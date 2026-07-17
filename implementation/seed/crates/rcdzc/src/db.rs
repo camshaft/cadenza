@@ -5297,7 +5297,20 @@ fn mark_float_literals(
 /// `Leaf::Sym`; a non-symbol first arg is not a unit definition.
 fn scan_unit_defines(ast: &Arenas) -> Vec<(String, StructId, i128, i128)> {
     let mut out = Vec::new();
-    for item in top_items(ast) {
+    // Scan EVERY arena node, not just top-level items: a `(Unit.define #"name" base num den)` is a
+    // name→conversion declaration wherever it appears — a TOP-LEVEL statement OR an INLINE unit value in a
+    // `Qty.of` unit position (`(Qty.of a (Unit.define #"foot" (Unit.base #"meter") 2 1))`). Both must feed
+    // the SAME uniqueness table `check_unit_defines` consults: else an inline define silently redefines a
+    // built-in unit's ratio (foot=2m) or uses one name at two ratios in one expression — the exact
+    // silent-wrong-physics the CDZ0502 "A Named Unit's Conversion Is Unique" rule exists to prevent
+    // (`units-of-measure.md`). Arena index order is deterministic (a node's children have higher indices
+    // than… — actually the reader assigns ids in construction order), giving `check_unit_defines`'s
+    // "earlier declaration"/"first-wins" a stable order. A top-level define is just a node here, scanned
+    // once (no double-count). The recognized-top-level-form set (`TOP_LEVEL_FORMS` / `scan_top_level`)
+    // still handles a top-level `Unit.define` separately for the "unknown top-level" decline — this scan
+    // only feeds the conversion table + the known-unit set + the value-reduction lookup.
+    for i in 0..ast.structure.len() {
+        let item = StructId(i as u32);
         if let Some(args) = unit_member_call(ast, item, "define")
             && args.len() == 4
             && let Some(name) = ast.as_sym(args[0])

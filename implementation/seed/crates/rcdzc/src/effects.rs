@@ -1770,6 +1770,18 @@ pub fn reduce_handle(
     // value is `(let ((t (f#ctx … init))) (. t 0))`. (The self-call arm already discards each spec's
     // OUT-state at the top level — the handle observes only the value.) Nothing pending → returns `rewritten`.
     let wrapped = drain_and_wrap(db, &ctx, 0, rewritten);
+    // Graft the threaded result UNDER the original handle's site (the same re-anchoring the E5 pure-one-hole
+    // and multi-shot blocks above do). The `thread` perform arm returns the resume VALUE as the perform's
+    // result via `deep_fresh_copy` — a freshly-pushed subtree whose root parent is `None`. When that value is
+    // a BARE NAME referencing an ENCLOSING binder — the IDENTITY-arm pass-through `(handle St k ((get (u) s
+    // (resume s s))) (St.get))`, whose folded body is just `k` (main's param) — the copy has no lexical chain,
+    // so the reference reads UNBOUND → `Poison` → the handle types as `Any` and lowering declines "return type
+    // has no machine representation" (a check/compile divergence: infer's export solve grounds it Int64, but
+    // `type_of(rewritten)` here reads `Any`). Re-parenting `wrapped` under the handle node restores the chain
+    // wrapped → handle → def so `k` re-resolves to main's param and types Int64. (A folded body forced through
+    // an arithmetic op — `(+ s 1)` or a compound body — already re-parents its operands, which is why those
+    // faces did not exhibit the leak; the bare pass-through is the gap.)
+    reparent_under_handle_site(db, wrapped, body);
     Some(wrapped)
 }
 
@@ -4378,6 +4390,18 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // observing continuation. Only takes effect when the callee is multi-value-threadable (checked below);
     // an unthreadable callee stays single-return (no regression — the miscompile is pinned, not newly broken).
     let caller_observes_outstate = db.force_multivalue.contains(&(orig_body, ctx.key.clone()));
+    // A caller-observed MUTUALLY-recursive callee cannot be threaded by the multi-value tuple machinery: it
+    // threads a SELF-call's out-state, but a mutual-SCC callee's recursion goes through a SIBLING def (`ea`
+    // calls `eb` calls `ea`), whose out-state the self-call arm does not project — forcing multi-value here
+    // produces a body leaking the internal `$s0`/`$t0` state-param names (a confusing CDZ0101). Rather than
+    // leak — or silently miscompile via single-return (the sibling's out-state is dropped, a DISTINCT
+    // pre-existing miscompile the breaker filed separately) — DECLINE cleanly, an honest "not yet reducible"
+    // todo. (Threading a mutual-SCC's out-state across the whole recursive group needs group-wide multi-value
+    // specialization — a later increment.) Only the CALLER-OBSERVED mutual case declines; a bare mutual
+    // recursion with no observed out-state still specializes single-return (unaffected).
+    if caller_observes_outstate && callee_calls_other_recursive_def(db, orig_body, callee_def) {
+        return None;
+    }
     let multivalue = (selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx)
         || caller_observes_outstate)
         && ctx.abortive.is_empty()

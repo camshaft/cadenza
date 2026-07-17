@@ -136,7 +136,12 @@ pub enum Outcome {
 fn trap_message(e: &anyhow::Error) -> String {
     match e.downcast_ref::<wasmtime::Trap>() {
         Some(trap) => format!("{trap}: {e:?}"),
-        None => format!("{e}"),
+        // A non-`Trap` error renders its whole CAUSE CHAIN inline (`{e:#}`), not just the outer message:
+        // when a HOST func returns an error (e.g. an exhausted `--host-response` list) wasmtime wraps it as
+        // "error while executing at wasm backtrace: …" and the actionable cause (`host call `E.op` has no
+        // recorded response …`) is a chain LINK — the bare `{e}` printed only the wrapper (a fleet breaker
+        // flagged this). `{e:#}` joins the chain (`outer: cause: root`) so the real reason is visible.
+        None => format!("{e:#}"),
     }
 }
 
@@ -1519,8 +1524,14 @@ fn bind_host_imports(
                         .expect("a result slot implies a declared result type");
                     let mut idx = cursor.lock().expect("host response cursor mutex");
                     let resp = responses.get(*idx).ok_or_else(|| {
+                        // Name the OP, the CALL NUMBER (1-based — `*idx` is the 0-based cursor), and how many
+                        // responses were supplied, so an exhausted `--host-response` list points straight at
+                        // the culprit (`cdz run` was surfacing only the bare wasmtime "error while executing"
+                        // wrapper — the actionable cause was buried; a fleet breaker flagged this).
                         anyhow!(
-                            "host call `{op_label}` has no recorded response (only {} supplied)",
+                            "host call `{op_label}` has no recorded response \
+                             (call {} of the run; {} response(s) supplied via --host-response)",
+                            *idx + 1,
                             responses.len()
                         )
                     })?;
@@ -2307,6 +2318,23 @@ mod tests {
         assert_eq!(scalar_of_value_form("(: 42 Int64)"), "42");
         assert_eq!(scalar_of_value_form("7"), "7");
         assert_eq!(scalar_of_value_form("  3  "), "3");
+    }
+
+    #[test]
+    fn trap_message_surfaces_the_host_error_cause_not_just_the_wrapper() {
+        // A HOST func error (e.g. an exhausted `--host-response` list) is propagated through wasm as a
+        // wrapped anyhow chain: the OUTER message is a generic "error while executing …" and the actionable
+        // reason is a CAUSE. `trap_message` must render the whole chain (`{e:#}`) so the reason is visible —
+        // the bare `{e}` (outer only) buried it (a fleet breaker flagged the bare-wrapper output).
+        let root = anyhow!(
+            "host call `ask.ask` has no recorded response (call 2 of the run; 1 response(s) supplied via --host-response)"
+        );
+        let wrapped = root.context("error while executing at wasm backtrace: 0: ask.ask");
+        let msg = trap_message(&wrapped);
+        assert!(
+            msg.contains("has no recorded response") && msg.contains("call 2 of the run"),
+            "the host-call cause (op + call index) must be surfaced, not just the wrapper: {msg:?}"
+        );
     }
 
     #[test]

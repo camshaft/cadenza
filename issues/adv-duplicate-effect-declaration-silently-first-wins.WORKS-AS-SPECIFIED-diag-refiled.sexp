@@ -52,3 +52,15 @@
 ; rejects CDZ0201; the effect NAME is the one unenforced fixed-name-set member. Same missed-check-site
 ; class as the inline Unit.define CDZ0502 bypass. Owner = resolve declaration scan (v-inference; bounce
 ; to v-effects if effect-name registration is theirs). Not spawning (fixer cap). Promote when fixed.
+
+; ---
+; WORKS-AS-SPECIFIED (corpus-bugfix + v-inference, 2026-07-17): the "expected CDZ0201" is WRONG.
+; Two same-named effects with different ops are DISTINCT effects BY DESIGN — corpus case
+; 14-effects-and-handlers.sexp:3129 explicitly pins "two effects declared with the same name are
+; distinct, not one merged effect" (capabilities-and-effects.md: an effect's identity is its
+; DECLARATION, not its name — unlike a type/module, which IS a name binding and collides). v-inference
+; implemented the CDZ0201 check and it REGRESSED that pinned case (pass->todo), then reverted (gate
+; 3731/0). So this is NOT a reject-gap. The REAL issue is DIAGNOSTICS-QUALITY: performing E.b when b
+; is on a LATER same-named effect gives a baffling "effect E has no operation b" — re-filed as a diag
+; improvement below (v-inference owns it, no soundness change). LESSON: check the corpus/spec ruling
+; BEFORE routing a "reject-gap" — this one had a standing case ruling the behavior correct.

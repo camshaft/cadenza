@@ -6030,6 +6030,88 @@ fn a_cross_function_fold_with_no_observed_outstate_stays_single_return() {
     }
 }
 
+/// FIXED (breaker finding, was a CHECK/COMPILE DIVERGENCE — a spurious decline of a well-typed program).
+/// `(def (main (: k Int64)) (handle St k ((get (u) s (resume s s))) (St.get)))` — a RUNTIME-seeded handler
+/// whose IDENTITY arm resumes the seed unchanged through a BARE-perform body. `cdz check` solved the result
+/// Int64 (the value is plainly the seed), but LOWERING declined "function return type has no machine
+/// representation" (wasm) / "result type Any has no native Rust representation" (rust). ROOT: the ordinary
+/// `thread` path in `reduce_handle` returns the perform's resume VALUE (here the state binder → the init seed
+/// `k`) via `deep_fresh_copy` — a freshly-pushed subtree with root parent `None`. When that value is a BARE
+/// NAME referencing an ENCLOSING binder (`k` = main's param), the copy has no lexical chain, so it reads
+/// UNBOUND → `Poison` → `type_of(rewritten)` = `Any` → the decline. Advancing the arm (`resume (+ s 1) …`),
+/// a compound body (`(+ 0 (St.get))`), or a literal seed each HID it (those force the value through an op
+/// that re-parents its operands); the pure pass-through was the gap. FIX: `reduce_handle` now
+/// `reparent_under_handle_site`s the threaded result (the same re-anchoring the E5 pure-one-hole + multi-shot
+/// blocks already do), restoring the chain so `k` re-resolves to main's param and types Int64. k=9 → 9.
+#[test]
+fn a_runtime_seeded_identity_arm_bare_perform_handle_yields_the_seed() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(do \
+        (effect St (op get (-> Unit Int64))) \
+        (def (main (: k Int64)) (handle St k ((get (u) s (resume s s))) (St.get))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("compiles (identity arm resuming the runtime seed — was a spurious 'no machine rep' decline)");
+    let v: i64 = run_returns_with(&bytes, "main", &[Val::S64(9)]);
+    assert_eq!(v, 9, "the identity arm resumes the seed; k=9 → 9");
+}
+
+/// ADVERSARIAL companion (task #15, breaker witness): TWO successive self-recursive folds under ONE handler —
+/// the SECOND fold must thread against the state the FIRST advanced, not the seed. `dn(n) = if n==0 then 0
+/// else dn(n-1) + Counter.bump()` counts down performing `bump` (state s→s+1); `(+ (* 1000 (dn 2)) (dn 2))`.
+/// The first `(dn 2)` performs twice (state 0→2) returning 0+1 = ... actually bump resumes with the CURRENT
+/// state so `(dn 2)` = bump@0 + bump@1 = 0 + 1 = ... the recursion sums `dn(1)+bump` = `(dn(0)+bump) + bump`
+/// = `(0 + b0) + b1` = 0 + 1 = ... left-to-right the inner call runs first: dn(2)=dn(1)+bump, dn(1)=dn(0)+bump,
+/// so bumps fire at s=0 (inner) then s=1 (outer) → dn(2) = (0+0)+1 = 1, state now 2; the SECOND (dn 2) fires
+/// bumps at s=2,3 → 2+3 = 5. So `(* 1000 1) + 5` = 1005. Pins that the caller-observed out-state threads the
+/// FIRST fold's advance into the SECOND fold (a state-reset would give `1000*1 + 1` = 1001).
+#[test]
+fn two_successive_self_recursive_folds_thread_state_between_them() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Counter (op bump (-> Int64))) \
+        (def (dn (: n Int64)) (if (= n 0) 0 (+ (dn (- n 1)) (Counter.bump)))) \
+        (def (main) (handle Counter 0 ((bump () s (resume s (+ s 1)))) \
+          (+ (* 1000 (dn 2)) (dn 2)))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("compiles (both self-recursive folds specialize multi-value)");
+    if let Some(v) = run_linked(&bytes, "main") {
+        // fold1 bumps at s=0,1 → 1 (state→2); fold2 bumps at s=2,3 → 5; 1000*1 + 5 = 1005.
+        assert_eq!(
+            v, "1005",
+            "the second fold must thread the first fold's advanced state: want 1005"
+        );
+    }
+}
+
+/// ADVERSARIAL companion (task #15, breaker witness): a caller-observed MUTUALLY-recursive effectful callee
+/// must DECLINE CLEANLY, never leak the internal `$s0`/`$t0` state-param names. `ea`/`eb` form an SCC (each
+/// performs `Counter.bump`), and `(+ (* 1000 (ea 3)) (Counter.bump))` observes the SCC's out-state via the
+/// trailing perform. The multi-value tuple machinery threads a SELF-call's out-state but not a mutual-SCC
+/// SIBLING's, so forcing multi-value here would leak `$s0`; the `callee_calls_other_recursive_def` guard
+/// declines instead. Pins that the decline is a clean "not yet reducible" todo (compiles with `expect_err`)
+/// carrying NO leaked internal name — never a wrong value, never a confusing CDZ0101.
+#[test]
+fn a_caller_observed_mutually_recursive_fold_declines_cleanly_no_leak() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Counter (op bump (-> Int64))) \
+        (def (ea (: n Int64)) (if (= n 0) 0 (+ (eb (- n 1)) (Counter.bump)))) \
+        (def (eb (: n Int64)) (if (= n 0) 0 (+ (ea (- n 1)) (Counter.bump)))) \
+        (def (main) (handle Counter 0 ((bump () s (resume s (+ s 1)))) \
+          (+ (* 1000 (ea 3)) (Counter.bump)))) \
+        (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src)))
+        .expect_err("a caller-observed mutual-SCC fold is not yet reducible — declines");
+    assert!(
+        !err.message.contains("$s") && !err.message.contains("$t") && !err.message.contains("#eff"),
+        "the decline must not leak an internal specialization name: {}",
+        err.message
+    );
+}
+
 /// FIXED (was a KNOWN LATENT SILENT MISCOMPILE, promoted 2026-07-17 when active-demand work cleared + a peer
 /// pinged). An effectful STATE-ADVANCING op (`put`→`Map.insert`) performed inside a CALLED HELPER used to have
 /// its handler-state advance DROPPED at the CALL-RETURN boundary — the later `get` MISSED → a WRONG VALUE (99).

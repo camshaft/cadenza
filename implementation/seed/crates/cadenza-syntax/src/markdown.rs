@@ -732,7 +732,20 @@ fn print_list(a: &Arenas, id: StructId, out: &mut String) {
         n = s;
         rest = &rest[1..];
     }
-    for &item in rest {
+    // LOOSE vs TIGHT. A tight item holds its text as bare inline (`(item (text …) …)`); a loose one
+    // wraps it in a paragraph (`(item (paragraph …))`) — pulldown-cmark's representation, and the whole
+    // list is loose if ANY item is. A loose list MUST be printed with a blank line between items, else
+    // the reprint reads back TIGHT (each item's paragraph collapses to bare inline) — a different tree,
+    // breaking arena-idempotency (`- a\n\n- b\n` → reprinted tight `- a\n- b\n` → loses the paragraphs).
+    let loose = rest.iter().any(|&item| {
+        child_tail(a, item)
+            .iter()
+            .any(|&c| a.head_name(c) == Some("paragraph"))
+    });
+    for (idx, &item) in rest.iter().enumerate() {
+        if loose && idx > 0 {
+            out.push('\n'); // blank line separating loose items
+        }
         let marker = if ordered {
             let m = format!("{n}. ");
             n += 1;
@@ -746,6 +759,11 @@ fn print_list(a: &Arenas, id: StructId, out: &mut String) {
         for (li, line) in inner.trim_end_matches('\n').split('\n').enumerate() {
             if li == 0 {
                 out.push_str(&marker);
+            } else if line.is_empty() {
+                // Don't emit trailing indent on a blank continuation line (keeps output clean and avoids
+                // reintroducing the tight-item spurious-blank shape a nested block already separates with).
+                out.push('\n');
+                continue;
             } else {
                 out.push_str(&indent);
             }
@@ -1180,6 +1198,23 @@ mod tests {
         assert_idempotent("- a\n  - b\n    - c\n");
         // A tight item with text, a nested list, THEN more tight siblings still round-trips.
         assert_idempotent("- one\n  - inner\n- two\n");
+    }
+
+    #[test]
+    fn loose_lists_stay_loose_and_tight_lists_stay_tight() {
+        // A LOOSE list — a blank line between items, so pulldown-cmark wraps each item's content in a
+        // `(paragraph …)` — must reprint WITH the blank lines, else it reads back TIGHT (bare inline under
+        // `item`), a different tree. The printer used to never separate items, so every loose list
+        // collapsed to tight on reprint (`- a\n\n- b\n` → `- a\n- b\n`), an arena-idempotency violation.
+        // `print_list` now detects looseness (any item holds a paragraph) and emits the item separators.
+        assert_idempotent("- a\n\n- b\n"); // loose unordered
+        assert_idempotent("1. a\n\n2. b\n"); // loose ordered
+        assert_idempotent("- one\n\n- two\n\n  extra paragraph\n- three\n"); // loose w/ a multi-block item
+        // And a tight list must NOT gain blank lines (stays tight on reprint).
+        assert_idempotent("- a\n- b\n");
+        assert_idempotent("1. a\n2. b\n");
+        // A tight item carrying a nested list is still tight (no spurious item separators either).
+        assert_idempotent("- x\n  - sub\n- y\n");
     }
 
     #[test]
