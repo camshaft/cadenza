@@ -567,20 +567,37 @@ a `NonEmptyList` never empty; a `SortedVec` only sorted. This makes property tes
 source of "what is a valid value of this type"** — verified on producers, assumed on consumers, elided-against
 by the optimizer, AND the generation constraint for fuzzing.
 
-**Seam (co-designed with v-property-testing, who owns generation):** v-verification EXPOSES the type's
-`@invariant` predicate (the same predicate defined for §10.2's obligations — one source of truth, denoted over
-`it`); v-property-testing's `gen<T>` CONSUMES it. Two generation strategies (theirs to implement):
-- **reject-until-valid (baseline):** generate a raw `T`, keep only if the invariant predicate holds. Simple,
-  always correct; can be rejection-heavy for a tight invariant.
-- **constrained-gen (better, where derivable):** derive an in-domain generator from the invariant SHAPE — a
-  range invariant `0≤it≤100` → generate directly in `[0,100]`; a `len>0` invariant → generate non-empty.
-  Only for recognizable predicate shapes; falls back to reject-until-valid otherwise.
-Shrinking must ALSO stay within the invariant (a shrunk counterexample is still a legal value). **Fork I3
-(route to operator):** what when an invariant is too tight for rejection sampling to hit (e.g. a sparse
-predicate)? — (a) a compile/test error "invariant too tight to fuzz; supply a manual generator", (b) require
-a manual `Test.gen` for such a type, (c) a rejection-budget then skip. My lean: (b)/(a) — a manual generator
-escape hatch with a clear diagnostic when rejection is infeasible. v-verification exposes the predicate; the
-generation policy is v-property-testing's + this fork.
+**Seam (co-designed with v-property-testing, SETTLED 2026-07-17):** v-verification EXPOSES the type's
+`@invariant` predicate via `Db::invariant_of(type)` (the same predicate from §10.2's obligations — one source
+of truth, denoted over `it`); v-property-testing's `gen<T>` CONSUMES it at its `classify_ty`/`build_gen`
+point. **Operator refinement (2026-07-17): CONSTRAINED-GEN is the PREFERRED path** — "never waste a cycle on
+a value just to get rejected" — with reject-until-valid only the correctness fallback. Three tiers (theirs
+to implement, agreed):
+- **constrained-gen (PREFERRED, where derivable):** derive an in-domain generator from the invariant SHAPE —
+  a range `0≤it≤100` → generate directly in `[0,100]`; `len>0` → generate non-empty. Zero rejection.
+- **reject-until-valid (fallback):** generate a raw `T`, keep iff the predicate holds; fuel-bounded. Correct
+  for ANY invariant; used when the shape isn't recognized.
+- **invariant-respecting shrink:** the shrinker accepts a smaller candidate only if it BOTH still fails the
+  property AND satisfies the invariant (a shrunk counterexample stays a legal value).
+
+**Structural exposure (the constrained-gen enabler).** Constrained-gen needs the invariant's STRUCTURE, not
+just an opaque callable. GOOD NEWS: the exposed predicate IS already structured — it's a `Term`/`Ast` tree
+(`(and (<= lo it) (<= it hi))` is an inspectable `Comb`-tree, exactly what b4b's denotation + the
+`t1(oob)`/`div0` cases pattern-match), so `Db::invariant_of` returning the predicate `StructId` ALREADY hands
+v-property-testing an analyzable shape — their tier-2 peephole reads it directly. **Fork I-struct (route to
+operator): who owns the shape-recognition + how much now?** — (a) v-property-testing peepholes the raw
+predicate AST (my lean — the shape IS the AST, no new form; they already designed this tier-2, keeps
+recognition in the generation lane where the gen strategies live); (b) v-verification pre-normalizes to a
+classified `RangeConstraint`/`NonEmpty`/`Conjunction` form (centralizes recognition in my lane, more upfront
+work). Both start with the common shapes (range/bound/non-empty) + fall back to reject-until-valid. My lean
+(a) — the raw AST is already the structured form; a shared shape-recognizer can move to a common util later
+if both verticals need it.
+
+Shrinking stays within the invariant (above). **Fork I3 (route to operator):** an invariant too tight for
+even reject-until-valid to hit — (a) a fuzz-time DECLINE "invariant too tight to fuzz; supply a `Test.gen`"
+(v-property-testing's lean + mine, agreed — decline at fuzz-time, NOT a definition-time error; the invariant
+is still valid+verified), (b) rejection-budget then skip. Lean: (a). v-verification exposes the predicate;
+the generation policy is v-property-testing's + these forks.
 
 ### 10.5 Failure mode (fork I2, route to operator) + dependency
 **I2 — a constructor that can't establish `I`:** REJECT (compile error "constructor cannot establish
@@ -596,8 +613,10 @@ obligation shapes (establish/preserve as `@ensures`-style discharges) can be pin
   (defer; shares the `it` binder).
 - **I2 (failure mode):** REJECT a constructor that can't establish the invariant (my lean) vs warn.
 - **I3 (generation, §10.4):** when an invariant is too tight for reject-until-valid fuzzing — manual-generator
-  escape hatch + clear diagnostic (my lean) vs rejection-budget-then-skip. (Generation policy is
-  v-property-testing's; v-verification just exposes the predicate.)
+  escape hatch + clear diagnostic (my lean; agreed with v-property-testing) vs rejection-budget-then-skip.
+- **I-struct (constrained-gen structural exposure, §10.4):** who owns invariant-shape-recognition —
+  v-property-testing peepholes the raw predicate AST `Db::invariant_of` exposes (my lean; the AST IS the
+  structured form) vs v-verification pre-normalizes to a classified constraint form.
 - **(shared) dependencies:** the (A1) kernel-in-prelude + b4c/b3 discharge+elision path `@invariant` reuses.
 - **(new seam) v-property-testing:** consumes the exposed `@invariant` predicate for `gen<T>` (§10.4).
 
