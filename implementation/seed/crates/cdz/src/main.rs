@@ -2751,16 +2751,40 @@ fn run_test_file(
                     GenDrivenOutcome::Property(Some(fail)) => {
                         failed += 1;
                         let msg = fail.message.map(|m| format!(": {m}")).unwrap_or_default();
-                        let pool = fail
-                            .inputs
-                            .iter()
-                            .map(|s| s.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        println!(
-                            "FAIL {name}{msg}\n  counterexample: generated ints [{pool}]  (seed {seed}; \
-                             replay with `--seed {seed}`)"
-                        );
+                        // Prefer the CONCRETE VALUE the shrunk pool decodes to (e.g. `never-three([0,0,0])`)
+                        // over the raw driver ints: recover the wrapper's original compound parameter type
+                        // (the pre-synthesis def `<name-without-gen>` survives, `@test`-stripped, with its
+                        // param type intact) and re-run the SAME generator derivation over the shrunk pool.
+                        // Falls back to the raw-int line when the type can't be recovered/decoded (a shape
+                        // the decoder doesn't yet render) — never a wrong value.
+                        let pool_ints: Vec<i64> =
+                            fail.inputs.iter().filter_map(|s| s.parse().ok()).collect();
+                        let rendered = compound_param_ty(&mut db, name)
+                            .and_then(|ty| render_pool_value(&ty, &pool_ints));
+                        match rendered {
+                            // Render the counterexample as a call to the ORIGINAL test (the `-gen` suffix is
+                            // the synthesized-wrapper detail; `never_three([0,0,0])` reads as the user wrote
+                            // it), while the `FAIL` line keeps the wrapper name the runner reports throughout.
+                            Some(value) => {
+                                let orig = name.strip_suffix("-gen").unwrap_or(name);
+                                println!(
+                                    "FAIL {name}{msg}\n  counterexample: {orig}({value})  (seed {seed}; \
+                                     replay with `--seed {seed}`)"
+                                )
+                            }
+                            None => {
+                                let pool = fail
+                                    .inputs
+                                    .iter()
+                                    .map(|s| s.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                println!(
+                                    "FAIL {name}{msg}\n  counterexample: generated ints [{pool}]  \
+                                     (seed {seed}; replay with `--seed {seed}`)"
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -3105,6 +3129,93 @@ fn param_generators(db: &mut rcdzc::db::Db, def: usize) -> Option<Vec<GenKind>> 
         kinds.push(kind);
     }
     Some(kinds)
+}
+
+/// The number of `(list …)` elements a synthesized variable-length list generator produces candidates for
+/// (mirrors `proptest_gen::G1_LIST_LEN`). The wrapper draws a count `c = gen % (LEN+1)`, then LEN candidate
+/// elements, keeping the first `c`. The decoder MUST use the same LEN to consume the pool in lockstep.
+const RUNNER_LIST_LEN: usize = 3;
+
+/// Recover the ORIGINAL compound parameter type of a synthesized `-gen` wrapper. `proptest_gen` leaves the
+/// pre-synthesis def in place (name `<wrapper-without-"-gen">`, its `@test` stripped so it's a plain callee)
+/// with its single compound parameter's type intact, and adds the nullary `-gen` wrapper beside it. So to
+/// render a wrapper's counterexample we look up that sibling def and solve its (first) parameter's type.
+/// `None` if the name isn't a `-gen` wrapper, no such sibling def exists, or it has no parameter.
+fn compound_param_ty(db: &mut rcdzc::db::Db, wrapper_name: &str) -> Option<rcdzc::ty::Ty> {
+    let orig = wrapper_name.strip_suffix("-gen")?;
+    let def = db.defs.iter().position(|d| d.name == orig)?;
+    let p = *db.defs[def].params.first()?;
+    let binder = db
+        .ast
+        .as_form(p, ":")
+        .and_then(|t| t.first().copied())
+        .unwrap_or(p);
+    Some(rcdzc::infer::type_of(db, binder))
+}
+
+/// Render the concrete value a shrunk driver `pool` decodes to for a compound parameter type `ty`, mirroring
+/// the generator derivation `proptest_gen::build_gen` synthesized into the `-gen` wrapper — so the reported
+/// counterexample is the actual value that failed (e.g. `[0, 0, 0]` / `(1, false)`) rather than the raw
+/// driver ints. Returns `None` for a type the decoder does not (yet) render (`Sum`/`Set`/`Map`/`Char`/
+/// nominal), so the caller falls back to the raw-int line — never a wrong value. The pool is consumed via a
+/// shared cursor in the SAME order the wrapper pulls `Test.gen`.
+fn render_pool_value(ty: &rcdzc::ty::Ty, pool: &[i64]) -> Option<String> {
+    let mut cursor = 0usize;
+    decode_value(ty, pool, &mut cursor)
+}
+
+/// One step of the pool→value decode (see [`render_pool_value`]). `cursor` advances by exactly the number of
+/// `Test.gen` ints the corresponding `build_gen` arm consumes, in the same order.
+fn decode_value(ty: &rcdzc::ty::Ty, pool: &[i64], cursor: &mut usize) -> Option<String> {
+    use rcdzc::ty::Ty;
+    // Pull the next driver int (the wrapper's `Test.gen`); `None` if the shrunk pool is exhausted.
+    let next = |cursor: &mut usize| -> Option<i64> {
+        let v = pool.get(*cursor).copied()?;
+        *cursor += 1;
+        Some(v)
+    };
+    match ty {
+        // A scalar Int consumes one int: the value IS that int.
+        Ty::Int(_) => Some(next(cursor)?.to_string()),
+        // A Bool consumes one int, taken as its parity (`gen % 2 == 0`) — the `build_gen` Bool derivation.
+        Ty::Bool => Some((next(cursor)?.rem_euclid(2) == 0).to_string()),
+        // A Float consumes one int, converted to an integer-valued float (`FloatN.of-int`).
+        Ty::Float(_) => Some(format!("{}.0", next(cursor)?)),
+        // A variable-length list: a count `c = gen % (LEN+1)` then LEN candidate elements (all drawn), value
+        // = the first `c`. The decoder draws in the SAME order so the cursor stays in lockstep with the run.
+        Ty::List(elem) => {
+            let c = (next(cursor)?.rem_euclid((RUNNER_LIST_LEN + 1) as i64)) as usize;
+            let mut elems = Vec::with_capacity(RUNNER_LIST_LEN);
+            for _ in 0..RUNNER_LIST_LEN {
+                elems.push(decode_value(elem, pool, cursor)?);
+            }
+            elems.truncate(c);
+            Some(format!("[{}]", elems.join(", ")))
+        }
+        // A tuple draws one value per slot, in order.
+        Ty::Tuple(slots) => {
+            let mut vals = Vec::with_capacity(slots.len());
+            for slot in slots.iter() {
+                vals.push(decode_value(slot, pool, cursor)?);
+            }
+            Some(format!("({})", vals.join(", ")))
+        }
+        // A record draws one value per field, in the field order `build_gen` used (the `BTreeMap` iteration
+        // order, which is what the synthesized `(record (f <gen>) …)` followed).
+        Ty::Record(fields) => {
+            let mut parts = Vec::with_capacity(fields.len());
+            for (sym, fty) in fields.iter() {
+                let v = decode_value(fty, pool, cursor)?;
+                parts.push(format!("{}: {}", sym.name, v));
+            }
+            Some(format!("{{{}}}", parts.join(", ")))
+        }
+        // Sum/Set/Map/Char/nominal/other: not (yet) decoded — fall back to the raw-int line. (A user SUM
+        // needs its variant payload types reconstructed from `decl + args` via sum normalization; a
+        // follow-up increment. Rendering the STRUCTURAL shapes — List/Tuple/Record over scalar leaves —
+        // already covers the common compound property-test parameters the operator hit.)
+        _ => None,
+    }
 }
 
 /// The outcome of one trial: PASS (the export returned) or FAIL (it trapped) with the failure message the

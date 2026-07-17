@@ -8929,7 +8929,24 @@ fn check_application(
                     // A quantity combined additively with a NON-quantity (a bare number) — no implicit
                     // dimensionless coercion (the numeric core's no-silent-promotion discipline applied to
                     // dimensions). CDZ0501.
-                    _ => {
+                    //
+                    // But ONLY when the non-quantity operand is actually a NUMBER: this CDZ0501 message
+                    // ("a quantity and a plain number") and its `(Qty.of <n> <unit>)` repair are meaningful
+                    // solely for a bare numeric operand. A quantity added to a NON-numeric value — e.g. an
+                    // `(Option (Qty …))` from `List.at`, a tuple, a string — is not a dimension slip; the
+                    // accurate report is the generic scheme-unify's CDZ0203 (which, for an `Option`, even
+                    // guides "the value is optional; match it to handle the `None` case"). So when the
+                    // non-quantity side is not numeric, fall THROUGH to the generic path rather than
+                    // mislabel the operand "a plain number" and offer a nonsensical `(Qty.of …)` wrap.
+                    _ if {
+                        let is_num = |t: &Ty| {
+                            matches!(t, Ty::Int(_) | Ty::Float(_) | Ty::BigInt | Ty::Rational)
+                        };
+                        // The operand that is NOT the quantity — the one this arm calls "a plain number".
+                        let non_qty = if matches!(a, Ty::Qty { .. }) { &b } else { &a };
+                        is_num(non_qty)
+                    } =>
+                    {
                         trace!(target: "rcdzc::infer", head = head.0, "fault: combining a quantity with a non-quantity (CDZ0501)");
                         let mut reject = Reject::coded(
                             Code::DimensionMismatch,
@@ -8973,6 +8990,10 @@ fn check_application(
                         }
                         return;
                     }
+                    // A quantity combined with a NON-numeric non-quantity (an `Option`, tuple, string, …):
+                    // NOT a dimension slip. Fall through (no `return`) to the generic scheme-unify path
+                    // below, which gives the accurate CDZ0203 for the actual type clash.
+                    _ => {}
                 }
             }
         }

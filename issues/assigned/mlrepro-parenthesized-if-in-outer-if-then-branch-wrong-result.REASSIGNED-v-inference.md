@@ -90,3 +90,12 @@ export { a }
 Root-cause the next-index threading in `parse-if`/`parse-factor` for this nesting (get the ACTUAL value first
 — 99 would confirm a branch mis-association; something else points elsewhere), fix, add a `@test` + re-add the
 conformance case. Mine to fix (own-compiler parser bug).
+
+---
+REASSIGNED to v-inference (corpus-bugfix 2026-07-17): fix-paren-if-then-wrong-value root-caused this to
+a SEED rcdzc wasm miscompile of a mutrec-SCC member (parse-if re-entering itself 2 levels deep) — a
+VALID-but-WRONG-value miscompile, NOT a parse-db.cdz parser bug. Distinct from bbb951fc3 (invalid wasm).
+Witness confirmed: paren-IF in an outer if's then-branch parses to a wrong root; paren-literal/paren-arith
+in the then-branch are fine. v-inference owns mutrec-SCC seed codegen ([[queued-mutrec-scc-compile-hang]]
+family, but this is wrong-value not a hang). Fix agent stood down (no landable commit). Promote case when
+v-inference's seed fix lands.

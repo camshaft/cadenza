@@ -323,6 +323,32 @@
             (export main)))
   (output (: 16 Int64)))
 
+; The two-sibling case above pins that internal CALLS resolve per-file. Its export-boundary TWIN: the
+; ENTRY file's EXPORTED name must also bind per-file. When a sibling defines the SAME name as the entry's
+; export (e.g. both `main`), the component's exported `main` MUST be the ENTRY's own def — a same-named
+; sibling def (spliced first, even a private one) must not hijack the export. The export used to bind
+; through the package-wide first-wins `def_of_name`, so the alphabetically-first file's `main` won the
+; export and BOTH entry choices ran the wrong file's code — a SILENT wrong program (no diagnostic, a
+; plausible value). Internal calls resolved per-file (the case above); only the export boundary missed it.
+
+(case "a package entry's exported def wins over a same-named def in a library file"
+  (doc    "Two package files each define `main`; the ENTRY (`main`, `* 7`) and a library `aaa` (`* 100`).
+           The component's exported `main` must be the ENTRY file's own def — n=3 → 21 — not the library's
+           (n*100 = 300). The flat cross-file `def_of_name` bound the export to the first-spliced file's
+           `main` (`aaa`, a library), so the entry's exported `main` silently ran `aaa`'s code. The
+           export boundary now resolves the exported name in the file that WROTE the `(export …)` clause
+           — the same per-file rule internal calls use (DESIGN-package-linking.md §4). A private (un-
+           exported) sibling `main` would hijack identically; both are the one missed resolution site.")
+  (module "aaa"
+    (do
+      (def (main (: n Int64)) (* n 100))
+      (export main)))
+  (input  (do
+            (def (main (: n Int64)) (* n 7))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 21 Int64)))
+
 ; A module declaration BINDS its name in the enclosing scope (the case at the top of this file), so two
 ; `(module a …)` in ONE scope are a fixed-name-set collision — the same ill-formedness as a duplicate `def`
 ; or type, rejected CDZ0201 ('module `a` is declared more than once'). Distinct from two SEPARATE-file

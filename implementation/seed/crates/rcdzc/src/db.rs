@@ -261,6 +261,24 @@ impl FileScopeTable {
         let idx = after.checked_sub(1)?;
         self.files[idx].contains(id).then_some(idx)
     }
+
+    /// Resolve an exported name to the VALUE def it names, WITHIN the file that declares the
+    /// `(export …)` clause — the file-scoped analogue of the flat `def_of_name` used by
+    /// `scan_top_level`. `name_occ` is the exported NAME atom (which file's demux range it falls in
+    /// IS the exporting file); `name` is the name it exports. Returns the def index visible under that
+    /// name in the exporting file's OWN scope (its own defs + its imports), or `None` if the file
+    /// exports no such value def (a type-handle export, or a name it does not actually define/import).
+    ///
+    /// This is the ONE resolution site the package linker missed: internal CALLS already resolve
+    /// per-file (`file_scoped_def`), but the EXPORT boundary bound through the package-wide first-wins
+    /// `def_of_name` — so a same-named def in a sibling file (even a private one, spliced earlier)
+    /// hijacked the entry's exported name, running the wrong file's code (`DESIGN-package-linking.md`
+    /// §4; `package-export-boundary-binds-flat-def-by-name-not-per-file`). Resolving the export in the
+    /// clause's own file — never a sibling's scope — is exactly the per-file rule the call path uses.
+    fn export_def(&self, name_occ: StructId, name: &str) -> Option<usize> {
+        let file = self.file_of(name_occ)?;
+        self.visible[file].get(name).copied()
+    }
 }
 
 /// Build the file-scoped resolution table from a package's [`crate::link::Linkage`]. For each file:
@@ -1557,6 +1575,17 @@ pub struct Db {
     /// Populated by `specialize_recursive`; read by the self-call rewrite arm.
     pub(crate) effect_spec_captures: std::collections::HashMap<String, Vec<String>>,
 
+    /// Recursive-effectful callees whose FINAL out-state is OBSERVED by a later item in the CALLER's strict
+    /// spine — a `(do (run-ops …) (Prim.run 0))` where the trailing perform reads the state the recursion
+    /// advanced. Keyed like `effect_specializations` (`(callee-body-occ, handler-context-key)`). Such a
+    /// callee MUST specialize in MULTI-VALUE mode so its advanced out-state threads to the observing
+    /// continuation; the single-return convention drops it (returns the incoming state unchanged), silently
+    /// miscompiling the observer to the PRE-recursion state (task #15, the cross-fn-fold out-state drop).
+    /// The mode decision (which reads the callee's OWN body) cannot see a CALLER-side observation, so
+    /// `reduce_handle` scans the handle body up front and records the marks here for `specialize_recursive`
+    /// to consult. Only UPGRADES a threadable callee to multi-value — a non-threadable one is left as-is.
+    pub(crate) force_multivalue: std::collections::HashSet<(StructId, String)>,
+
     /// Memo of `effects::subtree_performs` — whether the subtree at a node reaches a discharged perform (a
     /// `resume`, or a call into a discharged effect) under a given handler context. Keyed by `(node,
     /// handler-context-key)` (the same resolved-identity string `effect_specializations` uses). The
@@ -1828,7 +1857,7 @@ impl Db {
         // snapshot, not the polluted map, is what keeps the two cases distinct.
         let prelude_type_module_names: crate::fxhash::FxHashSet<String> =
             prelude.keys().cloned().collect();
-        let (defs, exports, mut type_decls, effect_decls, mut modules) = scan_top_level(&ast);
+        let (defs, mut exports, mut type_decls, effect_decls, mut modules) = scan_top_level(&ast);
         // Append the BUILT-IN sum declarations (generic `Option`/`Result`) as ordinary `TypeDecl`s, so a
         // program uses bare `Some`/`None`/`Ok`/`Err` + `Option`/`Result` without declaring them (the
         // corpus surface). They scan exactly like a user declaration; a user `(type Option …)` shadows
@@ -2108,6 +2137,25 @@ impl Db {
                 &prelude_type_module_names,
             )
         });
+        // RE-BIND each export to the def it names WITHIN ITS OWN FILE — the file-scoped analogue of the
+        // flat first-wins `def_of_name` that `scan_top_level` used. In a linked multi-file package the
+        // flat bind lets a same-named def in a sibling file (spliced earlier, even a PRIVATE one) hijack
+        // the entry's exported name, so the component runs the wrong file's code and returns its value
+        // (silent wrong-program — `package-export-boundary-binds-flat-def-by-name-not-per-file`). The
+        // internal CALL path already resolves per-file (`file_scoped_def`); this is the one boundary site
+        // that missed it. Resolve each export in the file that WROTE its `(export …)` clause (via the
+        // name atom's demux range) — never a sibling's scope (`DESIGN-package-linking.md` §4). A
+        // single-file compile has no `file_scope`, so this is skipped and the flat bind stands (unchanged).
+        // If the exporting file's own scope has no such value def (a type-handle export, or a name only
+        // present in a sibling), leave the scan's binding — that path (type export / diagnostics) is
+        // unaffected by the collision this fixes.
+        if let Some(fs) = file_scope.as_ref() {
+            for e in &mut exports {
+                if let Some(idx) = fs.export_def(e.name_occ, &e.name) {
+                    e.def = Some(idx);
+                }
+            }
+        }
         // Scan the program's `(Unit.define …)` forms BEFORE `ast` moves into the db (a raw-occurrence
         // store the units layer reduces on demand).
         let unit_defines = scan_unit_defines(&ast);
@@ -2339,6 +2387,7 @@ impl Db {
             effect_specializations: crate::fxhash::FxHashMap::default(),
             multivalue_specs: std::collections::HashSet::new(),
             effect_spec_captures: std::collections::HashMap::new(),
+            force_multivalue: std::collections::HashSet::new(),
             subtree_performs_cache: crate::fxhash::FxHashMap::default(),
             reduced_callable_walked: crate::fxhash::FxHashSet::default(),
             type_specializations: crate::fxhash::FxHashMap::default(),

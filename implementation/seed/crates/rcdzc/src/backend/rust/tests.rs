@@ -2398,6 +2398,50 @@ fn a_diverging_body_or_operand_emits_never_not_a_decline_or_a_method_call_on_nev
         never_arg.contains("panic!(\"unreachable\")") && !never_arg.contains(".checked_add"),
         "arithmetic reached via an inlined diverging call-arg emits only the trap:\n{never_arg}"
     );
+
+    // (d) NESTED diverging arithmetic — `(+ (+ (trap) 1) 2)` (reviewer residue of the direct-guard fix). The
+    // outer op's lhs is a LIVE `Core::Arith` (its own lhs traps), which `body_diverges` does NOT treat as
+    // diverging, so the DIRECT guard missed it and the outer emitted `<inner>.checked_add(2)` where `<inner>`
+    // is `panic!("unreachable")` → E0599. The transitive `arith_operand_diverges` recurses into arith
+    // operands, so the outer now emits only the diverging inner — no method call on `!` at ANY depth.
+    let nested = compile_rust("(module m (def (mk) (+ (+ (trap \"boom\") 1) 2)) (export mk))");
+    assert!(
+        nested.contains("panic!(\"unreachable\")") && !nested.contains(".checked_add"),
+        "nested diverging arithmetic emits only the trap, no method call on `!`:\n{nested}"
+    );
+    assert!(
+        compile_rust_result("(module m (def (mk) (+ (+ (trap \"boom\") 1) 2)) (export mk))")
+            .is_ok(),
+        "the nested diverging-arithmetic emit is well-formed Rust (no E0599)"
+    );
+    // The diverging operand nested in the RHS (`(+ 5 (+ (trap) 1))`) — lhs runs for effect, then the RHS
+    // aborts → `{ let _ = <lhs>; <trap> }`, still no `.checked_add` on `!`.
+    let nested_rhs = compile_rust("(module m (def (mk) (+ 5 (+ (trap \"boom\") 1))) (export mk))");
+    assert!(
+        nested_rhs.contains("panic!(\"unreachable\")") && !nested_rhs.contains(".checked_add"),
+        "a diverging operand nested in the rhs emits the lhs-for-effect then the trap:\n{nested_rhs}"
+    );
+
+    // (e) The `Core::Compare` TWIN — a comparison with a diverging operand. `(< (+ (trap) 1) 2)` would emit
+    // `panic!("unreachable") < 2` (comparing Rust's `!`/`()` with i64 → E0277); the same diverging-operand
+    // guard on the Compare emit path emits only the trap. wasm compiles + traps here, so this was a rust-only
+    // invalid-emit differential (a bare `(< (trap) 1)` needs a heap-walk both backends decline, so the
+    // reachable shape is the nested-arith one). rustc must accept it.
+    let cmp_nested =
+        compile_rust("(module m (def (mk) (if (< (+ (trap \"boom\") 1) 2) 10 20)) (export mk))");
+    assert!(
+        cmp_nested.contains("panic!(\"unreachable\")")
+            && !cmp_nested.contains("panic!(\"unreachable\") <")
+            && !cmp_nested.contains("panic!(\"unreachable\") =="),
+        "a diverging operand in a comparison emits only the trap, no compare on `!`:\n{cmp_nested}"
+    );
+    assert!(
+        compile_rust_result(
+            "(module m (def (mk) (if (< (+ (trap \"boom\") 1) 2) 10 20)) (export mk))"
+        )
+        .is_ok(),
+        "the diverging-comparison emit is well-formed Rust (no E0277)"
+    );
 }
 
 #[test]

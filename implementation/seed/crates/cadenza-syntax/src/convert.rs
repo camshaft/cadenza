@@ -412,6 +412,114 @@ mod tests {
         assert_eq!(Format::from_extension("prog.txt"), None); // unknown extension
     }
 
+    // Every `Format` variant, tied to the variant COUNT at compile time (`ALL_FORMATS.len() ==
+    // FORMAT_COUNT`, anchored by the exhaustive `format_ordinal` match below). Adding a variant to the
+    // enum fails to compile until it is given an ordinal here AND listed in this array — so the
+    // round-trip sweep below can never silently skip a new variant. (Same guard shape as token.rs's
+    // ALL_KEYWORDS/KEYWORD_COUNT.)
+    const ALL_FORMATS: &[Format] = &[
+        Format::Binary,
+        Format::Sexpr,
+        Format::Ml,
+        Format::Markdown,
+        Format::Json,
+        Format::Toml,
+        Format::Cedar,
+        Format::Debug,
+        Format::Flat,
+    ];
+
+    const fn format_ordinal(f: Format) -> usize {
+        match f {
+            Format::Binary => 0,
+            Format::Sexpr => 1,
+            Format::Ml => 2,
+            Format::Markdown => 3,
+            Format::Json => 4,
+            Format::Toml => 5,
+            Format::Cedar => 6,
+            Format::Debug => 7,
+            Format::Flat => 8,
+        }
+    }
+    const FORMAT_COUNT: usize = format_ordinal(Format::Flat) + 1;
+    const _: () = assert!(
+        ALL_FORMATS.len() == FORMAT_COUNT,
+        "ALL_FORMATS must list every Format variant exactly once"
+    );
+
+    #[test]
+    fn name_and_parse_round_trip_for_every_format_variant() {
+        // The CLI's `--from`/`--to` consistency rests on `parse(name(f)) == Some(f)` for EVERY variant:
+        // whatever canonical name a format prints as, re-parsing that name must recover the same format.
+        // The point-wise `format_names` test samples a few and OMITS markdown/debug/flat — a new variant
+        // (or one whose canonical name lacks a matching `parse` arm) would slip through. Drive from
+        // ALL_FORMATS (the whole variant set) so none is skipped.
+        for &f in ALL_FORMATS {
+            assert_eq!(
+                Format::parse(f.name()),
+                Some(f),
+                "{f:?}: parse(name) must round-trip (name = {:?})",
+                f.name()
+            );
+        }
+        // `name()` is INJECTIVE — every variant prints a distinct canonical name (else the round-trip
+        // above would be ambiguous and `--to <name>` could not name every format).
+        let mut names: Vec<&str> = ALL_FORMATS.iter().map(|f| f.name()).collect();
+        names.sort_unstable();
+        let distinct = names.len();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            distinct,
+            "Format::name must be injective across variants"
+        );
+    }
+
+    #[test]
+    fn from_extension_is_a_left_inverse_and_only_debug_flat_are_output_only() {
+        // Extension inference must AGREE with the format's own name: every non-output-only variant has at
+        // least one extension mapping back to it, and every extension that resolves lands on the RIGHT
+        // variant. The two OUTPUT-ONLY views (Debug, Flat) — per `from_extension`'s doc — have no
+        // extension, on purpose (you can't read a debug dump back). This pins the extension table against
+        // the variant set so a new readable surface can't be added without an extension (silently making
+        // `cdz foo.newext` an "unknown extension" error) and a new output-only one is deliberate.
+        let output_only = [Format::Debug, Format::Flat];
+        // Known extensions and where each must land — the inverse view of `from_extension`.
+        let exts: &[(&str, Format)] = &[
+            ("cdz", Format::Ml),
+            ("ml", Format::Ml),
+            ("sexp", Format::Sexpr),
+            ("sexpr", Format::Sexpr),
+            ("bin", Format::Binary),
+            ("cdzb", Format::Binary),
+            ("md", Format::Markdown),
+            ("markdown", Format::Markdown),
+            ("json", Format::Json),
+            ("toml", Format::Toml),
+            ("cedar", Format::Cedar),
+        ];
+        // Each listed extension resolves to exactly its stated variant (via a real path `x.<ext>`).
+        for &(ext, want) in exts {
+            assert_eq!(
+                Format::from_extension(&format!("x.{ext}")),
+                Some(want),
+                ".{ext} must infer {want:?}"
+            );
+        }
+        // Coverage matches the output-only classification exactly: a variant has an extension IFF it is
+        // not output-only.
+        for &f in ALL_FORMATS {
+            let has_ext = exts.iter().any(|&(_, v)| v == f);
+            let is_output_only = output_only.contains(&f);
+            assert_eq!(
+                has_ext, !is_output_only,
+                "{f:?}: has-extension ({has_ext}) must equal not-output-only ({})",
+                !is_output_only
+            );
+        }
+    }
+
     #[test]
     fn json_to_binary_to_json_round_trips() {
         // JSON reads to a value arena, encodes to canonical binary, and re-reads to the same tree.

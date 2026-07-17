@@ -429,6 +429,33 @@ export const EXAMPLES: Example[] = [
     expected: "1",
   },
   {
+    // Shows off: scanning a string's UTF-8 bytes in a loop — walk each byte and count the ASCII vowels.
+    // `Bytes.at` returns an Option (past-the-end is None), so we match it. "education" -> 5.
+    name: "Count vowels",
+    surface: "sexpr",
+    source: `(do
+  ; Is this byte one of a e i o u (lowercase ASCII)?
+  (def (is-vowel b)
+    (if (= b 97) true
+    (if (= b 101) true
+    (if (= b 105) true
+    (if (= b 111) true
+    (if (= b 117) true false))))))
+  ; Bytes.at returns (Option Int64); treat a missing byte as a non-vowel 0.
+  (def (byte-at bs i) (match (Bytes.at bs i) ((Some b) b) ((None) 0)))
+  ; Walk every byte, counting vowels.
+  (def (go bs i n acc)
+    (if (= i n)
+        acc
+        (go bs (+ i 1) n (if (is-vowel (byte-at bs i)) (+ acc 1) acc))))
+  (def (count-vowels s)
+    (let ((bs (String.to-bytes s)))
+      (go bs 0 (Bytes.len bs) 0)))
+  (def (main) (count-vowels "education"))
+  (export main))`,
+    expected: "5",
+  },
+  {
     // Shows off: computing a result without a built-in — integer square root by searching upward for the
     // largest g with g*g <= n. isqrt(144) = 12.
     name: "Integer square root",

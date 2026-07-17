@@ -199,7 +199,9 @@ def step-from(it, n, i) = match it with
 
 /// `step-by(it, n)` — keep every `n`-th element starting at index 0 (`0, n, 2n, …`), dropping the rest.
 /// A thin seed of `step-from` at countdown 0 (so the first element is always kept). `step-by(it, 1)` is the
-/// identity; `n <= 0` would never advance the counter past the first element — callers pass `n >= 1`.
+/// identity; `n <= 0` DEGENERATES to the identity too (the reset countdown `n - 1` never goes positive, so
+/// every element yields with the counter stuck ≤ 0 — nothing is skipped, benign, no trap). Callers pass
+/// `n >= 1`.
 def step-by(it, n) = step-from(it, n, 0)
 
 /// `zip3(a, b, c)` — pair the THREE iterators element-wise into a `GIter((a, b, c))`, stopping at the
@@ -745,8 +747,8 @@ def intersperse-empty-is-empty() =
   if count(intersperse(take(from-list([1]), 0), 0)) == 0
   then unit else trap("intersperse empty is empty")
 
-/// SLICE-12: `step-by` — closure-free, keeps every n-th element from index 0, pinned at two element types and
-/// the identity (n=1) case.
+/// SLICE-12: `step-by` — closure-free, keeps every n-th element from index 0, pinned at two element types,
+/// the identity (n=1) case, and the `n <= 0` degenerate (which is ALSO the identity — see `step-by`'s doc).
 
 @test
 def step-by-keeps-every-second-int() =
@@ -762,6 +764,14 @@ def step-by-one-is-identity-strings() =
 def step-by-three-keeps-first-and-fourth() =
   if int-list-eq(collect(step-by(from-list([1, 2, 3, 4, 5, 6, 7]), 3)), [1, 4, 7])
   then unit else trap("step-by 3 keeps indices 0,3,6")
+
+/// `step-by(it, 0)` (and any `n <= 0`) degenerates to the IDENTITY, not "just the first element": the reset
+/// countdown `n - 1` never goes positive, so every element yields. Pins the true behavior the docstring now
+/// describes (a v-iterators review caught the old comment claiming it kept only the first) — benign, no trap.
+@test
+def step-by-zero-degenerates-to-identity() =
+  if int-list-eq(collect(step-by(from-list([1, 2, 3, 4]), 0)), [1, 2, 3, 4])
+  then unit else trap("step-by 0 is the identity (keeps all)")
 
 /// SLICE-13: `position` — closure-storing, the 0-based index of the first predicate match (the index sibling
 /// of `find`), pinned at two element types, a miss, and the first-element hit.

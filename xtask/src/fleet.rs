@@ -2542,6 +2542,147 @@ fn file_mtime_unix(path: &Path) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
+// ── check-lease — fleet-wide concurrency limiter for `cargo xtask check` ──────────────────────────
+//
+// OPERATOR-MANDATED (2026-07-17): "limit the number of checks taking place at any given time — can't
+// keep overloading the system" + "prioritize the main merge over other checks". Uncoordinated
+// concurrent `cargo xtask check` runs (each a full build + ~3700-case gate) drove the 64-core host to
+// load 127-180 and SIGKILL'd pr-sync's gate-batch, so the merge queue starved behind a thundering herd
+// of one-off vertical checks. This advisory lease caps concurrency and lets the merge integrator WIN.
+//
+// A lease is a file `<hub>/.claude/fleet/check-leases/<pid>-<class>.lease`; `class` is `priority`
+// (pr-sync's merge-queue gate) or `vertical` (everyone else). Acquire = (reap stale) → obey the rules
+// below → create my file. Release = remove my file (RAII on `CheckLease::drop`, so a normal exit frees
+// the slot). A crash/SIGKILL can't free it, so a lease older than the TTL is reclaimed by any acquirer
+// (mtime-based liveness, the same idiom as heartbeats — no `/proc`/`libc` needed). Rules:
+//   * PRIORITY (pr-sync) never waits behind a vertical — it acquires immediately (its own uncapped
+//     class), so the main merge is never held up for one-off agent checks.
+//   * A VERTICAL yields to priority: it waits while any priority lease is held, AND waits for a free
+//     slot under the cap. So when pr-sync gates the queue, vertical checks pause rather than compete.
+// Fail-OPEN: if the lease dir can't be created/read, `check` proceeds unthrottled (a coordination
+// convenience must never HARD-BLOCK a developer's gate on an fs hiccup).
+
+/// Max concurrent NON-priority (`vertical`) checks. Small by design — a full check is a whole build +
+/// gate; ~3 keeps the 64-core host usable while several verticals make progress. Tunable for a bigger/
+/// smaller host via `CDZ_CHECK_LEASE_MAX`.
+fn check_lease_max() -> usize {
+    std::env::var("CDZ_CHECK_LEASE_MAX")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(3)
+}
+
+/// A lease older than this (no live holder refreshing it) is reclaimed. Must EXCEED the longest legit
+/// check (a slow full gate under load is ~35min) so a still-running check is never wrongly evicted;
+/// 45min gives margin. A SIGKILL'd check's lease is reclaimed after this instead of leaking a slot.
+const CHECK_LEASE_TTL_SECS: u64 = 45 * 60;
+
+/// An acquired check-lease; releasing (removing the lease file) happens on drop, so a normal `check`
+/// exit — or an early `return`/panic — frees the slot without an explicit release call.
+pub struct CheckLease {
+    file: Option<PathBuf>,
+}
+
+impl Drop for CheckLease {
+    fn drop(&mut self) {
+        if let Some(f) = &self.file {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+}
+
+/// The `.claude/fleet/check-leases` dir for the hub that owns `repo`. `None` if the hub can't be
+/// resolved or the dir can't be created (→ caller fails open, unthrottled).
+fn check_lease_dir(repo: &Path) -> Option<PathBuf> {
+    let hub = hub_root(repo)?;
+    let dir = hub.join(".claude/fleet/check-leases");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Live (`priority`, `vertical`) lease counts in `dir`, reaping any lease older than the TTL first (a
+/// crashed holder's leaked slot). Returns `(priority_live, vertical_live)`.
+fn scan_check_leases(dir: &Path, now: u64) -> (usize, usize) {
+    let mut priority = 0usize;
+    let mut vertical = 0usize;
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    for e in rd.filter_map(Result::ok) {
+        let p = e.path();
+        let name = match p.file_name().and_then(|n| n.to_str()) {
+            Some(n) if n.ends_with(".lease") => n.to_string(),
+            _ => continue,
+        };
+        // Reclaim a stale lease (crashed/killed holder that never dropped it).
+        if file_mtime_unix(&p).is_some_and(|m| now.saturating_sub(m) > CHECK_LEASE_TTL_SECS) {
+            let _ = std::fs::remove_file(&p);
+            continue;
+        }
+        if name.contains("-priority.lease") {
+            priority += 1;
+        } else {
+            vertical += 1;
+        }
+    }
+    (priority, vertical)
+}
+
+/// The acquire DECISION (pure, so it's unit-testable without the fs/poll loop): may a caller take a
+/// slot NOW given its class and the live counts? PRIORITY (pr-sync's merge gate) always may — it never
+/// waits behind vertical checks. A VERTICAL may only when NO priority lease is held (yield to the merge
+/// queue) AND the vertical count is under the cap.
+fn check_lease_go(priority: bool, prio_live: usize, vert_live: usize, max: usize) -> bool {
+    if priority {
+        true
+    } else {
+        prio_live == 0 && vert_live < max
+    }
+}
+
+/// Acquire a check-lease for `cargo xtask check`, blocking (with a poll loop) until it's this process's
+/// turn under the fleet-wide concurrency rules. `priority` (pr-sync's merge-queue gate) acquires
+/// immediately; a vertical waits for a free slot AND for zero priority leases. Fail-open: an
+/// unresolvable/unwritable lease dir returns an inert guard that throttles nothing.
+///
+/// `priority` defaults from the `CDZ_CHECK_PRIORITY` env (set by pr-sync's gate invocation) but callers
+/// may pass an explicit value.
+pub fn acquire_check_lease(repo: &Path, priority: bool) -> CheckLease {
+    let Some(dir) = check_lease_dir(repo) else {
+        eprintln!("check-lease: no lease dir (failing OPEN — unthrottled).");
+        return CheckLease { file: None };
+    };
+    let pid = std::process::id();
+    let class = if priority { "priority" } else { "vertical" };
+    let file = dir.join(format!("{pid}-{class}.lease"));
+    let max = check_lease_max();
+
+    // Poll until it's our turn. A priority acquirer skips the wait entirely.
+    let mut waited_notice = false;
+    loop {
+        let now = now_unix();
+        let (prio_live, vert_live) = scan_check_leases(&dir, now);
+        let go = check_lease_go(priority, prio_live, vert_live, max);
+        if go {
+            // Create the lease; its mtime marks acquisition (and is our liveness stamp).
+            if std::fs::write(&file, format!("{}\t{}", now, class)).is_err() {
+                eprintln!("check-lease: could not write lease (failing OPEN — unthrottled).");
+                return CheckLease { file: None };
+            }
+            return CheckLease { file: Some(file) };
+        }
+        if !waited_notice {
+            println!(
+                "check-lease: waiting for a check slot ({vert_live}/{max} vertical in use, \
+                 {prio_live} priority) — yielding to the merge queue…"
+            );
+            waited_notice = true;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
+}
+
 /// Parse a `/loop` interval like `10m` / `2h` / `30s` / `1d` into seconds. Falls back to 600s (the
 /// 10m default) on anything unrecognized, so a malformed interval never yields a 0-second stale
 /// window that would re-arm on every pass.
@@ -3984,6 +4125,19 @@ fn ensure_gate_batch_worktree(fleet: &Fleet) -> Option<PathBuf> {
     }
 }
 
+/// Build the value-heap runtime store in the gate-batch scratch worktree (`cargo xtask build`), so the
+/// combined-tree gate can resolve the runtime by content address instead of false-failing every heap
+/// case as a store miss. Returns true on success. Runs in `wt` (its own `target/cadenza-store`).
+fn gate_batch_build_store(wt: &Path) -> bool {
+    println!("gate-batch: building the runtime store in the scratch worktree (cargo xtask build)…");
+    Command::new("cargo")
+        .current_dir(wt)
+        .args(["xtask", "build"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Plan a pr-sync integration round with the optimistic-batch + bisect model, printing a
 /// machine-readable per-MR decision. Advisory only: never advances `trunk`, never replies — pr-sync
 /// executes the plan (single writer + reply-invariant). See the `GateBatch` doc for the loop.
@@ -4010,6 +4164,22 @@ fn gate_batch(fleet: &Fleet, dry_run: bool, limit: usize) {
         Some(p) => p,
         None => return,
     };
+
+    // Build the value-heap runtime STORE in the scratch worktree BEFORE gating. `cargo xtask check`
+    // (what `gate_subset` shells) does NOT build the content-addressed store — it resolves the runtime
+    // by content address from `target/cadenza-store`, which a fresh scratch worktree lacks. Without this
+    // EVERY heap case fails "no runtime of content address … in the store" (~1154 false store-miss reds
+    // observed), so the combined tree reads RED and the bisect isolates INNOCENT MRs on a false red.
+    // Mirror a normal pr-sync tick (build the store, then gate). Built once here off the scratch's trunk
+    // base; a runtime-bump MR is re-covered because `cargo xtask check`'s own wasm-runtime step rebuilds
+    // the runtime and any residual mismatch reds only that subset (bisect then isolates the real bumper).
+    if !gate_batch_build_store(&wt) {
+        eprintln!(
+            "gate-batch: could not build the runtime store in the scratch worktree — aborting \
+             (gating now would false-fail every heap case as a store miss)."
+        );
+        return;
+    }
 
     let scratch = "fleet-gate-batch-scratch";
     // Delete the scratch branch — but you CANNOT `git branch -D` the branch you are ON, so DETACH HEAD
@@ -4158,9 +4328,14 @@ fn gate_subset(repo: &Path, branch: &str, clean: &[BatchMr], subset: &[usize]) -
         }
     }
     // Run the omnibus gate on the combined tree; capture output (we only care about the exit status).
+    // `CDZ_CHECK_PRIORITY=1` marks this as the MERGE-QUEUE gate so it takes a PRIORITY check-lease —
+    // it never waits behind vertical checks, and vertical checks yield to it (operator: "prioritize
+    // the main merge over other checks"). Without this the merge gate would queue behind the herd it's
+    // trying to drain.
     Command::new("cargo")
         .current_dir(repo)
         .args(["xtask", "check"])
+        .env("CDZ_CHECK_PRIORITY", "1")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -5513,5 +5688,74 @@ mod tests {
             600,
             Some(9999)
         ));
+    }
+
+    #[test]
+    fn scan_check_leases_counts_priority_and_vertical_and_reaps_stale() {
+        let dir = std::env::temp_dir().join(format!("cdz-check-lease-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = 1_000_000u64;
+
+        // Two vertical + one priority live lease, plus a non-lease file that must be ignored.
+        std::fs::write(dir.join("111-vertical.lease"), "x").unwrap();
+        std::fs::write(dir.join("222-vertical.lease"), "x").unwrap();
+        std::fs::write(dir.join("333-priority.lease"), "x").unwrap();
+        std::fs::write(dir.join("notes.txt"), "ignore me").unwrap();
+        let (prio, vert) = scan_check_leases(&dir, now);
+        assert_eq!(
+            (prio, vert),
+            (1, 2),
+            "counts priority vs vertical, ignores non-.lease"
+        );
+
+        // A lease whose mtime is older than the TTL is reclaimed (a crashed holder's leaked slot):
+        // back-date one file and scan with a `now` far past its mtime + TTL.
+        let stale = dir.join("444-vertical.lease");
+        std::fs::write(&stale, "x").unwrap();
+        let stale_now = file_mtime_unix(&stale).unwrap() + CHECK_LEASE_TTL_SECS + 10;
+        let (prio2, vert2) = scan_check_leases(&dir, stale_now);
+        // At stale_now ALL four originals are also older than TTL (written ~same time) → only reaping
+        // remains; assert the stale one was removed and nothing lingers past the TTL.
+        assert!(!stale.exists(), "a lease older than the TTL is reclaimed");
+        assert_eq!((prio2, vert2), (0, 0), "everything past the TTL is reaped");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_lease_go_priority_wins_and_vertical_yields() {
+        // PRIORITY (pr-sync merge gate) always goes — even at/over the cap and with priority peers.
+        assert!(check_lease_go(true, 0, 0, 3));
+        assert!(
+            check_lease_go(true, 2, 99, 3),
+            "priority never waits behind vertical or the cap"
+        );
+
+        // VERTICAL goes only when no priority is held AND under the cap.
+        assert!(check_lease_go(false, 0, 0, 3));
+        assert!(check_lease_go(false, 0, 2, 3), "under the cap → go");
+        assert!(!check_lease_go(false, 0, 3, 3), "at the cap → wait");
+        assert!(!check_lease_go(false, 0, 4, 3), "over the cap → wait");
+        assert!(
+            !check_lease_go(false, 1, 0, 3),
+            "a held priority lease makes vertical yield even with free slots"
+        );
+    }
+
+    #[test]
+    fn check_lease_max_reads_env_with_sane_default() {
+        // Default is 3; a positive override parses; garbage/zero fall back to the default.
+        // (Env is process-global; set+clear around the assert to avoid cross-test bleed.)
+        // SAFETY: single-threaded test, no other thread reads the env concurrently.
+        unsafe { std::env::remove_var("CDZ_CHECK_LEASE_MAX") };
+        assert_eq!(check_lease_max(), 3);
+        unsafe { std::env::set_var("CDZ_CHECK_LEASE_MAX", "5") };
+        assert_eq!(check_lease_max(), 5);
+        unsafe { std::env::set_var("CDZ_CHECK_LEASE_MAX", "0") };
+        assert_eq!(check_lease_max(), 3, "zero is rejected → default");
+        unsafe { std::env::set_var("CDZ_CHECK_LEASE_MAX", "nonsense") };
+        assert_eq!(check_lease_max(), 3, "garbage → default");
+        unsafe { std::env::remove_var("CDZ_CHECK_LEASE_MAX") };
     }
 }

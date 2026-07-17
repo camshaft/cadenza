@@ -376,6 +376,69 @@ mod tests {
         assert_eq!(infix_glyph("->"), "->");
     }
 
+    // Every infix operator ARENA head — the exact domain of `infix_prec`, which is precisely the set of
+    // heads the printer ever hands to `infix_glyph` (it glyph-maps the head of an infix form). Kept in
+    // lockstep with the `infix_prec` match by `every_infix_head_has_a_precedence` (each must have a prec,
+    // so a head deleted from `infix_prec` is caught) — the anchor for the glyph round-trip sweep below.
+    const INFIX_HEADS: &[&str] = &[
+        ":", "->", "|>", "or", "and", "=", "<", ">", "<=", ">=", "|", "^", "Unit.^", "&", "<<",
+        ">>", "+", "-", "+%", "-%", "+.", "-.", "*", "/", "%", "*%", "*.", "/.", "Unit.*",
+        "Unit./",
+    ];
+
+    #[test]
+    fn every_infix_head_has_a_precedence() {
+        // Ties INFIX_HEADS to the `infix_prec` table: every listed head is a real infix operator. (A head
+        // REMOVED from `infix_prec` but left here fails; the glyph sweep below relies on this list being
+        // the true head domain.)
+        for h in INFIX_HEADS {
+            assert!(
+                infix_prec(h).is_some(),
+                "{h:?} listed as an infix head but has no precedence"
+            );
+        }
+    }
+
+    #[test]
+    fn infix_glyph_is_idempotent_and_identity_except_the_canonicalizing_heads() {
+        // The docstring's contract: `infix_glyph` gives an IDEMPOTENT surface round-trip — printing a head
+        // as its glyph, re-reading, and re-printing is stable (`ml(ml(x)) == ml(x)`). Nothing pinned that.
+        // Over the ENTIRE infix-head domain: (a) `infix_glyph` is idempotent (glyph of a glyph is itself),
+        // and (b) it is the IDENTITY except for exactly the four documented CANONICALIZING heads — equality
+        // (`=`→`==`) and the three unit-composition heads (`Unit.*`/`Unit./`/`Unit.^`→`*`/`/`/`^`). A stray
+        // new non-identity entry (which would need matching parser support to round-trip) or a
+        // non-idempotent one (which would make `ml` diverge under re-rendering) is caught here.
+        let canonicalizing: &[(&str, &str)] = &[
+            ("=", "=="),
+            ("Unit.*", "*"),
+            ("Unit./", "/"),
+            ("Unit.^", "^"),
+        ];
+        for h in INFIX_HEADS {
+            let g = infix_glyph(h);
+            // (a) idempotent: the glyph is a fixpoint, so re-rendering never diverges.
+            assert_eq!(
+                infix_glyph(g),
+                g,
+                "infix_glyph not idempotent at {h:?} (glyph {g:?})"
+            );
+            // (b) identity unless `h` is one of the four canonicalizing heads, in which case it maps to
+            // exactly the documented glyph.
+            match canonicalizing.iter().find(|&&(head, _)| head == *h) {
+                Some(&(_, want)) => assert_eq!(g, want, "{h:?} must render as {want:?}"),
+                None => assert_eq!(g, *h, "{h:?} must be identity (not a canonicalizing head)"),
+            }
+        }
+        // The canonicalizing set is EXACTLY these four — no head outside it is non-identity (the `None`
+        // arm above), and each listed one is present in the head domain (so the table can't go stale).
+        for &(head, _) in canonicalizing {
+            assert!(
+                INFIX_HEADS.contains(&head),
+                "canonicalizing head {head:?} missing from INFIX_HEADS"
+            );
+        }
+    }
+
     #[test]
     fn unit_composition_heads_render_infix() {
         // Unit composition renders as its math glyph so a unit reads like `meter / second` / `meter ^ 2`

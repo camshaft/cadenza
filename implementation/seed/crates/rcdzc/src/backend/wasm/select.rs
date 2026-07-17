@@ -9899,6 +9899,16 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         | Core::Tuple { .. }
         | Core::Record { .. }
         | Core::ListNew { .. }
+        // A list PRODUCER returns a FRESH owned list handle exactly like a `ListNew` constructor:
+        // `vec-concat` (`ListConcat`) consumes both operands and hands back a new vector; `vec-update`
+        // (`ListUpdate`) returns the updated list as a new handle. So such a list as a BORROWING-op operand
+        // (`List.len`/`List.at`/`= `) is an owned temporary the emit reclaims after the borrow — the LIST
+        // analog of the `BytesConcat`/`BytesSlice` producers below. WITHOUT this, `List.len (List.concat a
+        // b)` / `List.at (List.update l i x) j` fell to the `_ => decline` default, so the reclaim gate
+        // never fired and the fresh concat/update list LEAKED one vector per call (value correct — a leak,
+        // not a miscompile — but a real rc gap the `build`-via-`List.push` owned path already reclaims).
+        | Core::ListConcat { .. }
+        | Core::ListUpdate { .. }
         | Core::MapNew { .. }
         | Core::MapInsert { .. }
         | Core::MapRemove { .. }
@@ -16380,6 +16390,27 @@ mod tests {
         assert!(
             f.code.iter().any(|i| matches!(i, Lir::BrTable(_, _))),
             "a flipped-operand if-equality chain lifts to a br_table, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_let_bound_if_equality_chain_lifts_to_a_br_table() {
+        // The scrutinee may be a `let`-bound LocalRef, not only a bare parameter — the recognizer keys
+        // on the binder StructId, which is stable for a kept let-binding. `(let ((y …)) (if (= y k) …))`
+        // dispatches on `y` and lifts.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) \
+               (let ((y (+ n 1))) (if (= y 0) 100 (if (= y 1) 101 (if (= y 2) 102 999))))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::BrTable(_, _))),
+            "a let-bound if-equality chain lifts to a br_table, got: {:?}",
             f.code
         );
     }

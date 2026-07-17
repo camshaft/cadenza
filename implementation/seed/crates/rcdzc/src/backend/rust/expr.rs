@@ -958,6 +958,20 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::Compare { op, lhs, rhs } => {
             let sym =
                 compare_sym(op).ok_or_else(|| Reject::decline("not a comparison operator"))?;
+            // A DIVERGING OPERAND makes the comparison dead — the twin of `emit_arith`'s guard, for the
+            // `Core::Compare` emit path. `(< (+ (trap) 1) 2)` would otherwise emit `panic!("unreachable") <
+            // 2` — comparing Rust's `!`/`()` with `i64` (E0277). Cadenza evaluates lhs THEN rhs, so if lhs
+            // diverges emit it alone; if rhs diverges, lhs runs for effect then rhs aborts. Uses the same
+            // transitive `arith_operand_diverges` so a diverging operand NESTED in arith (the common shape,
+            // since a bare `(< (trap) 1)` needs a heap-walk both backends decline) is caught at any depth.
+            if arith_operand_diverges(db, lhs) {
+                return emit(db, lhs, env, ctx);
+            }
+            if arith_operand_diverges(db, rhs) {
+                let l = emit(db, lhs, env, ctx)?;
+                let r = emit(db, rhs, env, ctx)?;
+                return Ok(format!("{{ let _ = {l}; {r} }}"));
+            }
             match operand_int_ty(db, lhs, rhs) {
                 Some(it) => {
                     let l = emit_grounded(db, lhs, it, env, ctx)?;
@@ -2526,6 +2540,28 @@ fn emit_const_int_at(it: IntTy, v: &IntValue) -> Result<String, Reject> {
     }
 }
 
+/// Whether an arithmetic OPERAND provably diverges — the RUST-emit-local, TRANSITIVE companion of
+/// `body_diverges`. It is `body_diverges` (a bare/`Seq`/`Let`/`If`/`Match`-forwarded `Core::Trap`) PLUS
+/// the case `body_diverges` deliberately omits for its wasm purpose: a `Core::Arith` (or `Compare`) node
+/// whose OWN operand diverges. Cadenza evaluates an op's operands lhs-then-rhs before the op, so if either
+/// operand diverges the whole op is dead — but the node stays a live `Core::Arith` in Core (lower_arith
+/// propagates only `Poison`, not `Trap`), and `body_diverges`' `_ => false` arm never looks inside it. This
+/// helper looks inside, so `emit_arith`'s diverging-operand guard fires at ANY nesting depth (the fix for
+/// the nested `(+ (+ (trap) 1) 2)` residue of the direct guard). It does NOT touch shared Core / the wasm
+/// backend — it is a pure rust-emit predicate. Recursion is bounded by the finite operand tree.
+fn arith_operand_diverges(db: &mut Db, id: StructId) -> bool {
+    if crate::backend::wasm::select::body_diverges(db, id) {
+        return true;
+    }
+    match core_of(db, id) {
+        // An arithmetic/comparison node is dead if either operand diverges (operands run before the op).
+        Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {
+            arith_operand_diverges(db, lhs) || arith_operand_diverges(db, rhs)
+        }
+        _ => false,
+    }
+}
+
 /// Render a runtime arithmetic op as a Rust expression, honoring the numeric model's traps:
 ///  - `+`/`-`/`*` → `<lhs>.checked_add(<rhs>).unwrap_or_else(|| <trap>)` — trap (panic) on overflow;
 ///  - `/`/`%` → `checked_div`/`checked_rem` — trap on ÷0 and `MIN / -1`;
@@ -2550,10 +2586,20 @@ fn emit_arith(
     // matching the wasm backend where the trap's `unreachable` aborts before the add is ever executed.
     // Cadenza evaluates lhs THEN rhs: if lhs diverges, rhs never runs → emit lhs alone; if lhs is fine but
     // rhs diverges, lhs still runs (for effect) then rhs aborts → `{ let _ = <lhs>; <rhs> }`.
-    if crate::backend::wasm::select::body_diverges(db, lhs) {
+    //
+    // The check is TRANSITIVE (`arith_operand_diverges`), not just `body_diverges`: a diverging operand can
+    // be NESTED inside another arith — `(+ (+ (trap) 1) 2)` — where the outer lhs is a live `Core::Arith`
+    // (its own lhs traps). `body_diverges` (correctly, for its wasm purpose) does NOT treat an `Arith` node
+    // as diverging, and `lower_arith` keeps such a node live (it propagates only `Poison`, not `Trap`), so a
+    // bare `body_diverges` here MISSES the nested shape and the outer takes the normal path, emitting
+    // `<inner>.checked_add(2)` where `<inner>` is `panic!("unreachable")` — the exact E0599 the direct guard
+    // kills, one level deeper. Recursing into arith operands catches it: the outer sees lhs diverges, emits
+    // only `emit(lhs)`, which re-enters `emit_arith` on the inner and (its own lhs diverging) yields the bare
+    // panic — no method call on `!` at any depth.
+    if arith_operand_diverges(db, lhs) {
         return emit(db, lhs, env, ctx);
     }
-    if crate::backend::wasm::select::body_diverges(db, rhs) {
+    if arith_operand_diverges(db, rhs) {
         let l = emit(db, lhs, env, ctx)?;
         let r = emit(db, rhs, env, ctx)?;
         return Ok(format!("{{ let _ = {l}; {r} }}"));

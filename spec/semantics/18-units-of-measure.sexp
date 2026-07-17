@@ -334,6 +334,23 @@
   (input  (- (Qty.of 5.0 (Unit.base #"meter")) (Qty.of 2.0 (Unit.base #"second"))))
   (error  CDZ0501))
 
+(case "adding a quantity to a NON-numeric value is a plain type mismatch, not a dimension slip"
+  (doc    "The quantity/non-quantity additive reject reports CDZ0501 'a quantity and a plain number' — with
+           a `(Qty.of <n> <unit>)` repair — ONLY when the non-quantity operand is actually a NUMBER (the
+           companion case: a quantity + a bare Int). But a quantity added to a NON-numeric value is not a
+           dimension slip: here `(List.at xs 0)` has type `(Option (Qty Int64 meter))` (a lookup may miss),
+           and adding a `(Qty …)` to an `Option` is an ordinary type clash, reported as CDZ0203 — NOT
+           mislabeled 'a plain number' with a nonsensical `Qty.of` wrap. The additive-quantity arm is gated
+           on the non-quantity operand being numeric; otherwise it falls through to the generic scheme-unify
+           path, which names the actual `Option` mismatch (and, for an Option, even guides matching the
+           `None` case). Pins that a quantity combined with a non-number gets the accurate diagnostic.")
+  (input  (do
+            (def (main)
+              (Qty.value (+ (Qty.of 5 (Unit.base #"meter"))
+                            (List.at (list (Qty.of 1 (Unit.base #"meter"))) 0))))
+            (export main)))
+  (error  CDZ0203))
+
 ; ============================================================================================
 ; Multiplication and division — dimensions compose by the group operation
 ; ============================================================================================
@@ -1917,6 +1934,40 @@
             (def (main) (Qty.value (getx (mkv (Qty.of (Rational.of 5 1) (Unit.base #"meter"))))))
             (export main)))
   (output (: 5/1 Rational)))
+
+(case "a Qty payload's INNER type stays a real type parameter — the unit-arg skip does not over-skip"
+  (doc    "The companion of the two cases above, guarding the OTHER edge of the `(Qty T u)` type-parameter
+           skip. `collect_type_params` descends ONLY into a `(Qty T u)`'s inner type `T` and skips the unit
+           `u` — but it must NOT over-skip: a type VARIABLE sitting in the inner (`T`) position is still a
+           real generic parameter. `(type Box (B (Qty a (Unit.base #\"meter\"))))` has `a` in the inner-type
+           position, so `Box` is GENERIC over `a` (`children[1]` is harvested), while the unit-leaf `base`
+           is still NOT a parameter. So `(Box Rational)` resolves and a BARE `Box` correctly needs a type
+           argument (CDZ0203, its own reject case would fire) — exactly the genericity the fix must preserve.
+           Construct a `(Box Rational)` from a `7/2 m` quantity, project the payload, read its magnitude — the
+           inner-type parameter flows through construct → match → `Qty.value`. Runs to 7/2, proving the skip
+           preserved the inner-type generic (a spurious over-skip would have made `Box` nullary and rejected
+           `(Box Rational)`).")
+  (input  (do
+            (type Box (B (Qty a (Unit.base #"meter"))))
+            (def (mk (: x (Qty Rational (Unit.base #"meter")))) (Box.B x))
+            (def (unwrap (: b (Box Rational))) (match b ((Box.B q) (Qty.value q))))
+            (def (main) (unwrap (mk (Qty.of (Rational.of 7 2) (Unit.base #"meter")))))
+            (export main)))
+  (output (: 7/2 Rational)))
+
+(case "a Qty payload with a GENERIC inner type rejects a bare use with no type argument"
+  (doc    "The reject twin of the genericity pin above: since `(type Box (B (Qty a (Unit.base #\"meter\"))))`
+           is generic over its inner-type parameter `a` (harvested from the `(Qty T u)` inner position, unit
+           skipped), a BARE `Box` annotation with no type argument is CDZ0203 — the same as any generic type
+           used without its argument. This pins that the inner-type parameter is genuinely required (the skip
+           does not silently drop it, which would make `Box` nullary and wrongly ACCEPT a bare `Box`).")
+  (input  (do
+            (type Box (B (Qty a (Unit.base #"meter"))))
+            (def (mk (: x (Qty Rational (Unit.base #"meter")))) (Box.B x))
+            (def (unwrap (: b Box)) (match b ((Box.B q) (Qty.value q))))
+            (def (main) (unwrap (mk (Qty.of (Rational.of 7 2) (Unit.base #"meter")))))
+            (export main)))
+  (error  CDZ0203))
 
 (case "angle units radian and degree are first-class and exact within their own dimension"
   (doc    "ANGLE units — `radian` and `degree`, first-class built-ins for CAD revolve/rotate angles (the

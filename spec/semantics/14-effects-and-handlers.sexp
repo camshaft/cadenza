@@ -3469,6 +3469,28 @@
             (export main)))
   (output (: 4 Int64)))
 
+(case "a cross-function recursive fold's out-state threads to a later perform in the caller's continuation"
+  (doc    "The CALLER-observed out-state face of the multi-value return (the recursive analogue of the
+           inlined helper-call out-state threading). `run-ops` recursively performs `Prim.run` per list
+           element, advancing the handler state s -> s+1 each time; the handle body is `(do (run-ops [1 2
+           3]) (Prim.run 0))`, so a TRAILING perform in the caller's `do` — AFTER the recursive fold
+           returns — must observe the state the recursion accumulated. Three performs advance 0 -> 3, and
+           the trailing `(Prim.run 0)` resumes with s = 3. The single-return specialization drops the
+           recursion's final out-state (returns the incoming state unchanged), silently miscompiling the
+           trailing perform to the PRE-recursion 0; forcing MULTI-VALUE specialization when the caller's
+           spine observes the out-state threads the advance through. Regression guard for task #15.")
+  (input  (do
+            (effect Prim (op run (-> Int64 Int64)))
+            (def (run-ops (: ops (List Int64)))
+              (match ops
+                ((list h .. rest) (do (Prim.run h) (run-ops rest)))
+                (_ 0)))
+            (def (main)
+              (handle Prim 0 ((run (tag) s (resume s (+ s 1))))
+                (do (run-ops (list 1 2 3)) (Prim.run 0))))
+            (export main)))
+  (output (: 3 Int64)))
+
 (case "a nested inner handler that re-threads its own state folds (merged-context seed from init)"
   (doc    "Two NESTED handlers over a cross-function recursive loop that performs BOTH effects — the
            merged-context signature. The INNER handler `Tools` re-threads its OWN bound state in the arm

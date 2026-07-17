@@ -569,6 +569,90 @@ fn launch_fail(stage: &str, e: std::io::Error) -> ! {
     std::process::exit(1);
 }
 
+/// Per-invocation wall-clock ceiling for a single compile/run child (`cdz compile`, `cdz-run`, …).
+/// A compile-hang bug (the known `and/or/not` and `Any`-parse-if hangs) makes an individual case spin
+/// FOREVER at high CPU; under gate-batch's merged tree these accumulate (10→64→170+ live procs) and
+/// starve the host, and they never self-terminate. Bounding each child at a hard deadline turns an
+/// infinite hang into a single FAIL(hang) — the blast radius of any one compile-hang is one case, not
+/// the whole gate + the whole host. 120s is generous vs a normal case (<1s) yet well under the ~35min
+/// full-gate window; override with `CDZ_RUN_TIMEOUT_SECS` for a slow host or a debugging session.
+fn run_timeout() -> std::time::Duration {
+    let secs = std::env::var("CDZ_RUN_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(120);
+    std::time::Duration::from_secs(secs)
+}
+
+/// Like `Child::wait_with_output`, but with a hard wall-clock `timeout`. Returns `Ok(Some(output))` if
+/// the child exited within the deadline, `Ok(None)` if it was KILLED for exceeding it (a hang), or the
+/// underlying io error. Drains stdout+stderr on reader threads so a child that fills a pipe buffer
+/// can't deadlock the wait (the reason we can't just poll `try_wait` on a piped child). On timeout the
+/// child is killed and reaped so no zombie/orphan survives — the exact leak that piled up 100+ spinning
+/// `cdz-run` procs and forced a manual host recovery.
+fn wait_with_timeout(
+    mut child: std::process::Child,
+    timeout: std::time::Duration,
+) -> std::io::Result<Option<std::process::Output>> {
+    use std::io::Read;
+    // Take the pipes and drain each on its own thread — a hung child may still have emitted partial
+    // output, and an undrained full pipe would block the child (and us) even after we decide to kill.
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+    let out_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = out_pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let err_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = err_pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    // Poll for exit until the deadline. A short sleep between polls keeps this cheap (a normal case
+    // exits in <1s → at most a couple polls) without a busy-loop.
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break Some(status),
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    };
+
+    match status {
+        Some(status) => {
+            // Exited in time — join the drain threads for the full captured output.
+            let stdout = out_thread.join().unwrap_or_default();
+            let stderr = err_thread.join().unwrap_or_default();
+            Ok(Some(std::process::Output {
+                status,
+                stdout,
+                stderr,
+            }))
+        }
+        None => {
+            // Timed out — kill + reap so no orphan survives, then join the readers (they finish once
+            // the killed child's pipes close). The partial output is discarded (a hang has no verdict).
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = out_thread.join();
+            let _ = err_thread.join();
+            Ok(None)
+        }
+    }
+}
+
 /// Where the paths to the built pipeline binaries live, resolved once.
 struct Tools {
     syntax: PathBuf,
@@ -748,8 +832,12 @@ fn run_program_ml(tools: &Tools, program: &str, _call: Option<&Call>) -> Ran {
     {
         return Ran::BadArtifact(format!("cdz run-ml: writing program to stdin failed: {e}"));
     }
-    let out = match child.wait_with_output() {
-        Ok(o) => o,
+    let out = match wait_with_timeout(child, run_timeout()) {
+        Ok(Some(o)) => o,
+        // A run-ml HANG (a compile-hang bug in the ML front-end) — killed at the deadline. Per the
+        // run-ml contract this is a harness-read failure (BadArtifact), NOT a differential disagreement:
+        // the differential treats it as coverage-not-yet, never a false miscompile flag against the oracle.
+        Ok(None) => return Ran::BadArtifact("cdz run-ml timeout (hang)".to_string()),
         Err(e) => return Ran::BadArtifact(format!("cdz run-ml wait failed: {e}")),
     };
     // A non-zero exit is the ONE reserved harness-read-failure path (per the run-ml contract) — a
@@ -834,7 +922,13 @@ fn run_program_wasm(
     }
     let mut child = run.spawn().unwrap_or_else(|e| launch_fail("cdz-run", e));
     child.stdin.take().unwrap().write_all(&component).ok();
-    let run_out = child.wait_with_output().expect("wait cdz-run");
+    let run_out = match wait_with_timeout(child, run_timeout()).expect("wait cdz-run") {
+        Some(out) => out,
+        // A runaway program (an infinite loop, or a runtime that never returns) — killed at the
+        // deadline. Grade it as a trap-with-reason "timeout": on an `(output …)` case it FAILs (a value
+        // was expected), and a `(trap …)` case reason-matches only if it literally expects "timeout".
+        None => return Ran::Trap("timeout (hang)".to_string()),
+    };
     if run_out.status.success() {
         // cdz-run prints the OBSERVED host calls to stderr as `host-call\t<op>` lines, in call order;
         // parse them so the case's `(host-calls …)` can be verified. Empty for a non-host program.
@@ -893,7 +987,17 @@ fn emit_component_single_at(
         .stderr(Stdio::piped())
         .spawn()
         .unwrap_or_else(|e| launch_fail("rcdzc", e));
-    let rcdzc_out = rcdzc.wait_with_output().expect("wait rcdzc");
+    let rcdzc_out = match wait_with_timeout(rcdzc, run_timeout()).expect("wait rcdzc") {
+        Some(out) => out,
+        // A COMPILE-HANG (the known `and/or/not` / `Any`-parse-if bugs spin the compiler forever) —
+        // killed at the deadline. This is a FAIL, not a codeless decline: a hang is a real compiler bug
+        // the gate must surface, so map it to a trap-reason "compile timeout" (fails an `(output …)`
+        // case) rather than `Declined` (which would grade the hang as harmless not-yet-built `todo`).
+        None => {
+            let _ = syntax.wait();
+            return Err(Ran::Trap("compile timeout (hang)".to_string()));
+        }
+    };
     let _ = syntax.wait();
     if rcdzc_out.status.success() {
         Ok(rcdzc_out.stdout)
@@ -1021,7 +1125,15 @@ fn emit_rust_single(
         .stderr(Stdio::piped())
         .spawn()
         .unwrap_or_else(|e| launch_fail("rcdzc", e));
-    let rcdzc_out = rcdzc.wait_with_output().expect("wait rcdzc");
+    let rcdzc_out = match wait_with_timeout(rcdzc, run_timeout()).expect("wait rcdzc") {
+        Some(out) => out,
+        // A compile-hang on the RUST backend — killed at the deadline. A FAIL (real compiler bug), not a
+        // codeless decline: map to a trap-reason so an `(output …)` case fails rather than grading todo.
+        None => {
+            let _ = syntax.wait();
+            return Err(Ran::Trap("compile timeout (hang)".to_string()));
+        }
+    };
     let _ = syntax.wait();
     if !rcdzc_out.status.success() {
         return Err(Ran::Declined {
@@ -1386,11 +1498,26 @@ fn run_program_rust(
     let mut last_err = None;
     let mut got = None;
     for attempt in 0..8 {
-        match Command::new(&bin).output() {
-            Ok(o) => {
-                got = Some(o);
-                break;
-            }
+        // Spawn with piped stdout/stderr so the run is bounded by a wall-clock timeout — an
+        // infinite-loop program (the rust-backend analogue of a runaway wasm case) would otherwise hang
+        // the gate forever, the exact host-overload the timeouts bound.
+        match Command::new(&bin)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => match wait_with_timeout(child, run_timeout()) {
+                Ok(Some(o)) => {
+                    got = Some(o);
+                    break;
+                }
+                // Runaway emitted binary — killed at the deadline. FAIL(hang), same as the wasm run path.
+                Ok(None) => return Ran::Trap("timeout (hang)".to_string()),
+                Err(e) => {
+                    last_err = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(2 * (attempt + 1)));
+                }
+            },
             Err(e) => {
                 last_err = Some(e);
                 // A short escalating backoff to let the writer handle close.
@@ -3769,6 +3896,15 @@ fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)], target: GateTar
 /// prints the whole captured log
 /// (so an agent reads it in place instead of re-running with `| tail`) and its path, then exits.
 fn check(paths: &Paths, profile: &str) {
+    // Acquire a fleet-wide check-lease FIRST (operator-mandated concurrency cap). This blocks until a
+    // slot is free under the cap, and a vertical check yields to pr-sync's PRIORITY lease so the main
+    // merge queue is never held up by one-off agent checks. pr-sync's gate sets `CDZ_CHECK_PRIORITY=1`
+    // to take a priority (uncapped, never-waiting) slot. Held for the whole check; released on return
+    // (RAII drop). Fail-open, so a lease-dir hiccup never blocks a developer's gate. `_lease` must
+    // outlive the check body — do NOT drop it early (a `let _ =` would release the slot immediately).
+    let priority = std::env::var("CDZ_CHECK_PRIORITY").is_ok_and(|v| v == "1" || v == "true");
+    let _lease = fleet::acquire_check_lease(&paths.repo, priority);
+
     let mut log = Log::create(paths, "check");
     println!("check: logging to {}", log.path.display());
 
@@ -5325,5 +5461,43 @@ mod trap_grading_tests {
         assert!(!is_safe_module_name("C:foo"));
         assert!(!is_safe_module_name("C:\\foo"));
         assert!(!is_safe_module_name("stream:ads"));
+    }
+
+    #[test]
+    fn wait_with_timeout_returns_output_for_a_fast_child() {
+        // A child that exits well within the deadline yields its captured output + status.
+        let child = std::process::Command::new("sh")
+            .args(["-c", "printf hello; printf oops 1>&2; exit 0"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn sh");
+        let out = wait_with_timeout(child, std::time::Duration::from_secs(10))
+            .expect("wait ok")
+            .expect("did not time out");
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"hello");
+        assert_eq!(out.stderr, b"oops");
+    }
+
+    #[test]
+    fn wait_with_timeout_kills_a_hanging_child() {
+        // A child that would run far past the deadline is KILLED and reported as a timeout (`None`) —
+        // the compile-hang / runaway-program bound. Use a tiny deadline so the test itself is fast; the
+        // child sleeps far longer, so it can only end via our kill.
+        let start = std::time::Instant::now();
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn sleep");
+        let res = wait_with_timeout(child, std::time::Duration::from_millis(150)).expect("wait ok");
+        assert!(res.is_none(), "a hanging child must time out to None");
+        // It returned promptly at the deadline (killed), not after the child's own 30s sleep.
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "timeout must kill promptly, not wait out the child"
+        );
     }
 }

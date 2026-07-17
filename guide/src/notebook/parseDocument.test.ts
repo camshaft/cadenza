@@ -40,6 +40,14 @@ test("fence directives parse: table, chart:line/bar/scatter, formula, widget, hi
   assert.deepEqual(dir("cadenza hidden"), { kind: "hidden" });
 });
 
+test("a bare `chart` directive defaults to a line chart (not a silently-degraded plain value)", () => {
+  // A reader who writes ` ```cadenza chart ` wants a chart. Without a `:kind` we default to `line` (the
+  // most common shape) so the cell plots rather than falling through to `none` (a plain value with no
+  // plot + no signal). An UNKNOWN kind still stays `none` — we default a MISSING kind, not a bogus one.
+  assert.deepEqual(parseDirective("cadenza chart"), { kind: "chart", chart: "line" });
+  assert.deepEqual(parseDirective("cadenza chart:zorp"), { kind: "none" }); // bogus kind stays none
+});
+
 test("an absent or unknown directive is `none` (forward-compatible, never throws)", () => {
   assert.deepEqual(parseDirective("cadenza"), { kind: "none" });
   assert.deepEqual(parseDirective("cadenza wibble"), { kind: "none" });

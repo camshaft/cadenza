@@ -48,7 +48,11 @@ export function parseDirective(info: string): CellDirective {
   if (d === "formula") return { kind: "formula" };
   if (d === "widget") return { kind: "widget" };
   if (d === "hidden") return { kind: "hidden" };
-  if (d === "chart:line") return { kind: "chart", chart: "line" };
+  // A bare `chart` (no `:kind`) defaults to a line chart — the most common shape — so a reader who writes
+  // ` ```cadenza chart ` gets a chart, not a silently-degraded plain value (a `none` directive renders the
+  // value with no plot). An explicit `chart:line|bar|scatter` selects the kind; an UNKNOWN kind
+  // (`chart:zorp`) still falls through to `none` (forward-compatible: don't guess a bogus kind).
+  if (d === "chart" || d === "chart:line") return { kind: "chart", chart: "line" };
   if (d === "chart:bar") return { kind: "chart", chart: "bar" };
   if (d === "chart:scatter") return { kind: "chart", chart: "scatter" };
   return { kind: "none" };
