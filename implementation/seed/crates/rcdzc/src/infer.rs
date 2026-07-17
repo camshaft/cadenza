@@ -3186,7 +3186,28 @@ fn collect_param_constraints(
                             resolved_of(db, arg),
                             Resolved::Param { binder } if env.contains_key(&binder)
                         );
-                        if !arg_is_param {
+                        // A payload BINDER of a parameter — `h` in `(match it … ((Iter.Cons h rest)
+                        // (append h …)))`, a `SumPayload` reading `it`'s element. Passing `h` to a callee
+                        // constrains `it`'s ELEMENT the same way passing `it` directly constrains `it`: the
+                        // callee's k-th param type unifies with `h`'s type, which `arg_ty_in_env` walks
+                        // through the LOCAL subst back to `it`'s element var — so `(append h …)` (append's
+                        // domain `Iter _`) pins `it`'s element to `Iter _`, giving `it : Iter(Iter _)` and
+                        // (via append's result=domain-element tie) the result `Iter _`. Without this, a
+                        // recursive TRANSFORMER whose Cons arm threads its element into a generic callee
+                        // (`flatten`'s `append h …`) left `it`'s element and the result as DISCONNECTED vars
+                        // — the untied nested-generic tie (`(-> (Iter a) (Iter b))` instead of `(-> (Iter
+                        // (Iter a)) (Iter a))`). A payload binder is in NO env (env holds the params), so it
+                        // is distinct from `arg_is_param`; `arg_ty_in_env`'s `SumPayload` arm already links
+                        // it to the scrutinee param's element var, so the unify propagates into `subst`.
+                        let arg_is_param_payload = matches!(
+                            resolved_of(db, arg),
+                            Resolved::SumPayload { scrutinee, .. }
+                                if matches!(resolved_of(db, scrutinee),
+                                    Resolved::Ref { value } if env.contains_key(&value))
+                                || matches!(resolved_of(db, scrutinee),
+                                    Resolved::Param { binder } if env.contains_key(&binder))
+                        );
+                        if !arg_is_param && !arg_is_param_payload {
                             continue;
                         }
                         if let Some(pt) = callee_param_ty(db, callee, i)

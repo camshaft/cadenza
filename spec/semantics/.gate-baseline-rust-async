@@ -1306,6 +1306,7 @@ pass	a recursive user sum type is built at run time and renders its variant name
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
 pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
+pass	a recursive-generic flatten over a nested generic iterator composes at two element types
 pass	a recursive-generic flatten over a nested generic iterator monomorphizes and runs at one element type
 pass	a recursive-generic producer composes at two element types (the tied result var)
 pass	a recursive-generic producer over a list of its own generic-producer results monomorphizes and runs
