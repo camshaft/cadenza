@@ -2636,6 +2636,8 @@ impl<'a> Parser<'a> {
         // (`("tuple" …)`) is ever emitted in type position (which resolved to a value → CDZ0203).
         let left = if self.at(Kind::LParen) {
             self.type_paren(start)
+        } else if self.at(Kind::LBrace) {
+            self.type_brace_record(start)
         } else {
             let head = self.prefix();
             self.postfix(head, start)
@@ -2676,6 +2678,49 @@ impl<'a> Parser<'a> {
             items.push(self.type_ref());
         }
         self.expect(Kind::RParen, "`)`");
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
+    }
+
+    /// `{ field: T, … }` in TYPE position → the record TYPE node `(Record (: field T) …)` — the SAME
+    /// canonical node the explicit `Record(field: T, …)` application builds, so the brace form is pure
+    /// surface sugar for it (one type spelling, both surfaces agree). Handled directly in `type_ref`
+    /// because the shared `prefix`/`paren` path would read `{ … }` as a record VALUE literal (whose
+    /// fields are `name = value`), so a `field: T` there errors "expected `,`" at the `:` — the reported
+    /// gap. A trailing comma is allowed. `{}` is the empty record type `(Record)`. Each field type is
+    /// parsed by `type_ref`, so a field may itself be a function/tuple/nested-record type
+    /// (`{f: Int64 -> Bool, p: {x: Int64}}`).
+    fn type_brace_record(&mut self, start: Span) -> StructId {
+        self.expect(Kind::LBrace, "`{`");
+        let head = self.name("Record", start);
+        let mut items = vec![head];
+        while !self.at(Kind::RBrace) && !self.at_end() {
+            let field_start = self.cur_span();
+            // A field label: a bare name (or backtick name for a symbolic/reserved label).
+            let label = match self.kind() {
+                Kind::Ident => {
+                    let t = self.bump().unwrap();
+                    self.name(self.text(t), field_start)
+                }
+                Kind::BacktickName => {
+                    let t = self.bump().unwrap();
+                    self.name(literal::unescape_backtick_name(self.text(t)), field_start)
+                }
+                _ => {
+                    self.error("expected a record field name");
+                    self.error_node(field_start)
+                }
+            };
+            self.expect(Kind::Colon, "`:` after a record field name");
+            let ty = self.type_ref();
+            let colon = self.name(":", field_start);
+            let field_span = field_start.merge(self.prev_span());
+            items.push(self.list(vec![colon, label, ty], field_span));
+            if !self.sep_continue(Kind::RBrace) {
+                break;
+            }
+        }
+        self.expect(Kind::RBrace, "`}`");
         let span = start.merge(self.prev_span());
         self.list(items, span)
     }
@@ -4320,5 +4365,78 @@ mod tests {
         ] {
             let _ = recovered(prog);
         }
+    }
+
+    // ---- record-type annotation surface: `{field: T, …}` ----
+
+    #[test]
+    fn brace_record_type_annotation_equals_the_explicit_record_form() {
+        // The reported gap (v-inference / concierge): a `{field: T}` record-type annotation failed to
+        // parse ("expected `,`" at the `:`) even for CONCRETE field types, because `{ … }` in type
+        // position fell to the record-VALUE literal path (fields are `name = value`). Fixed: `type_ref`
+        // parses a brace in type position as a record TYPE, producing the SAME `(Record (: field T) …)`
+        // node the explicit `Record(field: T, …)` application builds — pure surface sugar for it.
+        use crate::sexpr;
+        // The brace form and the explicit Record(...) form must produce structurally-identical arenas.
+        for (brace, explicit) in [
+            ("def f(r: {x: Int64}) = r", "def f(r: Record(x: Int64)) = r"),
+            (
+                "def f(r: {x: Int64, y: Int64}) = r",
+                "def f(r: Record(x: Int64, y: Int64)) = r",
+            ),
+        ] {
+            let b = parse_ok(brace);
+            let e = parse_ok(explicit);
+            assert!(
+                b.structurally_eq(&e),
+                "brace record type != explicit Record form:\n  brace={}\n  explicit={}",
+                sexpr::print(&b),
+                sexpr::print(&e),
+            );
+        }
+        // The exact canonical shape.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(r: {x: Int64, y: Int64}) = r")),
+            "(def (f (: r (Record (: x Int64) (: y Int64)))) r)"
+        );
+        // An empty record type is `(Record)`.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(r: {}) = r")),
+            "(def (f (: r (Record))) r)"
+        );
+    }
+
+    #[test]
+    fn brace_record_type_nests_and_carries_function_and_tuple_field_types() {
+        use crate::sexpr;
+        // A field type is a full type_ref: function arrows, tuples, and nested record types all work —
+        // the capability-dict shape the operator wrote (`{describe: Int64 -> Int64}`) parses.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(g: {describe: Int64 -> Int64}) = g")),
+            "(def (f (: g (Record (: describe (-> Int64 Int64))))) g)"
+        );
+        // Nested record + tuple field types.
+        assert_eq!(
+            sexpr::print(&parse_ok(
+                "def f(r: {p: {x: Int64}, pair: (Int64, Bool)}) = r"
+            )),
+            "(def (f (: r (Record (: p (Record (: x Int64))) (: pair (Tuple Int64 Bool))))) r)"
+        );
+    }
+
+    #[test]
+    fn brace_record_type_round_trips_through_the_printer() {
+        // The record-type annotation survives print → re-read structurally (the ML surface contract).
+        let a = parse_ok("def f(r: {x: Int64, y: Bool}) = r");
+        let printed = crate::printer::print(&a, 80);
+        let back = read_ml(&printed);
+        assert!(
+            back.ok(),
+            "printed record-type annotation re-parses: {printed:?}"
+        );
+        assert!(
+            back.arenas.structurally_eq(&a),
+            "record-type annotation round-trips: {printed:?}"
+        );
     }
 }
