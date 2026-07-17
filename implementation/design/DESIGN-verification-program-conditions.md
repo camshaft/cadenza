@@ -558,7 +558,31 @@ discharges — and because the invariant holds for EVERY value, the elision appl
 flows (a stronger, whole-type version of the per-node elision). Same `provably_no_overflow`-style disjunction
 seam, keyed on the value's type-invariant instead of a per-node `Thm`.
 
-### 10.4 Failure mode (fork I2, route to operator) + dependency
+### 10.4 GENERATION — the invariant drives property-test fuzzing (operator addition, 2026-07-17)
+The invariant predicate has a THIRD consumer beyond verify + optimize: **property-test generation**. When a
+`@test`/`@exhaustive` fuzzes a value of a type with an `@invariant`, the generator must yield ONLY values
+that SATISFY the invariant — a `Percent` with `@invariant(and (>= it 0) (<= it 100))` generates in `0..100`;
+a `NonEmptyList` never empty; a `SortedVec` only sorted. This makes property tests exercise the RIGHT domain
+(legal values) instead of wasting trials on values the type can't hold. So the invariant is the **single
+source of "what is a valid value of this type"** — verified on producers, assumed on consumers, elided-against
+by the optimizer, AND the generation constraint for fuzzing.
+
+**Seam (co-designed with v-property-testing, who owns generation):** v-verification EXPOSES the type's
+`@invariant` predicate (the same predicate defined for §10.2's obligations — one source of truth, denoted over
+`it`); v-property-testing's `gen<T>` CONSUMES it. Two generation strategies (theirs to implement):
+- **reject-until-valid (baseline):** generate a raw `T`, keep only if the invariant predicate holds. Simple,
+  always correct; can be rejection-heavy for a tight invariant.
+- **constrained-gen (better, where derivable):** derive an in-domain generator from the invariant SHAPE — a
+  range invariant `0≤it≤100` → generate directly in `[0,100]`; a `len>0` invariant → generate non-empty.
+  Only for recognizable predicate shapes; falls back to reject-until-valid otherwise.
+Shrinking must ALSO stay within the invariant (a shrunk counterexample is still a legal value). **Fork I3
+(route to operator):** what when an invariant is too tight for rejection sampling to hit (e.g. a sparse
+predicate)? — (a) a compile/test error "invariant too tight to fuzz; supply a manual generator", (b) require
+a manual `Test.gen` for such a type, (c) a rejection-budget then skip. My lean: (b)/(a) — a manual generator
+escape hatch with a clear diagnostic when rejection is infeasible. v-verification exposes the predicate; the
+generation policy is v-property-testing's + this fork.
+
+### 10.5 Failure mode (fork I2, route to operator) + dependency
 **I2 — a constructor that can't establish `I`:** REJECT (compile error "constructor cannot establish
 invariant `I`") — my lean, consistent with `@ensures`/`@trap_free` (an invariant is a promise). A `@requires`
 on the constructor that makes `I` establishable is the escape hatch. Route to operator.
@@ -567,11 +591,15 @@ oracle + b3's elision seam. It lands AFTER the a1/a3/b3 foundation (it reuses al
 obligation shapes (establish/preserve as `@ensures`-style discharges) can be pinned in parallel now, like the
 `@trap_free` t1 sources.
 
-### 10.5 Forks routed to operator
+### 10.6 Forks routed to operator
 - **I1 (surface):** `@invariant(pred)` on the type decl (my lean) vs a refinement-type `where`-surface
   (defer; shares the `it` binder).
 - **I2 (failure mode):** REJECT a constructor that can't establish the invariant (my lean) vs warn.
+- **I3 (generation, §10.4):** when an invariant is too tight for reject-until-valid fuzzing — manual-generator
+  escape hatch + clear diagnostic (my lean) vs rejection-budget-then-skip. (Generation policy is
+  v-property-testing's; v-verification just exposes the predicate.)
 - **(shared) dependencies:** the (A1) kernel-in-prelude + b4c/b3 discharge+elision path `@invariant` reuses.
+- **(new seam) v-property-testing:** consumes the exposed `@invariant` predicate for `gen<T>` (§10.4).
 
 ---
 
