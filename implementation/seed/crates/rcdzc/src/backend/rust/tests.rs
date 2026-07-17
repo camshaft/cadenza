@@ -3977,3 +3977,43 @@ fn rustc_roundtrip_unusual_integer_width_stores_in_the_next_larger_primitive() {
         "an aliased UInt8 wrap needs no mask (the cast truncates exactly):\n{alias}"
     );
 }
+
+#[test]
+fn rustc_roundtrip_unusual_width_composes_through_compounds_and_collections() {
+    // The storage-width map (an unusual `(UInt N)` → the next-larger machine primitive) must COMPOSE through
+    // a tuple leaf, a Set element, and a List element — the value stays in range, so the wider storage is
+    // lossless and the collection Ord/eq (over the storage primitive) matches the logical order. Guards the
+    // tick-84 slice against a future change breaking unusual-width-in-compound. (Probed passing; pinned.)
+    // (a) a UInt48 MAX value as a Set element, queried by the same value → found (Ord over u64 = logical).
+    let set = compile_rust(
+        "(module m (def (run) \
+           (if (Set.contains (Set.of (list (: 281474976710655 (UInt 48)) (: 5 (UInt 48)))) \
+                             (: 281474976710655 (UInt 48))) 1 0)) (export run))",
+    );
+    if let Some(out) = rustc_run(&set, "run()") {
+        assert_eq!(
+            out, "1",
+            "the UInt48 max value is found as a Set element (u64-stored, in-range)"
+        );
+    }
+
+    // (b) a UInt48 leaf in a TUPLE crosses + projects back — the wider storage is transparent.
+    let tup = compile_rust(
+        "(module m (def (run) (. (tuple (: 281474976710655 (UInt 48)) 7) 0)) (export run))",
+    );
+    if let Some(out) = rustc_run(&tup, "run()") {
+        assert_eq!(
+            out, "281474976710655",
+            "a UInt48 tuple leaf round-trips its max value"
+        );
+    }
+
+    // (c) a UInt4 (nibble) wrap result as a List element, counted back — the masked value stores in u8.
+    let lst = compile_rust(
+        "(module m (def (run (: n Int64)) \
+           (List.len (list ((. (UInt 4) wrap) n) ((. (UInt 4) wrap) 3)))) (export run))",
+    );
+    if let Some(out) = rustc_run(&lst, "run(17)") {
+        assert_eq!(out, "2", "two UInt4 elements build a length-2 list");
+    }
+}
