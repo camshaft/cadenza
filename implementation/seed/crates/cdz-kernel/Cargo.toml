@@ -31,6 +31,12 @@ aws = []
 
 [dependencies]
 anyhow = "1"
+# The generic host-op driver (`run_agent_hosted`) + recorded-effect determinism (`RunOpts::host_responses`)
+# the fold owner (L1b) drives the agent loop through, and the embedder (`mock_converse`/`bedrock_converse`)
+# it binds the Model effect to. Both are excluded seed crates; an excluded crate may path-dep them (as
+# cdz-agent path-deps cdz-run). No new heavy tree — cdz-agent's aws-sdk stays behind ITS `bedrock` feature.
+cdz-run = { path = "../cdz-run" }
+cdz-agent = { path = "../cdz-agent" }
 
 [lib]
 name = "cdz_kernel"
