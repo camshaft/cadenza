@@ -2290,11 +2290,27 @@ fn folding_ranges_for(text: &str, is_ml: bool) -> Vec<FoldingRange> {
     };
     let mut out = Vec::new();
     for item in items {
-        // Fold the form INCLUDING a leading doc/comment wrapper (so the fold covers the whole
-        // declaration), so take the span of the item as-parsed, not the comment-unwrapped inner node.
-        let Some(span) = spans.get(item) else {
-            continue;
-        };
+        fold_item(&arenas, &spans, text, item, &mut out);
+    }
+    out
+}
+
+/// Emit a `FoldingRange` for `item` if it spans ≥2 lines, then — if `item` is a `(module …)` — RECURSE
+/// into its members so a multi-line declaration NESTED in a module folds too (the "nesting module members
+/// is a later refinement" the outline doc-comment promised). One level of nesting matches Cadenza's
+/// structure (top-level declarations, optionally grouped under a module); a member that is itself a module
+/// recurses again. The module's own fold (emitted first) covers the whole block; each member fold is a
+/// sub-region an editor nests under it.
+fn fold_item(
+    arenas: &cadenza_syntax::Arenas,
+    spans: &cadenza_syntax::spans::SpanTable,
+    text: &str,
+    item: cadenza_syntax::StructId,
+    out: &mut Vec<FoldingRange>,
+) {
+    // Fold the form INCLUDING a leading doc/comment wrapper (so the fold covers the whole declaration),
+    // so take the span of the item as-parsed, not the comment-unwrapped inner node.
+    if let Some(span) = spans.get(item) {
         let range = byte_range_to_range(text, span.start, span.end);
         // Only a genuinely multi-line form is foldable.
         if range.end.line > range.start.line {
@@ -2308,7 +2324,15 @@ fn folding_ranges_for(text: &str, is_ml: bool) -> Vec<FoldingRange> {
             });
         }
     }
-    out
+    // A `(module name member…)` groups declarations — recurse into its members (the tail past the name)
+    // so a multi-line member folds on its own. `as_form` reads through the comment wrapper.
+    let inner = crate::unwrap_comment(arenas, item);
+    if let Some(tail) = arenas.as_form(inner, "module") {
+        // Skip element 0 (the module NAME); the rest are its member declarations.
+        for &member in tail.iter().skip(1) {
+            fold_item(arenas, spans, text, member, out);
+        }
+    }
 }
 
 /// The selection-range chain at `pos`: the nested enclosing syntax nodes, innermost first, each linked as
@@ -4195,6 +4219,27 @@ mod tests {
         assert!(folding_ranges_for("def a = 1", true).is_empty());
         let _ = folding_ranges_for("def (f x = (", true);
         let _ = folding_ranges_for("", true);
+    }
+
+    #[test]
+    fn folding_ranges_recurse_into_module_members() {
+        // A module with a multi-line member: the module block folds AND its inner multi-line def folds too
+        // (the module-member refinement — a def nested in a module is foldable on its own, not just the
+        // whole module). Use the s-expr surface for an unambiguous `(module …)` shape.
+        // Lines: 0 `(module m`, 1 `  (def (inner x)`, 2 `    x)`, 3 `  (def (other) 1))`.
+        let text = "(module m\n  (def (inner x)\n    x)\n  (def (other) 1))";
+        let ranges = folding_ranges_for(text, false);
+        let spans: Vec<(u32, u32)> = ranges.iter().map(|r| (r.start_line, r.end_line)).collect();
+        // The whole module (line 0 → 3) folds.
+        assert!(
+            spans.iter().any(|&(s, e)| s == 0 && e == 3),
+            "the module block folds (0-3): {spans:?}"
+        );
+        // The multi-line member `inner` (lines 1-2) folds as its own sub-region — the refinement.
+        assert!(
+            spans.iter().any(|&(s, e)| s == 1 && e == 2),
+            "the multi-line module member `inner` (1-2) folds: {spans:?}"
+        );
     }
 
     #[test]
