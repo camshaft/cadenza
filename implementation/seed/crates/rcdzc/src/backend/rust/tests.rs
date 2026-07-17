@@ -3900,3 +3900,32 @@ fn rustc_roundtrip_closure_stored_in_a_heap_compound_element() {
         );
     }
 }
+
+#[test]
+fn export_name_kebab_validity_is_rejected_on_the_rust_backend_too() {
+    // An export's boundary name that is not a valid component kebab extern name is a LANGUAGE-level CDZ0201,
+    // not a wasm-only load failure — the rust backend applies the SAME reject (via the shared wasm-module
+    // checks) so both backends agree (the corpus grades these `(error CDZ0201)`; the rust backend emits no
+    // component, so without this it silently emitted a `pub fn`).
+    // (a) two source names colliding under kebab normalization (fA + f-a → f-a).
+    let collision = compile_rust_result(
+        "(module m (def (fA (: x Int64)) (+ x 1)) (def (f-a (: y Int64)) (+ y 2)) (export fA) (export f-a))",
+    );
+    assert!(
+        collision.is_err(),
+        "colliding kebab extern names are rejected on rust:\n{collision:?}"
+    );
+    // (b) a digit-led kebab segment (step-by-2 → segment `2` is not letter-led).
+    let digit_led =
+        compile_rust_result("(module m (def (step-by-2 (: x Int64)) (+ x 1)) (export step-by-2))");
+    assert!(
+        digit_led.is_err(),
+        "a digit-led kebab export segment is rejected on rust:\n{digit_led:?}"
+    );
+    // (c) a normal export name still emits (no over-rejection) — regression guard.
+    let ok = compile_rust("(module m (def (my-func (: x Int64)) (+ x 1)) (export my-func))");
+    assert!(
+        ok.contains("pub fn my_func") || ok.contains("pub fn my-func") || ok.contains("pub fn "),
+        "a valid kebab export name still emits a pub fn:\n{ok}"
+    );
+}

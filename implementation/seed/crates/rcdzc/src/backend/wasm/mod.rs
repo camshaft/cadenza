@@ -148,7 +148,12 @@ pub(crate) fn is_valid_interface_name(name: &str) -> bool {
 /// — so the compiler declines rather than miscompile, exactly as the duplicate-export check does for
 /// identical names. (Exports with the SAME source name are the duplicate-export case, caught earlier; a
 /// name colliding with ITSELF under normalization is not a collision.) The FIRST such pair is reported.
-fn kebab_export_collision(layout: &Layout) -> Option<Reject> {
+///
+/// `pub(crate)` so the RUST backend applies the SAME export-name reject: an export-boundary name colliding
+/// under kebab normalization is a language-level ill-formedness (CDZ0201), not a wasm-only concern — both
+/// backends must agree (the corpus grades these `(error CDZ0201)`; the rust backend emits no component, so
+/// without this call it silently emitted a value where wasm rejected).
+pub(crate) fn kebab_export_collision(layout: &Layout) -> Option<Reject> {
     let mut seen: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
     for e in &layout.exports {
         let extern_name = kebab_extern_name(&e.name);
@@ -185,7 +190,9 @@ fn kebab_export_collision(layout: &Layout) -> Option<Reject> {
 /// interface-NAME guard (`is_valid_interface_name`): a boundary name that isn't valid kebab is a
 /// compile-time reject, not a silent load failure. (Mirrors `cadenza_syntax::extern_name`'s ASCII
 /// precondition — kept a CONSUMER-side reject since the pure lib core takes `cadenza-syntax` DEV-only.)
-fn invalid_kebab_export_name(db: &Db, layout: &Layout) -> Option<Reject> {
+// `pub(crate)` so the RUST backend applies the SAME reject (an export name that is not valid kebab is a
+// language-level CDZ0201, not a wasm-only load failure — both backends must agree; see `kebab_export_collision`).
+pub(crate) fn invalid_kebab_export_name(db: &Db, layout: &Layout) -> Option<Reject> {
     for e in &layout.exports {
         let extern_name = kebab_extern_name(&e.name);
         if is_kebab_word(&extern_name) {
