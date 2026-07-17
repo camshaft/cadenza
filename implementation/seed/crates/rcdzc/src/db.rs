@@ -2037,6 +2037,13 @@ impl Db {
         // in that file's `StructId` range), plus its imports (each local name → the exporting file's
         // def of that name). A single-file compile carries no linkage, so this stays `None` and every
         // lookup falls through to the flat `def_name_index` — byte-identical to before.
+        // The per-file demux ranges — captured BEFORE `linkage` moves into `file_scope` below, so the
+        // root-scope pragma harvest can scope a `(pragma …)` to the FILE that declares it (a file IS a
+        // module; a default-fraction/integer directive is module-scoped and MUST NOT leak across an import
+        // boundary into another file's literals). `None` for a single-file compile (no cross-file scope to
+        // worry about — every node is "the same file").
+        let link_files: Option<Vec<crate::link::FileSpan>> =
+            linkage.as_ref().map(|lk| lk.files.clone());
         let file_scope = linkage.map(|lk| {
             build_file_scope(
                 &lk,
@@ -2092,6 +2099,18 @@ impl Db {
         // `(def …)` body's literals with the root pragma's `<T>`, the file-top analogue of the per-module
         // harvest. Definition-site scoped like the module case (`mark_*_literals` does not descend a nested
         // `(module …)`, so an inner module keeps its own default). Scanned from the root's top items.
+        // The file a top-level node belongs to (in a linked package), or `None` for a single-file compile
+        // (then every node is "the same file" — the leak cannot occur). Used to keep a file-top pragma's
+        // effect INSIDE the file that declares it: a `(pragma default-fraction …)` in `app.cdz` must NOT
+        // ground the literals of an IMPORTED `lib.cdz` (numeric-model.md §"…WITHIN THAT MODULE"; a file is
+        // a module). The linked arena splices every file's items under ONE synthetic `(do …)` root, so
+        // `top_items` returns items from ALL files — the pragma's SIBLINGS include imported files' defs
+        // unless filtered by file.
+        let file_of = |id: StructId| -> Option<usize> {
+            link_files
+                .as_ref()
+                .and_then(|fs| fs.iter().position(|f| f.contains(id)))
+        };
         for &item in &top_items(&ast) {
             let Some(ptail) = ast.as_form(item, "pragma") else {
                 continue;
@@ -2101,45 +2120,36 @@ impl Db {
             else {
                 continue;
             };
-            match key {
-                "default-integer" => {
-                    for &sib in &top_items(&ast) {
-                        if let Some(def_tail) = ast.as_form(sib, "def")
-                            && let Some(&def_body) = def_tail.get(1)
-                        {
-                            mark_int_literals(&ast, def_body, ty_expr, &mut default_int_literals);
-                        }
-                    }
+            // The file that DECLARES this pragma; only sibling defs in the SAME file are marked (a
+            // single-file compile has `link_files == None` → `pragma_file == None`, and the same-file test
+            // below is trivially true, so behavior is unchanged there).
+            let pragma_file = file_of(item);
+            let same_file = |sib: StructId| link_files.is_none() || file_of(sib) == pragma_file;
+            for &sib in &top_items(&ast) {
+                if !same_file(sib) {
+                    continue;
                 }
-                "default-fraction" => {
-                    for &sib in &top_items(&ast) {
-                        if let Some(def_tail) = ast.as_form(sib, "def")
-                            && let Some(&def_body) = def_tail.get(1)
-                        {
-                            mark_numeric_literals(
-                                &ast,
-                                def_body,
-                                ty_expr,
-                                &mut default_fraction_literals,
-                            );
-                        }
+                let Some(def_tail) = ast.as_form(sib, "def") else {
+                    continue;
+                };
+                let Some(&def_body) = def_tail.get(1) else {
+                    continue;
+                };
+                match key {
+                    "default-integer" => {
+                        mark_int_literals(&ast, def_body, ty_expr, &mut default_int_literals)
                     }
-                }
-                "default-float" => {
-                    for &sib in &top_items(&ast) {
-                        if let Some(def_tail) = ast.as_form(sib, "def")
-                            && let Some(&def_body) = def_tail.get(1)
-                        {
-                            mark_float_literals(
-                                &ast,
-                                def_body,
-                                ty_expr,
-                                &mut default_float_literals,
-                            );
-                        }
+                    "default-fraction" => mark_numeric_literals(
+                        &ast,
+                        def_body,
+                        ty_expr,
+                        &mut default_fraction_literals,
+                    ),
+                    "default-float" => {
+                        mark_float_literals(&ast, def_body, ty_expr, &mut default_float_literals)
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
         // Every node inside a TYPE-EXPRESSION subtree — so the construct-position shadow (`resolve_name`

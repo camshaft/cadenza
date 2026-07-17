@@ -1327,3 +1327,31 @@
   (module "mid" (do (import "base" (f)) (def (g (: n Int64)) (+ (f n) 1)) (export f) (export g)))
   (input  (do (import "mid" (f g)) (def (main) (+ (f 2) (g 3))) (export main)))
   (output (: 51 Int64)))
+
+; A file-top `(pragma default-fraction …)` in the ENTRY must NOT leak across the import boundary into an
+; imported module's literals. The pragma is MODULE-scoped (numeric-model.md §"…WITHIN THAT MODULE"; a file
+; is a module) — it grounds the DECLARING file's unconstrained literals, not an imported file's. `lib`
+; declares NO pragma and writes `(Rational.of 1 2)` (bare `1`/`2` are ordinary Int64 arguments to
+; `Rational.of`, exactly as written); the entry declares `(pragma default-fraction Rational)` and imports
+; `lib`. Regression guard: a bug briefly grounded the entry pragma over the WHOLE linked arena (every file's
+; top-level defs), so `lib`'s `Rational.of` arguments became `Rational` and it failed CDZ0203 — the pragma
+; leaked into the imported module. Here `lib.half` stays well-formed (its `1`/`2` are Int64) AND the entry's
+; own `(/ 1 2)` grounds to `Rational` (the pragma DOES apply in the declaring file): the two `1/2` values
+; are equal, so `main` returns 1.
+
+(case "a file-top default-fraction pragma does not leak into an imported module's literals"
+  (doc    "The entry declares `(pragma default-fraction Rational)` and imports `half` from `lib`, which has
+           NO pragma. `lib`'s `(Rational.of 1 2)` must keep its bare `1`/`2` as ordinary Int64 arguments —
+           the entry's pragma is module-scoped and MUST NOT ground `lib`'s literals (a regression briefly
+           leaked it across the import boundary, failing `lib`'s `Rational.of` CDZ0203). Meanwhile the
+           entry's OWN `(/ 1 2)` DOES ground to `Rational` (the pragma applies in the declaring file), so it
+           equals `lib.half` (both `1/2`); `main`'s result is `(: 1 Int64)` (explicitly annotated so the
+           pragma does not ground the answer, keeping the pinned value unambiguous). Pins module-scoped
+           pragma isolation across an import.")
+  (module "lib" (do (def (half) (Rational.of 1 2)) (export half)))
+  (input  (do
+            (pragma default-fraction Rational)
+            (import "lib" (half))
+            (def (main) (if (= (/ 1 2) (half)) (: 1 Int64) (: 0 Int64)))
+            (export main)))
+  (output (: 1 Int64)))

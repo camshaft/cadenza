@@ -541,6 +541,7 @@ pass	a field is projected off a record bound through a match arm
 pass	a field is projected off a record unwrapped from a result with expect
 pass	a field is projected off a record unwrapped from an optional with expect
 pass	a field read follows the record's SORTED field order, not its written order
+pass	a file-top default-fraction pragma does not leak into an imported module's literals
 pass	a file-top default-fraction pragma fixes a type but adds no conversion — no-promotion still holds
 pass	a file-top default-fraction pragma grounds a bare literal to its exact fraction
 pass	a file-top default-integer pragma fixes a bare literal's type
