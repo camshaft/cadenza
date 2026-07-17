@@ -41,6 +41,15 @@ anyhow = "1"
 cdz-run = { path = "../cdz-run" }
 cdz-agent = { path = "../cdz-agent" }
 
+# The COMPILER, embedded in the kernel (minimal-kernel rung K1). Operator ruling (2026-07-17, confirmed by
+# concierge): the deploy-once daemon must COMPILE Cadenza AT RUNTIME — agents append NEW programs to the log
+# that must run without a kernel redeploy, so the kernel embeds rcdzc (compile a `.cdz` source → a wasm
+# provider) + cdz-run's wasmtime (run it) in-process. This is the codeact-spike shape realized as the kernel:
+# "compile + run any Cadenza program from the log" IS the kernel's job. rcdzc is the kernel's one big dep; its
+# size is acceptable because the kernel is deploy-once (compile-anything-forever matters more than binary size).
+rcdzc = { path = "../rcdzc" }
+cadenza-syntax = { path = "../cadenza-syntax" }
+
 # The DynamoDB log backend (L1d), behind the `aws` feature only (heavy async tree — kept out of default).
 aws-config = { version = "1", optional = true }
 aws-sdk-dynamodb = { version = "1", optional = true }

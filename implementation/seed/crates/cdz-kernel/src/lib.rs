@@ -68,4 +68,16 @@ pub mod msg;
 /// [`sub::Predicate`] + a pure codec; L3b ([`sub::active_subscriptions`]) folds the active set (supersession
 /// by id + `unsubscribe` revocation); L3c ([`sub::dispatch`]) selects the active subscriptions a landed event
 /// matches — the schedulable set (running the handlers under their capability is the fold-owner rung, L4/L5).
+///
+/// NOTE (re-charter): `msg` + `sub` above are the pre-re-charter EVENT-SPECIFIC Rust (L2/L3), retained as the
+/// differential ORACLE the Cadenza ports gate against, to be deleted once those pass. New event logic is
+/// Cadenza (see [`kernel`]).
 pub mod sub;
+
+/// The tiny KERNEL (minimal-kernel re-charter, rung K1): compile a self-modifiable Cadenza `interpret`
+/// program AT RUNTIME (embedded rcdzc) into a provider, compose it with a peer executor, and run it (cdz-run's
+/// wasmtime) so interpret's `(List HostOp)` result crosses to the executor as a handle over the shared runtime
+/// — NO host-ABI widening (the peer path v-effects + v-peer-linking verified). The daemon understands NO
+/// events; all event MEANING is in the Cadenza interpret program. This is the codeact-spike shape (compiler +
+/// wasmtime in-process) realized as the deploy-once kernel. See `DESIGN-agent-runtime-minimal-kernel.md`.
+pub mod kernel;
