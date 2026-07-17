@@ -1125,4 +1125,145 @@ mod tests {
             assert_eq!(unescape_string(&escape_string(s)).as_deref(), Ok(s));
         }
     }
+
+    /// A random tagged-template HOLE's raw source text (bounded by `depth`): identifiers, calls, and
+    /// QUOTED STRINGS that carry braces/escaped-quotes (which must shield those braces from the hole's
+    /// depth scan), plus nested balanced `{…}` brace groups. Every `{` this emits is matched by a `}`, and
+    /// every string is closed — so the text is top-level brace-balanced and the split's hole scan collects
+    /// it verbatim up to the template's own closing `}`. This is exactly the shape the PR #409 fix hardened
+    /// (a `}` inside a hole's string must NOT prematurely close the hole).
+    fn gen_hole(rng: &mut Rng, depth: usize) -> String {
+        // Leaves: plain code, plus strings whose interior braces / escaped quote stress the shield.
+        let leaves = [
+            "x",
+            "y",
+            "foo",
+            "g(a)",
+            "\"s\"",      // a quoted string
+            "\"a}b{c\"",  // a string whose braces must be shielded from the depth counter
+            "\"q\\\"z\"", // a string with an escaped quote (\\" must not toggle string mode)
+        ];
+        if depth == 0 || rng.next().is_multiple_of(2) {
+            return leaves[(rng.next() as usize) % leaves.len()].to_string();
+        }
+        // A hole must NOT begin with `{`: the hole-opener `{` immediately followed by another `{` reads as
+        // a `{{` brace-ESCAPE in the chunk scanner (a hole can never start with `{` — the grammar forbids
+        // it), which would desync this test's oracle. So the FIRST part is always a leaf; only SUBSEQUENT
+        // parts may be nested balanced `{ … }` groups (a `}` inside the hole is handled by the depth
+        // counter, so a trailing group is fine).
+        let mut s = leaves[(rng.next() as usize) % leaves.len()].to_string();
+        let more = (rng.next() as usize) % 3; // 0..=2 additional parts
+        for _ in 0..more {
+            if rng.next().is_multiple_of(2) {
+                s.push('{');
+                s.push_str(&gen_hole(rng, depth - 1));
+                s.push('}');
+            } else {
+                s.push_str(&gen_hole(rng, depth - 1));
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn split_template_body_round_trips_generated_chunks_and_holes() {
+        // `split_template_body` is a PUBLIC tagged-template parser (the parser re-scans a `tag"…"` token
+        // through it) with a precise contract — `chunks.len() == holes.len() + 1`, and chunks+holes must
+        // reconstruct the source in order — plus the subtle string-/escape-shielded brace hole scan that
+        // was the PR #409 bug (a `}` inside a hole's string wrongly closed the hole). It had NO direct unit
+        // test. Build a token from KNOWN parts, split it back, and assert we recover exactly those parts:
+        //   * chunks come from a SAFE alphabet (no `{}\"` `"` `\\`) so they pass through the escape/brace
+        //     decode verbatim — an empty chunk (leading `{`, or two adjacent holes) is included;
+        //   * holes are brace-balanced raw source with quoted strings carrying braces (the shield case).
+        // A regression in the count invariant, the hole boundary, or the string shield shows as a mismatch.
+        let tags = ["t", "sql", "html", "x1"];
+        let chunk_alphabet: &[char] = &['a', 'b', ' ', 'Z', '0', '9', '.', '_'];
+        let mut rng = Rng(0x7e11_a7e5_c0de_0001);
+        for _ in 0..5000 {
+            let tag = tags[(rng.next() as usize) % tags.len()];
+            let nholes = (rng.next() as usize) % 4; // 0..=3 holes
+            let gen_chunk = |rng: &mut Rng| -> String {
+                let len = (rng.next() as usize) % 4; // 0..=3 chars (0 → an empty chunk)
+                (0..len)
+                    .map(|_| chunk_alphabet[(rng.next() as usize) % chunk_alphabet.len()])
+                    .collect()
+            };
+            let mut want_chunks: Vec<String> = Vec::new();
+            let mut want_holes: Vec<String> = Vec::new();
+            let mut body = String::new();
+            for _ in 0..nholes {
+                let c = gen_chunk(&mut rng);
+                body.push_str(&c);
+                want_chunks.push(c);
+                let h = gen_hole(&mut rng, 2);
+                body.push('{');
+                body.push_str(&h);
+                body.push('}');
+                want_holes.push(h);
+            }
+            let last = gen_chunk(&mut rng);
+            body.push_str(&last);
+            want_chunks.push(last);
+
+            let token = format!("{tag}\"{body}\"");
+            let parsed = split_template_body(&token)
+                .unwrap_or_else(|| panic!("well-formed template {token:?} must split"));
+            assert_eq!(parsed.tag, tag, "tag recovered for {token:?}");
+            // The count invariant the spec pins.
+            assert_eq!(
+                parsed.chunks.len(),
+                parsed.holes.len() + 1,
+                "chunks must be exactly one more than holes for {token:?}"
+            );
+            assert_eq!(
+                parsed.chunks, want_chunks,
+                "literal chunks did not round-trip for {token:?}"
+            );
+            assert_eq!(
+                parsed.holes, want_holes,
+                "hole raw source did not round-trip for {token:?} (a string-shield or brace-depth bug)"
+            );
+        }
+    }
+
+    #[test]
+    fn split_template_body_is_total_on_arbitrary_tokens() {
+        // The parser hands `split_template_body` a lexer-VALIDATED token, but the fn must still be TOTAL —
+        // never panic — on any input (a defensive contract, and it's `pub`). Sweep a delimiter-rich
+        // alphabet (the chars that drive its state machine: braces, quotes, backslash) and assert it only
+        // ever returns — and whenever it returns `Some`, the `chunks == holes + 1` invariant still holds
+        // (the code pushes a trailing chunk unconditionally, so this must never break, even on a body with
+        // an unmatched brace / dangling escape / unterminated string).
+        let alphabet: &[char] = &['{', '}', '"', '\\', 'a', ' ', 'n', 't', '(', ')'];
+        let mut rng = Rng(0x0bad_7e11_0a7e_0002);
+        for _ in 0..20_000 {
+            let len = (rng.next() as usize) % 14;
+            let core: String = (0..len)
+                .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                .collect();
+            // Both a bare core (may lack a quote → None) and a quote-wrapped `t"…"` shape.
+            for token in [core.clone(), format!("t\"{core}\"")] {
+                if let Some(parsed) = split_template_body(&token) {
+                    assert_eq!(
+                        parsed.chunks.len(),
+                        parsed.holes.len() + 1,
+                        "the chunks==holes+1 invariant must hold even on malformed {token:?}"
+                    );
+                }
+            }
+        }
+        // A few hand-picked pathological shapes — the exact edges a scan can mis-handle — must not panic.
+        for token in [
+            "t\"",          // just the opening quote, no closing
+            "t\"{",         // an unterminated hole
+            "t\"{\"}",      // a hole opened, an unterminated string inside, no close
+            "t\"}}}}\"",    // only escaped braces
+            "t\"\\\"",      // a dangling backslash before the closing quote
+            "t\"{{{{\"",    // only open-brace escapes
+            "\"noident\"",  // empty tag
+            "notatemplate", // no quote at all → None
+        ] {
+            let _ = split_template_body(token); // must merely return
+        }
+    }
 }
