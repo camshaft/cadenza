@@ -1,5 +1,5 @@
 /// examples-exact.cdz — worked CAD models built with EXACT arithmetic + REAL UNITS (R3, the operator's
-/// showcase: "lean into units — a great showcase of bigint/rationals/units"). Each model is a `Solid`
+/// showcase: "lean into units — a great showcase of bigint/rationals/units"). Each model is a `Solid(Rational)`
 /// (exact Rational geometry) whose dimensions are written in real-world units (`mm`, `inch`, `cm`) that
 /// convert EXACTLY to the model's millimetre coordinates — no float rounding anywhere. The bounding-box
 /// (exact, from `exact.cdz`) then reports true dimensions.
@@ -26,7 +26,7 @@ def box(w: Rational, d: Rational, h: Rational) = Solid.Cube(v3r(w, d, h))
 def cyl(height: Rational, radius: Rational) = Solid.Cylinder(height, radius)
 
 /// Translate a solid by exact mm offsets.
-def move(x: Rational, y: Rational, z: Rational, s: Solid) = Solid.Translate(v3r(x, y, z), s)
+def move(x: Rational, y: Rational, z: Rational, s: Solid(Rational)) = Solid.Translate(v3r(x, y, z), s)
 
 /// ---- the marquee model: a plate with two bolt holes, dimensioned in MIXED units ------------------------
 

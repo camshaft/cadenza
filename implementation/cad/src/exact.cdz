@@ -9,8 +9,8 @@
 /// ruling — see the vertical log). `Rational` has a TOTAL ORDER (exact), so the identical recursive fold
 /// COMPILES + RUNS. Exact CAD isn't just nicer — it's what makes the extent analysis expressible today.
 ///
-/// This is R1: a self-contained exact-geometry module + its `Solid` CSG sum, gated by @test. R2 folds the
-/// main `Solid`/`Vec3(Rational)` model (currently Float64) onto this exact basis + `Qty` dimensioned lengths
+/// This is R1: a self-contained exact-geometry module + its `Solid(Rational)` CSG sum, gated by @test. R2 folds the
+/// main `Solid(Rational)`/`Vec3(Rational)` model (currently Float64) onto this exact basis + `Qty` dimensioned lengths
 /// (coordinating with v-quantity on the Qty surface); the native/browser mesh drivers then convert Rational
 /// → f64 only at the manifold leaf, keeping the model tree exact.
 ///
@@ -32,18 +32,23 @@ type Vec3 =
 /// The exact CSG tree — the FULL model (R3): primitives (Empty/Cube/Sphere/Cylinder), the three booleans,
 /// and the affine transforms that stay exact over Rational (Translate, per-axis Scale). NOTE: no `Rotate` —
 /// a general rotation needs sin/cos, which have no exact Rational form; rotation, if needed, is applied by
-/// the mesh driver at the f64 manifold leaf, keeping the model tree exact. The Float64 `Solid` (solid.cdz)
-/// is the legacy model; this exact `Solid` is what the drivers/examples move onto.
+/// the mesh driver at the f64 manifold leaf, keeping the model tree exact. The Float64 `Solid(Rational)` (solid.cdz)
+/// is the legacy model; this exact `Solid(Rational)` is what the drivers/examples move onto.
+/// The CSG tree, GENERIC over its coordinate type `a` (stage 2 of Vec3→Qty, B-via-generic). Instantiated
+/// as `Solid(Qty[meter])` for the authored model (a coordinate IS a length — units end-to-end) and, via a
+/// `lower` map that unwraps each coordinate, as `Solid(Rational)` at the render edge the mesh driver parses
+/// (f64 only at the FFI edge). This stage is a PURE GENERALIZATION: all usage stays `Solid(Rational)`, so
+/// behavior + render grammar are unchanged; it unlocks the `Solid(Qty[meter])` model instantiation (stage 3).
 type Solid =
   | Empty                        // the identity of union / absorbing element of intersection
-  | Cube(Vec3(Rational))                  // an axis-aligned box of FULL size (w, d, h) centred at origin (like Cube)
-  | Sphere(Rational)             // a sphere of the given radius, centred at the origin
-  | Cylinder(Rational, Rational) // a cylinder (FULL height, radius), centred on the origin along +z
-  | Union(Solid, Solid)
-  | Difference(Solid, Solid)
-  | Intersection(Solid, Solid)
-  | Translate(Vec3(Rational), Solid)
-  | Scale(Vec3(Rational), Solid)         // per-axis exact scale (Rational factors)
+  | Cube(Vec3(a))                // an axis-aligned box of FULL size (w, d, h) centred at origin (like Cube)
+  | Sphere(a)                    // a sphere of the given radius, centred at the origin
+  | Cylinder(a, a)               // a cylinder (FULL height, radius), centred on the origin along +z
+  | Union(Solid(a), Solid(a))
+  | Difference(Solid(a), Solid(a))
+  | Intersection(Solid(a), Solid(a))
+  | Translate(Vec3(a), Solid(a))
+  | Scale(Vec3(a), Solid(a))     // per-axis exact scale (Rational factors)
 
 /// An exact axis-aligned bounding box: the min and max corners (both `Vec3(Rational)`).
 type Aabb =
@@ -125,7 +130,7 @@ def aabbr-of-corners(p: Vec3(Rational), q: Vec3(Rational)) = Aabb.Box(v3r-min(p,
 /// [-r, r]×[-r, r]×[-height/2, height/2] (radius IS a half-diameter, so it's not halved). A sphere of radius
 /// r spans [-r, r]³. A union encloses both children; a translate shifts both corners; a scale multiplies them
 /// (re-normalized to stay well-formed under a NEGATIVE/mirror factor — see the `Scale` arm).
-def bounding-box(s: Solid) = match s with
+def bounding-box(s: Solid(Rational)) = match s with
   | Solid.Empty => aabbr-empty()
   // Each primitive builds its box from ±half-extent corners, normalized via `aabbr-of-corners` so a NEGATIVE
   // dimension/radius yields a well-formed box (absolute extent) rather than an inverted one.
@@ -161,7 +166,7 @@ def aabbr-size(b: Aabb) =
 
 /// Is this exact solid the empty node? A direct top-node test (NOT a full leaf-count) — `simplify-r` collapses
 /// dead branches to `Empty`, so an `Empty` at a node is the signal an algebraic identity fires.
-def solidr-is-empty(s: Solid) = match s with
+def solidr-is-empty(s: Solid(Rational)) = match s with
   | Solid.Empty => true
   | _ => false
 
@@ -173,7 +178,7 @@ def solidr-is-empty(s: Solid) = match s with
 ///   • `Translate/Scale _ Empty` = `Empty`               (transforming nothing is nothing)
 /// Leaves and genuinely-non-empty nodes rebuild unchanged. Idempotent (a second pass is a no-op) and never
 /// adds geometry. NOTE: no `Rotater` in the exact model (rotation is an f64 mesh-leaf concern), so no rotate arm.
-def simplify-r(s: Solid) = match s with
+def simplify-r(s: Solid(Rational)) = match s with
   | Solid.Empty => Solid.Empty
   | Solid.Cube(v) => Solid.Cube(v)
   | Solid.Sphere(r) => Solid.Sphere(r)
@@ -377,7 +382,7 @@ def aabbr-union-and-intersect-of-explicit-boxes() =
          and v3r-eq(ilo, v3r(1 / 1, 1 / 1, 1 / 1)) and v3r-eq(ihi, v3r(2 / 1, 2 / 1, 2 / 1))
       then unit else trap("union/intersect corners")))
 
-// ---- R11: simplify-r — the empty-solid algebraic identities on the EXACT Solid model --------------------
+// ---- R11: simplify-r — the empty-solid algebraic identities on the EXACT Solid(Rational) model --------------------
 
 @test
 def simplify-r-absorbs-empty-in-union() =
