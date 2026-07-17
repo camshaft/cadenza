@@ -1318,3 +1318,99 @@
                       ((Option.None) true))))))
             (export main)))
   (output (: true Bool)))
+
+; ── t1(oob): the OUT-OF-BOUNDS trap-source obligation — for 0 <= i < len, `xs[i]` cannot trap ─────────
+; The @trap_free capstone (§8) proves EVERY trap source unreachable. This pins the OUT-OF-BOUNDS source: a
+; checked index `List.at xs i` (or Bytes.at) traps iff i < 0 OR i >= len, so its trap-free obligation is the
+; CONJUNCTION `(0 <= i) AND (i < len)` — a two-part bound. Under `@requires(>= i 0) @requires(< i len)`,
+; both conjuncts are direct precondition hypotheses; the obligation is their conjunction. The base gains a
+; `lt` order (Const 7) + a `conj` connective (Const 8) + a `both` rule (from G|-p and D|-q derive G++D|-p∧q).
+; From assume(ge i 0) and assume(lt i len): `both` gives `CONJ (ge i 0) (lt i len)` = the in-bounds proof.
+
+(case "t1(oob): the out-of-bounds obligation (0<=i) AND (i<len) is DISCHARGED from the two bound preconditions"
+  (doc    "The out-of-bounds trap source of the @trap_free capstone. A checked `xs[i]` traps iff `i < 0` or
+           `i >= len`; its trap-free obligation is the conjunction `(ge i 0) AND (lt i len)`. Under
+           `@requires(>= i 0)` and `@requires(< i len)`, each conjunct is a precondition hypothesis, and the
+           `both` rule combines them into `CONJ (ge i 0) (lt i len)` — the index is provably in bounds, so
+           the access cannot trap. The entry assumes both bounds, combines via `both`, and checks the
+           conclusion is the conjunction obligation (both conjuncts, hyps unioned). Runs to `true`. Pins the
+           OOB obligation shape (a two-part conjunction) the capstone's per-trap-source proof discharges.")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (ge   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 2) a) b))
+      (def (lt   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 7) a) b))
+      (def (conj (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 8) a) b))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      ; RULE `both`: from G |- p and D |- q derive G++D |- (conj p q) — the in-bounds proof combines the two
+      ; bound facts. (Hyps unioned, per the Inc-11 soundness rule that a multi-premise rule carries the union.)
+      (def (both (: t1 Thm) (: t2 Thm))
+        (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (conj (concl t1) (concl t2)))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq ge lt conj concl hyps assume both)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq ge lt conj concl hyps assume both))
+            (def (main)
+              (let ((i    (Term.Var 2))
+                    (len  (Term.Var 3))
+                    (zero (Term.Num 0)))
+                ; the OOB trap-free obligation: (conj (ge i 0) (lt i len))
+                (let ((goal (conj (ge i zero) (lt i len))))
+                  ; @requires(>= i 0) and @requires(< i len) → two hypotheses
+                  (let ((lower (assume (ge i zero)))
+                        (upper (assume (lt i len))))
+                    (match (both lower upper)
+                      ((Option.Some proof) (term-eq (concl proof) goal))
+                      ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "t1(oob) NEGATIVE: with only the LOWER bound (>= i 0), the out-of-bounds obligation is NOT complete — the trap STAYS"
+  (doc    "The OOB soundness dual. The obligation is the CONJUNCTION `(ge i 0) AND (lt i len)`; a precondition
+           giving ONLY the lower bound `>= i 0` (missing `< i len`) cannot establish it — `i` could still be
+           >= len, so the access can still trap past the end. The entry has only the lower-bound hypothesis
+           and confirms it does NOT establish the full conjunction (the upper-bound conjunct is absent). So
+           the @trap_free proof for the index MISSES → the bounds-check STAYS. Runs to `true` (asserts the
+           lower bound alone is not the obligation). Pins that a PARTIAL bound does not certify in-bounds —
+           @trap_free is sound (it never drops a bounds check unless BOTH bounds are proven).")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (ge   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 2) a) b))
+      (def (lt   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 7) a) b))
+      (def (conj (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 8) a) b))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq ge lt conj concl assume)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq ge lt conj concl assume))
+            (def (main)
+              (let ((i    (Term.Var 2))
+                    (len  (Term.Var 3))
+                    (zero (Term.Num 0)))
+                (let ((goal (conj (ge i zero) (lt i len))))
+                  ; only the lower bound is assumed — no upper bound, so the conjunction is not established
+                  (let ((lower (assume (ge i zero))))
+                    ; the lower bound alone is NOT the full obligation → bounds check stays
+                    (not (term-eq (concl lower) goal))))))
+            (export main)))
+  (output (: true Bool)))
