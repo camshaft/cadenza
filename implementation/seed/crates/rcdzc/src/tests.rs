@@ -52284,6 +52284,55 @@ mod stage1 {
     }
 
     #[test]
+    fn the_kind_type_under_a_compound_annotation_round_trips_not_collapses_to_unit() {
+        // The `Ty::Type` twin of the `Ty::Var` round-trip fix above: the KIND-OF-TYPES `Type` used INSIDE a
+        // compound annotation — an arrow domain/result `(-> Type Int64)` / `(-> Int64 Type)`, a `(Tuple Type
+        // …)`, a `(Record (kind Type))` — took the `reduce_ctor`→`encode_typeval` round-trip, and `encode_ty`
+        // had NO `Ty::Type` arm, so its catch-all stubbed `Type` as `Unit`. A `(: g (-> Type Int64))` param
+        // then schemed as `(-> (-> Unit Int64) …)`, and passing a real `(-> Type Int64)` value failed CDZ0203
+        // "argument is a Type, but a value of type Unit is expected". Fixed by pairing an `encode_ty`/
+        // `decode_ty` `Type` arm (same class as the Var/Bytes/String/Qty/Nominal round-trip holes). Verified
+        // via the def scheme: `Type` must survive in each compound position, not read `Unit`.
+        let scheme_of = |src: &str, name: &str| {
+            let mut db = crate::db::Db::load(parse(src));
+            let idx = db
+                .defs
+                .iter()
+                .position(|d| d.name == name)
+                .expect("def present");
+            crate::infer::def_scheme(&mut db, idx)
+                .map(|s| s.ty.render_name())
+                .unwrap_or_else(|| "<none>".to_string())
+        };
+        // Arrow DOMAIN: `(: g (-> Type Int64))` — g's type must stay `(-> Type Int64)`, not `(-> Unit Int64)`.
+        let dom = scheme_of(
+            "(module m (def (f (: g (-> Type Int64)) (: t Type)) (g t)) (export f))",
+            "f",
+        );
+        assert!(
+            dom.contains("(-> Type Int64)") && !dom.contains("(-> Unit Int64)"),
+            "Type in an arrow domain round-trips (not Unit): {dom}"
+        );
+        // TUPLE element + arrow RESULT.
+        let tup = scheme_of(
+            "(module m (def (f (: p (Tuple Type Int64))) 0) (export f))",
+            "f",
+        );
+        assert!(
+            tup.contains("(Tuple Type Int64)"),
+            "Type as a tuple element round-trips: {tup}"
+        );
+        let res = scheme_of(
+            "(module m (def (f (: g (-> Int64 Type))) 0) (export f))",
+            "f",
+        );
+        assert!(
+            res.contains("(-> Int64 Type)") && !res.contains("(-> Int64 Unit)"),
+            "Type in an arrow result round-trips: {res}"
+        );
+    }
+
+    #[test]
     fn a_malformed_const_parameter_names_the_annotated_binder_shape() {
         // A `const` parameter wraps exactly ONE annotated binder — `(const (: n Int64))`. A malformed
         // `(const n Int64)` (two operands, unannotated) survives `strip_const_params` (which only unwraps a
