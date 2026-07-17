@@ -1511,6 +1511,7 @@ pass	a runtime negative dividend divided by a constant power of two truncates to
 pass	a runtime negative dividend mod a constant power of two takes the dividend's sign
 pass	a runtime negative zero is not equal to positive zero
 pass	a runtime negative-const-multiply one past its lower fitting boundary traps
+pass	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 pass	a runtime overflowing left shift traps
 pass	a runtime product's derived dimension cancels correctly through a divide
 pass	a runtime product's derived dimension is enforced against an incompatible add
@@ -3532,7 +3533,6 @@ todo	a run's result is a deterministic function of a host call's recorded respon
 todo	a runtime bit-field packs a runtime value into a nibble
 todo	a runtime bit-field run spans two bytes and composes with an int segment
 todo	a runtime nibble truncation keeps the low four bits
-todo	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 todo	a scalar BETWEEN two Tuple args with a LIST result
 todo	a second same-signature closure export shares the one call method
 todo	a three-argument closure exported to the host is called with all three

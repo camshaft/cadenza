@@ -1465,6 +1465,7 @@ pass	a runtime negative dividend divided by a constant power of two truncates to
 pass	a runtime negative dividend mod a constant power of two takes the dividend's sign
 pass	a runtime negative zero is not equal to positive zero
 pass	a runtime negative-const-multiply one past its lower fitting boundary traps
+pass	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 pass	a runtime overflowing left shift traps
 pass	a runtime product's derived dimension cancels correctly through a divide
 pass	a runtime product's derived dimension is enforced against an incompatible add
@@ -3504,7 +3505,6 @@ todo	a runtime closure compares its argument to a captured value in a branch
 todo	a runtime closure whose body calls a recursive top-level function
 todo	a runtime function value is manually eta-wrapped and applied through nested recursive HOFs
 todo	a runtime nibble truncation keeps the low four bits
-todo	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 todo	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
 todo	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 todo	a scalar BETWEEN two Tuple args with a LIST result
