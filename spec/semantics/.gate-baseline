@@ -352,6 +352,7 @@ pass	a STRING-result effect op resumes with a string that folds through a concat
 pass	a SUM constructor payload that is a compound built from performs threads and destructures
 pass	a SUM is threaded as a handler's folded state across operations
 pass	a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)
+pass	a SYMBOL compound = has DISCRIMINATING power (two runtime-selected interned names separate)
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
@@ -858,6 +859,7 @@ pass	a function-typed parameter with a matching Bool-returning argument is accep
 pass	a general recursive-sum recursion (Nil|Cons count) reads the right payload through the fold
 pass	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
 pass	a generated value with a FLOAT leaf is reproducible (compound = over the canonical float byte form)
+pass	a generated value with a SYMBOL leaf is reproducible (compound = walks the interned-name byte leaf)
 pass	a generic definition takes the type as a type-valued parameter
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
@@ -896,6 +898,7 @@ pass	a guard-elided masked add at a NARROW width computes identically on both ba
 pass	a guard-elided masked add computes inline over runtime operands
 pass	a guard-elided masked multiply computes inline over runtime operands
 pass	a guard-elided masked subtract computes inline over runtime operands
+pass	a guard-elided masked left shift computes identically on both backends
 pass	a guarded arm among same-constructor match arms keeps first-match-wins
 pass	a guarded arm is selected when its guard holds
 pass	a guarded list-match arm body reads its element binder
@@ -1628,6 +1631,7 @@ pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
 pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a recursively-built linked list renders its full runtime spine
+pass	a reduce-shaped wrapper seeding a second generic helper at two element types declines pending the transitive tie
 pass	a redundant full-width mask on an unsigned runtime value is elided
 pass	a reference to an unbound name is rejected before running
 pass	a referenced let binding whose init overflows IS observed, so its trap occurs (the anchor)
@@ -3289,7 +3293,11 @@ pass	subtraction of two strings is rejected
 pass	subtraction of two symbols is rejected
 pass	sum type constructors are in scope after declaration
 pass	symbol identity follows String normalization
+pass	symbol ordering is reflexive at the boundary — less-than-or-equal on equal content
+pass	symbol ordering — greater-than agrees with the byte order
+pass	symbol ordering — greater-than-or-equal is false when strictly less
 pass	symbols interned from different strings are unequal
+pass	symbols order by content-lexicographic UTF-8 byte order — less-than
 pass	take-while composed after a map threads both transformers' closures
 pass	take-while excludes the failing element and everything after it (content, not just count)
 pass	take-while where every element satisfies the predicate keeps the whole run

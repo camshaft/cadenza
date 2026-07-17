@@ -24,6 +24,24 @@ test("a slider defaults step (Int64→1, Float64→range/100) and default (→mi
   assert.equal(flt.step, 1); // (100-0)/100
 });
 
+test("a slider with an inverted or zero-width range is rejected (needs max > min)", () => {
+  const inv = parseWidgets("x : Float64 = slider(100, 0)");
+  assert.equal(inv.widgets.length, 0);
+  assert.match(inv.errors[0].message, /max .* greater than min/);
+  const zero = parseWidgets("x : Float64 = slider(5, 5)");
+  assert.equal(zero.widgets.length, 0);
+  assert.match(zero.errors[0].message, /greater than min/);
+});
+
+test("a slider's step is forced positive — a declared step <= 0 falls back to the default", () => {
+  const neg = parseWidgets("x : Float64 = slider(0, 10, step: -1)").widgets[0] as Extract<Widget, { control: "slider" }>;
+  assert.equal(neg.step, 0.1); // (10-0)/100, not the negative
+  const zero = parseWidgets("y : Int64 = slider(0, 10, step: 0)").widgets[0] as Extract<Widget, { control: "slider" }>;
+  assert.equal(zero.step, 1); // Int64 default
+  const ok = parseWidgets("z : Float64 = slider(0, 10, step: 0.5)").widgets[0] as Extract<Widget, { control: "slider" }>;
+  assert.equal(ok.step, 0.5); // a valid positive step is kept
+});
+
 test("text / checkbox / dropdown parse their type-appropriate defaults", () => {
   assert.deepEqual(parseWidgets('label : String = text(default: "balance")').widgets[0], {
     name: "label", type: "String", control: "text", default: "balance",

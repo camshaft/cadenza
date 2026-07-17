@@ -6,6 +6,14 @@
 //! re-reads the identical sequence — the property the replay/re-fold thesis (vision §2.3, §3) needs. No
 //! network, no async: this is the CI-safe stand-in for the DynamoDB log (L1d) while the fold owner (L1b)
 //! and the replay-determinism gate (L1c) are built against the [`Log`] trait.
+//!
+//! CONCURRENCY CONTRACT: `FileLog` is SINGLE-PROCESS / externally-synchronized. An `append` is one
+//! `write_all`, not a cross-process-atomic write, so a reader in another process tailing concurrently
+//! could observe a partial trailing record (`read_all` then errors "truncated log"). The L1 fold owner is
+//! single-threaded and the sole reader+writer, so it never races itself — that is what makes the file log
+//! sound here. The real MULTI-WRITER ordering authority (vision §2.1: many writers append concurrently) is
+//! DynamoDB at L1d, whose conditional write is the actual concurrency primitive; this file log deliberately
+//! does not reimplement it.
 
 use crate::{Event, Log, Seq};
 use anyhow::{anyhow, Context, Result};
@@ -60,8 +68,16 @@ impl Log for FileLog {
         record.extend_from_slice(&payload_len.to_le_bytes());
         record.extend_from_slice(payload);
 
-        // One write of a fully-assembled record. Open in append mode per-call so a concurrent reader (the
-        // fold owner tailing) never sees a half-written record from a long-lived handle.
+        // Assemble the whole record first, then one `write_all` in append mode. NOTE: this is NOT a
+        // cross-process atomicity guarantee — `write_all` may issue multiple syscalls, so a reader in
+        // ANOTHER process/`FileLog` tailing concurrently could observe a partial trailing record (and
+        // `read_all` would then error "truncated log"). `FileLog` is the SINGLE-PROCESS / externally-
+        // synchronized L1a stand-in: the L1 fold owner is single-threaded and the sole reader+writer, so it
+        // never races itself. The real MULTI-WRITER ordering authority is DynamoDB at L1d (vision §2.1),
+        // whose conditional write is the actual concurrency primitive; this file log deliberately does not
+        // reimplement that. (Assembling the full record up front still keeps each write a single call, which
+        // minimizes — but does not eliminate — a torn read; the single-process contract is what makes it
+        // sound here.)
         let mut f = OpenOptions::new()
             .append(true)
             .open(&self.path)

@@ -2431,6 +2431,33 @@ fn emit_arith(
                      if c >= {width} {{ panic!(\"shift count out of range\") }} v >> c }}"
                 ))
             } else {
+                // `<<` GUARD ELISION — Core-tier parity with the wasm backend's `emit_shift` fast path
+                // (`select.rs`). When the shift provably cannot overflow, BOTH the count guard and the
+                // overflow round-trip are dead, so emit the bare `v << count`. Two sound cases, mirroring
+                // wasm exactly:
+                //   • CONSTANT count `k` with `0 <= k < width` AND `lower::shl_provably_in_range(lhs, k)`
+                //     (`(<< (& x 15) 2)` = [0,60]) — the fixed shift fits, and `k < width` means no count
+                //     guard is needed.
+                //   • RUNTIME count whose range is known AND `lower::shl_provably_in_range_dynamic(lhs,
+                //     rhs)` (`(<< (& x 15) (& k 3))`) — the dynamic predicate requires `chi < width`, so
+                //     the count is provably in range too (both guards dead).
+                // Until this, the rust `<<` emit consulted neither predicate, so this Core-tier elision
+                // was silently wasm-only (the same gap the arith consult closed for `+`/`-`/`*`).
+                let const_count = match core_of(db, rhs) {
+                    Core::ConstInt(v) => v.to_i64(),
+                    _ => None,
+                };
+                let elide = const_count.is_some_and(|k| {
+                    (0..width as i64).contains(&k)
+                        && crate::lower::shl_provably_in_range(db, lhs, k as u32)
+                }) || (const_count.is_none()
+                    && crate::lower::shl_provably_in_range_dynamic(db, lhs, rhs));
+                if elide {
+                    // Provably in range: the modular `<<` IS the true value (no dropped bit), and the count
+                    // is provably `< width`, so no guard is needed — byte-identical to the guarded form on
+                    // every reachable input, exactly like the elided wasm path.
+                    return Ok(format!("{{ let v: {vty} = {l}; v << ({count}) }}"));
+                }
                 // `<<`: guard the count, shift, then round-trip to detect an overflow (a dropped bit).
                 Ok(format!(
                     "{{ let v: {vty} = {l}; let c = ({count}) as u32; \
@@ -3196,6 +3223,22 @@ fn emit_sum_cont(
                 ));
             }
             let subject = emit_sum_payload(db, scrutinee, scrutinee, path, env, ctx)?;
+            // A LIST-LENGTH probe (`(Call (list _ .. rest))` — a list PATTERN in a sum-variant payload) tests
+            // the subject list's `vec-len`, not a value equality: `== len` for a fixed-arity `(list p0…p{n-1})`,
+            // `>= len` for a rest pattern (`.. rest`). The subject at `path` is the payload's `Vec<T>` (read via
+            // `emit_sum_payload`); mirror `emit_list_match_impl`'s length test. The leading-element binders
+            // (`SumPayload{…,Elem(i)}` → `xs[i]`) and the rest binder (`SumPayload{…,RestFrom(len)}` →
+            // `xs[len..].to_vec()`) already resolve through `emit_sum_payload`'s list arms, so only the length
+            // TEST needed rendering. This is the sum-decision-tree meeting the list matcher — the compiler-AST
+            // shape (a `(Call (List Node))` node dispatched by its child count).
+            if let crate::core::Probe::ListLen { len, at_least } = probe {
+                let op = if *at_least { ">=" } else { "==" };
+                let then_ = emit_sum_cont(db, scrutinee, then_, result_it, env, ctx)?;
+                let els = emit_sum_cont(db, scrutinee, els, result_it, env, ctx)?;
+                return Ok(format!(
+                    "if ({subject}).len() {op} {len} {{ {then_} }} else {{ {els} }}"
+                ));
+            }
             // The literal to compare against, in the sub-value's own type (`5i64`, `true`) so the Rust
             // comparison types. A string probe never reaches a RUNTIME test (it declines at `is_scalar`
             // before a decision tree is built), matching the scalar-match path.
@@ -3601,18 +3644,50 @@ fn emit_sum_payload(
             } else {
                 b.name.clone()
             };
+            // Walk the bind's payload TYPE alongside `rest` so an `Elem(i)` renders correctly per container:
+            // a TUPLE element is a field access `.i`, but a LIST element is an INDEX `[i]` (a `(Some (list x
+            // .. r))` binder reads element 0 of the payload `Vec`, not a `.0` tuple field → E0609 otherwise).
+            // The bind's path type is the entered-variant's payload (`ty_at_sum_path` at `b.path`, or a
+            // recorded hint); `None`/unknown falls back to the tuple `.i` form (the pre-existing behavior).
+            let mut cur_ty = lookup_sum_path_type(ctx, &b.path)
+                .unwrap_or_else(|| ty_at_sum_path(db, scrutinee, &b.path));
             for step in rest {
                 match step {
-                    crate::core::PathStep::Elem(i) => expr = format!("({expr}).{i}"),
+                    crate::core::PathStep::Elem(i) => {
+                        match cur_ty.strip_nominal() {
+                            Ty::List(elem) => {
+                                cur_ty = (**elem).clone();
+                                expr = format!("({expr})[{i}]");
+                            }
+                            Ty::Tuple(elems) => {
+                                cur_ty = elems.get(*i).cloned().unwrap_or(Ty::Any);
+                                expr = format!("({expr}).{i}");
+                            }
+                            // Unknown/other — keep the historical tuple-field form.
+                            _ => {
+                                cur_ty = Ty::Any;
+                                expr = format!("({expr}).{i}");
+                            }
+                        }
+                    }
                     crate::core::PathStep::Payload => {
                         return Err(Reject::decline(
                             "a nested sum payload is not yet rendered by the Rust backend",
                         ));
                     }
-                    crate::core::PathStep::RestFrom(_) => {
-                        return Err(Reject::decline(
-                            "a list rest binder is not yet rendered by the Rust backend",
-                        ));
+                    crate::core::PathStep::RestFrom(k) => {
+                        // A list REST binder — the tail sublist from index `k` (`xs[k..].to_vec()`), an owned
+                        // independent `Vec`. Only valid over a list-typed payload; other shapes decline.
+                        match cur_ty.strip_nominal() {
+                            Ty::List(_) => {
+                                return Ok(format!("({expr})[{k}..].to_vec()"));
+                            }
+                            _ => {
+                                return Err(Reject::decline(
+                                    "a list rest binder over a non-list payload is not rendered by the Rust backend",
+                                ));
+                            }
+                        }
                     }
                 }
             }

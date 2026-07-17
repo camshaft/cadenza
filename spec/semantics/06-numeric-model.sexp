@@ -2999,6 +2999,19 @@
   (call   main (: 1 Int64) (: 7 Int64))
   (output (: 128 Int64)))
 
+(case "a guard-elided masked left shift computes identically on both backends"
+  (doc    "The shift analogue of the guard-elided masked add, pinning BOTH-BACKEND `<<` elision parity.
+           `(<< (& a 15) 2)` over a runtime `a`: the masked value lives in [0,15], so `<< 2` lives in
+           [0,60] and provably fits Int64 — the compiler elides BOTH the count guard (constant 2 < 64) and
+           the overflow round-trip. The wasm backend elides via `shl_provably_in_range` in emit_shift; the
+           rust backend now consults the SAME Core-tier predicate and emits the bare `v << 2` (no round-trip
+           panic). Value parity is the observable proof the elision keeps the exact result: `(255)` =
+           (255&15) << 2 = 15 << 2 = 60, `(1)` = 1 << 2 = 4. Pins the guard-elided masked-shift path — the
+           bit-packing idiom where the range analysis proves no overflow, on both backends.")
+  (input  (do (def (main (: a Int64)) (<< (& a 15) 2)) (export main)))
+  (call   main (: 255 Int64)) (output (: 60 Int64))
+  (call   main (: 1 Int64)) (output (: 4 Int64)))
+
 (case "a strength-reduced multiply nested as an operand computes in place"
   (doc    "`(+ (* a 2) 1)` over a runtime `a`: the `(* a 2)` strength-reduces to `a << 1` and is the LHS
            OPERAND of the enclosing `+`, so the shift writes the add's operand slot DIRECTLY (its result

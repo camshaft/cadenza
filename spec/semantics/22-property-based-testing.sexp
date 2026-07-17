@@ -111,6 +111,42 @@
   (call   main (: 12345 Int64)) (output (: true Bool))
   (call   main (: -7 Int64)) (output (: true Bool)))
 
+(case "a generated value with a SYMBOL leaf is reproducible (compound = walks the interned-name byte leaf)"
+  (doc    "Witnesses §Generation Is Seeded And Reproducible for a compound carrying a SYMBOL leaf — the
+           last leaf type in the compound-`=`-reproducibility family (Int/Bool, BigInt, Rational, Float
+           already witnessed). `gen` draws a `(Tuple Symbol Bool)` — a constant interned name `(Symbol.of
+           \"tag\")` beside a seed-derived threshold bool — and `(= (gen seed) (gen seed))` = true. A Symbol
+           is a String byte-leaf at run time (the tagless heap has no distinct `Sym` shape; identity is the
+           interned CONTENT, exactly like a String), so the compound `=` walks it by the same byte-leaf
+           compare as a String element — distinct from the fixed-width scalar compare (Int/Bool), the
+           bignum-limb walk (BigInt/Rational), and the canonical-byte float compare. Runs at the boundary,
+           so the intern + the compound byte-leaf compare are real instructions, not a fold.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (gen (: s Int64)) (tuple ((. Symbol of) "tag") (< (& (next s) 255) 128)))
+              (def (main (: seed Int64)) (= (gen seed) (gen seed)))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: true Bool))
+  (call   main (: -7 Int64)) (output (: true Bool)))
+
+(case "a SYMBOL compound = has DISCRIMINATING power (two runtime-selected interned names separate)"
+  (doc    "The counterpart that makes the Symbol-leaf compare meaningful: the compound `=` must SEPARATE
+           genuinely different interned names, not just equate identical ones. To keep the compare a real
+           RUNTIME byte-leaf walk (a literal `(= (Symbol.of \"a\") (Symbol.of \"b\"))` would CONST-FOLD to
+           false at compile time, witnessing nothing), the symbol is SELECTED at runtime from a seed-derived
+           bool: `pick b = if b then (Symbol.of \"alpha\") else (Symbol.of \"beta\")`. Then a tuple carrying
+           `(pick x)` versus one carrying `(pick (not x))` holds two DIFFERENT symbols, so `=` is false; and
+           a tuple carrying `(pick x)` twice holds the SAME symbol, so `=` is true. The `n=0` vs `n=1` calls
+           below drive `x` to both branches. Pins that the Symbol compound `=` has power in BOTH directions
+           on a value inference cannot pre-decide.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (pick (: b Bool)) (if b ((. Symbol of) "alpha") ((. Symbol of) "beta")))
+              (def (differ (: seed Int64)) (let ((x (< (& (next seed) 255) 128))) (= (tuple (pick x) 0) (tuple (pick (not x)) 0))))
+              (def (same (: seed Int64)) (let ((x (< (& (next seed) 255) 128))) (= (tuple (pick x) 0) (tuple (pick x) 0))))
+              (def (main (: seed Int64)) (if (differ seed) false (same seed)))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: true Bool))
+  (call   main (: -7 Int64)) (output (: true Bool)))
+
 (case "a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)"
   (doc    "Deepens the compound-`=`-over-a-bignum-leaf witness with RATIONAL's distinguishing feature:
            equality is by NORMALIZED (reduced) form, not by the stored numerator/denominator. Two tuples

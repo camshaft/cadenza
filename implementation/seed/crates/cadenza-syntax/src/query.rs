@@ -4858,6 +4858,73 @@ mod tests {
             assert_eq!(cs[0].path, vec![1]);
             assert_eq!(cs[1].path, vec![2]);
         }
+
+        #[test]
+        fn diff_is_empty_exactly_when_the_trees_are_structurally_equal() {
+            // The core SOUNDNESS biconditional of the structural diff: `treediff::diff(a, b)` is EMPTY
+            // ⟺ `a` structurally-equals `b`. A false empty-diff (no change reported between DIFFERENT
+            // trees) would make `cdz diff` / review tooling miss an edit; a spurious change on EQUAL trees
+            // would report a phantom edit. Only one hand case (`identical_trees_have_no_changes`) pinned
+            // the ⟸ direction and none swept ⟹. Generate random tree PAIRS — sometimes equal (same seed
+            // regenerates the same program), sometimes differing — and assert diff-empty agrees with
+            // structural equality both ways.
+            use super::{SplitMix64, Tree, tree_eq};
+            fn gen_tree(rng: &mut SplitMix64, depth: usize) -> String {
+                let leaves = ["a", "b", "0", "1", "x"];
+                if depth == 0 || rng.next().is_multiple_of(3) {
+                    return leaves[(rng.next() as usize) % leaves.len()].to_string();
+                }
+                let heads = ["f", "g", "+", "*"];
+                let head = heads[(rng.next() as usize) % heads.len()];
+                let n = 1 + (rng.next() as usize) % 3;
+                let kids: Vec<String> = (0..n).map(|_| gen_tree(rng, depth - 1)).collect();
+                format!("({head} {})", kids.join(" "))
+            }
+            let mut rng = SplitMix64(0xd1ff_50f7_c0de_1a7e);
+            let mut equal_seen = 0usize;
+            let mut differ_seen = 0usize;
+            for _ in 0..3000 {
+                let da = 1 + (rng.next() as usize) % 4;
+                let db = 1 + (rng.next() as usize) % 4;
+                let (Ok(aa), Ok(ba)) = (
+                    crate::sexpr::read(&gen_tree(&mut rng, da)),
+                    crate::sexpr::read(&gen_tree(&mut rng, db)),
+                ) else {
+                    continue;
+                };
+                let (ta, tb) = (Tree::of(&aa), Tree::of(&ba));
+                let empty = treediff::diff(&ta, &tb).is_empty();
+                let eq = tree_eq(&ta, &tb);
+                assert_eq!(
+                    empty,
+                    eq,
+                    "diff-empty ({empty}) must agree with tree_eq ({eq}) for\n  a={}\n  b={}",
+                    ta.to_sexpr(),
+                    tb.to_sexpr()
+                );
+                // And the reflexive case explicitly: a tree never differs from itself.
+                assert!(
+                    treediff::diff(&ta, &ta).is_empty(),
+                    "a tree diffs empty against itself: {}",
+                    ta.to_sexpr()
+                );
+                if eq {
+                    equal_seen += 1;
+                } else {
+                    differ_seen += 1;
+                }
+            }
+            // The EQUAL arm is exercised DETERMINISTICALLY by the per-iteration reflexive `diff(ta, ta)`
+            // check above (a tree always equals itself), so it does not rely on the generator happening to
+            // produce a coincidental equal PAIR. `equal_seen`/`differ_seen` are only soft coverage hints:
+            // assert just that the DIFFERING arm was meaningfully hit (the interesting direction the pair
+            // sweep adds); the equal count is not asserted on (it depends on generator luck).
+            let _ = equal_seen;
+            assert!(
+                differ_seen >= 100,
+                "the pair sweep must hit differing pairs (the direction it adds), got {differ_seen}"
+            );
+        }
     }
 
     mod lint_tests {

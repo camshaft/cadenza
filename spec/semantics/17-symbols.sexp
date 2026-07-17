@@ -28,9 +28,12 @@
 ; invisibly (memory-and-resource-model.md #Sharing Is Not Observable): a Symbol built from a
 ; computed string and one built from a literal are ONE value, indistinguishable by every operation.
 ;
-; Symbols are EQUALITY-ONLY in this version: `=` and use as a map key, no ordering (`<` `>` …). A
-; content-lexicographic order MAY be added additively by a later decision if a sorted symbol table
-; needs it; it is deliberately not pinned here (the equality path is the compiler's hot path).
+; Symbols support `=`, use as a map key, AND a total ORDER by content-lexicographic UTF-8 byte order
+; (`<` `<=` `>` `>=` compare the interned bytes lexicographically). This is the additive content-
+; lexicographic order the earlier equality-only version deferred to a "later decision" — now blessed
+; (the order is well-defined because a Symbol's identity is its content, and it is backend-consistent:
+; rust represents a Symbol as a String whose UTF-8 byte Ord agrees with the wasm byte-leaf order,
+; including on multibyte/non-ASCII pairs). Equality remains the compiler's hot path.
 ;
 ; A later generation realizes the Symbol form (it is not on the ignition
 ; path — the seed clears ignition with `Int64`, `Bytes`, and `String`; options/realized-capability-set/).
@@ -63,6 +66,38 @@
            content are distinct (the companion of the idempotence case). Pins that Symbol equality is a
            genuine content test, not a blanket true, so a symbol-table lookup distinguishes names.")
   (input  (= (Symbol.of "map-insert") (Symbol.of "map-lookup")))
+  (output (: false Bool)))
+
+(case "symbols order by content-lexicographic UTF-8 byte order — less-than"
+  (doc    "`(< (Symbol.of \"a\") (Symbol.of \"b\"))` is true — Symbols carry a total order by the
+           content-lexicographic UTF-8 byte order of their interned bytes ('a'=0x61 < 'b'=0x62). This is
+           the additive content-lexicographic order the earlier equality-only version deferred to a
+           'later decision' — now blessed: the order is well-defined precisely because a Symbol's
+           identity is its content (see the load-bearing content-identity constraint above), and it is
+           backend-consistent (rust represents a Symbol as a String whose UTF-8 byte Ord agrees with the
+           wasm byte-leaf order on multibyte/non-ASCII pairs).")
+  (input  (< (Symbol.of "a") (Symbol.of "b")))
+  (output (: true Bool)))
+
+(case "symbol ordering is reflexive at the boundary — less-than-or-equal on equal content"
+  (doc    "`(<= (Symbol.of \"a\") (Symbol.of \"a\"))` is true — `<=` includes equality, and two Symbols
+           of the same content compare equal-under-order (consistent with `=`). Pins the reflexive edge
+           of the content-lexicographic order.")
+  (input  (<= (Symbol.of "a") (Symbol.of "a")))
+  (output (: true Bool)))
+
+(case "symbol ordering — greater-than agrees with the byte order"
+  (doc    "`(> (Symbol.of \"b\") (Symbol.of \"a\"))` is true — `>` is the mirror of `<` over the same
+           content-lexicographic UTF-8 byte order ('b'=0x62 > 'a'=0x61). Pins that the ordering ops are
+           mutually consistent, not independently defined.")
+  (input  (> (Symbol.of "b") (Symbol.of "a")))
+  (output (: true Bool)))
+
+(case "symbol ordering — greater-than-or-equal is false when strictly less"
+  (doc    "`(>= (Symbol.of \"a\") (Symbol.of \"b\"))` is false — 'a' is strictly less than 'b' under the
+           content-lexicographic byte order, so `>=` does not hold. The negative companion pinning that
+           all four relational ops evaluate consistently over the same total order.")
+  (input  (>= (Symbol.of "a") (Symbol.of "b")))
   (output (: false Bool)))
 
 (case "a symbol's identity is its content, not how the content was derived"

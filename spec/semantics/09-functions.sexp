@@ -3974,6 +3974,46 @@
             (export main)))
   (error  CDZ0201))
 
+; A TRANSITIVE recursive-generic tie: a `reduce`-shaped WRAPPER (`reduce1`) whose `Cons` arm seeds a
+; SECOND recursive-generic helper (`go`) with the HEAD element, used at TWO element types in one program
+; (Int64 sum + String concat), DECLINES. Distinct from the CDZ0201 producer/transformer ties above: it is
+; an uncoded decline ("this recursive function has a parameter whose type could not be inferred …") — the
+; delegated helper `go`'s parameter is not tied across the wrapper's two monomorphizations. A structurally
+; identical DIRECT fold with an element-typed accumulator at two types WORKS; the trigger is the wrapper→
+; second-helper delegation. NO annotation escape hatch exists: `go`'s param is a GENERIC element, and a
+; lowercase `(GIter a)` in an annotation is unbound (CDZ0101, no forall-binder), so `(: it GIter)` fails
+; CDZ0203 — the decline message names this honestly (it does NOT tell the author to annotate a generic
+; helper). Single element type compiles+runs; only ≥2 instantiations decline. A tracked inference follow-up
+; (the recursive-generic monomorphization tie family); pinned as a clean decline so a future fix flips it to
+; a run (6 + byte-len("ab")=2 = 8) and NEVER a miscompile meanwhile. (v-iterators' reduce/reduce1 residual.)
+
+(case "a reduce-shaped wrapper seeding a second generic helper at two element types declines pending the transitive tie"
+  (doc    "`reduce1` (a `reduce`-shaped wrapper) matches its iterator's `Cons` arm and seeds a SECOND
+           recursive-generic helper `go` with the head element as the initial accumulator; used at TWO
+           element types (Int64 `(+ x y)` folding [1,2,3], String `String.concat` folding [\"a\",\"b\"])
+           in one program, it declines — the delegated `go`'s parameter type is not tied across the two
+           monomorphizations of the wrapper (a TRANSITIVE recursive-generic tie, sibling of the
+           producer/transformer ties above). An uncoded decline, not CDZ0201; NO annotation can express
+           `go`'s polymorphic element (a lowercase `(GIter a)` annotation is unbound), so the decline
+           message names that honestly. A DIRECT element-typed fold at two types works; only this
+           wrapper→second-helper delegation is unrealized. Intended value when the tie lands: the Int64
+           reduce (1+2+3=6) plus the byte length of the String reduce (\"ab\"=2) = 8.")
+  (input  (do
+            (type GIter (Nil) (Cons a (GIter a)))
+            (def (from-list xs)
+              (match xs ((list) (GIter.Nil)) ((list h .. t) (GIter.Cons h (from-list t)))))
+            (def (go it acc f)
+              (match it ((GIter.Nil) acc) ((GIter.Cons h rest) (go rest (f acc h) f))))
+            (def (reduce1 it f)
+              (match it ((GIter.Nil) (Option.None)) ((GIter.Cons h rest) (Option.Some (go rest h f)))))
+            (def (main)
+              (+ (match (reduce1 (from-list (list 1 2 3)) (fn (x y) (+ x y)))
+                   ((Option.None) 0) ((Option.Some v) v))
+                 (match (reduce1 (from-list (list "a" "b")) (fn (x y) (String.concat x y)))
+                   ((Option.None) 0) ((Option.Some v) (String.byte-len v)))))
+            (export main)))
+  (declines))
+
 ; TYPE-VALUED PARAMETERS — the spec's model for a generic definition (`type-system.md §Generics Are
 ; Type-Valued Parameters`): a generic def takes the TYPE as an ordinary parameter (annotated `(: t Type)`,
 ; the kind of types), uses it as a type-constructor argument in a later parameter's annotation `(Box t)`,

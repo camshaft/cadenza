@@ -34352,6 +34352,39 @@ mod match_engine {
             Some("Bool"),
             "mirror's type node is Bool"
         );
+        // OPTIONS + DEFAULT config (a dropdown param): scan_manifest reads the `(: options (list …))` list
+        // node + the `(: default <val>)` value node. Both come back as node-ids the query handler renders
+        // (options → a JSON array of the list's elements, default → the rendered value / JSON null when
+        // absent). Here assert they are PRESENT (Some) for a param that declares them.
+        let ast2 = crate::testkit::parse(
+            "(module m \
+               (: (@ (param (: widget dropdown) (: options (list \"m\" \"mm\" \"in\")) (: default \"mm\")) unit) String) \
+               (def (main) 0) \
+             (export main))",
+        );
+        let recs2 = scan_manifest(&ast2);
+        let unit = recs2
+            .iter()
+            .find(|r| r.name == "unit")
+            .expect("unit record");
+        assert_eq!(
+            unit.widget.as_deref(),
+            Some("dropdown"),
+            "unit's widget is dropdown"
+        );
+        assert!(
+            unit.options.is_some(),
+            "unit's `options: (list …)` yields the list node"
+        );
+        assert!(
+            unit.default.is_some(),
+            "unit's `default: \"mm\"` yields the default value node"
+        );
+        // The options node IS the (list …) — confirm it reads as a list form the handler can enumerate.
+        assert!(
+            ast2.as_form(unit.options.unwrap(), "list").is_some(),
+            "the options node is a (list …) the query handler enumerates for the JSON array"
+        );
     }
 
     #[test]
@@ -59415,16 +59448,25 @@ mod sidecar_driven {
                  invalid component: {:?}",
                 out.diagnostics
             );
+            let boundary_diag = out.diagnostics.iter().find(|d| {
+                d.code.as_deref() == Some("CDZ0201")
+                    && d.message.contains("valid component boundary name")
+            });
             assert!(
-                out.diagnostics
-                    .iter()
-                    .any(|d| d.code.as_deref() == Some("CDZ0201")
-                        && d.message.contains("valid component boundary name")),
+                boundary_diag.is_some(),
                 "the decline for `{name}` is the coded boundary-name CDZ0201: {:?}",
                 out.diagnostics
                     .iter()
                     .map(|d| &d.message)
                     .collect::<Vec<_>>()
+            );
+            // The diagnostic ANCHORS at the offending `@test`/export def (its `sig_occ`), so a consumer that
+            // holds the span table points the reader AT the name to rename — not an unanchored bare message
+            // (v-guide-infra's actionable-diagnostic ask, 2026-07-17: the guide now teaches `@test` authoring,
+            // so a numeric-segment name must point at the name + say how to fix it).
+            assert!(
+                boundary_diag.unwrap().node.is_some(),
+                "the boundary-name reject for `{name}` carries a source anchor (points at the @test name)"
             );
         }
     }
@@ -60608,6 +60650,42 @@ mod sidecar_driven {
         assert_eq!(highlight_kinds_of(src, "slider"), vec!["symbol"]);
         // The annotation TARGET still resolves — the declared type is a `type`, unchanged by the softening.
         assert_eq!(highlight_kinds_of(src, "Int64"), vec!["type"]);
+    }
+
+    #[test]
+    fn highlight_paints_a_tag_annotation_without_false_reds() {
+        // A call-style `@tag("slow") def` reifies to `(@ (tag "slow") (def …))` — UNLIKE `@param`, the
+        // `@tag` annotation DOES wrap a `(def …)`, so `db::strip_annotations` UNWRAPS it in place (the def
+        // adopts the inner children) and ORPHANS both the `@` sigil AND the `(tag "slow")` application (they
+        // keep source spans but their ancestor chain no longer reaches root). The `@` is caught as an
+        // annotation token → `keyword`; the orphaned `tag` head + its `"slow"` string are inert (they resolve
+        // to nothing and are unreachable from root), so the quoted-data `reaches_root` stopgap softens the
+        // would-be-`unbound` `tag` head to `symbol` (data) rather than error-red. The tagged def + its body
+        // still classify normally through resolution. This PINS the invariant that a valid `@tag` program
+        // shows NO false-red highlight (a def-wrapping call-style annotation is the twin of the `@param`
+        // false-red case, which needed a fix; `@tag` is already safe via the orphan/stopgap paths).
+        //
+        // NOTE on the `tag` head colour: it reads `symbol`, not `keyword`. Painting it `keyword` (a decorator,
+        // matching the `@` sigil) is a cosmetic nicety, but the orphaned `(tag …)` app is STRUCTURALLY
+        // IDENTICAL to a quoted `(tag …)` data list (both detach from root after their respective in-place
+        // rewrites), so a keyword-paint keyed on "detached list headed `tag`" would misclassify quoted data —
+        // an unsound heuristic for a purely-cosmetic gain (both colours are non-red). So `symbol` is the
+        // deliberate, sound classification; this test locks it so a future change can't silently flip it.
+        let src = "(module m (@ (tag \"slow\") (def (t) (+ 1 1))) (export t))";
+        // The `@` sigil is an annotation decorator.
+        assert_eq!(highlight_kinds_of(src, "@"), vec!["keyword"]);
+        // The `tag` head of the orphaned call-style application — inert data, `symbol` not `unbound`.
+        assert_eq!(highlight_kinds_of(src, "tag"), vec!["symbol"]);
+        // The tagged def name still resolves — a nullary def reads as `variable` (a def WITH parameters
+        // reads `function`; `t` takes none), at both the def occurrence and the export reference. Never red.
+        assert_eq!(highlight_kinds_of(src, "t"), vec!["variable", "variable"]);
+        // NOTHING in a clean `@tag` program is painted error-red.
+        let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
+        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+        assert!(
+            !text.lines().any(|l| l.ends_with("\tunbound")),
+            "no token in a clean @tag program is unbound:\n{text}"
+        );
     }
 
     #[test]
@@ -71966,6 +72044,78 @@ mod cross_component_oracle {
                 "a string argument crosses to a peer as a shared handle and is read there"
             ),
             cdz_run::Outcome::Trap(t) => panic!("string-argument run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_symbol_crosses_to_and_from_a_peer_as_a_runtime_handle_like_a_string() {
+        use crate::testkit::parse;
+        // A Symbol crosses the peer boundary as a runtime handle, exactly like a String. A Symbol is a
+        // String byte-leaf at run time (the tagless heap has no `Shape::Sym` — `Symbol.of` retags a
+        // `bytes-compact` and Symbols compare as their content String; `box_op_ty`/`get_op_ty` map
+        // `Ty::Symbol` to the String layout, landed by the Symbol-String-leaf work). This pins the PEER
+        // TRANSPORT parity: `is_extern_heap_type` now includes `Ty::Symbol`, so a peer op that takes AND
+        // returns a Symbol crosses its `u32` handle both ways with no marshaling. Before, a peer op
+        // declaring a `Symbol` DECLINED at the boundary ("no component boundary form") while the identical
+        // String op crossed — an asymmetry, since the two share one runtime representation.
+        //
+        // PROVIDER (source): `echo : Symbol -> Symbol` returns the crossed Symbol handle unchanged.
+        let provider = compile_provider(
+            "(do (def (echo (: s Symbol)) s) (export echo))",
+            "cadenza:sym/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the symbol-echo provider validates");
+        }
+        // CONSUMER (source): passes a Symbol INTO the peer op (arg crosses as a handle) and reads the
+        // returned Symbol handle BACK (result crosses as a handle), then compares it to the original — a
+        // Symbol equality over the round-tripped handle. main returns a scalar (1 = equal), so the
+        // entrypoint result stays scalar (the compound Symbol only crosses at the peer boundary, not as
+        // the escaping entrypoint result).
+        let src = "(do \
+            (effect Sym (op echo (-> Symbol Symbol))) \
+            (bind Sym \"cadenza:sym/api\") \
+            (def (main) (host (Sym) (if (= (Sym.echo (Symbol.of \"hi\")) (Symbol.of \"hi\")) 1 0))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "symbol-peer consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("symbol-peer consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[symbol-peer] runtime wasm not found; skipping the run");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:sym/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a symbol crosses to and from a peer")
+        {
+            // The consumer built the Symbol `hi`, passed its handle to the peer, got the same handle back,
+            // and compared equal → 1. A SYMBOL crossed the boundary both ways as a shared runtime handle.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "1",
+                "a symbol crosses to and from a peer as a shared handle (round-trip compares equal)"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("symbol-peer run trapped: {t}"),
         }
     }
 

@@ -362,10 +362,16 @@ mod tests {
     // discharged no-overflow `Thm` should let a Core pass drop the overflow guard at the node it
     // licenses. This prototype proves the PASS WIRING end-to-end — iterate a checked-arith node →
     // consult a proof oracle keyed by the node's StructId → install a core override ONLY when the
-    // oracle licenses — without yet changing checkedness (the real guard-drop is b3, and needs
-    // v-core-opt's Slice-2a Core-level unchecked `Arith` variant, which does not exist yet). So the
-    // override installed here is the node's OWN core (an IDENTITY override): the mechanism runs, but
-    // behavior is preserved, exactly as the b2 increment requires (corpus-only, behavior-preserving).
+    // oracle licenses — without yet changing behavior (b2 is corpus-only, behavior-preserving). It
+    // installs the node's OWN core (an IDENTITY override) so the query-then-act path runs unchanged.
+    //
+    // b3 does NOT use an override or a new Core node. Per the settled seam (§3, disjunction), b3 routes
+    // the oracle boolean into `lower::provably_no_overflow = arith_provably_in_range(…) OR
+    // discharged_no_overflow(db, id)` — v-core-opt's Slice-5 lands that wrapper + a `false` stub, and b3
+    // fills the stub body with the compile-time eval. At b3 this identity-override path is DELETED: the
+    // existing `arith_provably_in_range` emit sites do the elision once the disjunction is true, on both
+    // backends, with no override and no unchecked variant. (The "Slice-2a unchecked node" plan is
+    // SUPERSEDED — no node is needed.)
     //
     // The oracle is a boolean stand-in here. In the real pipeline it is a compile-time `eval` of the
     // discharge program (the Cadenza `licenses` predicate pinned in 26-program-conditions.sexp); the
@@ -389,8 +395,9 @@ mod tests {
     }
 
     /// The proof-guided-elision pass (b2 mechanism prototype). For the target node, if the oracle
-    /// licenses it, install an override; otherwise leave it. Behavior-preserving in b2 (the override is
-    /// the node's own core); at b3 the licensed branch installs an UNCHECKED arith variant instead.
+    /// licenses it, install an identity override; otherwise leave it. Behavior-preserving in b2. At b3
+    /// this pass is REPLACED by the disjunction (the oracle boolean feeds `provably_no_overflow`), so no
+    /// override is installed — the existing emit sites elide. See the module comment above.
     struct ProofElisionPass<'a> {
         oracle: &'a StubOracle,
         target: crate::ast::StructId,
@@ -406,8 +413,9 @@ mod tests {
         }
         fn run(&self, db: &mut crate::db::Db) {
             if self.oracle.licenses(self.target).is_some() {
-                // b2: identity override (mechanism only; no checkedness change). b3 swaps in the
-                // unchecked arith variant once v-core-opt's Slice-2a lands.
+                // b2: identity override (mechanism only; no behavior change). At b3 this whole path is
+                // replaced by the disjunction — the oracle boolean feeds `lower::provably_no_overflow`
+                // and the existing emit sites elide; no override is installed.
                 let natural = crate::lower::core_of(db, self.target);
                 db.install_core_override(self.target, natural);
             }

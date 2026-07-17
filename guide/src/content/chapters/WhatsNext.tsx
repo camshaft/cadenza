@@ -91,6 +91,11 @@ export default function WhatsNext() {
         at a time, a peek at the WebAssembly and Rust your code compiles to, and a Share button that
         packs a whole program into a link.
       </P>
+      <P>
+        And to see the language doing real work, browse the{" "}
+        <Ch to="/example-apps">example applications</Ch> — the calculator, CAD preview, notebook, and
+        playground, each a differentiator you learned running as a full program.
+      </P>
     </article>
   );
 }
