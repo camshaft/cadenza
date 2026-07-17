@@ -324,26 +324,37 @@ export const EXAMPLES: Example[] = [
     expected: "(: (list 0 0 0 1 1 1 1 1) (List Int64))",
   },
   {
-    // Shows off: records + a list of them = a little data pipeline. Project one field (age) out of
-    // each (name, age) record by index-recursion, RETURNING the list of ages so you see the actual
-    // extracted data — [36, 41, 40] — rather than swallowing it to a single number.
+    // Shows off: records + a list of them = a little data pipeline, returning BOTH the data and the
+    // result. Project the age field of each (name, age) record into a list, and compute their average,
+    // returning the pair so you SEE both the extracted data [36,41,40] AND the aggregate 39.
     name: "Data pipeline over records",
     surface: "sexpr",
     source: `(do
-  ; A list of records — access a field with (. r age). Project the age of every record into a list.
+  ; A list of records — access a field with (. r age).
+  (def (age r) (. r age))
+  ; Project every record's age into a list.
   (def (ages xs i n acc)
     (if (= i n)
         acc
         (match (List.at xs i)
-          ((Some r) (ages xs (+ i 1) n (List.push acc (. r age))))
+          ((Some r) (ages xs (+ i 1) n (List.push acc (age r))))
+          ((None) acc))))
+  ; Sum the ages (for the average).
+  (def (sum-age xs i n acc)
+    (if (= i n)
+        acc
+        (match (List.at xs i)
+          ((Some r) (sum-age xs (+ i 1) n (+ acc (age r))))
           ((None) acc))))
   (def (main)
     (let ((people (list (record (name "Ada") (age 36))
                         (record (name "Alan") (age 41))
                         (record (name "Grace") (age 40)))))
-      (ages people 0 (List.len people) (: (list) (List Int64)))))
+      ; Return (the projected ages, their average) — both the data and the result.
+      (tuple (ages people 0 (List.len people) (: (list) (List Int64)))
+             (/ (sum-age people 0 (List.len people) 0) (List.len people)))))
   (export main))`,
-    expected: "(: (list 36 41 40) (List Int64))",
+    expected: "(: (tuple (list 36 41 40) 39) (Tuple (List Int64) Int64))",
   },
   {
     // Shows off: exponential recursion made concrete — the minimum moves to solve Tower of Hanoi with
