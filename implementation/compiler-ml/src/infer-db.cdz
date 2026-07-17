@@ -1,0 +1,138 @@
+/// infer-db.cdz — Increment 3 of the Cadenza-in-Cadenza compiler: the INFER (type) COLUMN. The second real
+/// derived query column, completing the demand chain infer → resolve → parse: it reads the RESOLVE column
+/// (`resolve-db`) — which itself reads the parse arena — and assigns a type fact to every node. This mirrors
+/// rcdzc's `Infer.type_of` calling `Resolve.resolved_of`: a producer reads its upstream producer's column.
+///
+/// THE INTEGER LANGUAGE IS MONOMORPHIC: every well-formed node is `TInt`. So the type fact is
+/// `Typed = TInt | TErr`, where `TErr` is the type-level poison — a node that CANNOT be `TInt` because it
+/// references an unbound name (resolve gave it `RPoison`) or has an ill-typed child. `TErr` propagates: a
+/// `Bin`/`Let` with any `TErr` part is itself `TErr`. This is the same absence≠value discipline one column
+/// up: every node gets a FILLED type fact (`TInt` or `TErr`), and the error is a filled decision, not a gap.
+///
+/// (Full HM lives in the existing `infer`/`infer-let` modules; the integer language needs no unification —
+/// there is one ground type — so this column is the DB-shaped monomorphic specialization. It widens to call
+/// the HM engine when the language grows function types.)
+
+import { Tok, Node, Tree, node-at, parse-tokens } from "parse-db"
+import { Resolved, resolve-tree } from "resolve-db"
+
+/// The type fact. `TInt` = the one ground type; `TErr` = type-level poison (unbound name / ill-typed child).
+type Typed =
+  | TInt
+  | TErr
+
+/// Infer the type of every node in the subtree at `id`, reading the pre-built resolve column `rcol` and
+/// threading the type column `tcol` (NodeId → Typed) it fills. Reading `rcol` (not re-resolving) is the
+/// producer-reads-producer contract: infer consumes resolve's already-memoized facts.
+def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+  match node-at(tree, id) with
+    | Option.Some(Node.NLit(_)) => Map.insert(tcol, id, Typed.TInt)
+    | Option.Some(Node.NVar(_)) =>
+        // a var is TInt iff resolve bound it; an unbound var (RPoison, or — defensively — no fact) is TErr.
+        (match Map.lookup(rcol, id) with
+          | Option.Some(Resolved.RBound(_)) => Map.insert(tcol, id, Typed.TInt)
+          | _ => Map.insert(tcol, id, Typed.TErr))
+    | Option.Some(Node.NBin(_, l, r)) =>
+        // infer both operands, then this node is TInt iff BOTH are TInt (else TErr propagates up).
+        (let t1 = infer-node(tree, l, rcol, tcol) in
+         (let t2 = infer-node(tree, r, rcol, t1) in
+          (match both-int(t2, l, r) with | ty => Map.insert(t2, id, ty))))
+    | Option.Some(Node.NLet(_, valId, bodyId)) =>
+        // infer value + body; the let's type is the body's, but only if BOTH value and body are well-typed
+        // (the value must be a well-typed Int for the binding to make sense in this monomorphic language).
+        (let t1 = infer-node(tree, valId, rcol, tcol) in
+         (let t2 = infer-node(tree, bodyId, rcol, t1) in
+          (match both-int(t2, valId, bodyId) with | ty => Map.insert(t2, id, ty))))
+    | Option.None(_) => tcol
+
+/// `TInt` iff the type column `tcol` has `TInt` at BOTH `a` and `b`, else `TErr` — the propagation rule.
+def both-int(tcol: Map(Int64, Typed), a: Int64, b: Int64) =
+  (match Map.lookup(tcol, a) with
+    | Option.Some(Typed.TInt) =>
+        (match Map.lookup(tcol, b) with | Option.Some(Typed.TInt) => Typed.TInt | _ => Typed.TErr)
+    | _ => Typed.TErr)
+
+/// The infer COLUMN builder: build the resolve column (demanding parse under it), then infer over it. This is
+/// the whole demand chain in one call — infer reaches resolve reaches parse — and the columns memoize.
+def infer-tree(tree: Tree, root: Int64) =
+  infer-node(tree, root, resolve-tree(tree, root), (Map.empty : Map(Int64, Typed)))
+
+/// The infer producer/query: the `Typed` fact at NodeId `id`. Unlike resolve, EVERY node has a type fact
+/// (there is no "needs no typing"), so a node in a well-formed tree is always `Some`.
+def type-at(tree: Tree, root: Int64, id: Int64) = Map.lookup(infer-tree(tree, root), id)
+
+/// Probe: is the whole program (the root) well-typed (TInt)?
+def well-typed(tree: Tree, root: Int64) = match type-at(tree, root, root) with
+  | Option.Some(Typed.TInt) => true
+  | _ => false
+
+/// Probe: is the node at `id` type-erroneous (TErr — type-level poison)?
+def type-err-at(tree: Tree, root: Int64, id: Int64) = match type-at(tree, root, id) with
+  | Option.Some(Typed.TErr) => true
+  | _ => false
+
+/// How many nodes carry a type fact (in a well-formed tree, every node).
+def typed-count(tree: Tree, root: Int64) = Map.len(infer-tree(tree, root))
+
+/// Test-token builders (parse-db doesn't export its private builders).
+def n(v: Int64) = Tok.TNum(v)
+def var(nm: Int64) = Tok.TName(nm)
+def plus() = Tok.TOp(43)
+def times() = Tok.TOp(42)
+def letkw() = Tok.TLet
+def inkw() = Tok.TIn
+def eq() = Tok.TEq
+
+/// Parse a token list to `(root, tree)`.
+def parse-of(ts: List(Tok)) = parse-tokens(ts)
+
+@test
+def id-literal-is-int() =
+  // "5" → the literal node is TInt; the program is well-typed.
+  (match parse-of([n(5)]) with | (root, tree) =>
+    (if well-typed(tree, root) then unit else trap("a literal is TInt")))
+
+@test
+def id-add-is-int() =
+  // "1 + 2" → both operands TInt → the + node is TInt.
+  (match parse-of([n(1), plus(), n(2)]) with | (root, tree) =>
+    (if well-typed(tree, root) then (if typed-count(tree, root) == 3 then unit else trap("every node typed")) else trap("1 + 2 is TInt")))
+
+@test
+def id-unbound-var-is-err() =
+  // a bare "x" → resolve gives RPoison → the var node is TErr → program not well-typed.
+  (match parse-of([var(1)]) with | (root, tree) =>
+    (if type-err-at(tree, root, root) then (if well-typed(tree, root) == false then unit else trap("unbound var is not well-typed")) else trap("unbound var is TErr")))
+
+@test
+def id-bound-var-is-int() =
+  // "let x = 2 in x" → the body var is bound → TInt; the let is TInt.
+  (match parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1)]) with | (root, tree) =>
+    (if well-typed(tree, root) then unit else trap("bound var makes the let TInt")))
+
+@test
+def id-err-propagates-through-bin() =
+  // "x + 1" (x unbound) → the + node is TErr because its left operand is TErr (propagation up).
+  (match parse-of([var(1), plus(), n(1)]) with | (root, tree) =>
+    (if type-err-at(tree, root, root) then unit else trap("+ with an unbound operand is TErr")))
+
+@test
+def id-err-propagates-through-let-value() =
+  // "let x = y in 5" (y unbound) → the value is TErr → the let is TErr even though the body (5) is TInt.
+  (match parse-of([letkw(), var(1), eq(), var(2), inkw(), n(5)]) with | (root, tree) =>
+    (if type-err-at(tree, root, root) then unit else trap("a let with an ill-typed value is TErr")))
+
+@test
+def id-milestone-is-int() =
+  // THE MILESTONE `let x = 2 in x * 3 + 1`: fully well-typed — every node TInt, program TInt. This is the
+  // green light that Inc4 (lower) + Inc5 (run→7) can proceed on a type-clean tree.
+  (match parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]) with | (root, tree) =>
+    (if well-typed(tree, root) then unit else trap("the milestone program is well-typed TInt")))
+
+@test
+def id-nested-let-is-int() =
+  // "let a = 1 in let b = 2 in a + b" → both vars bound → all TInt.
+  (match parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), n(2), inkw(), var(1), plus(), var(2)]) with | (root, tree) =>
+    (if well-typed(tree, root) then unit else trap("nested lets, both vars bound, is TInt")))
+
+export { Typed.*, infer-tree, type-at, well-typed, type-err-at, typed-count }

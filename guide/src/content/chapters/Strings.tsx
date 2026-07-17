@@ -113,6 +113,11 @@ export default function Strings() {
         (<C>Some ""</C>); one that runs off the end is <C>None</C>, not a trap.
       </P>
 
+      <P>
+        Characters are one view of text. Underneath sits the raw encoding — the octets a file or a
+        protocol actually carries. That's <em>bytes</em>, next.
+      </P>
+
       <H2>Your turn</H2>
       <P>
         First a length question, then a slice. The word <C>"naïve"</C> has an accented <C>ï</C> that

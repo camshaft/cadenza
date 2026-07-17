@@ -3048,6 +3048,22 @@
             (export main)))
   (output (: 60 Int64)))
 
+(case "passing one newtype where a different newtype is expected names both nominal types"
+  (doc    "Two DISTINCT single-variant newtypes over the same underlying Int64 — `A` and `B` — do not
+           interchange: a function `(f (: x A))` applied to a `(B.MkB 5)` is rejected CDZ0203, 'this argument
+           is a B, but a value of type A is expected here'. The message names BOTH nominal types (the one
+           given and the one expected) at the argument position, so the reader sees the nominal boundary was
+           crossed — not a structural clash (both erase to Int64), and not the generic 'types differ'. Pins
+           the nominal-mismatch-at-argument diagnostic: distinct newtypes are nominally incompatible even
+           when their underlying representations match. The program's outcome is the rejection.")
+  (input  (do
+            (type A (MkA Int64))
+            (type B (MkB Int64))
+            (def (f (: x A)) x)
+            (def (main) (f (B.MkB 5)))
+            (export main)))
+  (error  CDZ0203))
+
 (case "a sum-match recursion that accumulates a built-in list returns a list"
   (doc    "The ACCUMULATOR companion of the fold above, and the shape a compiler's per-function
            return-kind table takes: `recompute` recurses by `match`-destructuring a user-sum parameter

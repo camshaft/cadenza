@@ -97,6 +97,12 @@ export default function Bytes() {
         offset is a value you handle, not a crash.
       </Note>
 
+      <P>
+        Raw octets are a flat sequence. Real formats give them <em>structure</em> — a 2-byte length, a
+        tag, a payload. <em>Binary matching</em>, next, describes that layout as typed segments that build
+        and destructure <C>Bytes</C> both ways.
+      </P>
+
       <H2>Your turn</H2>
       <Exercise
         id="bytes:1"

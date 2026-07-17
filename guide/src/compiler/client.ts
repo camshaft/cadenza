@@ -2,7 +2,7 @@
 /// so any component can `await compiler.compile(...)` as if it were a local async function.
 
 import * as Comlink from "comlink";
-import type { CompilerApi, CompileOutcome, Diag, DiagFix, Surface, TypeAtInfo, DefineAtInfo, SemanticTok, DispositionInfo } from "./worker.ts";
+import type { CompilerApi, CompileOutcome, TestCompileOutcome, Diag, DiagFix, Surface, TypeAtInfo, DefineAtInfo, SemanticTok, DispositionInfo } from "./worker.ts";
 
 let proxy: Comlink.Remote<CompilerApi> | null = null;
 
@@ -18,6 +18,12 @@ function client(): Comlink.Remote<CompilerApi> {
 
 export function compile(text: string, from: Surface): Promise<CompileOutcome> {
   return client().compile(text, from);
+}
+
+/// Compile in TEST-LAYOUT mode: each `@test` becomes an invocable export. Returns component + diagnostics
+/// + the discovered test names (nullary vs parameterized). The run worker invokes the nullary exports.
+export function compileTests(text: string, from: Surface): Promise<TestCompileOutcome> {
+  return client().compileTests(text, from);
 }
 
 /// Type-check without building a component (as-you-type diagnostics). No export required upstream.
@@ -110,4 +116,4 @@ export function exportTypes(text: string, from: Surface): Promise<string> {
   return client().exportTypes(text, from);
 }
 
-export type { CompileOutcome, Surface, Diag, DiagFix, TypeAtInfo, DefineAtInfo, SemanticTok, DispositionInfo };
+export type { CompileOutcome, TestCompileOutcome, Surface, Diag, DiagFix, TypeAtInfo, DefineAtInfo, SemanticTok, DispositionInfo };

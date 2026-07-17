@@ -3606,24 +3606,28 @@
 ; A recursive-generic PRODUCER applied to a list whose ELEMENTS are themselves results of the SAME
 ; producer — `(from-list (list (inner) (inner)))` where `(inner) = (from-list (list 1 2)) : Iter Int64`,
 ; so the outer call is `from-list` at element type `Iter Int64` (a self-nested `Iter (Iter Int64)`). This
-; DECLINES (CDZ0201, a `todo`), NOT a miscompile: typing the outer arg re-enters `from-list`'s OWN
+; used to DECLINE (CDZ0201) and now RUNS (`icount` → 2): typing the outer arg re-enters `from-list`'s OWN
 ; scheme/param solve (still on the stack), so the re-entry guard types the element `(inner)` as `Any` → the
-; list is `List Any` → `∀a. List a -> Iter a` binds `a=Any` → result `Iter Any`, undetermined → the
-; monomorphizer declines. The re-entry guard is load-bearing (it prevents scheme-solve loops + cache
-; poisoning), so the fix is a deeper fixpoint/deferral, not a guard relaxation — a tracked inference
-; follow-up (v-inference; the root of v-iterators' scan/flatten nested-generic residual). A CONCRETE-element
-; list (`(list 1 2)`, `(list (five) (five))` for a non-generic `five`) is unaffected — only an element whose
-; type transitively needs the producer's in-flight scheme collapses. Pinned as a DECLINE so the boundary is
-; executable and flips to a run (icount → 2) when the re-entrancy fix lands; today an honest decline.
+; list is momentarily `List Any`. The re-entrancy FIX (v-inference): `type_of`'s memo guard does NOT cache a
+; provisional NESTED-`Any` in a DATA-CONTAINER element (`(List Any)`) born while a def's solve is on the
+; stack AND the node is EXTERNAL to every in-flight def's body (a caller re-entering the producer's solve,
+; here in `main`) — so a later CLEAN read, after `from-list`'s scheme completes, recomputes the grounded
+; `(List (Iter Int64))` and the outer call monomorphizes. Scoped so it never touches a MONOMORPHIC recursive
+; def's OWN self-call result (typed INSIDE that def's body — internal), whose concrete `Ty::Sum` the rust
+; sum-match emit depends on (a blunter skip turned a bottom-up fold's clean decline into a rust miscompile);
+; and gated to a data element (not a function arrow, whose `Any` is a closure hole the transformer-closure
+; tie grounds). A CONCRETE-element list (`(list 1 2)`) was always fine. This is v-iterators' scan/flatten
+; nested-generic residual root cause — the un-annotated form now joins the annotated twin below at 2.
 
-(case "a recursive-generic producer over a list of its own generic-producer results declines pending the scheme re-entrancy fix"
+(case "a recursive-generic producer over a list of its own generic-producer results monomorphizes and runs"
   (doc    "`(from-list (list (inner) (inner)))` where `(inner) = (from-list (list 1 2)) : Iter Int64` applies
            `from-list` at element type `Iter Int64` (a self-nested `Iter (Iter Int64)`). Typing the outer
-           arg re-enters `from-list`'s own in-flight scheme solve, so the element `(inner)` types `Any` and
-           the result element is undetermined — the monomorphizer DECLINES (CDZ0201), an honest decline (not
-           a miscompile). Contrast the producer over a CONCRETE-element list above (which composes): the gap
-           is only an element whose type transitively needs the producer's not-yet-cached scheme. Intended
-           value when the re-entrancy fix lands: `icount` of the doubly-nested iter (2 outer elements) = 2.")
+           arg re-enters `from-list`'s own in-flight scheme solve, so the element `(inner)` momentarily types
+           `Any` and the list `(List Any)`; the memo guard does NOT cache that provisional data-element `Any`
+           born external to the in-flight producer's body, so a later clean read (after the scheme completes)
+           grounds it to `(List (Iter Int64))` and the outer call monomorphizes. `icount` of the doubly-nested
+           iter (2 outer elements) = 2. Previously an honest CDZ0201 decline pending this re-entrancy fix; now
+           it joins the annotated twin below (an explicit annotation is no longer required to ground it).")
   (input  (do
             (type Iter (Nil) (Cons a (Iter a)))
             (def (from-list xs)
@@ -3633,7 +3637,7 @@
               (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
             (def (main) (icount (from-list (list (inner) (inner)))))
             (export main)))
-  (error  CDZ0201))
+  (output (: 2 Int64)))
 
 (case "an annotation on a nested generic-call argument grounds the self-nested producer and it runs"
   (doc    "The WORKAROUND for the decline above (the one the CDZ0201 message names): annotating a nested

@@ -1765,10 +1765,138 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let db_ = const_big_expr(&d);
             Ok(format!("cdz_num::Rational::new({nb}, {db_})"))
         }
-        | Core::BinBuild { .. }
-        | Core::BinBitsBuild { .. }
-        | Core::BinIntRead { .. }
-        | Core::BinRestRead { .. }
+        // A runtime `(bin …)` CONSTRUCTION of fixed-width INT segments → a `Vec<u8>` built segment by
+        // segment, mirroring the wasm `BinBuild` (select.rs). Each segment: materialize its value as an
+        // i64, RANGE-CHECK it against the segment's (signed, bits) width (a defensive backstop — the width
+        // type already bounds it, so this is normally dead; a genuine out-of-range TRAPS "binary value does
+        // not fit segment", the runtime companion of the constant CDZ0304), then write `w` bytes MSB-first
+        // (`le` reverses the byte position within the segment). Byte-identical to the wasm heap build.
+        Core::BinBuild { segs } => {
+            // Build each segment into a fixed `[0u8; w]` array (byte positions written explicitly, `le`
+            // counting the position down within the segment), then extend the buffer in declaration order.
+            let mut body = String::from("{ let mut __b: Vec<u8> = Vec::new(); ");
+            for s in &segs {
+                let w = s.width as u32;
+                let bits = w * 8;
+                let v = emit(db, s.value, env, ctx)?;
+                body.push_str(&format!("{{ let __v: i64 = ({v}) as i64; "));
+                if bits < 64 {
+                    if s.signed {
+                        let hi = (1i64 << (bits - 1)) - 1;
+                        let lo = -(1i64 << (bits - 1));
+                        body.push_str(&format!(
+                            "if __v > {hi}i64 || __v < {lo}i64 {{ panic!(\"binary value does not fit segment\") }} "
+                        ));
+                    } else {
+                        let ceil = 1i64 << bits;
+                        body.push_str(&format!(
+                            "if __v < 0 || __v >= {ceil}i64 {{ panic!(\"binary value does not fit segment\") }} "
+                        ));
+                    }
+                }
+                body.push_str(&format!("let mut __seg = [0u8; {w}]; "));
+                for p in 0..w {
+                    let shift = (w - 1 - p) * 8;
+                    let pos_in_seg = if s.little_endian { w - 1 - p } else { p };
+                    let byte = if shift > 0 {
+                        format!("(((__v as u64) >> {shift}) as u8)")
+                    } else {
+                        "(__v as u8)".to_string()
+                    };
+                    body.push_str(&format!("__seg[{pos_in_seg}usize] = {byte}; "));
+                }
+                body.push_str("__b.extend_from_slice(&__seg); } ");
+            }
+            body.push_str("__b }");
+            Ok(body)
+        }
+        // A runtime `(bits v k)` RUN packed MSB-first into a `Vec<u8>` — mirror the wasm `BinBitsBuild`. The
+        // run is byte-aligned (CDZ0220), so the total byte count + every flush position + the bit-cursor are
+        // STATIC; only the field values are runtime. An i64 accumulator collects open bits MSB-first,
+        // flushing whole bytes from its top as they close. Each field range-checks `0 <= v < 2^k` (a
+        // defensive backstop — the `(UInt k)` field type already bounds it; a real miss traps).
+        Core::BinBitsBuild { fields } => {
+            let total_bits: u32 = fields.iter().map(|f| f.k).sum();
+            let total_bytes = total_bits / 8;
+            let mut body = format!(
+                "{{ let mut __b: Vec<u8> = Vec::with_capacity({total_bytes}); let mut __acc: i64 = 0; "
+            );
+            let mut nbits: u32 = 0;
+            for f in &fields {
+                let k = f.k;
+                let v = emit(db, f.value, env, ctx)?;
+                let ceil = 1i64 << k;
+                let mask = (1i64 << k) - 1;
+                body.push_str(&format!(
+                    "{{ let __v: i64 = ({v}) as i64; \
+                     if __v < 0 || __v >= {ceil}i64 {{ panic!(\"binary value does not fit segment\") }} \
+                     __acc = (__acc << {k}) | (__v & {mask}i64); }} "
+                ));
+                nbits += k;
+                while nbits >= 8 {
+                    let shift = nbits - 8;
+                    let byte = if shift > 0 {
+                        format!("(((__acc as u64) >> {shift}) as u8)")
+                    } else {
+                        "(__acc as u8)".to_string()
+                    };
+                    body.push_str(&format!("__b.push({byte}); "));
+                    nbits -= 8;
+                    if nbits == 0 {
+                        body.push_str("__acc = 0; ");
+                    } else {
+                        let m = (1i64 << nbits) - 1;
+                        body.push_str(&format!("__acc &= {m}i64; "));
+                    }
+                }
+            }
+            body.push_str("__b }");
+            Ok(body)
+        }
+        // Read a fixed-width INT segment out of a runtime `Bytes` (`Vec<u8>`) scrutinee at a STATIC offset —
+        // the value a `bin`-pattern binder decodes. Assemble `w` bytes MSB-first (`le` reversed) into an i64,
+        // then sign-extend a signed segment narrower than 64 bits (an unsigned one is already zero-extended).
+        // The caller's length probe guaranteed the read is in bounds. Mirror the wasm `BinIntRead`.
+        Core::BinIntRead {
+            bytes,
+            byte_offset,
+            width,
+            signed,
+            little_endian,
+        } => {
+            let v = emit(db, bytes, env, ctx)?;
+            let w = width as u32;
+            let mut body = format!("{{ let __bytes = {v}; let mut __acc: i64 = 0; ");
+            for p in 0..w {
+                let shift = (w - 1 - p) * 8;
+                let pos = if little_endian {
+                    byte_offset + (w - 1 - p)
+                } else {
+                    byte_offset + p
+                };
+                let term = if shift > 0 {
+                    format!("((__bytes[{pos}usize] as i64) << {shift})")
+                } else {
+                    format!("(__bytes[{pos}usize] as i64)")
+                };
+                body.push_str(&format!("__acc |= {term}; "));
+            }
+            if signed && w < 8 {
+                let sh = (8 - w) * 8;
+                body.push_str(&format!("__acc = (__acc << {sh}) >> {sh}; "));
+            }
+            body.push_str("__acc }");
+            Ok(body)
+        }
+        // Read the FINAL `(bytes rest)` segment — the tail of the `Vec<u8>` scrutinee from a STATIC offset to
+        // the end, as an owned `Vec<u8>`. The caller's length probe guaranteed `len >= byte_offset`. Mirror
+        // the wasm `BinRestRead` (`bytes-slice(bytes, off, len - off)`).
+        Core::BinRestRead { bytes, byte_offset } => {
+            let v = emit(db, bytes, env, ctx)?;
+            Ok(format!(
+                "{{ let __bytes = {v}; __bytes[{byte_offset}usize..].to_vec() }}"
+            ))
+        }
         // A host call OR a cross-component call crosses a component boundary — the Rust backend emits no
         // component imports, so it declines (the wasm backend is the boundary target). A sequencing block
         // only ever holds a host-call statement today, so the Rust backend declines it too.
@@ -2074,6 +2202,24 @@ fn emit_arith(
     let r = emit_grounded(db, rhs, it, env, ctx)?;
     match op {
         Prim::Add | Prim::Sub | Prim::Mul => {
+            // GUARD ELISION — Core-tier parity with the wasm backend's `select.rs:12542` fast path. When
+            // interval arithmetic proves the result stays in the type (the SAME `lower::arith_provably_in_range`
+            // predicate, defined in lower.rs at the CORE tier — so ONE decision drives BOTH backends), the
+            // overflow trap cannot fire, so emit the plain MODULAR op (`wrapping_*`, the analogue of the
+            // elided wasm path's bare `m.add()`) with NO `checked_*`/panic. SOUND: provably-in-range ⇒ the
+            // true result never leaves the type ⇒ the wrapping result IS the true result, byte-identical to
+            // the checked form on every in-range input, and never traps (exactly like the elided wasm path).
+            // Until this, the rust backend consulted the predicate NOWHERE, so a Core-tier elision (range
+            // analysis today, a discharged no-overflow proof next) was silently wasm-only.
+            if crate::lower::arith_provably_in_range(db, op, lhs, rhs, it) {
+                let wrapping = match op {
+                    Prim::Add => "wrapping_add",
+                    Prim::Sub => "wrapping_sub",
+                    Prim::Mul => "wrapping_mul",
+                    _ => unreachable!(),
+                };
+                return Ok(format!("({l}).{wrapping}({r})"));
+            }
             let method = match op {
                 Prim::Add => "checked_add",
                 Prim::Sub => "checked_sub",

@@ -95,6 +95,22 @@
   (call   main (: 12345 Int64)) (output (: true Bool))
   (call   main (: -7 Int64)) (output (: true Bool)))
 
+(case "a generated value with a FLOAT leaf is reproducible (compound = over the canonical float byte form)"
+  (doc    "Witnesses §Generation Is Seeded And Reproducible for a compound carrying a FLOAT leaf: `gen`
+           draws a `(Tuple Float64 Bool)` from the seed (an integer-valued float via `Float64.of-int` + a
+           threshold bool), and `(= (gen seed) (gen seed))` = true. This exercises runtime structural
+           equality over a compound whose element is a FLOAT — a per-element compare by the canonical byte
+           form (core-semantics.md #Floating-Point Equality Follows The Canonical Byte Form), distinct from
+           the bignum-limb walk (BIGINT/RATIONAL cases) and the fixed-width scalar compare (the Int/Bool
+           tuple case). The generator uses `of-int` (never NaN), so each drawn float compares equal to its
+           twin. Runs at the boundary — the lift + the compound float-compare are real instructions.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (gen (: s Int64)) (tuple ((. Float64 of-int) (& (next s) 255)) (< (& (next (next s)) 255) 128)))
+              (def (main (: seed Int64)) (= (gen seed) (gen seed)))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: true Bool))
+  (call   main (: -7 Int64)) (output (: true Bool)))
+
 (case "a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)"
   (doc    "Deepens the compound-`=`-over-a-bignum-leaf witness with RATIONAL's distinguishing feature:
            equality is by NORMALIZED (reduced) form, not by the stored numerator/denominator. Two tuples

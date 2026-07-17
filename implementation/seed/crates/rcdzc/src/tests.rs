@@ -34146,6 +34146,47 @@ mod match_engine {
     }
 
     #[test]
+    fn at_param_site_generates_a_param_accessor_the_guest_can_reference() {
+        // @param sidecar (DESIGN-runtime-parameter-host-effect.md): a `@param(widget: …) name : Type` site
+        // — parsed to `(: (@ (param …) name) Type)` — makes the sidecar GENERATE `(effect Param (op name
+        // (-> Unit Type)))`, so a guest `(Param.name)` resolves to the generated accessor. This tests the
+        // SCAN+GENERATE: WITH a @param site, `(Param.width)` resolves (no CDZ0101); WITHOUT it, `Param` is
+        // unbound (proving the generation is what binds it). The run-with-a-host-value path is covered by
+        // the 26-runtime-params corpus (host-response wiring lives in cdz-run, not this lib harness).
+        assert!(
+            reject_code(
+                "(module m \
+                   (: (@ (param (: widget slider)) width) Int64) \
+                   (def (main) (host (Param) (Param.width))) \
+                 (export main))"
+            )
+            .is_none(),
+            "an @param site generates the Param effect so (Param.width) resolves"
+        );
+        // WITHOUT the @param site, Param is not generated → (Param.width) is unbound (CDZ0101). This is the
+        // control proving the sidecar's generation is exactly what binds the accessor.
+        assert_eq!(
+            reject_code("(module m (def (main) (host (Param) (Param.width))) (export main))")
+                .as_deref(),
+            Some("CDZ0101"),
+            "without an @param site there is no generated Param — (Param.width) is unbound"
+        );
+        // The accessor is typed by the annotation: a second @param generates a second op, and both
+        // resolve under one generated Param effect (one effect, one op per site).
+        assert!(
+            reject_code(
+                "(module m \
+                   (: (@ (param (: widget slider)) width) Int64) \
+                   (: (@ (param (: widget number)) height) Int64) \
+                   (def (main) (host (Param) (+ (Param.width) (Param.height)))) \
+                 (export main))"
+            )
+            .is_none(),
+            "two @param sites generate two accessors under one Param effect, both resolve"
+        );
+    }
+
+    #[test]
     fn a_non_canonical_float_cannot_be_reified_into_an_ast_float_uniform_decline() {
         // 12-metaprogramming / adv-ast-float-nan differential: a NaN Float64 has no canonical value form,
         // so `(Ast.Float Float64.nan)` used to DIVERGE across backends (wasm TRAPped at the host encode
@@ -60210,6 +60251,39 @@ mod sidecar_driven {
         let src = "(module m (def (main) (+ 1 nope)) (export main))";
         assert_eq!(highlight_kinds_of(src, "nope"), vec!["unbound"]);
         assert_eq!(highlight_kinds_of(src, "+"), vec!["function"]);
+    }
+
+    #[test]
+    fn highlight_paints_quoted_data_as_symbol_not_unbound() {
+        // Inside a (quasiquote …), a QUOTED name is inert DATA, not a live reference — so it must NOT be
+        // painted `unbound` (error-red) even though it resolves to nothing. `reify_quotes` orphans the
+        // original quoted children (they keep spans but detach from the root), so `classify_highlight`
+        // reclassifies a DETACHED would-be-unbound leaf as `symbol`. Only the UNQUOTE hole is a live ref.
+        // `mk`'s body is a valid quasiquote; `add`/`foo` are quoted data, `x` is the (bound) unquote hole.
+        let src =
+            "(module m (def (mk (: x Ast)) (quasiquote (add 1 (unquote x) foo))) (export mk))";
+        assert_eq!(
+            highlight_kinds_of(src, "add"),
+            vec!["symbol"],
+            "a quoted name is data, not an unbound typo"
+        );
+        assert_eq!(
+            highlight_kinds_of(src, "foo"),
+            vec!["symbol"],
+            "a quoted name is data, not an unbound typo"
+        );
+        // The unquote hole `x` is a LIVE reference to the parameter — still classified as a param (it is
+        // reachable from root, so the detached-orphan reclassification does not touch it). `x` appears
+        // twice: the parameter binder occurrence + the unquote-hole use, both `param`.
+        assert_eq!(highlight_kinds_of(src, "x"), vec!["param", "param"]);
+    }
+
+    #[test]
+    fn highlight_still_flags_a_reachable_unbound_typo() {
+        // The quoted-data reclassification is NARROW: a genuine unbound typo in LIVE (root-reachable) code
+        // stays `unbound` (red) — only DETACHED (quoted-orphan) leaves are softened to `symbol`.
+        let src = "(module m (def (main) (nonexistent 1)) (export main))";
+        assert_eq!(highlight_kinds_of(src, "nonexistent"), vec!["unbound"]);
     }
 
     #[test]

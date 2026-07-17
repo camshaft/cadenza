@@ -853,6 +853,7 @@ pass	a function-typed parameter annotation's result type is checked against the 
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
 pass	a general recursive-sum recursion (Nil|Cons count) reads the right payload through the fold
 pass	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
+pass	a generated value with a FLOAT leaf is reproducible (compound = over the canonical float byte form)
 pass	a generic definition takes the type as a type-valued parameter
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
@@ -1334,6 +1335,7 @@ pass	a nested unquote pattern matches a Str sub-AST by shape
 pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a neutral and-true keeps both the trap and the value of its left operand
+pass	a no-overflow obligation is DISCHARGED: for x <= 100, (x + 1) <= MAXINT via monotonicity + a numeral fact
 pass	a nominal record compared to a plain record of the same shape is a type error
 pass	a non-admitted float width NESTED in a compound annotation is rejected
 pass	a non-admitted float width in a parameter annotation is rejected
@@ -1601,7 +1603,7 @@ pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
 pass	a recursive-generic filter threading a predicate closure composes at two element types
 pass	a recursive-generic producer composes at two element types (the tied result var)
-pass	a recursive-generic producer over a list of its own generic-producer results declines pending the scheme re-entrancy fix
+pass	a recursive-generic producer over a list of its own generic-producer results monomorphizes and runs
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
 pass	a recursive-generic producer's element is usable at each instantiation
 pass	a recursive-generic producer's result is consumed by an element-typed consumer
@@ -1653,6 +1655,7 @@ pass	a round-trip consumer that does NOT apply the closure on the taken branch
 pass	a run's result is a deterministic function of a host call's recorded response
 pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
+pass	a runtime -0.0 float leaf two levels deep stays distinct from positive zero
 pass	a runtime BigInt absent from a Set is not found
 pass	a runtime BigInt accumulator threaded through recursion grows past Int64
 pass	a runtime BigInt comparison sees an intermediate that overflows Int64
@@ -1686,6 +1689,7 @@ pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before co
 pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
 pass	a runtime MIXED-SCALE Rational-magnitude sum converts to the reference EXACTLY
 pass	a runtime NaN equals a runtime NaN under the canonical byte form
+pass	a runtime NaN float leaf two levels deep (a record-of-tuple) compares equal by the canonical byte form
 pass	a runtime NaN leaf in a tuple compares equal, a runtime -0.0 leaf stays distinct
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime Rational MAP KEY is found by a normalized-equal key
@@ -2243,6 +2247,7 @@ pass	addition of two symbols is rejected — a symbol is not a number
 pass	all four leaf kinds in one quoted form dispatch their own tags
 pass	all-nullary enum equality compares discriminants
 pass	an 8-bit-integer closure crosses the host boundary
+pass	an @param site generates a Param accessor a host delegation reads at run time
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an IEC binary prefix converts exactly over Int64
@@ -2269,6 +2274,7 @@ pass	an R-suffixed decimal literal is its exact fraction
 pass	an R-suffixed integer literal is that integer over one
 pass	an R-suffixed literal composes with exact rational arithmetic
 pass	an SI decimal prefix scales a unit by a power of ten
+pass	an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the no-overflow obligation cannot be closed (the check must stay)
 pass	an abort abandons a pending borrowed map lookup and the map survives
 pass	an abort abandons a pending consuming op and the shared binding survives
 pass	an abortive handler abandons a host call in the path it discards
@@ -3042,6 +3048,7 @@ pass	overflow of the default integer traps deterministically
 pass	parsing a length-framed message and rebuilding it yields the original bytes
 pass	partial application captures a let-bound value in the residual lambda
 pass	partial application captures a runtime parameter in the residual lambda
+pass	passing one newtype where a different newtype is expected names both nominal types
 pass	pattern matching over AST distinguishes forms
 pass	performing a string-parameter operation with a non-string argument is a type error
 pass	performing an operation with a wrong-type argument for a compound parameter is a type error
@@ -3325,6 +3332,7 @@ pass	the exponent marker is case-insensitive
 pass	the false-literal coercion negates a float ordering compare, turning an unordered pair true
 pass	the first failing `?` short-circuits; a later `?` never runs
 pass	the float ordering-versus-equality split on the zero pair
+pass	the generated Param accessor carries the @param's declared type into arithmetic
 pass	the generated-set convergence property has discriminating power — two different generated sets are NOT equal
 pass	the generator is a deterministic function of its seed (same seed, same value) — folds
 pass	the generator reproduces its stream from a runtime seed (same seed, same value) — runs

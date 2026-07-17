@@ -1,0 +1,166 @@
+/// resolve-db.cdz — Increment 2 of the Cadenza-in-Cadenza compiler: the RESOLVE COLUMN, the first REAL
+/// derived query column of the lazy DB. It reads the parse column's arena (`parse-db`) and produces a
+/// name→binding fact for every variable reference: each `NVar` node gets a `Resolved` fact keyed by its
+/// NodeId. This is producer-reads-producer — resolve reads parse — exactly rcdzc's contract (`Resolve`
+/// reads the AST, `Infer` will read `Resolve`).
+///
+/// THE FACT: `Resolved` is `RBound(binderId)` — the NodeId of the enclosing `NLet` that binds the name — or
+/// `RPoison`, a use of an UNBOUND name. Poison is the load-bearing rcdzc idea: a negative decision is itself
+/// a FILLED value in the column, DISTINCT from "not-yet-determined" (absence). So after resolving, an
+/// unbound `x` has `Some(RPoison)` in the column, while a node that needs no resolution (a literal) has NO
+/// entry (`None`) — absence ≠ value, provable by lookup.
+///
+/// SCOPE: resolution is a top-down walk threading a scope environment `Map(nameId, binderNodeId)`. A `let`
+/// is NON-RECURSIVE (the value is resolved in the OUTER scope; only the body sees the new binding), and an
+/// inner `let` of the same name SHADOWS the outer (the env `Map.insert` overwrites). The walk fills the
+/// resolve column (`Map(NodeId, Resolved)`) as it descends. Once built, a lookup is O(1) — the column IS the
+/// memo (the DB discipline; rcdzc's resolve fills all of a tree's resolved facts in one demand-driven walk).
+
+import { Tok, Node, Tree, node-at, parse-tokens, is-let } from "parse-db"
+
+/// The resolve fact for a variable reference. `RBound(binderId)` = bound to the `NLet` at `binderId`;
+/// `RPoison` = the name is unbound (a FILLED negative decision — not absence).
+type Resolved =
+  | RBound(Int64)
+  | RPoison
+
+/// Resolve the subtree rooted at `id` under scope `env` (nameId → binder NodeId), threading the resolve
+/// column `col` (NodeId → Resolved) that it fills for every `NVar` reached.
+def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, Resolved)) =
+  match node-at(tree, id) with
+    | Option.Some(Node.NLit(_)) => col
+    | Option.Some(Node.NVar(nm)) =>
+        (match Map.lookup(env, nm) with
+          | Option.Some(binder) => Map.insert(col, id, Resolved.RBound(binder))
+          | Option.None(_) => Map.insert(col, id, Resolved.RPoison))
+    | Option.Some(Node.NBin(_, l, r)) =>
+        resolve-node(tree, r, env, resolve-node(tree, l, env, col))
+    | Option.Some(Node.NLet(nm, valId, bodyId)) =>
+        // let is NON-recursive: the value is resolved in the OUTER env; the body sees nm bound to THIS let's
+        // node id. `Map.insert` overwrites, so an inner let of the same name shadows the outer.
+        (let col1 = resolve-node(tree, valId, env, col) in
+         (let env2 = Map.insert(env, nm, id) in
+          resolve-node(tree, bodyId, env2, col1)))
+    | Option.None(_) => col   // an id not in the arena (a malformed tree) resolves to nothing
+
+/// The resolve COLUMN builder: resolve the whole tree from `root`, starting with an empty scope + column.
+def resolve-tree(tree: Tree, root: Int64) =
+  resolve-node(tree, root, (Map.empty : Map(Int64, Int64)), (Map.empty : Map(Int64, Resolved)))
+
+/// The resolve producer/query: the `Resolved` fact at NodeId `id`, or `None` if the node needs no resolution
+/// (e.g. a literal — absence, distinct from a filled `RPoison`). This is the read a downstream column (infer)
+/// will call — producer-reads-producer.
+def resolved-at(tree: Tree, root: Int64, id: Int64) = Map.lookup(resolve-tree(tree, root), id)
+
+/// How many facts the resolve column holds (a probe: one per variable reference).
+def resolved-count(tree: Tree, root: Int64) = Map.len(resolve-tree(tree, root))
+
+/// Probe: is the node at `id` resolved to a binding whose binder id is `b`?
+def resolved-to(tree: Tree, root: Int64, id: Int64, b: Int64) = match resolved-at(tree, root, id) with
+  | Option.Some(Resolved.RBound(x)) => x == b
+  | _ => false
+
+/// Probe: is the node at `id` resolved to Poison (an unbound name — a FILLED negative decision)?
+def resolved-poison(tree: Tree, root: Int64, id: Int64) = match resolved-at(tree, root, id) with
+  | Option.Some(Resolved.RPoison) => true
+  | _ => false
+
+/// Test-token builders (parse-db does not export its private builders).
+def n(v: Int64) = Tok.TNum(v)
+def var(nm: Int64) = Tok.TName(nm)
+def plus() = Tok.TOp(43)
+def times() = Tok.TOp(42)
+def letkw() = Tok.TLet
+def inkw() = Tok.TIn
+def eq() = Tok.TEq
+
+/// Parse then resolve a token list, returning `(root, tree)` for probing.
+def parse-of(ts: List(Tok)) = parse-tokens(ts)
+
+@test
+def rd-bound-simple() =
+  // "let x = 2 in x" → the body's NVar x is BOUND to the enclosing let. The binder is a let binding name x.
+  (match parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(_, _, bodyId)) =>
+        (match resolved-at(tree, root, bodyId) with
+          | Option.Some(Resolved.RBound(b)) =>
+            (if is-let(tree, b, 1) then (if b == root then unit else trap("binder is the enclosing let")) else trap("binder binds x"))
+          | _ => trap("body var is RBound"))
+      | _ => trap("root is a let")))
+
+@test
+def rd-unbound-is-poison() =
+  // a bare "x" (no enclosing let) → the NVar resolves to RPoison (a FILLED negative decision, not absence).
+  (match parse-of([var(1)]) with | (root, tree) =>
+    (if resolved-poison(tree, root, root) then (if resolved-count(tree, root) == 1 then unit else trap("one resolved fact")) else trap("unbound x is Poison")))
+
+@test
+def rd-poison-is-filled-not-absent() =
+  // absence ≠ value: an unbound var has Some(RPoison) in the column; a LITERAL-only program has NO entry
+  // for its literal node (it needs no resolution) → None. Filled-negative vs not-determined are distinct.
+  (match parse-of([n(5)]) with | (root, tree) =>
+    (match resolved-at(tree, root, root) with
+      | Option.None(_) => (if resolved-count(tree, root) == 0 then unit else trap("a literal fills no resolve fact"))
+      | Option.Some(_) => trap("a literal needs no resolution — absent, not filled")))
+
+@test
+def rd-value-not-in-own-scope() =
+  // let is NON-recursive: in "let x = x in 5", the RHS `x` refers to the OUTER scope (none) → RPoison. The
+  // binding does not scope over its own value.
+  (match parse-of([letkw(), var(1), eq(), var(1), inkw(), n(5)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(_, valId, _)) =>
+        (if resolved-poison(tree, root, valId) then unit else trap("the value's x is unbound (let is non-recursive)"))
+      | _ => trap("root is a let")))
+
+@test
+def rd-shadowing-inner-wins() =
+  // "let x = 1 in let x = 2 in x" → the innermost x binds to the INNER let (shadowing). The binder is a let
+  // of x that is NOT the root (outer) let.
+  (match parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(1), eq(), n(2), inkw(), var(1)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(_, _, innerLetId)) =>
+        (match node-at(tree, innerLetId) with
+          | Option.Some(Node.NLet(_, _, xId)) =>
+            (match resolved-at(tree, root, xId) with
+              | Option.Some(Resolved.RBound(b)) =>
+                (if is-let(tree, b, 1) then (if b == innerLetId then unit else trap("bound to the INNER let (shadow)")) else trap("binder binds x"))
+              | _ => trap("inner x is RBound"))
+          | _ => trap("body is the inner let"))
+      | _ => trap("root is a let")))
+
+@test
+def rd-nested-distinct-bindings() =
+  // "let a = 1 in let b = 2 in a + b" → a binds to the OUTER let, b to the INNER let: two distinct bindings.
+  (match parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), n(2), inkw(), var(1), plus(), var(2)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(_, _, innerLetId)) =>
+        (match node-at(tree, innerLetId) with
+          | Option.Some(Node.NLet(_, _, sumId)) =>
+            (match node-at(tree, sumId) with
+              | Option.Some(Node.NBin(_, aId, bId)) =>
+                (if resolved-to(tree, root, aId, root) then
+                   (if resolved-to(tree, root, bId, innerLetId) then unit else trap("b binds to the inner let"))
+                 else trap("a binds to the outer (root) let"))
+              | _ => trap("body is a + Bin"))
+          | _ => trap("body is the inner let"))
+      | _ => trap("root is a let")))
+
+@test
+def rd-milestone-body-var-bound() =
+  // THE MILESTONE `let x = 2 in x * 3 + 1`: the `x` in the body resolves to the let binder; the two literals
+  // (3, 1) and the value literal (2) fill NO resolve facts. Exactly one resolved fact (the single NVar).
+  (match parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(_, _, bodyId)) =>
+        (match node-at(tree, bodyId) with
+          | Option.Some(Node.NBin(_, mulId, _)) =>
+            (match node-at(tree, mulId) with
+              | Option.Some(Node.NBin(_, xId, _)) =>
+                (if resolved-to(tree, root, xId, root) then (if resolved-count(tree, root) == 1 then unit else trap("exactly one resolved fact — the single var")) else trap("body x binds to the let"))
+              | _ => trap("mul's left is the var x"))
+          | _ => trap("body is + "))
+      | _ => trap("root is a let")))
+
+export { Resolved.*, resolve-tree, resolved-at, resolved-count, resolved-to, resolved-poison }

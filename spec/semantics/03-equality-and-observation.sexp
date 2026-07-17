@@ -641,6 +641,32 @@
   (input  (= (record (x -0.0)) (record (x 0.0))))
   (output (: false Bool)))
 
+; The runtime float-leaf cases above are ONE level deep (a float directly in a tuple/list/sum/record). These
+; pin the canonical-byte float compare TWO levels deep — a float leaf in a record-of-tuple — so the heap walk
+; keeps canonicalizing the float at depth, not only at the top level. A walk that stopped applying the
+; canonical-byte rule below depth 1 would give the WRONG NaN/-0.0 answer for a nested float (nan!=nan or
+; -0.0==+0.0). Both operands built from a boundary Float parameter (genuinely runtime, no fold).
+
+(case "a runtime NaN float leaf two levels deep (a record-of-tuple) compares equal by the canonical byte form"
+  (doc    "The DEPTH companion of the single-level float-leaf cases: a NaN two levels down — `(record (t
+           (tuple <nan> 3)))` — must still compare by the canonical byte form (`nan == nan`) → true. `x` is a
+           boundary Float parameter forced to NaN via `(- x Float64.nan)` so the compound is runtime-built
+           (no fold). Pins the heap walk canonicalizes a float leaf at depth 2, not only depth 1 — a walk
+           that raw-compared a nested float would answer false (nan != nan under a bit compare).")
+  (input  (do (def (main (: x Float64)) (= (record (t (tuple (- x Float64.nan) 3))) (record (t (tuple (- x Float64.nan) 3))))) (export main)))
+  (call   main (: 1.0 Float64))
+  (output (: true Bool)))
+
+(case "a runtime -0.0 float leaf two levels deep stays distinct from positive zero"
+  (doc    "The signed-zero DEPTH companion: `-0.0` two levels down — `(record (t (tuple -0.0 3)))` vs the same
+           with `0.0` — stays DISTINCT (canonical byte forms differ) → false, even nested. `z` is a boundary
+           Float parameter (`(* z -0.0)` yields -0.0 at runtime, no fold). Pins the canonical byte distinction
+           for signed zero holds at depth 2 — a walk that stopped distinguishing signed zero below the top
+           level would wrongly answer true.")
+  (input  (do (def (main (: z Float64)) (= (record (t (tuple (* z -0.0) 3))) (record (t (tuple 0.0 3))))) (export main)))
+  (call   main (: 0.0 Float64))
+  (output (: false Bool)))
+
 ; Float64 equality is a REALIZED seed capability (options/realized-capability-set/: "Float64
 ; literals/equality"), so it must hold for a RUNTIME float operand — one from a function parameter,
 ; a call, an if — not only for two compile-time-constant literals. The cases above compare constant

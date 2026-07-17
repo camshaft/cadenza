@@ -1081,6 +1081,51 @@ impl Ty {
         }
     }
 
+    /// Whether this type contains an `Any` in a DATA-CONTAINER ELEMENT position — nested in a
+    /// List/Tuple/Map/Set/Record/Sum/Nominal/Qty — but NOT reached through a function arrow (`Ty::Fn`).
+    /// `(List Any)` and `(Tuple Int64 Any)` are true; `(-> Int64 (-> Any Any))` and a bare `Any` are
+    /// false (the arrow's `Any` is a not-yet-solved closure domain/result, a legitimate intermediate the
+    /// closure-tie machinery grounds — distinct from the self-nested-producer re-entrancy poison, which
+    /// collapses a data element to `Any`). Used by the `type_of` memo guard to skip caching ONLY the
+    /// producer-re-entrancy poison, leaving a curried-closure arrow signature cached (its `Any`s ground
+    /// via the transformer-closure tie, and a module-member generic monomorphization depends on it).
+    pub fn has_any_in_data_element(&self) -> bool {
+        match self {
+            // An arrow is NOT descended: its `Any`s are closure domain/result holes, not the data poison.
+            Ty::Fn(_, _) => false,
+            // A bare `Any` at THIS position is not a nested data element (the caller already excludes it).
+            Ty::Any => false,
+            Ty::Tuple(elems) => elems.iter().any(|t| t.contains_any_no_arrow()),
+            Ty::List(elem) | Ty::Set(elem) => elem.contains_any_no_arrow(),
+            Ty::Map(k, v) => k.contains_any_no_arrow() || v.contains_any_no_arrow(),
+            Ty::Record(fields) => fields.values().any(|t| t.contains_any_no_arrow()),
+            Ty::Sum { args, .. } | Ty::Nominal { args, .. } => {
+                args.iter().any(|t| t.contains_any_no_arrow())
+            }
+            Ty::Qty { inner, .. } => inner.contains_any_no_arrow(),
+            _ => false,
+        }
+    }
+
+    /// Whether this type contains an `Any` ANYWHERE reachable WITHOUT crossing a function arrow — the
+    /// element-position recursion used by [`has_any_in_data_element`]. An `Any` under a `Ty::Fn` is
+    /// invisible here (that arm returns false); a data-container element's `Any` is visible.
+    fn contains_any_no_arrow(&self) -> bool {
+        match self {
+            Ty::Any => true,
+            Ty::Fn(_, _) => false,
+            Ty::Tuple(elems) => elems.iter().any(|t| t.contains_any_no_arrow()),
+            Ty::List(elem) | Ty::Set(elem) => elem.contains_any_no_arrow(),
+            Ty::Map(k, v) => k.contains_any_no_arrow() || v.contains_any_no_arrow(),
+            Ty::Record(fields) => fields.values().any(|t| t.contains_any_no_arrow()),
+            Ty::Sum { args, .. } | Ty::Nominal { args, .. } => {
+                args.iter().any(|t| t.contains_any_no_arrow())
+            }
+            Ty::Qty { inner, .. } => inner.contains_any_no_arrow(),
+            _ => false,
+        }
+    }
+
     /// Whether this type contains a TYPE-VALUE (`Ty::Type`, the kind of types) anywhere — itself, or
     /// nested in a compound (`(Tuple Type Int64)`, `(List Type)`, a record field, a sum/nominal arg). A
     /// type-value is COMPILE-TIME ONLY (`type-system.md §226`: a type-value never flows from runtime data),

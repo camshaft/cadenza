@@ -104,6 +104,12 @@ export default function Rationals() {
         (<C>CDZ0304</C>) — the same "no correct answer, so refuse" rule as dividing an integer by zero.
       </Note>
 
+      <P>
+        That refuse-when-there's-no-answer instinct runs through every number type you've now met. The next
+        chapter, <em>Errors &amp; absence</em>, makes it a tool you hold: <C>Option</C> and <C>Result</C>{" "}
+        turn a might-not-have-an-answer into an ordinary value you handle.
+      </P>
+
       <H2>Your turn</H2>
       <Exercise
         id="rationals:1"

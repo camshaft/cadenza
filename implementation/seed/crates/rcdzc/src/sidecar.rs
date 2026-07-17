@@ -1236,7 +1236,40 @@ fn classify_highlight(db: &mut Db, id: StructId) -> Option<HighlightKind> {
 
     // Any other name: resolve it and classify by what it denotes, reading the meta channels the value
     // carries. `resolved_of` is the SAME producer a compile reads, so a token's colour equals its meaning.
-    Some(classify_resolved_name(db, id))
+    let kind = classify_resolved_name(db, id);
+
+    // QUOTED-DATA STOPGAP. A name that resolves to `Unbound` but is DETACHED from the program root is
+    // inert quoted data, not a live typo: `reify_quotes` overwrites a `(quasiquote …)` node with its
+    // synthetic Ast-construction and leaves the ORIGINAL quoted children dangling (they keep their source
+    // spans — so the highlighter still paints them — but their ancestor chain no longer reaches
+    // `db.ast.root`). Painting such a leaf `Unbound` (error-RED) is wrong: the program is well-formed
+    // (`check` reports no error). Reclassify a detached would-be-unbound leaf as `Symbol` (the "name taken
+    // as data" colour) so a quasiquote template reads as data, not a wall of fake errors. Narrow by design:
+    // only a would-be-`Unbound` leaf that is unreachable from root is touched — a live unbound typo IS
+    // reachable, so real errors still colour red. (Precise provenance is v-metaprogramming's follow-up:
+    // a `quoted-data` marker on these leaves; this reachability heuristic is the interim, and tightens to
+    // reading that marker once it lands.)
+    if kind == HighlightKind::Unbound && !reaches_root(db, id) {
+        return Some(HighlightKind::Symbol);
+    }
+    Some(kind)
+}
+
+/// Whether the node at `id` is connected to the arena root by the parent chain. A node whose walk hits
+/// `None` before reaching `db.ast.root` is DETACHED — e.g. the original quoted children `reify_quotes`
+/// orphans when it overwrites a quasiquote node with its synthetic copy. Bounded by the arena depth.
+fn reaches_root(db: &Db, id: StructId) -> bool {
+    if id == db.ast.root {
+        return true;
+    }
+    let mut cursor = db.parent_of(id);
+    while let Some(node) = cursor {
+        if node == db.ast.root {
+            return true;
+        }
+        cursor = db.parent_of(node);
+    }
+    false
 }
 
 /// Whether the name at `id` is in a LABEL position — a member-access KEY (`(. operand KEY)`, second

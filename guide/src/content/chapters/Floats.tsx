@@ -111,6 +111,12 @@ export default function Floats() {
         expect="error"
       />
 
+      <P>
+        A float trades exactness for speed, and is honest about it. But when a rounding error would be a{" "}
+        <em>bug</em> — money, exact ratios — you want the opposite trade. That's <em>exact fractions</em>,
+        next.
+      </P>
+
       <H2>Your turn</H2>
       <Exercise
         id="floats:1"

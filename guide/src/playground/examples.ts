@@ -128,6 +128,67 @@ export const EXAMPLES: Example[] = [
   (export main))`,
   },
   {
+    // Shows off: a Map used as a MEMO CACHE, threaded functionally through the recursion. Each call
+    // returns (value, updated-map); the cache turns exponential fib into linear. fib(30) = 832040 —
+    // it returns instantly, where naive fib(30) would make >2.7M calls.
+    name: "Memoized Fibonacci (Map cache)",
+    surface: "sexpr",
+    source: `(module m
+  ; A persistent Map threaded as a cache: fib returns (value, updated-map).
+  ; Looking a result up before recomputing turns exponential fib into linear.
+  (def (fib n mp)
+    (match (Map.lookup mp n)
+      ((Some v) (tuple v mp))
+      ((None)
+       (if (< n 2)
+           (tuple n (Map.insert mp n n))
+           (let ((a (fib (- n 1) mp)))
+             (let ((b (fib (- n 2) (. a 1))))
+               (let ((r (+ (. a 0) (. b 0))))
+                 (tuple r (Map.insert (. b 1) n r)))))))))
+  (def (main) (. (fib 30 (Map.empty)) 0))
+  (export main))`,
+  },
+  {
+    // Shows off: building a frequency table by folding a list into a Map (add-or-bump each key).
+    // Uses the List.at/List.len index-recursion idiom (the prelude List has no fold). The result is a
+    // (List (Tuple Int64 Int64)) of (value, count) pairs — the shape a notebook `table` cell renders.
+    name: "Frequency count (fold into a Map)",
+    surface: "sexpr",
+    source: `(module m
+  ; Count occurrences of each element, accumulating into a Map.
+  (def (bump mp k)
+    (match (Map.lookup mp k)
+      ((Some c) (Map.insert mp k (+ c 1)))
+      ((None) (Map.insert mp k 1))))
+  ; List has no fold, so walk by index with List.at / List.len.
+  (def (tally xs i n mp)
+    (if (= i n)
+        mp
+        (match (List.at xs i)
+          ((Some x) (tally xs (+ i 1) n (bump mp x)))
+          ((None) mp))))
+  (def (main)
+    (let ((xs (list 3 1 3 3 1 2)))
+      (Map.to-list (tally xs 0 (List.len xs) (Map.empty)))))
+  (export main))`,
+  },
+  {
+    // Shows off: EXACT rational arithmetic — 1/2 + 1/3 + 1/6 is EXACTLY 1, with no floating-point
+    // drift. The (pragma default-fraction Rational) makes bare literals exact fractions; compare with
+    // Float64, where 0.1 + 0.2 famously isn't 0.3. The pragma lives in a nested module whose function
+    // the outer main calls (the way a module sets its own numeric default).
+    name: "Exact rational arithmetic",
+    surface: "sexpr",
+    source: `(do
+  (module m
+    (pragma default-fraction Rational)
+    ; Bare literals here are EXACT fractions, so this sums to exactly 1 — no float drift.
+    (def (sum) (+ (+ (/ 1 2) (/ 1 3)) (/ 1 6))))
+  (def (main) ((. m sum) unit))
+  (export main))`,
+  },
+  {
     name: "A type error (see the squiggle)",
     surface: "sexpr",
     source: `(module m

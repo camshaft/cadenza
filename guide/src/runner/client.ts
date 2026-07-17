@@ -5,10 +5,12 @@
 /// timeout; on timeout we `terminate()` the (now-dead) worker, report "timed out", and drop the
 /// reference so the NEXT run spins up a fresh worker. A completed run reuses the same worker.
 
-import { renderValue, renderSyntax, renderSyntaxDisplay, runtimeHash, type Surface } from "../compiler/client.ts";
+import { renderValue, renderSyntax, renderSyntaxDisplay, runtimeHash, compileTests, type Surface } from "../compiler/client.ts";
 import runtimeUrl from "../wasm/runtime.wasm?url";
 import { hexDigest, explainIfStaleRuntime } from "./runtimeHashGuard.ts";
-import type { RunJob, RunResult } from "./runWorker.ts";
+import type { RunJob, RunResult, TestResult } from "./runWorker.ts";
+
+export type { TestResult };
 
 /** How long a single run may take before we assume a runaway loop and kill the worker. */
 const RUN_TIMEOUT_MS = 5000;
@@ -120,10 +122,90 @@ export async function run(
         };
       case "trap":
         return { kind: "trap", message: explainIfStaleRuntime(raw.message, runtimeMatchesCompiler) };
-      default:
+      case "error":
         return { kind: "error", message: explainIfStaleRuntime(raw.message, runtimeMatchesCompiler) };
+      default:
+        // A normal `run` never posts a test job, so a "tests" result shouldn't reach here — but keep the
+        // switch exhaustive rather than reading `.message` off a variant that lacks it.
+        return { kind: "error", message: "unexpected run result" };
     }
   } finally {
     busy = false;
   }
+}
+
+/// Run a TEST-LAYOUT component (from `compile_tests`) and report each named `@test`'s pass/fail. Same
+/// worker + watchdog + stale-runtime guard as `run`; posts a `mode: "test"` job so the worker invokes each
+/// `testNames` export (clean return = pass, trap = fail, unanswered-`Test.gen` = deferred). Serialized like
+/// `run`. A timeout marks every test as errored (the whole suite ran past the watchdog).
+export async function runTestComponent(
+  component: Uint8Array,
+  testNames: string[],
+): Promise<TestResult[]> {
+  if (busy) return testNames.map((name) => ({ name, pass: false, error: "a run is already in progress" }));
+  busy = true;
+  try {
+    const runtime = await loadRuntime();
+    if (runtime) await checkRuntimeHash(runtime);
+    worker ??= freshWorker();
+    const w = worker;
+
+    const raw = await new Promise<RunResult | { kind: "timeout" }>((resolve) => {
+      const timer = setTimeout(() => {
+        w.terminate();
+        worker = null;
+        resolve({ kind: "timeout" });
+      }, RUN_TIMEOUT_MS);
+      w.onmessage = (e: MessageEvent<RunResult>) => {
+        clearTimeout(timer);
+        resolve(e.data);
+      };
+      w.onerror = (e) => {
+        clearTimeout(timer);
+        worker = null;
+        resolve({ kind: "error", message: e.message } as RunResult);
+      };
+      const job: RunJob = { component, runtime, mode: "test", testNames };
+      w.postMessage(job);
+    });
+
+    if (raw.kind === "tests") return raw.results;
+    if (raw.kind === "timeout") return testNames.map((name) => ({ name, pass: false, error: "timed out" }));
+    // A whole-suite error (couldn't instantiate the component, etc.) — surface it against every test so the
+    // caller shows the failure rather than a silent empty result.
+    const message = "message" in raw ? explainIfStaleRuntime(raw.message, runtimeMatchesCompiler) : "test run failed";
+    return testNames.map((name) => ({ name, pass: false, error: message }));
+  } finally {
+    busy = false;
+  }
+}
+
+/// The full in-browser `@test` runner: compile `source` in test-layout mode, then invoke each nullary
+/// `@test` export and report per-test pass/fail — the browser equivalent of `cdz test`. A compile failure
+/// (incl. "no `@test`") returns the compile diagnostics as an error outcome; otherwise a `TestResult` per
+/// nullary test (clean return = pass, trap = fail), plus a `deferred` entry per PARAMETERIZED `@test`
+/// (property/exhaustive — real trials are a follow-up), so the UI can show "N property tests deferred"
+/// rather than dropping them. `<Runnable mode="test">` + the check-examples test-branch call this.
+export type TestRunOutcome =
+  | { kind: "tests"; results: TestResult[] }
+  | { kind: "error"; message: string };
+
+export async function runTests(source: string, surface: Surface = "sexpr"): Promise<TestRunOutcome> {
+  const compiled = await compileTests(source, surface);
+  if (!compiled.component) {
+    const firstErr = compiled.diagnostics.find((d) => d.error);
+    return {
+      kind: "error",
+      message: firstErr ? `${firstErr.code || ""} ${firstErr.message}`.trim() : "no `@test` definition to run",
+    };
+  }
+  const ran = await runTestComponent(compiled.component, compiled.nullaryTestNames);
+  // Append the parameterized @tests as deferred rows (not run in the MVP; property trials are a follow-up).
+  const deferred: TestResult[] = compiled.paramTestNames.map((name) => ({
+    name,
+    pass: false,
+    deferred: true,
+    error: "property test — deferred (runs with generated inputs in a later increment)",
+  }));
+  return { kind: "tests", results: [...ran, ...deferred] };
 }

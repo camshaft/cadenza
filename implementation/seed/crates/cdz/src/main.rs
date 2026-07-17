@@ -773,15 +773,36 @@ fn build_path_deps(
     project: &ProjectSpecs,
     opt_level: rcdzc::OptLevel,
 ) -> Result<Vec<(String, std::path::PathBuf)>, ()> {
+    // Delegate to the fallible core; on ANY error, clean up the temp dep components already written so a
+    // mid-loop failure (dep N fails to build) doesn't leak deps 1..N-1's `.cdz-run-dep-*` files (the
+    // caller only cleans the CONSUMER's temp). Cleanup is best-effort — the error is already reported.
+    let mut peers = Vec::new();
+    match build_path_deps_into(project, opt_level, &mut peers) {
+        Ok(()) => Ok(peers),
+        Err(()) => {
+            for (_iface, path) in &peers {
+                let _ = std::fs::remove_file(path);
+            }
+            Err(())
+        }
+    }
+}
+
+/// The fallible core of [`build_path_deps`]: push each built dep's `(interface, temp-wasm)` into `peers`.
+/// Kept separate so the wrapper can clean up `peers`' temps on an error return (no leak on mid-failure).
+fn build_path_deps_into(
+    project: &ProjectSpecs,
+    opt_level: rcdzc::OptLevel,
+    peers: &mut Vec<(String, std::path::PathBuf)>,
+) -> Result<(), ()> {
     if project.m.deps.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
     let manifest_dir = project
         .mpath
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let mut peers = Vec::new();
     for dep in &project.m.deps {
         // Today the only dep source is a PATH; a future registry source would branch here to fetch+build
         // instead of resolving a sibling dir. (The `DepSource` enum is what lets that slot in later.) The
@@ -814,6 +835,17 @@ fn build_path_deps(
                 .to_string()
         });
         let iface = format!("cadenza:{dep_name}/api");
+        // Two deps publishing the SAME interface (same `name`) would collide — the runner binds each peer
+        // under its interface name, so a duplicate is an opaque wasmtime-linker failure at compose. Detect
+        // it HERE with a clear diagnostic naming the clashing deps, before building/composing.
+        if peers.iter().any(|(existing, _)| *existing == iface) {
+            eprintln!(
+                "{PROG}: two dependencies publish the same interface `{iface}` (dependency `{dep_path}` \
+                 and an earlier one share the name `{dep_name}`) — give each dependency a distinct \
+                 `def name` in its `Project.cdz` so their peer interfaces don't collide"
+            );
+            return Err(());
+        }
         let dep_bytes = match compile_project_component_bytes_named(
             &dep_specs.specs,
             &dep_specs.entry_name,
@@ -846,7 +878,7 @@ fn build_path_deps(
         }
         peers.push((iface, dep_wasm));
     }
-    Ok(peers)
+    Ok(())
 }
 
 /// A project resolved from its `Project.cdz`: the manifest (`m`) + its path (`mpath`), plus the compile

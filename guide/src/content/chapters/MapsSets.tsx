@@ -190,6 +190,11 @@ export default function MapsSets() {
         each in a single step.
       </P>
 
+      <P>
+        Numbers, symbols, lists, maps — all collections of values. Text is its own thing, with its own
+        honest questions (how long <em>is</em> a string?). <em>Strings &amp; text</em>, next.
+      </P>
+
       <H2>Your turn</H2>
       <Exercise
         id="maps-sets:1"

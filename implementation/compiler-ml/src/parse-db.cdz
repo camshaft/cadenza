@@ -7,24 +7,37 @@
 /// walks children by demanding their ids. NodeIds are assigned by a counter threaded through the build
 /// (the `fresh`/`anf` discipline), so they are stable and dense (0..n-1) for a given parse.
 ///
-/// The grammar is the integer language the re-charter targets: `Int` literals, `+ - *` with precedence
-/// (`*` binds tighter than `+`/`-`), and parentheses. `parse-tokens` returns `(rootId, Tree)` — the root
-/// node's id plus the arena — so a caller (the compiler driver / the DB's `ast` column) has both the entry
-/// point and the store. (This intentionally re-declares its own `Tok`/`Node` rather than importing lex's —
-/// lex does not export its `Token` type, and a self-contained column keeps the Inc-1 surface minimal.)
+/// The grammar is the integer language the re-charter targets: `Int` literals, variable references, `let
+/// NAME = expr in expr` bindings, `+ - *` with precedence (`*` binds tighter than `+`/`-`), and parentheses.
+/// `parse-tokens` returns `(rootId, Tree)` — the root node's id plus the arena — so a caller (the compiler
+/// driver / the DB's `ast` column) has both the entry point and the store. (This intentionally re-declares
+/// its own `Tok`/`Node` rather than importing lex's — lex does not export its `Token` type, and a self-
+/// contained column keeps the surface minimal.)
+///
+/// Inc-2 prep: `let`/variable syntax is added HERE (the parse column) so the upcoming resolve column has real
+/// name→binding structure to resolve. Names are interned to an `Int64` name-id (the mirror of a real lexer's
+/// string-interning); the grammar now covers the milestone program `let x = 2 in x * 3 + 1`.
 
 /// A token (the lexer's output; here constructed directly by tests / a future lex adapter).
 type Tok =
   | TNum(Int64)
+  | TName(Int64)    // an identifier, interned to a name-id (Int64)
   | TOp(Int64)      // 43 = +, 45 = -, 42 = *
+  | TLet
+  | TIn
+  | TEq             // the `=` of a let binding
   | TLParen
   | TRParen
   | TEnd
 
-/// An AST node in the arena. A `Bin` references its operands BY NodeId (not inline) — the arena shape.
+/// An AST node in the arena. A `Bin` references its operands BY NodeId (not inline) — the arena shape. `NVar`
+/// carries a name-id (resolve turns it into a binding); `NLet` carries `(nameId, valueId, bodyId)` — value
+/// and body are child NodeIds, so a `let` is a node whose scope the resolve column will walk by id.
 type Node =
   | NLit(Int64)
+  | NVar(Int64)                   // NVar(nameId) — a variable reference
   | NBin(Int64, Int64, Int64)     // NBin(op, leftId, rightId)
+  | NLet(Int64, Int64, Int64)     // NLet(nameId, valueId, bodyId)
 
 /// The arena: nodes keyed by NodeId, plus the next fresh id. (Named `Tree`, NOT `Ast` — a type named `Ast`
 /// collides with the built-in metaprog `Ast`, drawing CDZ0201 "two types with the same name".)
@@ -52,11 +65,13 @@ def tok-at(ts: List(Tok), i: Int64) = match List.at(ts, i) with
 /// The op code of a token if it is `TOp op` (else -1).
 def op-code(t: Tok) = match t with | Tok.TOp(op) => op | _ => 0 - 1
 
-/// parse-factor: an Int literal, or a parenthesized expression. Returns `(nodeId, nextIndex, tree')`.
+/// parse-factor: an Int literal, a variable reference, or a parenthesized expression. A paren nests the FULL
+/// grammar (`parse-any`, so `(let x = 1 in x)` parses). Returns `(nodeId, nextIndex, tree')`.
 def parse-factor(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
   | Tok.TNum(v) => (match add-node(tree, Node.NLit(v)) with | (id, t1) => (id, i + 1, t1))
+  | Tok.TName(nm) => (match add-node(tree, Node.NVar(nm)) with | (id, t1) => (id, i + 1, t1))
   | Tok.TLParen =>
-    (match parse-expr(ts, i + 1, tree) with | (inner, j, t1) =>
+    (match parse-any(ts, i + 1, tree) with | (inner, j, t1) =>
       // consume the matching ')' if present (j points at it); tolerate a missing one.
       (match tok-at(ts, j) with | Tok.TRParen => (inner, j + 1, t1) | _ => (inner, j, t1)))
   | _ => (match add-node(tree, Node.NLit(0)) with | (id, t1) => (id, i + 1, t1))   // error recovery: 0
@@ -84,8 +99,27 @@ def add-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
   (match parse-term(ts, i + 1, tree) with | (rhs, j, t1) =>
     (match add-node(t1, Node.NBin(op, lhs, rhs)) with | (id, t2) => parse-expr-tail(ts, j, id, t2)))
 
+/// parse-any: the top of the grammar — a `let NAME = expr in expr` binding, or an additive expression. `let`
+/// nests `parse-any` in both the value and body positions, so `let a = 1 in let b = 2 in a + b` parses and
+/// the body is itself a let node (nested scopes the resolve column will walk by id).
+def parse-any(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
+  | Tok.TLet => parse-let(ts, i + 1, tree)
+  | _ => parse-expr(ts, i, tree)
+
+/// parse-let: after the `let` keyword — `NAME = <any> in <any>`, building an `NLet(nameId, valueId, bodyId)`.
+/// Tolerates a missing `=`/`in` (error recovery: parse straight through). The value and body are children BY
+/// ID, matching the arena shape.
+def parse-let(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
+  | Tok.TName(nm) =>
+    (let j = (match tok-at(ts, i + 1) with | Tok.TEq => i + 2 | _ => i + 1) in
+     (match parse-any(ts, j, tree) with | (valId, k, t1) =>
+       (let m = (match tok-at(ts, k) with | Tok.TIn => k + 1 | _ => k) in
+        (match parse-any(ts, m, t1) with | (bodyId, p, t2) =>
+          (match add-node(t2, Node.NLet(nm, valId, bodyId)) with | (id, t3) => (id, p, t3))))))
+  | _ => parse-expr(ts, i, tree)   // recovery: `let` with no name → parse as expression
+
 /// The parse COLUMN entry: tokens → `(rootId, Tree)` — the root node id and the arena.
-def parse-tokens(ts: List(Tok)) = match parse-expr(ts, 0, empty-tree()) with | (root, _, tree) => (root, tree)
+def parse-tokens(ts: List(Tok)) = match parse-any(ts, 0, empty-tree()) with | (root, _, tree) => (root, tree)
 
 /// A structural probe: is the node at `id` a `Bin` with op `op`?
 def is-bin-op(tree: Tree, id: Int64, op: Int64) = match node-at(tree, id) with
@@ -96,11 +130,25 @@ def is-lit(tree: Tree, id: Int64, v: Int64) = match node-at(tree, id) with
   | Option.Some(Node.NLit(x)) => x == v
   | _ => false
 
+/// Is the node at `id` a variable reference to name-id `nm`?
+def is-var(tree: Tree, id: Int64, nm: Int64) = match node-at(tree, id) with
+  | Option.Some(Node.NVar(x)) => x == nm
+  | _ => false
+
+/// Is the node at `id` a `let` binding name-id `nm`?
+def is-let(tree: Tree, id: Int64, nm: Int64) = match node-at(tree, id) with
+  | Option.Some(Node.NLet(x, _, _)) => x == nm
+  | _ => false
+
 /// Builders (test ergonomics).
 def n(v: Int64) = Tok.TNum(v)
+def var(nm: Int64) = Tok.TName(nm)
 def plus() = Tok.TOp(43)
 def minus() = Tok.TOp(45)
 def times() = Tok.TOp(42)
+def letkw() = Tok.TLet
+def inkw() = Tok.TIn
+def eq() = Tok.TEq
 
 @test
 def pd-single-literal() =
@@ -165,4 +213,60 @@ def pd-children-by-id-not-inline() =
         (if is-lit(tree, l, 7) then (if is-lit(tree, r, 8) then unit else trap("right child id → Lit 8")) else trap("left child id → Lit 7"))
       | _ => trap("root is a Bin")))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, parse-tokens, is-bin-op, is-lit }
+@test
+def pd-single-var() =
+  // "x" (name-id 1) → one NVar node, root is it.
+  (match parse-tokens([var(1)]) with | (root, tree) =>
+    (if node-count(tree) == 1 then (if is-var(tree, root, 1) then unit else trap("root is Var 1")) else trap("one node")))
+
+@test
+def pd-let-binding-shape() =
+  // "let x = 2 in x" → root is a NLet naming x(=1); its value is NLit 2, its body is NVar x.
+  (match parse-tokens([letkw(), var(1), eq(), n(2), inkw(), var(1)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(nm, valId, bodyId)) =>
+        (if nm == 1 then
+           (if is-lit(tree, valId, 2) then
+              (if is-var(tree, bodyId, 1) then unit else trap("body is Var x")) else trap("value is Lit 2"))
+         else trap("let binds name-id 1"))
+      | _ => trap("root is a Let")))
+
+@test
+def pd-let-milestone-program() =
+  // THE MILESTONE program `let x = 2 in x * 3 + 1`: root is a let of x; its BODY is `x*3+1` = a + Bin whose
+  // left is a * Bin (x * 3) and right is Lit 1 — the shape the DB pipeline will resolve/infer/lower/run to 7.
+  (match parse-tokens([letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(nm, valId, bodyId)) =>
+        (if nm == 1 then
+           (if is-lit(tree, valId, 2) then
+              (match node-at(tree, bodyId) with
+                | Option.Some(Node.NBin(op, l, r)) =>
+                  (if op == 43 then
+                     (if is-bin-op(tree, l, 42) then (if is-lit(tree, r, 1) then unit else trap("+ 's right is Lit 1")) else trap("+ 's left is a * Bin"))
+                   else trap("body root is +"))
+                | _ => trap("body is a Bin"))
+            else trap("value is Lit 2"))
+         else trap("let binds x"))
+      | _ => trap("root is a Let")))
+
+@test
+def pd-nested-let-scopes() =
+  // "let a = 1 in let b = 2 in a + b" → root let (a); its BODY is itself a let (b) — nested scopes by id.
+  (match parse-tokens([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), n(2), inkw(), var(1), plus(), var(2)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(nm, _, bodyId)) =>
+        (if nm == 1 then (if is-let(tree, bodyId, 2) then unit else trap("outer let's body is the inner let (b)")) else trap("outer binds a"))
+      | _ => trap("root is a Let")))
+
+@test
+def pd-let-in-parens() =
+  // "(let x = 5 in x) * 2" → parens let the full grammar (incl. let) nest under an operator: root is a * Bin
+  // whose LEFT child is a let node. Proves parse-factor's paren nests parse-any, not just parse-expr.
+  (match parse-tokens([Tok.TLParen, letkw(), var(1), eq(), n(5), inkw(), var(1), Tok.TRParen, times(), n(2)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NBin(op, l, _)) =>
+        (if op == 42 then (if is-let(tree, l, 1) then unit else trap("* 's left child is a let")) else trap("root is * "))
+      | _ => trap("root is a Bin")))
+
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, parse-tokens, is-bin-op, is-lit, is-var, is-let }

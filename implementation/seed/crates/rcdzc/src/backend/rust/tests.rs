@@ -115,6 +115,64 @@ fn rustc_roundtrip_narrow_literal_operand_computes_and_traps() {
 }
 
 #[test]
+fn a_provably_in_range_arith_op_elides_its_overflow_check_on_the_rust_backend() {
+    // BOTH-BACKEND PARITY (v-core-opt Slice-2): the rust backend now consults the SAME Core-tier
+    // `lower::arith_provably_in_range` predicate the wasm backend uses (`select.rs:12542`), so a
+    // provably-in-range op sheds its overflow trap on BOTH backends — one Core-tier decision, not a
+    // wasm-only elision. When the interval fits, emit the plain modular `wrapping_*` (never traps),
+    // NOT `checked_*().unwrap_or_else(panic)`.
+    //
+    // `(+ (& x 15) (& y 15))`: [0,15]+[0,15] = [0,30] ⊆ Int64 → wrapping_add, no panic.
+    let add = compile_rust(
+        "(module m (def (f (: x Int64) (: y Int64)) (+ (& x 15) (& y 15))) (export f))",
+    );
+    assert!(
+        add.contains("wrapping_add") && !add.contains("checked_add"),
+        "a provably-in-range add emits the plain modular op, no overflow panic:\n{add}"
+    );
+    // `(* (& x 15) 3)`: [0,15]×3 = [0,45] ⊆ Int64 → wrapping_mul.
+    let mul = compile_rust("(module m (def (f (: x Int64)) (* (& x 15) 3)) (export f))");
+    assert!(
+        mul.contains("wrapping_mul") && !mul.contains("checked_mul"),
+        "a provably-in-range mul emits the plain modular op:\n{mul}"
+    );
+    // A FULL-RANGE add (an unbounded operand) is NOT provable → KEEPS the checked op + trap. This is the
+    // dual that proves the elision is opt-in on a proof of safety, never on the absence of a disproof.
+    let kept = compile_rust("(module m (def (f (: x Int64) (: y Int64)) (+ x y)) (export f))");
+    assert!(
+        kept.contains("checked_add") && kept.contains("panic!"),
+        "a full-range add keeps its overflow trap:\n{kept}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_provably_in_range_elision_computes_identically_and_unproven_still_traps() {
+    // The elision is BEHAVIOR-PRESERVING end-to-end through rustc: a provably-in-range op computes the
+    // SAME value with the guard elided (wrapping) as it would checked, AND an unproven op still TRAPS on
+    // overflow — the correctness bar (an opt that changes observable behavior is a miscompile).
+    let elided = compile_rust(
+        "(module m (def (f (: x Int64) (: y Int64)) (+ (& x 15) (& y 15))) (export f))",
+    );
+    // x=15,y=15 → (15&15)+(15&15) = 30. Same value the checked form would compute; no trap.
+    if let Some(out) = rustc_run(&elided, "f(15, 15)") {
+        assert_eq!(
+            out, "30",
+            "provably-in-range add computes identically when elided"
+        );
+    }
+    // An UNPROVEN (full-range) add still traps on genuine overflow — Int64::MAX + 1.
+    let checked = compile_rust("(module m (def (f (: x Int64) (: y Int64)) (+ x y)) (export f))");
+    match rustc_run_traps(&checked, "f(9223372036854775807, 1)") {
+        TrapRun::Trapped(msg) => assert!(
+            msg.contains("overflow"),
+            "unproven add still traps on overflow, got: {msg}"
+        ),
+        TrapRun::RanOk(out) => panic!("MAX + 1 must TRAP (overflow), but ran → {out}"),
+        TrapRun::NoRustc => {}
+    }
+}
+
+#[test]
 fn a_narrow_op_with_a_control_flow_operand_wraps_it_down_to_the_op_width() {
     // REGRESSION (the rust-backend cross-backend miscompile): a narrow-annotated op whose operand is a
     // DEFERRED-WIDTH control-flow expression (`if`/`match` of bare literals, inferred Int64) emitted an
@@ -3336,5 +3394,75 @@ fn rustc_roundtrip_structural_eq_over_a_compound_with_a_float_leaf() {
     assert!(
         bad.is_err(),
         "a compound with a function leaf is not float-walkable — declines:\n{bad:?}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_runtime_bin_construction_and_match() {
+    // A runtime `(bin …)` of fixed-width INT segments builds a Vec<u8> (range-checked, big-endian by
+    // default, `le` reversed) and a `bin` pattern decodes it back — was a whole-family decline ("the Rust
+    // backend does not yet render this compound value"). Mirrors the wasm BinBuild/BinIntRead.
+    // (a) u16 round-trip: build from a runtime UInt16, decode back — 258 -> 258.
+    let rt = compile_rust(
+        "(module m (def (run (: n UInt16)) (match (bin (u16 n)) ((bin (u16 m)) m) (_ -1))) (export run))",
+    );
+    assert!(
+        rt.contains("extend_from_slice") && rt.contains("__acc"),
+        "bin build + read emitted:\n{rt}"
+    );
+    if let Some(out) = rustc_run(&rt, "run(258)") {
+        assert_eq!(out, "258", "u16 bin round-trips");
+    }
+
+    // (b) a big-endian u16 read back BY BYTE INDEX: 258 = 0x0102 -> byte0=1, byte1=2 (MSB first).
+    let be = compile_rust(
+        "(module m (def (run (: n UInt16)) \
+           (match (Bytes.at (bin (u16 n)) 0) ((Some b) b) ((None _) -1))) (export run))",
+    );
+    if let Some(out) = rustc_run(&be, "run(258)") {
+        assert_eq!(out, "1", "big-endian lays the high byte (1) first");
+    }
+
+    // (c) a little-endian SIGNED segment round-trips a negative value: i16 le, -2 -> -2. (The `le`
+    // modifier is TRAILING — `(i16 n le)`.)
+    let le = compile_rust(
+        "(module m (def (run (: n Int16)) (match (bin (i16 n le)) ((bin (i16 m le)) m) (_ 0))) (export run))",
+    );
+    if let Some(out) = rustc_run(&le, "run(-2)") {
+        assert_eq!(out, "-2", "signed little-endian round-trips a negative");
+    }
+
+    // (d) a multi-arm tag dispatch: tag 2 selects the second arm, y+1000.
+    let tag = compile_rust(
+        "(module m (def (run (: t UInt8) (: v UInt16)) \
+           (match (bin (u8 t) (u16 v)) \
+             ((bin (u8 1) (u16 x)) x) ((bin (u8 2) (u16 y)) (+ y 1000)) (_ -1))) (export run))",
+    );
+    if let Some(out) = rustc_run(&tag, "run(2, 300)") {
+        assert_eq!(out, "1300", "the tag-2 arm fires: 300 + 1000");
+    }
+    if let Some(out) = rustc_run(&tag, "run(1, 42)") {
+        assert_eq!(out, "42", "the tag-1 arm binds x");
+    }
+
+    // (e) a final REST segment binds the tail after a fixed header, and its length reads back. The
+    // scrutinee is a 3-byte bin (header + 2 more); the rest after the 1-byte header is 2 bytes.
+    let rest = compile_rust(
+        "(module m (def (run (: n UInt8)) \
+           (match (bin (u8 n) (u8 7) (u8 8)) ((bin (u8 h) (bytes rest)) (Bytes.len rest)) (_ -1))) (export run))",
+    );
+    if let Some(out) = rustc_run(&rest, "run(5)") {
+        assert_eq!(out, "2", "the rest tail after the 1-byte header is 2 bytes");
+    }
+
+    // (f) the emitted range-check is a defensive backstop (the segment's width type already bounds the
+    // value at compile time — a fixed-width int segment REQUIRES a value of that width, so a fit trap is
+    // normally dead). Pin that the guard IS emitted for a narrow segment (< 64 bits) so it stays a real
+    // backstop; width 8 (u64) needs no check.
+    let guard =
+        compile_rust("(module m (def (run (: n UInt16)) (Bytes.len (bin (u16 n)))) (export run))");
+    assert!(
+        guard.contains("binary value does not fit segment"),
+        "a narrow segment emits the fit backstop:\n{guard}"
     );
 }

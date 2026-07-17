@@ -79,6 +79,12 @@ export default function Symbols() {
         stand in for each other.
       </Note>
 
+      <P>
+        That's the last of the everyday value shapes — numbers, text, bytes, symbols, and the collections
+        that hold them. Now we look harder at <em>one</em> of them: how Cadenza models numbers, and why it
+        refuses to convert them behind your back. <em>The numeric model</em>, next.
+      </P>
+
       <H2>Your turn</H2>
       <Exercise
         id="symbols:1"
