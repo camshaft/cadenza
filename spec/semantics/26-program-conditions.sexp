@@ -655,3 +655,181 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool)))
+
+; ── b4c(unprovable): an @ensures whose obligation is NOT dischargeable → the PROVEN tier fails (CDZ-VERIFY) ─
+; The dual of b4c(proven). For `@ensures(<= it MAXINT) (def (f x) (+ x 1))` with NO (or too-weak)
+; @requires, the postcondition obligation `le (add x 1) MAXINT` is NOT provable — x is unbounded, so the
+; discharge chain has no bounding hypothesis to feed mono-add-r, and le-ax cannot mint a non-ground fact.
+; At b4c this un-discharged obligation is the PROVEN-tier MISS: the author gets CDZ-VERIFY (or, if @test is
+; stacked, the TESTED tier runs it — v-property-testing's lane). This pins that a genuinely-unprovable
+; postcondition does NOT spuriously discharge — the proof tier is SOUND (it never claims a false proof).
+
+(case "b4c(unprovable): @ensures(<= it MAXINT) on unbounded (f x)=x+1 is NOT dischargeable — the proof tier correctly MISSES (CDZ-VERIFY)"
+  (doc    "The PROVEN-tier soundness dual. With no bounding @requires, the @ensures postcondition
+           `<= it MAXINT` (it := body `x+1`) denotes to the obligation `le (add x 1) MAXINT`, which is NOT
+           provable: x is unbounded so there is no `le x c` hypothesis for mono-add-r, and the checked
+           le-ax cannot mint the non-ground `le (add x 1) MAXINT` (eval-ground fails on the Var). The entry
+           attempts the discharge WITHOUT a precondition and confirms it does not reach the obligation — so
+           the PROVEN tier correctly MISSES (→ CDZ-VERIFY, or TESTED if @test is stacked). Runs to `true`
+           (asserts non-derivability). Pins the proof tier is SOUND: a genuinely-unprovable postcondition
+           does not spuriously discharge, so an @ensures never yields a FALSE proof — the LCF guarantee at
+           the program-condition level.")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 0) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+      (def (maxint) (Term.Num 9223372036854775807))
+      (def (eval-ground (: t Term))
+        (match t
+          ((Term.Num n) (Option.Some n))
+          ((Term.Comb (Term.Comb (Term.Const 0) a) b)
+            (match (eval-ground a)
+              ((Option.Some av) (match (eval-ground b)
+                                  ((Option.Some bv) (Option.Some (+ av bv)))
+                                  ((Option.None) (Option.None))))
+              ((Option.None) (Option.None))))
+          (_ (Option.None))))
+      ; the only obligation-minting axiom is the CHECKED ground le-ax; with an unbounded x the goal
+      ; `le (add x 1) MAXINT` is non-ground, so le-ax returns None — no proof.
+      (def (le-ax (: lhs Term) (: rhs Term))
+        (match (eval-ground lhs)
+          ((Option.Some lv) (match (eval-ground rhs)
+                              ((Option.Some rv) (if (<= lv rv)
+                                                  (Option.Some (Thm.Seq (list) (le lhs rhs)))
+                                                  (Option.None)))
+                              ((Option.None) (Option.None))))
+          ((Option.None) (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq add le maxint eval-ground le-ax)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq add le maxint eval-ground le-ax))
+            (def (main)
+              (let ((x   (Term.Var 0))
+                    (one (Term.Num 1)))
+                ; the unprovable obligation: le (add x 1) MAXINT with x unbounded
+                (let ((goal (le (add x one) (maxint))))
+                  ; the only axiom that could mint it is le-ax; it is NON-GROUND → None. No proof reaches
+                  ; goal, so the PROVEN tier misses. (goal is bound to exercise the denotation but is not
+                  ; provable — assert le-ax yields None.)
+                  (let ((attempt (le-ax goal (maxint))))
+                    (match attempt
+                      ((Option.Some _) false)
+                      ((Option.None) true))))))
+            (export main)))
+  (output (: true Bool)))
+
+; ── b4c(conjunctive): a TWO-hypothesis precondition — both @requires flow to the discharge + hyps-subset ─
+; b4a records STACKED @requires as a Vec (a conjunction). This pins the multi-hypothesis path the earlier
+; single-precondition cases do not: `@requires(>= x 0) @requires(<= x 100)` gives a sequent with TWO
+; hypotheses, and the b2 `licenses` hyps-subset must require BOTH are covered by the node precondition (not
+; just one). Discharge uses only the `<= x 100` bound (the upper one drives no-overflow), but the proof
+; CARRIES both hypotheses, so the match predicate's precondition must contain both — a two-element
+; hyps-subset, the "ALL hyps covered" soundness check that a single-hyp case cannot exercise.
+
+(case "b4c(conjunctive): two stacked @requires give a 2-hyp proof; licenses requires BOTH hyps covered by the precondition"
+  (doc    "The multi-hypothesis discharge + hyps-subset soundness path. `@requires(>= x 0)
+           @requires(<= x 100)` on `(f x)=x+1` yields a proof carrying TWO hypotheses {ge x 0, le x 100}
+           (both assumed, unioned through the rules). The obligation `le (add x 1) MAXINT` is discharged
+           from the `le x 100` bound (mono-add-r + numeral fact + trans), but the resulting Thm's hyps
+           include BOTH assumptions. `licenses` then checks hyps-subset over a TWO-element precondition
+           {ge x 0, le x 100} — and it must require BOTH covered: a proof carrying `ge x 0` cannot be
+           licensed by a precondition lacking it. The entry builds the 2-hyp proof and asserts `licenses`
+           accepts it under the matching 2-element precondition. Runs to `true`. Pins that hyps-subset is
+           the ALL-hyps-covered check (not any-one), the soundness core over a genuine conjunction.")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 0) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+      (def (ge  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 2) a) b))
+      (def (maxint) (Term.Num 9223372036854775807))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (eval-ground (: t Term))
+        (match t
+          ((Term.Num n) (Option.Some n))
+          ((Term.Comb (Term.Comb (Term.Const 0) a) b)
+            (match (eval-ground a)
+              ((Option.Some av) (match (eval-ground b)
+                                  ((Option.Some bv) (Option.Some (+ av bv)))
+                                  ((Option.None) (Option.None))))
+              ((Option.None) (Option.None))))
+          (_ (Option.None))))
+      (def (le-ax (: lhs Term) (: rhs Term))
+        (match (eval-ground lhs)
+          ((Option.Some lv) (match (eval-ground rhs)
+                              ((Option.Some rv) (if (<= lv rv)
+                                                  (Option.Some (Thm.Seq (list) (le lhs rhs)))
+                                                  (Option.None)))
+                              ((Option.None) (Option.None))))
+          ((Option.None) (Option.None))))
+      ; mono-add-r that PRESERVES the operand hyps (so the derived step keeps {ge x 0, le x 100})
+      (def (mono-add-r (: th Thm) (: k Term))
+        (match (concl th)
+          ((Term.Comb (Term.Comb (Term.Const 1) x) c)
+            (Option.Some (Thm.Seq (hyps th) (le (add x k) (add c k)))))
+          (_ (Option.None))))
+      (def (trans-le (: t1 Thm) (: t2 Thm))
+        (match (concl t1)
+          ((Term.Comb (Term.Comb (Term.Const 1) a) b)
+            (match (concl t2)
+              ((Term.Comb (Term.Comb (Term.Const 1) b2) c)
+                (if (term-eq b b2)
+                  (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (le a c)))
+                  (Option.None)))
+              (_ (Option.None))))
+          (_ (Option.None))))
+      ; CONJ: assume two facts into one 2-hyp theorem (the stacked-@requires precondition as a conjunction)
+      (def (assume-both (: p Term) (: q Term)) (Thm.Seq (list p q) p))
+      (def (mem (: q Term) (: ps (List Term)))
+        (match ps ((list) false) ((list h .. t) (if (term-eq q h) true (mem q t)))))
+      (def (hyps-subset (: hs (List Term)) (: pre (List Term)))
+        (match hs ((list) true) ((list h .. t) (if (mem h pre) (hyps-subset t pre) false))))
+      (def (licenses (: thm Thm) (: obligation Term) (: pre (List Term)))
+        (and (term-eq (concl thm) obligation) (hyps-subset (hyps thm) pre)))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq add le ge maxint concl hyps assume assume-both le-ax mono-add-r trans-le licenses)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq add le ge maxint concl hyps assume assume-both le-ax mono-add-r trans-le licenses))
+            (def (main)
+              (let ((x    (Term.Var 0))
+                    (one  (Term.Num 1))
+                    (c100 (Term.Num 100))
+                    (zero (Term.Num 0)))
+                (let ((obligation  (le (add x one) (maxint)))
+                      ; the node precondition is the CONJUNCTION {ge x 0, le x 100}
+                      (precondition (list (ge x zero) (le x c100))))
+                  ; a proof carrying BOTH hypotheses — built via the EXPORTED assume-both rule (a Thm
+                  ; cannot be constructed outside the kernel; conclusion is the first arg, hyps are both).
+                  (let ((pre-le (assume-both (le x c100) (ge x zero))))
+                    (match (mono-add-r pre-le one)
+                      ((Option.Some step1)
+                        (match (le-ax (add c100 one) (maxint))
+                          ((Option.Some fact)
+                            (match (trans-le step1 fact)
+                              ((Option.Some proof)
+                                ; the proof's hyps are {ge x 0, le x 100}; licenses requires BOTH in pre
+                                (licenses proof obligation precondition))
+                              ((Option.None) false)))
+                          ((Option.None) false)))
+                      ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))

@@ -1,6 +1,8 @@
-/// Curated starter programs for the playground's Examples dropdown. Each is a full module (the
-/// playground buffer is compiled verbatim) authored in the s-expression surface; the surface toggle
-/// re-renders them. All are verified to compile + run against the current compiler.
+/// Curated starter programs for the playground's Examples dropdown. Each is a full program (the
+/// playground buffer is compiled verbatim) authored in the s-expression surface as flat top-level
+/// definitions grouped in a `(do …)` (no `module` wrapper — that's boilerplate unless an example's
+/// point IS modules); the surface toggle re-renders them into idiomatic top-level ML `def`s. All are
+/// verified to compile + run against the current compiler.
 
 import type { Surface } from "../compiler/client.ts";
 
@@ -19,7 +21,7 @@ export const EXAMPLES: Example[] = [
   {
     name: "Hello, arithmetic",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   (def (main) (+ 2 3))
   (export main))`,
     expected: "5",
@@ -27,7 +29,7 @@ export const EXAMPLES: Example[] = [
   {
     name: "A recursive sum",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   (def (sm n)
     (if (= n 0) 0 (+ n (sm (- n 1)))))
   (def (main) (sm 5))
@@ -37,7 +39,7 @@ export const EXAMPLES: Example[] = [
   {
     name: "Pattern matching",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   (def (main)
     (match 2
       (1 10)
@@ -49,7 +51,7 @@ export const EXAMPLES: Example[] = [
   {
     name: "Option & sum types",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   (type Opt (Some Int64) (None unit))
   (def (main)
     (match (Some 7)
@@ -61,7 +63,7 @@ export const EXAMPLES: Example[] = [
   {
     name: "Records",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   (def (area r) (* (. r w) (. r h)))
   (def (main) (area (record (w 4) (h 5))))
   (export main))`,
@@ -70,7 +72,7 @@ export const EXAMPLES: Example[] = [
   {
     name: "A tuple",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   (def (main) (tuple 1 2 3))
   (export main))`,
     expected: "(: (tuple 1 2 3) (Tuple Int64 Int64 Int64))",
@@ -78,7 +80,7 @@ export const EXAMPLES: Example[] = [
   {
     name: "Lists",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   (def (main)
     (List.len (List.concat (list 1 2) (list 3 4 5))))
   (export main))`,
@@ -90,7 +92,7 @@ export const EXAMPLES: Example[] = [
     // "look what you can build" hook — an AST evaluator in a dozen lines. Computes (2 + 3) * -(4) = -20.
     name: "Expression interpreter",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; A tiny arithmetic language, evaluated by structural recursion over its AST.
   (type Expr
     (Lit Int64)
@@ -115,7 +117,7 @@ export const EXAMPLES: Example[] = [
     // The Collatz orbit of 27 famously climbs to 9232 before falling — this counts its 111 steps.
     name: "Collatz orbit length",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; Count the steps for n to reach 1 under the Collatz map
   ; (n/2 if even, 3n+1 if odd). 27 is the famously long orbit.
   (def (collatz n steps)
@@ -133,7 +135,7 @@ export const EXAMPLES: Example[] = [
     // `compose` builds a new function; applying it to 20 runs inc then double ==> 42.
     name: "Function composition",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; compose builds a NEW function that runs g then f — a closure over both.
   (def (compose f g) (fn (x) (f (g x))))
   (def (double x) (* x 2))
@@ -148,7 +150,7 @@ export const EXAMPLES: Example[] = [
     // it returns instantly, where naive fib(30) would make >2.7M calls.
     name: "Memoized Fibonacci (Map cache)",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; A persistent Map threaded as a cache: fib returns (value, updated-map).
   ; Looking a result up before recomputing turns exponential fib into linear.
   (def (fib n mp)
@@ -171,7 +173,7 @@ export const EXAMPLES: Example[] = [
     // (List (Tuple Int64 Int64)) of (value, count) pairs — the shape a notebook `table` cell renders.
     name: "Frequency count (fold into a Map)",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; Count occurrences of each element, accumulating into a Map.
   (def (bump mp k)
     (match (Map.lookup mp k)
@@ -192,17 +194,15 @@ export const EXAMPLES: Example[] = [
   },
   {
     // Shows off: EXACT rational arithmetic — 1/2 + 1/3 + 1/6 is EXACTLY 1, with no floating-point
-    // drift. The (pragma default-fraction Rational) makes bare literals exact fractions; compare with
-    // Float64, where 0.1 + 0.2 famously isn't 0.3. The pragma lives in a nested module whose function
-    // the outer main calls (the way a module sets its own numeric default).
+    // drift. The `(pragma default-fraction Rational)` directive makes every bare literal in scope an
+    // exact fraction; compare with Float64, where 0.1 + 0.2 famously isn't 0.3.
     name: "Exact rational arithmetic",
     surface: "sexpr",
     source: `(do
-  (module m
-    (pragma default-fraction Rational)
-    ; Bare literals here are EXACT fractions, so this sums to exactly 1 — no float drift.
-    (def (sum) (+ (+ (/ 1 2) (/ 1 3)) (/ 1 6))))
-  (def (main) ((. m sum) unit))
+  (pragma default-fraction Rational)
+  ; Bare literals here are EXACT fractions, so this sums to exactly 1 — no float drift.
+  (def (sum) (+ (+ (/ 1 2) (/ 1 3)) (/ 1 6)))
+  (def (main) (sum))
   (export main))`,
     expected: "(: 1/1 Rational)",
   },
@@ -211,7 +211,7 @@ export const EXAMPLES: Example[] = [
     // gcd(a,b) = gcd(b, a mod b); lcm(a,b) = a*b/gcd. lcm(12,18) = 36.
     name: "GCD and LCM (Euclid)",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; Euclid's algorithm: gcd(a, b) = gcd(b, a mod b), until b is 0.
   (def (gcd a b) (if (= b 0) a (gcd b (% a b))))
   ; LCM falls out of GCD: lcm(a, b) = a * b / gcd(a, b).
@@ -225,7 +225,7 @@ export const EXAMPLES: Example[] = [
     // of two sets) is built from union + difference: (A\\B) ∪ (B\\A). Result: {1, 2, 5, 6}.
     name: "Set algebra (symmetric difference)",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; The symmetric difference of two sets: elements in exactly one of them.
   ; (A minus B) union (B minus A). Sets also give you dedup for free.
   (def (sym-diff a b)
@@ -243,7 +243,7 @@ export const EXAMPLES: Example[] = [
     // "3 4 + 5 *" = (3+4)*5 = 35.
     name: "RPN calculator (stack machine)",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; A stack is a cons list — push and pop are just constructors and match.
   (type Stack (Empty unit) (Cons (Tuple Int64 Stack)))
   (def (push s x) (Cons (tuple x s)))
@@ -281,7 +281,7 @@ export const EXAMPLES: Example[] = [
     // isprime tests divisibility up to √n; count folds over the range. Primes ≤ 100 = 25.
     name: "Count primes (trial division)",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; Trial division: n is prime if no d with d*d <= n divides it.
   (def (isprime-from d n)
     (if (> (* d d) n)
@@ -303,7 +303,7 @@ export const EXAMPLES: Example[] = [
     // rule. Returns the row after 4 generations of a single seed cell.
     name: "Rule 110 cellular automaton",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; Elementary cellular automaton Rule 110 — a row of 0/1 cells, each new cell a
   ; function of its left/center/right neighbours. Famously Turing-complete.
   (def (cell xs i) (match (List.at xs i) ((Some v) v) ((None) 0)))
@@ -327,7 +327,7 @@ export const EXAMPLES: Example[] = [
     // over a list of (name, age) records by index-recursion. (36 + 41 + 40) / 3 = 39.
     name: "Data pipeline over records",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; A list of records — access a field with (. r age) — aggregated into an average.
   (def (sum-age xs i n acc)
     (if (= i n)
@@ -348,7 +348,7 @@ export const EXAMPLES: Example[] = [
     // n disks is 2^n - 1 (move n-1, move the big disk, move n-1 back). hanoi(10) = 1023.
     name: "Tower of Hanoi (move count)",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; Moves to solve Tower of Hanoi: solve n-1, move the largest disk, solve n-1 again.
   ; This is exactly 2^n - 1.
   (def (hanoi n)
@@ -364,7 +364,7 @@ export const EXAMPLES: Example[] = [
     // number by repeatedly taking n mod 2 and dividing by 2. 2730 = 0b101010101010 has 6 one-bits.
     name: "Population count (bits)",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; Count the 1-bits of n: the low bit is n mod 2; shift right by dividing by 2.
   (def (popcount n acc)
     (if (= n 0)
@@ -380,7 +380,7 @@ export const EXAMPLES: Example[] = [
     // accumulator is annotated so its element type is fixed before any element is pushed.
     name: "Run-length encoding",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   (def (at xs i) (match (List.at xs i) ((Some v) v) ((None) 0)))
   ; Walk the list carrying the current value + its running count; emit on a change.
   (def (go xs i n cur cnt acc)
@@ -402,7 +402,7 @@ export const EXAMPLES: Example[] = [
     // the i-th and (n-1-i)-th UTF-8 bytes moving inward. "racecar" -> 1 (true).
     name: "Palindrome check",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; Compare bytes from both ends moving inward; a mismatch means not a palindrome.
   (def (at bs i) (match (Bytes.at bs i) ((Some b) b) ((None) 0)))
   (def (pal bs i j)
@@ -420,7 +420,7 @@ export const EXAMPLES: Example[] = [
     // largest g with g*g <= n. isqrt(144) = 12.
     name: "Integer square root",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; The largest g such that g*g <= n: search up until g*g overshoots, then back off one.
   (def (isqrt-from n g)
     (if (> (* g g) n) (- g 1) (isqrt-from n (+ g 1))))
@@ -434,7 +434,7 @@ export const EXAMPLES: Example[] = [
     // The prelude List has no reverse, so we walk indices downward. [1 2 3 4 5] -> [5 4 3 2 1].
     name: "Reverse a list",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   (def (at xs i) (match (List.at xs i) ((Some v) v) ((None) 0)))
   ; Walk from the last index down, pushing each element onto a fresh list.
   (def (rev xs i acc)
@@ -451,7 +451,7 @@ export const EXAMPLES: Example[] = [
     // generate the expression (base*base + offset) for base=6, offset=5 and evaluate it -> 41.
     name: "Metaprogramming (quote & eval)",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; quasiquote builds code as data; unquote splices a value in; eval runs it.
   ; This generates and evaluates  (base * base) + offset.
   (def (gen base offset)
@@ -466,7 +466,7 @@ export const EXAMPLES: Example[] = [
     // STATE, hands back the new total, and resumes. tick 10 -> 10, tick 5 -> 15, so 10 + 15 = 25.
     name: "Effects & handlers (stateful)",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   ; Declare an effect, then discharge it with a handler that threads STATE.
   (effect Tick (op tick (-> Int64 Int64)))
   (def (main)
@@ -480,7 +480,7 @@ export const EXAMPLES: Example[] = [
   {
     name: "A type error (see the squiggle)",
     surface: "sexpr",
-    source: `(module m
+    source: `(do
   (def (main) (+ 1 true))
   (export main))`,
   },

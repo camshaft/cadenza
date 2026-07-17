@@ -1599,12 +1599,28 @@ fn scaffold_project(dir: &std::path::Path, sexpr: bool, created: bool) -> ExitCo
     // `cdz fmt --check` immediately (a CI that fmt-checks shouldn't fail on the scaffold). The ML printer
     // puts a blank line between a top-level `def` and the `export` block — the previous single-line-gap
     // template failed `cdz fmt --check` on a brand-new project.
+    // The scaffolded entry ships a starter `@test` alongside `main`, so a fresh project is BUILDABLE,
+    // RUNNABLE, and TESTABLE out of the box — `cd <name> && cdz test` passes immediately (the `cargo new`
+    // convention of a green starter test), instead of the previous scaffold's `cdz test` dead-ending on
+    // "the manifest declares no `tests`". Written in CANONICAL (`cdz fmt`) form so the fresh project also
+    // passes `cdz fmt --check` (the ML printer puts `@test` on its own line, a blank line before `export`;
+    // the s-expr equality operator is `=`, not `==`).
     let (ext, entry_src) = if sexpr {
-        ("sexp", "(do (def (main) 0) (export main))\n".to_string())
+        (
+            "sexp",
+            "(do (def (main) 0) \
+             (@ test (def (main_is_zero) (if (= (main) 0) unit (trap \"main\")))) \
+             (export main))\n"
+                .to_string(),
+        )
     } else {
         (
             "cdz",
-            "def main() -> Int64 = 0\n\nexport { main }\n".to_string(),
+            "def main() -> Int64 = 0\n\n\
+             @test\n\
+             def main_is_zero() = if main() == 0 then unit else trap(\"main\")\n\n\
+             export { main }\n"
+                .to_string(),
         )
     };
     let entry_file = format!("main.{ext}");
@@ -1612,9 +1628,13 @@ fn scaffold_project(dir: &std::path::Path, sexpr: bool, created: bool) -> ExitCo
     // with a `"`, `\`, or control char would otherwise inject into (and malform) the generated
     // Project.cdz. `entry_file` is always `main.cdz`/`main.sexp` (no escaping needed), but escape it too
     // for uniformity. Uses the canonical `cadenza_syntax` escaper so the manifest re-parses exactly.
+    // Declare the entry as the test suite too (`def tests = ["main.cdz"]`), so `cdz test` runs the
+    // scaffolded `@test` out of the box rather than reporting "the manifest declares no `tests`". The entry
+    // carries both `main` and a starter `@test`, so one file is entry + suite for a fresh project.
     let manifest_src = format!(
-        "def name = \"{}\"\ndef entry = \"{}\"\n",
+        "def name = \"{}\"\ndef entry = \"{}\"\ndef tests = [\"{}\"]\n",
         cadenza_syntax::literal::escape_string(&proj_name),
+        cadenza_syntax::literal::escape_string(&entry_file),
         cadenza_syntax::literal::escape_string(&entry_file),
     );
     // Write the manifest + entry. A write failure (permissions, a race) is a clean tool error.

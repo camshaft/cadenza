@@ -344,6 +344,7 @@ pass	a call-returned UInt8 newtype literal-payload arm spills at the narrow widt
 pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly
 pass	a captured pre-shadow value survives the re-binding
 pass	a capturing closure is applied through a recursive higher-order function
+pass	a capturing closure stored as a runtime list element is extracted by List.at and applied
 pass	a capturing closure stored in a tuple is extracted and applied
 pass	a capturing unannotated closure in a payload is typed from the declared arrow
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
@@ -2144,6 +2145,7 @@ pass	an export and a like-named metadata key do not collide
 pass	an export mixing a scalar and a nested-tuple parameter returns a list from both
 pass	an export mixing a scalar and a tuple parameter returns a BigInt from both
 pass	an export mixing a scalar and a tuple parameter returns a list from both
+pass	an export name with a digit-led kebab segment is rejected, not silently invalid
 pass	an export whose name is not kebab-case crosses under a normalized extern name
 pass	an export with a nested-tuple parameter returns a list from its leaves
 pass	an export with a record-with-a-tuple-field parameter returns a list from its leaves
@@ -2302,7 +2304,9 @@ pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
 pass	at min times -1 the three overflow families diverge: checked None, wrapping min
 pass	b4b denotation: a predicate Ast (<= x 100) denotes to the bounds obligation term le (Var 0) (Num 100)
+pass	b4c(conjunctive): two stacked @requires give a 2-hyp proof; licenses requires BOTH hyps covered by the precondition
 pass	b4c(proven): @requires(<= x 100)/@ensures(<= it MAXINT) on (f x)=x+1 discharges — P denoted as hyp, Q[it:=body] as goal
+pass	b4c(unprovable): @ensures(<= it MAXINT) on unbounded (f x)=x+1 is NOT dischargeable — the proof tier correctly MISSES (CDZ-VERIFY)
 pass	binding the same effect to a peer twice is rejected
 pass	bit-field segments pack sub-byte values into one byte
 pass	bitwise AND masks bits
@@ -3099,6 +3103,7 @@ pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two `?`s in one boundary both unwrap (nested happy path)
 pass	two adjacent modules declared inside a function body compose
 pass	two bare nullary variants reflect the same undetermined type
+pass	two capturing closures stored as runtime tuple elements keep distinct captures
 pass	two chars with different scalar values are unequal
 pass	two closures from one factory capture distinct values
 pass	two constant records with the same fields in different written order are equal
@@ -3119,6 +3124,7 @@ pass	two empty byte sequences are equal
 pass	two empty strings are equal
 pass	two equal chars compare equal
 pass	two expects of one bound optional share its resident handle
+pass	two exports normalizing to the same kebab extern name are rejected
 pass	two fallible reads of one Bytes parameter share its resident handle slot
 pass	two fallible reads of one collection parameter share its resident handle slot
 pass	two functions both body-solved to Int64->Bool reflect equal arrows
@@ -3542,7 +3548,6 @@ todo	an escaping closure captures two values and takes three arguments
 todo	an escaping closure whose body binds a multi-variable let
 todo	an escaping closure whose body is a match hits the literal arm
 todo	an escaping closure whose body is a match hits the wildcard arm
-todo	an export name with a digit-led kebab segment is rejected, not silently invalid
 todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
 todo	an unusual in-range width is a first-class type
 todo	and performs the right operand's effect when the left is true
@@ -3672,7 +3677,6 @@ todo	three distinct closure signatures cross as three resource types
 todo	three same-variant literal arms fall through in order
 todo	tuple elements are evaluated left to right
 todo	two @param sites generate two accessors under one Param effect
-todo	two exports normalizing to the same kebab extern name are rejected
 todo	two host calls consume their responses in order
 todo	two host responses combine in call order through a non-commutative operator
 todo	two same-signature Bytes-returning closures share one call — first

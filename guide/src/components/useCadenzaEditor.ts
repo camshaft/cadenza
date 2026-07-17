@@ -30,13 +30,19 @@ export type EditorOutcome =
 /// snippet isn't a complete program, so we wrap it (adding the `export`/`main`), render the whole
 /// program, and strip the added scaffolding back off — round-tripping through the compiler without
 /// exposing it. A `wrap={false}` example (a full module the author wrote) renders directly.
+///
+/// SAME surface (`from === to`) is NOT a no-op: it still round-trips through the compiler's pretty-
+/// printer, so an authored single-line `source` displays PRETTY (indented / line-broken by the
+/// printer) rather than as the raw string the author typed. This is what makes the guide's formatting
+/// uniform everywhere — every editor's initial buffer is the printer's canonical layout regardless of
+/// how the example was hand-written. (A snippet that doesn't round-trip cleanly falls back to the
+/// original text via the caller's `.catch`.)
 export async function renderSnippet(
   text: string,
   from: Surface,
   to: Surface,
   wrap: boolean,
 ): Promise<string> {
-  if (from === to) return text;
   if (!wrap) return renderSyntax(text, from, to);
   const wrapped = wrapModule(text, from);
   const rendered = await renderSyntax(wrapped, from, to);
@@ -70,21 +76,22 @@ export function useCadenzaEditor(
   // (preserving edits) rather than clobbering it with the original `source`.
   const shownSurface = useRef<Surface>(authoredIn);
 
-  // On mount, convert the authored source into the active surface once.
+  // On mount, render the authored source into the active surface via the pretty-printer. We ALWAYS
+  // round-trip (even when `authoredIn === surface`) so the displayed buffer is the printer's canonical
+  // layout — an authored single-line `source` shows PRETTY (indented / line-broken), giving uniform
+  // formatting across every example. A snippet that doesn't round-trip cleanly keeps the raw source.
   useEffect(() => {
     let cancelled = false;
-    if (authoredIn !== surface) {
-      renderSnippet(source, authoredIn, surface, wrap)
-        .then((r) => {
-          if (!cancelled) {
-            setText(r);
-            shownSurface.current = surface;
-          }
-        })
-        .catch(() => {});
-    } else {
-      shownSurface.current = authoredIn;
-    }
+    renderSnippet(source, authoredIn, surface, wrap)
+      .then((r) => {
+        if (!cancelled) {
+          setText(r);
+          shownSurface.current = surface;
+        }
+      })
+      .catch(() => {
+        if (!cancelled) shownSurface.current = surface;
+      });
     return () => {
       cancelled = true;
     };
@@ -162,13 +169,12 @@ export function useCadenzaEditor(
 
   const reset = useCallback(() => {
     const target = shownSurface.current;
-    if (authoredIn === target) {
-      setText(source);
-    } else {
-      renderSnippet(source, authoredIn, target, wrap)
-        .then(setText)
-        .catch(() => setText(source));
-    }
+    // Round-trip through the pretty-printer even for the authored surface, so a reset restores the
+    // same PRETTY layout the reader first saw (not the raw single-line `source`). Falls back to the
+    // raw source if it doesn't round-trip.
+    renderSnippet(source, authoredIn, target, wrap)
+      .then(setText)
+      .catch(() => setText(source));
   }, [authoredIn, source, wrap]);
 
   return { text, setText, surface: shownSurface.current, reset, run, applyFix };

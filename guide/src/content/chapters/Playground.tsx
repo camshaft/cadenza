@@ -136,7 +136,8 @@ export default function Playground() {
       <P>
         Everything here runs the real compiler in your browser — but the same compiler ships as a single
         command-line tool, <C>cdz</C>, for working on your own machine. One binary carries the whole loop:
-        <C>cdz new</C> scaffolds a project (a <C>Project.cdz</C> manifest and a buildable entry file);{" "}
+        <C>cdz new</C> scaffolds a project (a <C>Project.cdz</C> manifest, a buildable entry file, and a
+        passing starter <C>@test</C>, so <C>cdz test</C> is green from the first command);{" "}
         <C>cdz compile</C> lowers a single program to a WebAssembly component and <C>cdz build</C> compiles a
         whole project into one component; <C>cdz run</C> executes a compiled one, <C>cdz check</C> reports
         diagnostics without building, and <C>cdz test</C> runs a module's tests while <C>cdz fmt</C> reprints

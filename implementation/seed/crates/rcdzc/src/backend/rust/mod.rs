@@ -120,6 +120,19 @@ pub(super) const ENV_PARAM: &str = "__cdz_env";
 /// calls itself directly (native stack), so the wasm backend's tail-call-to-loop transform is simply
 /// unnecessary here.
 pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject> {
+    // An export's BOUNDARY NAME must be a valid component-model kebab extern name — a LANGUAGE-level
+    // ill-formedness (CDZ0201), not a wasm-only load concern: two source names colliding under kebab
+    // normalization (`fA` + `f-a` → `f-a`), or a name with a digit-/hyphen-led or non-ASCII segment
+    // (`step-by-2`), is rejected on EVERY backend. The wasm backend rejects these at export planning
+    // (`kebab_export_collision`/`invalid_kebab_export_name`); the rust backend emits no component, so it
+    // would otherwise silently emit a `pub fn` where wasm rejects — a differential outcome. Apply the SAME
+    // two checks here so both backends agree (the corpus grades these `(error CDZ0201)`).
+    if let Some(reject) = super::wasm::kebab_export_collision(layout) {
+        return Err(reject);
+    }
+    if let Some(reject) = super::wasm::invalid_kebab_export_name(db, layout) {
+        return Err(reject);
+    }
     let mut out = String::new();
     out.push_str(PREAMBLE);
     // In async/gas mode the emitted functions thread the `CdzEnv` gas/yield capability. That trait lives

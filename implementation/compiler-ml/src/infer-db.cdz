@@ -71,16 +71,15 @@ def var-type(tree: Tree, binder: Int64, tcol: Map(Int64, Typed)) =
     | _ => Typed.TErr)
 
 /// The result type of a binary node with op `op` and operands at `a`,`b`. Both operands must be `TInt`
-/// (there is no bool arithmetic / bool comparison yet); then arithmetic (43/45/42) → `TInt`, comparison
-/// (60 `<`, 61 `==`) → `TBool`. Any non-Int operand or unknown op → `TErr`.
+/// (there is no bool arithmetic yet); then arithmetic (43/45/42) → `TInt`, relational (60 `<`, 61 `==`,
+/// 62 `>`, 63 `<=`, 64 `>=`, 65 `!=`) → `TBool`. Any non-Int operand or unknown op → `TErr`.
 def bin-type(op: Int64, tcol: Map(Int64, Typed), a: Int64, b: Int64) =
   (if both-int(tcol, a, b) then
      (if (op == 43) then Typed.TInt
       else (if (op == 45) then Typed.TInt
       else (if (op == 42) then Typed.TInt
-      else (if (op == 60) then Typed.TBool
-      else (if (op == 61) then Typed.TBool
-      else Typed.TErr)))))
+      else (if (op >= 60) then (if (op <= 65) then Typed.TBool else Typed.TErr)   // relational 60..65 → TBool
+      else Typed.TErr))))
    else Typed.TErr)
 
 /// The type of a `let`: the body's type, provided neither value nor body is `TErr` (a well-typed binding of

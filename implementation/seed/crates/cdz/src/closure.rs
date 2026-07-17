@@ -159,3 +159,58 @@ fn read_or_open(
         None => crate::load_program_spanned_counted(file),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parse `source` as an s-expr program (via the canonical loader, keyed off a `.sexp` name) and return
+    /// the declared import paths — exercising `declared_import_paths` over the real arena shape a closure
+    /// walk reads, not a hand-built arena.
+    fn imports_of(source: &str) -> Vec<String> {
+        let (_src, arenas, _spans, _errs) =
+            crate::parse_program_spanned_counted("t.sexp", source.to_string())
+                .expect("the fixture parses");
+        declared_import_paths(&arenas)
+    }
+
+    #[test]
+    fn declared_import_paths_reads_a_multi_form_do_root() {
+        // A multi-form program is a `(do …)` root; each `(import "path" (name…))` clause contributes its
+        // PATH string, in order. Two imports + a def → both paths, def ignored.
+        assert_eq!(
+            imports_of("(do (import \"lib-a\" (f)) (import \"lib-b\" (g)) (def main 1))"),
+            vec!["lib-a".to_string(), "lib-b".to_string()]
+        );
+    }
+
+    #[test]
+    fn declared_import_paths_reads_a_bare_single_form_root() {
+        // A single top-level form is its OWN root (no `(do …)` wrapper). A lone import is still detected —
+        // the `None => vec![root]` arm.
+        assert_eq!(
+            imports_of("(import \"solo\" (h))"),
+            vec!["solo".to_string()]
+        );
+    }
+
+    #[test]
+    fn declared_import_paths_is_empty_when_there_are_no_imports() {
+        // A program with no import clause declares nothing — the closure walk pulls in no siblings.
+        assert!(imports_of("(do (def main 1) (def helper 2))").is_empty());
+        assert!(imports_of("(def main 1)").is_empty());
+    }
+
+    #[test]
+    fn declared_import_paths_ignores_a_malformed_import_with_no_string_path() {
+        // A malformed import whose first tail element is NOT a string (an aliased/qualified form the parser
+        // preserves, or a bare `(import)`) contributes NOTHING here — `link()` reports it as a diagnostic
+        // once the file is pulled in; the closure walk simply doesn't chase a non-path. A well-formed
+        // import alongside it is still collected (the malformed one doesn't poison the scan).
+        assert_eq!(
+            imports_of("(do (import \"good\" (f)) (import bad (g)) (def main 1))"),
+            vec!["good".to_string()],
+            "a string-path import is kept; a non-string-path import is skipped, not fatal"
+        );
+    }
+}
