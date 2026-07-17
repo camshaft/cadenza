@@ -60653,6 +60653,42 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn highlight_paints_a_tag_annotation_without_false_reds() {
+        // A call-style `@tag("slow") def` reifies to `(@ (tag "slow") (def …))` — UNLIKE `@param`, the
+        // `@tag` annotation DOES wrap a `(def …)`, so `db::strip_annotations` UNWRAPS it in place (the def
+        // adopts the inner children) and ORPHANS both the `@` sigil AND the `(tag "slow")` application (they
+        // keep source spans but their ancestor chain no longer reaches root). The `@` is caught as an
+        // annotation token → `keyword`; the orphaned `tag` head + its `"slow"` string are inert (they resolve
+        // to nothing and are unreachable from root), so the quoted-data `reaches_root` stopgap softens the
+        // would-be-`unbound` `tag` head to `symbol` (data) rather than error-red. The tagged def + its body
+        // still classify normally through resolution. This PINS the invariant that a valid `@tag` program
+        // shows NO false-red highlight (a def-wrapping call-style annotation is the twin of the `@param`
+        // false-red case, which needed a fix; `@tag` is already safe via the orphan/stopgap paths).
+        //
+        // NOTE on the `tag` head colour: it reads `symbol`, not `keyword`. Painting it `keyword` (a decorator,
+        // matching the `@` sigil) is a cosmetic nicety, but the orphaned `(tag …)` app is STRUCTURALLY
+        // IDENTICAL to a quoted `(tag …)` data list (both detach from root after their respective in-place
+        // rewrites), so a keyword-paint keyed on "detached list headed `tag`" would misclassify quoted data —
+        // an unsound heuristic for a purely-cosmetic gain (both colours are non-red). So `symbol` is the
+        // deliberate, sound classification; this test locks it so a future change can't silently flip it.
+        let src = "(module m (@ (tag \"slow\") (def (t) (+ 1 1))) (export t))";
+        // The `@` sigil is an annotation decorator.
+        assert_eq!(highlight_kinds_of(src, "@"), vec!["keyword"]);
+        // The `tag` head of the orphaned call-style application — inert data, `symbol` not `unbound`.
+        assert_eq!(highlight_kinds_of(src, "tag"), vec!["symbol"]);
+        // The tagged def name still resolves — a nullary def reads as `variable` (a def WITH parameters
+        // reads `function`; `t` takes none), at both the def occurrence and the export reference. Never red.
+        assert_eq!(highlight_kinds_of(src, "t"), vec!["variable", "variable"]);
+        // NOTHING in a clean `@tag` program is painted error-red.
+        let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
+        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+        assert!(
+            !text.lines().any(|l| l.ends_with("\tunbound")),
+            "no token in a clean @tag program is unbound:\n{text}"
+        );
+    }
+
+    #[test]
     fn highlight_colours_literals_by_kind() {
         // Each literal leaf carries its own kind; a keyword head is `keyword`.
         let src = "(module m (def (main) (if true 42 0)) (export main))";
