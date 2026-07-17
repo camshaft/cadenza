@@ -91,15 +91,21 @@ def parse-factor(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
       (match tok-at(ts, j) with | Tok.TRParen => (inner, j + 1, t1) | _ => (inner, j, t1)))
   | _ => (match add-node(tree, Node.NLit(0)) with | (id, t1) => (id, i + 1, t1))   // error recovery: 0
 
-/// parse-term: factor (`*` factor)* — `*` binds tighter than `+`/`-`.
+/// parse-term: factor ((`*`|`/`|`%`) factor)* — the multiplicative tier, tighter than `+`/`-` and
+/// left-associative. Op codes 42 `*`, 47 `/`, 37 `%` all bind here; each builds an `NBin` (op-agnostic), so
+/// `/` and `%` join by widening the op test — no new grammar function (SCC-safe).
 def parse-term(ts: List(Tok), i: Int64, tree: Tree) =
   (match parse-factor(ts, i, tree) with | (lhs, j, t1) => parse-term-tail(ts, j, lhs, t1))
 
 def parse-term-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree) =
-  (if op-code(tok-at(ts, i)) == 42 then
-    (match parse-factor(ts, i + 1, tree) with | (rhs, j, t1) =>
-      (match add-node(t1, Node.NBin(42, lhs, rhs)) with | (id, t2) => parse-term-tail(ts, j, id, t2)))
-   else (lhs, i, tree))
+  (let op = op-code(tok-at(ts, i)) in
+   if (op == 42) then mul-tail-add(ts, i, lhs, tree, 42)
+   else (if (op == 47) then mul-tail-add(ts, i, lhs, tree, 47)
+   else (if (op == 37) then mul-tail-add(ts, i, lhs, tree, 37) else (lhs, i, tree))))
+
+def mul-tail-add(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
+  (match parse-factor(ts, i + 1, tree) with | (rhs, j, t1) =>
+    (match add-node(t1, Node.NBin(op, lhs, rhs)) with | (id, t2) => parse-term-tail(ts, j, id, t2)))
 
 /// parse-expr: term ((`+`|`-`) term)* — left-associative additive layer.
 def parse-expr(ts: List(Tok), i: Int64, tree: Tree) =
@@ -198,6 +204,8 @@ def var(nm: Int64) = Tok.TName(nm)
 def plus() = Tok.TOp(43)
 def minus() = Tok.TOp(45)
 def times() = Tok.TOp(42)
+def divop() = Tok.TOp(47)   // `/`
+def modop() = Tok.TOp(37)   // `%`
 def letkw() = Tok.TLet
 def inkw() = Tok.TIn
 def eq() = Tok.TEq
@@ -436,6 +444,21 @@ def pd-ne-looser-than-arith() =
     (match node-at(tree, root) with
       | Option.Some(Node.NBin(op, l, _)) =>
         (if op == 65 then (if is-bin-op(tree, l, 43) then unit else trap("!= 's left is a + Bin")) else trap("root is !="))
+      | _ => trap("root is a Bin")))
+
+@test
+def pd-div-op() =
+  // "8 / 2" → NBin with op 47.
+  (match parse-tokens([n(8), divop(), n(2)]) with | (root, tree) =>
+    (if is-bin-op(tree, root, 47) then unit else trap("root is a / Bin")))
+
+@test
+def pd-mod-same-precedence-as-mul() =
+  // "1 + 6 % 4" → root is `+` whose RIGHT is a `%` Bin (% binds tighter than +, same tier as *).
+  (match parse-tokens([n(1), plus(), n(6), modop(), n(4)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NBin(op, _, r)) =>
+        (if op == 43 then (if is-bin-op(tree, r, 37) then unit else trap("+ 's right is a % Bin")) else trap("root is +"))
       | _ => trap("root is a Bin")))
 
 export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit }

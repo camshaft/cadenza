@@ -50,13 +50,14 @@ def eval-bin(op: Int64, a: Int64, b: Int64) =
    else (if op == 45 then Option.Some(a - b)
    else (if op == 42 then Option.Some(a * b)
    else (if op == 47 then (if b == 0 then Option.None(unit) else Option.Some(a / b))
+   else (if op == 37 then (if b == 0 then Option.None(unit) else Option.Some(a % b))   // modulo; %0 → None
    else (if op == 60 then Option.Some(if a < b then 1 else 0)
    else (if op == 61 then Option.Some(if a == b then 1 else 0)
    else (if op == 62 then Option.Some(if b < a then 1 else 0)                  // a > b  ≡ b < a
    else (if op == 63 then Option.Some(if b < a then 0 else 1)                  // a <= b ≡ not (b < a)
    else (if op == 64 then Option.Some(if a < b then 0 else 1)                  // a >= b ≡ not (a < b)
    else (if op == 65 then Option.Some(if a == b then 0 else 1)                 // a != b ≡ not (a == b)
-   else Option.None(unit)))))))))))
+   else Option.None(unit))))))))))))
 
 /// Evaluate a lowered tree from `root` with an empty env — `Some value` for a well-typed program, `None` if
 /// it had no core form (ill-typed) or hit a malformed Core.
@@ -75,6 +76,8 @@ def var(nm: Int64) = Tok.TName(nm)
 def plus() = Tok.TOp(43)
 def minus() = Tok.TOp(45)
 def times() = Tok.TOp(42)
+def divop() = Tok.TOp(47)
+def modop() = Tok.TOp(37)
 def letkw() = Tok.TLet
 def inkw() = Tok.TIn
 def eq() = Tok.TEq
@@ -278,5 +281,30 @@ def ev-ne() =
 def ev-rel-in-if() =
   // if 5 >= 5 then 1 else 0 → 1 (a new relational op as an if condition).
   (match run([ifkw(), n(5), ge(), n(5), thenkw(), n(1), elsekw(), n(0)]) with | Option.Some(v) => (if v == 1 then unit else trap("5>=5 → then=1")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-div() =
+  // 8 / 2 → 4.
+  (match run([n(8), divop(), n(2)]) with | Option.Some(v) => (if v == 4 then unit else trap("8/2=4")) | Option.None(_) => trap("div runs"))
+
+@test
+def ev-div-by-zero-is-none() =
+  // 5 / 0 → None (trap-free: divide-by-zero yields absence, not a crash).
+  (match run([n(5), divop(), n(0)]) with | Option.None(_) => unit | Option.Some(_) => trap("5/0 must be None"))
+
+@test
+def ev-mod() =
+  // 7 % 3 → 1.
+  (match run([n(7), modop(), n(3)]) with | Option.Some(v) => (if v == 1 then unit else trap("7%3=1")) | Option.None(_) => trap("mod runs"))
+
+@test
+def ev-mod-by-zero-is-none() =
+  // 7 % 0 → None.
+  (match run([n(7), modop(), n(0)]) with | Option.None(_) => unit | Option.Some(_) => trap("7%0 must be None"))
+
+@test
+def ev-div-precedence() =
+  // 1 + 8 / 2 → 5 (division tighter than addition).
+  (match run([n(1), plus(), n(8), divop(), n(2)]) with | Option.Some(v) => (if v == 5 then unit else trap("1+8/2=5")) | Option.None(_) => trap("runs"))
 
 export { eval-core, eval-bin, eval-tree, run, milestone-tokens, run-milestone }
