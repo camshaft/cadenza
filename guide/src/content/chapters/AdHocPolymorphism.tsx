@@ -58,16 +58,24 @@ export default function AdHocPolymorphism() {
         function; no record is passed, no field is looked up at run time:
       </P>
       <Runnable
-        source={`(def (describe-int n) (+ n 100))
+        source={`(def (describe-plus n) (+ n 100))
+(def (describe-double n) (* n 2))
 (def (show-with (const (: dict (Record (describe (-> Int64 Int64))))) (: x Int64))
   ((. dict describe) x))
-(def (main) (show-with (record (describe describe-int)) 5))`}
+(def (main)
+  (+ (show-with (record (describe describe-plus)) 5)
+     (show-with (record (describe describe-double)) 5)))`}
       />
       <P>
-        Same <C>106</C>-style dispatch, now with zero runtime cost: the dictionary is a compile-time
-        argument, folded away. This is what a typeclass system does under the hood — thread a dictionary to
-        the use site — except here the dictionary is an ordinary record you can see, and the erasure is the
-        general <C>const</C> mechanism, not special trait plumbing.
+        Two different instances through the same specialized <C>show-with</C> — <C>describe-plus</C> gives{" "}
+        <C>105</C>, <C>describe-double</C> gives <C>10</C>, summing to <C>115</C> — so dispatch genuinely
+        varies even with the dictionary erased. The annotation <C>{`(Record (describe (-> Int64 Int64)))`}</C> is
+        a real constraint: it names the field the dictionary must carry and its type, so a record missing{" "}
+        <C>describe</C> (or with the wrong signature) is a compile error, not a runtime surprise. Zero runtime
+        cost, because the dictionary is a compile-time argument folded away: this is exactly what a typeclass
+        system does under the hood — thread a dictionary to the use site — except here the dictionary is an
+        ordinary record you can see, and the erasure is the general <C>const</C> mechanism, not special trait
+        plumbing.
       </P>
 
       <H2>The built-in instances: typed operators</H2>
