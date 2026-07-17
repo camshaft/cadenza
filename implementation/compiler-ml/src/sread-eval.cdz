@@ -60,4 +60,20 @@ def se-unsupported-declines() =
   // NOT an NLit-0 that would fabricate a value and falsely disagree with rcdzc.
   (match run-src("\"hello\"") with | Option.None(_) => unit | Option.Some(_) => trap("string literal declines"))
 
+@test
+def se-digit-separator-declines() =
+  // `1_000_000` is a DIGIT-SEPARATOR literal this subset doesn't support — it must DECLINE, NOT read the
+  // prefix `1` (which would falsely differ from rcdzc's 1000000). The token-boundary guard catches it.
+  (match run-src("1_000_000") with | Option.None(_) => unit | Option.Some(_) => trap("1_000_000 declines, not value 1"))
+
+@test
+def se-trailing-junk-declines() =
+  // `123abc` is malformed (rcdzc rejects it) — must DECLINE, not read `123` and ignore the trailing letters.
+  (match run-src("123abc") with | Option.None(_) => unit | Option.Some(_) => trap("123abc declines, not value 123"))
+
+@test
+def se-plain-int-still-runs() =
+  // regression guard: a CLEAN int literal still runs (the boundary guard only rejects non-clean endings).
+  (match run-src("42") with | Option.Some(v) => (if v == 42 then unit else trap("42")) | Option.None(_) => trap("clean int still runs"))
+
 export { run-src }
