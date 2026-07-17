@@ -2013,6 +2013,8 @@ pass	a spliced boolean drives an evaluated conditional through the lifted leaf
 pass	a spliced string participates in an evaluated equality
 pass	a squared BigInt-inner quantity added to a linear one is a dimension mismatch
 pass	a squared quantity does not add to a linear quantity
+pass	a stacked @test @ensures def called as a function returns its value, not unit (value-transparent)
+pass	a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)
 pass	a state-advancing helper called before a later read threads its write through the continuation
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller

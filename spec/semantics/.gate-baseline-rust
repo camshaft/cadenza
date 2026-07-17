@@ -3710,3 +3710,5 @@ todo	two host responses combine in call order through a non-commutative operator
 todo	two same-signature Bytes-returning closures share one call — first
 todo	two same-signature Bytes-returning closures share one call — second
 todo	two same-signature String-returning closures share one call
+pass	a stacked @test @ensures def called as a function returns its value, not unit (value-transparent)
+pass	a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)

@@ -1624,3 +1624,39 @@
                       ((Option.None) true))))))
             (export main)))
   (output (: true Bool)))
+; ── TESTED tier: a `@test`-stacked `@ensures` is VALUE-TRANSPARENT and still checks the postcondition ─────
+; When `@test` is stacked on `@ensures`, the postcondition runs as a property test (v-property-testing's
+; lane): the rewrite injects `(let ((it BODY)) (if Q it (trap …)))` — `it` bound to the def's own result so
+; the predicate reads the computed value, TRAPPING when Q is false (a `@test` passes by returning, fails by
+; trapping). The pass branch returns `it` (the def's VALUE), NOT `unit` — so the def stays value-transparent
+; when ALSO called as an ordinary function, exactly like a bare `@test` def and a bare `@ensures` def both do
+; (neither changes the def's return value). These two pin both halves so neither regresses: value-transparency
+; (the def still returns its value) AND the test semantics (a false postcondition still traps). The stacked
+; rewrite returning `unit` on the pass branch was a surprise a breaker probe flagged; the fix returns `it`.
+
+(case "a stacked @test @ensures def called as a function returns its value, not unit (value-transparent)"
+  (doc    "A def carrying BOTH `@test` and `@ensures`, when CALLED as an ordinary function, returns its
+           computed value — NOT `unit`. `(dbl 5)` = 10, the same value a bare `@test` def or a bare
+           `@ensures` def returns (both are value-transparent). The TESTED-tier rewrite injects
+           `(let ((it BODY)) (if Q it (trap …)))`: the pass branch returns `it` (the def's result), so the
+           postcondition check does not swallow the value. A rewrite that returned `unit` on the pass branch
+           (the earlier behavior) would make the stacked form silently non-value-transparent — this pins it
+           does not. The true postcondition `(>= it 0)` holds for 10, so no trap; the value 10 flows out.")
+  (input  (do
+            (@ test (@ (ensures (>= it 0)) (def (dbl (: x Int64)) (+ x x))))
+            (def (main) (dbl 5))
+            (export main)))
+  (output (: 10 Int64)))
+
+(case "a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)"
+  (doc    "The test-semantics half of the value-transparency pin above: making the postcondition FALSE must
+           still TRAP (a `@test` fails by trapping). `(dbl 5)` = 10 and the postcondition `(< it 0)` — i.e.
+           `10 < 0` — is false, so the injected `(if Q it (trap …))` takes the trap arm, halting with the
+           canonical `unreachable` kind. Together with the value-transparent case above this pins that
+           returning `it` (not `unit`) on the PASS branch did NOT weaken the check: a true postcondition
+           yields the value, a false one still traps — the fix is value-transparent AND test-preserving.")
+  (input  (do
+            (@ test (@ (ensures (< it 0)) (def (dbl (: x Int64)) (+ x x))))
+            (def (main) (dbl 5))
+            (export main)))
+  (trap   "unreachable"))
