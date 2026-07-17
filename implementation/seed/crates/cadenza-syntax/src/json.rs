@@ -1039,6 +1039,53 @@ mod tests {
     }
 
     #[test]
+    fn a_generated_json_document_survives_the_binary_codec_round_trip() {
+        // The binary codec is the CANONICAL STORED form for a data document too (not just code), so it
+        // must faithfully preserve a JSON value arena. `json_to_binary_round_trips` pins ONE hand doc;
+        // this sweeps it: for random JSON, `read → encode → decode` is structurally identical to the
+        // parsed arena, AND printing the decoded arena re-reads to the same tree (so a doc survives
+        // `cdz convert --from json --to binary` and back). A codec/JSON-surface mismatch on some
+        // generated shape (deep nesting, duplicate/unicode keys, heterogeneous arrays, exact/edge numbers)
+        // would silently corrupt stored data — the sweep the hand case can't reach. Also asserts encode is
+        // DETERMINISTIC (re-encoding the decoded arena reproduces the bytes — the bijection guarantee).
+        let seeds: [u64; 3] = [
+            0x1a7e_c0de_0bad_f00d,
+            0x5eed_face_1234_abcd,
+            0xd06f_00d5_beef_cafe,
+        ];
+        let mut total = 0usize;
+        for &seed in &seeds {
+            let mut rng = Rng(seed);
+            for _ in 0..1500 {
+                let depth = 1 + rng.below(4);
+                let src = gen_json(&mut rng, depth);
+                let Ok(a1) = read(&src) else { continue };
+                let bin = crate::codec::encode(&a1);
+                let a2 =
+                    crate::codec::decode(&bin).expect("a JSON arena decodes from its own encoding");
+                assert!(
+                    a1.structurally_eq(&a2),
+                    "JSON arena survives binary round-trip for {src}"
+                );
+                // Determinism: re-encoding the decoded arena reproduces the exact bytes.
+                assert_eq!(
+                    bin,
+                    crate::codec::encode(&a2),
+                    "binary encode is deterministic for {src}"
+                );
+                // And the decoded arena prints back to a tree that re-reads identically.
+                let a3 = read(&print(&a2, 100)).expect("decoded-then-printed JSON re-reads");
+                assert!(
+                    a1.structurally_eq(&a3),
+                    "JSON survives binary → print → re-read for {src}"
+                );
+                total += 1;
+            }
+        }
+        assert!(total >= 4000, "swept a meaningful codec space, got {total}");
+    }
+
+    #[test]
     fn json_read_never_panics_on_arbitrary_input() {
         // `read` operates on UNTRUSTED text; it must return a diagnostic, never panic. Sweep random
         // byte-ish strings (drawn from JSON's structural chars + digits + escapes + unicode) plus
