@@ -5787,6 +5787,36 @@ fn a_handler_arm_capturing_an_enclosing_fn_param_folds_under_a_multi_arm_nested_
     }
 }
 
+/// A memoized query-DB shape (the salsa `Db` a self-hosting compiler mirrors): a TWO-op handler where an arm
+/// DESTRUCTURES its arg with a `match` and resumes inside the branch, performed in a `;`-SEQUENCE with a later
+/// op that READS the state the first wrote. `put` arm `(match kv ((tuple k v) (resume unit (+ k v))))` threads
+/// a new state from the PATTERN BINDERS; `get` reads it. Before the fix this declined "not yet reducible": the
+/// perform arm's `(value, next_state)` extraction (`peel_resume_from_arm_body`) handled a bare `(resume v s)`
+/// and a `(do stmt… (resume v s))` but NOT a `(match … (resume v s))` arm body → the whole fold declined when
+/// the match-shaped arm was performed in a sequence. The fix peels the resume from EACH match branch and
+/// rebuilds BOTH a value-match and a next-state-match over the (pure) arg — so a branch next-state that
+/// references its pattern binders (`(+ k v)`) stays scoped inside the branch and threads forward. A
+/// match-shaped arm folds when performed ONCE already (a different path); this is the SEQUENCED case (the
+/// second perform reads the first's out-state). (v-compiler-ml dogfood — the compiler's Db-on-effects
+/// substrate.)
+#[test]
+fn a_match_shaped_arm_body_resumes_in_a_sequence_of_performs() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Db (op put (-> (Tuple Int64 Int64) Unit)) (op get (-> Int64 Int64))) \
+        (def (main) \
+          (handle Db 0 \
+            ((put (kv) s (match kv ((tuple k v) (resume unit (+ k v))))) \
+             (get (k) s (resume s s))) \
+            (do (Db.put (tuple 1 41)) (Db.get 0)))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "a match-shaped arm body performed in a sequence must peel the resume per branch, not decline",
+    );
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(v, "42");
+    }
+}
+
 /// The residual sub-case of the effectful-helper-in-a-self-call-arg family: an inlined helper whose perform
 /// sits UNDER A CONDITIONAL (`if`/`match`) — either in a branch (`if c then acc + B.b x else acc`) or in the
 /// condition (`if B.b x == 1 then …`). The deep-fresh-copy fixes fold a helper that performs on its
@@ -5942,36 +5972,32 @@ fn an_escaping_captured_continuation_is_refused_not_miscompiled() {
         .expect_err("an escaping captured continuation must be refused, not miscompiled");
 }
 
-/// A handler arm that DESTRUCTURES its state with a `match` and resumes inside EACH branch — e.g.
-/// `(get (u) s (match s ((Some n) (resume n s)) (None (resume 0 s))))` — folds when the body performs
-/// the op ONCE (corpus "a handler whose STATE is a sum destructures it in the arm" → 6), because there
-/// is then no threaded state AFTER the perform. But when the body performs the op MORE THAN ONCE (here a
-/// `(do (St.get) (+ 1 (St.get)))`), the first perform's next-state is BRANCH-DEPENDENT (a `match`-valued
-/// state), and threading that match-valued next-state forward into the SECOND perform is not yet served
-/// by the tail-resumptive fold — so it DECLINES cleanly. This must stay a clean decline, never a
-/// miscompile: threading a branch-dependent state is exactly the shape the state-threading miscompile
-/// ledger warns about (a naive fold would thread against the wrong branch's state). The equivalent
-/// program with the `match` in the resume VALUE — `(resume (match s …) s)` — folds fine (it keeps the
-/// next-state branch-independent), so this is an ergonomic gap, not a capability gap. Pins the boundary.
+/// A handler arm that DESTRUCTURES its state (or its arg) with a `match` and resumes inside EACH branch —
+/// e.g. `(get (u) s (match s ((Some n) (resume n s)) (None (resume 0 s))))`. This now FOLDS under a
+/// MULTI-perform body when the branches thread the SAME next-state: the perform arm peels the resume from
+/// each match branch and rebuilds BOTH a value-match and a next-state-match over the (pure) scrutinee, so
+/// the match-valued next-state threads forward to the next perform (see `peel_resume_from_arm_body`).
+/// `(do (St.get) (+ 1 (St.get)))` over a `(Some 5)` seed: both gets read `(Some 5)` → 5 (both branches
+/// thread `s` unchanged), so `(+ 1 5)` = 6. (Previously this DECLINED "not yet reducible"; the match-shaped
+/// arm-body fix — v-compiler-ml's memoized-DB dogfood — folds it.) A genuinely BRANCH-DIVERGENT next-state
+/// (each branch threads a DIFFERENT advanced state, `(resume n (Some (+ n 1)))`) still DECLINES cleanly —
+/// the deeper match-valued-state re-threading is not yet served — never a MISCOMPILE (the state-threading
+/// ledger's wrong-branch hazard is avoided by declining, not folding to a wrong value).
 #[test]
-fn a_state_destructuring_arm_under_a_multi_perform_body_declines_not_miscompiles() {
+fn a_state_destructuring_arm_under_a_multi_perform_body_folds_or_declines_never_miscompiles() {
     use crate::testkit::parse;
-    // Two performs of `get` under a state-matching arm → the match-valued next-state must thread into
-    // the second perform, which the tail-resumptive fold does not yet do: a clean decline.
+    // Two performs of `get` under a state-matching arm, both branches threading `s` unchanged → FOLDS to 6.
     let src = "(do (effect St (op get (-> Unit Int64))) \
                (def (main) \
                  (handle St (Some 5) ((get (u) s (match s ((Some n) (resume n s)) (None (resume 0 s))))) \
                    (do (St.get) (+ 1 (St.get))))) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-        "a state-destructuring arm under a multi-perform body must decline, not miscompile",
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "a state-destructuring arm under a multi-perform body now folds (match-shaped resume peel)",
     );
-    assert!(
-        !err.message.contains("#eff") && !err.message.contains("$s"),
-        "the decline must not leak an internal state-param name, got: {}",
-        err.message
-    );
-    // The SINGLE-perform companion still FOLDS (the corpus case): a match-state arm is fine when the
-    // body performs once — pin that this decline is specific to the multi-perform / threaded-state shape.
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(v, "6", "both gets read (Some 5) → 5, so (+ 1 5) = 6");
+    }
+    // The SINGLE-perform companion still folds (the corpus case).
     let ok = "(do (effect St (op get (-> Unit Int64))) \
               (def (main) \
                 (handle St (Some 5) ((get (u) s (match s ((Some n) (resume n s)) (None (resume 0 s))))) \
@@ -5980,6 +6006,28 @@ fn a_state_destructuring_arm_under_a_multi_perform_body_declines_not_miscompiles
         compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
         "a single-perform body over a state-destructuring arm must still fold"
     );
+    // A BRANCH-DIVERGENT next-state (each branch advances the state differently) under a multi-perform body
+    // still DECLINES cleanly — never a miscompile (no wrong value, no leaked internal state-param name).
+    let divergent = "(do (effect St (op get (-> Unit Int64))) \
+                     (def (main) \
+                       (handle St (Some 5) ((get (u) s (match s ((Some n) (resume n (Some (+ n 1)))) (None (resume 0 s))))) \
+                         (+ (St.get) (+ (St.get) (St.get))))) (export main))";
+    match compile_component(&crate::codec::encode(&parse(divergent))) {
+        Ok(bytes) => {
+            // If a future increment folds it, the value MUST be correct (L→R: 5 + (6 + 7) = 18), never wrong.
+            if let Some(v) = run_linked(&bytes, "main") {
+                assert_eq!(
+                    v, "18",
+                    "if the divergent case folds, it must be 5 + (6 + 7) = 18, not a miscompile"
+                );
+            }
+        }
+        Err(e) => assert!(
+            !e.message.contains("#eff") && !e.message.contains("$s"),
+            "the divergent-branch decline must be clean (no leaked internal state-param name), got: {}",
+            e.message
+        ),
+    }
 }
 
 /// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
@@ -36873,6 +36921,49 @@ mod match_engine {
     }
 
     #[test]
+    fn chaining_two_unit_in_conversions_is_a_clean_cdz0501_not_a_terse_runtime_decline() {
+        // v-cad report: `Unit.in`/`as` UNWRAPS to a bare number (Q3), so chaining `(Unit.in cm (Unit.in mm
+        // x))` feeds the OUTER Unit.in a bare number, not a quantity. This was a terse uncoded backend
+        // decline ("Unit.in of a non-quantity") at lowering; now it's a clean COMPILE-time CDZ0501 that
+        // explains the unwrap and names the Qty.of-rewrap repair. Caught in check_application before it
+        // reaches lowering.
+        let chained = "(do (def (main) ((. Unit in) ((. Unit of) #\"centimeter\") \
+                       ((. Unit in) ((. Unit of) #\"millimeter\") \
+                        ((. Qty of) ((. Rational of) 1 1) ((. Unit of) #\"inch\"))))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(chained)))
+            .expect_err("chaining two Unit.in conversions must reject");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0501"),
+            "a chained Unit.in (second operand is a bare number) is a coded CDZ0501, not an uncoded decline"
+        );
+        assert!(
+            err.message.contains("converts a QUANTITY") && err.message.contains("Qty.of"),
+            "the message explains Unit.in converts a quantity + names the Qty.of-rewrap repair: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("of a non-quantity"),
+            "the terse backend 'Unit.in of a non-quantity' decline must no longer surface: {}",
+            err.message
+        );
+        // The suggested repair type-checks + computes the exact chained conversion: 1 inch → mm (127/5),
+        // re-wrapped as (Qty.of 127/5 mm), → cm = 127/50 (1 inch = 2.54 cm exactly). The outer `Unit.in cm`
+        // already UNWRAPS to a bare Rational, so no `Qty.value` wrapper is needed on the result.
+        let repaired = "(do (def (main) ((. Unit in) ((. Unit of) #\"centimeter\") \
+                        ((. Qty of) ((. Unit in) ((. Unit of) #\"millimeter\") \
+                          ((. Qty of) ((. Rational of) 1 1) ((. Unit of) #\"inch\"))) \
+                          ((. Unit of) #\"millimeter\")))) (export main))";
+        let Some(rendered) = run_heap_value_escape(repaired) else {
+            return; // no runtime store — the corpus gate is the e2e witness
+        };
+        assert!(
+            rendered.contains("127/50"),
+            "the Qty.of-rewrap repair converts 1 inch → cm = 127/50 exactly: {rendered}"
+        );
+    }
+
+    #[test]
     fn registering_a_family_unit_twice_with_conflicting_conversions_is_an_error() {
         // Operator ask: a name→conversion must be a FUNCTION — registering the same unit name with a
         // DIFFERENT dimension or scale is an error (returns the offending name → CDZ0502 at a future user
@@ -60284,6 +60375,32 @@ mod sidecar_driven {
         // stays `unbound` (red) — only DETACHED (quoted-orphan) leaves are softened to `symbol`.
         let src = "(module m (def (main) (nonexistent 1)) (export main))";
         assert_eq!(highlight_kinds_of(src, "nonexistent"), vec!["unbound"]);
+    }
+
+    #[test]
+    fn highlight_paints_a_well_formed_annotation_as_keyword() {
+        // `db::strip_annotations` unwraps a `(@ NAME (def …))` wrapper IN PLACE and orphans the original
+        // `@`/NAME occurrences (`parent_of == None`) — they keep source spans (so the highlighter paints
+        // them) but resolve to nothing. `classify_highlight` recognizes a PARENTLESS `@` / known-annotation
+        // name as an annotation token and paints it `keyword` (a decorator), not a generic `symbol` or a
+        // spurious `unbound`. The `def` name and body still classify normally through resolution.
+        let src = "(module m (@ test (def (t) (assert_eq 1 1 \"x\"))) (export t))";
+        assert_eq!(highlight_kinds_of(src, "@"), vec!["keyword"]);
+        assert_eq!(highlight_kinds_of(src, "test"), vec!["keyword"]);
+        // A second known annotation spelling paints the same way.
+        let src2 =
+            "(module m (@ exhaustive (def (p (: n Int64)) (assert (> n 0) \"x\"))) (export p))";
+        assert_eq!(highlight_kinds_of(src2, "exhaustive"), vec!["keyword"]);
+    }
+
+    #[test]
+    fn highlight_still_reds_an_annotation_that_wraps_no_definition() {
+        // The annotation-token softening is NARROW: it fires only on the PARENTLESS occurrences an in-place
+        // unwrap leaves behind. A `(@ NAME <non-def>)` is a genuine CDZ0201 (an annotation must wrap a def);
+        // it is NOT rewritten, so its `@` KEEPS its parent → falls through to `unbound` (red), leaving the
+        // real error visible rather than masking it as a decorator.
+        let src = "(module m (def (main) (@ test 42)) (export main))";
+        assert_eq!(highlight_kinds_of(src, "@"), vec!["unbound"]);
     }
 
     #[test]

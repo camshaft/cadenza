@@ -18,6 +18,8 @@ import { OpenInPlayground } from "./OpenInPlayground.tsx";
 import type { Surface } from "../syntax/SyntaxContext.tsx";
 import type { Diag } from "../compiler/client.ts";
 import { fixConfidence, fixIsApplicable } from "../playground/applyFix.ts";
+import { runTests, type TestRunOutcome } from "../runner/client.ts";
+import { useSyntax } from "../syntax/SyntaxContext.tsx";
 
 /// Wrap the editor text into a compilable program for diagnostics/hover, AND report the UTF-8 byte
 /// length of the wrapper prefix so spans map back to the editor text. `wrapModule` trims the snippet,
@@ -43,11 +45,25 @@ interface Props {
   expect?: "value" | "error";
   /** Optional caption shown above the editor. */
   title?: string;
+  /** "run" (default) = compile + run the entry, showing its value. "test" = run the snippet's `@test`
+   *  defs as tests (like `cdz test`), showing inline pass/fail per test. In test mode the source is a
+   *  program with `@test`-annotated defs (no hardcoded main), and `wrap` is ignored (a test build lays
+   *  its boundary out from the @test defs, not an export). */
+  mode?: "run" | "test";
 }
 
 type Status = { phase: "idle" } | { phase: "busy" } | { phase: "done"; outcome: EditorOutcome };
+type TestStatus =
+  | { phase: "idle" }
+  | { phase: "busy" }
+  | { phase: "done"; outcome: TestRunOutcome };
 
-export function Runnable({ source, authoredIn = "sexpr", wrap = true, expect = "value", title }: Props) {
+export function Runnable({ source, authoredIn = "sexpr", wrap = true, expect = "value", title, mode = "run" }: Props) {
+  if (mode === "test") return <TestRunnable source={source} authoredIn={authoredIn} title={title} />;
+  return <RunRunnable source={source} authoredIn={authoredIn} wrap={wrap} expect={expect} title={title} />;
+}
+
+function RunRunnable({ source, authoredIn = "sexpr", wrap = true, expect = "value", title }: Props) {
   const editor = useCadenzaEditor(source, authoredIn, wrap);
   const [status, setStatus] = useState<Status>({ phase: "idle" });
   // The minimal IDE (squiggles + hover) turns on once the reader focuses the editor, so a page full
@@ -228,4 +244,102 @@ function fixActionLabel(d: Diag): string {
     default:
       return `Replace with \`${fix.replacement}\``;
   }
+}
+
+/// A Runnable in TEST mode: the snippet is a program with `@test`-annotated defs, and Run executes them
+/// as tests (like `cdz test`), showing inline ✓/✗ per test. `wrap` is off — a test build lays its
+/// boundary out from the @test defs, not an export/main. Uses the shared editor (same Cadenza IDE
+/// highlighting) so the reader sees + edits real test code.
+function TestRunnable({ source, authoredIn = "sexpr", title }: Pick<Props, "source" | "authoredIn" | "title">) {
+  const editor = useCadenzaEditor(source, authoredIn, false);
+  const { surface } = useSyntax();
+  const [status, setStatus] = useState<TestStatus>({ phase: "idle" });
+  const [ideOn, setIdeOn] = useState(false);
+
+  async function doRun() {
+    setStatus({ phase: "busy" });
+    try {
+      setStatus({ phase: "done", outcome: await runTests(editor.text, surface) });
+    } catch (e) {
+      setStatus({ phase: "done", outcome: { kind: "error", message: e instanceof Error ? e.message : String(e) } });
+    }
+  }
+
+  const busy = status.phase === "busy";
+  return (
+    <div className="my-6 overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/70 shadow-lg">
+      <div className="flex items-center justify-between border-b border-slate-700/60 bg-slate-800/50 px-3 py-1.5">
+        <span className="text-xs font-medium text-slate-400">{title ?? "Tests"}</span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => { editor.reset(); setStatus({ phase: "idle" }); }}
+            className="rounded px-2 py-1 text-xs text-slate-400 transition hover:bg-slate-700/60 hover:text-slate-200"
+          >
+            Reset
+          </button>
+          <button
+            onClick={doRun}
+            disabled={busy}
+            className="rounded-md bg-cadenza-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-cadenza-500 disabled:opacity-50"
+          >
+            {busy ? "Running…" : "▶ Run tests"}
+          </button>
+        </div>
+      </div>
+
+      <div onFocusCapture={() => setIdeOn(true)}>
+        <CodeEditor
+          value={editor.text}
+          onChange={editor.setText}
+          ide={ideOn ? { surface: () => surface, prepare: (t) => ({ compiled: t, wrapPrefixBytes: 0 }) } : undefined}
+        />
+      </div>
+
+      {status.phase !== "idle" && <TestResultsPane busy={busy} outcome={status.phase === "done" ? status.outcome : null} />}
+    </div>
+  );
+}
+
+/// Renders a test run's outcome: inline ✓/✗ per `@test` (failing tests show the trap message), deferred
+/// property tests as a muted note, or a compile error (e.g. "no `@test` definition"). Mirrors `cdz test`'s
+/// per-test lines + a passed/failed footer.
+function TestResultsPane({ busy, outcome }: { busy: boolean; outcome: TestRunOutcome | null }) {
+  if (busy || !outcome) {
+    return (
+      <div className="border-t border-slate-700/60 bg-slate-800/40 px-4 py-2.5 font-mono text-[13px] text-slate-400">
+        Compiling &amp; running tests…
+      </div>
+    );
+  }
+  if (outcome.kind === "error") {
+    return (
+      <div className="border-t border-slate-700/60 bg-slate-800/40 px-4 py-2.5 font-mono text-[13px] text-rose-300">
+        {outcome.message}
+      </div>
+    );
+  }
+  const ran = outcome.results.filter((r) => !r.deferred);
+  const deferred = outcome.results.filter((r) => r.deferred);
+  const passed = ran.filter((r) => r.pass).length;
+  const failed = ran.length - passed;
+  return (
+    <div className="border-t border-slate-700/60 bg-slate-800/40 px-4 py-2.5 font-mono text-[13px]">
+      <ul className="space-y-1">
+        {ran.map((r) => (
+          <li key={r.name} className={r.pass ? "text-emerald-300" : "text-rose-300"}>
+            {r.pass ? "✓" : "✗"} {r.name}
+            {!r.pass && r.error ? <span className="text-rose-400/80"> — {r.error}</span> : null}
+          </li>
+        ))}
+        {deferred.map((r) => (
+          <li key={r.name} className="text-slate-500">
+            • {r.name} <span className="text-slate-600">— property test (deferred)</span>
+          </li>
+        ))}
+      </ul>
+      <div className={`mt-2 text-xs ${failed > 0 ? "text-rose-400" : "text-emerald-400"}`}>
+        {passed} passed{failed > 0 ? `, ${failed} failed` : ""}{deferred.length > 0 ? `, ${deferred.length} deferred` : ""}
+      </div>
+    </div>
+  );
 }

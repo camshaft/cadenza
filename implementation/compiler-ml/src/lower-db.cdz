@@ -1,0 +1,170 @@
+/// lower-db.cdz — Increment 4 of the Cadenza-in-Cadenza compiler: the LOWER (Core-IR) COLUMN. The third
+/// derived query column, extending the demand chain to lower → infer → resolve → parse: it lowers the typed
+/// parse arena into a small integer Core IR. Mirrors rcdzc's `Lower.core_of` reading `Infer.type_of`.
+///
+/// THE CORE IR is a pointer tree (not an arena) — small and directly walkable by the Inc-5 evaluator. Its
+/// key move is CANONICALIZATION: a source `NVar(nameId)` lowers to `CVar(binderId)` where `binderId` is the
+/// NodeId of the `NLet` that binds it (from the resolve column). So Core carries canonical UNIQUE names
+/// (the binder's identity), not source name-ids — shadowing is already resolved, and the Inc-5 evaluator can
+/// key its environment by binderId with no scope logic. A `NLet(nameId, …)` lowers to `CLet(letNodeId, …)`
+/// keyed by ITS OWN NodeId, matching the `CVar(binderId)` its bound uses carry.
+///
+/// LOWERING IS GATED ON TYPING: `lower-tree` returns `Option(Core)` — `Some` for a well-typed tree, `None`
+/// if any node is `TErr` (unbound name / ill-typed). Absence≠value once more: a type-erroneous program has
+/// NO core form (a filled `None`), not a bogus tree. Lowering reads the infer column to make this decision,
+/// and reads the resolve column to canonicalize vars — producer-reads-two-producers.
+
+import { Tok, Node, Tree, node-at, parse-tokens } from "parse-db"
+import { Resolved, resolve-tree } from "resolve-db"
+import { Typed, infer-tree } from "infer-db"
+
+/// The integer Core IR. `CVar` carries the BINDER node-id (canonical unique name); `CLet` is keyed by its
+/// own let-node-id. Op codes match the parser/token codes (43 +, 45 -, 42 *).
+type Core =
+  | CNum(Int64)
+  | CVar(Int64)               // CVar(binderId) — canonical, resolved
+  | CBin(Int64, Core, Core)   // CBin(op, left, right)
+  | CLet(Int64, Core, Core)   // CLet(binderId, value, body)
+
+/// Lower the subtree at `id`, reading the pre-built resolve column `rcol` (for var canonicalization) and
+/// type column `tcol` (the well-typed gate). Returns `Option(Core)` — `None` if this node or any descendant
+/// is ill-typed / unbound. Reading the two upstream columns (not recomputing) is the producer-reads-producer
+/// contract.
+def lower-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+  // a node whose type fact is TErr (or missing) has no core form.
+  (match Map.lookup(tcol, id) with
+    | Option.Some(Typed.TInt) => lower-ok(tree, id, rcol, tcol)
+    | _ => Option.None(unit))
+
+/// The typed-node case: build the Core node, canonicalizing a var to its binder id via `rcol`.
+def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+  match node-at(tree, id) with
+    | Option.Some(Node.NLit(v)) => Option.Some(Core.CNum(v))
+    | Option.Some(Node.NVar(_)) =>
+        // canonicalize: replace the source name with the binder's node-id (resolve already proved RBound
+        // since the type fact was TInt). Defensive: a non-RBound fact yields no core form.
+        (match Map.lookup(rcol, id) with
+          | Option.Some(Resolved.RBound(binder)) => Option.Some(Core.CVar(binder))
+          | _ => Option.None(unit))
+    | Option.Some(Node.NBin(op, l, r)) =>
+        (match lower-node(tree, l, rcol, tcol) with
+          | Option.Some(cl) =>
+            (match lower-node(tree, r, rcol, tcol) with
+              | Option.Some(cr) => Option.Some(Core.CBin(op, cl, cr))
+              | Option.None(_) => Option.None(unit))
+          | Option.None(_) => Option.None(unit))
+    | Option.Some(Node.NLet(_, valId, bodyId)) =>
+        // the let is keyed by its OWN node-id, matching the CVar(binderId) of its bound uses.
+        (match lower-node(tree, valId, rcol, tcol) with
+          | Option.Some(cv) =>
+            (match lower-node(tree, bodyId, rcol, tcol) with
+              | Option.Some(cb) => Option.Some(Core.CLet(id, cv, cb))
+              | Option.None(_) => Option.None(unit))
+          | Option.None(_) => Option.None(unit))
+    | Option.None(_) => Option.None(unit)
+
+/// The lower COLUMN builder: build resolve + infer columns (demanding parse under them), then lower over
+/// them. The whole demand chain in one call — lower reaches infer reaches resolve reaches parse.
+def lower-tree(tree: Tree, root: Int64) =
+  lower-node(tree, root, resolve-tree(tree, root), infer-tree(tree, root))
+
+/// Probe: the op code of a `CBin` (-1 otherwise).
+def core-op(c: Core) = match c with | Core.CBin(op, _, _) => op | _ => 0 - 1
+
+/// Probe: is this Core a `CNum v`?
+def is-cnum(c: Core, v: Int64) = match c with | Core.CNum(x) => x == v | _ => false
+
+/// Probe: is this Core a `CVar` with binder id `b`?
+def is-cvar(c: Core, b: Int64) = match c with | Core.CVar(x) => x == b | _ => false
+
+/// Test-token builders (parse-db doesn't export its private builders).
+def n(v: Int64) = Tok.TNum(v)
+def var(nm: Int64) = Tok.TName(nm)
+def plus() = Tok.TOp(43)
+def times() = Tok.TOp(42)
+def letkw() = Tok.TLet
+def inkw() = Tok.TIn
+def eq() = Tok.TEq
+def parse-of(ts: List(Tok)) = parse-tokens(ts)
+
+@test
+def lw-literal() =
+  // "5" → Some(CNum 5).
+  (match parse-of([n(5)]) with | (root, tree) =>
+    (match lower-tree(tree, root) with | Option.Some(c) => (if is-cnum(c, 5) then unit else trap("CNum 5")) | Option.None(_) => trap("a literal lowers")))
+
+@test
+def lw-add() =
+  // "1 + 2" → Some(CBin(+, CNum 1, CNum 2)).
+  (match parse-of([n(1), plus(), n(2)]) with | (root, tree) =>
+    (match lower-tree(tree, root) with
+      | Option.Some(Core.CBin(op, l, r)) =>
+        (if op == 43 then (if is-cnum(l, 1) then (if is-cnum(r, 2) then unit else trap("right CNum 2")) else trap("left CNum 1")) else trap("+ op"))
+      | _ => trap("1 + 2 lowers to a CBin")))
+
+@test
+def lw-var-canonicalizes-to-binder() =
+  // "let x = 2 in x" → CLet(binderId, CNum 2, CVar binderId): the body var's CVar carries the LET's node-id.
+  (match parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1)]) with | (root, tree) =>
+    (match lower-tree(tree, root) with
+      | Option.Some(Core.CLet(binderId, cv, cb)) =>
+        (if binderId == root then
+           (if is-cnum(cv, 2) then (if is-cvar(cb, root) then unit else trap("body is CVar(letId)")) else trap("value CNum 2"))
+         else trap("CLet keyed by the let node-id"))
+      | _ => trap("let lowers to CLet")))
+
+@test
+def lw-ill-typed-has-no-core() =
+  // an unbound "x" is TErr → NO core form (None). absence≠value: the ill-typed program has no lowering.
+  (match parse-of([var(1)]) with | (root, tree) =>
+    (match lower-tree(tree, root) with | Option.None(_) => unit | Option.Some(_) => trap("ill-typed program has no core form")))
+
+@test
+def lw-err-in-subtree-blocks-lowering() =
+  // "x + 1" (x unbound) → the whole thing is TErr → None (the error blocks lowering of the parent too).
+  (match parse-of([var(1), plus(), n(1)]) with | (root, tree) =>
+    (match lower-tree(tree, root) with | Option.None(_) => unit | Option.Some(_) => trap("a + with an unbound operand does not lower")))
+
+@test
+def lw-shadowing-canonical-names-distinct() =
+  // "let x = 1 in let x = 2 in x" → the inner x's CVar binds to the INNER let's node-id, not the outer's.
+  // Proves canonicalization disambiguates shadowed names by binder identity.
+  (match parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(1), eq(), n(2), inkw(), var(1)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(_, _, innerLetId)) =>
+        (match lower-tree(tree, root) with
+          | Option.Some(Core.CLet(outerId, _, body)) =>
+            (match body with
+              | Core.CLet(innerId, _, innerBody) =>
+                (if is-cvar(innerBody, innerId) then
+                   (if (innerId == innerLetId) then (if (outerId == root) then unit else trap("outer CLet keyed by root")) else trap("inner CLet keyed by inner let id"))
+                 else trap("inner body is CVar(innerLetId) — shadow resolved"))
+              | _ => trap("outer body is the inner CLet"))
+          | _ => trap("root lowers to CLet"))
+      | _ => trap("root is a let")))
+
+@test
+def lw-milestone-lowers() =
+  // THE MILESTONE `let x = 2 in x * 3 + 1` lowers to CLet(root, CNum 2, CBin(+, CBin(*, CVar root, CNum 3),
+  // CNum 1)) — the exact Core the Inc-5 evaluator will run to 7 (env{root->2}: 2*3+1 = 7).
+  (match parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]) with | (root, tree) =>
+    (match lower-tree(tree, root) with
+      | Option.Some(Core.CLet(binderId, cv, body)) =>
+        (if binderId == root then
+           (if is-cnum(cv, 2) then
+              (match body with
+                | Core.CBin(addop, mul, one) =>
+                  (if addop == 43 then
+                     (match mul with
+                       | Core.CBin(mulop, xv, three) =>
+                         (if mulop == 42 then
+                            (if is-cvar(xv, root) then (if is-cnum(three, 3) then (if is-cnum(one, 1) then unit else trap("+ right CNum 1")) else trap("* right CNum 3")) else trap("* left CVar(root)"))
+                          else trap("inner is *"))
+                       | _ => trap("+ left is a *"))
+                   else trap("body is +"))
+                | _ => trap("body is a CBin"))
+            else trap("value CNum 2"))
+         else trap("CLet keyed by root"))
+      | _ => trap("milestone lowers to CLet")))
+
+export { Core.*, lower-tree, lower-node, core-op, is-cnum, is-cvar }

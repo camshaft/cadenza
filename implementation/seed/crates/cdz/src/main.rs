@@ -2301,7 +2301,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
     // Resolve the project dir to watch (no entry requirement — `check` needs none; `build`/`test` report
     // their own missing-entry error on the re-run). This validates the target up front so `cdz watch` on a
     // manifest-less dir fails immediately rather than watching nothing.
-    let (dir, _mpath, _m) = match resolve_project_manifest(args.target.as_deref(), "cdz watch") {
+    let (dir, _mpath, m) = match resolve_project_manifest(args.target.as_deref(), "cdz watch") {
         Ok(v) => v,
         Err(code) => return code,
     };
@@ -2372,6 +2372,25 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
     if let Err(e) = watcher.watch(&dir, RecursiveMode::Recursive) {
         eprintln!("{PROG}: cannot watch {}: {e}", dir.display());
         return ExitCode::FAILURE;
+    }
+    // ALSO watch each PATH DEPENDENCY's directory, so editing a dep's source re-triggers the run — the
+    // multi-project edit loop (`cdz watch --exec run` on a project with `def deps`). The dep dir is
+    // resolved relative to this manifest's dir (same as `build_path_deps`). A dep whose dir can't be
+    // watched (e.g. it doesn't exist yet) is noted but NOT fatal — the run itself reports an unresolvable
+    // dep; here we just skip watching it. The source-file filter still gates re-runs, so a dep's own
+    // `.wasm` build artifacts don't self-trigger.
+    for dep in &m.deps {
+        #[allow(clippy::infallible_destructuring_match)]
+        let dep_path = match dep {
+            DepSource::Path(p) => p,
+        };
+        let dep_dir = dir.join(dep_path);
+        if let Err(e) = watcher.watch(&dep_dir, RecursiveMode::Recursive) {
+            eprintln!(
+                "{PROG}: note: not watching dependency `{dep_path}` ({}): {e}",
+                dep_dir.display()
+            );
+        }
     }
 
     let debounce = Duration::from_millis(args.debounce_ms);

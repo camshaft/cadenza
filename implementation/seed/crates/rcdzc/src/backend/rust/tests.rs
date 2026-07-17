@@ -3466,3 +3466,57 @@ fn rustc_roundtrip_runtime_bin_construction_and_match() {
         "a narrow segment emits the fit backstop:\n{guard}"
     );
 }
+
+#[test]
+fn rustc_roundtrip_empty_list_grounds_to_its_slot_element_type() {
+    // An empty `(list)` in a construction slot whose element type is known must annotate `Vec::<T>::new()`,
+    // not a bare `vec![]` rustc can't infer (E0282). Surfaced by the multi-module HOL-kernel cases where a
+    // `(list)` sits in an erased-newtype tuple payload (`Thm.Seq (list) tm`).
+    // (a) an empty list as a SUM payload (single-variant erased newtype → a tuple payload).
+    let seq = compile_rust(
+        "(module m (type Thm (Seq (List Int64) Int64)) \
+           (def (run (: n Int64)) (Thm.Seq (list) n)) (export (. Thm *)) (export run))",
+    );
+    assert!(
+        seq.contains("Vec::<i64>::new()"),
+        "an empty-list tuple payload grounds to Vec::<i64>::new():\n{seq}"
+    );
+    assert!(
+        !seq.contains("(vec![], "),
+        "no un-annotated empty vec![] in the payload:\n{seq}"
+    );
+
+    // (b) an empty list DIRECTLY typed still grounds (the ListNew-own-type path).
+    let direct = compile_rust("(module m (def (run) (: (list) (List Int64))) (export run))");
+    assert!(
+        direct.contains("Vec::<i64>::new()"),
+        "a directly-typed empty list grounds:\n{direct}"
+    );
+
+    // (c) a NON-empty list stays the bare vec![…] (byte-identical, element inferred from the first).
+    let nonempty = compile_rust("(module m (def (run) (: (list 1 2) (List Int64))) (export run))");
+    assert!(
+        nonempty.contains("vec!["),
+        "a non-empty list stays vec![…]:\n{nonempty}"
+    );
+}
+
+#[test]
+fn a_linked_duplicate_same_name_enum_emits_once() {
+    // A linked multi-module program can carry two byte-identical same-name enum declarations — a lib and
+    // the entry each declaring `(type Box (W a) (E))`. They emit the same Rust `enum Box`, so emitting both
+    // is a duplicate (E0428); the backend dedups byte-identical same-ident decls to ONE. Here a single
+    // module with the type declared once is the baseline (the dedup path is exercised by the gate's linked
+    // module cases); pin that a normal single decl still emits exactly one enum (no over-dedup).
+    let one = compile_rust(
+        "(module m (type Box (W Int64) (E)) (def (run) (match (Box.W 42) ((Box.W n) n) ((Box.E) 0))) (export run))",
+    );
+    assert_eq!(
+        one.matches("enum Box").count(),
+        1,
+        "a single Box decl emits exactly one enum:\n{one}"
+    );
+    if let Some(out) = rustc_run(&one, "run()") {
+        assert_eq!(out, "42", "the Box.W arm binds 42");
+    }
+}

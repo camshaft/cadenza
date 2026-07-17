@@ -51,7 +51,7 @@ function blockedBy(ex) {
 
 // ---- the compiler (browser wasm) + runner (jco), loaded once ----
 const pkgDir = join(guideRoot, "src/wasm/pkg");
-const { default: init, compile, render_value, render_syntax, export_types } = await import(join(pkgDir, "cdz_wasm.js"));
+const { default: init, compile, compile_tests, render_value, render_syntax, export_types } = await import(join(pkgDir, "cdz_wasm.js"));
 await init({ module_or_path: readFileSync(join(pkgDir, "cdz_wasm_bg.wasm")) });
 const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
 // Mirror the app run path's scalar formatting (a whole-number Float gets its `.0` back from the static
@@ -149,6 +149,58 @@ async function runComponent(componentBytes, program, surface) {
   return formatScalarByType(value, resultTypeOf(export_types(program, surface)));
 }
 
+// ---- run a TEST-LAYOUT component's @test exports (mirrors runWorker's test mode) ----
+// Instantiate the test component, invoke each named nullary @test export, and report pass/fail: a clean
+// return = pass, a trap/throw = fail. A source name (`one_plus_one`) crosses the boundary as kebab/camel
+// (`one-plus-one`/`onePlusOne`), so match by a normalized key (strip -/_ + lowercase).
+const normName = (n) => n.replace(/[-_]/g, "").toLowerCase();
+async function runTestExports(componentBytes, testNames) {
+  const prog = await loadComponent(componentBytes, "prog");
+  const heap = await getHeap();
+  const imports = heap ? { [HEAP_IMPORT]: heap } : {};
+  const root = await prog.instantiate(prog.getCore, imports);
+  const byNorm = new Map();
+  for (const [name, v] of Object.entries(root)) if (typeof v === "function") byNorm.set(normName(name), v);
+  const results = [];
+  for (const name of testNames) {
+    const fn = byNorm.get(normName(name));
+    if (typeof fn !== "function") { results.push({ name, pass: false, error: "export not found" }); continue; }
+    try { fn(); results.push({ name, pass: true }); }
+    catch (e) { results.push({ name, pass: false, error: String(e && e.message ? e.message : e).slice(0, 60) }); }
+  }
+  return results;
+}
+
+// ---- check a `mode="test"` example: compile-tests, run each @test, assert expected pass/fail ----
+async function checkTestProgram(ex, where) {
+  const brief = ex.snippet.replace(/\n/g, " ").slice(0, 80);
+  const surface = ex.surface ?? "sexpr";
+  let r;
+  try {
+    r = compile_tests(ex.snippet, surface);
+  } catch (e) {
+    return `${ex.file} [test] (${where}): parse error — ${String(e.message || e).slice(0, 80)}\n    ${brief}`;
+  }
+  if (!r.component) {
+    const d = r.diagnostics.find((x) => x.error) ?? r.diagnostics[0];
+    return `${ex.file} [test] (${where}): test compile DECLINED — ${d ? `${d.code} ${d.message}` : "no @test / no component"}\n    ${brief}`;
+  }
+  if (r.nullary_test_names.length === 0) {
+    return `${ex.file} [test] (${where}): a mode="test" example has no nullary @test defs to run\n    ${brief}`;
+  }
+  const results = await runTestExports(r.component, r.nullary_test_names);
+  const failed = results.filter((t) => !t.pass);
+  if (ex.expect === "error") {
+    // A teaching example demonstrating a FAILING test: at least one @test must fail.
+    if (failed.length > 0) return null;
+    return `${ex.file} [test] (${where}): expect="error" but every @test PASSED\n    ${brief}`;
+  }
+  // Default: every nullary @test must pass.
+  if (failed.length === 0) return null;
+  const detail = failed.map((t) => `${t.name}: ${t.error ?? "failed"}`).join("; ");
+  return `${ex.file} [test] (${where}): @test(s) FAILED — ${detail}\n    ${brief}`;
+}
+
 // ---- extract `source=`/`solution=`/`expected=`/`expect=` from a chapter's TSX ----
 // Each example is a `<Runnable …/>` or `<Exercise …/>` element; we pull the template-literal blocks
 // and the string attributes. A tolerant scan (not a full JSX parse) — the guide's examples all use the
@@ -181,7 +233,11 @@ function extractExamples(tsx, file) {
     const noWrap = /wrap=\{false\}/.test(attrs);
     if (kind === "Runnable") {
       const source = grab("source");
-      if (source != null) out.push({ file, kind, snippet: source, expect, expected: null, noWrap });
+      // A `mode="test"` Runnable runs its @test defs as tests (like `cdz test`). We compile-tests + run
+      // each @test export and assert the expected pass/fail: default every @test PASSES; `expect="error"`
+      // means at least one @test is meant to FAIL (a teaching example demonstrating a failing test).
+      const isTest = /mode="test"/.test(attrs) || /mode=\{"test"\}/.test(attrs);
+      if (source != null) out.push({ file, kind, snippet: source, expect, expected: null, noWrap, isTest });
     } else {
       // Exercise: check the SOLUTION (the starter has a `?` hole by design).
       const solution = grab("solution");
@@ -284,6 +340,10 @@ async function checkProgram(program, surface, ex, where) {
 
 // ---- check one example in BOTH surfaces (the reader can toggle); null on success, else a reason ----
 async function checkExample(ex) {
+  // A `mode="test"` Runnable is a program of @test defs run as tests (like `cdz test`) — a distinct path
+  // (compile_tests + invoke each @test export), not the eval-main path. Checked in its authored surface
+  // (s-expr by default); the reader-toggle round-trip isn't exercised (the @test defs are the boundary).
+  if (ex.isTest) return checkTestProgram(ex, ex.surface === "ml" ? "ML" : "s-expr");
   // A PLAYGROUND example is a FULL module authored in its own `surface`; the reader loads it, then may
   // toggle. It's compiled verbatim (`noWrap`) in its authored surface, then RE-RENDERED whole to the
   // other surface (`render_syntax`) and compiled again — so a broken toggle round-trip is caught. This

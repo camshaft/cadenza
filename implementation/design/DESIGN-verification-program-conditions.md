@@ -3,7 +3,8 @@
 Status: **Increment (b) DESIGN — ALL FORKS RESOLVED (operator 2026-07-16): `@requires`/`@ensures` GREENLIT;
 `@requires`/`@ensures` parse SETTLED with v-syntax; opt-seam SETTLED as a FOUR-WAY division (v-core-opt +
 v-wasm-opt + v-rust-backend + me — §7), with a known Core-representability prerequisite v-core-opt lands
-before my b3 (§3). NEXT: b1.** Follows the LCF kernel
+before my b3 (§3). b0 doc + b1 obligation corpus LANDED; b2 discharge-reaches-optimizer architecture DECIDED
+(compile-time eval, §3). NEXT: b2 code.** Follows the LCF kernel
 ([DESIGN-verification-hol-kernel.md](DESIGN-verification-hol-kernel.md), CHARTER DELIVERED: a working,
 unforgeable `Thm` on trunk). Vertical `v-verification`, subsystem `rcdzc`. Operator greenlight
 (2026-07-16, via concierge, verbatim intent): *"Adding pre/post-conditions would be amazing … keep in
@@ -207,13 +208,32 @@ predicate); (2) **my b2/b3 differential gate MUST include a rust case**, not onl
 proof-driven elision passes the gate while silently doing nothing (or diverging) on rust. v-wasm-opt will
 co-verify both-backend byte-identity once my oracle (b2) + v-core-opt's pass exist.
 
+### How a Cadenza `Thm` reaches the Rust optimizer — COMPILE-TIME EVAL (b2 architecture, decided 2026-07-16)
+A real question b2 surfaces: the kernel `Thm` is a Cadenza *library value*, but the optimizer (`opt.rs`) is
+*Rust*. The oracle must NOT reimplement the kernel in Rust — that would be a second, untrusted kernel
+defeating the LCF story. Resolution: **reuse the compiler's existing compile-time `eval`** (12-metaprogramming
+§Compile-Time Evaluation Is One Tier; `eval_ast::desugar_eval` — `(eval <ast>)` reconstructs the source form
+and folds it through the ordinary path, already tested to execute hand-built `Ast` at compile time). The
+discharge program is an ordinary Cadenza expression: it calls the kernel rules to build the obligation `Thm`
+and returns a boolean — "does `concl(proof)` structurally equal `no-overflow@Id` AND are its `hyps` ⊆ the
+node's stated precondition?" That expression is **evaluated at compile time**; the optimizer consumes only
+its boolean/`Option` result. So:
+- The **oracle** (`StructId → Option<discharged-Thm-handle>`) is, concretely, "compile-time-eval the
+  discharge program for this node; `Some` iff it returns the match-true." No `Thm` representation crosses
+  into Rust — only the already-checked boolean does. The kernel stays the sole `Thm` authority.
+- The **match predicate** (conclusion-structural-equality + hyp-subset) is written IN CADENZA, in the same
+  trusted kernel module, and pinned in the corpus (b1 already exercises the discharge; b2 adds the match
+  predicate + the "wrong-assumption `Thm` is rejected" pin). The Rust side trusts only "compile-time eval
+  returned true," which it cannot forge (eval runs the real kernel).
+
 ### What the optimizer must trust (and what it must NOT)
-- **Trusted:** the kernel `Thm` type (unforgeable), and the *predicate* "this `Thm`'s conclusion is the
-  obligation that `overflow-check@Id` discharges." That predicate must itself be audited — a sloppy match
-  (e.g. ignoring the node's precondition context, or matching a `Thm` proven under different bindings)
-  would license an unsound elision. **This match predicate is the new trusted surface of Inc-b** and gets
-  the same adversarial pinning the kernel boundary got (breaker: "supply a `Thm` that looks like it
-  licenses `@Id` but was proven under different assumptions — does the elision wrongly fire?").
+- **Trusted:** the kernel `Thm` type (unforgeable), the compile-time-eval tier (already trusted for macros),
+  and the *predicate* "this `Thm`'s conclusion is the obligation that `overflow-check@Id` discharges." That
+  predicate must itself be audited — a sloppy match (e.g. ignoring the node's precondition context, or
+  matching a `Thm` proven under different bindings) would license an unsound elision. **This match predicate
+  is the new trusted surface of Inc-b** and gets the same adversarial pinning the kernel boundary got
+  (breaker: "supply a `Thm` that looks like it licenses `@Id` but was proven under different assumptions —
+  does the elision wrongly fire?").
 - **Untrusted:** annotation elaboration, denotation, VC generation, tactic search. All can be buggy
   without unsoundness — a bug there yields "no `Thm`" or "wrong `Thm`," and either way the match fails and
   the check stays.
@@ -245,11 +265,14 @@ Front-load the design validation BEFORE any compiler change, exactly as Inc-a di
   obligation is NOT provable" (the check must stay). Obligations keyed by a placeholder Core-`Id` so the
   corpus already speaks v-core-opt's `Id` language. Ships with its `.gate-baseline`. Validates the
   denotation + discharge end-to-end with zero risk.
-- **b2 — the match predicate + a discharge→elision PROTOTYPE (real `CorePass`, corpus-only).** Implement the
-  trusted "does this `Thm` license `no-overflow@Id`" predicate + the pure oracle (`Id → Option<Thm-handle>`);
-  prototype the Core elision pass installing an unchecked-op override on `Some`. By now v-core-opt's slice-1
-  core-override seam exists, so this is a real `CorePass`, not a toy. Adversarially pinned (breaker) BEFORE
-  it gates anything real. Sync point ↔ v-core-opt slice-2.
+- **b2 — the match predicate (IN CADENZA) + the compile-time-eval oracle + a discharge→elision PROTOTYPE.**
+  Write the trusted "does this `Thm` license `no-overflow@Id`" predicate as a Cadenza function in the kernel
+  module (conclusion structural-equality + hyps ⊆ node precondition), and pin it in the corpus — including
+  the soundness pin that a `Thm` proven under DIFFERENT assumptions is REJECTED. The oracle
+  (`StructId → Option<Thm-handle>`) is compile-time-eval of the discharge program (§3 "compile-time eval");
+  the Rust side consumes only its boolean. Prototype the Core elision pass installing an unchecked override
+  on the true result — v-core-opt's slice-1 override seam (`db.install_core_override`) is LANDED, so this is
+  a real `CorePass`. Adversarially pinned (breaker) BEFORE it gates anything real. Sync ↔ v-core-opt slice-2.
 - **b3 — proof-guided elision on the real overflow guard (opt-in, proven cases only).** Wire b2's oracle
   into the Core-tier checked-arith emit via the disjunction (`arith_provably_in_range OR oracle(id)`): a
   node with a matching discharged `Thm` installs an unchecked override; all others unchanged. **ASSUMES

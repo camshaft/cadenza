@@ -74,6 +74,11 @@ export default function Philosophy() {
         patterns. Each chapter flags the tenet at work in a <span className="text-cadenza-300">✦ Why
         it's this way</span> box. Keep an eye out for them.
       </P>
+
+      <P>
+        Enough <em>why</em> — time to write some. The next chapter, <em>Values &amp; functions</em>, starts
+        from the smallest pieces: literals, bindings, and functions the compiler types for you.
+      </P>
     </article>
   );
 }

@@ -2478,6 +2478,27 @@
   (call   main (: 200 Int64))
   (output (: 200 UInt8)))
 
+; The wide-positive wrap case above never crosses zero; these pin the NEGATIVE-input face of the same
+; conversion — `UInt8.wrap` is a pure low-byte truncation reinterpreted UNSIGNED, not a magnitude or a
+; `|n| mod 256`, so a negative operand's two's-complement low byte is read as 0..255.
+(case "uint8 wrap of a negative runtime value reads the low byte as unsigned"
+  (doc    "`(UInt8.wrap -1)` = 255: -1's two's-complement low byte is 0xFF, read UNSIGNED as 255 — not a
+           magnitude (`|−1| = 1`) and not a reject. The wide-positive case only witnesses the positive side
+           of the truncation; a negative operand exercises that the low 8 bits are taken verbatim and the
+           UInt8 target reinterprets them unsigned, on both backends.")
+  (input  (do (def (main (: n Int64)) (UInt8.wrap n)) (export main)))
+  (call   main (: -1 Int64))
+  (output (: 255 UInt8)))
+
+(case "uint8 wrap of a negative multiple of 256 is its low byte, zero"
+  (doc    "`(UInt8.wrap -256)` = 0: -256's low 8 bits are all zero, so the unsigned reinterpretation is 0 —
+           the negative-side companion of `256 → 0`. Pins that the truncation is a raw low-byte mask (a
+           `|n| mod 256` impl would also give 0 here, but paired with the `-1 → 255` case above the two
+           together exclude the magnitude interpretation) on both backends.")
+  (input  (do (def (main (: n Int64)) (UInt8.wrap n)) (export main)))
+  (call   main (: -256 Int64))
+  (output (: 0 UInt8)))
+
 (case "int8 wrap truncates and sign-extends the low 8 bits of a runtime value"
   (doc    "The SIGNED companion: `(Int8.wrap n)` truncates to the low 8 bits AND sign-extends them to the
            Int8 range — 200's low byte (0xC8) has the sign bit set, so it reads as -56; 127 stays 127.

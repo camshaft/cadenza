@@ -1,0 +1,117 @@
+/// eval-db.cdz — Increment 5 of the Cadenza-in-Cadenza compiler: EMIT + RUN, the END-TO-END MILESTONE. This
+/// evaluates the lowered integer Core IR (`lower-db`) to a value, and — via the `run` driver — takes a token
+/// program all the way source → parse → resolve → infer → lower → RUN, through the lazy query DB.
+///
+/// THE MILESTONE (re-charter): `let x = 2 in x * 3 + 1` runs to **7**. `run-milestone()` demonstrates it.
+///
+/// The evaluator is trivial precisely because the earlier columns did their jobs: lowering CANONICALIZED
+/// every variable to its binder node-id (`CVar(binderId)`) and keyed every `CLet` by that same id, so eval
+/// carries an `env: Map(binderId, Int64)` and needs ZERO scope logic — `CLet(b, v, body)` evaluates `body`
+/// under `env{b → eval v}`, and `CVar(b)` is just `env` lookup. This is the pay-off of resolution-as-a-column.
+///
+/// `eval-core` returns `Option(Int64)`: `None` only on a malformed Core (an unbound `CVar` — impossible for a
+/// tree that came through `lower-tree`, which canonicalizes only RBound vars, but handled totally). `run`
+/// composes lowering (itself gated on typing) with eval, so an ill-typed source program yields `None`
+/// (no core form → nothing to run) — absence≠value carried all the way to the result.
+
+import { Tok, Tree, parse-tokens } from "parse-db"
+import { Core, lower-tree } from "lower-db"
+
+/// Evaluate a Core term under `env` (binderId → value). Total: an unbound var or divide-by-zero → `None`.
+def eval-core(c: Core, env: Map(Int64, Int64)) = match c with
+  | Core.CNum(v) => Option.Some(v)
+  | Core.CVar(b) => Map.lookup(env, b)
+  | Core.CBin(op, l, r) =>
+      (match eval-core(l, env) with
+        | Option.Some(a) =>
+          (match eval-core(r, env) with
+            | Option.Some(b) => eval-bin(op, a, b)
+            | Option.None(_) => Option.None(unit))
+        | Option.None(_) => Option.None(unit))
+  | Core.CLet(binder, valExpr, body) =>
+      // non-recursive let: eval the value in the CURRENT env, bind it to the let's canonical id, eval body.
+      (match eval-core(valExpr, env) with
+        | Option.Some(v) => eval-core(body, Map.insert(env, binder, v))
+        | Option.None(_) => Option.None(unit))
+
+/// Apply a binary op (43 +, 45 -, 42 *, 47 /). Division by zero → `None` (a total, trap-free evaluator).
+def eval-bin(op: Int64, a: Int64, b: Int64) =
+  (if op == 43 then Option.Some(a + b)
+   else (if op == 45 then Option.Some(a - b)
+   else (if op == 42 then Option.Some(a * b)
+   else (if op == 47 then (if b == 0 then Option.None(unit) else Option.Some(a / b))
+   else Option.None(unit)))))
+
+/// Evaluate a lowered tree from `root` with an empty env — `Some value` for a well-typed program, `None` if
+/// it had no core form (ill-typed) or hit a malformed Core.
+def eval-tree(tree: Tree, root: Int64) = match lower-tree(tree, root) with
+  | Option.Some(c) => eval-core(c, (Map.empty : Map(Int64, Int64)))
+  | Option.None(_) => Option.None(unit)
+
+/// THE DRIVER: a token program → its integer result, source → parse → resolve → infer → lower → run, all via
+/// the lazy query DB. `Some v` = ran to `v`; `None` = ill-typed (no core form) or malformed.
+def run(ts: List(Tok)) = match parse-tokens(ts) with | (root, tree) => eval-tree(tree, root)
+
+
+/// Builders + the milestone program, so the end-to-end result is demonstrable without hand-tokenizing.
+def n(v: Int64) = Tok.TNum(v)
+def var(nm: Int64) = Tok.TName(nm)
+def plus() = Tok.TOp(43)
+def minus() = Tok.TOp(45)
+def times() = Tok.TOp(42)
+def letkw() = Tok.TLet
+def inkw() = Tok.TIn
+def eq() = Tok.TEq
+
+/// `let x = 2 in x * 3 + 1` as tokens — THE MILESTONE program.
+def milestone-tokens() = [letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]
+
+/// Run the milestone program end-to-end; `Some 7` when the whole DB pipeline works.
+def run-milestone() = run(milestone-tokens())
+
+@test
+def ev-literal() =
+  (match run([n(42)]) with | Option.Some(v) => (if v == 42 then unit else trap("42")) | Option.None(_) => trap("a literal runs"))
+
+@test
+def ev-add() =
+  // 1 + 2 = 3
+  (match run([n(1), plus(), n(2)]) with | Option.Some(v) => (if v == 3 then unit else trap("1+2=3")) | Option.None(_) => trap("add runs"))
+
+@test
+def ev-precedence() =
+  // 1 + 2 * 3 = 7 (mul binds tighter) — arithmetic honoring the parse-column precedence.
+  (match run([n(1), plus(), n(2), times(), n(3)]) with | Option.Some(v) => (if v == 7 then unit else trap("1+2*3=7")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-let-substitutes() =
+  // let x = 2 in x  →  2 (the bound value flows through the env keyed by the let's canonical id).
+  (match run([letkw(), var(1), eq(), n(2), inkw(), var(1)]) with | Option.Some(v) => (if v == 2 then unit else trap("x=2")) | Option.None(_) => trap("let runs"))
+
+@test
+def ev-let-used-in-arith() =
+  // let x = 5 in x - 2  →  3
+  (match run([letkw(), var(1), eq(), n(5), inkw(), var(1), minus(), n(2)]) with | Option.Some(v) => (if v == 3 then unit else trap("5-2=3")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-shadowing-inner-value() =
+  // let x = 1 in let x = 2 in x  →  2 (inner binding shadows; env keyed by distinct binder ids picks inner).
+  (match run([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(1), eq(), n(2), inkw(), var(1)]) with | Option.Some(v) => (if v == 2 then unit else trap("shadow → 2")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-nested-lets-arith() =
+  // let a = 1 in let b = 2 in a + b  →  3 (two distinct bindings, both read).
+  (match run([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), n(2), inkw(), var(1), plus(), var(2)]) with | Option.Some(v) => (if v == 3 then unit else trap("a+b=3")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-ill-typed-does-not-run() =
+  // an unbound "x" is ill-typed → no core form → run yields None (absence carried to the result).
+  (match run([var(1)]) with | Option.None(_) => unit | Option.Some(_) => trap("ill-typed program does not run"))
+
+@test
+def ev-milestone-runs-to-seven() =
+  // ★ THE RE-CHARTER MILESTONE ★ — `let x = 2 in x * 3 + 1` goes source → parse → resolve → infer → lower →
+  // run, all through the lazy query DB, and produces 7 (x=2, 2*3=6, 6+1=7).
+  (match run-milestone() with | Option.Some(v) => (if v == 7 then unit else trap("MILESTONE: let x=2 in x*3+1 = 7")) | Option.None(_) => trap("MILESTONE must run to a value"))
+
+export { eval-core, eval-bin, eval-tree, run, milestone-tokens, run-milestone }

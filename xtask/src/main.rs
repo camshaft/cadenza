@@ -684,14 +684,11 @@ fn run_program(
 ) -> Ran {
     match target {
         GateTarget::Wasm => run_program_wasm(tools, store, program, modules, call, host_responses),
-        // The Rust backend has no package-linking path yet — a multi-file case declines there (Todo).
-        GateTarget::Rust if !modules.is_empty() => Ran::Declined { code: None },
-        GateTarget::RustAsync if !modules.is_empty() => Ran::Declined { code: None },
         // The Rust backend has no host-boundary path — a host-delegating case declines there (Todo).
         GateTarget::Rust if !host_responses.is_empty() => Ran::Declined { code: None },
         GateTarget::RustAsync if !host_responses.is_empty() => Ran::Declined { code: None },
-        GateTarget::Rust => run_program_rust(tools, program, call, false),
-        GateTarget::RustAsync => run_program_rust(tools, program, call, true),
+        GateTarget::Rust => run_program_rust(tools, program, modules, call, false),
+        GateTarget::RustAsync => run_program_rust(tools, program, modules, call, true),
     }
 }
 
@@ -867,26 +864,11 @@ fn emit_component_package(
     }
 }
 
-/// Drive one program through cdz-syntax → rcdzc `--target rust` → `rustc` → run — the Rust-backend
-/// gate path. Returns the SAME [`Ran`] outcomes as the wasm path, so `grade_trial` judges the Rust
-/// backend against the one corpus oracle:
-///  - rcdzc REJECTS/declines → `Ran::Declined { code }` (unchanged from wasm — the front-end is shared);
-///  - the emitted `.rs` fails to COMPILE under `rustc` → `Ran::BadArtifact` (the miscompile a broken
-///    artifact is — e.g. the narrow-literal width mismatch this gate was built to catch);
-///  - the compiled program PANICS at run time → `Ran::Trap` (a Cadenza trap is a Rust panic);
-///  - it prints a value → `Ran::Value` (the export's result, in cdz-run's bare-scalar rendering, which
-///    Rust's `Display` for an integer/bool reproduces exactly — `42`, `true`).
-///
-/// A driver `fn main` is generated that calls the sole export (or the `(call …)` export with the trial's
-/// args written verbatim as Rust literals) and prints the result, so the value crosses on stdout exactly
-/// as cdz-run emits it. Scalar-only today: a compound result declines in the Rust backend (→ `Declined`
-/// → Todo), so no `(: value type)` rendering is needed here.
-fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mode: bool) -> Ran {
+/// Emit Rust source for a SINGLE-file program via the `cdz convert | cdz compile - --target <rust>` pipe.
+/// `Ok(source)` or `Err(Ran::Declined { code })` on a shared-front reject/decline (code from stderr).
+fn emit_rust_single(tools: &Tools, program: &str, rust_target: &str) -> Result<String, Ran> {
     use std::io::Write;
     use std::process::{Command, Stdio};
-
-    // Stage 1+2: program text → binary AST → Rust source (rcdzc `--target rust[-async] -o -`, on stdout).
-    let rust_target = if async_mode { "rust-async" } else { "rust" };
     let mut syntax = Command::new(&tools.syntax)
         .args(["convert", "--from", "sexpr", "--to", "binary", "-"])
         .stdin(Stdio::piped())
@@ -910,12 +892,111 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     let rcdzc_out = rcdzc.wait_with_output().expect("wait rcdzc");
     let _ = syntax.wait();
     if !rcdzc_out.status.success() {
-        // A shared-front rejection/decline — identical outcome to the wasm path.
-        return Ran::Declined {
+        return Err(Ran::Declined {
             code: first_error_code(&rcdzc_out.stderr),
-        };
+        });
     }
-    let module = String::from_utf8_lossy(&rcdzc_out.stdout).to_string();
+    Ok(String::from_utf8_lossy(&rcdzc_out.stdout).to_string())
+}
+
+/// Emit Rust source for a PACKAGE (entry + imported libraries) — the rust-target twin of
+/// [`emit_component_package`]. Writes the entry as `main.sexp` and each library `(name, prog)` as
+/// `<name>.sexp` into a fresh unique temp dir, then runs `cdz compile <lib>.sexp… main.sexp --entry main
+/// --target <rust> -o -`; the `cdz` front-end parses + LINKS the sources in process (same linker the wasm
+/// package path uses) and the rust backend emits ONE combined module. `Ok(source)` or `Err(Ran::…)` on a
+/// reject/decline (code from stderr) or a temp-file failure.
+fn emit_rust_package(
+    tools: &Tools,
+    program: &str,
+    modules: &[(String, String)],
+    rust_target: &str,
+) -> Result<String, Ran> {
+    use std::process::Command;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TICK: AtomicU64 = AtomicU64::new(0);
+    let tick = TICK.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("cdz-rustpkg-{}-{tick}", std::process::id()));
+    if std::fs::create_dir_all(&dir).is_err() {
+        return Err(Ran::BadArtifact(
+            "could not create a temp rust package dir".into(),
+        ));
+    }
+    // The entry is `main.sexp`; each library is `<name>.sexp` (matching its `(import "name" …)` target).
+    let mut specs: Vec<PathBuf> = Vec::new();
+    let entry_path = dir.join("main.sexp");
+    if std::fs::write(&entry_path, program).is_err() {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(Ran::BadArtifact("could not write the entry file".into()));
+    }
+    for (name, prog) in modules {
+        let p = dir.join(format!("{name}.sexp"));
+        if std::fs::write(&p, prog).is_err() {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(Ran::BadArtifact("could not write a library file".into()));
+        }
+        specs.push(p);
+    }
+    specs.push(entry_path); // entry last (link order is irrelevant, but keep it deterministic)
+    let mut cmd = Command::new(&tools.rcdzc);
+    cmd.arg("compile");
+    for s in &specs {
+        cmd.arg(s);
+    }
+    cmd.args(["--entry", "main", "-o", "-", "--target", rust_target]);
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| launch_fail("cdz compile", e));
+    let _ = std::fs::remove_dir_all(&dir);
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    } else {
+        Err(Ran::Declined {
+            code: first_error_code(&out.stderr),
+        })
+    }
+}
+
+/// Drive one program through cdz-syntax → rcdzc `--target rust` → `rustc` → run — the Rust-backend
+/// gate path. Returns the SAME [`Ran`] outcomes as the wasm path, so `grade_trial` judges the Rust
+/// backend against the one corpus oracle:
+///  - rcdzc REJECTS/declines → `Ran::Declined { code }` (unchanged from wasm — the front-end is shared);
+///  - the emitted `.rs` fails to COMPILE under `rustc` → `Ran::BadArtifact` (the miscompile a broken
+///    artifact is — e.g. the narrow-literal width mismatch this gate was built to catch);
+///  - the compiled program PANICS at run time → `Ran::Trap` (a Cadenza trap is a Rust panic);
+///  - it prints a value → `Ran::Value` (the export's result, in cdz-run's bare-scalar rendering, which
+///    Rust's `Display` for an integer/bool reproduces exactly — `42`, `true`).
+///
+/// A driver `fn main` is generated that calls the sole export (or the `(call …)` export with the trial's
+/// args written verbatim as Rust literals) and prints the result, so the value crosses on stdout exactly
+/// as cdz-run emits it. Scalar-only today: a compound result declines in the Rust backend (→ `Declined`
+/// → Todo), so no `(: value type)` rendering is needed here.
+fn run_program_rust(
+    tools: &Tools,
+    program: &str,
+    modules: &[(String, String)],
+    call: Option<&Call>,
+    async_mode: bool,
+) -> Ran {
+    use std::process::Command;
+
+    // Stage 1+2: program text → Rust source. A SINGLE-file case pipes `cdz convert | cdz compile - --target
+    // rust[-async]`; a PACKAGE case (imported libraries present) writes the entry + each library to a temp
+    // dir and runs `cdz compile <lib>.sexp… main.sexp --entry main --target rust` — the front-end links the
+    // sources exactly as the wasm package path does (`emit_component_package`), then the rust backend emits
+    // one combined module. Either way `module` is the emitted Rust; the rest of this fn (rustc + run) is
+    // shared. `Err(Ran::…)` short-circuits a reject/decline/write failure with the same outcome as wasm.
+    let rust_target = if async_mode { "rust-async" } else { "rust" };
+    let module = if modules.is_empty() {
+        match emit_rust_single(tools, program, rust_target) {
+            Ok(m) => m,
+            Err(ran) => return ran,
+        }
+    } else {
+        match emit_rust_package(tools, program, modules, rust_target) {
+            Ok(m) => m,
+            Err(ran) => return ran,
+        }
+    };
 
     // The export to invoke, and the call expression. The gate passes bare value text (`20`, `-1`,
     // `true`); written verbatim they are valid Rust literals whose type the fn signature fixes. A

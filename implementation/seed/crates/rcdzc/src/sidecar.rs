@@ -1225,6 +1225,20 @@ fn classify_highlight(db: &mut Db, id: StructId) -> Option<HighlightKind> {
         return Some(HighlightKind::Keyword);
     }
 
+    // An ANNOTATION SIGIL or NAME — the `@` head and the annotation name of a well-formed `(@ NAME (def …))`
+    // (`@test`, `@exhaustive`, `@inline-never`, …). `db::strip_annotations` UNWRAPS the wrapper node in
+    // place (the def adopts the inner children) and ORPHANS the original `@`/name occurrences to
+    // `parent_of == None` — so a leaf walk still visits them (they keep source spans) but they resolve to
+    // nothing (`@` is no grammar head, no value op; the name denotes no binding) → a spurious `Unbound`.
+    // Paint them `Keyword` (annotations are keyword-like syntax) so a `@test` reads as a decorator, not a
+    // wall of error-red or a generic data symbol. Sound because ONLY `strip_annotations` orphans a `@` or a
+    // non-`handle` name to a MISSING parent: an annotation on a NON-def is a CDZ0201 (not rewritten, so its
+    // `@` KEEPS its parent → falls through to red with its real squiggle); quoted data retains a `Some`
+    // parent (the chain stops at the quoted list, not the leaf); `desugar_handles` orphans only `handle`.
+    if is_annotation_token(db, id) {
+        return Some(HighlightKind::Keyword);
+    }
+
     // A BINDING DECLARATION site — a `let` binder name, or a bare match-arm binder pattern. These are
     // where a name is DECLARED, not referenced: resolving one looks it up before it binds and reports a
     // spurious `Unbound`. So classify by the binding role (a local `variable`) without resolving. (A
@@ -1337,6 +1351,34 @@ fn is_keyword_position(db: &Db, id: StructId) -> bool {
 /// head-name but keeps out of `GRAMMAR`). One source of truth for [`is_keyword_position`].
 fn is_highlight_keyword(name: &str) -> bool {
     crate::resolve::is_grammar_head(name) || matches!(name, "effect" | "op" | "type")
+}
+
+/// Whether the leaf at `id` is an ANNOTATION TOKEN — the `@` sigil or the NAME of a well-formed
+/// `(@ NAME (def …))` annotation, LEFT ORPHANED (`parent_of == None`) by `db::strip_annotations`'s
+/// in-place unwrap. Two shapes qualify, distinguished by spelling:
+///  - the `@` head itself: `@` has NO other role in the language (not a `GRAMMAR` head, not a value op),
+///    and only `strip_annotations` orphans a `@` occurrence — so a PARENTLESS `@` is unambiguously an
+///    unwrapped annotation sigil. (An annotation on a NON-def is a CDZ0201 that is NOT rewritten, so its
+///    `@` keeps its parent and is excluded here — its red squiggle is correct.)
+///  - an annotation NAME in [`crate::db::KNOWN_ANNOTATIONS`] (`test`/`exhaustive`/`inline-never`/…): a
+///    parentless leaf spelled as one of these is the name half of the same unwrapped wrapper. Restricting
+///    to the known catalog keeps it sound — the only other pass that orphans a NAME leaf is
+///    `desugar_handles`, which orphans only `handle` (not a known annotation), and quoted data keeps a
+///    `Some` parent (its chain stops at the quoted list, never `None` at the leaf itself).
+///
+/// Painting these `Keyword` makes a `@test`/`@exhaustive` render as a decorator rather than a generic data
+/// `Symbol` (the incidental colour they get today from the `reaches_root` unbound-stopgap).
+fn is_annotation_token(db: &Db, id: StructId) -> bool {
+    // Both annotation-token shapes are orphaned to a MISSING parent; a leaf that still has a parent is a
+    // live occurrence (a value ref, or the `@` of a malformed CDZ0201 annotation) — never one of these.
+    if db.parent_of(id).is_some() {
+        return false;
+    }
+    match db.ast.as_name(id) {
+        Some("@") => true,
+        Some(name) => crate::db::KNOWN_ANNOTATIONS.contains(&name),
+        None => false,
+    }
 }
 
 /// Whether the name at `id` is an EFFECT OPERATION NAME — the second child of an `(op <name> <type>)`
