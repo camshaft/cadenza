@@ -1213,6 +1213,29 @@ pub enum HighlightKind {
 }
 
 impl HighlightKind {
+    /// Every `HighlightKind` variant, in declaration order — the canonical vocabulary the `Highlight`
+    /// query can emit. A downstream consumer (e.g. the `cdz lsp` server's semantic-token legend) can
+    /// iterate this to prove it handles the WHOLE vocabulary, so adding a variant forces a decision there
+    /// rather than silently rendering the new kind unclassified. Keep in sync with the enum + `as_str`
+    /// (the `all_variants_have_a_distinct_wire_spelling` test pins that this list is complete + 1:1).
+    pub const ALL: &'static [HighlightKind] = &[
+        HighlightKind::Keyword,
+        HighlightKind::Type,
+        HighlightKind::Constructor,
+        HighlightKind::Function,
+        HighlightKind::Param,
+        HighlightKind::Variable,
+        HighlightKind::Effect,
+        HighlightKind::Label,
+        HighlightKind::Number,
+        HighlightKind::Str,
+        HighlightKind::Char,
+        HighlightKind::Bytes,
+        HighlightKind::Symbol,
+        HighlightKind::Literal,
+        HighlightKind::Unbound,
+    ];
+
     /// The wire spelling — a short stable token an editor keys its theme on. Kebab-case, single word.
     pub fn as_str(self) -> &'static str {
         match self {

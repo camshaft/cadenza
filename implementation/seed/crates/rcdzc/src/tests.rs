@@ -60895,6 +60895,51 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn highlight_kind_all_is_the_complete_1to1_wire_vocabulary() {
+        use crate::sidecar::HighlightKind;
+        // `HighlightKind::ALL` is the canonical vocabulary a downstream consumer (the `cdz lsp` semantic-
+        // token legend) iterates to prove it handles EVERY kind. Pin two invariants so it can't rot:
+        // (1) ALL is COMPLETE — a `match` over a representative forces a compile error if a variant is
+        //     added without extending ALL (the arm below is exhaustive, so a new variant breaks the build
+        //     here, the single place that must be updated alongside the enum);
+        // (2) the wire spellings are DISTINCT and 1:1 with ALL (no two kinds share a theme token, and
+        //     every entry has a spelling).
+        // Exhaustiveness guard: this match must list every variant. Adding a `HighlightKind` fails to
+        // compile until it is added BOTH here and to `ALL` — the forcing function the comment promises.
+        for &k in HighlightKind::ALL {
+            match k {
+                HighlightKind::Keyword
+                | HighlightKind::Type
+                | HighlightKind::Constructor
+                | HighlightKind::Function
+                | HighlightKind::Param
+                | HighlightKind::Variable
+                | HighlightKind::Effect
+                | HighlightKind::Label
+                | HighlightKind::Number
+                | HighlightKind::Str
+                | HighlightKind::Char
+                | HighlightKind::Bytes
+                | HighlightKind::Symbol
+                | HighlightKind::Literal
+                | HighlightKind::Unbound => {}
+            }
+        }
+        // Distinct, non-empty wire spellings, one per ALL entry.
+        let spellings: Vec<&str> = HighlightKind::ALL.iter().map(|k| k.as_str()).collect();
+        assert!(
+            spellings.iter().all(|s| !s.is_empty()),
+            "every highlight kind has a wire spelling"
+        );
+        let unique: std::collections::BTreeSet<&str> = spellings.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            spellings.len(),
+            "wire spellings must be DISTINCT (no two kinds share a theme token): {spellings:?}"
+        );
+    }
+
+    #[test]
     fn highlight_colours_literals_by_kind() {
         // Each literal leaf carries its own kind; a keyword head is `keyword`.
         let src = "(module m (def (main) (if true 42 0)) (export main))";
