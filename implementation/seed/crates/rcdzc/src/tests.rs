@@ -6088,6 +6088,40 @@ fn a_param_seeded_handle_in_a_helper_called_with_a_runtime_arg_resolves_the_seed
     );
 }
 
+/// FIXED (breaker miscompile, verified silent WRONG VALUE): a short-circuit connective `(and b (> (St.tick)
+/// 0))` DIRECTLY in an `if` CONDITION dropped the condition's state advance, so the taken branch read the
+/// pre-condition seed. Seeded 0, arm `(tick (u) s (resume (+ s 1) (+ s 1)))`: with b=true the condition's tick
+/// advances state 0→1, so the then-branch `(St.tick)` must resume 2 — but returned 1 (advance dropped). ROOT:
+/// hoist Site 3 desugars the connective `(and b rhs)` → `(if b rhs false)`, leaving an outer `if` whose CONDITION
+/// is a branch-performing `if`; the `If` thread arm returns the post-CONDITION state (not a per-branch advance),
+/// so the tick in the condition's branch is lost to the outer branches. FIX: hoist Site 5 binds a performing
+/// condition/scrutinee to a `let` (`(if C t e)` ≡ `(let ((#cv C)) (if #cv t e))`), turning C into a `let`-init
+/// that Site 4 distributes — each branch then threads under C's advanced state. b=true → 2, b=false → -99
+/// (short-circuit: the condition's tick never runs). The let-bound twin `(let ((c (and …))) (if c …))` already
+/// threaded correctly (it hit Site 4 directly) — this brings the INLINE connective to parity.
+#[test]
+fn a_connective_in_an_if_condition_threads_its_state_advance_to_the_branch() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(do \
+        (effect St (op tick (-> Unit Int64))) \
+        (def (main (: b Bool)) (handle St 0 ((tick (u) s (resume (+ s 1) (+ s 1)))) \
+          (if (and b (> (St.tick) 0)) (St.tick) -99))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("compiles (connective in if-condition — Site 5 hoist)");
+    let vt: i64 = run_returns_with(&bytes, "main", &[Val::Bool(true)]);
+    assert_eq!(
+        vt, 2,
+        "the condition's tick advance must reach the branch tick; b=true → 2"
+    );
+    let vf: i64 = run_returns_with(&bytes, "main", &[Val::Bool(false)]);
+    assert_eq!(
+        vf, -99,
+        "b=false short-circuits: the condition's tick never runs → else -99"
+    );
+}
+
 /// ADVERSARIAL companion (task #15, breaker witness): TWO successive self-recursive folds under ONE handler —
 /// the SECOND fold must thread against the state the FIRST advanced, not the seed. `dn(n) = if n==0 then 0
 /// else dn(n-1) + Counter.bump()` counts down performing `bump` (state s→s+1); `(+ (* 1000 (dn 2)) (dn 2))`.

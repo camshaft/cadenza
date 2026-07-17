@@ -294,6 +294,19 @@ enum Cmd {
     /// the interface so the gate wiring can land against 0/N green and each ML feature flips cases without
     /// any xtask change.
     RunMl(RunMlArgs),
+
+    /// Compile a single program to the RUST backend, run it natively, and print the SAME machine-readable
+    /// verdict shape as `cdz run-ml` — the seam the fuzzer's rust-vs-wasm differential ORACLE invokes so a
+    /// program's Rust-backend value can be compared to its wasm value (from `cdz run`) like-for-like. Reads
+    /// the program SOURCE from a FILE argument, or from stdin when no file is given. Emits `--target rust`,
+    /// `rustc`-compiles the module (linking the pre-built `cdz-rt`/`cdz-num` rlibs beside the `cdz` binary)
+    /// with a driver that renders the boundary value via the shared `cdz-rust-render` crate (byte-identical
+    /// to what `cdz-run` prints), runs it, and prints ONE verdict line to stdout: `value <sexpr>` (ran to
+    /// that value) | `declined` (front-end reject OR rust-backend not-yet — coverage, not a mismatch) |
+    /// `trap <msg>` (a Cadenza trap = a Rust panic) | `error <msg>` (the emitted `.rs` failed to `rustc` — a
+    /// MISCOMPILE the fuzzer files). Keeping `declined` and `error` DISTINCT is the fuzzer's one requirement
+    /// beyond run-ml's grammar. Exits 0 for any run outcome; the one non-zero exit is a harness READ error.
+    RunRust(RunRustArgs),
 }
 
 fn main() -> ExitCode {
@@ -353,6 +366,7 @@ fn main() -> ExitCode {
         Cmd::ParamManifest(a) => run_param_manifest(&a),
         Cmd::Lsp => run_lsp(),
         Cmd::RunMl(a) => run_run_ml(&a),
+        Cmd::RunRust(a) => run_run_rust(&a),
     }
 }
 
@@ -635,6 +649,262 @@ fn parse_ml_option_render(rendered: &str) -> String {
         }
     }
     "declined".to_string()
+}
+
+#[derive(clap::Args)]
+struct RunRustArgs {
+    /// The program SOURCE file (s-expr / ml surface). OMITTED → read the program from stdin. Mirrors
+    /// `cdz run-ml`'s input contract so the fuzzer's differential harness is symmetric.
+    file: Option<String>,
+    /// The export to invoke (default: the sole exported nullary `main`). The scalar/nullary case needs
+    /// none; a `--call NAME` selects a specific export for a future arg-taking case.
+    #[arg(long)]
+    call: Option<String>,
+}
+
+/// `cdz run-rust` — compile a program to the RUST backend, run it natively, print ONE verdict line.
+///
+/// The fuzzer's rust-vs-wasm differential ORACLE shells this to get the Rust-backend value and compare it
+/// to the wasm value (`cdz run`) — so the render MUST match `cdz-run`'s byte-for-byte (it uses the shared
+/// `cdz-rust-render` crate, the same one the corpus gate's `--target rust` path uses). Verdict grammar:
+/// `value <sexpr>` (ran to that value — bare, exactly as `cdz-run` prints); `declined` (the front-end
+/// REJECTED the program, OR the rust backend doesn't emit it yet — coverage-not-yet, NOT a mismatch the
+/// fuzzer files); `trap <msg>` (the program TRAPPED at run time — a Cadenza trap lowered to a Rust panic,
+/// compared by reason); `error <msg>` (the emitted `.rs` FAILED to `rustc` — a bad artifact, a MISCOMPILE
+/// the fuzzer files). `declined` vs `error` are kept DISTINCT (the fuzzer's one requirement beyond run-ml).
+/// Exit is ALWAYS 0 for a run outcome (a verdict is not a shell failure); the one non-zero exit is a HARNESS
+/// failure that produced no verdict (a file/stdin READ error).
+///
+/// MECHANISM (mirrors the gate's `run_program_rust`, now that its render half is the shared crate): shell
+/// `cdz compile - -o - --target rust` (self, via `current_exe`) to emit the `.rs`; wrap it in `mod prog {…}`
+/// and add a driver `fn main` that calls the export and prints `cdz_rust_render::cdz_render_expr(...)`;
+/// `rustc -O` it, linking the pre-built `cdz-rt`/`cdz-num` rlibs that sit BESIDE the `cdz` binary in
+/// `target/<profile>/` (the same dir `current_exe` lives in); run the binary and map its outcome to a verdict.
+fn run_run_rust(args: &RunRustArgs) -> ExitCode {
+    use std::io::Read;
+    // 1. Read the program source (file or stdin). A read failure is the reserved harness-error path.
+    let source = match &args.file {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{PROG} run-rust: cannot read {path}: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => {
+            let mut buf = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
+                eprintln!("{PROG} run-rust: cannot read stdin: {e}");
+                return ExitCode::FAILURE;
+            }
+            buf
+        }
+    };
+
+    // 2. Emit the Rust module: shell `cdz compile - -o - --target rust` to SELF (install-location-independent
+    //    via `current_exe`). A compile FAILURE means the front-end rejected the program or the rust backend
+    //    declines it → `declined` (coverage-not-yet), NOT an `error` (an error is a bad ARTIFACT — see step 5).
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("{PROG} run-rust: current_exe: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let module = match emit_rust_module(&exe, &source) {
+        EmitOutcome::Module(m) => m,
+        EmitOutcome::Declined => {
+            println!("declined");
+            return ExitCode::SUCCESS;
+        }
+        EmitOutcome::Harness(msg) => {
+            eprintln!("{PROG} run-rust: {msg}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 3. Determine the export to invoke + its Cadenza result type (read off the `// cdz-return[<ident>]:`
+    //    note the backend emits). With no `--call`, the sole export is the `pub fn <name>` the module
+    //    defines; recover its name from the signature.
+    let export = match &args.call {
+        Some(name) => cdz_rust_render::rust_ident(name),
+        None => match module
+            .split("pub fn ")
+            .nth(1)
+            .map(|s| s.split(['(', '<']).next().unwrap_or("").trim())
+        {
+            Some(name) if !name.is_empty() => name.to_string(),
+            _ => {
+                // No exported fn in the emitted module — the backend produced nothing runnable → declined.
+                println!("declined");
+                return ExitCode::SUCCESS;
+            }
+        },
+    };
+    let ret_ty = cdz_rust_render::cdz_return_type(&module, &export);
+
+    // 4. Build a driver: wrap the emitted module in `mod prog {…}` (so its `pub fn main` becomes
+    //    `prog::main` and does NOT collide with the driver's own `fn main`), then print the boundary value
+    //    rendered by the SHARED crate — byte-identical to what `cdz-run` prints.
+    let render = match &ret_ty {
+        Some(ty) => {
+            let sums = cdz_rust_render::cdz_sum_descriptors(&module);
+            let newtypes = cdz_rust_render::cdz_newtype_descriptors(&module);
+            let sum_params = cdz_rust_render::cdz_sum_params(&module);
+            let unit_form = cdz_rust_render::cdz_unit_form(&module, &export);
+            let scale = cdz_rust_render::cdz_scale(&module, &export);
+            cdz_rust_render::cdz_render_expr(
+                ty,
+                &sums,
+                &newtypes,
+                &sum_params,
+                unit_form.as_deref(),
+                scale,
+            )
+        }
+        // No `cdz-return` note (an older/void export) — fall back to Display of the result.
+        None => "format!(\"{}\", __r)".to_string(),
+    };
+    let driver = format!(
+        "#[allow(warnings)]\nmod prog {{\n{module}\n}}\nfn main() {{\n    let __r = prog::{export}();\n    println!(\"{{}}\", {render});\n}}\n"
+    );
+
+    // 5. rustc the driver, linking the pre-built `cdz-rt`/`cdz-num` rlibs beside the `cdz` binary (same
+    //    dir `current_exe` is in — `cargo build` puts `libcdz_{rt,num}.rlib` in `target/<profile>/`). A
+    //    UNIQUE per-process temp dir (pid-stamped) so concurrent oracle invocations never race prog.rs/prog.
+    match compile_and_run_rust_driver(&exe, &driver) {
+        Ok(verdict) => {
+            println!("{verdict}");
+            ExitCode::SUCCESS
+        }
+        Err(msg) => {
+            eprintln!("{PROG} run-rust: {msg}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The outcome of emitting a program to the rust backend: the `.rs` module text, a DECLINE (front-end
+/// reject / backend not-yet), or a HARNESS failure (couldn't spawn the compiler).
+enum EmitOutcome {
+    Module(String),
+    Declined,
+    Harness(String),
+}
+
+/// Shell `<exe> compile <src>.sexp -o - --target rust` → the emitted `.rs` on stdout. The source is
+/// written to a per-process temp `.sexp` FILE (not piped to stdin `-`, which `cdz compile` reads as a
+/// pre-built binary AST — a `.sexp` file's extension selects in-process SOURCE parsing). A non-zero
+/// compile exit is a DECLINE (front-end reject or rust-backend not-yet); a spawn/IO failure is a harness error.
+fn emit_rust_module(exe: &std::path::Path, source: &str) -> EmitOutcome {
+    use std::process::Command;
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("cdz-run-rust-emit-{}-{seq}", std::process::id()));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return EmitOutcome::Harness(format!("create temp dir: {e}"));
+    }
+    struct TmpDir(std::path::PathBuf);
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _guard = TmpDir(dir.clone());
+    let src = dir.join("prog.sexp");
+    if let Err(e) = std::fs::write(&src, source) {
+        return EmitOutcome::Harness(format!("write source: {e}"));
+    }
+    let out = match Command::new(exe)
+        .arg("compile")
+        .arg(&src)
+        .args(["-o", "-", "--target", "rust"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => return EmitOutcome::Harness(format!("spawn compile: {e}")),
+    };
+    if !out.status.success() {
+        return EmitOutcome::Declined;
+    }
+    EmitOutcome::Module(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Write the `driver` to a per-process temp dir, `rustc -O` it (linking the `cdz-rt`/`cdz-num` rlibs that
+/// sit beside `exe`), run the binary, and map the outcome to a verdict STRING. A rustc failure is
+/// `error <first-stderr-line>` (a bad artifact = a miscompile); a non-zero RUN is `trap <…>` (a panic =
+/// a Cadenza trap); success is `value <stdout>` (the rendered boundary value). The temp dir is removed on
+/// every return via an RAII guard.
+fn compile_and_run_rust_driver(exe: &std::path::Path, driver: &str) -> Result<String, String> {
+    use std::process::Command;
+    let lib_dir = exe
+        .parent()
+        .ok_or_else(|| "cannot locate the cdz binary's directory".to_string())?;
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("cdz-run-rust-{}-{seq}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    struct TmpDir(std::path::PathBuf);
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _guard = TmpDir(dir.clone());
+    let src = dir.join("prog.rs");
+    let bin = dir.join("prog");
+    std::fs::write(&src, driver).map_err(|e| format!("write driver: {e}"))?;
+
+    // rustc, linking the pre-built rlibs beside the cdz binary (built by `cargo build`/`cargo xtask
+    // build` into `target/<profile>/`). `--extern` only makes a crate available (not force-linked), so
+    // passing both is harmless when the program references neither.
+    let mut cmd = Command::new("rustc");
+    cmd.args(["-O", "--edition", "2021"])
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin);
+    cmd.arg("-L")
+        .arg(format!("dependency={}", lib_dir.display()));
+    let rt = lib_dir.join("libcdz_rt.rlib");
+    if rt.exists() {
+        cmd.arg("--extern").arg(format!("cdz_rt={}", rt.display()));
+    }
+    let num = lib_dir.join("libcdz_num.rlib");
+    if num.exists() {
+        cmd.arg("--extern")
+            .arg(format!("cdz_num={}", num.display()));
+    }
+    let compile = cmd
+        .output()
+        .map_err(|e| format!("rustc failed to launch: {e}"))?;
+    if !compile.status.success() {
+        // The emitted `.rs` did not compile — a BAD ARTIFACT (a rust-backend miscompile the fuzzer files),
+        // NOT a decline. Report the first stderr line (often the root error).
+        let stderr = String::from_utf8_lossy(&compile.stderr);
+        let first = stderr
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("rustc failed")
+            .trim();
+        return Ok(format!("error {first}"));
+    }
+    // Run the compiled driver. A non-zero exit (a panic) is a TRAP (a Cadenza trap lowered to a Rust
+    // panic); the panic message on stderr is the reason.
+    let run = Command::new(&bin)
+        .output()
+        .map_err(|e| format!("run failed to launch: {e}"))?;
+    if !run.status.success() {
+        let stderr = String::from_utf8_lossy(&run.stderr);
+        let reason = stderr
+            .lines()
+            .find(|l| l.contains("panicked at") || l.contains("panic"))
+            .or_else(|| stderr.lines().find(|l| !l.trim().is_empty()))
+            .unwrap_or("panic")
+            .trim();
+        return Ok(format!("trap {reason}"));
+    }
+    let value = String::from_utf8_lossy(&run.stdout).trim().to_string();
+    Ok(format!("value {value}"))
 }
 
 // ── compile (with in-process source parsing + auto-spans for debug) ──────────────────────────────
@@ -2786,8 +3056,8 @@ fn run_test_file(
                         // the decoder doesn't yet render) — never a wrong value.
                         let pool_ints: Vec<i64> =
                             fail.inputs.iter().filter_map(|s| s.parse().ok()).collect();
-                        let rendered = compound_param_ty(&mut db, name)
-                            .and_then(|ty| render_pool_value(&ty, &pool_ints));
+                        let rendered = rcdzc::proptest_gen::gen_ty_of_wrapper_param(&db, name)
+                            .and_then(|gty| render_pool_value(&gty, &pool_ints));
                         match rendered {
                             // Render the counterexample as a call to the ORIGINAL test (the `-gen` suffix is
                             // the synthesized-wrapper detail; `never_three([0,0,0])` reads as the user wrote
@@ -3321,54 +3591,42 @@ fn apply_cmp(op: &str, lit: i128, mirrored: bool, b: &mut ParamBound) {
 /// elements, keeping the first `c`. The decoder MUST use the same LEN to consume the pool in lockstep.
 const RUNNER_LIST_LEN: usize = 3;
 
-/// Recover the ORIGINAL compound parameter type of a synthesized `-gen` wrapper. `proptest_gen` leaves the
-/// pre-synthesis def in place (name `<wrapper-without-"-gen">`, its `@test` stripped so it's a plain callee)
-/// with its single compound parameter's type intact, and adds the nullary `-gen` wrapper beside it. So to
-/// render a wrapper's counterexample we look up that sibling def and solve its (first) parameter's type.
-/// `None` if the name isn't a `-gen` wrapper, no such sibling def exists, or it has no parameter.
-fn compound_param_ty(db: &mut rcdzc::db::Db, wrapper_name: &str) -> Option<rcdzc::ty::Ty> {
-    let orig = wrapper_name.strip_suffix("-gen")?;
-    let def = db.defs.iter().position(|d| d.name == orig)?;
-    let p = *db.defs[def].params.first()?;
-    let binder = db
-        .ast
-        .as_form(p, ":")
-        .and_then(|t| t.first().copied())
-        .unwrap_or(p);
-    Some(rcdzc::infer::type_of(db, binder))
-}
-
-/// Render the concrete value a shrunk driver `pool` decodes to for a compound parameter type `ty`, mirroring
-/// the generator derivation `proptest_gen::build_gen` synthesized into the `-gen` wrapper — so the reported
-/// counterexample is the actual value that failed (e.g. `[0, 0, 0]` / `(1, false)`) rather than the raw
-/// driver ints. Returns `None` for a type the decoder does not (yet) render (`Sum`/`Set`/`Map`/`Char`/
-/// nominal), so the caller falls back to the raw-int line — never a wrong value. The pool is consumed via a
-/// shared cursor in the SAME order the wrapper pulls `Test.gen`.
-fn render_pool_value(ty: &rcdzc::ty::Ty, pool: &[i64]) -> Option<String> {
+/// Render the concrete value a shrunk driver `pool` decodes to for the wrapper's parameter generator shape
+/// `gty`, mirroring the derivation `proptest_gen::build_gen` synthesized into the `-gen` wrapper — so the
+/// reported counterexample is the actual value that failed (`[0, 0, 0]` / `(1, false)` / `Err(3)`) rather
+/// than the raw driver ints. `gty` is `proptest_gen`'s OWN `GenTy` (via `gen_ty_of_wrapper_param`), so the
+/// decode vocabulary is the SAME one the generator was built from — it can never drift out of sync, and a
+/// `Sum`/nested shape is covered identically to the wrapper. The pool is consumed via a shared cursor in the
+/// SAME order the wrapper pulls `Test.gen`. `None` only if the pool runs dry (a malformed shrink).
+fn render_pool_value(gty: &rcdzc::proptest_gen::GenTy, pool: &[i64]) -> Option<String> {
     let mut cursor = 0usize;
-    decode_value(ty, pool, &mut cursor)
+    decode_value(gty, pool, &mut cursor)
 }
 
 /// One step of the pool→value decode (see [`render_pool_value`]). `cursor` advances by exactly the number of
 /// `Test.gen` ints the corresponding `build_gen` arm consumes, in the same order.
-fn decode_value(ty: &rcdzc::ty::Ty, pool: &[i64], cursor: &mut usize) -> Option<String> {
-    use rcdzc::ty::Ty;
+fn decode_value(
+    gty: &rcdzc::proptest_gen::GenTy,
+    pool: &[i64],
+    cursor: &mut usize,
+) -> Option<String> {
+    use rcdzc::proptest_gen::GenTy;
     // Pull the next driver int (the wrapper's `Test.gen`); `None` if the shrunk pool is exhausted.
     let next = |cursor: &mut usize| -> Option<i64> {
         let v = pool.get(*cursor).copied()?;
         *cursor += 1;
         Some(v)
     };
-    match ty {
+    match gty {
         // A scalar Int consumes one int: the value IS that int.
-        Ty::Int(_) => Some(next(cursor)?.to_string()),
+        GenTy::Int => Some(next(cursor)?.to_string()),
         // A Bool consumes one int, taken as its parity (`gen % 2 == 0`) — the `build_gen` Bool derivation.
-        Ty::Bool => Some((next(cursor)?.rem_euclid(2) == 0).to_string()),
+        GenTy::Bool => Some((next(cursor)?.rem_euclid(2) == 0).to_string()),
         // A Float consumes one int, converted to an integer-valued float (`FloatN.of-int`).
-        Ty::Float(_) => Some(format!("{}.0", next(cursor)?)),
+        GenTy::Float(_) => Some(format!("{}.0", next(cursor)?)),
         // A variable-length list: a count `c = gen % (LEN+1)` then LEN candidate elements (all drawn), value
         // = the first `c`. The decoder draws in the SAME order so the cursor stays in lockstep with the run.
-        Ty::List(elem) => {
+        GenTy::List(elem) => {
             let c = (next(cursor)?.rem_euclid((RUNNER_LIST_LEN + 1) as i64)) as usize;
             let mut elems = Vec::with_capacity(RUNNER_LIST_LEN);
             for _ in 0..RUNNER_LIST_LEN {
@@ -3378,28 +3636,50 @@ fn decode_value(ty: &rcdzc::ty::Ty, pool: &[i64], cursor: &mut usize) -> Option<
             Some(format!("[{}]", elems.join(", ")))
         }
         // A tuple draws one value per slot, in order.
-        Ty::Tuple(slots) => {
+        GenTy::Tuple(slots) => {
             let mut vals = Vec::with_capacity(slots.len());
             for slot in slots.iter() {
                 vals.push(decode_value(slot, pool, cursor)?);
             }
             Some(format!("({})", vals.join(", ")))
         }
-        // A record draws one value per field, in the field order `build_gen` used (the `BTreeMap` iteration
-        // order, which is what the synthesized `(record (f <gen>) …)` followed).
-        Ty::Record(fields) => {
+        // A record draws one value per field, in the field order `build_gen` used.
+        GenTy::Record(fields) => {
             let mut parts = Vec::with_capacity(fields.len());
-            for (sym, fty) in fields.iter() {
+            for (fname, fty) in fields.iter() {
                 let v = decode_value(fty, pool, cursor)?;
-                parts.push(format!("{}: {}", sym.name, v));
+                parts.push(format!("{fname}: {v}"));
             }
             Some(format!("{{{}}}", parts.join(", ")))
         }
-        // Sum/Set/Map/Char/nominal/other: not (yet) decoded — fall back to the raw-int line. (A user SUM
-        // needs its variant payload types reconstructed from `decl + args` via sum normalization; a
-        // follow-up increment. Rendering the STRUCTURAL shapes — List/Tuple/Record over scalar leaves —
-        // already covers the common compound property-test parameters the operator hit.)
-        _ => None,
+        // A user SUM: the wrapper draws a selector `sel = gen % k` FIRST, then EVERY variant's payload
+        // unconditionally (in order), and keeps variant `sel`. The decoder mirrors that EXACTLY — draw the
+        // selector, then decode each variant's payload advancing the cursor over ALL of them, keeping only
+        // the selected variant's rendering (`Err(3)`, or a bare `None` for a nullary variant). Draining every
+        // payload keeps the cursor correct even when the sum is NESTED inside an enclosing compound.
+        GenTy::Sum { variants, .. } => {
+            if variants.is_empty() {
+                return None;
+            }
+            let k = variants.len();
+            let sel = (next(cursor)?.rem_euclid(k as i64)) as usize;
+            let mut selected: Option<String> = None;
+            for (i, (vname, payload)) in variants.iter().enumerate() {
+                let rendered = match payload {
+                    None => vname.clone(),
+                    Some(pty) => format!("{vname}({})", decode_value(pty, pool, cursor)?),
+                };
+                if i == sel {
+                    selected = Some(rendered);
+                }
+            }
+            selected
+        }
+        // Set/Map: the generator dedups (Set) / last-write-wins (Map) over G1_LIST_LEN drawn elements, so the
+        // rendered VALUE is not a simple 1:1 decode of the pool (a collision yields a smaller collection). The
+        // pool is still consumed deterministically, but rendering the post-dedup value would need to model
+        // the runtime dedup — a later increment. Fall back to the raw-int line (never a wrong value).
+        GenTy::Set(_) | GenTy::Map(_, _) => None,
     }
 }
 

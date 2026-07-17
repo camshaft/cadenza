@@ -1422,6 +1422,28 @@
                 (and (Coin.flip) (not (Coin.flip))))) (export main)))
   (output (: true Bool)))
 
+(case "a connective-wrapped perform in an if condition threads its state advance to the taken branch"
+  (doc    "A short-circuit connective `(and b (> (St.tick) 0))` sitting DIRECTLY in an `if` CONDITION — the
+           condition's `tick` advances the handler state, and the taken branch's `tick` must READ that advance.
+           Seeded 0, arm `(tick (u) s (resume (+ s 1) (+ s 1)))`; with `b = true` the condition's `tick` resumes
+           1 (state → 1), so the then-branch `(St.tick)` resumes 2. Had the condition's advance been dropped (the
+           connective → `if`-desugar's out-state is the post-CONDITION state, which the `If` thread arm does not
+           observe per-branch), the then-branch would read the seed and resume 1 — the silent miscompile this
+           pins. FIXED by hoist Site 5: a conditional whose CONDITION/SCRUTINEE itself performs in a branch is
+           bound to a `let` (`(if C t e)` ≡ `(let ((#cv C)) (if #cv t e))`), turning C into a `let`-init that
+           Site 4 distributes so each branch threads under C's advanced state. Controls that already threaded
+           (bare effectful compare in the cond, a LET-bound connective) are unaffected; `not` is not part of the
+           broken desugar. b=true → 2.")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (def (main (: b Bool))
+              (handle St 0
+                ((tick (u) s (resume (+ s 1) (+ s 1))))
+                (if (and b (> (St.tick) 0)) (St.tick) -99)))
+            (export main)))
+  (call   main (: true Bool))
+  (output (: 2 Int64)))
+
 (case "two performs bound by nested lets thread the handler state in order"
   (doc    "Two performs on the strict spine, each BOUND by its own `let`, thread the handler state in
            evaluation order across the binds. `(let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b)))` under a

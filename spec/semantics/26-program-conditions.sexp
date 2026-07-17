@@ -1874,3 +1874,29 @@
   (output (: 2 Int64))
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
+
+; ── @requires × @test: constrained GENERATION (breaker pin, keyed on the 71efd45a6 slice) ──────────
+; A `@requires` precondition on a `@test`-stacked def is a FILTER on the generated input domain, not a
+; property the test may fail on. The ruling (v-verification + v-property-testing, 2026-07-17): the
+; @requires trap stays a HARD production contract, so the ONLY sound test-runner behavior is to DRAW
+; IN-DOMAIN — a generated input violating the pre must never surface as a spurious counterexample
+; (`f(-1)` under `(requires (>= x 0))` was exactly that before the constrained-gen slice). The corpus
+; can't drive `cdz test` directly, so this pins the DEF-SIDE composition the runner relies on: the
+; stacked def, called in-domain, enforces the pre, the body, and the post exactly as unstacked.
+
+(case "a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call"
+  (doc    "The def-side composition the constrained-gen ruling relies on: `@test` stacked over
+           `(@ (ensures (> it 0)) (@ (requires (>= x 0)) (def f …)))` leaves the def's OWN contract
+           intact for ordinary calls — in-domain `(f 5)` runs pre → body → post and returns 6;
+           out-of-domain `(f -5)` still HARD-TRAPS on the pre (the production contract the test
+           runner must respect by drawing in-domain, never a soft reject). Pins that the @test wrapper
+           is transparent to direct-call enforcement — the test tier changes how INPUTS are drawn,
+           not what the contract means.")
+  (input  (do
+            (@ test (@ (ensures (> it 0)) (@ (requires (>= x 0)) (def (f (: x Int64)) (+ x 1)))))
+            (def (main (: n Int64)) (f n))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64))
+  (call   main (: -5 Int64))
+  (trap   "unreachable"))

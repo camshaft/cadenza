@@ -102,3 +102,11 @@
 ; effect-lowering: lower a let-bound perform correctly regardless of surrounding if/let nesting + node
 ; order. v-verification filing a NON-VERIFICATION minimal repro ((if c (let ((r (E.op))) (if (> r 0) r
 ; (trap))) (trap)) under a handler) that isolates it with zero annotations. Promote when v-effects fixes.
+
+; SHARPENED (v-verification negative result, 2026-07-17): NO hand-source witness exists — the exact
+; reversed shape hand-written ((def (f (: x Int64)) (if (>= x 0) (let ((it (+ x (St.tick)))) (if (> it 0)
+; it (trap))) (trap)))) RETURNS 101 (works). ONLY the verify_enforce-CONSTRUCTED AST declines. Trigger is
+; INTRINSIC to verify_enforce's node construction (predicate/let/it/if appended at HIGH arena indices after
+; the body + it-binding occ-sharing), not tree shape. effect-lowering lower.rs:16930 (it operand reads
+; is_scalar=FALSE) sensitive to arena index/order. => THIS repro IS the canonical minimal witness; v-effects
+; must test their fix against IT, not a hand-written equivalent (which lowers fine = false green).

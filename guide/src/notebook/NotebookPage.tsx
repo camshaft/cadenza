@@ -23,7 +23,7 @@ import { cellIde } from "./cellIde.ts";
 import { ProseView } from "./ProseView.tsx";
 import { OutputView } from "./OutputView.tsx";
 import { WidgetControls } from "./WidgetControls.tsx";
-import { DEFAULT_EXAMPLE } from "./examples.ts";
+import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
 import { LazyCodeEditor } from "../editor/LazyCodeEditor.tsx";
 
 /// The starter notebook the route opens with — the flagship compound-interest example (from the shared
@@ -62,6 +62,10 @@ export default function NotebookPage() {
   // (or flicker every output to "not run") on each keystroke. They coincide except during an active edit.
   const [doc, setDoc] = useState(STARTER);
   const [committedDoc, setCommittedDoc] = useState(STARTER);
+  // The loaded example's slug (drives the example-picker's selection). Switching examples REPLACES the
+  // whole document (both the live + committed copy so the re-parse/re-run fires immediately, not after the
+  // edit-debounce) and clears widget values so a stale value from the previous notebook can't linger.
+  const [exampleSlug, setExampleSlug] = useState(DEFAULT_EXAMPLE.slug);
   const docDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (docDebounce.current) clearTimeout(docDebounce.current);
@@ -91,6 +95,17 @@ export default function NotebookPage() {
     [cells],
   );
   const [values, setValues] = useState<WidgetValues>({});
+  // Switch to another example notebook: replace the whole document (live AND committed, so the switch
+  // re-parses + re-runs at once rather than waiting on the edit-debounce) and reset widget values (the new
+  // notebook declares its own widgets; `setValues({})` lets the reconcile effect re-seed them from defaults).
+  const onSelectExample = useCallback((slug: string) => {
+    const example = EXAMPLES.find((e) => e.slug === slug);
+    if (!example) return;
+    setExampleSlug(slug);
+    setDoc(example.markdown);
+    setCommittedDoc(example.markdown);
+    setValues({});
+  }, []);
   // A ref mirror of `values`, so the debounced widget-change handler can read the LATEST committed values
   // to build the recompute buffer WITHOUT running a side effect inside a setState updater (that updater
   // can be double-invoked under StrictMode/batching, which would enqueue duplicate runs).
@@ -212,8 +227,24 @@ export default function NotebookPage() {
     <div className="mx-auto min-h-screen max-w-4xl px-4 py-6">
       <div className="mb-4 flex items-baseline justify-between gap-3">
         <h1 className="text-lg font-bold text-slate-100 sm:text-xl">Cadenza Notebook</h1>
-        {/* Mobile touch target: the header link gets a 44px min-height below `sm`, compact at sm+. */}
+        {/* Mobile touch target: the controls get a 44px min-height below `sm`, compact at sm+. */}
         <div className="flex shrink-0 items-center gap-1 text-xs sm:gap-3">
+          {/* Example picker — swap between the canonical notebooks (examples.ts). */}
+          <label className="flex min-h-11 items-center gap-1 sm:min-h-0">
+            <span className="sr-only">Example notebook</span>
+            <select
+              data-testid="notebook-example-picker"
+              value={exampleSlug}
+              onChange={(e) => onSelectExample(e.target.value)}
+              className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-200 focus:border-cadenza-500 focus:outline-none"
+            >
+              {EXAMPLES.map((e) => (
+                <option key={e.slug} value={e.slug}>
+                  {e.title}
+                </option>
+              ))}
+            </select>
+          </label>
           <Link
             to="/playground"
             className="flex min-h-11 items-center px-2 text-cadenza-400 hover:text-cadenza-300 sm:min-h-0 sm:px-0"
