@@ -6,6 +6,11 @@
 ///
 /// This is the marquee demonstration: a plate that is 50 mm wide with 1/4-inch bolt holes carries `50` and
 /// `127/20` (6.35 mm) EXACTLY in one model — the thing floats can't do and the reason Rational+Qty exist.
+///
+/// NUMERIC MODE (S1-redux): `@!default-fraction Rational` — model dimensions read as bare `n/d` exact
+/// Rationals (`inch (1/4)`, `254/10`), no `Rational.of` noise. Module-local (imported `exact`/`units`
+/// unaffected; `ri`/`mm`/`inch`/`foot` keep their signatures and a bare Int64 arg to `ri` stays Int64).
+@!default-fraction Rational
 
 import { Solidr, Vec3r, Aabbr } from "exact"
 import { v3r, bounding-box, aabbr-size, v3r-eq, v3r-x } from "exact"
@@ -80,7 +85,7 @@ def l-bracket(w: Rational, d: Rational, h: Rational, t: Rational, hole-r: Ration
 @test
 def plate-box-is-its-outer-size-in-mm() =
   // a 50mm × 30mm × 5mm plate (holes internal) → bounding box exactly (50, 30, 5) mm.
-  let p = plate(mm(ri(50)), mm(ri(30)), mm(ri(5)), inch(Rational.of(1, 4))) in
+  let p = plate(mm(ri(50)), mm(ri(30)), mm(ri(5)), inch(1 / 4)) in
   if v3r-eq(aabbr-size(bounding-box(p)), v3r(ri(50), ri(30), ri(5))) then unit
   else trap("plate outer box is 50×30×5 mm exactly")
 
@@ -88,13 +93,13 @@ def plate-box-is-its-outer-size-in-mm() =
 def plate-mixes-metric-and-imperial-exactly() =
   // the showcase: the plate's holes are 1/4 inch = 127/20 mm — carried EXACTLY alongside the mm width.
   // check the hole radius value flows through as the exact Rational (no float).
-  if inch(Rational.of(1, 4)) == Rational.of(127, 20) then unit
+  if inch(1 / 4) == 127 / 20 then unit
   else trap("1/4 inch hole = 127/20 mm exactly, mixed with metric plate")
 
 @test
 def a_metric_and_imperial_box_agree_when_equal() =
   // a 25.4mm cube and a 1-inch cube have the SAME exact bounding box (25.4mm == 1inch exactly).
-  let metric = box(Rational.of(254, 10), Rational.of(254, 10), Rational.of(254, 10)) in
+  let metric = box(254 / 10, 254 / 10, 254 / 10) in
   let imperial = box(inch(ri(1)), inch(ri(1)), inch(ri(1))) in
   if v3r-eq(aabbr-size(bounding-box(metric)), aabbr-size(bounding-box(imperial))) then unit
   else trap("25.4mm cube == 1inch cube exactly")
@@ -111,20 +116,20 @@ def foot-dimensioned-box-is-exact() =
   // a 1-foot cube → 304.8 mm = 1524/5 per axis, exact.
   let c = box(foot(ri(1)), foot(ri(1)), foot(ri(1))) in
   match bounding-box(c) with | Aabbr.Boxr(_, hi) =>
-    if v3r-x(hi) == Rational.of(762, 5) then unit else trap("1-foot cube half-extent = 762/5 mm (full 1524/5)")
+    if v3r-x(hi) == 762 / 5 then unit else trap("1-foot cube half-extent = 762/5 mm (full 1524/5)")
 
 @test
 def bolt-flange-box-is-its-diameter-by-thickness() =
   // a flange of radius 60mm, 8mm thick (bore 20, bolt circle 45, 1/4in holes) → outer envelope (2r, 2r, t) =
   // (120, 120, 8) mm: the disc sets the diameter, and the bore + bolt holes (Differences) never grow the box.
-  let f = bolt-flange(mm(ri(60)), mm(ri(8)), mm(ri(20)), mm(ri(45)), inch(Rational.of(1, 4))) in
+  let f = bolt-flange(mm(ri(60)), mm(ri(8)), mm(ri(20)), mm(ri(45)), inch(1 / 4)) in
   if v3r-eq(aabbr-size(bounding-box(f)), v3r(ri(120), ri(120), ri(8))) then unit
   else trap("bolt-flange envelope is (2r, 2r, t) = (120, 120, 8) mm exactly")
 
 @test
 def bolt-flange-mixes-metric-body-with-imperial-fasteners() =
   // the showcase: a metric flange (60mm r, 45mm bolt circle) carries 1/4-inch bolt holes = 127/20 mm EXACTLY.
-  if inch(Rational.of(1, 4)) == Rational.of(127, 20) then
+  if inch(1 / 4) == 127 / 20 then
     (if mm(ri(45)) == ri(45) then unit else trap("bolt circle 45 mm exact")) else trap("1/4in bolt hole = 127/20 mm")
 
 @test
@@ -134,7 +139,7 @@ def bolt-flange-hole-centres-sit-on-the-bolt-circle() =
   // so (lo.x + hi.x)/2 = bcr exactly. This is the ±45mm cardinal-position claim, checked on the real geometry.
   // Exact because the cardinal offset is just +bcr / 0 — no trig.
   let bcr = mm(ri(45)) in
-  let hole-r = inch(Rational.of(1, 4)) in
+  let hole-r = inch(1 / 4) in
   let east-hole = move(bcr, ri(0), ri(0), cyl(mm(ri(8)), hole-r)) in
   match bounding-box(east-hole) with | Aabbr.Boxr(lo, hi) =>
     // centre-x = (lo.x + hi.x)/2 must equal bcr = 45; and the west hole (−bcr) mirrors to −45.
@@ -148,14 +153,14 @@ def bolt-flange-hole-centres-sit-on-the-bolt-circle() =
 def l-bracket-box-is-its-envelope-in-mm() =
   // a 50×40×30 mm L-bracket (1/8-inch wall, 3mm hole) → outer envelope exactly (50, 40, 30) mm: the base
   // gives w×d, the upright wall raises z to the full h, and the hole (a Difference) never grows the box.
-  let b = l-bracket(mm(ri(50)), mm(ri(40)), mm(ri(30)), inch(Rational.of(1, 8)), mm(ri(3))) in
+  let b = l-bracket(mm(ri(50)), mm(ri(40)), mm(ri(30)), inch(1 / 8), mm(ri(3))) in
   if v3r-eq(aabbr-size(bounding-box(b)), v3r(ri(50), ri(40), ri(30))) then unit
   else trap("L-bracket envelope is 50×40×30 mm exactly (union of base+wall, hole doesn't grow it)")
 
 @test
 def l-bracket-wall-thickness-is-exact-imperial() =
   // the showcase: the wall is 1/8 inch = 127/40 mm (= 3.175), carried EXACTLY alongside the metric arms.
-  if inch(Rational.of(1, 8)) == Rational.of(127, 40) then unit
+  if inch(1 / 8) == 127 / 40 then unit
   else trap("1/8 inch wall = 127/40 mm exactly, mixed with the metric 50×40×30 bracket")
 
 export { box, cyl, move, plate, tube, l-bracket, bolt-flange }
