@@ -31605,7 +31605,10 @@ mod match_engine {
         let bytes = component(src);
         use wasmtime::component::Val;
         let got: i64 = run_returns_with(&bytes, "main", &[Val::S64(5)]);
-        assert_eq!(got, 1, "n>0 selects the concrete 1 (the diverging match is not taken)");
+        assert_eq!(
+            got, 1,
+            "n>0 selects the concrete 1 (the diverging match is not taken)"
+        );
         assert!(
             call_traps(&bytes, "main", &[Val::S64(0)]),
             "n=0 forces the all-diverge match, which must TRAP"

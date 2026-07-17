@@ -2898,9 +2898,7 @@ fn sumcont_diverges(db: &mut Db, cont: &crate::core::SumCont) -> bool {
     use crate::core::SumCont;
     match cont {
         SumCont::Leaf(body) => body_diverges(db, *body),
-        SumCont::Guarded { body, els, .. } => {
-            body_diverges(db, *body) && sumcont_diverges(db, els)
-        }
+        SumCont::Guarded { body, els, .. } => body_diverges(db, *body) && sumcont_diverges(db, els),
         SumCont::LitTest { then_, els, .. } => {
             sumcont_diverges(db, then_) && sumcont_diverges(db, els)
         }
