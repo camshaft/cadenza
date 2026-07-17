@@ -1753,10 +1753,10 @@ impl Db {
         // BEFORE resolve, so a guest `(Param.width)` reference resolves against the generated accessor
         // (the generate-before-resolve ordering that dodges the Param-unbound circularity). The guest
         // reads the param's type from its EXPLICIT annotation, so no whole-program resolve is needed
-        // here. Faults (an untyped `@param`, a B-invariant violation) are recorded for `collect_faults` —
-        // wired to a reject diagnostic in a follow-up brick; the first brick generates the effect and
-        // detects the fault (the diagnostic wiring is additive and does not gate this brick).
-        let _param_faults = crate::param_sidecar::generate(&mut ast);
+        // here. An untyped `@param` (a B-invariant violation) needs no handling here — it is already
+        // rejected upstream by `strip_annotations` (CDZ0201 "wraps no definition"), so this pass only
+        // scans + generates the well-typed sites (see `param_sidecar` module docs).
+        crate::param_sidecar::generate(&mut ast);
         // The program's node count, captured BEFORE the prelude appends — the boundary between user
         // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
         // are the user program; ids at/above are prelude or evaluator-synthesized.
