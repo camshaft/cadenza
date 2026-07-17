@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { extractChart } from "./extractChart.ts";
+import { extractChart, categoryLabels } from "./extractChart.ts";
 
 test("a List of (x, y) tuples → one unnamed series of points", () => {
   const r = extractChart("(: (list (tuple 1 10) (tuple 2 20) (tuple 3 15)) T)");
@@ -109,4 +109,37 @@ test("a record list with a non-numeric first field → category label, x = row i
 test("a record with only one field (no y) → typed fallback", () => {
   const r = extractChart("(: (list (record (x 1)) (record (x 2))) T)");
   assert.equal(r.ok, false);
+});
+
+// ── categoryLabels: the x-axis category names for a labelled (categorical) chart ──
+
+test("categoryLabels returns null for a purely numeric chart (no labels → keep numeric ticks)", () => {
+  const r = extractChart("(: (list (tuple 1 10) (tuple 2 20)) T)");
+  assert.ok(r.ok);
+  assert.equal(categoryLabels(r.series), null);
+});
+
+test("categoryLabels lists the category names in x-slot order for a labelled chart", () => {
+  const r = extractChart('(: (list (tuple "jan" 10) (tuple "feb" 20) (tuple "mar" 15)) T)');
+  assert.ok(r.ok);
+  assert.deepEqual(categoryLabels(r.series), ["jan", "feb", "mar"]);
+});
+
+test("categoryLabels aligns labels across multiple series sharing the same categorical x", () => {
+  const r = extractChart('(: (list (tuple "q1" 10 100) (tuple "q2" 20 200)) T)');
+  assert.ok(r.ok);
+  assert.equal(r.series.length, 2);
+  assert.deepEqual(categoryLabels(r.series), ["q1", "q2"]);
+});
+
+test("categoryLabels works for a record-list categorical chart", () => {
+  const r = extractChart('(: (list (record (month "jan") (n 10)) (record (month "feb") (n 20))) T)');
+  assert.ok(r.ok);
+  assert.deepEqual(categoryLabels(r.series), ["jan", "feb"]);
+});
+
+test("categoryLabels fills a label-less x-slot with its bare index (defensive)", () => {
+  // Hand-built series with a gap at x=1: slot 1 has no label → falls back to "1".
+  const series = [{ name: "", points: [{ x: 0, y: 5, label: "a" }, { x: 2, y: 7, label: "c" }] }];
+  assert.deepEqual(categoryLabels(series), ["a", "1", "c"]);
 });

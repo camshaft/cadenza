@@ -144,17 +144,38 @@ kernel discharges, reusing the b1 denotation (`Ast → Term`, §1A). For a pure-
    instead of the compiler-synthesized range side-condition — so b4 REUSES b1–b3 wholesale; it adds the
    *surface* (`@ensures(Q)` → `denote(Q)`) and the *diagnostic* ("CDZ-VERIFY: cannot prove `@ensures` …"
    when the kernel returns no `Thm`), not new kernel or oracle machinery.
-4. **Discharge + report.** Run the obligation through the kernel (compile-time eval, as b2/b3). A discharged
-   `Thm` whose conclusion matches the obligation → the annotation holds (and, for the implicit overflow one,
-   feeds the elision oracle). No `Thm` → a compile diagnostic (untrusted failure: the claim wasn't proven).
+4. **Discharge + report — a THREE-TIER outcome (v-property-testing seam, 2026-07-17).** Run the obligation
+   through the kernel (compile-time eval, as b2/b3). The SAME denoted `Q` drives all three outcomes — one
+   postcondition, no author restatement:
+   - **PROVEN** — the kernel discharges a `Thm` whose conclusion matches the obligation → the annotation
+     holds (and, for the implicit overflow one, feeds the b3 elision oracle).
+   - **TESTED** — if `Q` is not statically provable, auto-synthesize a PROPERTY TEST from it:
+     v-property-testing's F1 compiler-directed generators produce inputs for `f`'s params (scalar/tuple/
+     record/set/map/leaf), run `denote(Q)` as the oracle, and shrink to a minimal counterexample on failure.
+     A useful middle — not a proof, but real evidence + a concrete counterexample. `denote(Q)` IS their
+     property oracle (the shared "postcondition as predicate over (params, result=`it`)" denotation), so the
+     elaborator emits ONE artifact both consumers read.
+   - **CDZ-VERIFY** — only if neither proven nor testable (a param type the generators don't cover), or the
+     mode an author opts into for "must be statically proven".
+   Seam ownership (to co-design at b4 elaboration land): the elaborator hands v-property-testing `denote(Q)`
+   + the param types; who owns the "proven-else-test" policy knob is TBD with them.
 
 **Why this is a small b4, not a new increment.** b1 built the denotation + discharge; b2 the match predicate;
 b3 the oracle→optimizer wiring. b4 is: (a) the `@ensures`/`@requires` elaboration that emits `denote(Q)` /
 `assume(denote P)` — a front-end pass over the already-settled parse; (b) the CDZ-VERIFY diagnostic. The
 kernel, the denotation, the match predicate, and the elision seam are all already built. b4 corpus pins:
-a `def` with a provable `@ensures` type-checks + discharges; one with an unprovable `@ensures` gets
-CDZ-VERIFY; a `@requires` bound flows into the body's overflow discharge (linking the surface to the b3
-elision — a proven `@requires x<=100` elides an `x+1` guard in the body).
+a `def` with a provable `@ensures` type-checks + discharges; an unprovable-but-testable `@ensures` yields a
+synthesized property test (TESTED tier); a truly-uncheckable one gets CDZ-VERIFY; a `@requires` bound flows
+into the body's overflow discharge (linking the surface to the b3 elision — a proven `@requires x<=100`
+elides an `x+1` guard in the body).
+
+**b3/b4 ORDER (corrected 2026-07-17, agreed with v-core-opt).** b4 must PRECEDE b3: `discharged_no_overflow`
+(b3's body) has nothing to compile-time-eval until a Core node CARRIES a discharge program, and that
+per-node attachment IS the b4 elaboration. There is no `@requires`/`@ensures`→Core-node channel today
+(`arith_provably_in_range` reads only `value_range`, pure interval analysis). So the built order is: Slice-5
+wrapper (DONE, stub=`false`, behavior-neutral) → **b4 elaboration (attaches the obligation+precondition to
+the arith node's `StructId`)** → **b3 fills `discharged_no_overflow` to eval that per-node obligation
+(fail-closed on trap)**. v-core-opt's seam is order-independent; the stub correctly stays `false` until b4.
 
 ---
 

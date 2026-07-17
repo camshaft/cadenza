@@ -126,6 +126,8 @@ pass	a BigInt entry argument is marshalled through the value's own constructor
 pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
+pass	a BigInt narrowed to the exact Int8 maximum and minimum fits and converts
+pass	a BigInt narrowed to the exact UInt8 maximum fits and converts
 pass	a BigInt operation does not silently promote a fixed-width operand
 pass	a BigInt-inner quantity ADDITION past Int64.max stays exact through the wrapper
 pass	a BigInt-inner quantity grows past Int64.max without trapping
@@ -1338,6 +1340,7 @@ pass	a recursive user sum type is built at run time and renders its variant name
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
 pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
+pass	a recursive-generic flatten over a nested generic iterator composes at two element types
 pass	a recursive-generic flatten over a nested generic iterator monomorphizes and runs at one element type
 pass	a recursive-generic producer composes at two element types (the tied result var)
 pass	a recursive-generic producer over a list of its own generic-producer results monomorphizes and runs

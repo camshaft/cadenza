@@ -461,6 +461,23 @@ export const EXAMPLES: Example[] = [
     expected: "41",
   },
   {
+    // Shows off: algebraic effects & handlers — a signature Cadenza feature — discharged entirely
+    // in-program. `Tick.tick n` performs an operation; the handler threads a running total as its
+    // STATE, hands back the new total, and resumes. tick 10 -> 10, tick 5 -> 15, so 10 + 15 = 25.
+    name: "Effects & handlers (stateful)",
+    surface: "sexpr",
+    source: `(module m
+  ; Declare an effect, then discharge it with a handler that threads STATE.
+  (effect Tick (op tick (-> Int64 Int64)))
+  (def (main)
+    ; handler seeds state 0; each tick adds n to the state and returns the new total.
+    (handle Tick 0
+      ((tick (n) s (resume (+ s n) (+ s n))))
+      (+ (Tick.tick 10) (Tick.tick 5))))
+  (export main))`,
+    expected: "25",
+  },
+  {
     name: "A type error (see the squiggle)",
     surface: "sexpr",
     source: `(module m

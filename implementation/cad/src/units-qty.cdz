@@ -15,6 +15,14 @@
 /// (unwrapping each length to its exact meter magnitude), so a Qty-field-typed build plugs into the
 /// existing exact machinery unchanged. Internal store is exact Rational METERS (operator's Q1 ruling); f64
 /// only at the manifold edge.
+///
+/// NUMERIC MODE (S1-redux): this module declares `@!default-fraction Rational` — app-level exact-by-default
+/// (the operator's units vision), now that a file-top pragma takes effect AND stays module-local (does not
+/// leak into imported modules — v-inference fixes). So a bare `n/d` here is an EXACT Rational (not Int64
+/// truncation), coordinate magnitudes read naturally (`127/5000`) with no `Rational.of` noise, and the
+/// imported `exact.cdz` (which uses `Rational.of` throughout) is UNAFFECTED (its own module default holds).
+
+@!default-fraction Rational
 
 import { Vec3r } from "exact"
 import { v3r } from "exact"
@@ -31,9 +39,10 @@ type Vec3q =
 def v3q(x: Qty(Rational, Unit.base(#"meter")), y: Qty(Rational, Unit.base(#"meter")), z: Qty(Rational, Unit.base(#"meter"))) =
   Vec3q.V3q(x, y, z)
 
-/// A meter length from an integer count of meters — the everyday component builder (`qm(5)` = 5-metre
-/// length), sugar over `Qty.of` so callers rarely spell the unit by hand.
-def qm(n: Int64) = Qty.of(Rational.of(n, 1), Unit.of(#"meter"))
+/// A meter length from a magnitude — the everyday component builder (`qm(5)` = 5-metre length), sugar over
+/// `Qty.of`. `n` is a `Rational` (under this module's `default-fraction Rational`, a caller's bare `5`
+/// grounds to Rational), so a whole or fractional count works: `qm(5)`, `qm(3/2)`.
+def qm(n: Rational) = Qty.of(n, Unit.of(#"meter"))
 
 /// The three length components, each read back OUT as a meter quantity (units preserved).
 def q-x(v: Vec3q) = match v with | Vec3q.V3q(x, _, _) => x
@@ -52,8 +61,8 @@ def vec3q-to-vec3r(v: Vec3q) =
 def a-vec3q-field-holds-a-length-quantity() =
   // The field itself is a Qty — read a component back and it is a meter quantity of the right magnitude.
   let v = v3q(qm(5), qm(2), qm(3)) in
-  if Qty.value(q-x(v)) == Rational.of(5, 1) then
-    (if Qty.value(q-z(v)) == Rational.of(3, 1) then unit else trap("z")) else trap("x")
+  if Qty.value(q-x(v)) == 5 / 1 then
+    (if Qty.value(q-z(v)) == 3 / 1 then unit else trap("z")) else trap("x")
 
 @test
 def vec3q-bridges-to-the-exact-vec3r-core() =
@@ -61,15 +70,15 @@ def vec3q-bridges-to-the-exact-vec3r-core() =
   // field build plugs into the existing exact machinery, same magnitudes, no f64.
   let v = v3q(qm(4), qm(5), qm(6)) in
   match vec3q-to-vec3r(v) with | Vec3r.V3r(x, y, z) =>
-    if x == Rational.of(4, 1) then (if z == Rational.of(6, 1) then unit else trap("z")) else trap("x")
+    if x == 4 / 1 then (if z == 6 / 1 then unit else trap("z")) else trap("x")
 
 @test
 def a-vec3q-component-authored-in-inches-is-exact-meters() =
   // Author a component in INCHES; it converts to exact Rational METERS and the field carries that exact
   // quantity. 1 inch = 127/5000 m EXACTLY. The strong-field type + exact conversion together.
-  let one-inch = Qty.of(Rational.of(1, 1), Unit.of(#"inch")) in
+  let one-inch = Qty.of(1 / 1, Unit.of(#"inch")) in
   let as-meters = Qty.of(Qty.value(Unit.in(Unit.of(#"meter"), one-inch)), Unit.of(#"meter")) in
   let v = v3q(as-meters, qm(0), qm(0)) in
-  if Qty.value(q-x(v)) == Rational.of(127, 5000) then unit else trap("1 inch = 127/5000 m")
+  if Qty.value(q-x(v)) == 127 / 5000 then unit else trap("1 inch = 127/5000 m")
 
 export { Vec3q.*, v3q, qm, q-x, q-y, q-z, vec3q-to-vec3r }

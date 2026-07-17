@@ -529,6 +529,27 @@
   (input  (UInt8.of (BigInt.of 300)))
   (error  CDZ0302))
 
+; The SUCCESS companions of the overflow-reject above: a narrowing whose value is EXACTLY the target's
+; max (or min) fits and converts unchanged. These pin the range check's boundary is INCLUSIVE (≤ max,
+; ≥ min), not an off-by-one `<`: 255 is a valid UInt8 (not one-too-big), 127/−128 are the valid Int8
+; extremes. The overflow case pins the reject just past the edge; these pin acceptance exactly AT it.
+(case "a BigInt narrowed to the exact UInt8 maximum fits and converts"
+  (doc    "`(UInt8.of (BigInt.of 255))` = 255 : UInt8 — 255 is the maximum UInt8 (0..=255), so the checked
+           narrowing ACCEPTS it (the inclusive upper edge), the success boundary of the `300` overflow
+           reject above. Pins that the range check is `≤ 255` not `< 255` — an off-by-one `<` would wrongly
+           reject the valid maximum.")
+  (input  (UInt8.of (BigInt.of 255)))
+  (output (: 255 UInt8)))
+
+(case "a BigInt narrowed to the exact Int8 maximum and minimum fits and converts"
+  (doc    "The signed extremes: `(Int8.of (BigInt.of 127))` = 127 and `(Int8.of (BigInt.of -128))` = −128 —
+           the inclusive max and min of Int8 (−128..=127), both accepted by the checked narrowing. Pins the
+           two-sided boundary is inclusive: `127` is not one-too-big (a `< 127` check would reject it) and
+           `−128` is not one-too-small (a `> −128` check would reject it). The signed companion of the UInt8
+           maximum case, covering BOTH edges of the two's-complement range.")
+  (input  (tuple (Int8.of (BigInt.of 127)) (Int8.of (BigInt.of -128))))
+  (output (: (tuple 127 -128) (Tuple Int8 Int8))))
+
 (case "a BigInt operation does not silently promote a fixed-width operand"
   (doc    "`(+ (BigInt.of 1) 1)` mixes a BigInt and an Int64 — two distinct numeric types — rejected
            (CDZ0301) rather than absorbing the Int64 1 into BigInt (numeric-model.md #Numeric Types Do

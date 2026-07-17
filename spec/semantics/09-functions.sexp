@@ -3673,8 +3673,8 @@
            recursive `append`, the archetypal monadic-join / `concatMap` core. At a single element type
            (Int64) it monomorphizes and runs: `flatten([[1,2],[3,4,5]])` flattens to a 5-element iter, so
            `icount` = 5. Pins the recursive-generic TRANSFORMER-over-nested-generic shape (the transformer
-           analogue of the self-nested producer above) at a single type; flatten at ≥2 element types is a
-           tracked residual decline (the recursive-transformer element tie), not this case.")
+           analogue of the self-nested producer above) at a single type; the TWO-element-type composition
+           is pinned in the case just below (it now runs too).")
   (input  (do
             (type Iter (Nil) (Cons a (Iter a)))
             (def (from-list xs)
@@ -3689,6 +3689,40 @@
               (icount (flatten (from-list (list (from-list (list 1 2)) (from-list (list 3 4 5)))))))
             (export main)))
   (output (: 5 Int64)))
+
+; A recursive-generic flatten `Iter(Iter a) -> Iter a` composing at TWO element types in one program — the
+; transformer-over-nested-generic tie at ≥2 instantiations. This DECLINED (the untied nested-generic tie:
+; `flatten`'s scheme inferred `(-> (Iter a) (Iter b))`, the domain-inner element and the result element as
+; disconnected vars). FIXED by the payload-binder-to-callee constraint: `flatten`'s Cons arm passes `h`
+; (its element, an `Iter a`) to the generic `append`, whose domain (`Iter _`) now unifies with `h`'s type
+; through the param solve — so `it`'s element is pinned `Iter _` (`it : Iter(Iter _)`) and, via append's
+; result=domain-element tie, the result is `Iter _`, giving the correct scheme `(-> (Iter (Iter a)) (Iter
+; a))`. Both element types monomorphize independently: `flatten([[1,2],[3,4,5]])` (Int, icount 5) plus
+; `flatten([["a","b"],["c"]])` (String, icount 3) = 8. The append-delegate member of the recursive-generic
+; transitive-tie family (its accumulator-seeded siblings reduce/reverse remain a tracked residual).
+
+(case "a recursive-generic flatten over a nested generic iterator composes at two element types"
+  (doc    "`flatten : Iter(Iter a) -> Iter a` at TWO element types in one program. Its Cons arm threads its
+           element `h` (an `Iter a`) into the generic `append`; the scheme solve ties `append`'s domain to
+           `h`'s type, so `it`'s element is pinned to `Iter _` (`it : Iter(Iter _)`) and the result to
+           `Iter _` — the correct `(-> (Iter (Iter a)) (Iter a))` scheme, monomorphized per element type.
+           `flatten([[1,2],[3,4,5]])` (Int64, icount 5) plus `flatten([[\"a\",\"b\"],[\"c\"]])` (String,
+           icount 3) = 8. Was an untied-nested-generic decline; now composes.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (append xs ys)
+              (match xs ((Iter.Nil) ys) ((Iter.Cons h t) (Iter.Cons h (append t ys)))))
+            (def (flatten it)
+              (match it ((Iter.Nil) (Iter.Nil)) ((Iter.Cons h rest) (append h (flatten rest)))))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main)
+              (+ (icount (flatten (from-list (list (from-list (list 1 2)) (from-list (list 3 4 5))))))
+                 (icount (flatten (from-list (list (from-list (list "a" "b")) (from-list (list "c"))))))))
+            (export main)))
+  (output (: 8 Int64)))
 
 ; The COMPLEMENT of the producer tie above — a recursive-generic TRANSFORMER that threads a CLOSURE:
 ; `(gmap it f) = (Cons (f h) (gmap rest f))` maps `f` over each element, principal type

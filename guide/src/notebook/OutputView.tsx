@@ -3,7 +3,7 @@
 /// shape decisions live in the pure renderOutput.ts; this is only the JSX + the SVG chart drawing.
 
 import type { CellOutput } from "./renderOutput.ts";
-import type { Series } from "./extractChart.ts";
+import { categoryLabels, type Series } from "./extractChart.ts";
 import type { Table } from "./extractTable.ts";
 import type { Formula } from "./formula.ts";
 
@@ -95,15 +95,37 @@ function ChartView({ chart, series }: { chart: "line" | "bar" | "scatter"; serie
   // read with a scale instead of bare lines.
   const tick = (v: number) => (Number.isInteger(v) ? `${v}` : v.toFixed(2).replace(/\.?0+$/, ""));
 
+  // Categorical x-axis: when the points carry category labels (a non-numeric x, e.g. `(tuple "jan" 10)`),
+  // print the category NAMES at their x-slots instead of the numeric `min`/`max` indices. Cap the count so
+  // labels don't collide; when there are more categories than we can show, thin them to evenly-spaced ticks.
+  const cats = categoryLabels(series);
+  const MAX_CAT_TICKS = 8;
+  const catTicks =
+    cats === null
+      ? null
+      : cats
+          .map((label, x) => ({ label, x }))
+          .filter((_, i, arr) => arr.length <= MAX_CAT_TICKS || i % Math.ceil(arr.length / MAX_CAT_TICKS) === 0);
+
   const svg = (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-2xl" role="img" aria-label="chart">
       {/* axes */}
       <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} stroke="#475569" strokeWidth={1} />
       <line x1={PAD} y1={PAD} x2={PAD} y2={H - PAD} stroke="#475569" strokeWidth={1} />
-      {/* axis ticks: x min/max along the bottom, y min/max up the left — so the scale is legible */}
+      {/* axis ticks: y min/max up the left; x either category names at their slots or numeric min/max */}
       <g fontSize={10} fill="#94a3b8">
-        <text x={PAD} y={H - PAD + 14} textAnchor="start">{tick(minX)}</text>
-        <text x={W - PAD} y={H - PAD + 14} textAnchor="end">{tick(maxX)}</text>
+        {catTicks ? (
+          catTicks.map(({ label, x }) => (
+            <text key={x} x={sx(x)} y={H - PAD + 14} textAnchor="middle" data-testid="x-cat-tick">
+              {label}
+            </text>
+          ))
+        ) : (
+          <>
+            <text x={PAD} y={H - PAD + 14} textAnchor="start">{tick(minX)}</text>
+            <text x={W - PAD} y={H - PAD + 14} textAnchor="end">{tick(maxX)}</text>
+          </>
+        )}
         <text x={PAD - 4} y={H - PAD} textAnchor="end">{tick(minY)}</text>
         <text x={PAD - 4} y={PAD + 4} textAnchor="end">{tick(maxY)}</text>
       </g>

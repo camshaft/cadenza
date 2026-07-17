@@ -106,6 +106,26 @@ export function extractChart(rendered: string): ChartResult {
   return { ok: true, series };
 }
 
+/// Derive the ordered categorical x-axis labels for a chart, or null if the chart isn't categorical.
+/// A chart is categorical when its points carry `label`s (a non-numeric x was mapped to its row index +
+/// a label, e.g. `(tuple "jan" 10)`). Returns one label per integer x-slot `0..maxX`, taking the label
+/// seen at that x across all series (a slot with no label — shouldn't happen for a categorical chart —
+/// falls back to its bare index). ChartView uses this to print category names under the axis instead of
+/// the numeric `0..N` indices. Returns null when NO point has a label (a purely numeric chart), so the
+/// caller keeps the numeric min/max ticks.
+export function categoryLabels(series: Series[]): string[] | null {
+  const byX = new Map<number, string>();
+  for (const s of series) {
+    for (const p of s.points) {
+      // Only integer x-slots can be category positions; a labelled point always has an integer index x.
+      if (p.label !== undefined && Number.isInteger(p.x)) byX.set(p.x, p.label);
+    }
+  }
+  if (byX.size === 0) return null;
+  const maxX = Math.max(...byX.keys());
+  return Array.from({ length: maxX + 1 }, (_, i) => byX.get(i) ?? `${i}`);
+}
+
 /// A `(name value)` field of a record; returns [name, valueNode] or null if malformed.
 function recordField(f: Node): [string, Node] | null {
   if (isList(f) && f.list.length === 2 && isAtom(f.list[0])) return [f.list[0].atom, f.list[1]];
