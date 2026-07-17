@@ -31553,6 +31553,29 @@ mod match_engine {
     }
 
     #[test]
+    fn a_nested_both_diverge_if_in_value_position_yields_the_outer_value() {
+        // The differential-closing witness (breaker): a both-diverge `if` NESTED as a value subexpression
+        // — `(if b 1 (if c (trap) (trap)))` — declined ONLY on wasm (rust/rust-async compiled + ran to 1).
+        // The inner `if` is `Never`; its EMPTY block yields nothing, so a trailing `unreachable` (stack-
+        // polymorphic) supplies the i64 the OUTER else-arm expects. b=true selects the concrete `1`
+        // (no trap); b=false forces the inner both-diverge `if`, which traps. Pins the outer value flows
+        // AND the nested-Never emit validates in a value position.
+        let src = "(module m (def (main (: b Bool) (: c Bool)) (if b 1 (if c (trap \"x\") (trap \"y\")))) \
+                   (export main))";
+        let bytes = component(src);
+        use wasmtime::component::Val;
+        let got: i64 = run_returns_with(&bytes, "main", &[Val::Bool(true), Val::Bool(true)]);
+        assert_eq!(
+            got, 1,
+            "b=true selects the concrete 1 (the nested Never else-arm is not taken)"
+        );
+        assert!(
+            call_traps(&bytes, "main", &[Val::Bool(false), Val::Bool(true)]),
+            "b=false forces the nested both-diverge if, which must TRAP"
+        );
+    }
+
+    #[test]
     fn a_body_that_traps_through_a_seq_emits_a_trapping_function() {
         // The divergence detection peers THROUGH a `Core::Seq` (an effect-statement run then a value) to
         // its trapping tail — the shape a unit-test FAILURE path takes: run a `report`/`log` host effect

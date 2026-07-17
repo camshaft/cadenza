@@ -4579,16 +4579,22 @@ fn emit_tail(
             // number at a different width fails validation. A scalar cond leaves `*high == base`, so this
             // is a no-op (byte-identical) for the common case.
             let branch_base = *high;
+            // A `Never` result (BOTH branches diverge) has no valtype but yields no value on any path —
+            // both arms end in `unreachable`. Emit an EMPTY (0-result) block, then a trailing
+            // `unreachable` AFTER it so the stack-polymorphic `unreachable` satisfies whatever slot the
+            // enclosing (possibly value) position expects — a nested `(if b 1 (if c (trap) (trap)))` sends
+            // the inner diverging `if` here as the outer's tail else-arm, which wants an i64. Trailing
+            // `unreachable` is dead (both arms trapped) but keeps the module valid. Mirrors `Core::Trap`.
+            // A genuinely unrepresentable non-diverging result still DECLINES.
+            let mut never_diverges = false;
             let block_ty = match &result {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(other) {
                     Some(vt) => BlockType::Val(vt),
-                    // A `Never` result (BOTH branches diverge) has no valtype but yields no value on any
-                    // path — both arms end in `unreachable`, so the block produces nothing: emit an EMPTY
-                    // (0-result) block type rather than declining. Mirrors the diverging-fn-body → UNIT
-                    // signature (`body_diverges` / the `select_function` ret rewrite). A genuinely
-                    // unrepresentable result (a non-diverging compound with no machine rep) still declines.
-                    None if body_diverges(db, id) => BlockType::Empty,
+                    None if body_diverges(db, id) => {
+                        never_diverges = true;
+                        BlockType::Empty
+                    }
                     None => {
                         return Err(Reject::decline(
                             "if result type has no machine representation",
@@ -4650,6 +4656,9 @@ fn emit_tail(
             db.pop_range_refinements();
             else_res?;
             out.push(Lir::End);
+            if never_diverges {
+                out.push(Lir::Unreachable);
+            }
             Ok(())
         }
         // A `let` in tail position: its body is tail — BUT only if no heap binding must be `drop`ped
@@ -8064,16 +8073,23 @@ fn emit(
             // and `emit_call_args` already apply. (A scalar cond leaves `*high == base`, so this is a
             // no-op for the common case and the emitted bytes are unchanged.)
             let branch_base = *high;
+            // A `Never` result (BOTH branches diverge) has no valtype but yields no value on any path —
+            // both arms end in `unreachable`. Emit an EMPTY (0-result) `if` block, then a trailing
+            // `unreachable` AFTER it: the block produces nothing, and the stack-polymorphic `unreachable`
+            // satisfies whatever machine slot the ENCLOSING context expects (this `if` may be a value
+            // subexpression — `(if b 1 (if c (trap) (trap)))` — where the outer arm wants an i64). The
+            // trailing `unreachable` is dead (both arms already trapped) but keeps the module valid in any
+            // position. Mirrors `Core::Trap`'s bare `unreachable`. A genuinely unrepresentable result (a
+            // non-diverging compound with no machine rep) still DECLINES.
+            let mut never_diverges = false;
             let block_ty = match &result {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(other) {
                     Some(vt) => BlockType::Val(vt),
-                    // A `Never` result (BOTH branches diverge) has no valtype but yields no value on any
-                    // path — both arms end in `unreachable`, so the block produces nothing: emit an EMPTY
-                    // (0-result) block type rather than declining. Mirrors the diverging-fn-body → UNIT
-                    // signature (`body_diverges` / the `select_function` ret rewrite). A genuinely
-                    // unrepresentable result (a non-diverging compound with no machine rep) still declines.
-                    None if body_diverges(db, id) => BlockType::Empty,
+                    None if body_diverges(db, id) => {
+                        never_diverges = true;
+                        BlockType::Empty
+                    }
                     None => {
                         return Err(Reject::decline(
                             "if result type has no machine representation",
@@ -8125,6 +8141,12 @@ fn emit(
             db.pop_range_refinements();
             else_res?;
             out.push(Lir::End);
+            // A both-diverge (`Never`) `if` yields nothing from its empty block; a trailing `unreachable`
+            // supplies the stack-polymorphic value the enclosing value position expects (dead — both arms
+            // trapped).
+            if never_diverges {
+                out.push(Lir::Unreachable);
+            }
             Ok(())
         }
         // A scalar MATCH → a chain of `if`s. The match's solved type is each arm's block-result type.
