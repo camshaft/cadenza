@@ -476,9 +476,43 @@ fn binder_names(form: &Tree) -> Vec<String> {
                 pat_names(sig, &mut out);
             }
         }
+        Some("match") => {
+            // (match scrut (pat body)… ) — each arm is a `(pattern body)` list; the PATTERN binds names
+            // for that arm's scope. Unlike let/fn/def binding-targets, a match pattern's LIST form is a
+            // CONSTRUCTOR pattern (`(Some n)`, `(L.Cons h t)`) whose leading name is the constructor, not a
+            // binder — so arm-pattern names are collected with `arm_pattern_names`, which skips that head.
+            for arm in items.iter().skip(2) {
+                if let Tree::List(pair, _) = arm
+                    && let Some(pattern) = pair.first()
+                {
+                    arm_pattern_names(pattern, &mut out);
+                }
+            }
+        }
         _ => {}
     }
     out
+}
+
+/// The names a MATCH-ARM pattern binds — like [`binder_names`]'s `pat_names`, but the leading name of a
+/// LIST pattern is a CONSTRUCTOR (`(Some n)` → ctor `Some`, binds `n`; `(L.Cons h t)` → binds `h`,`t`;
+/// `(C.R)` → nullary ctor, binds nothing), so it is skipped. A bare-name pattern (`m`) binds that name;
+/// a literal (`0`) or wildcard binds nothing; a metavar/splice pattern binds no static name.
+fn arm_pattern_names(pat: &Tree, out: &mut Vec<String>) {
+    match pat {
+        Tree::Atom(Leaf::Name(n), _) if !is_wildcard(n) => out.push(n.clone()),
+        Tree::List(kids, _) => {
+            if as_metavar_tree(pat).is_some() || as_splice(pat).is_some() {
+                return;
+            }
+            // Skip a leading constructor head; descend the rest as sub-patterns (nested destructuring).
+            let start = usize::from(kids.first().and_then(|k| k.as_name()).is_some());
+            for k in &kids[start.min(kids.len())..] {
+                arm_pattern_names(k, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The bare names occurring FREE in `tree` — every `Name` atom not in HEAD position of a list (a head
@@ -5920,6 +5954,53 @@ mod tests {
             !tmpl("(fn (n) (let ((k 0)) ,body))")
                 .capture_risks(&binds)
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn capture_risk_recognizes_match_arm_binders() {
+        // A bare-name match-arm pattern `m` binds `m` for the arm; if a spliced metavar's tree has a free
+        // `m`, that is a capture. `(match e (m ,body))` over `,body = (+ m 1)`.
+        let binds = first_bindings("(g ,body)", "(g (+ m 1))");
+        assert_eq!(
+            tmpl("(match e (m ,body))").capture_risks(&binds),
+            vec![CaptureRisk {
+                binder: "m".to_string(),
+                metavar: "body".to_string()
+            }],
+            "a match-arm binder `m` captures the free `m` in the spliced arm body"
+        );
+        // A CONSTRUCTOR-pattern arm `(Some n)`: `Some` is the constructor head (NOT a binder), `n` binds.
+        let binds = first_bindings("(g ,body)", "(g (+ n 1))");
+        assert_eq!(
+            tmpl("(match e ((Some n) ,body))").capture_risks(&binds),
+            vec![CaptureRisk {
+                binder: "n".to_string(),
+                metavar: "body".to_string()
+            }],
+            "the constructor `Some` is not a binder; the payload `n` is"
+        );
+        // A nullary constructor pattern `(C.R)` binds NOTHING — no false capture even when the metavar
+        // tree mentions names.
+        let binds = first_bindings("(g ,body)", "(g (f e))");
+        assert!(
+            tmpl("(match z ((C.R) ,body))")
+                .capture_risks(&binds)
+                .is_empty(),
+            "a nullary constructor pattern binds nothing, so it cannot capture"
+        );
+        // A nested constructor pattern `(L.Cons h t)` binds both `h` and `t`.
+        let binds = first_bindings("(g ,body)", "(g (+ h t))");
+        let risks = tmpl("(match e ((L.Cons h t) ,body))").capture_risks(&binds);
+        assert!(
+            risks.contains(&CaptureRisk {
+                binder: "h".to_string(),
+                metavar: "body".to_string()
+            }) && risks.contains(&CaptureRisk {
+                binder: "t".to_string(),
+                metavar: "body".to_string()
+            }),
+            "both `h` and `t` are arm binders; got {risks:?}"
         );
     }
 

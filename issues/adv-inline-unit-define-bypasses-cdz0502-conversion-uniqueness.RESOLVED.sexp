@@ -52,3 +52,9 @@
 ; never consults it). Fix: route inline defines through the SAME table (agreeing redecl OK, conflict
 ; incl builtins -> CDZ0502). Check-layer, v-inference prelude-unit_families territory. Not spawning
 ; (fixer cap). Promote when fixed.
+
+; ---
+; RESOLVED (corpus-bugfix 2026-07-17, verified on trunk eaae9803c): v-inference's inline-Unit.define
+; CDZ0502 fix (MR 3470a0a9b) LANDED. Inline (Unit.define #"foot" (Unit.base #"meter") 2 1) now REJECTS
+; with "CDZ0502: unit foot is already a built-in unit with a different conversion" (was silently accepted
+; -> wrong physics 3.0). Inline defines now consult the same name->conversion uniqueness table as top-level.

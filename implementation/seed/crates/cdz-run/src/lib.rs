@@ -132,7 +132,9 @@ pub enum Outcome {
 /// (`integer divide by zero`, `integer overflow`, `wasm 'unreachable' instruction executed`, `out of
 /// bounds memory access`, …). Surface that reason FIRST so a reason-matching consumer (the behavior
 /// gate) can recognize the trap, then the full error for a human. A non-trap error (no `Trap` in the
-/// chain) renders as before.
+/// chain) renders its whole anyhow CAUSE CHAIN inline (`{e:#}`), not just the outer message — so a HOST
+/// func error (e.g. an exhausted `--host-response` list) surfaces its actionable reason, which wasmtime
+/// otherwise buries under an "error while executing …" wrapper (see the `None` arm).
 fn trap_message(e: &anyhow::Error) -> String {
     match e.downcast_ref::<wasmtime::Trap>() {
         Some(trap) => format!("{trap}: {e:?}"),

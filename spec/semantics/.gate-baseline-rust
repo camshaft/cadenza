@@ -223,6 +223,9 @@ pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
 pass	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
+pass	a @requires on a recursive def is re-checked at every entry including self-calls
+pass	a @requires precondition is enforced for a genuinely-runtime argument
+pass	a @requires predicate that itself traps keeps its own trap kind
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
 pass	a BOOL-result effect op threads state across two performs on a boolean connective's operands
@@ -461,6 +464,7 @@ pass	a boolean tuple element is projected as the program result
 pass	a boolean-parameter function applied to false
 pass	a boolean-returning function called with a false result
 pass	a both-diverge if nested in a value position yields the outer value
+pass	a bottom-up fold matches a tuple of its recursive results with constructor patterns
 pass	a bound effect performed with neither a handler nor a host delegation has no home
 pass	a bound name in a map key is used by its value, not the literal name
 pass	a bounded generator produces only in-range values (0 <= roll < 64) for a runtime seed
@@ -1346,6 +1350,7 @@ pass	a one-element tuple pattern against a two-tuple is a type error
 pass	a one-shot handler arm folds a body with TWO performs by re-reducing the continuation
 pass	a one-shot two-hole body folds across a let binding
 pass	a one-shot two-hole body folds with the leading perform in an if condition
+pass	a package entry's exported def wins over a same-named def in a library file
 pass	a param-keyed map literal selects its literal-pattern arm by value in both directions
 pass	a param-shadowing let with a param-referencing initializer folds at a constant argument
 pass	a parameter annotation contradicting its use is rejected
@@ -2215,6 +2220,7 @@ pass	all-nullary enum equality compares discriminants
 pass	an 8-bit-integer closure crosses the host boundary
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
+pass	an EFFECTFUL @requires predicate performs under the caller's handler and advances its state before the body
 pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
 pass	an IEC-prefixed quantity displays scaled to its reference over Int64
@@ -3553,7 +3559,6 @@ todo	a String-returning closure alongside a parameterized plain export — the p
 todo	a THREE-argument closure round-trips — flat arrow spelling
 todo	a Tuple ARG among scalars with a BYTE-ROPE result crosses the direct-call boundary
 todo	a UInt64 closure round-trips through a consumer export
-pass	a bottom-up fold matches a tuple of its recursive results with constructor patterns
 todo	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a camelCase round-trip resolves through kebab boundary-name normalization
 todo	a camelCase same-signature multi-export normalizes each make-<name>
