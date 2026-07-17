@@ -451,4 +451,55 @@ mod tests {
         );
         assert_eq!(forms[0], "(do (a) (b))");
     }
+
+    #[test]
+    fn parse_fragment_parses_a_form_and_declines_an_unparseable_one() {
+        // A well-formed fix payload parses into an owned Tree; re-rendering it round-trips the text.
+        let tree = parse_fragment("(Some x)").expect("a parseable fragment");
+        assert_eq!(tree.to_sexpr(), "(Some x)");
+        // A bare atom is also a valid fragment (a `replace` payload can be a single name).
+        assert_eq!(
+            parse_fragment("compute").map(|t| t.to_sexpr()),
+            Some("compute".to_string())
+        );
+        // An unparseable payload (dangling paren) declines with None — the caller drops that fix rather
+        // than panicking. Total.
+        assert!(
+            parse_fragment("(unbalanced").is_none(),
+            "an unparseable fragment is None, not a panic"
+        );
+    }
+
+    #[test]
+    fn substitute_hole_fills_the_wrap_hole_and_copies_everything_else() {
+        use cadenza_syntax::query::Tree;
+        // A wrap realizes `(Some <HOLE>)` with the wrapped subtree in place of the hole atom. Build the
+        // template from the real WRAP_HOLE spelling so the atom matches the production code's sentinel.
+        let template =
+            parse_fragment(&format!("(Some {})", rcdzc::WRAP_HOLE)).expect("template parses");
+        let fill = parse_fragment("(compute 1)").expect("fill parses");
+        let filled = substitute_hole(&template, &fill);
+        assert_eq!(
+            filled.to_sexpr(),
+            "(Some (compute 1))",
+            "the hole is replaced by the fill; the `Some` head is copied verbatim"
+        );
+        // A template with NO hole is copied structurally unchanged (the fill is unused).
+        let no_hole = parse_fragment("(A b c)").expect("parses");
+        assert_eq!(
+            substitute_hole(&no_hole, &fill).to_sexpr(),
+            "(A b c)",
+            "a hole-free template is unchanged"
+        );
+        // A bare hole atom at the root becomes exactly the fill.
+        let bare_hole = Tree::Atom(
+            cadenza_syntax::ast::Leaf::Name(rcdzc::WRAP_HOLE.to_string()),
+            None,
+        );
+        assert_eq!(
+            substitute_hole(&bare_hole, &fill).to_sexpr(),
+            "(compute 1)",
+            "a root-level hole is wholly replaced by the fill"
+        );
+    }
 }
