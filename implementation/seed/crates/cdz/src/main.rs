@@ -419,11 +419,15 @@ fn run_run_ml(args: &RunMlArgs) -> ExitCode {
 
     // 3. Write the driver INTO the compiler-ml src dir (so `import \"sread-eval\"` resolves). Unique-ish
     //    name; cleaned up before every return below. The gate runs from the repo root, so this relative
-    //    path is stable; falls back to a harness error if the dir is absent.
+    //    path is stable. If the dir is ABSENT (e.g. `run-ml` invoked from a crate dir under `cargo test`,
+    //    not the repo root), the ML compiler simply isn't available HERE — that is coverage-not-yet, not a
+    //    program READ failure, so per the exit-code contract emit a `declined` VERDICT and exit 0 (a missing
+    //    compiler is a decline, not a shell failure; the ONLY non-zero path is a program read error). The
+    //    gate always runs from the repo root where the dir exists, so it still gets real differential runs.
     let src_dir = std::path::Path::new("implementation/compiler-ml/src");
     if !src_dir.is_dir() {
-        eprintln!("{PROG} run-ml: compiler-ml src dir not found (run from repo root)");
-        return ExitCode::FAILURE;
+        println!("declined");
+        return ExitCode::SUCCESS;
     }
     let driver_path = src_dir.join("zz-run-ml-driver.cdz");
     if let Err(e) = std::fs::write(&driver_path, &driver) {
