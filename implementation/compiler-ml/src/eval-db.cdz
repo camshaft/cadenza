@@ -177,9 +177,25 @@ def ev-if-with-let-and-arith() =
 
 @test
 def ev-if-untaken-branch-not-evaluated() =
-  // if 1 < 2 then 7 else (1 / 0)  →  7: the else-branch divide-by-zero is NOT evaluated (if is lazy). If
-  // both branches were eagerly evaluated this would be None; getting 7 proves only the taken branch runs.
-  (match run([ifkw(), n(1), lt(), n(2), thenkw(), n(7), elsekw(), n(1), Tok.TOp(47), n(0)]) with | Option.Some(v) => (if v == 7 then unit else trap("taken branch only → 7")) | Option.None(_) => trap("lazy if runs to 7"))
+  // The evaluator's `if` is LAZY: only the taken branch is evaluated. Build the Core DIRECTLY —
+  // `CIf(CNum 1, CNum 7, CBin(47, CNum 1, CNum 0))` — i.e. `if 1 then 7 else (1 / 0)`, using division
+  // (op 47), which `eval-bin` supports but the SURFACE parser does not yet. (An earlier version wrote the
+  // else as source tokens `1 / 0`; since parse-db has no op-47 node, those tokens were dropped and the test
+  // passed for the wrong reason — Copilot on PR #519 caught this. Constructing the Core directly pins the
+  // evaluator's laziness without depending on an unsupported surface operator.) A non-zero cond takes the
+  // then-branch; the else `1 / 0` would eval to `None` if evaluated, so getting `Some 7` proves it is NOT.
+  (match eval-core(Core.CIf(Core.CNum(1), Core.CNum(7), Core.CBin(47, Core.CNum(1), Core.CNum(0))), (Map.empty : Map(Int64, Int64))) with
+    | Option.Some(v) => (if v == 7 then unit else trap("taken branch only → 7"))
+    | Option.None(_) => trap("lazy if: the untaken 1/0 else must NOT be evaluated"))
+
+@test
+def ev-if-taken-branch-divide-by-zero-does-sink() =
+  // The complement, to prove the above isn't vacuous: if the DIVIDE-BY-ZERO is in the TAKEN branch, eval
+  // DOES reach it and yields None. `if 1 then (1 / 0) else 7` → None. Together these pin that laziness is
+  // branch-selective, not a blanket skip.
+  (match eval-core(Core.CIf(Core.CNum(1), Core.CBin(47, Core.CNum(1), Core.CNum(0)), Core.CNum(7)), (Map.empty : Map(Int64, Int64))) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("a divide-by-zero in the TAKEN branch must sink to None"))
 
 @test
 def ev-nested-else-if() =
