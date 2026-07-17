@@ -10261,10 +10261,24 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
         Some(s) => s,
         None => {
             trace!(target: "rcdzc::lower", head = head.0, callee, "call: callee signature undetermined → decline (A2)");
-            // The connected parameter solve (A2, `solve_recursive_params`) left a parameter undetermined —
-            // no use in the body pinned its type, so it grounds to `Any` and has no machine width. TWO
-            // shapes reach here and the actionable advice DIFFERS, so name both rather than always saying
-            // "annotate its parameters" (which OVERPROMISES: a generic helper has no writable annotation).
+            // `def_scheme` returned `None` for one of TWO reasons — distinguish them, because the actionable
+            // advice is OPPOSITE. If every PARAMETER is already determined (annotated or solved), the
+            // undetermined thing is the def's RESULT: the body never yields a concrete type because every
+            // path recurses — a recursive function with NO BASE CASE. Telling that author to "add an explicit
+            // annotation" on a parameter is wrong (the parameter — often ALREADY `(: n Int64)` — is fine); the
+            // fault is the missing base case, and no parameter annotation fixes it.
+            if crate::infer::recursive_def_params_all_determined(db, callee) {
+                return Core::Poison(Reject::decline(
+                    "this recursive function never returns a concrete value — every path calls itself, so \
+                     its result type is undetermined and it has no machine representation. Add a BASE CASE \
+                     that returns a value without recursing (e.g. an `if`/`match` arm that stops the \
+                     recursion), so the result type is fixed",
+                ));
+            }
+            // Otherwise a PARAMETER stayed undetermined — no use in the body pinned its type, so it grounds
+            // to `Any` and has no machine width. TWO shapes reach here and the actionable advice DIFFERS, so
+            // name both rather than always saying "annotate its parameters" (which OVERPROMISES: a generic
+            // helper has no writable annotation).
             //   (a) A MONOMORPHIC recursive helper whose parameter is only ever passed through (never used
             //       in a width-fixing operation): an explicit annotation `(: p Int64)` DOES ground it.
             //   (b) A recursive-GENERIC helper — one THREADED from a generic producer, where the param's
