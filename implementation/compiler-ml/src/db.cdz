@@ -15,12 +15,21 @@
 ///     stand-in fact is a plain Int64.)
 ///
 /// STATE SHAPE — design note (re-charter plan): the truest mirror of rcdzc's `&mut Db` is a `Db` STATE
-/// EFFECT (get/put over a threaded store). That is currently BLOCKED — a two-op handler (`get`/`put`) whose
-/// state is a heap `Map`, where `get` returns a `Map.lookup`, DECLINES "not yet reducible by the tail-
-/// resumptive fold" (filed: queue `mlrepro-decline-two-op-map-state-handler-memo-shape`, sent v-effects).
-/// So this substrate uses the PURE THREADED-DB (plan design (B)): every producer takes a `Db` and returns
-/// `(fact, Db')`, threading the memo store explicitly. Same demand + memo semantics, no effect dependency;
-/// it switches to the effect form once that decline is lifted.
+/// EFFECT (get/put over a threaded store). This substrate uses the PURE THREADED-DB (plan design (B))
+/// instead: every producer takes a `Db` and returns `(fact, Db')`, threading the memo store explicitly.
+/// Same demand + memo semantics, no effect dependency. Design B is DELIBERATE and PERMANENT for now (not a
+/// stopgap) — the effect form (design A) was re-attempted after the effect fold advanced and STILL cannot
+/// express this substrate. Two boundaries, in order of when they were hit/lifted:
+///   1. (ORIGINAL, LIFTED by v-effects `4a8b278b6`) an inline `put; get` sequence over a two-op Map-state
+///      handler used to DECLINE "not yet reducible by the tail-resumptive fold"; it now folds correctly.
+///   2. (REMAINING, filed `mlrepro-effect-db-helper-outstate-lost-to-caller-sequence`, sent v-effects) a
+///      HELPER that performs BOTH `get` and `put` internally (the memoize combinator itself) does NOT
+///      propagate its out-state to a LATER perform in the caller's sequence — and now manifests as a SILENT
+///      WRONG VALUE (the memo misses), not a clean decline. That is exactly the load-bearing memoized-DB
+///      shape (a producer fills its column; a later read must see the fill), so effect-Db can't host the
+///      lazy query DB until it's lifted. Threaded-Db (B) has no such issue — the `(fact, Db')` return makes
+///      every fill explicit and visible downstream. Revisit A only after boundary 2 is fixed AND verified
+///      value-correct (not just non-declining) on that repro.
 ///
 /// A `Db` is a record of columns. Inc 0 has ONE stand-in column, `facts`, plus the demand/memo combinator
 /// `demand` that every real column producer (parse/resolve/infer/lower) will follow.
