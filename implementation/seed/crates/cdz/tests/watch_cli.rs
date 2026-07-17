@@ -78,6 +78,19 @@ fn count(cap: &std::path::Path, needle: &str) -> usize {
     read_cap(cap).matches(needle).count()
 }
 
+/// Poll until `needle` occurs at least `want` times in the capture file (up to `timeout`); return
+/// whether that count was reached. (For asserting a per-run signal fired N times, not just once.)
+fn wait_for_count(cap: &std::path::Path, needle: &str, want: usize, timeout: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if count(cap, needle) >= want {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    count(cap, needle) >= want
+}
+
 /// Poll until `path` exists (up to `timeout`); return whether it appeared. Used to detect a build's
 /// artifact by its FILE (stabler than grepping the build's stdout for a substring that could change).
 fn wait_for_path(path: &std::path::Path, timeout: Duration) -> bool {
@@ -474,5 +487,51 @@ fn watch_test_passes_filter_to_the_rerun() {
     assert_eq!(
         ran_beta, 0,
         "the filtered-out test must NOT run (proving --filter threaded through, not the whole suite): {captured}"
+    );
+}
+
+#[test]
+fn watch_clear_emits_a_clear_screen_before_each_run() {
+    // `--clear` (like `cargo watch -c`) clears the terminal before EACH run so output starts fresh. The
+    // clear is the ANSI erase-display sequence `\x1b[2J`; our capture file records it verbatim (harmless
+    // when stdout isn't a tty). Assert it appears ONCE on the initial run, then TWICE after a source edit
+    // re-runs — proving it fires per-run, not just at startup. (Without --clear it never appears — the
+    // sibling `watch_reruns_check…` test's captures contain no `\x1b[2J`.)
+    let (root, proj) = scaffold("clear");
+    let (mut child, cap) = spawn_watch(&proj, &["--clear"], "clear");
+    assert!(
+        wait_for(&cap, "watching", Duration::from_secs(20)),
+        "startup banner: {}",
+        read_cap(&cap)
+    );
+    // The initial run cleared once.
+    assert!(
+        wait_for(&cap, "\x1b[2J", Duration::from_secs(20)),
+        "the initial run clears the screen: {:?}",
+        read_cap(&cap)
+    );
+    let clears_after_startup = count(&cap, "\x1b[2J");
+
+    // A source edit → the re-run clears again (a second clear).
+    std::thread::sleep(Duration::from_millis(800));
+    std::fs::write(
+        proj.join("main.cdz"),
+        "def main() -> Int64 = 1\n\nexport { main }\n",
+    )
+    .expect("edit source");
+    let two_clears = wait_for_count(&cap, "\x1b[2J", 2, Duration::from_secs(20));
+    let captured = read_cap(&cap);
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_file(&cap);
+    assert_eq!(
+        clears_after_startup, 1,
+        "exactly one clear on the initial run: {captured:?}"
+    );
+    assert!(
+        two_clears,
+        "the re-run clears the screen again (2 total): {captured:?}"
     );
 }

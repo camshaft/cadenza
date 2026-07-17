@@ -2316,6 +2316,17 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
     let tag = args.tag.clone();
     let trials = args.trials;
     let seed = args.seed;
+    // Clear the terminal before each run (`--clear`, like `cargo watch -c`). A `Copy` bool captured
+    // separately from `args` (which is moved into the `rerun` closure below). The clear is emitted BEFORE
+    // the run's banner so each run's output starts on a fresh screen; a no-op when `--clear` is unset.
+    let clear = args.clear;
+    let clear_screen = move || {
+        if clear {
+            use std::io::Write;
+            print!("\x1b[2J\x1b[H"); // ANSI: erase display + move cursor home
+            let _ = std::io::stdout().flush();
+        }
+    };
     let dir_str = dir.to_string_lossy().into_owned();
     let rerun = move || -> ExitCode {
         match args.exec {
@@ -2417,6 +2428,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
     };
 
     // 1. Initial run (once — the initial feedback, like `cargo watch`).
+    clear_screen();
     let _ = rerun();
 
     // Drain the STARTUP event burst before arming the change loop. macOS FSEvents delivers a spurious
@@ -2455,6 +2467,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 continue; // artifact/temp churn only — nothing to re-run
             }
         }
+        clear_screen();
         eprintln!("{PROG}: ⟳ change detected — re-running `cdz {label}`");
         let _ = rerun();
         // Inspect events that arrived DURING the re-run. Artifact-only churn (the run's own outputs) is
@@ -3255,6 +3268,12 @@ struct WatchArgs {
     /// --seed`) — reproducible from it. Default 0. Ignored by the other execs.
     #[arg(long, default_value_t = 0)]
     seed: u64,
+    /// Clear the terminal before EACH run (the initial one and every re-run), like `cargo watch -c` — so
+    /// each run's output starts on a fresh screen instead of scrolling endlessly. Emits the ANSI
+    /// clear-screen + cursor-home sequence; harmless if stdout is redirected to a file (it just writes the
+    /// bytes). Off by default (output accumulates).
+    #[arg(long)]
+    clear: bool,
     /// The debounce window in milliseconds — filesystem events within this window of each other are
     /// COALESCED into a single re-run (so saving several files at once, or an editor's write-then-rename,
     /// triggers one run, not a storm). Default 400ms.
