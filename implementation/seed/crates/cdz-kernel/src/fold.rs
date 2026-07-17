@@ -75,6 +75,83 @@ where
     )
 }
 
+/// The outcome of a REPLAY (L1c): the loop's [`Outcome`] plus how many model calls were answered from the
+/// recorded log (`replayed`) vs how many had NO recorded response left (`missing`). A faithful replay of a
+/// log recorded by [`drive_one_turn`] has `missing == 0` and makes zero LIVE model calls — that is the
+/// recorded-effect determinism proof (vision §2.3).
+pub struct Replay {
+    pub outcome: Outcome,
+    pub replayed: usize,
+    pub missing: usize,
+}
+
+/// RE-FOLD a turn from a log recorded by [`drive_one_turn`], WITHOUT a live model call (agent-runtime L1c).
+///
+/// This is the load-bearing recorded-effect-determinism proof (vision §2.3): the model effect is answered
+/// not by a live backend but by REPLAYING the `model-response` events the live run appended, in order. So
+/// re-folding the same log reproduces the same cognition with the world's non-determinism frozen — the
+/// property that makes an agent's whole existence a fold over its log (§3: fork / hand-off / time-travel
+/// are all re-fold, needing no continuation capture).
+///
+/// The recorded responses are the payloads of the `model-response` events in `recorded`, consumed in log
+/// order. If the loop performs MORE model calls than were recorded (a divergent fold), the extra calls get
+/// an empty completion and `missing` counts them — a loud signal the replay didn't match, never a silent
+/// live fallback.
+pub fn replay_one_turn(
+    recorded: &[crate::Event],
+    consumer: &[u8],
+    opts: &RunOpts,
+) -> Result<Replay> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    // The recorded model completions, in log order — the only thing the replayed model effect returns.
+    let responses: Vec<String> = recorded
+        .iter()
+        .filter(|e| e.kind == MODEL_RESPONSE)
+        .map(|e| String::from_utf8_lossy(&e.payload).into_owned())
+        .collect();
+
+    let cursor = Arc::new(AtomicUsize::new(0));
+    let missing = Arc::new(AtomicUsize::new(0));
+    let queue = Arc::new(Mutex::new(responses));
+
+    let replay = {
+        let cursor = Arc::clone(&cursor);
+        let missing = Arc::clone(&missing);
+        let queue = Arc::clone(&queue);
+        move |_prompt: String| {
+            // Answer purely from the recorded tail — NO live converse. Pop the next recorded response;
+            // count a miss (and return "") if the fold asked for more calls than were recorded.
+            let i = cursor.fetch_add(1, Ordering::SeqCst);
+            let q = queue.lock().unwrap();
+            match q.get(i) {
+                Some(resp) => resp.clone(),
+                None => {
+                    missing.fetch_add(1, Ordering::SeqCst);
+                    String::new()
+                }
+            }
+        }
+    };
+
+    let outcome = cdz_run::run_agent_hosted(
+        consumer,
+        opts,
+        vec![HostOpBinding {
+            iface: cdz_agent::MODEL_IFACE.to_string(),
+            op: cdz_agent::MODEL_OP.to_string(),
+            host: HostOp::StringToString(Box::new(replay)),
+        }],
+    )?;
+
+    Ok(Replay {
+        outcome,
+        replayed: cursor.load(Ordering::SeqCst) - missing.load(Ordering::SeqCst),
+        missing: missing.load(Ordering::SeqCst),
+    })
+}
+
 /// Resolve the value-heap runtime a `consumer` requires (by content address) from the content-addressed
 /// store on some ancestor of `start` — the same walk the cdz-agent driver uses. Returns the runtime bytes,
 /// or None if no ancestor store holds it (a runtime bump can stale a fixture; the caller then skips).
@@ -114,6 +191,31 @@ mod tests {
 
     fn store_root() -> std::path::PathBuf {
         env!("CARGO_MANIFEST_DIR").into()
+    }
+
+    /// Resolve `RunOpts` for the model-consumer fixture (runtime by content address + export "main"), or
+    /// None if the store/fixture is absent (a runtime bump can stale the fixture) — the caller then skips.
+    fn opts_or_skip() -> Option<RunOpts> {
+        let hash = match required_runtime_hash(MODEL_CONSUMER) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("[cdz-kernel] fixture has no runtime requirement ({e}); skipping");
+                return None;
+            }
+        };
+        let runtime = find_runtime(&store_root(), &hash).or_else(|| {
+            eprintln!(
+                "[cdz-kernel] runtime {hash} not in any ancestor store or stale fixture; skipping"
+            );
+            None
+        })?;
+        Some(RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        })
     }
 
     #[test]
@@ -182,6 +284,76 @@ mod tests {
         assert_eq!(
             events[1].payload, b"HI",
             "the response event carries the completion"
+        );
+    }
+
+    #[test]
+    fn replay_reproduces_the_live_outcome_from_the_recorded_log_with_no_live_call() {
+        // THE load-bearing L1c proof (recorded-effect determinism, vision §2.3): a live turn records the
+        // model interaction to the log; re-folding that log with the model effect answered by REPLAYING the
+        // recorded responses reproduces the identical outcome — and makes ZERO live model calls. This is
+        // why an agent's whole existence can be a fold over its log (fork / hand-off / time-travel = re-fold).
+        let Some(opts) = opts_or_skip() else { return };
+
+        // 1) LIVE run: records model-request/response events into the log.
+        let logfile =
+            std::env::temp_dir().join(format!("cdz-kernel-replay-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&logfile);
+        let log = Arc::new(Mutex::new(crate::FileLog::open(&logfile).unwrap()));
+        let live = drive_one_turn(
+            Arc::clone(&log),
+            MODEL_CONSUMER,
+            &opts,
+            cdz_agent::mock_converse,
+        );
+        let live_value = match live {
+            Ok(Outcome::Value(s)) => s,
+            other => panic!("live turn did not produce a value: {other:?}"),
+        };
+        let recorded = log.lock().unwrap().tail(0).unwrap();
+        let _ = std::fs::remove_file(&logfile);
+
+        // 2) REPLAY: re-fold from the recorded log, answering the model effect from the recorded responses
+        //    only. `replay_one_turn` binds ONLY a recorded-response closure (no live backend is passed in
+        //    at all), so a live model call is structurally impossible — the model effect can only be
+        //    answered from the log.
+        let replay = replay_one_turn(&recorded, MODEL_CONSUMER, &opts)
+            .expect("replay re-folds the recorded log");
+
+        // Identical outcome, every model call answered from the record, nothing missing (no divergence),
+        // and nothing left over — the fold over (request, response) events was pure.
+        match replay.outcome {
+            Outcome::Value(s) => assert_eq!(
+                s, live_value,
+                "replay reproduces the live outcome exactly from the recorded log"
+            ),
+            Outcome::Trap(t) => panic!("replay trapped: {t}"),
+        }
+        assert_eq!(
+            replay.missing, 0,
+            "no model call lacked a recorded response (no divergence)"
+        );
+        assert_eq!(
+            replay.replayed, 1,
+            "exactly the one recorded model call was replayed (the turn's single converse)"
+        );
+    }
+
+    #[test]
+    fn replay_reports_missing_when_the_log_lacks_a_recorded_response() {
+        // A replay against a log with NO model-response events (a truncated/empty record) must NOT silently
+        // fall back to a live call — it answers "" and COUNTS the miss, a loud divergence signal. Proves the
+        // replay is honest about an incomplete record rather than papering over it.
+        let Some(opts) = opts_or_skip() else { return };
+        let empty: Vec<crate::Event> = Vec::new();
+        let replay = replay_one_turn(&empty, MODEL_CONSUMER, &opts).expect("replay runs");
+        assert_eq!(
+            replay.replayed, 0,
+            "no recorded responses were available to replay"
+        );
+        assert_eq!(
+            replay.missing, 1,
+            "the turn's model call had no recorded response → counted as missing, not a live fallback"
         );
     }
 
