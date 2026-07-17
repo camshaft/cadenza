@@ -1689,6 +1689,7 @@ pass	a signed narrow-width wrapping-add constant folds by wrapping to the negati
 pass	a signed pattern segment reads a two's-complement integer as negative
 pass	a signed segment reads the sign-bit-only byte as the minimum, not its magnitude
 pass	a signed-byte entrypoint returns its runtime argument
+pass	a single Map.swap reports the OLD prior value WHILE the new map holds the NEW value (combined atomicity)
 pass	a single-form body admits a sequence by holding a do block
 pass	a single-scalar String.slice equals the String.at of the same index (the two scalar-addressing paths agree)
 pass	a single-variant Int32 newtype literal-payload arm compiles at the payload width
