@@ -1345,6 +1345,26 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 2500 BigInt)))
 
+(case "a scaled-unit PARAMETER annotation keeps its scale across the type round-trip (mixed-scale combine)"
+  (doc    "A parameter annotated at a NON-reference unit — `(: a (Qty Int64 kilometer))` — must keep its
+           scale (1000/1) so a mixed-scale combine with it CONVERTS. A `Ty::Qty`'s unit carries a `scale`
+           ratio to the dimension reference, but the type-value ENCODE/DECODE round-trip a parameter
+           annotation takes (`eval::encode_ty` → `resolve::decode_ty`) dropped it: `encode_ty` emitted only
+           the `(base NAME EXP)` dimension triples, so decode rebuilt the unit at scale 1/1 (the reference).
+           A scaled-unit param then silently became its REFERENCE unit, and `(+ a b)` with `a : Qty km`,
+           `b : Qty m` saw EQUAL scales → added the RAW magnitudes with no conversion (a silent miscompile:
+           `f(2, 500)` gave 502, not 2500). The fix encodes a `(scale NUM DEN)` item for a non-1/1 unit and
+           decode restores it. Now `2 km + 500 m` = 2500 m (2 km converts to 2000 m, + 500). CONTRAST the
+           CONSTANT/let-bound forms, which never lost the scale (no encode round-trip) — this pins the
+           PARAMETER path. `cdz check` passed the mis-scaled program, so this is a check-vs-run pin: it must
+           RUN to the converted magnitude, not a raw-added one.")
+  (input  (do
+            (def (main (: a (Qty Int64 (Unit.prefix kilo (Unit.base #"meter"))))
+                       (: b (Qty Int64 (Unit.base #"meter"))))
+              (Qty.value (+ a b)))
+            (export main)))
+  (call   main (: 2 Int64) (: 500 Int64)) (output (: 2500 Int64)))
+
 ; A mixed-scale combine converts each operand's magnitude to the reference — and that magnitude may come
 ; from a COMPUTED quantity (a `*`/`/`-derived one, a let-bound one), not only a directly-written `Qty.of`.
 ; The converter reads the magnitude via `qty_magnitude_occ`: a literal `Qty.of`'s value occurrence, else

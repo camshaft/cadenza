@@ -27,11 +27,34 @@ import type { Widget } from "./parseWidgets.ts";
 import type { WidgetValues } from "./assembleForRun.ts";
 import { assembleCell } from "./assembleCell.ts";
 import { widgetBinding } from "./assembleForRun.ts";
+import { exportNames, topLevelDefNames } from "../components/wrapModule.ts";
 
 /// The UTF-8 byte length of a string (the unit `wrapPrefixBytes` is measured in — the compiler reports
 /// byte offsets, and `cadenzaLint` maps them back by subtracting this prefix).
 function utf8Len(s: string): number {
   return new TextEncoder().encode(s).length;
+}
+
+/// A top-level `export` form for a cell's definitions, appended as a SUFFIX after the cell text so the
+/// linted module has a public entry. Without it, `compile` declines the cell with "no `(export …)`:
+/// nothing is public" — an UNANCHORED (from=to=0) diagnostic that `cadenzaLint` pins to the cell's start,
+/// so the operator sees the cell (and its `main`) flagged as unused/non-public even though the RUN path
+/// (`repl_eval`, which roots the entry implicitly) compiles it clean (operator UX #1). The export names
+/// `main` when the cell defines it (the guide convention), else the cell's own top-level defs — the same
+/// rule `wrapModule` uses. Empty when the cell declares nothing to export (a bare expression / prose-only
+/// edit) so we don't emit a dangling `(export)`. The suffix sits AFTER the cell text, so it never shifts
+/// `wrapPrefixBytes`, and `cadenzaLint` clamps any diagnostic landing in it to the cell-content end.
+function exportSuffix(cellText: string, surface: Surface): string {
+  const trimmed = cellText.trim();
+  // Only export names the cell ACTUALLY defines. `exportNames` synthesizes `main` for a bare expression
+  // (because `wrapModule` would rewrite it to `(def (main) <expr>)`), but `prepareCell` does NOT rewrite —
+  // it lints the cell text verbatim — so exporting a synthesized `main` that has no `def` would be a
+  // dangling export ("export `main` names no definition"). Intersect with the cell's real top-level defs;
+  // a cell that defines nothing (a bare expression / prose-only edit) gets NO suffix.
+  const defined = new Set(topLevelDefNames(trimmed, surface));
+  const names = exportNames(trimmed, surface).filter((n) => defined.has(n));
+  if (names.length === 0) return "";
+  return surface === "sexpr" ? `\n(export ${names.join(" ")})` : `\nexport { ${names.join(", ")} }`;
 }
 
 /// Build the `prepare` output for linting the code cell at `index`: its live `cellText` compiled with the
@@ -58,7 +81,11 @@ export function prepareCell(
   // newline-separated top-level forms — the `assembleForRun` convention).
   const prefixParts = [widgetBindings, scopeBuffer].filter((s) => s.trim().length > 0);
   const prefix = prefixParts.length > 0 ? prefixParts.join("\n\n") + "\n\n" : "";
-  return { compiled: prefix + cellText, wrapPrefixBytes: utf8Len(prefix) };
+  // Append an `export` SUFFIX so the linted module has a public entry — otherwise `compile` declines with
+  // "nothing is public" and the cell's `main` is flagged unused (operator UX #1). Suffix, not prefix, so
+  // `wrapPrefixBytes` (and thus the cell's diagnostic offsets) stay exact.
+  const suffix = exportSuffix(cellText, surface);
+  return { compiled: prefix + cellText + suffix, wrapPrefixBytes: utf8Len(prefix) };
 }
 
 /// The full `IdeConfig` for a notebook code cell's editor — `surface` fixed to the notebook surface, and a

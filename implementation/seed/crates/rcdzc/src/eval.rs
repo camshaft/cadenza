@@ -3086,6 +3086,28 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
                 });
                 unit_items.push(db.push_list(vec![base, nm, e]));
             }
+            // Encode the SCALE ratio to the dimension's reference unit — a `(scale NUM DEN)` item — so a
+            // NON-reference unit (`kilometer` = 1000/1, `foot` = 381/1250, `KiB` = 1024/1) survives the
+            // encode→decode round-trip a TYPE-VALUE takes (e.g. a `(: q (Qty Int64 (Unit.prefix kilo …)))`
+            // parameter annotation, whose Qty type is encoded then `decode_ty`'d back). WITHOUT this the
+            // decode rebuilt the unit at scale 1/1 (the reference), so a scaled-unit param silently became
+            // its reference unit → a cross-scale combine/comparison with it computed on RAW magnitudes with
+            // no conversion (`quantity_scales_differ` saw equal scales) — a silent miscompile (`(+ (a: Qty
+            // km) (b: Qty m))` with a=2,b=500 gave 502, not 2500). Emitted ONLY for a non-1/1 scale so the
+            // common reference-unit form stays byte-identical (decode defaults a missing `(scale …)` to 1/1).
+            let (sn, sd) = unit.scale();
+            if (sn, sd) != (1, 1) {
+                let scale_head = db.push_name("scale");
+                let n = db.push_atom(Leaf::Int {
+                    value: IntValue::from_i128(sn),
+                    radix: crate::ast::Radix::Dec,
+                });
+                let d = db.push_atom(Leaf::Int {
+                    value: IntValue::from_i128(sd),
+                    radix: crate::ast::Radix::Dec,
+                });
+                unit_items.push(db.push_list(vec![scale_head, n, d]));
+            }
             let unit_node = db.push_list(unit_items);
             db.push_list(vec![head, inner_node, unit_node])
         }
