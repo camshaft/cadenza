@@ -179,6 +179,7 @@ pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
+pass	a Qty-typed variant payload keeps its type non-generic and matches back
 pass	a RADIX literal carries the N type suffix
 pass	a RATIONAL compound = has DISCRIMINATING power (1/2 ≠ 1/3, but 0/2 = 0/3)
 pass	a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)
@@ -1181,6 +1182,7 @@ pass	a private module member is still visible to a sibling
 pass	a private module member participates in mutual recursion with an exported sibling
 pass	a private sibling defined after its exported caller still resolves
 pass	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
+pass	a product type of three Qty fields with concrete units constructs and projects
 pass	a program declares its own family unit and converts with it
 pass	a program that delegates no effect is pure and never suspends
 pass	a program's syntax tree is an ordinary value walked recursively across calls
@@ -2280,7 +2282,6 @@ pass	byte sequences are equal by their bytes in order
 pass	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 pass	chained guards of the same variant are tried in order
-pass	chaining two Unit.in conversions is a compile-time error — the inner one already unwrapped
 pass	char to-int and from-int round-trip through the scalar value
 pass	checked addition yields None on overflow instead of trapping
 pass	checked addition yields Some of the sum when it fits
@@ -2705,7 +2706,6 @@ pass	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
 pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and dimension
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	raising a runtime computed quantity to a power squares the runtime magnitude
-pass	re-wrapping the intermediate with Qty.of makes a two-step conversion well-formed
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	read classifies a lone punctuation token as an Ast.Name and it round-trips
 pass	read of text that is not a well-formed s-expression declines
@@ -3420,6 +3420,7 @@ todo	a mutually-recursive AST walker reads a node's child list without corruptin
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a nested element pattern dispatches on a NON-variant-0 list payload
 todo	a nested tuple list element is bound over a runtime list and folded across the rest
+todo	a no-overflow obligation is DISCHARGED: for x <= 100, (x + 1) <= MAXINT via monotonicity + a numeral fact
 todo	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 todo	a parameterized export returning a capturing closure is made and called by the host
 todo	a parameterized export returning a multi-argument capturing closure
@@ -3471,6 +3472,8 @@ todo	an 8-bit-integer closure crosses the host boundary
 todo	an @param of a Bool type generates a Bool-typed accessor
 todo	an @param of a Float64 type generates a Float64-typed accessor
 todo	an @param site generates a Param accessor a host delegation reads at run time
+todo	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
+todo	an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the no-overflow obligation cannot be closed (the check must stay)
 todo	an abortive handler abandons a host call in the path it discards
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee

@@ -317,6 +317,7 @@ pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
+pass	a Qty-typed variant payload keeps its type non-generic and matches back
 pass	a RADIX literal carries the N type suffix
 pass	a RATIONAL compound = has DISCRIMINATING power (1/2 ≠ 1/3, but 0/2 = 0/3)
 pass	a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)
@@ -1457,6 +1458,7 @@ pass	a private module member participates in mutual recursion with an exported s
 pass	a private sibling defined after its exported caller still resolves
 pass	a produced closure is handed back into a consumer export (the round trip)
 pass	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
+pass	a product type of three Qty fields with concrete units constructs and projects
 pass	a program declares its own family unit and converts with it
 pass	a program that delegates no effect is pure and never suspends
 pass	a program that makes a host call has that call in its observable behavior
