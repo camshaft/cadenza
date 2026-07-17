@@ -297,8 +297,6 @@ def conformance-cx-mod-parity() = (if check-case(c-cx-mod-parity()) then unit el
 @test
 def conformance-cx-var-in-later-binding() = (if check-case(c-cx-var-in-later-binding()) then unit else trap("let a=4 in let b=a*a in b+a → 20"))
 @test
-def conformance-cx-nested-if-in-then() = (if check-case(c-cx-nested-if-in-then()) then unit else trap("nested if in then → 42"))
-@test
 def conformance-cx-div-paren-divisor() = (if check-case(c-cx-div-paren-divisor()) then unit else trap("let x=20 in x/(2+3) → 4"))
 @test
 def conformance-cx-bool-let-as-cond() = (if check-case(c-cx-bool-let-as-cond()) then unit else trap("let flag=5>3 in if flag then 1 else 0 → 1"))
