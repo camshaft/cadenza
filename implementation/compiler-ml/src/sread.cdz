@@ -11,7 +11,7 @@
 /// `read-form` + a test here. Reuses `strlex`'s char helpers (`char-at`, `is-digit`, `scan-number`) and
 /// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
 
-import { Node, Tree, empty-tree, add-node, is-lit } from "parse-db"
+import { Node, Tree, empty-tree, add-node, node-at, is-lit, is-bool-lit, is-bin-op } from "parse-db"
 
 /// The 1-char string at position `i` of `s`, or `""` past the end. (strlex has an identical private helper;
 /// sread keeps its own so it depends only on parse-db, not strlex's internals.)
@@ -41,16 +41,64 @@ def skip-space(s: String, i: Int64) =
   (if i == String.byte-len(s) then i
    else (if is-space(char-at(s, i)) then skip-space(s, i + 1) else i))
 
-/// Read ONE form starting at index `i` (after leading space is skipped by the caller), interning its nodes
-/// into `tree`. Returns `(rootId, nextIndex, tree')`. FIRST SLICE: only a non-negative integer literal —
-/// `NLit`. Any other lead char is error-recovery `NLit 0` (widened as real forms land).
+/// Is `c` a lowercase-letter char (the lead of a keyword/symbol atom `true`/`false`)? A minimal set — the
+/// atoms this slice recognizes.
+def is-alpha(c: String) =
+  c == "t" or c == "f" or c == "i" or c == "e" or c == "l" or c == "n"
+  or c == "a" or c == "b" or c == "d" or c == "h" or c == "s" or c == "x"
+  or c == "y" or c == "z" or c == "r" or c == "u" or c == "o" or c == "m"
+  or c == "p" or c == "g" or c == "v" or c == "w" or c == "k" or c == "q"
+  or c == "c" or c == "j"
+
+/// Scan an ATOM (keyword/symbol/identifier) from `i` — a run of non-space, non-paren chars — returning
+/// `(atom-string, next-index)`. Used to read `true`/`false` and (later) operator symbols / names.
+def scan-atom(s: String, i: Int64, acc: String) =
+  (if i == String.byte-len(s) then (acc, i)
+   else (let c = char-at(s, i) in
+     (if (is-space(c)) then (acc, i)
+      else (if (c == "(") then (acc, i)
+      else (if (c == ")") then (acc, i)
+      else scan-atom(s, i + 1, String.concat(acc, c)))))))
+
+/// The op-code for a binary operator SYMBOL, matching parse-db's codes (43 + / 45 - / 42 * / 47 / / 37 % /
+/// 60 < / 61 == / 62 > / 63 <= / 64 >= / 65 !=). Returns -1 for an unrecognized symbol.
+def op-code-of(sym: String) =
+  (if sym == "+" then 43 else (if sym == "-" then 45 else (if sym == "*" then 42
+   else (if sym == "/" then 47 else (if sym == "%" then 37
+   else (if sym == "<" then 60 else (if sym == "==" then 61 else (if sym == ">" then 62
+   else (if sym == "<=" then 63 else (if sym == ">=" then 64 else (if sym == "!=" then 65
+   else 0 - 1)))))))))))
+
+/// Read ONE form starting at index `i` (leading space skipped here). Returns `(rootId, nextIndex, tree')`.
+/// SLICE 2 handles: non-negative INT literal; `true`/`false` bool literals; and a PARENTHESISED PREFIX form
+/// `(op a b)` where `op` is a binary operator symbol → `NBin(code, a, b)`. Unrecognized lead → recovery
+/// `NLit 0`. (`if`/`let`/vars are later slices.)
 def read-form(s: String, i: Int64, tree: Tree) =
   (let j = skip-space(s, i) in
    (let c = char-at(s, j) in
     (if is-digit(c) then
        (match scan-number(s, j, 0) with | (v, k) =>
          (match add-node(tree, Node.NLit(v)) with | (id, t1) => (id, k, t1)))
-     else (match add-node(tree, Node.NLit(0)) with | (id, t1) => (id, j + 1, t1)))))
+     else (if (c == "(") then read-paren-form(s, j + 1, tree)
+     else (if (is-alpha(c)) then
+        (match scan-atom(s, j, "") with | (atom, k) =>
+          (if (atom == "true") then (match add-node(tree, Node.NBoolLit(1)) with | (id, t1) => (id, k, t1))
+           else (if (atom == "false") then (match add-node(tree, Node.NBoolLit(0)) with | (id, t1) => (id, k, t1))
+           else (match add-node(tree, Node.NLit(0)) with | (id, t1) => (id, k, t1)))))
+     else (match add-node(tree, Node.NLit(0)) with | (id, t1) => (id, j + 1, t1)))))))
+
+/// After a `(` at index `i`: read the operator SYMBOL atom, then two operand forms, then consume the `)`.
+/// Builds `NBin(op-code, leftId, rightId)`. A missing `)` is tolerated (error recovery). Only binary prefix
+/// forms this slice — an unrecognized head symbol still reads two operands and builds `NBin(-1, …)` (which
+/// infer will type as `TErr`), keeping the reader total.
+def read-paren-form(s: String, i: Int64, tree: Tree) =
+  (let h = skip-space(s, i) in
+   (match scan-atom(s, h, "") with | (sym, a0) =>
+     (match read-form(s, a0, tree) with | (leftId, a1, t1) =>
+       (match read-form(s, a1, t1) with | (rightId, a2, t2) =>
+         (let a3 = skip-space(s, a2) in
+          (let a4 = (if (char-at(s, a3) == ")") then a3 + 1 else a3) in
+           (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a4, t3))))))))
 
 /// The reader ENTRY: source text → `(rootId, Tree)`, the shape `eval-db.eval-tree(tree, root)` consumes.
 def read-source(s: String) = match read-form(s, 0, empty-tree()) with | (root, _, tree) => (root, tree)
@@ -73,4 +121,46 @@ def sr-multidigit() =
   (match read-source("100") with | (root, tree) =>
     (if is-lit(tree, root, 100) then unit else trap("root is NLit 100")))
 
-export { skip-space, read-form, read-source }
+@test
+def sr-true() =
+  // "true" → NBoolLit(1).
+  (match read-source("true") with | (root, tree) =>
+    (if is-bool-lit(tree, root, 1) then unit else trap("root is NBoolLit 1")))
+
+@test
+def sr-false() =
+  // "false" → NBoolLit(0).
+  (match read-source("false") with | (root, tree) =>
+    (if is-bool-lit(tree, root, 0) then unit else trap("root is NBoolLit 0")))
+
+@test
+def sr-prefix-add() =
+  // "(+ 1 2)" → NBin(43, NLit 1, NLit 2): prefix binop with both operands.
+  (match read-source("(+ 1 2)") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NBin(op, l, r)) =>
+        (if op == 43 then (if is-lit(tree, l, 1) then (if is-lit(tree, r, 2) then unit else trap("right NLit 2")) else trap("left NLit 1")) else trap("op is +"))
+      | _ => trap("root is a + Bin")))
+
+@test
+def sr-prefix-lt() =
+  // "(< 3 4)" → NBin(60, ...): the `<` symbol maps to op 60.
+  (match read-source("(< 3 4)") with | (root, tree) =>
+    (if is-bin-op(tree, root, 60) then unit else trap("root is a < Bin (op 60)")))
+
+@test
+def sr-prefix-nested() =
+  // "(+ 1 (* 2 3))" → root + whose RIGHT child is a * Bin (nested prefix form, children by id).
+  (match read-source("(+ 1 (* 2 3))") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NBin(op, _, r)) =>
+        (if op == 43 then (if is-bin-op(tree, r, 42) then unit else trap("+ 's right is a * Bin")) else trap("root is +"))
+      | _ => trap("root is a Bin")))
+
+@test
+def sr-prefix-eqeq() =
+  // "(== 5 5)" → op 61 (the two-char == symbol scans as one atom).
+  (match read-source("(== 5 5)") with | (root, tree) =>
+    (if is-bin-op(tree, root, 61) then unit else trap("root is a == Bin (op 61)")))
+
+export { skip-space, read-form, read-source, scan-atom, op-code-of }
