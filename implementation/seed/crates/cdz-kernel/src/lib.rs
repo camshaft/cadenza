@@ -66,5 +66,6 @@ pub mod msg;
 /// Subscriptions over the log (L3): a [`sub::Subscription`] `{id, predicate, program_ref, capability}` is a
 /// durable `subscribe` event (vision §8, the one reactive primitive). L3a is the type + a concrete matchable
 /// [`sub::Predicate`] + a pure codec; L3b ([`sub::active_subscriptions`]) folds the active set (supersession
-/// by id + `unsubscribe` revocation); L3c dispatches a landed event against them.
+/// by id + `unsubscribe` revocation); L3c ([`sub::dispatch`]) selects the active subscriptions a landed event
+/// matches — the schedulable set (running the handlers under their capability is the fold-owner rung, L4/L5).
 pub mod sub;

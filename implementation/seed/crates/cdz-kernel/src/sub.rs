@@ -196,6 +196,24 @@ pub fn active_subscriptions(events: &[Event]) -> Vec<(crate::Seq, Subscription)>
     live
 }
 
+/// DISPATCH a newly-landed event against the active subscriptions (agent-runtime L3c) — the core reactive
+/// step: an event lands → which active subscriptions' predicates [`Predicate::matches`] it → those are the
+/// handler programs to schedule. Given the `events` seen so far (the log up to and *including* `new_event`)
+/// and the `new_event` that just landed, folds the active set with [`active_subscriptions`] and returns the
+/// subset whose predicate matches `new_event`, in the same seq order — the SCHEDULABLE set.
+///
+/// This is *only* the match/selection step: it returns WHICH subscriptions fire, paired with the seq that
+/// defined each (so a handler run can be recorded/correlated). Actually RUNNING a matched handler program
+/// under its capability is the fold owner + capability rung (L4/L5) — L3c is pure and deterministic, so the
+/// dispatch decision itself is replayable. L3d then shows a `MessageTo(me)` subscription's dispatch reproduces
+/// exactly what [`crate::msg::inbox_for`] surfaces, unifying the agent loop with this primitive.
+pub fn dispatch(events: &[Event], new_event: &Event) -> Vec<(crate::Seq, Subscription)> {
+    active_subscriptions(events)
+        .into_iter()
+        .filter(|(_, sub)| sub.predicate.matches(new_event))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,5 +462,78 @@ mod tests {
     #[test]
     fn unsubscribe_tag_is_stable() {
         assert_eq!(UNSUBSCRIBE, "unsubscribe");
+    }
+
+    // ── L3c: dispatch a landed event against the active subscriptions (the schedulable set) ───────────
+
+    #[test]
+    fn dispatch_returns_only_the_active_subscriptions_whose_predicate_matches() {
+        // Two active subs: one on messages-to-me, one on kind "tick". A message-to-me event fires only the
+        // former; a "tick" event fires only the latter — dispatch = active set filtered by matches().
+        let log = [
+            sub_event(0, "inbox", Predicate::MessageTo("me".into())),
+            sub_event(1, "ticker", Predicate::EventKind("tick".into())),
+        ];
+        let msg = msg_event(2, "me");
+        let fired = dispatch(&[log[0].clone(), log[1].clone(), msg.clone()], &msg);
+        assert_eq!(
+            fired.iter().map(|(_, s)| s.id.clone()).collect::<Vec<_>>(),
+            vec!["inbox".to_string()],
+            "a message-to-me fires only the MessageTo(me) subscription"
+        );
+        let tick = Event {
+            seq: 3,
+            kind: "tick".into(),
+            payload: vec![],
+        };
+        let fired2 = dispatch(&[log[0].clone(), log[1].clone(), tick.clone()], &tick);
+        assert_eq!(
+            fired2.iter().map(|(_, s)| s.id.clone()).collect::<Vec<_>>(),
+            vec!["ticker".to_string()],
+            "a tick event fires only the EventKind(tick) subscription"
+        );
+    }
+
+    #[test]
+    fn dispatch_ignores_revoked_and_superseded_subscriptions() {
+        // A revoked subscription never fires; a superseded one fires by its NEW predicate, not the old.
+        let msg = msg_event(9, "me");
+        // `a` subscribes to MessageTo(me) then is unsubscribed → must NOT fire on a message to me.
+        let revoked_log = vec![
+            sub_event(0, "a", Predicate::MessageTo("me".into())),
+            unsub_event(1, "a"),
+            msg.clone(),
+        ];
+        assert!(
+            dispatch(&revoked_log, &msg).is_empty(),
+            "a revoked subscription does not fire"
+        );
+        // `b` first subscribes to a non-matching kind, then re-subscribes (supersede) to MessageTo(me).
+        let superseded_log = vec![
+            sub_event(0, "b", Predicate::EventKind("other".into())),
+            sub_event(1, "b", Predicate::MessageTo("me".into())),
+            msg.clone(),
+        ];
+        let fired = dispatch(&superseded_log, &msg);
+        assert_eq!(
+            fired.iter().map(|(_, s)| s.id.clone()).collect::<Vec<_>>(),
+            vec!["b".to_string()],
+            "the superseding predicate (MessageTo) is what dispatch matches on"
+        );
+    }
+
+    #[test]
+    fn dispatch_is_empty_when_no_active_subscription_matches() {
+        let log = [sub_event(0, "a", Predicate::EventKind("tick".into()))];
+        let msg = msg_event(1, "me");
+        assert!(
+            dispatch(&[log[0].clone(), msg.clone()], &msg).is_empty(),
+            "no active subscription matches this event → nothing scheduled"
+        );
+        // No subscriptions at all → nothing fires.
+        assert!(
+            dispatch(std::slice::from_ref(&msg), &msg).is_empty(),
+            "no subscriptions → empty dispatch"
+        );
     }
 }
