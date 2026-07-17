@@ -291,6 +291,25 @@ The machinery (§2, §3.1) is shared across all three, so the design investment 
 paradigm-independent; only the *surface* and the *degree of code generation* differ. (b) takes generation
 all the way: one artifact, every actor emitted.
 
+### 4.2 The projection target: one self-contained deployable artifact per actor (operator clarifications)
+Two operator clarifications after the Q1 ruling sharpen *what projection produces*:
+- **Per-actor artifacts are fully self-contained and independently deployable.** Projecting the one
+  choreography yields, per role, not just a per-role *function* but a **separate, totally self-contained
+  compiled artifact** — each actor is its own independent deployable unit (a wasm component / binary), with
+  only the `Comm` effect as its boundary to the others. The single global source fans out to N standalone
+  programs that never share a runtime; they interact *only* through projected messages. This is the natural
+  end of "shred it up into one per actor" — the shredded pieces are deployables, not just code fragments.
+  Design consequence: projection's output per role is a *complete program* (entrypoint + its `Comm`
+  delegation manifest, per capabilities-and-effects.md), and each actor's manifest is exactly its projected
+  message alphabet — nothing more is grantable. Inc 3's gate should therefore compile each projected actor
+  as its *own* component and run them against a shared mock `Comm` transport, not link them into one module.
+- **The compiler runs as a wasm build (agent-harness/kernel context).** The agent-runtime uses a wasm build
+  of the Cadenza compiler; since projection is a compile-time metaprogram (§2.1), "generate every actor" is
+  a capability the *wasm-hosted* compiler exposes — i.e. an agent can project a choreography into per-actor
+  artifacts at runtime through the compiler-as-tool. This aligns choreographic-protocols with the
+  agent-runtime vision (`DESIGN-agent-runtime-vision.md`): the fleet flagship (§6.1) is not just an
+  illustration but a path to the runtime projecting its own coordination.
+
 ---
 
 ## 5. The other forks (Q2–Q5) — defaults chosen, operator may override
