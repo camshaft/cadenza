@@ -356,4 +356,124 @@ mod tests {
             "an identity override leaves core_of's result unchanged"
         );
     }
+
+    // ── Verification b2: the proof-guided-elision CorePass MECHANISM prototype ──────────────────────
+    // The Inc-b opt seam (implementation/design/DESIGN-verification-program-conditions.md §3): a
+    // discharged no-overflow `Thm` should let a Core pass drop the overflow guard at the node it
+    // licenses. This prototype proves the PASS WIRING end-to-end — iterate a checked-arith node →
+    // consult a proof oracle keyed by the node's StructId → install a core override ONLY when the
+    // oracle licenses — without yet changing checkedness (the real guard-drop is b3, and needs
+    // v-core-opt's Slice-2a Core-level unchecked `Arith` variant, which does not exist yet). So the
+    // override installed here is the node's OWN core (an IDENTITY override): the mechanism runs, but
+    // behavior is preserved, exactly as the b2 increment requires (corpus-only, behavior-preserving).
+    //
+    // The oracle is a boolean stand-in here. In the real pipeline it is a compile-time `eval` of the
+    // discharge program (the Cadenza `licenses` predicate pinned in 26-program-conditions.sexp); the
+    // Rust side consumes only its boolean, so this prototype's shape (query → Option → install-or-skip)
+    // is exactly the production shape with the eval swapped in for the stand-in.
+
+    /// A proof oracle keyed by Core `StructId`: `Some(())` iff a discharged `Thm` licenses eliding the
+    /// overflow guard at that node. In production this is a compile-time eval of the discharge program;
+    /// the prototype passes an explicit set of licensed node ids.
+    struct StubOracle {
+        licensed: std::collections::HashSet<crate::ast::StructId>,
+    }
+    impl StubOracle {
+        fn licenses(&self, id: crate::ast::StructId) -> Option<()> {
+            if self.licensed.contains(&id) {
+                Some(())
+            } else {
+                None
+            }
+        }
+    }
+
+    /// The proof-guided-elision pass (b2 mechanism prototype). For the target node, if the oracle
+    /// licenses it, install an override; otherwise leave it. Behavior-preserving in b2 (the override is
+    /// the node's own core); at b3 the licensed branch installs an UNCHECKED arith variant instead.
+    struct ProofElisionPass<'a> {
+        oracle: &'a StubOracle,
+        target: crate::ast::StructId,
+    }
+    impl<'a> CorePass for ProofElisionPass<'a> {
+        fn min_level(&self) -> OptLevel {
+            // Proof-guided elision is a higher-tier optimization; it runs from O2 up. (The real
+            // registration is a b3 concern; the prototype does not register into the pipeline.)
+            OptLevel::O2
+        }
+        fn name(&self) -> &'static str {
+            "proof-guided-elision"
+        }
+        fn run(&self, db: &mut crate::db::Db) {
+            if self.oracle.licenses(self.target).is_some() {
+                // b2: identity override (mechanism only; no checkedness change). b3 swaps in the
+                // unchecked arith variant once v-core-opt's Slice-2a lands.
+                let natural = crate::lower::core_of(db, self.target);
+                db.install_core_override(self.target, natural);
+            }
+        }
+    }
+
+    #[test]
+    fn proof_elision_pass_installs_an_override_only_when_the_oracle_licenses() {
+        // A LICENSED node: the pass consults the oracle, gets Some, and installs the (identity) override
+        // — proving the iterate → query → install wiring, behavior-preserving in b2.
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 42) (export main))",
+        ));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main body");
+        let natural = crate::lower::core_of(&mut db, body);
+        assert!(!db.has_core_overrides(), "no override before the pass runs");
+
+        let mut licensed = std::collections::HashSet::new();
+        licensed.insert(body);
+        let oracle = StubOracle { licensed };
+        ProofElisionPass {
+            oracle: &oracle,
+            target: body,
+        }
+        .run(&mut db);
+
+        // The mechanism fired: an override is installed for the licensed node.
+        assert!(
+            db.has_core_overrides(),
+            "a licensed node gets a proof-guided override installed"
+        );
+        // …and it is behavior-preserving (b2 identity override): core_of is unchanged.
+        let after = crate::lower::core_of(&mut db, body);
+        assert_eq!(
+            format!("{natural:?}"),
+            format!("{after:?}"),
+            "the b2 proof-elision override is behavior-preserving (identity)"
+        );
+    }
+
+    #[test]
+    fn proof_elision_pass_leaves_an_unlicensed_node_untouched() {
+        // An UNLICENSED node (oracle returns None → no discharged Thm): the pass installs NOTHING, so
+        // the overflow check STAYS. This is the default-is-always-the-check invariant at the pass level:
+        // absence of a proof means no elision, never elision-on-absence-of-disproof.
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 42) (export main))",
+        ));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main body");
+        let _ = crate::lower::core_of(&mut db, body);
+
+        // Empty oracle: nothing is licensed.
+        let oracle = StubOracle {
+            licensed: std::collections::HashSet::new(),
+        };
+        ProofElisionPass {
+            oracle: &oracle,
+            target: body,
+        }
+        .run(&mut db);
+
+        assert!(
+            !db.has_core_overrides(),
+            "an unlicensed node gets NO override — the check stays (default is always the check)"
+        );
+    }
 }

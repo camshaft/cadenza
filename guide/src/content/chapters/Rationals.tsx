@@ -1,5 +1,6 @@
 import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
+import { Link } from "react-router-dom";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
 
@@ -86,7 +87,12 @@ export default function Rationals() {
       />
       <P>
         <C>1/1</C>, not <C>0.9999999999999999</C>. Division is exact too, and — unlike integer division —
-        total for any nonzero divisor: <C>(3/4) / (2/1)</C> is <C>3/8</C>, no remainder, no rounding.
+        total for any nonzero divisor: <C>(3/4) / (2/1)</C> is <C>3/8</C>, no remainder, no rounding. You
+        can try exact fractions yourself in the{" "}
+        <Link to="/calculator" className="text-cadenza-300 underline-offset-2 hover:underline">
+          calculator
+        </Link>{" "}
+        — type <C>1 / 3 + 1 / 3 + 1 / 3</C> and watch it come back <C>1</C>.
       </P>
       <Runnable source={`(/ (Rational.of 3 4) (Rational.of 2 1))`} />
 

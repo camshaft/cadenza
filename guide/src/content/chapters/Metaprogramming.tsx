@@ -1,5 +1,6 @@
 import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
+import { Link } from "react-router-dom";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
 
@@ -257,6 +258,15 @@ export default function Metaprogramming() {
         poking at string-tagged reflection, and <C>eval</C> is an optional extra (for macros and the
         REPL), not something the core depends on. Code as data, with no new machinery to learn.
       </Why>
+
+      <P>
+        You can watch a program become an <C>Ast</C> value — and see the WebAssembly and Rust it compiles
+        to — in the{" "}
+        <Link to="/playground" className="text-cadenza-300 underline-offset-2 hover:underline">
+          playground
+        </Link>
+        , where code-as-data stops being an abstraction and becomes something you can poke at.
+      </P>
 
       <H2>Your turn</H2>
       <Exercise

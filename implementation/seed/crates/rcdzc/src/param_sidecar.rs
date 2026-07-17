@@ -11,10 +11,14 @@
 //! — the OUTER colon carries the explicit type, its inner is the `@`-annotation over the param NAME, and
 //! the `(param …)` application's tail is the config kv pairs (each a `(: key value)`).
 //!
-//! B-INVARIANT (concierge + v-effects): `@param` MUST carry an explicit type. An untyped `@param(…) name`
-//! parses to a bare `(@ (param …) name)` with NO wrapping colon — nothing to generate an accessor from —
-//! and is rejected here rather than silently dropped (the generated op's result type IS the annotation
-//! type, so an un-typed param has no accessor type).
+//! B-INVARIANT (concierge + v-effects): `@param` MUST carry an explicit type — the generated op's result
+//! type IS the annotation type, so an un-typed param has no accessor type. This is enforced UPSTREAM, not
+//! by this pass: an untyped `@param(…) name` parses to a bare `(@ (param …) name)` (an annotation over a
+//! plain name, not a def and not a `(: … Type)` binder), which `strip_annotations` already REJECTS as
+//! CDZ0201 "annotation wraps no definition" before this pass runs. So an untyped `@param` never reaches a
+//! generate — this scan simply matches only the well-typed `(: (@ (param …) name) Type)` shape, and the
+//! untyped case is already a coded reject (verified). A dedicated `@param`-specific untyped diagnostic (a
+//! clearer message than the generic wraps-no-definition) is a possible later polish, not a correctness gap.
 //!
 //! ORDERING (my analysis, accepted): the guest USES a param via `(Param.width)`, which is unbound until
 //! this pass generates `Param`. So the generate runs BEFORE resolve, reading each param's EXPLICIT
@@ -35,23 +39,15 @@ struct ParamSite {
     ty: StructId,
 }
 
-/// A malformed `@param` — an `@param(…)` annotation with NO wrapping `(: … Type)` (missing the required
-/// explicit type). Carries the annotation node for `collect_faults` to reject (require-explicit-type).
-/// (Returned so the load path can surface it; the first brick records it for a diagnostic.)
-#[derive(Default)]
-pub struct ParamFaults {
-    /// `@param` annotation occurrences that lack an explicit type wrapper (B-invariant violations).
-    pub untyped: Vec<StructId>,
-}
-
-/// Scan every `@param` site and GENERATE the `Param` effect, appending it as a module member. Returns the
-/// faults (untyped `@param` sites) for the load path to reject. The scan matches the confirmed shape
-/// `(: (@ (param <kv>) name) Type)`; an `@param` NOT wrapped by an outer colon is an untyped fault.
-pub fn generate(ast: &mut Arenas) -> ParamFaults {
+/// Scan every well-typed `@param` site and GENERATE the `Param` effect, appending it as a module member.
+/// The scan matches only the confirmed shape `(: (@ (param <kv>) name) Type)` — an untyped `@param` (a
+/// bare `(@ (param …) name)` with no `(: … Type)` wrapper) is REJECTED UPSTREAM by `strip_annotations`
+/// (CDZ0201 "wraps no definition") before this pass runs, so it never reaches a generate; this pass need
+/// not (and does not) re-detect it. No `@param` sites → no `Param` effect (an empty program needs none).
+pub fn generate(ast: &mut Arenas) {
     // Only ORIGINAL nodes can be a source `@param` site; the generate APPENDS nodes, so bound the scan.
     let original_len = ast.structure.len() as u32;
     let mut sites: Vec<ParamSite> = Vec::new();
-    let mut faults = ParamFaults::default();
 
     for i in 0..original_len {
         let id = StructId(i);
@@ -64,21 +60,10 @@ pub fn generate(ast: &mut Arenas) -> ParamFaults {
         }
     }
 
-    // The UNTYPED-fault scan: a `(@ (param …) name)` NOT wrapped by an outer `(: … Type)` is a
-    // require-explicit-type violation (B-invariant) — the accessor would have no result type to generate.
-    for i in 0..original_len {
-        let id = StructId(i);
-        // A bare `@param` annotation: `(@ (param …) <inner>)`. If it is NOT the inner of some typing
-        // colon (i.e. not part of a matched site), it is untyped.
-        if is_param_annotation(ast, id) && !any_colon_types(ast, id, original_len) {
-            faults.untyped.push(id);
-        }
-    }
-
     if sites.is_empty() {
         // No `@param` sites: generate nothing (an empty project needs no `Param` effect). A later brick
         // may emit an empty effect + manifest for tooling uniformity; the first brick simply no-ops.
-        return faults;
+        return;
     }
 
     // GENERATE `(effect Param (op <name> (-> Unit <Type>)) …)` — one op per site, result-typed by the
@@ -87,10 +72,7 @@ pub fn generate(ast: &mut Arenas) -> ParamFaults {
     // the shape a hand-written effect parses to, so v-effects' host-bind path consumes it unchanged.
     let effect = build_param_effect(ast, &sites);
     append_module_member(ast, effect);
-    faults
 }
-
-// (No `Copied2` helper — the scan reads the colon tail via a direct `&[inner, ty]` slice match.)
 
 /// If `inner` is a `@param` annotation `(@ (param <kv>…) <name>)`, return the param NAME occurrence (the
 /// annotation's second child). `None` if it is not a `@param` annotation or has no name.
@@ -100,24 +82,6 @@ fn param_annotation_name(ast: &Arenas, inner: StructId) -> Option<StructId> {
     // The annotation's name position must be the application `(param …)`.
     ast.as_form(app, "param")?;
     Some(name)
-}
-
-/// Whether `id` is a `@param` annotation node `(@ (param …) _)`.
-fn is_param_annotation(ast: &Arenas, id: StructId) -> bool {
-    ast.as_form(id, "@")
-        .and_then(|tail| tail.first().copied())
-        .is_some_and(|app| ast.as_form(app, "param").is_some())
-}
-
-/// Whether some `(: <id> <Type>)` colon node (in `0..original_len`) types the annotation `ann` — i.e.
-/// `ann` is the inner of a typing colon. Used to detect an UNtyped `@param` (no such colon).
-fn any_colon_types(ast: &Arenas, ann: StructId, original_len: u32) -> bool {
-    (0..original_len).any(|i| {
-        let cid = StructId(i);
-        ast.as_form(cid, ":")
-            .and_then(|t| t.first().copied())
-            .is_some_and(|inner| inner == ann)
-    })
 }
 
 /// Build `(effect Param (op <name> (-> Unit <Type>)) …)` from the scanned sites and return its node id.

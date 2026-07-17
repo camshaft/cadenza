@@ -2871,6 +2871,19 @@
   (call   main (: 255 Int64) (: 250 Int64)) (output (: 9 Int64))
   (call   main (: 8 Int64) (: 8 Int64)) (output (: 0 Int64)))
 
+(case "a guard-elided masked add at a NARROW width computes identically on both backends"
+  (doc    "The narrow-width analogue of the guard-elided masked add above, pinning BOTH-BACKEND elision
+           DECISION PARITY at a narrow type. `(+ (& a 15) (& b 15))` over UInt8: both masked values live in
+           [0,15], so the sum lives in [0,30] and provably fits UInt8's [0,255] — the overflow guard is
+           dead on both backends. The elision predicate `arith_provably_in_range` is fed the GROUNDED result
+           type on each side (wasm via `Machine::of`, rust by grounding `int_ty_of` the same way), so both
+           make the IDENTICAL decision at narrow width — a raw non-ground type on either side could keep a
+           guard the other drops (correct-but-divergent). Value parity is the observable proof: `(200, 100)`
+           = (200&15) + (100&15) = 8 + 4 = 12; `(255, 255)` = 15 + 15 = 30, in range for UInt8.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (+ (& a 15) (& b 15))) (export main)))
+  (call   main (: 200 UInt8) (: 100 UInt8)) (output (: 12 UInt8))
+  (call   main (: 255 UInt8) (: 255 UInt8)) (output (: 30 UInt8)))
+
 (case "a runtime bitwise OR combines bits"
   (doc    "`(| a b)` emits `i64.or`; `(42, 128)` = 170 — setting the LEB128 continuation bit on a runtime
            byte. Pins the emitted bitwise-OR path.")

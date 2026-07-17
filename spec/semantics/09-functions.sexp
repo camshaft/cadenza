@@ -3659,6 +3659,37 @@
             (export main)))
   (output (: 2 Int64)))
 
+; A recursive-generic TRANSFORMER whose ELEMENT is itself the SAME nested generic — `flatten : Iter(Iter a)
+; -> Iter a`, `(match it ((Iter.Nil)(Iter.Nil)) ((Iter.Cons h rest)(append h (flatten rest))))`, chaining
+; each inner `Iter a` via `append`. At a SINGLE element type (Int64) the emit path monomorphizes it and it
+; RUNS: `flatten([[1,2],[3,4,5]])` = `[1,2,3,4,5]`, `icount` = 5. This is the recursive-transformer-over-
+; nested-generic shape — the transformer analogue of the self-nested PRODUCER above, and the single-type
+; base of v-iterators' flatten. (Flatten at TWO element types in one program is a KNOWN residual decline —
+; the recursive-transformer element/closure tie at ≥2 instantiations — a tracked inference follow-up; this
+; case pins the single-type composition, which the emit path realizes correctly.)
+
+(case "a recursive-generic flatten over a nested generic iterator monomorphizes and runs at one element type"
+  (doc    "`flatten : Iter(Iter a) -> Iter a` concatenates a nested iterator's inner iterators via a
+           recursive `append`, the archetypal monadic-join / `concatMap` core. At a single element type
+           (Int64) it monomorphizes and runs: `flatten([[1,2],[3,4,5]])` flattens to a 5-element iter, so
+           `icount` = 5. Pins the recursive-generic TRANSFORMER-over-nested-generic shape (the transformer
+           analogue of the self-nested producer above) at a single type; flatten at ≥2 element types is a
+           tracked residual decline (the recursive-transformer element tie), not this case.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (append xs ys)
+              (match xs ((Iter.Nil) ys) ((Iter.Cons h t) (Iter.Cons h (append t ys)))))
+            (def (flatten it)
+              (match it ((Iter.Nil) (Iter.Nil)) ((Iter.Cons h rest) (append h (flatten rest)))))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main)
+              (icount (flatten (from-list (list (from-list (list 1 2)) (from-list (list 3 4 5)))))))
+            (export main)))
+  (output (: 5 Int64)))
+
 ; The COMPLEMENT of the producer tie above — a recursive-generic TRANSFORMER that threads a CLOSURE:
 ; `(gmap it f) = (Cons (f h) (gmap rest f))` maps `f` over each element, principal type
 ; `∀a b. (Iter a) → (a → b) → (Iter b)` with the closure DOMAIN `a` tied to the element `it` carries. The

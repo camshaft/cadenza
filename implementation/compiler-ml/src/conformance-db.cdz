@@ -80,13 +80,27 @@ def c-eq-false() = Case.Case([Tok.TNum(3), Tok.TOp(61), Tok.TNum(4)], Expect.Run
 def c-cmp-of-arith() = Case.Case([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2), Tok.TOp(60), Tok.TNum(4)], Expect.Runs(1))
 /// `let b = 2 < 3 in b` → Runs 1 (a Bool-valued binding).
 def c-let-bool() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TOp(60), Tok.TNum(3), Tok.TIn, Tok.TName(1)], Expect.Runs(1))
+/// `if 1 < 2 then 10 else 20` → Runs 10 (cond true).
+def c-if-then() = Case.Case([Tok.TIf, Tok.TNum(1), Tok.TOp(60), Tok.TNum(2), Tok.TThen, Tok.TNum(10), Tok.TElse, Tok.TNum(20)], Expect.Runs(10))
+/// `if 5 < 2 then 10 else 20` → Runs 20 (cond false).
+def c-if-else() = Case.Case([Tok.TIf, Tok.TNum(5), Tok.TOp(60), Tok.TNum(2), Tok.TThen, Tok.TNum(10), Tok.TElse, Tok.TNum(20)], Expect.Runs(20))
+/// `let x = 3 in if x == 3 then x * 2 else 0` → Runs 6 (var in cond + taken branch).
+def c-if-with-let() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(3), Tok.TIn, Tok.TIf, Tok.TName(1), Tok.TOp(61), Tok.TNum(3), Tok.TThen, Tok.TName(1), Tok.TOp(42), Tok.TNum(2), Tok.TElse, Tok.TNum(0)], Expect.Runs(6))
+/// `if 5 < 1 then 100 else if 5 < 10 then 200 else 300` → Runs 200 (else-if chain).
+def c-if-nested-else() = Case.Case([Tok.TIf, Tok.TNum(5), Tok.TOp(60), Tok.TNum(1), Tok.TThen, Tok.TNum(100), Tok.TElse, Tok.TIf, Tok.TNum(5), Tok.TOp(60), Tok.TNum(10), Tok.TThen, Tok.TNum(200), Tok.TElse, Tok.TNum(300)], Expect.Runs(200))
+/// `if 1 then 10 else 20` → Declines (non-Bool condition is ill-typed).
+def c-if-nonbool-cond-declines() = Case.Case([Tok.TIf, Tok.TNum(1), Tok.TThen, Tok.TNum(10), Tok.TElse, Tok.TNum(20)], Expect.Declines)
+/// `if 1 < 2 then 10 else 3 < 4` → Declines (branch types mismatch: Int vs Bool).
+def c-if-branch-mismatch-declines() = Case.Case([Tok.TIf, Tok.TNum(1), Tok.TOp(60), Tok.TNum(2), Tok.TThen, Tok.TNum(10), Tok.TElse, Tok.TNum(3), Tok.TOp(60), Tok.TNum(4)], Expect.Declines)
 
 /// THE CORPUS: every conformance case. Widening the language = appending here (start-low-and-climb).
 def corpus() = [
   c-literal(), c-add(), c-sub(), c-mul(), c-precedence(),
   c-let-trivial(), c-milestone(), c-nested-lets(), c-shadowing(),
   c-unbound-declines(), c-unbound-in-arith-declines(),
-  c-lt-true(), c-lt-false(), c-eq-true(), c-eq-false(), c-cmp-of-arith(), c-let-bool()
+  c-lt-true(), c-lt-false(), c-eq-true(), c-eq-false(), c-cmp-of-arith(), c-let-bool(),
+  c-if-then(), c-if-else(), c-if-with-let(), c-if-nested-else(),
+  c-if-nonbool-cond-declines(), c-if-branch-mismatch-declines()
 ]
 
 /// THE SCOREBOARD: `(passed, total)` over the corpus — what the `cadenza-ml` gate target prints as `X/N`.
@@ -119,7 +133,7 @@ def cf-declines-mismatch-is-fail() =
 def cf-corpus-all-pass() =
   // the whole corpus is at 100% — the current conformance floor.
   (match conformance() with | (passed, total) =>
-    (if passed == total then (if total == 17 then unit else trap("17 cases")) else trap("all cases pass")))
+    (if passed == total then (if total == 23 then unit else trap("23 cases")) else trap("all cases pass")))
 
 @test
 def cf-count-passing-partial() =
@@ -169,5 +183,17 @@ def conformance-eq-false() = (if check-case(c-eq-false()) then unit else trap("3
 def conformance-cmp-of-arith() = (if check-case(c-cmp-of-arith()) then unit else trap("1 + 2 < 4 → 1"))
 @test
 def conformance-let-bool() = (if check-case(c-let-bool()) then unit else trap("let b = 2 < 3 in b → 1"))
+@test
+def conformance-if-then() = (if check-case(c-if-then()) then unit else trap("if 1<2 then 10 else 20 → 10"))
+@test
+def conformance-if-else() = (if check-case(c-if-else()) then unit else trap("if 5<2 then 10 else 20 → 20"))
+@test
+def conformance-if-with-let() = (if check-case(c-if-with-let()) then unit else trap("let x=3 in if x==3 then x*2 else 0 → 6"))
+@test
+def conformance-if-nested-else() = (if check-case(c-if-nested-else()) then unit else trap("else-if chain → 200"))
+@test
+def conformance-if-nonbool-cond-declines() = (if check-case(c-if-nonbool-cond-declines()) then unit else trap("non-Bool cond declines"))
+@test
+def conformance-if-branch-mismatch-declines() = (if check-case(c-if-branch-mismatch-declines()) then unit else trap("branch type mismatch declines"))
 
 export { Expect.*, Case.*, case-passes, check-case, count-passing, corpus, conformance, all-pass }

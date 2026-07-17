@@ -51,6 +51,13 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         (let t1 = infer-node(tree, valId, rcol, tcol) in
          (let t2 = infer-node(tree, bodyId, rcol, t1) in
           (match let-type(t2, valId, bodyId) with | ty => Map.insert(t2, id, ty))))
+    | Option.Some(Node.NIf(condId, thenId, elseId)) =>
+        // infer all three; an `if` is well-typed iff cond is TBool and then/else share a ground type — that
+        // shared type is the if's type. A non-Bool cond, a mismatched pair, or any TErr child → TErr.
+        (let t1 = infer-node(tree, condId, rcol, tcol) in
+         (let t2 = infer-node(tree, thenId, rcol, t1) in
+          (let t3 = infer-node(tree, elseId, rcol, t2) in
+           (match if-type(t3, condId, thenId, elseId) with | ty => Map.insert(t3, id, ty)))))
     | Option.None(_) => tcol
 
 /// The type of a variable reference bound at `binder` (an `NLet` node-id): the type of that let's VALUE
@@ -91,6 +98,27 @@ def both-int(tcol: Map(Int64, Typed), a: Int64, b: Int64) =
     | Option.Some(Typed.TInt) =>
         (match Map.lookup(tcol, b) with | Option.Some(Typed.TInt) => true | _ => false)
     | _ => false)
+
+/// Structural equality of two ground types (`TInt`/`TBool`); `TErr` is never equal to anything (an erroneous
+/// branch never makes an `if` well-typed).
+def type-eq(a: Typed, b: Typed) = match a with
+  | Typed.TInt => (match b with | Typed.TInt => true | _ => false)
+  | Typed.TBool => (match b with | Typed.TBool => true | _ => false)
+  | Typed.TErr => false
+
+/// The type of an `if`: its two branches' shared type, provided the condition is `TBool` and the then/else
+/// branches have the SAME ground type. A non-Bool cond, mismatched branches, or any missing/erroneous fact
+/// → `TErr`. (The then-type is returned when they match; both are equal so either works.)
+def if-type(tcol: Map(Int64, Typed), condId: Int64, thenId: Int64, elseId: Int64) =
+  (match Map.lookup(tcol, condId) with
+    | Option.Some(Typed.TBool) =>
+        (match Map.lookup(tcol, thenId) with
+          | Option.Some(tt) =>
+            (match Map.lookup(tcol, elseId) with
+              | Option.Some(et) => (if type-eq(tt, et) then tt else Typed.TErr)
+              | Option.None(_) => Typed.TErr)
+          | Option.None(_) => Typed.TErr)
+    | _ => Typed.TErr)
 
 /// The infer COLUMN builder: build the resolve column (demanding parse under it), then infer over it. This is
 /// the whole demand chain in one call — infer reaches resolve reaches parse — and the columns memoize.
@@ -135,6 +163,9 @@ def inkw() = Tok.TIn
 def eq() = Tok.TEq
 def lt() = Tok.TOp(60)
 def eqop() = Tok.TOp(61)
+def ifkw() = Tok.TIf
+def thenkw() = Tok.TThen
+def elsekw() = Tok.TElse
 
 /// Parse a token list to `(root, tree)`.
 def parse-of(ts: List(Tok)) = parse-tokens(ts)
@@ -221,5 +252,29 @@ def id-comparison-in-let-value-well-typed() =
   // "let b = 2 < 3 in b" is well-typed (a Bool-valued let).
   (match parse-of([letkw(), var(2), eq(), n(2), lt(), n(3), inkw(), var(2)]) with | (root, tree) =>
     (if well-typed(tree, root) then unit else trap("Bool-valued let is well-typed")))
+
+@test
+def id-if-is-branch-type() =
+  // "if 1 < 2 then 10 else 20" → cond TBool, both branches TInt → the if is TInt.
+  (match parse-of([ifkw(), n(1), lt(), n(2), thenkw(), n(10), elsekw(), n(20)]) with | (root, tree) =>
+    (if is-int-at(tree, root, root) then unit else trap("if with Int branches is TInt")))
+
+@test
+def id-if-nonbool-cond-is-err() =
+  // "if 1 then 10 else 20" → cond is TInt, not TBool → the if is TErr (a non-Bool condition is ill-typed).
+  (match parse-of([ifkw(), n(1), thenkw(), n(10), elsekw(), n(20)]) with | (root, tree) =>
+    (if type-err-at(tree, root, root) then unit else trap("non-Bool cond → TErr")))
+
+@test
+def id-if-branch-mismatch-is-err() =
+  // "if 1 < 2 then 10 else (3 < 4)" → then is TInt, else is TBool → mismatched branches → TErr.
+  (match parse-of([ifkw(), n(1), lt(), n(2), thenkw(), n(10), elsekw(), n(3), lt(), n(4)]) with | (root, tree) =>
+    (if type-err-at(tree, root, root) then unit else trap("mismatched branch types → TErr")))
+
+@test
+def id-if-bool-branches-is-bool() =
+  // "if 1 < 2 then 3 < 4 else 5 < 6" → cond TBool, both branches TBool → the if is TBool.
+  (match parse-of([ifkw(), n(1), lt(), n(2), thenkw(), n(3), lt(), n(4), elsekw(), n(5), lt(), n(6)]) with | (root, tree) =>
+    (if is-bool-at(tree, root, root) then unit else trap("if with Bool branches is TBool")))
 
 export { Typed.*, infer-tree, type-at, well-typed, type-err-at, typed-count, is-bool-at, is-int-at }

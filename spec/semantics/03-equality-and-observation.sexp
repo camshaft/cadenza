@@ -904,7 +904,6 @@
             (def (mk (: n Int64)) (if (> n 0) (Nat.S (mk (- n 1))) (Nat.Z)))
             (def (main (: k Int64)) (if (= (Nat.S (Nat.S (Nat.Z))) (mk k)) 1 0))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 2 Int64))
   (output (: 1 Int64)))
 

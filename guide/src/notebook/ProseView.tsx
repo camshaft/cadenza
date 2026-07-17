@@ -14,6 +14,8 @@ function renderInline(spans: Inline[]): ReactNode[] {
         return <strong key={i} className="font-semibold text-slate-100">{s.text}</strong>;
       case "em":
         return <em key={i} className="italic">{s.text}</em>;
+      case "del":
+        return <del key={i} className="text-slate-500 line-through">{s.text}</del>;
       case "code":
         return <C key={i}>{s.text}</C>;
       case "link":

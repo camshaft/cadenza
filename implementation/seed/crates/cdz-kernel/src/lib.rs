@@ -49,3 +49,8 @@ pub trait Log {
 /// the Bedrock embedder shipped with.
 pub mod file_log;
 pub use file_log::FileLog;
+
+/// The single-threaded FOLD OWNER (L1b): tails the log, drives one agent-loop turn through the embedder,
+/// and appends every model effect-request/response as an immutable event (recorded-effect determinism,
+/// vision §2.3) — the "tail → fold → execute effect-request → append" core.
+pub mod fold;

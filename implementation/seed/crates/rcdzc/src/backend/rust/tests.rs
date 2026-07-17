@@ -173,6 +173,40 @@ fn rustc_roundtrip_provably_in_range_elision_computes_identically_and_unproven_s
 }
 
 #[test]
+fn a_provably_in_range_narrow_op_elides_identically_to_wasm() {
+    // BOTH-BACKEND DECISION PARITY at NARROW width (the case v-wasm-opt flagged co-verifying Slice-2). The
+    // wasm backend feeds the predicate the GROUNDED machine type (`Machine::of(int_ty_of)`); the rust
+    // backend now grounds `int_ty_of` the same way before the predicate, so both make the IDENTICAL
+    // elision decision at a narrow type. `(+ (& a 15) (& b 15))` over UInt8: [0,15]+[0,15] = [0,30] ⊆
+    // [0,255] → provably fits UInt8 → wrapping_add at u8 width, NOT checked_add, on rust just as wasm
+    // elides its guard. (If rust passed the raw non-ground type it could keep a guard wasm drops — a
+    // divergent-but-correct decision; grounding closes that gap.)
+    let narrow = compile_rust(
+        "(module m (def (f (: a UInt8) (: b UInt8)) (+ (& a 15) (& b 15))) (export f))",
+    );
+    assert!(
+        narrow.contains("wrapping_add") && !narrow.contains("checked_add"),
+        "a provably-in-range UInt8 add elides at narrow width (parity with wasm):\n{narrow}"
+    );
+    // End-to-end: (200&15)+(100&15) = 8 + 4 = 12, in-range at UInt8 → computes identically, no trap.
+    if let Some(out) = rustc_run(&narrow, "f(200, 100)") {
+        assert_eq!(
+            out, "12",
+            "narrow provably-in-range add computes identically when elided"
+        );
+    }
+    // The DUAL: a narrow add whose interval EXCEEDS the type is NOT provable → keeps the checked op + trap.
+    // `(+ (& a 200) (& b 200))` over UInt8: [0,200]+[0,200] = [0,400] > 255 → checked_add stays.
+    let narrow_over = compile_rust(
+        "(module m (def (f (: a UInt8) (: b UInt8)) (+ (& a 200) (& b 200))) (export f))",
+    );
+    assert!(
+        narrow_over.contains("checked_add"),
+        "a narrow add whose interval exceeds the type keeps its overflow trap:\n{narrow_over}"
+    );
+}
+
+#[test]
 fn a_narrow_op_with_a_control_flow_operand_wraps_it_down_to_the_op_width() {
     // REGRESSION (the rust-backend cross-backend miscompile): a narrow-annotated op whose operand is a
     // DEFERRED-WIDTH control-flow expression (`if`/`match` of bare literals, inferred Int64) emitted an
@@ -203,12 +237,17 @@ fn a_narrow_op_with_a_control_flow_operand_wraps_it_down_to_the_op_width() {
     assert!(m.contains("}) as i8)"), "match-operand wrapped to i8:\n{m}");
     // An UNANNOTATED op is genuinely Int64 (deferred branches) — it must NOT wrap the `if` down: the op
     // adds an i64 and the if-block is NOT followed by an `as i8` cast (the `(5u8 as i8)` in the condition
-    // is unrelated — it grounds the comparison literal to `n`'s width).
+    // is unrelated — it grounds the comparison literal to `n`'s width). The operand `100` grounds to i64.
+    // The add itself is guard-ELIDED to `wrapping_add`: the branches are ∈ [0,100] and `+ 100` gives
+    // [100,200] ⊆ Int64, provably in range. This is the both-backend PARITY the grounding fix delivers —
+    // this op's node type is non-ground (deferred branch widths), and before grounding the rust predicate
+    // rejected it (kept `checked_add`) while wasm elided it (its `Machine::of` grounds deferred→64); now
+    // both elide identically. The invariant under test (the i64 operand is NOT narrowed to i8) is unchanged.
     let wide =
         compile_rust("(module m (def (go (: n Int8)) (+ (if (< n 5) 100 0) 100)) (export go))");
     assert!(
-        wide.contains("checked_add((100u64 as i64))") && !wide.contains("}) as i8)"),
-        "an unannotated Int64 op must not wrap its if-operand down:\n{wide}"
+        wide.contains("}).wrapping_add((100u64 as i64))") && !wide.contains("}) as i8)"),
+        "an unannotated Int64 op must not wrap its if-operand down (and elides in-range, matching wasm):\n{wide}"
     );
 }
 
@@ -3465,6 +3504,20 @@ fn rustc_roundtrip_runtime_bin_construction_and_match() {
         guard.contains("binary value does not fit segment"),
         "a narrow segment emits the fit backstop:\n{guard}"
     );
+
+    // (g) a runtime `(bits v k)` RUN computes its ceil/mask in u128 — NOT `1i64 << k` (which is i64::MIN at
+    // k==63, a shift-overflow at k==64), so a wide field cannot emit a negative ceil / wrong mask (Copilot
+    // PR#516). A byte-aligned `(bits n 8)` run over a UInt8: the fit-check ceil is `256u128`, mask `255u128`.
+    let bits = compile_rust(
+        "(module m (def (run (: n UInt8)) (Bytes.len (bin (bits n 8)))) (export run))",
+    );
+    assert!(
+        bits.contains("256u128") && bits.contains("255u128"),
+        "a bit-field run computes ceil/mask in u128 (no 1i64<<k overflow):\n{bits}"
+    );
+    if let Some(out) = rustc_run(&bits, "run(200)") {
+        assert_eq!(out, "1", "a byte-aligned bits run packs to 1 byte");
+    }
 }
 
 #[test]

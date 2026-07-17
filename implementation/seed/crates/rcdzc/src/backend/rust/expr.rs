@@ -1912,12 +1912,20 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             for f in &fields {
                 let k = f.k;
                 let v = emit(db, f.value, env, ctx)?;
-                let ceil = 1i64 << k;
-                let mask = (1i64 << k) - 1;
+                // `ceil = 2^k` and `mask = 2^k - 1` computed in u128 so a WIDE field cannot overflow the
+                // shift (Copilot PR#516): `1i64 << k` is `i64::MIN` at k==63 and a shift-overflow at k==64,
+                // which would emit a NEGATIVE `ceil` (breaking the `__v >= ceil` range-check) and a wrong
+                // `mask`. `lower` caps a RUNTIME bit-field at k ≤ 56 (a wider one declines "…wider than 56
+                // bits is not yet built"), so a k in 57..=64 is not reachable here TODAY — but compute in
+                // u128 regardless so the emit stays correct if that cap ever moves, matching the wasm side's
+                // width-agnostic pack. The range check compares `__v` (a non-negative-checked i64) against
+                // `ceil` in u128 (a k-bit UNSIGNED field: `0 <= v < 2^k`); the mask is `2^k - 1`.
+                let ceil: u128 = 1u128 << k;
+                let mask: u128 = ceil - 1;
                 body.push_str(&format!(
                     "{{ let __v: i64 = ({v}) as i64; \
-                     if __v < 0 || __v >= {ceil}i64 {{ panic!(\"binary value does not fit segment\") }} \
-                     __acc = (__acc << {k}) | (__v & {mask}i64); }} "
+                     if __v < 0 || (__v as u128) >= {ceil}u128 {{ panic!(\"binary value does not fit segment\") }} \
+                     __acc = (__acc << {k}) | ((__v as u128 & {mask}u128) as i64); }} "
                 ));
                 nbits += k;
                 while nbits >= 8 {
@@ -2298,7 +2306,17 @@ fn emit_arith(
             // the checked form on every in-range input, and never traps (exactly like the elided wasm path).
             // Until this, the rust backend consulted the predicate NOWHERE, so a Core-tier elision (range
             // analysis today, a discharged no-overflow proof next) was silently wasm-only.
-            if crate::lower::arith_provably_in_range(db, op, lhs, rhs, it) {
+            //
+            // PARITY: pass the GROUNDED result type, exactly as the wasm backend does. wasm feeds the
+            // predicate `IntTy::fixed(m.signed, m.width)` where `m = Machine::of(int_ty_of(db, id))`, and
+            // `Machine::of` grounds a Deferred/Var width→64 and a deferred sign→signed (`ground_width`/
+            // `ground_signed`). `arith_provably_in_range` internally rejects a NON-ground `IntTy`
+            // (`resolved_int_bounds` returns `None` on Deferred/Var), so passing `it` raw would make rust
+            // KEEP a guard wasm elides on a deferred-width node — a correct-but-divergent elision decision.
+            // Grounding here mirrors `Machine::of` so BOTH backends make the identical decision. (For a
+            // concrete narrow/wide type `it` is already ground, so this is a no-op on the common path.)
+            let grounded = crate::ty::IntTy::fixed(it.ground_signed(), it.ground_width());
+            if crate::lower::arith_provably_in_range(db, op, lhs, rhs, grounded) {
                 let wrapping = match op {
                     Prim::Add => "wrapping_add",
                     Prim::Sub => "wrapping_sub",

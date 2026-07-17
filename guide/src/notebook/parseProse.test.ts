@@ -135,3 +135,15 @@ test("a table with no body rows is still a table (header only)", () => {
   assert.equal(b[0].t, "table");
   if (b[0].t === "table") assert.equal(b[0].rows.length, 0);
 });
+
+test("GFM strikethrough ~~…~~ parses to a del span", () => {
+  assert.deepEqual(parseInline("a ~~struck~~ b"), [
+    { t: "text", text: "a " },
+    { t: "del", text: "struck" },
+    { t: "text", text: " b" },
+  ]);
+});
+
+test("an unclosed ~~ renders as literal text (never throws)", () => {
+  assert.deepEqual(parseInline("a ~~ b"), [{ t: "text", text: "a ~~ b" }]);
+});

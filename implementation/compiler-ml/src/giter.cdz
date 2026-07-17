@@ -19,16 +19,17 @@
 /// `next` is still the pull interface (`GIter(a) -> Option((a, GIter(a)))`), total (never traps) and pure
 /// (re-stepping yields the same element); the cons-cell IS the reified rest, so `next` just projects it.
 ///
-/// SCOPE (slices 1–7). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
-/// (`count`, `collect`, `nth`, `last`), transformers (`chain`, `take`, `drop`, `zip`). CLOSURE-STORING
-/// (unblocked by the recursive-generic-transformer closure tie + the rigid-biased if-join): `map`, `filter`,
-/// `drop-while`, `take-while`, `scan`, `find`, `all`, `any` — each threads a closure and monomorphizes per
-/// element type. Every function composes at Int64 AND String in one program (the tests pin this).
+/// SCOPE (slices 1–10). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
+/// (`count`, `collect`, `nth`, `last`), transformers (`chain`, `take`, `drop`, `zip`, `enumerate`).
+/// CLOSURE-STORING (unblocked by the recursive-generic-transformer closure tie + the rigid-biased if-join):
+/// `map`, `filter`, `drop-while`, `take-while`, `scan`, `find`, `all`, `any`, `fold`, `zip-with` — each
+/// threads a closure and monomorphizes per element type. Every function composes at Int64 AND String in one
+/// program (the tests pin this).
 /// ELEMENT-CHANGING
-/// is supported too: `zip` yields a tuple element, and `map` maps `a -> b` at a DIFFERENT result type
-/// (int→Bool, int→String — see the tests); no `∀`-annotation is needed because the new element type is
-/// INFERRED from the (unannotated) closure / tuple, never WRITTEN — so the "no-∀-binder-in-annotation"
-/// surface gap does not bite here.
+/// is supported too: `zip`/`enumerate` yield a tuple element, `map` maps `a -> b` at a DIFFERENT result type
+/// (int→Bool, int→String — see the tests), and `zip-with`/`fold` fuse to an inferred result/accumulator type;
+/// no `∀`-annotation is needed because the new type is INFERRED from the (unannotated) closure / tuple, never
+/// WRITTEN — so the "no-∀-binder-in-annotation" surface gap does not bite here.
 ///
 /// NOT YET (residual inference gap, filed + routed to v-inference):
 ///   - An UNUSED/identity closure (`fn (s) => s`) at TWO element types still declines (the closure-body-
@@ -142,6 +143,18 @@ def zip(a, b) = match a with
     | GIter.Nil(_) => GIter.Nil(unit)
     | GIter.Cons(hb, rb) => GIter.Cons((ha, hb), zip(ra, rb)))
 
+/// `enum-from(it, i)` — the recursive worker for `enumerate`: pair each element with an index counter that
+/// starts at `i` and climbs. Closure-free; the result element is a `(Int64, a)` tuple, so like `zip` it
+/// CHANGES the element type without a `∀`-annotation (the tuple is inferred) and composes at ≥2 source
+/// element types. `i` is a plain Int64 threaded through the recursion, never fixing `a`.
+def enum-from(it, i) = match it with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(h, rest) => GIter.Cons((i, h), enum-from(rest, i + 1))
+
+/// `enumerate(it)` — pair each element with its 0-based index, yielding a `GIter((Int64, a))`. The
+/// iterator analogue of `List.enumerate`; a thin seed of `enum-from` at index 0.
+def enumerate(it) = enum-from(it, 0)
+
 /// CLOSURE-STORING TRANSFORMERS & CONSUMERS (thread a closure through the recursion) -------------------
 /// Unblocked by the recursive-generic-transformer closure tie (rcdzc "tie a recursive-generic transformer's
 /// closure domain to the mapped element"): a recursive-generic function that threads a closure now
@@ -199,6 +212,26 @@ def take-while(it, p) = match it with
 def scan(it, acc, f) = match it with
   | GIter.Nil(_) => GIter.Cons(acc, GIter.Nil(unit))
   | GIter.Cons(h, rest) => GIter.Cons(acc, scan(rest, f(acc, h), f))
+
+/// `fold(it, acc, f)` — a LEFT fold: thread `acc` through the elements, combining with `f : acc -> a -> acc`,
+/// and return the final accumulator (the eager reducer `scan` emits the intermediates of). Threads BOTH the
+/// accumulator and the closure; `acc` may be any type (inferred from the seed + `f`), so the result is NOT
+/// element-typed — `count`/`collect` are its closure-free special cases. Composes at ≥2 source element types
+/// via the transformer closure tie. `fold(from-list([1,2,3]), 0, +)` = 6.
+def fold(it, acc, f) = match it with
+  | GIter.Nil(_) => acc
+  | GIter.Cons(h, rest) => fold(rest, f(acc, h), f)
+
+/// `zip-with(a, b, f)` — pair the two iterators element-wise THROUGH a combiner `f : a -> b -> c`, stopping
+/// at the SHORTER one; yields a `GIter(c)`. The closure-storing generalization of `zip` (which is
+/// `zip-with(a, b, fn(x, y) => (x, y))`): `zip` builds the tuple structurally, `zip-with` lets the caller
+/// fuse the pair through `f` so no intermediate tuple is materialized. Threads `f` through the recursion, so
+/// it needed the transformer closure tie; the result element `c` is inferred from `f`.
+def zip-with(a, b, f) = match a with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(ha, ra) => (match b with
+    | GIter.Nil(_) => GIter.Nil(unit)
+    | GIter.Cons(hb, rb) => GIter.Cons(f(ha, hb), zip-with(ra, rb, f)))
 
 /// TESTS ----------------------------------------------------------------------------------------------
 
@@ -491,5 +524,77 @@ def scan-over-strings-accumulates-lengths() =
 def scan-string-accumulator() =
   if str-list-eq(collect(scan(from-list(["a", "b"]), "", fn(a, x) => String.concat(a, x))), ["", "a", "ab"])
   then unit else trap("scan String source, String accumulator")
+
+/// SLICE-8: `enumerate` — closure-free, element-CHANGING to a `(Int64, a)` tuple (like `zip`), pinned at
+/// two source element types; the index climbs 0,1,2,….
+
+@test
+def enumerate-ints-indices-climb() =
+  match next(enumerate(from-list([10, 20, 30]))) with
+  | Option.None(_) => trap("enumerate of non-empty must yield")
+  | Option.Some(p) => (match p with | (pair, _rest) =>
+    (match pair with | (i, v) =>
+      if i == 0 then (if v == 10 then unit else trap("enumerate first elem")) else trap("enumerate first index")))
+
+@test
+def enumerate-preserves-length-ints() =
+  if count(enumerate(from-list([1, 2, 3, 4]))) == 4
+  then unit else trap("enumerate preserves length (ints)")
+
+@test
+def enumerate-strings-second-source-type() =
+  if count(enumerate(from-list(["a", "b"]))) == 2
+  then unit else trap("enumerate String source (2nd element type)")
+
+@test
+def enumerate-empty-is-empty() =
+  if count(enumerate(take(from-list([1]), 0))) == 0
+  then unit else trap("enumerate of empty is empty")
+
+/// SLICE-9: `fold` — left-fold consumer threading accumulator + closure, pinned at two source element types
+/// and a non-element accumulator type. `count`/`collect`'s eager generalization.
+
+@test
+def fold-sums-ints() =
+  if fold(from-list([1, 2, 3, 4]), 0, fn(a, x) => a + x) == 10
+  then unit else trap("fold sum ints")
+
+@test
+def fold-string-lengths-into-int-accumulator() =
+  if fold(from-list(["a", "bb", "ccc"]), 0, fn(a, s) => a + String.byte-len(s)) == 6
+  then unit else trap("fold String source, Int64 accumulator")
+
+@test
+def fold-empty-returns-seed() =
+  if fold(take(from-list([1]), 0), 42, fn(a, x) => a + x) == 42
+  then unit else trap("fold of empty returns the seed")
+
+@test
+def fold-is-order-sensitive-left-to-right() =
+  if fold(from-list([1, 2, 3]), 0, fn(a, x) => a * 10 + x) == 123
+  then unit else trap("fold threads accumulator left-to-right")
+
+/// SLICE-10: `zip-with` — closure-storing zip, fuses each pair through `f`, stops at the shorter; pinned at
+/// two source element types and stopping behavior.
+
+@test
+def zip-with-sums-pairs-ints() =
+  if int-list-eq(collect(zip-with(from-list([1, 2, 3]), from-list([10, 20, 30]), fn(x, y) => x + y)), [11, 22, 33])
+  then unit else trap("zip-with sums pairs")
+
+@test
+def zip-with-stops-at-shorter() =
+  if count(zip-with(from-list([1, 2, 3, 4]), from-list([10, 20]), fn(x, y) => x + y)) == 2
+  then unit else trap("zip-with stops at shorter")
+
+@test
+def zip-with-mixed-source-types-into-int() =
+  if int-list-eq(collect(zip-with(from-list(["a", "bb"]), from-list([5, 6]), fn(s, n) => String.byte-len(s) + n)), [6, 8])
+  then unit else trap("zip-with String and Int64 sources fused to Int64")
+
+@test
+def zip-with-empty-left-is-empty() =
+  if count(zip-with(take(from-list([1]), 0), from-list([9, 9]), fn(x, y) => x + y)) == 0
+  then unit else trap("zip-with empty left is empty")
 
 export { GIter.* }

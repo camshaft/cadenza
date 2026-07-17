@@ -240,7 +240,11 @@ export default function Units() {
         <Link to="/cad" className="font-medium text-cadenza-300 underline-offset-2 hover:underline">
           CAD page
         </Link>{" "}
-        lets you see a model like this rendered.
+        lets you see a model like this rendered. The{" "}
+        <Link to="/calculator" className="font-medium text-cadenza-300 underline-offset-2 hover:underline">
+          calculator
+        </Link>{" "}
+        works in dimensioned quantities too, if you'd rather just do unit arithmetic at a prompt.
       </P>
 
       <Why tenet="Dimensions are checked, then erased">
