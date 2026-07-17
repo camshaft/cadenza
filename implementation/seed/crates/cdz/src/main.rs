@@ -2312,6 +2312,10 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
     let store = args.store.clone();
     let call = args.call.clone();
     let run_args = args.args.clone();
+    let filter = args.filter.clone();
+    let tag = args.tag.clone();
+    let trials = args.trials;
+    let seed = args.seed;
     let dir_str = dir.to_string_lossy().into_owned();
     let rerun = move || -> ExitCode {
         match args.exec {
@@ -2322,11 +2326,11 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
             }),
             WatchCmd::Test => run_test(&TestArgs {
                 file: Some(dir_str.clone()),
-                filter: None,
-                tag: None,
+                filter: filter.clone(),
+                tag: tag.clone(),
                 store: store.clone(),
-                trials: 100,
-                seed: 0,
+                trials,
+                seed,
             }),
             WatchCmd::Build => run_build(&BuildArgs {
                 dir: Some(dir_str.clone()),
@@ -3234,6 +3238,23 @@ struct WatchArgs {
     /// a flag. Ignored by the other execs.
     #[arg(long = "arg", value_name = "VALUE", allow_hyphen_values = true)]
     args: Vec<String>,
+    /// Run only `@test`s whose name CONTAINS this substring on each `--exec test` re-run (like `cdz test
+    /// --filter`) — so a watch can focus one failing test instead of the whole suite. Ignored by the
+    /// other execs.
+    #[arg(long)]
+    filter: Option<String>,
+    /// Run only `@test`s carrying this `@tag("…")` on each `--exec test` re-run (like `cdz test --tag`);
+    /// composes with `--filter` by AND. Ignored by the other execs.
+    #[arg(long)]
+    tag: Option<String>,
+    /// Trials per PROPERTY test on each `--exec test` re-run (like `cdz test --trials`). Default 100.
+    /// Ignored by the other execs.
+    #[arg(long, default_value_t = 100)]
+    trials: u64,
+    /// The random SEED for property-input generation on each `--exec test` re-run (like `cdz test
+    /// --seed`) — reproducible from it. Default 0. Ignored by the other execs.
+    #[arg(long, default_value_t = 0)]
+    seed: u64,
     /// The debounce window in milliseconds — filesystem events within this window of each other are
     /// COALESCED into a single re-run (so saving several files at once, or an editor's write-then-rename,
     /// triggers one run, not a storm). Default 400ms.

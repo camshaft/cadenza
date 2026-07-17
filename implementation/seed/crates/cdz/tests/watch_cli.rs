@@ -425,3 +425,54 @@ fn watch_run_passes_call_and_arg_to_an_arg_taking_entry() {
         "the re-run re-applies --arg to the edited entry: main(7) = 107: {captured}"
     );
 }
+
+#[test]
+fn watch_test_passes_filter_to_the_rerun() {
+    // FOLLOW-UP (symmetric with the run --call/--arg passthrough): `cdz watch --exec test` used to
+    // hardcode filter/tag/trials/seed, so you couldn't watch ONE test. Now `--filter` (and `--tag`/
+    // `--trials`/`--seed`) thread through to each re-run (like `cdz test --filter`). Watch a project with
+    // two `@test`s (`alpha_ok`, `beta_ok`) under `--exec test --filter alpha`: a re-run must report
+    // `PASS alpha_ok` but NOT run `beta_ok` — proving the filter reached the test run, not the whole suite.
+    let root = std::env::temp_dir().join(format!("cdz-watch-tfilter-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let proj = root.join("app");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("Project.cdz"),
+        "def name = \"app\"\ndef entry = \"main.cdz\"\ndef tests = [\"main.cdz\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("main.cdz"),
+        "def main() -> Int64 = 0\n\
+         @test def alpha_ok() = if 1 == 1 then unit else trap(\"a\")\n\
+         @test def beta_ok() = if 2 == 2 then unit else trap(\"b\")\n\n\
+         export { main }\n",
+    )
+    .unwrap();
+
+    let (mut child, cap) = spawn_watch(&proj, &["--exec", "test", "--filter", "alpha"], "tfilter");
+    assert!(
+        wait_for(&cap, "watching", Duration::from_secs(20)),
+        "startup banner: {}",
+        read_cap(&cap)
+    );
+    // The initial test run must report the filtered test — proving --filter reached the run.
+    let saw_alpha = wait_for(&cap, "PASS alpha_ok", Duration::from_secs(30));
+    std::thread::sleep(Duration::from_secs(2)); // let any second (unfiltered) test surface if the filter were dropped
+    let ran_beta = count(&cap, "beta_ok");
+    let captured = read_cap(&cap);
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_file(&cap);
+    assert!(
+        saw_alpha,
+        "the --filter reaches the test re-run (PASS alpha_ok): {captured}"
+    );
+    assert_eq!(
+        ran_beta, 0,
+        "the filtered-out test must NOT run (proving --filter threaded through, not the whole suite): {captured}"
+    );
+}
