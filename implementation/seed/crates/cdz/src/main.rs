@@ -276,9 +276,12 @@ enum Cmd {
     /// corpus rcdzc is gated against (operator directive 2026-07-17). Reads the program SOURCE from a FILE
     /// argument, or from stdin when no file is given. Prints ONE verdict line to stdout:
     /// `value <sexpr>` (ran to that value) | `declined` (well-formed but not-yet-supported by the ML
-    /// compiler's current language subset — a coverage-not-yet, not an error) | `error <msg>`. ALWAYS exits
-    /// 0 — a decline/error is a verdict, not a shell failure; the gate maps stdout→a per-case outcome and
-    /// reports a climbing `cadenza-ml conformance: X/N` line. STUB: currently declines every program (the
+    /// compiler's current language subset — a coverage-not-yet, not an error) | `error <msg>`. Exits 0 for
+    /// any RUN OUTCOME — a decline/error is a verdict, not a shell failure; the gate maps stdout→a per-case
+    /// outcome and reports a climbing `cadenza-ml conformance: X/N` line. The one non-zero exit is a
+    /// HARNESS-level failure that produced no verdict (a file/stdin READ error), so a script tells "the ML
+    /// compiler judged this program" from "the input couldn't be read at all". STUB: currently declines
+    /// every program (the
     /// ML compiler's source front-end lands behind this subcommand next, per the A/B/C ruling); this fixes
     /// the interface so the gate wiring can land against 0/N green and each ML feature flips cases without
     /// any xtask change.
