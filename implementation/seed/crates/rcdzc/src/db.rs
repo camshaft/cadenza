@@ -1666,6 +1666,10 @@ pub struct Db {
     /// `Db::ensures_of`.
     pub(crate) ensures: crate::fxhash::FxHashMap<StructId, Vec<StructId>>,
 
+    /// `@requires`/`@ensures` heads with not-exactly-one predicate argument (malformed by ARITY). Read by
+    /// `Db::malformed_verify_forms` to REJECT them in `collect_faults` (CDZ0201), like `malformed_tags`.
+    pub(crate) malformed_verify: Vec<StructId>,
+
     /// TRANSIENT flow-sensitive value-range REFINEMENTS, active only during wasm emit. A stack of
     /// frames, each mapping a variable's binder occurrence (a `Core::Param`/`LocalRef` `binder`) to a
     /// range `[lo, hi]` KNOWN to hold in the current control-flow branch (`hi = None` = unbounded above).
@@ -1759,6 +1763,7 @@ impl Db {
             malformed_tags,
             requires,
             ensures,
+            malformed_verify,
         } = strip_annotations(&mut ast);
         // `@param` SIDECAR — scan every `@param(widget: …) name : Type` site and GENERATE the `Param`
         // effect (one typed accessor op per param), appending it as a module member. Runs HERE, right
@@ -2313,6 +2318,7 @@ impl Db {
             malformed_tags,
             requires,
             ensures,
+            malformed_verify,
             range_refinements: Vec::new(),
         };
         // NEWTYPE ERASURE: materialize, once, which declared sums are erasable NEWTYPES and their
@@ -3629,6 +3635,13 @@ impl Db {
         &self.malformed_tags
     }
 
+    /// `@requires`/`@ensures` heads with not-exactly-one predicate argument (malformed by ARITY). Read by
+    /// `collect_faults` to REJECT them (CDZ0201) — the same discipline `malformed_tag_forms` applies to
+    /// `@tag`, so a shape-broken precondition/postcondition is an author-visible error, not a silent drop.
+    pub fn malformed_verify_forms(&self) -> &[StructId] {
+        &self.malformed_verify
+    }
+
     /// Each well-formed-SHAPE constructor-export element `(. T A)` / `(. T *)` in a top-level `(export …)`
     /// clause, as `(element_occ, type_name_occ, ctor_name_occ)`. `element_occ` anchors a diagnostic at the
     /// `(. …)` element; `type_name_occ`/`ctor_name_occ` are the `T`/`A` atoms (the ctor is the reserved `*`
@@ -4287,6 +4300,11 @@ pub(crate) struct StrippedAnnotations {
     /// the implicit result binder `it` (v-syntax's result-binding convention). Denoted + discharged in a
     /// later b4 slice; recorded here (behavior-neutral) as the surface half of the channel.
     pub(crate) ensures: crate::fxhash::FxHashMap<StructId, Vec<StructId>>,
+    /// `(@ (requires …) …)` / `(@ (ensures …) …)` heads whose argument is not exactly one predicate form —
+    /// a malformed `@requires`/`@ensures` (`@requires()`, `@requires(a b)`). Recorded by the offending
+    /// occurrence so `collect_faults` REJECTS it (CDZ0201), the same arity discipline `malformed_tags`
+    /// applies to `@tag` — a silently-unrecorded predicate would mask the author error (b4a2).
+    pub(crate) malformed_verify: Vec<StructId>,
 }
 
 /// Unwrap EVERY `@`-ANNOTATION on a definition — `(@ inline-never (def …))`, `(@ inline-always (def …))`,
@@ -4385,6 +4403,7 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         crate::fxhash::FxHashMap::default();
     let mut ensures: crate::fxhash::FxHashMap<StructId, Vec<StructId>> =
         crate::fxhash::FxHashMap::default();
+    let mut malformed_verify: Vec<StructId> = Vec::new();
     for i in 0..ast.structure.len() {
         let id = StructId(i as u32);
         // `(@ NAME INNER)` — the annotation head `@`, its name, and the annotated form. Only a known
@@ -4422,19 +4441,29 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         // (a Cadenza expression over the def's params, and — for `@ensures` — the result binder `it`), not
         // a string. `@requires(> x 0)` → `(@ (requires (> x 0)) def)`, so the name position is the
         // application `(requires (> x 0))` and its single tail element is the predicate occurrence. Record
-        // that `StructId`; the verification layer denotes it into a HOL obligation (a later b4 slice). A
-        // `@requires`/`@ensures` with not-exactly-one argument is left unrecorded here (a well-formedness
-        // concern for a later slice, alongside the denotation), not silently mis-modeled.
-        let requires_pred: Option<StructId> =
-            ast.as_form(name_occ, "requires").and_then(|t| match t {
-                [only] => Some(*only),
-                _ => None,
-            });
-        let ensures_pred: Option<StructId> =
-            ast.as_form(name_occ, "ensures").and_then(|t| match t {
-                [only] => Some(*only),
-                _ => None,
-            });
+        // that `StructId`; the verification layer denotes it into a HOL obligation (a later b4 slice).
+        //
+        // ARITY validation (b4a2): a `@requires`/`@ensures` with NOT-exactly-one argument (`@requires()`,
+        // `@requires(a b)`) is a pure SHAPE error `strip_annotations` can see — exactly like `@tag`
+        // validates one-string. Record the offending occurrence in `malformed_verify` so `collect_faults`
+        // REJECTS it (CDZ0201), rather than silently recording no predicate (which would mask the author
+        // error, exactly the `@tag` masking bug). NAME-resolution / boolean-typedness of the predicate is
+        // NOT checked here — that needs the def's param scope + the `it` binder, so it is deferred to the
+        // denotation pass (b4c), which reports an unbound name at the annotation span.
+        let requires_app = ast.as_form(name_occ, "requires");
+        let ensures_app = ast.as_form(name_occ, "ensures");
+        let requires_pred: Option<StructId> = requires_app.and_then(|t| match t {
+            [only] => Some(*only),
+            _ => None,
+        });
+        let ensures_pred: Option<StructId> = ensures_app.and_then(|t| match t {
+            [only] => Some(*only),
+            _ => None,
+        });
+        // A `(requires …)` / `(ensures …)` head with not-exactly-one arg → malformed (recorded below,
+        // once we know the inner is a def, mirroring the `@tag` malformed discipline).
+        let malformed_verify_here = (requires_app.is_some() && requires_pred.is_none())
+            || (ensures_app.is_some() && ensures_pred.is_none());
         // The inner must be a `(def SIG BODY …)` — read its children to adopt them + find the BODY occ.
         // NOTE: this def check is BEFORE the malformed-`@tag` recording below on purpose — the `@tag`
         // contract only applies when the annotation wraps a DEFINITION, so a `@tag` around a NON-def is
@@ -4451,6 +4480,12 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         // "wraps no definition" mistake, not additionally a malformed-tag one.
         if tag_app.is_some() && tag_arg.is_none() {
             malformed_tags.push(name_occ);
+        }
+        // A `@requires`/`@ensures` with not-exactly-one arg — record for rejection (b4a2), same discipline
+        // as the malformed `@tag` above: only once the inner IS a def (a `@requires` on a non-def is the
+        // "wraps no definition" mistake). Silently recording no predicate would mask the author error.
+        if malformed_verify_here {
+            malformed_verify.push(name_occ);
         }
         // The def's BODY occurrence: `def_tail = [SIG, BODY, …]`, so index 1 (a well-formed def has ≥2).
         let Some(&body) = def_tail.get(1) else {
@@ -4527,6 +4562,7 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         malformed_tags,
         requires,
         ensures,
+        malformed_verify,
     }
 }
 

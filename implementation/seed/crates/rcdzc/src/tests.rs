@@ -17029,6 +17029,43 @@ mod match_engine {
         );
     }
 
+    /// Verification Inc-b b4a2: a `@requires`/`@ensures` with NOT-exactly-one predicate argument
+    /// (`@requires()`, `@requires(a b)`) is a shape error REJECTED at strip time (CDZ0201), the same arity
+    /// discipline `@tag` gets — a silently-unrecorded predicate would mask the author's mistake and surface
+    /// far away when the denotation consumes it. A valid `@requires(pred)`/`@ensures(pred)` is accepted.
+    /// (Name-resolution/boolean-typedness of the predicate is checked later, at denotation, where the def
+    /// param scope + `it` binder are available — flagged by breaker; scoped here to arity only.)
+    #[test]
+    fn a_malformed_requires_ensures_arity_is_rejected_not_silently_dropped() {
+        use crate::testkit::parse;
+        for src in [
+            "(module m (@ (requires) (def (c) 3)) (export c))", // zero args
+            "(module m (@ (requires (> x 0) (< x 9)) (def (c (: x Int64)) 3)) (export c))", // two args
+            "(module m (@ (ensures) (def (c) 3)) (export c))", // zero args
+            "(module m (@ (ensures (> it 0) 5) (def (c) 3)) (export c))", // two args
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("takes exactly one PREDICATE argument"))
+                .unwrap_or_else(|| {
+                    panic!("a malformed `@requires`/`@ensures` must be rejected: {src}")
+                });
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        }
+        // NO false positive: a valid one-predicate `@requires`/`@ensures` is accepted silently.
+        for ok in [
+            "(module m (@ (requires (> x 0)) (def (c (: x Int64)) 3)) (export c))",
+            "(module m (@ (ensures (> it 0)) (def (c) 3)) (export c))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("takes exactly one PREDICATE argument")),
+                "a valid one-predicate @requires/@ensures is not flagged: {ok}"
+            );
+        }
+    }
+
     /// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
     /// valid: `T` a declared sum, `A` one of its variants. The linker's `as_ctor_export` recorded the
     /// (type, ctor) names WITHOUT checking they exist, so `(export (. T Nonesuch))` (a ctor `T` lacks),

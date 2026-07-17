@@ -2299,6 +2299,24 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             .at(occ),
         );
     }
+    // A `@requires`/`@ensures` with not-exactly-one PREDICATE argument (`@requires()`, `@requires(a b)`) is
+    // a shape error the verification layer cannot model — silently recording no predicate would mask the
+    // author's mistake (exactly the `@tag` masking bug). Reject each, naming the required one-predicate
+    // shape. (Whether the predicate's NAMES resolve + it is boolean is checked later, at denotation, where
+    // the def param scope + the `it` binder are in scope — reported there at the annotation span.)
+    for &occ in db.malformed_verify_forms() {
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                "a `@requires`/`@ensures` annotation takes exactly one PREDICATE argument — a boolean \
+                 expression over the def's parameters (and, for `@ensures`, the result binder `it`), e.g. \
+                 `@requires(> x 0)` (`(@ (requires (> x 0)) (def …))`); a missing or multiple argument is \
+                 not a well-formed condition and would be silently ignored"
+                    .to_string(),
+            )
+            .at(occ),
+        );
+    }
     // SEMANTIC validation of a CONSTRUCTOR-EXPORT `(export (. T A))` / `(export (. T *))` — the opaque-types
     // surface. `malformed_exports` (above) accepts its SHAPE, and the linker's `as_ctor_export` records the
     // (type, ctor) names WITHOUT checking they exist — so `(export (. T Nonesuch))` (a ctor `T` lacks),
