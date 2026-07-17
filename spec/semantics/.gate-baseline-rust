@@ -2408,9 +2408,11 @@ pass	decode of a Str tag with an oversized length yields the error case
 pass	decode of a truncated Float tag yields the error case, not a trap
 pass	decode of an unknown tag byte yields the error case
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
+pass	decoding a lone continuation byte yields none
 pass	decoding a runtime ROPE Bytes as UTF-8 flattens before validating (well-formed)
 pass	decoding a runtime ROPE Bytes that is ill-formed yields none
 pass	decoding a surrogate code point encoded as UTF-8 yields none
+pass	decoding a truncated multi-byte sequence yields none
 pass	decoding an encoded string round-trips to the same bytes (the inverse direction)
 pass	decoding an overlong UTF-8 encoding yields none
 pass	decoding bytes that are not a canonical AST yields the error case, not a trap
