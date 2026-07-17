@@ -17319,6 +17319,39 @@ mod match_engine {
         }
     }
 
+    /// Verification Inc-b a1: the compiler-bundled verification KERNEL asset (`verify_kernel.cdz`) READS as
+    /// a well-formed s-expression module and declares the pieces a1/a3 need — the ABSTRACT `Thm` sequent
+    /// and the `licenses` match predicate. This is the parse-level validation of the asset the compiler will
+    /// `include_str!` at a1 (design §9): a malformed/truncated kernel source is caught here.
+    ///
+    /// NOTE: full semantic validation (the module's types in scope, `Thm` unforgeable) requires the LINKED-
+    /// package load a1 wires (`Db::load_linked`) — a bare `Db::load` of a `(module …)` does not put the
+    /// module's own types in scope for its defs, which is exactly why a1 loads the kernel as a linked
+    /// member. That end-to-end check is part of a1 proper; the module shape's opacity is already pinned by
+    /// the 25-verification corpus (63 unforgeability cases over this same `Thm`-sequent shape).
+    #[test]
+    fn bundled_verify_kernel_asset_reads_and_declares_thm_and_licenses() {
+        // The bundled kernel asset — the same source the compiler will include_str! at a1.
+        const KERNEL_SRC: &str = include_str!("verify_kernel.cdz");
+        // It READS as a well-formed s-expression (the reader the compiler uses at a1).
+        let arenas = cadenza_syntax::sexpr::read(KERNEL_SRC)
+            .expect("the bundled verify_kernel.cdz reads as well-formed s-expression");
+        assert!(!arenas.structure.is_empty(), "non-empty kernel arena");
+        // It declares the pieces a1 links + a3 compile-time-evals: the abstract Thm sequent + licenses.
+        assert!(
+            KERNEL_SRC.contains("(type Thm (Seq (List Term) Term))"),
+            "the kernel declares the abstract Thm sequent"
+        );
+        assert!(
+            KERNEL_SRC.contains("(def (licenses"),
+            "the kernel declares the licenses match predicate (the trusted elision surface)"
+        );
+        assert!(
+            KERNEL_SRC.contains("(module \"verify-kernel\""),
+            "the kernel is a named module (linked as a package member at a1)"
+        );
+    }
+
     /// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
     /// valid: `T` a declared sum, `A` one of its variants. The linker's `as_ctor_export` recorded the
     /// (type, ctor) names WITHOUT checking they exist, so `(export (. T Nonesuch))` (a ctor `T` lacks),
