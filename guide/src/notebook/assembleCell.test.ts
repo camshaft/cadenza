@@ -163,3 +163,29 @@ test("assembleCell keeps a prior cell's NON-main helper while stripping its main
   assert.equal(a.buffer, "(def (base) 100.0)"); // helper preserved, prior main dropped
   assert.deepEqual(a.inScope, ["base"]); // base in scope, main is not
 });
+
+// ── PR #529 hardening: topLevelForms + stripMainDef edge cases (both harden the P0 #12 fix) ──
+
+test("topLevelForms splits INDENTED ML forms (leading whitespace before the keyword) — PR #529", () => {
+  // An indented cell must still split into forms (each keyword line starts a form), else stripMainDef
+  // misses its main → CDZ0201 recurs. Two indented defs → two separate forms.
+  assert.deepEqual(topLevelForms("  def helper = 1\n  def main() = 2", "ml"), ["def helper = 1", "def main() = 2"]);
+  assert.deepEqual(topLevelForms("  def a = 1\n  def b = 2", "ml"), ["def a = 1", "def b = 2"]);
+});
+
+test("stripMainDef strips an INDENTED prior-cell main (ML) — PR #529", () => {
+  // Before the fix, the indented `main` rode along as part of one un-split form and was NOT stripped.
+  assert.equal(stripMainDef("  def helper = 1\n  def main() = 2", "ml"), "def helper = 1");
+});
+
+test("stripMainDef strips a form whose `main` is NOT the first def (multi-def form) — PR #529", () => {
+  // (do (def helper) (def main)) — main is second; the whole form must still be dropped.
+  assert.equal(stripMainDef("(do (def (helper) 1) (def (main) 2))", "sexpr"), "");
+  // A multi-def form with NO main is kept intact.
+  assert.equal(stripMainDef("(do (def (a) 1) (def (b) 2))", "sexpr"), "(do (def (a) 1) (def (b) 2))");
+});
+
+test("stripMainDef regressions still hold: `mainline` kept, plain non-main defs kept", () => {
+  assert.equal(stripMainDef("(def (mainline) 7)", "sexpr"), "(def (mainline) 7)");
+  assert.equal(stripMainDef("(def (base) 1)\n(def (main) 2)", "sexpr"), "(def (base) 1)");
+});

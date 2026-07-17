@@ -73,10 +73,12 @@ export function topLevelForms(source: string, surface: Surface): string[] {
     return forms.filter((f) => f.length > 0);
   }
   // ML: a top-level form begins at a line starting with a top-level keyword; it runs until the next one.
+  // Allow LEADING WHITESPACE before the keyword — an indented cell (`  def main() = …`) must still split
+  // into forms, else `stripMainDef` misses its `main` and >1 `main` collides on CDZ0201 (PR #529).
   const lines = trimmed.split("\n");
   const forms: string[] = [];
   let cur: string[] = [];
-  const isFormStart = (line: string) => /^(def|type|effect|export|import|Unit\.define)\b/.test(line);
+  const isFormStart = (line: string) => /^\s*(def|type|effect|export|import|Unit\.define)\b/.test(line);
   for (const line of lines) {
     if (isFormStart(line) && cur.length) {
       forms.push(cur.join("\n").trim());
@@ -95,8 +97,10 @@ export function topLevelForms(source: string, surface: Surface): string[] {
 /// `def base = …` helper) is preserved, so the sequential-scope contract still holds. `main` is matched by
 /// def-NAME, so a helper whose name merely contains "main" (`mainline`) is untouched.
 export function stripMainDef(source: string, surface: Surface): string {
+  // Drop a form if ANY of its top-level def names is `main` (not just the FIRST) — a multi-def form like
+  // `(do (def (helper) …) (def (main) …))` whose `main` isn't first must still be stripped (PR #529).
   return topLevelForms(source, surface)
-    .filter((form) => topLevelDefNames(form, surface)[0] !== "main")
+    .filter((form) => !topLevelDefNames(form, surface).includes("main"))
     .join(surface === "sexpr" ? "\n" : "\n\n");
 }
 
