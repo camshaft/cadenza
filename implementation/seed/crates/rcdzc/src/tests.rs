@@ -60507,6 +60507,13 @@ mod sidecar_driven {
         let text = artifact_text(&out, KIND_PARAM_MANIFEST).expect("a param-manifest artifact");
         let rows: Vec<Vec<&str>> = text.lines().map(|l| l.split('\t').collect()).collect();
         assert_eq!(rows.len(), 2, "two @param sites → two rows: {text:?}");
+        // Pin the WIRE SHAPE the CLI depends on: exactly 8 TAB-separated fields per row
+        // (name, widget, type, range-lo, range-hi, options, default, name-node). The `cdz param-manifest`
+        // reader `splitn(8)`s each row and now FAILS LOUDLY on a row that isn't 8-wide (Copilot PR #525),
+        // so pinning the column count HERE stops the producer from silently drifting the consumer's shape.
+        for r in &rows {
+            assert_eq!(r.len(), 8, "each param-manifest row has 8 fields: {r:?}");
+        }
 
         // width: slider widget, Int64 type, a range (both element nodes present, not `-`), no options/default.
         let width = rows.iter().find(|r| r[0] == "width").expect("width row");

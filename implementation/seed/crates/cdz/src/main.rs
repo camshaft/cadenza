@@ -4841,7 +4841,16 @@ fn run_param_manifest(args: &ParamManifestArgs) -> ExitCode {
             cadenza_syntax::StructId(id),
         ))
     };
+    // Track whether any NON-EMPTY line failed to parse into the expected 8-column shape. A blank line is
+    // skipped silently (harmless); a malformed row is a LOUD error, not a silent drop — otherwise a sidecar
+    // output-format regression would drop params while `cdz param-manifest` still reported success, masking
+    // the break (Copilot PR #525 — the silent-pass-on-malformed-input class). We report the offending line
+    // and FAIL at the end, so a format skew surfaces immediately instead of a quietly-short manifest.
+    let mut malformed = false;
     for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
         // `name  widget  type  range-lo  range-hi  options  default  name-node` — split into exactly 8.
         let cols: Vec<&str> = line.splitn(8, '\t').collect();
         let [
@@ -4855,6 +4864,12 @@ fn run_param_manifest(args: &ParamManifestArgs) -> ExitCode {
             name_node,
         ] = cols[..]
         else {
+            eprintln!(
+                "{PROG}: internal: could not parse a param-manifest row (expected 8 tab-separated \
+                 fields, got {}) — the sidecar output format may have changed: {line:?}",
+                cols.len()
+            );
+            malformed = true;
             continue;
         };
         let widget = (widget != "-").then_some(widget);
@@ -4930,7 +4945,13 @@ fn run_param_manifest(args: &ParamManifestArgs) -> ExitCode {
             println!("{loc}: {name} : {ty}{cfg}");
         }
     }
-    ExitCode::SUCCESS
+    // A malformed row means the command could not faithfully read its own tool's output — fail loudly
+    // rather than return success with a silently-short manifest.
+    if malformed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// `cdz instantiations NAME FILE` — the DISPOSITION of definition NAME plus, if it is specialized, every
