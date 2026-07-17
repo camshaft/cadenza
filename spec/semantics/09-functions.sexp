@@ -203,6 +203,39 @@
             ((. (tuple (fn ((: x Int64)) (+ x k)) 9) 0) 5)))
   (output (: 12 Int64)))
 
+; The case above FOLDS (a constant tuple whose closure β-reduces through the projection). These two exercise
+; the RUNTIME closure-in-heap-compound REP: closures bound via `let` into a runtime list/tuple, extracted by
+; `List.at`/a pattern binder, and applied — a `call_indirect` on a heap-stored closure cell, not a fold. This
+; path declined on the rust backend ("a closure whose function type is not fully solved here has no native
+; Rust representation") until the closure's dyn-Fn type was grounded from the LIFTED LAMBDA's own concrete
+; types (not `type_of`, which is non-concrete at a compound-element position). Now it runs on wasm + the
+; RUST backend, keeping each closure's distinct capture. (rust-ASYNC still declines at emit_lifted_lambda — a
+; distinct not-yet-built path — so these grade `todo` there, pending that increment.)
+(case "a capturing closure stored as a runtime list element is extracted by List.at and applied"
+  (doc    "`(adder n) = (fn (x) (+ x n))`; a runtime list `(list (adder 1) (adder 2))` holds two capturing
+           closures; `List.at fs 0` reads the first out as an Option and the arm applies it: `((adder 1)
+           10)` = 11. Exercises the runtime closure-in-LIST-element representation — a heap-stored closure
+           cell read back and applied (`call_indirect`), NOT a foldable constant projection. Pins that a
+           closure survives being stored in and read back out of a runtime list on wasm and rust (the
+           rep-grounding fix); rust-async declines at emit_lifted_lambda (a later increment).")
+  (input  (do
+            (def (adder n) (fn (x) (+ x n)))
+            (def (main) (let ((fs (list (adder 1) (adder 2)))) (match (List.at fs 0) ((Some f) (f 10)) ((None u) -1))))
+            (export main)))
+  (output (: 11 Int64)))
+
+(case "two capturing closures stored as runtime tuple elements keep distinct captures"
+  (doc    "The tuple-element runtime companion: `(tuple (adder 1) (adder 2))` bound via `let` holds two
+           closures with DISTINCT captures (n=1 and n=2); a tuple binder extracts both and each is applied to
+           10 → `(+ 11 12)` = 23. Pins that two runtime closures in a heap tuple keep their SEPARATE captures
+           (not unified/aliased to one) and each dispatches correctly — the runtime rep, not the folded
+           constant-tuple projection above. Runs on wasm + rust; rust-async declines (later increment).")
+  (input  (do
+            (def (adder n) (fn (x) (+ x n)))
+            (def (main) (let (((tuple f g) (tuple (adder 1) (adder 2)))) (+ (f 10) (g 10))))
+            (export main)))
+  (output (: 23 Int64)))
+
 (case "a closure carried in a sum payload is extracted by a match and applied"
   (doc    "core-semantics.md §A Function Is A First-Class Value: a function stored in a SUM variant's
            payload — the callback-in-a-variant shape — is extracted by a match binder and applied.

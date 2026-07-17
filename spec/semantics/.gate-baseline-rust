@@ -344,6 +344,7 @@ pass	a call-returned UInt8 newtype literal-payload arm spills at the narrow widt
 pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly
 pass	a captured pre-shadow value survives the re-binding
 pass	a capturing closure is applied through a recursive higher-order function
+pass	a capturing closure stored as a runtime list element is extracted by List.at and applied
 pass	a capturing closure stored in a tuple is extracted and applied
 pass	a capturing unannotated closure in a payload is typed from the declared arrow
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
@@ -3101,6 +3102,7 @@ pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two `?`s in one boundary both unwrap (nested happy path)
 pass	two adjacent modules declared inside a function body compose
 pass	two bare nullary variants reflect the same undetermined type
+pass	two capturing closures stored as runtime tuple elements keep distinct captures
 pass	two chars with different scalar values are unequal
 pass	two closures from one factory capture distinct values
 pass	two constant records with the same fields in different written order are equal

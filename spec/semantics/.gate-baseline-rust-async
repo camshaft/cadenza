@@ -3338,6 +3338,7 @@ todo	a capturing closure returning Bytes
 todo	a capturing closure returning a COMPOUND is a repeatable (borrow<t>) callback handle
 todo	a capturing closure returning a String
 todo	a capturing closure returning a nominal-over-scalar
+todo	a capturing closure stored as a runtime list element is extracted by List.at and applied
 todo	a capturing closure whose body uses the capture after an inner computation
 todo	a capturing closure with a let binding in its body
 todo	a capturing unannotated closure in a payload is typed from the declared arrow
@@ -3674,6 +3675,8 @@ todo	three distinct closure signatures cross as three resource types
 todo	three same-variant literal arms fall through in order
 todo	tuple elements are evaluated left to right
 todo	two @param sites generate two accessors under one Param effect
+todo	two capturing closures stored as runtime tuple elements keep distinct captures
+todo	two exports normalizing to the same kebab extern name are rejected
 todo	two host calls consume their responses in order
 todo	two host responses combine in call order through a non-commutative operator
 todo	two same-signature Bytes-returning closures share one call — first

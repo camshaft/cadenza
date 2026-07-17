@@ -516,6 +516,7 @@ pass	a capturing closure returning Bytes
 pass	a capturing closure returning a COMPOUND is a repeatable (borrow<t>) callback handle
 pass	a capturing closure returning a String
 pass	a capturing closure returning a nominal-over-scalar
+pass	a capturing closure stored as a runtime list element is extracted by List.at and applied
 pass	a capturing closure stored in a tuple is extracted and applied
 pass	a capturing closure whose body uses the capture after an inner computation
 pass	a capturing closure with a let binding in its body
@@ -3538,6 +3539,7 @@ pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two `?`s in one boundary both unwrap (nested happy path)
 pass	two adjacent modules declared inside a function body compose
 pass	two bare nullary variants reflect the same undetermined type
+pass	two capturing closures stored as runtime tuple elements keep distinct captures
 pass	two chars with different scalar values are unequal
 pass	two closures from one factory capture distinct values
 pass	two constant records with the same fields in different written order are equal
