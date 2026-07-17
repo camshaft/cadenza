@@ -60378,6 +60378,32 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn highlight_paints_a_well_formed_annotation_as_keyword() {
+        // `db::strip_annotations` unwraps a `(@ NAME (def …))` wrapper IN PLACE and orphans the original
+        // `@`/NAME occurrences (`parent_of == None`) — they keep source spans (so the highlighter paints
+        // them) but resolve to nothing. `classify_highlight` recognizes a PARENTLESS `@` / known-annotation
+        // name as an annotation token and paints it `keyword` (a decorator), not a generic `symbol` or a
+        // spurious `unbound`. The `def` name and body still classify normally through resolution.
+        let src = "(module m (@ test (def (t) (assert_eq 1 1 \"x\"))) (export t))";
+        assert_eq!(highlight_kinds_of(src, "@"), vec!["keyword"]);
+        assert_eq!(highlight_kinds_of(src, "test"), vec!["keyword"]);
+        // A second known annotation spelling paints the same way.
+        let src2 =
+            "(module m (@ exhaustive (def (p (: n Int64)) (assert (> n 0) \"x\"))) (export p))";
+        assert_eq!(highlight_kinds_of(src2, "exhaustive"), vec!["keyword"]);
+    }
+
+    #[test]
+    fn highlight_still_reds_an_annotation_that_wraps_no_definition() {
+        // The annotation-token softening is NARROW: it fires only on the PARENTLESS occurrences an in-place
+        // unwrap leaves behind. A `(@ NAME <non-def>)` is a genuine CDZ0201 (an annotation must wrap a def);
+        // it is NOT rewritten, so its `@` KEEPS its parent → falls through to `unbound` (red), leaving the
+        // real error visible rather than masking it as a decorator.
+        let src = "(module m (def (main) (@ test 42)) (export main))";
+        assert_eq!(highlight_kinds_of(src, "@"), vec!["unbound"]);
+    }
+
+    #[test]
     fn highlight_colours_literals_by_kind() {
         // Each literal leaf carries its own kind; a keyword head is `keyword`.
         let src = "(module m (def (main) (if true 42 0)) (export main))";
