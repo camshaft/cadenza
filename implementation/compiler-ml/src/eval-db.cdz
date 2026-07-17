@@ -40,8 +40,11 @@ def eval-core(c: Core, env: Map(Int64, Int64)) = match c with
         | Option.Some(c) => (if (c == 0) then eval-core(els, env) else eval-core(thn, env))
         | Option.None(_) => Option.None(unit))
 
-/// Apply a binary op (43 +, 45 -, 42 *, 47 /, 60 `<`, 61 `==`). Comparisons yield a Bool encoded as 0/1
-/// (Core represents Bool as an Int). Division by zero → `None` (a total, trap-free evaluator).
+/// Apply a binary op: 43 +, 45 -, 42 *, 47 /, and the relational ops 60 `<`, 61 `==`, 62 `>`, 63 `<=`,
+/// 64 `>=`, 65 `!=`. Relational ops yield a Bool encoded as 0/1 (Core represents Bool as an Int); each of
+/// the four new ones is defined in terms of the primitives `<` and `==`:
+///   a > b  ≡ b < a ;  a <= b ≡ not (b < a) ;  a >= b ≡ not (a < b) ;  a != b ≡ not (a == b).
+/// Division by zero → `None` (a total, trap-free evaluator).
 def eval-bin(op: Int64, a: Int64, b: Int64) =
   (if op == 43 then Option.Some(a + b)
    else (if op == 45 then Option.Some(a - b)
@@ -49,7 +52,11 @@ def eval-bin(op: Int64, a: Int64, b: Int64) =
    else (if op == 47 then (if b == 0 then Option.None(unit) else Option.Some(a / b))
    else (if op == 60 then Option.Some(if a < b then 1 else 0)
    else (if op == 61 then Option.Some(if a == b then 1 else 0)
-   else Option.None(unit)))))))
+   else (if op == 62 then Option.Some(if b < a then 1 else 0)                  // a > b  ≡ b < a
+   else (if op == 63 then Option.Some(if b < a then 0 else 1)                  // a <= b ≡ not (b < a)
+   else (if op == 64 then Option.Some(if a < b then 0 else 1)                  // a >= b ≡ not (a < b)
+   else (if op == 65 then Option.Some(if a == b then 0 else 1)                 // a != b ≡ not (a == b)
+   else Option.None(unit)))))))))))
 
 /// Evaluate a lowered tree from `root` with an empty env — `Some value` for a well-typed program, `None` if
 /// it had no core form (ill-typed) or hit a malformed Core.
@@ -73,6 +80,10 @@ def inkw() = Tok.TIn
 def eq() = Tok.TEq
 def lt() = Tok.TOp(60)
 def eqop() = Tok.TOp(61)
+def gt() = Tok.TOp(62)
+def le() = Tok.TOp(63)
+def ge() = Tok.TOp(64)
+def ne() = Tok.TOp(65)
 def ifkw() = Tok.TIf
 def thenkw() = Tok.TThen
 def elsekw() = Tok.TElse
@@ -242,5 +253,30 @@ def ev-unary-minus-of-let-var() =
 def ev-double-negation() =
   // - -5  →  5 (0 - (0 - 5)).
   (match run([neg(), neg(), n(5)]) with | Option.Some(v) => (if v == 5 then unit else trap("- -5 = 5")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-gt() =
+  // 3 > 2 → 1 ; 2 > 3 → 0.
+  (match run([n(3), gt(), n(2)]) with | Option.Some(v) => (if v == 1 then (match run([n(2), gt(), n(3)]) with | Option.Some(w) => (if w == 0 then unit else trap("2>3=0")) | Option.None(_) => trap("runs")) else trap("3>2=1")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-le() =
+  // 2 <= 2 → 1 ; 3 <= 2 → 0.
+  (match run([n(2), le(), n(2)]) with | Option.Some(v) => (if v == 1 then (match run([n(3), le(), n(2)]) with | Option.Some(w) => (if w == 0 then unit else trap("3<=2=0")) | Option.None(_) => trap("runs")) else trap("2<=2=1")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-ge() =
+  // 2 >= 3 → 0 ; 3 >= 3 → 1.
+  (match run([n(2), ge(), n(3)]) with | Option.Some(v) => (if v == 0 then (match run([n(3), ge(), n(3)]) with | Option.Some(w) => (if w == 1 then unit else trap("3>=3=1")) | Option.None(_) => trap("runs")) else trap("2>=3=0")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-ne() =
+  // 3 != 4 → 1 ; 3 != 3 → 0.
+  (match run([n(3), ne(), n(4)]) with | Option.Some(v) => (if v == 1 then (match run([n(3), ne(), n(3)]) with | Option.Some(w) => (if w == 0 then unit else trap("3!=3=0")) | Option.None(_) => trap("runs")) else trap("3!=4=1")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-rel-in-if() =
+  // if 5 >= 5 then 1 else 0 → 1 (a new relational op as an if condition).
+  (match run([ifkw(), n(5), ge(), n(5), thenkw(), n(1), elsekw(), n(0)]) with | Option.Some(v) => (if v == 1 then unit else trap("5>=5 → then=1")) | Option.None(_) => trap("runs"))
 
 export { eval-core, eval-bin, eval-tree, run, milestone-tokens, run-milestone }
