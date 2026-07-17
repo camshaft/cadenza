@@ -1410,6 +1410,18 @@ pub fn unit_families() -> BTreeMap<String, UnitConversion> {
         ("kilohertz", &[("second", -1)], 1000, 1),
         ("megahertz", &[("second", -1)], 1_000_000, 1),
         ("gigahertz", &[("second", -1)], 1_000_000_000, 1),
+        // ANGLE — `radian` and `degree` are SEPARATE base dimensions, NOT one angle dimension, because
+        // their conversion is IRRATIONAL (180° = π rad, and π has no exact Rational). Every unit here keys
+        // to an EXACT rational ratio to its dimension reference (inch = 127/5000 meter); forcing rad↔deg
+        // into one dimension would need an approximate π ratio and BREAK that exact-Rational invariant. As
+        // distinct dimensions each is exact WITHIN itself (`5 degree + 90 degree = 95 degree`; `1 radian +
+        // 1 radian = 2 radian`), and mixing them (`degree + radian`) correctly rejects CDZ0501 — honest,
+        // since they are not exactly interconvertible. A program needing rad↔deg does it explicitly at the
+        // f64/approximate boundary (where `sin`/`cos` already live), never silently through this registry.
+        // First-class per the operator ruling (CAD revolve/rotate angles get their own unit family, like
+        // meter/km — v-cad's Vec3→Qty[radian|degree] retype). See the reply on the v-cad ask + option (a).
+        ("radian", &[("radian", 1)], 1, 1),
+        ("degree", &[("degree", 1)], 1, 1),
     ];
     let mut m = match register_families(rows.iter().copied()) {
         Ok(m) => m,
@@ -1486,6 +1498,13 @@ pub fn unit_families() -> BTreeMap<String, UnitConversion> {
         ("kHz", "kilohertz"),
         ("MHz", "megahertz"),
         ("GHz", "gigahertz"),
+        // angle — plurals + the conventional `rad`/`deg` abbreviations (the `°` glyph is NOT added: a
+        // quantity-literal unit is a bare-safe identifier the parser re-lexes as one `Ident`, and `°` is
+        // not an identifier char — a program wanting it would need surface-lexer support, out of scope here).
+        ("radians", "radian"),
+        ("degrees", "degree"),
+        ("rad", "radian"),
+        ("deg", "degree"),
     ];
     for (alias, canonical) in ALIASES {
         let conv = m

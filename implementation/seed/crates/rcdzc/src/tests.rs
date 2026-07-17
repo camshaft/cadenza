@@ -37439,6 +37439,60 @@ mod match_engine {
     }
 
     #[test]
+    fn radian_and_degree_are_first_class_units_in_separate_dimensions() {
+        // ANGLE units (operator ruling — CAD revolve/rotate angles get their own family, like meter/km).
+        // `radian` and `degree` are SEPARATE base DIMENSIONS, NOT one angle dimension: their conversion is
+        // IRRATIONAL (180° = π rad, π has no exact Rational), and every family unit keys to an EXACT
+        // rational ratio — so one shared dimension would break the exact-Rational invariant. As distinct
+        // dimensions each is exact WITHIN itself and mixing them rejects CDZ0501 (honest — not exactly
+        // interconvertible). `rad`/`deg`/`radians`/`degrees` alias their canonical spelling.
+        let fams = crate::prelude::unit_families();
+        for name in ["radian", "degree", "radians", "degrees", "rad", "deg"] {
+            assert!(fams.contains_key(name), "angle unit `{name}` is registered");
+        }
+        assert_eq!(fams.get("rad"), fams.get("radian"), "`rad` = `radian`");
+        assert_eq!(fams.get("deg"), fams.get("degree"), "`deg` = `degree`");
+        assert_eq!(
+            fams.get("radians"),
+            fams.get("radian"),
+            "`radians` = `radian`"
+        );
+        // Distinct DIMENSIONS: radian's and degree's conversions differ (their dimension component is a
+        // different base), so they are NOT the same unit and never silently interconvert.
+        assert_ne!(
+            fams.get("radian"),
+            fams.get("degree"),
+            "radian and degree are DISTINCT dimensions (no exact interconversion)"
+        );
+        // Exact WITHIN a dimension: `5 degree + 90 degree = 95 degree` runs (Int64 magnitude, no runtime).
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(do (def (main) ((. Qty value) \
+                       (+ ((. Qty of) 5 ((. Unit of) #\"degree\")) \
+                          ((. Qty of) 90 ((. Unit of) #\"degree\"))))) (export main))"
+                )))
+                .expect("a degree + degree sum compiles and runs"),
+                "main"
+            ),
+            95
+        );
+        // Mixing dimensions REJECTS CDZ0501 — degree + radian is not exactly interconvertible, so it is a
+        // dimension mismatch, not a silent conversion.
+        assert_eq!(
+            compile_component(&crate::codec::encode(&parse(
+                "(do (def (main) (+ ((. Qty of) 1 ((. Unit of) #\"degree\")) \
+                   ((. Qty of) 1 ((. Unit of) #\"radian\")))) (export main))"
+            )))
+            .err()
+            .and_then(|d| d.code.as_deref().map(str::to_string))
+            .as_deref(),
+            Some("CDZ0501"),
+            "degree + radian must reject CDZ0501 (incompatible dimension)"
+        );
+    }
+
+    #[test]
     fn a_named_rate_unit_of_a_derived_dimension_converts_and_mixes() {
         // F2-5: `mbps` is a named unit of the DERIVED dimension `byte/second` (a rate = information/time),
         // not an atomic base. A rate DERIVED by division (`bytes / seconds`) is the SAME free-abelian-
