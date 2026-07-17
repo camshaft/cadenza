@@ -89,6 +89,19 @@ function renderToMl(snippet) {
   return stripModule(render_syntax(wrapModule(snippet, "sexpr"), "sexpr", "ml"), "ml");
 }
 
+/// Render a `mode="test"` snippet (bare @test/def forms, no export/main) between surfaces. `render_syntax`
+/// takes a SINGLE top-level form, but a test snippet is often MULTIPLE top-level forms (several @tests, or a
+/// helper `def` + a `@test`). S-expr has no bare multi-form top level, so we gather them under a `(do …)`
+/// before rendering, then strip the `(do …)` back off (ML's native top level IS multi-form, so an ML source
+/// renders directly). Mirrors how the app must render a toggled test panel. Returns the snippet in `to`.
+function renderTestSnippet(snippet, from, to) {
+  if (from === to) return snippet.trim();
+  const gathered = from === "sexpr" ? `(do ${snippet.trim()})` : snippet.trim();
+  const rendered = render_syntax(gathered, from, to);
+  // `stripModule` peels the `(do …)`/export wrapper; there's no export here, so it just unwraps the `(do …)`.
+  return to === "sexpr" ? stripModule(rendered, "sexpr") : rendered.trim();
+}
+
 // ---- transpile a component to disk and load its `instantiate` (mirrors runWorker.ts loadComponent) ----
 async function loadComponent(componentBytes, name) {
   const { files } = await transpileBytes(new Uint8Array(componentBytes), {
@@ -174,13 +187,13 @@ async function runTestExports(componentBytes, testNames) {
   return results;
 }
 
-// ---- check a `mode="test"` example: compile-tests, run each @test, assert expected pass/fail ----
-async function checkTestProgram(ex, where) {
-  const brief = ex.snippet.replace(/\n/g, " ").slice(0, 80);
-  const surface = ex.surface ?? "sexpr";
+// ---- run a `mode="test"` snippet in ONE surface: compile-tests, run each @test, assert expected pass/fail ----
+// `snippet` is the test-defs source ALREADY in `surface`. Returns null on success, else a reason string.
+async function runTestInSurface(ex, snippet, surface, where) {
+  const brief = snippet.replace(/\n/g, " ").slice(0, 80);
   // Prepend the shared assert prelude unless the example opted out (prelude={false}) — mirrors <Runnable
   // mode="test">, so the gate compiles+runs exactly what the reader's example runs.
-  const program = ex.prelude ? `${assertPreludeFor(surface)}\n${ex.snippet}` : ex.snippet;
+  const program = ex.prelude ? `${assertPreludeFor(surface)}\n${snippet}` : snippet;
   let r;
   try {
     r = compile_tests(program, surface);
@@ -205,6 +218,26 @@ async function checkTestProgram(ex, where) {
   if (failed.length === 0) return null;
   const detail = failed.map((t) => `${t.name}: ${t.error ?? "failed"}`).join("; ");
   return `${ex.file} [test] (${where}): @test(s) FAILED — ${detail}\n    ${brief}`;
+}
+
+// ---- check a `mode="test"` example in BOTH surfaces (the reader can toggle) ----
+// The reader toggles the surface, so a test example RUNS in whichever surface is active — the ML render+run
+// path must work too, NOT just the authored surface. (This cross-surface pass is what would have caught the
+// kebab-prelude bug: the ML assert prelude once used `assert_eq`, but an ML `assert-eq` call resolves to the
+// KEBAB name, so every rendered-to-ML test failed while the authored s-expr pass stayed green.) We render the
+// authored snippet to the other surface via `render_syntax` and run it there with THAT surface's prelude.
+async function checkTestProgram(ex) {
+  const authored = ex.surface ?? "sexpr";
+  const authoredFail = await runTestInSurface(ex, ex.snippet, authored, authored === "ml" ? "ML" : "s-expr");
+  if (authoredFail) return authoredFail;
+  const other = authored === "ml" ? "sexpr" : "ml";
+  let otherSnippet;
+  try {
+    otherSnippet = renderTestSnippet(ex.snippet, authored, other);
+  } catch (e) {
+    return `${ex.file} [test] (${other === "ml" ? "ML" : "s-expr"} toggle): render threw — ${String(e.message || e).slice(0, 80)}`;
+  }
+  return runTestInSurface(ex, otherSnippet, other, `${other === "ml" ? "ML" : "s-expr"} toggle`);
 }
 
 // ---- extract `source=`/`solution=`/`expected=`/`expect=` from a chapter's TSX ----
@@ -359,9 +392,10 @@ async function checkProgram(program, surface, ex, where) {
 // ---- check one example in BOTH surfaces (the reader can toggle); null on success, else a reason ----
 async function checkExample(ex) {
   // A `mode="test"` Runnable is a program of @test defs run as tests (like `cdz test`) — a distinct path
-  // (compile_tests + invoke each @test export), not the eval-main path. Checked in its authored surface
-  // (s-expr by default); the reader-toggle round-trip isn't exercised (the @test defs are the boundary).
-  if (ex.isTest) return checkTestProgram(ex, ex.surface === "ml" ? "ML" : "s-expr");
+  // (compile_tests + invoke each @test export), not the eval-main path. Checked in BOTH surfaces (the
+  // reader toggles): the authored surface + the render_syntax'd other surface, so the ML render+run path
+  // is gated too (this closes the gap that let the kebab-prelude bug ship).
+  if (ex.isTest) return checkTestProgram(ex);
   // A PLAYGROUND example is a FULL module authored in its own `surface`; the reader loads it, then may
   // toggle. It's compiled verbatim (`noWrap`) in its authored surface, then RE-RENDERED whole to the
   // other surface (`render_syntax`) and compiled again — so a broken toggle round-trip is caught. This
