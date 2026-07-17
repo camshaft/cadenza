@@ -42,8 +42,10 @@ export default function ExampleApps() {
         targeting two backends, which is the point of a compiler that treats code as data. It ships a
         dropdown of worked example programs — an AST interpreter, a Collatz walk, function composition,
         a memoized Fibonacci, exact-rational arithmetic, set algebra, an RPN stack machine, and more — each
-        a small showcase of recursion, sum types, closures, or the collections — including a Rule 110
-        cellular automaton, a Turing-complete system in a handful of lines. It's where{" "}
+        a small showcase of recursion, sum types, closures, or the collections. Two stand out: a Rule 110
+        cellular automaton, a Turing-complete system in a handful of lines; and a{" "}
+        <em>code-as-data</em> example that quotes a program into an AST, splices a computed value into it,
+        and <C>eval</C>s the result — Cadenza building and running Cadenza from within itself. It's where{" "}
         <Ch to="/metaprogramming">metaprogramming</Ch> and the target-neutral value model become tangible.
         (The <Ch to="/using-the-playground">playground chapter</Ch> tours its features in depth.)
       </P>
