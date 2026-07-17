@@ -5817,6 +5817,55 @@ fn a_match_shaped_arm_body_resumes_in_a_sequence_of_performs() {
     }
 }
 
+/// KNOWN LATENT SILENT MISCOMPILE — PINNED (concierge ruling 2026-07-17: queue the branch-out-state fix,
+/// pin the unsound case so it is tracked + cannot silently regress-worse; work active-demand Quantity-ABI/E5
+/// first, promote when they clear or a real consumer hits it). A HELPER that performs a STATE-ADVANCING op
+/// (`put`→`Map.insert`) inside a conditional BRANCH, called in a NON-TAIL position (a `let`-init) whose
+/// continuation READS the state (a later `get`), drops the branch's advanced out-state — the `Match`/`If`
+/// thread arms return the post-scrutinee state, discarding the advance. So the later `get` MISSES → a WRONG
+/// VALUE (v-compiler-ml's memoized-DB `demand`, lifting db.cdz onto effect-Db design A; they routed around it
+/// via the pure threaded-Db design B, so NO current consumer). VERIFIED LATENT (predates the 4a8b278b6
+/// match-arm fix — compiles+fails identically at the pre-fix parent), NOT a regression. A quick guard was
+/// proven IMPOSSIBLE (3 clean-reverted attempts: an arm-level decline over-declines the SOUND tail cases +
+/// breaks specialization; a let/do-arm reactive guard can't work — the helper's `put` is already inlined+
+/// threaded+folded-away by the time the arm sees the init). The real fix is BRANCH-OUT-STATE THREADING
+/// (thread each branch's advanced out-state forward as a match-valued state) — a substantial vertical, QUEUED.
+/// This test PINS the shape as a KNOWN MISCOMPILE: it currently COMPILES + runs to the WRONG value; when the
+/// branch-out-state fix lands, `run-then-get` yields 50 (demand fills 5→25, the later get(5) sees Some 25, so
+/// 25 + 25 = 50) — FLIP the assertion to `50` then. Until then it documents the bug (compiles, not a decline)
+/// so a regression to a DIFFERENT wrong shape (or a leak) is caught. Full analysis:
+/// queue mlrepro-effect-db-helper-outstate-lost-to-caller-sequence.cdz + the queued-branch-outstate memory.
+#[test]
+fn a_helper_state_advance_in_a_branch_lost_to_a_later_read_is_a_known_miscompile() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Db (op get (-> Int64 (Option Int64))) (op put (-> (Tuple Int64 Int64) Unit))) \
+        (def (demand (: k Int64) (: compute Int64)) \
+          (match (Db.get k) \
+            (((. Option Some) v) v) \
+            (((. Option None) u) (do (Db.put (tuple k compute)) compute)))) \
+        (def (run-then-get) \
+          (handle Db (Map.empty) \
+            ((get (k) s (resume (Map.lookup s k) s)) \
+             (put (kv) s (match kv ((tuple k v) (resume unit (Map.insert s k v)))))) \
+            (let ((a (demand 5 25))) \
+              (match (Db.get 5) (((. Option Some) v) (+ a v)) (((. Option None) u) 99))))) \
+        (export run-then-get))";
+    // Currently COMPILES (the miscompile is silent — a wrong value, not a decline). Pin that it still
+    // compiles (so a regression to a decline/leak is caught) — the value is WRONG today (the `get 5` misses
+    // because `demand`'s `put` out-state was dropped, so it takes the `None` arm → 99, not `25 + 25` = 50).
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("known-latent silent miscompile: currently COMPILES (does not decline) — see doc");
+    if let Some(v) = run_linked(&bytes, "run-then-get") {
+        // KNOWN-WRONG: the later `get 5` misses (dropped out-state) → `None` arm → 99. When the
+        // branch-out-state fix lands, this becomes "50" — FLIP to assert_eq!(v, "50") then.
+        assert_eq!(
+            v, "99",
+            "KNOWN MISCOMPILE (branch-out-state dropped): get 5 misses → 99; should be 50 once fixed"
+        );
+    }
+}
+
 /// The residual sub-case of the effectful-helper-in-a-self-call-arg family: an inlined helper whose perform
 /// sits UNDER A CONDITIONAL (`if`/`match`) — either in a branch (`if c then acc + B.b x else acc`) or in the
 /// condition (`if B.b x == 1 then …`). The deep-fresh-copy fixes fold a helper that performs on its
@@ -20064,6 +20113,55 @@ mod match_engine {
         );
     }
 
+    /// A Symbol as a TUPLE ELEMENT of a runtime compound `=` — a Symbol IS a String byte-leaf handle at run
+    /// time, so a Symbol element boxes/reads-back/compares exactly like a String element (which already
+    /// worked). Before, `box_op_ty`/`get_op_ty` lacked `Ty::Symbol` (only `Ty::String`), so a Symbol tuple
+    /// element declined "needs the value heap"; the wasm twin of v-rust-backend's `Ty::Symbol → String` rep
+    /// (v-property-testing found the asymmetry). `(tuple (Symbol.of "a") n)` compares equal to itself.
+    #[test]
+    fn a_symbol_tuple_element_compares_by_content_on_the_value_heap() {
+        use crate::testkit::parse;
+        // Compose against the real runtime (the tuple+Symbol build needs arr-alloc/champ-eq); skip if the
+        // runtime wasm is not built.
+        let run = |src: &str| -> Option<String> {
+            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+            let runtime = crate::tests::find_runtime_wasm()?;
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec!["7".to_string()],
+                runtime: Some(runtime),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => Some(s),
+                cdz_run::Outcome::Trap(t) => panic!("Symbol-tuple-element = trapped: {t}"),
+            }
+        };
+        // Equal tuples with a Symbol element → true (a Symbol element boxes/compares like a String element).
+        let Some(eq) = run("(module m (def (main (: n Int64)) \
+               (if (= (tuple ((. Symbol of) \"a\") n) (tuple ((. Symbol of) \"a\") n)) 1 0)) (export main))")
+        else {
+            eprintln!("runtime wasm not found; skipping Symbol-tuple-element run");
+            return;
+        };
+        assert_eq!(eq, "1", "equal Symbol-element tuples compare equal");
+        // A differing scalar sibling → not equal.
+        assert_eq!(
+            run("(module m (def (main (: n Int64)) \
+                   (if (= (tuple ((. Symbol of) \"a\") n) (tuple ((. Symbol of) \"a\") (+ n 1))) 1 0)) (export main))").unwrap(),
+            "0",
+            "a differing scalar sibling makes the tuples unequal"
+        );
+        // A differing SYMBOL element (same scalar) → not equal (content comparison).
+        assert_eq!(
+            run("(module m (def (main (: n Int64)) \
+                   (if (= (tuple ((. Symbol of) \"a\") n) (tuple ((. Symbol of) \"b\") n)) 1 0)) (export main))").unwrap(),
+            "0",
+            "a differing Symbol element makes the tuples unequal (by content)"
+        );
+    }
+
     #[test]
     fn symbol_of_a_non_string_reports_one_error_not_a_misleading_runtime_string_decline() {
         // `(Symbol.of 5)` is a type error (`Symbol.of : String → Symbol`, applied to Int64) — CDZ0203.
@@ -20422,38 +20520,44 @@ mod match_engine {
         );
     }
 
-    /// A WELL-FORMED `(pragma default-integer <T>)` written at the PROGRAM'S TOP LEVEL — the root module's
-    /// own member, or a bare `(do …)` item — has NO effect: the load-time pass collects a pragma's literals
-    /// only from a NESTED `(module NAME …)` declaration (one inside a `(do …)`), not the root. Before, such
-    /// a top-level pragma hit the generic "unbound name `pragma`" decline (a misleading typo read, since
-    /// `pragma` is a recognized directive). Now `unknown_top_forms`' `pragma` case names the real situation
-    /// — a pragma is effective only inside a nested module — coded CDZ0601, so the author wraps the module
-    /// in a `(do …)` rather than chasing a phantom typo. A MALFORMED top-level pragma keeps its more-
-    /// specific registry reject (unknown key CDZ0601 / arity CDZ0602 / domain CDZ0303), not the placement
-    /// message.
+    /// A WELL-FORMED `(pragma default-integer|default-fraction|default-float <T>)` written at the PROGRAM'S
+    /// TOP LEVEL — the root module's own directive, or a bare `(do …)` item — now TAKES EFFECT: `Db::load`
+    /// harvests it over the root scope's `(def …)` literals, exactly as a nested `(module NAME …)` pragma is
+    /// harvested for its members (numeric-model.md §A Module May Declare Its Default … Literal Type — a file
+    /// IS a module, no do-nesting requirement). So it is NO LONGER mis-scoped: no "has effect only inside a
+    /// nested module" placement fault, and NO misleading "unbound name `pragma`". A MALFORMED top-level
+    /// pragma still rejects via the registry pass (unknown key CDZ0601 / arity CDZ0602 / domain CDZ0303).
     #[test]
-    fn a_top_level_pragma_names_its_ineffective_placement_not_an_unbound_name() {
+    fn a_top_level_default_pragma_takes_effect_not_a_placement_fault() {
         use crate::testkit::parse;
-        // A well-formed top-level `default-integer` pragma → the placement message (not "unbound name").
+        // A well-formed top-level default pragma → NO placement fault, NO unbound-`pragma`, and (with a
+        // well-formed body) NO error at all — it is honored.
         for src in [
             "(module m (pragma default-integer Int32) (def (main) 1) (export main))",
             "(do (pragma default-integer BigInt) (def (main) 1) (export main))",
+            "(do (pragma default-fraction Rational) (def (main) (/ 1 2)) (export main))",
         ] {
-            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                .into_iter()
-                .find(|d| d.message.contains("has effect only inside a nested"))
-                .unwrap_or_else(|| panic!("a top-level pragma names its placement: {src}"));
-            assert_eq!(d.code.as_deref(), Some("CDZ0601"), "got: {}", d.message);
-            // NOT the old misleading "unbound name `pragma`".
             let all = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                !all.iter()
+                    .any(|d| d.message.contains("has effect only inside a nested")),
+                "a well-formed top-level pragma is no longer mis-scoped: {src} -> {:?}",
+                all.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
             assert!(
                 !all.iter()
                     .any(|d| d.message.contains("unbound name `pragma`")),
                 "no misleading unbound-pragma: {src} -> {:?}",
                 all.iter().map(|d| &d.message).collect::<Vec<_>>()
             );
+            assert!(
+                all.iter()
+                    .all(|d| d.severity != crate::abi::Severity::Error),
+                "a well-formed top-level default pragma program has no error: {src} -> {:?}",
+                all.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
         }
-        // A MALFORMED top-level pragma keeps the MORE-SPECIFIC registry message, not the placement one:
+        // A MALFORMED top-level pragma keeps the MORE-SPECIFIC registry message:
         // unknown key → names the key; wrong arity → CDZ0602; non-integer type → CDZ0303.
         let unknown = crate::diagnostics(&mut crate::db::Db::load(parse(
             "(module m (pragma nonesuch 5) (def (main) 1) (export main))",
@@ -20461,11 +20565,8 @@ mod match_engine {
         assert!(
             unknown
                 .iter()
-                .any(|d| d.message.contains("`nonesuch` is not a module directive"))
-                && !unknown
-                    .iter()
-                    .any(|d| d.message.contains("has effect only inside a nested")),
-            "an unknown top-level pragma key keeps the registry message, not the placement one: {:?}",
+                .any(|d| d.message.contains("`nonesuch` is not a module directive")),
+            "an unknown top-level pragma key keeps the registry message: {:?}",
             unknown.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
         assert_eq!(
@@ -34191,6 +34292,66 @@ mod match_engine {
                 "Ast.Float — {what}"
             );
         }
+    }
+
+    #[test]
+    fn scan_manifest_reads_each_param_site_name_widget_range_and_type() {
+        // @param sidecar WIDGET MANIFEST (DESIGN-runtime-parameter-host-effect.md 2nd output): param_sidecar::
+        // scan_manifest walks every `(: (@ (param <kv>) name) Type)` site into a ParamRecord the host reads
+        // (v-cdz-tooling plumbs the Query + `cdz param-manifest` CLI over these). This tests the SCAN half —
+        // that each site's name + widget + range + type node are read off the arena correctly. Node-ids
+        // (ty/range) are rendered by the query handler (Db type column + span table); here we assert the
+        // NAME + widget string + that a range yields two element nodes + a type node is present.
+        use crate::param_sidecar::scan_manifest;
+        // NOTE the s-expr surface spells the range list `(list 0 100)` — the `[0 100]` bracket-sugar is an
+        // ML-surface literal the s-expr reader does NOT parse as a list (it reads `[0`/`100]` as atoms). The
+        // canonical arena node is `(list lo hi)` either way (bracket sugar desugars to it on the ML side).
+        let ast = crate::testkit::parse(
+            "(module m \
+               (: (@ (param (: widget slider) (: range (list 0 100))) width) Int64) \
+               (: (@ (param (: widget toggle)) mirror) Bool) \
+               (def (main) 0) \
+             (export main))",
+        );
+        let recs = scan_manifest(&ast);
+        assert_eq!(recs.len(), 2, "two @param sites → two manifest records");
+        let width = recs
+            .iter()
+            .find(|r| r.name == "width")
+            .expect("width record");
+        assert_eq!(
+            width.widget.as_deref(),
+            Some("slider"),
+            "width's widget config reads as `slider`"
+        );
+        assert!(
+            width.range.is_some(),
+            "width's `range: [0 100]` yields two element nodes"
+        );
+        // The declared type node is present (rendered by the query handler); confirm it names Int64.
+        assert_eq!(
+            ast.as_name(width.ty),
+            Some("Int64"),
+            "width's declared type node is Int64"
+        );
+        let mirror = recs
+            .iter()
+            .find(|r| r.name == "mirror")
+            .expect("mirror record");
+        assert_eq!(
+            mirror.widget.as_deref(),
+            Some("toggle"),
+            "mirror's widget config reads as `toggle`"
+        );
+        assert!(
+            mirror.range.is_none(),
+            "mirror has no range kv → range is None (a stable-schema null, not a crash)"
+        );
+        assert_eq!(
+            ast.as_name(mirror.ty),
+            Some("Bool"),
+            "mirror's type node is Bool"
+        );
     }
 
     #[test]
@@ -60426,6 +60587,27 @@ mod sidecar_driven {
         // real error visible rather than masking it as a decorator.
         let src = "(module m (def (main) (@ test 42)) (export main))";
         assert_eq!(highlight_kinds_of(src, "@"), vec!["unbound"]);
+    }
+
+    #[test]
+    fn highlight_paints_a_live_at_param_annotation_without_false_reds() {
+        // A `@param(widget: slider) width : Int64` site parses to `(: (@ (param (: widget slider)) width)
+        // Int64)` — a CALL-STYLE annotation on a PARAM binder, NOT wrapping a `(def …)`, so
+        // `strip_annotations`' def-only unwrap never fires and the whole `(@ (param …) …)` form stays LIVE
+        // and root-reachable (unlike the orphaned def-annotation case). Its `@` sigil + `param` head resolve
+        // to nothing and its config kv leaves aren't a value scope, so a naive leaf walk paints FOUR tokens
+        // `unbound` (error-red) on a program that compiles clean (the sidecar generates `Param`). The fix:
+        // `@`/`param` paint `keyword` (a decorator); the config payload (`widget`/`slider`) softens to
+        // `symbol` (inert metadata); the annotation TARGET (`width`, `Int64`) still classifies normally.
+        let src = "(module m (: (@ (param (: widget slider)) width) Int64) \
+                    (def (main) (host (Param) (Param.width))) (export main))";
+        assert_eq!(highlight_kinds_of(src, "@"), vec!["keyword"]);
+        assert_eq!(highlight_kinds_of(src, "param"), vec!["keyword"]);
+        // Config payload — inert metadata, `symbol` not `unbound`.
+        assert_eq!(highlight_kinds_of(src, "widget"), vec!["symbol"]);
+        assert_eq!(highlight_kinds_of(src, "slider"), vec!["symbol"]);
+        // The annotation TARGET still resolves — the declared type is a `type`, unchanged by the softening.
+        assert_eq!(highlight_kinds_of(src, "Int64"), vec!["type"]);
     }
 
     #[test]

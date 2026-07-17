@@ -77,11 +77,106 @@ pub fn generate(ast: &mut Arenas) {
 /// If `inner` is a `@param` annotation `(@ (param <kv>…) <name>)`, return the param NAME occurrence (the
 /// annotation's second child). `None` if it is not a `@param` annotation or has no name.
 fn param_annotation_name(ast: &Arenas, inner: StructId) -> Option<StructId> {
+    Some(param_annotation_parts(ast, inner)?.1)
+}
+
+/// If `inner` is a `@param` annotation `(@ (param <kv>…) <name>)`, return `(param-app-node, name-node)` —
+/// the `(param …)` application (whose tail is the config kv pairs) and the annotated param NAME. `None`
+/// otherwise. The `_name`-only [`param_annotation_name`] wraps this for the generate path.
+fn param_annotation_parts(ast: &Arenas, inner: StructId) -> Option<(StructId, StructId)> {
     let tail = ast.as_form(inner, "@")?;
     let (&app, &name) = (tail.first()?, tail.get(1)?);
     // The annotation's name position must be the application `(param …)`.
     ast.as_form(app, "param")?;
-    Some(name)
+    Some((app, name))
+}
+
+// ── The WIDGET MANIFEST scan (v-metaprogramming's half; v-cdz-tooling plumbs the Query + `cdz
+// param-manifest` CLI over these records — DESIGN-runtime-parameter-host-effect.md 2nd output). ──
+
+/// One `@param` site's MANIFEST record — what the host reads to render a control. NODE-IDS for the type +
+/// config values (not rendered strings): v-cdz-tooling's query handler renders the type via the Db type
+/// column (`Ty::render_name`) and the config values via its JSON builder, and maps `name_node` to
+/// `file:line:col` via the span table it holds (query-engine.md: the compiler emits node IDENTITY, the
+/// front-end owns spans + rendering). `widget` is a bare name atom, read directly to a `String`.
+pub struct ParamRecord {
+    /// The param name (the accessor member name / manifest key / host-bind key).
+    pub name: String,
+    /// The declared TYPE node (the outer colon's type child) — render via the type column.
+    pub ty: StructId,
+    /// The `(: widget <name>)` config value as a `String` (e.g. `"slider"`); `None` if no widget kv.
+    pub widget: Option<String>,
+    /// The `(: range [<lo> <hi>])` element nodes `(lo, hi)`; `None` if no range kv.
+    pub range: Option<(StructId, StructId)>,
+    /// The `(: options [<v>…])` list node; `None` if no options kv.
+    pub options: Option<StructId>,
+    /// The `(: default <val>)` value node; `None` if no default kv.
+    pub default: Option<StructId>,
+    /// The param NAME occurrence — map to `file:line:col` via the front-end span table.
+    pub name_node: StructId,
+}
+
+/// Scan every well-typed `@param` site `(: (@ (param <kv>) name) Type)` into a manifest record. READ-ONLY
+/// over the arena (does NOT mutate / generate — that is [`generate`]). One record per site, config kv read
+/// off the `(param …)` application's tail (`(: key value)` pairs). This is the SCAN half of the widget
+/// manifest; v-cdz-tooling's `Query::ParamManifest` + `cdz param-manifest` renders these to JSON.
+pub fn scan_manifest(ast: &Arenas) -> Vec<ParamRecord> {
+    let mut records = Vec::new();
+    for i in 0..ast.structure.len() as u32 {
+        let id = StructId(i);
+        let Some(&[inner, ty]) = ast.as_form(id, ":") else {
+            continue;
+        };
+        let Some((app, name_node)) = param_annotation_parts(ast, inner) else {
+            continue;
+        };
+        let Some(name) = ast.as_name(name_node).map(str::to_string) else {
+            continue;
+        };
+        // The config kv pairs are the `(param …)` application's tail, each a `(: key value)` node.
+        records.push(ParamRecord {
+            name,
+            ty,
+            widget: config_name(ast, app, "widget"),
+            range: config_range(ast, app),
+            options: config_value(ast, app, "options"),
+            default: config_value(ast, app, "default"),
+            name_node,
+        });
+    }
+    records
+}
+
+/// The VALUE node of a `(: <key> <value>)` config kv in the `(param …)` application `app`'s tail, if
+/// present. The tail is the arguments after the `param` head; each is a `(: key value)` colon node.
+fn config_value(ast: &Arenas, app: StructId, key: &str) -> Option<StructId> {
+    let tail = ast.as_form(app, "param")?;
+    for &kv in tail {
+        if let Some(&[k, v]) = ast.as_form(kv, ":")
+            && ast.as_name(k) == Some(key)
+        {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// A config kv's value as a bare NAME string (e.g. `(: widget slider)` → `"slider"`); `None` if the key
+/// is absent or its value is not a bare name.
+fn config_name(ast: &Arenas, app: StructId, key: &str) -> Option<String> {
+    let v = config_value(ast, app, key)?;
+    ast.as_name(v).map(str::to_string)
+}
+
+/// The `(lo, hi)` element nodes of a `(: range [<lo> <hi>])` config kv, if present and a 2-element list.
+/// The value is the `list`-headed 2-element form v-syntax's `[lo hi]` parses to.
+fn config_range(ast: &Arenas, app: StructId) -> Option<(StructId, StructId)> {
+    let v = config_value(ast, app, "range")?;
+    // `[lo hi]` parses to a `(list lo hi)` form; take its two elements.
+    match ast.as_form(v, "list")? {
+        [lo, hi] => Some((*lo, *hi)),
+        _ => None,
+    }
 }
 
 /// Build `(effect Param (op <name> (-> Unit <Type>)) …)` from the scanned sites and return its node id.

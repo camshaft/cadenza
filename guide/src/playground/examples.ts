@@ -371,6 +371,51 @@ export const EXAMPLES: Example[] = [
   (export main))`,
   },
   {
+    // Shows off: string work via bytes — check a word reads the same forwards and backwards by comparing
+    // the i-th and (n-1-i)-th UTF-8 bytes moving inward. "racecar" -> 1 (true).
+    name: "Palindrome check",
+    surface: "sexpr",
+    source: `(module m
+  ; Compare bytes from both ends moving inward; a mismatch means not a palindrome.
+  (def (at bs i) (match (Bytes.at bs i) ((Some b) b) ((None) 0)))
+  (def (pal bs i j)
+    (if (>= i j)
+        true
+        (if (= (at bs i) (at bs j)) (pal bs (+ i 1) (- j 1)) false)))
+  (def (main)
+    (let ((bs (String.to-bytes "racecar")))
+      (if (pal bs 0 (- (Bytes.len bs) 1)) 1 0)))
+  (export main))`,
+  },
+  {
+    // Shows off: computing a result without a built-in — integer square root by searching upward for the
+    // largest g with g*g <= n. isqrt(144) = 12.
+    name: "Integer square root",
+    surface: "sexpr",
+    source: `(module m
+  ; The largest g such that g*g <= n: search up until g*g overshoots, then back off one.
+  (def (isqrt-from n g)
+    (if (> (* g g) n) (- g 1) (isqrt-from n (+ g 1))))
+  (def (isqrt n) (isqrt-from n 1))
+  (def (main) (isqrt 144))
+  (export main))`,
+  },
+  {
+    // Shows off: rebuilding a list in reverse by pushing elements from the end onto a fresh list.
+    // The prelude List has no reverse, so we walk indices downward. [1 2 3 4 5] -> [5 4 3 2 1].
+    name: "Reverse a list",
+    surface: "sexpr",
+    source: `(module m
+  (def (at xs i) (match (List.at xs i) ((Some v) v) ((None) 0)))
+  ; Walk from the last index down, pushing each element onto a fresh list.
+  (def (rev xs i acc)
+    (if (< i 0) acc (rev xs (- i 1) (List.push acc (at xs i)))))
+  (def (main)
+    (let ((xs (list 1 2 3 4 5)))
+      (rev xs (- (List.len xs) 1) (: (list) (List Int64)))))
+  (export main))`,
+  },
+  {
     name: "A type error (see the squiggle)",
     surface: "sexpr",
     source: `(module m

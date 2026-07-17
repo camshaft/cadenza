@@ -2083,6 +2083,65 @@ impl Db {
                 collect_default_float_literals(&ast, m.occ, ty_expr, &mut default_float_literals);
             }
         }
+        // ROOT/FILE-TOP scope. A `(pragma <key> <T>)` written as a TOP-LEVEL item — the root `(do …)`'s
+        // own child or a bare-file form (`read_all` wraps top-level forms in a synthetic `(do …)`), NOT
+        // inside a nested `(module NAME …)` — declares the default for the WHOLE root module, exactly as
+        // a nested module's pragma does for its members. numeric-model.md §"A Module May Declare Its
+        // Default … Literal Type" imposes no do-nesting requirement, and a file IS a module; the impl
+        // previously honored only nested-module pragmas (CDZ0601 at the root). Mark each root-scope
+        // `(def …)` body's literals with the root pragma's `<T>`, the file-top analogue of the per-module
+        // harvest. Definition-site scoped like the module case (`mark_*_literals` does not descend a nested
+        // `(module …)`, so an inner module keeps its own default). Scanned from the root's top items.
+        for &item in &top_items(&ast) {
+            let Some(ptail) = ast.as_form(item, "pragma") else {
+                continue;
+            };
+            let (Some(key), Some(&ty_expr)) =
+                (ptail.first().and_then(|&k| ast.as_name(k)), ptail.get(1))
+            else {
+                continue;
+            };
+            match key {
+                "default-integer" => {
+                    for &sib in &top_items(&ast) {
+                        if let Some(def_tail) = ast.as_form(sib, "def")
+                            && let Some(&def_body) = def_tail.get(1)
+                        {
+                            mark_int_literals(&ast, def_body, ty_expr, &mut default_int_literals);
+                        }
+                    }
+                }
+                "default-fraction" => {
+                    for &sib in &top_items(&ast) {
+                        if let Some(def_tail) = ast.as_form(sib, "def")
+                            && let Some(&def_body) = def_tail.get(1)
+                        {
+                            mark_numeric_literals(
+                                &ast,
+                                def_body,
+                                ty_expr,
+                                &mut default_fraction_literals,
+                            );
+                        }
+                    }
+                }
+                "default-float" => {
+                    for &sib in &top_items(&ast) {
+                        if let Some(def_tail) = ast.as_form(sib, "def")
+                            && let Some(&def_body) = def_tail.get(1)
+                        {
+                            mark_float_literals(
+                                &ast,
+                                def_body,
+                                ty_expr,
+                                &mut default_float_literals,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         // Every node inside a TYPE-EXPRESSION subtree — so the construct-position shadow (`resolve_name`
         // step 3d) fires only in genuine VALUE position and leaves a `(List Ast)` payload / annotation type
         // as the List TYPE constructor. Roots: every `(: e T)` annotation's type slot, every variant

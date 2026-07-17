@@ -1552,6 +1552,13 @@ fn box_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
         | Ty::Set(_)
         | Ty::Bytes
         | Ty::String
+        // A Symbol is a String byte-leaf at run time (the tagless heap has no `Shape::Sym`; a Symbol is
+        // represented + compared exactly as its content String — see `Symbol.of`'s `bytes-compact` retag),
+        // so as a tuple/record/list/map/set element it is ALREADY a heap handle stored as-is, exactly like
+        // a String element. Without this a `(tuple (Symbol.of …) …)` element declined "needs the value
+        // heap", while the identical String element worked (the rust backend already maps `Ty::Symbol` →
+        // `String`; this brings the wasm compound-element layout to the same parity).
+        | Ty::Symbol
         // A BigInt is already a heap handle (its sign-magnitude leaf — `bigint-of-i64`/arithmetic return
         // handles), so as a nested element it is stored as-is, exactly like a String/List/Map handle.
         | Ty::BigInt
@@ -1624,6 +1631,10 @@ fn get_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
         | Ty::Set(_)
         | Ty::Bytes
         | Ty::String
+        // A Symbol reads back as its String byte-leaf handle directly (dual of `box_op_ty`'s Symbol arm —
+        // a Symbol IS a String at run time, so no unbox), so a Symbol tuple/record/element read is used
+        // as-is like a String element.
+        | Ty::Symbol
         // A BigInt handle read back from a heap slot is used as-is (dual of `box_op_ty`'s BigInt arm).
         | Ty::BigInt
         // A Rational handle read back from a heap slot is used as-is (dual of `box_op_ty`'s Rational arm).

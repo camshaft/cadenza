@@ -21,6 +21,7 @@
 /// A token (the lexer's output; here constructed directly by tests / a future lex adapter).
 type Tok =
   | TNum(Int64)
+  | TBoolTok(Int64) // a boolean literal `true`/`false`, carried as 1/0
   | TName(Int64)    // an identifier, interned to a name-id (Int64)
   | TOp(Int64)      // 43 = +, 45 = -, 42 = *, 60 = <, 61 = ==
   | TLet
@@ -38,6 +39,7 @@ type Tok =
 /// and body are child NodeIds, so a `let` is a node whose scope the resolve column will walk by id.
 type Node =
   | NLit(Int64)
+  | NBoolLit(Int64)               // NBoolLit(1|0) — a boolean literal true/false
   | NVar(Int64)                   // NVar(nameId) — a variable reference
   | NBin(Int64, Int64, Int64)     // NBin(op, leftId, rightId)
   | NLet(Int64, Int64, Int64)     // NLet(nameId, valueId, bodyId)
@@ -69,10 +71,11 @@ def tok-at(ts: List(Tok), i: Int64) = match List.at(ts, i) with
 /// The op code of a token if it is `TOp op` (else -1).
 def op-code(t: Tok) = match t with | Tok.TOp(op) => op | _ => 0 - 1
 
-/// parse-factor: an Int literal, a variable reference, or a parenthesized expression. A paren nests the FULL
-/// grammar (`parse-any`, so `(let x = 1 in x)` parses). Returns `(nodeId, nextIndex, tree')`.
+/// parse-factor: an Int literal, a boolean literal, a variable reference, or a parenthesized expression. A
+/// paren nests the FULL grammar (`parse-any`, so `(let x = 1 in x)` parses). Returns `(nodeId, nextIndex, tree')`.
 def parse-factor(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
   | Tok.TNum(v) => (match add-node(tree, Node.NLit(v)) with | (id, t1) => (id, i + 1, t1))
+  | Tok.TBoolTok(b) => (match add-node(tree, Node.NBoolLit(b)) with | (id, t1) => (id, i + 1, t1))
   | Tok.TName(nm) => (match add-node(tree, Node.NVar(nm)) with | (id, t1) => (id, i + 1, t1))
   | Tok.TLParen =>
     (match parse-any(ts, i + 1, tree) with | (inner, j, t1) =>
@@ -177,6 +180,11 @@ def is-if(tree: Tree, id: Int64) = match node-at(tree, id) with
   | Option.Some(Node.NIf(_, _, _)) => true
   | _ => false
 
+/// Is the node at `id` a boolean literal with value `b` (1|0)?
+def is-bool-lit(tree: Tree, id: Int64, b: Int64) = match node-at(tree, id) with
+  | Option.Some(Node.NBoolLit(x)) => x == b
+  | _ => false
+
 /// Builders (test ergonomics).
 def n(v: Int64) = Tok.TNum(v)
 def var(nm: Int64) = Tok.TName(nm)
@@ -191,6 +199,8 @@ def eqop() = Tok.TOp(61)    // `==` (comparison, distinct from the let-binding T
 def ifkw() = Tok.TIf
 def thenkw() = Tok.TThen
 def elsekw() = Tok.TElse
+def truelit() = Tok.TBoolTok(1)
+def falselit() = Tok.TBoolTok(0)
 
 @test
 def pd-single-literal() =
@@ -357,4 +367,24 @@ def pd-nested-if-in-else() =
       | Option.Some(Node.NIf(_, _, els)) => (if is-if(tree, els) then unit else trap("else branch is a nested if"))
       | _ => trap("root is an NIf")))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if }
+@test
+def pd-bool-literal-true() =
+  // "true" → one NBoolLit(1) node.
+  (match parse-tokens([truelit()]) with | (root, tree) =>
+    (if is-bool-lit(tree, root, 1) then unit else trap("root is NBoolLit 1")))
+
+@test
+def pd-bool-literal-false() =
+  // "false" → NBoolLit(0).
+  (match parse-tokens([falselit()]) with | (root, tree) =>
+    (if is-bool-lit(tree, root, 0) then unit else trap("root is NBoolLit 0")))
+
+@test
+def pd-bool-in-if-cond() =
+  // "if true then 1 else 2" → cond is a bool literal (proves a bool literal parses as a factor in cond pos).
+  (match parse-tokens([ifkw(), truelit(), thenkw(), n(1), elsekw(), n(2)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NIf(cond, _, _)) => (if is-bool-lit(tree, cond, 1) then unit else trap("cond is bool literal true"))
+      | _ => trap("root is an NIf")))
+
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit }

@@ -29,6 +29,7 @@ type Resolved =
 def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, Resolved)) =
   match node-at(tree, id) with
     | Option.Some(Node.NLit(_)) => col
+    | Option.Some(Node.NBoolLit(_)) => col
     | Option.Some(Node.NVar(nm)) =>
         (match Map.lookup(env, nm) with
           | Option.Some(binder) => Map.insert(col, id, Resolved.RBound(binder))

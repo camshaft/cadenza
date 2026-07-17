@@ -1239,6 +1239,17 @@ fn classify_highlight(db: &mut Db, id: StructId) -> Option<HighlightKind> {
         return Some(HighlightKind::Keyword);
     }
 
+    // The SIGIL or HEAD of a LIVE `@param` annotation `(@ (param …) name)` — the call-style annotation
+    // `strip_annotations` does NOT unwrap (it wraps a PARAM binder inside a `(: … Type)`, not a `(def …)`,
+    // so the def-only unwrap never fires and the whole form stays in the arena, root-reachable — unlike the
+    // orphaned def-annotation case above). Its `@` and `param` head resolve to nothing → a spurious
+    // `Unbound`. Paint them `Keyword` (a decorator). The config payload (`widget`/`slider`) is handled at
+    // the unbound step below, not here. (Keyed on the recognized `(param …)` head so a malformed
+    // `(@ foo 42)` CDZ0201 is NOT matched and keeps its real red squiggle.)
+    if is_param_annotation_keyword(db, id) {
+        return Some(HighlightKind::Keyword);
+    }
+
     // A BINDING DECLARATION site — a `let` binder name, or a bare match-arm binder pattern. These are
     // where a name is DECLARED, not referenced: resolving one looks it up before it binds and reports a
     // spurious `Unbound`. So classify by the binding role (a local `variable`) without resolving. (A
@@ -1266,7 +1277,74 @@ fn classify_highlight(db: &mut Db, id: StructId) -> Option<HighlightKind> {
     if kind == HighlightKind::Unbound && !reaches_root(db, id) {
         return Some(HighlightKind::Symbol);
     }
+
+    // A `@param` CONFIG value — a would-be-`Unbound` leaf inside the `(param <kv>…)` application of a live
+    // `@param` annotation (`widget`/`slider` in `@param(widget: slider) width`). The config kv pairs are
+    // inert metadata the sidecar reads structurally (a widget descriptor, not a value scope), so a bare
+    // config name resolves to nothing → a spurious `Unbound` on a well-formed program. Soften it to
+    // `Symbol` (data), like the quoted-data case. Only a would-be-`Unbound` leaf is touched — a config
+    // position that DID resolve (a future live reference) keeps its real colour, and the `@`/`param` head +
+    // the annotation TARGET (the param name/type) are handled elsewhere, so this reaches only the payload.
+    if kind == HighlightKind::Unbound && within_param_annotation_config(db, id) {
+        return Some(HighlightKind::Symbol);
+    }
     Some(kind)
+}
+
+/// Whether the leaf at `id` is the `@` sigil or the `param` HEAD of a LIVE `@param` annotation
+/// `(@ (param …) name)` — the syntax of the call-style annotation, painted `Keyword` (a decorator). Keyed
+/// on the RECOGNIZED shape (an `@` form whose first child is a `(param …)` application), matching
+/// `param_sidecar`'s own `(@ (param …) _)` detector, so an unrelated / malformed `(@ …)` is not caught
+/// (its `@` keeps falling through to its real `Unbound` red).
+///  - the `@` sigil: `id` is the HEAD of a `(@ (param …) name)` form;
+///  - the `param` head: `id` is the HEAD of the `(param …)` application that is the `@`'s first child.
+fn is_param_annotation_keyword(db: &Db, id: StructId) -> bool {
+    let Some(parent) = db.parent_of(id) else {
+        return false;
+    };
+    // `id` is the `@` sigil: `id` is the HEAD of its parent `(@ APP name)`, and the annotation's first
+    // tail element `APP` is a `(param …)` application. (`as_form(parent, "@")` returns the tail AFTER the
+    // `@` head, so `tail.first()` is `APP`, not `id`; `id` being the head is checked structurally.)
+    if db.ast.as_name(id) == Some("@")
+        && matches!(db.ast.get(parent), Struct::List(kids) if kids.first() == Some(&id))
+        && let Some(tail) = db.ast.as_form(parent, "@")
+        && tail
+            .first()
+            .is_some_and(|&app| db.ast.as_form(app, "param").is_some())
+    {
+        return true;
+    }
+    // `id` is the `param` head: `id` is the HEAD of its parent `(param …)`, and that parent is in turn the
+    // FIRST child (name position) of an enclosing `(@ (param …) name)` — the `@param` shape.
+    if db.ast.head_name(parent) == Some("param")
+        && matches!(db.ast.get(parent), Struct::List(kids) if kids.first() == Some(&id))
+        && let Some(grand) = db.parent_of(parent)
+        && let Some(gtail) = db.ast.as_form(grand, "@")
+        && gtail.first() == Some(&parent)
+    {
+        return true;
+    }
+    false
+}
+
+/// Whether the leaf at `id` sits inside the `(param <kv>…)` application of a live `@param` annotation
+/// `(@ (param …) name)` — a CONFIG-payload position (a `widget`/`slider` kv leaf), inert metadata softened
+/// to `Symbol`. Walks up from `id`: some ancestor must be a `(param …)` application that is the FIRST
+/// child (name position) of an enclosing `(@ …)` form. Excludes the annotation TARGET (the param name is
+/// the `@`'s SECOND child, never under the `(param …)` subtree) so it still resolves normally.
+fn within_param_annotation_config(db: &Db, id: StructId) -> bool {
+    let mut cursor = db.parent_of(id);
+    while let Some(node) = cursor {
+        if db.ast.head_name(node) == Some("param")
+            && let Some(grand) = db.parent_of(node)
+            && let Some(gtail) = db.ast.as_form(grand, "@")
+            && gtail.first() == Some(&node)
+        {
+            return true;
+        }
+        cursor = db.parent_of(node);
+    }
+    false
 }
 
 /// Whether the node at `id` is connected to the arena root by the parent chain. A node whose walk hits

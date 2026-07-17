@@ -8,9 +8,11 @@ export default function ConstParameters() {
     <article>
       <H1>Const parameters</H1>
       <Lede>
-        A <C>const</C> parameter is an argument the compiler must know at compile time. It gets{" "}
-        <em>inlined</em> into a specialized copy of the function and then erased — so a different const
-        value produces a different specialization, and nothing about it survives to run time.
+        Some arguments you know before the program ever runs — a size, a type, a table of behaviour. What
+        if the compiler could bake those in and charge you nothing at run time? That's a <C>const</C>{" "}
+        parameter: an argument the compiler must know at compile time, <em>inlined</em> into a specialized
+        copy of the function and then erased — so a different const value produces a different
+        specialization, and nothing about it survives to run time.
       </Lede>
 
       <P>
