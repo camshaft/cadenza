@@ -98,6 +98,40 @@ fn dispatch_executor_src() -> String {
         .to_string()
 }
 
+/// The K1c PERFORMING executor: each op fires a real `Prim.run` PERFORM (the shape a real broad primitive
+/// takes — `Prim.run` stands in for exec/http/log; handled in-program here by a mock that echoes the op's tag
+/// as the perform's RESULT, like a real primitive returns its own call result). Two structural points
+/// v-effects confirmed: (1) bind the crossed `(List HostOp)` to a `let` OUTSIDE the `host (K)` block, then
+/// fold+perform outside it (a perform-fold nested INSIDE the peer host block declines — a separate un-reduced
+/// increment, reported); (2) SUM the PER-OP RESULTS (each `Prim.run` returns its own value), NOT a threaded
+/// handler-state counter — a handler-state accumulator across the cross-fn `run-ops` recursion is a separate
+/// QUEUED miscompile (v-effects pinned it; drops the recursion's final out-state). Per-op-result is exactly
+/// the real exec/http/log shape (each call returns its own result), and it folds cleanly. So kind=1 →
+/// [Append, Exec] → tags [1, 2] → sum 3; the sum PROVES each op fired a real effect + its result came back.
+fn performing_executor_src() -> String {
+    "(do \
+       (type HostOp (Append String) (Exec String) (Http String) (Noop Int64)) \
+       (effect K (op interpret (-> Int64 Int64 (List HostOp)))) \
+       (bind K \"cadenza:agent/kernel\") \
+       (effect Prim (op run (-> Int64 Int64))) \
+       (def (op-tag (: op HostOp)) \
+         (match op \
+           ((Append s) 1) \
+           ((Exec s) 2) \
+           ((Http s) 3) \
+           ((Noop n) 0))) \
+       (def (run-ops (: ops (List HostOp))) \
+         (match ops \
+           ((list head .. rest) (+ (Prim.run (op-tag head)) (run-ops rest))) \
+           (_ 0))) \
+       (def (main (: kind Int64)) \
+         (let ((ops (host (K) (K.interpret kind 0)))) \
+           (handle Prim 0 ((run (tag) s (resume tag s))) \
+             (run-ops ops)))) \
+       (export main))"
+        .to_string()
+}
+
 /// The result of running one interpret turn through the kernel: the number of host-ops the interpret program
 /// scheduled for the given event (the executor's `List.len` over the crossed `(List HostOp)` handle). K1b
 /// turns this into the executed op-effects; K1 surfaces the count as proof the loop ran end-to-end.
@@ -106,57 +140,16 @@ pub struct InterpretRun {
     pub op_count: i64,
 }
 
-/// Run one interpret turn: COMPILE `interpret_src` as a provider, COMPOSE it with the executor peer, and RUN
-/// via `cdz_run::run_with_peers`, passing the scalar `event_kind`. Returns the number of host-ops interpret
-/// scheduled. `runtime` is the value-heap runtime wasm (resolve from the store; `None` if absent → the caller
-/// skips, since a runtime bump can stale it). This is the whole K1 spine: compile → provide → peer-execute →
-/// consume the crossed list.
-pub fn run_interpret(
+/// The shared K1 SPINE: compile `interpret_src` as a provider, compose it with the given `executor` peer
+/// source, run via `cdz_run::run_with_peers` passing the scalar `event_kind`, and return the executor's scalar
+/// result. Every `run_interpret*` variant is this spine + a specific executor (the difference is only what the
+/// Cadenza executor DOES with the crossed `(List HostOp)` — count it, cost it, or perform it). `runtime` is the
+/// value-heap runtime wasm (resolve via [`find_runtime_for`]; a run SKIPS when it is absent, since a runtime
+/// bump can stale the store). `what` labels the executor in error messages.
+fn run_with_executor(
     interpret_src: &str,
-    event_kind: i64,
-    runtime: Vec<u8>,
-) -> Result<InterpretRun> {
-    let provider = compile_interpret_provider(interpret_src)?;
-    let peers = vec![cdz_run::Peer {
-        bytes: provider,
-        interface: KERNEL_IFACE.to_string(),
-    }];
-    let executor_arenas = cadenza_syntax::sexpr::read(&executor_src())
-        .map_err(|e| anyhow!("executor source did not parse: {e:?}"))?;
-    let consumer =
-        rcdzc::compile::compile_component(&cadenza_syntax::codec::encode(&executor_arenas))
-            .map_err(|d| {
-                anyhow!(
-                    "executor peer did not compile: {} [{:?}]",
-                    d.message,
-                    d.code
-                )
-            })?;
-    let opts = cdz_run::RunOpts {
-        export: Some("main".to_string()),
-        args: vec![event_kind.to_string()],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run_with_peers(&consumer, &peers, &opts)? {
-        cdz_run::Outcome::Value(s) => {
-            let op_count = s
-                .parse::<i64>()
-                .map_err(|_| anyhow!("executor returned a non-integer op-count: {s:?}"))?;
-            Ok(InterpretRun { op_count })
-        }
-        cdz_run::Outcome::Trap(t) => Err(anyhow!("interpret run trapped: {t}")),
-    }
-}
-
-/// Run one interpret turn with the K1b DISPATCHING executor: compile the provider, compose with the
-/// [`dispatch_executor_src`] peer (which folds the crossed `(List HostOp)` and dispatches each op by variant),
-/// and run. Returns the summed per-op cost — proof the executor WALKED the crossed list + matched each
-/// element's variant over the shared runtime (the core of op execution; real `exec`/`http` side-effects
-/// replace the cost sum in K1c). Shares the compile/compose/run spine with [`run_interpret`].
-pub fn run_interpret_dispatched(
-    interpret_src: &str,
+    executor: &str,
+    what: &str,
     event_kind: i64,
     runtime: Vec<u8>,
 ) -> Result<i64> {
@@ -165,13 +158,13 @@ pub fn run_interpret_dispatched(
         bytes: provider,
         interface: KERNEL_IFACE.to_string(),
     }];
-    let executor_arenas = cadenza_syntax::sexpr::read(&dispatch_executor_src())
-        .map_err(|e| anyhow!("dispatch executor source did not parse: {e:?}"))?;
+    let executor_arenas = cadenza_syntax::sexpr::read(executor)
+        .map_err(|e| anyhow!("{what} executor source did not parse: {e:?}"))?;
     let consumer =
         rcdzc::compile::compile_component(&cadenza_syntax::codec::encode(&executor_arenas))
             .map_err(|d| {
                 anyhow!(
-                    "dispatch executor peer did not compile: {} [{:?}]",
+                    "{what} executor peer did not compile: {} [{:?}]",
                     d.message,
                     d.code
                 )
@@ -186,9 +179,57 @@ pub fn run_interpret_dispatched(
     match cdz_run::run_with_peers(&consumer, &peers, &opts)? {
         cdz_run::Outcome::Value(s) => s
             .parse::<i64>()
-            .map_err(|_| anyhow!("dispatch executor returned a non-integer cost: {s:?}")),
-        cdz_run::Outcome::Trap(t) => Err(anyhow!("dispatch run trapped: {t}")),
+            .map_err(|_| anyhow!("{what} executor returned a non-integer result: {s:?}")),
+        cdz_run::Outcome::Trap(t) => Err(anyhow!("{what} run trapped: {t}")),
     }
+}
+
+/// Run one interpret turn (K1): compile interpret as a provider, compose with the counting executor, and
+/// return the number of host-ops interpret scheduled (the executor's `List.len` over the crossed list) — the
+/// whole compile → provide → peer-execute → consume-the-crossed-list spine, end to end.
+pub fn run_interpret(
+    interpret_src: &str,
+    event_kind: i64,
+    runtime: Vec<u8>,
+) -> Result<InterpretRun> {
+    let op_count = run_with_executor(interpret_src, &executor_src(), "count", event_kind, runtime)?;
+    Ok(InterpretRun { op_count })
+}
+
+/// Run one interpret turn with the K1b DISPATCHING executor: it folds the crossed `(List HostOp)` and
+/// dispatches each op by variant, returning the summed per-op cost — proof the executor WALKED the crossed
+/// list + matched each element's variant over the shared runtime.
+pub fn run_interpret_dispatched(
+    interpret_src: &str,
+    event_kind: i64,
+    runtime: Vec<u8>,
+) -> Result<i64> {
+    run_with_executor(
+        interpret_src,
+        &dispatch_executor_src(),
+        "dispatch",
+        event_kind,
+        runtime,
+    )
+}
+
+/// Run one interpret turn with the K1c PERFORMING executor: each op fires a real `Prim.run` PERFORM and the
+/// fold sums the PER-OP RESULTS (each perform returns its own value — the real exec/http/log shape, NOT a
+/// threaded handler-state counter). Returns that sum — proof each op fired a real effect AND its result came
+/// back through the cross-fn fold. (v-effects confirmed per-op-result folds today; the handler-state-counter
+/// variant is a separate QUEUED miscompile, not needed here. Fetch-plan-outside-host structure per K1c doc.)
+pub fn run_interpret_performing(
+    interpret_src: &str,
+    event_kind: i64,
+    runtime: Vec<u8>,
+) -> Result<i64> {
+    run_with_executor(
+        interpret_src,
+        &performing_executor_src(),
+        "perform",
+        event_kind,
+        runtime,
+    )
 }
 
 /// Resolve the value-heap runtime wasm the compiled provider requires, from the content-addressed store on
@@ -288,5 +329,32 @@ mod tests {
         let cost0 = run_interpret_dispatched(INTERPRET_SRC, 9, runtime)
             .expect("the dispatch executor runs for a non-message event");
         assert_eq!(cost0, 0, "kind=9 → [Noop(0)] → 0");
+    }
+
+    #[test]
+    fn the_performing_executor_fires_a_real_effect_per_op_and_sums_results() {
+        // K1c: each op fires a real `Prim.run` PERFORM; the fold sums the PER-OP RESULTS (each perform returns
+        // its tag — the real exec/http/log per-call-result shape, not a threaded counter). kind=1 → [Append(1),
+        // Exec(2)] → 1+2 = 3 (proves both ops performed AND their results came back through the cross-fn fold);
+        // kind=9 → [Noop(0)] → 0. A dropped perform or lost result would mis-sum.
+        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let Some(runtime) = compile_interpret_provider(INTERPRET_SRC)
+            .ok()
+            .and_then(|p| find_runtime_for(&p, store_root))
+        else {
+            eprintln!(
+                "[cdz-kernel::kernel] value-heap runtime absent/stale; skipping the perform run"
+            );
+            return;
+        };
+        let sum = run_interpret_performing(INTERPRET_SRC, 1, runtime.clone())
+            .expect("the performing executor runs end-to-end");
+        assert_eq!(
+            sum, 3,
+            "kind=1 → [Append(1), Exec(2)] → each op performed + its result summed = 3"
+        );
+        let sum0 = run_interpret_performing(INTERPRET_SRC, 9, runtime)
+            .expect("the performing executor runs for a non-message event");
+        assert_eq!(sum0, 0, "kind=9 → [Noop(0)] → 0");
     }
 }
