@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "wasm": "cd ../implementation/seed/crates/cdz-wasm && wasm-pack build --target web --release && node ../../../../guide/scripts/stage-wasm.mjs",
     "check:examples": "node scripts/check-examples.mjs",
+    "check:worker-stack": "node scripts/check-worker-stack.mjs",
     "check:calculator": "node scripts/check-calculator.mjs",
     "check:prose": "node scripts/check-prose-annotations.mjs",
     "check:visual": "LD_PRELOAD=/usr/lib64/libstdc++.so.6 LD_LIBRARY_PATH=/usr/lib64:/lib64 node scripts/check-visual.mjs",

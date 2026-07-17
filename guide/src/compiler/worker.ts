@@ -160,13 +160,17 @@ function toDiag(d: {
 /// decline diagnostic, so a syntax error reads like any other "no" instead of rejecting the promise.
 /// Unanchored (byte 0) — the message carries the byte offset the wasm reported.
 ///
-/// STOPGAP for the module-qualified-call deep-recursion crash (P0): the browser compiles in a WORKER, whose
-/// JS/wasm stack is smaller than the main thread's, so a deep-but-terminating compiler recursion (e.g.
-/// module-qualified resolution — v-inference is landing an iterative resolve.rs fix) can overflow the worker
-/// stack ("Maximum call stack size exceeded") or trip a wasm "memory access out of bounds" — even for a
-/// program that compiles cleanly natively + on the main thread. Surface those as a CLEAN, actionable
-/// diagnostic instead of the raw runtime error, so the reader sees an explanation rather than a scary crash.
-/// (Remove/relax once the iterative resolve lands and a 3-line module program no longer recurses deeply.)
+/// DEFENSIVE BACKSTOP for a deep-recursion overflow in the WORKER: the browser compiles in a Worker, whose
+/// JS/wasm stack is smaller than the main thread's, so a very deep compiler recursion can overflow the worker
+/// stack ("Maximum call stack size exceeded") or trip a wasm "memory access out of bounds" for a program that
+/// compiles cleanly natively + on the main thread. We surface that as a CLEAN, actionable diagnostic instead
+/// of a scary raw runtime error.
+///
+/// NOTE: the original trigger — the module-qualified-call P0 — is FIXED (v-inference's `arrow_lambdas_in_progress`
+/// re-entry guard dropped resolution depth from 1000+ to ~5; the guide's module examples now compile+run in the
+/// worker, gated by the worker-conformance case in `check-examples.mjs`). This backstop stays only for
+/// GENUINELY pathological programs (e.g. an extremely deeply-nested user construction) — it's no longer a known
+/// bug, so the message no longer promises a fix or blames module-qualified forms.
 function parseErrorDiag(e: unknown): Diag {
   const message = e instanceof Error ? e.message : String(e);
   if (/maximum call stack|out of bounds|stack overflow|recursion/i.test(message)) {
@@ -174,8 +178,8 @@ function parseErrorDiag(e: unknown): Diag {
       error: true,
       code: "",
       message:
-        "the browser compiler ran out of stack on this program (a deeply-nested / module-qualified form). " +
-        "It may compile with the `cdz` CLI; this is a known browser-compiler limit being fixed.",
+        "the browser compiler ran out of stack on this program (an unusually deeply-nested form). " +
+        "Try simplifying it, or compile it with the `cdz` CLI, which has a larger stack.",
       node: 0,
       from: 0,
       to: 0,
