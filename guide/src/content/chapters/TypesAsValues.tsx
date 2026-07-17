@@ -8,9 +8,10 @@ export default function TypesAsValues() {
     <article>
       <H1>Types as values</H1>
       <Lede>
-        In Cadenza a type isn't a separate, second-class thing the compiler keeps to itself — it's an
-        ordinary value. You can bind it to a name, pass it, return it, compare two of them, and even
-        branch on them. The catch: it's all settled at compile time, and erased before the program runs.
+        In most languages, types live in a sealed-off world you can't compute with — you can't pass one to
+        a function or compare two of them. What if a type were just a value? In Cadenza it is: you can bind
+        a type to a name, pass it, return it, compare two of them, and even branch on them. The catch: it's
+        all settled at compile time, and erased before the program runs.
       </Lede>
 
       <H2>A type is a value</H2>

@@ -9,9 +9,10 @@ export default function PropertyTesting() {
     <article>
       <H1>Testing &amp; properties</H1>
       <Lede>
-        A test in Cadenza is just a function you mark <C>@test</C>. There's no separate testing DSL: the
-        runner finds every <C>@test</C>, runs it, and reports a pass or a fail. The panels below run for
-        real, right here — each shows ✓ or ✗ per test.
+        You could write a hundred example tests by hand — or state the rule that must always hold and let
+        the machine hunt for counterexamples. Cadenza does both, with no testing framework to learn: a test
+        is just a function you mark <C>@test</C>, and the runner finds every one, runs it, and reports a
+        pass or a fail. The panels below run for real, right here — each shows ✓ or ✗ per test.
       </Lede>
 
       <H2>A test is a marked function</H2>

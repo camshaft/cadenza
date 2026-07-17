@@ -9,9 +9,10 @@ export default function Metaprogramming() {
     <article>
       <H1>Metaprogramming</H1>
       <Lede>
-        Code is data. <C>quote</C> hands you a program's structure as an ordinary value you can inspect,
-        take apart, build up, and — if you like — run. There's no separate macro language: the AST is a
-        sum type like any other, so you already know how to work with it.
+        What if a program could read and rewrite another program — with no macro language to learn, just
+        the tools you already have? In Cadenza, code is data: <C>quote</C> hands you a program's structure
+        as an ordinary value you can inspect, take apart, build up, and — if you like — run. There's no
+        separate macro system; the AST is a sum type like any other, so you already know how to work with it.
       </Lede>
 
       <H2>Quote: a program as a value</H2>

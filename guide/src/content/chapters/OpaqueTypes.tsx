@@ -8,10 +8,11 @@ export default function OpaqueTypes() {
     <article>
       <H1>Opaque types</H1>
       <Lede>
-        A module can export a type's <em>name</em> while keeping its <em>constructor</em> private. The
-        result is an <em>opaque</em> type (also called an abstract data type): code elsewhere can hold and
-        pass its values and call the module's functions on them, but can't build or take one apart — so an
-        invariant established when the value is made holds <em>everywhere</em>, forever.
+        How do you guarantee a value is <em>always</em> valid — a percentage never above 100, a list never
+        empty — no matter what code touches it? Make the type <em>opaque</em>: a module exports the type's{" "}
+        <em>name</em> while keeping its <em>constructor</em> private (an abstract data type). Code elsewhere
+        can hold and pass its values and call the module's functions on them, but can't build or take one
+        apart — so an invariant established when the value is made holds <em>everywhere</em>, forever.
       </Lede>
 
       <P>
