@@ -4416,11 +4416,13 @@ fn tail_resume(db: &mut Db, node: StructId) -> Option<(StructId, StructId)> {
 ///     effect, then `v` is the value.
 ///   * a `(match scrut (pat (resume v s))…)` (the arm DESTRUCTURES its op arg, resuming per branch) → the
 ///     VALUE is the match rebuilt around each branch's resume value `(match scrut (pat v)…)`, and the
-///     NEXT-STATE is the branches' shared next-state. Every branch must itself peel to a resume; the
-///     branches must AGREE on the next-state (structurally identical) — a branch-VARYING next-state is a
-///     match-valued state the tail fold cannot thread as a single slot value, so DECLINE (`None`). The common
-///     case — destructure the arg (`(k, v)`) but thread ONE state (all branches `resume(…, Map.insert(s,k,v))`
-///     or `resume(…, s)`) — agrees, and folds. (v-compiler-ml's get/put memoized-DB shape: a `put` arm
+///     NEXT-STATE is a SECOND match rebuilt around each branch's next-state `(match scrut (pat s)…)` — over
+///     the SAME (pure) scrutinee. Keeping BOTH match-wrapped is load-bearing: a branch's next-state may
+///     reference the branch's PATTERN BINDERS (the DB `put` arm's `Map.insert(s, k, v)` uses `k`,`v`), so it
+///     CANNOT be hoisted out of the match — it must stay inside its branch. A branch-DEPENDENT next-state is
+///     therefore ALLOWED (each branch keeps its own); the state threads forward as a match-VALUED expression,
+///     sound because the scrutinee is the pure op arg (evaluating it in both matches duplicates no effect).
+///     Every branch must itself peel to a resume. (v-compiler-ml's get/put memoized-DB shape: a `put` arm
 ///     `(match kv (| (k,v) => resume(unit, Map.insert(s,k,v))))` performed in a `;`-sequence with a `get`.)
 ///
 /// `None` if the arm body is not one of these (the honest "not yet reducible" decline).
