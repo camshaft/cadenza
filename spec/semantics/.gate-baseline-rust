@@ -1,5 +1,4 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
-todo	a state-advancing helper called before a later read threads its write through the continuation
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
@@ -1908,6 +1907,9 @@ pass	a spliced boolean drives an evaluated conditional through the lifted leaf
 pass	a spliced string participates in an evaluated equality
 pass	a squared BigInt-inner quantity added to a linear one is a dimension mismatch
 pass	a squared quantity does not add to a linear quantity
+pass	a stacked @test @ensures def called as a function returns its value, not unit (value-transparent)
+pass	a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)
+pass	a state-advancing helper called before a later read threads its write through the continuation
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strength-reduced multiply nested as an operand computes in place
@@ -3140,6 +3142,8 @@ pass	t1(match) NEGATIVE: a NON-total arm set (one Bool arm missing) does NOT dis
 pass	t1(match): the exhaustiveness obligation COVERS is DISCHARGED for a TOTAL arm set — the match cannot trap
 pass	t1(oob) NEGATIVE: with only the LOWER bound (>= i 0), the out-of-bounds obligation is NOT complete — the trap STAYS
 pass	t1(oob): the out-of-bounds obligation (0<=i) AND (i<len) is DISCHARGED from the two bound preconditions
+pass	t1(trap) NEGATIVE: a trap guard NOT contradicted by the precondition is NOT unreachable — the trap STAYS
+pass	t1(trap): an explicit trap under guard (lt x 0) is UNREACHABLE when @requires(>= x 0) — the trap is dead
 pass	take-while composed after a map threads both transformers' closures
 pass	take-while excludes the failing element and everything after it (content, not just count)
 pass	take-while where every element satisfies the predicate keeps the whole run

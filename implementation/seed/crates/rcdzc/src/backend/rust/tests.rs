@@ -810,6 +810,60 @@ fn map_and_set_emit_native_btree_collections() {
 }
 
 #[test]
+fn an_empty_map_used_get_only_grounds_its_annotation_but_an_inserted_base_stays_inferred() {
+    // REGRESSION (breaker + v-effects + v-metaprogramming + corpus-bugfix, batch 160): an empty `Map.empty`
+    // used ONLY get-only (an empty-Map HANDLER STATE whose K/V are fixed later through get/put effect ops,
+    // not at construction) emitted a bare `BTreeMap::new()` that rustc could NOT infer → E0282. The fix
+    // GROUNDS the open key/value vars to the default and annotates. But an empty map that IS the base of an
+    // enclosing `Map.insert`/`Map.remove` must STAY unannotated (bare `new()`) — the insert fixes its type,
+    // and a grounded annotation would OVER-CONSTRAIN a Rational/String/Bytes-keyed map → E0308.
+
+    // (a) An empty-map handler state, get-only (no insert on the seed's own occurrences): the seed grounds
+    // to `BTreeMap<i64, i64>` and the whole thing builds + runs (→ 50). (The full effects+continuation case
+    // is pinned in the corpus; this is the direct rust-emit unit check.)
+    let handler = compile_rust(
+        "(module m \
+           (effect Db (op get (-> Int64 (Option Int64))) (op put (-> (Tuple Int64 Int64) Unit))) \
+           (def (demand (: k Int64) (: c Int64)) \
+             (match ((. Db get) k) (((. Option Some) v) v) \
+               (((. Option None) u) (do ((. Db put) (tuple k c)) c)))) \
+           (def (run) (handle Db ((. Map empty)) \
+             ((get (k) s (resume ((. Map lookup) s k) s)) \
+              (put (kv) s (match kv ((tuple k v) (resume unit ((. Map insert) s k v)))))) \
+             (let ((a (demand 5 25))) \
+               (match ((. Db get) 5) (((. Option Some) v) (+ a v)) (((. Option None) u) 99))))) \
+           (export run))",
+    );
+    assert!(
+        handler.contains("BTreeMap<i64, i64> = std::collections::BTreeMap::new()"),
+        "the get-only empty-map handler state grounds its annotation to <i64, i64>:\n{handler}"
+    );
+    if let Some(out) = rustc_run(&handler, "run()") {
+        assert_eq!(
+            out, "50",
+            "the handler threads state through the continuation: 25 + 25 = 50"
+        );
+    }
+
+    // (b) An empty map that is the BASE of an insert with a NON-default key type (Rational) must NOT be
+    // grounded — it stays a bare `new()` inferred from the insert. A grounded `<i64,i64>` would E0308
+    // against the Rational key. Builds + runs (→ 10).
+    let rational_key = compile_rust(
+        "(module m (def (look) \
+           (match (Map.lookup (Map.insert (Map.insert (Map.empty) ((. Rational of) 1 2) 10) \
+                                          ((. Rational of) 2 3) 20) ((. Rational of) 1 2)) \
+             ((Some v) v) ((None) 0))) (export look))",
+    );
+    assert!(
+        !rational_key.contains("BTreeMap<i64, i64> = "),
+        "an inserted-base empty map is NOT force-grounded to <i64,i64> (would clash with the Rational key):\n{rational_key}"
+    );
+    if let Some(out) = rustc_run(&rational_key, "look()") {
+        assert_eq!(out, "10", "the Rational-keyed map looks up 1/2 → 10");
+    }
+}
+
+#[test]
 fn a_bare_float_set_or_map_key_uses_the_cdz_f64_total_order_wrapper() {
     // A bare `Float` Set element / Map key is NOT `Ord` as a raw `f64` (NaN breaks totality), so it maps to
     // the `CdzF64` total-order wrapper (bit-canonical, NaN→one quiet NaN — the runtime's `box-float`). The

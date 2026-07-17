@@ -75,6 +75,15 @@ pub struct Ctx<'a> {
     /// its subject type by lookup (longest-prefix match + walk the remaining `Elem`s) instead of
     /// re-deriving it variant-0-first. Empty at the root (the scrutinee's own type resolves directly).
     pub sum_path_types: Vec<(Vec<crate::core::PathStep>, Ty)>,
+    /// Set true ONLY while emitting the base-map operand of an enclosing `Map.insert`/`Map.remove`. An
+    /// empty `Map.empty` in that position has its `BTreeMap<K,V>` element types INFERRED by the enclosing
+    /// `.insert(k, v)`/`.remove(&k)` (rustc reads K/V from the inserted key/value), so a bare
+    /// `BTreeMap::new()` compiles — and any spelled annotation there would OVER-CONSTRAIN it (grounding an
+    /// open var to the default `Int64` would clash with a Rational/String/Bytes key the insert actually
+    /// uses → E0308). So `MapNew` SUPPRESSES its ground-annotation when this is set. When it is NOT set
+    /// (an empty map used get-only / passed through — e.g. an empty-Map HANDLER STATE), the annotation is
+    /// needed (nothing else fixes K/V) and `MapNew` grounds it. `false` in every other context.
+    pub map_typed_by_enclosing_insert: bool,
 }
 
 /// A payload bound by a sum-match arm's Rust pattern: the scrutinee occurrence + access path the
@@ -154,6 +163,7 @@ pub fn emit_body(
         loop_group: None,
         sum_binds: Vec::new(),
         sum_path_types: Vec::new(),
+        map_typed_by_enclosing_insert: false,
     };
     let expr = emit(db, body, &env, &ctx)?;
     Ok(format!("    {expr}"))
@@ -257,6 +267,7 @@ pub(super) fn emit_lifted_lambda(
         loop_group: None,
         sum_binds: Vec::new(),
         sum_path_types: Vec::new(),
+        map_typed_by_enclosing_insert: false,
     };
     let body = emit(db, lam.body, &env, &ctx)?;
     let ident = lifted_ident(k);
@@ -293,6 +304,7 @@ fn emit_loop_body(
         loop_group: Some(&group),
         sum_binds: Vec::new(),
         sum_path_types: Vec::new(),
+        map_typed_by_enclosing_insert: false,
     };
     // Initialize the shared locals from THIS member's params (its param name → `__pi`), then the body.
     let mut init = String::new();
@@ -1243,18 +1255,36 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 let ve = emit(db, *v, env, ctx)?;
                 lines.push_str(&format!("__m.insert({ke}, {ve}); "));
             }
-            // ANNOTATE `__m` with the node's solved `BTreeMap<K,V>` type WHEN it maps concretely. When it
-            // does NOT — an `Map.empty` whose K/V are still unsolved VARS at this node (its type is fixed
-            // only by DOWNSTREAM use, e.g. threaded into a `(Map Int64 Int64)` param) — emit a BARE
-            // `BTreeMap::new()` and let RUST infer K/V from that use (verified: a bare `new()` threaded into
-            // a typed callee compiles). An annotation would be ideal but we have no concrete type to spell;
-            // the bare form is correct wherever the surrounding context pins the type. A genuinely
-            // uninferrable standalone empty map is an E0282 (a real BadArtifact) — but such a value never
-            // escapes/crosses anywhere, so it does not arise in practice. (Was a FALSE DECLINE: a
-            // context-typed empty map — the common map-accumulator seed — declined though Rust could infer.)
-            let ann = match types::rust_type(&type_of(db, id)) {
-                Some(t) => format!(": {t}"),
-                None => String::new(),
+            // ANNOTATE `__m` with the node's `BTreeMap<K,V>` type. When the node maps concretely, spell it
+            // directly. When it does NOT — an `Map.empty` whose K/V are still unsolved VARS at this node
+            // (its type is fixed only by DOWNSTREAM use, e.g. an empty-Map HANDLER STATE whose K/V are
+            // pinned through the get/put effect ops, NOT at the construction site) — GROUND the open vars
+            // to the default (`Int64`) and annotate with that. A bare `BTreeMap::new()` there is
+            // uninferrable when the only use is a `.get()` (which can't fix K/V from the map alone) → rustc
+            // E0282; the grounded annotation gives the common integer-typed shape a concrete type. If the
+            // map is genuinely used at a non-default element type reachable only through unsolved vars, the
+            // grounded annotation is WRONG and rustc errors LOUDLY at `new()` (a build failure graded todo),
+            // never a silent miscompile — strictly safer than the bare `new()` that E0282s for every open
+            // case. (Earlier this was a bare `new()`, which E0282'd an empty-Map handler state — a
+            // Todo→Fail regression once the effects inline/hoist fix made that shape reach the rust emit.)
+            let map_ty = type_of(db, id);
+            let ann = if ctx.map_typed_by_enclosing_insert {
+                // The enclosing `.insert`/`.remove` will fix K/V — a bare `new()` infers, and an annotation
+                // would OVER-CONSTRAIN (grounding an open var here clashes with a Rational/String/Bytes key
+                // the insert actually uses → E0308). Leave it unannotated; rustc reads the types from the use.
+                match types::rust_type(&map_ty) {
+                    Some(t) => format!(": {t}"),
+                    None => String::new(),
+                }
+            } else {
+                // No enclosing insert to infer from (get-only / pass-through — e.g. an empty-Map handler
+                // state): GROUND the open vars so the annotation is spellable (else E0282). See
+                // `ground_open_vars` for why grounding to the default is safe (a wrong ground → loud rustc
+                // error, never a silent miscompile).
+                match types::rust_type(&types::ground_open_vars(&map_ty)) {
+                    Some(t) => format!(": {t}"),
+                    None => String::new(),
+                }
             };
             Ok(format!(
                 "{{ let mut __m{ann} = std::collections::BTreeMap::new(); {lines}__m }}"
@@ -1270,7 +1300,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     "a Map with a non-Ord (float-carrying) key has no BTreeMap rep on the Rust backend",
                 ));
             }
-            let m = emit(db, map, env, ctx)?;
+            // The base map's element types are fixed by THIS `.insert(k, v)` — flag it so an empty
+            // `Map.empty` base emits a bare `BTreeMap::new()` (inferred) rather than a grounded annotation
+            // that could over-constrain the key type (a Rational/String/Bytes key → E0308).
+            let mut map_ctx = ctx.clone();
+            map_ctx.map_typed_by_enclosing_insert = true;
+            let m = emit(db, map, env, &map_ctx)?;
             let k = emit(db, key, env, ctx)?;
             let k = wrap_ord_key(k, &kt);
             let v = emit(db, val, env, ctx)?;
@@ -1289,7 +1324,11 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // `Map.remove` → drop the key, returning the new map (removing an absent key is total, `remove`
         // just returns the prior value which we discard). Persistent → consume into a `mut` local.
         Core::MapRemove { map, key, .. } => {
-            let m = emit(db, map, env, ctx)?;
+            // The base map's element types are fixed by THIS `.remove(&k)` (the key type) — flag it so an
+            // empty base emits a bare inferred `new()` rather than an over-constraining grounded annotation.
+            let mut map_ctx = ctx.clone();
+            map_ctx.map_typed_by_enclosing_insert = true;
+            let m = emit(db, map, env, &map_ctx)?;
             let k = emit(db, key, env, ctx)?;
             let k = wrap_ord_key(k, &type_of(db, key));
             Ok(format!("{{ let mut __m = {m}; __m.remove(&({k})); __m }}"))
