@@ -40,8 +40,8 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{
     CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest,
-    DocumentSymbolRequest, GotoDefinition, HoverRequest, References, Rename, Request as _,
-    SemanticTokensFullRequest, Shutdown, WorkspaceSymbolRequest,
+    DocumentSymbolRequest, FoldingRangeRequest, GotoDefinition, HoverRequest, References, Rename,
+    Request as _, SemanticTokensFullRequest, Shutdown, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
@@ -49,15 +49,15 @@ use lsp_types::{
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbolParams,
-    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
-    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, Location,
-    MarkedString, Position, PublishDiagnosticsParams, Range, ReferenceParams, RenameParams,
-    SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SymbolInformation,
-    SymbolKind, TextDocumentContentChangeEvent, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit, WorkspaceSymbolParams,
-    WorkspaceSymbolResponse,
+    DocumentSymbolResponse, FoldingRange, FoldingRangeParams, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, Location, MarkedString, Position, PublishDiagnosticsParams,
+    Range, ReferenceParams, RenameParams, SemanticToken, SemanticTokenType, SemanticTokens,
+    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    SymbolInformation, SymbolKind, TextDocumentContentChangeEvent, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
+    WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 
 /// Run the stdio LSP server to completion: perform the initialize handshake, then loop over incoming
@@ -125,6 +125,9 @@ fn capabilities() -> ServerCapabilities {
         // run across every OPEN document, filtered by the query string. (An on-disk project scan of
         // unopened files is a later increment; this covers the loaded editor set.)
         workspace_symbol_provider: Some(lsp_types::OneOf::Left(true)),
+        // Folding ranges — collapse each multi-line top-level form (the `(def …)`/`(type …)`/`(module
+        // …)` a declaration spans). Structural, from the parse tree's top-level spans; no query needed.
+        folding_range_provider: Some(lsp_types::FoldingRangeProviderCapability::Simple(true)),
         // Completion with no trigger characters — the client invokes it on the usual identifier typing /
         // Ctrl-Space. We return the full candidate set (locals + top-level symbols) and let the client
         // filter by the typed prefix (the standard "server offers, client filters" model).
@@ -310,6 +313,11 @@ impl Server {
             WorkspaceSymbolRequest::METHOD => {
                 let (id, params) = cast_request::<WorkspaceSymbolRequest>(req)?;
                 let result = self.workspace_symbol(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
+            FoldingRangeRequest::METHOD => {
+                let (id, params) = cast_request::<FoldingRangeRequest>(req)?;
+                let result = self.folding_range(&params);
                 self.send_response(Response::new_ok(id, result))
             }
             Completion::METHOD => {
@@ -573,6 +581,16 @@ impl Server {
             }
         }
         Some(WorkspaceSymbolResponse::Flat(symbols))
+    }
+
+    /// Answer a `textDocument/foldingRange`: a foldable region for each MULTI-LINE top-level form (a
+    /// `(def …)`/`(type …)`/`(effect …)`/`(module …)` a declaration spans), so the editor's gutter offers
+    /// a collapse toggle on each declaration. Purely structural — the top-level forms' spans from the
+    /// parse tree, no query. `None` when the document is not open; an empty list when nothing spans more
+    /// than one line — total, never a panic on a malformed buffer.
+    fn folding_range(&self, params: &FoldingRangeParams) -> Option<Vec<FoldingRange>> {
+        let doc = self.docs.get(&params.text_document.uri)?;
+        Some(folding_ranges_for(&doc.text, doc.is_ml))
     }
 
     /// Answer a `textDocument/completion`: the names in scope at the cursor — local bindings (backed by
@@ -2222,6 +2240,45 @@ fn top_level_symbols_of(text: &str, is_ml: bool) -> Vec<(String, String, Range)>
             continue;
         };
         out.push((name.to_string(), kind.to_string(), range));
+    }
+    out
+}
+
+/// The folding ranges for `text`: one per MULTI-LINE top-level form. Enumerates the parse tree's
+/// top-level items (the children of the `(do …)` root, or the lone root form — the SAME walk
+/// `imported_names`/`declared_import_paths` use, after peeling a leading comment/doc wrapper), takes each
+/// item's source span, and emits a `FoldingRange` from its first to its last line for any item that spans
+/// ≥2 lines (a single-line form has nothing to fold). Line-based (no `end_character`), so the client
+/// folds whole lines — the conventional declaration fold. TOTAL: an un-analyzable buffer yields no
+/// ranges rather than panicking; a form with no span is skipped.
+fn folding_ranges_for(text: &str, is_ml: bool) -> Vec<FoldingRange> {
+    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return Vec::new();
+    };
+    let root = crate::unwrap_comment(&arenas, arenas.root);
+    let items: Vec<cadenza_syntax::StructId> = match arenas.as_form(root, "do") {
+        Some(tail) => tail.to_vec(),
+        None => vec![root],
+    };
+    let mut out = Vec::new();
+    for item in items {
+        // Fold the form INCLUDING a leading doc/comment wrapper (so the fold covers the whole
+        // declaration), so take the span of the item as-parsed, not the comment-unwrapped inner node.
+        let Some(span) = spans.get(item) else {
+            continue;
+        };
+        let range = byte_range_to_range(text, span.start, span.end);
+        // Only a genuinely multi-line form is foldable.
+        if range.end.line > range.start.line {
+            out.push(FoldingRange {
+                start_line: range.start.line,
+                end_line: range.end.line,
+                start_character: None,
+                end_character: None,
+                kind: None,
+                collapsed_text: None,
+            });
+        }
     }
     out
 }
@@ -4038,6 +4095,62 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(true),
             "workspaceSymbolProvider must be advertised: {value}"
+        );
+    }
+
+    #[test]
+    fn folding_ranges_fold_each_multi_line_top_level_form() {
+        // Two top-level defs, each spanning multiple lines; a single-line def in between folds nothing.
+        // `helper` spans lines 0-1, `single` is one line (2), `main` spans lines 3-4.
+        let text = "def helper(x: Int64) -> Int64 =\n  x\n\
+                    def single = 1\n\
+                    def main =\n  helper(single)";
+        let ranges = folding_ranges_for(text, true);
+        // The two multi-line forms fold; the one-line `single` does not.
+        let spans: Vec<(u32, u32)> = ranges.iter().map(|r| (r.start_line, r.end_line)).collect();
+        assert!(
+            spans.contains(&(0, 1)),
+            "helper (lines 0-1) folds: {spans:?}"
+        );
+        assert!(spans.contains(&(3, 4)), "main (lines 3-4) folds: {spans:?}");
+        assert!(
+            !spans.iter().any(|(s, e)| s == e),
+            "no single-line (start==end) range is emitted: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn folding_ranges_are_empty_for_a_single_line_program_and_total_on_malformed() {
+        // An all-one-line program has nothing to fold → empty, not None-at-this-layer (the handler wraps
+        // Some). A malformed buffer yields a defined (possibly empty) list, never a panic.
+        assert!(folding_ranges_for("def a = 1", true).is_empty());
+        let _ = folding_ranges_for("def (f x = (", true);
+        let _ = folding_ranges_for("", true);
+    }
+
+    #[test]
+    fn folding_range_capability_is_advertised() {
+        let value = serde_json::to_value(capabilities()).expect("serializes");
+        // `foldingRangeProvider` serializes to `true` for the Simple(true) capability.
+        assert_eq!(
+            value.get("foldingRangeProvider").and_then(|v| v.as_bool()),
+            Some(true),
+            "foldingRangeProvider must be advertised: {value}"
+        );
+    }
+
+    #[test]
+    fn folding_range_handler_returns_none_on_an_unopened_document() {
+        // The handler's docs.get guard: a foldingRange over an unopened URI is None (total, no panic).
+        let (server, _client) = memory_server();
+        let params = FoldingRangeParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: test_uri() },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        assert!(
+            server.folding_range(&params).is_none(),
+            "foldingRange on an unopened document must be None"
         );
     }
 
