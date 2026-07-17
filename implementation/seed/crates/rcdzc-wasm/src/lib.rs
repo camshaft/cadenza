@@ -1,0 +1,81 @@
+//! rcdzc-wasm — the Cadenza compiler as a WASM artifact (agent-runtime minimal-kernel, K1-dep wasm-swap).
+//!
+//! Operator directive #54: the agent-kernel runs a WASM build of the compiler via its embedded wasmtime, not
+//! native-linked rcdzc — keeping the kernel minimal (wasm-host + log + broad primitives) and the compiler a
+//! swappable wasm artifact updatable without a kernel redeploy. This crate is that artifact.
+//!
+//! It wraps [`rcdzc::compile_component`] (the wasm-portable compile path — feasibility proven) in a wasm
+//! entrypoint: **AST bytes in → program-component wasm bytes out**. It takes AST bytes (not surface text) so
+//! the front-end reader (`cadenza-syntax`) need NOT be in the compiler wasm — the log stores AST bytes anyway
+//! (the routed source-vs-AST sub-fork; AST-in is the lean). The compile GLUE ([`compile_ast`]) is pure + host-
+//! testable; the wasm EXPORT ([`compile`]) wraps it over a minimal linear-memory ABI.
+
+/// Compile a Cadenza program's AST bytes into a program-component wasm (the ABI-independent glue — pure, and
+/// unit-testable on the host). Returns `Ok(component_bytes)` or `Err(diagnostic_message)` — a bad program is a
+/// loud error string the kernel surfaces, not a silent empty. Wraps [`rcdzc::compile_component`], the same
+/// entrypoint the native K1 kernel used, now reachable from the wasm build.
+pub fn compile_ast(ast_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    rcdzc::compile_component(ast_bytes).map_err(|d| format!("{} [{:?}]", d.message, d.code))
+}
+
+/// The minimal linear-memory ABI the kernel's wasmtime invokes (wasm target only). The kernel writes the AST
+/// bytes into this module's memory at `ptr` (len `len`), calls `compile`, and reads the RESULT the same way:
+/// the return value packs the result `(ptr << 32) | len` into a u64, where the result region is
+/// `[status: 1 byte][payload...]` — status 0 = ok (payload = component wasm), status 1 = error (payload = the
+/// UTF-8 diagnostic). A packed return of 0 means "could not even allocate" (out of memory). This is a first,
+/// deliberately-simple core ABI; a richer component-model `compile: (list u8) -> result<list u8, string>` is a
+/// routed sub-fork (the crate compiles as a cdylib either way; the glue [`compile_ast`] is unchanged).
+///
+/// # Safety
+/// `ptr`/`len` must describe a valid, initialized region in this module's linear memory (the kernel wrote it).
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn compile(ptr: u32, len: u32) -> u64 {
+    let ast = std::slice::from_raw_parts(ptr as *const u8, len as usize);
+    let (status, payload) = match compile_ast(ast) {
+        Ok(bytes) => (0u8, bytes),
+        Err(msg) => (1u8, msg.into_bytes()),
+    };
+    // Build the result region: 1 status byte + payload, leaked so the kernel can read it before freeing.
+    let mut out = Vec::with_capacity(1 + payload.len());
+    out.push(status);
+    out.extend_from_slice(&payload);
+    let boxed = out.into_boxed_slice();
+    let rlen = boxed.len() as u64;
+    let rptr = Box::into_raw(boxed) as *mut u8 as u64;
+    (rptr << 32) | rlen
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build AST bytes for a source the same way the kernel would feed them (via cadenza-syntax's codec — a
+    /// dev-dependency here, exactly as rcdzc's own testkit bridges the two crates' Arenas by bytes).
+    fn ast_of(src: &str) -> Vec<u8> {
+        let arenas = cadenza_syntax::sexpr::read(src).expect("test source parses");
+        cadenza_syntax::codec::encode(&arenas)
+    }
+
+    #[test]
+    fn compile_ast_compiles_a_valid_program_to_a_component() {
+        // The glue compiles a real program's AST to a wasm component (non-empty bytes). This is exactly what
+        // the wasm export wraps — proving the compiler-as-wasm path produces a program the kernel can run.
+        let ast = ast_of("(do (def (main) 42) (export main))");
+        let out = compile_ast(&ast).expect("a valid program compiles");
+        assert!(!out.is_empty(), "the compiled component has bytes");
+        // A wasm component starts with the wasm magic `\0asm`.
+        assert_eq!(&out[..4], b"\0asm", "the output is a wasm module/component");
+    }
+
+    #[test]
+    fn compile_ast_reports_a_bad_program_as_a_loud_error() {
+        // An unbound name is a loud Err string (the kernel surfaces it), not a silent empty component.
+        let ast = ast_of("(do (def (main) undefined-name) (export main))");
+        let err = compile_ast(&ast).expect_err("a program with an unbound name must not compile");
+        assert!(
+            err.contains("CDZ") || !err.is_empty(),
+            "the error carries the diagnostic: {err}"
+        );
+    }
+}

@@ -1,0 +1,41 @@
+# rcdzc-wasm — the Cadenza COMPILER as a WASM artifact (agent-runtime minimal-kernel, K1-dep wasm-swap).
+#
+# Operator directive (2026-07-17, #54): the agent-kernel must NOT native-link the compiler — it runs a WASM
+# BUILD of rcdzc via the wasmtime it already hosts, so the kernel stays minimal (wasm-host + log + broad
+# primitives) and the compiler is a SWAPPABLE wasm artifact updatable WITHOUT a kernel redeploy. This crate is
+# that artifact: a thin wasm entrypoint that wraps `rcdzc::compile_component` (AST bytes -> program-wasm bytes).
+#
+# Feasibility PROVEN (v-agent-harness probe, see [[rcdzc-compiles-to-wasm32-wasip1]]): `rcdzc --lib` compiles
+# clean for wasm32-wasip1 — its heavy deps (wasmtime/wasm-encoder/front-end reader) are tests-only and don't
+# enter the wasm build, and `compile_component` is pub + reachable. This crate builds ON that.
+#
+# STANDALONE (own `[workspace]` table + root Cargo.toml exclude), like cdz-runtime/cdz-wasm: it only ever
+# builds for a wasm target (`cargo build --target wasm32-wasip1 -p rcdzc-wasm`), never in the native seed
+# build/gate. Path-deps the workspace-member `rcdzc` (an excluded crate may depend on a member, as cdz-smith
+# does). A dedicated CI job builds it to wasm. The KERNEL loads the produced wasm via wasmtime and invokes
+# `compile` per program (K1-dep wasm-swap: `cdz_kernel::kernel::compile_interpret_provider` will run this
+# instead of calling native rcdzc — a localized change, the compose/run/execute spine is unchanged).
+[workspace]
+
+[package]
+name = "rcdzc-wasm"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+# cdylib → a wasm module the kernel's wasmtime loads. (The exact export ABI — a raw `(ptr,len)->packed` core
+# export vs a WASI command vs a component `compile` — is a routed sub-fork; the lib compiles as a cdylib
+# either way, and the ABI-independent `compile_ast` glue below is what the entrypoint wraps.)
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The compiler core — the SAME crate the native kernel used, now targeted to wasm. Its heavy deps are
+# tests-only (proven), so the wasm build is just the compile path.
+rcdzc = { path = "../rcdzc" }
+
+[dev-dependencies]
+# The front-end reader — TESTS ONLY (bridges source text → AST bytes to feed `compile_ast`, the same
+# bytes-bridge rcdzc's testkit uses). NOT a build-path dep: the shipped wasm takes AST bytes directly, so the
+# reader never enters the compiler wasm (the log stores AST bytes).
+cadenza-syntax = { path = "../cadenza-syntax" }
