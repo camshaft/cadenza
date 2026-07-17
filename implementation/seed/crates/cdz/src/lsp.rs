@@ -53,8 +53,8 @@ use lsp_types::{
     SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
     SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SymbolKind,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions,
-    WorkspaceEdit,
+    TextDocumentContentChangeEvent, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+    Uri, WorkDoneProgressOptions, WorkspaceEdit,
 };
 
 /// Run the stdio LSP server to completion: perform the initialize handshake, then loop over incoming
@@ -88,8 +88,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
     Ok(())
 }
 
-/// The capabilities this server advertises: FULL text-document sync (the client resends the whole
-/// document on each change — simplest correct model; incremental sync is a later refinement),
+/// The capabilities this server advertises: INCREMENTAL text-document sync (the client sends only the
+/// changed RANGES on each edit — the server splices them into its buffer via `apply_content_change`,
+/// so a keystroke ships a few bytes instead of the whole file; the recomputed analysis is byte-identical
+/// to a full resend, since the spliced text equals the full document text),
 /// diagnostics via `publishDiagnostics` (a push the server sends on open/change, so no explicit
 /// capability flag beyond sync is required for the classic push model), `hover` (the "type at
 /// cursor" read, backed by the `TypeAt` query), `definition` (go-to, backed by `ResolveOf`),
@@ -99,7 +101,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
 /// `semantic_token_legend`).
 fn capabilities() -> ServerCapabilities {
     ServerCapabilities {
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(
+            TextDocumentSyncKind::INCREMENTAL,
+        )),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         references_provider: Some(lsp_types::OneOf::Left(true)),
@@ -498,22 +502,27 @@ impl Server {
             DidChangeTextDocument::METHOD => {
                 let params: DidChangeTextDocumentParams = extract_note(note)?;
                 let uri = params.text_document.uri;
-                // FULL sync: the last content change carries the whole new document text.
-                if let Some(change) = params.content_changes.into_iter().next_back() {
-                    let is_ml = uri_is_ml(&uri);
-                    self.docs.insert(
-                        uri.clone(),
-                        Document {
-                            text: change.text,
-                            is_ml,
-                        },
-                    );
-                    self.publish(&uri)?;
-                    // Reverse-dependency invalidation: if the edited doc is a LIBRARY, re-lint every open
-                    // importer so its cross-file diagnostics track the live edit (not just the lib itself).
-                    if let Some(path) = uri_to_path(&uri) {
-                        self.republish_importers_of(&path)?;
-                    }
+                // INCREMENTAL sync: `content_changes` is an ORDERED list of edits; apply each to the
+                // current buffer in turn (each change's range is relative to the text AFTER the prior
+                // changes in the same notification, per the LSP spec). A change with no `range` is a
+                // whole-document replace (a client may still send one) — `apply_content_change` handles
+                // both. If the doc is somehow unknown (a change before an open), start from an empty
+                // buffer so the range edits still apply against a defined base rather than being dropped.
+                let is_ml = uri_is_ml(&uri);
+                let mut text = self
+                    .docs
+                    .get(&uri)
+                    .map(|d| d.text.clone())
+                    .unwrap_or_default();
+                for change in params.content_changes {
+                    apply_content_change(&mut text, change);
+                }
+                self.docs.insert(uri.clone(), Document { text, is_ml });
+                self.publish(&uri)?;
+                // Reverse-dependency invalidation: if the edited doc is a LIBRARY, re-lint every open
+                // importer so its cross-file diagnostics track the live edit (not just the lib itself).
+                if let Some(path) = uri_to_path(&uri) {
+                    self.republish_importers_of(&path)?;
                 }
             }
             DidCloseTextDocument::METHOD => {
@@ -1076,6 +1085,27 @@ fn position_to_byte(text: &str, pos: Position) -> usize {
         }
     }
     text.len()
+}
+
+/// Apply one incremental `didChange` content change to `text` IN PLACE. A change with a `range` splices
+/// its `text` over the `[start, end)` byte span the range maps to (via [`position_to_byte`], so the
+/// UTF-16 columns the client sends resolve to UTF-8 byte offsets); a change with NO range is a
+/// whole-document replace (the LSP spec permits either, even under incremental sync). Ranges are clamped
+/// and ordered so a malformed change (end before start, out-of-range) can never panic — a tooling read
+/// stays total. Called for each change in order; each range is relative to the text as left by the prior
+/// change in the same notification, which holds because we mutate `text` before the next iteration.
+fn apply_content_change(text: &mut String, change: TextDocumentContentChangeEvent) {
+    let Some(range) = change.range else {
+        // No range: the whole document was replaced.
+        *text = change.text;
+        return;
+    };
+    let start = position_to_byte(text, range.start);
+    let end = position_to_byte(text, range.end);
+    // Clamp to a well-ordered span: a degenerate range (end < start) collapses to an insertion at start
+    // rather than a panic on `replace_range`.
+    let (lo, hi) = (start.min(end), start.max(end));
+    text.replace_range(lo..hi, &change.text);
 }
 
 // ── the analysis: source text + cursor → LSP hover, via the `TypeAt` query ──────────────────────────
@@ -2365,6 +2395,85 @@ mod tests {
         assert_eq!(position_to_byte(text, Position::new(0, 99)), 2);
         // A line past the end clamps to the text end.
         assert_eq!(position_to_byte(text, Position::new(9, 0)), text.len());
+    }
+
+    /// Build one incremental content change over a `[(l0,c0)..(l1,c1))` range with replacement `text`.
+    fn ranged_change(
+        l0: u32,
+        c0: u32,
+        l1: u32,
+        c1: u32,
+        text: &str,
+    ) -> TextDocumentContentChangeEvent {
+        TextDocumentContentChangeEvent {
+            range: Some(Range::new(Position::new(l0, c0), Position::new(l1, c1))),
+            range_length: None,
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn apply_content_change_splices_a_ranged_edit() {
+        // A single-line replace: swap `cd` (cols 0..2 on line 1) for `XY`.
+        let mut text = "ab\ncd".to_string();
+        apply_content_change(&mut text, ranged_change(1, 0, 1, 2, "XY"));
+        assert_eq!(text, "ab\nXY");
+        // A pure INSERTION is a zero-width range: insert `!` at (0,2), pushing the newline right.
+        let mut text = "ab\ncd".to_string();
+        apply_content_change(&mut text, ranged_change(0, 2, 0, 2, "!"));
+        assert_eq!(text, "ab!\ncd");
+        // A pure DELETION is an empty replacement over a span: delete `b\nc` (0,1)..(1,1).
+        let mut text = "ab\ncd".to_string();
+        apply_content_change(&mut text, ranged_change(0, 1, 1, 1, ""));
+        assert_eq!(text, "ad");
+    }
+
+    #[test]
+    fn apply_content_change_without_a_range_replaces_the_whole_document() {
+        // A change with no range is a full-document replace (a client may still send one under INCREMENTAL).
+        let mut text = "old contents".to_string();
+        apply_content_change(
+            &mut text,
+            TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: "brand new".to_string(),
+            },
+        );
+        assert_eq!(text, "brand new");
+    }
+
+    #[test]
+    fn apply_content_change_applies_a_sequence_relative_to_prior_edits() {
+        // The LSP spec: within one notification, each change's range is relative to the text as left by
+        // the PRIOR change. Insert `X` at (0,1) → `aXbc`, then a second edit at (0,3) (now the `c`) → `aXbY`.
+        let mut text = "abc".to_string();
+        apply_content_change(&mut text, ranged_change(0, 1, 0, 1, "X")); // aXbc
+        apply_content_change(&mut text, ranged_change(0, 3, 0, 4, "Y")); // replace `c` → aXbY
+        assert_eq!(text, "aXbY");
+    }
+
+    #[test]
+    fn apply_content_change_clamps_a_degenerate_range_without_panicking() {
+        // A malformed range with end BEFORE start collapses to an insertion at the lower offset — a tooling
+        // read stays total (never a `replace_range` panic on an inverted span).
+        let mut text = "abcd".to_string();
+        apply_content_change(&mut text, ranged_change(0, 3, 0, 1, "!"));
+        // The `[1,3)` span (`bc`) is replaced by `!` — `a!d`.
+        assert_eq!(text, "a!d");
+        // An entirely out-of-range span clamps to the text end and appends.
+        let mut text = "ab".to_string();
+        apply_content_change(&mut text, ranged_change(9, 0, 9, 0, "Z"));
+        assert_eq!(text, "abZ");
+    }
+
+    #[test]
+    fn apply_content_change_maps_utf16_columns_to_utf8_bytes() {
+        // A range column counts UTF-16 units (LSP), so an edit after a multibyte char resolves to the right
+        // byte. `€` is 3 UTF-8 bytes but 1 UTF-16 unit; replace the `x` at column 1 with `Y`.
+        let mut text = "€x".to_string();
+        apply_content_change(&mut text, ranged_change(0, 1, 0, 2, "Y"));
+        assert_eq!(text, "€Y");
     }
 
     #[test]
