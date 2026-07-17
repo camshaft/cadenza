@@ -3512,18 +3512,33 @@ fn needs_clause_lines(text: &str) -> Vec<usize> {
 fn needs_free_lint(paths: &Paths) -> Result<(), String> {
     let dir = paths.repo.join("spec/semantics");
     let mut hits: Vec<String> = Vec::new();
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| p.extension().is_some_and(|x| x == "sexp"))
-                .collect()
-        })
-        .unwrap_or_default();
+    // A lint must FAIL LOUDLY if it cannot enumerate its inputs — a silent `unwrap_or_default()` here
+    // would make the whole check pass VACUOUSLY (0 files scanned) on an unreadable corpus dir, hiding a
+    // re-introduced clause. Propagate the error instead.
+    let entries = std::fs::read_dir(&dir)
+        .map_err(|e| format!("cannot read corpus dir {}: {e}", dir.display()))?;
+    let mut files: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("cannot read a corpus dir entry in {}: {e}", dir.display()))?
+            .path();
+        if path.extension().is_some_and(|x| x == "sexp") {
+            files.push(path);
+        }
+    }
     files.sort();
+    // The corpus always ships many `spec/semantics/*.sexp`; zero means we're scanning the wrong tree (a
+    // bad `paths.repo`) — treat it as a hard error, not a vacuous pass.
+    if files.is_empty() {
+        return Err(format!(
+            "no *.sexp corpus files found under {}",
+            dir.display()
+        ));
+    }
     for file in &files {
-        let Ok(text) = std::fs::read_to_string(file) else {
-            continue;
-        };
+        // A file we can enumerate but not READ could hide a `(needs …)` clause — fail, don't skip.
+        let text = std::fs::read_to_string(file)
+            .map_err(|e| format!("cannot read corpus file {}: {e}", file.display()))?;
         let rel = file.strip_prefix(&paths.repo).unwrap_or(file).display();
         for line_no in needs_clause_lines(&text) {
             hits.push(format!("{rel}:{line_no}"));
@@ -4066,6 +4081,30 @@ mod trap_grading_tests {
         // Multiple clauses across a file are all reported, in order.
         let many = "(needs a)\nx\n  (needs b)\n";
         assert_eq!(needs_clause_lines(many), vec![1, 3]);
+    }
+
+    #[test]
+    fn needs_free_lint_fails_loudly_when_it_cannot_enumerate_inputs() {
+        // A lint that can't read its inputs must FAIL, not vacuously pass (PR#519 Copilot): an
+        // unreadable/absent corpus dir or an empty one would otherwise green the whole `check` having
+        // scanned nothing, hiding a re-introduced clause. `paths` points at a repo whose
+        // `spec/semantics` does not exist → read_dir errors → hard Err.
+        let tick = std::process::id();
+        let root = std::env::temp_dir().join(format!("needs-lint-empty-{tick}"));
+        std::fs::create_dir_all(&root).unwrap();
+        let paths = Paths {
+            seed: root.join("implementation/seed"),
+            repo: root.clone(),
+        };
+        let err = needs_free_lint(&paths).expect_err("missing corpus dir must be a hard error");
+        assert!(err.contains("cannot read corpus dir"), "got: {err}");
+
+        // An EXISTING but empty spec/semantics (0 *.sexp) is also a hard error, not a vacuous pass.
+        std::fs::create_dir_all(root.join("spec/semantics")).unwrap();
+        let err = needs_free_lint(&paths).expect_err("empty corpus dir must be a hard error");
+        assert!(err.contains("no *.sexp corpus files"), "got: {err}");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
