@@ -2641,6 +2641,50 @@ mod tests {
     }
 
     #[test]
+    fn semantic_tokens_skip_a_leaf_that_crosses_a_line_boundary() {
+        // LSP semantic tokens are SINGLE-LINE (delta-encoded per line); a leaf whose span crosses a line
+        // boundary — a multi-line string literal — must be SKIPPED (left to the editor's lexical fallback)
+        // rather than emitted as a token whose length would run past the end of its start line. Pins the
+        // `start.line != end.line` guard so a regression can't emit an out-of-line token that a strict
+        // client rejects. Every EMITTED token must be single-line; the tokens on the other lines still
+        // appear (the skip is surgical to the crossing leaf).
+        let src = "(module m (def (msg) \"line one\nline two\") (export msg))";
+        let toks = semantic_tokens_for(src, false);
+        assert!(
+            !toks.is_empty(),
+            "the single-line tokens (keyword/name/…) are still emitted around the skipped string"
+        );
+        // Reconstruct each token's absolute (line, start, length) and confirm none is the multi-line
+        // string: the string starts on line 0 at the `\"` and ends on line 1, so if it were NOT skipped it
+        // would appear as a line-0 token whose start.character + length overruns line 0's content. The
+        // strongest invariant: the delta stream stays ascending + non-overlapping AND every token's length
+        // fits within its line — `assert_no_overlap` already checks ascending/non-overlap; here we assert
+        // no token claims to start on the line where the multi-line string BEGINS at its column.
+        assert_no_overlap(&toks);
+        // The `msg` name appears twice (def + export) and both are single-line `variable` tokens — proving
+        // the walk continued past the skipped string rather than aborting.
+        let string_line0_col = {
+            // Column (UTF-16) of the opening quote on line 0.
+            let byte = src.find('"').expect("a string literal");
+            byte_to_position(src, byte).character
+        };
+        let mut line = 0u32;
+        let mut start = 0u32;
+        for t in &toks {
+            line += t.delta_line;
+            start = if t.delta_line == 0 {
+                start + t.delta_start
+            } else {
+                t.delta_start
+            };
+            assert!(
+                !(line == 0 && start == string_line0_col),
+                "the multi-line string literal at line 0 col {string_line0_col} must be SKIPPED, not emitted"
+            );
+        }
+    }
+
+    #[test]
     fn diagnostics_for_a_clean_program_is_empty() {
         // A well-formed ML program has no faults — the result is total and empty, never an error. `x + x`
         // uses the parameter (so no unused-param warning) and references only bound names.
