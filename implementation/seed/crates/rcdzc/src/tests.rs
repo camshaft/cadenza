@@ -17066,6 +17066,46 @@ mod match_engine {
         }
     }
 
+    /// Verification Inc-b b4c: a `@requires`/`@ensures` predicate references only names in scope — the
+    /// def's PARAMETERS, `it` (for `@ensures`), and prelude/global names. A name that is none of those is
+    /// UNBOUND → CDZ0101 at the annotation (good locality). The b4a2-deferred name check, done where the
+    /// scope is known: each predicate name occurrence is checked against the param set + `it`, and any other
+    /// name must resolve standalone (a prelude op does; a stray name poisons CDZ0101).
+    #[test]
+    fn requires_ensures_predicate_unbound_name_is_cdz0101_valid_names_ok() {
+        use crate::testkit::parse;
+        // UNBOUND: a name that is not a param, not `it`, not a prelude op.
+        for (src, why) in [
+            (
+                "(module m (@ (requires (> y 0)) (def (f (: x Int64)) (+ x 1))) (export f))",
+                "@requires references unbound `y` (param is x)",
+            ),
+            (
+                "(module m (@ (ensures (> zzz 0)) (def (f (: x Int64)) (+ x 1))) (export f))",
+                "@ensures references unbound `zzz`",
+            ),
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0101"))
+                .unwrap_or_else(|| panic!("an unbound predicate name must be CDZ0101: {why}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0101"), "{why}: {}", d.message);
+        }
+        // BOUND: params, `it` (in @ensures), and prelude operators (`>`,`+`,`<=`) all in scope — no CDZ0101.
+        for ok in [
+            "(module m (@ (requires (> x 0)) (def (f (: x Int64)) (+ x 1))) (export f))", // param x
+            "(module m (@ (ensures (> it 0)) (def (f (: x Int64)) (+ x 1))) (export f))", // result it
+            "(module m (@ (requires (<= x 100)) (@ (ensures (> it x)) (def (f (: x Int64)) (+ x 1)))) (export f))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.code.as_deref() == Some("CDZ0101")),
+                "a predicate over params/it/prelude-ops must NOT flag unbound: {ok}"
+            );
+        }
+    }
+
     /// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
     /// valid: `T` a declared sum, `A` one of its variants. The linker's `as_ctor_export` recorded the
     /// (type, ctor) names WITHOUT checking they exist, so `(export (. T Nonesuch))` (a ctor `T` lacks),

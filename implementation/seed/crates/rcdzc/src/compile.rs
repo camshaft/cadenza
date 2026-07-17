@@ -870,6 +870,76 @@ fn unbacktick(msg: &str) -> Option<&str> {
     Some(&rest[..end])
 }
 
+/// The parameter NAMES of definition `def_ix` (a param is a bare name atom or a `(: name T)` binder whose
+/// first child is the name), for the b4c predicate name-scope check.
+fn def_param_names(db: &Db, def_ix: usize) -> Vec<String> {
+    let Some(def) = db.defs.get(def_ix) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for &p in &def.params {
+        if let Some(n) = db.ast.as_name(p) {
+            names.push(n.to_string());
+        } else if let Some(tail) = db.ast.as_form(p, ":")
+            && let Some(&first) = tail.first()
+            && let Some(n) = db.ast.as_name(first)
+        {
+            names.push(n.to_string());
+        }
+    }
+    names
+}
+
+/// The `@requires`/`@ensures` predicate occurrences of definition `def_ix`, each with whether it is an
+/// `@ensures` (so `it` is an additional bound name). Requires first, then ensures.
+fn verify_predicates_of(db: &Db, def_ix: usize) -> Vec<(StructId, bool)> {
+    let mut v: Vec<(StructId, bool)> = db.requires_of(def_ix).iter().map(|&p| (p, false)).collect();
+    v.extend(db.ensures_of(def_ix).iter().map(|&p| (p, true)));
+    v
+}
+
+/// The first NAME the predicate at `pred` references that is neither a def parameter, nor `it` (when
+/// `is_ensures`), nor a name that resolves standalone (a prelude/global) — i.e. an UNBOUND name — as a
+/// `CDZ0101` `Reject` anchored at that occurrence, or `None` if all names are in scope. Iterative walk (a
+/// deep predicate must not overflow). NOTE: a member-access key `(. operand key)` is a label, not a name
+/// lookup, so its `key` child is NOT checked (skipped like the resolver does).
+fn first_unbound_predicate_name(
+    db: &mut Db,
+    pred: StructId,
+    param_names: &[String],
+    is_ensures: bool,
+) -> Option<Reject> {
+    let mut stack = vec![pred];
+    while let Some(cur) = stack.pop() {
+        // A `(. operand key)` member access: recurse into the operand but NOT the key (a label).
+        if let Some(tail) = db.ast.as_form(cur, ".") {
+            if let Some(&operand) = tail.first() {
+                stack.push(operand);
+            }
+            continue; // key child intentionally not walked (a label, not a name lookup)
+        }
+        if let Some(name) = db.ast.as_name(cur).map(str::to_string) {
+            // A bound name: a def parameter, or `it` in an `@ensures`. In scope — skip.
+            if param_names.contains(&name) || (is_ensures && name == "it") {
+                continue;
+            }
+            // Otherwise it must resolve standalone (a prelude op / global). An unbound name poisons.
+            if let crate::resolved::Resolved::Poison(reject) = crate::resolve::resolved_of(db, cur)
+                && reject.code == Some(Code::Unbound)
+            {
+                return Some(reject);
+            }
+            continue;
+        }
+        if let crate::ast::Struct::List(children) = db.ast.get(cur) {
+            for &c in children {
+                stack.push(c);
+            }
+        }
+    }
+    None
+}
+
 fn collect_faults(db: &mut Db) -> Vec<Reject> {
     let mut faults = Vec::new();
     // A BAKEABLE type-valued export (a nullary export whose type-value reduces to a concrete type) crosses
@@ -2316,6 +2386,23 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             )
             .at(occ),
         );
+    }
+    // b4c NAME-RESOLUTION: a `@requires`/`@ensures` predicate references only names in scope — the def's
+    // PARAMETERS, the result binder `it` (for `@ensures`), and prelude/global names. A name that is NONE of
+    // those is UNBOUND — reported CDZ0101 AT the annotation (good locality), not far away at denotation.
+    // The recorded predicate was stripped from the def body so it has no scope of its own; rather than
+    // re-parent it (broad blast radius), we check each NAME OCCURRENCE it references: skip the def's param
+    // names and (for `@ensures`) `it`, and for every OTHER name test whether it resolves standalone (a
+    // prelude op like `>`/`+` does; a stray name resolves to `Poison(CDZ0101)`). This is exact for the flat
+    // arithmetic fragment (no predicate-local binders yet); a future nested-binder predicate would extend
+    // the skip set with the predicate's own bindings.
+    for di in 0..db.defs.len() {
+        let param_names = def_param_names(db, di);
+        for &(pred, is_ens) in &verify_predicates_of(db, di) {
+            if let Some(reject) = first_unbound_predicate_name(db, pred, &param_names, is_ens) {
+                faults.push(reject);
+            }
+        }
     }
     // SEMANTIC validation of a CONSTRUCTOR-EXPORT `(export (. T A))` / `(export (. T *))` — the opaque-types
     // surface. `malformed_exports` (above) accepts its SHAPE, and the linker's `as_ctor_export` records the
