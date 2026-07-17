@@ -51,7 +51,7 @@ function blockedBy(ex) {
 
 // ---- the compiler (browser wasm) + runner (jco), loaded once ----
 const pkgDir = join(guideRoot, "src/wasm/pkg");
-const { default: init, compile, compile_tests, render_value, render_syntax, export_types } = await import(join(pkgDir, "cdz_wasm.js"));
+const { default: init, compile, compile_tests, param_test_signatures, render_value, render_syntax, export_types } = await import(join(pkgDir, "cdz_wasm.js"));
 await init({ module_or_path: readFileSync(join(pkgDir, "cdz_wasm_bg.wasm")) });
 const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
 // Mirror the app run path's scalar formatting (a whole-number Float gets its `.0` back from the static
@@ -187,6 +187,54 @@ async function runTestExports(componentBytes, testNames) {
   return results;
 }
 
+// ---- drive SCALAR-param property tests (mirrors runWorker's scalar driver) ----
+// A scalar-param @test keeps its params on the export (compound:false in param_test_signatures), so the
+// driver generates a value per param type and calls fn(...args) over trials; a throw = a failing trial,
+// shrunk toward the minimal counterexample. Keeps the gate in lockstep with the in-browser driver.
+const INT_RANGE = {
+  int8: [-128n, 127n], int16: [-32768n, 32767n], int32: [-2147483648n, 2147483647n],
+  int64: [-9223372036854775808n, 9223372036854775807n],
+  uint8: [0n, 255n], uint16: [0n, 65535n], uint32: [0n, 4294967295n], uint64: [0n, 18446744073709551615n],
+};
+const lcg = (s) => (s * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn;
+function genArgFor(type, state) {
+  const next = lcg(state);
+  if (type === "bool") return { arg: (next & 1n) === 0n, state: next };
+  if (type === "float32" || type === "float64") return { arg: Number(next % 2048n) - 1024, state: next };
+  const range = INT_RANGE[type];
+  if (!range) return { arg: 0n, state: next };
+  const span = range[1] - range[0] + 1n;
+  return { arg: range[0] + (((next % span) + span) % span), state: next };
+}
+function genArgsFor(paramTypes, seed) {
+  let state = seed; const args = [];
+  for (const t of paramTypes) { const { arg, state: s } = genArgFor(t, state); args.push(arg); state = s; }
+  return args;
+}
+async function runScalarProps(componentBytes, sigs) {
+  const scalar = sigs.filter((s) => !s.compound);
+  if (scalar.length === 0) return [];
+  const prog = await loadComponent(componentBytes, "prog");
+  const heap = await getHeap();
+  const root = await prog.instantiate(prog.getCore, heap ? { [HEAP_IMPORT]: heap } : {});
+  const byNorm = new Map();
+  for (const [name, v] of Object.entries(root)) if (typeof v === "function") byNorm.set(normName(name), v);
+  const results = [];
+  for (const sig of scalar) {
+    const name = sig.name;
+    // The raw wasm binding returns a `ParamTestSignature` class with snake_case `param_types` (the TS
+    // client wrapper is what renames it to `paramTypes`; here we call the wasm export directly).
+    const paramTypes = sig.param_types;
+    const fn = byNorm.get(normName(name));
+    if (typeof fn !== "function") { results.push({ name, pass: false, error: "property export not found" }); continue; }
+    const runArgs = (args) => { try { fn(...args); return false; } catch { return true; } };
+    let failed = false;
+    for (let t = 0; t < 100; t++) { if (runArgs(genArgsFor(paramTypes, BigInt(t) + 1n))) { failed = true; break; } }
+    results.push(failed ? { name, pass: false, error: "property failed" } : { name, pass: true });
+  }
+  return results;
+}
+
 // ---- run a `mode="test"` snippet in ONE surface: compile-tests, run each @test, assert expected pass/fail ----
 // `snippet` is the test-defs source ALREADY in `surface`. Returns null on success, else a reason string.
 async function runTestInSurface(ex, snippet, surface, where) {
@@ -204,10 +252,19 @@ async function runTestInSurface(ex, snippet, surface, where) {
     const d = r.diagnostics.find((x) => x.error) ?? r.diagnostics[0];
     return `${ex.file} [test] (${where}): test compile DECLINED — ${d ? `${d.code} ${d.message}` : "no @test / no component"}\n    ${brief}`;
   }
-  if (r.nullary_test_names.length === 0) {
-    return `${ex.file} [test] (${where}): a mode="test" example has no nullary @test defs to run\n    ${brief}`;
+  // Gather SCALAR-param property signatures (compound:false) so a parameterized @test is DRIVEN, not
+  // treated as "nothing to run". A compound (`-gen`) test is still deferred (not run here).
+  let sigs = [];
+  try { sigs = param_test_signatures(program, surface) ?? []; } catch { sigs = []; }
+  const scalarSigs = sigs.filter((s) => !s.compound);
+  if (r.nullary_test_names.length === 0 && scalarSigs.length === 0) {
+    return `${ex.file} [test] (${where}): a mode="test" example has no runnable @test defs (no nullary, no scalar property)\n    ${brief}`;
   }
-  const results = await runTestExports(r.component, r.nullary_test_names);
+  const nullaryResults = r.nullary_test_names.length > 0
+    ? await runTestExports(r.component, r.nullary_test_names)
+    : [];
+  const propResults = await runScalarProps(r.component, sigs);
+  const results = [...nullaryResults, ...propResults];
   const failed = results.filter((t) => !t.pass);
   if (ex.expect === "error") {
     // A teaching example demonstrating a FAILING test: at least one @test must fail.

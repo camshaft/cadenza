@@ -307,6 +307,33 @@
   (input  (eval (Ast.List (list))))
   (trap   "unreachable"))
 
+; MALFORMED-AST FAMILY (companions to the empty-list case above): the eval desugar FAITHFULLY reconstructs the
+; source an `Ast.*` construction denotes and hands it to the ordinary pipeline — it does NOT itself validate or
+; paper over an ill-typed program. So a STRUCTURALLY-reconstructable but ILL-TYPED eval argument reconstructs to
+; ordinary source that the type-checker then rejects with the SAME diagnostic that hand-written source would get.
+; These pin that soundness: the reconstruct's job is faithful denotation, and semantic errors surface as the
+; ordinary CDZ codes rather than being swallowed into a wrong value. Guards against a future reconstruct change
+; that silently accepted (mis-folded) an ill-typed constructed AST instead of letting the checker reject it.
+(case "eval of an Ast.List with a non-operator head is the ordinary application type error"
+  (doc    "`(eval (Ast.List (list (Ast.Int 1) (Ast.Int 2))))` reconstructs to the source `(1 2)` — an Int64
+           applied as if it were a function. The eval desugar reconstructs faithfully; the reconstructed
+           source is then type-checked like any other, so it is rejected as CDZ0201 (cannot apply a value of
+           type Int64 — it is not a function), exactly as hand-written `(1 2)` is. Pins that a malformed
+           (non-operator-headed) constructed AST surfaces the ORDINARY application type error via faithful
+           reconstruction, not a silent success or a bespoke eval-only failure.")
+  (input  (eval (Ast.List (list (Ast.Int 1) (Ast.Int 2)))))
+  (error  CDZ0201))
+
+(case "eval of a bare Ast.Name for an unbound name is the ordinary unbound-name error"
+  (doc    "`(eval (Ast.Name \"nonexistent\"))` reconstructs to the bare name `nonexistent` as a program.
+           The reconstruct is faithful; the reconstructed name is resolved like any other reference, so an
+           unbound one is rejected as CDZ0101 (unbound name), exactly as a hand-written bare `nonexistent`
+           is. Pins that eval of a name-denoting AST goes through ordinary NAME RESOLUTION — the reconstruct
+           does not invent a binding or swallow the reference — so an unbound program name is the ordinary
+           unbound-name error, not an eval-specific one.")
+  (input  (eval (Ast.Name "nonexistent")))
+  (error  CDZ0101))
+
 (case "quoting an empty compound produces an empty Ast.List"
   (doc    "`(quote ())` reifies the empty compound `()` to an EMPTY `Ast.List` — the reifier maps a
            parenthesized form to `Ast.List` of its reified elements, and zero elements give an empty list

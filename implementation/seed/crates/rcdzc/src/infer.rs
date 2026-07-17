@@ -3952,6 +3952,28 @@ pub fn def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
     scheme
 }
 
+/// Whether EVERY parameter of `def` has a DETERMINED (non-`Any`) type — the param half of what
+/// `compute_def_scheme` checks before it also demands the body/result. When `def_scheme` returns `None`
+/// but this returns `true`, the undetermined thing is the def's RESULT, not a parameter: the body never
+/// yields a concrete type (a recursive function with NO base case — every path recurses — so its result
+/// is unconstrained). The `def_scheme`-declined call site uses this to tell those two failures apart, so
+/// it doesn't tell an author whose parameter is ALREADY annotated `(: n Int64)` to "add an explicit
+/// annotation" — the parameter is fine; the missing base case is the fault. Mirrors `compute_def_scheme`'s
+/// param loop exactly (same binder extraction + `type_of` + `Ty::Any` test) so the two agree.
+pub(crate) fn recursive_def_params_all_determined(db: &mut Db, def: usize) -> bool {
+    let sig_params = db.defs[def].params.clone();
+    for p in &sig_params {
+        let binder = match db.ast.as_form(*p, ":").and_then(|t| t.first().copied()) {
+            Some(name_occ) => name_occ,
+            None => *p,
+        };
+        if matches!(type_of(db, binder), Ty::Any) {
+            return false;
+        }
+    }
+    true
+}
+
 fn compute_def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
     let body = db.defs[def].body?;
     let sig_params = db.defs[def].params.clone();

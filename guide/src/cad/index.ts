@@ -1,13 +1,13 @@
 /// The CAD mesh driver for the /cad browser route — v-cad's module (G3b). A TS port of the Rust cdz-cad
-/// (implementation/seed/crates/cdz-cad): parse a rendered EXACT `Solidr` s-expr (Rational `n/d` coords) into
+/// (implementation/seed/crates/cdz-cad): parse a rendered EXACT `Solid` s-expr (Rational `n/d` coords) into
 /// a CSG tree, walk it into a manifold-3d solid, triangulate, and return the flat triangle buffers the /cad
 /// route feeds to three.js. v-guide-infra owns the route/canvas/deps; this module is v-cad's (per the split).
 ///
 /// The run worker produces the model's rendered value like:
-///   (: (Differencer (Cuber (: (tuple 50/1 30/1 5/1) Vec3r)) (Spherer 127/20)) Solidr)
-/// The exact `Solidr` model (implementation/cad) uses Rational coordinates (`n/d`); this parser reads the
+///   (: (Difference (Cube (: (tuple 50/1 30/1 5/1) Vec3)) (Sphere 127/20)) Solid)
+/// The exact `Solid` model (implementation/cad) uses Rational coordinates (`n/d`); this parser reads the
 /// numerator/denominator and evaluates to a JS number (n/d) at the mesh leaf — the MODEL is exact, the
-/// geometry kernel (manifold) is float. Full-size Cuber/Cylinderr, no Rotater (no exact rotation).
+/// geometry kernel (manifold) is float. Full-size Cube/Cylinder, no Rotate (no exact rotation).
 
 import Module from "manifold-3d";
 import type { ManifoldToplevel } from "manifold-3d";
@@ -24,7 +24,7 @@ export type MeshResult =
 /// Tessellation of curved primitives (sphere/cylinder), matching the Rust driver's DEFAULT_SEGMENTS.
 const SEGMENTS = 32;
 
-/// The maximum Solidr nesting depth (matches cdz-cad's MAX_DEPTH) — an adversarially deep input Errs cleanly
+/// The maximum Solid nesting depth (matches cdz-cad's MAX_DEPTH) — an adversarially deep input Errs cleanly
 /// instead of overflowing the recursive descent.
 const MAX_DEPTH = 256;
 
@@ -102,7 +102,7 @@ class Parser {
     return this.toks[this.pos] === "(" && this.isAtom(this.toks[this.pos + 1], ":");
   }
 
-  /// Parse a value at a Solidr position, transparently unwrapping a `(: <value> Type>)` annotation.
+  /// Parse a value at a Solid position, transparently unwrapping a `(: <value> Type>)` annotation.
   parseSolid(): Solid {
     if (++this.depth > MAX_DEPTH) {
       throw new Error(`solid nests deeper than the limit (${MAX_DEPTH})`);
@@ -112,7 +112,7 @@ class Parser {
       this.expectOpen(); // (
       this.expectAtom(); // :
       r = this.parseSolid(); // the annotated value
-      this.expectAtom(); // Type name (Solidr)
+      this.expectAtom(); // Type name (Solid)
       this.expectClose(); // )
     } else {
       r = this.parseNode();
@@ -126,36 +126,36 @@ class Parser {
     const head = this.expectAtom();
     let node: Solid;
     switch (head) {
-      case "Emptyr":
+      case "Empty":
         this.expectAtom(); // `unit` payload
         node = { t: "empty" };
         break;
-      case "Cuber":
+      case "Cube":
         node = { t: "cube", s: this.parseVec3() };
         break;
-      case "Spherer":
+      case "Sphere":
         node = { t: "sphere", r: this.parseRational() };
         break;
-      case "Cylinderr":
+      case "Cylinder":
         node = { t: "cylinder", h: this.parseRational(), r: this.parseRational() };
         break;
-      case "Unionr":
+      case "Union":
         node = { t: "union", a: this.parseSolid(), b: this.parseSolid() };
         break;
-      case "Differencer":
+      case "Difference":
         node = { t: "difference", a: this.parseSolid(), b: this.parseSolid() };
         break;
-      case "Intersectionr":
+      case "Intersection":
         node = { t: "intersection", a: this.parseSolid(), b: this.parseSolid() };
         break;
-      case "Translater":
+      case "Translate":
         node = { t: "translate", v: this.parseVec3(), of: this.parseSolid() };
         break;
-      case "Scaler":
+      case "Scale":
         node = { t: "scale", v: this.parseVec3(), of: this.parseSolid() };
         break;
       default:
-        throw new Error(`unknown Solidr constructor \`${head}\``);
+        throw new Error(`unknown Solid constructor \`${head}\``);
     }
     this.expectClose();
     return node;
@@ -166,12 +166,12 @@ class Parser {
       this.expectOpen(); // (
       this.expectAtom(); // :
       const v = this.parseVec3(); // inner (tuple …)
-      this.expectAtom(); // Vec3r
+      this.expectAtom(); // Vec3
       this.expectClose(); // )
       return v;
     }
     this.expectOpen();
-    if (this.expectAtom() !== "tuple") throw new Error("expected a Vec3r `(tuple …)`");
+    if (this.expectAtom() !== "tuple") throw new Error("expected a Vec3 `(tuple …)`");
     const v: Vec3 = [this.parseRational(), this.parseRational(), this.parseRational()];
     this.expectClose();
     return v;
@@ -199,7 +199,7 @@ class Parser {
   }
 }
 
-/// Parse a rendered `Solidr` s-expression into a CSG tree (throws on a malformed form).
+/// Parse a rendered `Solid` s-expression into a CSG tree (throws on a malformed form).
 function parseSolid(text: string): Solid {
   const p = new Parser(tokenize(text.trim()));
   const s = p.parseSolid();
@@ -221,7 +221,7 @@ function toManifold(M: ManifoldStatic, s: Solid): ManifoldObj {
       // NOT degenerate geometry. This composes correctly when nested (an empty arm of a union/difference).
       return M.cube([0, 0, 0], true);
     case "cube":
-      return M.cube(s.s, true); // FULL size, centred (matches Cuber semantics)
+      return M.cube(s.s, true); // FULL size, centred (matches Cube semantics)
     case "sphere":
       return M.sphere(s.r, SEGMENTS);
     case "cylinder":
@@ -252,7 +252,7 @@ async function manifoldStatic(): Promise<ManifoldStatic> {
   return (await toplevelPromise).Manifold;
 }
 
-/// Mesh a rendered `Solidr` value into triangle buffers (never throws — a typed error on parse/mesh failure).
+/// Mesh a rendered `Solid` value into triangle buffers (never throws — a typed error on parse/mesh failure).
 export async function meshFromSolid(solidText: string): Promise<MeshResult> {
   let tree: Solid;
   try {

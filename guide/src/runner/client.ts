@@ -5,7 +5,7 @@
 /// timeout; on timeout we `terminate()` the (now-dead) worker, report "timed out", and drop the
 /// reference so the NEXT run spins up a fresh worker. A completed run reuses the same worker.
 
-import { renderValue, renderSyntax, renderSyntaxDisplay, runtimeHash, compileTests, type Surface } from "../compiler/client.ts";
+import { renderValue, renderSyntax, renderSyntaxDisplay, runtimeHash, compileTests, paramTestSignatures, type Surface, type ParamTestSig } from "../compiler/client.ts";
 import runtimeUrl from "../wasm/runtime.wasm?url";
 import { hexDigest, explainIfStaleRuntime } from "./runtimeHashGuard.ts";
 import type { RunJob, RunResult, TestResult } from "./runWorker.ts";
@@ -141,6 +141,7 @@ export async function run(
 export async function runTestComponent(
   component: Uint8Array,
   testNames: string[],
+  scalarProps: { name: string; paramTypes: string[] }[] = [],
 ): Promise<TestResult[]> {
   if (busy) return testNames.map((name) => ({ name, pass: false, error: "a run is already in progress" }));
   busy = true;
@@ -165,16 +166,19 @@ export async function runTestComponent(
         worker = null;
         resolve({ kind: "error", message: e.message } as RunResult);
       };
-      const job: RunJob = { component, runtime, mode: "test", testNames };
+      const job: RunJob = { component, runtime, mode: "test", testNames, scalarProps };
       w.postMessage(job);
     });
 
     if (raw.kind === "tests") return raw.results;
-    if (raw.kind === "timeout") return testNames.map((name) => ({ name, pass: false, error: "timed out" }));
+    // A timeout / whole-suite error surfaces against every test AND every scalar property (else a driven
+    // property that timed out would silently vanish from the report).
+    const allNames = [...testNames, ...scalarProps.map((p) => p.name)];
+    if (raw.kind === "timeout") return allNames.map((name) => ({ name, pass: false, error: "timed out" }));
     // A whole-suite error (couldn't instantiate the component, etc.) — surface it against every test so the
     // caller shows the failure rather than a silent empty result.
     const message = "message" in raw ? explainIfStaleRuntime(raw.message, runtimeMatchesCompiler) : "test run failed";
-    return testNames.map((name) => ({ name, pass: false, error: message }));
+    return allNames.map((name) => ({ name, pass: false, error: message }));
   } finally {
     busy = false;
   }
@@ -199,13 +203,25 @@ export async function runTests(source: string, surface: Surface = "sexpr"): Prom
       message: firstErr ? `${firstErr.code || ""} ${firstErr.message}`.trim() : "no `@test` definition to run",
     };
   }
-  const ran = await runTestComponent(compiled.component, compiled.nullaryTestNames);
-  // Append the parameterized @tests as deferred rows (not run in the MVP; property trials are a follow-up).
-  const deferred: TestResult[] = compiled.paramTestNames.map((name) => ({
+  // Split the parameterized @tests into SCALAR (params on the export → the arg-driver runs them live over
+  // generated inputs) and COMPOUND (`-gen` wrappers performing `Test.gen` internally → still deferred,
+  // phase 2). `param_test_signatures` classifies each: `compound: false` = scalar, drivable now.
+  const sigs = await paramTestSignatures(source, surface).catch(() => [] as ParamTestSig[]);
+  const scalarProps = sigs
+    .filter((s) => !s.compound)
+    .map((s) => ({ name: s.name, paramTypes: s.paramTypes }));
+  const compoundNames = new Set(sigs.filter((s) => s.compound).map((s) => s.name));
+  const ran = await runTestComponent(compiled.component, compiled.nullaryTestNames, scalarProps);
+  // A COMPOUND (`-gen`) property test still defers (needs the internal `Test.gen` host driver — phase 2).
+  // Fall back to `paramTestNames` for anything the signatures did not classify (a defensive union).
+  const deferredNames = compiled.paramTestNames.filter(
+    (n) => compoundNames.has(n) || !scalarProps.some((p) => p.name === n),
+  );
+  const deferred: TestResult[] = deferredNames.map((name) => ({
     name,
     pass: false,
     deferred: true,
-    error: "property test — deferred (runs with generated inputs in a later increment)",
+    error: "property test — deferred (compound generator; runs in a later increment)",
   }));
   return { kind: "tests", results: [...ran, ...deferred] };
 }

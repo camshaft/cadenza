@@ -266,6 +266,21 @@ enum Cmd {
     /// type"), reusing the SAME compiler queries the one-shot subcommands drive. No arguments — it
     /// communicates only over stdin/stdout.
     Lsp,
+
+    // ── Cadenza-in-Cadenza (ML) compiler conformance ────────────────────────────────────────────────
+    /// Run a single corpus program through the CADENZA-IN-CADENZA (ML) compiler and print a
+    /// machine-readable VERDICT — the seam the `cargo xtask gate` `cadenza-ml` target invokes to measure
+    /// the self-hosted compiler's conformance against the SHARED corpus (`spec/semantics/*.sexp`), the same
+    /// corpus rcdzc is gated against (operator directive 2026-07-17). Reads the program SOURCE from a FILE
+    /// argument, or from stdin when no file is given. Prints ONE verdict line to stdout:
+    /// `value <sexpr>` (ran to that value) | `declined` (well-formed but not-yet-supported by the ML
+    /// compiler's current language subset — a coverage-not-yet, not an error) | `error <msg>`. ALWAYS exits
+    /// 0 — a decline/error is a verdict, not a shell failure; the gate maps stdout→a per-case outcome and
+    /// reports a climbing `cadenza-ml conformance: X/N` line. STUB: currently declines every program (the
+    /// ML compiler's source front-end lands behind this subcommand next, per the A/B/C ruling); this fixes
+    /// the interface so the gate wiring can land against 0/N green and each ML feature flips cases without
+    /// any xtask change.
+    RunMl(RunMlArgs),
 }
 
 fn main() -> ExitCode {
@@ -323,6 +338,7 @@ fn main() -> ExitCode {
         Cmd::Instantiations(a) => run_instantiations(&a),
         Cmd::ParamManifest(a) => run_param_manifest(&a),
         Cmd::Lsp => run_lsp(),
+        Cmd::RunMl(a) => run_run_ml(&a),
     }
 }
 
@@ -337,6 +353,55 @@ fn run_lsp() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+// ── Cadenza-in-Cadenza (ML) compiler conformance seam ─────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct RunMlArgs {
+    /// The corpus program SOURCE file (s-expr / ml surface). OMITTED → read the program from stdin. The
+    /// `cargo xtask gate` `cadenza-ml` target passes each `spec/semantics/*.sexp` case's program here.
+    file: Option<String>,
+}
+
+/// `cdz run-ml` — run ONE corpus program through the Cadenza-in-Cadenza (ML) compiler and print a
+/// machine-readable verdict for the gate. Contract (fixed, invariant to the A/B/C source-reader ruling):
+///   - input: program source from FILE, else stdin.
+///   - stdout: exactly ONE verdict line — `value <sexpr>` | `declined` | `error <msg>`.
+///   - exit: ALWAYS 0 (a decline/error is a VERDICT, not a shell failure; the gate reserves non-zero for a
+///     genuine harness crash).
+///
+/// STUB (this increment): the ML compiler's source front-end (source → its `Tok` pipeline) has not landed
+/// yet — that's the next unit, behind whichever of A/B/C the operator picks. So every program currently
+/// `declined` (well-formed-but-not-yet-supported → coverage-not-yet, NOT an error). This fixes the interface
+/// so v-fleet-tooling can wire the `cadenza-ml` GateTarget + reported `X/N` line against a real 0/N-green
+/// seam; each ML feature added later flips cases `declined`→`value …` with ZERO xtask change.
+fn run_run_ml(args: &RunMlArgs) -> ExitCode {
+    use std::io::Read;
+    // Read the program source (file or stdin). A read failure is a harness-level problem → the one
+    // reserved non-success path, so the gate can distinguish "couldn't feed the program" from a verdict.
+    let source = match &args.file {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{PROG} run-ml: cannot read {path}: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => {
+            let mut buf = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
+                eprintln!("{PROG} run-ml: cannot read stdin: {e}");
+                return ExitCode::FAILURE;
+            }
+            buf
+        }
+    };
+    // STUB: no source front-end yet → every program is not-yet-supported. `_source` is read (so the
+    // stdin/file plumbing + the gate contract are exercised now) but not yet compiled.
+    let _source = source;
+    println!("declined");
+    ExitCode::SUCCESS
 }
 
 // ── compile (with in-process source parsing + auto-spans for debug) ──────────────────────────────
@@ -1156,6 +1221,13 @@ struct TreeArgs {
     /// The project whose dependency tree to print: a `Project.cdz` manifest, or a DIRECTORY holding one.
     /// OMITTED → search up from the current directory for the nearest `Project.cdz` (like `cdz build`).
     dir: Option<String>,
+    /// Emit the tree as a nested JSON object instead of the box-drawing text — the shape a tool consumes
+    /// to read the project graph without parsing the connectors. Each node is
+    /// `{name, path, deps: [...]}`; a node also carries `unresolved: true` (no `Project.cdz` at its path)
+    /// or `repeated: true` (already shown higher up — a cycle/diamond, not re-expanded), mirroring the
+    /// text form's `*unresolved*` / `(*)` markers. The root node's `path` is its directory.
+    #[arg(long)]
+    json: bool,
 }
 
 /// `cdz metadata [DIR]` — print the resolved project manifest as JSON (the `cargo metadata` analogue): a
@@ -1335,9 +1407,7 @@ fn run_tree(args: &TreeArgs) -> ExitCode {
         Ok(v) => v,
         Err(code) => return code,
     };
-    // The root line: `name (dir)`.
     let root_name = m.name.clone().unwrap_or_else(|| "<unnamed>".to_string());
-    println!("{root_name} ({})", dir.display());
     // Canonicalize a dir for the visited-set key (so `../a` and an absolute path to the same dir collide),
     // falling back to the raw path when canonicalization fails (a not-yet-existing dep dir).
     let canon = |p: &std::path::Path| -> std::path::PathBuf {
@@ -1346,8 +1416,66 @@ fn run_tree(args: &TreeArgs) -> ExitCode {
     let mut visited: std::collections::HashSet<std::path::PathBuf> =
         std::collections::HashSet::new();
     visited.insert(canon(&dir));
-    print_dep_subtree(&dir, &m, "", &mut visited);
+    if args.json {
+        // The root node object: `{name, path, deps: [...]}` — same shape a tool consumes for the whole
+        // graph. The root's `path` is its directory (deps carry their manifest-relative path spelling).
+        let deps = dep_subtree_json(&dir, &m, &mut visited);
+        use cadenza_syntax::query::json;
+        let mut obj = json::Object::new();
+        obj.string("name", &root_name);
+        obj.string("path", &dir.to_string_lossy());
+        obj.raw("deps", &deps);
+        println!("{}", obj.finish());
+    } else {
+        // The root line: `name (dir)`, then the recursive box-drawing subtree.
+        println!("{root_name} ({})", dir.display());
+        print_dep_subtree(&dir, &m, "", &mut visited);
+    }
     ExitCode::SUCCESS
+}
+
+/// Build the JSON array of `manifest_dir`'s `def deps` as nested `{name, path, deps}` node objects — the
+/// `--json` counterpart of [`print_dep_subtree`], sharing its resolution + cycle/diamond guard. A dep with
+/// no resolvable `Project.cdz` is `{path, unresolved: true}`; a dep already shown higher up is
+/// `{name, path, repeated: true}` (not re-expanded), mirroring the text form's `*unresolved*` / `(*)`.
+fn dep_subtree_json(
+    manifest_dir: &std::path::Path,
+    m: &Manifest,
+    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+) -> String {
+    use cadenza_syntax::query::json;
+    let canon = |p: &std::path::Path| -> std::path::PathBuf {
+        std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    };
+    let mut arr = json::Array::new();
+    for dep in &m.deps {
+        #[allow(clippy::infallible_destructuring_match)]
+        let dep_path = match dep {
+            DepSource::Path(p) => p,
+        };
+        let dep_dir = manifest_dir.join(dep_path);
+        let mut obj = json::Object::new();
+        match load_manifest(&dep_dir) {
+            Ok(Some((_dpath, dm))) => {
+                let dep_name = dm.name.clone().unwrap_or_else(|| "<unnamed>".to_string());
+                obj.string("name", &dep_name);
+                obj.string("path", dep_path);
+                let key = canon(&dep_dir);
+                if visited.contains(&key) {
+                    obj.raw("repeated", "true");
+                } else {
+                    visited.insert(key);
+                    obj.raw("deps", &dep_subtree_json(&dep_dir, &dm, visited));
+                }
+            }
+            _ => {
+                obj.string("path", dep_path);
+                obj.raw("unresolved", "true");
+            }
+        }
+        arr.raw(&obj.finish());
+    }
+    arr.finish()
 }
 
 /// Recursively print `manifest_dir`'s `def deps` beneath it, each with a tree connector under `prefix`.

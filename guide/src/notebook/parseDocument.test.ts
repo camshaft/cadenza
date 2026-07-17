@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseDocument, parseDirective, cellRanges, serializeDocument, setCellSource, type Cell } from "./parseDocument.ts";
+import { parseDocument, parseDirective, cellRanges, serializeDocument, setCellSource, assignIds, type Cell } from "./parseDocument.ts";
 
 test("a plain prose-only document is one prose cell", () => {
   const cells = parseDocument("# Title\n\nsome **markdown** prose.");
@@ -252,4 +252,36 @@ test("an edit then re-serialize survives a full parse round trip (the live edit 
   const md = serializeDocument(edited);
   assert.deepEqual(parseDocument(md), edited);
   assert.match(md, /\(def \(main\) 42\)/);
+});
+
+// ── assignIds / id preservation: stable React keys for a stacked per-cell UI (P0 #13) ──
+
+test("assignIds stamps a stable monotonic id in document order (parseDocument leaves cells id-less)", () => {
+  const cells = parseDocument("prose\n\n```cadenza\n(def (main) 1)\n```\n\nmore\n\n```cadenza table\n(def (main) (list))\n```");
+  // parseDocument itself assigns NO ids (pure structural split).
+  assert.equal(cells.every((c) => c.id === undefined), true);
+  const withIds = assignIds(cells);
+  assert.deepEqual(withIds.map((c) => c.id), [0, 1, 2, 3]);
+  // A fresh array (immutable) — the originals are untouched.
+  assert.notEqual(withIds, cells);
+  assert.equal(cells[0].id, undefined);
+  // The cell content is otherwise preserved.
+  assert.equal(withIds[1].kind, "code");
+  assert.equal((withIds[1] as Extract<Cell, { kind: "code" }>).source, "(def (main) 1)");
+});
+
+test("setCellSource preserves a cell's id across an edit (the React key survives)", () => {
+  const cells = assignIds(parseDocument("```cadenza\n(def (main) 1)\n```\n\nprose"));
+  assert.equal(cells[0].id, 0);
+  const next = setCellSource(cells, 0, "(def (main) 42)");
+  assert.equal(next[0].id, 0); // same id → the per-cell editor keeps focus/state
+  assert.equal((next[0] as Extract<Cell, { kind: "code" }>).source, "(def (main) 42)");
+  assert.equal(next[1].id, cells[1].id); // untouched cell keeps its id
+});
+
+test("serializeDocument ignores id (id is a UI concern, not doc content) — round trip still holds", () => {
+  const cells = assignIds(parseDocument("```cadenza\n(def (main) 1)\n```"));
+  const md = serializeDocument(cells);
+  // Re-parsing yields id-less cells (parseDocument doesn't assign); assignIds re-stamps identically.
+  assert.deepEqual(assignIds(parseDocument(md)), cells);
 });

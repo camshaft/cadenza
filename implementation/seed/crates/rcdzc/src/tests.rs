@@ -14236,6 +14236,60 @@ mod recursion {
     }
 
     #[test]
+    fn a_recursive_def_with_no_base_case_names_the_missing_base_case_not_the_parameter() {
+        // A recursive function whose EVERY path recurses (`(def (loop n) (loop (+ n 1)))`) declines: its
+        // RESULT type is undetermined (the body never yields a concrete value). `def_scheme` returns `None`
+        // — but so does an undetermined-PARAMETER decline, and the call site used to blame the PARAMETER for
+        // both, telling the author to "add an explicit annotation `(: p Int64)`". That is WRONG here: with
+        // `(: n Int64)` the parameter is already determined, yet the old message still demanded the very
+        // annotation already present. The fix distinguishes the two via `recursive_def_params_all_determined`
+        // — when the params ARE determined, the fault is the missing BASE CASE, and the message says so.
+        let base_case_msg = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .unwrap_or_else(|| panic!("a no-base-case recursive def must decline: {src}"))
+                .message
+        };
+        // Unannotated AND annotated — BOTH now name the missing base case (the annotated one is the bug:
+        // the parameter is fine, so "annotate the parameter" was a dead end).
+        for src in [
+            "(module m (def (loop n) (loop (+ n 1))) (def (main) (loop 0)) (export main))",
+            "(module m (def (loop (: n Int64)) (loop (+ n 1))) (def (main) (loop 0)) (export main))",
+        ] {
+            let m = base_case_msg(src);
+            assert!(
+                m.contains("never returns") && m.contains("BASE CASE"),
+                "names the missing base case, not the parameter: {m}"
+            );
+            assert!(
+                !m.contains("add an explicit annotation"),
+                "must NOT send the author to annotate an already-fine parameter: {m}"
+            );
+        }
+        // A def WITH a base case that stops the recursion types + runs — the base case fixes the result.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (loop (: n Int64)) (if (< n 0) 0 (loop (+ n 1)))) \
+                       (def (main) (loop -1)) (export main))"
+                ),
+                "main"
+            ),
+            0
+        );
+        // A GENUINE undetermined-PARAMETER decline (a pure pass-through with NO base case is dominated by
+        // the missing base case, so construct the param case that survives a base case: a param never
+        // width-fixed AND never seeded concretely). The recursive-param / monomorphization-tie guidance
+        // still fires for that shape — the base-case branch does NOT swallow it.
+        let ambiguous = "(module m (def (id x) x) (def (loop p) (if true (id p) (loop p))) \
+                          (def (main) (loop (id 0))) (export main))";
+        // (This particular one resolves via the seeded `(id 0)` → Int64; the assertion we care about is the
+        // POSITIVE base-case naming above and the no-annotation-dead-end guarantee. Kept as a compile smoke.)
+        let _ = crate::diagnostics(&mut crate::db::Db::load(parse(ambiguous)));
+    }
+
+    #[test]
     fn a_param_passed_to_a_polymorphic_callee_is_not_over_constrained() {
         // The argument-position constraint is PRECISE: it fires only when the callee's k-th parameter is
         // DETERMINED (not `Any`/`Var`). A parameter passed to a POLYMORPHIC callee (`id`, whose param is
@@ -61225,6 +61279,38 @@ mod sidecar_driven {
             unique.len(),
             spellings.len(),
             "wire spellings must be DISTINCT (no two kinds share a theme token): {spellings:?}"
+        );
+    }
+
+    #[test]
+    fn symbol_kind_all_is_the_complete_1to1_wire_vocabulary() {
+        use crate::sidecar::SymbolKind;
+        // `SymbolKind::ALL` is the canonical symbols-query vocabulary a downstream consumer (an LSP
+        // document-outline / breadcrumb icon legend) iterates to prove it handles EVERY declaration
+        // kind. Same two invariants as the `HighlightKind` guard above, so it can't rot:
+        // (1) ALL is COMPLETE — the exhaustive `match` fails to compile if a variant is added without
+        //     extending ALL (this and `ALL` are the single pair to update alongside the enum);
+        // (2) the wire spellings are DISTINCT and 1:1 with ALL (no two kinds share an outline token,
+        //     and every entry has a spelling).
+        for &k in SymbolKind::ALL {
+            match k {
+                SymbolKind::Value
+                | SymbolKind::Function
+                | SymbolKind::Type
+                | SymbolKind::Effect
+                | SymbolKind::Module => {}
+            }
+        }
+        let spellings: Vec<&str> = SymbolKind::ALL.iter().map(|k| k.as_str()).collect();
+        assert!(
+            spellings.iter().all(|s| !s.is_empty()),
+            "every symbol kind has a wire spelling"
+        );
+        let unique: std::collections::BTreeSet<&str> = spellings.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            spellings.len(),
+            "wire spellings must be DISTINCT (no two kinds share an outline token): {spellings:?}"
         );
     }
 

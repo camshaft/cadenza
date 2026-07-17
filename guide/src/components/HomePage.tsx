@@ -13,11 +13,18 @@ export default function HomePage() {
       <header className="sticky top-0 z-20 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
           <span className="text-lg font-bold tracking-tight text-slate-100">Cadenza</span>
-          <div className="flex items-center gap-3 sm:gap-4">
-            <Link to={`/${firstChapter}`} className="text-sm text-slate-400 transition hover:text-slate-200">
+          {/* Mobile touch targets: the header nav links get a 44px min-height below `sm`, compact at sm+. */}
+          <div className="flex items-center gap-1 sm:gap-4">
+            <Link
+              to={`/${firstChapter}`}
+              className="flex min-h-11 items-center px-2 text-sm text-slate-400 transition hover:text-slate-200 sm:min-h-0 sm:px-0"
+            >
               Guide
             </Link>
-            <Link to="/playground" className="text-sm text-slate-400 transition hover:text-slate-200">
+            <Link
+              to="/playground"
+              className="flex min-h-11 items-center px-2 text-sm text-slate-400 transition hover:text-slate-200 sm:min-h-0 sm:px-0"
+            >
               Playground
             </Link>
             {/* The syntax toggle is a nicety here (the guide/playground carry their own); hide it on

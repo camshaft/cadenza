@@ -1118,3 +1118,102 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool)))
+
+; ── b(mul): a no-overflow discharge for MULTIPLICATION — for x <= 100, (x * 2) <= MAXINT ──────────────
+; Completes the arithmetic-op discharge coverage (+, -, now *) that b3's guard elision handles. For a
+; checked `x * 2` under `@requires(<= x 100)`, the no-overflow obligation is `LE (mul x 2) MAXINT`. The base
+; gains a `mul` head + a `mono-mul-r` rule — multiplying both sides of a `<=` by a POSITIVE constant
+; preserves the order (the positivity is the rule's side-condition: it only fires for a positive `Num` k).
+; From `assume (le x 100)`: mono-mul-r by 2 → `LE (mul x 2) (mul 100 2)`, and `le-ax (mul 100 2) MAXINT`
+; mints `LE (mul 100 2) MAXINT` (eval-ground (mul 100 2) = 200, 200 <= MAXINT), then trans-le closes it.
+; `mul`=Const 4. mono-mul-r requires k a positive numeral (an arbitrary/negative multiplier does NOT
+; preserve `<=` — the rule returns None, so the axiom base stays sound).
+
+(case "b(mul): a no-overflow obligation is DISCHARGED for x <= 100, (x * 2) <= MAXINT via positive-multiplier monotonicity"
+  (doc    "The multiplication case, completing +/-/* discharge coverage. A checked `x * 2 : Int64` under
+           `@requires(<= x 100)` has the no-overflow obligation `LE (mul x 2) MAXINT`. From `assume
+           (le x 100)`, `mono-mul-r` (multiply both sides by the POSITIVE constant 2 — its positivity is the
+           rule's side-condition; a non-positive multiplier returns None) gives `LE (mul x 2) (mul 100 2)`,
+           then the CHECKED ground axiom `le-ax (mul 100 2) MAXINT` mints `LE (mul 100 2) MAXINT` because
+           `eval-ground (mul 100 2) = 200` and `200 <= MAXINT`, and `trans-le` closes it to `LE (mul x 2)
+           MAXINT`. Pins that the discharge convention covers MULTIPLICATION (b3 elides `*` guards too), with
+           the positive-multiplier side-condition keeping the monotonicity rule sound.")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (mul (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 4) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+      (def (maxint) (Term.Num 9223372036854775807))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (eval-ground (: t Term))
+        (match t
+          ((Term.Num n) (Option.Some n))
+          ((Term.Comb (Term.Comb (Term.Const 4) a) b)
+            (match (eval-ground a)
+              ((Option.Some av) (match (eval-ground b)
+                                  ((Option.Some bv) (Option.Some (* av bv)))
+                                  ((Option.None) (Option.None))))
+              ((Option.None) (Option.None))))
+          (_ (Option.None))))
+      (def (le-ax (: lhs Term) (: rhs Term))
+        (match (eval-ground lhs)
+          ((Option.Some lv) (match (eval-ground rhs)
+                              ((Option.Some rv) (if (<= lv rv)
+                                                  (Option.Some (Thm.Seq (list) (le lhs rhs)))
+                                                  (Option.None)))
+                              ((Option.None) (Option.None))))
+          ((Option.None) (Option.None))))
+      ; RULE: monotonicity of * on the right by a POSITIVE constant k — from G |- (le x c) derive
+      ; G |- (le (mul x k) (mul c k)). k must be a positive Num (side-condition); else None (a non-positive
+      ; multiplier flips or collapses the order, so minting would be unsound).
+      (def (mono-mul-r (: th Thm) (: k Term))
+        (match k
+          ((Term.Num kv)
+            (if (> kv 0)
+              (match (concl th)
+                ((Term.Comb (Term.Comb (Term.Const 1) x) c)
+                  (Option.Some (Thm.Seq (hyps th) (le (mul x k) (mul c k)))))
+                (_ (Option.None)))
+              (Option.None)))
+          (_ (Option.None))))
+      (def (trans-le (: t1 Thm) (: t2 Thm))
+        (match (concl t1)
+          ((Term.Comb (Term.Comb (Term.Const 1) a) b)
+            (match (concl t2)
+              ((Term.Comb (Term.Comb (Term.Const 1) b2) c)
+                (if (term-eq b b2)
+                  (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (le a c)))
+                  (Option.None)))
+              (_ (Option.None))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq mul le maxint concl hyps assume le-ax mono-mul-r trans-le)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq mul le maxint concl hyps assume le-ax mono-mul-r trans-le))
+            (def (main)
+              (let ((x    (Term.Var 0))
+                    (two  (Term.Num 2))
+                    (c100 (Term.Num 100)))
+                (let ((goal (le (mul x two) (maxint))))
+                  (let ((pre (assume (le x c100))))
+                    (match (mono-mul-r pre two)
+                      ((Option.Some step1)
+                        (match (le-ax (mul c100 two) (maxint))
+                          ((Option.Some fact)
+                            (match (trans-le step1 fact)
+                              ((Option.Some proof) (term-eq (concl proof) goal))
+                              ((Option.None) false)))
+                          ((Option.None) false)))
+                      ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))

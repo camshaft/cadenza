@@ -108,3 +108,50 @@ fn tree_of_a_depless_project_is_just_the_root() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn tree_json_emits_the_nested_graph() {
+    // `--json` emits ONE nested `{name, path, deps: [...]}` object — the shape a tool consumes without
+    // parsing the box-drawing connectors. Same graph as the text test: app → mathlib → util, app → util
+    // (a diamond → `repeated: true`, not re-expanded), + an unresolvable dep (`unresolved: true`). Parsed,
+    // not substring-checked, so a malformed object fails loudly.
+    let root = workspace("json");
+    project(&root, "util", &[]);
+    project(&root, "mathlib", &["../util"]);
+    project(&root, "app", &["../mathlib", "../util", "../ghost"]);
+    let (ok, out, err) = run(&["tree", root.join("app").to_str().unwrap(), "--json"]);
+    assert!(ok, "cdz tree --json should succeed: {out}{err}");
+    let v: serde_json::Value =
+        serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("valid JSON ({e}): {out}"));
+    assert_eq!(v["name"], "app", "root name: {out}");
+    let deps = v["deps"].as_array().expect("deps is an array");
+    assert_eq!(deps.len(), 3, "three deps: {out}");
+    // mathlib expanded, with util nested under it.
+    let mathlib = deps
+        .iter()
+        .find(|d| d["name"] == "mathlib")
+        .expect("mathlib dep");
+    assert_eq!(
+        mathlib["deps"][0]["name"], "util",
+        "mathlib's util is nested: {out}"
+    );
+    // The direct util is the diamond — marked repeated, NOT re-expanded (no nested deps).
+    let util = deps
+        .iter()
+        .find(|d| d["path"] == "../util" && d["repeated"] == true)
+        .expect("the diamond util is marked repeated");
+    assert!(
+        util["deps"].is_null(),
+        "a repeated node is not re-expanded: {out}"
+    );
+    // The missing dep is marked unresolved (and carries no name).
+    let ghost = deps
+        .iter()
+        .find(|d| d["path"] == "../ghost")
+        .expect("ghost dep");
+    assert_eq!(
+        ghost["unresolved"], true,
+        "the missing dep is unresolved: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

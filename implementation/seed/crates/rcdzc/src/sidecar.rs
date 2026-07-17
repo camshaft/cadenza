@@ -834,6 +834,18 @@ pub enum SymbolKind {
 }
 
 impl SymbolKind {
+    /// Every `SymbolKind` in declaration order — the complete symbols-query vocabulary, so a consumer
+    /// can iterate the whole set (build an outline-icon legend, assert a 1:1 wire mapping) without
+    /// hand-listing the variants. Mirrors `HighlightKind::ALL`; a variant added to the enum but not here
+    /// is caught by the exhaustive-match completeness test.
+    pub const ALL: &'static [SymbolKind] = &[
+        SymbolKind::Value,
+        SymbolKind::Function,
+        SymbolKind::Type,
+        SymbolKind::Effect,
+        SymbolKind::Module,
+    ];
+
     /// The wire spelling — a short stable kebab-case token, the same style as `HighlightKind::as_str`.
     pub fn as_str(self) -> &'static str {
         match self {

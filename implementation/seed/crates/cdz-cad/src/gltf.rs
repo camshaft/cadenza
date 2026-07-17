@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn a_cube_glb_has_a_valid_header_and_chunks() {
-        let m = mesh(&parse_solid("(: (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) Solidr)").unwrap());
+        let m = mesh(&parse_solid("(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)").unwrap());
         let glb = to_glb(&m);
         assert_eq!(u32_at(&glb, 0), GLB_MAGIC, "magic is glTF");
         assert_eq!(u32_at(&glb, 4), 2, "version 2");
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn the_json_is_well_formed_and_declares_the_mesh() {
-        let m = mesh(&parse_solid("(: (Spherer 1.0) Solidr)").unwrap());
+        let m = mesh(&parse_solid("(: (Sphere 1.0) Solid)").unwrap());
         let glb = to_glb(&m);
         let json_len = u32_at(&glb, 12) as usize;
         let json = std::str::from_utf8(&glb[20..20 + json_len]).unwrap();
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn bin_buffer_length_matches_indices_plus_positions() {
-        let m = mesh(&parse_solid("(: (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) Solidr)").unwrap());
+        let m = mesh(&parse_solid("(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)").unwrap());
         let glb = to_glb(&m);
         let json_len = u32_at(&glb, 12) as usize;
         let bin_off = 20 + json_len;
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn an_empty_mesh_still_writes_a_valid_glb() {
-        let m = mesh(&parse_solid("(: (Emptyr unit) Solidr)").unwrap());
+        let m = mesh(&parse_solid("(: (Empty unit) Solid)").unwrap());
         let glb = to_glb(&m);
         assert_eq!(u32_at(&glb, 0), GLB_MAGIC);
         assert_eq!(u32_at(&glb, 8) as usize, glb.len());

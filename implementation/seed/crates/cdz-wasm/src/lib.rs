@@ -467,8 +467,8 @@ fn scalar_type_enum(ast: &rcdzc::ast::Arenas, ty_node: rcdzc::ast::StructId) -> 
         return "other".to_string();
     };
     match name {
-        "Int8" | "Int16" | "Int32" | "Int64" | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "Bool"
-        | "Float32" | "Float64" => name.to_ascii_lowercase(),
+        "Int8" | "Int16" | "Int32" | "Int64" | "UInt8" | "UInt16" | "UInt32" | "UInt64"
+        | "Bool" | "Float32" | "Float64" => name.to_ascii_lowercase(),
         _ => "other".to_string(),
     }
 }

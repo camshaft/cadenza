@@ -3027,6 +3027,72 @@ mod tests {
         assert!(served.is_ok(), "serve returned an error: {served:?}");
     }
 
+    #[test]
+    fn serve_answers_an_unknown_request_with_method_not_found() {
+        // The `_ =>` arm of `handle_request`: an unrecognized method must come back as a `MethodNotFound`
+        // ERROR response (not a panic, not silence) so the client is not left waiting on its request id.
+        // Exercised end-to-end over the real `serve` loop, the one path the happy-path serve test skips.
+        let (server_conn, client) = Connection::memory();
+        let handle = std::thread::spawn(move || {
+            let mut server = Server::new(server_conn);
+            server.serve()
+        });
+        // A method the server does not implement. No didOpen needed — dispatch rejects before any doc work.
+        client
+            .sender
+            .send(Message::Request(Request::new(
+                RequestId::from(1),
+                "textDocument/theOneWeDoNotSupport".to_string(),
+                serde_json::Value::Null,
+            )))
+            .unwrap();
+        let mut got_err = false;
+        loop {
+            match client.receiver.recv() {
+                Ok(Message::Response(r)) if r.id == RequestId::from(1) => {
+                    match r.response_kind {
+                        lsp_server::ResponseKind::Err { error } => {
+                            assert_eq!(
+                                error.code,
+                                lsp_server::ErrorCode::MethodNotFound as i32,
+                                "an unknown method must be MethodNotFound, got {error:?}"
+                            );
+                        }
+                        lsp_server::ResponseKind::Ok { result } => {
+                            panic!("an unknown method should error, not succeed: {result:?}")
+                        }
+                    }
+                    got_err = true;
+                    break;
+                }
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+        assert!(
+            got_err,
+            "the unknown request was answered with an error through serve"
+        );
+        // Clean shutdown so the serve thread returns (proves the loop survives an error response).
+        client
+            .sender
+            .send(Message::Request(Request::new(
+                RequestId::from(2),
+                Shutdown::METHOD.to_string(),
+                serde_json::Value::Null,
+            )))
+            .unwrap();
+        client
+            .sender
+            .send(Message::Notification(Notification::new(
+                "exit".to_string(),
+                serde_json::Value::Null,
+            )))
+            .unwrap();
+        let served = handle.join().expect("the serve thread did not panic");
+        assert!(served.is_ok(), "serve returned an error: {served:?}");
+    }
+
     /// The line/character of a `Position`, as a tuple, for terse assertions.
     fn lc(p: Position) -> (u32, u32) {
         (p.line, p.character)

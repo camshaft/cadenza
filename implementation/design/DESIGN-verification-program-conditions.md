@@ -408,6 +408,71 @@ Each increment is one gated unit; b3 (the disjunction wiring) is the next unit n
 
 ---
 
+## 8. THE CAPSTONE — `@trap_free`: prove a function NEVER crashes (operator directive, 2026-07-17)
+
+**Operator directive:** *"a way to prove that a function is completely free of traps … incredibly powerful
+for building super reliable systems that are completely crash free."* This is the capstone of the whole
+Inc-b arc: where `@ensures` proves ONE stated postcondition and proof-guided elision proves ONE no-overflow
+obligation, `@trap_free` proves that **EVERY trap source in the function body is unreachable on every input
+satisfying `@requires`** — so the function is statically guaranteed never to crash.
+
+### 8.1 Surface (fork T1, route to operator)
+A `@trap_free` (or `@total`) annotation on a `def`, in the `@requires`/`@ensures` family (same glued-
+annotation parse, no new primitive):
+`@trap_free @requires(P) def f x = body`. It takes NO predicate argument — it is a whole-body promise. Fork
+T1 (naming): `@trap_free` (precise — "no trap") vs `@total` (familiar from type theory, but "total" also
+implies termination, which this does NOT prove — a `@trap_free` function may still loop forever). **My lean:
+`@trap_free`** — it names exactly the guarantee (no trap ≠ terminates); `@total` overclaims. Route to operator.
+
+### 8.2 The obligation — every trap source proven unreachable
+`@trap_free f` denotes to the CONJUNCTION of a per-trap-source obligation over `body`, each under the
+`@requires` precondition. The trap sources (from the runtime trap set + `is_trap_free`):
+| Trap source | Per-node obligation |
+|---|---|
+| integer **overflow** (`+`/`-`/`*` checked arith) | `no-overflow@Id` — the b1–b3 obligation, ALREADY built |
+| integer **divide/mod by zero** (`/`,`%`) | `divisor ≠ 0` at the node (`GT`/`≠` obligation, new order rule) |
+| **out-of-bounds** index (`List.at`/`Bytes.at`/…) | `0 ≤ i < len` at the node (a bounds obligation) |
+| **partial match / unreachable arm** | the match is EXHAUSTIVE on the scrutinee's reachable values (the exhaustiveness checker already proves this for total matches; the obligation is "no `Unreachable` node reachable") |
+| explicit **`trap()`** / effect-abort | the `trap` node is unreachable (its guarding condition is provably false) |
+
+So `@trap_free` is the **whole-function generalization of proof-guided elision**: elision proves ONE
+overflow guard unreachable to drop it; `@trap_free` proves ALL trap sources unreachable to certify the
+function. It REUSES the b1–b3 machinery per trap source (the discharge, the `licenses`-style match), adding
+the divide-by-zero and bounds obligation shapes (new order/range rules in the arithmetic base, same
+checked-schema discipline).
+
+### 8.3 Discharge + guarantee (fork T2, route to operator)
+The kernel discharges each per-source obligation (compile-time eval, as b4c); the function is `@trap_free`
+iff EVERY trap source is proven unreachable. **Fork T2 — the failure mode when a source can't be proven:**
+(a) REJECT (compile error "cannot prove `@trap_free`: <the un-proven trap source> may trap") — the
+annotation is a PROMISE, so an unproven promise is an error; OR (b) warn + fall back to runtime checks. **My
+lean: REJECT** — `@trap_free` is a guarantee the author asserts; silently keeping runtime checks would break
+the "proven crash-free" contract the operator wants (and the author would think they had a guarantee they
+don't). Route to operator. **Bonus (the elision payoff):** a proven `@trap_free` function's guards are ALL
+provably dead → the optimizer elides EVERY one (the b3 disjunction, applied per source) — so proven-crash-
+free code is ALSO faster (no runtime checks). That is the operator's "proofs feed optimization" at whole-
+function scale.
+
+### 8.4 Dependency + increment plan
+`@trap_free` **depends on the kernel-location fork** (§3-adjacent, still pending operator): compile-time
+discharge needs the kernel available, same as b4c. It also reuses proof-guided elision's per-trap-source
+reasoning. Increment plan (after the kernel-location ruling):
+- **t1 — corpus:** hand-author the per-trap-source obligations (divide-by-zero, bounds, exhaustiveness,
+  explicit-trap) as `bounds`-kernel discharges, like the b1 `+`/`-`/`*` cases — validate each source's
+  obligation discharges (and its NEGATIVE: an un-bounded divisor is NOT provably non-zero → stays trappable).
+- **t2 — the `@trap_free` conjunction:** a def is trap-free iff every trap-source obligation in its body
+  discharges; corpus-pin the whole-function certificate + the reject when one source can't be proven.
+- **t3 — surface + optimizer:** the `@trap_free` annotation (fork T1) + REJECT diagnostic (fork T2) +
+  elide-all-proven-guards (the whole-function elision payoff).
+
+### 8.5 Forks routed to operator
+- **T1 (surface naming):** `@trap_free` (my lean — names the exact guarantee) vs `@total` (overclaims
+  termination). 
+- **T2 (failure mode):** REJECT an unprovable `@trap_free` (my lean — it's a promise) vs warn+runtime-fallback.
+- **(carried) kernel-location fork** — `@trap_free` needs it resolved too (compile-time discharge).
+
+---
+
 ## References
 - [DESIGN-verification-hol-kernel.md](DESIGN-verification-hol-kernel.md) — the kernel this builds on
   (unforgeable `Thm`, the trust boundary, the LCF check-is-trivial/find-is-untrusted payoff).

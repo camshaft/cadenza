@@ -11,7 +11,7 @@
 /// unaffected). The TYPES don't change.
 @!default-fraction Rational
 
-import { Solidr, Vec3r, Aabbr } from "exact"
+import { Solid, Vec3, Aabb } from "exact"
 import { bounding-box, aabbr-size, v3r-x, v3r-y, v3r-z } from "exact"
 import { Vec3m, v3-len, len-m, meters, to-vec3r } from "units-typed"
 
@@ -24,10 +24,10 @@ def inches(n: Int64) =
   Qty.of(Qty.value(Unit.in(Unit.of(#"meter"), Qty.of(Rational.of(n, (1 : Int64)), Unit.of(#"inch")))), Unit.of(#"meter"))
 
 /// A meter-model axis-aligned box: width/depth/height given as LENGTHS (type-checked), stored as exact
-/// meters, built into the exact `Solidr` CSG the drivers consume. Mixing a length with a bare number here
+/// meters, built into the exact `Solid` CSG the drivers consume. Mixing a length with a bare number here
 /// is a CDZ0301 type error — the strong unit typing the operator wants, at the point of authoring.
 def box-len(w: Qty(Rational, Unit.base(#"meter")), d: Qty(Rational, Unit.base(#"meter")), h: Qty(Rational, Unit.base(#"meter"))) =
-  Solidr.Cuber(to-vec3r(v3-len(w, d, h)))
+  Solid.Cube(to-vec3r(v3-len(w, d, h)))
 
 /// ---- worked models: author in real units, exact meters underneath ----
 

@@ -4704,6 +4704,61 @@ mod tests {
         }
 
         #[test]
+        fn line_col_matches_an_independent_reference_over_generated_sources() {
+            // `line_col` (and its `LineIndex` fast path) is the byte→(line,col) primitive EVERY surface's
+            // error reporting funnels through (`locate_byte_in_message` rewrites "at byte N" → "line:col").
+            // `line_index_matches_line_col_at_every_offset` proves the two INTERNAL impls agree — but they
+            // could agree while BOTH being wrong. This pins them against an INDEPENDENT reference computed
+            // a different way: line = 1 + count of '\n' strictly before `byte`; col = 1 + count of CHARS
+            // since the last '\n' at-or-before `byte`. Swept over random sources rich in newlines + multibyte
+            // (col counts CHARS, not bytes) at every char-boundary offset. A regression (counting bytes for
+            // col, an off-by-one at a newline, a past-end mis-clamp) would misplace every reported error.
+            fn reference(src: &str, byte: usize) -> (usize, usize) {
+                let byte = byte.min(src.len());
+                let mut line = 1usize;
+                let mut col = 1usize;
+                for (i, ch) in src.char_indices() {
+                    if i >= byte {
+                        break;
+                    }
+                    if ch == '\n' {
+                        line += 1;
+                        col = 1;
+                    } else {
+                        col += 1;
+                    }
+                }
+                (line, col)
+            }
+            // Alphabet weighted toward newlines + multibyte so lines/columns and byte≠char occur densely.
+            let alphabet: &[char] = &['\n', 'a', 'b', ' ', 'é', '中', '😀', '\t'];
+            let mut rng = SplitMix64(0x11e_c01d_1a7e_5eed);
+            for _ in 0..3000 {
+                let len = (rng.next() % 30) as usize;
+                let src: String = (0..len)
+                    .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                    .collect();
+                let idx = driver::LineIndex::new(&src);
+                for byte in 0..=src.len() + 2 {
+                    if byte <= src.len() && !src.is_char_boundary(byte) {
+                        continue; // queried only at char boundaries (span starts)
+                    }
+                    let want = reference(&src, byte);
+                    assert_eq!(
+                        driver::line_col(&src, byte),
+                        want,
+                        "line_col disagrees with the reference at byte {byte} of {src:?}"
+                    );
+                    assert_eq!(
+                        idx.line_col(&src, byte),
+                        want,
+                        "LineIndex::line_col disagrees with the reference at byte {byte} of {src:?}"
+                    );
+                }
+            }
+        }
+
+        #[test]
         fn lint_report_renders_location_severity_message_and_flags_error() {
             let (target, _) = driver::load(b"g(deprecated())", Format::Ml).unwrap();
             let set = crate::query::lint::LintSet::compile("(lint (deprecated ,@_) \"no\" error)")

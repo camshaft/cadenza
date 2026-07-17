@@ -2622,6 +2622,7 @@ pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
 pass	at min times -1 the three overflow families diverge: checked None, wrapping min
+pass	b(mul): a no-overflow obligation is DISCHARGED for x <= 100, (x * 2) <= MAXINT via positive-multiplier monotonicity
 pass	b(sub): a no-underflow obligation is DISCHARGED — for x >= 0, (x - 1) >= MININT via monotonicity + a CHECKED numeral fact
 pass	b4b denotation: a predicate Ast (<= x 100) denotes to the bounds obligation term le (Var 0) (Num 100)
 pass	b4c(conjunctive) NEG-1: precondition covers only {le x 100} (missing ge x 0) — the 2-hyp proof is NOT licensed
@@ -2777,6 +2778,7 @@ pass	decoding well-formed UTF-8 bytes yields the string
 pass	deeply nested pattern matching
 pass	demoting a Float64 to Float32 rounds to the nearest binary32
 pass	difference cardinality with a runtime-element subtrahend
+pass	difference is NOT commutative
 pass	difference over a runtime-element set removes exactly that element
 pass	different runtime Bytes nested in a tuple compare unequal
 pass	differing trapping operands trap by selection only under the arith hoist
@@ -2870,6 +2872,7 @@ pass	equality over a runtime float in a SUM payload compares by the float leaf
 pass	eval does not forge a private constructor NESTED in a compound
 pass	eval does not see through a splice whose operand is itself an Ast value
 pass	eval is optional for macros and interactive use
+pass	eval of a bare Ast.Name for an unbound name is the ordinary unbound-name error
 pass	eval of a fully-concrete imported constructor is legal from outside
 pass	eval of a partially-exported type's EXPORTED constructor works
 pass	eval of a partially-exported type's WITHHELD constructor is rejected
@@ -2893,6 +2896,7 @@ pass	eval of a quoted string executes it to the string value
 pass	eval of a quoted theorem constructor cannot forge an abstract theorem outside the kernel
 pass	eval of a template splicing a runtime VALUE folds — the working side of the boundary
 pass	eval of an Ast.Float NaN node executes to the NaN value — it does NOT construct an escaping node
+pass	eval of an Ast.List with a non-operator head is the ordinary application type error
 pass	eval of an exported smart constructor still works — the forge fix does not over-reject
 pass	eval on malformed AST traps
 pass	every not-a-number value is equal to every not-a-number value
@@ -2968,6 +2972,7 @@ pass	integer to byte (truncate to 0-255)
 pass	integer to byte wraps on overflow
 pass	interning the same string twice yields equal symbols
 pass	intersection cardinality with a runtime-element operand
+pass	intersection is associative
 pass	intersection with the empty set is the empty set
 pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
 pass	keyed lookups at different keys are not shared
@@ -3635,6 +3640,8 @@ pass	unary negation of an exact rational negates the numerator
 pass	under-applying a unary constructor is a type error, not a fabricated unit payload
 pass	unequal-depth payload paths bind distinctly
 pass	union cardinality with a runtime-element operand
+pass	union dedups overlapping elements by content, counted once
+pass	union is associative
 pass	union is commutative
 pass	union of a set with itself is the set (idempotent)
 pass	union with the empty set is the set itself

@@ -73,8 +73,8 @@ mod tests {
     #[test]
     fn a_centered_cube_has_symmetric_bounds() {
         // a 2×2×2 cube centred at the origin spans [-1, 1] on each axis.
-        let b = bounds(&parse_solid("(: (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) Solidr)").unwrap())
-            .unwrap();
+        let b =
+            bounds(&parse_solid("(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)").unwrap()).unwrap();
         assert!(
             approx(b.min[0], -1.0) && approx(b.max[0], 1.0),
             "x spans [-1,1]"
@@ -95,7 +95,7 @@ mod tests {
     fn a_translate_shifts_the_bounds() {
         // translate a unit-ish sphere out along +x → its center x is the translation.
         let b = bounds(
-            &parse_solid("(: (Translater (: (tuple 5.0 0.0 0.0) Vec3r) (Spherer 1.0)) Solidr)")
+            &parse_solid("(: (Translate (: (tuple 5.0 0.0 0.0) Vec3) (Sphere 1.0)) Solid)")
                 .unwrap(),
         )
         .unwrap();
@@ -112,7 +112,7 @@ mod tests {
         // two unit cubes 10 apart on x → the union's x-extent spans both.
         let b = bounds(
             &parse_solid(
-                "(: (Unionr (Cuber (: (tuple 1.0 1.0 1.0) Vec3r)) (Translater (: (tuple 10.0 0.0 0.0) Vec3r) (Cuber (: (tuple 1.0 1.0 1.0) Vec3r)))) Solidr)",
+                "(: (Union (Cube (: (tuple 1.0 1.0 1.0) Vec3)) (Translate (: (tuple 10.0 0.0 0.0) Vec3) (Cube (: (tuple 1.0 1.0 1.0) Vec3)))) Solid)",
             )
             .unwrap(),
         )
@@ -125,15 +125,15 @@ mod tests {
     #[test]
     fn empty_has_no_bounds() {
         assert_eq!(
-            bounds(&parse_solid("(: (Emptyr unit) Solidr)").unwrap()),
+            bounds(&parse_solid("(: (Empty unit) Solid)").unwrap()),
             None
         );
     }
 
     #[test]
     fn fits_within_a_build_volume() {
-        let b = bounds(&parse_solid("(: (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) Solidr)").unwrap())
-            .unwrap();
+        let b =
+            bounds(&parse_solid("(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)").unwrap()).unwrap();
         assert!(b.fits_within([3.0, 3.0, 3.0]), "a 2-cube fits a 3-bed");
         assert!(!b.fits_within([1.0, 3.0, 3.0]), "…but not a 1-wide bed");
     }

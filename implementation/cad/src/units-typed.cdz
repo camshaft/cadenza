@@ -16,7 +16,7 @@
 /// model); an accessor hands a coordinate back OUT as a length-`Qty`. Strong typing at the boundary,
 /// exact Rational meters inside — no Qty box in every node, no dependence on the blocked generic path.
 ///
-/// This composes with the existing bare-`Rational` `Vec3r` (exact.cdz): `Vec3m` here IS the meter-model
+/// This composes with the existing bare-`Rational` `Vec3` (exact.cdz): `Vec3m` here IS the meter-model
 /// store; `to-vec3r` bridges to the existing CSG/bbox machinery unchanged (all still exact Rational).
 ///
 /// NUMERIC MODE (S1-redux): `@!default-fraction Rational` — exact-by-default, so a bare `n/d` is an exact
@@ -24,7 +24,7 @@
 /// this default is forced with an explicit `(… : Int64)` annotation.
 @!default-fraction Rational
 
-import { Vec3r } from "exact"
+import { Vec3 } from "exact"
 import { v3r } from "exact"
 
 /// A length in the base METER unit — the type an author supplies for a coordinate/size. Written inline
@@ -61,7 +61,7 @@ def len-m(q: Qty(Rational, Unit.base(#"meter"))) = Qty.value(q)
 /// length). Sugar over `Qty.of` so callers rarely spell the unit by hand.
 def meters(n: Int64) = Qty.of(Rational.of(n, (1 : Int64)), Unit.of(#"meter"))
 
-/// Bridge a meter-model vector to the exact bare-`Rational` `Vec3r` the existing CSG/bbox machinery
+/// Bridge a meter-model vector to the exact bare-`Rational` `Vec3` the existing CSG/bbox machinery
 /// (exact.cdz) consumes — the magnitudes ARE the (meter) coordinates, so this is a direct re-pack, still
 /// fully exact. This is how S2 plugs into the model without touching the CSG core.
 def to-vec3r(v: Vec3m) = match v with | Vec3m.V3m(x, y, z) => v3r(x, y, z)
@@ -95,10 +95,10 @@ def authoring-in-inches-stores-exact-meters() =
 
 @test
 def to-vec3r-bridges-to-the-exact-csg-model() =
-  // The meter-model vector re-packs to the bare-Rational Vec3r the CSG/bbox core consumes — same exact
+  // The meter-model vector re-packs to the bare-Rational Vec3 the CSG/bbox core consumes — same exact
   // magnitudes, so a units-typed build plugs into the existing exact machinery unchanged.
   let v = v3-len(meters(4), meters(5), meters(6)) in
-  match to-vec3r(v) with | Vec3r.V3r(x, y, z) =>
+  match to-vec3r(v) with | Vec3.V3(x, y, z) =>
     if x == 4 / 1 then (if z == 6 / 1 then unit else trap("z")) else trap("x")
 
 export { Vec3m.*, v3-len, m-x, m-y, m-z, len-m, meters, to-vec3r }

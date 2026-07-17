@@ -108,8 +108,9 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
   return (
     <button
       onClick={onClick}
+      // Mobile touch target: 44px-tall tab below `sm` (the touch guideline), compact at sm+.
       className={
-        "flex items-center rounded px-2.5 py-1 text-xs font-medium transition " +
+        "flex min-h-11 items-center rounded px-2.5 text-xs font-medium transition sm:min-h-0 sm:py-1 " +
         (active ? "bg-slate-700/60 text-slate-100" : "text-slate-400 hover:text-slate-200")
       }
     >
