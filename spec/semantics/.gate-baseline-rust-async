@@ -2241,6 +2241,7 @@ pass	byte sequences are equal by their bytes in order
 pass	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 pass	chained guards of the same variant are tried in order
+pass	chaining two Unit.in conversions is a compile-time error — the inner one already unwrapped
 pass	char to-int and from-int round-trip through the scalar value
 pass	checked addition yields None on overflow instead of trapping
 pass	checked addition yields Some of the sum when it fits
@@ -2665,6 +2666,7 @@ pass	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
 pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and dimension
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	raising a runtime computed quantity to a power squares the runtime magnitude
+pass	re-wrapping the intermediate with Qty.of makes a two-step conversion well-formed
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	read classifies a lone punctuation token as an Ast.Name and it round-trips
 pass	read of text that is not a well-formed s-expression declines
@@ -2795,6 +2797,8 @@ pass	the LEB128 byte composition runs on a runtime operand
 pass	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
 pass	the arithmetic operator rejects a float-first mixed operand pair
+pass	the b2 match predicate LICENSES the elision: the discharged no-overflow proof matches the obligation and its hyps are covered by the node precondition
+pass	the b2 match predicate REJECTS a proof discharged under a FOREIGN hypothesis not in the node precondition (soundness — no elision under wrong assumptions)
 pass	the bitwise self-identities hold on a runtime narrow UInt8 (x & x = x, x | x = x, x ^ x = 0)
 pass	the bitwise-AND-with-zero annihilator does not discard a trapping runtime operand
 pass	the boolean less-than operator agrees with compare over Bool
@@ -3402,7 +3406,6 @@ todo	a mutually-recursive AST walker reads a node's child list without corruptin
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a nested element pattern dispatches on a NON-variant-0 list payload
 todo	a nested tuple list element is bound over a runtime list and folded across the rest
-todo	a no-overflow obligation is DISCHARGED: for x <= 100, (x + 1) <= MAXINT via monotonicity + a numeral fact
 todo	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 todo	a parameterized export returning a capturing closure is made and called by the host
 todo	a parameterized export returning a multi-argument capturing closure
@@ -3467,8 +3470,6 @@ todo	an 8-bit-integer closure crosses the host boundary
 todo	an @param of a Bool type generates a Bool-typed accessor
 todo	an @param of a Float64 type generates a Float64-typed accessor
 todo	an @param site generates a Param accessor a host delegation reads at run time
-todo	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
-todo	an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the no-overflow obligation cannot be closed (the check must stay)
 todo	an @param with no widget config still generates its typed accessor
 todo	an abortive handler abandons a host call in the path it discards
 todo	an entrypoint delegation lets a program reach its host function
