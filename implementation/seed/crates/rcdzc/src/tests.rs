@@ -5817,6 +5817,55 @@ fn a_match_shaped_arm_body_resumes_in_a_sequence_of_performs() {
     }
 }
 
+/// KNOWN LATENT SILENT MISCOMPILE — PINNED (concierge ruling 2026-07-17: queue the branch-out-state fix,
+/// pin the unsound case so it is tracked + cannot silently regress-worse; work active-demand Quantity-ABI/E5
+/// first, promote when they clear or a real consumer hits it). A HELPER that performs a STATE-ADVANCING op
+/// (`put`→`Map.insert`) inside a conditional BRANCH, called in a NON-TAIL position (a `let`-init) whose
+/// continuation READS the state (a later `get`), drops the branch's advanced out-state — the `Match`/`If`
+/// thread arms return the post-scrutinee state, discarding the advance. So the later `get` MISSES → a WRONG
+/// VALUE (v-compiler-ml's memoized-DB `demand`, lifting db.cdz onto effect-Db design A; they routed around it
+/// via the pure threaded-Db design B, so NO current consumer). VERIFIED LATENT (predates the 4a8b278b6
+/// match-arm fix — compiles+fails identically at the pre-fix parent), NOT a regression. A quick guard was
+/// proven IMPOSSIBLE (3 clean-reverted attempts: an arm-level decline over-declines the SOUND tail cases +
+/// breaks specialization; a let/do-arm reactive guard can't work — the helper's `put` is already inlined+
+/// threaded+folded-away by the time the arm sees the init). The real fix is BRANCH-OUT-STATE THREADING
+/// (thread each branch's advanced out-state forward as a match-valued state) — a substantial vertical, QUEUED.
+/// This test PINS the shape as a KNOWN MISCOMPILE: it currently COMPILES + runs to the WRONG value; when the
+/// branch-out-state fix lands, `run-then-get` yields 50 (demand fills 5→25, the later get(5) sees Some 25, so
+/// 25 + 25 = 50) — FLIP the assertion to `50` then. Until then it documents the bug (compiles, not a decline)
+/// so a regression to a DIFFERENT wrong shape (or a leak) is caught. Full analysis:
+/// queue mlrepro-effect-db-helper-outstate-lost-to-caller-sequence.cdz + the queued-branch-outstate memory.
+#[test]
+fn a_helper_state_advance_in_a_branch_lost_to_a_later_read_is_a_known_miscompile() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Db (op get (-> Int64 (Option Int64))) (op put (-> (Tuple Int64 Int64) Unit))) \
+        (def (demand (: k Int64) (: compute Int64)) \
+          (match (Db.get k) \
+            (((. Option Some) v) v) \
+            (((. Option None) u) (do (Db.put (tuple k compute)) compute)))) \
+        (def (run-then-get) \
+          (handle Db (Map.empty) \
+            ((get (k) s (resume (Map.lookup s k) s)) \
+             (put (kv) s (match kv ((tuple k v) (resume unit (Map.insert s k v)))))) \
+            (let ((a (demand 5 25))) \
+              (match (Db.get 5) (((. Option Some) v) (+ a v)) (((. Option None) u) 99))))) \
+        (export run-then-get))";
+    // Currently COMPILES (the miscompile is silent — a wrong value, not a decline). Pin that it still
+    // compiles (so a regression to a decline/leak is caught) — the value is WRONG today (the `get 5` misses
+    // because `demand`'s `put` out-state was dropped, so it takes the `None` arm → 99, not `25 + 25` = 50).
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("known-latent silent miscompile: currently COMPILES (does not decline) — see doc");
+    if let Some(v) = run_linked(&bytes, "run-then-get") {
+        // KNOWN-WRONG: the later `get 5` misses (dropped out-state) → `None` arm → 99. When the
+        // branch-out-state fix lands, this becomes "50" — FLIP to assert_eq!(v, "50") then.
+        assert_eq!(
+            v, "99",
+            "KNOWN MISCOMPILE (branch-out-state dropped): get 5 misses → 99; should be 50 once fixed"
+        );
+    }
+}
+
 /// The residual sub-case of the effectful-helper-in-a-self-call-arg family: an inlined helper whose perform
 /// sits UNDER A CONDITIONAL (`if`/`match`) — either in a branch (`if c then acc + B.b x else acc`) or in the
 /// condition (`if B.b x == 1 then …`). The deep-fresh-copy fixes fold a helper that performs on its
@@ -73480,3 +73529,4 @@ mod ir_payloads_stay_rc_backed_not_arc {
     const _: () = <crate::ty::Ty as AmbiguousIfSend<_>>::MARKER;
     const _: () = <crate::core::Core as AmbiguousIfSend<_>>::MARKER;
 }
+
