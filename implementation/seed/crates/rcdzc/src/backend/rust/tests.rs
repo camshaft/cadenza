@@ -3921,11 +3921,14 @@ fn export_name_kebab_validity_is_rejected_on_the_rust_backend_too() {
         digit_led.is_err(),
         "a digit-led kebab export segment is rejected on rust:\n{digit_led:?}"
     );
-    // (c) a normal export name still emits (no over-rejection) — regression guard.
+    // (c) a normal export name still emits (no over-rejection) — regression guard. Assert on the SPECIFIC
+    // emitted identifier `my_func` (the `my-func` boundary name sanitized: `-`→`_` for a Rust fn), NOT a
+    // bare `"pub fn "` fallback — that matches ANY public fn (the emitted module always has one), so it
+    // would pass even if `my_func` were mis-emitted/missing (Copilot PR#528 weak-test finding).
     let ok = compile_rust("(module m (def (my-func (: x Int64)) (+ x 1)) (export my-func))");
     assert!(
-        ok.contains("pub fn my_func") || ok.contains("pub fn my-func") || ok.contains("pub fn "),
-        "a valid kebab export name still emits a pub fn:\n{ok}"
+        ok.contains("pub fn my_func"),
+        "a valid kebab export name still emits `pub fn my_func` (not declined/over-rejected):\n{ok}"
     );
 }
 
