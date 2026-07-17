@@ -43,6 +43,13 @@ exclude = [
     # cdz-smith does with rcdzc). Builds + tests standalone (`cargo test` from its own dir, mock-only by
     # default — no AWS creds/network); a dedicated CI job runs it. Has its own `[workspace]` table.
     "implementation/seed/crates/cdz-agent",
+    # `cdz-kernel` (the log-native agent-runtime microkernel, v-agent-harness agent-runtime L1) is excluded
+    # for the same reason as cdz-agent: its future `aws` feature (L1d, the DynamoDB log backend) pulls the
+    # heavy async aws-sdk + tokio tree the seed's `--workspace` build + corpus gate must never pay. It is a
+    # leaf crate with its own `[workspace]` table; the default build (file-backed log, no network) builds +
+    # tests standalone, run by a dedicated CI job. Excluded up front so later rungs drop in without a
+    # workspace-topology change.
+    "implementation/seed/crates/cdz-kernel",
 ]
 
 [profile.dev]

@@ -1,0 +1,37 @@
+# cdz-kernel — the log-native agent-runtime MICROKERNEL (v-agent-harness, agent-runtime L1).
+#
+# The vision (implementation/design/DESIGN-agent-runtime-vision.md) is a log-native agent OS whose minimal
+# core is: tail an ordered LOG -> FOLD it with a Cadenza program -> execute the effect-requests the fold
+# emits, appending each result back as an immutable event (recorded-effect determinism, vision §2.3). This
+# crate is that microkernel, built up the L1 ladder (see DESIGN-agent-runtime-L1-plan.md):
+#   L1a (this commit) — the `Log` abstraction + a deterministic file-backed impl (local, no network).
+#   L1b — the single-threaded fold owner driving one agent-loop turn (reuses cdz-agent's embedder + the
+#         cdz-run host driver).
+#   L1c — the replay-determinism gate (live-record -> re-fold-from-record -> identical, zero live calls).
+#   L1d — swap the file log for DynamoDB behind an `aws` feature (like cdz-agent's `bedrock`).
+#
+# EXCLUDED from the seed workspace (own `[workspace]` table + root Cargo.toml exclude), the same isolation
+# cdz-agent/cdz-cad use: the L1d `aws` feature will pull the heavy aws-sdk + tokio tree, which a plain
+# `cargo build --workspace` and the corpus gate must never pay. L1a has no heavy deps yet; the isolation is
+# established up front so later rungs drop in without a workspace-topology change. A dedicated CI job builds
+# + tests it (default features = file log + mock model, no creds/network — CI-safe).
+[workspace]
+
+[package]
+name = "cdz-kernel"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[features]
+# OFF by default: the DynamoDB log backend (L1d) — the async aws-sdk + tokio tree. The default build is the
+# file-backed log, so `cargo build`/`cargo test` here needs no AWS creds and no network (the CI-gated path).
+default = []
+aws = []
+
+[dependencies]
+anyhow = "1"
+
+[lib]
+name = "cdz_kernel"
+path = "src/lib.rs"
