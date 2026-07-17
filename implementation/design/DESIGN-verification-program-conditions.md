@@ -5,7 +5,30 @@ Status: **Increment (b) DESIGN — ALL FORKS RESOLVED (operator 2026-07-16): `@r
 v-wasm-opt + v-rust-backend + me — §7), opt-seam simplified to a Core-tier DISJUNCTION
 (no new node; both backends already consult `arith_provably_in_range`, §3). b0 doc + b1 obligation corpus +
 b2 (Cadenza match predicate + `CorePass` mechanism) DONE; b3 = land `discharged_no_overflow` (stub→body) that
-v-core-opt's Slice-5 wrapper ORs into the predicate. NEXT: b3.** Follows the LCF kernel
+v-core-opt's Slice-5 wrapper ORs into the predicate.**
+
+**⚠ RULING (D)+A (operator, 2026-07-17) — the discharge/elision path is now TWO-PHASE.** Building b3's
+"compile-time-eval the discharge program → bool" as originally written turned out to be UNBUILDABLE on
+current rcdzc: the discharge kernel (`licenses`/`term-eq`/`hyps-subset`/`eval-ground`) is RECURSIVE, and
+rcdzc's compile-time β-reduce evaluator DECLINES recursion (`eval.rs`, "a recursive function needs runtime
+specialization"). The b1–b(mul) corpus discharges only because the gate COMPILES the cases TO WASM AND RUNS
+them — there is no compile-time recursive interpreter, and `desugar_eval` only reconstructs quoted/literal
+Ast, it does not run a recursive user fn to a constant. So the operator ruled:
+- **(D) short-term — verify at RUN TIME.** `@requires`/`@ensures`/`@trap_free`/`@invariant` are enforced by
+  injecting body-entry / body-exit checks that TRAP on violation (a load pass, `verify_enforce.rs`), NOT by
+  eliding guards. No proof runs at compile time; `discharged_no_overflow` stays a DORMANT-CORRECT `false`
+  stub (it never elides, so it is never unsound — it simply does not yet optimize). This ships the safety
+  guarantee ("a violated condition crashes deterministically") today.
+- **(A) long-term — a bounded, fuel-total compile-time kernel interpreter** is the real LCF-faithful
+  proof-guided-elision path (the "proofs feed optimization" payoff): it would let `discharged_no_overflow`
+  actually compile-time-run the kernel and return `licenses`, flipping guards off on a present `Thm`. That is
+  a future scoped workstream; §3's compile-time-eval discharge design below is retained as its target, NOT as
+  something b3 builds now. The v-core-opt Slice-5 disjunction wrapper is unaffected (it ORs a stub that stays
+  `false` until (A)).
+**So NEXT is the (D) run-time-enforcement arc** (`verify_enforce.rs`: plain `@requires` at body-entry LANDED;
+universal `@ensures`, then `@trap_free`/`@invariant` test-tier), not b3-as-elision.
+
+Follows the LCF kernel
 ([DESIGN-verification-hol-kernel.md](DESIGN-verification-hol-kernel.md), CHARTER DELIVERED: a working,
 unforgeable `Thm` on trunk). Vertical `v-verification`, subsystem `rcdzc`. Operator greenlight
 (2026-07-16, via concierge, verbatim intent): *"Adding pre/post-conditions would be amazing … keep in
@@ -214,9 +237,15 @@ So b3 is a **disjunction**:
 
 v-core-opt owns a thin Core wrapper (their Slice-5) that ORs my oracle into the existing predicate; both
 backends inherit it with ZERO emit change (they already gate on the predicate). I own `discharged_no_overflow`
-— which lands first as a `false`-returning STUB (disjunction identical to today → behavior-neutral, green),
-then b3 fills its body (compile-time-eval the discharge program, return the `licenses` boolean).
-Unforgeability still gates it: no licensing `Thm` → the oracle returns `false` → the guard stays.
+— which landed as a `false`-returning STUB (disjunction identical to today → behavior-neutral, green).
+
+**⚠ Per RULING (D)+A (see the status banner), `discharged_no_overflow` STAYS a `false` stub for now.** The
+"fills its body (compile-time-eval the discharge program, return the `licenses` boolean)" step needs a
+recursive compile-time interpreter that rcdzc does not have — it is the future (A) workstream, not b3-now.
+Because the stub returns `false`, the disjunction is exactly `arith_provably_in_range` today: no proof-guided
+elision fires, and the path is unconditionally sound (elision is opt-in on a present `Thm`; a `false` oracle
+never elides). The short-term guarantee is delivered by RUN-TIME enforcement (`verify_enforce.rs`) instead.
+Unforgeability still gates the eventual (A) fill: no licensing `Thm` → the oracle returns `false` → the guard stays.
 
 ### The seam
 - The compiler emits checked arithmetic (an overflow trap) at a Core node with stable `Id`, UNLESS

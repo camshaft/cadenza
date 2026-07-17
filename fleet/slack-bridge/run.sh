@@ -14,6 +14,8 @@
 #   RESTART_DELAY        seconds to wait before restarting after a crash     (default: 5)
 #   WATCHDOG_ONLY        (rust impl) =1 → run JUST the fleet watchdog, NO Socket Mode — a safe way to
 #                        run the reliability backbone as a 2nd process without a competing Slack conn.
+#   RUN_ONCE             =1 → exec the bridge ONCE and do NOT self-restart (let the supervisor — e.g. a
+#                        systemd unit with Restart=always — own the restart loop). Default: internal loop.
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,6 +42,14 @@ start() {
 }
 
 echo "run.sh: launching '$impl' bridge; FLEET_DIR=$FLEET_DIR channel=${SLACK_BRIDGE_CHANNEL:-<none>}"
+
+# RUN_ONCE=1 → the supervisor (systemd Restart=always) owns restarts; exec once and exit with the
+# bridge's own status so the supervisor sees the real exit code. Otherwise run our own restart loop.
+if [[ "${RUN_ONCE:-}" == "1" ]]; then
+  start
+  exit $?
+fi
+
 while true; do
   start
   code=$?

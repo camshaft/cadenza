@@ -5256,6 +5256,8 @@ fn subtree_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
 }
 
 fn subtree_performs_uncached(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    #[cfg(test)]
+    crate::db::SUBTREE_PERFORMS_UNCACHED_CALLS.with(|c| c.set(c.get() + 1));
     if let Resolved::Apply { head, .. } = resolved_of(db, node)
         && is_perform(db, head, ctx).is_some()
     {

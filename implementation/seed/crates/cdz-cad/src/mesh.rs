@@ -197,4 +197,25 @@ mod tests {
         );
         assert!(two.triangle_count() > one.triangle_count());
     }
+
+    #[test]
+    fn intersection_of_disjoint_solids_meshes_to_nothing() {
+        // The mesh-side counterpart of the exact library's inverted-box invariant (exact.cdz's
+        // `intersection-of-disjoint-solids-is-an-inverted-empty-box`): two NON-overlapping real solids
+        // intersect to NO geometry. Two unit cubes 10 apart in x share no volume → the manifold boolean is
+        // empty (0 triangles), NOT a degenerate sliver. This pins that the driver agrees with the model that
+        // a disjoint intersection is empty — a driver that clamped an inverted box to a zero/positive sliver
+        // (rather than emptying it) would fail here.
+        let inter = mesh(
+            &parse_solid(
+                "(: (Intersection (Cube (: (tuple 2.0 2.0 2.0) Vec3)) (Translate (: (tuple 10.0 0.0 0.0) Vec3) (Cube (: (tuple 2.0 2.0 2.0) Vec3)))) Solid)",
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            inter.triangle_count(),
+            0,
+            "intersection of two disjoint cubes is empty geometry"
+        );
+    }
 }

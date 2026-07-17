@@ -916,6 +916,29 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
         "a user-sum parameter is property-tested via the synthesized wrapper: {stdout}"
     );
 
+    // G5-COVERAGE: the sum generator must actually REACH a payload-carrying variant, not just always pick
+    // the nullary one — a "never a `Var`" property MUST fail within a modest trial count (mirrors the
+    // never-true/never-empty coverage cases for Bool/List). This pins the discriminating direction: the
+    // variant selection has power, and a FALSE sum property is reported by its `-gen` wrapper name with a
+    // replayable seed + a counterexample.
+    let sumfail = write(
+        &d,
+        "sumfail.sexp",
+        "(do (type Ty (Var Int64) (Con Bool) (Nil)) \
+           (@ test (def (never-var (: t Ty)) \
+             (match t (((. Ty Var) n) (trap \"saw Var\")) (((. Ty Con) b) unit) (((. Ty Nil)) unit)))) \
+           (def (anchor6) 1))",
+    );
+    let (ok, stdout, _) = run(&["test", &sumfail, "--seed", "0", "--trials", "30"]);
+    assert!(
+        !ok && stdout.contains("FAIL never-var-gen"),
+        "the sum generator must reach the Var variant so a never-a-Var property fails: {stdout}"
+    );
+    assert!(
+        stdout.contains("counterexample") && stdout.contains("seed 0"),
+        "a failing sum property reports a counterexample + replay seed: {stdout}"
+    );
+
     // G6: `(Set …)` and `(Map …)` params are generated too (a `Set.of (list …)` / a `Map.insert` fold).
     let setmap = write(
         &d,

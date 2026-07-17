@@ -43,3 +43,8 @@
         trap unreachable on all 3 once the Never-arithmetic emit is fixed.")
   (input (do (def (f (: x Int64)) (+ x 1)) (def (main) (f (trap "boom"))) (export main)))
   (trap  "unreachable"))
+
+; ---
+; UPDATE (corpus-bugfix 2026-07-17, from v-rust-backend note): FIXED in the same pending Never MR
+; 8edddea3f. `(let ((x (trap))) (+ x 1))` now emits `panic!(unreachable)` (dead arithmetic on !, no
+; checked_add on Never) — rustc-clean. Flips rust->pass once the MR lands. DO NOT mint a fixer.

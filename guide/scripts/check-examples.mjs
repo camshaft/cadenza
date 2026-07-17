@@ -68,9 +68,9 @@ const { assertPreludeFor } = await import(join(guideRoot, "src/components/assert
 // (its only import is a type), so node loads it directly VIA TYPE-STRIPPING — which needs Node ≥ 22.6
 // (on by default) or ≥ 20.19 with --experimental-strip-types. On an older Node the import fails with a
 // cryptic "Unknown file extension .ts" loader error; catch it and say exactly what's wrong + how to fix.
-let wrapModule, stripModule;
+let wrapModule, stripModule, gatherTestForms, ungatherTestForms;
 try {
-  ({ wrapModule, stripModule } = await import(join(guideRoot, "src/components/wrapModule.ts")));
+  ({ wrapModule, stripModule, gatherTestForms, ungatherTestForms } = await import(join(guideRoot, "src/components/wrapModule.ts")));
 } catch (e) {
   const msg = String(e && e.message ? e.message : e);
   if (/Unknown file extension|strip.?types|\.ts/i.test(msg)) {
@@ -96,10 +96,10 @@ function renderToMl(snippet) {
 /// renders directly). Mirrors how the app must render a toggled test panel. Returns the snippet in `to`.
 function renderTestSnippet(snippet, from, to) {
   if (from === to) return snippet.trim();
-  const gathered = from === "sexpr" ? `(do ${snippet.trim()})` : snippet.trim();
-  const rendered = render_syntax(gathered, from, to);
-  // `stripModule` peels the `(do …)`/export wrapper; there's no export here, so it just unwraps the `(do …)`.
-  return to === "sexpr" ? stripModule(rendered, "sexpr") : rendered.trim();
+  // Gather bare multi-form into one top-level form, render, ungather — via the SHARED helpers the app's
+  // `renderSnippet` also uses, so the gate and the app can never render a test panel differently again.
+  const rendered = render_syntax(gatherTestForms(snippet, from), from, to);
+  return ungatherTestForms(rendered, to);
 }
 
 // ---- transpile a component to disk and load its `instantiate` (mirrors runWorker.ts loadComponent) ----

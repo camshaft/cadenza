@@ -845,14 +845,35 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
     // node / the four fix columns is `-` when absent). We resolve each fault's node id — and its fix's
     // node id — to a byte span here.
     let text_out = run_query_text(&ast_bytes, &rcdzc::Query::Diagnostics)?;
-    let span_of = |field: &str| -> (u32, u32) {
-        field
-            .parse::<u32>()
-            .ok()
-            .and_then(|n| spans.as_ref()?.get(cadenza_syntax::ast::StructId(n)))
-            .map(|s| (s.start as u32, s.end as u32))
-            .unwrap_or((0, 0))
+    // Single-file: every node id keys directly into the user's span table (a miss defaults to the
+    // whole-buffer `(0, 0)` — we never drop a single-file fault).
+    let span_of = |n: u32| -> Option<(u32, u32)> {
+        Some(
+            spans
+                .as_ref()
+                .and_then(|s| s.get(cadenza_syntax::ast::StructId(n)))
+                .map(|s| (s.start as u32, s.end as u32))
+                .unwrap_or((0, 0)),
+        )
     };
+    Ok(diag_lines_to_js(&text_out, from == Format::Ml, span_of))
+}
+
+/// Parse the TAB-separated diagnostics text the `Diagnostics` sidecar query emits (one fault per line:
+/// `severity  code  node  fix-kind  fix-node  fix-replacement  fix-verified  message`, each column `-`
+/// when absent) into JS [`Diagnostic`]s. `resolve_span` maps a real node id to its `[from, to)` byte
+/// range in the source UNDER EDIT — the ONE thing the single-file and preloaded-package paths differ on
+/// (the package path demuxes a GLOBAL id through the link-map to the user file first). Returning `None`
+/// means "this fault's node is not in the source under edit" — the fault is DROPPED (over a linked
+/// package that is a fault inside a trusted preloaded library, which the reader can't act on in their own
+/// buffer; the single-file path's `resolve_span` is total, so it never drops). An UNANCHORED fault
+/// (node column `-`) is always kept with a `(0, 0)` range (a whole-program fault, not tied to a node).
+/// `is_ml` selects the surface for a `wrap` fix's prefix/suffix split.
+fn diag_lines_to_js(
+    text_out: &str,
+    is_ml: bool,
+    resolve_span: impl Fn(u32) -> Option<(u32, u32)>,
+) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for line in text_out.lines() {
         if line.is_empty() {
@@ -867,18 +888,38 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
         let fix_replacement = parts.next().unwrap_or("-");
         let fix_verified = parts.next().unwrap_or("-");
         let message = parts.next().unwrap_or("").to_string();
+        // Resolve the primary node. An unanchored `-` node stays a whole-buffer `(0, 0)` fault; a real
+        // id that `resolve_span` places OUTSIDE the source under edit (a preloaded-library fault) is
+        // dropped — `continue` skips it so it never squiggles the user's buffer at a bogus offset.
         let node = node_field.parse::<u32>().ok();
-        let (span_from, span_to) = span_of(node_field);
-        let has_fix = fix_node_field != "-";
+        let (span_from, span_to) = match node {
+            Some(n) => match resolve_span(n) {
+                Some(span) => span,
+                None => continue,
+            },
+            None => (0, 0),
+        };
+        // A fix that targets a node outside the source under edit is dropped to a no-fix (the diagnostic
+        // is still shown; only its quick-fix, which would splice the wrong file, is suppressed).
+        let has_fix = fix_node_field != "-"
+            && fix_node_field
+                .parse::<u32>()
+                .ok()
+                .and_then(&resolve_span)
+                .is_some();
         let (fix_from, fix_to) = if has_fix {
-            span_of(fix_node_field)
+            fix_node_field
+                .parse::<u32>()
+                .ok()
+                .and_then(&resolve_span)
+                .unwrap_or((0, 0))
         } else {
             (0, 0)
         };
         // A WRAP fix splits into surface-correct `prefix`/`suffix` (never the raw `…`-sentinel
         // replacement, which a JS splice would write literally and corrupt) — the shared reshape+split.
         let (fix_replacement, fix_prefix, fix_suffix) = if has_fix && fix_kind == "wrap" {
-            let (p, s) = rcdzc::wrap_prefix_suffix(fix_replacement, from == Format::Ml);
+            let (p, s) = rcdzc::wrap_prefix_suffix(fix_replacement, is_ml);
             (String::new(), p, s)
         } else if has_fix {
             (fix_replacement.to_string(), String::new(), String::new())
@@ -909,7 +950,169 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
             },
         });
     }
-    Ok(out)
+    out
+}
+
+/// Type-check `text` LINKED against preloaded library modules and return diagnostics over the USER
+/// text's spans — the preload-aware sibling of [`diagnostics`], mirroring [`compile_with_preloaded`]'s
+/// linking so the `/cad` IDE linter resolves a model's `import from "<lib>"` against an ambiently-supplied
+/// library instead of false-flagging every imported name unbound. `preloaded_names[i]` is the module a
+/// `import from "<name>"` binds to, `preloaded_sources[i]` its source, `preloaded_formats[i]` its surface;
+/// the three MUST be equal length.
+///
+/// Spans map to the USER model (the buffer the reader edits), NOT the preloaded libraries: the user text
+/// is the `main` file, the library modules are linked siblings, and Diagnostics runs over the whole
+/// package so a cross-file name resolves. Each fault's GLOBAL node id is demuxed through the package
+/// link-map back to the `main` file's LOCAL id and looked up in the user span table; a fault landing in a
+/// preloaded library (a fault the reader can't act on in their own buffer) is dropped. With no preloaded
+/// modules this is byte-identical to [`diagnostics`] (no linkage, flat namespace) — an editor that passes
+/// empty arrays behaves exactly as before.
+#[wasm_bindgen]
+pub fn diagnostics_with_preloaded(
+    text: &str,
+    from: &str,
+    preloaded_names: Vec<String>,
+    preloaded_sources: Vec<String>,
+    preloaded_formats: Vec<String>,
+) -> Result<Vec<Diagnostic>, JsError> {
+    let from = parse_format(from)?;
+    if preloaded_names.len() != preloaded_sources.len()
+        || preloaded_names.len() != preloaded_formats.len()
+    {
+        return Err(JsError::new(
+            "diagnostics_with_preloaded: preloaded_names/sources/formats must be equal length",
+        ));
+    }
+
+    // No preloaded modules → nothing to link; the flat single-file diagnostics path is byte-identical.
+    if preloaded_names.is_empty() {
+        return diagnostics(text, from.name());
+    }
+
+    // Parse the user model into the `main` AST + span table (a parse failure → one codeless error
+    // diagnostic carrying the mistake's source range, matching `diagnostics`).
+    let (ast_bytes, spans) = match parse_spanned(text, from) {
+        Ok(pair) => pair,
+        Err(msg) => {
+            // A parse failure is one codeless error diagnostic carrying the mistake's source range (so
+            // the editor underlines the syntax error), matching `diagnostics`. Reuse `compile_error`'s
+            // single-diagnostic construction and hand back just that diagnostic list.
+            let (from_b, to_b) = ml_parse_error_span(text, from).unwrap_or((0, 0));
+            return Ok(compile_error(msg, from_b, to_b).diagnostics);
+        }
+    };
+
+    // The user model is the `main` AST artifact; each preloaded module is an `ast` artifact NAMED by its
+    // module name (the target of an `import from "<name>"`). A `KIND_ENTRY` marker names `main` the entry
+    // so `rcdzc::compile` LINKS them (same package-linking as `compile_with_preloaded`). The `Diagnostics`
+    // sidecar request rides alongside, so the compile runs the fault query over the WHOLE package.
+    let mut inputs = vec![rcdzc::Artifact::new(
+        rcdzc::Artifact::KIND_AST,
+        "main",
+        ast_bytes,
+    )];
+    for ((name, source), fmt) in preloaded_names
+        .iter()
+        .zip(preloaded_sources.iter())
+        .zip(preloaded_formats.iter())
+    {
+        let pf = parse_format(fmt)?;
+        match parse_spanned(source, pf) {
+            Ok((bytes, _)) => {
+                inputs.push(rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, name, bytes));
+            }
+            Err(msg) => {
+                // A broken preloaded library can't be linked — surface it as one codeless fault naming
+                // the module (matching `compile_with_preloaded`), rather than silently dropping the
+                // library and drowning the user in "unbound" faults for its every export.
+                return Ok(vec![Diagnostic {
+                    error: true,
+                    code: String::new(),
+                    message: format!("preloaded module `{name}` failed to parse: {msg}"),
+                    node: u32::MAX,
+                    from: 0,
+                    to: 0,
+                    fix_replacement: String::new(),
+                    fix_prefix: String::new(),
+                    fix_suffix: String::new(),
+                    fix_from: 0,
+                    fix_to: 0,
+                    fix_verified: false,
+                    fix_kind: String::new(),
+                }]);
+            }
+        }
+    }
+    inputs.push(rcdzc::Artifact::new(
+        rcdzc::link::KIND_ENTRY,
+        "entry",
+        b"main".to_vec(),
+    ));
+    inputs.push(rcdzc::Artifact::new(
+        rcdzc::sidecar::KIND_SIDECAR,
+        "drive",
+        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::Query::Diagnostics)]),
+    ));
+
+    let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
+        // The diagnostics query itself failed to produce its artifact (an internal decline) — surface it
+        // as one codeless fault rather than an empty (falsely-clean) diagnostic set.
+        return Ok(vec![Diagnostic {
+            error: true,
+            code: String::new(),
+            message: "diagnostics query produced no result".to_string(),
+            node: u32::MAX,
+            from: 0,
+            to: 0,
+            fix_replacement: String::new(),
+            fix_prefix: String::new(),
+            fix_suffix: String::new(),
+            fix_from: 0,
+            fix_to: 0,
+            fix_verified: false,
+            fix_kind: String::new(),
+        }]);
+    };
+    let text_out = String::from_utf8(bytes.to_vec())
+        .map_err(|_| JsError::new("diagnostics artifact was not valid UTF-8"))?;
+
+    // Demux a GLOBAL node id to the `main` file's LOCAL id via the package link-map, then look it up in
+    // the user span table. A single-file compile emits no link-map (every id is already the entry's
+    // local id); a package has one FileSpan per linked file, keyed by artifact name — keep only ids in
+    // `main`'s `[base, base+count)` range (a fault outside it lives in a preloaded library → `None` →
+    // dropped by `diag_lines_to_js`).
+    let link_map = out
+        .artifact(rcdzc::link::KIND_LINK_MAP)
+        .map(rcdzc::link::decode_link_map)
+        .unwrap_or_default();
+    let main_range = link_map
+        .iter()
+        .find(|fs| fs.path == "main")
+        .map(|fs| (fs.struct_base, fs.struct_count));
+    let resolve_span = |global: u32| -> Option<(u32, u32)> {
+        let local = match main_range {
+            // Package: keep only ids inside `main`'s global range, rebased to its local id space.
+            Some((base, count)) => {
+                if global >= base && global < base + count {
+                    global - base
+                } else {
+                    return None; // a fault in a preloaded library — not the user's buffer
+                }
+            }
+            // No link-map (degenerate: linking collapsed to one file) — the id is already local.
+            None => global,
+        };
+        spans
+            .as_ref()
+            .and_then(|s| s.get(cadenza_syntax::ast::StructId(local)))
+            .map(|s| (s.start as u32, s.end as u32))
+    };
+    Ok(diag_lines_to_js(
+        &text_out,
+        from == Format::Ml,
+        resolve_span,
+    ))
 }
 
 /// The inferred type at a source byte offset — for a hover tooltip. Finds the innermost user node
@@ -1657,6 +1860,120 @@ mod tests {
                 .iter()
                 .map(|d| &d.message)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn diagnostics_with_preloaded_resolves_a_preloaded_import_clean() {
+        // The `/cad` IDE-linter seam: the editor buffer holds ONLY the user's model, which imports names
+        // from a PRELOADED library. The preload-aware linter links the library, so the imported names
+        // resolve and the buffer shows NO error squiggles (the plain, non-preload `diagnostics` would
+        // false-flag the import "not modeled" + the names unbound — see the control below).
+        let lib = "def answer() = 42\nexport { answer }";
+        let model = "import { answer } from \"lib\"\ndef main() = answer()\nexport { main }";
+        let diags = diagnostics_with_preloaded(
+            model,
+            "ml",
+            vec!["lib".to_string()],
+            vec![lib.to_string()],
+            vec!["ml".to_string()],
+        )
+        .expect("diagnostics_with_preloaded runs");
+        let errors: Vec<_> = diags.iter().filter(|d| d.error).collect();
+        assert!(
+            errors.is_empty(),
+            "a model importing a preloaded module lints clean, got errors: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn diagnostics_without_the_preloaded_module_flags_the_import() {
+        // Control: the SAME model with NO preloaded module DOES flag the unresolved import — proving the
+        // clean lint above is BECAUSE the module was linked in, not because the import was ignored.
+        let model = "import { answer } from \"lib\"\ndef main() = answer()\nexport { main }";
+        let diags = diagnostics_with_preloaded(model, "ml", Vec::new(), Vec::new(), Vec::new())
+            .expect("diagnostics_with_preloaded runs with no preloads");
+        assert!(
+            diags.iter().any(|d| d.error),
+            "an unsatisfied import without its module produces an error diagnostic"
+        );
+    }
+
+    #[test]
+    fn diagnostics_with_preloaded_empty_matches_plain_diagnostics() {
+        // No preloaded modules → byte-identical to plain `diagnostics` (the flat single-file path). A
+        // buffer with a real fault (unbound `nope`) yields the SAME diagnostic set either way.
+        let src = "def main() = nope\nexport { main }";
+        let a = diagnostics(src, "ml").expect("diagnostics");
+        let b = diagnostics_with_preloaded(src, "ml", Vec::new(), Vec::new(), Vec::new())
+            .expect("diagnostics_with_preloaded");
+        assert_eq!(a.len(), b.len(), "same fault count");
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert_eq!(
+                (x.code.as_str(), x.from, x.to),
+                (y.code.as_str(), y.from, y.to)
+            );
+            assert_eq!(x.message, y.message);
+        }
+    }
+
+    #[test]
+    fn diagnostics_with_preloaded_maps_a_user_fault_to_the_user_span() {
+        // A REAL fault in the user model (an unbound `bogus`, alongside a correctly-imported preloaded
+        // name) must still be reported — mapped to the user buffer's OWN span, not dropped as a library
+        // fault and not offset by the linked library's node ids.
+        let lib = "def answer() = 42\nexport { answer }";
+        let model =
+            "import { answer } from \"lib\"\ndef main() = answer() + bogus\nexport { main }";
+        let diags = diagnostics_with_preloaded(
+            model,
+            "ml",
+            vec!["lib".to_string()],
+            vec![lib.to_string()],
+            vec!["ml".to_string()],
+        )
+        .expect("diagnostics_with_preloaded runs");
+        let unbound: Vec<_> = diags
+            .iter()
+            .filter(|d| d.error && d.message.contains("bogus"))
+            .collect();
+        assert_eq!(
+            unbound.len(),
+            1,
+            "the user's own unbound name is reported exactly once, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // Its span points INTO the user model at the `bogus` occurrence (a non-zero range within the
+        // model text) — not at (0,0) and not somewhere in the linked library's id space.
+        let d = unbound[0];
+        let at = model.find("bogus").expect("bogus in model") as u32;
+        assert_eq!(
+            (d.from, d.to),
+            (at, at + "bogus".len() as u32),
+            "the fault maps to the `bogus` occurrence in the USER model"
+        );
+    }
+
+    #[test]
+    fn diagnostics_with_preloaded_names_a_broken_library_module() {
+        // A preloaded module that fails to parse → a codeless error diagnostic NAMING the module (mirrors
+        // `compile_with_preloaded`), so the reader sees which library broke rather than an unbound cascade.
+        let model = "import { answer } from \"lib\"\ndef main() = answer()\nexport { main }";
+        let diags = diagnostics_with_preloaded(
+            model,
+            "ml",
+            vec!["lib".to_string()],
+            vec!["def answer( = ".to_string()], // malformed
+            vec!["ml".to_string()],
+        )
+        .expect("diagnostics_with_preloaded runs");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.error && d.message.contains("preloaded module `lib`")),
+            "a broken preloaded module is reported by name, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 }

@@ -11,6 +11,8 @@ import {
   wrapPrefixOf,
   topLevelDefNames,
   exportNames,
+  gatherTestForms,
+  ungatherTestForms,
 } from "./wrapModule.ts";
 
 test("bare expression → def main() + export (both surfaces)", () => {
@@ -82,4 +84,29 @@ test("wrapPrefixOf is the UTF-8 byte offset of the snippet within the wrapped pr
   assert.equal(wrapped.slice(0, prefix), "(do (def (main) ");
   // A snippet that isn't embedded (already-complete) reports 0.
   assert.equal(wrapPrefixOf("done", "unrelated"), 0);
+});
+
+// A `mode="test"` panel renders bare `@test`/`def` forms (wrap=false). The pretty-printer takes ONE
+// top-level form, but a test snippet is usually MULTIPLE (several @tests, or a helper + a @test). S-expr
+// has no bare multi-form top level, so a multi-form snippet must be gathered under `(do …)` before
+// rendering — the miss that fed raw s-expr to the ML parser on the testing page ("expected a name" on
+// the first, multi-@test, examples). These pin the gather so app + gate stay in lockstep.
+test("gatherTestForms wraps a multi-form s-expr snippet under (do …), leaves ML untouched", () => {
+  const sexpr = "(@ test (def (t1) unit))\n(@ test (def (t2) unit))";
+  assert.equal(gatherTestForms(sexpr, "sexpr"), `(do ${sexpr})`);
+  const ml = "`@`(test, def t1() = unit)\n`@`(test, def t2() = unit)";
+  assert.equal(gatherTestForms(ml, "ml"), ml);
+});
+
+test("ungatherTestForms peels the (do …) for an s-expr output, trims an ML output", () => {
+  // s-expr output: strip the outer `(do …)` back to the bare forms.
+  assert.equal(ungatherTestForms("(do (@ test (def (t1) unit)))", "sexpr"), "(@ test (def (t1) unit))");
+  // ML output: already native multi-form top level — returned as-is (trimmed).
+  const ml = "`@`(test, def t1() = unit)";
+  assert.equal(ungatherTestForms(`${ml}\n`, "ml"), ml);
+});
+
+test("gatherTestForms is round-tripped by ungatherTestForms in the same s-expr surface", () => {
+  const sexpr = "(@ test (def (t1) unit)) (@ test (def (t2) unit))";
+  assert.equal(ungatherTestForms(gatherTestForms(sexpr, "sexpr"), "sexpr"), sexpr);
 });

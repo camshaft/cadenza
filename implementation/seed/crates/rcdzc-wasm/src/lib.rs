@@ -37,7 +37,12 @@ pub unsafe extern "C" fn compile(ptr: u32, len: u32) -> u64 {
         Err(msg) => (1u8, msg.into_bytes()),
     };
     // Build the result region: 1 status byte + payload, leaked so the kernel can read it before freeing.
-    let mut out = Vec::with_capacity(1 + payload.len());
+    // Use try_reserve_exact so an oversized payload returns the documented 0 sentinel instead of aborting the
+    // whole instance (Vec::with_capacity calls handle_alloc_error -> the wasm `unreachable` trap on OOM).
+    let mut out = Vec::<u8>::new();
+    if out.try_reserve_exact(1 + payload.len()).is_err() {
+        return 0; // "could not even allocate" — honor the packed-0 OOM sentinel, don't trap the instance.
+    }
     out.push(status);
     out.extend_from_slice(&payload);
     let boxed = out.into_boxed_slice();
@@ -57,7 +62,13 @@ pub unsafe extern "C" fn compile(ptr: u32, len: u32) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn alloc(len: u32) -> u32 {
-    let mut buf = Vec::<u8>::with_capacity(len as usize);
+    // try_reserve_exact (not with_capacity) so an oversized/hostile `len` returns the documented 0 sentinel
+    // rather than aborting the whole instance: with_capacity calls handle_alloc_error -> the `unreachable`
+    // trap on OOM, which would kill the long-lived kernel instead of letting the host handle it gracefully.
+    let mut buf = Vec::<u8>::new();
+    if buf.try_reserve_exact(len as usize).is_err() {
+        return 0; // out of memory — the host sees a null ptr and errors, instance stays alive.
+    }
     let ptr = buf.as_mut_ptr() as u32;
     std::mem::forget(buf); // leak: the host owns it until dealloc
     ptr

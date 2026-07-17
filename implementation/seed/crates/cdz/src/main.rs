@@ -142,6 +142,14 @@ enum Cmd {
     /// re-expanded (so a dependency cycle terminates). Resolves the same `Project.cdz` as `cdz build`/`cdz
     /// metadata` (searching upward when given no argument).
     Tree(TreeArgs),
+    /// Add a PATH DEPENDENCY to the project's `Project.cdz` (the `cargo add` analogue): append PATH to the
+    /// manifest's `def deps` list (creating the `def deps` line if absent), so you don't hand-edit the
+    /// manifest. Idempotent — an already-present path is a no-op with a notice, not a duplicate. Edits the
+    /// manifest TEXT in place (preserving its formatting + comments), then re-parses to confirm it's still
+    /// valid. Warns (but still adds) when PATH has no `Project.cdz` yet — the dep may not exist yet, same as
+    /// `cdz tree`'s `*unresolved*`. Resolves the same `Project.cdz` as `cdz build` (searching upward with
+    /// no `--manifest`).
+    Add(AddArgs),
 
     // ── project clean ─────────────────────────────────────────────────────────────────────────────
     /// Remove the build artifacts a `cdz build`/`cdz run` produces (the `cargo clean` analogue): the
@@ -320,6 +328,7 @@ fn main() -> ExitCode {
         Cmd::Build(a) => run_build(&a),
         Cmd::Metadata(a) => run_metadata(&a),
         Cmd::Tree(a) => run_tree(&a),
+        Cmd::Add(a) => run_add(&a),
         Cmd::Clean(a) => run_clean(&a),
         Cmd::New(a) => run_new(&a),
         Cmd::Init(a) => run_init(&a),
@@ -1442,6 +1451,16 @@ struct TreeArgs {
     json: bool,
 }
 
+#[derive(clap::Args)]
+struct AddArgs {
+    /// The PATH dependency to add — a sibling project directory (relative to the manifest), e.g. `../lib`.
+    path: String,
+    /// The project to add the dependency TO: a `Project.cdz` or a directory holding one. OMITTED → search
+    /// up from the current directory for the nearest `Project.cdz` (like `cdz build`).
+    #[arg(long)]
+    manifest: Option<String>,
+}
+
 /// `cdz metadata [DIR]` — print the resolved project manifest as JSON (the `cargo metadata` analogue): a
 /// machine-readable description of what the project IS, for editors, build tools, and scripts. Resolves
 /// the same `Project.cdz` that `cdz build`/`cdz test` do, then emits one JSON object: the manifest's raw
@@ -1727,6 +1746,107 @@ fn print_dep_subtree(
             }
             // No manifest at the dep path, or it didn't parse — a partial tree beats an abort.
             _ => println!("{prefix}{connector}{dep_path} *unresolved*"),
+        }
+    }
+}
+
+/// `cdz add PATH [--manifest DIR]` — add a PATH dependency to the project's `Project.cdz` (the `cargo add`
+/// analogue). Resolves the manifest (same as `cdz build`; upward search when `--manifest` is omitted),
+/// dedup-checks PATH against the manifest's parsed `def deps` (an already-present path is an idempotent
+/// no-op notice), then edits the manifest TEXT in place — inserting into an existing `def deps = [...]`
+/// list, or adding a fresh `def deps = ["PATH"]` line when none exists. Text-editing (not re-serializing
+/// the arena) preserves the user's formatting + comments. After writing, it RE-PARSES the manifest to
+/// confirm the edit left a valid `Project.cdz` (and that PATH is now among the deps), rolling back on any
+/// parse failure so a broken edit never lands. A PATH with no `Project.cdz` yet is a WARNING, not a
+/// refusal — the dep may not exist yet (same tolerance as `cdz tree`'s `*unresolved*`).
+fn run_add(args: &AddArgs) -> ExitCode {
+    let (dir, mpath, m) = match resolve_project_manifest(args.manifest.as_deref(), "cdz add") {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    // Idempotent: an already-declared path is a no-op (not a duplicate). Compare against the parsed deps.
+    if m.deps.iter().any(|d| d.as_manifest_text() == args.path) {
+        eprintln!(
+            "{PROG}: `{}` already declares `{}` as a dependency — nothing to add",
+            mpath.display(),
+            args.path
+        );
+        return ExitCode::SUCCESS;
+    }
+    // A dep that doesn't resolve to a `Project.cdz` YET is a warning, not a refusal (the dir may be added
+    // later; `cdz build`/`cdz tree` handle an unresolvable dep gracefully). Resolve relative to the
+    // manifest dir, exactly as `build_path_deps` / `cdz tree` do.
+    if !dir.join(&args.path).join(MANIFEST_NAME).is_file() {
+        eprintln!(
+            "{PROG}: warning: `{}` has no `{MANIFEST_NAME}` yet — adding it anyway (a `cdz build` will \
+             report it unresolved until it exists)",
+            args.path
+        );
+    }
+    // Read the manifest TEXT (not the arena) so the edit preserves formatting + comments.
+    let text = match std::fs::read_to_string(&mpath) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{PROG}: reading {}: {e}", mpath.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    // Escape the path for the `"…"` string literal (a path with a `"`/`\` is unusual but must not malform
+    // the manifest), via the canonical `cadenza_syntax` escaper so it re-parses exactly.
+    let quoted = format!("\"{}\"", cadenza_syntax::literal::escape_string(&args.path));
+    // Two edit shapes, both preserving surrounding text:
+    //  - an existing `def deps = [ … ]` line: insert the new entry before the closing `]` (with a `, ` if
+    //    the list is non-empty, so `["../a"]` → `["../a", "../b"]` and `[]` → `["../b"]`);
+    //  - no `def deps` at all: append a fresh `def deps = ["PATH"]` line.
+    let new_text = if let Some(open) = text.find("def deps") {
+        // Find this `def deps` clause's `[` and its matching `]` (the manifest is a flat list of defs, so
+        // the first `]` after the `[` closes it — no nested brackets in a string-list value).
+        let Some(lb) = text[open..].find('[').map(|i| open + i) else {
+            eprintln!(
+                "{PROG}: {}: malformed `def deps` (no `[`) — not editing",
+                mpath.display()
+            );
+            return ExitCode::FAILURE;
+        };
+        let Some(rb) = text[lb..].find(']').map(|i| lb + i) else {
+            eprintln!(
+                "{PROG}: {}: malformed `def deps` (no `]`) — not editing",
+                mpath.display()
+            );
+            return ExitCode::FAILURE;
+        };
+        let inner = text[lb + 1..rb].trim();
+        let insert = if inner.is_empty() {
+            quoted.clone() // `[]` → `["PATH"]`
+        } else {
+            format!("{inner}, {quoted}") // `["../a"]` → `["../a", "PATH"]`
+        };
+        format!("{}[{insert}]{}", &text[..lb], &text[rb + 1..])
+    } else {
+        // No `def deps` — append a fresh line (a trailing newline first if the file doesn't end in one).
+        let sep = if text.ends_with('\n') { "" } else { "\n" };
+        format!("{text}{sep}def deps = [{quoted}]\n")
+    };
+    // Write, then RE-PARSE to confirm the edit is a valid manifest that now declares PATH. On any failure,
+    // roll back to the original text so a broken edit never persists.
+    if let Err(e) = std::fs::write(&mpath, &new_text) {
+        eprintln!("{PROG}: writing {}: {e}", mpath.display());
+        return ExitCode::FAILURE;
+    }
+    match load_manifest(&dir) {
+        Ok(Some((_p, m2))) if m2.deps.iter().any(|d| d.as_manifest_text() == args.path) => {
+            eprintln!("{PROG}: added `{}` to {}", args.path, mpath.display());
+            ExitCode::SUCCESS
+        }
+        _ => {
+            // The edit produced an invalid / unexpected manifest — restore the original.
+            let _ = std::fs::write(&mpath, &text);
+            eprintln!(
+                "{PROG}: the edit did not produce a valid `{MANIFEST_NAME}` declaring `{}` — reverted \
+                 (please add it by hand)",
+                args.path
+            );
+            ExitCode::FAILURE
         }
     }
 }

@@ -43,3 +43,19 @@
   (input (do (def (main (: n Int64)) (match n (0 (trap "zero")) (_ (trap "other")))) (export main)))
   (call  main (: 0 Int64))
   (trap  "unreachable"))
+
+; ---
+; UPDATE (corpus-bugfix 2026-07-17, trunk@1c255812b, fresh build): NO LONGER a uniform decline —
+; it is now a WASM-accepts / RUST-declines DIFFERENTIAL. Disposition (a) was implemented for WASM:
+;   wasm  -> COMPILES; `run --arg true` -> `wasm trap: unreachable` (correct: both arms diverge).
+;   rust  -> DECLINES "main: result type _ has no native Rust representation".
+; So wasm now treats a both-Never if as Never (compile+trap), but the rust backend still bails on the
+; unrepresentable result type. Routed to v-rust-backend to match wasm (a Never-bodied main should
+; compile + trap on rust too, like a direct `(trap)` body / `bomb` does).
+
+; ---
+; UPDATE (corpus-bugfix 2026-07-17, from v-rust-backend note): rust side FIXED in pending Never MR
+; 8edddea3f (branch fleet/v-rust-backend, queued at pr-sync behind a large backlog). Emits
+; `pub fn main(b: bool) -> ! { if b { panic!(unreachable) } else { panic!(unreachable) } }` —
+; rustc-clean, traps at runtime. Once that MR lands, this witness flips rust->pass; promote to spec.
+; DO NOT mint a fixer.

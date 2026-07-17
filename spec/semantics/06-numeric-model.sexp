@@ -2152,6 +2152,24 @@
   (call   main (: 1 Int64) (: 65 Int64))
   (trap   "unreachable"))
 
+; The runtime count guard must range-check the FULL-WIDTH count, not its low 32 bits. A guard that
+; narrows the count with `as u32` BEFORE comparing (`if (count as u32) >= 64`) reads only the low 32
+; bits: a count that is a multiple of 2^32 has low-32-bits 0, so it would see 0, skip the trap, and
+; shift by 0 — returning the operand UNCHANGED as a plausible in-range value where a trap is required.
+; The genuinely-runtime counts pinned above (64 / -1 / 65) all fit in u32's low bits unchanged, so they
+; never exercised the truncation face; this one does. wasm's runtime guard checks the full i64 and
+; traps; the rust guard was `(count) as u32; if c >= 64`, which silently masked here — a backend
+; value differential. Pins: guard at full width before any narrowing cast.
+(case "a genuinely-runtime shift count that is a multiple of 2^32 traps rather than truncating to zero"
+  (doc    "`(<< x n)` with x = 5 and n = 4294967296 (= 2^32) at the call boundary. Out of range 0..=63,
+           so it MUST trap. A guard that first narrows the count to u32 sees 0 (2^32 mod 2^32 = 0) and
+           lets the shift through as a no-op, returning x = 5 unchanged — a silently wrong VALUE. Pins
+           the runtime guard comparing the FULL-WIDTH count, not its low 32 bits. wasm: traps; rust +
+           rust-async before the fix: returned 5 (miscompile).")
+  (input  (do (def (main (: x Int64) (: n Int64)) (<< x n)) (export main)))
+  (call   main (: 5 Int64) (: 4294967296 Int64))
+  (trap   "unreachable"))
+
 ; --- Checked and wrapping arithmetic: the two DEFINED non-trapping overflow outcomes ----------------
 ; The default `+`/`-`/`*` TRAP on overflow (the checked-Int64 default, above). numeric-model.md #Overflow
 ; Is Defined admits a defined VALUE outcome too — offered here as explicit Int64 methods that never trap:

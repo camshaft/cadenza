@@ -72,9 +72,26 @@ pub(crate) fn enforce(ast: &mut Arenas) {
         }) else {
             continue;
         };
-        // INNER must be `(def SIG BODY …)` — a well-formed def has ≥2 tail elements (SIG, BODY). An annotation
-        // around a non-def is a well-formedness concern handled elsewhere; leave it untouched.
-        let Some(def_tail) = ast.as_form(inner, "def") else {
+        // INNER is USUALLY `(def SIG BODY …)`, but a def may STACK several verification/other annotations —
+        // `(@ (requires P1) (@ (requires P2) (def …)))` — in which case this `@requires`' INNER is itself an
+        // `(@ …)` wrapper, not the def. Descend through any number of intervening `(@ NAME INNER2)` layers to
+        // the actual def occ, so a STACKED outer `@requires` still finds its def and enforces (a single scan
+        // otherwise skips every `@requires` whose inner is another wrapper — only the innermost would enforce,
+        // silently dropping the outer preconditions). Each stacked `@requires` is processed at its own index
+        // and wraps the def's CURRENT body, so the layers compose: `(if P1 (if P2 BODY trap) trap)`.
+        let mut def_occ = inner;
+        while ast.as_form(def_occ, "def").is_none() {
+            let Some(chain) = ast.as_form(def_occ, "@") else {
+                break; // not a def and not an `@` wrapper — a non-def annotand, leave untouched below
+            };
+            let Some(&next_inner) = chain.get(1) else {
+                break;
+            };
+            def_occ = next_inner;
+        }
+        // The descent target must be `(def SIG BODY …)` — a well-formed def has ≥2 tail elements (SIG, BODY).
+        // An annotation around a non-def is a well-formedness concern handled elsewhere; leave it untouched.
+        let Some(def_tail) = ast.as_form(def_occ, "def") else {
             continue;
         };
         let (Some(&sig), Some(&body)) = (def_tail.first(), def_tail.get(1)) else {
@@ -95,12 +112,14 @@ pub(crate) fn enforce(ast: &mut Arenas) {
             };
             push_list(ast, vec![if_head, pred, body, trap_call])
         };
-        // Rewrite the INNER def in place: `(def SIG checked_body TRAILING…)`. Overwriting `inner` (the def
-        // node id) keeps the outer `(@ (requires PRE) …)` child pointer valid, so `strip_annotations` still
-        // sees the wrapper + records `PRE`.
+        // Rewrite the def in place: `(def SIG checked_body TRAILING…)`. Overwriting `def_occ` (the actual def
+        // node id, reached by descending any stacked `@` wrappers) keeps every enclosing `(@ (requires PRE) …)`
+        // child pointer valid, so `strip_annotations` still sees each wrapper + records its `PRE`. When several
+        // `@requires` stack, each is processed at its own index and re-wraps the def's CURRENT body, so the
+        // checks nest — `(if P_outer (if P_inner BODY trap) trap)` — and ALL preconditions are enforced.
         let def_head = name(ast, "def");
         let mut new_children = vec![def_head, sig, checked_body];
         new_children.extend(trailing);
-        ast.structure[inner.0 as usize] = Struct::List(new_children);
+        ast.structure[def_occ.0 as usize] = Struct::List(new_children);
     }
 }

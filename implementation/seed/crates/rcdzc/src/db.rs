@@ -141,6 +141,17 @@ thread_local! {
     /// `project_meta_reads_a_meta_field_without_scanning_the_wide_user_block`.
     pub(crate) static PROJECT_META_FIELDS_VISITED: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
+
+    /// Test-only: total UN-CACHED `effects::subtree_performs` computations (the `_uncached` body) since
+    /// the last reset — i.e. the actual per-node perform-verdict work, NOT the cache hits. The frame-free
+    /// effect fold's `strongly_pure`/`pure_hole` classifiers call `subtree_performs` at MANY nodes as they
+    /// descend a handle body, and `strongly_pure` re-ran the WHOLE-subtree walk at every node, so a wide/
+    /// deep body recomputed the same node's verdict O(size) times (the scan O(size²), the fold super-linear).
+    /// Memoizing per `(node, ctx.key)` collapses the repeats — so this count grows O(size), not O(size²).
+    /// The noise-free regression signal (a wall-clock ratio false-fails under fleet load) — see
+    /// `the_effect_fold_pure_classifier_scales_linearly_over_a_wide_context`.
+    pub(crate) static SUBTREE_PERFORMS_UNCACHED_CALLS: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter

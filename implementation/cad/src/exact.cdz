@@ -344,6 +344,23 @@ def intersection-of-two-cubes-is-the-overlap() =
   match bounding-box(Solid.Intersection(a, b)) with | Aabb.Box(lo, hi) =>
     (if v3r-x(lo) == rzero() then (if v3r-x(hi) == one then unit else trap("hi.x = 1")) else trap("lo.x = 0"))
 
+@test
+def intersection-of-disjoint-solids-is-an-inverted-empty-box() =
+  // PIN the documented aabbr-intersect contract (see its doc-comment): the box of an intersection of two
+  // NON-overlapping solids is INVERTED (lo > hi on the separating axis), which a mesh driver reads as "no
+  // geometry" — NOT a well-formed degenerate box. This is deliberately NOT normalized by aabbr-of-corners:
+  // normalizing an inverted overlap would falsely claim a real (zero- or positive-volume) box where the
+  // solids don't touch. Two size-2 cubes ([-1,1]) with one translated +10 in x ([9,11]) are disjoint on x →
+  // lo.x = max(-1, 9) = 9, hi.x = min(1, 11) = 1, so lo.x (9) > hi.x (1): inverted. y/z still overlap ([-1,1]).
+  let two = 2 / 1 in
+  let a = Solid.Cube(v3r(two, two, two)) in
+  let b = Solid.Translate(v3r(10 / 1, rzero(), rzero()), Solid.Cube(v3r(two, two, two))) in
+  match bounding-box(Solid.Intersection(a, b)) with | Aabb.Box(lo, hi) =>
+    // the separating axis is inverted (lo.x > hi.x); the non-separating axes stay well-formed (lo <= hi).
+    (if v3r-x(lo) > v3r-x(hi) then
+       (if v3r-y(lo) == (rzero() - (1 / 1)) then (if v3r-y(hi) == 1 / 1 then unit else trap("hi.y = 1")) else trap("lo.y = -1"))
+     else trap("expected an inverted box on the separating x axis (lo.x > hi.x) for a disjoint intersection"))
+
 // ---- R9: direct coverage for the exported vector/box helpers that were only exercised transitively --------
 
 @test
@@ -458,6 +475,99 @@ def simplify-r-of-a-mixed-tree-drops-dead-branches-but-preserves-the-real-extent
      else unit)
   else trap("simplify-r must preserve the real cube's extent while dropping the dead branch")
 
-export { Vec3.*, Solid.*, Aabb.*, rmin, rmax, rzero, v3r, v3r-x, v3r-y, v3r-z, v3r-add, v3r-mul, v3r-min,
-         v3r-max, v3r-eq, aabbr-union, aabbr-intersect, aabbr-empty, aabbr-of-corners, bounding-box, aabbr-size,
-         solidr-is-empty, simplify-r }
+// ---- P5: monomorphic host-render mirror (SolidR / Vec3R + `lower`) --------------------------------------------
+// The authored model is GENERIC — `Solid(a)` / `Vec3(a)` — so it can carry either exact `Rational` coords or a
+// `Qty[meter]` length (B-via-generic). But the /cad mesh pipeline works by RETURNING the built `Solid` value to
+// the host and parsing its canonical s-expr render (the render-grammar-to-driver contract). The compiler cannot
+// yet emit a host value-form walker for a GENERIC recursive sum instantiated at a type (`Solid(Rational)`
+// declines with "rendering this value as the host result needs a value-form walker that loops to a
+// runtime-determined depth"), though a MONOMORPHIC recursive sum of the same shape renders fine. So a program
+// that wants to hand a Solid to the mesh driver `lower`s its `Solid(Rational)` into this monomorphic `SolidR`
+// mirror and returns THAT — `main = lower(model)`. The render is IDENTICAL in grammar to the generic form the
+// driver already parses: constructors `Empty`/`Cube`/`Sphere`/`Cylinder`/`Union`/`Difference`/`Intersection`/
+// `Translate`/`Scale`, a `Vec3` as `(: (tuple x y z) …)`, coords as exact Rational `n/d` — the parser discards
+// the trailing type-name atom, so `SolidR`/`Vec3R` vs `Solid`/`Vec3` is invisible to it. (When the compiler
+// gains generic-recursive-sum host-render, this mirror becomes redundant and a program can return the generic
+// `Solid(Rational)` directly.)
+type Vec3R =
+  | V3(Rational, Rational, Rational)
+type SolidR =
+  | Empty
+  | Cube(Vec3R)
+  | Sphere(Rational)
+  | Cylinder(Rational, Rational)
+  | Union(SolidR, SolidR)
+  | Difference(SolidR, SolidR)
+  | Intersection(SolidR, SolidR)
+  | Translate(Vec3R, SolidR)
+  | Scale(Vec3R, SolidR)
+
+/// Lower one exact vector into the monomorphic mirror (identity on the three Rational coordinates).
+def lower-vec3(v: Vec3(Rational)) =
+  match v with | Vec3.V3(x, y, z) => Vec3R.V3(x, y, z)
+
+/// Lower a generic `Solid(Rational)` into the monomorphic `SolidR` the host can render + the mesh driver parses.
+/// A structural 1:1 map — every constructor is preserved, so the rendered s-expr is grammar-identical to the
+/// generic form; only the (parser-ignored) type-name atom differs.
+def lower(s: Solid(Rational)) = match s with
+  | Solid.Empty => SolidR.Empty
+  | Solid.Cube(sz) => SolidR.Cube(lower-vec3(sz))
+  | Solid.Sphere(r) => SolidR.Sphere(r)
+  | Solid.Cylinder(h, r) => SolidR.Cylinder(h, r)
+  | Solid.Union(a, b) => SolidR.Union(lower(a), lower(b))
+  | Solid.Difference(a, b) => SolidR.Difference(lower(a), lower(b))
+  | Solid.Intersection(a, b) => SolidR.Intersection(lower(a), lower(b))
+  | Solid.Translate(by, of) => SolidR.Translate(lower-vec3(by), lower(of))
+  | Solid.Scale(by, of) => SolidR.Scale(lower-vec3(by), lower(of))
+
+@test
+def lower-preserves-every-constructor-and-coordinate() =
+  // Pin the render-grammar-to-driver contract at the model layer: `lower` maps each generic Solid constructor
+  // to its SolidR twin 1:1, preserving exact Rational coords. Build one tree touching EVERY variant and lowered
+  // pattern-match it back, asserting the shape + a representative coordinate survive. (The host-render itself
+  // is exercised by v-guide-infra's headless /cad verification; here we pin the pure lowering is total + exact.)
+  let tree = Solid.Union(
+    Solid.Translate(v3r(1 / 1, rzero(), rzero()), Solid.Cylinder(3 / 1, 1 / 1)),
+    Solid.Scale(v3r(2 / 1, 2 / 1, 2 / 1),
+      Solid.Difference(Solid.Cube(v3r(4 / 1, 4 / 1, 4 / 1)),
+        Solid.Intersection(Solid.Sphere(5 / 2), Solid.Empty)))) in
+  // Bind the whole lowered tree, then destructure branch-by-branch (binder names avoid a case-insensitive
+  // collision with constructor names like `Cube`). The left branch is `Translate(+1x, Cylinder 3 1)`; the
+  // right is `Scale(2, Difference(Cube 4, Intersection(Sphere 5/2, Empty)))`.
+  match lower(tree) with
+    | SolidR.Union(left, right) =>
+      (match left with
+        | SolidR.Translate(lv, lc) =>
+          (match lv with | Vec3R.V3(lx, _, _) =>
+            (match lc with
+              | SolidR.Cylinder(ch, cr) =>
+                (if lx == 1 / 1 and ch == 3 / 1 and cr == 1 / 1 then
+                  (match right with
+                    | SolidR.Scale(_, rc) =>
+                      (match rc with
+                        | SolidR.Difference(box, tools) =>
+                          (match box with
+                            | SolidR.Cube(bv) =>
+                              (match bv with | Vec3R.V3(bx, _, _) =>
+                                (if bx == 4 / 1 then
+                                  (match tools with
+                                    | SolidR.Intersection(ball, hole) =>
+                                      (match ball with
+                                        | SolidR.Sphere(sr) =>
+                                          (match hole with
+                                            | SolidR.Empty => (if sr == 5 / 2 then unit else trap("sphere radius lost"))
+                                            | _ => trap("Empty leaf lost"))
+                                        | _ => trap("Sphere lost"))
+                                    | _ => trap("Intersection lost"))
+                                 else trap("cube x lost")))
+                            | _ => trap("Cube lost"))
+                        | _ => trap("Difference lost"))
+                    | _ => trap("Scale lost"))
+                 else trap("translate/cylinder coords lost"))
+              | _ => trap("Cylinder lost")))
+        | _ => trap("Translate lost"))
+    | _ => trap("Union lost")
+
+export { Vec3.*, Solid.*, Aabb.*, SolidR.*, Vec3R.*, rmin, rmax, rzero, v3r, v3r-x, v3r-y, v3r-z, v3r-add,
+         v3r-mul, v3r-min, v3r-max, v3r-eq, aabbr-union, aabbr-intersect, aabbr-empty, aabbr-of-corners,
+         bounding-box, aabbr-size, solidr-is-empty, simplify-r, lower-vec3, lower }

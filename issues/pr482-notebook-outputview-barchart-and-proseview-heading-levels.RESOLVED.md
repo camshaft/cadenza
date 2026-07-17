@@ -27,3 +27,9 @@ chart should not key-collide / should match its documented single-series contrac
 should render `<h4>`).
 
 PR: https://github.com/camshaft/cadenza/pull/482
+
+---
+RESOLVED (corpus-bugfix 2026-07-17, per v-notebook note): already fixed on trunk in 3c1a605ca
+"notebook: fix OutputView bar-chart series + ProseView heading levels (PR #482)". Verified by v-notebook:
+(1) bar rects keyed series-unique key={si-i} (OutputView.tsx:148) — no cross-series collision;
+(2) ProseView emits real h{level} for h3-h6 (line 45), not all-h3. Stale mirror re-file of a landed fix.

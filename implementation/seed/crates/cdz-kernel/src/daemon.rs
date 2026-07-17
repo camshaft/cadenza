@@ -155,7 +155,10 @@ mod tests {
     #[test]
     fn tick_performing_executes_each_op_not_just_counts() {
         // The daemon's real execution step: tick_performing drives the PERFORMING executor, so each op the
-        // genesis interpret schedules fires a real Prim.run perform. kind=1 → [Append, Exec] → 2 performs.
+        // genesis interpret schedules fires a real Prim.run perform whose per-op RESULT is summed (Append→1,
+        // Exec→2 — the real exec/http/log shape, each call returns its own value). kind=1 → [Append, Exec] →
+        // 1+2 = 3 (proves both ops PERFORMED and their results came back through the cross-fn fold — NOT a
+        // count, which is `tick`'s job). Mirrors the kernel's `the_performing_executor_fires_a_real_effect…`.
         let (path, mut log) = temp_log();
         crate::boot::inject_genesis(&mut log, GENESIS).unwrap();
         let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -170,8 +173,8 @@ mod tests {
         let performed =
             tick_performing(&log, 1, runtime).expect("the daemon executes the genesis's ops");
         assert_eq!(
-            performed, 2,
-            "kind=1 → [Append, Exec] → each op fired a real perform → 2"
+            performed, 3,
+            "kind=1 → [Append(1), Exec(2)] → each op fired a real perform + its result summed → 3"
         );
         let _ = std::fs::remove_file(&path);
     }

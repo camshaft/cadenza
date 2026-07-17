@@ -27784,6 +27784,48 @@ mod match_engine {
     }
 
     #[test]
+    fn bytes_at_over_an_owned_temporary_slice_reclaims_the_slice() {
+        // The SLICE-PRODUCER operand face of the Bytes.at owned-temporary reclaim: the previous test
+        // exercises a `Bytes.concat` producer (`build`) as the owned operand; `Bytes.slice` is the sibling
+        // rope-producer in the Owned classifier (`BytesSlice`), so a `Bytes.at (Bytes.slice (build …) …) i`
+        // is also an owned-temporary bytes the Bytes.at borrows then must drop. A borrowed slice operand
+        // would leak one bytes leaf per read (a stress loop building + slicing a fresh bytes each iteration
+        // would drift or trap on leak). Pins the slice face passes even though it isn't the concat face —
+        // both root at an Owned handle, but a future change to the ownership classifier could regress one
+        // without the other. `build` threads the bytes through recursion so it is a genuine runtime handle
+        // (a constant `Bytes.slice`/`Bytes.of` folds away → no runtime reclaim to observe).
+        let slice_owned = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. Bytes concat) acc b\"\\x0a\\x14\\x1e\")) acc)) \
+               (def (main) ((. Option expect) \
+                   ((. Bytes at) ((. Option expect) ((. Bytes slice) (build 0 3 b\"\") 1 3) \"s\") 1) \"v\")) \
+               (export main))";
+        assert!(
+            component_imports_op(&component(slice_owned), "drop"),
+            "Bytes.at over an owned-temporary Bytes.slice must import `drop` (reclaim the slice — leak fix)"
+        );
+        if let Some(out) = run_on_heap(slice_owned) {
+            assert_eq!(
+                out, "30",
+                "Bytes.at of an owned slice is value-unchanged by the reclaim (0x1e = 30)"
+            );
+        }
+        // A stress loop: build+slice a fresh owned bytes each iteration and read it. A leaked slice leaf
+        // would OOM / drift; a double-free would trap. 5000× reading byte 1 of the slice (0x1e = 30).
+        let slice_stress = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. Bytes concat) acc b\"\\x0a\\x14\\x1e\")) acc)) \
+               (def (drive j m tot) (if (< j m) \
+                   (drive (+ j 1) m (+ tot ((. Option expect) \
+                       ((. Bytes at) ((. Option expect) ((. Bytes slice) (build 0 3 b\"\") 1 3) \"s\") 1) \"v\"))) tot)) \
+               (def (main) (drive 0 5000 0)) (export main))";
+        if let Some(out) = run_on_heap(slice_stress) {
+            assert_eq!(
+                out, "150000",
+                "5000 owned-temporary Bytes.at-over-slice must each reclaim the slice (no leak/UAF drift)"
+            );
+        }
+    }
+
+    #[test]
     fn set_contains_and_map_lookup_over_an_owned_temporary_reclaim_the_collection() {
         // The last READ-op faces: `Set.contains`/`Map.lookup` over an owned-temporary collection must
         // reclaim it. ⚠ Map.lookup is DELICATE — the looked-up value is borrowed from the map and dup'd in
@@ -31310,6 +31352,39 @@ mod match_engine {
             .unwrap(),
             "12",
             "a list consumed by two operations is not freed early"
+        );
+    }
+
+    #[test]
+    fn a_mixed_width_mutual_scc_gives_each_member_a_fresh_scratch_floor() {
+        // REGRESSION (mutrec-scc-growth-emits-invalid-wasm): a mutual-recursion SCC compiles all members'
+        // bodies inline into ONE shared dispatch loop, so their transient scratch shares the function's
+        // local slots. Each member sits in a mutually-EXCLUSIVE dispatch branch (`which == idx`), but a
+        // wasm local is FUNCTION-GLOBAL with ONE type — so two members must not stash different-WIDTH temps
+        // in the SAME slot. Before the per-member scratch-floor fix, every member was handed the shared
+        // `base` floor, so:
+        //   • `r0`'s first op is a String `=` → `value-eq` tees the compacted i32 handle into the floor slot;
+        //   • `r1`'s leading MULTI-USE `let j` (an i64, used twice so it can't inline) claims that SAME slot.
+        // → the one local was declared i32 (r0) AND i64 (r1) and the module failed validation with
+        // `type mismatch: expected i64, found i32` (the real `wasm[0]::function[N]` invalid-emit the
+        // in-cycle sread reader hit). Advancing each member to `(*high).max(base)` hands it never-typed
+        // slots. This is the minimal reduction of the 6-fn read-form SCC that surfaced the bug.
+        // r0("z",4,6): "zz" != "xx" → r1(3) → r0(2) → r1(1) → r0(0) → r1(-1): j=(-1+6)=5 → (+ j j)=10.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (r0 (: s String) (: a Int64) (: b Int64)) \
+                 (if (= ((. String concat) s s) \"xx\") a (r1 s (- a 1) b))) \
+               (def (r1 (: s String) (: a Int64) (: b Int64)) \
+                 (let ((j (+ a b))) (if (< a 1) (+ j j) (r0 s (- a 1) b)))) \
+               (def (main) (r0 \"z\" 4 6)) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping mixed-width mutual SCC run");
+            return;
+        };
+        assert_eq!(
+            v, "10",
+            "a mixed-width mutual SCC emits VALID wasm (per-member fresh scratch floor)"
         );
     }
 
@@ -49544,10 +49619,13 @@ mod stage1 {
         // Growth guard on a WIDE pure context — `(+ 0 (+ 1 … (Ask.get)))`, one perform at the bottom of an
         // N-wide `+`-spine that `strongly_pure`/`pure_hole` must classify. It is SHALLOW (no deep recursion,
         // so no interaction with the fold's reduction-depth backstop) and its classification cost is the
-        // memoized `subtree_performs` — the cleanest signal for this fix. Was O(n^1.7) (the per-node
-        // re-walk); now linear. Timed as the MIN of several PAIRED back-to-back (width n, width 2n) runs so
-        // transient contention under the parallel harness cancels in the ratio (the technique
-        // `scope_resolution_deep_let_chain` uses). Linear ⇒ ~2×; the old re-walk ⇒ ≥3.3×. Threshold 2.7×.
+        // memoized `subtree_performs` — the cleanest signal for this fix. Was O(n²) (the per-node re-walk);
+        // now linear. The NOISE-FREE signal is `SUBTREE_PERFORMS_UNCACHED_CALLS` — the count of ACTUAL
+        // un-cached perform-verdict computations (the compiler's own recursion count, a pure function of the
+        // program), NOT wall-clock. A wall-clock ratio false-fails under fleet load (a width-200 run in a
+        // quiet slice vs a width-400 run hitting a scheduling stall inflates the ratio past threshold —
+        // exactly the flake the count-based guard avoids). Linear ⇒ the count grows ~2× over a 2× width;
+        // the old per-node re-walk was O(n²) ⇒ ~4×.
         fn wide_pure(n: usize) -> String {
             let mut e = String::from("((. Ask get))");
             for i in 0..n {
@@ -49569,29 +49647,28 @@ mod stage1 {
             0 + 1 + 2 + 3 + 5,
             "the wide `+`-spine sums 0..4 plus the perform's resumed state 5"
         );
-        fn check_ms(src: &str) -> f64 {
+        fn uncached_calls(src: &str) -> u64 {
             // The wide `+`-spine (width 200/400) parses and type-checks to a deep-but-finite recursion —
             // route it through the depth-sized compiler stack so it doesn't overflow the ~2 MB `cargo test`
             // worker stack (the guard-thread pattern the deep-recursion tests use).
             crate::host::run_with_compiler_stack(|| {
-                let start = std::time::Instant::now();
+                crate::db::SUBTREE_PERFORMS_UNCACHED_CALLS.with(|c| c.set(0));
                 let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-                start.elapsed().as_secs_f64() * 1000.0
+                crate::db::SUBTREE_PERFORMS_UNCACHED_CALLS.with(|c| c.get())
             })
         }
-        let (narrow, wide) = (wide_pure(200), wide_pure(400));
-        check_ms(&narrow); // warm lazy one-time init before the first timed pair
-        let mut best = f64::INFINITY;
-        for _ in 0..6 {
-            let t200 = check_ms(&narrow);
-            let t400 = check_ms(&wide);
-            best = best.min(t400 / t200.max(0.1));
-        }
+        // Width 200→400 is a 2× spine; LINEAR (each node's verdict computed once via the memo) ⇒ the
+        // un-cached count grows ~2×; the O(n²) per-node re-walk (a cache-defeating regression) grew ~4×.
+        // Require the ratio stay well under 3× (between the regimes, with margin for constant terms).
+        let n200 = uncached_calls(&wide_pure(200));
+        let n400 = uncached_calls(&wide_pure(400));
+        let ratio = n400 as f64 / (n200.max(1)) as f64;
         assert!(
-            best < 2.7,
+            n200 > 0 && ratio < 3.0,
             "the effect fold's pure classifier must scale LINEARLY over a wide context (was O(n²) via a \
-             per-node whole-subtree `subtree_performs` re-walk; now memoized): width 200→400 grew {best:.1}× \
-             (min paired ratio); linear is ~2×, the old re-walk was ≥3.3×"
+             per-node whole-subtree `subtree_performs` re-walk; now memoized per `(node, ctx.key)`): width \
+             200→400 grew un-cached `subtree_performs` computations {ratio:.1}× (n200={n200}, n400={n400}); \
+             linear is ~2×, the old re-walk was ~4×"
         );
     }
 
@@ -55974,6 +56051,63 @@ mod stage1 {
             let b = compile_component(&crate::codec::encode(&parse(shape))).expect("compile");
             assert_eq!(run_returns_with::<i64>(&b, "main", &[Val::S64(10)]), 17);
         }
+    }
+
+    #[test]
+    fn a_capturing_closure_in_a_let_bound_compound_projected_and_applied_folds() {
+        use wasmtime::component::Val;
+        // The COMPOUND face of the let-bound-closure fold — the third face of the same hazard as
+        // `a_returned_capturing_closure_bound_by_let_and_applied_folds`. A capturing closure stored in a
+        // record/tuple that is `let`-bound, projected, and applied: `(let ((r (record (f (fn (x) (+ x n))))))
+        // ((. r f) 10))`. This was a BOTH-BACKEND MISCOMPILE (invalid wasm at exit 0 —
+        // `func … type mismatch: expected i32, found i64` — and rust E0425 on an unbound `__cap0`).
+        //
+        // Root cause: `should_keep_binding` already short-circuits a `Resolved::Lambda` init AND one that
+        // `lambda_body`-reduces to a lambda, precisely to keep the classification `core_of(init)` from
+        // speculatively LIFTING the closure and polluting `db.captured_ref`. But a COMPOUND init CONTAINING a
+        // lambda is neither — it slipped past, was lowered (lifting the contained closure), and recorded the
+        // captured `n`. The projection `(. r f)` then β-reduced inline to `(+ 10 n)` reusing the SHARED `n`
+        // occurrence, which the stale `captured_ref` entry lowered to a `Core::Captured` env-read in `main`
+        // (no closure env) → the slot mismatch. `compound_contains_lambda` (a lift-free reduce) now detects a
+        // projection-only compound-holding-a-closure binding so it folds through, exactly like the inline
+        // `((. (record (f (fn (x) (+ x n)))) f) 10)` and direct-let forms. n = 1 → 10 + 1 = 11 (a pure fold,
+        // no heap round-trip, no runtime import).
+        let record = "(module m \
+            (def (main (: n Int64)) (let ((r (record (f (fn ((: x Int64)) (+ x n)))))) ((. r f) 10))) \
+            (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(record))).expect("compile");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            "the let-bound record's closure folds inline — no heap round-trip, no runtime import"
+        );
+        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(1)]), 11);
+        // The TUPLE face — a capturing closure stored as tuple element 0, `let`-bound, projected, applied.
+        let tuple = "(module m \
+            (def (main (: n Int64)) (let ((r (tuple (fn ((: x Int64)) (+ x n)) 9))) ((. r 0) 10))) \
+            (export main))";
+        let bt = compile_component(&crate::codec::encode(&parse(tuple))).expect("compile");
+        assert!(
+            cdz_run::required_runtime(&bt).expect("valid").is_none(),
+            "the let-bound tuple's closure folds inline — no heap round-trip, no runtime import"
+        );
+        assert_eq!(run_returns_with::<i64>(&bt, "main", &[Val::S64(1)]), 11);
+        // Projected and called TWICE through the one binding — each application folds independently:
+        // (10+1) + (20+1) = 32 with n = 1 (the second call passes 20).
+        let twice = "(module m \
+            (def (main (: n Int64)) \
+              (let ((r (record (f (fn ((: x Int64)) (+ x n)))))) (+ ((. r f) 10) ((. r f) 20)))) \
+            (export main))";
+        let b2 = compile_component(&crate::codec::encode(&parse(twice))).expect("compile");
+        assert_eq!(run_returns_with::<i64>(&b2, "main", &[Val::S64(1)]), 32);
+        // The capture is a LET-LOCAL rather than a def param, and the record carries an EXTRA plain field —
+        // both breaker-listed variants. `(let ((k 7)) (let ((r (record (f (fn (x) (+ x k))) (g 99)))) ((. r f) 5)))`
+        // = (+ 5 7) = 12.
+        let local_cap = "(module m \
+            (def (main) \
+              (let ((k 7)) (let ((r (record (f (fn ((: x Int64)) (+ x k))) (g 99)))) ((. r f) 5)))) \
+            (export main))";
+        let bl = compile_component(&crate::codec::encode(&parse(local_cap))).expect("compile");
+        assert_eq!(run_returns_with::<i64>(&bl, "main", &[]), 12);
     }
 
     #[test]
@@ -73737,6 +73871,86 @@ mod cross_component_oracle {
                 "a scalar quantity crosses to and from a peer as its inner scalar (3 meter → dbl → 6)"
             ),
             cdz_run::Outcome::Trap(t) => panic!("quantity-peer run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_heap_inner_quantity_crosses_to_and_from_a_peer_as_a_runtime_handle() {
+        use crate::testkit::parse;
+        // The COMPLEMENT of `a_scalar_quantity_crosses_…`: a HEAP-inner Quantity — `(Qty Rational m)`,
+        // whose magnitude is an exact rational (a value-heap bignum pair, not a scalar) — crosses the peer
+        // boundary as its opaque `u32` runtime HANDLE, NOT by value. This exercises the OTHER arm of the
+        // Qty ABI split: `extern_abi_val_type` calls `abi_val_type` first, whose `Ty::Qty { inner } =>
+        // abi_val_type(inner)` returns `None` for a Rational inner (a Rational has no scalar boundary
+        // form), so it falls through to `is_extern_heap_type`, whose `Ty::Qty { inner } =>
+        // is_extern_heap_type(inner)` recurses into the `Ty::Rational` arm → `true` → `AbiValType::U32`.
+        // The scalar-Qty test pins the by-value half (Int64 inner → `abi_val_type` arm); this pins the
+        // by-handle half (Rational inner → `is_extern_heap_type` arm). The two arms are complementary and
+        // BOTH must hold for the Quantity ABI to be sound over a peer — this branch was asserted only in
+        // the scalar test's doc-comment prose ("a HEAP-inner Qty still falls through to the handle path"),
+        // never exercised e2e until now.
+        //
+        // PROVIDER (source): `echo : (Qty Rational m) -> (Qty Rational m)` returns the crossed handle
+        // unchanged (the exact-rational magnitude survives the round trip as a shared-runtime handle).
+        let provider = compile_provider(
+            "(do (def (echo (: q (Qty Rational (Unit.base #\"meter\")))) q) (export echo))",
+            "cadenza:qr/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the rational-quantity echo provider validates");
+        }
+        // CONSUMER (source): builds `1/2 meter` (a Rational-inner Qty — its magnitude is a heap value),
+        // passes its handle INTO the peer (arg crosses as a handle), reads the returned Qty's magnitude
+        // back with `Qty.value` (a Rational), and compares it EXACTLY to a fresh `1/2` → 1. The
+        // exact-rational magnitude crossed both ways as a shared-runtime handle with no marshaling; main
+        // returns a scalar so the compound only crosses at the peer boundary, not as the escaping result.
+        let src = "(do \
+            (effect Qr (op echo (-> (Qty Rational (Unit.base #\"meter\")) (Qty Rational (Unit.base #\"meter\"))))) \
+            (bind Qr \"cadenza:qr/api\") \
+            (def (main) (host (Qr) \
+                (if (= (Qty.value (Qr.echo (Qty.of (Rational.of 1 2) (Unit.base #\"meter\")))) \
+                       (Rational.of 1 2)) 1 0))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "rational-quantity-peer consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("rational-quantity-peer consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[rational-quantity-peer] runtime wasm not found; skipping the run");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:qr/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a heap-inner quantity crosses to and from a peer")
+        {
+            // The consumer built `1/2 meter`, passed its handle to the peer, got the same handle back, read
+            // the magnitude, and compared it EXACTLY to `1/2` → 1. A HEAP-inner (Rational) QUANTITY crossed
+            // the boundary both ways as a shared runtime handle (NOT by value like the scalar-inner Qty).
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "1",
+                "a heap-inner (Rational) quantity crosses to and from a peer as a shared handle (1/2 meter round-trips exactly)"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("rational-quantity-peer run trapped: {t}"),
         }
     }
 

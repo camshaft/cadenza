@@ -2718,8 +2718,11 @@ fn emit_arith(
         }
         // A runtime shift, honoring the numeric model's trapping semantics exactly (mirroring the wasm
         // backend's `emit_shift` — `numeric-model.md` §A Shift Is Not Exempt From Overflow Is Defined):
-        //   - COUNT GUARD: a count outside `0..N` traps. The count is read as `u32` and compared `>= N`,
-        //     which catches BOTH a too-large count and a negative one (a negative read unsigned is huge);
+        //   - COUNT GUARD: a count outside `0..N` traps. The count is range-checked at its FULL i64 width
+        //     (`(0..N).contains(&c64)`) BEFORE the narrowing `as u32`, catching BOTH a too-large count and
+        //     a negative one. Checking the untruncated width matters: a count that is a multiple of 2^32
+        //     has low-32-bits 0, so an `as u32`-then-compare guard would see 0, skip the trap, and shift
+        //     by a masked amount — a silent wrong VALUE where wasm traps;
         //   - `<<` is exact `*2^count`, so it TRAPS on overflow: shift, then round-trip `(r >> count)`
         //     must recover the value — Rust's `>>` is arithmetic for a signed type / logical for an
         //     unsigned one, so the inverse is exact and the check catches a dropped high bit;
@@ -2733,15 +2736,16 @@ fn emit_arith(
             let vty = types::rust_type(&Ty::Int(it)).ok_or_else(|| {
                 Reject::decline("shift value width has no native Rust representation")
             })?;
-            // The count expression: its own solved type (a shift count is not rigidly the value's type),
-            // cast to u32 for the guard and the shift-count position.
+            // The count expression: its own solved type (a shift count is not rigidly the value's type).
+            // Range-checked at full i64 width, then cast to u32 for the shift-count position.
             let count_it = int_ty_of(db, rhs);
             let count = emit_grounded(db, rhs, count_it, env, ctx)?;
             if matches!(op, Prim::Shr) {
                 // `>>`: guard the count, then the native shift (arithmetic/logical by `vty`'s sign).
                 Ok(format!(
-                    "{{ let v: {vty} = {l}; let c = ({count}) as u32; \
-                     if c >= {width} {{ panic!(\"shift count out of range\") }} v >> c }}"
+                    "{{ let v: {vty} = {l}; let c64 = ({count}) as i64; \
+                     if !(0..{width}).contains(&c64) {{ panic!(\"shift count out of range\") }} \
+                     let c = c64 as u32; v >> c }}"
                 ))
             } else {
                 // `<<` GUARD ELISION — Core-tier parity with the wasm backend's `emit_shift` fast path
@@ -2773,8 +2777,9 @@ fn emit_arith(
                 }
                 // `<<`: guard the count, shift, then round-trip to detect an overflow (a dropped bit).
                 Ok(format!(
-                    "{{ let v: {vty} = {l}; let c = ({count}) as u32; \
-                     if c >= {width} {{ panic!(\"shift count out of range\") }} \
+                    "{{ let v: {vty} = {l}; let c64 = ({count}) as i64; \
+                     if !(0..{width}).contains(&c64) {{ panic!(\"shift count out of range\") }} \
+                     let c = c64 as u32; \
                      let r = v << c; \
                      if (r >> c) != v {{ panic!(\"integer overflow in left shift\") }} r }}"
                 ))
@@ -4102,12 +4107,64 @@ fn emit_sum_payload(
                                 ));
                             }
                         },
-                        // A `Payload`/`RestFrom` beyond the leading list index is a shape this slice does not
-                        // render — decline (the pre-existing boundary). A sum-element payload binder
-                        // (`(list (A.I x) .. rest)`, path `[Elem(i), Payload]`) needs the guard-established
-                        // DISCRIMINANT to spell `match (xs)[i] { A::I(p) => p, … }`, but the disc is not on this
-                        // path (an or-pattern over all variants mis-types a heterogeneous-payload sum) — so it
-                        // needs the disc threaded from the guard (a lower.rs change), deferred.
+                        // A `Payload` step over a SUM element — a sum-constructor list-element binder
+                        // (`(list (A.I x) .. rest)`, path `[Elem(i), Payload]`): the leading `Elem(i)` read
+                        // `(xs)[i]` (a value of the element sum `A`), and this `Payload` binds the matched
+                        // variant's payload. The desugar's discriminant guard already established WHICH
+                        // variant `(xs)[i]` is (the arm only runs when it matched `A::I`), but that disc is
+                        // not on this path. RECOVER it from the SumPayload node's OWN solved type: the binder
+                        // is typed at its variant's payload type, so the variant is the one whose payload type
+                        // equals `type_of(id)` — UNIQUE for the common heterogeneous sum (`A (I Int64) (N
+                        // String)`: I≠N). Emit `match (xs)[i] { A::I(__p) => __p, _ => unreachable!() }` — a
+                        // SINGLE-variant match (no or-pattern, so no heterogeneous-payload E0308) with a
+                        // defensive `_` (the guard proved this variant, so `_` is dead). AMBIGUOUS (two
+                        // variants share the exact payload type) or NO match → decline (can't pick soundly
+                        // without the guard's disc — a genuine lower.rs-threading case, still deferred).
+                        crate::core::PathStep::Payload if rest.len() == 1 => {
+                            let sum_ty = cur_ty.strip_nominal().clone();
+                            let target = type_of(db, id);
+                            // Enumerate the sum's variants; find the disc whose single payload type matches
+                            // the binder's type. Require a UNIQUE match for soundness.
+                            let n = match &sum_ty {
+                                Ty::Sum { decl, .. } => db
+                                    .type_decl_by_occ(*decl)
+                                    .map(|d| d.variants.len())
+                                    .unwrap_or(0),
+                                _ => 0,
+                            };
+                            let mut hit: Option<u32> = None;
+                            for d in 0..n as u32 {
+                                if let Some(pt) = variant_payload_ty(db, &sum_ty, d)
+                                    && pt.agrees_with(&target)
+                                {
+                                    if hit.is_some() {
+                                        hit = None; // ambiguous — two variants share the payload type
+                                        break;
+                                    }
+                                    hit = Some(d);
+                                }
+                            }
+                            let disc = hit.ok_or_else(|| {
+                                Reject::decline(
+                                    "a sum-constructor list-element payload whose variant is not uniquely determined by its payload type needs the guard discriminant threaded (deferred)",
+                                )
+                            })?;
+                            let vpath = sum_variant_path_of_ty(db, &sum_ty, disc)?;
+                            // A RECURSIVE variant's field is boxed — the bind derefs (`*__pv`), moving the
+                            // value out of the owned `Box`.
+                            let boxed = super::enums::variant_is_recursive(db, &sum_ty, disc);
+                            let bind = if boxed { "(*__pv)" } else { "__pv" };
+                            // The whole expression is the payload extracted from the matched variant. The
+                            // scrutinee `(xs)[i]` is a BORROWED list element, so `.clone()` it into the match
+                            // to own the sum value; `__pv` then MOVES the payload out of that owned clone —
+                            // no second clone is needed even for a non-Copy payload (the element clone already
+                            // produced an independent owned value; `id`'s clone-on-read is satisfied by it).
+                            return Ok(format!(
+                                "match ({expr}).clone() {{ {vpath}(__pv) => {bind}, _ => panic!(\"unreachable\") }}"
+                            ));
+                        }
+                        // A `Payload` at a non-terminal position (a payload with further nested steps) or a
+                        // `RestFrom` beyond the leading list index is a shape this slice does not render.
                         _ => {
                             return Err(Reject::decline(
                                 "a nested list-element binder beyond a tuple projection is not rendered by the Rust backend",

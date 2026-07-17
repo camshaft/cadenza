@@ -147,6 +147,43 @@
   (call   main (: 12345 Int64)) (output (: true Bool))
   (call   main (: -7 Int64)) (output (: true Bool)))
 
+(case "a generated SUM value is reproducible from its seed (compound = walks the variant tag and its payload)"
+  (doc    "Witnesses §Generation Is Seeded And Reproducible for a generator that produces a user-declared
+           SUM value — the tagged-union container, the last GenTy shape beside tuple/record/set/map. `gen`
+           draws a `Result` from the seed: a seed-derived bool picks the CONSTRUCTOR (`Ok` vs `Err`) and a
+           masked int is its payload, so `(= (gen seed) (gen seed))` = true — the whole tagged value
+           (variant tag + payload) re-generates identically and the compound `=` walks BOTH the discriminant
+           and the carried Int64. This is distinct from the product containers (tuple/record) — a sum's `=`
+           must first agree on the tag, then compare the payload. Runs at the boundary so the constructor
+           selection + the tagged compare are real instructions, not a compile-time fold.")
+  (input  (do (type Result (Ok Int64) (Err Int64))
+              (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (gen (: s Int64)) (if (= (& (next s) 1) 0) (Ok (& (next (next s)) 255)) (Err (& (next (next s)) 255))))
+              (def (main (: seed Int64)) (= (gen seed) (gen seed)))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: true Bool))
+  (call   main (: -7 Int64)) (output (: true Bool)))
+
+(case "a SUM compound = has DISCRIMINATING power (a runtime-selected constructor separates two tagged values)"
+  (doc    "The counterpart that makes the sum-value compare meaningful: the compound `=` must SEPARATE values
+           that carry the SAME payload but a DIFFERENT variant tag, not just equate identical ones. To keep
+           the compare a real RUNTIME tagged walk (a literal `(= (Ok v) (Err v))` could const-fold once both
+           constructors are known at compile time), the constructor is SELECTED at runtime: `mk tag v = if
+           tag then (Ok v) else (Err v)`, with `tag` and `v` both seed-derived. Then `(mk tag v)` equals
+           itself (same tag, same payload → true), and `(mk tag v)` vs `(mk (not tag) v)` holds the SAME
+           payload under DIFFERENT tags, so `=` is false. `main` returns true iff BOTH hold — pinning that a
+           sum `=` has power in both directions (equates equal tagged values, separates ones that differ only
+           in the discriminant) on a value inference cannot pre-decide.")
+  (input  (do (type Result (Ok Int64) (Err Int64))
+              (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (mk (: tag Bool) (: v Int64)) (if tag (Ok v) (Err v)))
+              (def (main (: seed Int64))
+                (let ((tag (= (& (next seed) 1) 0)) (v (& (next (next seed)) 255)))
+                  (if (= (mk tag v) (mk tag v)) (not (= (mk tag v) (mk (not tag) v))) false)))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: true Bool))
+  (call   main (: -7 Int64)) (output (: true Bool)))
+
 (case "a generated RECORD value is reproducible from its seed (compound = walks the record fields)"
   (doc    "Witnesses §Generation Is Seeded And Reproducible for a generator that produces a RECORD — the
            other named product container beside the tuple. The doc of the tuple case promises structural
