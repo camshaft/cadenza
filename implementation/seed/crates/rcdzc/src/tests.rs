@@ -36721,6 +36721,31 @@ mod match_engine {
                 "a known/declared unit is not flagged: {ok}"
             );
         }
+        // NO SPURIOUS "not a SYMBOL" companion: an unknown unit `#"name"` IS a well-formed symbol literal,
+        // so `check_unit_composition`'s "names its unit with a SYMBOL, but this is a Symbol value" reject
+        // must NOT fire alongside the unknown-unit one. Before the symbol-arg exclusion, `5 furlong` got
+        // BOTH — the second self-contradictory (it names the very `#"…"` form the arg already is). The
+        // unknown-unit diagnostic is the SOLE fault for a bad unit name.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) (Qty.of 5 (Unit.of #\"furlong\"))) (export main))",
+        )));
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.message.contains("names its unit with a SYMBOL")),
+            "no spurious not-a-SYMBOL reject on a valid symbol naming an unknown unit: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // A genuinely NON-symbol arg (an integer) STILL earns the "not a SYMBOL" reject — the exclusion is
+        // for a valid symbol only, not a blanket suppression.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (main) (Qty.of 1 (Unit.of 42))) (export main))"
+            )))
+            .iter()
+            .any(|d| d.message.contains("names its unit with a SYMBOL")),
+            "a non-symbol Unit.of arg still names the symbol requirement"
+        );
     }
 
     /// A MALFORMED `(Unit.define …)` — wrong arity, a non-symbol name, or a non-integer scale — is CDZ0201,

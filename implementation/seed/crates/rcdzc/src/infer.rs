@@ -7367,9 +7367,16 @@ fn check_unit_composition(db: &mut Db, id: crate::ast::StructId, out: &mut Vec<R
         // read below finds no single symbol; the message names the symbol requirement, the actionable fix.)
         Prim::UnitOf | Prim::UnitBase
             // A single bare-NAME arg (`(Unit.of foot)`) is DELIBERATELY left to the unbound-name handler,
-            // which names it with a `#"foot"` replace fix — richer than this generic message. Only a
-            // non-name non-symbol arg (an integer/string/compound), or a wrong arity, reaches here.
-            if !(args.len() == 1 && db.ast.as_name(args[0]).is_some()) =>
+            // which names it with a `#"foot"` replace fix — richer than this generic message. A single
+            // valid SYMBOL arg (`(Unit.of #"furlong")`) is a well-formed unit NAME — the arg IS a symbol,
+            // so this "not a SYMBOL" reject is WRONG; an UNKNOWN such unit is `check_unknown_units`'s job
+            // (CDZ0201 with a did-you-mean), and a KNOWN one reduces fine. Without excluding it, `5 furlong`
+            // (an unknown unit) got a SPURIOUS "names its unit with a SYMBOL, but this is a Symbol value"
+            // ALONGSIDE the correct "unknown unit `furlong`" — two errors, the first self-contradictory
+            // (it names the very `#"…"` form the arg already is). Only a non-name non-symbol arg (an
+            // integer/string/compound), or a wrong arity, reaches here.
+            if !(args.len() == 1
+                && (db.ast.as_name(args[0]).is_some() || db.ast.as_sym(args[0]).is_some())) =>
         {
             let op = if prim == Prim::UnitBase {
                 "Unit.base"
