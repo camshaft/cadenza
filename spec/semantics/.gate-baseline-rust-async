@@ -1,7 +1,4 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
-pass	adding a degree quantity to a radian quantity is a dimension mismatch
-pass	angle units radian and degree are first-class and exact within their own dimension
-todo	a state-advancing helper called before a later read threads its write through the continuation
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
@@ -687,6 +684,7 @@ pass	a heap arg threaded UNCHANGED to a self-recursive call while a sibling arg 
 pass	a heap capture persists across two applications of a curried closure
 pass	a heap list conditionally escaping into a Some in one branch is still usable after the join
 pass	a heap list consumed in only one if-branch stays live for a use after the if
+pass	a helper called TWICE threads its first write so the second call HITS the memoized value
 pass	a helper decodes bytes to a string and consumes the fallible result
 pass	a helper projects a record parameter constrained by its argument
 pass	a helper projects a tuple parameter constrained by its argument
@@ -1327,7 +1325,6 @@ pass	a recursive-generic producer composes at two element types (the tied result
 pass	a recursive-generic producer over a list of its own generic-producer results monomorphizes and runs
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
 pass	a recursive-generic producer's element is usable at each instantiation
-todo	a recursive-generic transformer threading an IDENTITY closure composes at TWO element types
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
@@ -1928,6 +1925,7 @@ pass	a zero-length slice is the empty byte sequence
 pass	accessing through an empty-side split-at is usable, like the equivalent literal
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
 pass	adding a cubed length to a squared length is a dimension mismatch
+pass	adding a degree quantity to a radian quantity is a dimension mismatch
 pass	adding a squared length to a plain length is a dimension mismatch
 pass	adding adjacent high-power quantities is a mismatch (meter^100 + meter^101)
 pass	adding quantities of incompatible dimension is a compile-time error
@@ -2051,6 +2049,7 @@ pass	an association list is searched by key with a tuple-carrying Option match
 pass	an axiom composes with the inference rules like any other theorem (SYM of ETA)
 pass	an axiom theorem is unforgeable — new_axiom's Thm cannot be fabricated outside the kernel
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
+pass	an earlier name-binding arm shadows a later literal arm — first-match-wins, not specificity-ordered
 pass	an effect discharged by a handler does not escape to the manifest
 pass	an effect in a statically-dead branch is still syntactically reached, so its delegation is not latent
 pass	an effect in a statically-dead branch still requires a grant — ungranted is rejected
@@ -2246,6 +2245,7 @@ pass	an unwrapped conversion result is a bare number under ordinary numeric rule
 pass	an unwrapped length adds to an unwrapped time with no dimension error
 pass	and evaluates the right operand when the left is true
 pass	and short-circuits at run time: a false left operand skips the trapping right operand
+pass	angle units radian and degree are first-class and exact within their own dimension
 pass	annotating a quantity at a dimension the expression does not derive is an error
 pass	annotating a quantity at a same-dimension DIFFERENT unit is accepted (dimension checked, not scale)
 pass	applying a boolean is a type error
@@ -2656,6 +2656,7 @@ pass	negative zero stays distinct from zero through the hoisted float compare
 pass	nested patterns deconstruct recursively
 pass	nested patterns with literals
 pass	nested quasiquote embeds a FLOAT via the inner unquote
+pass	nested-Option equality observes the OUTER variant and matches identical nesting
 pass	nullary constructor patterns are uniform with unary
 pass	one effect's result flows as the ARGUMENT to a DIFFERENT effect's op under nested handlers
 pass	one encode-decode cycle is byte-stable
@@ -3520,6 +3521,7 @@ todo	a recursive-generic filter threading a predicate closure composes at two el
 todo	a recursive-generic producer's result is consumed by an element-typed consumer
 todo	a recursive-generic transformer composes with itself
 todo	a recursive-generic transformer threading a closure composes at two element types
+todo	a recursive-generic transformer threading an IDENTITY closure composes at TWO element types
 todo	a recursive-generic transformer threading an IDENTITY closure composes at a single element type
 todo	a recursive-generic transformer with a bare-Nil STOP branch composes at two element types
 todo	a recursive-generic transformer with an element-CHANGING closure ties domain to codomain
@@ -3719,9 +3721,3 @@ todo	two same-signature Bytes-returning closures share one call — second
 todo	two same-signature String-returning closures share one call
 todo	two same-signature closures alongside a plain export all coexist
 todo	two same-signature closures alongside a plain export — the plain export runs
-pass	a stacked @test @ensures def called as a function returns its value, not unit (value-transparent)
-pass	a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)
-pass	nested-Option equality observes the OUTER variant and matches identical nesting
-pass	an earlier name-binding arm shadows a later literal arm — first-match-wins, not specificity-ordered
-pass	t1(trap): an explicit trap under guard (lt x 0) is UNREACHABLE when @requires(>= x 0) — the trap is dead
-pass	t1(trap) NEGATIVE: a trap guard NOT contradicted by the precondition is NOT unreachable — the trap STAYS
