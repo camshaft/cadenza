@@ -318,17 +318,17 @@ export default function PlaygroundPage() {
     <div className="flex h-screen flex-col bg-slate-950 text-slate-200">
       {/* Toolbar — wraps on narrow screens so every control stays reachable. */}
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 px-3 py-2">
-        <Link to="/" className="mr-1 text-sm font-bold tracking-tight text-slate-100">
+        <Link to="/" className="mr-1 flex min-h-11 items-center text-sm font-bold tracking-tight text-slate-100 sm:min-h-0">
           Cadenza
         </Link>
         <span className="mr-2 hidden text-xs text-slate-500 sm:inline">playground</span>
         <button
           onClick={doRun}
-          className="rounded-md bg-cadenza-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-cadenza-500"
+          className="flex min-h-11 items-center justify-center rounded-md bg-cadenza-600 px-3 text-xs font-semibold text-white transition hover:bg-cadenza-500 sm:min-h-0 sm:py-1"
         >
           ▶ Run
         </button>
-        <button onClick={format} className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-800/60 hover:text-slate-200">
+        <button onClick={format} className="flex min-h-11 items-center rounded px-2 text-xs text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 sm:min-h-0 sm:py-1">
           Format
         </button>
         <select
@@ -336,7 +336,7 @@ export default function PlaygroundPage() {
             void loadExample(e.target.value);
             e.target.selectedIndex = 0;
           }}
-          className="rounded bg-slate-800/60 px-2 py-1 text-xs text-slate-300"
+          className="min-h-11 rounded bg-slate-800/60 px-2 text-xs text-slate-300 sm:min-h-0 sm:py-1"
           defaultValue=""
         >
           <option value="" disabled>
@@ -350,7 +350,7 @@ export default function PlaygroundPage() {
         </select>
         <div className="ml-auto flex items-center gap-2">
           <SurfaceToggle surface={surface} setSurface={setSurface} />
-          <button onClick={share} className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-800/60 hover:text-slate-200">
+          <button onClick={share} className="flex min-h-11 items-center rounded px-2 text-xs text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 sm:min-h-0 sm:py-1">
             Share
           </button>
         </div>
@@ -433,8 +433,9 @@ function SurfaceToggle({ surface, setSurface }: { surface: "ml" | "sexpr"; setSu
         <button
           key={s}
           onClick={() => setSurface(s)}
+          // Mobile touch target: 44px-tall segment below `sm`, compact at sm+.
           className={
-            "rounded-md px-2.5 py-0.5 text-xs font-medium transition " +
+            "flex min-h-11 items-center rounded-md px-2.5 text-xs font-medium transition sm:min-h-0 sm:py-0.5 " +
             (s === surface ? "bg-cadenza-600 text-white" : "text-slate-400 hover:text-slate-200")
           }
         >
