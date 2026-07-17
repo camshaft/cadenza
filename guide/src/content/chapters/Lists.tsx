@@ -23,10 +23,10 @@ export default function Lists() {
       </P>
       <Runnable source={`(List.push (list 1 2) 3)`} />
       <P>
-        And because the result is itself a list, you can feed it straight into another operation — chain{" "}
-        <C>concat</C> and then measure, all in one expression:
+        <C>List.concat</C> joins two lists into a new one — Run this and you see the whole joined list,{" "}
+        <C>(list 1 2 3 4 5)</C>, the two inputs laid end to end:
       </P>
-      <Runnable source={`(List.len (List.concat (list 1 2) (list 3 4 5)))`} />
+      <Runnable source={`(List.concat (list 1 2) (list 3 4 5))`} />
 
       <H2>Reaching in safely</H2>
       <P>

@@ -17,12 +17,14 @@ export default function BinaryMatching() {
       <P>
         A <C>(bin …)</C> expression lays out fixed-width fields. <C>(u16 258)</C> is a 16-bit unsigned
         integer — two bytes, most-significant first (big-endian, the network default) — and <C>(u8 …)</C>{" "}
-        one byte. This form is three bytes wide:
+        one byte. Return it and you see the exact octets it lays down:
       </P>
-      <Runnable source={`(Bytes.len (bin (u16 258) (u8 (UInt8.wrap 5))))`} />
+      <Runnable source={`(bin (u16 258) (u8 (UInt8.wrap 5)))`} />
       <P>
-        Each fixed-width segment contributes exactly its width — a <C>u16</C> is always two bytes, a{" "}
-        <C>u32</C> always four — whatever value it carries, so the length is the sum of the widths.
+        <C>{`b"\\x01\\x02\\x05"`}</C> — three bytes: <C>258</C> is <C>0x0102</C>, written big-endian as{" "}
+        <C>\x01</C> then <C>\x02</C>, followed by the <C>u8</C> byte <C>\x05</C>. Each fixed-width segment
+        contributes exactly its width — a <C>u16</C> is always two bytes, a <C>u32</C> always four —
+        whatever value it carries, so you can read the layout straight off the result.
       </P>
 
       <H2>Taking bytes apart</H2>
