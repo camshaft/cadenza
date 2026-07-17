@@ -3857,6 +3857,29 @@
             (export main)))
   (output (: 4 Int64)))
 
+(case "a type-valued parameter under a function-arrow annotation dispatches an ad-hoc-polymorphic dict"
+  (doc    "AD-HOC POLYMORPHISM via a record of functions, generic over the element type — a `(: t Type)`
+           parameter used in the DOMAIN of a function ARROW inside another parameter's annotation:
+           `show-with(t: Type, dict: Record(describe: t → Int64), x: t) = dict.describe(x)`. The tie is that
+           `t` must reduce to the SAME type variable in the arrow `(-> t Int64)` as in the bare `(: x t)` —
+           a `(: g (-> t …))` arrow annotation previously collapsed `t` to `Unit` (the `encode_ty`/`decode_ty`
+           round-trip for a built arrow type-value had no `Ty::Var` arm, so the def scheme read `(-> (-> Unit
+           Int64) …)` and a real closure argument mismatched). Now the scheme is `(-> Type (-> (Record
+           (describe (-> a Int64))) (-> a Int64)))`, and `show-with` dispatches over BOTH an Int64 instance
+           (`describe-int`) AND a Bool instance (`describe-bool`) through the dict in one program:
+           `describe-int(5)=5` + `describe-bool(true)=1` = 6. Pins the type-valued-parameter-under-an-arrow
+           substitution the ad-hoc-polymorphism chapter (traits = records of functions) depends on.")
+  (input  (do
+            (def (describe-int (: n Int64)) n)
+            (def (describe-bool (: b Bool)) (if b 1 0))
+            (def (show-with (: t Type) (: dict (Record (describe (-> t Int64)))) (: x t))
+              ((. dict describe) x))
+            (def (main)
+              (+ (show-with Int64 (record (describe describe-int)) 5)
+                 (show-with Bool (record (describe describe-bool)) true)))
+            (export main)))
+  (output (: 6 Int64)))
+
 ; take-while BEHAVIORAL edges (breaker): the case above pins the inference TIE (bare-Nil stop branch keeps
 ; the result-element tie at ≥2 types); these pin the runtime BEHAVIOR the landed giter.cdz @tests (ints,
 ; strings, one leading-run) don't cover as corpus: the whole-list case where NO element fails (the stop
