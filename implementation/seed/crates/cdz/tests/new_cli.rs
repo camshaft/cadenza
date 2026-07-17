@@ -54,6 +54,36 @@ fn new_scaffolds_a_buildable_project() {
 }
 
 #[test]
+fn new_scaffolds_a_testable_project() {
+    // The `cargo new` parity: a fresh project runs `cdz test` GREEN out of the box — the scaffold ships a
+    // starter `@test` in the entry and a `def tests = [...]` in the manifest. Regression: the scaffold used
+    // to omit both, so `cd app && cdz test` dead-ended on "the manifest declares no `tests`". Assert the
+    // natural new→test flow passes on BOTH surfaces.
+    for extra in [&[][..], &["--sexpr"][..]] {
+        let root = scratch(if extra.is_empty() {
+            "test-ml"
+        } else {
+            "test-sexp"
+        });
+        let mut args = vec!["new", "app"];
+        args.extend_from_slice(extra);
+        let (ok, _o, err) = run_in(&root, &args);
+        assert!(ok, "cdz new ({extra:?}) failed: {err}");
+        let proj = root.join("app");
+        let (tok, tout, terr) = run_in(&proj, &["test", "."]);
+        assert!(
+            tok,
+            "a fresh scaffold ({extra:?}) must `cdz test` green out of the box: {tout}{terr}"
+        );
+        assert!(
+            tout.contains("1 passed, 0 failed"),
+            "the starter @test passes ({extra:?}): {tout}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[test]
 fn new_scaffolds_an_already_formatted_project() {
     // A freshly-scaffolded project must pass `cdz fmt --check` (rc=0) out of the box — the entry is
     // written in its canonical printer form. Regression: the ML template previously omitted the blank
