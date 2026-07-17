@@ -2082,13 +2082,19 @@ mod tests {
 
     #[test]
     fn request_list_round_trips() {
+        // EXHAUSTIVE over every Request/Query variant — a missing variant would let a broken encode/
+        // decode arm (a copy-paste tag mismatch, a dropped operand) slip through. Emit targets:
+        // Wasm/WasmDebug/Dwarf/Tests/Rust/RustAsync. Queries: all 13 (name-keyed, node-keyed, nullary).
         let requests = vec![
             Request::Emit(Target::Wasm),
+            Request::Emit(Target::WasmDebug),
+            Request::Emit(Target::Dwarf),
+            Request::EmitTests,
+            Request::Emit(Target::Rust),
+            Request::Emit(Target::RustAsync),
             Request::Query(Query::TypeOf {
                 name: "main".into(),
             }),
-            Request::Emit(Target::Rust),
-            Request::Emit(Target::RustAsync),
             Request::Query(Query::UsesOf {
                 name: "helper".into(),
             }),
@@ -2106,8 +2112,67 @@ mod tests {
                 name: "fold-n".into(),
             }),
             Request::Query(Query::Symbols),
+            Request::Query(Query::ParamManifest),
         ];
         assert_eq!(decode(&encode(&requests)), Some(requests));
+    }
+
+    #[test]
+    fn every_request_variant_round_trips_individually() {
+        // Round-trip each variant ALONE too, so a variant that only survives when neighboured by others
+        // (a length/offset bug masked by the next request's bytes) is still caught. An exhaustive `match`
+        // in the builder below forces this list to extend when a Request/Query variant is added.
+        let each: Vec<Request> = vec![
+            Request::Emit(Target::Wasm),
+            Request::Emit(Target::WasmDebug),
+            Request::Emit(Target::Dwarf),
+            Request::EmitTests,
+            Request::Emit(Target::Rust),
+            Request::Emit(Target::RustAsync),
+            Request::Query(Query::TypeOf { name: "n".into() }),
+            Request::Query(Query::UsesOf { name: "n".into() }),
+            Request::Query(Query::TypeAt { node: 1 }),
+            Request::Query(Query::Diagnostics),
+            Request::Query(Query::ResolveOf { node: 1 }),
+            Request::Query(Query::ScopeAt { node: 1 }),
+            Request::Query(Query::Exports),
+            Request::Query(Query::Highlight),
+            Request::Query(Query::DocOf { name: "n".into() }),
+            Request::Query(Query::DocAt { node: 1 }),
+            Request::Query(Query::Instantiations { name: "n".into() }),
+            Request::Query(Query::Symbols),
+            Request::Query(Query::ParamManifest),
+        ];
+        // Exhaustiveness guard: adding a Request/Query variant fails to compile until listed above AND here.
+        for r in &each {
+            match r {
+                Request::Emit(_)
+                | Request::EmitTests
+                | Request::Query(
+                    Query::TypeOf { .. }
+                    | Query::UsesOf { .. }
+                    | Query::TypeAt { .. }
+                    | Query::Diagnostics
+                    | Query::ResolveOf { .. }
+                    | Query::ScopeAt { .. }
+                    | Query::Exports
+                    | Query::Highlight
+                    | Query::DocOf { .. }
+                    | Query::DocAt { .. }
+                    | Query::Instantiations { .. }
+                    | Query::Symbols
+                    | Query::ParamManifest,
+                ) => {}
+            }
+        }
+        for r in each {
+            let one = vec![r.clone()];
+            assert_eq!(
+                decode(&encode(&one)),
+                Some(one),
+                "variant did not round-trip alone: {r:?}"
+            );
+        }
     }
 
     #[test]
