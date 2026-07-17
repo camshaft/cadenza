@@ -801,7 +801,7 @@ fn run_program_wasm(
     let component = if modules.is_empty() {
         emit_component_single_at(tools, program, opt_level)
     } else {
-        emit_component_package(tools, program, modules)
+        emit_component_package(tools, program, modules, opt_level)
     };
     let component = match component {
         Ok(bytes) => bytes,
@@ -914,6 +914,7 @@ fn emit_component_package(
     tools: &Tools,
     program: &str,
     modules: &[(String, String)],
+    opt_level: Option<&str>,
 ) -> Result<Vec<u8>, Ran> {
     use std::process::Command;
 
@@ -964,6 +965,12 @@ fn emit_component_package(
         cmd.arg(s);
     }
     cmd.args(["--entry", "main", "-o", "-"]);
+    // Thread the requested opt tier (only the opt-sweep passes one; None = compiler default) — so a
+    // package case is compiled at the SAME level being swept, not silently at the default. Without this
+    // the sweep could not cover multi-module programs (they'd all compile at O1 regardless of level).
+    if let Some(level) = opt_level {
+        cmd.args(["--opt-level", level]);
+    }
     let out = cmd
         .output()
         .unwrap_or_else(|e| launch_fail("cdz compile", e));
@@ -2763,8 +2770,9 @@ fn sweep_outcome_key(ran: &Ran) -> String {
 /// projection (the value a run yields, or the trap/decline) is the real invariant the levels must
 /// preserve. Each case is driven per its trials (its `(call …)`s); a case that DECLINES at the default
 /// tier is skipped (a decline is level-independent; the normal gate grades it Todo). Multi-file PACKAGE
-/// cases are skipped in this first cut (the single-file pipe covers the arithmetic/control programs where
-/// the pass tiers act). Wired into `cargo xtask check` (operator directive 2026-07-17) → a HARD BLOCKING
+/// cases ARE covered (`emit_component_package` threads the opt level, so each level recompiles the whole
+/// package) — extending the guard to multi-module programs where a cross-module/inlining pass could
+/// mis-optimize. Wired into `cargo xtask check` (operator directive 2026-07-17) → a HARD BLOCKING
 /// merge gate: because pr-sync re-gates every MR via `check`, a cross-level divergence rejects the MR. It
 /// guards nothing while the `PassManager` pipeline is empty (every level runs identically), but stands
 /// ready to catch fleet-wide any future Core pass that mis-optimizes at `O2`/`O3`.
@@ -2856,7 +2864,7 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
     };
 
     println!(
-        "\ngate --opt-sweep: {checked} checked ({skipped} skipped: package/decline), {} divergence(s) across O0..O3",
+        "\ngate --opt-sweep: {checked} checked ({skipped} skipped: declines-at-default), {} divergence(s) across O0..O3",
         divergences.len()
     );
     if !divergences.is_empty() {
@@ -2887,10 +2895,10 @@ fn sweep_one_case(
     rec: &CorpusRecord,
     levels: &[&str],
 ) -> SweepOutcome {
-    // Multi-file package cases are out of scope for this first cut.
-    if !rec.modules.is_empty() {
-        return SweepOutcome::Skipped;
-    }
+    // Multi-file PACKAGE cases are covered too: `run_program_wasm` → `emit_component_package` now threads
+    // the opt level (so each level actually recompiles the whole package), extending the level-equivalence
+    // guard to multi-module programs — exactly where a future cross-module/inlining Core pass could
+    // mis-optimize. (A case that DECLINES at the default tier is still skipped below — level-independent.)
     // Each trial (a `(call …)`, or the single no-call trial) is run at every level and compared.
     let calls: Vec<Option<&Call>> = if rec.trials.is_empty() {
         vec![None]
