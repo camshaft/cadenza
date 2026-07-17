@@ -43,7 +43,7 @@ export default function Bytes() {
         source={`(def (main)
   (match (Bytes.at (Bytes.of (list 10 20 30)) 1)
     ((Some b) b)
-    ((None _) (- 0 1))))`}
+    ((None _) -1)))`}
       />
       <P>Push the index past the end and the <C>None</C> arm fires — no out-of-bounds crash.</P>
 
@@ -116,11 +116,11 @@ export default function Bytes() {
         starter={`(def (main)
   (match (Bytes.at b"ABC" ?)
     ((Some x) x)
-    ((None _) (- 0 1))))`}
+    ((None _) -1)))`}
         solution={`(def (main)
   (match (Bytes.at b"ABC" 2)
     ((Some x) x)
-    ((None _) (- 0 1))))`}
+    ((None _) -1)))`}
         expected="67"
         hint={
           <>

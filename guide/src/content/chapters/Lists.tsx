@@ -39,7 +39,7 @@ export default function Lists() {
         source={`(def (main)
   (match (List.at (list 10 20 30) 1)
     ((Some x) x)
-    ((None _) (- 0 1))))`}
+    ((None _) -1)))`}
       />
       <P>
         Change the index <C>1</C> to <C>9</C> and Run: the lookup misses, the <C>None</C> arm fires,
