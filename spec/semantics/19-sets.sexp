@@ -180,6 +180,41 @@
   (input  (= (Set.union (Set.of (list 1 2 3)) (Set.of (list 1 2 3))) (Set.of (list 1 2 3))))
   (output (: true Bool)))
 
+(case "union is associative"
+  (doc    "`(A ∪ B) ∪ C` equals `A ∪ (B ∪ C)` for overlapping A={1,2}, B={2,3}, C={3,4} — the union
+           regrouping does not change the result (both are {1,2,3,4}). The MULTI-way companion of
+           commutativity: a canonical-order or dedup bug in the 3-way fold could break associativity while
+           the 2-way commutativity above still passes, so this pins the associative regrouping directly.
+           MUST be true.")
+  (input  (= (Set.union (Set.union (Set.of (list 1 2)) (Set.of (list 2 3))) (Set.of (list 3 4)))
+             (Set.union (Set.of (list 1 2)) (Set.union (Set.of (list 2 3)) (Set.of (list 3 4))))))
+  (output (: true Bool)))
+
+(case "union dedups overlapping elements by content, counted once"
+  (doc    "`(Set.len (Set.union {1,2,3} {2,3,4}))` is 4, not 6: the shared elements 2 and 3 are held once in
+           the union, not double-counted. The operation-level dedup over TWO multi-element sets (the
+           existing runtime union-dedup case only overlaps a single element), pinning that union merges
+           by content across a genuine multi-element overlap. MUST be 4.")
+  (input  (Set.len (Set.union (Set.of (list 1 2 3)) (Set.of (list 2 3 4)))))
+  (output (: 4 Int64)))
+
+(case "intersection is associative"
+  (doc    "`(A ∩ B) ∩ C` equals `A ∩ (B ∩ C)` for A={1,2,3,4}, B={2,3,4,5}, C={3,4,5,6} — both regroupings
+           yield {3,4}. The intersection companion of union associativity; pins that the meet regrouping is
+           order-independent. MUST be true.")
+  (input  (= (Set.intersection (Set.intersection (Set.of (list 1 2 3 4)) (Set.of (list 2 3 4 5))) (Set.of (list 3 4 5 6)))
+             (Set.intersection (Set.of (list 1 2 3 4)) (Set.intersection (Set.of (list 2 3 4 5)) (Set.of (list 3 4 5 6))))))
+  (output (: true Bool)))
+
+(case "difference is NOT commutative"
+  (doc    "`{1,2,3} \\ {2,3,4}` = {1} but `{2,3,4} \\ {1,2,3}` = {4} — set difference is directional, so
+           `A \\ B` and `B \\ A` are DIFFERENT sets (unequal). The contrast to union/intersection
+           commutativity: pins that difference does NOT commute (a `=` between the two orderings is FALSE),
+           so a bug treating difference symmetrically would be caught. MUST be false.")
+  (input  (= (Set.difference (Set.of (list 1 2 3)) (Set.of (list 2 3 4)))
+             (Set.difference (Set.of (list 2 3 4)) (Set.of (list 1 2 3)))))
+  (output (: false Bool)))
+
 (case "the empty set is equal to the empty set"
   (doc    "`(= (Set.of (list)) (Set.of (list)))` is true — two empty sets contain the same (no) elements
            (collections-and-text.md #A Set Is A Collection Of Unique Elements). Pins that the empty set

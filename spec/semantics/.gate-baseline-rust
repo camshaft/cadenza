@@ -2469,6 +2469,7 @@ pass	decoding well-formed UTF-8 bytes yields the string
 pass	deeply nested pattern matching
 pass	demoting a Float64 to Float32 rounds to the nearest binary32
 pass	difference cardinality with a runtime-element subtrahend
+pass	difference is NOT commutative
 pass	difference over a runtime-element set removes exactly that element
 pass	different runtime Bytes nested in a tuple compare unequal
 pass	differing trapping operands trap by selection only under the arith hoist
@@ -2609,6 +2610,7 @@ pass	integer to byte (truncate to 0-255)
 pass	integer to byte wraps on overflow
 pass	interning the same string twice yields equal symbols
 pass	intersection cardinality with a runtime-element operand
+pass	intersection is associative
 pass	intersection with the empty set is the empty set
 pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
 pass	keyed lookups at different keys are not shared
@@ -3198,6 +3200,8 @@ pass	unary negation of an exact rational negates the numerator
 pass	under-applying a unary constructor is a type error, not a fabricated unit payload
 pass	unequal-depth payload paths bind distinctly
 pass	union cardinality with a runtime-element operand
+pass	union dedups overlapping elements by content, counted once
+pass	union is associative
 pass	union is commutative
 pass	union of a set with itself is the set (idempotent)
 pass	union with the empty set is the set itself
