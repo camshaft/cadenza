@@ -16985,6 +16985,50 @@ mod match_engine {
         );
     }
 
+    /// Verification Inc-b b4a: `@requires(pred)`/`@ensures(pred)` are RECORDED (their predicate occurrences
+    /// keyed by the def's body occ, `Db::requires_of`/`ensures_of`) — the `@requires`/`@ensures`→node
+    /// channel the proof-guided-elision oracle needs — AND the annotated def is otherwise UNCHANGED
+    /// (behavior-neutral: it compiles + runs exactly as the un-annotated def, since nothing yet CONSUMES
+    /// the recorded predicates; the denotation + discharge are later b4/b3 slices). Before this slice
+    /// `@requires`/`@ensures` were inert unknown markers (recorded nowhere).
+    #[test]
+    fn requires_ensures_predicates_are_recorded_and_behavior_neutral() {
+        use crate::testkit::parse;
+        // A def carrying a @requires and a @ensures. The predicates are ordinary forms over the param `x`
+        // (and, for @ensures, the implicit result binder `it`); b4a just records their StructIds.
+        let src = "(module m (@ (requires (> x 0)) (@ (ensures (> it 0)) (def (f (: x Int64)) (+ x 1)))) (export f))";
+        let db = crate::db::Db::load(parse(src));
+        // The annotations are RECORDED against f's def.
+        let f = db.def_by_name("f").expect("def f");
+        assert_eq!(
+            db.requires_of(f).len(),
+            1,
+            "the @requires(> x 0) predicate is recorded for f"
+        );
+        assert_eq!(
+            db.ensures_of(f).len(),
+            1,
+            "the @ensures(> it 0) predicate is recorded for f"
+        );
+        // BEHAVIOR-NEUTRAL: the annotated def compiles + runs identically to the un-annotated one.
+        use wasmtime::component::Val;
+        let annotated =
+            compile_component(&crate::codec::encode(&parse(src))).expect("annotated compiles");
+        let plain_src = "(module m (def (f (: x Int64)) (+ x 1)) (export f))";
+        let plain =
+            compile_component(&crate::codec::encode(&parse(plain_src))).expect("plain compiles");
+        assert_eq!(
+            run_returns_with::<i64>(&annotated, "f", &[Val::S64(41)]),
+            42,
+            "the @requires/@ensures-annotated f runs to (+ 41 1)=42"
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&plain, "f", &[Val::S64(41)]),
+            run_returns_with::<i64>(&annotated, "f", &[Val::S64(41)]),
+            "the annotated def runs identically to the un-annotated def (behavior-neutral)"
+        );
+    }
+
     /// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
     /// valid: `T` a declared sum, `A` one of its variants. The linker's `as_ctor_export` recorded the
     /// (type, ctor) names WITHOUT checking they exist, so `(export (. T Nonesuch))` (a ctor `T` lacks),
