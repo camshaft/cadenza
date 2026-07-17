@@ -22,6 +22,15 @@ import { runTests, type TestRunOutcome } from "../runner/client.ts";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
 import { assertPreludeFor } from "./assertPrelude.ts";
 
+/// Shared example-control button classes. Both carry a 44px mobile touch target (`min-h-11` below `sm`,
+/// the touch guideline) that collapses to the compact desktop density at `sm+`. `BTN_PRIMARY` is the
+/// accent action (Run / Check); `BTN_SECONDARY` is a muted action (Reset / Hint / Show solution). Kept as
+/// constants so every example control stays in lockstep (a per-button edit would drift the touch sizing).
+export const BTN_PRIMARY =
+  "flex min-h-11 items-center justify-center rounded-md bg-cadenza-600 px-3 text-xs font-semibold text-white transition hover:bg-cadenza-500 disabled:opacity-50 sm:min-h-0 sm:py-1";
+export const BTN_SECONDARY =
+  "flex min-h-11 items-center justify-center rounded px-2 text-xs text-slate-400 transition hover:bg-slate-700/60 hover:text-slate-200 sm:min-h-0 sm:py-1";
+
 /// Wrap the editor text into a compilable program for diagnostics/hover, AND report the UTF-8 byte
 /// length of the wrapper prefix so spans map back to the editor text. `wrapModule` trims the snippet,
 /// so we locate the trimmed body within the wrapped output for an exact prefix. When the text is
@@ -109,14 +118,14 @@ function RunRunnable({ source, authoredIn = "sexpr", wrap = true, expect = "valu
           />
           <button
             onClick={reset}
-            className="rounded px-2 py-1 text-xs text-slate-400 transition hover:bg-slate-700/60 hover:text-slate-200"
+            className={BTN_SECONDARY}
           >
             Reset
           </button>
           <button
             onClick={doRun}
             disabled={busy}
-            className="rounded-md bg-cadenza-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-cadenza-500 disabled:opacity-50"
+            className={BTN_PRIMARY}
           >
             {busy ? "Running…" : "▶ Run"}
           </button>
@@ -282,14 +291,14 @@ function TestRunnable({ source, authoredIn = "sexpr", title, prelude = true }: P
         <div className="flex items-center gap-2">
           <button
             onClick={() => { editor.reset(); setStatus({ phase: "idle" }); }}
-            className="rounded px-2 py-1 text-xs text-slate-400 transition hover:bg-slate-700/60 hover:text-slate-200"
+            className={BTN_SECONDARY}
           >
             Reset
           </button>
           <button
             onClick={doRun}
             disabled={busy}
-            className="rounded-md bg-cadenza-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-cadenza-500 disabled:opacity-50"
+            className={BTN_PRIMARY}
           >
             {busy ? "Running…" : "▶ Run tests"}
           </button>

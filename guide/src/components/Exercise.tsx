@@ -14,6 +14,7 @@ import { LazyCodeEditor as CodeEditor } from "../editor/LazyCodeEditor.tsx";
 import { useCadenzaEditor } from "./useCadenzaEditor.ts";
 import { renderSnippet } from "./useCadenzaEditor.ts";
 import { StatusIcon } from "./StatusIcon.tsx";
+import { BTN_PRIMARY, BTN_SECONDARY } from "./Runnable.tsx";
 import { useProgress } from "../progress/ProgressContext.tsx";
 import type { Surface } from "../syntax/SyntaxContext.tsx";
 
@@ -125,7 +126,7 @@ export function Exercise({
         <button
           onClick={doCheck}
           disabled={busy}
-          className="rounded-md bg-cadenza-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-cadenza-500 disabled:opacity-50"
+          className={BTN_PRIMARY}
         >
           {busy ? "Checking…" : "Check"}
         </button>
@@ -134,21 +135,21 @@ export function Exercise({
             editor.reset();
             setCheck({ phase: "idle" });
           }}
-          className="rounded px-2 py-1 text-xs text-slate-400 transition hover:bg-slate-700/60 hover:text-slate-200"
+          className={BTN_SECONDARY}
         >
           Reset
         </button>
         {hint && (
           <button
             onClick={() => setShowHint((s) => !s)}
-            className="rounded px-2 py-1 text-xs text-slate-400 transition hover:bg-slate-700/60 hover:text-slate-200"
+            className={BTN_SECONDARY}
           >
             {showHint ? "Hide hint" : "Hint"}
           </button>
         )}
         <button
           onClick={revealSolution}
-          className="ml-auto rounded px-2 py-1 text-xs text-slate-500 transition hover:bg-slate-700/60 hover:text-slate-300"
+          className={`ml-auto ${BTN_SECONDARY} text-slate-500 hover:text-slate-300`}
           title="Try not to rely on this too much!"
         >
           Show solution
