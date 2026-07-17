@@ -499,12 +499,12 @@ fn compile_run_ml_driver(driver_path: &std::path::Path) -> Result<String, String
 /// unexpected → `declined` (conservative — never emit a bogus `value`).
 fn parse_ml_option_render(rendered: &str) -> String {
     // Find `(Some ` and take the token up to the next `)`.
-    if let Some(rest) = rendered.split("(Some ").nth(1) {
-        if let Some(n) = rest.split(')').next() {
-            let n = n.trim();
-            if !n.is_empty() {
-                return format!("value {n}");
-            }
+    if let Some(rest) = rendered.split("(Some ").nth(1)
+        && let Some(n) = rest.split(')').next()
+    {
+        let n = n.trim();
+        if !n.is_empty() {
+            return format!("value {n}");
         }
     }
     "declined".to_string()
