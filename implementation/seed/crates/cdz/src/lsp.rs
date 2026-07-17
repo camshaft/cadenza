@@ -3093,6 +3093,108 @@ mod tests {
         assert!(served.is_ok(), "serve returned an error: {served:?}");
     }
 
+    #[test]
+    fn read_handlers_return_none_on_a_document_that_is_not_open() {
+        // Every read handler opens with `self.docs.get(uri)?` — a request over a URI the server has never
+        // seen a `didOpen` for (a client racing a query ahead of open, or querying a closed buffer) must
+        // return `None`/JSON-null, NEVER panic and never query stale/empty state. This is a DISTINCT branch
+        // from "cursor lands on no node in an OPEN doc" (the `*_at` totality tests): here the document map
+        // has no entry at all. Drives the handler methods directly on a fresh server with an empty doc map.
+        let (server, _client) = memory_server();
+        let uri = test_uri();
+        let doc_pos = lsp_types::TextDocumentPositionParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            position: Position::new(0, 0),
+        };
+        // Position-based reads.
+        assert!(
+            server
+                .hover(&HoverParams {
+                    text_document_position_params: doc_pos.clone(),
+                    work_done_progress_params: Default::default(),
+                })
+                .is_none(),
+            "hover on an unopened document must be None"
+        );
+        assert!(
+            server
+                .goto_definition(&GotoDefinitionParams {
+                    text_document_position_params: doc_pos.clone(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                })
+                .is_none(),
+            "definition on an unopened document must be None"
+        );
+        assert!(
+            server
+                .references(&ReferenceParams {
+                    text_document_position: doc_pos.clone(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                    context: lsp_types::ReferenceContext {
+                        include_declaration: true,
+                    },
+                })
+                .is_none(),
+            "references on an unopened document must be None"
+        );
+        assert!(
+            server
+                .completion(&CompletionParams {
+                    text_document_position: doc_pos.clone(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                    context: None,
+                })
+                .is_none(),
+            "completion on an unopened document must be None"
+        );
+        // Whole-document reads.
+        assert!(
+            server
+                .semantic_tokens(&SemanticTokensParams {
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                })
+                .is_none(),
+            "semantic tokens on an unopened document must be None"
+        );
+        assert!(
+            server
+                .document_symbol(&DocumentSymbolParams {
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                })
+                .is_none(),
+            "document symbols on an unopened document must be None"
+        );
+        assert!(
+            server
+                .code_lens(&CodeLensParams {
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                })
+                .is_none(),
+            "code lens on an unopened document must be None"
+        );
+        assert!(
+            server
+                .code_action(&CodeActionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                    range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                    context: Default::default(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                })
+                .is_none(),
+            "code action on an unopened document must be None"
+        );
+    }
+
     /// The line/character of a `Position`, as a tuple, for terse assertions.
     fn lc(p: Position) -> (u32, u32) {
         (p.line, p.character)
