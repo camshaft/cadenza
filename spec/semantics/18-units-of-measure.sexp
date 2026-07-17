@@ -1796,6 +1796,27 @@
                         (Qty.of (UInt8.of 50) (Unit.base #"meter")))))
   (error  CDZ0304))
 
+(case "a narrow-width Int quantity stored as a map value round-trips through Map.lookup"
+  (doc    "A `(Qty Int8 meter)` stored as a MAP VALUE, read back via `Map.lookup` (→ `Option`), and let the
+           retrieved quantity ESCAPE the Option match AS A QTY (bound, then `Qty.value`-unwrapped OUTSIDE the
+           arm). A quantity over a NARROW int erases to its inner narrow int's i32 machine slot, but the heap
+           boxes/reads an integer through an i64 cell (`box-int`/`get-int`), so a narrow value needs an
+           i32→i64 EXTEND before `box-int` and an i64→i32 NARROW after `get-int`. Both `is_narrow_int` (the
+           extend/narrow decision) and `int_ty_of` (the `ConstI32`-vs-`ConstI64` literal-width decision) read
+           the node's solved type and MUST peel `Ty::Qty` to see the narrow inner — WITHOUT the peel a
+           `(Qty Int8 u)` map value mis-lowered: the magnitude emitted as an i64 constant while the read
+           applied the i64→i32 narrow (and vice-versa), leaving an i64 where the i32 narrow-int slot was
+           expected → an INVALID module (`expected i32, found i64`) that `cdz check` did NOT catch. Here the
+           stored `100 meter` reads back and unwraps to 100. Pins the narrow-Qty heap value-decode round-trip.")
+  (input  (do
+            (def (main)
+              (Qty.value
+                (match (Map.lookup (Map.insert (Map.empty) 1 (Qty.of (Int8.of 100) (Unit.base #"meter"))) 1)
+                  ((Some q) q)
+                  ((None) (Qty.of (Int8.of 0) (Unit.base #"meter"))))))
+            (export main)))
+  (output (: 100 Int8)))
+
 ; --- Quantity joins: the same-unit flow and the explicit-conversion repair --------------------------
 ; 806e45ba9 fixed the mixed-unit join DIAGNOSTIC (a scale clash, not a shadowed declaration). These
 ; pin the join semantics around it, promoted from passing breaker probes: a same-unit join is ONE

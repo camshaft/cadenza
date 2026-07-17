@@ -10,6 +10,13 @@ declare module "*.wasm?url" {
   export default url;
 }
 
+// `?raw` imports resolve to the file's text. `.cdz` is the Cadenza source extension (the staged CAD
+// library `exact.cdz`, preloaded by /cad); vite/client's built-in `?raw` types don't cover it.
+declare module "*.cdz?raw" {
+  const src: string;
+  export default src;
+}
+
 // The jco-transpile package ships no bundled types under our resolution; declare the surface we use.
 declare module "@bytecodealliance/jco-transpile" {
   export function transpileBytes(

@@ -266,12 +266,32 @@ pub struct Peer {
 //= spec/contracts/component-abi.md#a-cross-component-handle-is-meaningful-only-in-the-shared-runtime-instance
 //# A host that composes Cadenza components which exchange values by handle MUST bind every such component's value-heap runtime import to the one shared runtime instance, so that the components' handles index one heap and a component cannot be handed a handle into a heap it does not share.
 pub fn run_with_peers(consumer_bytes: &[u8], peers: &[Peer], opts: &RunOpts) -> Result<Outcome> {
+    // The no-host-bindings special case of [`run_with_peers_hosted`] (like `run_agent` is of the hosted
+    // form) — a composed run whose only non-Cadenza surface is `opts.host_responses`, no live closures.
+    run_with_peers_hosted(consumer_bytes, peers, opts, Vec::new())
+}
+
+/// Like [`run_with_peers`], but ALSO binds each [`HostOpBinding`]'s live Rust closure into the consumer —
+/// composing the peer providers AND answering host ops with real closures in ONE run. This is the runner
+/// the agent-kernel needs: its `interpret` stays a separately-compiled, self-modifiable PROVIDER peer,
+/// while its `Prim` effect (exec/http/log) is answered by a host closure — neither [`run_with_peers`]
+/// (no host bindings) nor [`run_agent_hosted`] (no peers) does both. The bound ops' interfaces are added
+/// to the host-effect skip list so a bound op is never ALSO auto-bound from `opts.host_responses`.
+pub fn run_with_peers_hosted(
+    consumer_bytes: &[u8],
+    peers: &[Peer],
+    opts: &RunOpts,
+    bindings: Vec<HostOpBinding>,
+) -> Result<Outcome> {
     use std::sync::{Arc, Mutex};
     let engine = engine();
     let consumer = Component::new(&engine, consumer_bytes)
         .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
     let mut store = Store::new(&engine, ());
     let mut linker: Linker<()> = Linker::new(&engine);
+
+    // Shape-check the host bindings up-front (clear error, not an opaque trap in the closure).
+    check_host_op_binding_shapes(&engine, &consumer, &bindings)?;
 
     // The runtime import each component may declare — the consumer and each peer. They all pin the SAME
     // runtime (same content hash → same import name), so ONE runtime instance serves them all. Instantiate
@@ -384,17 +404,24 @@ pub fn run_with_peers(consumer_bytes: &[u8], peers: &[Peer], opts: &RunOpts) -> 
     bind_peer_ifaces_into(&mut linker, &peer_ifaces)?;
 
     // Bind the consumer's HOST-effect imports (if any), skipping the peer interfaces already bound above
-    // so a peer interface is never double-bound as a host effect.
-    let peer_names: Vec<String> = peers.iter().map(|p| p.interface.clone()).collect();
+    // AND the interfaces we bind explicitly below (a live closure), so neither is double-bound as an
+    // auto `opts.host_responses` effect (a double-bind is a linker error).
+    let mut skip: Vec<String> = peers.iter().map(|p| p.interface.clone()).collect();
+    skip.extend(bindings.iter().map(|b| b.iface.clone()));
     let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    bind_host_imports(
-        &engine,
-        &consumer,
-        &mut linker,
-        opts,
-        &observed,
-        &peer_names,
-    )?;
+    bind_host_imports(&engine, &consumer, &mut linker, opts, &observed, &skip)?;
+
+    // Bind each explicit host-op closure into the consumer, marshalling through the shared runtime's ropes.
+    // Requires the shared runtime to exist (String host-op args/results cross as rope handles into it).
+    if !bindings.is_empty() {
+        let (rt_instance, _) = shared_runtime.as_ref().ok_or_else(|| {
+            anyhow!(
+                "run_with_peers_hosted requires the value-heap runtime (host-op String args/results cross \
+                 as rope handles), but neither the consumer nor any peer imports it"
+            )
+        })?;
+        bind_host_op_bindings(&mut store, &mut linker, rt_instance, bindings)?;
+    }
 
     run_export(&engine, &consumer, &mut store, &linker, opts)
 }
@@ -788,23 +815,13 @@ pub fn run_agent_hosted(
     opts: &RunOpts,
     bindings: Vec<HostOpBinding>,
 ) -> Result<Outcome> {
-    use std::sync::Arc;
     let engine = engine();
     let consumer = Component::new(&engine, consumer_bytes)
         .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
     let mut store = Store::new(&engine, ());
     let mut linker: Linker<()> = Linker::new(&engine);
 
-    // Shape-check each binding against the consumer's declared import (clear up-front error, not an
-    // opaque trap in the closure). Skips a binding the consumer doesn't import (the linker reports that).
-    for b in &bindings {
-        let want = match &b.host {
-            HostOp::StringToString(_) => (&[Type::U32][..], &[Type::U32][..]),
-            HostOp::StringToScalar(_) => (&[Type::U32][..], &[Type::S64][..]),
-            HostOp::UnitToString(_) => (&[][..], &[Type::U32][..]),
-        };
-        check_host_op_shape(&engine, &consumer, &b.iface, &b.op, want.0, want.1)?;
-    }
+    check_host_op_binding_shapes(&engine, &consumer, &bindings)?;
 
     // One shared value-heap runtime serves the consumer + every closure (String args/results are ropes).
     let req = find_runtime_req(&engine, &consumer).ok_or_else(|| {
@@ -823,8 +840,43 @@ pub fn run_agent_hosted(
         &heap_names,
     )?;
 
+    bind_host_op_bindings(&mut store, &mut linker, &rt_instance, bindings)?;
+
+    run_export(&engine, &consumer, &mut store, &linker, opts)
+}
+
+/// Shape-check each [`HostOpBinding`] against the consumer's declared import (a clear up-front error,
+/// not an opaque trap deep in the closure). A binding the consumer doesn't import is skipped (the linker
+/// reports that). Shared by [`run_agent_hosted`] and [`run_with_peers_hosted`].
+fn check_host_op_binding_shapes(
+    engine: &Engine,
+    consumer: &Component,
+    bindings: &[HostOpBinding],
+) -> Result<()> {
+    for b in bindings {
+        let want = match &b.host {
+            HostOp::StringToString(_) => (&[Type::U32][..], &[Type::U32][..]),
+            HostOp::StringToScalar(_) => (&[Type::U32][..], &[Type::S64][..]),
+            HostOp::UnitToString(_) => (&[][..], &[Type::U32][..]),
+        };
+        check_host_op_shape(engine, consumer, &b.iface, &b.op, want.0, want.1)?;
+    }
+    Ok(())
+}
+
+/// Bind each [`HostOpBinding`] into `linker` as a `func_new` closure of the right shape, marshalling
+/// String args/results through the shared runtime's `str-get`/`str-new` ropes. The `rt_instance` must
+/// already be bound into `linker` (String host-op args/results cross as rope handles into it). Shared by
+/// [`run_agent_hosted`] and [`run_with_peers_hosted`] so the two runners bind host ops identically.
+fn bind_host_op_bindings(
+    store: &mut Store<()>,
+    linker: &mut Linker<()>,
+    rt_instance: &wasmtime::component::Instance,
+    bindings: Vec<HostOpBinding>,
+) -> Result<()> {
+    use std::sync::Arc;
     let heap_idx = rt_instance
-        .get_export_index(&mut store, None, RUNTIME_IFACE)
+        .get_export_index(&mut *store, None, RUNTIME_IFACE)
         .ok_or_else(|| anyhow!("runtime does not export {RUNTIME_IFACE}"))?;
     let get_func_named =
         |store: &mut Store<()>, fname: &str| -> Result<wasmtime::component::Func> {
@@ -835,8 +887,8 @@ pub fn run_agent_hosted(
                 .get_func(&mut *store, fidx)
                 .ok_or_else(|| anyhow!("runtime export `{fname}` is not a func"))
         };
-    let str_get = get_func_named(&mut store, "str-get")?;
-    let str_new = get_func_named(&mut store, "str-new")?;
+    let str_get = get_func_named(store, "str-get")?;
+    let str_new = get_func_named(store, "str-new")?;
 
     // Bind each op to a `func_new` closure of the right shape. Reading the arg rope (`str-get`) / minting
     // the result rope (`str-new`) inside the closure via the passed `ctx` is the `bind_runtime_into`
@@ -884,8 +936,7 @@ pub fn run_agent_hosted(
             }
         }
     }
-
-    run_export(&engine, &consumer, &mut store, &linker, opts)
+    Ok(())
 }
 
 /// Read a host op's single `u32` arg handle to its `String` via the runtime's `str-get`. Shared by the

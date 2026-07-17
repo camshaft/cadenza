@@ -585,6 +585,21 @@ fn run_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+/// Wall-clock cap for a whole `cdz test <suite>` SUITE run (not a single case). Distinct from
+/// `run_timeout` (per-corpus-case): a suite legitimately runs MINUTES (the compiler-ml sweep compiles +
+/// runs ~73 cases), so the cap is GENEROUS — the point is to convert a TRUE HANG (e.g. `cf-corpus-all-pass`
+/// spinning on a known compile-hang, which emits no output and looks to every observer like a silent kill
+/// with no TOTAL) into a LOUD, NAMED, auto-bisectable FAIL, NOT to throttle a slow-but-passing suite.
+/// Default 6min; override with `CDZ_SUITE_TIMEOUT_SECS`.
+fn suite_timeout() -> std::time::Duration {
+    let secs = std::env::var("CDZ_SUITE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(6 * 60);
+    std::time::Duration::from_secs(secs)
+}
+
 /// Like `Child::wait_with_output`, but with a hard wall-clock `timeout`. Returns `Ok(Some(output))` if
 /// the child exited within the deadline, `Ok(None)` if it was KILLED for exceeding it (a hang), or the
 /// underlying io error. Drains stdout+stderr on reader threads so a child that fills a pipe buffer
@@ -4025,11 +4040,23 @@ fn check(paths: &Paths, profile: &str) {
         "implementation/compiler-ml",
         "implementation/agent-harness",
     ] {
-        log.step(
-            &format!("cdz-test {suite}"),
-            &format!("{cdz} test {suite}"),
-            repo,
-        );
+        let name = format!("cdz-test {suite}");
+        let cmd = format!("{cdz} test {suite}");
+        // The compiler-ml sweep (~25-30min: ~73 cases each compiling a Cadenza program through the ML
+        // compiler AND running it under wasmtime) is the dominant per-batch gate cost, and pr-sync
+        // re-runs the whole `check` several times per batch (store-rebuild / re-plan / retry) even when
+        // nothing changed. Content-cache its GREEN verdict keyed on (cdz binary ‖ compiler-ml tree) so
+        // an unchanged (compiler, corpus) skips the re-run; any real change flips the key → full sweep.
+        // The other two suites are quick, so run them plainly.
+        // All suites get a generous suite-level wall-clock cap so a true HANG fails LOUD + NAMED instead
+        // of silently wedging the gate (the "env kill" that looked like a signal was cf-corpus-all-pass
+        // hanging with no output). compiler-ml additionally content-caches its green verdict.
+        if suite == "implementation/compiler-ml" {
+            let cache = CachedStep::new(paths, &name, Path::new(&cdz), &paths.repo.join(suite));
+            log.step_cached(&name, &cmd, repo, cache.as_ref(), suite_timeout());
+        } else {
+            log.step_timed(&name, &cmd, repo, suite_timeout());
+        }
     }
 
     // Citation-coverage regression gate: fail if a `//=` / `//#` duvet citation was deleted/stranded
@@ -4449,6 +4476,112 @@ impl Log {
         }
     }
 
+    /// Like `step`, but with a hard wall-clock `timeout` on the whole command. On timeout the child is
+    /// killed and the step FAILS LOUDLY — the log records `TIMED OUT after Ns` naming the step, then
+    /// `dump_and_exit` surfaces it. This converts a silent multi-minute HANG (a stuck `cdz test` suite
+    /// that emits no output and no TOTAL — which every observer, including the concierge, misread as an
+    /// "environmental kill") into an instantly-actionable, auto-bisectable named failure. Any captured
+    /// partial output (the last case it was on) is written to the log first, so the hang is localized.
+    fn step_timed(&mut self, name: &str, cmd: &str, dir: &Path, timeout: std::time::Duration) {
+        use std::io::Write;
+        writeln!(
+            self.file,
+            "\n==== {name}: {cmd} (timeout {}s) ====",
+            timeout.as_secs()
+        )
+        .ok();
+        self.file.flush().ok();
+
+        let mut parts = cmd.split_whitespace();
+        let program = parts.next().expect("non-empty command");
+        let args: Vec<&str> = parts.collect();
+
+        let child = std::process::Command::new(program)
+            .args(&args)
+            .current_dir(dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|e| {
+                eprintln!("  ✗ {name} — could not launch: {e}");
+                std::process::exit(1);
+            });
+
+        let started = std::time::Instant::now();
+        match wait_with_timeout(child, timeout) {
+            Ok(Some(out)) => {
+                self.file.write_all(&out.stdout).ok();
+                self.file.write_all(&out.stderr).ok();
+                self.file.flush().ok();
+                if out.status.success() {
+                    println!("  ✓ {name}");
+                } else {
+                    eprintln!("  ✗ {name} — FAILED");
+                    self.dump_and_exit(name);
+                }
+            }
+            // Killed at the deadline — a true hang. Write partial output (localizes the stuck case), then
+            // fail loudly with the elapsed time and step name.
+            Ok(None) => {
+                let elapsed = started.elapsed().as_secs();
+                writeln!(
+                    self.file,
+                    "\n{name}: TIMED OUT after {elapsed}s (killed) — the suite hung (no completion). \
+                     The last case above is where it stuck; this is a HANG, not a slow pass. Raise \
+                     CDZ_SUITE_TIMEOUT_SECS only if it is genuinely slow-but-passing."
+                )
+                .ok();
+                self.file.flush().ok();
+                eprintln!("  ✗ {name} — TIMED OUT after {elapsed}s (hang)");
+                self.dump_and_exit(name);
+            }
+            Err(e) => {
+                eprintln!("  ✗ {name} — wait failed: {e}");
+                self.dump_and_exit(name);
+            }
+        }
+    }
+
+    /// Like `step`, but memoized on a content `key`: if a GREEN verdict for this exact key is already
+    /// cached (a prior check this batch ran the identical sweep and it passed), SKIP the re-run and reuse
+    /// it. Only GREEN is cached — a RED always re-runs fresh (so the failure log is current and a stale
+    /// cache can never manufacture a false green). On a fresh green run the verdict is recorded for the
+    /// next check in the batch. `cache_dir` is where the verdict marker lives; `None` disables caching
+    /// (always runs). This kills the dominant per-batch waste: pr-sync re-running the ~25-30min
+    /// compiler-ml sweep multiple times per batch even when (compiler, corpus) didn't change between runs.
+    fn step_cached(
+        &mut self,
+        name: &str,
+        cmd: &str,
+        dir: &Path,
+        cache: Option<&CachedStep>,
+        timeout: std::time::Duration,
+    ) {
+        use std::io::Write;
+        if let Some(c) = cache
+            && c.is_green()
+        {
+            writeln!(
+                self.file,
+                "\n==== {name}: CACHED green (key {}) ====",
+                c.short_key()
+            )
+            .ok();
+            self.file.flush().ok();
+            println!(
+                "  ✓ {name} (cached — unchanged compiler + corpus since a green run this batch)"
+            );
+            return;
+        }
+        // Timed so a true hang (e.g. `cf-corpus-all-pass` spinning on a compile-hang) FAILS LOUDLY named
+        // rather than silently wedging the gate; step_timed exits the process on fail/timeout.
+        self.step_timed(name, cmd, dir, timeout);
+        // Reaching here means the run SUCCEEDED (step_timed exits on failure), so record green.
+        if let Some(c) = cache {
+            c.record_green();
+        }
+    }
+
     /// Print the whole captured log to the console (so the failure is readable without re-running)
     /// plus its path, then exit non-zero.
     fn dump_and_exit(&self, failed_step: &str) -> ! {
@@ -4463,6 +4596,90 @@ impl Log {
         );
         std::process::exit(1);
     }
+}
+
+/// A content-keyed GREEN-verdict cache for one expensive `check` step (the compiler-ml `cdz test` sweep,
+/// ~25-30min). The key is a hash of everything that can change the verdict — the `cdz` compiler binary
+/// (which embeds rcdzc) plus the suite's source tree — so an unchanged (compiler, corpus) reuses the
+/// cached green and a change to EITHER forces a fresh run (no coverage loss). Only green is stored; red
+/// re-runs fresh. The marker is a file `<cache_dir>/<name>.<key>.green`; its presence == green.
+struct CachedStep {
+    marker: PathBuf,
+    key: String,
+}
+
+impl CachedStep {
+    /// Build the cache handle for step `name` over inputs (`binary`, `tree`). Returns `None` (caching
+    /// disabled → always run) if the key can't be computed — a missing binary/tree, or an unreadable
+    /// cache dir. Fail-open to a real run is always safe; the only unsafe outcome (a false green) is
+    /// impossible because we only ever CACHE a verdict we just observed green.
+    fn new(paths: &Paths, name: &str, binary: &Path, tree: &Path) -> Option<CachedStep> {
+        let bin_bytes = std::fs::read(binary).ok()?;
+        let tree_hash = hash_tree(tree)?;
+        // Key = H( binary-hash ‖ tree-hash ). Domain-separate the two so a byte can't migrate between
+        // them and alias a different (binary, tree) pair to the same key.
+        let combined = format!("{}:{}", content_address(&bin_bytes), tree_hash);
+        let key = content_address(combined.as_bytes());
+        let dir = paths.repo.join("target/xtask-cache");
+        std::fs::create_dir_all(&dir).ok()?;
+        let safe_name = name.replace(['/', ' '], "_");
+        let marker = dir.join(format!("{safe_name}.{key}.green"));
+        Some(CachedStep { marker, key })
+    }
+
+    /// Is a green verdict for this exact key already recorded?
+    fn is_green(&self) -> bool {
+        self.marker.exists()
+    }
+
+    /// Record a green verdict (best-effort; a write failure just means the next run recomputes).
+    fn record_green(&self) {
+        let _ = std::fs::write(&self.marker, &self.key);
+    }
+
+    fn short_key(&self) -> &str {
+        &self.key[..self.key.len().min(12)]
+    }
+}
+
+/// Content hash of every file under `root`, in a DETERMINISTIC order (paths sorted), so the same tree
+/// always hashes the same regardless of directory-read order. Each file contributes its relative path
+/// AND its bytes (so a rename or a content edit both change the hash). `None` if `root` can't be walked.
+fn hash_tree(root: &Path) -> Option<String> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_files(root, &mut files).ok()?;
+    files.sort();
+    let mut h = Sha256::new();
+    for f in &files {
+        let rel = f.strip_prefix(root).unwrap_or(f);
+        h.update(rel.to_string_lossy().as_bytes());
+        h.update([0u8]); // path/content separator
+        if let Ok(bytes) = std::fs::read(f) {
+            h.update(&bytes);
+        }
+        h.update([0u8]); // file separator
+    }
+    let digest = h.finalize();
+    let mut s = String::with_capacity(64);
+    for b in digest {
+        s.push_str(&format!("{b:02x}"));
+    }
+    Some(s)
+}
+
+/// Recursively collect every regular file under `dir` into `out` (order unspecified; caller sorts).
+fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            collect_files(&path, out)?;
+        } else if ty.is_file() {
+            out.push(path);
+        }
+    }
+    Ok(())
 }
 
 // ============================================================================================
@@ -5499,5 +5716,120 @@ mod trap_grading_tests {
             start.elapsed() < std::time::Duration::from_secs(5),
             "timeout must kill promptly, not wait out the child"
         );
+    }
+
+    #[test]
+    fn hash_tree_is_deterministic_and_change_sensitive() {
+        let base = std::env::temp_dir().join(format!("cdz-hashtree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("sub")).unwrap();
+        std::fs::write(base.join("a.cdz"), "alpha").unwrap();
+        std::fs::write(base.join("sub/b.cdz"), "beta").unwrap();
+
+        let h1 = hash_tree(&base).expect("hashable");
+        let h2 = hash_tree(&base).expect("hashable");
+        assert_eq!(
+            h1, h2,
+            "same tree → same hash (order-independent, deterministic)"
+        );
+
+        // A content edit changes the hash.
+        std::fs::write(base.join("a.cdz"), "alpha!").unwrap();
+        let h3 = hash_tree(&base).expect("hashable");
+        assert_ne!(h1, h3, "editing a file's content changes the tree hash");
+
+        // Adding a file changes the hash.
+        std::fs::write(base.join("c.cdz"), "gamma").unwrap();
+        let h4 = hash_tree(&base).expect("hashable");
+        assert_ne!(h3, h4, "adding a file changes the tree hash");
+
+        // A rename (same bytes, different path) changes the hash — path is folded in.
+        std::fs::remove_file(base.join("c.cdz")).unwrap();
+        std::fs::write(base.join("d.cdz"), "gamma").unwrap();
+        let h5 = hash_tree(&base).expect("hashable");
+        assert_ne!(h4, h5, "a rename changes the tree hash (path folded in)");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cached_step_records_and_reuses_green_only() {
+        // The core cache contract: a green verdict for an exact key is reusable; a DIFFERENT key
+        // (compiler or corpus changed) is a miss → must re-run. Red is never stored (only record_green
+        // exists), so a stale cache can never manufacture a false green.
+        let repo = std::env::temp_dir().join(format!("cdz-cachedstep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        let tree = repo.join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(tree.join("x.cdz"), "one").unwrap();
+        let binary = repo.join("cdz.bin");
+        std::fs::write(&binary, b"compiler-v1").unwrap();
+        let paths = Paths {
+            repo: repo.clone(),
+            seed: repo.clone(),
+        };
+
+        let c1 = CachedStep::new(&paths, "cdz-test x", &binary, &tree).expect("key computable");
+        assert!(!c1.is_green(), "cold cache is a miss");
+        c1.record_green();
+        assert!(c1.is_green(), "after record_green, the same key is a hit");
+
+        // Same inputs → same key → still a hit (this is the intra-batch reuse that saves the re-run).
+        let c1b = CachedStep::new(&paths, "cdz-test x", &binary, &tree).expect("key computable");
+        assert!(
+            c1b.is_green(),
+            "an identical (binary, tree) reuses the cached green"
+        );
+
+        // Change the corpus → different key → miss (full sweep re-runs; no coverage loss).
+        std::fs::write(tree.join("x.cdz"), "one-changed").unwrap();
+        let c2 = CachedStep::new(&paths, "cdz-test x", &binary, &tree).expect("key computable");
+        assert!(
+            !c2.is_green(),
+            "a corpus change invalidates the cached green"
+        );
+
+        // Change the compiler binary → different key → miss.
+        std::fs::write(tree.join("x.cdz"), "one").unwrap(); // restore corpus
+        std::fs::write(&binary, b"compiler-v2").unwrap();
+        let c3 = CachedStep::new(&paths, "cdz-test x", &binary, &tree).expect("key computable");
+        assert!(
+            !c3.is_green(),
+            "a compiler-binary change invalidates the cached green"
+        );
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn suite_timeout_reads_env_with_generous_default() {
+        // Default is generous (6min) so a slow-but-passing suite isn't false-failed; a positive override
+        // parses; zero/garbage fall back. (Env is process-global; set+clear around the assert.)
+        // SAFETY: single-threaded test, no other thread reads the env concurrently.
+        unsafe { std::env::remove_var("CDZ_SUITE_TIMEOUT_SECS") };
+        assert_eq!(
+            suite_timeout(),
+            std::time::Duration::from_secs(360),
+            "default 6min"
+        );
+        unsafe { std::env::set_var("CDZ_SUITE_TIMEOUT_SECS", "480") };
+        assert_eq!(
+            suite_timeout(),
+            std::time::Duration::from_secs(480),
+            "override parses"
+        );
+        unsafe { std::env::set_var("CDZ_SUITE_TIMEOUT_SECS", "0") };
+        assert_eq!(
+            suite_timeout(),
+            std::time::Duration::from_secs(360),
+            "zero rejected → default"
+        );
+        unsafe { std::env::set_var("CDZ_SUITE_TIMEOUT_SECS", "nope") };
+        assert_eq!(
+            suite_timeout(),
+            std::time::Duration::from_secs(360),
+            "garbage → default"
+        );
+        unsafe { std::env::remove_var("CDZ_SUITE_TIMEOUT_SECS") };
     }
 }

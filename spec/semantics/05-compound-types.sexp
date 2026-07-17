@@ -2116,6 +2116,28 @@
             (export main)))
   (output (: 1007 Int64)))
 
+(case "a list element that is a sum with a tuple payload binds the tuple fields"
+  (doc    "A LIST ELEMENT that is a sum whose payload is a TUPLE — `(match xs ((list (Pt (tuple a b)))
+           (+ a b)) (_ 0))`, `P = (Pt (Tuple Int64 Int64)) | Nil`. The two tuple binders `a`/`b` both
+           extend the shared sum-payload prefix `[Elem(0), Payload]` (`Elem(0)` = the LIST element, then
+           `Payload` into the sum), so the wasm backend computes that prefix once into a slot
+           (`materialize_payload_prefixes`). Its prefix-walk hardcoded `arr-get` for EVERY `Elem` step —
+           but the leading `Elem(0)` reads a LIST element (an RRB `vec`), which needs `vec-get`, not a
+           flat `arr-get`. The `arr-get` read the vec handle as an array → garbage → the body re-match's
+           discriminant probe fell to its dead `_ → trap` arm → `unreachable`. The fix tracks the
+           sub-value type down the prefix walk and reads a `List` element with `vec-get`. Distinct from
+           the direct (non-list) tuple-payload match and the list element with a SCALAR payload, which
+           never hit the shared-prefix materialization with a leading list `Elem` and always worked.
+           `build 3` = `[(Pt (tuple 3 9))]` → the arm binds a=3 b=9 → 12; `build 0` = `[(Nil)]` → the
+           `_` fallthrough → 0.")
+  (input  (module m (type P (Pt (Tuple Int64 Int64)) (Nil))
+            (def (build (: k Int64)) (if (< k 1) (list (Nil)) (list (Pt (tuple k 9)))))
+            (def (f (: xs (List P))) (match xs ((list (Pt (tuple a b))) (+ a b)) (_ 0)))
+            (def (main (: k Int64)) (f (build k)))))
+  (call   main (: 3 Int64)) (output (: 12 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (call   main (: 5 Int64)) (output (: 14 Int64)))
+
 (case "a runtime list of lists escapes with its nested element type"
   (doc    "A runtime-built `(List (List Int64))` — a list whose ELEMENTS are themselves lists — crosses
            the host boundary. The value-encode walker already recurses over the nested-list element
@@ -4804,6 +4826,26 @@
                 ((tuple false (G)) 4)))
             (def (main) (f (tuple false (G)))) (export main)))
   (output (: 4 Int64)))
+
+(case "a tuple of two sums is exhaustive when every variant×variant combination is covered"
+  (doc    "EXHAUSTIVENESS over a product of two SUM factors, each closed by variant
+           coverage: `(match t ((tuple (P) (X)) …) ((tuple (P) (Y)) …) ((tuple (Q) (X)) …)
+           ((tuple (Q) (Y)) …))` over `(Tuple A B)`, `A=(P)|(Q)`, `B=(X)|(Y)`, is exhaustive
+           WITHOUT a `_` when all four variant×variant leaves are present. The companion to
+           the bool×sum product case above: here BOTH factors are sum discriminants (not a
+           bool-else-refinement), so the decision tree switches on `[Elem(0)]` then `[Elem(1)]`
+           and closes each column by its variant set. `(Q, X)` selects the third arm → 3.")
+  (input  (do
+            (type A (P) (Q))
+            (type B (X) (Y))
+            (def (f (: t (Tuple A B)))
+              (match t
+                ((tuple (P) (X)) 1)
+                ((tuple (P) (Y)) 2)
+                ((tuple (Q) (X)) 3)
+                ((tuple (Q) (Y)) 4)))
+            (def (main) (f (tuple (Q) (X)))) (export main)))
+  (output (: 3 Int64)))
 
 (case "a list of bools is exhaustive when the empty and both first-element values are covered"
   (doc    "The LIST analogue of the tuple-of-bools case: `(match xs ((list) …) ((list true .. r) …)

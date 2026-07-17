@@ -79,6 +79,55 @@ fn run_ml_from_stdin_also_exits_zero_with_a_verdict() {
 }
 
 #[test]
+fn run_ml_leaves_no_driver_file_behind() {
+    // `cdz run-ml` writes a pid-stamped `zz-run-ml-driver-<pid>.cdz` INTO the compiler-ml src tree (its
+    // `import "sread-eval"` resolves entry-dir-relative, so it can't live in a temp dir). An RAII guard
+    // must remove it on every in-process exit path — else a screenful of stray drivers accumulates in the
+    // shared worktree's `git status` (the fleet-pollution issue this pins).
+    //
+    // Assert on OUR child's OWN pid-stamped driver, not a directory COUNT: the sibling run-ml tests run
+    // concurrently against the same shared src dir, so their in-flight drivers make a count-delta racy
+    // (observed before=0/after=2). Spawn the child ourselves, capture its pid, let it fully exit, then
+    // assert exactly `zz-run-ml-driver-<child-pid>.cdz` is absent — a leak of THIS run is unambiguous and
+    // independent of any concurrent invocation.
+    let mut root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src_dir = loop {
+        let cand = root.join("implementation/compiler-ml/src");
+        if cand.is_dir() {
+            break Some(cand);
+        }
+        if !root.pop() {
+            break None;
+        }
+    };
+    let Some(src_dir) = src_dir else {
+        // The compiler-ml src tree isn't present in this checkout (shouldn't happen in-repo) — nothing to
+        // pin; don't fail the harness over a layout we can't see.
+        return;
+    };
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let (dir, path) = temp_src("cleanup", "(do (def (main) 0) (export main))");
+    // Spawn so we can read the child's pid — the driver is named after the CHILD `cdz`'s process id.
+    let child = Command::new(exe)
+        .args(["run-ml", &path])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cdz run-ml");
+    let child_pid = child.id();
+    let out = child.wait_with_output().expect("wait run-ml");
+    let _ = std::fs::remove_dir_all(&dir);
+    // The child has fully exited, so its RAII guard has run — its own driver must be gone.
+    let leaked = src_dir.join(format!("zz-run-ml-driver-{child_pid}.cdz"));
+    assert!(
+        !leaked.exists(),
+        "run-ml leaked its driver {} (child exited status {:?}) — the RAII cleanup guard regressed",
+        leaked.display(),
+        out.status
+    );
+}
+
+#[test]
 fn run_ml_on_an_unreadable_file_exits_non_zero() {
     // The ONE non-zero exit: a HARNESS failure that produced no verdict (a file READ error). A script /
     // the gate distinguishes "the ML compiler judged this program" (exit 0 + a verdict) from "the input

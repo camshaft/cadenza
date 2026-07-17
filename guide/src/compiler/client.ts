@@ -20,6 +20,19 @@ export function compile(text: string, from: Surface): Promise<CompileOutcome> {
   return client().compile(text, from);
 }
 
+/// Compile with PRELOADED library modules link-merged (parallel name/source/format arrays). `text` may
+/// `import` a preloaded module by name; the compiler links the supplied source. /cad compiles a bare model
+/// buffer against the preloaded CAD library so the reader edits only the model.
+export function compileWithPreloaded(
+  text: string,
+  from: Surface,
+  names: string[],
+  sources: string[],
+  formats: string[],
+): Promise<CompileOutcome> {
+  return client().compileWithPreloaded(text, from, names, sources, formats);
+}
+
 /// Compile in TEST-LAYOUT mode: each `@test` becomes an invocable export. Returns component + diagnostics
 /// + the discovered test names (nullary vs parameterized). The run worker invokes the nullary exports.
 export function compileTests(text: string, from: Surface): Promise<TestCompileOutcome> {
@@ -35,6 +48,19 @@ export function paramTestSignatures(text: string, from: Surface): Promise<ParamT
 /// Type-check without building a component (as-you-type diagnostics). No export required upstream.
 export function diagnostics(text: string, from: Surface): Promise<Diag[]> {
   return client().diagnostics(text, from);
+}
+
+/// Type-check with PRELOADED library modules link-merged (as-you-type sibling of `compileWithPreloaded`).
+/// Faults map to the USER text spans (faults inside a preloaded library are dropped). /cad lints a bare
+/// model against the preloaded CAD library so the preloaded vocab doesn't show as unbound.
+export function diagnosticsWithPreloaded(
+  text: string,
+  from: Surface,
+  names: string[],
+  sources: string[],
+  formats: string[],
+): Promise<Diag[]> {
+  return client().diagnosticsWithPreloaded(text, from, names, sources, formats);
 }
 
 /// The inferred type at a UTF-8 byte offset, for a hover tooltip.
@@ -56,6 +82,19 @@ export function references_at(text: string, from: Surface, byteOffset: number): 
 /// role. Empty when the buffer doesn't parse (the editor keeps its lexical colours).
 export function semanticTokens(text: string, from: Surface): Promise<SemanticTok[]> {
   return client().semanticTokens(text, from);
+}
+
+/// Semantic tokens with PRELOADED library modules link-merged (highlighting sibling of
+/// `diagnosticsWithPreloaded`). A name resolving into a preloaded library colours as what it truly is;
+/// tokens map to the USER text spans. /cad highlights the preloaded CAD vocab (`Solid`/`v3r`/`lower`).
+export function semanticTokensWithPreloaded(
+  text: string,
+  from: Surface,
+  names: string[],
+  sources: string[],
+  formats: string[],
+): Promise<SemanticTok[]> {
+  return client().semanticTokensWithPreloaded(text, from, names, sources, formats);
 }
 
 /// How the compiler compiled the definition whose name is at a byte offset (inlined / specialized /

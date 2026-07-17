@@ -1088,3 +1088,64 @@ fn a_false_test_stacked_ensures_fails_with_a_counterexample() {
         "the replay seed is reported for the counterexample: {stdout}"
     );
 }
+
+/// CONSTRAINED GENERATION for a `@requires` precondition: a `@test` over a `@requires`-constrained def must
+/// generate only IN-DOMAIN inputs, so the (D) body-entry precondition trap never fires and the test is not
+/// spuriously failed. `@requires(x >= 0)` on `f` — the generator draws only `x >= 0` (the negative half of
+/// the `Int64` range is clamped away), so every trial satisfies the pre and the property passes. Before this,
+/// the generator drew a negative `x`, the enforced pre trapped, and the runner reported a spurious `f(-1)`.
+/// (v-verification keeps the pre a HARD trap for production callers; the harness generates in-domain so it
+/// never trips under test — the agreed division of the @requires seam.)
+#[test]
+fn a_test_over_a_requires_constrained_def_generates_in_domain_and_passes() {
+    let d = dir("requires-gen");
+    // `@requires(x >= 0)` on a total-on-its-domain function. With constrained generation every drawn `x` is
+    // >= 0, so the precondition holds on every trial and the property passes the full trial count. A second
+    // def keeps the ML top level a do-block.
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(x >= 0)\n\
+         def f(x: Int64) = x + 1\n\
+         @test def drive() = if f(3) == 4 then unit else trap(\"body\")\n\
+         @requires(x >= 0)\n\
+         @test def prop(x: Int64) = if x >= 0 then unit else trap(\"generated a negative x despite @requires\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--trials", "100"]);
+    assert!(
+        ok,
+        "a @requires-constrained property generates in-domain and passes (no spurious pre-trap): {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS prop (100 trials)"),
+        "the @requires(x >= 0) property passes all trials — generation stayed in-domain: {stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL prop"),
+        "the @requires'd property must NOT spuriously fail on a generated out-of-domain draw: {stdout}"
+    );
+}
+
+/// A RANGE `@requires` (a conjunction) constrains generation to the bounded window: `@requires(x >= 0 and
+/// x < 100)` draws only `x` in `[0, 99]`, so a body that traps outside that window never fires. Pins that the
+/// conjunction is distilled into both bounds (lo AND hi), not just one.
+#[test]
+fn a_range_requires_constrains_generation_to_the_window() {
+    let d = dir("requires-range");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(x >= 0 and x < 100)\n\
+         @test def inwindow(x: Int64) = if x >= 0 and x < 100 then unit else trap(\"out of the required window\")\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--trials", "100"]);
+    assert!(
+        ok,
+        "a range @requires constrains generation to [0,99] so the window property passes: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS inwindow (100 trials)"),
+        "the range-@requires property passes all trials — generation stayed within [0,99]: {stdout}"
+    );
+}

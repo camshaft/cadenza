@@ -2474,6 +2474,69 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
     }
 }
 
+/// A COLLECTION construction whose element/key/value siblings interleave a BigInt HEAP HANDLE (i32) with
+/// GUARDED Int64 arithmetic (i64) compiles to a VALID module and runs to the right value — the regression
+/// guard for the `Set.of`/`Map.insert` slot-collision miscompile
+/// (`adv-bigint-arith-elem-then-of-int64-arith-elem-set-map-invalid-wasm-slot-clash`). `(Set.of (list (+
+/// (BigInt.of n) (BigInt.of 1)) (BigInt.of (+ n 2))))` builds a set whose FIRST element is a BigInt sum
+/// (its `bigint-add` operands stash i32 handles in scratch slots) and whose SECOND element boxes a checked
+/// `(+ n 2)` (an i64 overflow-guard temp). The `Core::SetOf`/`MapNew`/`MapInsert`/`SetInsert` arms used to
+/// emit every sibling at a FIXED `base`, so the second element's i64 arith temp reused the slot the first
+/// element's i32 handle had already typed → one wasm local declared at two widths → `wasm-tools validate:
+/// expected i64, found i32`, the component rejected at load (O0 and O2 alike). The fix advances each
+/// sibling's scratch base past the running high-water (the disjoint-slot discipline
+/// `Core::Tuple`/`Core::Record`/`Core::ListNew` already applied). `{n+1, n+2}` with n=5 is `{6, 7}` — two
+/// distinct elements, so `Set.len` = 2; the `Map.insert` twin keys `{6, 7}` → size 2.
+#[test]
+fn a_bigint_arith_then_of_arith_collection_element_pair_runs() {
+    use crate::testkit::parse;
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!(
+            "runtime wasm not found (run `cargo xtask build`); skipping collection slot-clash run"
+        );
+        return;
+    };
+    // A helper: compile the module, assert it is VALID wasm (the miscompile was a validation failure, so
+    // `compile_component` returning `Ok` + `required_runtime` re-parsing the bytes is itself the guard),
+    // then run `main 5` and assert the value.
+    let check = |src: &str, expect: &str, what: &str| {
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|e| panic!("{what} must compile: {e:?}"));
+        assert!(
+            cdz_run::required_runtime(&bytes)
+                .expect("the emitted component must be valid wasm")
+                .is_some(),
+            "{what} builds a runtime collection, so it imports the value-heap runtime"
+        );
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: Some(runtime.clone()),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, expect, "{what}"),
+            cdz_run::Outcome::Trap(t) => panic!("{what} trapped (miscompile?): {t}"),
+        }
+    };
+    // Set: element 1 = BigInt sum (i32 handles), element 2 = BigInt.of(Int64 arith) (i64 guard temp).
+    check(
+        "(module m (def (main (: n Int64)) \
+           (Set.len (Set.of (list (+ (BigInt.of n) (BigInt.of 1)) (BigInt.of (+ n 2)))))) (export main))",
+        "2",
+        "Set.of {n+1, n+2} at n=5 is {6,7} → len 2",
+    );
+    // Map twin: nested `Map.insert`s over the same key pair — key 1 a BigInt sum, key 2 a BigInt.of(arith).
+    check(
+        "(module m (def (main (: n Int64)) \
+           (Map.len (Map.insert (Map.insert (Map.empty) (+ (BigInt.of n) (BigInt.of 1)) 1) \
+                                (BigInt.of (+ n 2)) 2))) (export main))",
+        "2",
+        "Map.insert keys {n+1, n+2} at n=5 → size 2",
+    );
+}
+
 /// A synthesized (β-reduced) scope form's parameters still resolve — the regression guard for the
 /// per-scope binder index. The index is built at load over the ORIGINAL arena, but β-reduction copies
 /// a lambda/def body into FRESH `fn`/`def` nodes; a parameter reference inside such a copy must find
@@ -17419,6 +17482,46 @@ mod match_engine {
         );
     }
 
+    /// Verification Inc-b (D): a BARE `@ensures(Q)` (not stacked under `@test`) is ENFORCED at body-EXIT —
+    /// `verify_enforce::enforce` rewrites the def body to `(let ((it BODY)) (if Q it (trap)))`, so a violated
+    /// postcondition TRAPS and a satisfied one is value-transparent (returns the def's own value). This is the
+    /// teeth of the universal-@ensures enforcement: assert BOTH a violating input traps AND a satisfying input
+    /// returns the computed value unchanged. (A `@test @ensures` STACK is v-property-testing's TESTED tier —
+    /// this pass skips that shape to avoid double-injection — so this test uses a BARE `@ensures`.)
+    #[test]
+    fn a_bare_ensures_postcondition_is_enforced_at_body_exit() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        // `@ensures (>= it 0)` on `f(x) = x - 100`: the body becomes `(let ((it (- x 100))) (if (>= it 0) it
+        // (trap)))`. f(5) = -95 violates it → TRAP; f(200) = 100 satisfies it → returns 100 (value-transparent).
+        let src = "(module m (@ (ensures (>= it 0)) (def (f (: x Int64)) (- x 100))) (export f))";
+        let comp =
+            compile_component(&crate::codec::encode(&parse(src))).expect("annotated compiles");
+        // VIOLATING input x=5 (result -95 < 0) → the injected postcondition check takes the trap arm.
+        assert!(
+            call_traps(&comp, "f", &[Val::S64(5)]),
+            "a violated bare @ensures postcondition traps on x=5 (result -95 < 0)"
+        );
+        // SATISFYING input x=200 (result 100 >= 0) → value-transparent, returns the def's own value 100.
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "f", &[Val::S64(200)]),
+            100,
+            "a satisfied bare @ensures is value-transparent — the def returns its computed value 100, not unit"
+        );
+        // CAPTURE GUARD: a def whose PARAM is literally named `it` is SKIPPED for @ensures (the injected
+        // `(let ((it …)) …)` would shadow the param). The def keeps its meaning: `f(5) = 5 - 100 = -95` using
+        // the PARAMETER `it`, no trap, no shadow — even though -95 would VIOLATE the postcondition if enforced.
+        let guarded =
+            "(module m (@ (ensures (>= it 0)) (def (f (: it Int64)) (- it 100))) (export f))";
+        let gcomp =
+            compile_component(&crate::codec::encode(&parse(guarded))).expect("guarded compiles");
+        assert_eq!(
+            run_returns_with::<i64>(&gcomp, "f", &[Val::S64(5)]),
+            -95,
+            "an @ensures on a def with a param named `it` is skipped (capture guard) — returns -95, no trap"
+        );
+    }
+
     /// Verification Inc-b b4a2: a `@requires`/`@ensures` with NOT-exactly-one predicate argument
     /// (`@requires()`, `@requires(a b)`) is a shape error REJECTED at strip time (CDZ0201), the same arity
     /// discipline `@tag` gets — a silently-unrecorded predicate would mask the author's mistake and surface
@@ -27971,6 +28074,67 @@ mod match_engine {
     }
 
     #[test]
+    fn list_len_over_an_owned_temporary_list_push_reclaims_it_without_touching_the_accumulator() {
+        // The THIRD list-producer face: `List.push` (`vec-push`) CONSUMES its input list + element and
+        // returns a NEW owned list (persistence), exactly like `List.concat`/`List.update` — so a borrowing
+        // op over an owned-temporary push RESULT (`List.len (List.push (build …) x)`) must reclaim it or it
+        // leaks one vector per call. It was NOT in the Owned classifier, so it leaked (0 drops). Fix
+        // classifies `Core::ListPush` Owned. ⚠ THE DELICATE PART: `List.push` is the FBIP ACCUMULATOR path —
+        // classifying it Owned must NOT perturb `(build i n (List.push acc i))`, where the push is the
+        // RECURSION TAIL (never a borrowing-op operand, so its ownership is never consulted → the
+        // single-consume fast path + alloc bench are untouched), and must NOT double-free a BORROWED/shared
+        // `acc` (rc>1 is `dup`'d before the push by the Perceus retain, so `vec-push` yields a genuinely
+        // fresh result whose drop can't free the live `acc`).
+        let push_owned = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (main) ((. List len) ((. List push) (build 0 3 (list)) 99))) (export main))";
+        assert!(
+            component_imports_op(&component(push_owned), "drop"),
+            "List.len over an owned-temporary List.push result must import `drop` (reclaim — leak fix)"
+        );
+        if let Some(out) = run_on_heap(push_owned) {
+            assert_eq!(
+                out, "4",
+                "List.push len unchanged by the reclaim (3 + 1 pushed)"
+            );
+        }
+        // ACCUMULATOR path: `build` returns the push as its recursion TAIL — value must stay correct and the
+        // FBIP single-consume fast path must not be perturbed (a spurious drop here would double-free / drift).
+        let accum = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (main) ((. List len) (build 0 500 (list)))) (export main))";
+        if let Some(out) = run_on_heap(accum) {
+            assert_eq!(
+                out, "500",
+                "the FBIP accumulator (push as recursion tail) is unaffected by the owned-operand reclaim"
+            );
+        }
+        // A BORROWED let-bound push result read TWICE must not be freed by the first read (else double-free).
+        let push_borrowed = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (main) (let ((xs ((. List push) (build 0 3 (list)) 99))) \
+                             (+ ((. List len) xs) ((. List len) xs)))) (export main))";
+        if let Some(out) = run_on_heap(push_borrowed) {
+            assert_eq!(
+                out, "8",
+                "a borrowed push result read twice must not be freed early (4 + 4, no double-free)"
+            );
+        }
+        // Leak stress: 20000× a fresh owned push read+discarded. A leaked vector per call would OOM/drift.
+        let push_stress = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (drive j m tot) (if (< j m) \
+                   (drive (+ j 1) m (+ tot ((. List len) ((. List push) (build 0 3 (list)) 99)))) tot)) \
+               (def (main) (drive 0 20000 0)) (export main))";
+        if let Some(out) = run_on_heap(push_stress) {
+            assert_eq!(
+                out, "80000",
+                "20000 owned-temporary List.push must each reclaim the fresh list (no leak drift)"
+            );
+        }
+    }
+
+    #[test]
     fn set_contains_and_map_lookup_over_an_owned_temporary_reclaim_the_collection() {
         // The last READ-op faces: `Set.contains`/`Map.lookup` over an owned-temporary collection must
         // reclaim it. ⚠ Map.lookup is DELICATE — the looked-up value is borrowed from the map and dup'd in
@@ -29977,6 +30141,65 @@ mod match_engine {
             .unwrap(),
             "-99",
             "the empty list matches no ctor arm and falls to the catch-all"
+        );
+    }
+
+    #[test]
+    fn a_list_element_sum_with_a_tuple_payload_binds_the_tuple_fields() {
+        // REGRESSION (wasm list-element sum-TUPLE-payload miscompile): a list element that is a sum whose
+        // payload is a TUPLE — `(match xs ((list (Pt (tuple a b))) (+ a b)) (_ 0))`, `P = (Pt (Tuple Int64
+        // Int64)) | Nil` — trapped `unreachable` on an input that SHOULD match, instead of binding a/b.
+        //
+        // The tuple binders `a`/`b` both extend the shared payload prefix `[Elem(0), Payload]` (Elem(0) = the
+        // LIST element, then Payload into the sum), so `materialize_payload_prefixes` computes that prefix
+        // once into a slot. Its prefix-walk hardcoded `arr-get` for EVERY `Elem` step — but the leading
+        // `Elem(0)` here reads a LIST element (an RRB `vec`), which needs `vec-get`, not a flat `arr-get`.
+        // The `arr-get` read the vec handle as an array → garbage → the body re-match's discriminant probe
+        // fell to its dead `_ → trap` arm → `unreachable`. The fix tracks the sub-value type down the prefix
+        // walk (exactly as the main `SumPayload` emit does) and reads a `List` element with `vec-get`.
+        //
+        // The NON-list faces (direct tuple-payload match, list element with a SCALAR payload) already worked
+        // — they never hit the shared-prefix materialization with a leading list `Elem` — so this pins the
+        // specific list-element + tuple-payload combo.
+        let Some(v) = run_heap_value(
+            "(module m (type P (Pt (Tuple Int64 Int64)) (Nil)) \
+               (def (build (: k Int64)) (if (< k 1) (list (Nil)) (list (Pt (tuple k 9))))) \
+               (def (f (: xs (List P))) (match xs ((list (Pt (tuple a b))) (+ a b)) (_ 0))) \
+               (def (main (: k Int64)) (f (build k))) (export main))",
+            vec!["3".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping list-element sum-tuple-payload run");
+            return;
+        };
+        assert_eq!(
+            v, "12",
+            "the (Pt (tuple a b)) list element binds a=3 b=9 → 12"
+        );
+        // The Nil arm / `_` fallthrough on k < 1 (an empty-of-`Pt` list-of-Nil) → 0.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type P (Pt (Tuple Int64 Int64)) (Nil)) \
+                   (def (build (: k Int64)) (if (< k 1) (list (Nil)) (list (Pt (tuple k 9))))) \
+                   (def (f (: xs (List P))) (match xs ((list (Pt (tuple a b))) (+ a b)) (_ 0))) \
+                   (def (main (: k Int64)) (f (build k))) (export main))",
+                vec!["0".to_string()],
+            )
+            .unwrap(),
+            "0",
+            "a (Nil) head falls through to the `_` arm → 0"
+        );
+        // A DIFFERENT input width confirms the binders read the real tuple fields, not a fixed constant.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type P (Pt (Tuple Int64 Int64)) (Nil)) \
+                   (def (build (: k Int64)) (if (< k 1) (list (Nil)) (list (Pt (tuple k 9))))) \
+                   (def (f (: xs (List P))) (match xs ((list (Pt (tuple a b))) (+ a b)) (_ 0))) \
+                   (def (main (: k Int64)) (f (build k))) (export main))",
+                vec!["5".to_string()],
+            )
+            .unwrap(),
+            "14",
+            "k=5 binds a=5 b=9 → 14"
         );
     }
 
@@ -37887,6 +38110,50 @@ mod match_engine {
     }
 
     #[test]
+    fn a_narrow_width_qty_stored_as_a_map_value_emits_valid_wasm_through_lookup() {
+        // MISCOMPILE REGRESSION: a `(Qty Int8 u)` stored as a MAP VALUE, read back via `Map.lookup` (→
+        // `Option`), and let ESCAPE the Option match AS A QTY (bound + `Qty.value`-unwrapped OUTSIDE the
+        // arm) emitted an INVALID module — `expected i32, found i64`. A quantity over a NARROW int erases to
+        // its inner narrow int's i32 machine slot, but the heap boxes/reads integers through an i64 cell
+        // (`box-int`/`get-int`), so a narrow value needs an i32→i64 EXTEND before `box-int` and an i64→i32
+        // NARROW after `get-int`. Both `is_narrow_int` (the extend/narrow decision) and `int_ty_of` (the
+        // `ConstI32`-vs-`ConstI64` literal-width decision) read the node's solved type and MUST peel
+        // `Ty::Qty` to see the narrow inner — without the peel the magnitude emitted as an i64 constant while
+        // the read applied the i64→i32 narrow, leaving an i64 where the i32 narrow-int slot was expected. The
+        // two width decisions must agree on the same peeled type (the `int_ty_of`/`is_narrow_int` lockstep,
+        // now extended from `strip_nominal` to also peel `Ty::Qty`). `cdz check` did NOT catch it (a
+        // check-vs-link gap), so the precise guard is that the emitted component VALIDATES.
+        let src = "(module m (def (main) ((. Qty value) \
+                     (match ((. Map lookup) \
+                              ((. Map insert) ((. Map empty)) 1 \
+                               ((. Qty of) ((. Int8 of) 100) ((. Unit base) #\"meter\"))) 1) \
+                       ((Some q) q) \
+                       ((None) ((. Qty of) ((. Int8 of) 0) ((. Unit base) #\"meter\")))))) \
+                     (export main))";
+        let bytes = component(src);
+        wasmparser::validate(&bytes)
+            .expect("a narrow-width Qty map value read back via Map.lookup must emit valid wasm");
+        // And it runs to the stored magnitude (100) when a runtime store is present.
+        if let Some(v) = run_heap_value_escape(src) {
+            assert_eq!(
+                v, "100",
+                "the stored narrow-Qty map value reads back as 100"
+            );
+        }
+        // CONTROL: a WIDE Int64 quantity map value already validated (rides the i64 fixnum default) — the
+        // fix must not regress it.
+        let wide = "(module m (def (main) ((. Qty value) \
+                      (match ((. Map lookup) \
+                               ((. Map insert) ((. Map empty)) 1 \
+                                ((. Qty of) 100 ((. Unit base) #\"meter\"))) 1) \
+                        ((Some q) q) \
+                        ((None) ((. Qty of) 0 ((. Unit base) #\"meter\")))))) \
+                      (export main))";
+        wasmparser::validate(&component(wide))
+            .expect("a wide-Int64 Qty map value must still emit valid wasm");
+    }
+
+    #[test]
     fn qty_pow_negative_over_a_rational_inner_is_the_exact_reciprocal() {
         // `lower_qty_pow` builds the reciprocal `1 / value^|n|` for a negative exponent; the numerator `1`
         // must be in q's INNER numeric type, not a bare Int64. Over a Rational inner a bare `1` divided by
@@ -40732,27 +40999,26 @@ mod diagnostics {
             }),
             "a wrong-sum ctor arm lists the matched type's variants: {diags:?}"
         );
-        // Growth guard: `cdz check` at N vs 2N wrong-sum arms against an N-variant sum. The per-site
-        // closest-matches sort drove a 400→800 ratio of ~3.2× (O(N² log N)); the memo makes it ~1.8×
-        // (linear). Paired back-to-back timings, MIN ratio, so transient contention cancels. Threshold 2.5.
-        fn check_ms(src: &str) -> f64 {
-            let start = std::time::Instant::now();
+        // Growth guard at N vs 2N wrong-sum arms against an N-variant sum. The NOISE-FREE signal is
+        // `VARIANT_CLOSEST_MATCHES_MISSES` — the far-miss "closest matches" sorts actually COMPUTED, NOT
+        // wall-clock. A wall-clock ratio false-fails under fleet load (a narrow run in a quiet slice vs a
+        // wide run hitting a scheduling stall inflates the ratio past threshold — the flake). The per-site
+        // sort re-ran once per wrong arm → O(N) misses (and O(N² log N) work); the per-`(decl, key)` memo
+        // collapses them: all N arms here share the ONE key `(B, "Wrong")`, so misses stay CONSTANT (1)
+        // regardless of N. Assert the miss count does NOT grow with N (a revert to the per-site sort makes
+        // it grow ~linearly with the arm count).
+        fn closest_misses(src: &str) -> u64 {
+            crate::db::VARIANT_CLOSEST_MATCHES_MISSES.with(|c| c.set(0));
             let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            start.elapsed().as_secs_f64() * 1000.0
+            crate::db::VARIANT_CLOSEST_MATCHES_MISSES.with(|c| c.get())
         }
-        let (narrow, wide) = (wrong_sum_src(400), wrong_sum_src(800));
-        check_ms(&narrow); // warm lazy one-time init before the first timed pair
-        let mut best = f64::INFINITY;
-        for _ in 0..6 {
-            let t400 = check_ms(&narrow);
-            let t800 = check_ms(&wide);
-            best = best.min(t800 / t400.max(0.1));
-        }
+        let m400 = closest_misses(&wrong_sum_src(400));
+        let m800 = closest_misses(&wrong_sum_src(800));
         assert!(
-            best < 2.5,
-            "N wrong-sum-ctor arms against a wide sum must scale linearly (was O(N² log N) via a per-site \
-             `closest_matches` sort; now memoized per (decl, key)): width 400→800 grew {best:.1}× (min \
-             paired ratio); linear is ~2×, the per-site sort was ~3.2×"
+            m400 > 0 && m800 <= m400 + 1,
+            "N wrong-sum-ctor arms sharing one wrong head must sort closest-matches ONCE (memoized per \
+             (decl, key)), not per site: 400→800 arms grew the closest-matches sorts from {m400} to {m800} \
+             (memoized is constant ≈1; the per-site sort grew ~linearly with the arm count)"
         );
     }
 
@@ -72343,6 +72609,95 @@ mod cross_component_oracle {
                 panic!("provider compiles: {:?}", out.diagnostics);
             })
             .to_vec()
+    }
+
+    #[test]
+    fn two_effects_bound_to_the_same_interface_share_one_peer_instance() {
+        use crate::testkit::parse;
+        // TWO DISTINCT effects bound to the SAME interface string share ONE peer instance import. A `(bind
+        // …)` route dedups on the EFFECT NAME (compile.rs `bound_effects`), NOT the interface string — so
+        // `(bind A "cadenza:x/y")` + `(bind B "cadenza:x/y")` is LEGAL: both effects route to one provider
+        // interface, and the emit MERGES their ops into a SINGLE `cadenza:x/y` instance import (verified by
+        // inspection: the component has exactly one import named `cadenza:x/y` carrying both `fa` and `fb`,
+        // not two colliding same-named instance imports → not the silent-invalid-component class). This is
+        // the natural shape when one provider component exports several ops a consumer splits across
+        // multiple declared effects (e.g. a `cadenza:model/api` provider whose `converse` + `embed` the
+        // consumer models as two effects Chat and Embed both bound to `cadenza:model/api`). Pin it: the
+        // multi-effect→single-instance merge on the peer boundary had no e2e coverage.
+        //
+        // PROVIDER (source): ONE component exporting BOTH ops on `cadenza:x/y` — `fa` adds 10, `fb` adds 20.
+        let provider = compile_provider(
+            "(do (def (fa (: x Int64)) (+ x 10)) (def (fb (: x Int64)) (+ x 20)) \
+                 (export fa) (export fb))",
+            "cadenza:x/y",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the two-op provider validates");
+        }
+        // CONSUMER (source): declares TWO effects A + B, binds BOTH to `cadenza:x/y`, performs one op from
+        // each in one body. The consumer emits ONE `cadenza:x/y` instance import carrying both ops.
+        let src = "(do \
+            (effect A (op fa (-> Int64 Int64))) \
+            (effect B (op fb (-> Int64 Int64))) \
+            (bind A \"cadenza:x/y\") \
+            (bind B \"cadenza:x/y\") \
+            (def (main) (host (A B) (+ (A.fa 1) (B.fb 2)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "two-effects-one-iface consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("two-effects-one-iface consumer validates");
+        }
+        // Structural pin: the consumer has EXACTLY ONE instance import named `cadenza:x/y` (both effects
+        // merged onto it), not two colliding imports.
+        let x_y_imports = wasmparser::Parser::new(0)
+            .parse_all(&consumer)
+            .filter_map(|p| match p {
+                Ok(wasmparser::Payload::ComponentImportSection(s)) => Some(s),
+                _ => None,
+            })
+            .flat_map(|s| s.into_iter().filter_map(Result::ok))
+            .filter(|imp| imp.name.0 == "cadenza:x/y")
+            .count();
+        assert_eq!(
+            x_y_imports, 1,
+            "two effects bound to one interface must merge into a SINGLE instance import, not collide"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[two-effects-one-iface] runtime wasm not found; skipping the run");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:x/y".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("two effects sharing one peer interface run")
+        {
+            // main = A.fa(1) + B.fb(2) = (1+10) + (2+20) = 11 + 22 = 33. Both effects routed to the ONE
+            // shared provider instance and each op returned its own result.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "33",
+                "two effects on one peer interface each route to their op (fa(1)=11 + fb(2)=22 = 33)"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("two-effects-one-iface run trapped: {t}"),
+        }
     }
 
     #[test]

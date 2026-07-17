@@ -4815,6 +4815,35 @@ mod tests {
     }
 
     #[test]
+    fn signature_help_picks_the_innermost_enclosing_call_when_calls_nest() {
+        // Nested calls `(add (id 5) 9)`: the finder picks the SMALLEST-span named call COVERING the cursor,
+        // so a cursor on the OUTER argument `9` shows `add` (the inner `(id 5)` does not cover `9`), while a
+        // cursor inside `(id 5)` shows `id`. This is what disambiguates which signature to surface as the
+        // caret moves between an argument and a sub-call.
+        let text = "(do (def (id (: x Int64)) x) \
+                     (def (add (: a Int64) (: b Int64)) (+ a b)) \
+                     (def (main) (add (id 5) 9)))";
+        // Cursor on the outer call's second argument `9` → the enclosing call is `add`.
+        let on_outer_arg = text.rfind("(id 5) 9").unwrap() + 7; // the `9`
+        let outer = signature_help_at(text, false, byte_to_position(text, on_outer_arg))
+            .expect("a signature at the outer arg");
+        assert!(
+            outer.signatures[0].label.starts_with("add : "),
+            "cursor on the outer arg surfaces the OUTER callee `add`: {}",
+            outer.signatures[0].label
+        );
+        // Cursor on the inner call's argument `5` → the enclosing call is `id` (the innermost).
+        let on_inner_arg = text.rfind("id 5").unwrap() + 3; // the `5`
+        let inner = signature_help_at(text, false, byte_to_position(text, on_inner_arg))
+            .expect("a signature at the inner arg");
+        assert!(
+            inner.signatures[0].label.starts_with("id : "),
+            "cursor inside the sub-call surfaces the INNER callee `id`: {}",
+            inner.signatures[0].label
+        );
+    }
+
+    #[test]
     fn signature_help_handler_returns_none_on_an_unopened_document() {
         let (server, _client) = memory_server();
         let params = SignatureHelpParams {

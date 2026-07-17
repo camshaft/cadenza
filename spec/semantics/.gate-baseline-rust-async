@@ -1,4 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+pass	@ensures with a param literally named it is SKIPPED (capture guard) — the def returns its value, no shadow
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
@@ -185,6 +186,8 @@ pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
+pass	a PLAIN @ensures postcondition is ENFORCED at body-exit: a VIOLATED postcondition traps when the def is called
+pass	a PLAIN @ensures postcondition is value-transparent when SATISFIED: the def returns its computed value
 pass	a PLAIN @requires precondition is ENFORCED at body-entry: a VIOLATED precondition traps when the def is called
 pass	a PLAIN @requires precondition is value-transparent when SATISFIED: the def returns its computed value
 pass	a Qty payload with a GENERIC inner type rejects a bare use with no type argument
@@ -807,6 +810,7 @@ pass	a list pattern over a non-list scrutinee is a type error
 pass	a list type whose element position holds a value is rejected
 pass	a list value consumed by two operations in one function is not freed early
 pass	a list with a runtime element is returned as a program result
+pass	a list-arm constructor element over a runtime-built list
 pass	a list-arm map element whose key is absent falls through
 pass	a list-carrying recursion whose base arm does a fallible indexed read compiles
 pass	a list-concatenating helper threads lists through a call
@@ -847,6 +851,7 @@ pass	a many-arm scalar match in tail position selects each arm by a runtime scru
 pass	a many-arm string match consumed by concat beside a recursive call keeps both operands
 pass	a map KEYED by a user sum looks up by the variant
 pass	a map built at run time escapes to the host as its value form
+pass	a map built from a BigInt sum key and a BigInt.of-over-arithmetic key has both entries
 pass	a map can be a key, compared by its value
 pass	a map can hold a map as a value
 pass	a map chosen by a runtime if is size-measured with valid wasm
@@ -997,6 +1002,7 @@ pass	a narrow-UInt8-guarded div is not select-ified — the guard shields the tr
 pass	a narrow-body arithmetic on an in-range constant arg overflows the parameter width
 pass	a narrow-width Int quantity add that fits the inner width runs normally
 pass	a narrow-width Int quantity add that overflows the inner width traps at compile time
+pass	a narrow-width Int quantity stored as a map value round-trips through Map.lookup
 pass	a narrow-width accumulator that never changes threads through the recursion
 pass	a narrow-width newtype boxed as a list element matches by its literal payload
 pass	a narrow-width newtype boxed as a sum payload matches by its literal payload
@@ -1626,6 +1632,7 @@ pass	a sequencing block yields the value of its last form
 pass	a set accumulator is queried for membership after building
 pass	a set as a map value: runtime membership tested through the lookup
 pass	a set built at run time escapes to the host as its value form
+pass	a set built from a BigInt sum and a BigInt.of over integer arithmetic has both elements
 pass	a set built from generated values is equal regardless of insertion order (order-independent equality on generated inputs)
 pass	a set chosen by a runtime if is membership-tested with valid wasm
 pass	a set chosen by a runtime if is size-measured with valid wasm
@@ -1841,6 +1848,7 @@ pass	a tuple is constructed with positional elements
 pass	a tuple of a bool and a sum is exhaustive when every bool×variant combination is covered
 pass	a tuple of bools is exhaustive when every combination is covered
 pass	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
+pass	a tuple of two sums is exhaustive when every variant×variant combination is covered
 pass	a tuple of two sums is matched with nested constructor patterns
 pass	a tuple pattern against a Sign scrutinee is a type error
 pass	a tuple pattern against a sum scrutinee is a type error
@@ -3328,6 +3336,7 @@ todo	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
 todo	a 32-bit-float closure crosses the host boundary
 todo	a 32-bit-integer closure crosses the host boundary
 todo	a 64-bit-unsigned closure crosses the host boundary
+todo	a @param accessor splices into a quasiquote and the eval computes with the host value
 todo	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 todo	a BOOL-field Tuple closure ARG, false discriminant
 todo	a Bytes-returning closure alongside a plain export — the closure runs
@@ -3507,8 +3516,8 @@ todo	a host op whose result is a QUANTITY crosses the boundary as its inner scal
 todo	a host op with a String parameter composes with the value-heap runtime
 todo	a host-called closure applied to a different argument tracks the input
 todo	a host-called closure with a different body dispatches the right code
+todo	a list element that is a sum with a tuple payload binds the tuple fields
 todo	a list of closures each keeps its own capture, selected by a runtime index
-todo	a list-arm constructor element over a runtime-built list
 todo	a literal narrow-width newtype list element in a constructed list grounds to its inner width
 todo	a multi-argument closure among distinct-signature exports
 todo	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling

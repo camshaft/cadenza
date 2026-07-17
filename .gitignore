@@ -26,3 +26,9 @@ target/
 # Compiled seed compiler binary (regenerable via cargo build)
 implementation/stable
 Cargo.lock
+
+# `cdz run-ml` writes a pid-stamped driver into the compiler-ml src dir (imports resolve
+# entry-dir-relative, so it MUST live beside the sources — not a temp dir). It cleans up on a
+# normal exit, but a SIGTERM'd run under gate-batch contention can leave one behind; ignore the
+# whole prefix so a stray driver never pollutes git status or gets caught by a `git add -A`.
+implementation/compiler-ml/src/zz-run-ml-driver-*.cdz
