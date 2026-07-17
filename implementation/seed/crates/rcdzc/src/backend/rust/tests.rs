@@ -3520,3 +3520,46 @@ fn a_linked_duplicate_same_name_enum_emits_once() {
         assert_eq!(out, "42", "the Box.W arm binds 42");
     }
 }
+
+#[test]
+fn rustc_roundtrip_runtime_symbol_is_a_string_leaf() {
+    // A Symbol maps to Rust's `String` (a canonical text leaf, identity = content). Runtime Symbol.of /
+    // Symbol.to-string are a String-level identity retag (a `String` is already flat/canonical — the wasm
+    // bytes-compact has no analogue); Symbol `==` is content equality. Was a whole-family decline
+    // ("a runtime Symbol conversion has no rust representation yet").
+    // (a) a runtime string interned to a Symbol compares EQUAL to a constant symbol of the same content.
+    let intern = compile_rust(
+        "(module m (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+           (def (run) (if (= (Symbol.of (rep \"\" 3)) #\"xxx\") 1 0)) (export run))",
+    );
+    assert!(
+        intern.contains("=="),
+        "a runtime Symbol compares by content (native ==):\n{intern}"
+    );
+    if let Some(out) = rustc_run(&intern, "run()") {
+        assert_eq!(
+            out, "1",
+            "an interned runtime string == the same-content symbol"
+        );
+    }
+
+    // (b) a round-trip Symbol.of → Symbol.to-string recovers the content String (byte-len observes it).
+    let round = compile_rust(
+        "(module m (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+           (def (run) (String.byte-len (Symbol.to-string (Symbol.of (rep \"xx\" 3))))) (export run))",
+    );
+    if let Some(out) = rustc_run(&round, "run()") {
+        assert_eq!(
+            out, "5",
+            "Symbol.of then Symbol.to-string recovers the 5-byte content"
+        );
+    }
+
+    // (c) a constant Symbol RESULT renders as cdz-run's `((. Symbol of) "…")` construction form (the
+    // return-type note is `Symbol`, the fn returns `String`). Pin the type note + String rep.
+    let konst = compile_rust("(module m (def (run) (Symbol.of \"map-insert\")) (export run))");
+    assert!(
+        konst.contains("// cdz-return[run]: Symbol") && konst.contains("-> String"),
+        "a Symbol result carries the Symbol type note over a String rep:\n{konst}"
+    );
+}

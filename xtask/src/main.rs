@@ -1979,6 +1979,14 @@ fn cdz_render_at(
     if ty == "String" {
         return format!("format!(\"\\\"{{}}\\\"\", {path})");
     }
+    // A `Symbol` value is the Rust `String` the backend emits (a Symbol IS its canonical text) — render it
+    // as cdz-run's canonical CONSTRUCTION form `((. Symbol of) "<content>")` (`lower::const_value_ast`'s
+    // Symbol surface; the gate accepts the bare value or the `(: value type)` form, so the value form
+    // suffices). The content is the raw UTF-8 between quotes, no escaping (matching the `String` render's
+    // raw passthrough). `{path}` is a `String`/`&String`.
+    if ty == "Symbol" {
+        return format!("format!(\"((. Symbol of) \\\"{{}}\\\")\", {path})");
+    }
     // A `Char` value is the Rust `char` the backend emits — render it as cdz-run's canonical `#\<…>` form,
     // matching `cadenza-syntax`'s `literal::render_char`: the named specials (`#\space`/`#\newline`/`#\tab`/
     // `#\return`/`#\null`), a control scalar → `#\u+HHHH` (uppercase hex, ≥4 digits), else `#\<char>`. The
