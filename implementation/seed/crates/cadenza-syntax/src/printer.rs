@@ -3641,6 +3641,55 @@ mod tests {
     }
 
     #[test]
+    fn the_test_annotation_example_round_trips_both_directions_and_never_prints_the_backtick_at_form()
+     {
+        // REGRESSION for the operator's thrice-reported high-viz `@test` bug (concierge issue): a
+        // `(@ test (def …))` annotation on the ML surface must PRINT as `@test` above the def and PARSE
+        // that back to the same `(@ test …)` head — NOT the malformed `` `@`(test, <def>) `` backtick-quoted-
+        // symbol CALL that was reported (which broke every `@test`/`@property` example in both directions).
+        // Pin the operator's EXACT example (a `@test` def with an `assert-eq` body) so the specific case can
+        // never regress; the general annotation surface is covered above, but this thrice-reported case
+        // deserves its own witness. Both directions + a NEGATIVE assertion against the malformed form.
+        let sx =
+            r#"(@ test (def (two-plus-two-is-four) (assert-eq (+ 2 2) 4 "arithmetic is broken")))"#;
+        // s-expr → ML: prints `@test` on its own line above the def, no backtick-`@`-call.
+        let ml = print(&sexpr::read(sx).unwrap(), 80);
+        assert_eq!(
+            ml, "@test\ndef two-plus-two-is-four() = assert-eq(2 + 2, 4, \"arithmetic is broken\")",
+            "the @test annotation must print above the def, not as a backtick-@ call"
+        );
+        // The regression signature: the malformed output was a backtick-quoted `@` applied as a call.
+        assert!(
+            !ml.contains("`@`"),
+            "must not print the annotation as a backtick-quoted `@` symbol call: {ml}"
+        );
+        // ML → s-expr: `@test`-above-the-def parses back to the canonical `(@ test …)` head.
+        let back = parser::read_ml(&ml);
+        assert!(
+            back.ok(),
+            "the printed @test form must re-parse: {:?}",
+            back.errors
+        );
+        assert_eq!(
+            sexpr::print(&back.arenas),
+            sx,
+            "the ML @test form must re-read to the same (@ test …) head"
+        );
+        // The full s-expr↔ML round-trip is structurally faithful (what the guide/testing page relies on).
+        assert!(
+            sexpr::read(sx)
+                .unwrap()
+                .structurally_eq(&parser::read_ml(&ml).arenas),
+            "the operator's @test example must round-trip s-expr ⇄ ML structurally"
+        );
+        // `@property` — the other broken example — behaves the same way.
+        let prop = "(@ property (def (p x) (assert-eq x x \"reflexive\")))";
+        let prop_ml = print(&sexpr::read(prop).unwrap(), 80);
+        assert!(prop_ml.starts_with("@property\n"), "{prop_ml}");
+        assert_eq!(sexpr::print(&parser::read_ml(&prop_ml).arenas), prop);
+    }
+
+    #[test]
     fn tagged_template_round_trips_hole_free() {
         // B1: a hole-free tagged template `tag"…"` reads to `(tagged-template <tag> (chunks <str>)
         // (holes))` and prints back to the glued `tag"…"` surface.
