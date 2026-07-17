@@ -278,6 +278,89 @@ mod tests {
         assert!(out.contains("List ["), "{out}");
     }
 
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible generation without a dependency (mirrors
+    /// the unit-test PRNGs in `codec.rs`/`lexer.rs`/`canon.rs`).
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// Build a random arena node (bounded by `depth`): either an atom of some leaf kind, or a `List`
+    /// with 0..=3 random children. Multi-child, varied-width — the shape that catches a walker that
+    /// visits children in the WRONG order (a single-child chain cannot).
+    fn gen_node(rng: &mut Rng, b: &mut Builder, depth: usize) -> StructId {
+        if depth == 0 || rng.below(3) == 0 {
+            let leaf = match rng.below(4) {
+                0 => Leaf::Name(["a", "b", "cc", "x"][rng.below(4)].to_string()),
+                1 => Leaf::Int {
+                    value: BigInt::from(rng.below(1000) as i64),
+                    radix: Radix::Dec,
+                },
+                2 => Leaf::Bool(rng.below(2) == 0),
+                _ => Leaf::Str(["", "hi", "a b"][rng.below(3)].to_string()),
+            };
+            return b.atom_leaf(leaf);
+        }
+        let n = rng.below(4); // 0..=3 children
+        let kids: Vec<StructId> = (0..n).map(|_| gen_node(rng, b, depth - 1)).collect();
+        b.list(kids)
+    }
+
+    /// An INDEPENDENT recursive oracle for `print`'s tree view — the obvious native-recursion form the
+    /// production walker replaced with an explicit stack (to survive deep untrusted arenas). If the
+    /// iterative rewrite visits children out of order, mis-indents a level, or drops the reverse-push
+    /// bookkeeping, this reference and `print` disagree.
+    fn oracle(a: &Arenas, id: StructId, depth: usize, out: &mut String) {
+        for _ in 0..depth {
+            out.push_str("  ");
+        }
+        match a.get(id) {
+            Struct::Atom(leaf_id) => {
+                out.push_str(&format!("#{} Atom {}\n", id.0, leaf(a.leaf(*leaf_id))));
+            }
+            Struct::List(children) => {
+                out.push_str(&format!("#{} List\n", id.0));
+                for &child in children.iter() {
+                    oracle(a, child, depth + 1, out);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn print_matches_an_independent_recursive_oracle_over_generated_arenas() {
+        // `print`'s tree walk is an explicit-stack rewrite of a recursion (so a deep untrusted arena
+        // can't overflow the native stack). The deep-chain test proves it doesn't crash — but a single-
+        // child chain can't detect a walker that visits multi-child siblings in the WRONG order or off by
+        // one indent level (the reverse-push is exactly the bookkeeping most likely to drift on a rewrite).
+        // Sweep random MULTI-CHILD arenas and assert the iterative `print` is byte-identical to a plain
+        // recursive oracle: same pre-order, same left-to-right child order, same per-depth indent.
+        let mut rng = Rng(0xde6b_c0de_1a7e_5eed);
+        for _ in 0..4000 {
+            let depth = 1 + rng.below(4);
+            let mut b = Builder::new();
+            let root = gen_node(&mut rng, &mut b, depth);
+            let a = b.finish(root);
+            let got = print(&a);
+            let mut want = String::new();
+            oracle(&a, a.root, 0, &mut want);
+            assert_eq!(
+                got, want,
+                "iterative `print` diverged from the recursive oracle for arena rooted at #{}",
+                a.root.0
+            );
+        }
+    }
+
     #[test]
     fn flat_shows_leaf_interning() {
         // `main` occurs TWICE in the source but is interned to ONE leaf; two Atom occurrences point

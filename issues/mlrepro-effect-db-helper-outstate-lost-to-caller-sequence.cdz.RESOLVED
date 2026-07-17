@@ -45,3 +45,5 @@ def effect-db-helper-outstate-lost() =
   if run-then-get() == 50 then unit else trap("demand's internal put should be visible to a later get: 25+25=50")
 
 export { run-then-get }
+
+// ✅ RESOLVED 2026-07-17 — VERIFIED BY CONTENT on trunk b1e78c1bd: @test effect-db-helper-outstate-lost now PASSES (1/0, → 50; was silent-wrong 0/1 → -1). gate 3701/9/0. Fixed by v-effects (MR de52b100c / e59f2c80f): the real root was beta_reduce DROPPING the effectful do-intermediate on the INLINE path (demand None arm → Ref{compute}, beta_reduce chased the Ref → bare compute → Db.put GONE), NOT the call-boundary/branch out-state threading everyone theorized. Fix = preserve the do structurally in beta_reduce + re-run hoist_resumptive_conditional after inline. v-effects shipped a value-graded corpus case. Lesson [[effect-lost-one-layer-up-beta-reduce-drops-do-intermediate-debug-post-inline-body]]. CLOSED.

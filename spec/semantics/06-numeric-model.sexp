@@ -4259,6 +4259,21 @@
   (call   main (: 15 Int64))
   (output (: 15 (UInt 4))))
 
+(case "a runtime SIGNED nibble truncation sign-extends from the top kept bit"
+  (doc    "`((Int 4) wrap n)` — the SIGNED companion of the (UInt 4) case. A signed unusual width keeps the
+           low N bits then REINTERPRETS them at the target sign: bit N-1 is the sign bit, so a set top-kept
+           bit makes the result NEGATIVE. n = 8 = 0b1000 keeps the low nibble 0b1000, whose bit 3 is set →
+           8 - 2^4 = -8 (the 4-bit two's-complement minimum), NOT +8. n = 7 = 0b0111 fits with the sign bit
+           clear → 7. n = 15 = 0b1111 → all bits set → -1. Pins `IntValue::wrap_to(signed=true, 4)` across
+           BOTH backends — a plain low-bit mask (correct for the unsigned width) would wrongly keep +8/+15.")
+  (input  (do (def (main (: n Int64)) ((. (Int 4) wrap) n)) (export main)))
+  (call   main (: 8 Int64))
+  (output (: -8 (Int 4)))
+  (call   main (: 7 Int64))
+  (output (: 7 (Int 4)))
+  (call   main (: 15 Int64))
+  (output (: -1 (Int 4))))
+
 ; --- Unary negation: prefix `-<expr>` is the arity-1 subtraction `(- e)` -----------------------
 ; The ML surface `-x` (prefix minus applied to an expression, not a bare literal) canonicalizes to the
 ; ONE-operand subtraction `(- e)`, negation. It is `0 - e` at the operand's numeric type — closed over

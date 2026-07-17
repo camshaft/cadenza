@@ -485,23 +485,35 @@ forever.
 **The mechanism (no precedent — the prelude is Rust-built today; `db.prelude` maps a builtin name → an arena
 occurrence, `db.rs:1021`).** The kernel is a MODULE (types + many defs), not a single builtin, and it must
 NOT be re-implemented in Rust (that would be the second kernel the LCF design forbids). So embed the kernel
-SOURCE and load it:
-- **a1 — embed + parse the kernel source.** `include_str!` the trusted kernel module source (a `.cdz`/s-expr
-  file — the `bounds`/`hol` module, promoted from the corpus to a canonical compiler-bundled asset), parse it
-  once at compiler init (the reader already exists), and register its defs into `db` the way an ordinary
-  module's members register (`modules::register_callable`). No precedent for `include_str!` in the compiler
-  → this is the new mechanism; keep it small (one asset, one load call).
-- **a2 — make the kernel names resolvable.** The kernel's exported names (`licenses`, the rules, `Thm`) bind
-  in the prelude map (or a dedicated always-in-scope module namespace) so the discharge program the compiler
-  synthesizes can reference them. The `Thm` abstract-type boundary must hold (opacity gated on
-  `is_linked_package` — the kernel stays a SEPARATE linked module, per the Inc-a load-bearing constraint).
-- **a3 — compile-time-eval the discharge.** With the kernel in scope, the b4c oracle synthesizes a discharge
-  program (`(licenses <proof> <obligation> <pre>)`) and compile-time-evals it (`eval_ast`, §3) to a boolean;
-  b3's `discharged_no_overflow` returns it (fail-closed on an eval trap). This is the payoff the whole arc
-  builds to.
+SOURCE and load it AS A LINKED PACKAGE MEMBER:
 
-**Sequencing:** a1 (embed+parse+register the kernel module) is the foundation — the first real slice of the
-unblocked arc. Then a2 (name resolution) → a3 (compile-time-eval wiring = b4c) → b3 (the oracle) → the
+**REFINED a1 architecture (2026-07-17) — link the kernel as a package member, NOT prelude-install.** An
+initial plan was "install the kernel into the `db.prelude` map + carve out the opacity gate." Investigation
+found two problems with that: (i) `prelude::install` builds Rust-constructed nodes in the MAIN arena, but
+`parse` yields a FRESH arena → prelude-install needs arena-merge surgery; (ii) worse, opacity is gated on
+`is_linked_package()` = `file_scope.is_some()` (db.rs:3076), and prelude nodes are "in no file" → a
+prelude-installed `Thm` would be FORGEABLE (the soundness blocker §A1). BOTH problems vanish if the kernel is
+loaded the way a MULTI-FILE LINKED PACKAGE already is: `Db::load_linked(merged_arena, Linkage)` (db.rs:1734,
+the real compile entry at compile.rs:129) takes a merged multi-file arena + a `Linkage` (per-file demux +
+scopes) and SETS `file_scope` — so a linked member's `Thm` opacity works NATURALLY, no carve-out.
+- **a1 — link the bundled kernel as an extra package "file."** `include_str!` the trusted kernel source
+  (the `bounds`/`hol` module, promoted from the corpus to a canonical compiler-bundled asset), and at the
+  compile entry PREPEND it as an additional file in the merged arena + an extra `FileSpan`/`FileScope` in the
+  `Linkage` (exports its rules + `Thm` handle). It is then a genuine linked module: `is_linked_package` true,
+  `Thm` opacity fires (CDZ0214) with NO carve-out and NO prelude-arena surgery. The kernel is a
+  compiler-prepended package member, always present.
+- **a2 — the kernel's exports are in scope** via the normal linked-package import/export surface (its
+  `FileScope` exports `licenses`/rules/`Thm`); the synthesized discharge program imports them like any
+  cross-file reference. No new resolution path.
+- **a3 — compile-time-eval the discharge.** With the kernel linked + in scope, the b4c oracle synthesizes a
+  discharge program (`(licenses <proof> <obligation> <pre>)`) and compile-time-evals it (`eval_ast`, §3) to a
+  boolean; b3's `discharged_no_overflow` returns it (fail-closed on an eval trap). The payoff.
+- **FORGE-VECTOR pin (with a1):** a Rust `#[test]` that a bundled-kernel `Thm.MkThm(...)` outside the kernel
+  file is CDZ0214 (opacity holds through the linked-member path) — the regression guard for §A1.
+
+**Sequencing:** a1 (link the kernel as a package member) is the foundation — the first real slice of the
+unblocked arc. Then a2 (exports in scope — mostly free via linkage) → a3 (compile-time-eval wiring = b4c) →
+b3 (the oracle) → the
 `@trap_free` t2/t3. The t1 per-trap-source obligation corpus (div0 done; OOB/exhaustiveness/explicit-trap
 next) proceeds in parallel — it's kernel-location-independent and feeds a3/b3's discharge targets.
 

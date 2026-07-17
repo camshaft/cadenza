@@ -1,5 +1,30 @@
 # Plan: gate-driven ML-compiler conformance off the SHARED corpus (operator directive, 2026-07-17)
 
+## THE run_run_ml WIRE — mechanism PINNED (2026-07-17, ready to build on a quiet box + landed sread)
+
+End-to-end proven: `sread-eval.run-src(s) = read-source(s)→eval-tree` runs a program FROM SOURCE →
+`Option(Int64)` (milestone `(let ((x 2)) (+ (* x 3) 1))`→7). `Option(Int64)` CROSSES the boundary; `cdz run`
+renders `(: (Some 42) (Option Int64))` / `(: (None unit) …)`. So `run_run_ml` (Rust, cdz/src/main.rs) does:
+1. read the corpus program SOURCE (file/stdin) — already done in the stub.
+2. escape it as a Cadenza STRING LITERAL, generate a driver:
+     `import { run-src } from "sread-eval"`
+     `def main() = run-src("<ESCAPED-SOURCE>")`
+     `export { main }`
+   (source is a compile-time literal — NO String boundary crossing, the constraint that ruled out an arg.)
+3. IMPORT RESOLUTION: `closure::load` resolves imports RELATIVE TO THE ENTRY FILE'S DIR (`entry.parent()`;
+   confirmed closure.rs:90). There is NO `--search-path` flag. So the driver MUST be written INTO
+   `implementation/compiler-ml/src/` (alongside sread-eval + the pipeline modules) so `import "sread-eval"`
+   resolves. Write a temp driver there (unique name, e.g. `zz-run-ml-driver.cdz`), compile+run, then DELETE it.
+   ⚠ temp file in the tracked src dir — must clean up even on error; consider a `.gitignore`d name / guard.
+4. compile+run: either IN-PROCESS (like `cdz test`/`cdz run` — cdz-run is linked in) or shell `cdz compile |
+   cdz run`. In-process is cleaner (no PATH dep); the run yields the rendered `Option`.
+5. parse the render: `(: (Some N) (Option Int64))` → print `value N` (BARE scalar N, matching rcdzc's
+   Ran::Value render for the differential); `(: (None …) …)` → print `declined`; anything else / trap →
+   `error <msg>` (or `declined` for out-of-subset). Exit 0 (verdict), per contract.
+BLOCKED-ON: sread + sread-eval must be ON TRUNK first (the driver imports them; pr-sync re-gate compiles the
+driver). All 4 (sread slices 2-4 + sread-eval) are pending. Build the wire once they land + box is quiet
+(heavy: full `cdz` crate compile + a driver compile-per-case).
+
 ## INVOCATION ARCHITECTURE (settled 2026-07-17: SOURCE-IN, per operator "exact same way as rcdzc")
 
 `cdz run-ml` STUB LANDED on trunk (`c009ad30c`). Now the front-end behind it. The operator: the ML compiler

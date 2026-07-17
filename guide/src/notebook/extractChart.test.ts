@@ -164,13 +164,14 @@ test("minOf / maxOf on an empty list with no seed match Math.min()/Math.max() (�
   assert.equal(maxOf([]), -Infinity);
 });
 
-test("minOf / maxOf handle a LARGE array that would overflow Math.min(...arr) (the PR #524 bug)", () => {
-  // A spread of this many args throws `RangeError: too many arguments` in V8; the loop must not.
+test("minOf / maxOf handle a LARGE array without throwing (the PR #524 bug — loop, not spread)", () => {
+  // The old `Math.max(...arr)` spread throws `RangeError: too many arguments` once the length passes the
+  // JS engine's arg-count limit; the loop-based helpers must handle any size. (We do NOT assert that the
+  // spread throws at a specific length — that limit is engine/version-dependent and would test V8, not our
+  // code, so it can flake — PR #527. The real invariant is that OUR helpers return the right extent here.)
   const big = Array.from({ length: 500_000 }, (_, i) => i);
   assert.equal(minOf(big), 0);
   assert.equal(maxOf(big), 499_999);
-  // (Sanity: confirm the old spread approach WOULD have thrown, so this test guards a real regression.)
-  assert.throws(() => Math.max(...big), RangeError);
 });
 
 test("minOf / maxOf accept any iterable (e.g. a Map's keys, as categoryLabels uses)", () => {

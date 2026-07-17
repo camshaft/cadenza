@@ -1,0 +1,90 @@
+/// interpret-events.cdz — the minimal-kernel interpret over the REAL compound signature (re-charter K0-full).
+///
+/// `interpret.cdz` proved the RESULT direction (a `(List HostOp)` provider result crosses to a Cadenza-peer
+/// executor as a handle — v-effects MR 1174ab794, no ABI widening). This module completes the shape: interpret
+/// now takes the REAL compound ARGUMENTS — the log `tail: List Event` + the `new: Event` that just landed —
+/// both of which cross INBOUND to a provider as runtime handles today (v-peer-linking verified e2e: a
+/// `(List T)` arg is the inbound twin of the result-handle path, no gap). So the fully-Cadenza kernel brain
+/// `interpret : (List Event, Event) -> (List HostOp)` is crossable in BOTH directions with no host-ABI work.
+///
+/// This is the "everything above the tiny host is self-modifiable Cadenza" core: the kernel hands interpret
+/// the opaque log tail + the new event; interpret (all in Cadenza) decides the broad host-ops to run. Event
+/// interpretation, the inbox/dedup rules, dispatch — all live HERE, never in Rust.
+
+/// A log event, as the Cadenza interpret sees it — a `kind` tag + a scalar `seq` (its log position). Modeled
+/// with an Int64 kind + seq for now (the payload is opaque bytes the kernel never interprets; a richer Event
+/// with a Bytes payload joins once the executor needs to read it). This is the value that crosses inbound as
+/// a handle (the `tail` is a `List Event`, the `new` is one `Event`).
+type Event =
+  | Event(Int64, Int64)
+
+/// A host operation interpret asks the kernel to run — the broad-primitive surface (operator forks 1+3:
+/// max reach, so no new host op is ever needed). Named type (NOT an inline sum) — v-effects wiring finding:
+/// an effect-op / provider result type must be a NAMED type, an inline `(Sum …)` is CDZ0101. `Append` = the
+/// one log write; `Exec` = run any host command; `Http` = any network call; `Noop` = nothing.
+type HostOp =
+  | Append(String)
+  | Exec(String)
+  | Http(String)
+  | Noop
+
+/// The `kind` tag of an event (its first field). A pure projection so the dispatch logic reads clearly.
+def event-kind(e: Event) = match e with
+  | Event.Event(kind, seq) => kind
+
+/// How many events in the `tail` share the new event's kind — a fold over the INBOUND `(List Event)` arg
+/// (this is what exercises the compound-arg-inbound path). A real interpret uses the tail for dedup/context;
+/// here it counts prior same-kind events (e.g. "have I already handled this kind?").
+def count-kind(tail: List(Event), k: Int64) = match tail with
+  | [] => 0
+  | [head, .. rest] =>
+    (if event-kind(head) == k then 1 else 0) + count-kind(rest, k)
+
+/// INTERPRET the newly-landed event against the log tail — the kernel's whole brain, in Cadenza, over the
+/// REAL compound signature. Decides the broad host-ops to run: a `message` event (kind 1) → append an ack +
+/// exec a handler, BUT only if it is the FIRST message of its kind in the tail (dedup — a re-delivered
+/// message is a Noop); a `tick` (kind 2) → http poll; else Noop. Returns a `(List HostOp)` that crosses to
+/// the executor peer as a handle. Pure + total → replayable (same tail+event → same ops).
+def interpret(tail: List(Event), new: Event) =
+  let k = event-kind(new) in
+  if k == 1 then
+    (if count-kind(tail, 1) == 0 then
+      [Append("ack"), Exec("handle-message")]
+    else
+      [Noop])            // already saw a message of this kind → dedup to Noop
+  else if k == 2 then
+    [Http("poll")]
+  else
+    [Noop]
+
+/// Op-count of an interpret over a tail — a scalar the boundary carries so the suite gate-proves the LOGIC
+/// (including the tail-dependent dedup) before the full provider+peer loop is wired.
+def op-count(tail: List(Event), new: Event) = List.len(interpret(tail, new))
+
+/// A fresh message event at seq `s` (kind 1).
+def msg(s: Int64) = Event.Event(1, s)
+
+@test def a_first_message_appends_ack_then_execs() =
+  op-count([], msg(0)) == 2
+
+@test def a_redelivered_message_dedups_to_noop() =
+  // The tail already holds a kind-1 event → the new message is a duplicate → single Noop.
+  op-count([msg(0)], msg(1)) == 1
+
+@test def a_tick_event_schedules_one_poll() =
+  op-count([], Event.Event(2, 0)) == 1
+
+@test def an_unknown_event_is_a_noop() =
+  op-count([], Event.Event(9, 0)) == 1
+
+/// count-kind folds the inbound (List Event) arg correctly (the compound-arg-inbound path exercised).
+@test def count_kind_folds_the_tail() =
+  count-kind([msg(0), Event.Event(2, 1), msg(2)], 1) == 2
+
+/// The first op of a first-message interpret is the log-append (order is load-bearing: ack before handler).
+@test def a_first_message_appends_before_it_execs() =
+  match interpret([], msg(0)) with
+  | [first, .. _] => (match first with
+    | HostOp.Append(_) => true
+    | _ => false)
+  | [] => false

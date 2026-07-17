@@ -9407,13 +9407,22 @@ fn check_application(
                         .ast
                         .as_name(crate::eval::param_name_occ(db, param_occ))
                         .map(str::to_string);
-                    let tail = structural_delta_hint(&pt, &at).unwrap_or_default();
+                    // Render the EXPECTED/actual types with the accumulated substitution APPLIED — an
+                    // EARLIER argument may have already solved a shared type variable this parameter also
+                    // mentions. `(def (pair (: t Type) (: x t) (: y t)) …)` called `(pair Int64 1 true)`:
+                    // typing `x = 1` binds the shared `t`-var to `Int64` in `subst`, so `y`'s parameter type
+                    // is Int64 — but the RAW `pt` is still the unsolved `Ty::Var`, which `render_name`
+                    // prints as `_` ("a value of type `_` is expected here" — an unhelpful hole). Applying
+                    // `subst` first renders the real "Int64", the type the sibling argument already pinned.
+                    let spt = subst.apply(&pt);
+                    let sat = subst.apply(&at);
+                    let tail = structural_delta_hint(&spt, &sat).unwrap_or_default();
                     let reject = Reject {
                         message: call_argument_mismatch_message(
                             callee.as_deref(),
                             param.as_deref(),
-                            &pt,
-                            &at,
+                            &spt,
+                            &sat,
                             &tail,
                         ),
                         ..reject
@@ -9423,23 +9432,26 @@ fn check_application(
                     // WRAP the argument in the matching constructor `(Some 5)`. General over any sum (reads
                     // the expected sum's own variants), forced-choice only (ambiguous → no suggestion), and
                     // the wrap type-checks in one shot. Heuristic — the intent (which construction) is a guess.
-                    let tagged = if let Some(variant) = wrap_variant_for(db, &pt, &at) {
+                    // The fix heuristics read the SUBSTITUTED types too (a shared var an earlier arg solved
+                    // is now concrete — e.g. a wrap/coercion suggestion keys off the real expected type, not
+                    // an unsolved `Ty::Var` that matches nothing).
+                    let tagged = if let Some(variant) = wrap_variant_for(db, &spt, &sat) {
                         reject.with_fix(Fix::wrap_heuristic(
                             arg,
                             format!("({variant} "),
                             ")",
                             format!("wrap the value in `{variant}`"),
                         ))
-                    } else if let Some((prefix, suffix, verb)) = total_conversion_wrap(&pt, &at) {
+                    } else if let Some((prefix, suffix, verb)) = total_conversion_wrap(&spt, &sat) {
                         // A total prelude conversion bridges the mismatch at the CALL SITE — `String` where
                         // `Bytes` is expected → `(String.to-bytes …)`. The text-model twin of the numeric
                         // coercion wraps; heuristic, `--verify-fixes` upgrades it.
                         reject.with_fix(Fix::wrap_heuristic(arg, prefix, suffix, verb))
-                    } else if let Some(fix) = record_field_typo_fix(db, &pt, &at, arg)
-                        .or_else(|| record_field_add_fix(db, &pt, &at, arg))
-                        .or_else(|| record_field_delete_fix(db, &pt, &at, arg))
-                        .or_else(|| tuple_element_add_fix(db, &pt, &at, arg))
-                        .or_else(|| tuple_element_delete_fix(db, &pt, &at, arg))
+                    } else if let Some(fix) = record_field_typo_fix(db, &spt, &sat, arg)
+                        .or_else(|| record_field_add_fix(db, &spt, &sat, arg))
+                        .or_else(|| record_field_delete_fix(db, &spt, &sat, arg))
+                        .or_else(|| tuple_element_add_fix(db, &spt, &sat, arg))
+                        .or_else(|| tuple_element_delete_fix(db, &spt, &sat, arg))
                     {
                         // A RECORD-literal field-set repair: a misspelled field is RENAMED (first — a rename
                         // is the minimal edit); a pure OMISSION gets the missing fields ADDED with `(trap

@@ -1,0 +1,52 @@
+/// sread-eval.cdz — END-TO-END integration test of the SOURCE-IN pipeline: a program's canonical s-expr
+/// SOURCE TEXT → `sread.read-source` → `Node` arena → `eval-db.eval-tree` (which drives resolve→infer→lower
+/// →eval) → a value. This is the whole Cadenza-in-Cadenza compiler run FROM SOURCE (not hand-built `Tok`
+/// lists) — the shape `cdz run-ml` will invoke to differentially conform against rcdzc on the shared corpus.
+///
+/// `run-src(s)` returns `Option(Int64)`: `Some v` = the program ran to `v`; `None` = the ML compiler declines
+/// (ill-typed / out-of-subset). These pins are the executable proof that the reader + pipeline agree on the
+/// integer/bool subset, and they guard it as the reader/pipeline evolve.
+
+import { read-source } from "sread"
+import { eval-tree } from "eval-db"
+
+/// Read + run a program from its s-expr SOURCE. `Some value` | `None` (declined).
+def run-src(s: String) = match read-source(s) with | (root, tree) => eval-tree(tree, root)
+
+@test
+def se-int-literal() =
+  (match run-src("42") with | Option.Some(v) => (if v == 42 then unit else trap("42")) | Option.None(_) => trap("literal runs"))
+
+@test
+def se-prefix-arith() =
+  // (+ 1 (* 2 3)) → 7 (prefix, nested, precedence-free — the parens ARE the grouping).
+  (match run-src("(+ 1 (* 2 3))") with | Option.Some(v) => (if v == 7 then unit else trap("1+2*3=7")) | Option.None(_) => trap("runs"))
+
+@test
+def se-comparison() =
+  // (< 1 2) → 1 (Bool true encoded 0/1).
+  (match run-src("(< 1 2)") with | Option.Some(v) => (if v == 1 then unit else trap("1<2=1")) | Option.None(_) => trap("runs"))
+
+@test
+def se-if() =
+  // (if (< 5 2) 10 20) → 20 (false → else).
+  (match run-src("(if (< 5 2) 10 20)") with | Option.Some(v) => (if v == 20 then unit else trap("if false → 20")) | Option.None(_) => trap("runs"))
+
+@test
+def se-let() =
+  // (let ((x 10)) x) → 10 (binder + use share the name-id).
+  (match run-src("(let ((x 10)) x)") with | Option.Some(v) => (if v == 10 then unit else trap("let x=10 → 10")) | Option.None(_) => trap("runs"))
+
+@test
+def se-milestone-from-source() =
+  // ★ THE MILESTONE, FROM SOURCE TEXT ★ — (let ((x 2)) (+ (* x 3) 1)) → 7. The re-charter's headline program
+  // now runs source → sread → arena → resolve/infer/lower/eval → 7, with the source READ by the ML compiler
+  // (not a hand-built Tok list). This is `let x = 2 in x*3+1` in canonical prefix s-expr.
+  (match run-src("(let ((x 2)) (+ (* x 3) 1))") with | Option.Some(v) => (if v == 7 then unit else trap("MILESTONE from source = 7")) | Option.None(_) => trap("milestone runs"))
+
+@test
+def se-nested-let() =
+  // (let ((a 1)) (let ((b 2)) (+ a b))) → 3.
+  (match run-src("(let ((a 1)) (let ((b 2)) (+ a b)))") with | Option.Some(v) => (if v == 3 then unit else trap("nested let → 3")) | Option.None(_) => trap("runs"))
+
+export { run-src }

@@ -1505,3 +1505,158 @@
                   ((Option.None) true))))
             (export main)))
   (output (: true Bool)))
+
+; ── t1(trap): the EXPLICIT-TRAP trap source — a `trap()` under a provably-FALSE guard is unreachable ──
+; The @trap_free capstone (§8): an explicit `trap()` (or effect-abort) inside `(if guard (trap) …)` traps
+; iff `guard` is satisfiable. Its trap-free obligation is UNREACHABILITY — the guard is provably FALSE for
+; every input satisfying @requires, so the trap branch is dead. Modeled: the obligation `FALSE guard` holds
+; when a `refute` rule derives a contradiction from `assume guard` + the precondition. Simplest ground
+; instance: a trap guarded by `(lt x 0)` in a function `@requires(>= x 0)` — `ge x 0` and `lt x 0` are
+; contradictory, so `refute` (from G |- (ge x 0) and a guard (lt x 0)) mints `UNREACHABLE (lt x 0)`.
+; `unreach`=Const 10. A guard NOT contradicted by the precondition → None (the trap stays reachable).
+
+(case "t1(trap): an explicit trap under guard (lt x 0) is UNREACHABLE when @requires(>= x 0) — the trap is dead"
+  (doc    "The explicit-trap source of the @trap_free capstone. A `(if (lt x 0) (trap) …)` traps iff its
+           guard `(lt x 0)` is satisfiable. Under `@requires(>= x 0)`, the guard CONTRADICTS the precondition
+           (`ge x 0` and `lt x 0` cannot both hold), so the `refute` rule — from the precondition hypothesis
+           `ge x 0` and the guard `lt x 0` — derives `UNREACHABLE (lt x 0)`: the trap branch is dead, so the
+           function cannot reach the explicit trap. The entry assumes the precondition, refutes the guard,
+           and checks the conclusion is the unreachability obligation. Runs to `true`. Pins the explicit-trap
+           obligation shape (a guard proven false by the precondition) — the FIFTH and last trap source of
+           the whole-function trap-free proof.")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (ge      (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 2) a) b))
+      (def (lt      (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 7) a) b))
+      (def (unreach (: g Term)) (Term.Comb (Term.Const 10) g))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      ; RULE `refute`: from G |- (ge x 0) and a GUARD (lt x 0) — a direct contradiction (x>=0 vs x<0 on the
+      ; same x, same bound 0) — derive G |- (UNREACHABLE guard): the guarded branch is dead. Fires ONLY when
+      ; the guard is `(lt x 0)` and the hypothesis is `(ge x 0)` for the SAME x (a recognized contradiction).
+      (def (refute (: th Thm) (: guard Term))
+        (match (concl th)
+          ((Term.Comb (Term.Comb (Term.Const 2) x) (Term.Num 0))
+            (match guard
+              ((Term.Comb (Term.Comb (Term.Const 7) gx) (Term.Num 0))
+                (if (term-eq x gx)
+                  (Option.Some (Thm.Seq (hyps th) (unreach guard)))
+                  (Option.None)))
+              (_ (Option.None))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq ge lt unreach concl hyps assume refute)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq ge lt unreach concl hyps assume refute))
+            (def (main)
+              (let ((x    (Term.Var 0))
+                    (zero (Term.Num 0)))
+                (let ((guard (lt x zero)))
+                  (let ((goal (unreach guard)))
+                    ; @requires(>= x 0) → assume (ge x 0); refute the guard (lt x 0) as contradictory
+                    (let ((pre (assume (ge x zero))))
+                      (match (refute pre guard)
+                        ((Option.Some proof) (term-eq (concl proof) goal))
+                        ((Option.None) false)))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "t1(trap) NEGATIVE: a trap guard NOT contradicted by the precondition is NOT unreachable — the trap STAYS"
+  (doc    "The explicit-trap soundness dual. If the trap guard is NOT contradicted by the precondition — here
+           the guard is `(lt x 0)` but the precondition is only `(ge x 5)`… actually a guard the precondition
+           does not refute: guard `(lt x 100)` under `@requires(>= x 0)` is SATISFIABLE (x in [0,100) hits
+           it), so `refute` (which recognizes only the exact `ge x 0` vs `lt x 0` contradiction) returns None
+           — the trap branch is NOT proven dead, so the explicit trap STAYS reachable. The entry confirms
+           `refute` of a non-contradictory guard yields None. Runs to `true`. Pins that a reachable explicit
+           trap is NOT certified away — @trap_free is sound (it never drops a trap whose guard it cannot
+           prove false).")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (ge      (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 2) a) b))
+      (def (lt      (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 7) a) b))
+      (def (unreach (: g Term)) (Term.Comb (Term.Const 10) g))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (refute (: th Thm) (: guard Term))
+        (match (concl th)
+          ((Term.Comb (Term.Comb (Term.Const 2) x) (Term.Num 0))
+            (match guard
+              ((Term.Comb (Term.Comb (Term.Const 7) gx) (Term.Num 0))
+                (if (term-eq x gx)
+                  (Option.Some (Thm.Seq (hyps th) (unreach guard)))
+                  (Option.None)))
+              (_ (Option.None))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq ge lt unreach concl hyps assume refute)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq ge lt unreach concl hyps assume refute))
+            (def (main)
+              (let ((x     (Term.Var 0))
+                    (zero  (Term.Num 0))
+                    (c100  (Term.Num 100)))
+                ; guard (lt x 100) — SATISFIABLE under (ge x 0) (x in [0,100)); NOT the ge-x-0/lt-x-0
+                ; contradiction refute recognizes → None → the trap stays reachable.
+                (let ((guard (lt x c100)))
+                  (let ((pre (assume (ge x zero))))
+                    (match (refute pre guard)
+                      ((Option.Some _) false)
+                      ((Option.None) true))))))
+            (export main)))
+  (output (: true Bool)))
+; ── TESTED tier: a `@test`-stacked `@ensures` is VALUE-TRANSPARENT and still checks the postcondition ─────
+; When `@test` is stacked on `@ensures`, the postcondition runs as a property test (v-property-testing's
+; lane): the rewrite injects `(let ((it BODY)) (if Q it (trap …)))` — `it` bound to the def's own result so
+; the predicate reads the computed value, TRAPPING when Q is false (a `@test` passes by returning, fails by
+; trapping). The pass branch returns `it` (the def's VALUE), NOT `unit` — so the def stays value-transparent
+; when ALSO called as an ordinary function, exactly like a bare `@test` def and a bare `@ensures` def both do
+; (neither changes the def's return value). These two pin both halves so neither regresses: value-transparency
+; (the def still returns its value) AND the test semantics (a false postcondition still traps). The stacked
+; rewrite returning `unit` on the pass branch was a surprise a breaker probe flagged; the fix returns `it`.
+
+(case "a stacked @test @ensures def called as a function returns its value, not unit (value-transparent)"
+  (doc    "A def carrying BOTH `@test` and `@ensures`, when CALLED as an ordinary function, returns its
+           computed value — NOT `unit`. `(dbl 5)` = 10, the same value a bare `@test` def or a bare
+           `@ensures` def returns (both are value-transparent). The TESTED-tier rewrite injects
+           `(let ((it BODY)) (if Q it (trap …)))`: the pass branch returns `it` (the def's result), so the
+           postcondition check does not swallow the value. A rewrite that returned `unit` on the pass branch
+           (the earlier behavior) would make the stacked form silently non-value-transparent — this pins it
+           does not. The true postcondition `(>= it 0)` holds for 10, so no trap; the value 10 flows out.")
+  (input  (do
+            (@ test (@ (ensures (>= it 0)) (def (dbl (: x Int64)) (+ x x))))
+            (def (main) (dbl 5))
+            (export main)))
+  (output (: 10 Int64)))
+
+(case "a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)"
+  (doc    "The test-semantics half of the value-transparency pin above: making the postcondition FALSE must
+           still TRAP (a `@test` fails by trapping). `(dbl 5)` = 10 and the postcondition `(< it 0)` — i.e.
+           `10 < 0` — is false, so the injected `(if Q it (trap …))` takes the trap arm, halting with the
+           canonical `unreachable` kind. Together with the value-transparent case above this pins that
+           returning `it` (not `unit`) on the PASS branch did NOT weaken the check: a true postcondition
+           yields the value, a false one still traps — the fix is value-transparent AND test-preserving.")
+  (input  (do
+            (@ test (@ (ensures (< it 0)) (def (dbl (: x Int64)) (+ x x))))
+            (def (main) (dbl 5))
+            (export main)))
+  (trap   "unreachable"))

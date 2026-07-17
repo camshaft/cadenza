@@ -1,0 +1,40 @@
+// PRESSURE-CEILING minimal repro (v-inference monomorphizer instantiation-pressure ceiling; concierge
+// asked v-iterators to narrow it). The FULL giter.cdz (92 @tests) declines when flatten is added; this
+// ~30-line program reproduces the SAME CDZ0201 with flatten + gmap at FOUR element instantiations.
+//
+// KEY FINDINGS (trunk, with flatten tie e7d78a566; run via `cdz test <this>`):
+//   - flatten (nested Iter(Iter a)) + gmap at 5 SCALAR element types (int/string/int->bool/bool->int/int->int)
+//     = PASSES. So it is NOT raw instantiation COUNT.
+//   - flatten + gmap at 4 types where ONE is a COMPOUND tuple element (gmap x => (x,x), a GIter((Int,Int)))
+//     = DECLINES CDZ0201 (this file). A COMPOUND/nested element instantiation is LOAD-BEARING: costs more
+//     monomorphization pressure than a scalar, and flatten's own nested Iter(Iter a) + a compound gmap
+//     element together tip the ceiling at ~4 instantiations.
+//   - flatten + gmap@{int,tuple} (3 tests) = PASSES; +string (4 tests, this file) = DECLINES. Tightest = 4.
+//   - Neither flatten-alone nor gmap-tuple-alone trips it; it is CUMULATIVE nested + compound pressure.
+// HYPOTHESIS: superlinear cost in force_monomorphize/type_specialize over the instantiation set where a
+// COMPOUND element multiplies per-instantiation cost (nested type structure), NOT a per-shape tie. Likely
+// shares a root with the parse-db compile-hang (heavy monomorphized set crossing a 2nd axis).
+type GIter = | Nil | Cons(a, GIter(a))
+def from-list(xs) = match xs with
+  | [] => GIter.Nil(unit)
+  | [h, .. t] => GIter.Cons(h, from-list(t))
+def count(it) = match it with
+  | GIter.Nil(_) => 0
+  | GIter.Cons(_, rest) => 1 + count(rest)
+def chain(a, b) = match a with
+  | GIter.Nil(_) => b
+  | GIter.Cons(h, rest) => GIter.Cons(h, chain(rest, b))
+def flatten(its) = match its with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(inner, rest) => chain(inner, flatten(rest))
+def gmap(it, f) = match it with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(h, rest) => GIter.Cons(f(h), gmap(rest, f))
+@test
+def fl() = if count(flatten(from-list([from-list([1,2]), from-list([3,4,5])]))) == 5 then unit else trap("fl")
+@test
+def a() = if count(gmap(from-list([1,2,3]), fn(x) => x + 1)) == 3 then unit else trap("a")
+@test
+def b() = if count(gmap(from-list(["a","b"]), fn(s) => String.concat(s,s))) == 2 then unit else trap("b")
+@test
+def t() = if count(gmap(from-list([1,2]), fn(x) => (x, x))) == 2 then unit else trap("t")

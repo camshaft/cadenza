@@ -36,13 +36,17 @@ const STARTER = DEFAULT_EXAMPLE.markdown;
 /// surface toggle are a later slice.
 const NOTEBOOK_SURFACE: Surface = "sexpr";
 
-/// IDE config for the shared editor (v-guide-infra's LazyCodeEditor): Cadenza lexical + semantic
-/// highlighting, inline squiggles, type-on-hover. The notebook is surface-pinned s-expr and the doc is
-/// self-contained, so `prepare` is identity (no wrapping) — the same shape /cad uses.
-const NOTEBOOK_IDE = {
-  surface: () => NOTEBOOK_SURFACE,
-  prepare: (t: string) => ({ compiled: t, wrapPrefixBytes: 0 }),
-};
+/// The "Edit source" pane edits the WHOLE notebook DOCUMENT — markdown prose interleaved with ```cadenza
+/// code fences — NOT a single Cadenza program. So it must NOT run the Cadenza language service (error
+/// squiggles / type-hover) over the doc: feeding a markdown+code blob to the compiler flags every prose
+/// line as a parse error → the whole doc renders red (operator IDE #13). We therefore leave `ide`
+/// UNSET on the doc editor — `CodeEditor`'s base still applies the LEXICAL Cadenza highlighter (harmless,
+/// and it colors the code fences), but no linter/hover treats the markdown as one program.
+///
+/// (The RICHER fix — per-cell editable code cells, each Cadenza-linted in its own sequential scope via
+/// `cellIde` (`./cellIde.ts`, which composes `assembleCell`→a `prepare` that maps spans onto the cell) —
+/// is a separate feature: it changes the notebook's interaction model from whole-doc editing to in-place
+/// cell editing. The `cellIde` seam is ready for it; flagged to v-notebook/concierge as a follow-up.)
 
 /// The notebook is a RATIONAL-mode app (operator-directed, app-level like the calculator): a bare numeric
 /// literal — integer OR float — grounds to Rational, so cells compute EXACTLY (right for scientific use).
@@ -226,7 +230,9 @@ export default function NotebookPage() {
         >
           {/* The shared IDE editor (v-guide-infra's LazyCodeEditor) — Cadenza highlighting + squiggles +
               type-on-hover, code-split behind React.lazy so it never touches first paint. */}
-          <LazyCodeEditor value={doc} onChange={setDoc} ide={NOTEBOOK_IDE} minHeight="16rem" />
+          {/* No `ide`: the doc is markdown+code, not one Cadenza program — see NOTEBOOK_IDE removal note.
+              CodeEditor's base still applies the lexical Cadenza highlighter (colors the code fences). */}
+          <LazyCodeEditor value={doc} onChange={setDoc} minHeight="16rem" />
         </div>
       )}
 

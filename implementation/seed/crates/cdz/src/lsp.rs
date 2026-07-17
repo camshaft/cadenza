@@ -40,7 +40,7 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{
     CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest,
-    DocumentSymbolRequest, GotoDefinition, HoverRequest, References, Request as _,
+    DocumentSymbolRequest, GotoDefinition, HoverRequest, References, Rename, Request as _,
     SemanticTokensFullRequest, Shutdown,
 };
 use lsp_types::{
@@ -51,9 +51,9 @@ use lsp_types::{
     DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbolParams,
     DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
     HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, Location,
-    MarkedString, Position, PublishDiagnosticsParams, Range, ReferenceParams, SemanticToken,
-    SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
-    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    MarkedString, Position, PublishDiagnosticsParams, Range, ReferenceParams, RenameParams,
+    SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SymbolKind,
     TextDocumentContentChangeEvent, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
     Uri, WorkDoneProgressOptions, WorkspaceEdit,
@@ -113,6 +113,10 @@ fn capabilities() -> ServerCapabilities {
         // subtle same-symbol highlight as you rest the caret on a name) — the single-document sibling of
         // find-references, backed by the same `UsesOf` query + shadowing guard.
         document_highlight_provider: Some(lsp_types::OneOf::Left(true)),
+        // Rename a symbol across its whole scope (F2) — every reference PLUS the declaration, as a single
+        // `WorkspaceEdit`. Backed by the same reference-finding path (package-aware + the same shadowing
+        // guard), so a rename touches exactly what find-references would, in every file it appears.
+        rename_provider: Some(lsp_types::OneOf::Left(true)),
         // The document outline (Ctrl-Shift-O / the breadcrumb bar) — every top-level declaration, backed
         // by the `Symbols` query.
         document_symbol_provider: Some(lsp_types::OneOf::Left(true)),
@@ -293,6 +297,11 @@ impl Server {
                 let result = self.document_highlight(&params);
                 self.send_response(Response::new_ok(id, result))
             }
+            Rename::METHOD => {
+                let (id, params) = cast_request::<Rename>(req)?;
+                let result = self.rename(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
             Completion::METHOD => {
                 let (id, params) = cast_request::<Completion>(req)?;
                 let result = self.completion(&params);
@@ -460,6 +469,61 @@ impl Server {
             })
             .collect();
         Some(highlights)
+    }
+
+    /// Answer a `textDocument/rename` (F2): replace EVERY occurrence of the symbol under the cursor — all
+    /// references PLUS the declaration — with `new_name`, as a single `WorkspaceEdit`. This is the WRITE
+    /// counterpart of `references`: it finds exactly the same occurrences (package-aware across the file
+    /// closure, under the same shadowing guard, always including the declaration since a rename must move
+    /// the def too) and emits one `TextEdit` per occurrence, grouped by file URI so a cross-file rename
+    /// edits every file at once. `None` when the document is not open or the cursor is not on a renamable
+    /// name (a literal, an unresolved reference) — the editor then declines the rename rather than
+    /// applying an empty edit.
+    #[allow(clippy::mutable_key_type)] // `WorkspaceEdit.changes` is the LSP-mandated `HashMap<Uri, _>`.
+    fn rename(&self, params: &RenameParams) -> Option<WorkspaceEdit> {
+        let pos = &params.text_document_position;
+        let uri = &pos.text_document.uri;
+        let doc = self.docs.get(uri)?;
+        let new_name = &params.new_name;
+        // The occurrences to rewrite: the SAME set find-references returns, with the declaration included
+        // (a rename must move the def site too). Package-aware first (a cross-file symbol), single-buffer
+        // otherwise — mirroring the `references` handler so a rename never edits less than references shows.
+        let locations =
+            if let Some(entry_path) = uri_to_path(uri).filter(|_| self.doc_declares_import(doc)) {
+                let open = self.open_resolver();
+                let refs = package_references_at(
+                    &entry_path.to_string_lossy(),
+                    &open,
+                    &doc.text,
+                    doc.is_ml,
+                    pos.position,
+                    true,
+                );
+                if refs.is_empty() {
+                    references_at(&doc.text, doc.is_ml, pos.position, uri, true)
+                } else {
+                    refs
+                }
+            } else {
+                references_at(&doc.text, doc.is_ml, pos.position, uri, true)
+            };
+        // Not on a renamable name → decline (None), so the editor doesn't apply an empty rename.
+        if locations.is_empty() {
+            return None;
+        }
+        // One `TextEdit` per occurrence, grouped by the file the occurrence lives in (a cross-file rename
+        // yields several `changes` entries; a single-buffer rename, one).
+        let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
+        for loc in locations {
+            changes.entry(loc.uri).or_default().push(TextEdit {
+                range: loc.range,
+                new_text: new_name.clone(),
+            });
+        }
+        Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        })
     }
 
     /// Answer a `textDocument/completion`: the names in scope at the cursor — local bindings (backed by
@@ -3575,6 +3639,116 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(true),
             "documentHighlightProvider must be advertised: {value}"
+        );
+    }
+
+    /// Build a `RenameParams` for the cursor at `pos` renaming to `new_name`.
+    fn rename_params(uri: &Uri, pos: Position, new_name: &str) -> RenameParams {
+        RenameParams {
+            text_document_position: lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                position: pos,
+            },
+            new_name: new_name.to_string(),
+            work_done_progress_params: Default::default(),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::mutable_key_type)] // `WorkspaceEdit.changes` is the LSP-mandated `HashMap<Uri, _>`.
+    fn rename_rewrites_every_occurrence_including_the_declaration() {
+        // Rename is the WRITE counterpart of references: every use PLUS the declaration is replaced. On
+        // `helper` (declared line 0, used lines 1 & 2), a rename from any occurrence edits all three.
+        let (mut server, _client) = memory_server();
+        let uri = test_uri();
+        let text = "def helper(x: Int64) -> Int64 = x\n\
+                    def a = helper(1)\n\
+                    def b = helper(2)";
+        server
+            .handle_notification(did_open_note(&uri, text))
+            .expect("didOpen dispatches");
+        // Cursor on the `helper` use in `a` (line 1, col 8).
+        let edit = server
+            .rename(&rename_params(&uri, Position::new(1, 8), "worker"))
+            .expect("a workspace edit");
+        let changes = edit.changes.expect("changes present");
+        let edits = changes.get(&uri).expect("edits for this file");
+        // Declaration (line 0) + both uses (lines 1, 2) = three edits, each inserting the new name.
+        let lines: Vec<u32> = edits.iter().map(|e| e.range.start.line).collect();
+        assert!(
+            lines.contains(&0) && lines.contains(&1) && lines.contains(&2),
+            "declaration + both uses rewritten: {lines:?}"
+        );
+        assert!(
+            edits.iter().all(|e| e.new_text == "worker"),
+            "every edit inserts the new name: {edits:?}"
+        );
+    }
+
+    #[test]
+    fn rename_off_a_name_is_none_so_the_editor_declines() {
+        // A cursor on a literal (not a renamable name) yields None — the editor declines the rename
+        // rather than applying an empty WorkspaceEdit.
+        let (mut server, _client) = memory_server();
+        let uri = test_uri();
+        server
+            .handle_notification(did_open_note(&uri, "def answer = 42"))
+            .expect("didOpen dispatches");
+        // Cursor on the `42` literal (col 13).
+        assert!(
+            server
+                .rename(&rename_params(&uri, Position::new(0, 13), "x"))
+                .is_none(),
+            "rename off a name must be None (editor declines)"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::mutable_key_type)] // `WorkspaceEdit.changes` is the LSP-mandated `HashMap<Uri, _>`.
+    fn rename_on_a_local_shadowing_a_top_level_does_not_touch_the_top_level() {
+        // The same shadowing guard references uses must apply to rename: renaming a LOCAL binder that
+        // shadows a top-level of the same spelling must NOT rewrite the unrelated top-level's occurrences.
+        // `helper` is a top-level def AND a parameter of `g` that shadows it.
+        let (mut server, _client) = memory_server();
+        let uri = test_uri();
+        let text = "def helper(x: Int64) -> Int64 = x\n\
+                    def g(helper: Int64) -> Int64 = helper\n\
+                    def m = helper(1)";
+        server
+            .handle_notification(did_open_note(&uri, text))
+            .expect("didOpen dispatches");
+        // Cursor on the LOCAL `helper` use in g's body (line 1). Renaming it must not edit the top-level
+        // def (line 0) or its use in `m` (line 2) — the guard returns the local scope only (empty here,
+        // since a node-keyed local-uses query is a later increment), so the rename declines rather than
+        // wrongly rewriting the top-level.
+        let text_line1 = "def g(helper: Int64) -> Int64 = ";
+        let edit = server.rename(&rename_params(
+            &uri,
+            Position::new(1, text_line1.len() as u32),
+            "z",
+        ));
+        if let Some(edit) = edit {
+            let changes = edit.changes.unwrap_or_default();
+            let all_lines: Vec<u32> = changes
+                .values()
+                .flat_map(|es| es.iter().map(|e| e.range.start.line))
+                .collect();
+            assert!(
+                !all_lines.contains(&2),
+                "the top-level use on line 2 must NOT be renamed by a local rename: {all_lines:?}"
+            );
+        }
+        // (None is also acceptable — declining a local rename is correct when the local-uses query is not
+        // yet node-keyed; the invariant is simply that the top-level is never wrongly rewritten.)
+    }
+
+    #[test]
+    fn rename_capability_is_advertised() {
+        let value = serde_json::to_value(capabilities()).expect("serializes");
+        assert_eq!(
+            value.get("renameProvider").and_then(|v| v.as_bool()),
+            Some(true),
+            "renameProvider must be advertised: {value}"
         );
     }
 

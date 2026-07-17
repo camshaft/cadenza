@@ -19420,6 +19420,29 @@ mod match_engine {
             wrap.message,
             wrap.fix
         );
+        // A SHARED type variable an EARLIER argument already solved renders CONCRETELY, not as `_`. In
+        // `(def (pair (: t Type) (: x t) (: y t)) x)` the two `t`-annotated params share one var; typing the
+        // arg for `x` binds it, so the mismatch report for `y` must show that SOLVED type — the call-site
+        // unify now applies the accumulated substitution before rendering the expected type. `(pair Int64 1
+        // true)`: `x = 1` pins `t`'s var to Int64, so `y`'s expected type is Int64, not the unsolved-`Ty::Var`
+        // "_" it used to print ("a value of type `_` is expected here").
+        let shared = reject_full(
+            "(module m (def (pair (: t Type) (: x t) (: y t)) x) (def (g) (pair Int64 1 true)) (export g))",
+        )
+        .expect("a sibling-param mismatch on a shared type var rejects");
+        assert!(
+            shared
+                .message
+                .contains("parameter `y` is a Bool, but a value of type Int64 is expected here"),
+            "the shared var renders the type the sibling arg solved (Int64), not `_`: {}",
+            shared.message
+        );
+        assert!(
+            !shared.message.contains("value of type `_`")
+                && !shared.message.contains("value of type _"),
+            "no unsolved-var `_` in the expected-type render: {}",
+            shared.message
+        );
     }
 
     #[test]
@@ -71352,6 +71375,121 @@ mod cross_component_oracle {
     // the still-open String-entrypoint-param cell #7 — which the real loop does anyway (it builds the
     // prompt from context, never takes it as an export param).
     // ------------------------------------------------------------------------------------------------
+    // ------------------------------------------------------------------------------------------------
+    // The AGENT-KERNEL result shape (v-agent-harness FORK2, operator-greenlit 2026-07-17): the minimal
+    // event-agnostic kernel is `interpret : (List Event, Event) -> (List HostOp)` where `HostOp` is a SUM
+    // (Append/Exec/Http/Log). The kernel is a PROVIDER component; its result is consumed by a Cadenza PEER
+    // executor over the ONE shared value-heap runtime — NOT a foreign host. So the `(List (Sum …))` result
+    // crosses PEER→PEER as an opaque `u32` handle via `extern_abi_val_type` (a `List` → U32 regardless of
+    // element type — the element sum is never marshaled; the shared runtime owns the value). This PROBE
+    // settles v-agent-harness's question — "does a `(List (Sum …))` provider result already round-trip, or
+    // is there a List-of-Sum gap?" — by CONTENT: a provider exporting a fn returning a heap-built
+    // `(list (Append 1) (Exec 2))` must compile + validate with the result as a boundary handle. If this
+    // passes, the agent-kernel result path needs NO host-ABI widening (the peer path already serves it);
+    // the only true host boundary is the executor's broad primitives (exec/http/log — scalar/String args),
+    // already expressible. A `List` argument would be the separate inbound direction (v-peer-linking).
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_provider_returning_a_list_of_sum_crosses_as_a_peer_handle() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // A provider whose export `interpret` returns a `(List HostOp)` — the agent-kernel result shape.
+        // `HostOp` is a user SUM; the body ignores its scalar arg and returns a genuine heap-built list of
+        // two distinct variants (so the result is a real runtime handle, not a const-folded immediate).
+        let provider = compile_provider(
+            "(do (type HostOp (Append Int64) (Exec Int64)) \
+               (def (interpret (: ev Int64)) (list (Append ev) (Exec 2))) \
+               (export interpret))",
+            "cadenza:agent/kernel",
+        );
+        let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        v.validate_all(&provider)
+            .expect("a provider returning (List (Sum …)) validates — the peer path serves it");
+        // It builds a compound, so it imports the shared value-heap runtime (the handle it mints is
+        // meaningful to a peer executor) — confirming the result crosses as a runtime handle, not marshaled.
+        assert!(
+            String::from_utf8_lossy(&provider).contains(&import_name),
+            "the kernel provider imports the value-heap runtime (its (List HostOp) result is a heap handle)"
+        );
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // The agent-kernel FULL LOOP end-to-end (v-agent-harness K0, their `interpret.cdz` shape): a PROVIDER
+    // `interpret` returns a BRANCH-BUILT `(List HostOp)` (HostOp a sum with String payloads — Append/Exec/
+    // Http/Noop), and a PEER EXECUTOR consumes the crossed list: `List.len` it, and `List.at 0` + match the
+    // first variant, reducing to a scalar. This goes beyond the compile+validate probe above — it RUNS the
+    // provider+peer loop under wasmtime over the ONE shared runtime, confirming the `(List (Sum String))`
+    // handle the kernel mints is consumed by a Cadenza peer that pattern-matches each HostOp (exactly the
+    // executor shim v-agent-harness builds). Answers their "does provider + peer executor consuming the
+    // (List HostOp) handle work as-is?" — YES, no host-ABI widening. Args kept SCALAR (the result direction
+    // is what K0 blocked on; the compound-ARG inbound is the separate v-peer-linking cell). `interpret(1,_)`
+    // takes the Append/Exec branch → a 2-element list; the executor returns `List.len` = 2.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn the_agent_kernel_list_of_hostop_result_runs_through_a_peer_executor() {
+        use crate::testkit::parse;
+        // PROVIDER (the kernel): `interpret(kind, turn)` returns a branch-built (List HostOp). HostOp is a
+        // sum with String payloads (Append/Exec/Http/Noop — the executor's op vocabulary). kind==1 → the
+        // 2-op [Append, Exec] plan; else → the 1-op [Noop] plan. Branch-built so the list ESCAPES as a real
+        // runtime handle (not const-folded), exactly like v-agent-harness's interpret.cdz.
+        let provider = compile_provider(
+            "(do (type HostOp (Append String) (Exec String) (Http String) (Noop Int64)) \
+               (def (interpret (: kind Int64) (: turn Int64)) \
+                 (if (= kind 1) (list (Append \"a\") (Exec \"e\")) (list (Noop 0)))) \
+               (export interpret))",
+            "cadenza:agent/kernel",
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[agent-kernel] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:agent/kernel".to_string(),
+        }];
+        // PEER EXECUTOR (consumer): binds the kernel, performs `interpret`, and consumes the crossed
+        // (List HostOp) handle — `List.len` reduces it to a scalar (the executor would instead iterate +
+        // dispatch each HostOp to a broad primitive, but len proves the handle crossed + is a live list).
+        let src = "(do \
+            (type HostOp (Append String) (Exec String) (Http String) (Noop Int64)) \
+            (effect K (op interpret (-> Int64 Int64 (List HostOp)))) \
+            (bind K \"cadenza:agent/kernel\") \
+            (def (main (: kind Int64)) (host (K) (List.len (K.interpret kind 0)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)));
+        let opts = |kind: &str| cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![kind.to_string()],
+            runtime: Some(runtime.clone()),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match consumer {
+            Ok(consumer) => {
+                // kind=1 → [Append, Exec] → List.len = 2. The (List (Sum String)) crossed peer→peer as a
+                // handle and the executor read its length over the shared runtime.
+                match cdz_run::run_with_peers(&consumer, &peers, &opts("1"))
+                    .expect("the agent-kernel (List HostOp) result crosses to a peer executor")
+                {
+                    cdz_run::Outcome::Value(s) => assert_eq!(
+                        s, "2",
+                        "the peer executor consumes the crossed (List HostOp): [Append, Exec] → len 2"
+                    ),
+                    cdz_run::Outcome::Trap(t) => panic!("agent-kernel loop trapped: {t}"),
+                }
+            }
+            // If the CONSUMER side (a peer-bound op whose result type is a (List (Sum …))) is not yet
+            // expressible, that is a v-peer-linking gap on the effect-op RESULT-TYPE surface, NOT the
+            // provider path (which the probe above proves works). Surface it clearly rather than a silent
+            // skip — this is the exact seam v-agent-harness needs, so a decline here is actionable signal.
+            Err(d) => panic!(
+                "peer CONSUMER of a (List (Sum …)) op result did not compile: {} [{:?}] — \
+                 the provider path validates (see probe); this is the consumer-side op-result-type seam",
+                d.message, d.code
+            ),
+        }
+    }
+
     #[test]
     fn u8_a_string_argument_crosses_to_a_peer() {
         use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};

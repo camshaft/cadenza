@@ -116,3 +116,37 @@ fn doc_of_a_definition_whose_doc_text_looks_like_the_sentinel_still_succeeds() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn doc_json_distinguishes_the_three_total_outcomes() {
+    // `--json` emits `{name, exists, documented, doc}` so a tool distinguishes documented / undocumented /
+    // unknown without parsing the prose. Parsed (not substring-checked), across all three outcomes.
+    let f = temp_module("json");
+    let path = f.to_str().unwrap();
+
+    // (1) documented → exists+documented true, doc carries the text.
+    let (ok, out, err) = run(&["doc", "documented", path, "--json"]);
+    assert!(ok, "documented doc --json succeeds: {err}{out}");
+    let v: serde_json::Value =
+        serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("valid JSON ({e}): {out}"));
+    assert_eq!(v["name"], "documented");
+    assert_eq!(v["exists"], true, "a real def exists: {out}");
+    assert_eq!(v["documented"], true, "it carries doc: {out}");
+    assert_eq!(v["doc"], "the doc text", "the doc text is carried: {out}");
+
+    // (2) real but undocumented → exists true, documented false, doc null.
+    let (ok, out, _e) = run(&["doc", "plain", path, "--json"]);
+    assert!(ok, "an undocumented-but-real def still succeeds: {out}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("valid JSON");
+    assert_eq!(v["exists"], true, "the def exists: {out}");
+    assert_eq!(v["documented"], false, "but is undocumented: {out}");
+    assert!(v["doc"].is_null(), "doc is null when undocumented: {out}");
+
+    // (3) unknown name → exists false, non-zero exit, doc null.
+    let (ok, out, _e) = run(&["doc", "ghost", path, "--json"]);
+    assert!(!ok, "an unresolvable name is a non-zero exit: {out}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("valid JSON");
+    assert_eq!(v["exists"], false, "an unknown name does not exist: {out}");
+    assert!(v["doc"].is_null(), "doc is null for an unknown name: {out}");
+    let _ = std::fs::remove_dir_all(f.parent().unwrap());
+}

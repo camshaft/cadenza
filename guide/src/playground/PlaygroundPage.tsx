@@ -396,8 +396,10 @@ export default function PlaygroundPage() {
         </Panel>
       </PanelGroup>
 
-      {/* Status bar */}
-      <div className="flex items-center gap-4 border-t border-slate-800 px-3 py-1 text-[11px] text-slate-500">
+      {/* Status bar — a dense 11px IDE info strip (Ln/Col, error/warning counts, footer credits). Its
+          links are NOT primary controls (an IDE status-line pattern), so they're exempt from the 44px
+          mobile tap-target floor — marked for the check:visual `tapTargetsExcept`. */}
+      <div data-testid="status-bar" className="flex items-center gap-4 border-t border-slate-800 px-3 py-1 text-[11px] text-slate-500">
         <span>
           Ln {cursor.line}, Col {cursor.col}
         </span>

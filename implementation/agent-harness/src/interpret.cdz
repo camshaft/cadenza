@@ -1,0 +1,66 @@
+/// interpret.cdz — the minimal-kernel INTERPRET program, authored IN Cadenza (re-charter K0 repro).
+///
+/// The operator's minimal-kernel mandate (implementation/design/DESIGN-agent-runtime-minimal-kernel.md +
+/// -broad-primitives.md): the Rust host understands NO events. A self-modifiable CADENZA program interprets
+/// the event log and returns the host-ops to run; the tiny host just executes them. This is the FIRST such
+/// program — the shape the daemon drives: `interpret : (log tail, new event) -> (List HostOp)`.
+///
+/// It is also the K0 repro v-effects asked for. v-effects verified (their probe MR 836493184) that a
+/// `(List (Sum …))` PROVIDER RESULT already crosses to a Cadenza-peer consumer as an opaque runtime handle
+/// via `extern_abi_val_type` — NO host-ABI widening needed for the RESULT direction. So the kernel's
+/// interpret can return `(List HostOp)` today, as long as it compiles as a provider and its consumer is the
+/// Cadenza executor peer. The still-to-verify bit is the compound ARG inbound (`List Event` INTO interpret —
+/// v-peer-linking's arg-side); this module keeps the args SCALAR for now (a turn id + an event-kind tag) so
+/// the RESULT path — the one we were blocked on — is gate-proven independent of the arg-side.
+///
+/// HostOp is the BROAD-primitive surface (forks 1+3 ruling): the ops are generic high-reach primitives
+/// (exec / http / log-append), NOT a narrow agent API — Cadenza composes all behavior from these. Modeled
+/// with scalar/String fields here (already-expressible across the boundary); the real payloads (Bytes) join
+/// when v-peer-linking confirms the compound-arg inbound.
+
+/// A host operation the interpret program asks the tiny kernel to run — the whole "syscall" surface, broad
+/// and generic (operator forks 1+3: max reach per primitive, so no new host op is ever needed). Scalar/
+/// String fields for now (the boundary-proven subset). `Append` = the one log write; `Exec` = run any host
+/// command (the universal escape hatch); `Http` = any network call.
+type HostOp =
+  | Append(String)
+  | Exec(String)
+  | Http(String)
+  | Noop
+
+/// INTERPRET one landed event — the kernel's whole brain, in Cadenza. Given the new event's `kind` tag (a
+/// scalar stand-in for the event; the real `(tail, event)` compound args land once v-peer-linking confirms
+/// the inbound direction) and a `turn` id, decide the host-ops to run. This models the reactive core: a
+/// "message" event (kind 1) → log an ack + exec a handler; a "tick" (kind 2) → an http poll; anything else
+/// → do nothing. The RESULT is a `(List HostOp)` — the compound that crosses to the executor peer as a
+/// handle (v-effects: already supported). Pure + total: same inputs → same op list (replayable).
+def interpret(kind: Int64, turn: Int64) =
+  if kind == 1 then
+    [Append("ack"), Exec("handle-message")]
+  else if kind == 2 then
+    [Http("poll")]
+  else
+    [Noop]
+
+/// The number of ops interpret schedules for a given event — a scalar the boundary can carry today, so the
+/// suite gate-proves interpret's LOGIC (which ops fire per event kind) even before the full provider+peer
+/// loop is wired. (`List.len` over the returned `(List HostOp)`.)
+def op-count(kind: Int64, turn: Int64) = List.len(interpret(kind, turn))
+
+@test def a_message_event_schedules_ack_then_handler() =
+  op-count(1, 0) == 2
+
+@test def a_tick_event_schedules_one_poll() =
+  op-count(2, 0) == 1
+
+@test def an_unknown_event_schedules_only_noop() =
+  op-count(9, 0) == 1
+
+/// The FIRST op for a message event is the log-append (ack) — pins the ORDER interpret emits (the executor
+/// runs the list in order, so order is semantically load-bearing: ack before the handler runs).
+@test def a_message_appends_before_it_execs() =
+  match interpret(1, 0) with
+  | [first, .. _] => (match first with
+    | HostOp.Append(_) => true
+    | _ => false)
+  | [] => false

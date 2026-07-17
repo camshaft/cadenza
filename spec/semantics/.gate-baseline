@@ -1306,6 +1306,7 @@ pass	a negative zero in a record field is distinct from positive zero
 pass	a negative zero nested in a tuple is distinct from positive zero
 pass	a negative-power SI prefix converts over Float
 pass	a negative-power SI prefix is an exact rational scale
+pass	a nested @param annotation in a value position is rejected as a misplaced annotation
 pass	a nested Ast.List match falls through when the inner leaf variant differs
 pass	a nested Ast.List match over a constant quote reads the deep leaf at the right depth
 pass	a nested OR by the same constant collapses to a single OR
@@ -1731,6 +1732,7 @@ pass	a runtime Rational built from a parameter compares by its exact value
 pass	a runtime Rational comparison of a parameter is false when it should be
 pass	a runtime Result carrying a String error is matched
 pass	a runtime Result constructed from a condition selects its Ok or Err arm
+pass	a runtime SIGNED nibble truncation sign-extends from the top kept bit
 pass	a runtime String match and its (= s literal) if-chain agree on the DEFAULT fall-through arm
 pass	a runtime String match on a hit arm agrees with its desugared (= s literal) if-chain
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
@@ -2012,6 +2014,8 @@ pass	a spliced boolean drives an evaluated conditional through the lifted leaf
 pass	a spliced string participates in an evaluated equality
 pass	a squared BigInt-inner quantity added to a linear one is a dimension mismatch
 pass	a squared quantity does not add to a linear quantity
+pass	a stacked @test @ensures def called as a function returns its value, not unit (value-transparent)
+pass	a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)
 pass	a state-advancing helper called before a later read threads its write through the continuation
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller
@@ -3345,6 +3349,8 @@ pass	t1(match) NEGATIVE: a NON-total arm set (one Bool arm missing) does NOT dis
 pass	t1(match): the exhaustiveness obligation COVERS is DISCHARGED for a TOTAL arm set — the match cannot trap
 pass	t1(oob) NEGATIVE: with only the LOWER bound (>= i 0), the out-of-bounds obligation is NOT complete — the trap STAYS
 pass	t1(oob): the out-of-bounds obligation (0<=i) AND (i<len) is DISCHARGED from the two bound preconditions
+pass	t1(trap) NEGATIVE: a trap guard NOT contradicted by the precondition is NOT unreachable — the trap STAYS
+pass	t1(trap): an explicit trap under guard (lt x 0) is UNREACHABLE when @requires(>= x 0) — the trap is dead
 pass	take-while composed after a map threads both transformers' closures
 pass	take-while excludes the failing element and everything after it (content, not just count)
 pass	take-while where every element satisfies the predicate keeps the whole run
