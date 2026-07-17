@@ -57,6 +57,9 @@ const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
 // Mirror the app run path's scalar formatting (a whole-number Float gets its `.0` back from the static
 // result type) so the harness validates the SAME rendered text the browser shows.
 const { formatScalarByType, resultTypeOf } = await import(join(guideRoot, "src/runner/scalarFormat.ts"));
+// The shared assert prelude (assert/assert-eq/assert-ne via trap) prepended to a mode="test" example — the
+// SAME prepend <Runnable mode="test"> does, so the harness gates exactly what ships. Type-only imports erase.
+const { assertPreludeFor } = await import(join(guideRoot, "src/components/assertPrelude.ts"));
 
 // ---- wrapModule / stripModule: the ONE real implementation, imported from the guide source ----
 // Previously this harness carried a hand-copy of these — which silently DRIFTED from the app (a bug-(C)
@@ -175,9 +178,12 @@ async function runTestExports(componentBytes, testNames) {
 async function checkTestProgram(ex, where) {
   const brief = ex.snippet.replace(/\n/g, " ").slice(0, 80);
   const surface = ex.surface ?? "sexpr";
+  // Prepend the shared assert prelude unless the example opted out (prelude={false}) — mirrors <Runnable
+  // mode="test">, so the gate compiles+runs exactly what the reader's example runs.
+  const program = ex.prelude ? `${assertPreludeFor(surface)}\n${ex.snippet}` : ex.snippet;
   let r;
   try {
-    r = compile_tests(ex.snippet, surface);
+    r = compile_tests(program, surface);
   } catch (e) {
     return `${ex.file} [test] (${where}): parse error — ${String(e.message || e).slice(0, 80)}\n    ${brief}`;
   }
@@ -237,7 +243,9 @@ function extractExamples(tsx, file) {
       // each @test export and assert the expected pass/fail: default every @test PASSES; `expect="error"`
       // means at least one @test is meant to FAIL (a teaching example demonstrating a failing test).
       const isTest = /mode="test"/.test(attrs) || /mode=\{"test"\}/.test(attrs);
-      if (source != null) out.push({ file, kind, snippet: source, expect, expected: null, noWrap, isTest });
+      // Default the shared assert prelude ON (matches <Runnable> prelude default); `prelude={false}` opts out.
+      const prelude = isTest && !/prelude=\{false\}/.test(attrs);
+      if (source != null) out.push({ file, kind, snippet: source, expect, expected: null, noWrap, isTest, prelude });
     } else {
       // Exercise: check the SOLUTION (the starter has a `?` hole by design).
       const solution = grab("solution");

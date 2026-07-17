@@ -44,8 +44,13 @@ export function extractTable(rendered: string): TableResult {
     return { ok: false, reason: `unparseable value: ${(e as Error).message}` };
   }
 
+  // A BARE record (not wrapped in a list) → a single-row table: its fields are the columns, one row of
+  // values. This is the natural "one labeled row" / struct-of-results display, so a cell can return a
+  // record directly without wrapping it in a list.
+  if (head(node) === "record") return recordTable([node]);
+
   if (head(node) !== "list") {
-    return { ok: false, reason: "value is not a `list` — a table cell must return a List of rows" };
+    return { ok: false, reason: "value is not a `list` or `record` — a table cell must return one of those" };
   }
   const elems = (node as { list: Node[] }).list.slice(1); // drop the `list` head
   if (elems.length === 0) return { ok: true, table: { columns: [], rows: [] } };

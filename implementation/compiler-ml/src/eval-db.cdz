@@ -34,13 +34,16 @@ def eval-core(c: Core, env: Map(Int64, Int64)) = match c with
         | Option.Some(v) => eval-core(body, Map.insert(env, binder, v))
         | Option.None(_) => Option.None(unit))
 
-/// Apply a binary op (43 +, 45 -, 42 *, 47 /). Division by zero → `None` (a total, trap-free evaluator).
+/// Apply a binary op (43 +, 45 -, 42 *, 47 /, 60 `<`, 61 `==`). Comparisons yield a Bool encoded as 0/1
+/// (Core represents Bool as an Int). Division by zero → `None` (a total, trap-free evaluator).
 def eval-bin(op: Int64, a: Int64, b: Int64) =
   (if op == 43 then Option.Some(a + b)
    else (if op == 45 then Option.Some(a - b)
    else (if op == 42 then Option.Some(a * b)
    else (if op == 47 then (if b == 0 then Option.None(unit) else Option.Some(a / b))
-   else Option.None(unit)))))
+   else (if op == 60 then Option.Some(if a < b then 1 else 0)
+   else (if op == 61 then Option.Some(if a == b then 1 else 0)
+   else Option.None(unit)))))))
 
 /// Evaluate a lowered tree from `root` with an empty env — `Some value` for a well-typed program, `None` if
 /// it had no core form (ill-typed) or hit a malformed Core.
@@ -62,6 +65,8 @@ def times() = Tok.TOp(42)
 def letkw() = Tok.TLet
 def inkw() = Tok.TIn
 def eq() = Tok.TEq
+def lt() = Tok.TOp(60)
+def eqop() = Tok.TOp(61)
 
 /// `let x = 2 in x * 3 + 1` as tokens — THE MILESTONE program.
 def milestone-tokens() = [letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]
@@ -113,5 +118,35 @@ def ev-milestone-runs-to-seven() =
   // ★ THE RE-CHARTER MILESTONE ★ — `let x = 2 in x * 3 + 1` goes source → parse → resolve → infer → lower →
   // run, all through the lazy query DB, and produces 7 (x=2, 2*3=6, 6+1=7).
   (match run-milestone() with | Option.Some(v) => (if v == 7 then unit else trap("MILESTONE: let x=2 in x*3+1 = 7")) | Option.None(_) => trap("MILESTONE must run to a value"))
+
+@test
+def ev-less-than-true() =
+  // 1 < 2  →  1 (Bool true encoded as 1).
+  (match run([n(1), lt(), n(2)]) with | Option.Some(v) => (if v == 1 then unit else trap("1<2 = 1")) | Option.None(_) => trap("comparison runs"))
+
+@test
+def ev-less-than-false() =
+  // 5 < 2  →  0 (Bool false).
+  (match run([n(5), lt(), n(2)]) with | Option.Some(v) => (if v == 0 then unit else trap("5<2 = 0")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-equality-true() =
+  // 3 == 3  →  1.
+  (match run([n(3), eqop(), n(3)]) with | Option.Some(v) => (if v == 1 then unit else trap("3==3 = 1")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-equality-false() =
+  // 3 == 4  →  0.
+  (match run([n(3), eqop(), n(4)]) with | Option.Some(v) => (if v == 0 then unit else trap("3==4 = 0")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-comparison-of-arith() =
+  // 1 + 2 < 4  →  (3 < 4) = 1 (comparison looser than additive; the whole thing runs to a Bool).
+  (match run([n(1), plus(), n(2), lt(), n(4)]) with | Option.Some(v) => (if v == 1 then unit else trap("1+2<4 = 1")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-let-bound-bool() =
+  // let b = 2 < 3 in b  →  1 (a Bool-valued binding flows through the env).
+  (match run([letkw(), var(1), eq(), n(2), lt(), n(3), inkw(), var(1)]) with | Option.Some(v) => (if v == 1 then unit else trap("let b = 2<3 in b = 1")) | Option.None(_) => trap("runs"))
 
 export { eval-core, eval-bin, eval-tree, run, milestone-tokens, run-milestone }

@@ -1475,21 +1475,23 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // `Core::StrToBytes` is the "canonicalize a runtime text leaf" op. On the wasm side it backs THREE
         // surface ops (all a `bytes-compact` byte-rope flatten): `String.to-bytes` (String → Bytes),
         // `Symbol.of` (String → Symbol, intern), and `Symbol.to-string` (Symbol → String). On the RUST
-        // backend only the `String.to-bytes` case is representable today: `String::into_bytes` (total,
-        // no-op-cost, yields the `Vec<u8>` the `Ty::Bytes` result maps to). A Symbol-typed result OR a
-        // Symbol operand has NO rust rep yet (Symbol → `None` in the type map — a separate v-rust-backend
-        // increment), so it declines cleanly here rather than emitting a `Vec<u8>`/`String` mismatch. The
-        // wasm side emits all three; a runtime-Symbol program is simply rust-`todo` until the rep lands.
+        // native rep:
+        //  - `String.to-bytes` (result `Ty::Bytes`) → `String::into_bytes` → the `Vec<u8>` the result maps to.
+        //  - a Symbol↔String retag (`Symbol.of`: result `Ty::Symbol`; `Symbol.to-string`: Symbol operand,
+        //    result `Ty::String`) — BOTH sides map to Rust's `String`, and a `String` is ALREADY a flat
+        //    canonical leaf (the wasm `bytes-compact` rope-flatten has no analogue on the native rep), so the
+        //    retag is the IDENTITY on the operand's `String` value — emit it unchanged. (Interning canonicalizes
+        //    by CONTENT; two equal-content Strings are already `==`, so no runtime intern table is needed to
+        //    match the value semantics — the same reason `Bytes.compact` is a no-op here.)
         Core::StrToBytes { string } => {
-            if matches!(type_of(db, id).strip_nominal(), Ty::Symbol)
-                || matches!(type_of(db, string).strip_nominal(), Ty::Symbol)
-            {
-                return Err(Reject::decline(
-                    "a runtime Symbol conversion has no rust representation yet (String↔Symbol retag is a later rust-backend increment)",
-                ));
-            }
             let s = emit(db, string, env, ctx)?;
-            Ok(format!("({s}).into_bytes()"))
+            // A Bytes RESULT is the byte view (`into_bytes`); a Symbol/String result (a Symbol retag) keeps
+            // the `String` value as-is.
+            if matches!(type_of(db, id).strip_nominal(), Ty::Bytes) {
+                Ok(format!("({s}).into_bytes()"))
+            } else {
+                Ok(s)
+            }
         }
         // A SUM VALUE CONSTRUCTION → the Rust enum variant `<Enum>::<Variant>(payloads…)`. The enum +
         // variant names come from the node's solved `Ty::Sum` declaration at the disc's index (the

@@ -99,12 +99,27 @@ def add-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
   (match parse-term(ts, i + 1, tree) with | (rhs, j, t1) =>
     (match add-node(t1, Node.NBin(op, lhs, rhs)) with | (id, t2) => parse-expr-tail(ts, j, id, t2)))
 
-/// parse-any: the top of the grammar — a `let NAME = expr in expr` binding, or an additive expression. `let`
+/// parse-any: the top of the grammar — a `let NAME = expr in expr` binding, or a comparison expression. `let`
 /// nests `parse-any` in both the value and body positions, so `let a = 1 in let b = 2 in a + b` parses and
 /// the body is itself a let node (nested scopes the resolve column will walk by id).
 def parse-any(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
   | Tok.TLet => parse-let(ts, i + 1, tree)
-  | _ => parse-expr(ts, i, tree)
+  | _ => parse-cmp(ts, i, tree)
+
+/// parse-cmp: the comparison layer — `expr [(`<`|`==`) expr]`, looser than `+`/`-` (so `1 + 2 < 3 + 4` groups
+/// the additions under the comparison) and NON-associative (one comparison; a trailing second is ignored,
+/// matching the "chained comparison is not an expression" stance). Op codes 60 = `<`, 61 = `==` (distinct
+/// from `TEq`, which is only the let-binding `=`). A comparison builds an `NBin` just like arithmetic; infer
+/// gives it `TBool` while arithmetic `NBin`s stay `TInt`.
+def parse-cmp(ts: List(Tok), i: Int64, tree: Tree) =
+  (match parse-expr(ts, i, tree) with | (lhs, j, t1) =>
+    (let op = op-code(tok-at(ts, j)) in
+     if op == 60 then cmp-tail(ts, j, lhs, t1, 60)
+     else (if op == 61 then cmp-tail(ts, j, lhs, t1, 61) else (lhs, j, t1))))
+
+def cmp-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
+  (match parse-expr(ts, i + 1, tree) with | (rhs, j, t1) =>
+    (match add-node(t1, Node.NBin(op, lhs, rhs)) with | (id, t2) => (id, j, t2)))
 
 /// parse-let: after the `let` keyword — `NAME = <any> in <any>`, building an `NLet(nameId, valueId, bodyId)`.
 /// Tolerates a missing `=`/`in` (error recovery: parse straight through). The value and body are children BY
@@ -149,6 +164,8 @@ def times() = Tok.TOp(42)
 def letkw() = Tok.TLet
 def inkw() = Tok.TIn
 def eq() = Tok.TEq
+def lt() = Tok.TOp(60)      // `<`
+def eqop() = Tok.TOp(61)    // `==` (comparison, distinct from the let-binding TEq)
 
 @test
 def pd-single-literal() =
@@ -268,5 +285,26 @@ def pd-let-in-parens() =
       | Option.Some(Node.NBin(op, l, _)) =>
         (if op == 42 then (if is-let(tree, l, 1) then unit else trap("* 's left child is a let")) else trap("root is * "))
       | _ => trap("root is a Bin")))
+
+@test
+def pd-comparison-lt() =
+  // "1 < 2" → root is an NBin with op 60 (<).
+  (match parse-tokens([n(1), lt(), n(2)]) with | (root, tree) =>
+    (if is-bin-op(tree, root, 60) then unit else trap("root is a < Bin")))
+
+@test
+def pd-comparison-looser-than-arith() =
+  // "1 + 2 < 3" → root is `<` (op 60) whose LEFT child is a `+` Bin (comparison is looser than additive).
+  (match parse-tokens([n(1), plus(), n(2), lt(), n(3)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NBin(op, l, _)) =>
+        (if op == 60 then (if is-bin-op(tree, l, 43) then unit else trap("< 's left is a + Bin")) else trap("root is <"))
+      | _ => trap("root is a Bin")))
+
+@test
+def pd-equality-op() =
+  // "3 == 3" → root is an NBin with op 61 (==), distinct from the let-binding TEq.
+  (match parse-tokens([n(3), eqop(), n(3)]) with | (root, tree) =>
+    (if is-bin-op(tree, root, 61) then unit else trap("root is a == Bin")))
 
 export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, parse-tokens, is-bin-op, is-lit, is-var, is-let }

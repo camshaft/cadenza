@@ -1881,3 +1881,39 @@
            `Unit.^` (base and exponent) are validated, like both factors of `Unit.*`/`Unit./`.")
   (input  (do (def (main) (Qty.value (Qty.of 1.0 (Unit.^ 5 2)))) (export main)))
   (error  CDZ0201))
+
+(case "a Qty-typed variant payload keeps its type non-generic and matches back"
+  (doc    "A `(type Holder (H (Qty Rational (Unit.base #\"meter\"))))` — a variant whose payload is a Qty with
+           a CONCRETE unit. The unit expression's leaf names (`base`, `meter`) are compile-time UNIT bases,
+           NOT type variables, so `Holder` must stay a NULLARY (non-generic) type: `collect_type_params`
+           descends only into a `(Qty T u)`'s inner type `T`, never the unit `u`. Previously the free
+           lowercase `base` in the unit leaked into the type's parameter binder, making `Holder` spuriously
+           generic `(Holder base)` — a bare `Holder` annotation then failed CDZ0203 and the match arm was
+           `not a variant of Holder`. Here the constructor builds the Qty, a bare `Holder` sig resolves, and
+           the arm reads the payload back; `Qty.value` of the `7/2 m` quantity floors' numerator is exercised
+           via `Rational.value`. Runs to the rational magnitude 7/2.")
+  (input  (do
+            (type Holder (H (Qty Rational (Unit.base #"meter"))))
+            (def (mk) (Holder.H (Qty.of (Rational.of 7 2) (Unit.base #"meter"))))
+            (def (unwrap (: h Holder)) (match h ((Holder.H q) (Qty.value q))))
+            (def (main) (unwrap (mk)))
+            (export main)))
+  (output (: 7/2 Rational)))
+
+(case "a product type of three Qty fields with concrete units constructs and projects"
+  (doc    "The units-carrying product a CAD `Vec3` needs: `(type V3q (V3 (Qty Rational m) (Qty Rational m)
+           (Qty Rational m)))`, three Qty fields each with a concrete `meter` unit. Each unit expression's
+           leaf names are unit bases, not type parameters, so `V3q` stays non-generic (three concrete
+           payloads) — the same `(Qty T u)` unit-arg skip as the single-payload case, now across a
+           multi-field product. Builds a `V3q` from a `5 m` quantity, projects the first field, reads its
+           magnitude — 5/1. Pins that a Qty-typed PRODUCT field (not just a def-param annotation) is a
+           first-class carrier of units.")
+  (input  (do
+            (type V3q (V3 (Qty Rational (Unit.base #"meter"))
+                          (Qty Rational (Unit.base #"meter"))
+                          (Qty Rational (Unit.base #"meter"))))
+            (def (mkv (: x (Qty Rational (Unit.base #"meter")))) (V3q.V3 x x x))
+            (def (getx (: v V3q)) (match v ((V3q.V3 a b c) a)))
+            (def (main) (Qty.value (getx (mkv (Qty.of (Rational.of 5 1) (Unit.base #"meter"))))))
+            (export main)))
+  (output (: 5/1 Rational)))

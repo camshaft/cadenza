@@ -31,9 +31,12 @@ type Core =
 /// is ill-typed / unbound. Reading the two upstream columns (not recomputing) is the producer-reads-producer
 /// contract.
 def lower-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
-  // a node whose type fact is TErr (or missing) has no core form.
+  // a node with any GROUND type (TInt or TBool) lowers; TErr (or a missing fact) has no core form. Bool is
+  // represented in Core as an Int (0/1) — comparison `CBin`s evaluate to 0/1 — so the Core stays minimal and
+  // uniform; the type column already proved the shape well-typed.
   (match Map.lookup(tcol, id) with
     | Option.Some(Typed.TInt) => lower-ok(tree, id, rcol, tcol)
+    | Option.Some(Typed.TBool) => lower-ok(tree, id, rcol, tcol)
     | _ => Option.None(unit))
 
 /// The typed-node case: build the Core node, canonicalizing a var to its binder id via `rcol`.

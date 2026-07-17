@@ -172,10 +172,15 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // buffer) → clone-on-read covers a shared string. (`String` is `Ord`, so it can also key a
         // `BTreeMap` — unblocking String-keyed maps that declined while `String` had no rep.)
         Ty::String => Some("String".to_string()),
-        // Functions and type/erased values have no native mapping. (A `Ty::Symbol` has no rust rep yet —
-        // the rust-backend Symbol representation, incl. its render/const/conversion handling, is a
-        // separate v-rust-backend increment; a runtime Symbol op declines cleanly on rust until then,
-        // while the wasm side emits it as a tagless byte-leaf retag.)
+        // A SYMBOL is a canonical TEXT leaf whose identity IS its content (an interned name) — the SAME
+        // tagless byte-leaf rep as a String on the wasm side. On the native rep it maps to Rust's owned
+        // `String`: a Symbol value IS its text, compared/keyed/rendered by content exactly as a String
+        // (`String` is `Eq`+`Ord`, so a Symbol can key a `BTreeMap` and compare with `==` — the content
+        // equality the wasm byte-leaf compare gives). The Symbol↔String retag (`Symbol.of`/`.to-string`)
+        // is then the identity on the `String` (a `String` is already a flat canonical leaf — the wasm
+        // `bytes-compact` rope-flatten has no analogue), handled in `Core::StrToBytes`.
+        Ty::Symbol => Some("String".to_string()),
+        // Functions and type/erased values have no native mapping.
         _ => None,
     }
 }

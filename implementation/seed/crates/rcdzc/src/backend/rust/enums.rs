@@ -717,6 +717,10 @@ pub(super) fn ty_derives_eq(
         // value equality the wasm heap walk gives. (`String` eq already worked via a different path; this
         // adds `Bytes` + `Char` + the compound-containing-them cases — see v-core-opt's Bytes-eq note.)
         Ty::String | Ty::Char | Ty::Bytes => true,
+        // A `Symbol` maps to Rust's `String` (a canonical text leaf, identity = content), which is `Eq` —
+        // so a runtime `=` over a Symbol (and over a compound CONTAINING one) emits a native `==` that
+        // compares by content, matching the wasm byte-leaf compare (`Symbol.of "x" == #"x"`).
+        Ty::Symbol => true,
         // `BigInt`/`Rational` map to `cdz_num::Big`/`cdz_num::Rational`, both of which `#[derive(PartialEq,
         // Eq)]` — so a runtime `=` over them (and over a compound CONTAINING them: a `(Tuple Rational Int64)`,
         // a Rational in a SUM payload) emits a native `==`. CRUCIALLY this is the CANONICAL-FORM equality the

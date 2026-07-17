@@ -16,9 +16,13 @@
 import { Tok, Node, Tree, node-at, parse-tokens } from "parse-db"
 import { Resolved, resolve-tree } from "resolve-db"
 
-/// The type fact. `TInt` = the one ground type; `TErr` = type-level poison (unbound name / ill-typed child).
+/// The type fact. `TInt`/`TBool` = the two ground types; `TErr` = type-level poison (unbound name / ill-typed
+/// child / operator-operand mismatch). The language stopped being purely monomorphic once comparison landed:
+/// a comparison `NBin` (op 60 `<`, 61 `==`) is `TBool`, arithmetic (43/45/42) is `TInt`; both REQUIRE `TInt`
+/// operands (there is no bool arithmetic / no bool-to-bool comparison yet — those would be `TErr`).
 type Typed =
   | TInt
+  | TBool
   | TErr
 
 /// Infer the type of every node in the subtree at `id`, reading the pre-built resolve column `rcol` and
@@ -28,29 +32,65 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
   match node-at(tree, id) with
     | Option.Some(Node.NLit(_)) => Map.insert(tcol, id, Typed.TInt)
     | Option.Some(Node.NVar(_)) =>
-        // a var is TInt iff resolve bound it; an unbound var (RPoison, or — defensively — no fact) is TErr.
+        // a var's type is the type of the VALUE its binder binds (not hardcoded Int) — so a var bound to a
+        // Bool is Bool. resolve gives the binder NLet's node-id; its value was typed before the body (the
+        // walk does value then body), so tcol already holds it. An unbound var (RPoison) is TErr.
         (match Map.lookup(rcol, id) with
-          | Option.Some(Resolved.RBound(_)) => Map.insert(tcol, id, Typed.TInt)
+          | Option.Some(Resolved.RBound(binder)) => Map.insert(tcol, id, var-type(tree, binder, tcol))
           | _ => Map.insert(tcol, id, Typed.TErr))
-    | Option.Some(Node.NBin(_, l, r)) =>
-        // infer both operands, then this node is TInt iff BOTH are TInt (else TErr propagates up).
+    | Option.Some(Node.NBin(op, l, r)) =>
+        // infer both operands; the result type is op-dependent. Arithmetic (43/45/42) needs Int operands and
+        // is Int; comparison (60/61) needs Int operands and is Bool. A non-Int operand → TErr (propagates up).
         (let t1 = infer-node(tree, l, rcol, tcol) in
          (let t2 = infer-node(tree, r, rcol, t1) in
-          (match both-int(t2, l, r) with | ty => Map.insert(t2, id, ty))))
+          (match bin-type(op, t2, l, r) with | ty => Map.insert(t2, id, ty))))
     | Option.Some(Node.NLet(_, valId, bodyId)) =>
-        // infer value + body; the let's type is the body's, but only if BOTH value and body are well-typed
-        // (the value must be a well-typed Int for the binding to make sense in this monomorphic language).
+        // infer value + body; the let's type is the BODY's type — but only if both value and body are
+        // well-typed (neither is TErr). The value need not be Int (a let could bind a Bool), so gate on
+        // "both non-error" and inherit the body's type.
         (let t1 = infer-node(tree, valId, rcol, tcol) in
          (let t2 = infer-node(tree, bodyId, rcol, t1) in
-          (match both-int(t2, valId, bodyId) with | ty => Map.insert(t2, id, ty))))
+          (match let-type(t2, valId, bodyId) with | ty => Map.insert(t2, id, ty))))
     | Option.None(_) => tcol
 
-/// `TInt` iff the type column `tcol` has `TInt` at BOTH `a` and `b`, else `TErr` — the propagation rule.
+/// The type of a variable reference bound at `binder` (an `NLet` node-id): the type of that let's VALUE
+/// node, which the walk already typed (value before body). `TErr` if the binder isn't a let or its value
+/// isn't yet typed (defensive — shouldn't happen for a well-formed resolved tree).
+def var-type(tree: Tree, binder: Int64, tcol: Map(Int64, Typed)) =
+  (match node-at(tree, binder) with
+    | Option.Some(Node.NLet(_, valId, _)) =>
+        (match Map.lookup(tcol, valId) with | Option.Some(t) => t | Option.None(_) => Typed.TErr)
+    | _ => Typed.TErr)
+
+/// The result type of a binary node with op `op` and operands at `a`,`b`. Both operands must be `TInt`
+/// (there is no bool arithmetic / bool comparison yet); then arithmetic (43/45/42) → `TInt`, comparison
+/// (60 `<`, 61 `==`) → `TBool`. Any non-Int operand or unknown op → `TErr`.
+def bin-type(op: Int64, tcol: Map(Int64, Typed), a: Int64, b: Int64) =
+  (if both-int(tcol, a, b) then
+     (if (op == 43) then Typed.TInt
+      else (if (op == 45) then Typed.TInt
+      else (if (op == 42) then Typed.TInt
+      else (if (op == 60) then Typed.TBool
+      else (if (op == 61) then Typed.TBool
+      else Typed.TErr)))))
+   else Typed.TErr)
+
+/// The type of a `let`: the body's type, provided neither value nor body is `TErr` (a well-typed binding of
+/// any ground type). `TErr` if either part is erroneous.
+def let-type(tcol: Map(Int64, Typed), valId: Int64, bodyId: Int64) =
+  (match Map.lookup(tcol, valId) with
+    | Option.Some(Typed.TErr) => Typed.TErr
+    | Option.None(_) => Typed.TErr
+    | _ => (match Map.lookup(tcol, bodyId) with
+             | Option.Some(bt) => bt
+             | Option.None(_) => Typed.TErr))
+
+/// Bool iff both operands are `TInt` (the operand rule for every current binary op) — used by `bin-type`.
 def both-int(tcol: Map(Int64, Typed), a: Int64, b: Int64) =
   (match Map.lookup(tcol, a) with
     | Option.Some(Typed.TInt) =>
-        (match Map.lookup(tcol, b) with | Option.Some(Typed.TInt) => Typed.TInt | _ => Typed.TErr)
-    | _ => Typed.TErr)
+        (match Map.lookup(tcol, b) with | Option.Some(Typed.TInt) => true | _ => false)
+    | _ => false)
 
 /// The infer COLUMN builder: build the resolve column (demanding parse under it), then infer over it. This is
 /// the whole demand chain in one call — infer reaches resolve reaches parse — and the columns memoize.
@@ -61,8 +101,19 @@ def infer-tree(tree: Tree, root: Int64) =
 /// (there is no "needs no typing"), so a node in a well-formed tree is always `Some`.
 def type-at(tree: Tree, root: Int64, id: Int64) = Map.lookup(infer-tree(tree, root), id)
 
-/// Probe: is the whole program (the root) well-typed (TInt)?
+/// Probe: is the whole program (the root) well-typed (any ground type — TInt or TBool, not TErr/absent)?
 def well-typed(tree: Tree, root: Int64) = match type-at(tree, root, root) with
+  | Option.Some(Typed.TInt) => true
+  | Option.Some(Typed.TBool) => true
+  | _ => false
+
+/// Probe: is the node at `id` typed `TBool`?
+def is-bool-at(tree: Tree, root: Int64, id: Int64) = match type-at(tree, root, id) with
+  | Option.Some(Typed.TBool) => true
+  | _ => false
+
+/// Probe: is the node at `id` typed `TInt`?
+def is-int-at(tree: Tree, root: Int64, id: Int64) = match type-at(tree, root, id) with
   | Option.Some(Typed.TInt) => true
   | _ => false
 
@@ -82,6 +133,8 @@ def times() = Tok.TOp(42)
 def letkw() = Tok.TLet
 def inkw() = Tok.TIn
 def eq() = Tok.TEq
+def lt() = Tok.TOp(60)
+def eqop() = Tok.TOp(61)
 
 /// Parse a token list to `(root, tree)`.
 def parse-of(ts: List(Tok)) = parse-tokens(ts)
@@ -135,4 +188,38 @@ def id-nested-let-is-int() =
   (match parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), n(2), inkw(), var(1), plus(), var(2)]) with | (root, tree) =>
     (if well-typed(tree, root) then unit else trap("nested lets, both vars bound, is TInt")))
 
-export { Typed.*, infer-tree, type-at, well-typed, type-err-at, typed-count }
+@test
+def id-comparison-is-bool() =
+  // "1 < 2" → the < node is TBool (its Int operands satisfy the comparison operand rule).
+  (match parse-of([n(1), lt(), n(2)]) with | (root, tree) =>
+    (if is-bool-at(tree, root, root) then unit else trap("1 < 2 is TBool")))
+
+@test
+def id-equality-is-bool() =
+  // "3 == 3" → TBool.
+  (match parse-of([n(3), eqop(), n(3)]) with | (root, tree) =>
+    (if is-bool-at(tree, root, root) then unit else trap("3 == 3 is TBool")))
+
+@test
+def id-comparison-of-arith-is-bool() =
+  // "1 + 2 < 4" → the + node is TInt, the < node (root) is TBool. Mixed-type tree, both facts filled.
+  (match parse-of([n(1), plus(), n(2), lt(), n(4)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NBin(_, l, _)) =>
+        (if is-bool-at(tree, root, root) then (if is-int-at(tree, root, l) then unit else trap("+ child is TInt")) else trap("root < is TBool"))
+      | _ => trap("root is a Bin")))
+
+@test
+def id-let-can-bind-bool() =
+  // "let x = 1 < 2 in x" → x binds a TBool value; the body var x is TBool, the let is TBool. Proves let-type
+  // inherits the body's type (not hardcoded Int) and a binding can carry a non-Int ground type.
+  (match parse-of([letkw(), var(1), eq(), n(1), lt(), n(2), inkw(), var(1)]) with | (root, tree) =>
+    (if is-bool-at(tree, root, root) then unit else trap("let binding a Bool has body type Bool")))
+
+@test
+def id-comparison-in-let-value-well-typed() =
+  // "let b = 2 < 3 in b" is well-typed (a Bool-valued let).
+  (match parse-of([letkw(), var(2), eq(), n(2), lt(), n(3), inkw(), var(2)]) with | (root, tree) =>
+    (if well-typed(tree, root) then unit else trap("Bool-valued let is well-typed")))
+
+export { Typed.*, infer-tree, type-at, well-typed, type-err-at, typed-count, is-bool-at, is-int-at }

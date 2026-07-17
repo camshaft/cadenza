@@ -76,3 +76,14 @@ test("mixed row shapes (tuple + record) → typed fallback", () => {
   const r = extractTable("(: (list (tuple 1 2) (record (a 1))) T)");
   assert.equal(r.ok, false);
 });
+
+test("a BARE record (not in a list) → a single-row table (fields = columns)", () => {
+  const r = extractTable("(: (record (name \"Ada\") (age 36)) T)");
+  assert.ok(r.ok);
+  assert.deepEqual(r.table.columns, ["name", "age"]);
+  assert.deepEqual(r.table.rows, [["Ada", "36"]]);
+});
+
+test("a bare non-record scalar is still NOT a table (value fallback)", () => {
+  assert.equal(extractTable("(: 42 Int64)").ok, false);
+});

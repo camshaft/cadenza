@@ -91,3 +91,22 @@
   (host-responses (respond Param.w (: 3 Int64))
                   (respond Param.h (: 4 Int64)))
   (output (: 7 Int64)))
+
+; SCAN ROBUSTNESS: the config kv (widget/range/…) is OPTIONAL to the SCAN — the sidecar reads the param
+; NAME + declared TYPE (which drive the generated accessor) and does not require any widget metadata to
+; generate. A bare `(param)` (no config) still yields a typed accessor; the config only feeds the widget
+; MANIFEST (a later brick), not the effect interface. Pins that a config-less @param is not rejected and
+; still generates its accessor — the type is the load-bearing metadata, the widget is presentational.
+
+(case "an @param with no widget config still generates its typed accessor"
+  (doc    "The config kv is optional to the accessor generation: `(: (@ (param) width) Int64)` — a bare
+           `(param)` with NO widget/range — still makes the sidecar generate `(op width (-> Unit Int64))`,
+           so `(Param.width)` resolves + reads the host value (→ 5). Pins that the SCAN keys on the param
+           name + declared type, not on the widget metadata (which only drives the later manifest).")
+  (input  (do
+            (: (@ (param) width) Int64)
+            (def (main) (host (Param) (Param.width)))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.width (: 5 Int64)))
+  (output (: 5 Int64)))

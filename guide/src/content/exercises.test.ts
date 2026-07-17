@@ -1,0 +1,80 @@
+/// Exercise-id integrity. Each <Exercise> carries a stable `id` (e.g. "basics:1") that keys the
+/// reader's saved progress — completing it is remembered under that id. Two invariants keep progress
+/// honest: ids must be globally UNIQUE (a duplicate — say from copy-pasting an exercise — would make
+/// two exercises share one completion state, so finishing one silently ticks the other), and each id's
+/// prefix must match its chapter's registered slug (a mis-prefixed id, like "basics:1" living in the
+/// Floats chapter, attributes progress to the wrong chapter's badge). chapters.test.ts already checks
+/// the per-chapter <Exercise> COUNT; this pins the ids themselves. Run with `npm run test:unit`.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { CHAPTERS } from "./chapters.ts";
+
+const here = dirname(fileURLToPath(import.meta.url)); // src/content
+const registrySrc = readFileSync(join(here, "chapters.ts"), "utf8");
+
+/// Map each chapter slug to its TSX filename by parsing the registry (same approach chapters.test.ts
+/// uses): each `slug: "x"` is followed by a `lazy(() => import("./chapters/File.tsx"))`.
+function fileForSlug(): Map<string, string> {
+  const entryRe = /slug:\s*"([^"]+)"[\s\S]*?import\("\.\/chapters\/([^"]+)"\)/g;
+  const map = new Map<string, string>();
+  for (let m = entryRe.exec(registrySrc); m; m = entryRe.exec(registrySrc)) {
+    map.set(m[1], m[2]);
+  }
+  return map;
+}
+
+/// Every `id="…"` passed to an <Exercise> in a chapter file, in source order.
+function exerciseIds(tsx: string): string[] {
+  return [...tsx.matchAll(/<Exercise\b[\s\S]*?\bid="([^"]+)"/g)].map((m) => m[1]);
+}
+
+test("every exercise id is globally unique across all chapters", () => {
+  const seen = new Map<string, string>(); // id → chapter slug that first used it
+  const dupes: string[] = [];
+  const map = fileForSlug();
+  for (const c of CHAPTERS) {
+    const file = map.get(c.slug);
+    if (!file) continue;
+    const tsx = readFileSync(join(here, "chapters", file), "utf8");
+    for (const id of exerciseIds(tsx)) {
+      if (seen.has(id)) dupes.push(`${id} (in ${c.slug} and ${seen.get(id)})`);
+      else seen.set(id, c.slug);
+    }
+  }
+  assert.equal(dupes.length, 0, `duplicate exercise id(s) — progress would collide:\n  ${dupes.join("\n  ")}`);
+});
+
+test("every exercise id is prefixed with its own chapter's slug (id = \"<slug>:<n>\")", () => {
+  const bad: string[] = [];
+  const map = fileForSlug();
+  for (const c of CHAPTERS) {
+    const file = map.get(c.slug);
+    if (!file) continue;
+    const tsx = readFileSync(join(here, "chapters", file), "utf8");
+    for (const id of exerciseIds(tsx)) {
+      const expected = new RegExp(`^${c.slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:\\d+$`);
+      if (!expected.test(id)) bad.push(`${c.slug}: id "${id}" should look like "${c.slug}:<n>"`);
+    }
+  }
+  assert.equal(bad.length, 0, `mis-prefixed exercise id(s) — progress attributed to the wrong chapter:\n  ${bad.join("\n  ")}`);
+});
+
+test("the exercise-id count per chapter equals the registry's declared `exercises`", () => {
+  // Complements chapters.test.ts's <Exercise>-tag count by checking it from the id side too, so a
+  // tag with no id (or an id outside an <Exercise>) can't drift the two views apart unnoticed.
+  const map = fileForSlug();
+  for (const c of CHAPTERS) {
+    const file = map.get(c.slug);
+    if (!file) continue;
+    const tsx = readFileSync(join(here, "chapters", file), "utf8");
+    assert.equal(
+      exerciseIds(tsx).length,
+      c.exercises ?? 0,
+      `${c.slug}: found ${exerciseIds(tsx).length} exercise id(s) but registry declares exercises:${c.exercises ?? 0}`,
+    );
+  }
+});

@@ -693,6 +693,17 @@ pub(crate) fn push_payload_type_positions(
         }
         return;
     }
+    // A `(Qty T u)` quantity type: validate only the inner-type argument (`T`); the second argument is a
+    // compile-time UNIT expression whose leaves are unit bases, not types (mirrors `db::collect_type_params`
+    // + `resolve::decode_ty`). Validating the whole `(Qty …)` form would push the unit expression as a
+    // type position, faulting on its `Unit.base`/`#"meter"` internals — which are not types.
+    if db.ast.head_name(occ) == Some("Qty")
+        && let crate::ast::Struct::List(children) = db.ast.get(occ)
+        && children.len() == 3
+    {
+        push_payload_type_positions(db, children[1], params, out);
+        return;
+    }
     // A non-record position: validate the whole expression. (A nested record inside a `(Tuple … (Record
     // …))` is reached because the ordinary resolver descent inside `type_errors` handles it — but a record
     // at the TOP of a payload, or as a tuple element, would carry its field names into that walk; splitting

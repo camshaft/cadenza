@@ -4634,6 +4634,21 @@ fn collect_type_params(ast: &Arenas, occ: StructId, params: &mut Vec<String>) {
                 }
             }
         }
+        // A `(Qty T u)` quantity type: the FIRST argument is the inner numeric TYPE, but the SECOND is a
+        // compile-time UNIT expression (`(Unit.base #"meter")`, `(Unit.* …)`) whose leaf names are UNIT
+        // BASES, not type variables — `eval::QtyCtor` reads it via `unit_of` and `resolve::decode_ty`'s
+        // "Qty" arm decodes it as a `Unit`, never as a type. Descending into it uniformly would harvest a
+        // lowercase unit-builder name (`base` in `Unit.base`) as a spurious type parameter, so a
+        // `(type Holder (H (Qty Rational (Unit.base #"meter"))))` becomes generic `Holder(base)` and a
+        // bare `Holder` stops resolving (CDZ0203). Descend ONLY into the inner-type argument; skip the
+        // unit. Same asymmetry `decode_ty`/`push_payload_type_positions` apply. (A malformed-arity `Qty`
+        // falls through to the uniform descent below — a well-formedness fault reported elsewhere.)
+        Struct::List(children)
+            if children.first().and_then(|&h| ast.as_name(h)) == Some("Qty")
+                && children.len() == 3 =>
+        {
+            collect_type_params(ast, children[1], params);
+        }
         // A type application `(Head arg…)` — descend into every child (the head of a nested application
         // may itself be a name, but a Capitalized head is a type constructor, not a parameter; the
         // lowercase filter above handles that). This reaches a parameter nested in `(Option a)`.

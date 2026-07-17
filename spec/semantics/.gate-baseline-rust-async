@@ -178,6 +178,7 @@ pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
+pass	a Qty-typed variant payload keeps its type non-generic and matches back
 pass	a RADIX literal carries the N type suffix
 pass	a RATIONAL compound = has DISCRIMINATING power (1/2 ≠ 1/3, but 0/2 = 0/3)
 pass	a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)
@@ -1154,6 +1155,7 @@ pass	a private module member is still visible to a sibling
 pass	a private module member participates in mutual recursion with an exported sibling
 pass	a private sibling defined after its exported caller still resolves
 pass	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
+pass	a product type of three Qty fields with concrete units constructs and projects
 pass	a program declares its own family unit and converts with it
 pass	a program that delegates no effect is pure and never suspends
 pass	a program's syntax tree is an ordinary value walked recursively across calls
@@ -1453,6 +1455,7 @@ pass	a runtime square multiply traps exactly past the Int64 square-root boundary
 pass	a runtime string bound from a sum payload compares equal to a string parameter
 pass	a runtime string compared against a literal folds against the literal side
 pass	a runtime string equality selects a branch by comparing a parameter to a literal
+pass	a runtime string interns to a symbol matched by content
 pass	a runtime string is indexed by scalar and the extracted scalar is returned
 pass	a runtime string is sliced by scalar offsets
 pass	a runtime string pattern dispatches by content (value-eq compare)
@@ -1479,6 +1482,7 @@ pass	a runtime symbol is found among a set of known symbols
 pass	a runtime symbol matches a symbol-literal pattern arm by content
 pass	a runtime symbol not among the known symbols is rejected
 pass	a runtime symbol not among the literal arms falls through to the wildcard
+pass	a runtime symbol round-trips back to its string
 pass	a runtime symbol that differs from the interned constant does not match
 pass	a runtime three-level nested tuple compares equal by a deep walk
 pass	a runtime three-variant classifier dispatches to the middle arm
@@ -1678,6 +1682,7 @@ pass	a supplementary-plane char literal matches by scalar value
 pass	a symbol compared to a number is a kind-boundary type error
 pass	a symbol compared to a string is a type error
 pass	a symbol converts back to its content string
+pass	a symbol is constructed from a string
 pass	a symbol literal list element dispatches a runtime list by its content
 pass	a symbol's identity is its content, not how the content was derived
 pass	a symbol-literal match agrees with its if-(= s lit) chain on the DEFAULT fall-through arm
@@ -2792,6 +2797,8 @@ pass	the LEB128 byte composition runs on a runtime operand
 pass	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
 pass	the arithmetic operator rejects a float-first mixed operand pair
+pass	the b2 match predicate LICENSES the elision: the discharged no-overflow proof matches the obligation and its hyps are covered by the node precondition
+pass	the b2 match predicate REJECTS a proof discharged under a FOREIGN hypothesis not in the node precondition (soundness — no elision under wrong assumptions)
 pass	the bitwise self-identities hold on a runtime narrow UInt8 (x & x = x, x | x = x, x ^ x = 0)
 pass	the bitwise-AND-with-zero annihilator does not discard a trapping runtime operand
 pass	the boolean less-than operator agrees with compare over Bool
@@ -3446,14 +3453,11 @@ todo	a runtime closure whose body calls a recursive top-level function
 todo	a runtime function value is manually eta-wrapped and applied through nested recursive HOFs
 todo	a runtime nibble truncation keeps the low four bits
 todo	a runtime out-of-bounds list update traps rather than aliasing a valid slot
-todo	a runtime string interns to a symbol matched by content
-todo	a runtime symbol round-trips back to its string
 todo	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
 todo	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 todo	a scalar BETWEEN two Tuple args with a LIST result
 todo	a second same-signature closure export shares the one call method
 todo	a sum variant's list payload split across empty and rest arms is exhaustive and dispatches
-todo	a symbol is constructed from a string
 todo	a three-argument closure exported to the host is called with all three
 todo	a three-parameter closure is applied at full arity through a recursive HOF
 todo	a three-payload constructor partially applied in a runtime tuple completes via eta-closure
@@ -3466,6 +3470,7 @@ todo	an 8-bit-integer closure crosses the host boundary
 todo	an @param of a Bool type generates a Bool-typed accessor
 todo	an @param of a Float64 type generates a Float64-typed accessor
 todo	an @param site generates a Param accessor a host delegation reads at run time
+todo	an @param with no widget config still generates its typed accessor
 todo	an abortive handler abandons a host call in the path it discards
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee

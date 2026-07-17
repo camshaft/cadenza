@@ -19,6 +19,7 @@ const SECTION_ORDER = [
   "Getting started",
   "Fundamentals",
   "What makes Cadenza different",
+  "Example applications",
   "Wrapping up",
 ];
 

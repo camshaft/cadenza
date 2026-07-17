@@ -541,4 +541,62 @@ mod tests {
         let rendered_head = assembled.head_name(assembled.root);
         assert_eq!(rendered_head, Some("do"), "assembled root is a do block");
     }
+
+    #[test]
+    fn an_authored_top_level_pragma_survives_assembly_verbatim() {
+        // The v-syntax half of the default-fraction-at-authored-top-level fix (co-owned with v-inference,
+        // who does the compile-side harvest + CDZ0601-lift): an author's own `(pragma default-fraction
+        // Rational)` in the buffer must reach the compiler UNCHANGED — `assemble` must NOT strip it or
+        // re-wrap it (it is copied as an ordinary buffer item). If it were dropped, v-inference's harvest
+        // would never see the top-level pragma and the exact-rational mode would silently not apply. (The
+        // REPL's OWN synthesized exact-mode pragma is separate — it wraps the ENTRY expression, not the
+        // buffer; this pins the AUTHORED one's survival, which is what a real `.cdz` file relies on.)
+        let buffer = parse("(do (pragma default-fraction Rational) (def (r) (/ 1 2)))");
+        let expr = parse("(r)");
+        let assembled = assemble_repl_program(&buffer, &expr); // non-exact: no synthesized pragma to confuse
+        // The authored pragma is the FIRST item under the assembled `do`, byte-for-byte intact.
+        let Struct::List(kids) = assembled.get(assembled.root) else {
+            panic!("assembled root is a do list");
+        };
+        // kids[0] is the `do` head; kids[1] must be the authored pragma.
+        let pragma = kids[1];
+        assert_eq!(
+            assembled.head_name(pragma),
+            Some("pragma"),
+            "the authored pragma is preserved as the first buffer item"
+        );
+        let Struct::List(pk) = assembled.get(pragma) else {
+            panic!("pragma is a list");
+        };
+        assert_eq!(
+            assembled.as_name(pk[1]),
+            Some("default-fraction"),
+            "pragma key intact"
+        );
+        assert_eq!(
+            assembled.as_name(pk[2]),
+            Some("Rational"),
+            "pragma type intact"
+        );
+    }
+
+    #[test]
+    fn ml_default_fraction_pragma_lowers_to_the_canonical_pragma_node() {
+        // The other v-syntax half: the ML surface `@!default-fraction Rational` must lower to the SAME
+        // `(pragma default-fraction Rational)` node the s-expr surface produces — at top-level-module
+        // scope — so v-inference's harvest (which keys off that node) sees an identical tree from either
+        // surface. A divergence here would make the fix work for `.sexp` but not authored `.ml`.
+        let ml =
+            crate::parser::read_ml("module m {\n@!default-fraction Rational\ndef x() = 1/2\n}");
+        assert!(ml.ok(), "the ML module parses: {:?}", ml.errors);
+        let sx =
+            crate::sexpr::read("(module m (pragma default-fraction Rational) (def (x) (/ 1 2)))")
+                .unwrap();
+        assert!(
+            ml.arenas.structurally_eq(&sx),
+            "ML @!default-fraction lowers to the canonical (pragma …) node inside a top-level module:\n  ml={}\n  sx={}",
+            crate::sexpr::print(&ml.arenas),
+            crate::sexpr::print(&sx),
+        );
+    }
 }

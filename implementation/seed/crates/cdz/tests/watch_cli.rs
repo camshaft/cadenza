@@ -374,3 +374,54 @@ fn watch_reruns_when_a_path_dependency_source_changes() {
     let _ = std::fs::remove_file(&cap);
     assert!(rer, "editing a path-dependency's source re-runs the watch");
 }
+
+#[test]
+fn watch_run_passes_call_and_arg_to_an_arg_taking_entry() {
+    // FOLLOW-UP: `cdz watch --exec run` used to pass NO call/arg to the entry, so an arg-TAKING `main`
+    // errored ("argument count mismatch") on every run. Now `--call`/`--arg` thread through to the run
+    // (like `cdz run --call/--arg`). Watch a project whose `main(x) = x + 1` under `--exec run --call
+    // main --arg 7`; the initial pass must print `8` (not an arity error), and a source edit changing the
+    // body to `x + 100` must re-run and print `107` — proving the arg is re-applied on every re-run.
+    let (root, proj) = scaffold("runarg");
+    std::fs::write(
+        proj.join("main.cdz"),
+        "def main(x: Int64) -> Int64 = x + 1\n\nexport { main }\n",
+    )
+    .expect("seed an arg-taking entry");
+    let (mut child, cap) = spawn_watch(
+        &proj,
+        &["--exec", "run", "--call", "main", "--arg", "7"],
+        "runarg",
+    );
+    assert!(
+        wait_for(&cap, "watching", Duration::from_secs(20)),
+        "startup banner: {}",
+        read_cap(&cap)
+    );
+    // The initial run applies main(7) = 8 — the arg reached the entry (no arity error).
+    let printed_8 = wait_for(&cap, "\n8", Duration::from_secs(30));
+    let after_initial = read_cap(&cap);
+
+    // Edit the body → the re-run must apply the SAME arg to the new code: main(7) = 7 + 100 = 107.
+    std::thread::sleep(Duration::from_millis(800));
+    std::fs::write(
+        proj.join("main.cdz"),
+        "def main(x: Int64) -> Int64 = x + 100\n\nexport { main }\n",
+    )
+    .expect("rewrite the entry body");
+    let printed_107 = wait_for(&cap, "\n107", Duration::from_secs(30));
+    let captured = read_cap(&cap);
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_file(&cap);
+    assert!(
+        printed_8,
+        "the initial run passes --arg to the entry: main(7) = 8 (no arity error): {after_initial}"
+    );
+    assert!(
+        printed_107,
+        "the re-run re-applies --arg to the edited entry: main(7) = 107: {captured}"
+    );
+}

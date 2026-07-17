@@ -34232,6 +34232,31 @@ mod match_engine {
             .is_none(),
             "two @param sites generate two accessors under one Param effect, both resolve"
         );
+        // The config kv is OPTIONAL to the scan: a bare `(param)` (no widget metadata) still generates the
+        // accessor — the scan keys on the param name + declared TYPE, not the widget (which feeds only the
+        // later manifest). So a config-less @param resolves its accessor, not a reject.
+        assert!(
+            reject_code(
+                "(module m \
+                   (: (@ (param) width) Int64) \
+                   (def (main) (host (Param) (Param.width))) \
+                 (export main))"
+            )
+            .is_none(),
+            "an @param with no widget config still generates its typed accessor"
+        );
+        // B-INVARIANT: an UNTYPED @param (no outer `(: … Type)` wrapper) has no accessor type to generate
+        // and is REJECTED (CDZ0201) — the accessor's result type IS the annotation type, so an un-typed
+        // param is not silently dropped. (Enforced upstream: `@param` over a bare name is `strip_annotations`'
+        // wraps-no-definition rejection; the sidecar's typed-shape scan simply never matches it.)
+        assert_eq!(
+            reject_code(
+                "(module m (@ (param (: widget slider)) width) (def (main) 0) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201"),
+            "an untyped @param (no `: Type`) is rejected — the B-invariant, an accessor needs a result type"
+        );
     }
 
     #[test]
