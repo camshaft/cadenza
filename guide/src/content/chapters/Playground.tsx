@@ -155,7 +155,8 @@ export default function Playground() {
         never lights up an unrelated top-level), scope-aware rename (F2 on a name rewrites its declaration and
         every reference in one edit, across files, and never touches an unrelated same-spelled name), name
         completion from what's actually in scope, one-click quick-fixes from the compiler's suggested repairs,
-        and an outline of a file's definitions.
+        an outline of a file's definitions, and a project-wide symbol search (jump to any <C>def</C>,{" "}
+        <C>type</C>, or <C>effect</C> across your open files by name, without knowing which file holds it).
       </P>
       <P>
         One of those is unique to Cadenza's compiler. Above every generic definition the compiler{" "}
