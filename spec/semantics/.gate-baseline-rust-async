@@ -3033,6 +3033,8 @@ pass	two unequal runtime strings compare false by their contents
 pass	two variants of the same sum compare unequal regardless of operand order
 pass	two variants past the first each carry a different nested sum, over a runtime discriminant
 pass	uint16 wrap truncates a wide runtime value to the low 16 bits
+pass	uint8 wrap of a negative multiple of 256 is its low byte, zero
+pass	uint8 wrap of a negative runtime value reads the low byte as unsigned
 pass	uint8 wrap truncates a wide runtime value to the low 8 bits
 pass	unary negation binds tighter than binary addition
 pass	unary negation in a lambda body negates the argument
