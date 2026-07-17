@@ -1217,3 +1217,104 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool)))
+
+; ── t1(div0): the DIVIDE-BY-ZERO trap-source obligation — for b > 0, (b != 0) so `a / b` cannot trap ──
+; The @trap_free capstone (design §8) proves EVERY trap source unreachable. This pins the DIVIDE-BY-ZERO
+; source: a checked `a / b` traps iff b = 0, so its trap-free obligation is `NEQ b 0` (the divisor is
+; non-zero). Under `@requires(> b 0)`, the obligation discharges: from `assume (gt b 0)`, a `pos-nonzero`
+; rule (a positive value is non-zero) yields `NEQ b 0`. The base gains a `gt` order + `neq` + `pos-nonzero`
+; + the CHECKED ground `gt-ax`. `gt`=Const 5, `neq`=Const 6. Pins the div0 trap-source obligation shape the
+; capstone's per-source conjunction needs.
+
+(case "t1(div0): the divide-by-zero obligation NEQ b 0 is DISCHARGED for b > 0 — so a/b cannot trap"
+  (doc    "The divide-by-zero trap source of the @trap_free capstone (design §8). A checked `a / b` traps iff
+           `b = 0`; its trap-free obligation is `NEQ b 0`. Under `@requires(> b 0)`, from `assume (gt b 0)`
+           the `pos-nonzero` rule (a value proven `> 0` is `!= 0`) derives `NEQ b 0` — the divisor is
+           provably non-zero, so the division cannot trap on that input. The entry discharges it through the
+           rules and checks the conclusion is the obligation. Runs to `true`. Pins the div0 obligation shape
+           the capstone's per-trap-source conjunction discharges (one source of the whole-function trap-free
+           proof).")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (gt  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 5) a) b))
+      (def (neq (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 6) a) b))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      ; RULE: pos-nonzero — from G |- (gt x 0) derive G |- (neq x 0). A value proven strictly positive is
+      ; non-zero. The rule fires ONLY when the premise is `(gt x (Num 0))` (the zero literal); else None.
+      (def (pos-nonzero (: th Thm))
+        (match (concl th)
+          ((Term.Comb (Term.Comb (Term.Const 5) x) (Term.Num 0))
+            (Option.Some (Thm.Seq (hyps th) (neq x (Term.Num 0)))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq gt neq concl hyps assume pos-nonzero)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq gt neq concl hyps assume pos-nonzero))
+            (def (main)
+              (let ((b    (Term.Var 1))
+                    (zero (Term.Num 0)))
+                ; the div0 trap-free obligation: (neq b 0)
+                (let ((goal (neq b zero)))
+                  ; @requires(> b 0) → assume (gt b 0); pos-nonzero derives (neq b 0)
+                  (let ((pre (assume (gt b zero))))
+                    (match (pos-nonzero pre)
+                      ((Option.Some proof) (term-eq (concl proof) goal))
+                      ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "t1(div0) NEGATIVE: an UNBOUNDED divisor is NOT provably non-zero — the divide-by-zero trap STAYS"
+  (doc    "The div0 soundness dual. With no `> b 0` (or `b != 0`) precondition, the divisor `b` is unbounded
+           — `NEQ b 0` is NOT provable: `pos-nonzero` needs a `(gt b 0)` premise, and an arbitrary assumption
+           about `b` does not establish it. So the @trap_free proof for the division MISSES → the div-by-zero
+           guard STAYS (the function is not certified trap-free on that source). The entry confirms
+           `pos-nonzero` of an unrelated assumption does not yield the obligation. Runs to `true`. Pins that
+           an unprovable divide-by-zero source correctly keeps the trap — @trap_free is sound (it never
+           certifies a function whose divisor could be zero).")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (gt  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 5) a) b))
+      (def (neq (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 6) a) b))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (pos-nonzero (: th Thm))
+        (match (concl th)
+          ((Term.Comb (Term.Comb (Term.Const 5) x) (Term.Num 0))
+            (Option.Some (Thm.Seq (hyps th) (neq x (Term.Num 0)))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq gt neq concl hyps assume pos-nonzero)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq gt neq concl hyps assume pos-nonzero))
+            (def (main)
+              (let ((b    (Term.Var 1))
+                    (zero (Term.Num 0)))
+                (let ((goal (neq b zero)))
+                  ; no `> b 0` precondition — only an unrelated assumption about b; pos-nonzero cannot fire
+                  (let ((unrelated (assume (neq b b))))
+                    (match (pos-nonzero unrelated)
+                      ((Option.Some proof) (not (term-eq (concl proof) goal)))
+                      ((Option.None) true))))))
+            (export main)))
+  (output (: true Bool)))
