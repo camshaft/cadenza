@@ -2938,6 +2938,95 @@ mod tests {
         );
     }
 
+    #[test]
+    fn serve_dispatches_a_request_and_terminates_on_shutdown() {
+        // End-to-end over the REAL receive loop (`serve`), not a direct handler call: the client sends a
+        // `didOpen`, a `hover` REQUEST, then the `shutdown` request + `exit` notification. Asserts (1) the
+        // request is routed to the handler and a Response comes back on the wire (the request→response
+        // cycle `serve`+`handle_request` drive — untested before; every other test calls handlers
+        // directly); (2) `serve` RETURNS after `shutdown`/`exit` (the loop terminates, not hangs). Runs the
+        // server on a thread so the single-threaded memory channel does not deadlock.
+        let (server_conn, client) = Connection::memory();
+        let handle = std::thread::spawn(move || {
+            let mut server = Server::new(server_conn);
+            server.serve()
+        });
+        let uri = test_uri();
+        // Open a doc so the hover has something to resolve.
+        client
+            .sender
+            .send(Message::Notification(did_open_note(
+                &uri,
+                "def answer = 42",
+            )))
+            .unwrap();
+        // A hover request on the `answer` name (line 0, col 4).
+        let hover_params = HoverParams {
+            text_document_position_params: lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                position: Position::new(0, 4),
+            },
+            work_done_progress_params: Default::default(),
+        };
+        client
+            .sender
+            .send(Message::Request(Request::new(
+                RequestId::from(1),
+                HoverRequest::METHOD.to_string(),
+                hover_params,
+            )))
+            .unwrap();
+        // Drain until we see the hover Response (the server also pushes a publishDiagnostics notification
+        // on didOpen — skip notifications, wait for the response to our request id).
+        let mut got_hover = false;
+        loop {
+            match client.receiver.recv() {
+                Ok(Message::Response(r)) if r.id == RequestId::from(1) => {
+                    // An Ok response with a non-null result — `answer` has a type. (Exact rendering is
+                    // covered by hover_at tests; here we only prove the request reached the handler and
+                    // returned a result through the real serve loop.)
+                    match r.response_kind {
+                        lsp_server::ResponseKind::Ok { result } => assert!(
+                            !result.is_null(),
+                            "hover over a typed definition should return a result through serve"
+                        ),
+                        lsp_server::ResponseKind::Err { error } => {
+                            panic!("hover request errored: {error:?}")
+                        }
+                    }
+                    got_hover = true;
+                    break;
+                }
+                // The didOpen diagnostics push + any other notification — ignore.
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+        assert!(
+            got_hover,
+            "the hover request was dispatched and answered by serve"
+        );
+        // Now shut the server down: `shutdown` request (server replies via handle_shutdown) then `exit`.
+        client
+            .sender
+            .send(Message::Request(Request::new(
+                RequestId::from(2),
+                Shutdown::METHOD.to_string(),
+                serde_json::Value::Null,
+            )))
+            .unwrap();
+        client
+            .sender
+            .send(Message::Notification(Notification::new(
+                "exit".to_string(),
+                serde_json::Value::Null,
+            )))
+            .unwrap();
+        // `serve` must RETURN (Ok) once shutdown+exit arrive — join proves the loop terminated, not hung.
+        let served = handle.join().expect("the serve thread did not panic");
+        assert!(served.is_ok(), "serve returned an error: {served:?}");
+    }
+
     /// The line/character of a `Position`, as a tuple, for terse assertions.
     fn lc(p: Position) -> (u32, u32) {
         (p.line, p.character)
