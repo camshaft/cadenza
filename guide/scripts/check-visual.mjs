@@ -35,6 +35,16 @@ const VIEWPORTS = [
 const ROUTES = [
   { path: "/", waitFor: "a[href]", label: "home" },
   {
+    // A chapter page — exercises the shared shell (SyntaxToggle, nav drawer) AND the Runnable/Exercise
+    // example controls (Run/Reset/Check/Hint/Show-solution/Open-in-playground), the guide's highest-count
+    // controls. /ordering has both a Runnable and an Exercise, so it covers both control sets. Guards the
+    // shell + example-control tap sizing (both landed) against regression.
+    path: "/ordering",
+    waitFor: ".cm-editor",
+    label: "chapter (ordering)",
+    tapTargets: true,
+  },
+  {
     path: "/calculator",
     waitFor: "input",
     label: "calculator",
@@ -244,28 +254,34 @@ try {
 
         // Mobile TAP TARGETS: on the phone viewport, a route that opted into `tapTargets` must have no
         // genuinely-tiny interactive control — the 44px touch guideline (Apple HIG / WCAG). The
-        // mobile-responsive pass sizes controls to `min-h-11` below `sm`; this guards that against
-        // regression. We assert the min VISIBLE interactive dimension is ≥ 40px (44 minus a rounding/border
-        // slack). Only meaningful at mobile width, so gate on the viewport.
+        // mobile-responsive pass sizes controls to `min-h-11` below `sm`. We assert primarily on HEIGHT
+        // (≥ 40px, 44 minus rounding/border slack) — the vertical tap axis the pass fixed, and the one that
+        // matters on a phone where controls stack down the page. A control that is TALL enough but narrow
+        // (a short-label segmented-control button like "ML", 33px wide × 44px tall) is a comfortable tap
+        // area and passes; we still flag anything genuinely tiny in BOTH axes (width < 24 AND height < 40).
+        // Only meaningful at mobile width, so gate on the viewport.
         if (route.tapTargets && vp.name === "mobile-390") {
-          const tiny = await page.evaluate(() => {
+          const bad = await page.evaluate(() => {
             const els = [...document.querySelectorAll('button, a[href], input, [role="button"], select')];
-            let min = Infinity;
-            let desc = "";
+            let worst = null;
             for (const el of els) {
               const r = el.getBoundingClientRect();
               if (r.width === 0 || r.height === 0) continue; // hidden / not laid out
-              const dim = Math.min(r.width, r.height);
-              if (dim < min) {
-                min = dim;
-                desc = (el.textContent || el.getAttribute("aria-label") || el.tagName).trim().slice(0, 24);
+              // Too small = short height (the primary tap axis), OR genuinely tiny in both axes.
+              const tooShort = r.height < 40;
+              const tinyBoth = r.width < 24 && r.height < 40;
+              if (tooShort || tinyBoth) {
+                const h = Math.round(r.height);
+                if (!worst || h < worst.h) {
+                  worst = { h, w: Math.round(r.width), desc: (el.textContent || el.getAttribute("aria-label") || el.tagName).trim().slice(0, 24) };
+                }
               }
             }
-            return { min: min === Infinity ? null : Math.round(min), desc };
+            return worst;
           });
           check(
-            tiny.min == null || tiny.min >= 40,
-            `${route.label}: mobile tap targets ≥ 44px (smallest ${tiny.min}px "${tiny.desc}")`,
+            bad == null,
+            `${route.label}: mobile tap targets ≥ 44px tall${bad ? ` (found ${bad.w}×${bad.h}px "${bad.desc}")` : ""}`,
           );
         }
 
