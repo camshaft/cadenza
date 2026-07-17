@@ -395,7 +395,10 @@ fn find_compiler_ml_src() -> Option<std::path::PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
         roots.push(cwd);
     }
-    if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) {
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()))
+    {
         roots.push(exe_dir);
     }
     for start in roots {
@@ -485,7 +488,9 @@ fn run_run_ml(args: &RunMlArgs) -> ExitCode {
     let src_dir = match find_compiler_ml_src() {
         Some(d) => d,
         None => {
-            eprintln!("{PROG} run-ml: compiler-ml src dir not found (searched up from cwd + exe dir)");
+            eprintln!(
+                "{PROG} run-ml: compiler-ml src dir not found (searched up from cwd + exe dir)"
+            );
             return ExitCode::FAILURE;
         }
     };
