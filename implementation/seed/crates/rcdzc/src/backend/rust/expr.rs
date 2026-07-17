@@ -931,18 +931,35 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 let operand_s = emit(db, operand, env, ctx)?;
                 let width = dst.ground_width();
                 // An `as` cast keeps the STORAGE width's low bits (`as u8` = low 8), but `.wrap` to an
-                // UNUSUAL width N (not a machine boundary — `UInt4`/`UInt48`, stored in the next-larger
-                // primitive) must keep the low N bits. Mask `& ((1<<N)-1)` after the cast so `(UInt4).wrap 17`
-                // = `17 & 0xF` = 1, not the byte-cast's 17. An aliased width (8/16/32/64) needs no mask (the
-                // `as` cast IS the exact truncation). The mask literal is written in the storage type `rty`;
-                // `2^N - 1` fits it (N ≤ the storage width). A SIGNED unusual width would additionally need a
-                // sign-extend from bit N-1 — but the corpus has only UNSIGNED unusual-width wraps; a signed
-                // one is not yet exercised, and the unsigned mask below is correct for it as a bit-truncation
-                // (the sign reinterpretation of a signed narrow wrap is a later slice — decline-safe since no
-                // case hits it and the mask keeps the low N bits either way).
+                // UNUSUAL width N (not a machine boundary — `UInt4`/`UInt48`/`Int4`, stored in the next-larger
+                // primitive) must keep the low N bits AND reinterpret them at the target sign. An aliased
+                // width (8/16/32/64) needs neither: the `as` cast IS the exact truncation + reinterpretation.
                 if matches!(width, 8 | 16 | 32 | 64) {
                     Ok(format!("({operand_s} as {rty})"))
+                } else if dst.ground_signed() {
+                    // A SIGNED unusual width keeps the low N bits then SIGN-EXTENDS from bit N-1 (so a set
+                    // bit N-1 makes the value negative — `(Int 4).wrap 8` = -8, matching `IntValue::wrap_to`:
+                    // low 4 bits = 8, bit 3 set → 8 - 2^4 = -8, NOT the byte-cast's +8). Achieve it with a
+                    // left-then-arithmetic-right shift in the SIGNED storage type: `(v << (bits-N)) >> (bits-N)`
+                    // pushes bit N-1 to the storage sign bit, and Rust's `>>` on a signed integer is an
+                    // ARITHMETIC shift that replicates it back down — the standard narrow-signed sign-extend.
+                    // `bits` is the storage primitive's width (8/16/32/64, the smallest ≥ N); `bits - N ≥ 1`
+                    // for an unusual width (N is never a machine boundary), so the shift is always in range.
+                    // (A plain `& mask` would keep the low bits but NOT reinterpret the sign — the bug this
+                    // fixes: it silently returned +8 for `(Int 4).wrap 8` rather than -8.)
+                    let storage_bits: u32 = match width {
+                        w if w <= 8 => 8,
+                        w if w <= 16 => 16,
+                        w if w <= 32 => 32,
+                        _ => 64,
+                    };
+                    let shift = storage_bits - width;
+                    Ok(format!(
+                        "((({operand_s} as {rty}) << {shift}) >> {shift})"
+                    ))
                 } else {
+                    // An UNSIGNED unusual width keeps the low N bits (`(UInt 4).wrap 17` = `17 & 0xF` = 1). The
+                    // mask literal is written in the storage type `rty`; `2^N - 1` fits it (N ≤ storage width).
                     let mask: u64 = (1u64 << width) - 1;
                     Ok(format!("(({operand_s} as {rty}) & {mask}{rty})"))
                 }

@@ -4030,6 +4030,48 @@ fn rustc_roundtrip_unusual_integer_width_stores_in_the_next_larger_primitive() {
 }
 
 #[test]
+fn rustc_roundtrip_a_signed_unusual_width_wrap_sign_extends_not_just_masks() {
+    // REGRESSION (Copilot PR #532, github-liaison note): a SIGNED unusual-width `.wrap` must keep the low N
+    // bits AND reinterpret them at the target sign (bit N-1 is the sign bit), NOT just mask. The prior emit
+    // `(v as i8) & 15` returned +8 for `(Int 4).wrap 8` — a SILENT miscompile: the correct signed 4-bit wrap
+    // is -8 (bit 3 set → 8 - 2^4). Fixed by a sign-extending shift `((v as i8) << (bits-N)) >> (bits-N)`
+    // (arithmetic right-shift replicates the sign bit). Matches `IntValue::wrap_to(signed=true, 4)` and the
+    // wasm backend (which was already correct — no twin bug).
+    let wrap = compile_rust("(module m (def (run (: n Int64)) ((. (Int 4) wrap) n)) (export run))");
+    assert!(
+        wrap.contains("<< 4") && wrap.contains(">> 4") && !wrap.contains("& 15"),
+        "a signed unusual-width wrap SIGN-EXTENDS via a shift, not a low-bit mask:\n{wrap}"
+    );
+    if let Some(out) = rustc_run(&wrap, "run(8)") {
+        assert_eq!(
+            out, "-8",
+            "(Int 4).wrap 8: bit 3 set → 8 - 16 = -8 (NOT the masked +8)"
+        );
+    }
+    if let Some(out) = rustc_run(&wrap, "run(7)") {
+        assert_eq!(out, "7", "(Int 4).wrap 7: sign bit clear → 7");
+    }
+    if let Some(out) = rustc_run(&wrap, "run(15)") {
+        assert_eq!(out, "-1", "(Int 4).wrap 15: all 4 bits set → -1");
+    }
+
+    // A SIGNED narrower-than-storage width beyond the byte: `(Int 12)` stores in i16 (16 bits), so the shift
+    // is `<< 4`/`>> 4` (16 - 12). `(Int 12).wrap 2048` = bit 11 set → 2048 - 2^12 = -2048 (the 12-bit min).
+    let wrap12 =
+        compile_rust("(module m (def (run (: n Int64)) ((. (Int 12) wrap) n)) (export run))");
+    assert!(
+        wrap12.contains("as i16") && wrap12.contains("<< 4") && wrap12.contains(">> 4"),
+        "a signed (Int 12) wrap sign-extends in i16 storage (16-12 = 4-bit shift):\n{wrap12}"
+    );
+    if let Some(out) = rustc_run(&wrap12, "run(2048)") {
+        assert_eq!(
+            out, "-2048",
+            "(Int 12).wrap 2048: bit 11 set → 2048 - 4096 = -2048"
+        );
+    }
+}
+
+#[test]
 fn rustc_roundtrip_unusual_width_composes_through_compounds_and_collections() {
     // The storage-width map (an unusual `(UInt N)` → the next-larger machine primitive) must COMPOSE through
     // a tuple leaf, a Set element, and a List element — the value stays in range, so the wider storage is

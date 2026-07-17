@@ -1626,6 +1626,7 @@ pass	a runtime Rational built from a parameter compares by its exact value
 pass	a runtime Rational comparison of a parameter is false when it should be
 pass	a runtime Result carrying a String error is matched
 pass	a runtime Result constructed from a condition selects its Ok or Err arm
+pass	a runtime SIGNED nibble truncation sign-extends from the top kept bit
 pass	a runtime String match and its (= s literal) if-chain agree on the DEFAULT fall-through arm
 pass	a runtime String match on a hit arm agrees with its desugared (= s literal) if-chain
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
