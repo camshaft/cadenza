@@ -8,6 +8,9 @@ A thin LSP client that launches **`cdz lsp`** (the compiler's own Language Serve
 - **hover** — the inferred type at the cursor;
 - **semantic highlighting** — colour by what a name *means* (type vs constructor vs local vs unbound);
 - **go-to-definition** and **find-references**;
+- **document highlight** — rest the caret on a name and every other occurrence in the file tints;
+- **rename** (F2) — rename a symbol across its whole scope, every reference *and* the declaration, in
+  one edit (cross-file when the symbol spans a project's import closure);
 - **completion** — names in scope (locals with their types + the module's top-level declarations);
 - **document outline** — the symbol tree / breadcrumb (Ctrl-Shift-O);
 - **quick-fixes** — the compiler's own structured repairs (the same ones `cdz fix` applies), one click
