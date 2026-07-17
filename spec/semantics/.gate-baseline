@@ -3295,6 +3295,8 @@ pass	the LEB128 byte composition runs on a runtime operand
 pass	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
 pass	the arithmetic operator rejects a float-first mixed operand pair
+pass	the b2 match predicate LICENSES the elision: the discharged no-overflow proof matches the obligation and its hyps are covered by the node precondition
+pass	the b2 match predicate REJECTS a proof discharged under a FOREIGN hypothesis not in the node precondition (soundness — no elision under wrong assumptions)
 pass	the bitwise self-identities hold on a runtime narrow UInt8 (x & x = x, x | x = x, x ^ x = 0)
 pass	the bitwise-AND-with-zero annihilator does not discard a trapping runtime operand
 pass	the boolean less-than operator agrees with compare over Bool

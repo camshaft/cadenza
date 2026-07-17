@@ -166,3 +166,175 @@
                     (not (term-eq (concl unrelated) obligation))))))
             (export main)))
   (output (: true Bool)))
+
+; ── b2: the MATCH PREDICATE (the compiler's trusted surface, written IN CADENZA) ────────────────────
+; The oracle's core (design §3): a discharged `Thm` LICENSES the elision of `overflow-check@Id` iff
+;   (1) its conclusion is STRUCTURALLY EXACTLY the obligation `no-overflow@Id` for the node's ACTUAL
+;       operands (term-eq), AND
+;   (2) every hypothesis it was proven under is DISCHARGED BY the node's stated precondition
+;       (hyps ⊆ precondition, each hyp term-eq to some precondition member).
+; (2) is the soundness core: a `Thm` proven under an assumption the node's precondition does NOT provide
+; must NOT license an elision (a proof of "x+1 ≤ MAXINT ASSUMING x ≤ 100" cannot elide the guard at a node
+; whose precondition is only "x ≤ 200"). At b3 the compiler compile-time-evals this predicate and consumes
+; only its boolean; here we pin the predicate itself.
+
+(case "the b2 match predicate LICENSES the elision: the discharged no-overflow proof matches the obligation and its hyps are covered by the node precondition"
+  (doc    "The positive b2 pin. The `bounds` kernel discharges `LE (add x 1) MAXINT` under hypothesis
+           `LE x 100` (the b1 chain: assume → mono-add-r → trans-le with a numeral fact). The `licenses`
+           predicate — the compiler's trusted match surface — accepts it: (1) `term-eq (concl proof)
+           obligation` holds (the conclusion IS the obligation for the node's actual operands), AND (2)
+           `hyps-subset (hyps proof) precondition` holds (its sole hypothesis `LE x 100` is exactly the
+           node's stated precondition). So the oracle would return Some and the Core elision pass would drop
+           the guard. Runs to `true`. Pins that a correctly-discharged proof under a matching precondition
+           licenses the elision — the fact b3 consumes via compile-time eval.")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 0) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+      (def (maxint) (Term.Const 2))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (le-ax (: a Term) (: b Term)) (Thm.Seq (list) (le a b)))
+      (def (mono-add-r (: th Thm) (: k Term))
+        (match (concl th)
+          ((Term.Comb (Term.Comb (Term.Const 1) x) c)
+            (Option.Some (Thm.Seq (hyps th) (le (add x k) (add c k)))))
+          (_ (Option.None))))
+      (def (trans-le (: t1 Thm) (: t2 Thm))
+        (match (concl t1)
+          ((Term.Comb (Term.Comb (Term.Const 1) a) b)
+            (match (concl t2)
+              ((Term.Comb (Term.Comb (Term.Const 1) b2) c)
+                (if (term-eq b b2)
+                  (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (le a c)))
+                  (Option.None)))
+              (_ (Option.None))))
+          (_ (Option.None))))
+      ; membership: some member of `ps` is term-eq to `q`
+      (def (mem (: q Term) (: ps (List Term)))
+        (match ps
+          ((list) false)
+          ((list h .. t) (if (term-eq q h) true (mem q t)))))
+      ; hyps ⊆ precondition: every hyp is a member of the precondition set
+      (def (hyps-subset (: hs (List Term)) (: pre (List Term)))
+        (match hs
+          ((list) true)
+          ((list h .. t) (if (mem h pre) (hyps-subset t pre) false))))
+      ; THE MATCH PREDICATE: conclusion is the obligation AND hyps are covered by the precondition
+      (def (licenses (: thm Thm) (: obligation Term) (: pre (List Term)))
+        (and (term-eq (concl thm) obligation) (hyps-subset (hyps thm) pre)))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq add le maxint concl hyps assume le-ax mono-add-r trans-le licenses)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq add le maxint concl hyps assume le-ax mono-add-r trans-le licenses))
+            (def (main)
+              (let ((x   (Term.Var 0))
+                    (one (Term.Num 1))
+                    (c   (Term.Num 100)))
+                (let ((obligation  (le (add x one) (maxint)))
+                      (precondition (list (le x c))))
+                  ; discharge the obligation (the b1 chain)
+                  (let ((pre (assume (le x c))))
+                    (match (mono-add-r pre one)
+                      ((Option.Some step1)
+                        (let ((fact (le-ax (add c one) (maxint))))
+                          (match (trans-le step1 fact)
+                            ((Option.Some proof)
+                              ; the match predicate accepts: conclusion matches AND hyps ⊆ precondition
+                              (licenses proof obligation precondition))
+                            ((Option.None) false))))
+                      ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "the b2 match predicate REJECTS a proof discharged under a FOREIGN hypothesis not in the node precondition (soundness — no elision under wrong assumptions)"
+  (doc    "The soundness-critical b2 negative — the breaker vector the design flags. A proof can have the
+           RIGHT conclusion `LE (add x 1) MAXINT` yet be established under a hypothesis the node's
+           precondition does NOT provide: here the proof is discharged assuming `LE x 100`, but the node's
+           stated precondition is only `LE x 200` (weaker — it does not license the `≤100`-dependent proof).
+           `term-eq` on the conclusion ALONE would wrongly accept (conclusions match), so the match predicate
+           MUST also check hyps ⊆ precondition — and it fails: the proof's hypothesis `LE x 100` is NOT a
+           member of the precondition `{LE x 200}`. So `licenses` returns false → the oracle returns None →
+           the overflow check STAYS. The entry asserts `licenses` is false for this mismatched-assumption
+           proof (runs to `true` via `not`). Pins that a `Thm` proven under assumptions the node does not
+           guarantee cannot license an elision — the exact forge-adjacent vector (right answer, wrong
+           reasons) that a conclusion-only match would miss.")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 0) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+      (def (maxint) (Term.Const 2))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (le-ax (: a Term) (: b Term)) (Thm.Seq (list) (le a b)))
+      (def (mono-add-r (: th Thm) (: k Term))
+        (match (concl th)
+          ((Term.Comb (Term.Comb (Term.Const 1) x) c)
+            (Option.Some (Thm.Seq (hyps th) (le (add x k) (add c k)))))
+          (_ (Option.None))))
+      (def (trans-le (: t1 Thm) (: t2 Thm))
+        (match (concl t1)
+          ((Term.Comb (Term.Comb (Term.Const 1) a) b)
+            (match (concl t2)
+              ((Term.Comb (Term.Comb (Term.Const 1) b2) c)
+                (if (term-eq b b2)
+                  (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (le a c)))
+                  (Option.None)))
+              (_ (Option.None))))
+          (_ (Option.None))))
+      (def (mem (: q Term) (: ps (List Term)))
+        (match ps
+          ((list) false)
+          ((list h .. t) (if (term-eq q h) true (mem q t)))))
+      (def (hyps-subset (: hs (List Term)) (: pre (List Term)))
+        (match hs
+          ((list) true)
+          ((list h .. t) (if (mem h pre) (hyps-subset t pre) false))))
+      (def (licenses (: thm Thm) (: obligation Term) (: pre (List Term)))
+        (and (term-eq (concl thm) obligation) (hyps-subset (hyps thm) pre)))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq add le maxint concl hyps assume le-ax mono-add-r trans-le licenses)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq add le maxint concl hyps assume le-ax mono-add-r trans-le licenses))
+            (def (main)
+              (let ((x    (Term.Var 0))
+                    (one  (Term.Num 1))
+                    (c100 (Term.Num 100))
+                    (c200 (Term.Num 200)))
+                (let ((obligation  (le (add x one) (maxint)))
+                      ; the node's ACTUAL precondition is the WEAKER (le x 200)
+                      (precondition (list (le x c200))))
+                  ; discharge a proof of the SAME conclusion but under the STRONGER hyp (le x 100)
+                  (let ((pre100 (assume (le x c100))))
+                    (match (mono-add-r pre100 one)
+                      ((Option.Some step1)
+                        (let ((fact (le-ax (add c100 one) (maxint))))
+                          (match (trans-le step1 fact)
+                            ((Option.Some proof)
+                              ; conclusion matches, BUT hyp (le x 100) ∉ precondition {(le x 200)} →
+                              ; licenses must be FALSE (the check must STAY). assert NOT licenses.
+                              (not (licenses proof obligation precondition)))
+                            ((Option.None) false))))
+                      ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))
