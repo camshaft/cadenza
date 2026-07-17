@@ -2537,10 +2537,41 @@ fn a_recursive_newtype_declines_the_whole_function() {
            (export sm))",
     )
     .expect_err("a recursive newtype must decline, not emit an uncompilable crate");
+    // The decline names it ACCURATELY as a recursive NEWTYPE (not "a sum" — it is not a sum, and it fails
+    // for a distinct reason: its erasure unfolds forever, so it needs a Box-indirected nominal emission).
     assert!(
-        err.iter()
-            .any(|d| d.contains("recursive") || d.contains("no emitted Rust enum")),
-        "decline reason should cite the recursive/unrepresentable type: {err:?}"
+        err.iter().any(|d| d.contains("recursive newtype")),
+        "decline reason should name the recursive newtype precisely: {err:?}"
+    );
+
+    // The decline is ROBUST across every position the recursive newtype can appear — a PARAM, a RESULT,
+    // and NESTED inside a List result — so a future partial fix cannot leave one position emitting an
+    // uncompilable signature (a `cannot find type Lst`). Each declines cleanly, none panics/miscompiles.
+    for prog in [
+        // param position
+        "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) (def (f (: l Lst)) 0) (export f))",
+        // result position
+        "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) (def (f) (Mk (None))) (export f))",
+        // nested inside a List result
+        "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) (def (f) (list (Mk (None)))) (export f))",
+    ] {
+        let e = try_compile_rust(prog).expect_err(
+            "a recursive newtype in any position must decline, not emit an uncompilable crate",
+        );
+        assert!(
+            e.iter().any(|d| d.contains("recursive newtype")),
+            "recursive-newtype decline in every position: {e:?}\nprog: {prog}"
+        );
+    }
+
+    // A genuine recursive SUM, by contrast, COMPILES (its enum boxes the recursive variant field) — so the
+    // "recursive newtype" phrasing is specific to the newtype gap, not a blanket recursion decline.
+    let sum = compile_rust(
+        "(module m (type IL (Cons (Tuple Int64 IL)) (Nil)) (def (f (: l IL)) 0) (export f))",
+    );
+    assert!(
+        sum.contains("enum IL") && sum.contains("::std::boxed::Box<"),
+        "a recursive SUM emits a Box-indirected enum (not declined like the newtype):\n{sum}"
     );
 }
 
