@@ -169,11 +169,19 @@ export default function CalculatorPage() {
       <div className="mb-3 shrink-0">
         <div className="flex items-baseline justify-between gap-3">
           <h1 className="text-lg font-bold text-slate-100 sm:text-xl">Cadenza calculator</h1>
-          <div className="flex shrink-0 items-center gap-3 text-xs">
-            <button onClick={reset} className="text-slate-400 hover:text-slate-200">
+          {/* Mobile touch targets: header actions get a 44px min-height (centered) below `sm`, compact
+              text-links at `sm`+ where a mouse doesn't need the padding. */}
+          <div className="flex shrink-0 items-center gap-1 text-xs sm:gap-3">
+            <button
+              onClick={reset}
+              className="flex min-h-11 items-center px-2 text-slate-400 hover:text-slate-200 sm:min-h-0 sm:px-0"
+            >
               Clear
             </button>
-            <Link to="/playground" className="text-cadenza-400 hover:text-cadenza-300">
+            <Link
+              to="/playground"
+              className="flex min-h-11 items-center px-2 text-cadenza-400 hover:text-cadenza-300 sm:min-h-0 sm:px-0"
+            >
               Playground →
             </Link>
           </div>
@@ -208,7 +216,7 @@ export default function CalculatorPage() {
                         // Read as a tappable chip: bordered pill, hover lift, explicit pointer cursor,
                         // the label as a badge next to the actual expression it inserts — so it's
                         // unmistakably interactive, not prose.
-                        className="group flex w-full cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/40 px-3 py-2 text-left transition hover:border-cadenza-500 hover:bg-slate-800"
+                        className="group flex min-h-11 w-full cursor-pointer items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/40 px-3 py-2 text-left transition hover:border-cadenza-500 hover:bg-slate-800 sm:min-h-0"
                         title={`Insert: ${s.expr}`}
                       >
                         <span className="shrink-0 rounded bg-slate-700/70 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-300 group-hover:bg-cadenza-600 group-hover:text-white">
@@ -245,12 +253,14 @@ export default function CalculatorPage() {
               autoCapitalize="off"
               autoCorrect="off"
               autoFocus
-              className="min-w-0 flex-1 bg-transparent font-mono text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none"
+              // Mobile touch target: a 44px-tall input line below `sm` so tapping to focus is comfortable.
+              className="min-h-11 min-w-0 flex-1 bg-transparent font-mono text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none sm:min-h-0"
             />
             <button
               onClick={() => void submit(input)}
               disabled={busy || input.trim() === ""}
-              className="rounded bg-cadenza-600 px-2.5 py-1 text-xs font-semibold text-white transition enabled:hover:bg-cadenza-500 disabled:opacity-40"
+              // Mobile touch target: a 44px min square below `sm` (the touch guideline), compact on desktop.
+              className="flex min-h-11 min-w-11 items-center justify-center rounded bg-cadenza-600 px-2.5 text-sm font-semibold text-white transition enabled:hover:bg-cadenza-500 disabled:opacity-40 sm:min-h-0 sm:min-w-0 sm:py-1 sm:text-xs"
             >
               =
             </button>

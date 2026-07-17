@@ -38,6 +38,9 @@ const ROUTES = [
     path: "/calculator",
     waitFor: "input",
     label: "calculator",
+    // Guard the mobile tap-target pass (=button / input / Clear / Playground→ / example chips sized to
+    // min-h-11 below sm) against regression.
+    tapTargets: true,
     // 2^256 is a 78-digit big integer — a single unbroken token, the mobile-overflow case.
     async interact(page) {
       await page.fill("input", "2 ^ 256");
@@ -237,6 +240,33 @@ try {
         if (route.expectCanvas) {
           const hasCanvas = await page.evaluate(() => !!document.querySelector("canvas"));
           check(hasCanvas, `${route.label}: 3D preview rendered a <canvas> on first load`);
+        }
+
+        // Mobile TAP TARGETS: on the phone viewport, a route that opted into `tapTargets` must have no
+        // genuinely-tiny interactive control — the 44px touch guideline (Apple HIG / WCAG). The
+        // mobile-responsive pass sizes controls to `min-h-11` below `sm`; this guards that against
+        // regression. We assert the min VISIBLE interactive dimension is ≥ 40px (44 minus a rounding/border
+        // slack). Only meaningful at mobile width, so gate on the viewport.
+        if (route.tapTargets && vp.name === "mobile-390") {
+          const tiny = await page.evaluate(() => {
+            const els = [...document.querySelectorAll('button, a[href], input, [role="button"], select')];
+            let min = Infinity;
+            let desc = "";
+            for (const el of els) {
+              const r = el.getBoundingClientRect();
+              if (r.width === 0 || r.height === 0) continue; // hidden / not laid out
+              const dim = Math.min(r.width, r.height);
+              if (dim < min) {
+                min = dim;
+                desc = (el.textContent || el.getAttribute("aria-label") || el.tagName).trim().slice(0, 24);
+              }
+            }
+            return { min: min === Infinity ? null : Math.round(min), desc };
+          });
+          check(
+            tiny.min == null || tiny.min >= 40,
+            `${route.label}: mobile tap targets ≥ 44px (smallest ${tiny.min}px "${tiny.desc}")`,
+          );
         }
 
         // A route can run arbitrary custom assertions via the shared `check(ok, msg)` helper — for
