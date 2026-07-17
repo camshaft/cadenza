@@ -494,9 +494,16 @@ fn watch_test_passes_filter_to_the_rerun() {
 fn watch_clear_emits_a_clear_screen_before_each_run() {
     // `--clear` (like `cargo watch -c`) clears the terminal before EACH run so output starts fresh. The
     // clear is the ANSI erase-display sequence `\x1b[2J`; our capture file records it verbatim (harmless
-    // when stdout isn't a tty). Assert it appears ONCE on the initial run, then TWICE after a source edit
-    // re-runs — proving it fires per-run, not just at startup. (Without --clear it never appears — the
-    // sibling `watch_reruns_check…` test's captures contain no `\x1b[2J`.)
+    // when stdout isn't a tty). The invariant `--clear` guarantees is PER-RUN: every run (the initial one
+    // and every re-run) emits exactly one clear.
+    //
+    // We assert this as a DELTA, not an absolute startup count (Copilot PR #521): on macOS, FSEvents
+    // delivers a spurious startup filesystem event that the watch loop handles via its normal change path,
+    // firing a SECOND startup run (and thus a second clear) that Linux inotify does not — so a fixed
+    // `assert_eq!(startup_clears, 1)` FLAKES there even though `--clear` works. The sibling
+    // `watch_runs_the_command_exactly_once_on_startup` test documents the same platform event. So: record
+    // whatever the startup clear count settles at (≥1 — the feature IS on), then assert a source edit
+    // INCREASES it (the re-run clears again) — a per-run delta that holds on every platform.
     let (root, proj) = scaffold("clear");
     let (mut child, cap) = spawn_watch(&proj, &["--clear"], "clear");
     assert!(
@@ -504,34 +511,41 @@ fn watch_clear_emits_a_clear_screen_before_each_run() {
         "startup banner: {}",
         read_cap(&cap)
     );
-    // The initial run cleared once.
+    // The initial run cleared (at least once — proves `--clear` is active; without it the capture would
+    // contain zero `\x1b[2J`, as the other watch tests' captures do).
     assert!(
         wait_for(&cap, "\x1b[2J", Duration::from_secs(20)),
         "the initial run clears the screen: {:?}",
         read_cap(&cap)
     );
-    let clears_after_startup = count(&cap, "\x1b[2J");
+    // Let any spurious startup FS event (macOS) settle so the baseline count is stable before the edit.
+    std::thread::sleep(Duration::from_secs(2));
+    let startup_clears = count(&cap, "\x1b[2J");
+    assert!(
+        startup_clears >= 1,
+        "the startup run clears at least once: {:?}",
+        read_cap(&cap)
+    );
 
-    // A source edit → the re-run clears again (a second clear).
+    // A source edit → the re-run clears AGAIN: the count must strictly increase (the per-run guarantee),
+    // regardless of whether startup fired one clear (Linux) or two (a macOS spurious startup event).
     std::thread::sleep(Duration::from_millis(800));
     std::fs::write(
         proj.join("main.cdz"),
         "def main() -> Int64 = 1\n\nexport { main }\n",
     )
     .expect("edit source");
-    let two_clears = wait_for_count(&cap, "\x1b[2J", 2, Duration::from_secs(20));
+    let cleared_again =
+        wait_for_count(&cap, "\x1b[2J", startup_clears + 1, Duration::from_secs(20));
     let captured = read_cap(&cap);
 
     let _ = child.kill();
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_file(&cap);
-    assert_eq!(
-        clears_after_startup, 1,
-        "exactly one clear on the initial run: {captured:?}"
-    );
     assert!(
-        two_clears,
-        "the re-run clears the screen again (2 total): {captured:?}"
+        cleared_again,
+        "the re-run clears the screen again (clears increased past the startup count {startup_clears}): \
+         {captured:?}"
     );
 }
