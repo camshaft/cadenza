@@ -60780,6 +60780,33 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn highlight_paints_stacked_annotations_without_false_reds() {
+        // STACKED annotations on one def — `@test @tag("slow") (def …)` reifies to
+        // `(@ test (@ (tag "slow") (def …)))`, nesting the wrappers. `db::strip_annotations` unwraps the
+        // INNER `(@ (tag …) def)` first (the def adopts its children), then the OUTER `(@ test …)`, orphaning
+        // BOTH `@` sigils, the `test` name, AND the `(tag "slow")` app — several detached tokens over one
+        // def. This is the multi-annotation edge the single-annotation tests don't reach: it must still show
+        // NO false-red (each `@`→keyword via the parentless-`@` path, `test`→keyword via KNOWN_ANNOTATIONS,
+        // the orphaned `tag` head→symbol via the quoted-data stopgap), and the def + body classify normally.
+        let src = "(module m (@ test (@ (tag \"slow\") (def (t) (+ 1 1)))) (export t))";
+        // Both `@` sigils are decorators. (Two occurrences, one per stacked annotation.)
+        assert_eq!(highlight_kinds_of(src, "@"), vec!["keyword", "keyword"]);
+        // The known-annotation name `test` is a keyword.
+        assert_eq!(highlight_kinds_of(src, "test"), vec!["keyword"]);
+        // The call-style `tag` head is inert data (orphaned app) — `symbol`, not error-red.
+        assert_eq!(highlight_kinds_of(src, "tag"), vec!["symbol"]);
+        // The doubly-annotated def still resolves — nullary def reads `variable`, at the def + export ref.
+        assert_eq!(highlight_kinds_of(src, "t"), vec!["variable", "variable"]);
+        // NOTHING in a clean stacked-annotation program is painted error-red.
+        let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
+        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+        assert!(
+            !text.lines().any(|l| l.ends_with("\tunbound")),
+            "no token in a clean stacked-annotation program is unbound:\n{text}"
+        );
+    }
+
+    #[test]
     fn highlight_colours_literals_by_kind() {
         // Each literal leaf carries its own kind; a keyword head is `keyword`.
         let src = "(module m (def (main) (if true 42 0)) (export main))";
