@@ -73914,6 +73914,78 @@ mod cross_component_oracle {
         }
     }
 
+    #[test]
+    fn a_peer_op_returning_a_tuple_with_a_variable_length_list_element_crosses() {
+        use crate::testkit::parse;
+        // A peer op returning a TUPLE whose element is a VARIABLE-LENGTH collection — `(Tuple (List Int64)
+        // Int64)` — crosses as a handle and BOTH fields (the dynamic-depth list + the scalar) read back
+        // over the shared runtime. This is the peer face of the nested-collection resource-escape routing
+        // (a Tuple/Record with a variable-length element has no fixed-hole `runtime_value_form_template`,
+        // so it escapes via the recursive-sum `value-encode` walker that loops to runtime depth — a peer
+        // op returning it flows through the SAME emit path as the fused peer envelope). Before that routing
+        // a peer op with this result declined ("value-form walker that loops to a runtime-determined depth
+        // is not yet emitted"). The earlier peer-List/Set/compound pins cover a FIXED-shape or bare-
+        // collection result; this covers a COMPOUND whose element is itself dynamic-depth.
+        //
+        // PROVIDER: mk(x) = (tuple [x, x+1, x+2], x*10) — a runtime-built list paired with a scalar.
+        let provider = compile_provider(
+            "(do (def (mk (: x Int64)) (tuple (list x (+ x 1) (+ x 2)) (* x 10))) (export mk))",
+            "cadenza:p/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the tuple-with-list provider validates");
+        }
+        // CONSUMER: binds it, reads BOTH fields of the crossed tuple — List.len of the variable-length
+        // element (field 0) + the scalar (field 1) — proving the dynamic-depth element survived the
+        // crossing intact, not just the scalar. main returns a scalar so the entrypoint result stays
+        // scalar (the compound crosses only at the peer boundary).
+        let src = "(do \
+            (effect P (op mk (-> Int64 (Tuple (List Int64) Int64)))) \
+            (bind P \"cadenza:p/api\") \
+            (def (main (: x Int64)) (host (P) (+ (List.len (. (P.mk x) 0)) (. (P.mk x) 1)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "tuple-with-list consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("tuple-with-list consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[tuple-with-list] runtime wasm not found; skipping the run");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:p/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["4".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a peer op returning a tuple-with-a-list crosses")
+        {
+            // mk(4) = ([4,5,6], 40); List.len(field0) = 3 + field1 = 40 → 43. The variable-length list
+            // element inside the peer-returned tuple crossed as a handle and read back correctly.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "43",
+                "a peer-returned tuple with a variable-length list element crosses; both fields read"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("tuple-with-list run trapped: {t}"),
+        }
+    }
+
     // ------------------------------------------------------------------------------------------------
     // PL22 — a peer op returning a SET (a CHAMP collection) crosses + the consumer reads its size. The
     // Set companion of PL18's List-result pin: a distinct runtime representation (CHAMP hash-set, not
