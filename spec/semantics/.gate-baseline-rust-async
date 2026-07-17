@@ -3677,7 +3677,6 @@ todo	three same-variant literal arms fall through in order
 todo	tuple elements are evaluated left to right
 todo	two @param sites generate two accessors under one Param effect
 todo	two capturing closures stored as runtime tuple elements keep distinct captures
-todo	two exports normalizing to the same kebab extern name are rejected
 todo	two host calls consume their responses in order
 todo	two host responses combine in call order through a non-commutative operator
 todo	two same-signature Bytes-returning closures share one call — first
