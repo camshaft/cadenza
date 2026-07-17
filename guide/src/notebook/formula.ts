@@ -38,9 +38,14 @@ export function classifyFormula(rendered: string): Formula {
 
   if (isAtom(node)) {
     const a = node.atom;
-    // A rational `n/d` (optionally negative) → a stacked fraction.
+    // A rational `n/d` (optionally negative) → a stacked fraction. A WHOLE-valued rational is canonicalized
+    // to `n/1` by Cadenza's number model; render it as a plain integer (`4/1` → `4`, `-4/1` → `-4`) rather
+    // than an ugly stacked fraction over `1`.
     const rat = /^(-?)(\d+)\/(\d+)$/.exec(a);
-    if (rat) return { kind: "fraction", num: rat[2], den: rat[3], negative: rat[1] === "-" };
+    if (rat) {
+      if (rat[3] === "1") return { kind: "plain", text: `${rat[1]}${rat[2]}` };
+      return { kind: "fraction", num: rat[2], den: rat[3], negative: rat[1] === "-" };
+    }
     // Any other atom (number, bool, symbol, quoted string) → plain friendly text.
     return { kind: "plain", text: unquoteAtom(a) };
   }
