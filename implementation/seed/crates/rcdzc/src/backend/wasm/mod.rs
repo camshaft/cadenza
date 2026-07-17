@@ -185,12 +185,17 @@ fn kebab_export_collision(layout: &Layout) -> Option<Reject> {
 /// interface-NAME guard (`is_valid_interface_name`): a boundary name that isn't valid kebab is a
 /// compile-time reject, not a silent load failure. (Mirrors `cadenza_syntax::extern_name`'s ASCII
 /// precondition — kept a CONSUMER-side reject since the pure lib core takes `cadenza-syntax` DEV-only.)
-fn invalid_kebab_export_name(layout: &Layout) -> Option<Reject> {
+fn invalid_kebab_export_name(db: &Db, layout: &Layout) -> Option<Reject> {
     for e in &layout.exports {
         let extern_name = kebab_extern_name(&e.name);
         if is_kebab_word(&extern_name) {
             continue;
         }
+        // Anchor the reject at the offending definition's SIGNATURE occurrence (where its name is written),
+        // so the diagnostic POINTS at the `@test`/export name the author must rename, not just describes it.
+        // For a `@test` build the export is a `@test` def; for a normal build it is an `(export …)`'d def —
+        // `sig_occ` is the name-bearing occurrence for both.
+        let name_span = db.defs.get(e.def).map(|d| d.sig_occ);
         // Pinpoint WHY it fails, so the fix is actionable rather than a generic "not valid kebab".
         // A char outside the kebab alphabet `[A-Za-z0-9-]` (a non-ASCII letter like `π`/`é`, or a symbol
         // like `·`) is the (1) non-ASCII cause; otherwise the alphabet is fine but a segment is digit-/
@@ -217,7 +222,11 @@ fn invalid_kebab_export_name(layout: &Layout) -> Option<Reject> {
                 e.name
             )
         };
-        return Some(Reject::coded(crate::diag::Code::Malformed, msg));
+        let reject = Reject::coded(crate::diag::Code::Malformed, msg);
+        return Some(match name_span {
+            Some(occ) => reject.at(occ),
+            None => reject,
+        });
     }
     None
 }
@@ -301,7 +310,7 @@ pub fn emit(
     // `wasmtime` rejects wholesale at load, with no diagnostic (a silent total-component failure — every
     // test in the file "fails", or the artifact is unloadable). Reject it here, before emit, naming the
     // offending name + the fix — the export-name analogue of the `is_valid_interface_name` guard.
-    if let Some(reject) = invalid_kebab_export_name(layout) {
+    if let Some(reject) = invalid_kebab_export_name(db, layout) {
         return Err(reject);
     }
     // HOST-OP BOUNDARY-REPRESENTABILITY guard — hoisted BEFORE every emit path (escape / closure / main),

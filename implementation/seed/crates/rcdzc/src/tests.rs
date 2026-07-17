@@ -59415,16 +59415,25 @@ mod sidecar_driven {
                  invalid component: {:?}",
                 out.diagnostics
             );
+            let boundary_diag = out.diagnostics.iter().find(|d| {
+                d.code.as_deref() == Some("CDZ0201")
+                    && d.message.contains("valid component boundary name")
+            });
             assert!(
-                out.diagnostics
-                    .iter()
-                    .any(|d| d.code.as_deref() == Some("CDZ0201")
-                        && d.message.contains("valid component boundary name")),
+                boundary_diag.is_some(),
                 "the decline for `{name}` is the coded boundary-name CDZ0201: {:?}",
                 out.diagnostics
                     .iter()
                     .map(|d| &d.message)
                     .collect::<Vec<_>>()
+            );
+            // The diagnostic ANCHORS at the offending `@test`/export def (its `sig_occ`), so a consumer that
+            // holds the span table points the reader AT the name to rename — not an unanchored bare message
+            // (v-guide-infra's actionable-diagnostic ask, 2026-07-17: the guide now teaches `@test` authoring,
+            // so a numeric-segment name must point at the name + say how to fix it).
+            assert!(
+                boundary_diag.unwrap().node.is_some(),
+                "the boundary-name reject for `{name}` carries a source anchor (points at the @test name)"
             );
         }
     }
