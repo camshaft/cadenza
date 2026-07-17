@@ -478,6 +478,46 @@ export const EXAMPLES: Example[] = [
     expected: "25",
   },
   {
+    // Shows off: composing lazy-style transformers into a pipeline. A hand-rolled linked sequence
+    // (Iter) with filter/map/fold; each stage recurses down the sequence and rebuilds it. The pipeline
+    // keeps the evens of 1..6 -> [2,4,6], triples them -> [6,12,18], and sums -> 36.
+    // (Authored with v-iterators, who own the iterator family.)
+    name: "Iterator pipeline (filter → map → fold)",
+    surface: "sexpr",
+    source: `(do
+  ; A linked sequence of Int64: empty (Nil) or a head paired with the rest.
+  (type Iter (Nil unit) (Cons (Tuple Int64 Iter)))
+  (def (from-list xs)
+    (match xs
+      ((list) (Nil unit))
+      ((list h .. t) (Cons (tuple h (from-list t))))))
+  ; Keep elements satisfying p.
+  (def (ifilter it p)
+    (match it
+      ((Nil _) (Nil unit))
+      ((Cons c) (if (p (. c 0))
+                    (Cons (tuple (. c 0) (ifilter (. c 1) p)))
+                    (ifilter (. c 1) p)))))
+  ; Apply f to every element.
+  (def (imap it f)
+    (match it
+      ((Nil _) (Nil unit))
+      ((Cons c) (Cons (tuple (f (. c 0)) (imap (. c 1) f))))))
+  ; Reduce left-to-right with f, starting from acc.
+  (def (ifold it acc f)
+    (match it
+      ((Nil _) acc)
+      ((Cons c) (ifold (. c 1) (f acc (. c 0)) f))))
+  ; evens of 1..6 -> triple -> sum = 36
+  (def (main)
+    (ifold (imap (ifilter (from-list (list 1 2 3 4 5 6)) (fn (x) (= 0 (% x 2))))
+                 (fn (x) (* x 3)))
+           0
+           (fn (a x) (+ a x))))
+  (export main))`,
+    expected: "36",
+  },
+  {
     name: "A type error (see the squiggle)",
     surface: "sexpr",
     source: `(do
