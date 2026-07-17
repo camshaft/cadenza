@@ -2144,6 +2144,37 @@ fn quantity_result_maps_to_inner_at_any_scale1_unit_else_declines() {
 }
 
 #[test]
+fn rustc_roundtrip_nominal_over_narrow_qty_map_value_grounds_to_inner_width() {
+    // A NOMINAL newtype WRAPPING a narrow-int quantity — `(type Len (Q (Qty Int8 meter)))` — stored as a
+    // MAP VALUE and read back. The map value type is the erased narrow inner (`i8`, `BTreeMap<i64, i8>`),
+    // but `int_ty_of` peeled only a RAW `Ty::Qty`, so a `Ty::Nominal { inner: Qty }` missed the peel and
+    // grounded the inserted magnitude to the i64 default → `insert(k, n as i64)` into an `i8` slot → rustc
+    // E0308 (reviewer-flagged, low-confidence, confirmed real). Fixed by `int_ty_of` doing strip_nominal →
+    // peel Qty → strip_nominal (mirroring the wasm backend), so the narrow inner is seen through ANY
+    // nominal/Qty wrapping. Emits `insert(…, 100u8 as i8)` and runs to 100 = the wasm oracle.
+    let rs = compile_rust(
+        "(module m (type Len (Q (Qty Int8 (Unit.base #\"meter\")))) \
+           (def (run) \
+             (match (Map.lookup (Map.insert (Map.empty) 1 \
+                       (Len.Q (Qty.of (Int8.of 100) (Unit.base #\"meter\")))) 1) \
+               ((Some (Len.Q q)) (Qty.value q)) \
+               ((None) 0))) \
+           (export run))",
+    );
+    // The narrow inner drives the map value type + the inserted magnitude — no `as i64` into an i8 slot.
+    assert!(
+        rs.contains("BTreeMap<i64, i8>") && rs.contains("100u8 as i8"),
+        "the nominal-over-Qty map value grounds to the inner i8 width (no i64 default):\n{rs}"
+    );
+    if let Some(out) = rustc_run(&rs, "run()") {
+        assert_eq!(
+            out, "100",
+            "the stored 100-meter nominal-Qty reads back + unwraps to 100"
+        );
+    }
+}
+
+#[test]
 fn a_non_scale1_float_int_or_rational_quantity_display_scales_to_its_reference() {
     // A NON-scale-1 unit DISPLAY-SCALES the stored magnitude to its dimension's reference (`5 km` →
     // `5000 m`). The backend emits the unit at REFERENCE (`Unit::at_reference().render_value_form`) + a

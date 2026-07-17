@@ -1797,3 +1797,80 @@
             (def (main) (f 5))
             (export main)))
   (output (: -95 Int64)))
+
+; ── @requires enforcement EDGES (breaker) — beyond the const-arg violated/satisfied pair above ──────
+; The two (D) pins above call `f` with a CONSTANT argument, so a fold could in principle have discharged
+; the check at compile time. These pin the enforcement's REACH: a genuinely-runtime argument (the check
+; must be emitted, not folded), a RECURSIVE def (the body-entry check re-fires at every entry, including
+; self-calls), a predicate that itself PERFORMS an effect (the pre runs under the caller's handler and
+; ADVANCES its state before the body runs), and a predicate that itself TRAPS (its own trap kind wins —
+; the requires rewrite adds no guard around the predicate's evaluation).
+
+(case "a @requires precondition is enforced for a genuinely-runtime argument"
+  (doc    "The runtime companion of the const-arg violation pin above: the argument arrives at the CALL
+           BOUNDARY, so nothing folds and the injected body-entry `(if (>= x 0) … (trap …))` must actually
+           run. `(f -5)` violates → the canonical unreachable trap; `(f 5)` satisfies → 6, value-transparent.
+           A pass that only proved const violations (or an emit that dropped the check on the runtime path)
+           would return -4 here — the exact pre-(D) behavior — so this is the regression pin for the
+           EMITTED check.")
+  (input  (do
+            (@ (requires (>= x 0)) (def (f (: x Int64)) (+ x 1)))
+            (def (main (: n Int64)) (f n))
+            (export main)))
+  (call   main (: -5 Int64))
+  (trap   "unreachable")
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "a @requires on a recursive def is re-checked at every entry including self-calls"
+  (doc    "The body-entry reading ({P} body {Q}, checked when the function RUNS) puts the injected check
+           inside the def, so a RECURSIVE def re-fires it on every self-call, not only the outermost entry.
+           `fact` with `@requires (>= n 0)`: n=4 → 24 (every recursive entry 4,3,2,1,0 satisfies), n=-1 →
+           the entry check traps immediately. Pins that the rewrite composes with recursion (specialization
+           /accumulator transforms must keep the per-entry check) — a call-site-only reading would also
+           pass n=4 but differs on shapes where an internal entry first violates.")
+  (input  (do
+            (@ (requires (>= n 0))
+              (def (fact (: n Int64)) (if (= n 0) 1 (* n (fact (- n 1))))))
+            (def (main (: k Int64)) (fact k))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 24 Int64))
+  (call   main (: -1 Int64))
+  (trap   "unreachable"))
+
+(case "an EFFECTFUL @requires predicate performs under the caller's handler and advances its state before the body"
+  (doc    "The predicate `(> (Counter.bump) 0)` PERFORMS an operation, so the injected body-entry check is
+           itself effectful: it must route to the dynamically-enclosing handler and its state advance must
+           be SEEN by the body's own later perform — the check is sequenced BEFORE the body, in the same
+           handler extent, not hoisted out of it or double-performed. Seeded 0: the pre's bump resumes 1
+           (>0, satisfied — and threads state 1), the body's bump resumes 2, so `(f 10)` = 10 + 2 = 12. A
+           rewrite that evaluated the predicate OUTSIDE the handler would fail to compile or trap; one that
+           re-evaluated it would yield 13.")
+  (input  (do
+            (effect Counter (op bump (-> Unit Int64)))
+            (@ (requires (> (Counter.bump) 0))
+              (def (f (: n Int64)) (+ n (Counter.bump))))
+            (def (main (: n Int64))
+              (handle Counter 0
+                ((bump (u) s (resume (+ s 1) (+ s 1))))
+                (f n)))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 12 Int64)))
+
+(case "a @requires predicate that itself traps keeps its own trap kind"
+  (doc    "The predicate `(> (/ 10 n) 0)` divides by its parameter, so at n=0 evaluating the PREDICATE
+           traps `integer divide by zero` — a DIFFERENT kind from the requires-violation `unreachable`.
+           The enforcement rewrite wraps the BODY in the predicate-guarded if; it adds no guard around the
+           predicate's own evaluation, so the predicate's trap fires first and keeps its kind (trap-kind
+           observability: reordering or re-classifying it would be a miscompile). n=2 satisfies (10/2=5>0)
+           → 2, the control.")
+  (input  (do
+            (@ (requires (> (/ 10 n) 0)) (def (f (: n Int64)) n))
+            (def (main (: n Int64)) (f n))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 2 Int64))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))

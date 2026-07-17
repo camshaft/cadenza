@@ -3250,17 +3250,25 @@ fn op_name(op: Prim) -> &'static str {
 /// read-off `select.rs` does (`int_ty_of`). A non-integer node never reaches an integer-typed emit
 /// path, so the default is defensive.
 fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
-    // PEEL `Ty::Qty`: a quantity over an int — `(Qty Int8 u)` — erases to its inner int's width (the unit
-    // is a compile-time value), so a `(Qty.of (Int8.of n) u)` magnitude must ground to the INNER width, not
-    // the i64 default. WITHOUT the peel, a narrow-Qty magnitude stored as a heap value (e.g. a `Map.insert`
-    // value) rendered `n as i64` into an `i8`-typed slot → Rust E0308 (`expected i8, found i64`). Mirrors
-    // the wasm backend's `int_ty_of` Qty peel (the `int_ty_of`/narrow-width lockstep, cross-backend twin).
-    let ty = match type_of(db, id) {
-        Ty::Qty { inner, .. } => *inner,
+    // STRIP_NOMINAL then PEEL `Ty::Qty` then STRIP_NOMINAL again — mirroring the wasm backend's `int_ty_of`
+    // EXACTLY (the cross-backend narrow-width lockstep). Two erasures compose:
+    //  - `strip_nominal`: an ERASED newtype over an int (`(type W (Wrap UInt8))`) has its inner int's width,
+    //    so a `(W.Wrap 5)` grounds to the INNER (u8), not the i64 default.
+    //  - PEEL `Ty::Qty`: a quantity over an int (`(Qty Int8 u)`) erases to its inner int's width (the unit is
+    //    compile-time), so a `(Qty.of (Int8.of n) u)` magnitude grounds to the INNER (i8).
+    // The leading strip is what the reviewer flagged as missing: a NOMINAL-over-Qty (`(type Len (Q (Qty Int8
+    // u)))` stored as a heap value) is `Ty::Nominal { inner: Qty }` — WITHOUT the leading strip the raw
+    // `Ty::Qty` match misses it and it defaults to i64, so a `Map.insert` value rendered `n as i64` into an
+    // `i8`-typed `BTreeMap<_, i8>` slot → Rust E0308. Strip → peel → strip handles nominal-over-Qty-over-
+    // nominal, so `int_ty_of` sees the true narrow inner in every wrapping. (Verified: closes the
+    // nominal-over-Qty map-value E0308; the bare-Qty case v-quantity fixed still resolves to the inner.)
+    let solved = type_of(db, id);
+    let inner = match solved.strip_nominal() {
+        Ty::Qty { inner, .. } => inner.strip_nominal(),
         other => other,
     };
-    match ty {
-        Ty::Int(it) => it,
+    match inner {
+        Ty::Int(it) => *it,
         _ => IntTy {
             sign: Sign::Fixed(true),
             width: Width::Fixed(crate::ty::DEFAULT_INT_WIDTH),

@@ -231,6 +231,9 @@ pass	a 32-bit-float closure crosses the host boundary
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a @param accessor splices into a quasiquote and the eval computes with the host value
+pass	a @requires on a recursive def is re-checked at every entry including self-calls
+pass	a @requires precondition is enforced for a genuinely-runtime argument
+pass	a @requires predicate that itself traps keeps its own trap kind
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
 pass	a BOOL-result effect op threads state across two performs on a boolean connective's operands
@@ -1434,6 +1437,7 @@ pass	a one-element tuple pattern against a two-tuple is a type error
 pass	a one-shot handler arm folds a body with TWO performs by re-reducing the continuation
 pass	a one-shot two-hole body folds across a let binding
 pass	a one-shot two-hole body folds with the leading perform in an if condition
+pass	a package entry's exported def wins over a same-named def in a library file
 pass	a param-keyed map literal selects its literal-pattern arm by value in both directions
 pass	a param-shadowing let with a param-referencing initializer folds at a constant argument
 pass	a parameter annotation contradicting its use is rejected
@@ -2328,6 +2332,7 @@ pass	an @param site generates a Param accessor a host delegation reads at run ti
 pass	an @param with no widget config still generates its typed accessor
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
+pass	an EFFECTFUL @requires predicate performs under the caller's handler and advances its state before the body
 pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
 pass	an IEC-prefixed quantity displays scaled to its reference over Int64
