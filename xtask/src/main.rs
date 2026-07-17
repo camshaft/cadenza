@@ -670,6 +670,12 @@ enum GateTarget {
     /// and a minimal executor, and drive the export under `block_on` — so the SAME corpus expectations
     /// grade the async form (its answers must match, gas threading and all).
     RustAsync,
+    /// The self-hosted Cadenza-in-Cadenza (ML) compiler, invoked via `cdz run-ml` (source in, one-line
+    /// verdict out). Its front-end supports only a small subset today, so most programs DECLINE — this
+    /// target is graded DIFFERENTIALLY against the Wasm (rcdzc) oracle, NOT the corpus directly (see the
+    /// `ml-conformance` reported step): a decline is coverage-not-yet, an agreeing value is progress, a
+    /// disagreeing value is the only real failure. It never drives the baseline gate.
+    CadenzaMl,
 }
 
 /// The `--target` value clap parses for the `gate` command (its own enum so clap validates the
@@ -704,6 +710,73 @@ fn run_program(
         GateTarget::RustAsync if !host_responses.is_empty() => Ran::Declined { code: None },
         GateTarget::Rust => run_program_rust(tools, program, modules, call, false),
         GateTarget::RustAsync => run_program_rust(tools, program, modules, call, true),
+        // The ML compiler has no package/host path today — a multi-file or host-delegating case is
+        // simply not-yet-supported there, which is a decline (coverage-not-yet), never a disagreement.
+        GateTarget::CadenzaMl if !modules.is_empty() || !host_responses.is_empty() => {
+            Ran::Declined { code: None }
+        }
+        GateTarget::CadenzaMl => run_program_ml(tools, program, call),
+    }
+}
+
+/// Drive one program through the self-hosted ML compiler via `cdz run-ml` — source on stdin, one line
+/// of verdict on stdout: `value <sexpr>` | `declined` | `error <msg>` (exit 0 always; a non-zero exit
+/// is a harness read failure). Maps that verdict to [`Ran`]: `value` → `Ran::Value` (no host calls —
+/// the ML path has no host boundary), `declined` → a codeless `Ran::Declined` (not-yet-supported, so it
+/// grades as `todo`/coverage-not-yet, never a disagreement), `error <msg>` → `Ran::Trap` (the program
+/// reached the compiler and was rejected with a message — distinct from a clean decline). The ML
+/// front-end is subset-only today, so most programs decline; this target is graded differentially
+/// against the Wasm oracle by the `ml-conformance` step, not against the corpus directly. `call` is
+/// currently ignored (the ML subset is nullary); a parameterized case declines above via the subset.
+fn run_program_ml(tools: &Tools, program: &str, _call: Option<&Call>) -> Ran {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // `tools.rcdzc` is the unified `cdz` binary; `run-ml` reads the program SOURCE from stdin.
+    let mut child = match Command::new(&tools.rcdzc)
+        .arg("run-ml")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return Ran::BadArtifact(format!("cdz run-ml spawn failed: {e}")),
+    };
+    if let Some(mut stdin) = child.stdin.take()
+        && let Err(e) = stdin.write_all(program.as_bytes())
+    {
+        return Ran::BadArtifact(format!("cdz run-ml: writing program to stdin failed: {e}"));
+    }
+    let out = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(e) => return Ran::BadArtifact(format!("cdz run-ml wait failed: {e}")),
+    };
+    // A non-zero exit is the ONE reserved harness-read-failure path (per the run-ml contract) — a
+    // broken feed, not a verdict.
+    if !out.status.success() {
+        return Ran::BadArtifact(format!(
+            "cdz run-ml exited non-zero: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    // The verdict is the LAST non-empty stdout line (the contract is one line, but be robust to a
+    // trailing newline / an incidental leading line).
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let verdict = stdout
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    if verdict == "declined" {
+        Ran::Declined { code: None }
+    } else if let Some(v) = verdict.strip_prefix("value ") {
+        Ran::Value(v.trim().to_string(), Vec::new())
+    } else if let Some(msg) = verdict.strip_prefix("error ") {
+        Ran::Trap(msg.trim().to_string())
+    } else {
+        Ran::BadArtifact(format!("cdz run-ml: unrecognized verdict line {verdict:?}"))
     }
 }
 
@@ -3472,6 +3545,11 @@ fn baseline_path(paths: &Paths, target: GateTarget) -> PathBuf {
         GateTarget::Wasm => ".gate-baseline".to_string(),
         GateTarget::Rust => ".gate-baseline-rust".to_string(),
         GateTarget::RustAsync => ".gate-baseline-rust-async".to_string(),
+        // CadenzaMl is graded DIFFERENTIALLY against the Wasm oracle (the `ml-conformance` reported
+        // step), never against a saved baseline — it has no baseline file and this is never reached.
+        GateTarget::CadenzaMl => {
+            unreachable!("cadenza-ml is differential-only; it has no gate baseline")
+        }
     };
     paths.repo.join("spec/semantics").join(name)
 }
@@ -3783,7 +3861,115 @@ fn check(paths: &Paths, profile: &str) {
         baseline_titles_agree_lint(paths)
     });
 
+    // cadenza-ml conformance — REPORTED, never a baseline gate. Drive each shared-corpus program
+    // through BOTH the ML compiler (`cdz run-ml`) and the rcdzc/wasm ORACLE, and diff the verdicts:
+    // an ML decline is coverage-not-yet (the front-end is subset-only), an ML value that MATCHES the
+    // oracle is progress, and an ML value that DISAGREES with the oracle is a differential miscompile.
+    // Report-only for now (a D>0 loud-warns but does not red the fleet, since the ML front-end is under
+    // active development); promote to blocking once it's trusted. Green against today's declines-all
+    // stub (0 agree / 0 disagree). This is the differential form the operator directed (C + diff).
+    report_ml_conformance(paths, profile);
+
     println!("\ncheck: all green ✓  (full log: {})", log.path.display());
+}
+
+/// Report cadenza-ml conformance DIFFERENTIALLY against the rcdzc/wasm oracle (never fails `check`).
+/// For each corpus case: run it through the ML compiler (`cdz run-ml`) and through the Wasm oracle, and
+/// classify — ML declined → coverage-not-yet; ML value == oracle value → agree; ML value != oracle, or
+/// ML ran where the oracle declined / vice-versa → DISAGREE (a differential miscompile). Prints
+/// `cadenza-ml: X agree / D disagree / N total`; a `D>0` prints a loud warning naming the disagreeing
+/// cases. Report-only: it warns but never reds the gate (the ML front-end is subset-only + evolving).
+fn report_ml_conformance(paths: &Paths, profile: &str) {
+    let tools = build_tools(paths, profile);
+    // The oracle (Wasm) resolves the value-heap runtime from the content-addressed store; the ML path
+    // needs no store. Default store location, same as the gate.
+    let store = Some(paths.repo.join("target/cadenza-store"));
+    let files = default_corpus_files(paths);
+    let records: Vec<CorpusRecord> = files
+        .iter()
+        .flat_map(|file| read_corpus(&tools, file))
+        .collect();
+
+    let (mut agree, mut disagree, mut not_yet) = (0usize, 0usize, 0usize);
+    let mut disagreements: Vec<String> = Vec::new();
+    for rec in &records {
+        // Compare the FIRST trial only (the ML subset is nullary; a `(call …)` case declines in
+        // run_program_ml's subset guard, so the first trial is representative of ML support today).
+        let call = rec.trials.first().and_then(|t| t.call.as_ref());
+        let ml = run_program(
+            &tools,
+            &store,
+            &rec.program,
+            &rec.modules,
+            call,
+            &rec.host_responses,
+            GateTarget::CadenzaMl,
+        );
+        match &ml {
+            // Not-yet-supported: the ML front-end declined. Coverage-not-yet, never a disagreement.
+            Ran::Declined { .. } => not_yet += 1,
+            // The ML compiler produced a value (or an error/bad artifact) — compare to the oracle.
+            _ => {
+                let oracle = run_program(
+                    &tools,
+                    &store,
+                    &rec.program,
+                    &rec.modules,
+                    call,
+                    &rec.host_responses,
+                    GateTarget::Wasm,
+                );
+                if ml_agrees_with_oracle(&ml, &oracle) {
+                    agree += 1;
+                } else {
+                    disagree += 1;
+                    disagreements.push(format!(
+                        "{}: ml={} oracle={}",
+                        rec.description,
+                        ran_summary(&ml),
+                        ran_summary(&oracle)
+                    ));
+                }
+            }
+        }
+    }
+    let total = agree + disagree + not_yet;
+    println!(
+        "cadenza-ml: {agree} agree / {disagree} disagree / {total} total ({not_yet} coverage-not-yet)"
+    );
+    if disagree > 0 {
+        eprintln!(
+            "  ⚠ cadenza-ml DIFFERENTIAL DISAGREEMENT(S) — the ML compiler's verdict differs from the \
+             rcdzc oracle (a differential miscompile to investigate; report-only, not yet blocking):"
+        );
+        for d in &disagreements {
+            eprintln!("    • {d}");
+        }
+    }
+}
+
+/// Whether the ML compiler's outcome AGREES with the rcdzc oracle on the same program. A shared VALUE
+/// must match; a shared trap agrees (both aborted); a coded reject agrees if the oracle also rejected.
+/// A value-vs-non-value, or ML-ran-where-oracle-declined (and vice-versa), is a DISAGREEMENT. (An ML
+/// decline is filtered out by the caller before this — it's coverage-not-yet, never compared.)
+fn ml_agrees_with_oracle(ml: &Ran, oracle: &Ran) -> bool {
+    match (ml, oracle) {
+        (Ran::Value(a, _), Ran::Value(b, _)) => a == b,
+        (Ran::Trap(_), Ran::Trap(_)) => true,
+        // The oracle declined but ML produced a value/trap — a disagreement (ML ran where rcdzc didn't).
+        _ => false,
+    }
+}
+
+/// A one-line summary of a `Ran` for the disagreement report.
+fn ran_summary(r: &Ran) -> String {
+    match r {
+        Ran::Value(v, _) => format!("value {v}"),
+        Ran::Declined { code: Some(c) } => format!("reject {c}"),
+        Ran::Declined { code: None } => "declined".to_string(),
+        Ran::Trap(m) => format!("trap {m}"),
+        Ran::BadArtifact(m) => format!("bad-artifact {m}"),
+    }
 }
 
 /// The set of case DESCRIPTIONS in a gate-baseline file (the `verdict\tdescription` lines, skipping
@@ -4561,6 +4747,34 @@ mod trap_grading_tests {
         assert!(err.contains("cannot read baseline"), "got: {err}");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ml_agrees_with_oracle_only_on_matching_value_or_shared_trap() {
+        // Same value → agree; different value → disagree (the differential miscompile).
+        assert!(ml_agrees_with_oracle(
+            &Ran::Value("42".into(), vec![]),
+            &Ran::Value("42".into(), vec![])
+        ));
+        assert!(!ml_agrees_with_oracle(
+            &Ran::Value("42".into(), vec![]),
+            &Ran::Value("43".into(), vec![])
+        ));
+        // Both trapped → agree (both aborted).
+        assert!(ml_agrees_with_oracle(
+            &Ran::Trap("overflow".into()),
+            &Ran::Trap("divide by zero".into())
+        ));
+        // ML ran to a value where the oracle DECLINED (or trapped) → disagree (ML ran where rcdzc
+        // didn't — a real differential, the case the diff exists to catch).
+        assert!(!ml_agrees_with_oracle(
+            &Ran::Value("1".into(), vec![]),
+            &Ran::Declined { code: None }
+        ));
+        assert!(!ml_agrees_with_oracle(
+            &Ran::Value("1".into(), vec![]),
+            &Ran::Trap("overflow".into())
+        ));
     }
 
     #[test]
