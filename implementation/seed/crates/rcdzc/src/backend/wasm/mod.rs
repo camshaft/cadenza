@@ -475,6 +475,21 @@ pub fn emit(
             // live handle rather than baking constant bytes (R2). Build the value-form TEMPLATE for the
             // result type; if it has one, route through `assemble_runtime_resource`.
             return emit_runtime_resource(db, layout, e.def, &tpl, spans);
+        } else if matches!(result, crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_))
+            && let Some(desc) = crate::lower::sum_shape_descriptor(db, &result)
+        {
+            // A TUPLE/RECORD whose `runtime_value_form_template` was `None` because it contains a
+            // VARIABLE-LENGTH element (a runtime-built list/map/set, or a sum) — the fixed-hole template
+            // can't represent a dynamic-depth element. It escapes via the SAME runtime `value-encode`
+            // walker a bare collection uses: `sum_shape_descriptor`'s Tuple/Record arm builds a parametric
+            // `Framed(<type-node>, …)` frame and `shape_of` recurses into the collection element (looping
+            // to runtime depth), so `(tuple (build 3) 30)` renders `(: (tuple (list 1 2 3) 30) (Tuple (List
+            // Int64) Int64))`. A FIXED-shape tuple/record (all scalar/byte/fixed-compound elements) already
+            // took the cheaper static-template arm above; this fallback serves ONLY the variable-shape case
+            // — the "show DATA + RESULT together" example pattern (a tuple of a runtime-built list + a
+            // computed scalar) v-guide-infra flagged. (Before this it fell through to the honest
+            // "value-form walker that loops to a runtime-determined depth is not yet emitted" decline.)
+            return emit_recursive_sum_resource(db, layout, e.def, &desc, spans);
         }
     }
 

@@ -4063,14 +4063,16 @@
             (export main)))
   (output (: 2 Int64)))
 
-(case "a recursive-generic transformer threading an IDENTITY closure at TWO types declines pending the multi-instantiation result tie"
-  (doc    "The RESIDUAL closure-tie gap: a pure IDENTITY closure `(fn (s) s)` composes at a SINGLE element
-           type (above), but MIXING it with another instantiation — Int64 `(fn (x) (+ x 1))` AND String
-           `(fn (s) s)` in one program — still DECLINES (CDZ0201). The per-call result flow pins each
-           instantiation's result, but the two coexisting monomorphizations of `gmap` do not yet both bind
-           their result element from their own closure (the multi-instantiation caller-side result tie). A
-           narrower not-yet-built follow-up; declines cleanly (no miscompile). A generation that ties each
-           instantiation's result runs this (3 + 2 = 5).")
+(case "a recursive-generic transformer threading an IDENTITY closure composes at TWO element types"
+  (doc    "The multi-instantiation closure tie: a pure IDENTITY closure `(fn (s) s)` composes at a SINGLE
+           element type (above) AND, mixed with another instantiation — Int64 `(fn (x) (+ x 1))` AND String
+           `(fn (s) s)` in one program — now RUNS (3 + 2 = 5). Previously DECLINED CDZ0201 (the two coexisting
+           monomorphizations of `gmap` did not both bind their result element from their own closure). FIXED
+           by tying an unannotated closure's result to its expected DOMAIN in `solved_lambda_arrow_under`
+           (seeding the concrete domain into `db.param_types` so an aggregate/pass-through body reads the
+           param at its domain type, not the bottom-up `Any`) — the same fix that lets a closure map to an
+           AGGREGATE result (tuple/user-sum) across ≥2 distinct domains. Pins that the multi-instantiation
+           closure-result tie composes; this was v-iterators' misnamed \"instantiation-pressure ceiling\".")
   (input  (do
             (type Iter (Nil) (Cons a (Iter a)))
             (def (from-list xs)
@@ -4082,7 +4084,7 @@
             (def (main) (+ (icount (gmap (from-list (list 1 2 3)) (fn (x) (+ x 1))))
                            (icount (gmap (from-list (list "a" "b")) (fn (s) s)))))
             (export main)))
-  (error  CDZ0201))
+  (output (: 5 Int64)))
 
 ; A TRANSITIVE recursive-generic tie: a `reduce`-shaped WRAPPER (`reduce1`) whose `Cons` arm seeds a
 ; SECOND recursive-generic helper (`go`) with the HEAD element, used at TWO element types in one program

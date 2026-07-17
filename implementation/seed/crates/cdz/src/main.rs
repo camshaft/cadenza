@@ -384,6 +384,58 @@ struct RunMlArgs {
 /// can't cross the component boundary as an arg, but a literal is compile-time — no crossing) and calls
 /// `run-src`, then compile+run it and read the rendered `Option`. The driver MUST live in the compiler-ml
 /// `src/` dir because `import "sread-eval"` resolves RELATIVE TO THE ENTRY FILE'S DIR (no `--search-path`).
+///
+/// Locate `implementation/compiler-ml/src` ROBUSTLY (not assuming cwd == repo root): walk upward from the
+/// current dir, then from the exe's dir, returning the first ancestor that contains it. So `cdz run-ml`
+/// works from any working directory — e.g. `cargo test`, whose per-crate cwd is NOT the repo root (the bug
+/// that reded the shared gate). Returns the resolved `…/compiler-ml/src` dir, or `None` if not found.
+fn find_compiler_ml_src() -> Option<std::path::PathBuf> {
+    const REL: &str = "implementation/compiler-ml/src";
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd);
+    }
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()))
+    {
+        roots.push(exe_dir);
+    }
+    for start in roots {
+        let mut cur: Option<&std::path::Path> = Some(start.as_path());
+        while let Some(dir) = cur {
+            let candidate = dir.join(REL);
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+            cur = dir.parent();
+        }
+    }
+    None
+}
+
+/// Cheap SOURCE-SHAPE gate: could this program POSSIBLY be in the ML compiler's supported subset (bare
+/// prefix expressions — int/bool/identifier literals, `(let ((x v)) b)`, `(if c t e)`, `(op a b)`)? A `true`
+/// answer only means "worth compiling"; the real reader/pipeline still decides value-vs-decline. A `false`
+/// answer FAST-DECLINES without the (tens-of-seconds) whole-pipeline compile. Conservative: reject the forms
+/// the subset definitely can't express — a top-level module `(do …)` / `(def …)` / `(export …)`, a string
+/// (`"`), a float/decimal (`.`), and empty input — so the gate never pays the compile cost for them.
+fn looks_in_ml_subset(src: &str) -> bool {
+    let s = src.trim();
+    if s.is_empty() {
+        return false;
+    }
+    // A quoted string or a decimal/float is out of the integer/bool subset.
+    if s.contains('"') || s.contains('.') {
+        return false;
+    }
+    // A multi-definition module / function definition is out of subset (the subset is a single expression).
+    if s.starts_with("(do") || s.contains("(def") || s.contains("(export") || s.contains("(fn") {
+        return false;
+    }
+    true
+}
+
 fn run_run_ml(args: &RunMlArgs) -> ExitCode {
     use std::io::Read;
     // 1. Read the program source (file or stdin). A read failure is the reserved harness-error path.
@@ -405,6 +457,18 @@ fn run_run_ml(args: &RunMlArgs) -> ExitCode {
         }
     };
 
+    // 1b. FAST-DECLINE out-of-subset programs WITHOUT compiling. Building the driver (which links the whole
+    //     compiler-ml pipeline) costs tens of seconds — far too slow to run per corpus case, and pointless
+    //     for the ~majority of corpus programs the ML front-end can't express yet. A cheap source scan
+    //     rejects anything outside the supported bare-expression subset (int/bool/ident/`(let …)`/`(if …)`/
+    //     `(op …)`): a top-level `(do …)`/`(def …)`/`(export …)` module, or an unbalanced/empty form. Only a
+    //     program that PASSES this shape gate pays the compile cost — so `run-ml` is fast for the common
+    //     out-of-subset case and the gate never hangs on the whole-pipeline compile.
+    if !looks_in_ml_subset(source.trim()) {
+        println!("declined");
+        return ExitCode::SUCCESS;
+    }
+
     // 2. Generate the driver: it embeds the source as a Cadenza string literal and calls run-src. The
     //    literal must escape `\` and `"`; the corpus s-expr programs are single-line ASCII (no newlines),
     //    so this minimal escape is sufficient (a defensive newline→space keeps it one line regardless).
@@ -417,18 +481,19 @@ fn run_run_ml(args: &RunMlArgs) -> ExitCode {
         "import {{ run-src }} from \"sread-eval\"\ndef main() = run-src(\"{escaped}\")\nexport {{ main }}\n"
     );
 
-    // 3. Write the driver INTO the compiler-ml src dir (so `import \"sread-eval\"` resolves). Unique-ish
-    //    name; cleaned up before every return below. The gate runs from the repo root, so this relative
-    //    path is stable. If the dir is ABSENT (e.g. `run-ml` invoked from a crate dir under `cargo test`,
-    //    not the repo root), the ML compiler simply isn't available HERE — that is coverage-not-yet, not a
-    //    program READ failure, so per the exit-code contract emit a `declined` VERDICT and exit 0 (a missing
-    //    compiler is a decline, not a shell failure; the ONLY non-zero path is a program read error). The
-    //    gate always runs from the repo root where the dir exists, so it still gets real differential runs.
-    let src_dir = std::path::Path::new("implementation/compiler-ml/src");
-    if !src_dir.is_dir() {
-        println!("declined");
-        return ExitCode::SUCCESS;
-    }
+    // 3. Write the driver INTO the compiler-ml src dir (so `import \"sread-eval\"` resolves — imports are
+    //    entry-dir-relative). Located ROBUSTLY (not assuming cwd == repo root): search upward from the cwd
+    //    AND from the exe's dir for `implementation/compiler-ml/src`, so `cdz run-ml` works from any cwd
+    //    (e.g. under `cargo test`, whose cwd is the crate dir, not the repo root).
+    let src_dir = match find_compiler_ml_src() {
+        Some(d) => d,
+        None => {
+            eprintln!(
+                "{PROG} run-ml: compiler-ml src dir not found (searched up from cwd + exe dir)"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
     let driver_path = src_dir.join("zz-run-ml-driver.cdz");
     if let Err(e) = std::fs::write(&driver_path, &driver) {
         eprintln!("{PROG} run-ml: cannot write driver: {e}");
@@ -6732,6 +6797,59 @@ mod tests {
         assert_eq!(program_name("/"), "main");
         assert_eq!(program_name(".."), "main");
         assert_eq!(program_name(""), "main");
+    }
+
+    #[test]
+    fn resolve_opt_level_precedence_follows_flag_then_manifest_then_release_then_default() {
+        use rcdzc::OptLevel;
+        let mp = std::path::Path::new("Project.cdz");
+        // The FLAG wins over everything (manifest + release both present, flag still decides).
+        assert_eq!(
+            resolve_opt_level_precedence(Some("O3"), true, Some("O0"), mp).unwrap(),
+            OptLevel::O3,
+            "an explicit --opt-level wins over the manifest AND --release"
+        );
+        // No flag → the MANIFEST wins over --release.
+        assert_eq!(
+            resolve_opt_level_precedence(None, true, Some("O0"), mp).unwrap(),
+            OptLevel::O0,
+            "the manifest opt-level wins over --release"
+        );
+        // No flag, no manifest, --release → O2.
+        assert_eq!(
+            resolve_opt_level_precedence(None, true, None, mp).unwrap(),
+            OptLevel::O2,
+            "--release with nothing else is O2"
+        );
+        // Nothing at all → the default (O1).
+        assert_eq!(
+            resolve_opt_level_precedence(None, false, None, mp).unwrap(),
+            OptLevel::default(),
+            "no flag, no manifest, no --release → the default tier"
+        );
+        assert_eq!(
+            OptLevel::default(),
+            OptLevel::O1,
+            "the documented default is O1"
+        );
+    }
+
+    #[test]
+    fn resolve_opt_level_precedence_errors_name_the_source_of_a_bad_level() {
+        let mp = std::path::Path::new("proj/Project.cdz");
+        // A malformed FLAG level errors, and the message names `--opt-level` so a typo is a clear failure.
+        let flag_err = resolve_opt_level_precedence(Some("Oops"), false, None, mp).unwrap_err();
+        assert!(
+            flag_err.contains("--opt-level") && flag_err.contains("Oops"),
+            "a bad flag level names the flag + the value: {flag_err}"
+        );
+        // A malformed MANIFEST level errors naming the manifest PATH (not the flag), so the fault is
+        // attributed to the right source.
+        let man_err = resolve_opt_level_precedence(None, false, Some("O9"), mp).unwrap_err();
+        assert!(
+            man_err.contains("proj/Project.cdz") && man_err.contains("O9"),
+            "a bad manifest level names the manifest path + the value: {man_err}"
+        );
     }
 
     /// A throwaway directory unique to `tag`, created empty. The caller populates + removes it.

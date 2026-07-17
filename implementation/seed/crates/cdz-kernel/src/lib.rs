@@ -74,6 +74,13 @@ pub mod msg;
 /// Cadenza (see [`kernel`]).
 pub mod sub;
 
+/// External adapters over the log (rung KA — the connector topology): a separate deployable (e.g. a Slack
+/// connector) with TWO logs — INBOUND ([`connector::post_on_behalf`]) posts a user's message into the MAIN log
+/// on-behalf-of a Cedar principal; OUTBOUND ([`connector::work_items`]) reads the connector's OWN kernel-
+/// written log (separate-stream, NOT tailing the main log — operator connector-logs ruling). Pure over `Log`;
+/// the real Slack HTTP I/O is the deployed binary on top.
+pub mod connector;
+
 /// The tiny KERNEL (minimal-kernel re-charter, rung K1): compile a self-modifiable Cadenza `interpret`
 /// program AT RUNTIME (embedded rcdzc) into a provider, compose it with a peer executor, and run it (cdz-run's
 /// wasmtime) so interpret's `(List HostOp)` result crosses to the executor as a handle over the shared runtime
@@ -81,3 +88,9 @@ pub mod sub;
 /// events; all event MEANING is in the Cadenza interpret program. This is the codeact-spike shape (compiler +
 /// wasmtime in-process) realized as the deploy-once kernel. See `DESIGN-agent-runtime-minimal-kernel.md`.
 pub mod kernel;
+
+/// Bootstrap + genesis injection (rung KC — the thin CLI's log half): [`boot::inject_genesis`] seeds the log
+/// with the genesis interpret SOURCE as a `program` event; [`boot::latest_program`] is the kernel's genesis
+/// lookup (the latest `program` event's source). No hardcoded genesis — the first program is data in the log
+/// the CLI injects (operator fork-5 ruling), and a later `program` event self-supersedes it.
+pub mod boot;

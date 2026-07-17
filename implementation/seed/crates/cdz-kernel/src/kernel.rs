@@ -72,6 +72,32 @@ fn executor_src() -> String {
         .to_string()
 }
 
+/// The K1b DISPATCHING executor: instead of `List.len`, it FOLDS the crossed `(List HostOp)` and dispatches
+/// EACH op by its variant — the shape real per-op execution takes (each variant → its broad primitive). Here
+/// the dispatch sums a per-variant COST (Append→1, Exec→10, Http→100, Noop→0) rather than performing real
+/// `exec`/`http` side-effects, so it is deterministic + gate-able with no external I/O; swapping the cost for
+/// a real broad-primitive `perform` is the same match, one rung on (K1c). This proves the executor can WALK
+/// the crossed handle + pattern-match each element over the shared runtime — the core of op execution.
+fn dispatch_executor_src() -> String {
+    "(do \
+       (type HostOp (Append String) (Exec String) (Http String) (Noop Int64)) \
+       (effect K (op interpret (-> Int64 Int64 (List HostOp)))) \
+       (bind K \"cadenza:agent/kernel\") \
+       (def (op-cost (: op HostOp)) \
+         (match op \
+           ((Append s) 1) \
+           ((Exec s) 10) \
+           ((Http s) 100) \
+           ((Noop n) 0))) \
+       (def (run-ops (: ops (List HostOp))) \
+         (match ops \
+           ((list head .. rest) (+ (op-cost head) (run-ops rest))) \
+           (_ 0))) \
+       (def (main (: kind Int64)) (host (K) (run-ops (K.interpret kind 0)))) \
+       (export main))"
+        .to_string()
+}
+
 /// The result of running one interpret turn through the kernel: the number of host-ops the interpret program
 /// scheduled for the given event (the executor's `List.len` over the crossed `(List HostOp)` handle). K1b
 /// turns this into the executed op-effects; K1 surfaces the count as proof the loop ran end-to-end.
@@ -121,6 +147,47 @@ pub fn run_interpret(
             Ok(InterpretRun { op_count })
         }
         cdz_run::Outcome::Trap(t) => Err(anyhow!("interpret run trapped: {t}")),
+    }
+}
+
+/// Run one interpret turn with the K1b DISPATCHING executor: compile the provider, compose with the
+/// [`dispatch_executor_src`] peer (which folds the crossed `(List HostOp)` and dispatches each op by variant),
+/// and run. Returns the summed per-op cost — proof the executor WALKED the crossed list + matched each
+/// element's variant over the shared runtime (the core of op execution; real `exec`/`http` side-effects
+/// replace the cost sum in K1c). Shares the compile/compose/run spine with [`run_interpret`].
+pub fn run_interpret_dispatched(
+    interpret_src: &str,
+    event_kind: i64,
+    runtime: Vec<u8>,
+) -> Result<i64> {
+    let provider = compile_interpret_provider(interpret_src)?;
+    let peers = vec![cdz_run::Peer {
+        bytes: provider,
+        interface: KERNEL_IFACE.to_string(),
+    }];
+    let executor_arenas = cadenza_syntax::sexpr::read(&dispatch_executor_src())
+        .map_err(|e| anyhow!("dispatch executor source did not parse: {e:?}"))?;
+    let consumer =
+        rcdzc::compile::compile_component(&cadenza_syntax::codec::encode(&executor_arenas))
+            .map_err(|d| {
+                anyhow!(
+                    "dispatch executor peer did not compile: {} [{:?}]",
+                    d.message,
+                    d.code
+                )
+            })?;
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![event_kind.to_string()],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run_with_peers(&consumer, &peers, &opts)? {
+        cdz_run::Outcome::Value(s) => s
+            .parse::<i64>()
+            .map_err(|_| anyhow!("dispatch executor returned a non-integer cost: {s:?}")),
+        cdz_run::Outcome::Trap(t) => Err(anyhow!("dispatch run trapped: {t}")),
     }
 }
 
@@ -195,5 +262,31 @@ mod tests {
         let run0 = run_interpret(INTERPRET_SRC, 9, runtime)
             .expect("the kernel runs interpret for a non-message event");
         assert_eq!(run0.op_count, 1, "kind=9 → [Noop] → len 1");
+    }
+
+    #[test]
+    fn the_dispatch_executor_walks_the_list_and_matches_each_op_variant() {
+        // K1b: the executor FOLDS the crossed (List HostOp) and dispatches EACH op by variant (Append→1,
+        // Exec→10, Http→100, Noop→0). kind=1 → [Append, Exec] → 1 + 10 = 11 (proves it walked BOTH elements
+        // AND matched each variant, not just counted). kind=9 → [Noop] → 0.
+        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let Some(runtime) = compile_interpret_provider(INTERPRET_SRC)
+            .ok()
+            .and_then(|p| find_runtime_for(&p, store_root))
+        else {
+            eprintln!(
+                "[cdz-kernel::kernel] value-heap runtime absent/stale; skipping the dispatch run"
+            );
+            return;
+        };
+        let cost = run_interpret_dispatched(INTERPRET_SRC, 1, runtime.clone())
+            .expect("the dispatch executor runs end-to-end");
+        assert_eq!(
+            cost, 11,
+            "kind=1 → [Append(1), Exec(10)] → the executor matched each variant + summed = 11"
+        );
+        let cost0 = run_interpret_dispatched(INTERPRET_SRC, 9, runtime)
+            .expect("the dispatch executor runs for a non-message event");
+        assert_eq!(cost0, 0, "kind=9 → [Noop(0)] → 0");
     }
 }

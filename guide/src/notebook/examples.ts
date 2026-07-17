@@ -61,8 +61,39 @@ A code cell with no directive shows its computed value.
 (def (main) (+ (* 6 7) 0))
 ~~~`;
 
+/// A loan-repayment showcase: a `number` principal + a `rate` slider + a `payment` slider drive a live
+/// declining-balance value + chart. Shows off THREE widget types (number + two sliders) plus a chart:line,
+/// all recomputing as you drag. Simple (non-compounding) interest, unrolled with +/-/* only so it compiles
+/// self-contained in the browser (no division/pow, no imports — the /cad + prelude-only constraint).
+const LOAN = `# Loan repayment
+
+Set the **principal**, the interest **rate**, and a fixed yearly **payment**, then watch the balance pay
+down.
+
+~~~cadenza widget
+principal : Float64 = number(default: 1000.0)
+rate : Float64 = slider(0.0, 0.2, step: 0.01, default: 0.05)
+payment : Float64 = slider(0.0, 500.0, step: 50.0, default: 200.0)
+~~~
+
+The balance after each year is last year's balance plus interest, minus the payment:
+
+~~~cadenza
+(def (year1) (- (+ principal (* principal rate)) payment))
+(def (year2) (- (+ year1 (* year1 rate)) payment))
+(def (year3) (- (+ year2 (* year2 rate)) payment))
+(def (main) year1)
+~~~
+
+The balance over three years — drag a control and the curve moves:
+
+~~~cadenza chart:line
+(def (main) (list (tuple 0 principal) (tuple 1 year1) (tuple 2 year2) (tuple 3 year3)))
+~~~`;
+
 export const EXAMPLES: ExampleNotebook[] = [
   { slug: "compound-interest", title: "Compound interest", markdown: COMPOUND_INTEREST },
+  { slug: "loan", title: "Loan repayment", markdown: LOAN },
   { slug: "tables", title: "Tables", markdown: TABLE_DEMO },
   { slug: "charts", title: "Charts", markdown: CHART_DEMO },
   { slug: "values", title: "Values", markdown: VALUE_DEMO },

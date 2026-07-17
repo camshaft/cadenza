@@ -458,8 +458,9 @@ fn emit_signature(
         // but no declaration — a signature naming it would not compile (`cannot find type IntList`). So a
         // function that takes such a type declines HERE, consistently with the skipped enum decl.
         if !enums::sum_representable(db, ty) {
+            let reason = enums::unrepresentable_reason(db, ty);
             return Err(Reject::decline(format!(
-                "`{name}`: parameter type {} is a sum with no emitted Rust enum (recursive/unrepresentable)",
+                "`{name}`: parameter type {} is {reason}",
                 ty.render_name()
             )));
         }
@@ -480,8 +481,9 @@ fn emit_signature(
     }
     // Same guard on the RESULT: a function returning a recursive sum (no emitted enum) declines.
     if !enums::sum_representable(db, result) {
+        let reason = enums::unrepresentable_reason(db, result);
         return Err(Reject::decline(format!(
-            "`{name}`: result type {} is a sum with no emitted Rust enum (recursive/unrepresentable)",
+            "`{name}`: result type {} is {reason}",
             result.render_name()
         )));
     }

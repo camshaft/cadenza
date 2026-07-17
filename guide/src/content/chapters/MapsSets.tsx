@@ -93,16 +93,17 @@ export default function MapsSets() {
         surface has a shorthand for each, rounding out the <C>#</C>-prefixed literal family you've been
         seeing: <C>[…]</C> is a list, <C>#(…)</C> is a <em>set</em>, and <C>{"#{…}"}</C> is a <em>map</em>.
         They're pure sugar — the same programs underneath — so this set literal is exactly the{" "}
-        <C>Set.of</C> call from the top of the chapter, and it still collapses the duplicate:
+        <C>Set.of</C> call from the top of the chapter, and it still collapses the duplicate to the set{" "}
+        <C>{`{1, 2, 3}`}</C>:
       </P>
-      <Runnable source={`(Set.len (Set.of (list 1 2 2 3)))`} />
+      <Runnable source={`(Set.of (list 1 2 2 3))`} />
       <P>
-        Toggle to the conventional surface and that reads <C>Set.len(#(1, 2, 2, 3))</C> — and, in fact,
-        every <C>Set.of (list …)</C> earlier in this chapter has been showing as <C>#(…)</C> whenever the
-        toggle was on. A map literal spells each entry <C>key = value</C> inside <C>{"#{…}"}</C>; here two
-        entries, so <C>Map.len</C> is <C>2</C>:
+        Toggle to the conventional surface and that reads <C>#(1, 2, 2, 3)</C> — and, in fact, every{" "}
+        <C>Set.of (list …)</C> earlier in this chapter has been showing as <C>#(…)</C> whenever the toggle
+        was on. A map literal spells each entry <C>key = value</C> inside <C>{"#{…}"}</C>; here two entries,
+        and returning it shows both:
       </P>
-      <Runnable source={`(Map.len (map (1 10) (2 20)))`} />
+      <Runnable source={`(map (1 10) (2 20))`} />
       <P>
         And it's an ordinary map, so <C>Map.lookup</C> works on it just the same — the value under key{" "}
         <C>2</C> is <C>20</C>:

@@ -501,7 +501,19 @@ scopes) and SETS `file_scope` — so a linked member's `Thm` opacity works NATUR
   compile entry PREPEND it as an additional file in the merged arena + an extra `FileSpan`/`FileScope` in the
   `Linkage` (exports its rules + `Thm` handle). It is then a genuine linked module: `is_linked_package` true,
   `Thm` opacity fires (CDZ0214) with NO carve-out and NO prelude-arena surgery. The kernel is a
-  compiler-prepended package member, always present.
+  compiler-prepended package member.
+  **⚠️ CONDITIONAL LINKING (load-bearing — 2026-07-17):** the kernel must be prepended ONLY when the program
+  USES a verification annotation. The compile entry has a fast path for the common `[only]` single-`ast`
+  case that returns `(arena, None)` — NO linkage, `is_linked_package` FALSE (compile.rs ~5199). Prepending
+  the kernel UNCONDITIONALLY would push every single-file program onto the multi-file linkage path, flipping
+  `is_linked_package` false→true for the ENTIRE corpus — a massive blast radius (opacity + resolution
+  scoping change for programs that never asked for verification). So a1 GATES the prepend on a cheap
+  raw-arena scan for a `requires`/`ensures`/`trap_free`/`invariant` annotation head: a non-verification
+  program stays on the untouched fast path (zero blast radius — the overwhelming common case); a
+  verification-USING program legitimately becomes a linked package (kernel + user file), which is correct —
+  it needs the kernel linked for discharge, and `is_linked_package` true is exactly what makes both the
+  kernel's `Thm` AND the user's own opaque types enforce their boundaries. The semantic change is scoped to
+  opted-in programs only.
 - **a2 — the kernel's exports are in scope** via the normal linked-package import/export surface (its
   `FileScope` exports `licenses`/rules/`Thm`); the synthesized discharge program imports them like any
   cross-file reference. No new resolution path.

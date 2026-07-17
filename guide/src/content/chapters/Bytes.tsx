@@ -15,14 +15,16 @@ export default function Bytes() {
       <P>
         A <C>Bytes</C> is an immutable sequence of 8-bit values. You can write one as a byte-string
         literal — <C>b"…"</C>, the <C>b</C> prefix distinguishing it from a text string — or build one
-        from a list of numbers with <C>Bytes.of</C>. Either way, <C>Bytes.len</C> counts the octets:
+        from a list of numbers with <C>Bytes.of</C>. Return one and you see it printed back as a{" "}
+        <C>b"…"</C> literal, non-printable bytes shown as <C>\x</C> escapes — here the numbers <C>10</C>,{" "}
+        <C>20</C>, <C>30</C> become the three octets <C>{`b"\\n\\x14\\x1e"`}</C>:
+      </P>
+      <Runnable source={`(Bytes.of (list 10 20 30))`} />
+      <P>
+        <C>Bytes.len</C> counts those octets — <C>b"hi!"</C> is the three bytes <C>h</C>, <C>i</C>,{" "}
+        <C>!</C>, so its length is <C>3</C>:
       </P>
       <Runnable source={`(Bytes.len b"hi!")`} />
-      <Runnable source={`(Bytes.len (Bytes.of (list 10 20 30)))`} />
-      <P>
-        Both are <C>3</C>: <C>b"hi!"</C> is the three octets <C>h</C>, <C>i</C>, <C>!</C>, and the built
-        sequence has three numbers in its list.
-      </P>
 
       <H2>Two ways to write the same bytes</H2>
       <P>
@@ -53,8 +55,11 @@ export default function Bytes() {
         a <em>length</em> — and because that window might run off the end, it returns an <C>Option</C>.
         Both return new values; the originals are untouched:
       </P>
-      <Runnable source={`(Bytes.len (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4 5))))`} />
-      <P>Joining a 2-byte sequence with a 3-byte one gives <C>5</C> bytes.</P>
+      <Runnable source={`(Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4 5)))`} />
+      <P>
+        Joining a 2-byte sequence with a 3-byte one gives the 5-byte{" "}
+        <C>{`b"\\x01\\x02\\x03\\x04\\x05"`}</C> — the two originals laid end to end, both untouched.
+      </P>
       <Runnable
         source={`(def (main)
   (Bytes.len
@@ -75,12 +80,14 @@ export default function Bytes() {
       <P>
         <C>String.to-bytes</C> — the crossing the <em>Strings</em> chapter covered — hands you a string's
         UTF-8 encoding as a <C>Bytes</C>, which lets us see what <C>Bytes.len</C> measures: octets, not
-        characters. The 4-character <C>"café"</C> encodes to <C>5</C> bytes:
+        characters. Return the bytes for the 4-character <C>"café"</C> and the encoding is right there —{" "}
+        <C>{`b"caf\\xc3\\xa9"`}</C>:
       </P>
-      <Runnable source={`(Bytes.len (String.to-bytes "café"))`} />
+      <Runnable source={`(String.to-bytes "café")`} />
       <P>
-        <C>Bytes.len</C> counts the octets it's given — here <C>5</C>, because <C>é</C> takes two of them —
-        whatever the character count of the text that produced them.
+        You can see it directly: <C>c</C>, <C>a</C>, <C>f</C> are one byte each, and the <C>é</C> is the
+        two bytes <C>{`\\xc3\\xa9`}</C> — five octets for four characters. So <C>Bytes.len</C> of this is{" "}
+        <C>5</C>, counting the octets it's given whatever the character count of the text that produced them.
       </P>
 
       <Why tenet="Text and bytes are different types">

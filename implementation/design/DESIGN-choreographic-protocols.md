@@ -5,17 +5,16 @@ concierge→Slack). **Audience:** the operator (shaping this live); a future `ve
 (area=`rcdzc` or `compiler-ml`); v-effects (comms-as-effects), v-metaprogramming (projection as a
 compile-time `Ast→Ast` pass), v-inference (session/local types as rows), v-verification (machine-checked
 projection soundness).
-**Status:** 🔵 **PROPOSAL — the research is done and the design is complete; the paradigm fork (Q1, §4) is
-resolved to a recommended DEFAULT (hybrid (c)), OPERATOR-OVERRIDABLE.** This lands as a proposal in the
-house style of `DESIGN-tagged-template-macros.md` and `DESIGN-agent-runtime-vision.md` (vision +
-increments + seams + gate + open decisions each carrying a chosen default). It captures the research
-synthesis and concrete Cadenza surface sketches for *all three* paradigm options (§4) as alternatives
-considered; the default is (c), and the two other surfaces are kept so the operator can redirect in one
-line via the concierge. **Build is intentionally NOT yet queued to a vertical** — per the operator's
-"talk it into shape" framing, the vertical handoff waits on the operator's confirmation (or override) of
-Q1, so no fleet resources are spent building a possibly-wrong surface. Everything paradigm-independent
-(the projection algorithm §3.1, the seams §2, the guarantees, the increment plan) is final regardless of
-which surface Q1 lands on.
+**Status:** 🟢 **ADOPTED — paradigm decided by the operator (2026-07-17): FULL CHOREOGRAPHIC PROGRAMMING
+(option (b)).** The north star is **one global program** with located values + explicit communications;
+the compiler **endpoint-projects it to GENERATE each actor's executable code** — the author writes NO
+per-endpoint code, there is literally one artifact. This is the most ambitious / highest-differentiation
+path (over pure-MPST-type-level (a) and the hybrid (c), which are retained only as *considered
+alternatives*, §4.1). Written in the house style of `DESIGN-tagged-template-macros.md` and
+`DESIGN-agent-runtime-vision.md` (vision + increments + seams + gate + open decisions with a chosen
+default). **Queued for a vertical** (`corpus-bugfix`, area=`compiler-ml`) to build top-to-bottom. Everything
+in §2 (seams), §3.1 (the projection algorithm), §5 (guarantees), §6.1 (the fleet flagship), and §7 (seams)
+is final; the choreographic-programming surface is §4.
 
 > **The operator's directive (verbatim intent):** "A way to model distributed systems where the protocol
 > is defined in a single place but we're able to shred it up into one per actor at compile time. Research
@@ -216,78 +215,81 @@ choice site (someone must signal "loop again" / "done"), handled by the same `�
 
 ---
 
-## 4. THE FORK (Q1) — which paradigm is the north star? [DEFAULT: (c) hybrid; OPERATOR-OVERRIDABLE]
+## 4. The surface: full choreographic programming (ADOPTED)
 
-Everything downstream depends on this, so it carries a **recommended default the operator can override in
-one line via the concierge** rather than blocking the proposal. All three sketches below are real Cadenza;
-they are kept as **alternatives considered** (house style) so a redirect costs nothing. **Default: (c)
-hybrid**, because it strictly subsumes the other two — it derives the checked local type of (a) *and* the
-generated spine of (b), letting a first increment ship the (a) checking path (fastest to real) while the
-(b) generation path lands on the same projection machinery later, without a paradigm re-pick. The
-paradigm choice affects ONLY §4's surface + Inc 3's shape; §2, §3.1, §5, §6.1, §7 are paradigm-independent
-and final.
-
-### Option (a) — MPST type-level: protocol-as-type, hand-written endpoints
-The single artifact is a **global type**; you still write each actor, checked against its projection.
+**The operator's ruling (2026-07-17): go full choreographic programming.** The single artifact is **one
+global program**: it names the roles, threads **located values** (`x@Role` — a value that physically lives
+at `Role`), and moves data with **explicit communications** (`a ~> b`). The compiler **endpoint-projects**
+this one program to **generate each actor's executable code**. The author writes **no per-endpoint code** —
+there is literally one source, and Buyer's program, Seller's program, and Shipper's program are all
+*emitted* from it. This is the most ambitious, highest-differentiation shape and the one the metaprogramming
+machinery exploits best.
 
 ```
-// The one global source: the interaction, once.
-protocol Purchase =
-  Buyer  -> Seller  : Title(String)
-  Seller -> Buyer   : Quote(Int64)
-  choice at Buyer
-    | Accept => Buyer -> Seller : Accept(unit)
-                Seller -> Shipper : Ship(Addr)
-    | Reject => Buyer -> Seller : Reject(unit)
-
-// Projection is COMPILE-TIME: `Purchase ↾ Seller` is a local (session) type the compiler derives.
-// You WRITE Seller and it is checked against that projected type — an unexpected send is rejected.
-def seller(c: Purchase ↾ Seller) =            // `c` carries Seller's projected obligations as a row
-  let title = Comm.recv(c, Buyer)             // ?Title
-  Comm.send(c, Buyer, Quote(price(title)))    // !Quote
-  match Comm.recv(c, Buyer) with              // &{Accept, Reject}
-    | Accept(_) => Comm.send(c, Shipper, Ship(addr(title)))
-    | Reject(_) => unit
-```
-Most incremental (leans on inference/rows), least "wow" (you still write endpoints). Closest to Scribble/
-session-type libraries but *multiparty* and *global-sourced*.
-
-### Option (b) — choreographic programming: ONE program, compiler generates every actor
-The single artifact is **one program** with located values + `~>` comms. The compiler EMITS each actor.
-
-```
-// The one global source: the PROGRAM, once. `x@R` = value located at role R; `a ~> b` = communicate.
+// The ONE global source: the PROGRAM, written once.
+//   x@R          a located value: `x` lives at role R.
+//   e@R ~> S     communicate: evaluate `e` at R, send it, bind the result located at S.
+//   Label@R ~> S a selection: R tells S which branch was taken (knowledge of choice — §3).
 choreography Purchase(title@Buyer: String) =
-  let title'@Seller = title ~> Seller          // Buyer sends title; Seller receives it
-  let quote@Buyer   = price(title')@Seller ~> Buyer
-  if accept?(quote)@Buyer then                  // internal choice AT Buyer
-    Accept@Buyer ~> Seller                       // Buyer notifies Seller (knowledge of choice — §3)
+  let title'@Seller = title ~> Seller             // Buyer sends the title; it arrives located at Seller
+  let quote@Buyer   = price(title')@Seller ~> Buyer  // Seller computes a quote locally, sends it to Buyer
+  if accept?(quote)@Buyer then                    // an INTERNAL CHOICE, decided at Buyer
+    Accept@Buyer ~> Seller                          // Buyer NOTIFIES Seller of the branch (required — §3)
     let addr@Shipper = addr(title')@Seller ~> Shipper
     ship(addr)@Shipper
   else
     Reject@Buyer ~> Seller
-
-// Projection GENERATES three programs. NO hand-written endpoints. e.g. the emitted Seller:
-//   def seller() = let title' = Comm.recv(Buyer) in Comm.send(Buyer, price(title'))
-//                  match Comm.recv(Buyer) with Accept => Comm.send(Shipper, addr(title')) | Reject => unit
 ```
-Most ambitious, best exploits metaprogramming, one artifact end-to-end. Highest differentiation. The
-`if … @Buyer` with no notification to a differing role is exactly what §3's diagnostic rejects.
 
-### Option (c) — hybrid: one declaration, projects BOTH a checked local type AND a fill-in scaffold
-A global `protocol` projects, per actor, (i) a **local type** to check against *and* (ii) a **handler
-skeleton** (the send/recv spine, with holes for the local computation) you fill. Splits the difference:
-the wire behavior is generated + correct-by-construction, the *business logic* stays hand-written and
-type-checked. Leans on metaprogramming (scaffold) *and* inference (the check).
+**What the compiler generates.** Projection walks this one program per role, keeping only that role's
+actions and turning each `~>` into a matched `Comm.send`/`Comm.recv` (§2.1 — a recursive `Ast → Ast` fold;
+§3.1 — the projection algorithm). The three emitted actors:
 
-**Recommendation → DEFAULT: (c) hybrid.** It subsumes both: the same projection machinery derives (a)'s
-checked local type *and* (b)'s generated spine, so a first increment can ship the (a) checking path (the
-fastest route to something real and the least new surface) while the (b) full-generation path lands later
-on the identical projection function — no second paradigm decision, no rework. Choreographic programming
-(b) remains the more radical, higher-differentiation *end state*, reached incrementally under (c) rather
-than as an upfront all-in bet. **Operator override:** if the operator prefers to commit straight to (b)
-(one artifact, zero endpoint code, maximal "wow") or stay minimal with pure (a), that's a one-line
-redirect via the concierge and only §4's surface + Inc 3 change — the rest of the doc is unaffected.
+```
+// GENERATED — the author wrote none of this.
+def Buyer(title: String) =
+  Comm.send(Seller, title)
+  let quote = Comm.recv(Seller)
+  if accept?(quote) then Comm.send(Seller, Accept) else Comm.send(Seller, Reject)
+
+def Seller() =
+  let title' = Comm.recv(Buyer)
+  Comm.send(Buyer, price(title'))
+  match Comm.recv(Buyer) with
+    | Accept => Comm.send(Shipper, addr(title'))
+    | Reject => unit
+
+def Shipper() =
+  match Comm.recv(Seller) with               // Shipper only hears from Seller on the Accept branch;
+    | Ship(addr) => ship(addr)               // reachable ONLY because Seller forwards after being told
+```
+
+**Why this is correct-by-construction:**
+- **Matched pairs.** Every `~>` projects to exactly one `send` at the source and one `recv` at the target —
+  sends and receives cannot mismatch, the structural root of deadlock-freedom (§5, Q3-ii).
+- **Knowledge of choice is a compile error, not a footgun.** The `if …@Buyer` makes Buyer's continuation
+  differ by branch; any role whose behavior differs (here Seller) must be *told*. Omitting the
+  `Accept@Buyer ~> Seller` / `Reject@Buyer ~> Seller` selections makes the `⊓` merge in §3.1 undefined, and
+  the compiler **rejects** with a diagnostic naming Seller and the choice (Q4). The author cannot silently
+  ship an un-projectable program.
+- **Located types are inferred.** `title'@Seller` etc. carry a *location* alongside their ordinary type;
+  a value may only be used at the role it lives at (using `title'` at Buyer after it moved to Seller is a
+  type error), and `~>` is the sole way to change location. This is a light extension of the existing type
+  system, not a parallel one.
+
+### 4.1 Considered alternatives (not adopted)
+Two other paradigms were designed and sketched; the operator chose (b) over both. Kept as a record.
+- **(a) MPST type-level** — the single artifact is a *global type*; projection yields a per-role *local
+  (session) type*, and the author still **writes each endpoint by hand**, checked against its projected
+  type. Most incremental (leans on inference/rows), but you still write N endpoints — no code generation,
+  lower "wow." Closest to Scribble / session-type libraries, but multiparty and global-sourced.
+- **(c) hybrid** — a global declaration projects, per actor, BOTH a checked local type AND a fill-in
+  handler *scaffold* (generated send/recv spine, holes for local logic). Subsumes (a)+(b) on one projection
+  engine and was the pre-ruling default; the operator preferred the fully-generated (b) end state directly.
+
+The machinery (§2, §3.1) is shared across all three, so the design investment in projection/merge/rows is
+paradigm-independent; only the *surface* and the *degree of code generation* differ. (b) takes generation
+all the way: one artifact, every actor emitted.
 
 ---
 
@@ -310,25 +312,27 @@ redirect via the concierge and only §4's surface + Inc 3 change — the rest of
 
 ## 6. Increment plan (top-to-bottom, the way a vertical lands it)
 
-Written for the default (c): Inc 3 ships the (a) checking path first, the (b) generation path extends it.
-Under a pure-(a) override, Inc 3 stops at checking; under a straight-(b) override, Inc 3 goes directly to
-full generation. Each increment is independently gated green.
+For the adopted (b) choreographic-programming surface: Inc 3 GENERATES each actor's executable code from
+the one global program. Each increment is independently gated green.
 
-- **Inc 0 — the global-protocol AST + parser.** A `protocol`/`choreography` surface form parsed into a
-  built-in-`Ast`-shaped value (roles, messages-as-sum-payloads, sequence, choice, recursion, parallel).
-  Gate: round-trip parse/print of the Purchase example; a well-formedness checker rejects malformed `G`.
-- **Inc 1 — well-formedness + projectability check.** The §3 knowledge-of-choice analysis; reject
-  un-projectable `G` with a role-naming diagnostic. Gate: a corpus of projectable/un-projectable protocols
-  with expected accept/`(error CDZ…)`.
-- **Inc 2 — projection to local types (all paradigms need this).** `project : Ast -> Role -> LocalType`
-  as a compile-time function; local type = a row. Gate: projected local type of each role of Purchase
-  matches a golden.
-- **Inc 3 — conformance / code-gen.** (a): check a hand-written endpoint against its projected local type
-  (row unification). (b)/(c): GENERATE the endpoint program (or scaffold) via `Ast → Ast` splice. Gate:
-  the generated/checked endpoints compile and, composed, execute the protocol end-to-end over a mock
-  in-memory `Comm` handler (a value flows Buyer→Seller→Shipper).
-- **Inc 4 — deadlock-freedom by construction.** Structural argument (b) or well-formedness (a); a corpus of
-  would-be-deadlocking protocols rejected. Gate: no accepted protocol deadlocks in the mock runtime.
+- **Inc 0 — the choreography AST + parser.** A `choreography` surface form (located values `x@R`, comms
+  `e@R ~> S`, selections `Label@R ~> S`, `let`, `if`-at-role, `rec`) parsed into a built-in-`Ast`-shaped
+  value. Gate: round-trip parse/print of the Purchase choreography; a well-formedness checker rejects
+  malformed input (e.g. a comm whose source/target roles are undeclared).
+- **Inc 1 — well-formedness + projectability check.** The §3 knowledge-of-choice analysis; reject a
+  choreography whose `if`-at-a-role fails to notify a differing role, with a role-naming diagnostic. Gate:
+  a corpus of projectable / un-projectable choreographies with expected accept / `(error CDZ…)`.
+- **Inc 2 — projection to per-role programs (the core).** `project : Ast -> Role -> Ast` as a compile-time
+  fold: keep only `Role`'s actions, turn each `~>` into a matched `Comm.send`/`Comm.recv`, project `if`-at-
+  `Role` to a local branch and `if`-at-another to an external `match` on the selection. Gate: the projected
+  `Ast` of each role of Purchase matches a golden.
+- **Inc 3 — code generation + end-to-end execution.** Splice the projected per-role `Ast`s as real top-level
+  defs (the author wrote none). Gate: the three generated actors compile and, composed, execute the
+  choreography end-to-end over a mock in-memory `Comm` handler — a `title` value provably flows Buyer→Seller
+  and a `quote` flows back, and the Accept branch reaches Shipper.
+- **Inc 4 — deadlock-freedom by construction.** The structural matched-send/recv argument (every `~>`
+  projects to a paired send/recv); a corpus of would-be-deadlocking choreographies rejected. Gate: no
+  accepted choreography deadlocks in the mock runtime.
 - **Inc 5 — the fleet as flagship choreography.** Model the fleet coordination protocol; project the
   role loops. Ties to agent-runtime. Gate: the projected roles round-trip a `merge-request`→`merged`.
   *Worked sketch (§6.1) — the motivating example that makes the whole design concrete.*
@@ -392,7 +396,7 @@ round-trip executed over a mock in-memory `Comm` handler (a `Ref` value provably
 - Proofs: `implementation/verification/` (HOL-Light kernel module).
 
 ## 8. Open decisions (chosen defaults, operator may override)
-1. Q1 paradigm — **(c) hybrid** (default; operator-overridable to (a) or (b); §4). 2. Effects for runtime — **yes** (Q2). 3. Guarantee tiering
+1. Q1 paradigm — **DECIDED: (b) full choreographic programming** (operator ruling 2026-07-17; §4). 2. Effects for runtime — **yes** (Q2). 3. Guarantee tiering
 — **(i)→(ii)→(iii)** (Q3). 4. Knowledge of choice — **reject+diagnose** (Q4). 5. Substrate —
 **transport-agnostic, fleet as flagship** (Q5). 6. Which subsystem owns it — **`compiler-ml`/new
 `choreography` package** (projection is Cadenza code), with `rcdzc` seams for the `Comm` effect + reader

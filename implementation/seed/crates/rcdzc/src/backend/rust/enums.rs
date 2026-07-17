@@ -811,6 +811,40 @@ pub(super) fn sum_representable(db: &mut Db, ty: &crate::ty::Ty) -> bool {
     }
 }
 
+/// A PRECISE phrase for WHY `ty` is not [`sum_representable`], for the decline diagnostic. The bare
+/// "sum with no emitted Rust enum" is wrong for a recursive NEWTYPE (`(type Lst (Mk (Option (Tuple Int64
+/// Lst))))`) — a newtype is not a sum, and it fails for a DIFFERENT reason (its ERASURE unfolds forever
+/// through the μ back-edge, so it would need a `Box`-indirected NOMINAL emission, not an enum). Naming it
+/// accurately points whoever picks up the gap (or a future me) at the right fix, instead of hunting for a
+/// missing enum. Returns the first offending kind found in a left-to-right structural walk; falls back to
+/// the sum phrasing when the offender is a genuine recursive/unrepresentable SUM. Call ONLY when
+/// `sum_representable(db, ty)` is already known false (else it returns the sum fallback harmlessly).
+pub(super) fn unrepresentable_reason(db: &mut Db, ty: &crate::ty::Ty) -> &'static str {
+    use crate::ty::Ty;
+    match ty {
+        // A recursive newtype is the case whose erasure can't terminate — name it as such.
+        Ty::Nominal { decl, inner, .. } if mentions_decl(inner, *decl) => {
+            "a recursive newtype with no Box-indirected Rust representation"
+        }
+        // A non-recursive newtype erases to its inner; the offender is inside the inner.
+        Ty::Nominal { inner, .. } => unrepresentable_reason(db, inner),
+        Ty::Tuple(elems) => elems
+            .iter()
+            .find(|e| !sum_representable(db, e))
+            .map(|e| unrepresentable_reason(db, &e.clone()))
+            .unwrap_or("a sum with no emitted Rust enum (recursive/unrepresentable)"),
+        Ty::List(e) | Ty::Set(e) => unrepresentable_reason(db, &e.clone()),
+        Ty::Map(k, v) => {
+            if !sum_representable(db, k) {
+                unrepresentable_reason(db, &k.clone())
+            } else {
+                unrepresentable_reason(db, &v.clone())
+            }
+        }
+        _ => "a sum with no emitted Rust enum (recursive/unrepresentable)",
+    }
+}
+
 /// Whether declaration `decl` emits a Rust enum (its variant payloads all resolve to native types and it
 /// is not recursive) — the representability of a NON-built-in sum. Mirrors `emit_one_enum`'s success.
 fn decl_emits(db: &mut Db, decl: &crate::db::TypeDecl) -> bool {

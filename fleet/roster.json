@@ -39,6 +39,7 @@
     { "name": "v-agent-harness", "role": "vertical", "vertical": "agent-harness", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "v-notebook", "role": "vertical", "vertical": "notebook", "area": "guide", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "v-playground-examples", "role": "vertical", "vertical": "playground-examples", "area": "guide", "model": "opus", "effort": "high", "interval": "30m" },
-    { "name": "v-guide-editor", "role": "vertical", "vertical": "guide-editor", "area": "guide", "model": "opus", "effort": "high", "interval": "30m" }
+    { "name": "v-guide-editor", "role": "vertical", "vertical": "guide-editor", "area": "guide", "model": "opus", "effort": "high", "interval": "30m" },
+    { "name": "v-choreography", "role": "vertical", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" }
   ]
 }

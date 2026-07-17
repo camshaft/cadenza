@@ -205,6 +205,37 @@ pub(super) fn ord_key_type(ty: &Ty) -> Option<String> {
     }
 }
 
+/// GROUND the still-unsolved type VARIABLES in `ty` to the default `Int64`, recursively — the type-level
+/// analogue of [`IntTy::ground_width`] grounding an unresolved WIDTH at selection. Used to spell a Rust
+/// annotation for a construction whose type inference left open, specifically an EMPTY collection literal
+/// (`Map.empty` / `Set.of (list)`) whose element/key/value types are fixed only by LATER use — e.g. an
+/// empty-Map handler state whose `K`/`V` are pinned through the `get`/`put` effect ops downstream, not at
+/// the construction site. Without a spelled annotation the emitted `BTreeMap::new()` is uninferrable and
+/// rustc raises E0282 ("type annotations needed"); grounding an open `Ty::Var`/`Ty::Any` to `Int64` gives
+/// a concrete annotation for the common integer-typed accumulator/handler-state shape.
+///
+/// A `Var`/`Any` in the KEY or VALUE position becomes `Int64`; a concrete leaf is unchanged; a compound
+/// recurses. This can only ever produce a WRONG type if the collection is genuinely used at a NON-default
+/// element type reachable only through unsolved vars — in which case rustc errors LOUDLY at the annotated
+/// `new()` (a build failure the gate records as `todo`), never a silent miscompile. So grounding is
+/// strictly safer than the bare `new()` (which E0282s for EVERY open case) and correct for the int-typed
+/// majority. Only the OPEN vars are grounded — a partially-solved `(Map Int64 Var)` grounds just the value.
+pub(super) fn ground_open_vars(ty: &Ty) -> Ty {
+    match ty {
+        Ty::Var(_) | Ty::Any => Ty::int64(),
+        Ty::List(e) => Ty::List(Box::new(ground_open_vars(e))),
+        Ty::Set(e) => Ty::Set(Box::new(ground_open_vars(e))),
+        Ty::Map(k, v) => Ty::Map(Box::new(ground_open_vars(k)), Box::new(ground_open_vars(v))),
+        Ty::Tuple(elems) => Ty::Tuple(
+            elems
+                .iter()
+                .map(ground_open_vars)
+                .collect::<std::rc::Rc<[Ty]>>(),
+        ),
+        _ => ty.clone(),
+    }
+}
+
 /// Whether `ty` maps to a Rust type that implements `Ord` — the bound `BTreeSet<T>`/`BTreeMap<K,_>`
 /// requires of its element/key. Every scalar/text/compound the backend represents IS `Ord` EXCEPT a
 /// FLOAT (and anything CONTAINING one): Rust's `f64`/`f32` are `PartialOrd` but NOT `Ord` (NaN breaks

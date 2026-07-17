@@ -2997,6 +2997,78 @@ mod tests {
     }
 
     #[test]
+    fn every_infix_operator_pairing_round_trips_through_minimal_parens() {
+        // The minimal-parenthesization logic — the printer's `prec`/`prec+1` split against `infix_prec`
+        // + `is_right_assoc` — is the part most sensitive to a precedence-table drift, yet the faithful
+        // round-trip sweep only exercises ONE operator pair (`+` vs `*`). Here we sweep the WHOLE infix
+        // grid: for every ordered pair (outer, inner) of arena operator heads, build BOTH `(outer (inner a
+        // b) c)` (inner on the left spine) and `(outer a (inner b c))` (inner on the right spine) directly
+        // in the arena, print to ML, re-read, and assert STRUCTURAL EQUALITY. If the printer omits a
+        // needed paren (inner binds looser and would re-associate) or the parser disagrees on a tier, the
+        // re-read tree differs and this fails — naming the exact operator pair and spine. Generation is at
+        // the arena level (via s-expr heads), so it never leans on the printer under test to construct the
+        // input. Covers comparisons, bitwise (`| ^ &`), shifts (`<< >>`), `%`, and the right-associative
+        // arrow `->` against every other operator — the pairings no existing test reaches.
+        //
+        // Arena heads that `infix_prec` recognizes AND that a bare `(op a b)` arena prints+reparses as an
+        // ordinary binary infix. `:`/`->` are the type-level operators (ascription/arrow); the arithmetic,
+        // comparison, bitwise, shift set is the value grid. `=` is equality (surface `==`). The `Unit.*`
+        // family is excluded here (it renders via the units glyph path, covered by the unit tests).
+        let ops = [
+            "->", "|>", "or", "and", "=", "<", ">", "<=", ">=", "|", "^", "&", "<<", ">>", "+",
+            "-", "*", "/", "%",
+        ];
+        // Sanity: each op is one the shared precedence table recognizes (guards a typo in this list).
+        for op in ops {
+            assert!(
+                token::infix_prec(op).is_some(),
+                "test op {op:?} must be in infix_prec"
+            );
+        }
+        // A single `(op a b)` must itself round-trip — if an operator's bare form doesn't, the grid
+        // results below would be meaningless. Assert it up front so a broken operator fails clearly here
+        // (the split_template_body lesson: check the primitive before the combinations).
+        for op in ops {
+            let sx = format!("(def (main) ({op} a b))");
+            let a = sexpr::read(&sx).unwrap_or_else(|e| panic!("{sx:?}: {}", e.0));
+            let back = parser::read_ml(&print(&a, 80));
+            assert!(
+                back.ok() && a.structurally_eq(&back.arenas),
+                "single-op form {op:?} must round-trip; ml={:?}",
+                print(&a, 80)
+            );
+        }
+        // The grid: every (outer, inner) pair, inner nested on the left AND the right spine, at a range of
+        // widths (the break decisions must not change the parenthesization).
+        for outer in ops {
+            for inner in ops {
+                for spine in ["left", "right"] {
+                    let sx = match spine {
+                        "left" => format!("(def (main) ({outer} ({inner} a b) c))"),
+                        _ => format!("(def (main) ({outer} a ({inner} b c)))"),
+                    };
+                    let a = sexpr::read(&sx).unwrap_or_else(|e| panic!("{sx:?}: {}", e.0));
+                    for &width in &[0usize, 1, 12, 40, 200] {
+                        let ml = print(&a, width);
+                        let back = parser::read_ml(&ml);
+                        assert!(
+                            back.ok(),
+                            "grid ({outer},{inner},{spine}) w={width} must re-parse clean: {sx:?}\n\
+                             --- ml ---\n{ml}\n{:?}",
+                            back.errors
+                        );
+                        assert!(
+                            a.structurally_eq(&back.arenas),
+                            "grid ({outer},{inner},{spine}) w={width} NOT faithful — a paren/precedence \
+                             drift changed the tree for {sx:?}\n--- ml ---\n{ml}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn as_conversion_does_not_break_before_as_so_it_round_trips_at_every_width() {
         // Regression: the `as` unit-conversion used a BREAKABLE space before `as`, so at a narrow width
         // the printer emitted `<value>⏎  as <unit>` — which then FAILED to re-parse, because the `as`
@@ -3566,6 +3638,55 @@ mod tests {
             assert_roundtrip("@cfg(\"a\", \"b\") def f() = 1", 80),
             "@cfg(\"a\", \"b\")\ndef f() = 1"
         );
+    }
+
+    #[test]
+    fn the_test_annotation_example_round_trips_both_directions_and_never_prints_the_backtick_at_form()
+     {
+        // REGRESSION for the operator's thrice-reported high-viz `@test` bug (concierge issue): a
+        // `(@ test (def …))` annotation on the ML surface must PRINT as `@test` above the def and PARSE
+        // that back to the same `(@ test …)` head — NOT the malformed `` `@`(test, <def>) `` backtick-quoted-
+        // symbol CALL that was reported (which broke every `@test`/`@property` example in both directions).
+        // Pin the operator's EXACT example (a `@test` def with an `assert-eq` body) so the specific case can
+        // never regress; the general annotation surface is covered above, but this thrice-reported case
+        // deserves its own witness. Both directions + a NEGATIVE assertion against the malformed form.
+        let sx =
+            r#"(@ test (def (two-plus-two-is-four) (assert-eq (+ 2 2) 4 "arithmetic is broken")))"#;
+        // s-expr → ML: prints `@test` on its own line above the def, no backtick-`@`-call.
+        let ml = print(&sexpr::read(sx).unwrap(), 80);
+        assert_eq!(
+            ml, "@test\ndef two-plus-two-is-four() = assert-eq(2 + 2, 4, \"arithmetic is broken\")",
+            "the @test annotation must print above the def, not as a backtick-@ call"
+        );
+        // The regression signature: the malformed output was a backtick-quoted `@` applied as a call.
+        assert!(
+            !ml.contains("`@`"),
+            "must not print the annotation as a backtick-quoted `@` symbol call: {ml}"
+        );
+        // ML → s-expr: `@test`-above-the-def parses back to the canonical `(@ test …)` head.
+        let back = parser::read_ml(&ml);
+        assert!(
+            back.ok(),
+            "the printed @test form must re-parse: {:?}",
+            back.errors
+        );
+        assert_eq!(
+            sexpr::print(&back.arenas),
+            sx,
+            "the ML @test form must re-read to the same (@ test …) head"
+        );
+        // The full s-expr↔ML round-trip is structurally faithful (what the guide/testing page relies on).
+        assert!(
+            sexpr::read(sx)
+                .unwrap()
+                .structurally_eq(&parser::read_ml(&ml).arenas),
+            "the operator's @test example must round-trip s-expr ⇄ ML structurally"
+        );
+        // `@property` — the other broken example — behaves the same way.
+        let prop = "(@ property (def (p x) (assert-eq x x \"reflexive\")))";
+        let prop_ml = print(&sexpr::read(prop).unwrap(), 80);
+        assert!(prop_ml.starts_with("@property\n"), "{prop_ml}");
+        assert_eq!(sexpr::print(&parser::read_ml(&prop_ml).arenas), prop);
     }
 
     #[test]

@@ -1917,3 +1917,24 @@
             (def (main) (Qty.value (getx (mkv (Qty.of (Rational.of 5 1) (Unit.base #"meter"))))))
             (export main)))
   (output (: 5/1 Rational)))
+
+(case "angle units radian and degree are first-class and exact within their own dimension"
+  (doc    "ANGLE units — `radian` and `degree`, first-class built-ins for CAD revolve/rotate angles (the
+           operator ruling). They are SEPARATE base dimensions (NOT one angle dimension): rad↔deg is
+           IRRATIONAL (180° = π rad, π has no exact Rational), and every family unit keys to an EXACT
+           rational ratio to its dimension reference, so one shared dimension would break the exact-Rational
+           invariant. As distinct dimensions each is EXACT within itself: `5 degree + 90 degree = 95 degree`
+           (the magnitude sums exactly, no π ever enters). Mixing them is a CDZ0501 dimension mismatch — the
+           companion case below — never a silent irrational conversion. Pins that the angle family composes
+           exactly within one unit; a program crossing rad↔deg does so explicitly at the f64/sin-cos boundary.")
+  (input  (Qty.value (+ (Qty.of 5 (Unit.of #"degree")) (Qty.of 90 (Unit.of #"degree")))))
+  (output (: 95 Int64)))
+
+(case "adding a degree quantity to a radian quantity is a dimension mismatch"
+  (doc    "The honest cross-dimension reject: `degree` and `radian` are DISTINCT base dimensions (their
+           conversion is irrational — see above), so adding them is CDZ0501 (incompatible dimension),
+           exactly as `meter + second` is. There is no silent rad↔deg conversion — the angle family keeps
+           each unit exact within itself, and a genuine conversion must be explicit at the approximate f64
+           boundary. Pins that the two angle dimensions do NOT interconvert implicitly.")
+  (input  (+ (Qty.of 1 (Unit.of #"degree")) (Qty.of 1 (Unit.of #"radian"))))
+  (error  CDZ0501))

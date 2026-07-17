@@ -1,4 +1,6 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+pass	adding a degree quantity to a radian quantity is a dimension mismatch
+pass	angle units radian and degree are first-class and exact within their own dimension
 todo	a state-advancing helper called before a later read threads its write through the continuation
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
@@ -1325,7 +1327,7 @@ pass	a recursive-generic producer composes at two element types (the tied result
 pass	a recursive-generic producer over a list of its own generic-producer results monomorphizes and runs
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
 pass	a recursive-generic producer's element is usable at each instantiation
-pass	a recursive-generic transformer threading an IDENTITY closure at TWO types declines pending the multi-instantiation result tie
+todo	a recursive-generic transformer threading an IDENTITY closure composes at TWO element types
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
@@ -1547,6 +1549,7 @@ pass	a runtime wrapper sum whose payload is a variant is matched by a nested con
 pass	a runtime-assembled tree round-trips equal to its quoted twin
 pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a runtime-built generic user sum escapes with its parametric type frame
+pass	a runtime-built list nested in a tuple crosses the host boundary rendering the nested collection
 pass	a runtime-built open-sum variant decodes through the schema
 pass	a runtime-built string crosses the boundary as its value form
 pass	a runtime-computed BigInt result crosses the host boundary
@@ -1677,6 +1680,9 @@ pass	a spliced boolean drives an evaluated conditional through the lifted leaf
 pass	a spliced string participates in an evaluated equality
 pass	a squared BigInt-inner quantity added to a linear one is a dimension mismatch
 pass	a squared quantity does not add to a linear quantity
+pass	a stacked @test @ensures def called as a function returns its value, not unit (value-transparent)
+pass	a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)
+pass	a state-advancing helper called before a later read threads its write through the continuation
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strength-reduced multiply nested as an operand computes in place
@@ -2861,6 +2867,8 @@ pass	t1(match) NEGATIVE: a NON-total arm set (one Bool arm missing) does NOT dis
 pass	t1(match): the exhaustiveness obligation COVERS is DISCHARGED for a TOTAL arm set — the match cannot trap
 pass	t1(oob) NEGATIVE: with only the LOWER bound (>= i 0), the out-of-bounds obligation is NOT complete — the trap STAYS
 pass	t1(oob): the out-of-bounds obligation (0<=i) AND (i<len) is DISCHARGED from the two bound preconditions
+pass	t1(trap) NEGATIVE: a trap guard NOT contradicted by the precondition is NOT unreachable — the trap STAYS
+pass	t1(trap): an explicit trap under guard (lt x 0) is UNREACHABLE when @requires(>= x 0) — the trap is dead
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
@@ -3714,3 +3722,6 @@ todo	two same-signature closures alongside a plain export — the plain export r
 pass	a stacked @test @ensures def called as a function returns its value, not unit (value-transparent)
 pass	a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)
 pass	nested-Option equality observes the OUTER variant and matches identical nesting
+pass	an earlier name-binding arm shadows a later literal arm — first-match-wins, not specificity-ordered
+pass	t1(trap): an explicit trap under guard (lt x 0) is UNREACHABLE when @requires(>= x 0) — the trap is dead
+pass	t1(trap) NEGATIVE: a trap guard NOT contradicted by the precondition is NOT unreachable — the trap STAYS
