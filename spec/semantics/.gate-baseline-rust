@@ -645,6 +645,8 @@ pass	a guard reads the payload binder and an enclosing parameter together
 pass	a guard sees the names its pattern binds and arms are tried in order
 pass	a guard-elided masked add at a NARROW width computes identically on both backends
 pass	a guard-elided masked add computes inline over runtime operands
+pass	a guard-elided masked multiply computes inline over runtime operands
+pass	a guard-elided masked subtract computes inline over runtime operands
 pass	a guarded arm among same-constructor match arms keeps first-match-wins
 pass	a guarded arm is selected when its guard holds
 pass	a guarded list-match arm body reads its element binder
@@ -1691,6 +1693,7 @@ pass	a string-literal pattern in a Symbol sum payload is a type error
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
 pass	a string-literal pattern over a symbol scrutinee is a type error
 pass	a string-literal sub-pattern in a Symbol tuple element is a type error
+pass	a subtract that can underflow int8 keeps its trap — elision is opt-in on a proof
 pass	a success `?` observes an earlier trapping let-init so the trap is not elided
 pass	a success `?` then a failure `?` short-circuits at the second
 pass	a suffixed BigInt literal annotated as Int64 is a type mismatch

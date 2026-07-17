@@ -2884,6 +2884,44 @@
   (call   main (: 200 UInt8) (: 100 UInt8)) (output (: 12 UInt8))
   (call   main (: 255 UInt8) (: 255 UInt8)) (output (: 30 UInt8)))
 
+; The masked-add case pins guard elision for `+`; these pin the SAME `arith_provably_in_range` decision for
+; `-` and `*` — the two ops the rust backend only started eliding when it was taught to consult the Core-tier
+; predicate (previously `emit_arith` emitted `checked_*().unwrap_or_else(panic)` unconditionally, so any
+; elision was silently wasm-only). Subtract's interval `[alo−bhi, ahi−blo]` can go NEGATIVE (a distinct proof
+; face from add's monotone `[alo+blo, ahi+bhi]`), and multiply takes the min/max of four corner products.
+; The third case is the SOUNDNESS DUAL: an op whose interval leaves the type is NOT provable, so its guard is
+; KEPT and it still traps — the elision is opt-in on a proof of safety, never on the absence of a disproof,
+; identically on both backends.
+(case "a guard-elided masked subtract computes inline over runtime operands"
+  (doc    "`(- (& a 7) 10)` over a runtime `a`: `(& a 7)` lives in [0,7], so the difference lives in
+           [−10,−3] and provably fits Int64 — the overflow guard is elided. The interval crosses zero into
+           the NEGATIVES, the face add's `[alo+blo, ahi+bhi]` never exercises; value parity is the proof the
+           elision keeps the exact (checked-equal) result: `(255)` = (255&7)−10 = 7−10 = −3, `(8)` = 0−10 =
+           −10. Pins the guard-elided masked-SUBTRACT path on both backends (the rust backend elides `-`
+           only since it was taught to consult the Core-tier `arith_provably_in_range`).")
+  (input  (do (def (main (: a Int64)) (- (& a 7) 10)) (export main)))
+  (call   main (: 255 Int64)) (output (: -3 Int64))
+  (call   main (: 8 Int64)) (output (: -10 Int64)))
+
+(case "a guard-elided masked multiply computes inline over runtime operands"
+  (doc    "`(* (& a 7) (& b 7))` over runtime operands: both live in [0,7], so the product lives in [0,49]
+           (the max of the four corner products) and provably fits Int64 — the overflow guard is elided.
+           `(255, 250)` = 7·2 = 14, `(8, 8)` = 0·0 = 0. Pins the guard-elided masked-MULTIPLY path — the
+           four-corner interval face of the same Core-tier predicate — on both backends.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (* (& a 7) (& b 7))) (export main)))
+  (call   main (: 255 Int64) (: 250 Int64)) (output (: 14 Int64))
+  (call   main (: 8 Int64) (: 8 Int64)) (output (: 0 Int64)))
+
+(case "a subtract that can underflow int8 keeps its trap — elision is opt-in on a proof"
+  (doc    "`(- x 1)` at Int8: `x` lives in [−128,127], so the difference lives in [−129,126] and −129 is
+           BELOW Int8::MIN — NOT provably in range, so the overflow guard is KEPT. `(5)` = 4 computes, but
+           `(-128)` = −129 underflows and MUST trap. The soundness dual of the elided cases above: the
+           rust backend's new modular `wrapping_*` path is gated on a PROVEN fit, never on the mere absence
+           of a disproof, so an unprovable op keeps its trap identically to wasm.")
+  (input  (do (def (main (: x Int8)) (- x 1)) (export main)))
+  (call   main (: 5 Int8)) (output (: 4 Int8))
+  (call   main (: -128 Int8)) (trap "integer overflow"))
+
 (case "a runtime bitwise OR combines bits"
   (doc    "`(| a b)` emits `i64.or`; `(42, 128)` = 170 — setting the LEB128 continuation bit on a runtime
            byte. Pins the emitted bitwise-OR path.")
