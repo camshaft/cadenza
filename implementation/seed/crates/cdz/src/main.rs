@@ -266,6 +266,21 @@ enum Cmd {
     /// type"), reusing the SAME compiler queries the one-shot subcommands drive. No arguments — it
     /// communicates only over stdin/stdout.
     Lsp,
+
+    // ── Cadenza-in-Cadenza (ML) compiler conformance ────────────────────────────────────────────────
+    /// Run a single corpus program through the CADENZA-IN-CADENZA (ML) compiler and print a
+    /// machine-readable VERDICT — the seam the `cargo xtask gate` `cadenza-ml` target invokes to measure
+    /// the self-hosted compiler's conformance against the SHARED corpus (`spec/semantics/*.sexp`), the same
+    /// corpus rcdzc is gated against (operator directive 2026-07-17). Reads the program SOURCE from a FILE
+    /// argument, or from stdin when no file is given. Prints ONE verdict line to stdout:
+    /// `value <sexpr>` (ran to that value) | `declined` (well-formed but not-yet-supported by the ML
+    /// compiler's current language subset — a coverage-not-yet, not an error) | `error <msg>`. ALWAYS exits
+    /// 0 — a decline/error is a verdict, not a shell failure; the gate maps stdout→a per-case outcome and
+    /// reports a climbing `cadenza-ml conformance: X/N` line. STUB: currently declines every program (the
+    /// ML compiler's source front-end lands behind this subcommand next, per the A/B/C ruling); this fixes
+    /// the interface so the gate wiring can land against 0/N green and each ML feature flips cases without
+    /// any xtask change.
+    RunMl(RunMlArgs),
 }
 
 fn main() -> ExitCode {
@@ -323,6 +338,7 @@ fn main() -> ExitCode {
         Cmd::Instantiations(a) => run_instantiations(&a),
         Cmd::ParamManifest(a) => run_param_manifest(&a),
         Cmd::Lsp => run_lsp(),
+        Cmd::RunMl(a) => run_run_ml(&a),
     }
 }
 
@@ -337,6 +353,55 @@ fn run_lsp() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+// ── Cadenza-in-Cadenza (ML) compiler conformance seam ─────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct RunMlArgs {
+    /// The corpus program SOURCE file (s-expr / ml surface). OMITTED → read the program from stdin. The
+    /// `cargo xtask gate` `cadenza-ml` target passes each `spec/semantics/*.sexp` case's program here.
+    file: Option<String>,
+}
+
+/// `cdz run-ml` — run ONE corpus program through the Cadenza-in-Cadenza (ML) compiler and print a
+/// machine-readable verdict for the gate. Contract (fixed, invariant to the A/B/C source-reader ruling):
+///   - input: program source from FILE, else stdin.
+///   - stdout: exactly ONE verdict line — `value <sexpr>` | `declined` | `error <msg>`.
+///   - exit: ALWAYS 0 (a decline/error is a VERDICT, not a shell failure; the gate reserves non-zero for a
+///     genuine harness crash).
+///
+/// STUB (this increment): the ML compiler's source front-end (source → its `Tok` pipeline) has not landed
+/// yet — that's the next unit, behind whichever of A/B/C the operator picks. So every program currently
+/// `declined` (well-formed-but-not-yet-supported → coverage-not-yet, NOT an error). This fixes the interface
+/// so v-fleet-tooling can wire the `cadenza-ml` GateTarget + reported `X/N` line against a real 0/N-green
+/// seam; each ML feature added later flips cases `declined`→`value …` with ZERO xtask change.
+fn run_run_ml(args: &RunMlArgs) -> ExitCode {
+    use std::io::Read;
+    // Read the program source (file or stdin). A read failure is a harness-level problem → the one
+    // reserved non-success path, so the gate can distinguish "couldn't feed the program" from a verdict.
+    let source = match &args.file {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{PROG} run-ml: cannot read {path}: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => {
+            let mut buf = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
+                eprintln!("{PROG} run-ml: cannot read stdin: {e}");
+                return ExitCode::FAILURE;
+            }
+            buf
+        }
+    };
+    // STUB: no source front-end yet → every program is not-yet-supported. `_source` is read (so the
+    // stdin/file plumbing + the gate contract are exercised now) but not yet compiled.
+    let _source = source;
+    println!("declined");
+    ExitCode::SUCCESS
 }
 
 // ── compile (with in-process source parsing + auto-spans for debug) ──────────────────────────────
