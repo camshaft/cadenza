@@ -4274,4 +4274,51 @@ mod tests {
             "still produces a well-formed (embedded …) node"
         );
     }
+
+    #[test]
+    fn embedded_syntax_switch_never_panics_and_stays_wellformed_over_arbitrary_bodies() {
+        // The embedded-syntax switch (`json{ … }` / `toml{ … }`) runs on UNTRUSTED body text — the raw
+        // region scanner (brace-balance, string-aware), the sub-grammar reader, and the span-remapping
+        // graft all consume arbitrary bytes. Like every other surface, it must be TOTAL: never PANIC, and
+        // on a SUCCESSFUL parse produce a well-formed traversable arena with a span table that is total +
+        // GEOMETRICALLY valid over the OUTER source (spans are shifted into document coordinates, so a bad
+        // offset would slice out of bounds). The hand tests pin specific shapes; this sweeps a
+        // delimiter-rich alphabet through both grammars, plus unterminated / deeply-nested-brace / string-
+        // heavy / multibyte bodies that stress the scanner. `recovered` asserts the invariants (arena
+        // well-formed + total, char-boundary, in-bounds span table) for each generated program.
+        let alphabet: Vec<char> = "{}[]\":,.-+0123456789 \tabctfn\\/\nλ中".chars().collect();
+        let mut rng = SplitMix64(0xe3be_dded_c0de_1a7e);
+        for grammar in ["json", "toml"] {
+            for len in 0..=40usize {
+                for _ in 0..80 {
+                    let body: String = (0..len)
+                        .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                        .collect();
+                    // Wrap the arbitrary body in the switch — the region scanner + sub-grammar reader must
+                    // survive whatever it contains (unbalanced braces → unterminated region; a `}` in a
+                    // string → not a close; garbage → a recovered sub-grammar error). `recovered` asserts
+                    // no panic + a well-formed, span-total, geometry-valid arena.
+                    let _ = recovered(&format!("{grammar}{{{body}}}"));
+                    // Also the UNTERMINATED form (no closing brace) — the scanner must consume to end and
+                    // emit a placeholder, never hang or panic.
+                    let _ = recovered(&format!("{grammar}{{{body}"));
+                    // And embedded in a larger program (a def RHS), so the token-cursor advance past the
+                    // region is exercised in context.
+                    let _ = recovered(&format!("def d() = {grammar}{{{body}}}\nx"));
+                }
+            }
+        }
+        // A few pathological brace/string shapes head-on.
+        for prog in [
+            r#"json{{{{{{{{"#,             // deeply unbalanced opens
+            r#"json{"}}}}}}}}"}"#,         // braces buried in a string
+            r#"json{ {"a": "b\"}\"c"} }"#, // escaped quotes + braces in a string
+            "toml{}",                      // empty body
+            "json{}",                      // empty body
+            r#"toml{ a = "]}[{" }"#,       // toml string with delimiters
+            "json{中{λ}中}",               // multibyte around braces
+        ] {
+            let _ = recovered(prog);
+        }
+    }
 }
