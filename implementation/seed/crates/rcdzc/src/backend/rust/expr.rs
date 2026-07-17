@@ -2298,7 +2298,17 @@ fn emit_arith(
             // the checked form on every in-range input, and never traps (exactly like the elided wasm path).
             // Until this, the rust backend consulted the predicate NOWHERE, so a Core-tier elision (range
             // analysis today, a discharged no-overflow proof next) was silently wasm-only.
-            if crate::lower::arith_provably_in_range(db, op, lhs, rhs, it) {
+            //
+            // PARITY: pass the GROUNDED result type, exactly as the wasm backend does. wasm feeds the
+            // predicate `IntTy::fixed(m.signed, m.width)` where `m = Machine::of(int_ty_of(db, id))`, and
+            // `Machine::of` grounds a Deferred/Var width→64 and a deferred sign→signed (`ground_width`/
+            // `ground_signed`). `arith_provably_in_range` internally rejects a NON-ground `IntTy`
+            // (`resolved_int_bounds` returns `None` on Deferred/Var), so passing `it` raw would make rust
+            // KEEP a guard wasm elides on a deferred-width node — a correct-but-divergent elision decision.
+            // Grounding here mirrors `Machine::of` so BOTH backends make the identical decision. (For a
+            // concrete narrow/wide type `it` is already ground, so this is a no-op on the common path.)
+            let grounded = crate::ty::IntTy::fixed(it.ground_signed(), it.ground_width());
+            if crate::lower::arith_provably_in_range(db, op, lhs, rhs, grounded) {
                 let wrapping = match op {
                     Prim::Add => "wrapping_add",
                     Prim::Sub => "wrapping_sub",
