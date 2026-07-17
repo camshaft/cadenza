@@ -3722,3 +3722,34 @@ fn rustc_roundtrip_list_pattern_in_a_sum_variant_payload() {
         assert_eq!(out, "-1", "mk 5 → None");
     }
 }
+
+#[test]
+fn rustc_roundtrip_nested_tuple_list_element_binder_with_rest_recursion() {
+    // A NESTED element pattern in a list arm — `(list (tuple a _) .. rest)` — binds `a` at the two-step
+    // path [Elem(0), Elem(0)] (list index 0, then tuple field 0). Combined with a self-recursive call on
+    // the rest binder, this declined ("sum payload has no bound match arm"): the list-scrutinee binder path
+    // resolved only a SINGLE [Elem(i)] step, so a nested [Elem(i), Elem(j)] fell through. Now it walks the
+    // trailing steps against the element type — a tuple field `.j`, a nested-list index `[j]`.
+    let sf = compile_rust(
+        "(module m (def (sf (: xs (List (Tuple Int64 Int64)))) \
+           (match xs ((list) 0) ((list (tuple a _) .. rest) (+ a (sf rest))))) \
+           (def (run) (sf (list (tuple 1 9) (tuple 2 8) (tuple 3 7)))) (export run))",
+    );
+    assert!(
+        sf.contains(")[0]).0") || sf.contains(")[0]).0)"),
+        "the nested-tuple element reads list-index [0] then tuple field .0:\n{sf}"
+    );
+    if let Some(out) = rustc_run(&sf, "run()") {
+        assert_eq!(out, "6", "sum of the first components 1+2+3 = 6");
+    }
+
+    // The non-recursive nested-tuple element still works (regression guard) — head's first component.
+    let one = compile_rust(
+        "(module m (def (f (: xs (List (Tuple Int64 Int64)))) \
+           (match xs ((list (tuple a b) .. rest) (+ a b)) (_ (- 0 1)))) \
+           (def (run) (f (list (tuple 5 9)))) (export run))",
+    );
+    if let Some(out) = rustc_run(&one, "run()") {
+        assert_eq!(out, "14", "the head tuple's a + b = 5 + 9");
+    }
+}

@@ -3740,20 +3740,58 @@ fn emit_sum_payload(
     // `.to_vec()` already produces an owned, independent `Vec`.
     if matches!(type_of(db, scrutinee).strip_nominal(), Ty::List(_)) {
         match path {
-            [crate::core::PathStep::Elem(i)] => {
-                let xs = emit(db, scrutinee, env, ctx)?;
-                // Clone a non-Copy element (the read value's own type drives it); a Copy element indexes
-                // in place. `id` is this `SumPayload` node — its type is the element type.
-                if needs_clone_on_read(db, id) {
-                    return Ok(format!("({xs})[{i}].clone()"));
-                }
-                return Ok(format!("({xs})[{i}]"));
-            }
+            // A leading `RestFrom(k)` — the tail sublist from index `k`, an owned `Vec` slice copy
+            // (persistent value semantics; the source list is left intact for a sibling element binder).
             [crate::core::PathStep::RestFrom(k)] => {
                 let xs = emit(db, scrutinee, env, ctx)?;
-                // The tail sublist from index `k` — an owned `Vec` slice copy (persistent value semantics;
-                // the source list is left intact for any sibling element binder in the same arm).
                 return Ok(format!("({xs})[{k}..].to_vec()"));
+            }
+            // A leading `Elem(i)` — the i-th element, then ANY trailing steps index INTO that element (a
+            // NESTED element pattern: `(list (tuple a b) .. rest)` binds `a` at `[Elem(0), Elem(0)]` — list
+            // index 0, then tuple field 0). Walk the trailing steps against the element TYPE so each renders
+            // per its container (a tuple field `.j`, a nested-list index `[j]`). Before, only a SINGLE
+            // `[Elem(i)]` resolved; a nested `[Elem(i), Elem(j)]` fell through to the decline (surfacing when
+            // a self-recursive arm reads such a binder). Clone a non-Copy final read (the element/subfield
+            // moves out of the borrowed list otherwise).
+            [crate::core::PathStep::Elem(i), rest @ ..] => {
+                let xs = emit(db, scrutinee, env, ctx)?;
+                let mut expr = format!("({xs})[{i}]");
+                let mut cur_ty = match type_of(db, scrutinee).strip_nominal() {
+                    Ty::List(elem) => (**elem).clone(),
+                    _ => Ty::Any,
+                };
+                for step in rest {
+                    match step {
+                        crate::core::PathStep::Elem(j) => match cur_ty.strip_nominal() {
+                            Ty::Tuple(elems) => {
+                                cur_ty = elems.get(*j).cloned().unwrap_or(Ty::Any);
+                                expr = format!("({expr}).{j}");
+                            }
+                            Ty::List(elem) => {
+                                cur_ty = (**elem).clone();
+                                expr = format!("({expr})[{j}]");
+                            }
+                            _ => {
+                                cur_ty = Ty::Any;
+                                expr = format!("({expr}).{j}");
+                            }
+                        },
+                        // A `Payload`/`RestFrom` beyond the leading list index is a shape this slice does not
+                        // render — decline (the pre-existing boundary).
+                        _ => {
+                            return Err(Reject::decline(
+                                "a nested list-element binder beyond a tuple projection is not rendered by the Rust backend",
+                            ));
+                        }
+                    }
+                }
+                // Clone a non-Copy final read (a `Vec`/`String`/nested list/tuple element read by value would
+                // move out of the borrowed list; a `Copy` scalar reads in place). `id` is this `SumPayload`
+                // node, so its solved type drives the decision.
+                if needs_clone_on_read(db, id) {
+                    return Ok(format!("{expr}.clone()"));
+                }
+                return Ok(expr);
             }
             _ => {}
         }
