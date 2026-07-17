@@ -143,6 +143,30 @@ pub fn inbox_for(events: &[crate::Event], agent: &str) -> Vec<(Seq, Message)> {
         .collect()
 }
 
+/// Append a `reply` message then ACK the source message at `source_seq` — in that ORDER — to `log`. This
+/// is the fleet's hard-won reply-then-ack rule, native over the log (vision §9): the reply MESSAGE event
+/// lands BEFORE the ACK event, so a crash BETWEEN them leaves the reply durably logged and the source
+/// still un-acked — [`inbox_for`] re-surfaces the source, and re-driving it re-appends an (idempotent-by-
+/// content) reply, never dropping one. The inverse failure — ack-before-reply — could lose a reply on a
+/// crash; that is exactly the trap this ordering avoids. Returns the two assigned seqs (reply, ack).
+pub fn reply_then_ack(
+    log: &mut impl crate::Log,
+    source_seq: Seq,
+    reply: &Message,
+) -> Result<(Seq, Seq)> {
+    // 1) the reply, appended FIRST (durable before the ack).
+    let reply_seq = log.append(MESSAGE, &reply.encode())?;
+    // 2) the ack of the source, appended SECOND.
+    let ack_seq = log.append(
+        ACK,
+        &Ack {
+            message_seq: source_seq,
+        }
+        .encode(),
+    )?;
+    Ok((reply_seq, ack_seq))
+}
+
 // ── length-prefixed codec helpers (u32-LE lengths; binary-safe; no deps) ────────────────────────────────
 
 fn put_u32(out: &mut Vec<u8>, v: u32) {
@@ -362,5 +386,122 @@ mod tests {
             vec![1],
             "the corrupt message is skipped; the well-formed one still projects"
         );
+    }
+
+    // ── L2c: reply-then-ack over a real Log (crash-safe ordering) ───────────────────────────────────────
+
+    use crate::{FileLog, Log};
+
+    fn temp_log(tag: &str) -> (std::path::PathBuf, FileLog) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let n = N.fetch_add(1, Ordering::SeqCst);
+        let p = std::env::temp_dir().join(format!(
+            "cdz-kernel-msg-{tag}-{}-{n}.log",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&p);
+        let log = FileLog::open(&p).unwrap();
+        (p, log)
+    }
+
+    #[test]
+    fn reply_then_ack_appends_reply_before_ack_and_processes_the_source() {
+        // reply_then_ack lands the reply MESSAGE then the ACK, in order; afterward the source is acked
+        // (out of the inbox) and the reply is present, addressed back to the original sender.
+        let (p, mut log) = temp_log("reply");
+        // A source merge-request from v-peer to me at seq 0.
+        let source = Message {
+            from: "v-peer".into(),
+            to: "me".into(),
+            kind: "merge-request".into(),
+            subject: "please review".into(),
+            refs: vec!["abc123".into()],
+            body: b"the diff".to_vec(),
+        };
+        let source_seq = log.append(MESSAGE, &source.encode()).unwrap();
+
+        // Before replying, the source is in my inbox.
+        assert_eq!(
+            inbox_for(&log.tail(0).unwrap(), "me")
+                .iter()
+                .map(|(s, _)| *s)
+                .collect::<Vec<_>>(),
+            vec![source_seq],
+            "the source message is unread in my inbox before I reply"
+        );
+
+        // Reply to v-peer + ack the source.
+        let reply = Message {
+            from: "me".into(),
+            to: "v-peer".into(),
+            kind: "merged".into(),
+            subject: "re: please review".into(),
+            refs: vec!["abc123".into()],
+            body: b"landed".to_vec(),
+        };
+        let (reply_seq, ack_seq) = reply_then_ack(&mut log, source_seq, &reply).unwrap();
+        assert!(
+            reply_seq < ack_seq,
+            "the reply is appended BEFORE the ack (crash-safe order)"
+        );
+
+        let events = log.tail(0).unwrap();
+        // The source is now acked → out of my inbox.
+        assert!(
+            is_acked(&events, source_seq),
+            "the source is acked after reply_then_ack"
+        );
+        assert!(
+            inbox_for(&events, "me").is_empty(),
+            "the acked source is processed → my inbox is empty"
+        );
+        // The reply is in v-peer's inbox, addressed back to the original sender.
+        let peer_inbox = inbox_for(&events, "v-peer");
+        assert_eq!(peer_inbox.len(), 1, "v-peer has one message: my reply");
+        assert_eq!(peer_inbox[0].1.kind, "merged", "the reply carries its kind");
+        assert_eq!(peer_inbox[0].1.body, b"landed");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn a_crash_between_reply_and_ack_leaves_the_source_re_drivable() {
+        // Simulate a crash AFTER the reply lands but BEFORE the ack: only the reply MESSAGE is in the log.
+        // The source must still be unread (re-drivable) — no reply is lost, the fleet's durable invariant.
+        let (p, mut log) = temp_log("crash");
+        let source = Message {
+            from: "v-peer".into(),
+            to: "me".into(),
+            kind: "ask".into(),
+            subject: "q".into(),
+            refs: vec![],
+            body: b"?".to_vec(),
+        };
+        let source_seq = log.append(MESSAGE, &source.encode()).unwrap();
+        // Only the reply lands (the ack "never happened" — the crash point).
+        let reply = Message {
+            from: "me".into(),
+            to: "v-peer".into(),
+            kind: "answer".into(),
+            subject: "a".into(),
+            refs: vec![],
+            body: b"!".to_vec(),
+        };
+        log.append(MESSAGE, &reply.encode()).unwrap();
+
+        let events = log.tail(0).unwrap();
+        assert!(
+            !is_acked(&events, source_seq),
+            "no ack landed → the source is NOT acked"
+        );
+        assert_eq!(
+            inbox_for(&events, "me")
+                .iter()
+                .map(|(s, _)| *s)
+                .collect::<Vec<_>>(),
+            vec![source_seq],
+            "the source is still unread (re-drivable) — reply-then-ack lost nothing"
+        );
+        let _ = std::fs::remove_file(&p);
     }
 }
