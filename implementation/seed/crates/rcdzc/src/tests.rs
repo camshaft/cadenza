@@ -59268,8 +59268,8 @@ mod sidecar_driven {
     use crate::compile::compile;
     use crate::sidecar::{
         self, KIND_DIAGNOSTICS, KIND_DOC, KIND_EXPORTS, KIND_HIGHLIGHT, KIND_INSTANTIATIONS,
-        KIND_RESOLVE, KIND_SCOPE, KIND_SYMBOLS, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query,
-        Request,
+        KIND_PARAM_MANIFEST, KIND_RESOLVE, KIND_SCOPE, KIND_SYMBOLS, KIND_TYPE_AT, KIND_TYPE_INFO,
+        KIND_USES, Query, Request,
     };
     use crate::testkit::parse;
 
@@ -60364,6 +60364,59 @@ mod sidecar_driven {
             assert_ne!(line.rsplit('\t').next().unwrap(), "-", "line: {line}");
             let _ = node;
         }
+    }
+
+    #[test]
+    fn a_param_manifest_query_renders_each_param_site_to_a_row() {
+        // The `@param` WIDGET MANIFEST query (v-metaprogramming's scan + v-cdz-tooling's Query+CLI): one row
+        // per `(: (@ (param <kv>) name) Type)` site, TAB-separated
+        // `name  widget  type  range-lo  range-hi  options  default  name-node`. The DECLARED TYPE is
+        // rendered here (the type column, `Ty::render_name`); the value fields are ARENA NODE IDS (or `-`),
+        // which the CLI renders. (Range spelled `(list 0 100)` in s-expr — `[0 100]` is ML-surface sugar.)
+        let src = "(module m \
+                   (: (@ (param (: widget slider) (: range (list 0 100))) width) Int64) \
+                   (: (@ (param (: widget toggle)) mirror) Bool) \
+                   (def (main) 0) (export main))";
+        let out = compile(&inputs(src, &[Request::Query(Query::ParamManifest)]), &[]);
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        let text = artifact_text(&out, KIND_PARAM_MANIFEST).expect("a param-manifest artifact");
+        let rows: Vec<Vec<&str>> = text.lines().map(|l| l.split('\t').collect()).collect();
+        assert_eq!(rows.len(), 2, "two @param sites → two rows: {text:?}");
+
+        // width: slider widget, Int64 type, a range (both element nodes present, not `-`), no options/default.
+        let width = rows.iter().find(|r| r[0] == "width").expect("width row");
+        assert_eq!(width[1], "slider", "width widget: {width:?}");
+        assert_eq!(
+            width[2], "Int64",
+            "width declared type rendered via the type column: {width:?}"
+        );
+        assert_ne!(width[3], "-", "width range-lo is a node id: {width:?}");
+        assert_ne!(width[4], "-", "width range-hi is a node id: {width:?}");
+        assert_eq!(width[5], "-", "width has no options: {width:?}");
+        assert_eq!(width[6], "-", "width has no default: {width:?}");
+        assert_ne!(
+            width[7], "-",
+            "width name-node is a jumpable node id: {width:?}"
+        );
+
+        // mirror: toggle widget, Bool type, NO range → both range columns are the `-` sentinel (stable schema).
+        let mirror = rows.iter().find(|r| r[0] == "mirror").expect("mirror row");
+        assert_eq!(mirror[1], "toggle", "mirror widget: {mirror:?}");
+        assert_eq!(mirror[2], "Bool", "mirror declared type: {mirror:?}");
+        assert_eq!(mirror[3], "-", "mirror has no range-lo: {mirror:?}");
+        assert_eq!(mirror[4], "-", "mirror has no range-hi: {mirror:?}");
+    }
+
+    #[test]
+    fn a_param_manifest_query_on_a_paramless_program_is_empty() {
+        // Total: a program with no `@param` sites yields the empty manifest, never an error.
+        let src = "(do (def (main) 0) (export main))";
+        let out = compile(&inputs(src, &[Request::Query(Query::ParamManifest)]), &[]);
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        assert_eq!(
+            artifact_text(&out, KIND_PARAM_MANIFEST).as_deref(),
+            Some("")
+        );
     }
 
     #[test]
