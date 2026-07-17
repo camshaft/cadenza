@@ -2678,65 +2678,64 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
         }
     };
 
-    let mut checked = 0u32;
-    let mut skipped = 0u32;
-    let mut divergences: Vec<String> = Vec::new();
-    for file in &files {
-        for rec in read_corpus(&tools, file) {
-            // Multi-file package cases are out of scope for this first cut.
-            if !rec.modules.is_empty() {
-                skipped += 1;
-                continue;
-            }
-            // For each trial (a `(call …)`, or the single no-call trial), run at every level and compare
-            // outcomes. A case with no trials still has one implicit no-call run.
-            let calls: Vec<Option<&Call>> = if rec.trials.is_empty() {
-                vec![None]
-            } else {
-                rec.trials.iter().map(|t| t.call.as_ref()).collect()
-            };
-            let mut case_declined_at_default = false;
-            let mut case_checked_any = false;
-            for call in calls {
-                let runs: Vec<Ran> = LEVELS
-                    .iter()
-                    .map(|lvl| {
-                        run_program_wasm(
-                            &tools,
-                            &opts.store,
-                            &rec.program,
-                            &rec.modules,
-                            call,
-                            &rec.host_responses,
-                            Some(lvl),
-                        )
-                    })
-                    .collect();
-                // A decline at the default tier means the case doesn't compile — skip it (level-independent).
-                if matches!(&runs[1], Ran::Declined { .. }) {
-                    case_declined_at_default = true;
-                    break;
-                }
-                case_checked_any = true;
-                let base = outcome(&runs[1]);
-                for (lvl, ran) in LEVELS.iter().zip(&runs) {
-                    let got = outcome(ran);
-                    if got != base {
-                        let label = call.map(|c| c.export.as_str()).unwrap_or("(no call)");
-                        divergences.push(format!(
-                            "{} [{label}]: {lvl} → `{got}`, O1 → `{base}` — LEVELS DIVERGE (candidate miscompile)",
-                            rec.description
-                        ));
+    // Gather every case, then sweep them IN PARALLEL — like `grade_all_parallel`, the work is
+    // process-bound (each level is a full compile+run subprocess pipeline), so a worker pool pulling from
+    // a shared cursor keeps many pipelines in flight. Order is irrelevant here (we only tally + collect
+    // divergences, no positional baseline), so a simple lock-collected result set suffices.
+    let records: Vec<CorpusRecord> = files
+        .iter()
+        .flat_map(|file| read_corpus(&tools, file))
+        .collect();
+    let outcome = &outcome;
+    let (checked, skipped, divergences) = {
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+        let checked = AtomicU32::new(0);
+        let skipped = AtomicU32::new(0);
+        let divergences: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        let cursor = AtomicUsize::new(0);
+        let workers = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .max(1);
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let (cursor, checked, skipped, divergences, records, tools, store) = (
+                    &cursor,
+                    &checked,
+                    &skipped,
+                    &divergences,
+                    &records,
+                    &tools,
+                    &opts.store,
+                );
+                scope.spawn(move || {
+                    loop {
+                        let i = cursor.fetch_add(1, Ordering::Relaxed);
+                        if i >= records.len() {
+                            break;
+                        }
+                        match sweep_one_case(tools, store, &records[i], &LEVELS, outcome) {
+                            SweepOutcome::Skipped => {
+                                skipped.fetch_add(1, Ordering::Relaxed);
+                            }
+                            SweepOutcome::Checked(diffs) => {
+                                checked.fetch_add(1, Ordering::Relaxed);
+                                if !diffs.is_empty() {
+                                    divergences.lock().unwrap().extend(diffs);
+                                }
+                            }
+                        }
                     }
-                }
+                });
             }
-            if case_declined_at_default {
-                skipped += 1;
-            } else if case_checked_any {
-                checked += 1;
-            }
-        }
-    }
+        });
+        (
+            checked.into_inner(),
+            skipped.into_inner(),
+            divergences.into_inner().unwrap(),
+        )
+    };
 
     println!(
         "\ngate --opt-sweep: {checked} checked ({skipped} skipped: package/decline), {} divergence(s) across O0..O3",
@@ -2750,6 +2749,77 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
         std::process::exit(1);
     }
     println!("all checked cases run to the SAME outcome at every optimization level ✓");
+}
+
+/// The per-case result of the opt-sweep: either the case was skipped (multi-file package, or it declines
+/// at the default tier — a decline is level-independent), or it was checked and yielded zero-or-more
+/// divergence messages (a level whose observable outcome differs from O1's).
+enum SweepOutcome {
+    Skipped,
+    Checked(Vec<String>),
+}
+
+/// Sweep ONE corpus case across all optimization `levels`: for each trial (`(call …)`, or one implicit
+/// no-call run), run the program at every level and compare the observable `outcome` to the O1 baseline.
+/// Returns the divergences found (empty = the case is level-equivalent). Pure per-case work (own
+/// subprocess pipelines, no shared mutable state), so the sweep runs these in parallel.
+fn sweep_one_case(
+    tools: &Tools,
+    store: &Option<PathBuf>,
+    rec: &CorpusRecord,
+    levels: &[&str],
+    outcome: &dyn Fn(&Ran) -> String,
+) -> SweepOutcome {
+    // Multi-file package cases are out of scope for this first cut.
+    if !rec.modules.is_empty() {
+        return SweepOutcome::Skipped;
+    }
+    // Each trial (a `(call …)`, or the single no-call trial) is run at every level and compared.
+    let calls: Vec<Option<&Call>> = if rec.trials.is_empty() {
+        vec![None]
+    } else {
+        rec.trials.iter().map(|t| t.call.as_ref()).collect()
+    };
+    let mut diffs = Vec::new();
+    let mut checked_any = false;
+    for call in calls {
+        let runs: Vec<Ran> = levels
+            .iter()
+            .map(|lvl| {
+                run_program_wasm(
+                    tools,
+                    store,
+                    &rec.program,
+                    &rec.modules,
+                    call,
+                    &rec.host_responses,
+                    Some(lvl),
+                )
+            })
+            .collect();
+        // A decline at the default tier means the case doesn't compile — skip it (level-independent).
+        let default_idx = levels.iter().position(|l| *l == "O1").unwrap_or(0);
+        if matches!(&runs[default_idx], Ran::Declined { .. }) {
+            return SweepOutcome::Skipped;
+        }
+        checked_any = true;
+        let base = outcome(&runs[default_idx]);
+        for (lvl, ran) in levels.iter().zip(&runs) {
+            let got = outcome(ran);
+            if got != base {
+                let label = call.map(|c| c.export.as_str()).unwrap_or("(no call)");
+                diffs.push(format!(
+                    "{} [{label}]: {lvl} → `{got}`, O1 → `{base}` — LEVELS DIVERGE (candidate miscompile)",
+                    rec.description
+                ));
+            }
+        }
+    }
+    if checked_any {
+        SweepOutcome::Checked(diffs)
+    } else {
+        SweepOutcome::Skipped
+    }
 }
 
 /// Grade every record in PARALLEL, returning `(description, grade)` in the SAME order as `records`.
