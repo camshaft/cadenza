@@ -240,7 +240,9 @@ enum Cmd {
     Highlight(HighlightArgs),
     /// The documentation of a definition NAME in FILE — its `(doc "…")` text, or a built-in's
     /// documentation (a prelude module's `(meta doc)` channel, or a grammar keyword's help) when the
-    /// name is not a user definition. The doc companion of `cdz type`.
+    /// name is not a user definition. The doc companion of `cdz type`. `--json` emits a
+    /// `{name, exists, documented, doc}` object so a tool distinguishes documented / undocumented /
+    /// unknown without parsing the prose.
     Doc(DocArgs),
     /// The documentation of the definition at a source BYTE OFFSET in FILE — a "documentation at cursor"
     /// hover. Resolves the offset to a node, then to the definition it is or references, and prints that
@@ -3699,6 +3701,13 @@ struct DocArgs {
     name: String,
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
+    /// Emit the result as a JSON object instead of the raw doc text — the shape a tool/editor consumes
+    /// for a hover without pattern-matching the prose. `{name, exists, documented, doc}`: `exists` is
+    /// false only for an unresolvable name (a typo); `documented` is true only when the name carries doc
+    /// text; `doc` is that text, or null when absent/unknown. So a consumer distinguishes the three total
+    /// outcomes (documented / exists-but-undocumented / no-such-definition) without parsing sentinels.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -3826,7 +3835,6 @@ fn run_doc(args: &DocArgs) -> ExitCode {
     match out.artifact(rcdzc::sidecar::KIND_DOC) {
         Some(bytes) => {
             let text = String::from_utf8_lossy(bytes);
-            println!("{text}");
             // The `DocOf` query is TOTAL — it returns a doc artifact for THREE outcomes: the doc text, a
             // "no documentation for `X`" line (a REAL definition that carries no doc), and a "no such
             // definition `X`" line (the name resolves to NOTHING — a typo). The first two are a SUCCESS
@@ -3834,7 +3842,36 @@ fn run_doc(args: &DocArgs) -> ExitCode {
             // FAILURE — a caller/script should tell "you misspelled the name" from "this exists but is
             // undocumented". `is_no_such_definition` matches the exact sentinel for the queried name (not a
             // loose prefix on the doc prose — the pr467 brittleness fix, shared with `cdz type`).
-            if is_no_such_definition(&text, &args.name) {
+            let no_such = is_no_such_definition(&text, &args.name);
+            // The undocumented-but-real sentinel is the compiler's exact `no documentation for `X`` line
+            // (rcdzc `DocOf`), matched precisely (not a loose prefix) so a real doc that happens to start
+            // with those words isn't misread.
+            let undocumented = text.trim() == format!("no documentation for `{}`", args.name);
+            if args.json {
+                use cadenza_syntax::query::json;
+                let mut obj = json::Object::new();
+                obj.string("name", &args.name);
+                obj.raw("exists", if no_such { "false" } else { "true" });
+                obj.raw(
+                    "documented",
+                    if !no_such && !undocumented {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                );
+                // `doc` is the actual doc text only when documented; null for the two "no doc" outcomes,
+                // so a consumer never mistakes a sentinel line for real documentation.
+                if !no_such && !undocumented {
+                    obj.string("doc", text.trim_end());
+                } else {
+                    obj.raw("doc", "null");
+                }
+                println!("{}", obj.finish());
+            } else {
+                println!("{text}");
+            }
+            if no_such {
                 ExitCode::FAILURE
             } else {
                 ExitCode::SUCCESS
