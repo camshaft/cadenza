@@ -83,9 +83,14 @@ def name-id-fold(bytes: Bytes, i: Int64, acc: Int64) =
 def name-id(name: String) = name-id-fold(String.to-bytes(name), 0, 7)
 
 /// Read ONE form starting at index `i` (leading space skipped here). Returns `(rootId, nextIndex, tree')`.
-/// SLICE 2 handles: non-negative INT literal; `true`/`false` bool literals; and a PARENTHESISED PREFIX form
-/// `(op a b)` where `op` is a binary operator symbol → `NBin(code, a, b)`. Unrecognized lead → recovery
-/// `NLit 0`. (`if`/`let`/vars are later slices.)
+/// Reads: non-negative INT literal; `true`/`false`; a bare identifier → `NVar`; a parenthesised prefix form
+/// (`if`/`let`/`(op a b)`). An UNSUPPORTED lead char (e.g. a string `"…"`, a float, `-`, a radix literal)
+/// reads as `unsupported()` — an UNBOUND `NVar` (name-id 0, unreachable by `name-id`) → resolve `RPoison` →
+/// infer `TErr` → eval `None` → the driver reports `declined`. This is the KEY totality+soundness rule: an
+/// out-of-subset program must DECLINE, never fabricate a bogus value (an `NLit 0` recovery would make
+/// `"hello"` "run" to 0 and falsely DISAGREE with rcdzc — the whole differential hinges on decline≠value).
+def unsupported(tree: Tree) = add-node(tree, Node.NVar(0))
+
 def read-form(s: String, i: Int64, tree: Tree) =
   (let j = skip-space(s, i) in
    (let c = char-at(s, j) in
@@ -100,7 +105,7 @@ def read-form(s: String, i: Int64, tree: Tree) =
            else
              // a bare identifier is a VARIABLE reference → NVar keyed by the name's deterministic id.
              (match add-node(tree, Node.NVar(name-id(atom))) with | (id, t1) => (id, k, t1)))))
-     else (match add-node(tree, Node.NLit(0)) with | (id, t1) => (id, j + 1, t1)))))))
+     else (match unsupported(tree) with | (id, t1) => (id, j + 1, t1)))))))
 
 /// Consume a `)` at/after index `i` (skipping space); tolerate a missing one. Returns the next index.
 def close-paren(s: String, i: Int64) =

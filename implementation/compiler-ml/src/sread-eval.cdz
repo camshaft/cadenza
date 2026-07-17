@@ -49,4 +49,15 @@ def se-nested-let() =
   // (let ((a 1)) (let ((b 2)) (+ a b))) → 3.
   (match run-src("(let ((a 1)) (let ((b 2)) (+ a b)))") with | Option.Some(v) => (if v == 3 then unit else trap("nested let → 3")) | Option.None(_) => trap("runs"))
 
+@test
+def se-unbound-declines() =
+  // a bare unbound var → None (declined), NOT a value: the differential must see decline, not a bogus value.
+  (match run-src("y") with | Option.None(_) => unit | Option.Some(_) => trap("unbound y declines"))
+
+@test
+def se-unsupported-declines() =
+  // an OUT-OF-SUBSET lead (a string literal) → None (declined). Reader recovery = unbound NVar → TErr → None,
+  // NOT an NLit-0 that would fabricate a value and falsely disagree with rcdzc.
+  (match run-src("\"hello\"") with | Option.None(_) => unit | Option.Some(_) => trap("string literal declines"))
+
 export { run-src }
