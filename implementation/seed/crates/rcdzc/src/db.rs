@@ -2120,10 +2120,19 @@ impl Db {
         // a module). The linked arena splices every file's items under ONE synthetic `(do …)` root, so
         // `top_items` returns items from ALL files — the pragma's SIBLINGS include imported files' defs
         // unless filtered by file.
+        // BINARY SEARCH the demux, not a linear `position(contains)`: the harvest below calls this inside a
+        // nested `top_items × top_items` loop (once per pragma × per sibling), so a linear scan is
+        // O(pragmas × siblings × files) on a multi-file package (Copilot perf note, PR #523). The files are
+        // spliced sequentially, so `link_files` is SORTED by `struct_base` with non-overlapping ranges —
+        // `partition_point` finds the last file whose base is ≤ `id` in O(log files), then a single
+        // `contains` confirms `id` is within that file's range (a node in NO file — the synth `(do …)` root
+        // — falls between/after ranges and fails the check). Same result as the linear scan, log-time.
         let file_of = |id: StructId| -> Option<usize> {
-            link_files
-                .as_ref()
-                .and_then(|fs| fs.iter().position(|f| f.contains(id)))
+            let fs = link_files.as_ref()?;
+            let idx = fs
+                .partition_point(|f| f.struct_base <= id.0)
+                .checked_sub(1)?;
+            fs.get(idx).filter(|f| f.contains(id)).map(|_| idx)
         };
         for &item in &top_items(&ast) {
             let Some(ptail) = ast.as_form(item, "pragma") else {
