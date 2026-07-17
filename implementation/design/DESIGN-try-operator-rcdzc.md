@@ -1,14 +1,37 @@
-# Design — the `?` / `try` operator (fallible short-circuit) in `rcdzc`
+# Design — the `?` and `try` operators (fallible short-circuit) in `rcdzc`
 
 **Author:** design agent (`design-try-operator`). **Audience:** the `vertical` agent that builds this,
 plus `v-effects` / `v-inference` / `v-syntax`, who own seams it touches.
-**Status (2026-07-16):** **LARGELY LANDED.** T0a (the `Try` node through resolve/infer + operand-shape
-CDZ0203), T0b (the boundary check `enclosing_boundary_ty` + CDZ0230 + kind-mismatch CDZ0203), BRICK 1
-(the `Core::Block`/`Break` nodes), BRICK 2a (constant-success fold), and BRICK 3a (constant-failure
-short-circuit) are all on trunk — a constant `?` compiles + executes both the happy and the short-circuit
-path. REMAINING: the RUNTIME `?` (a non-constant operand → the `Core::MatchSum`/block-br emit, BRICK 3b),
-the ML postfix `?` surface (v-syntax), the `try { }` block boundary (v2 / §4), and the T3 conversion-idiom
-prelude ops (`Result.map-err`/`Option.ok-or`). Line numbers are landmarks, not promises.
+
+> **🎨 RE-CHARTER (2026-07-17, operator directive).** `?` and `try` are **TWO DISTINCT operators**, not
+> synonyms. The initial cut conflated them (`?` desugared to `(try e)`, both meaning the propagate); the
+> operator has re-chartered them apart:
+> - **`?` (a SUFFIX operator)** — the **propagate / short-circuit**: `expr?` unwraps a success payload, or
+>   ABORTS (bubbles the failure) to the nearest enclosing boundary. This is what the *old* `try` did, and
+>   matches Rust's `?`.
+> - **`try { … }` (a CATCHER scope)** — a **delimited boundary** that BOUNDS where an inner `?` aborts to,
+>   and **returns that block's `Result`/`Option`** (it catches the `?` before it bubbles to the function
+>   top). `try` is the boundary a `?` unwinds to, NOT a synonym for `?`.
+>
+> This is the v1/v2 model §4 already describes, with the names split: v1 = the enclosing-FUNCTION boundary a
+> bare `?` targets; v2 = an explicit `try { }` boundary. It is a **nested-`Core::Block` + nearest-enclosing
+> target** change, **not new IR** — `Core::Block`/`Break` already model a boundary + non-local break to the
+> nearest enclosing block. Pending operator confirmation of 4 forks (recorded §4.1): (A) `try` is an
+> **expression** returning the block's Result [rec]; (B) **no auto-wrap** — the `try` body must be
+> `Result`/`Option`-typed [rec, per §5.1]; (C) the propagate op needs its own **s-expr head** now that
+> `(try e)` = the catcher — lean **`(? e)`**; (D) **two independent** error-unification scopes (inner `try`
+> vs the function). Sections below are being revised to this model; where they still say "`?`/`try`
+> synonyms" read `?` = propagate, `try` = catcher.
+
+**Status (2026-07-17):** **LANDED (as the propagate op, under the old `try` spelling); UNDER REDESIGN (name
+split).** On trunk today: T0a (the `Try` node through resolve/infer + operand-shape CDZ0203), T0b (boundary
+check `enclosing_boundary_ty` + CDZ0230 + kind-mismatch CDZ0203), BRICK 1 (`Core::Block`/`Break` nodes),
+BRICK 2a (constant-success fold), BRICK 3a (constant-failure short-circuit + §283 elide). These implement
+the **propagate** semantics (the future `?`) at the function boundary. REMAINING: the name split (`?` suffix
+vs `try` catcher, §4.1 forks); the RUNTIME `?` (non-constant operand → `Core::MatchSum`/block-br emit, BRICK
+3b, operator-gated); the ML postfix `?` surface + the `(? e)` s-expr head (v-syntax); the explicit `try { }`
+catcher boundary (v2 / §4); and the T3 conversion-idiom prelude ops (`Result.map-err`/`Option.ok-or`). Line
+numbers are landmarks, not promises.
 
 > **Origin.** The operator asked for "a `?` operator like Rust — there are quite a few nested matches we
 > could clean up" and, crucially, *"is that a monad generally? do we start going down that territory?"*
@@ -217,6 +240,30 @@ def classify(a: String, b: String) -> String =
 Nested `try` blocks nest boundaries; a `?` targets the **innermost** enclosing boundary (the same
 dynamic-extent / nearest-enclosing rule handlers use — DESIGN-effects-rcdzc.md §3 "under-frame"). Because the
 target is resolved lexically at desugar time, this is a plain innermost-block lookup, not a runtime search.
+
+A **bare `?` outside any `try`** targets the function boundary (v1) — unchanged from today. So splitting the
+names is **backward-preserving** for existing `?`-in-function programs: they keep aborting to the function.
+`try { }` only adds the ability to catch a `?` at an inner boundary.
+
+### 4.1 Open design forks (routed to the operator 2026-07-17; recommendations are the proposed defaults)
+
+The re-charter raises four semantics questions. Each is written with the vertical's recommendation; the
+operator confirms or tweaks before code lands.
+
+- **(A) `try` as expression vs statement.** *Recommend EXPRESSION* — `try { … }` evaluates to the block's
+  `Result`/`Option`, so it composes: `let parsed = try { … } in match parsed …` (the §4 example). Matches
+  the operator's "returns the result from that closure."
+- **(B) What `try` returns on the no-`?`-fires path.** *Recommend NO AUTO-WRAP* — the `try` body's tail
+  must already be `Result`/`Option`-typed (e.g. `Result.Ok((x,y))`); `try` does not silently wrap a bare
+  success into `Ok`. Consistent with the no-coercion stance (§5.1): the wrap is explicit and visible.
+- **(C) The propagate op's s-expr head.** `?` is postfix in ML, but the canonical s-expr surface needs a
+  head, and `(try e)` now denotes the **catcher**, not the propagate. *Recommend `(? e)`* as the propagate
+  head (mirrors the ML suffix); `(try BODY…)` becomes the catcher block. (Alternative floated: `(propagate
+  e)`.) v-syntax owns the postfix `?` token + this head — coordinate at T-R1.
+- **(D) Error-type unification scope.** *Recommend TWO INDEPENDENT scopes* — within a `try`, all `?` error
+  types unify with the `try`-block's `Result` error (§5); a bare `?` in the same function still unifies with
+  the **function** result error. Two lexical boundaries ⇒ two unification scopes, the natural reading. HM
+  does each scope's unification for free (§5).
 
 ## 5. Typing — coordinate with `v-inference`
 
