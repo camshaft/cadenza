@@ -16524,6 +16524,67 @@ mod match_engine {
     }
 
     #[test]
+    fn a_type_valued_param_used_in_a_value_position_reports_one_coded_error_not_a_cascade() {
+        // A `(: t Type)` parameter used in a VALUE position — `(+ t 1)` (arithmetic) or `(if t 1 2)`
+        // (a Bool-checked condition) — is a kind-boundary fault reported by `infer` as ONE coded reject
+        // (CDZ0201 "a Type and an Int64 are different types …" for the arith form; CDZ0203 "if condition
+        // must be Bool, found Type" for the if form). But lowering the erased type-param body ALSO leaked
+        // the whole no-runtime-form decline FAMILY — PRIM_AS_VALUE (`+` reached as a value once its operand
+        // is a type), NULLARY_LAMBDA_NO_CLOSURE, CLOSURE_PARAM_NO_REPR, TYPE_VALUE_NO_RUNTIME — so one
+        // mistake surfaced as 2–4 `error:` lines. `dedup_faults`'s `has_type_kind_boundary_reject` gate now
+        // drops that family (and recognizes the `found Type` phrasing, not only `are different types`), so
+        // each is ONE clean coded error.
+        let one_coded = |src: &str, code: &str| {
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            let errors: Vec<&crate::abi::Diagnostic> = out
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .collect();
+            assert_eq!(
+                errors.len(),
+                1,
+                "a type-param in a value position = ONE error, got: {:?}",
+                out.diagnostics
+            );
+            assert_eq!(
+                errors[0].code.as_deref(),
+                Some(code),
+                "got: {}",
+                errors[0].message
+            );
+            // None of the no-runtime-form declines accompany the coded reject.
+            assert!(
+                !out.diagnostics.iter().any(|d| matches!(
+                    d.message.as_str(),
+                    crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE
+                        | crate::diag::PRIM_AS_VALUE_DECLINE
+                        | crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE
+                        | crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE
+                )),
+                "no no-runtime-form cascade: {:?}",
+                out.diagnostics
+            );
+        };
+        // arithmetic (CDZ0201 kind boundary) and a Bool-checked condition (CDZ0203 "found Type").
+        one_coded(
+            "(module m (def (f (: t Type)) (+ t 1)) (def (main) (f Int64)) (export main))",
+            "CDZ0201",
+        );
+        one_coded(
+            "(module m (def (f (: t Type)) (if t 1 2)) (def (main) (f Int64)) (export main))",
+            "CDZ0203",
+        );
+    }
+
+    #[test]
     fn a_type_stored_in_a_compound_result_reports_one_coded_error() {
         // Type-valued-parameter vertical, T4: a type-value NESTED in a compound result — `(def (main)
         // (tuple Int64 5))` returns `(Tuple Type Int64)`. A type-value is compile-time-only
