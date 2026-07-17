@@ -8644,7 +8644,7 @@ fn emit(
                     )
                 }
                 Prim::Add | Prim::Sub | Prim::Mul => emit_checked_arith(
-                    db, op, m, lhs, rhs, slots, base, high, scratch_ty, layout, out,
+                    db, id, op, m, lhs, rhs, slots, base, high, scratch_ty, layout, out,
                 ),
                 // WRAPPING arithmetic — the RAW machine `add`/`sub`/`mul`, NO overflow guard (wasm's op
                 // already wraps modulo the slot). At a NARROW width the result is masked to the width by the
@@ -12509,6 +12509,7 @@ enum ResultDest {
 #[allow(clippy::too_many_arguments)]
 fn emit_checked_arith(
     db: &mut Db,
+    id: StructId,
     op: Prim,
     m: Machine,
     lhs: StructId,
@@ -12522,6 +12523,7 @@ fn emit_checked_arith(
 ) -> Result<(), Reject> {
     emit_checked_arith_to(
         db,
+        id,
         op,
         m,
         lhs,
@@ -12539,6 +12541,7 @@ fn emit_checked_arith(
 #[allow(clippy::too_many_arguments)]
 fn emit_checked_arith_to(
     db: &mut Db,
+    id: StructId,
     op: Prim,
     m: Machine,
     lhs: StructId,
@@ -12561,10 +12564,13 @@ fn emit_checked_arith_to(
     // `emit_operand` grounds a bare-literal operand to the op width `ot` (an out-of-range literal is still
     // rejected CDZ0302), exactly as the guarded path's `operand_src`/`emit_operand_into` do. B's transient
     // scratch (a nested computation) floats above `base` and never aliases A's already-pushed stack value.
-    // Uses the SAME `arith_provably_in_range` predicate the guarded path below checks after the op — moved
-    // up so the slot machinery is skipped entirely rather than claimed-then-unused.
+    // Uses the SAME `provably_no_overflow` decision the guarded path below checks after the op — moved
+    // up so the slot machinery is skipped entirely rather than claimed-then-unused. `provably_no_overflow`
+    // = range analysis OR a discharged proof (keyed by the arith node `id`), so a verification-licensed
+    // node elides here too once v-verification's b3 fills the oracle (behavior-neutral today: the stub
+    // returns false, so this ≡ `arith_provably_in_range` alone — the identical wasm bytes as before).
     let result_ty = IntTy::fixed(m.signed, m.width);
-    if crate::lower::arith_provably_in_range(db, op, lhs, rhs, result_ty) {
+    if crate::lower::provably_no_overflow(db, op, lhs, rhs, result_ty, id) {
         emit_operand(db, lhs, ot, slots, base, high, scratch_ty, layout, out)?;
         // B emits its own transient scratch above the running high-water — A is already on the stack, so B
         // never needs a slot A used; a fresh floor keeps B's width-disjoint scratch from re-typing a slot.
@@ -12831,6 +12837,7 @@ fn emit_operand_into(
         }
         return emit_checked_arith_to(
             db,
+            id,
             op,
             m,
             lhs,
