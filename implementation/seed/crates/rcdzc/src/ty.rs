@@ -1762,6 +1762,71 @@ impl Ty {
         }
     }
 
+    /// Like [`render_name`](Self::render_name), but renders each DISTINCT free type variable with a stable
+    /// letter NAME (`a`, `b`, `c`, …) drawn from `names` (a var-number → letter map), so a reader sees which
+    /// `_`s are the SAME quantified variable and which differ. `render_name` collapses every `Ty::Var` to a
+    /// bare `_`, which is right for a diagnostic (an unknown type is just "some type") but HIDES the tie
+    /// structure of a generic signature: `from-list`'s tied `(-> (List a) (Iter a))` and a broken
+    /// `(-> (Iter a) (Iter b))` both print `(-> (Iter _) (Iter _))`, indistinguishable. Used by the
+    /// scheme-aware [`Scheme::render_scheme`] (the `cdz type` surface), NOT by diagnostic messages — those
+    /// keep the stable `_`. A var absent from `names` (should not happen for a well-formed scheme) falls
+    /// back to `_`. Every non-`Var` arm delegates to the same shape `render_name` produces.
+    pub(crate) fn render_named_vars(
+        &self,
+        names: &std::collections::BTreeMap<u32, String>,
+    ) -> String {
+        match self {
+            Ty::Var(n) => names.get(n).cloned().unwrap_or_else(|| "_".to_string()),
+            Ty::Record(fields) => {
+                let mut s = String::from("(Record");
+                for (k, t) in fields.iter() {
+                    s.push_str(&format!(" ({} {})", k.name, t.render_named_vars(names)));
+                }
+                s.push(')');
+                s
+            }
+            Ty::Tuple(elems) => {
+                let mut s = String::from("(Tuple");
+                for t in elems.iter() {
+                    s.push(' ');
+                    s.push_str(&t.render_named_vars(names));
+                }
+                s.push(')');
+                s
+            }
+            Ty::List(elem) => format!("(List {})", elem.render_named_vars(names)),
+            Ty::Map(k, v) => format!(
+                "(Map {} {})",
+                k.render_named_vars(names),
+                v.render_named_vars(names)
+            ),
+            Ty::Set(elem) => format!("(Set {})", elem.render_named_vars(names)),
+            Ty::Sum { name, args, .. } => {
+                if args.is_empty() {
+                    name.clone()
+                } else {
+                    let mut s = format!("({name}");
+                    for a in args.iter() {
+                        s.push(' ');
+                        s.push_str(&a.render_named_vars(names));
+                    }
+                    s.push(')');
+                    s
+                }
+            }
+            Ty::Fn(p, r) => format!(
+                "(-> {} {})",
+                p.render_named_vars(names),
+                r.render_named_vars(names)
+            ),
+            Ty::Qty { inner, unit } => {
+                format!("(Qty {} {})", inner.render_named_vars(names), unit.render())
+            }
+            // Every scalar / nominal / non-var-bearing arm renders identically to `render_name`.
+            _ => self.render_name(),
+        }
+    }
+
     /// [`render_name`](Self::render_name) prefixed with the correct indefinite article — `an Int64`, `a
     /// String`, `a UInt8` — for a message that reads "found <this>" / "<this> and <that> are different
     /// types". The article is keyed off the type's SOUND, not merely its first letter: among the names
@@ -1809,6 +1874,33 @@ impl Scheme {
             sign_vars: Vec::new(),
             ty,
         }
+    }
+
+    /// Render the scheme's type with each DISTINCT quantified type variable shown as a stable letter
+    /// (`a`, `b`, …) instead of the collapsed `_` [`Ty::render_name`] produces. This makes the TIE
+    /// STRUCTURE of a generic signature visible — `from-list`'s tied `(-> (List a) (Iter a))` versus a
+    /// broken producer/transformer whose element is untied `(-> (Iter a) (Iter b))` — where both would
+    /// otherwise print `(-> (Iter _) (Iter _))`, indistinguishable. Used by the `cdz type` surface (the
+    /// `Query::TypeOf` answer), the exact tool for diagnosing a recursive-generic monomorphization tie;
+    /// diagnostic MESSAGES keep the stable `_`. Vars are named in FIRST-OCCURRENCE order over the type
+    /// (left-to-right), so the naming is deterministic and reads like a written `∀a b. …` signature. A
+    /// monomorphic scheme (no free vars) renders byte-identically to `render_name`.
+    pub fn render_scheme(&self) -> String {
+        let mut order = Vec::new();
+        self.ty.collect_free_vars(&mut order);
+        let mut names = std::collections::BTreeMap::new();
+        for (i, &v) in order.iter().enumerate() {
+            // a, b, …, z, then a1, b1, … for a signature with >26 distinct vars (never in practice).
+            let letter = (b'a' + (i % 26) as u8) as char;
+            let suffix = i / 26;
+            let name = if suffix == 0 {
+                letter.to_string()
+            } else {
+                format!("{letter}{suffix}")
+            };
+            names.insert(v, name);
+        }
+        self.ty.render_named_vars(&names)
     }
 }
 

@@ -440,9 +440,15 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
         Query::TypeOf { name } => {
             let text = match db.def_by_name(name) {
                 Some(def) => match crate::infer::def_scheme(db, def) {
-                    // The definition's rendered type — the same canonical text a value's annotation
-                    // carries (`Ty::render_name`). A demand-driven read of the type column.
-                    Some(scheme) => scheme.ty.render_name(),
+                    // The definition's rendered type. `render_scheme` names each DISTINCT quantified type
+                    // variable with a stable letter (`a`, `b`, …) rather than collapsing every var to `_`,
+                    // so a generic signature's TIE STRUCTURE is visible — `(-> (List a) (Iter a))` (element
+                    // tied) reads differently from `(-> (Iter a) (Iter b))` (untied), where `render_name`
+                    // would print `(-> (Iter _) (Iter _))` for both. A monomorphic scheme is byte-identical
+                    // to `render_name`. Diagnostic MESSAGES keep the collapsed `_` (an unknown type there is
+                    // just "some type"); only this `cdz type` surface names vars, the tool for diagnosing a
+                    // recursive-generic monomorphization tie.
+                    Some(scheme) => scheme.render_scheme(),
                     // A def whose type could not be solved (an ambiguous unannotated parameter) — a
                     // DEFINED "unknown", not an error: the query is total.
                     None => "unknown".to_string(),

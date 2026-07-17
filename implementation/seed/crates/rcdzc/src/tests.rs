@@ -59329,6 +59329,44 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn a_type_of_query_names_distinct_generic_vars_so_the_tie_structure_is_visible() {
+        // A GENERIC scheme's `cdz type` answer names each DISTINCT quantified type variable with a stable
+        // letter (`a`, `b`, …) instead of collapsing every var to `_` — so a reader sees which `_`s are the
+        // SAME variable. This is the tool for diagnosing a recursive-generic monomorphization TIE: an
+        // element-TIED producer and an UNtied one print differently.
+        //   - `from-list : List a -> Iter a` — the element is TIED (one var `a` on both sides). It composes
+        //     at multiple element types; `render_name` would print `(-> (List _) (Iter _))`, hiding the tie.
+        let src = "(module m (type Iter (Nil) (Cons a (Iter a))) \
+                    (def (from-list xs) (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t))))) \
+                    (def (main) 0) (export main))";
+        let out = compile(
+            &inputs(
+                src,
+                &[Request::Query(Query::TypeOf {
+                    name: "from-list".into(),
+                })],
+            ),
+            &[],
+        );
+        assert_eq!(
+            artifact_text(&out, KIND_TYPE_INFO).as_deref(),
+            Some("(-> (List a) (Iter a))"),
+            "a tied producer names the SAME var on both sides (not two collapsed `_`)"
+        );
+        // A MONOMORPHIC scheme is byte-identical to `render_name` (no vars to name).
+        let mono = "(module m (def (f (: x Int64)) x) (def (main) (f 1)) (export main))";
+        let out2 = compile(
+            &inputs(mono, &[Request::Query(Query::TypeOf { name: "f".into() })]),
+            &[],
+        );
+        assert_eq!(
+            artifact_text(&out2, KIND_TYPE_INFO).as_deref(),
+            Some("(-> Int64 Int64)"),
+            "a monomorphic scheme renders unchanged"
+        );
+    }
+
+    #[test]
     fn a_type_of_query_for_an_unknown_name_is_total() {
         // Querying a name that names no definition yields a DEFINED result, never an error — the
         // oracle contract (a query is total over every input). The result names the missing definition
