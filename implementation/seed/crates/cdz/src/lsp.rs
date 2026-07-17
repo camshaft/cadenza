@@ -2885,7 +2885,7 @@ mod tests {
             .expect("didClose dispatches");
         // (a) the buffer is forgotten.
         assert!(
-            server.docs.get(&uri).is_none(),
+            !server.docs.contains_key(&uri),
             "a closed document is removed from the open set"
         );
         // (b) the close published an EMPTY diagnostic list for the URI (clears the squiggle).
