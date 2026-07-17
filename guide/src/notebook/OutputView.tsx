@@ -145,12 +145,16 @@ function ChartView({ chart, series }: { chart: "line" | "bar" | "scatter"; serie
   const named = series.filter((s) => s.name !== "");
   const legend = named.length > 1 && (
     <div className="mt-1 flex flex-wrap gap-3 text-xs text-slate-400" data-testid="chart-legend">
-      {series.map((s, si) => (
-        <span key={si} className="inline-flex items-center gap-1">
-          <span className="inline-block h-2 w-3 rounded-sm" style={{ backgroundColor: HUES[si % HUES.length] }} />
-          {s.name}
-        </span>
-      ))}
+      {series.map((s, si) =>
+        // Skip an unnamed series (no blank legend entry), but index the color by the ORIGINAL position
+        // so swatches stay aligned with the chart's hues (PR #517).
+        s.name === "" ? null : (
+          <span key={si} className="inline-flex items-center gap-1">
+            <span className="inline-block h-2 w-3 rounded-sm" style={{ backgroundColor: HUES[si % HUES.length] }} />
+            {s.name}
+          </span>
+        ),
+      )}
     </div>
   );
 
