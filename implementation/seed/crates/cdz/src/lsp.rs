@@ -52,14 +52,15 @@ use lsp_types::{
     DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbolParams,
     DocumentSymbolResponse, FoldingRange, FoldingRangeParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, Location, MarkedString, Position, PublishDiagnosticsParams,
-    Range, ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams, SemanticToken,
-    SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
-    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelp,
-    SignatureHelpOptions, SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind,
-    TextDocumentContentChangeEvent, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
-    Uri, WorkDoneProgressOptions, WorkspaceEdit, WorkspaceSymbolParams, WorkspaceSymbolResponse,
+    InitializeParams, InitializeResult, Location, MarkedString, ParameterInformation,
+    ParameterLabel, Position, PublishDiagnosticsParams, Range, ReferenceParams, RenameParams,
+    SelectionRange, SelectionRangeParams, SemanticToken, SemanticTokenType, SemanticTokens,
+    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    SignatureHelp, SignatureHelpOptions, SignatureHelpParams, SignatureInformation,
+    SymbolInformation, SymbolKind, TextDocumentContentChangeEvent, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
+    WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 
 /// Run the stdio LSP server to completion: perform the initialize handshake, then loop over incoming
@@ -237,6 +238,10 @@ fn highlight_kind_to_token_index(kind: &str) -> Option<u32> {
 /// One open document's state: its full source text. The parsed program is recomputed on demand (a query
 /// is cheap relative to an edit's think-time, and recomputing keeps the "incremental result equals a
 /// full compilation" invariant trivially — there is no incremental cache to diverge from a batch).
+//= spec/capabilities/tooling-and-lsp.md#incremental-equals-batch
+//# An incremental analysis result MUST equal the result a full compilation of the same source would produce.
+//= spec/capabilities/tooling-and-lsp.md#incremental-equals-batch
+//# An incremental analysis MUST NOT report a type, definition, or diagnostic that a full compilation would not.
 struct Document {
     text: String,
     /// Whether this document is the ML surface (`.cdz`/`.ml`) vs s-expr (`.sexp`/`.sexpr`), inferred
@@ -2455,20 +2460,135 @@ fn signature_help_at(text: &str, is_ml: bool, pos: Position) -> Option<Signature
     let arg_spans: Vec<_> = children[1..].iter().filter_map(|&c| spans.get(c)).collect();
     let typed = arg_spans.iter().filter(|s| s.end <= byte).count();
     let active = typed as u32;
-    // The signature label is the callee with its arrow type — `callee : (-> A B)`. (Per-parameter labels
-    // would need to split the arrow into argument types; the whole-arrow label is a correct first form the
-    // client still highlights `activeParameter` against.)
+    // The signature label is the callee with its arrow type — `callee : (-> A B Ret)`.
     let label = format!("{callee} : {arrow}");
+    // Per-parameter labels: split the arrow `(-> P1 P2 … Ret)` into its top-level components so the client
+    // can BOLD the active parameter's type as you type. The last component is the RETURN type (not a
+    // parameter), so only the leading components are parameters. Offsets are code-UNIT ranges into `label`
+    // (LSP `LabelOffsets` are UTF-16, exclusive-end) located by finding each component's substring at/after
+    // the arrow's position in the label — robust to a type spelling repeating (e.g. `(-> Int64 Int64)`).
+    let params = arrow_parameter_components(&arrow);
+    let parameters: Vec<ParameterInformation> = if params.len() >= 2 {
+        // Drop the final component (the return type); the rest are parameter slots.
+        let param_types = &params[..params.len() - 1];
+        let label_utf16: Vec<u16> = label.encode_utf16().collect();
+        // Byte cursor into `label` for locating each component left-to-right (types can repeat).
+        let mut search_from = callee.len(); // start scanning past the callee name
+        param_types
+            .iter()
+            .filter_map(|ty| {
+                let at = label[search_from..].find(ty.as_str())? + search_from;
+                search_from = at + ty.len();
+                // Convert the byte range [at, at+ty.len()) to UTF-16 code-unit offsets into `label`.
+                let start = label[..at].encode_utf16().count() as u32;
+                let end = start + ty.encode_utf16().count() as u32;
+                // Guard against a malformed offset past the label (LabelOffsets must index `label`).
+                if (end as usize) <= label_utf16.len() {
+                    Some(ParameterInformation {
+                        label: ParameterLabel::LabelOffsets([start, end]),
+                        documentation: None,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    // Clamp the active parameter to a real slot so the client never highlights past the last parameter
+    // (a cursor past the final arg, or a variadic-looking over-count, points at the last slot).
+    let active = if parameters.is_empty() {
+        active
+    } else {
+        active.min(parameters.len() as u32 - 1)
+    };
+    let parameters = if parameters.is_empty() {
+        None
+    } else {
+        Some(parameters)
+    };
     Some(SignatureHelp {
         signatures: vec![SignatureInformation {
             label,
             documentation: None,
-            parameters: None,
+            parameters,
             active_parameter: Some(active),
         }],
         active_signature: Some(0),
         active_parameter: Some(active),
     })
+}
+
+/// Split a rendered arrow type into `[Param1, …, ParamN, Ret]`. The `TypeOf` query renders function types
+/// CURRIED — a 2-arg function is `(-> Int64 (-> Int64 Int64))`, not `(-> Int64 Int64 Int64)` — so this
+/// UNFOLDS the curry: each `(-> Head Rest)` contributes `Head` as a parameter, then recurses into `Rest`
+/// when `Rest` is itself an arrow; the final non-arrow `Rest` is the return type. Paren depth is tracked so
+/// a nested NON-arrow type stays one component (`(List a)` is one param). A curried tail is fully unfolded
+/// because the s-expr call `(f a b)` applies every level, so `(-> (List a) (-> A B))` → `["(List a)",
+/// "A", "B"]` (two fillable params + a return). Returns empty if `arrow` is not a `(-> …)` form or is a
+/// nullary `(-> Ret)`. The caller treats the last element as the return type and the leading ones as
+/// parameter slots.
+fn arrow_parameter_components(arrow: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = arrow.to_string();
+    loop {
+        let Some(inner) = rest.strip_prefix("(->").and_then(|s| s.strip_suffix(')')) else {
+            // A non-arrow tail is the return type (or the whole thing was not an arrow at all).
+            if !out.is_empty() {
+                out.push(rest);
+            }
+            return out;
+        };
+        // Split the inner into TOP-LEVEL components (depth-aware). A curried arrow has exactly two: the
+        // parameter type and the rest. A rendered arrow with >2 top-level components (a defensive path for
+        // any un-curried render) is treated as flat: all but the last are parameters.
+        let comps = split_top_level(inner);
+        if comps.len() < 2 {
+            // Degenerate `(-> Ret)` (nullary) — no parameters, just a return; nothing to highlight.
+            return out;
+        }
+        if comps.len() > 2 {
+            // Flat render fallback: every leading component is a parameter, the last is the return.
+            for c in comps {
+                out.push(c);
+            }
+            return out;
+        }
+        // Curried: first component is a parameter, second is the rest to unfold.
+        out.push(comps[0].clone());
+        rest = comps[1].clone();
+    }
+}
+
+/// Split a whitespace-separated component list at TOP-LEVEL only (paren-depth aware) so a nested
+/// parenthesised type stays a single component.
+fn split_top_level(inner: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for ch in inner.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            ')' => {
+                depth -= 1;
+                cur.push(ch);
+            }
+            c if c.is_whitespace() && depth == 0 => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 /// Map a `Symbols`-query kind spelling to the LSP `SymbolKind` for the outline. `value`→CONSTANT,
@@ -4492,6 +4612,79 @@ mod tests {
             sh2.active_parameter.unwrap() >= 1,
             "active parameter advanced past the first arg: {:?}",
             sh2.active_parameter
+        );
+    }
+
+    #[test]
+    fn arrow_parameter_components_unfold_the_curry() {
+        // A 2-arg function renders CURRIED — unfold to `[param, param, return]`.
+        assert_eq!(
+            arrow_parameter_components("(-> Int64 (-> Int64 Int64))"),
+            vec!["Int64", "Int64", "Int64"]
+        );
+        // A 3-arg curried arrow.
+        assert_eq!(
+            arrow_parameter_components("(-> Int64 (-> Int64 (-> Int64 Int64)))"),
+            vec!["Int64", "Int64", "Int64", "Int64"]
+        );
+        // Currying is ambiguous: `(-> (List a) (-> A B))` is equally "1-arg returning `(-> A B)`" and
+        // "2-arg `(List a)`,`A` returning `B`". Since the s-expr call `(f xs a)` applies BOTH levels, the
+        // honest reading is a full unfold — every curried level is a parameter slot the caller can fill.
+        assert_eq!(
+            arrow_parameter_components("(-> (List a) (-> A B))"),
+            vec!["(List a)", "A", "B"]
+        );
+        // A nullary arrow `(-> Ret)` has no parameters.
+        assert!(arrow_parameter_components("(-> Int64)").is_empty());
+        // A non-arrow (a nullary value's type) yields no components.
+        assert!(arrow_parameter_components("Int64").is_empty());
+    }
+
+    #[test]
+    fn signature_help_gives_per_parameter_label_offsets_and_bolds_the_active_one() {
+        // `add : (-> Int64 Int64 Int64)` — 2 params (the trailing Int64 is the RETURN, not a slot).
+        let text = "(do (def (add (: a Int64) (: b Int64)) (+ a b)) (def (main) (add 1 2)))";
+        let first_arg = text.find("add 1 2").unwrap() + 4; // on `1`
+        let sh = signature_help_at(text, false, byte_to_position(text, first_arg))
+            .expect("a signature inside the call");
+        let sig = &sh.signatures[0];
+        let params = sig
+            .parameters
+            .as_ref()
+            .expect("per-parameter labels emitted");
+        // Two parameter slots (return type dropped).
+        assert_eq!(
+            params.len(),
+            2,
+            "two parameters, not three (return dropped)"
+        );
+        // Each label offset must index a substring of the signature label that reads as the param's type.
+        let label_utf16: Vec<u16> = sig.label.encode_utf16().collect();
+        for p in params {
+            let ParameterLabel::LabelOffsets([s, e]) = p.label else {
+                panic!("expected LabelOffsets, got {:?}", p.label);
+            };
+            assert!(
+                (e as usize) <= label_utf16.len() && s < e,
+                "offset [{s},{e}] must be a valid range into label {:?}",
+                sig.label
+            );
+            let slice = String::from_utf16(&label_utf16[s as usize..e as usize]).unwrap();
+            assert_eq!(
+                slice, "Int64",
+                "the highlighted slot reads as the param type"
+            );
+        }
+        // On the first arg, active parameter is 0.
+        assert_eq!(sh.active_parameter, Some(0), "first arg active");
+        // Cursor well past the last arg → active clamps to the LAST parameter slot (index 1), never 2+.
+        let after_second = text.find("1 2)").unwrap() + 3; // the `)` after `2`
+        let sh2 = signature_help_at(text, false, byte_to_position(text, after_second))
+            .expect("a signature still inside the call");
+        assert_eq!(
+            sh2.active_parameter,
+            Some(1),
+            "active clamps to the last parameter slot, not past it"
         );
     }
 

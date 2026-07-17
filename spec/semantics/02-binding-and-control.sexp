@@ -4209,3 +4209,26 @@
   (output (: 7 Int64))
   (call   main (: 1 Int64))
   (output (: -1 Int64)))
+
+(case "a dense if-equality chain dispatches every value including the default"
+  (doc    "A nested `(if (= n k) …)` chain over one integer parameter is an integer dispatch a user
+           may write as chained `if`s instead of a `match`. Semantically it tests each constant in
+           order and takes the first that matches, else the final else. Pins the OBSERVED VALUE for a
+           matched arm (n=0/1/2/3 → 100/101/102/103) and the default (n outside → 999) — the
+           equivalence a backend that lifts the chain to a jump table (`br_table`) must preserve. The
+           lowering is a pure optimization: the value is exactly the if-chain's, only the dispatch is
+           O(1) instead of an O(n) equality cascade.")
+  (input  (do
+            (def (classify (: n Int64))
+              (if (= n 0) 100 (if (= n 1) 101 (if (= n 2) 102 (if (= n 3) 103 999)))))
+            (export classify)))
+  (call   classify (: 0 Int64))
+  (output (: 100 Int64))
+  (call   classify (: 2 Int64))
+  (output (: 102 Int64))
+  (call   classify (: 3 Int64))
+  (output (: 103 Int64))
+  (call   classify (: 7 Int64))
+  (output (: 999 Int64))
+  (call   classify (: -1 Int64))
+  (output (: 999 Int64)))

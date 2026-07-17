@@ -160,3 +160,45 @@ fn intersection_with_empty_meshes_to_nothing() {
     let inter = "(: (Intersection (Cube (: (tuple 2.0 2.0 2.0) Vec3)) (Empty unit)) Solid)";
     assert_eq!(tri_count(inter), 0, "intersection(x, Empty) is empty");
 }
+
+// ── The P5 host-render mirror: SolidR/Vec3R type-name atoms (GH #400) ──────────────────────────────
+// The authored CAD model is GENERIC (`Solid(a)`/`Vec3(a)`), but the compiler cannot yet emit a host
+// value-form walker for a GENERIC recursive sum instantiated at a type — so a program returns a MONOMORPHIC
+// `SolidR`/`Vec3R` mirror (via `exact.cdz`'s `lower : Solid(Rational) → SolidR`), which renders with type-name
+// atoms `SolidR`/`Vec3R` instead of `Solid`/`Vec3`. The driver parses by CONSTRUCTOR name and DISCARDS the
+// trailing type-name atom (see `parse_solid_value`: it `expect_atom()`s the type name without checking it), so
+// a SolidR-rendered model parses + meshes IDENTICALLY to the Solid form. This pin locks that tolerance in: a
+// future change that started VALIDATING the type-name atom (rejecting anything not literally `Solid`/`Vec3`)
+// would silently break the /cad preload path — this test would catch it. The render below is the EXACT string
+// `lower(Difference(Cube(v3r 4 4 4), Sphere 5/2))` produces (captured from `cdz run`).
+const SOLIDR_RENDER: &str =
+    "(: (Difference (Cube (: (tuple 4/1 4/1 4/1) Vec3R)) (Sphere 5/2)) SolidR)";
+
+#[test]
+fn a_solidr_rendered_model_parses_and_meshes_like_its_solid_twin() {
+    // the P5 monomorphic render (SolidR/Vec3R type names) must parse + mesh exactly as the equivalent Solid
+    // form — the type-name atom is cosmetic to the driver.
+    let solidr = parse_solid(SOLIDR_RENDER)
+        .expect("a SolidR-rendered model parses (type-name atom ignored)");
+    let twin =
+        parse_solid("(: (Difference (Cube (: (tuple 4/1 4/1 4/1) Vec3)) (Sphere 5/2)) Solid)")
+            .expect("the Solid twin parses");
+    let m = mesh(&solidr);
+    assert!(
+        !m.is_empty(),
+        "the SolidR model has geometry (a 4³ cube minus a Ø2.5 sphere)"
+    );
+    assert_eq!(
+        mesh(&solidr).triangle_count(),
+        mesh(&twin).triangle_count(),
+        "SolidR and Solid renders of the same model mesh identically — the type name is discarded"
+    );
+    // and the bounds match the base cube (4×4×4; the sphere is an internal cut that doesn't grow the box).
+    let d = bounds(&solidr)
+        .expect("the SolidR model has bounds")
+        .dimensions();
+    assert!(
+        approx(d[0], 4.0) && approx(d[1], 4.0) && approx(d[2], 4.0),
+        "SolidR model box is its 4×4×4 cube, got {d:?}"
+    );
+}

@@ -160,6 +160,20 @@ test("valid kebab widget names are still accepted", () => {
   }
 });
 
+test("a widget named `main` is rejected (reserved per-cell entry slot → would collide as CDZ0201)", () => {
+  // `main` is a valid IDENT, so the generic name check passes it — but it's every cell's reserved entry
+  // point. A widget `main` would splice `def (main) = <value>` into the buffer alongside the cell's own
+  // `def (main)` → two `main`s in one module → CDZ0201 at run time. parseWidgets must reject it up front
+  // with an actionable message (mirrors the run-path P0 #12 discipline: `main` is not a shareable name).
+  const { widgets, errors } = parseWidgets("main : Float64 = slider(0, 1)");
+  assert.equal(widgets.length, 0, "widget named `main` is not produced");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /`main` is reserved/);
+  // A NON-main name that merely contains "main" is fine (matched exactly, not as a substring).
+  assert.deepEqual(parseWidgets("main-rate : Float64 = slider(0, 1)").errors, []);
+  assert.deepEqual(parseWidgets("mainline : Float64 = slider(0, 1)").errors, []);
+});
+
 test("escaped quotes inside a dropdown option split + unescape correctly (PR #474)", () => {
   const w = parseWidgets('m : String = dropdown("a \\"q\\" opt", "b")').widgets[0] as Extract<Widget, { control: "dropdown" }>;
   // Two options, not four; the first has its inner quotes unescaped.

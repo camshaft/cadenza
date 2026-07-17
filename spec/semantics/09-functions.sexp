@@ -203,6 +203,41 @@
             ((. (tuple (fn ((: x Int64)) (+ x k)) 9) 0) 5)))
   (output (: 12 Int64)))
 
+; The LET-BOUND compound face of the same fold. A capturing closure stored in a compound that is BOUND with
+; `let`, projected, and applied — `(let ((r (record (f (fn (x) (+ x n)))))) ((. r f) 10))` — must behave
+; EXACTLY like the inline-compound case above and the direct-let closure. This was a BOTH-BACKEND MISCOMPILE
+; (invalid wasm at exit 0 — `func … type mismatch: expected i32, found i64` — and rust E0425 on an unbound
+; `__cap0`): the `let` keep-analysis (`should_keep_binding`) already short-circuits a `Resolved::Lambda` init
+; and one that REDUCES to a lambda, precisely to avoid a speculative `core_of(init)` that LIFTS the closure
+; and pollutes the capture set — but a COMPOUND (record/tuple) init CONTAINING a lambda is neither, so it
+; slipped past, was lowered (lifting the contained closure), and recorded the captured `n`. The projection
+; `(. r f)` then β-reduced inline to `(+ 10 n)` reusing the SHARED `n` occurrence, which the stale
+; `captured_ref` entry lowered to a `Core::Captured` env-read in `main` (no closure env) → the slot mismatch.
+; The fix propagates a projection-only compound-holding-a-closure binding (`compound_contains_lambda`, a
+; lift-free reduce), so each projection folds through exactly as the inline-compound and direct-let forms do.
+(case "a capturing closure stored in a let-bound record is projected and applied"
+  (doc    "`(let ((r (record (f (fn (x) (+ x n)))))) ((. r f) 10))` — the closure captures the def parameter
+           `n`, is stored in a record field, the record is `let`-bound, and the projected function is applied.
+           Must fold exactly like the inline-record and direct-let controls (the call sees the capture):
+           n = 1 → 10 + 1 = 11. Pins the both-backend miscompile where the compound binding's contained
+           closure was speculatively lifted, poisoning the inline fold of the projected closure.")
+  (input  (do
+            (def (main (: n Int64)) (let ((r (record (f (fn (x) (+ x n)))))) ((. r f) 10)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 11 Int64)))
+
+(case "a capturing closure stored in a let-bound tuple is projected and applied"
+  (doc    "The TUPLE face of the let-bound compound fold: `(let ((r (tuple (fn (x) (+ x n)) 9))) ((. r 0) 10))`
+           stores the capturing closure as tuple element 0, `let`-binds the tuple, projects, and applies —
+           n = 1 → 11. Same root cause as the record case (a compound init holding a closure must fold
+           through, not lift); pins the tuple projection path alongside the record one.")
+  (input  (do
+            (def (main (: n Int64)) (let ((r (tuple (fn (x) (+ x n)) 9))) ((. r 0) 10)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 11 Int64)))
+
 ; The case above FOLDS (a constant tuple whose closure β-reduces through the projection). These two exercise
 ; the RUNTIME closure-in-heap-compound REP: closures bound via `let` into a runtime list/tuple, extracted by
 ; `List.at`/a pattern binder, and applied — a `call_indirect` on a heap-stored closure cell, not a fold. This

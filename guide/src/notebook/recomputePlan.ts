@@ -47,7 +47,13 @@ function buildNodes(cells: Cell[], widgets: Widget[], surface: Surface): { nodes
   for (let i = 0; i < cells.length; i++) {
     const cell = cells[i];
     if (cell.kind !== "code" || cell.directive.kind === "widget") continue;
-    const produces = topLevelDefNames(cell.source.trim(), surface);
+    // `main` is a cell's PRIVATE per-cell entry slot, not a cross-cell name: `assembleCell.stripMainDef`
+    // drops a prior cell's `main` before it enters a later cell's scope (P0 #12), and `assembleCell`
+    // excludes `main` from `inScope`. So `main` can NEVER be a real cross-cell dependency — every code
+    // cell defines its own `main`, and if we treated it as a producible/consumable candidate, changing
+    // ONE widget would cascade a recompute to EVERY downstream cell (they all "reference" `main` via
+    // `def (main)`), defeating the reactive minimization. Exclude it here, mirroring `assembleCell`.
+    const produces = topLevelDefNames(cell.source.trim(), surface).filter((n) => n !== "main");
     for (const p of produces) candidates.add(p);
     nodes.push({ index: i, produces, consumes: [] });
   }

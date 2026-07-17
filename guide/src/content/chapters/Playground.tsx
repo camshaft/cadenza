@@ -93,6 +93,15 @@ export default function Playground() {
         structure both syntaxes are just views of.
       </P>
       <P>
+        It goes further than underlining. Rest the caret on a name and every other use of it tints
+        softly — the declaration included — so you can see a value's whole reach at a glance.{" "}
+        <strong>⌘-click</strong> (or Ctrl-click) that name to jump straight to where it's defined. And
+        when a mistake has an obvious repair, the diagnostic offers a <em>quick-fix</em>: apply it and
+        the compiler's suggested edit is spliced in for you. These aren't editor heuristics guessing from
+        spelling — every one is the compiler answering a question about your actual program, live in the
+        browser.
+      </P>
+      <P>
         Even the colours come from the compiler. Rather than guessing a token's role from its spelling,
         the editor asks the compiler what each name <em>means</em> — so a type, a constructor, a function,
         a local, and an <em>unbound</em> name (a typo the compiler can't resolve) each get their own

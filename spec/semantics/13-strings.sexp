@@ -1368,6 +1368,29 @@
   (input  (String.scalar-at "café" 3))
   (output (: (Some #\é) (Option Char))))
 
+; The three scalar-at cases above use a CONSTANT string AND a CONSTANT index, so they fold to a
+; `Leaf::Char` at compile time (`lower_str_scalar_at`) and never exercise a runtime read. `String.scalar-at`
+; with a RUNTIME index — even over a constant string — cannot fold: its result is a `Char`, and a runtime
+; Char has NO machine representation in the seed yet (`Ty::Char` → no boundary/slot valtype, lir.rs ~394;
+; `Core::ConstChar` only folds, select.rs ~5698). So the op soundly DECLINES rather than emitting a
+; possibly-truncated scalar read. This is the reject-don't-miscompile boundary for the scalar-at EMIT path
+; (distinct from the runtime-char MATCH decline below): the runtime half `op_bytes_scalar_at` is built +
+; proven in cdz-runtime but stays UNEXPORTED (frozen hash unchanged) until the runtime Char rep lands. A
+; future change that emitted a runtime scalar-at (a wrong i32-codepoint box, a truncated read) instead of
+; declining would flip this `(declines)`; it upgrades to an executing witness when the Char rep is wired.
+(case "String.scalar-at over a runtime index declines pending the runtime Char rep"
+  (doc    "`(String.scalar-at \"café\" i)` with `i` a runtime Int64 PARAMETER cannot fold (the result is a
+           Char, and a runtime Char has no seed representation yet), so `String.scalar-at` soundly DECLINES
+           rather than emitting a possibly-truncated scalar read — the reject-don't-miscompile boundary for
+           the scalar-at emit path. Contrast the constant-index `(String.scalar-at \"café\" 3)` case above,
+           which folds to `(Some #\\é)`. Grades the scalar-at emit-path decline as an intentional, tracked
+           boundary: the runtime read `op_bytes_scalar_at` is proven in cdz-runtime but unexported until the
+           runtime Char rep lands (companion to the runtime-char match decline below).")
+  (input  (do
+            (def (main (: i Int64)) (String.scalar-at "café" i))
+            (export main)))
+  (declines))
+
 (case "converting a char to its integer scalar value is total"
   (doc    "Witnesses collections-and-text.md #A Char Converts To And From An Integer Totally:
            `(Char.to-int #\\a)` is 97 — the Unicode scalar value (code point) of the char `a`. Total:

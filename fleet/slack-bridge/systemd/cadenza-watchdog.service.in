@@ -1,0 +1,30 @@
+# systemd --user unit for the Cadenza fleet WATCHDOG daemon (reliability backbone).
+#
+# TEMPLATE — `@REPO_ROOT@` / `@HOME@` / `@PATH@` substituted by install.sh. Runs the Rust bridge binary
+# with WATCHDOG_ONLY=1: it fires `cargo xtask fleet watchdog` on a fixed cadence (~4min) to re-arm
+# stalled `/loop`s and reap stopped windows, WITHOUT opening a Socket Mode connection (so it never
+# competes with the live Slack bridge for events). Auto-starts on boot alongside the bridge.
+#
+# NOTE: the binary shells `cargo xtask fleet watchdog` from its compile-time repo root, so the watchdog
+# logic tracks whatever this worktree's xtask source is built to. Rebuild the binary after a watchdog
+# tool change (`cargo build --release` in this dir) and `systemctl --user restart cadenza-watchdog`.
+[Unit]
+Description=Cadenza fleet watchdog daemon (out-of-band /loop re-arm; no Socket Mode)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=WATCHDOG_ONLY=1
+Environment=CADENZA_ENV_FILE=@HOME@/.cadenza-env
+# FLEET_DIR is the SHARED HUB state dir (see the bridge unit) — `.claude/` exists only at the main
+# checkout, not per-worktree. install.sh resolves @FLEET_DIR@ from the common git dir's parent.
+Environment=FLEET_DIR=@FLEET_DIR@
+Environment=PATH=@PATH@
+WorkingDirectory=@REPO_ROOT@/fleet/slack-bridge
+ExecStart=@REPO_ROOT@/fleet/slack-bridge/target/release/cadenza-slack-bridge
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

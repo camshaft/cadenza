@@ -128,6 +128,8 @@ pass	Qty.unit recovers the unit of a quantity whose magnitude is a runtime value
 pass	Qty.value recovers the underlying numeric value, discarding the unit
 pass	Result propagates errors without trapping
 pass	Result type for fallible operations
+pass	STACKED @requires: EVERY precondition is enforced — a violated OUTER @requires traps (not only the innermost)
+pass	STACKED @requires: value-transparent when ALL preconditions are satisfied
 pass	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 pass	Set.contains does not fold a set whose element is a runtime scalar
 pass	Set.contains finds a runtime STRING-rope element built via Set.of
@@ -148,6 +150,7 @@ pass	String.from-bytes decodes a multibyte RUNTIME Bytes ROPE, flattening before
 pass	String.from-bytes of an ill-formed RUNTIME byte sequence yields None (never traps)
 pass	String.from-bytes rejects a lone continuation byte
 pass	String.from-bytes rejects an overlong encoding
+pass	String.scalar-at over a runtime index declines pending the runtime Char rep
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
 pass	String.to-bytes of a genuinely-runtime string yields its UTF-8 byte length
@@ -337,6 +340,7 @@ pass	a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outs
 pass	a SINGLE-variant open sum still requires an open-tail arm
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a STRING-result effect op resumes with a string that folds through a concat
+pass	a SUM compound = has DISCRIMINATING power (a runtime-selected constructor separates two tagged values)
 pass	a SUM constructor payload that is a compound built from performs threads and destructures
 pass	a SUM is threaded as a handler's folded state across operations
 pass	a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)
@@ -486,6 +490,8 @@ pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces co
 pass	a captured pre-shadow value survives the re-binding
 pass	a capturing closure is applied through a recursive higher-order function
 pass	a capturing closure stored as a runtime list element is extracted by List.at and applied
+pass	a capturing closure stored in a let-bound record is projected and applied
+pass	a capturing closure stored in a let-bound tuple is projected and applied
 pass	a capturing closure stored in a tuple is extracted and applied
 pass	a capturing unannotated closure in a payload is typed from the declared arrow
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
@@ -680,6 +686,7 @@ pass	a default-integer pragma naming a non-integer type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
 pass	a delegated capability is not itself an export field
 pass	a delegation naming an effect that is never reached is rejected as latent authority
+pass	a dense if-equality chain dispatches every value including the default
 pass	a dense zero-based jump-table match hits a covered arm
 pass	a dense zero-based jump-table match routes an out-of-range scrutinee to the default
 pass	a dependent size of zero binds an empty body and leaves the rest untouched
@@ -797,6 +804,7 @@ pass	a function-typed parameter annotation's result type is checked against the 
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
 pass	a general recursive-sum recursion (Nil|Cons count) reads the right payload through the fold
 pass	a generated RECORD value is reproducible from its seed (compound = walks the record fields)
+pass	a generated SUM value is reproducible from its seed (compound = walks the variant tag and its payload)
 pass	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
 pass	a generated value with a FLOAT leaf is reproducible (compound = over the canonical float byte form)
 pass	a generated value with a SYMBOL leaf is reproducible (compound = walks the interned-name byte leaf)
@@ -820,6 +828,7 @@ pass	a genuinely-runtime left-shift count equal to the bit width traps rather th
 pass	a genuinely-runtime multiplication overflow traps on the emitted operation
 pass	a genuinely-runtime negation of the minimum integer traps
 pass	a genuinely-runtime negative right-shift count traps rather than masking
+pass	a genuinely-runtime shift count that is a multiple of 2^32 traps rather than truncating to zero
 pass	a genuinely-runtime subtraction underflow at the minimum traps
 pass	a grafted template is structurally equal to the directly-quoted tree
 pass	a guard combines the payload binder with the rest binder

@@ -10,7 +10,7 @@ import { formatScalarByType, resultTypeOf } from "../runner/scalarFormat.ts";
 import { useSyntax, type Surface } from "../syntax/SyntaxContext.tsx";
 import type { Diag } from "../compiler/client.ts";
 import { applyFix as applyFixToText } from "../playground/applyFix.ts";
-import { wrapModule, stripModule, wrapPrefixOf } from "./wrapModule.ts";
+import { wrapModule, stripModule, wrapPrefixOf, gatherTestForms, ungatherTestForms } from "./wrapModule.ts";
 
 // Re-exported so existing importers (`Runnable`, others) keep their `./useCadenzaEditor.ts` path; the
 // pure logic itself lives in `./wrapModule.ts` (React-free, so `node --test` can unit-test it).
@@ -37,13 +37,27 @@ export type EditorOutcome =
 /// uniform everywhere — every editor's initial buffer is the printer's canonical layout regardless of
 /// how the example was hand-written. (A snippet that doesn't round-trip cleanly falls back to the
 /// original text via the caller's `.catch`.)
+///
+/// The `wrap={false}` path (a `mode="test"` panel — several `@test`/`def` forms, no export/main) still
+/// has to reach the pretty-printer, and `renderSyntax` renders ONE top-level form: s-expr has no bare
+/// multi-form top level, so a multi-def test snippet threw "trailing input" here, the caller's `.catch`
+/// kept the raw s-expr but marked the surface ML, and Run then fed s-expr to the ML parser → "expected a
+/// name" (the reader-visible break on the testing page's first, multi-`@test`, examples). So gather a
+/// multi-form s-expr snippet under `(do …)` before rendering and peel it back off with `stripModule` —
+/// the SAME move the `check:examples` gate's `renderTestSnippet` makes, so app and gate render alike. ML
+/// top level is already multi-form, so an ML snippet renders directly.
 export async function renderSnippet(
   text: string,
   from: Surface,
   to: Surface,
   wrap: boolean,
 ): Promise<string> {
-  if (!wrap) return renderSyntax(text, from, to);
+  if (!wrap) {
+    // A `wrap={false}` (test) snippet is bare multi-form; gather it into one top-level form for the
+    // single-form pretty-printer, then ungather. Shared with the gate so they can't diverge.
+    const rendered = await renderSyntax(gatherTestForms(text, from), from, to);
+    return ungatherTestForms(rendered, to);
+  }
   const wrapped = wrapModule(text, from);
   const rendered = await renderSyntax(wrapped, from, to);
   return stripModule(rendered, to);

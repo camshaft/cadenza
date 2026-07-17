@@ -2225,12 +2225,18 @@ fn a_runtime_shift_emits_a_guarded_block() {
     // `<<` guards the count (`>= N` panics) AND round-trips to catch overflow; `>>` guards the count
     // and shifts natively (arithmetic for signed, logical for unsigned — the value type decides).
     let shl = compile_rust("(module m (def (go (: a Int64) (: b Int64)) (<< a b)) (export go))");
-    assert!(shl.contains("c >= 64"), "count guard:\n{shl}");
+    // The count is range-checked at its FULL i64 width BEFORE the narrowing `as u32` — a
+    // `(count as u32) >= 64` guard reads only the low 32 bits and lets a 2^32-multiple count slip
+    // through (see `a_runtime_shift_count_that_is_a_multiple_of_2_pow_32_traps`).
+    assert!(
+        shl.contains("(0..64).contains(&c64)"),
+        "count guard:\n{shl}"
+    );
     assert!(shl.contains("(r >> c) != v"), "overflow round-trip:\n{shl}");
     assert!(shl.contains("v << c"), "the shift:\n{shl}");
     let shr = compile_rust("(module m (def (go (: a Int64) (: b Int64)) (>> a b)) (export go))");
     assert!(
-        shr.contains("c >= 64") && shr.contains("v >> c"),
+        shr.contains("(0..64).contains(&c64)") && shr.contains("v >> c"),
         ">> guarded:\n{shr}"
     );
     assert!(
@@ -2261,6 +2267,38 @@ fn rustc_roundtrip_shift_computes_and_traps() {
 }
 
 #[test]
+fn a_runtime_shift_count_that_is_a_multiple_of_2_pow_32_traps() {
+    // REGRESSION (breaker 2026-07-17): the count guard must range-check the count at its FULL i64
+    // width BEFORE narrowing to u32. The prior guard `let c = (count) as u32; if c >= 64` truncated
+    // FIRST, so a count that is a multiple of 2^32 (low 32 bits = 0) read as 0, skipped the trap, and
+    // shifted by 0 — returning the operand UNCHANGED where wasm traps (a backend value differential).
+    // `(<< 5 2^32)` MUST trap "shift count out of range", not evaluate to 5.
+    let shl = compile_rust("(module m (def (go (: a Int64) (: b Int64)) (<< a b)) (export go))");
+    match rustc_run_traps(&shl, "go(5, 4294967296)") {
+        TrapRun::Trapped(msg) => assert!(
+            msg.contains("shift count out of range"),
+            "expected an out-of-range-count trap, got:\n{msg}"
+        ),
+        TrapRun::RanOk(out) => {
+            panic!("`(<< 5 2^32)` must TRAP (count out of range), but ran → {out}")
+        }
+        TrapRun::NoRustc => {}
+    }
+    // The `>>` arm shares the fix: `(>> 20 2^32+2)` must trap, not truncate to `(>> 20 2)` = 5.
+    let shr = compile_rust("(module m (def (go (: a Int64) (: b Int64)) (>> a b)) (export go))");
+    match rustc_run_traps(&shr, "go(20, 4294967298)") {
+        TrapRun::Trapped(msg) => assert!(
+            msg.contains("shift count out of range"),
+            "expected an out-of-range-count trap, got:\n{msg}"
+        ),
+        TrapRun::RanOk(out) => {
+            panic!("`(>> 20 2^32+2)` must TRAP (count out of range), but ran → {out}")
+        }
+        TrapRun::NoRustc => {}
+    }
+}
+
+#[test]
 fn a_provably_in_range_left_shift_elides_its_overflow_guard_on_the_rust_backend() {
     // BOTH-BACKEND PARITY (v-core-opt Slice-4): the rust `<<` emit now consults the SAME Core-tier
     // shl_provably_in_range / _dynamic predicates the wasm backend uses (select.rs emit_shift), so a
@@ -2270,7 +2308,9 @@ fn a_provably_in_range_left_shift_elides_its_overflow_guard_on_the_rust_backend(
     // CONSTANT count: `(<< (& a 15) 2)` — value ∈ [0,15], << 2 = [0,60] ⊆ Int64, count 2 < 64 → bare shift.
     let konst = compile_rust("(module m (def (f (: a Int64)) (<< (& a 15) 2)) (export f))");
     assert!(
-        konst.contains("v << (") && !konst.contains("(r >> c) != v") && !konst.contains("c >= 64"),
+        konst.contains("v << (")
+            && !konst.contains("(r >> c) != v")
+            && !konst.contains("(0..64).contains(&c64)"),
         "a provably-in-range constant-count `<<` drops both guards:\n{konst}"
     );
     // DYNAMIC (masked runtime) count: `(<< (& a 15) (& k 3))` — value ∈ [0,15], count ∈ [0,7], max
@@ -2279,14 +2319,14 @@ fn a_provably_in_range_left_shift_elides_its_overflow_guard_on_the_rust_backend(
         "(module m (def (f (: a Int64) (: k Int64)) (<< (& a 15) (& k 3))) (export f))",
     );
     assert!(
-        !dynamic.contains("(r >> c) != v") && !dynamic.contains("c >= 64"),
+        !dynamic.contains("(r >> c) != v") && !dynamic.contains("(0..64).contains(&c64)"),
         "a provably-in-range masked-dynamic-count `<<` drops both guards:\n{dynamic}"
     );
     // A FULL-RANGE `<<` (unbounded value/count) is NOT provable → KEEPS both guards. The dual proving
     // the elision is opt-in on a proof of safety, never on the absence of a disproof.
     let kept = compile_rust("(module m (def (f (: a Int64) (: b Int64)) (<< a b)) (export f))");
     assert!(
-        kept.contains("c >= 64") && kept.contains("(r >> c) != v"),
+        kept.contains("(0..64).contains(&c64)") && kept.contains("(r >> c) != v"),
         "a full-range `<<` keeps its count guard + overflow round-trip:\n{kept}"
     );
 }
@@ -4087,6 +4127,101 @@ fn rustc_roundtrip_nested_tuple_list_element_binder_with_rest_recursion() {
             "the doubly-nested tuple's innermost first component = 7"
         );
     }
+}
+
+#[test]
+fn rustc_roundtrip_sum_constructor_list_element_payload_binder() {
+    // A SUM-CONSTRUCTOR list-element binder — `(list (I x) .. rest)` over a `List A` where `A` is a
+    // heterogeneous sum `(I Int64) (N String)`. The binder `x` sits at path [Elem(0), Payload]: the
+    // leading Elem(0) reads `(xs)[0]` (a value of the element sum), and the Payload binds the matched
+    // variant's payload. Was a decline ("a nested list-element binder beyond a tuple projection is not
+    // rendered") — the guard's discriminant is not on the binder's path. RECOVERED from the SumPayload
+    // node's own solved type: the variant is the UNIQUE one whose payload type equals the binder's type
+    // (I:Int64 ≠ N:String), emitted as a single-variant `match (xs)[0] { A::I(__pv) => __pv, _ => … }`.
+    let hetero = compile_rust(
+        "(module m (type A (I Int64) (N String)) \
+           (def (build (: k Int64)) (if (< k 1) (list (N \"z\")) (list (I k)))) \
+           (def (f (: xs (List A))) (match xs ((list (I x) .. r) x) (_ 0))) \
+           (def (run (: k Int64)) (f (build k))) (export run))",
+    );
+    assert!(
+        hetero.contains("A :: I (__pv) => __pv") || hetero.contains("A::I(__pv) => __pv"),
+        "the sum-element payload binds via a single-variant match:\n{hetero}"
+    );
+    if let Some(out) = rustc_run(&hetero, "run(2)") {
+        assert_eq!(out, "2", "the head is (I 2), the payload binder yields 2");
+    }
+    if let Some(out) = rustc_run(&hetero, "run(0)") {
+        assert_eq!(
+            out, "0",
+            "the head is (N \"z\"), no (I _) match → the fallthrough arm 0"
+        );
+    }
+
+    // A NON-COPY payload (String) binds by MOVING out of the cloned element — the `(xs)[0].clone()`
+    // already owns the sum value, so `__pv` needs NO second `.clone()` (would be a wasted allocation).
+    let string_pay = compile_rust(
+        "(module m (type A (I Int64) (N String)) \
+           (def (build (: k Int64)) (if (< k 1) (list (I 0)) (list (N \"hello\")))) \
+           (def (f (: xs (List A))) (match xs ((list (N s) .. r) s) (_ \"none\"))) \
+           (def (run (: k Int64)) (f (build k))) (export run))",
+    );
+    assert!(
+        (string_pay.contains("A :: N (__pv) => __pv") || string_pay.contains("A::N(__pv) => __pv"))
+            && !string_pay.contains("__pv.clone()")
+            && !string_pay.contains("__pv . clone ()"),
+        "the non-Copy payload MOVES out of the cloned element (no redundant second clone):\n{string_pay}"
+    );
+    if let Some(out) = rustc_run(&string_pay, "run(2)") {
+        assert_eq!(
+            out, "hello",
+            "the head is (N \"hello\"), the String binder yields hello"
+        );
+    }
+    if let Some(out) = rustc_run(&string_pay, "run(0)") {
+        assert_eq!(
+            out, "none",
+            "the head is (I 0), no (N _) match → the fallthrough arm"
+        );
+    }
+
+    // A RECURSIVE (boxed) variant payload derefs the `Box` — `T::Wrap(__pv) => (*__pv)` moves the inner
+    // value out of the owned box, no clone. Verifies the `variant_is_recursive` deref arm end-to-end.
+    let boxed = compile_rust(
+        "(module m (type T (Leaf Int64) (Wrap T)) \
+           (def (unwrap (: xs (List T))) (match xs ((list (Wrap t) .. r) t) (_ (Leaf 0)))) \
+           (def (top (: xs (List T))) (match (unwrap xs) ((Leaf n) n) ((Wrap _) -1))) \
+           (def (build (: k Int64)) (if (< k 1) (list (Leaf 5)) (list (Wrap (Leaf k))))) \
+           (def (run (: k Int64)) (top (build k))) (export run))",
+    );
+    assert!(
+        boxed.contains("(*__pv)") || boxed.contains("(* __pv)"),
+        "the recursive variant payload derefs the box:\n{boxed}"
+    );
+    if let Some(out) = rustc_run(&boxed, "run(2)") {
+        assert_eq!(out, "2", "(Wrap (Leaf 2)) unwraps to (Leaf 2) → 2");
+    }
+    if let Some(out) = rustc_run(&boxed, "run(0)") {
+        assert_eq!(
+            out, "0",
+            "(Leaf 5) head ≠ (Wrap _) → unwrap's (Leaf 0) fallthrough → top reads n=0"
+        );
+    }
+
+    // SOUNDNESS PIN: an AMBIGUOUS sum — two variants share the exact payload type `(I Int64) (J Int64)`
+    // — cannot be disambiguated from the binder's type alone, so this DECLINES (a `todo`) rather than
+    // guessing a variant and miscompiling. Threading the guard discriminant (a lower.rs change) is the
+    // deferred real fix; declining keeps the Rust backend sound in the meantime.
+    let ambiguous = compile_rust_result(
+        "(module m (type A (I Int64) (J Int64)) \
+           (def (build (: k Int64)) (if (< k 1) (list (J 9)) (list (I k)))) \
+           (def (f (: xs (List A))) (match xs ((list (I x) .. r) x) (_ 0))) \
+           (def (run (: k Int64)) (f (build k))) (export run))",
+    );
+    assert!(
+        ambiguous.is_err(),
+        "an ambiguous-payload-type sum-element binder declines, not miscompiles:\n{ambiguous:?}"
+    );
 }
 
 #[test]

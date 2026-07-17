@@ -26,3 +26,7 @@
                   (match (Db.get 5) (((. Option Some) v) (+ a v)) (((. Option None) u) 99)))))
             (export run-then-get)))
   (output (: 50 Int64)))
+
+; ---
+; RESOLVED (corpus-bugfix 2026-07-17, from v-rust-backend note): already LANDED in batch 164
+; (v-rust-backend 1b528bcc5, empty-Map handler-state annotation fix). Green on current trunk.

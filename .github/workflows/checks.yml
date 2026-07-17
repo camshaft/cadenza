@@ -83,6 +83,27 @@ jobs:
       - name: Node smoke test
         working-directory: fleet/slack-bridge
         run: node smoke.test.js
+      - name: Launcher + systemd units
+        working-directory: fleet/slack-bridge
+        run: |
+          # The launcher/installer must parse, and the systemd unit templates must be valid units.
+          bash -n run.sh
+          bash -n systemd/install.sh
+          # Render the templates against a fake @REPO_ROOT@ populated with stub executables at the
+          # ExecStart paths (run.sh + the watchdog binary), so systemd-analyze verifies unit
+          # syntax/keys without needing a real release build. (A missing ExecStart → verify exits 1.)
+          root=/tmp/sd-root
+          mkdir -p "$root/fleet/slack-bridge/target/release"
+          printf '#!/bin/sh\n' > "$root/fleet/slack-bridge/run.sh"
+          printf '#!/bin/sh\n' > "$root/fleet/slack-bridge/target/release/cadenza-slack-bridge"
+          chmod +x "$root/fleet/slack-bridge/run.sh" "$root/fleet/slack-bridge/target/release/cadenza-slack-bridge"
+          mkdir -p /tmp/sd
+          for f in cadenza-slack-bridge cadenza-watchdog; do
+            sed -e "s#@REPO_ROOT@#$root#g" -e "s#@FLEET_DIR@#$root/.claude/fleet#g" \
+                -e "s#@HOME@#$HOME#g" -e "s#@PATH@#$PATH#g" -e "s#@CHANNEL@#DUMMYCHAN#g" \
+                "systemd/$f.service.in" > "/tmp/sd/$f.service"
+          done
+          systemd-analyze verify /tmp/sd/cadenza-slack-bridge.service /tmp/sd/cadenza-watchdog.service
 
   # ── wasm-runtime-dependent jobs ─────────────────────────────────────────────
   # The value-heap runtime is invisible to `cargo build`; these jobs build it explicitly.

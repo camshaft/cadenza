@@ -689,7 +689,25 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
         }
-        let mut root = if forms.len() == 1 {
+        // Comments after the last grammar token (e.g. a trailing `// note` on the final line) have no
+        // FOLLOWING form to precede. Attach them to the LAST form instead — the same `(comment "text"
+        // node)` wrapper a mid/leading comment gets, just around the final form rather than the next one.
+        // This preserves the TOP-LEVEL FORM SET: a trailing comment must NOT wrap the whole root, because
+        // when the root is a multi-form `(do …)` that buries every top-level def inside the comment's
+        // child, so a top-level walk (`cdz metadata`/`exports`/manifest parse) sees ZERO defs though a
+        // leading comment parses fine (bug from v-cdz-tooling: a `Project.cdz` ending in `//` read as
+        // name:null deps:[]). Wrapping the last form keeps each def a direct root child. (v1 scope: the
+        // comment's PRINTED position moves ABOVE the last form — the same known limitation a mid-comment
+        // already has — but the def set is now correct, which is what walkers depend on.) When there are
+        // no forms at all (a comment-only program) `program` has already errored above, so `forms` is
+        // non-empty here whenever `trailing` is.
+        let trailing = std::mem::take(&mut self.trailing);
+        if !trailing.is_empty() && !forms.is_empty() {
+            let last = forms.pop().unwrap();
+            let wrapped = self.wrap_comments(trailing, last);
+            forms.push(wrapped);
+        }
+        if forms.len() == 1 {
             forms.pop().unwrap()
         } else {
             let do_head = self.name("do", start);
@@ -698,14 +716,7 @@ impl<'a> Parser<'a> {
             items.extend(forms);
             let span = start.merge(self.prev_span());
             self.list(items, span)
-        };
-        // Comments after the last grammar token (e.g. a trailing `// note` on the final line) have
-        // no following form to precede; attach them as outer `(comment …)` wrappers so nothing is
-        // dropped. (v1 scope: their printed position moves above the program — a known limitation
-        // noted for a later "trailing comment" refinement.)
-        let trailing = std::mem::take(&mut self.trailing);
-        root = self.wrap_comments(trailing, root);
-        root
+        }
     }
 
     /// Parse one top-level form and append it to `forms`, FLATTENING a `(do …)` result into its
@@ -2754,6 +2765,55 @@ mod tests {
             p.errors
         );
         p.arenas
+    }
+
+    #[test]
+    fn a_trailing_comment_attaches_to_the_last_form_not_the_whole_program() {
+        use crate::sexpr;
+        // A `//` comment after the LAST top-level form has no following form to precede. It must attach
+        // to the LAST form (the same `(comment "text" node)` wrapper a mid/leading comment gets), NOT
+        // wrap the whole root. Wrapping the root buried every top-level def inside the comment's child
+        // when the root is a multi-form `(do …)`, so a top-level walk (`cdz metadata`/exports/manifest)
+        // saw ZERO defs though a leading comment parsed fine (v-cdz-tooling bug: a `Project.cdz` ending
+        // in `//` read as name:null deps:[]). Regression guard: the trailing comment stays INSIDE the
+        // do-block on the last form, keeping each def a direct root child.
+        assert_eq!(
+            sexpr::print(&parse_ok("def a = 1\ndef b = 2\n// end")),
+            "(do (def a 1) (comment \"end\" (def b 2)))",
+            "trailing comment must wrap the LAST form, not the whole (do …) — else top-level defs vanish"
+        );
+        // Multiple trailing comments stack on the last form, outermost first (mirrors `wrap_comments`).
+        assert_eq!(
+            sexpr::print(&parse_ok("def a = 1\ndef b = 2\n// x\n// y")),
+            "(do (def a 1) (comment \"x\" (comment \"y\" (def b 2))))"
+        );
+        // Contrast (must stay correct): a MID comment attaches to its following form, a LEADING comment
+        // to the first form — the trailing case now matches this same shape.
+        assert_eq!(
+            sexpr::print(&parse_ok("def a = 1\n// mid\ndef b = 2")),
+            "(do (def a 1) (comment \"mid\" (def b 2)))"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("// lead\ndef a = 1\ndef b = 2")),
+            "(do (comment \"lead\" (def a 1)) (def b 2))"
+        );
+        // A SINGLE-form program: trailing and leading both wrap that one form (root stays bare, no `do`),
+        // so the def is reachable either way — the multi-form case is the one that regressed.
+        assert_eq!(
+            sexpr::print(&parse_ok("def main() = 42\n// note")),
+            "(comment \"note\" (def (main) 42))"
+        );
+        // The bijection that matters to walkers: for the buggy input, the top-level form set (the direct
+        // children of the root `do`, unwrapping any comment) is exactly {a, b} — two defs, not zero.
+        let a = parse_ok("def a = 1\ndef b = 2\n// end");
+        let elems = a
+            .as_form(a.root, "do")
+            .expect("multi-form root is a do-block");
+        assert_eq!(
+            elems.len(),
+            2,
+            "two top-level forms survive the trailing comment"
+        );
     }
 
     #[test]

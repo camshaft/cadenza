@@ -29,6 +29,27 @@ test("every chapter has a non-empty title, blurb, and section", () => {
   }
 });
 
+// Titles and blurbs are the reader's map of the tour: they label every sidebar row and chapter card.
+// Two chapters sharing a title (or a blurb) makes the sidebar read as two identical rows — the classic
+// symptom of copy-pasting a registry entry and forgetting to retitle it. The slug check above catches a
+// duplicate route, but a distinct slug can still carry a cloned title/blurb, so pin distinctness here.
+test("chapter titles and blurbs are each distinct across the registry", () => {
+  const titleOf = new Map<string, string>(); // normalized title → first slug that used it
+  const blurbOf = new Map<string, string>();
+  const dupeTitles: string[] = [];
+  const dupeBlurbs: string[] = [];
+  for (const c of CHAPTERS) {
+    const t = c.title.trim();
+    if (titleOf.has(t)) dupeTitles.push(`"${t}" (in ${c.slug} and ${titleOf.get(t)})`);
+    else titleOf.set(t, c.slug);
+    const b = c.blurb.trim();
+    if (blurbOf.has(b)) dupeBlurbs.push(`"${b}" (in ${c.slug} and ${blurbOf.get(b)})`);
+    else blurbOf.set(b, c.slug);
+  }
+  assert.equal(dupeTitles.length, 0, `duplicate chapter title(s) — the sidebar would show identical rows:\n  ${dupeTitles.join("\n  ")}`);
+  assert.equal(dupeBlurbs.length, 0, `duplicate chapter blurb(s) — likely a copy-pasted registry entry:\n  ${dupeBlurbs.join("\n  ")}`);
+});
+
 test("exercises count is a non-negative integer when present", () => {
   for (const c of CHAPTERS) {
     if (c.exercises !== undefined) {

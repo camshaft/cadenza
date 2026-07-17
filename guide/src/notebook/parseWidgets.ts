@@ -116,6 +116,11 @@ function parseLine(raw: string): Widget | string {
   const name = header.slice(0, colon).trim();
   const typeStr = header.slice(colon + 1).trim();
   if (!IDENT_RE.test(name)) return `\`${name}\` is not a valid widget name`;
+  // `main` is every cell's reserved per-cell entry slot (the run path calls `(main)`/`main()`, and
+  // assembleForRun already carries each cell's own `def (main)`). A widget named `main` would splice a
+  // second `def (main) = <value>` into the buffer → two `main`s in one module → CDZ0201 at run time. Reject
+  // it up front with an actionable message rather than emitting source that fails to compile downstream.
+  if (name === "main") return "`main` is reserved (each cell's entry point) — name the widget something else";
   if (!TYPES.includes(typeStr as WidgetType)) {
     return `unknown type \`${typeStr}\` — expected one of ${TYPES.join(", ")}`;
   }

@@ -1281,6 +1281,28 @@ mod tests {
         );
     }
 
+    /// `classify_sum` models a variant as `(VNAME PAYLOAD?)` — zero or ONE payload occurrence (several
+    /// fields are a single `(Tuple …)`/`(Record …)` payload). A variant with TWO+ payload occurrences
+    /// (`(Var Int64 Bool)`) is not that shape, so the whole sum declines and no wrapper is synthesized —
+    /// the `@test` then declines cleanly at the boundary rather than a mis-generated multi-slot variant.
+    #[test]
+    fn a_multi_payload_variant_declines() {
+        let ast = crate::testkit::parse(
+            "(do (type Bad (Var Int64 Bool) (Nil)) \
+               (@ test (def (b (: v Bad)) unit)) (def (o) 1))",
+        );
+        let db = Db::load(ast);
+        let names: Vec<String> = db
+            .test_defs()
+            .into_iter()
+            .map(|i| db.defs[i].name.clone())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n == "b-gen"),
+            "a multi-payload variant gets no wrapper (single-payload guard): {names:?}"
+        );
+    }
+
     /// A `@test` over a genuinely NON-generatable element (`(List Char)` — `Char` is not yet generated) is
     /// left alone: no wrapper, so it declines at the boundary as before. (Nested `List`/`Tuple` over
     /// int/Bool/float leaves ARE generatable now — the non-generatable leaf is what stops it.)

@@ -78,6 +78,41 @@ test("a widget feeding two independent branches re-runs both, in document order"
   assert.deepEqual(recomputePlan(cells, [slider("k")], "k", "ml"), [1, 2]);
 });
 
+test("`main` is NOT a cross-cell dependency — a widget change does not cascade through every cell's `main`", () => {
+  // Production reality: EVERY notebook code cell defines its own `main` (its private per-cell entry slot,
+  // stripped from downstream scope by assembleCell.stripMainDef, P0 #12). If `main` were treated as a
+  // producible/consumable name, changing `rate` (used only by cell 1) would dirty cell 1's `main`, which
+  // cell 2 "consumes" (it also has `def (main)`), cascading to EVERY downstream cell — defeating the
+  // reactive minimization. Only the cell that truly references `rate` (+ genuine downstream data deps)
+  // should re-run. This pins that `main` is excluded from the dependency graph (both surfaces).
+  const sexprCells: Cell[] = [
+    code("rate : Float64 = slider(0, 1)", { kind: "widget" }),
+    code("(def (main) (* rate 100.0))"), // idx1: really uses rate
+    code("(def (main) 42.0)"), // idx2: independent constant, own main — must NOT re-run
+    code("(def (main) (+ 1.0 2.0))"), // idx3: independent constant, own main — must NOT re-run
+  ];
+  assert.deepEqual(recomputePlan(sexprCells, [slider("rate")], "rate", "sexpr"), [1]);
+
+  const mlCells: Cell[] = [
+    code("rate : Float64 = slider(0, 1)", { kind: "widget" }),
+    code("def main() = rate * 100.0"), // idx1: uses rate
+    code("def main() = 42.0"), // idx2: independent, own main
+  ];
+  assert.deepEqual(recomputePlan(mlCells, [slider("rate")], "rate", "ml"), [1]);
+});
+
+test("`main` exclusion does not suppress a GENUINE downstream data dependency", () => {
+  // The fix excludes `main` as a dependency name, but a real cross-cell data dep (via a NON-main helper)
+  // must still propagate: cell 1 produces `base` from `rate`; cell 2's `main` uses `base` → it re-runs.
+  const cells: Cell[] = [
+    code("rate : Float64 = slider(0, 1)", { kind: "widget" }),
+    code("(def (base) (* rate 100.0))"), // idx1: produces base (non-main) from rate
+    code("(def (main) base)"), // idx2: uses base → genuinely dirty
+    code("(def (main) 7.0)"), // idx3: independent → NOT in plan
+  ];
+  assert.deepEqual(recomputePlan(cells, [slider("rate")], "rate", "sexpr"), [1, 2]);
+});
+
 test("initialRunOrder lists every code cell (not widget/prose) in document order", () => {
   const cells: Cell[] = [
     prose("intro"),

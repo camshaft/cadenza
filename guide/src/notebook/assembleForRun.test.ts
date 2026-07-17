@@ -82,3 +82,31 @@ test("multiple widgets bind in list order (all in the buffer, before the cell de
   assert.equal(r.buffer, "def a = 1.0\ndef b = 2.0\n\ndef main() = a + b");
   assert.equal(r.entry, "main()");
 });
+
+// ── P0 #12 at the RUN seam: a multi-cell notebook where every code cell defines its own `main` must
+// still assemble a single-`main` buffer at the ACTUAL run path (assembleForRun layers widget bindings on
+// top of assembleCell's strip). assembleCell.test.ts pins the strip in isolation and examples.test.ts
+// pins it end-to-end on SHIPPED content; this pins the mechanism at the run seam on synthetic content, so
+// a regression is caught even without a matching example. Both surfaces (the notebook ships s-expr). ──
+test("a later cell assembles exactly ONE `main` — prior cells' `main` stripped, widget + helper kept (P0 #12, sexpr)", () => {
+  const cells: Cell[] = [
+    code("rate : Float64 = slider(0, 1)", { kind: "widget" }),
+    code("(def (base) 100.0)\n(def (main) base)"), // prior cell defines a helper AND its own main
+    code("(def (main) (* base rate))"), // this cell's main uses the helper + the widget
+  ];
+  const r = assembleForRun(cells, 2, [slider("rate", 0.5)], { rate: 0.5 }, "sexpr");
+  assert.equal(r.buffer, "(def (rate) 0.5)\n\n(def (base) 100.0)\n\n(def (main) (* base rate))");
+  assert.equal((r.buffer.match(/\(def \(main\)/g) ?? []).length, 1, "exactly one `main` — no CDZ0201 collision");
+  assert.equal(r.entry, "(main)");
+});
+
+test("a later cell assembles exactly ONE `main` — prior cells' `main` stripped (P0 #12, ml)", () => {
+  const cells: Cell[] = [
+    code("def base = 100.0\ndef main() = base"), // prior helper + main
+    code("def main() = base * 2.0"), // this cell's main uses the prior helper
+  ];
+  const r = assembleForRun(cells, 1, [], {}, "ml");
+  assert.equal(r.buffer, "def base = 100.0\n\ndef main() = base * 2.0");
+  assert.equal((r.buffer.match(/\bdef main\(\)/g) ?? []).length, 1, "exactly one `main` — no CDZ0201 collision");
+  assert.equal(r.entry, "main()");
+});

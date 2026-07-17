@@ -87,6 +87,27 @@ Or by hand for the Node impl: `cd fleet/slack-bridge && npm install && npm start
 `SLACK_BRIDGE_CHANNEL` (a channel or DM id) so fleet→Slack posts reach you. It prints
 `… running (Socket Mode)` / `Now connected to Slack` and stays up.
 
+#### Auto-start on boot (systemd — recommended)
+
+A `tmux`/manual launcher does **not** survive a host reboot (it also clears the `/tmp` runner loop),
+leaving the operator with no comms until an agent notices and relaunches. To make the bridge + the
+out-of-band watchdog daemon start automatically on boot and restart on crash, install the tracked
+systemd `--user` units:
+
+```
+fleet/slack-bridge/systemd/install.sh      # substitutes machine paths, enables + starts both units
+```
+
+This writes `cadenza-slack-bridge.service` (the Node/Rust bridge, `RUN_ONCE=1` so systemd owns the
+restart loop) and `cadenza-watchdog.service` (`WATCHDOG_ONLY=1`, no Socket Mode) into
+`~/.config/systemd/user/`, runs `loginctl enable-linger` (so they start without an interactive login),
+and enables both `WantedBy=default.target`. Manage them with `systemctl --user {status,restart,stop}
+cadenza-slack-bridge cadenza-watchdog`; logs via `journalctl --user -u cadenza-slack-bridge -f`. The
+`.service.in` files are checked-in **templates** (`@REPO_ROOT@`/`@HOME@`/`@PATH@`/`@CHANNEL@`
+placeholders) — never commit a resolved absolute host path. Re-run `install.sh` after moving the repo
+or rebuilding the watchdog binary (`cargo build --release` here, then `systemctl --user restart
+cadenza-watchdog`).
+
 ## Configuration
 
 All via environment variables:

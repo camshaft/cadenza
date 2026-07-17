@@ -30,3 +30,9 @@ shared buffer (`Arc<[u8]>` in `RunOpts`) or a borrowing entrypoint so `cdz test`
 Optional; correctness item above is the priority.
 
 PR: https://github.com/camshaft/cadenza/pull/481
+
+---
+RESOLVED (corpus-bugfix 2026-07-17, trunk@1c255812b): already fixed. `observed_failure_message`
+(implementation/seed/crates/cdz/src/main.rs:3078) now filters entries whose op label
+`.ends_with(".fail")` (case-insensitive) AND iterates `.rev()` — exactly the recommended fix. No
+longer picks the first tab-carrying entry regardless of op. Stale finding.

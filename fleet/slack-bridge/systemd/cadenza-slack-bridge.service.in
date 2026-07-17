@@ -1,0 +1,33 @@
+# systemd --user unit for the Cadenza fleet↔Slack bridge (the operator's comms channel).
+#
+# This is a TEMPLATE: `@REPO_ROOT@` / `@HOME@` / `@PATH@` are substituted by install.sh into the real
+# unit at ~/.config/systemd/user/. Paths are machine-specific, so the checked-in file stays a template
+# (never commit an absolute host path). With `loginctl enable-linger`, this auto-starts on boot and
+# survives logout — closing the reboot comms-gap that previously needed a manual/agent relaunch.
+[Unit]
+Description=Cadenza fleet<->Slack bridge (Socket Mode; operator comms)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# run.sh reads Slack tokens from ~/.cadenza-env (never committed). RUN_ONCE=1 hands the restart loop to
+# systemd (Restart=always below) instead of run.sh's own while-loop, so systemd owns supervision.
+Environment=RUN_ONCE=1
+Environment=BRIDGE_IMPL=node
+Environment=CADENZA_ENV_FILE=@HOME@/.cadenza-env
+# FLEET_DIR is the SHARED runtime state dir at the HUB, NOT @REPO_ROOT@/.claude/fleet: `.claude/` is
+# gitignored and exists only at the main checkout (shared across worktrees via the common git dir), so a
+# worktree-relative path points at a NONEXISTENT inbox. install.sh resolves @FLEET_DIR@ from the hub.
+Environment=FLEET_DIR=@FLEET_DIR@
+Environment=SLACK_BRIDGE_CHANNEL=@CHANNEL@
+# systemd starts with a minimal PATH; the bridge needs node (and, for the rust impl, cargo). Bake in the
+# resolved PATH captured at install time so `node`/`cargo` resolve without a login shell.
+Environment=PATH=@PATH@
+WorkingDirectory=@REPO_ROOT@/fleet/slack-bridge
+ExecStart=@REPO_ROOT@/fleet/slack-bridge/run.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

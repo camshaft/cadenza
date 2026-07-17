@@ -31,6 +31,11 @@ publish = false
 # DynamoDB client calls are feature-gated (network-only, exercised manually), mirroring cdz-agent's bedrock.
 default = []
 aws = ["dep:aws-config", "dep:aws-sdk-dynamodb", "dep:tokio"]
+# Run the compiler AS A WASM (`rcdzc.wasm`) via wasmtime+WASI (operator #54, concierge-approved plan a). OFF
+# by default — the default build uses the native rcdzc compile path; this feature adds loading + invoking the
+# compiler-wasm (a wasm32-wasip1 core module exporting alloc/compile/dealloc). wasmtime is the SAME engine v37
+# cdz-run already pulls; wasmtime-wasi adds the thin preview1 ctx a wasm32-wasip1 module needs.
+wasm-compiler = ["dep:wasmtime", "dep:wasmtime-wasi"]
 
 [dependencies]
 anyhow = "1"
@@ -49,6 +54,11 @@ cdz-agent = { path = "../cdz-agent" }
 # size is acceptable because the kernel is deploy-once (compile-anything-forever matters more than binary size).
 rcdzc = { path = "../rcdzc" }
 cadenza-syntax = { path = "../cadenza-syntax" }
+
+# Run the compiler-wasm (`rcdzc.wasm`) — the wasm-swap host, behind the `wasm-compiler` feature. Same wasmtime
+# engine (v37) cdz-run pulls; wasmtime-wasi is the preview1 ctx for the wasm32-wasip1 core module.
+wasmtime = { version = "37", default-features = false, features = ["runtime", "cranelift"], optional = true }
+wasmtime-wasi = { version = "37", optional = true }
 
 # The DynamoDB log backend (L1d), behind the `aws` feature only (heavy async tree — kept out of default).
 aws-config = { version = "1", optional = true }

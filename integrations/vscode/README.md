@@ -12,6 +12,8 @@ A thin LSP client that launches **`cdz lsp`** (the compiler's own Language Serve
 - **rename** (F2) — rename a symbol across its whole scope, every reference *and* the declaration, in
   one edit (cross-file when the symbol spans a project's import closure);
 - **completion** — names in scope (locals with their types + the module's top-level declarations);
+- **signature help** — inside a call, the callee's type signature with the active parameter highlighted
+  as you type each argument;
 - **document outline** — the symbol tree / breadcrumb (Ctrl-Shift-O);
 - **workspace symbol search** — jump to any top-level declaration across the open files (Ctrl-T);
 - **folding** — collapse each multi-line top-level declaration from the gutter;

@@ -100,3 +100,11 @@ pub mod boot;
 /// ([`kernel::run_interpret`]). Ties the boot half (genesis lookup) + the kernel half (compile+run) into the
 /// per-event loop spine; the event-source driver is thin on top. Pure over the `Log` + the runtime store.
 pub mod daemon;
+
+/// Run the compiler AS A WASM (K1-dep wasm-swap, operator #54): [`wasm_compiler::compile_via_wasm`] loads
+/// `rcdzc.wasm` (the wasm32-wasip1 build of rcdzc) into wasmtime + a WASI ctx and drives its alloc→compile→
+/// read→dealloc ABI to turn AST bytes into a program component — so the compiler is a swappable wasm artifact,
+/// not native-linked. Behind the `wasm-compiler` feature (the default build uses native rcdzc). Plan (b) folds
+/// this into cdz-run's Component API once rcdzc-wasm is re-authored as a component.
+#[cfg(feature = "wasm-compiler")]
+pub mod wasm_compiler;

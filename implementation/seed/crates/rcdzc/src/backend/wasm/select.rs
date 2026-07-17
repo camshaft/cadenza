@@ -4557,6 +4557,46 @@ fn emit_tail(
                     }
                 }
             }
+            // IF-CHAIN → INTEGER MATCH (tail position — see the non-tail `Core::If` arm for the shape and
+            // soundness): route a nested `(if (= X k) …)` dispatch on one reusable integer scrutinee
+            // through the match backend so a dense range gets a `br_table`. Threads the tail loop context
+            // (`tl`), so a self-tail-call in an arm body still iterates the loop / becomes a `return_call`
+            // exactly as it did in the `if`-chain — the match backend's `Tail(tl)` path owns that (and the
+            // `br_table` path is skipped for a self-loop `Tail(Some(_))`, keeping the linear chain that
+            // loops correctly; a plain `Tail(None)`/exported body still gets the table).
+            if let Some((scrut, arms)) = if_chain_as_int_match(db, cond, then_, else_) {
+                let it = int_ty_of(db, scrut);
+                let result_it = match &result {
+                    Ty::Int(rit) => Some(*rit),
+                    _ => None,
+                };
+                let block_ty = match &result {
+                    Ty::Unit => BlockType::Empty,
+                    other => match valtype_of(other) {
+                        Some(vt) => BlockType::Val(vt),
+                        None => {
+                            return Err(Reject::decline(
+                                "if-chain match result type has no machine representation",
+                            ));
+                        }
+                    },
+                };
+                return emit_match_arms_tailable(
+                    db,
+                    scrut,
+                    &arms,
+                    it,
+                    result_it,
+                    block_ty,
+                    slots,
+                    base,
+                    high,
+                    scratch_ty,
+                    layout,
+                    out,
+                    TailPos::Tail(tl),
+                );
+            }
             // BRANCHLESS SELECT (see the non-tail `emit` arm for the full rationale): when both branches
             // are cheap trap-free scalar computations (`is_select_arm`) and the result is a non-heap
             // scalar, a `select` beats an `if`. A trap-free arm is never a tail call (a call is not
@@ -5069,13 +5109,23 @@ fn emit_mutual_dispatch(
         let body = db.defs[member]
             .body
             .ok_or_else(|| Reject::decline("a loop member has no body"))?;
+        // Each member's body gets a FRESH scratch floor past the running high-water mark, NOT the shared
+        // `base`. Members sit in mutually-EXCLUSIVE dispatch branches (`which == idx`), but a wasm local is
+        // FUNCTION-GLOBAL and has ONE type — so if member A stashes an i64 arith temp in scratch slot `base`
+        // and member B stashes an i32 heap handle in that same slot, the one local is declared at two widths
+        // and the module fails validation (`type mismatch: expected i64, found i32` at the `local.tee`).
+        // Advancing to `*high` hands each member never-typed slots, exactly the discipline the CSE/LICM arm
+        // (`body_base = body_base.max(high)`) and `emit_call_args`/`emit_loop_iteration` already apply for
+        // simultaneously-typed sibling scratch. (The prior code passed `base` unchanged to every member, so
+        // a 6-member SCC of mixed-width readers — `(i32,i64,i32)` args — emitted invalid wasm.)
+        let member_base = (*high).max(base);
         if idx + 1 == members.len() {
             // Last member — the unconditional tail (no probe; reached by elimination).
             return emit_tail(
                 db,
                 body,
                 slots,
-                base,
+                member_base,
                 high,
                 scratch_ty,
                 layout,
@@ -5102,7 +5152,7 @@ fn emit_mutual_dispatch(
             db,
             body,
             slots,
-            base,
+            member_base,
             high,
             scratch_ty,
             layout,
@@ -8075,6 +8125,35 @@ fn emit(
                     }
                 }
             }
+            // IF-CHAIN → INTEGER MATCH: a nested `(if (= X k0) … (if (= X k1) … default))` on one
+            // reusable integer scrutinee with ≥3 distinct constants is an integer dispatch a user wrote as
+            // chained `if`s. Route it through the match backend so a DENSE range gets an O(1) `br_table`
+            // instead of the O(n) `if (== k)` cascade this arm would otherwise emit. (Rust gets the jump
+            // table from LLVM; wasm does not.) Fires AFTER the flow-sensitive dead-branch/equal-branch
+            // folds above (a decided cond should collapse, not dispatch) and BEFORE the branchless-select
+            // below (a 3+-way dispatch is not a 2-arm select).
+            if let Some((scrut, arms)) = if_chain_as_int_match(db, cond, then_, else_) {
+                let it = int_ty_of(db, scrut);
+                let result_it = match &result {
+                    Ty::Int(rit) => Some(*rit),
+                    _ => None,
+                };
+                let block_ty = match &result {
+                    Ty::Unit => BlockType::Empty,
+                    other => match valtype_of(other) {
+                        Some(vt) => BlockType::Val(vt),
+                        None => {
+                            return Err(Reject::decline(
+                                "if-chain match result type has no machine representation",
+                            ));
+                        }
+                    },
+                };
+                return emit_match_arms(
+                    db, scrut, &arms, it, result_it, block_ty, slots, base, high, scratch_ty,
+                    layout, out,
+                );
+            }
             // BRANCHLESS SELECT: when both branches are cheap trap-free scalar computations (a
             // param/local/constant, or a small trap-free op like `(& x 7)` — see `is_select_arm`) and the
             // result is a SCALAR (not unit, not a heap handle), emit wasm's `select` instead of an
@@ -9183,6 +9262,125 @@ fn emit(
         // surfaces it before emission, so reaching here is a decline rather than emitted code.
         Core::Poison(reject) => Err(reject),
     }
+}
+
+/// Recognize a nested `(if (= X k0) b0 (if (= X k1) b1 … default))` chain — an integer-equality
+/// dispatch a user wrote as chained `if`s rather than a `match` — and lift it to the SAME
+/// `(scrutinee, arms)` shape a `Core::Match` carries, so it inherits the match backend's dense-range
+/// `br_table` (and 2-arm `select`) lowering instead of emitting an O(n) `if (== k)` cascade. Rust gets
+/// this jump-table for free from LLVM; wasm does not, so this is a wasm-specific missed opt.
+///
+/// The scrutinee `X` must be a REUSABLE scalar (a `Param`/`LocalRef` binder or a constant — the same
+/// values `reusable_scalar_src` accepts) and the SAME binder in every arm's test (`(= X k)` or the
+/// flipped `(= k X)`), each `k` a distinct compile-time `ConstInt` fitting `i64`; the innermost non-`if`
+/// (or non-matching) else is the DEFAULT arm (a synthesized trailing `Wild`). Returns `None` (fall
+/// through to the ordinary `if` lowering) unless the chain has ≥3 distinct-const arms — below that the
+/// existing branchless-`select`/`if` lowering is already at least as good, and the match path would only
+/// add overhead. The synthesized arms REUSE the original body `StructId`s (no AST synthesis), so the
+/// lowering is byte-for-byte the value the `if`-chain would have produced.
+///
+/// Soundness: an `if`-chain tests the arms IN ORDER and takes the first whose `== k` holds; the
+/// distinct-`k` requirement means at most one arm matches any value, so order is irrelevant and the
+/// synthesized first-wins match is equivalent. The default covers every other value (the chain's final
+/// else). A guarded/non-equality/mixed-binder link ends the chain (becomes the default), never a wrong
+/// arm. Only INTEGER scrutinees qualify (`br_table`/match dispatch is integer) — a Bool `X` has ≤2
+/// values so it never reaches the ≥3 threshold.
+fn if_chain_as_int_match(
+    db: &mut Db,
+    cond: StructId,
+    then_: StructId,
+    else_: StructId,
+) -> Option<(StructId, Vec<crate::core::MatchArm>)> {
+    // The scalar binder + constant of a single `(= X k)` / `(= k X)` equality test, or `None` if `id`
+    // is not an unguarded integer-equality of a reusable scalar binder against a constant.
+    fn eq_binder_const(db: &mut Db, id: StructId) -> Option<(StructId, StructId, i64)> {
+        let Core::Compare {
+            op: Prim::Eq,
+            lhs,
+            rhs,
+        } = core_of(db, id)
+        else {
+            return None;
+        };
+        // One operand a reusable scalar binder (Param/LocalRef), the other a ConstInt in i64 range.
+        let binder_node = |db: &mut Db, n: StructId| -> Option<StructId> {
+            match core_of(db, n) {
+                Core::Param { .. } | Core::LocalRef { .. } => Some(n),
+                _ => None,
+            }
+        };
+        let const_i64 = |db: &mut Db, n: StructId| -> Option<i64> {
+            match core_of(db, n) {
+                Core::ConstInt(v) => v.to_i64(),
+                _ => None,
+            }
+        };
+        // The binder KEY (its slot binder StructId) identifies which variable is switched on — the
+        // stable identity used to require every link tests the SAME variable.
+        let key_of = |db: &mut Db, b: StructId| -> Option<StructId> {
+            match core_of(db, b) {
+                Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
+                _ => None,
+            }
+        };
+        if let (Some(b), Some(k)) = (binder_node(db, lhs), const_i64(db, rhs)) {
+            return Some((b, key_of(db, b)?, k));
+        }
+        if let (Some(k), Some(b)) = (const_i64(db, lhs), binder_node(db, rhs)) {
+            return Some((b, key_of(db, b)?, k));
+        }
+        None
+    }
+
+    // The head must be an equality test; record its scrutinee node + binder key.
+    let (scrut, key, k0) = eq_binder_const(db, cond)?;
+    // Only INTEGER scrutinees dispatch via match/br_table.
+    if !matches!(type_of(db, scrut).strip_nominal(), Ty::Int(_)) {
+        return None;
+    }
+    let mut arms: Vec<crate::core::MatchArm> = Vec::new();
+    let mut seen: Vec<i64> = Vec::new();
+    arms.push(crate::core::MatchArm {
+        probe: crate::core::Probe::Int(crate::ast::IntValue::from_i64(k0)),
+        guard: None,
+        body: then_,
+    });
+    seen.push(k0);
+    // Walk the else-chain: each link must be an `(if (= X k) body else')` on the SAME binder key with a
+    // fresh constant. The first link that is NOT such a test becomes the default (wildcard) arm.
+    let mut cur_else = else_;
+    while let Core::If {
+        cond: c2,
+        then_: t2,
+        else_: e2,
+    } = core_of(db, cur_else)
+    {
+        // The link must be `(= X k)` on the SAME binder with a fresh constant; a different variable, a
+        // duplicate const, or a non-equality cond ends the chain (this whole `if` becomes the default).
+        match eq_binder_const(db, c2) {
+            Some((_, k2, kv)) if k2 == key && !seen.contains(&kv) => {
+                arms.push(crate::core::MatchArm {
+                    probe: crate::core::Probe::Int(crate::ast::IntValue::from_i64(kv)),
+                    guard: None,
+                    body: t2,
+                });
+                seen.push(kv);
+                cur_else = e2;
+            }
+            _ => break,
+        }
+    }
+    // Need ≥3 const arms for the match lowering to be worth it (a 2-arm chain already selects/ifs well).
+    if arms.len() < 3 {
+        return None;
+    }
+    // The remaining `cur_else` is the DEFAULT arm (covers every other value) — a synthesized wildcard.
+    arms.push(crate::core::MatchArm {
+        probe: crate::core::Probe::Wild,
+        guard: None,
+        body: cur_else,
+    });
+    Some((scrut, arms))
 }
 
 /// Emit a scalar match as a chain of `if`s. `arms` is `[(probe, body)…]` in order; `it` is the
@@ -16135,6 +16333,94 @@ mod tests {
         assert!(
             !f.code.iter().any(|i| matches!(i, Lir::I64Eq)),
             "a br_table dispatch has no linear per-arm equality probe, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_dense_if_equality_chain_lifts_to_a_br_table() {
+        // A nested `(if (= n k) …)` dispatch — the SAME integer switch a user could write as a `match`,
+        // but spelled with chained `if`s — over ≥3 dense constants lifts to a `br_table`, not the O(n)
+        // linear `if (== k)` cascade it would otherwise emit. This is the wasm-specific twin of the
+        // `match` br_table (Rust gets the jump table from LLVM).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) \
+               (if (= n 0) 100 (if (= n 1) 101 (if (= n 2) 102 (if (= n 3) 103 999))))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::BrTable(_, _))),
+            "a dense if-equality chain lifts to a br_table, got: {:?}",
+            f.code
+        );
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I64Eq)),
+            "the lifted chain dispatches via the table, no linear per-arm I64Eq probe, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_flipped_if_equality_chain_lifts_to_a_br_table() {
+        // The `(= k n)` operand order (constant on the left) is recognized identically — equality is
+        // symmetric, so `(= 0 n)` is the same probe as `(= n 0)`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) \
+               (if (= 0 n) 100 (if (= 1 n) 101 (if (= 2 n) 102 (if (= 3 n) 103 999))))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::BrTable(_, _))),
+            "a flipped-operand if-equality chain lifts to a br_table, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_two_arm_if_equality_chain_does_not_lift_to_a_br_table() {
+        // Below the ≥3-arm threshold the existing branchless-select / structured-if lowering is already
+        // at least as good, so a 2-const chain is NOT lifted (no table, and no wasted match machinery).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (if (= n 0) 100 (if (= n 1) 101 999))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::BrTable(_, _))),
+            "a 2-arm if-equality chain is not lifted to a br_table, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_mixed_variable_if_chain_does_not_lift() {
+        // A chain whose links test DIFFERENT variables is not one integer dispatch — the recognizer must
+        // stop at the first foreign-variable link (folding only the leading same-variable arms, and only
+        // when ≥3 of them). Here just two `n`-arms precede a `k`-arm, so the whole chain stays plain
+        // structured `if`s (no br_table) — proving a mixed chain never mis-collapses across variables.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64) (: k Int64)) \
+               (if (= n 0) 100 (if (= n 1) 101 (if (= k 2) 102 999)))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::BrTable(_, _))),
+            "a mixed-variable chain (only 2 same-var arms) does not lift, got: {:?}",
             f.code
         );
     }

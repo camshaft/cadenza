@@ -3948,6 +3948,42 @@ fn partition_batch(n: usize, mut gate: impl FnMut(&[usize]) -> bool) -> (Vec<usi
     (remaining, broken)
 }
 
+/// Ensure a DEDICATED, reusable work tree for the gate-batch scratch branch, returning its path.
+///
+/// gate-batch does `git checkout -B`, `git merge`, and `cargo xtask check` — all working-tree
+/// operations. It CANNOT run them in `fleet.repo`, which is the BARE hub (`git checkout` fatals with
+/// "this operation must be run in a work tree"), and it must NOT run them in pr-sync's own worktree
+/// (that holds `trunk` and is the single writer mid-integration — displacing its HEAD would corrupt a
+/// live merge). So we carve out a separate hub-anchored work tree under `.claude/worktrees/` and reuse
+/// it across rounds so its `target/` stays warm (a fresh worktree would rebuild the world every gate).
+/// Created DETACHED (no branch) — the scratch BRANCH is created inside it per round via `checkout -B`.
+/// Returns `None` if the worktree cannot be created (caller aborts, nothing changed).
+fn ensure_gate_batch_worktree(fleet: &Fleet) -> Option<PathBuf> {
+    let wt = fleet.worktrees.join("fleet-gate-batch");
+    if wt.join(".git").exists() {
+        return Some(wt);
+    }
+    std::fs::create_dir_all(&fleet.worktrees).ok();
+    // `--detach` at trunk: HEAD is not on any branch, so the per-round `checkout -B scratch trunk`
+    // never collides with a branch this worktree "owns", and cleanup can just detach back.
+    let ok = Command::new("git")
+        .current_dir(&fleet.repo)
+        .args(["worktree", "add", "--detach"])
+        .arg(&wt)
+        .arg(TRUNK)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok {
+        Some(wt)
+    } else {
+        eprintln!(
+            "gate-batch: could not create scratch worktree at {wt:?} (git worktree add failed)."
+        );
+        None
+    }
+}
+
 /// Plan a pr-sync integration round with the optimistic-batch + bisect model, printing a
 /// machine-readable per-MR decision. Advisory only: never advances `trunk`, never replies — pr-sync
 /// executes the plan (single writer + reply-invariant). See the `GateBatch` doc for the loop.
@@ -3966,20 +4002,30 @@ fn gate_batch(fleet: &Fleet, dry_run: bool, limit: usize) {
         mrs.len()
     );
 
+    // All the git working-tree ops (checkout -B / merge / `cargo xtask check`) run in a DEDICATED
+    // scratch WORK TREE, never in `fleet.repo` (the bare hub — checkout fatals there) and never in
+    // pr-sync's worktree (that holds `trunk` and is the single writer). Reused across rounds so its
+    // `target/` stays warm. Abort cleanly if it can't be created.
+    let wt = match ensure_gate_batch_worktree(fleet) {
+        Some(p) => p,
+        None => return,
+    };
+
     let scratch = "fleet-gate-batch-scratch";
-    // Delete the scratch branch — but you CANNOT `git branch -D` the branch you are ON, so detach to
-    // `trunk` FIRST, then delete. Leaving the repo on the scratch branch (or leaving the branch behind)
-    // would strand pr-sync's worktree on a throwaway branch. `--dry-run` RETAINS the scratch branch for
-    // inspection (still detaches off it so the worktree is back on trunk).
+    // Delete the scratch branch — but you CANNOT `git branch -D` the branch you are ON, so DETACH HEAD
+    // (at trunk) FIRST, then delete. We detach rather than `checkout trunk` because pr-sync's worktree
+    // holds the `trunk` branch and git forbids checking out a branch that's already checked out in
+    // another worktree. `--dry-run` RETAINS the scratch branch for inspection (still detaches off it).
     let cleanup = |branch: &str, keep_branch: bool| {
-        // Detach to trunk so we're never sitting on the branch we're about to delete.
+        // Detach HEAD at trunk so we're never sitting on the branch we're about to delete (and never
+        // trying to check out trunk, which pr-sync's worktree already holds).
         let _ = Command::new("git")
-            .current_dir(&fleet.repo)
-            .args(["checkout", "trunk"])
+            .current_dir(&wt)
+            .args(["checkout", "--detach", TRUNK])
             .output();
         if !keep_branch {
             let _ = Command::new("git")
-                .current_dir(&fleet.repo)
+                .current_dir(&wt)
                 .args(["branch", "-D", branch])
                 .output();
         }
@@ -3987,10 +4033,10 @@ fn gate_batch(fleet: &Fleet, dry_run: bool, limit: usize) {
 
     // CONFLICT-PREFILTER: merge each ref, in order, onto a fresh scratch branch off trunk; an MR that
     // does not merge cleanly is a BOUNCE (no gate cost). The survivors are the cleanly-mergeable set.
-    // Start from a clean slate: force-delete any stale scratch branch from a prior run (we're on trunk
-    // now, not scratch, so this delete is safe).
+    // Start from a clean slate: force-delete any stale scratch branch from a prior run (we're detached
+    // now, not on scratch, so this delete is safe).
     cleanup(scratch, false);
-    if !git_branch_at(&fleet.repo, scratch, "trunk") {
+    if !git_branch_at(&wt, scratch, "trunk") {
         eprintln!(
             "gate-batch: cannot create scratch branch off trunk — aborting (nothing changed)."
         );
@@ -3999,13 +4045,13 @@ fn gate_batch(fleet: &Fleet, dry_run: bool, limit: usize) {
     let mut clean: Vec<BatchMr> = Vec::new();
     let mut bounced: Vec<BatchMr> = Vec::new();
     for mr in &mrs {
-        if git_merge_no_ff_onto(&fleet.repo, scratch, &mr.r#ref) {
+        if git_merge_no_ff_onto(&wt, scratch, &mr.r#ref) {
             clean.push(mr.clone());
         } else {
             // Abort the failed merge so the scratch branch stays at the last clean state.
             let _ = Command::new("git")
-                .current_dir(&fleet.repo)
-                .args(["-C", ".", "merge", "--abort"])
+                .current_dir(&wt)
+                .args(["merge", "--abort"])
                 .output();
             bounced.push(mr.clone());
         }
@@ -4014,7 +4060,7 @@ fn gate_batch(fleet: &Fleet, dry_run: bool, limit: usize) {
     // OPTIMISTIC GATE + BISECT over the cleanly-merged set. The oracle re-forms a subset onto trunk on
     // the scratch branch and runs `cargo xtask check`.
     let (land_idx, broken_idx) = partition_batch(clean.len(), |subset| {
-        gate_subset(&fleet.repo, scratch, &clean, subset)
+        gate_subset(&wt, scratch, &clean, subset)
     });
 
     // Detach off scratch back to trunk; keep the scratch branch only under --dry-run (for inspection).

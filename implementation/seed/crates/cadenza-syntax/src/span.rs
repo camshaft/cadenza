@@ -202,4 +202,59 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn contains_span_agrees_with_pointwise_contains_over_generated_spans() {
+        // `contains_span` and `contains` are the two containment predicates the span table + LSP
+        // node-at-offset lookups rest on. The doc on `contains_span` records a REAL past bug: it was
+        // implemented as `self.contains(span.start) && self.contains(span.end)` — wrong because `contains`
+        // is half-open (so `contains(end)` failed on a shared end, and a span didn't even contain itself).
+        // The hand tests pin specific cases; this sweeps the two predicates' RELATIONSHIP so a regression
+        // back to a point-check impl (or any endpoint off-by-one) is caught over the whole coordinate space:
+        //   * point/range consistency: `a.contains(i)` ⟺ `a.contains_span(i..i+1)` — a single byte is the
+        //     unit-length sub-range, the exact bridge between the two predicates;
+        //   * range containment = pointwise containment for a NON-EMPTY inner span: `a.contains_span(b)`
+        //     (b non-empty) ⟺ every byte in `[b.start, b.end)` satisfies `a.contains(_)`;
+        //   * an EMPTY inner span is contained iff its point sits in the CLOSED `[start, end]` (the
+        //     half-open `contains` says nothing here — this is the documented vacuous-containment case).
+        // Small coordinate space so nesting / shared endpoints / just-outside cases actually occur.
+        let mut seed = SplitMix64(0xc047_a1a5_4c0d_e501);
+        let span = |s: &mut SplitMix64| {
+            let a = (s.next() % 24) as usize;
+            let b = (s.next() % 24) as usize;
+            Span::new(a.min(b), a.max(b))
+        };
+        for _ in 0..20_000 {
+            let a = span(&mut seed);
+            let b = span(&mut seed);
+            // (1) point ⇔ unit-range: contains(i) iff contains_span(i..i+1), over a byte range covering
+            // a's neighbourhood (before start, interior, at/after end).
+            for i in 0..26usize {
+                assert_eq!(
+                    a.contains(i),
+                    a.contains_span(Span::new(i, i + 1)),
+                    "contains({i}) disagrees with contains_span({i}..{}) for {a:?}",
+                    i + 1
+                );
+            }
+            // (2) for a NON-EMPTY inner span, range containment ⇔ every interior byte is contained.
+            if !b.is_empty() {
+                let pointwise = (b.start..b.end).all(|i| a.contains(i));
+                assert_eq!(
+                    a.contains_span(b),
+                    pointwise,
+                    "contains_span({b:?}) disagrees with pointwise contains over its bytes for {a:?}"
+                );
+            } else {
+                // (3) an EMPTY inner span is contained iff its point is in the CLOSED interval [start,end]
+                // (the documented vacuous case — half-open `contains` would wrongly reject the endpoint).
+                assert_eq!(
+                    a.contains_span(b),
+                    a.start <= b.start && b.start <= a.end,
+                    "empty-span containment wrong for point {} in {a:?}",
+                    b.start
+                );
+            }
+        }
+    }
 }

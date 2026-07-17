@@ -11117,6 +11117,26 @@ fn should_keep_binding(db: &mut Db, init: StructId, uses: &BindingUses) -> bool 
     if crate::eval::lambda_body(db, init).is_some() {
         return false;
     }
+    // A COMPOUND (record/tuple/list) init that CONTAINS a lambda and is only PROJECTED — never used as a
+    // whole value — is the THIRD face of the same hazard. It is neither a `Resolved::Lambda` nor a value
+    // that `lambda_body`-reduces to one (it is a `Resolved::Record`/`Tuple`/`List`), so it slips past both
+    // short-circuits above — but the `is_compound_value` / `is_runtime_computation` / host-call gates below
+    // all call `core_of(init)`, which LOWERS the compound and thereby SPECULATIVELY LIFTS its contained
+    // capturing lambda (`lower_lambda_value`), polluting `db.captured_ref` with the lambda body's
+    // capturing-reference occurrences. Those occurrences are SHARED with the fold of the projected-and-
+    // called closure — `(let ((r (record (f (fn (x) (+ x n)))))) ((. r f) 10))` copy-propagates `r` and
+    // β-reduces `((. r f) 10)` to `(+ 10 n)`, reusing the ORIGINAL `n` occurrence — so the stale
+    // `captured_ref` entry makes the folded `n` lower to a `Core::Captured` env-read in the ENCLOSING
+    // scope (which has no closure env): the wasm emit passes the captured i64 where the env i32 handle
+    // belongs (invalid module, `func … type mismatch`) and the rust emit references an unbound `__cap0`
+    // (E0425). Detect it STRUCTURALLY (`resolved_of` + `lambda_body`, which reduce but do NOT lower, so the
+    // detection never lifts) and propagate, so each projection folds through exactly as the inline-record
+    // and direct-let controls do. A compound that ESCAPES whole (returned / passed / nested) genuinely
+    // needs materialization and is LEFT to the lift+keep path below: no inline fold shares its lambda body
+    // there (the projection happens at RUNTIME via `call_indirect`), so that lift is correct, not pollution.
+    if !uses.escapes_whole.contains(&init) && compound_contains_lambda(db, init) {
+        return false;
+    }
     // A binding whose value PERFORMS A HOST EFFECT is ALWAYS kept — regardless of use count. A host call
     // has OBSERVABLE ORDER AND COUNT (`core-semantics.md` §Host Calls Are Ordered And Part Of Observable
     // Behavior), so copy-propagating it is UNSOUND both ways: at ≥2 uses it re-performs the effect once per
@@ -11182,6 +11202,38 @@ fn should_keep_binding(db: &mut Db, init: StructId, uses: &BindingUses) -> bool 
 /// values whose only-projected form folds through rather than being built on the heap.
 fn is_compound_value(db: &mut Db, init: StructId) -> bool {
     matches!(core_of(db, init), Core::Tuple { .. } | Core::Record { .. })
+}
+
+/// Whether `init` REDUCES to a COMPOUND — a record / tuple / list — that CONTAINS a function value (a
+/// lambda, directly or transitively through a nested compound). Uses only the eval-side reducers
+/// (`reduce_to_record_id` / `reduce_to_tuple_elems` / `resolved_of` + `lambda_body`), which β-reduce/build
+/// the compound VALUE but never LOWER it (`core_of`) — so, unlike the classification gates in
+/// `should_keep_binding`, this does NOT speculatively lift a contained capturing lambda (which would
+/// pollute `db.captured_ref` and miscompile the inline fold of the projected closure). Reducing (not just
+/// matching `resolved_of`) is required because a record/tuple init is an `Apply` of the `RecordNew`/tuple
+/// ctor prim, not a bare `Resolved::Record`/`Tuple`. Used to keep a projection-only
+/// compound-holding-a-closure binding on the fold-through path (`should_keep_binding` returns `false`),
+/// matching the inline-record and direct-let controls.
+fn compound_contains_lambda(db: &mut Db, init: StructId) -> bool {
+    // A function-valued element (a bare lambda, or one reached through a nested compound). `lambda_body`
+    // reduces without lowering, so the element probe stays lift-free.
+    let elem_holds = |db: &mut Db, e: StructId| {
+        crate::eval::lambda_body(db, e).is_some() || compound_contains_lambda(db, e)
+    };
+    // A TUPLE / LIST — its element occurrences (`reduce_to_tuple_elems` reduces the ctor `Apply`). `elems`
+    // (an `Rc<[StructId]>`) is borrowed only by the iterator; each `elem_holds` mutably borrows `db`
+    // (disjoint), so the walk needs no owned copy.
+    if let Some(elems) = crate::eval::reduce_to_tuple_elems(db, init) {
+        return elems.iter().copied().any(|e| elem_holds(db, e));
+    }
+    // A RECORD — reduce to the record occurrence, then read its field values (`fields` is the owned map of
+    // the cloned `Resolved::Record`, so iterating it while `elem_holds` borrows `db` is disjoint).
+    if let Some(rec) = crate::eval::reduce_to_record_id(db, init)
+        && let Resolved::Record { fields } = resolved_of(db, rec)
+    {
+        return fields.values().copied().any(|v| elem_holds(db, v));
+    }
+    false
 }
 
 /// Whether the node at `init` lowers to a RUNTIME COMPUTATION — a core form that emits instructions

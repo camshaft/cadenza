@@ -708,8 +708,8 @@ fn run_program(
         // The Rust backend has no host-boundary path — a host-delegating case declines there (Todo).
         GateTarget::Rust if !host_responses.is_empty() => Ran::Declined { code: None },
         GateTarget::RustAsync if !host_responses.is_empty() => Ran::Declined { code: None },
-        GateTarget::Rust => run_program_rust(tools, program, modules, call, false),
-        GateTarget::RustAsync => run_program_rust(tools, program, modules, call, true),
+        GateTarget::Rust => run_program_rust(tools, program, modules, call, false, None),
+        GateTarget::RustAsync => run_program_rust(tools, program, modules, call, true, None),
         // The ML compiler has no package/host path today — a multi-file or host-delegating case is
         // simply not-yet-supported there, which is a decline (coverage-not-yet), never a disagreement.
         GateTarget::CadenzaMl if !modules.is_empty() || !host_responses.is_empty() => {
@@ -986,7 +986,14 @@ fn emit_component_package(
 
 /// Emit Rust source for a SINGLE-file program via the `cdz convert | cdz compile - --target <rust>` pipe.
 /// `Ok(source)` or `Err(Ran::Declined { code })` on a shared-front reject/decline (code from stderr).
-fn emit_rust_single(tools: &Tools, program: &str, rust_target: &str) -> Result<String, Ran> {
+/// `opt_level` selects the Core pass tier (`--opt-level <L>`); only the opt-sweep passes one — the normal
+/// gate passes `None` so its behavior is byte-identical to before.
+fn emit_rust_single(
+    tools: &Tools,
+    program: &str,
+    rust_target: &str,
+    opt_level: Option<&str>,
+) -> Result<String, Ran> {
     use std::io::Write;
     use std::process::{Command, Stdio};
     let mut syntax = Command::new(&tools.syntax)
@@ -1002,8 +1009,13 @@ fn emit_rust_single(tools: &Tools, program: &str, rust_target: &str) -> Result<S
         .unwrap()
         .write_all(program.as_bytes())
         .ok();
+    let mut compile_args: Vec<&str> = vec!["compile", "-", "-o", "-", "--target", rust_target];
+    if let Some(level) = opt_level {
+        compile_args.push("--opt-level");
+        compile_args.push(level);
+    }
     let rcdzc = Command::new(&tools.rcdzc)
-        .args(["compile", "-", "-o", "-", "--target", rust_target])
+        .args(&compile_args)
         .stdin(Stdio::from(syntax.stdout.take().unwrap()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1050,6 +1062,7 @@ fn emit_rust_package(
     program: &str,
     modules: &[(String, String)],
     rust_target: &str,
+    opt_level: Option<&str>,
 ) -> Result<String, Ran> {
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1094,6 +1107,11 @@ fn emit_rust_package(
         cmd.arg(s);
     }
     cmd.args(["--entry", "main", "-o", "-", "--target", rust_target]);
+    // Thread the requested opt tier (only the opt-sweep passes one; None = compiler default) so a package
+    // case is compiled at the SAME level being swept — matching the wasm package path (`emit_component_package`).
+    if let Some(level) = opt_level {
+        cmd.args(["--opt-level", level]);
+    }
     let out = cmd
         .output()
         .unwrap_or_else(|e| launch_fail("cdz compile", e));
@@ -1127,6 +1145,7 @@ fn run_program_rust(
     modules: &[(String, String)],
     call: Option<&Call>,
     async_mode: bool,
+    opt_level: Option<&str>,
 ) -> Ran {
     use std::process::Command;
 
@@ -1138,12 +1157,12 @@ fn run_program_rust(
     // shared. `Err(Ran::…)` short-circuits a reject/decline/write failure with the same outcome as wasm.
     let rust_target = if async_mode { "rust-async" } else { "rust" };
     let module = if modules.is_empty() {
-        match emit_rust_single(tools, program, rust_target) {
+        match emit_rust_single(tools, program, rust_target, opt_level) {
             Ok(m) => m,
             Err(ran) => return ran,
         }
     } else {
-        match emit_rust_package(tools, program, modules, rust_target) {
+        match emit_rust_package(tools, program, modules, rust_target, opt_level) {
             Ok(m) => m,
             Err(ran) => return ran,
         }
@@ -2777,20 +2796,15 @@ fn sweep_outcome_key(ran: &Ran) -> String {
 /// guards nothing while the `PassManager` pipeline is empty (every level runs identically), but stands
 /// ready to catch fleet-wide any future Core pass that mis-optimizes at `O2`/`O3`.
 fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
-    // The sweep drives the WASM run path only (`run_program_wasm`). Honoring `--target rust`/`rust-async`
-    // would need `--opt-level` threaded through the separate rust run path (a follow-up); silently running
-    // wasm under `--target rust` would give a FALSE sense of cross-level coverage for that backend. So
-    // REJECT the combo with a clear error rather than fake it.
-    if !matches!(opts.target, GateTarget::Wasm) {
+    // The sweep honors `--target wasm` (default), `--target rust`, and `--target rust-async` — each drives
+    // its own compile+run path with the opt level threaded through (`run_program_wasm` /
+    // `run_program_rust`), so the level-equivalence guard covers BOTH backends (the v-core-opt charter's
+    // both-backend correctness bar). The `cadenza-ml` target has no `--opt-level` surface (the self-hosted
+    // compiler runs one pipeline), so a level sweep is meaningless there — reject it with a clear error.
+    if matches!(opts.target, GateTarget::CadenzaMl) {
         eprintln!(
-            "error: --opt-sweep supports only the wasm target for now (got --target {}). \
-             Run `gate --opt-sweep` without --target; rust/rust-async opt-level sweep is a follow-up.",
-            match opts.target {
-                GateTarget::Rust => "rust",
-                GateTarget::RustAsync => "rust-async",
-                GateTarget::Wasm => "wasm",
-                GateTarget::CadenzaMl => "cadenza-ml",
-            }
+            "error: --opt-sweep supports the wasm / rust / rust-async targets (got --target cadenza-ml). \
+             The self-hosted ML compiler has no --opt-level tier surface to sweep."
         );
         std::process::exit(2);
     }
@@ -2826,7 +2840,7 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
             .max(1);
         std::thread::scope(|scope| {
             for _ in 0..workers {
-                let (cursor, checked, skipped, divergences, records, tools, store) = (
+                let (cursor, checked, skipped, divergences, records, tools, store, target) = (
                     &cursor,
                     &checked,
                     &skipped,
@@ -2834,6 +2848,7 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
                     &records,
                     &tools,
                     &opts.store,
+                    opts.target,
                 );
                 scope.spawn(move || {
                     loop {
@@ -2841,7 +2856,7 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
                         if i >= records.len() {
                             break;
                         }
-                        match sweep_one_case(tools, store, &records[i], &LEVELS) {
+                        match sweep_one_case(tools, store, &records[i], &LEVELS, target) {
                             SweepOutcome::Skipped => {
                                 skipped.fetch_add(1, Ordering::Relaxed);
                             }
@@ -2894,34 +2909,51 @@ fn sweep_one_case(
     store: &Option<PathBuf>,
     rec: &CorpusRecord,
     levels: &[&str],
+    target: GateTarget,
 ) -> SweepOutcome {
-    // Multi-file PACKAGE cases are covered too: `run_program_wasm` → `emit_component_package` now threads
-    // the opt level (so each level actually recompiles the whole package), extending the level-equivalence
-    // guard to multi-module programs — exactly where a future cross-module/inlining Core pass could
-    // mis-optimize. (A case that DECLINES at the default tier is still skipped below — level-independent.)
-    // Each trial (a `(call …)`, or the single no-call trial) is run at every level and compared.
+    // Multi-file PACKAGE cases are covered too: both backends thread the opt level through their package
+    // emit (`emit_component_package` / `emit_rust_package`) so each level recompiles the whole package,
+    // extending the level-equivalence guard to multi-module programs — exactly where a future
+    // cross-module/inlining Core pass could mis-optimize. (A case that DECLINES at the default tier is
+    // still skipped below — level-independent.) Each trial (a `(call …)`, or the single no-call trial) is
+    // run at every level and compared. The run path follows `--target`: wasm (default) drives the wasm
+    // pipeline, rust/rust-async the rustc pipeline (a host-delegating case declines under rust, so it is
+    // skipped as level-independent just like a default decline).
     let calls: Vec<Option<&Call>> = if rec.trials.is_empty() {
         vec![None]
     } else {
         rec.trials.iter().map(|t| t.call.as_ref()).collect()
     };
+    let run_at = |lvl: &str, call: Option<&Call>| -> Ran {
+        match target {
+            GateTarget::Wasm => run_program_wasm(
+                tools,
+                store,
+                &rec.program,
+                &rec.modules,
+                call,
+                &rec.host_responses,
+                Some(lvl),
+            ),
+            // The Rust backend has no host-boundary path — a host-delegating case declines there, so it is
+            // level-independent (skipped below, like a default decline). Mirror the normal-gate dispatch.
+            GateTarget::Rust | GateTarget::RustAsync if !rec.host_responses.is_empty() => {
+                Ran::Declined { code: None }
+            }
+            GateTarget::Rust => {
+                run_program_rust(tools, &rec.program, &rec.modules, call, false, Some(lvl))
+            }
+            GateTarget::RustAsync => {
+                run_program_rust(tools, &rec.program, &rec.modules, call, true, Some(lvl))
+            }
+            // Rejected up front in `gate_opt_sweep`; unreachable here.
+            GateTarget::CadenzaMl => Ran::Declined { code: None },
+        }
+    };
     let mut diffs = Vec::new();
     let mut checked_any = false;
     for call in calls {
-        let runs: Vec<Ran> = levels
-            .iter()
-            .map(|lvl| {
-                run_program_wasm(
-                    tools,
-                    store,
-                    &rec.program,
-                    &rec.modules,
-                    call,
-                    &rec.host_responses,
-                    Some(lvl),
-                )
-            })
-            .collect();
+        let runs: Vec<Ran> = levels.iter().map(|lvl| run_at(lvl, call)).collect();
         // A decline at the default tier means the case doesn't compile — skip it (level-independent).
         let default_idx = levels.iter().position(|l| *l == "O1").unwrap_or(0);
         if matches!(&runs[default_idx], Ran::Declined { .. }) {
@@ -3823,8 +3855,11 @@ fn check(paths: &Paths, profile: &str) {
     // cross-level divergence. Because `check` is exactly what pr-sync re-gates with, adding it here makes
     // it blocking on merge across ALL levels in one place. With the `PassManager` pipeline currently empty
     // every level runs identically, so this is green today and stands guard over every future Core pass
-    // (an unsound pass caught before it lands — the §9 both-backend-miscompile guard). Wasm-target only
-    // (the sweep rejects a non-wasm target); ~parallelized so the full corpus completes in a couple min.
+    // (an unsound pass caught before it lands — the §9 both-backend-miscompile guard). This blocking step
+    // sweeps the WASM backend; the sweep ALSO honors `--target rust`/`rust-async` (each level threaded
+    // through the rustc pipeline) for on-demand both-backend verification, but — like the rust behavior
+    // gate itself — that is opt-in and NOT part of blocking `check` (rustc-per-case × 4 levels is too slow
+    // to run on every dev check). ~parallelized so the full wasm corpus completes in a couple min.
     log.step(
         "opt-sweep",
         &format!("{xtask} --profile {profile} gate --opt-sweep"),

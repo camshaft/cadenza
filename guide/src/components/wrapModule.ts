@@ -84,6 +84,25 @@ export function wrapModule(src: string, surface: Surface): string {
   return `def main() = ${trimmed}\nexport { main }`;
 }
 
+/// Gather a `mode="test"` snippet (bare `@test`/`def` forms, NO export/main) into a SINGLE top-level
+/// form so the pretty-printer — which renders one top-level form — can round-trip it. S-expr has no bare
+/// multi-form top level, so several `@test`s (or a helper `def` + a `@test`) must be gathered under a
+/// `(do …)`; ML's native top level IS multi-form, so an ML snippet passes through untouched. This is the
+/// display/render counterpart of a test panel's `wrap={false}` (the boundary is laid out from the `@test`
+/// defs, not an export, so `wrapModule`'s export ceremony is wrong here). Pair with [`ungatherTestForms`].
+/// Both the app's `renderSnippet` and the `check:examples` gate call THIS — a prior copy in each drifted,
+/// leaving the gate green while the app fed raw s-expr to the ML parser ("expected a name").
+export function gatherTestForms(snippet: string, surface: Surface): string {
+  return surface === "sexpr" ? `(do ${snippet.trim()})` : snippet.trim();
+}
+
+/// Inverse of [`gatherTestForms`] over a RENDERED program: peel the `(do …)` back off when the output is
+/// s-expr (via `stripModule`, which unwraps a bare `(do …)`); an ML output is already the native multi-
+/// form top level, so it's returned trimmed. `to` is the surface the rendered text is IN.
+export function ungatherTestForms(rendered: string, to: Surface): string {
+  return to === "sexpr" ? stripModule(rendered, "sexpr") : rendered.trim();
+}
+
 /// Strip the `export` (and synthesized `main`) that `wrapModule` supplied, back to the author's bare
 /// definitions or expression, for DISPLAY — the inverse of `wrapModule` over a RENDERED program.
 /// Because the wrapper adds only top-level forms (no `module` shell), this is a trailing-`export`

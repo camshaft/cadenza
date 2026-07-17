@@ -1693,3 +1693,39 @@
             (def (main) (f 5))
             (export main)))
   (output (: 6 Int64)))
+
+(case "STACKED @requires: EVERY precondition is enforced — a violated OUTER @requires traps (not only the innermost)"
+  (doc    "Soundness pin for stacked preconditions. A def may carry several `@requires`, which desugar to
+           NESTED annotation wrappers: `(@ (requires (>= x 0)) (@ (requires (<= x 100)) (def (f x) (+ x 1))))`.
+           `verify_enforce::enforce` must descend through the intervening `(@ …)` layer to reach the def and
+           re-wrap its CURRENT body at EACH `@requires`, so the checks nest — `(if (>= x 0) (if (<= x 100)
+           (+ x 1) trap) trap)` — and ALL preconditions verify. Before the fix, the scan only rewrote a
+           `@requires` whose INNER was directly a `(def …)`, so the OUTER `(requires (>= x 0))` (whose inner
+           is another `(@ …)` wrapper) was SILENTLY SKIPPED — only the innermost `(<= x 100)` enforced. Then
+           `(f -5)` — which VIOLATES the outer `(>= x 0)` but SATISFIES the inner `(<= x 100)` — wrongly
+           returned `-4` instead of trapping. This case calls `(f -5)`: the outer precondition is now checked,
+           its `if` takes the trap arm, halting with the canonical `unreachable` kind. Pins that stacking does
+           not drop the outer preconditions — the (D) guarantee (a violated precondition crashes) holds for
+           EVERY stated precondition, not just the last.")
+  (input  (do
+            (@ (requires (>= x 0))
+            (@ (requires (<= x 100))
+               (def (f (: x Int64)) (+ x 1))))
+            (def (main) (f -5))
+            (export main)))
+  (trap   "unreachable"))
+
+(case "STACKED @requires: value-transparent when ALL preconditions are satisfied"
+  (doc    "The value-transparency half of the stacked-@requires pin above. With both `(>= x 0)` and
+           `(<= x 100)` stacked on `(f x) = x + 1`, `(f 50)` satisfies BOTH, so the nested checks
+           `(if (>= x 0) (if (<= x 100) (+ x 1) trap) trap)` both take the pass arm and the def returns its
+           own value `51` — no trap, no swallowed value. Together with the trap case above this pins that the
+           multi-precondition enforcement composes correctly: every precondition is checked, and a run that
+           satisfies all of them yields the computed result unchanged.")
+  (input  (do
+            (@ (requires (>= x 0))
+            (@ (requires (<= x 100))
+               (def (f (: x Int64)) (+ x 1))))
+            (def (main) (f 50))
+            (export main)))
+  (output (: 51 Int64)))

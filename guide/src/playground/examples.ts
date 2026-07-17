@@ -443,6 +443,26 @@ export const EXAMPLES: Example[] = [
     expected: "12",
   },
   {
+    // Shows off: MUTUAL recursion — two top-level defs each call the other, and Cadenza resolves the
+    // forward reference across definitions (a whole recursion group, not just self-recursion). Classic
+    // even/odd parity, then count how many of 0..<10 are even -> 5.
+    name: "Mutual recursion (even & odd)",
+    surface: "sexpr",
+    source: `(do
+  ; Each predicate is defined in terms of the OTHER — a mutually recursive group.
+  ; Cadenza resolves the forward reference to is-odd before it is defined below.
+  (def (is-even n) (if (= n 0) true (is-odd (- n 1))))
+  (def (is-odd n) (if (= n 0) false (is-even (- n 1))))
+  ; Count how many of 0..<n are even, using is-even.
+  (def (count-evens n i acc)
+    (if (= i n)
+        acc
+        (count-evens n (+ i 1) (if (is-even i) (+ acc 1) acc))))
+  (def (main) (count-evens 10 0 0))
+  (export main))`,
+    expected: "5",
+  },
+  {
     // Shows off: rebuilding a list in reverse by pushing elements from the end onto a fresh list.
     // The prelude List has no reverse, so we walk indices downward. [1 2 3 4 5] -> [5 4 3 2 1].
     name: "Reverse a list",

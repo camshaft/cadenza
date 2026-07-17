@@ -33,3 +33,9 @@
   (input (do (def (main (: b Bool) (: c Bool)) (if b 1 (if c (trap "x") (trap "y")))) (export main)))
   (call  main (: true Bool) (: false Bool))
   (output (: 1 Int64)))
+
+; ---
+; RESOLVED (corpus-bugfix 2026-07-17, trunk@1c255812b, fresh build): NO LONGER reproduces.
+; wasm now COMPILES this program (exit 0) and `run --arg true --arg false` -> 1 (correct); rust also
+; compiles+runs -> 1. The wasm if-emit both-diverge decline is gone on trunk. Both backends agree.
+; Consider promoting to spec/semantics as a passing case.

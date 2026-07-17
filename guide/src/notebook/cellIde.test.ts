@@ -71,3 +71,61 @@ test("wrapPrefixBytes counts UTF-8 bytes, not UTF-16 code units", () => {
   // "café" is 5 UTF-16 units but 5 chars / 6 UTF-8 bytes for the é — so byte length > char length.
   assert.ok(Buffer.byteLength(prefix, "utf8") > prefix.length, "é should make byte length exceed char length");
 });
+
+// ─── s-expr surface ──────────────────────────────────────────────────────────────────────────────
+// The shipped notebook runs in the s-expr surface (NotebookPage's `NOTEBOOK_SURFACE = "sexpr"`), so the
+// cell IDE's `prepare` is exercised in s-expr in production — pin that path explicitly (the ML tests
+// above alone leave the REAL user surface un-gated).
+
+test("s-expr: the first code cell — prepare is identity (no prior scope, no widgets)", () => {
+  const cells: Cell[] = [code("(def (main) (+ 1 2))")];
+  const r = prepareCell(cells, 0, NO_WIDGETS, NO_VALUES, "sexpr", "(def (main) (+ 1 2))");
+  assert.equal(r.compiled, "(def (main) (+ 1 2))");
+  assert.equal(r.wrapPrefixBytes, 0);
+});
+
+test("s-expr: a later cell — prior cells' defs are prepended and counted in wrapPrefixBytes", () => {
+  const cells: Cell[] = [code("(def (x) 10)"), code("(def (y) 20)"), code("(def (main) (+ x y))")];
+  const cellText = "(def (main) (+ x y))";
+  const r = prepareCell(cells, 2, NO_WIDGETS, NO_VALUES, "sexpr", cellText);
+  assert.equal(r.compiled, "(def (x) 10)\n\n(def (y) 20)\n\n(def (main) (+ x y))");
+  const prefix = "(def (x) 10)\n\n(def (y) 20)\n\n";
+  assert.equal(r.wrapPrefixBytes, Buffer.byteLength(prefix, "utf8"));
+  assert.equal(r.compiled.slice(r.wrapPrefixBytes), cellText);
+});
+
+test("s-expr: widget bindings are prepended before prior cells using the live value", () => {
+  const widgets: Widget[] = [
+    { name: "rate", type: "Float64", control: "slider", min: 0, max: 1, step: 0.1, default: 0.5 },
+  ];
+  const values: WidgetValues = Object.assign(Object.create(null), { rate: 0.2 });
+  const cells: Cell[] = [code("(def (main) (* rate 100.0))")];
+  const cellText = "(def (main) (* rate 100.0))";
+  const r = prepareCell(cells, 0, widgets, values, "sexpr", cellText);
+  // s-expr binding is `(def (rate) <lit>)` using the LIVE value (0.2).
+  assert.ok(r.compiled.startsWith("(def (rate) "), `expected widget binding first, got: ${r.compiled.slice(0, 40)}`);
+  assert.ok(r.compiled.endsWith(cellText));
+  assert.equal(r.compiled.slice(r.wrapPrefixBytes), cellText);
+});
+
+test("s-expr: a prior cell's own `main` is stripped from the linter prefix (P0 #12, no CDZ0201)", () => {
+  // The prior cell defines ITS OWN `main` (a private per-cell output slot). It must NOT enter this cell's
+  // linter prefix, else the compiled buffer has two `main`s and the cell mis-lints with CDZ0201 (>1 main).
+  // The prior cell also defines a `base` helper, which SHOULD flow forward.
+  const cells: Cell[] = [code("(def (base) 100)\n(def (main) base)"), code("(def (main) (* base 2))")];
+  const cellText = "(def (main) (* base 2))";
+  const r = prepareCell(cells, 1, NO_WIDGETS, NO_VALUES, "sexpr", cellText);
+  // Exactly one `main` in the compiled buffer (this cell's own), and the prior `base` helper is in scope.
+  assert.equal((r.compiled.match(/\(def \(main\)/g) ?? []).length, 1, "prior cell's `main` stripped");
+  assert.ok(r.compiled.includes("(def (base) 100)"), "prior non-`main` helper flows into scope");
+  assert.equal(r.compiled.slice(r.wrapPrefixBytes), cellText);
+});
+
+test("s-expr: a widget with no live value falls back to its default", () => {
+  const widgets: Widget[] = [
+    { name: "n", type: "Int64", control: "number", min: 0, max: 10, step: 1, default: 3 },
+  ];
+  const cells: Cell[] = [code("(def (main) n)")];
+  const r = prepareCell(cells, 0, widgets, NO_VALUES, "sexpr", "(def (main) n)");
+  assert.ok(r.compiled.includes("(def (n) 3)"), `expected default binding, got: ${r.compiled.slice(0, 40)}`);
+});

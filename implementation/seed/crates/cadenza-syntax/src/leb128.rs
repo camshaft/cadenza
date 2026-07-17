@@ -257,6 +257,71 @@ mod tests {
         }
     }
 
+    /// One field of a heterogeneous wire record — the reader offers four write/read pairs, and the real
+    /// codec relies on them COMPOSING: a mix written back-to-back must read back in order, every value
+    /// recovered, landing exactly `at_end`. Isolated round-trip tests miss a cross-field position bug (a
+    /// `take`/`byte` off-by-one corrupts every SUBSEQUENT field, not the one that mis-stepped).
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Field {
+        Var(u64),
+        U64Be(u64),
+        I64Be(i64),
+        Raw(u8, u8), // (byte, count) — a run of `count` copies of `byte`, read via `take`
+    }
+
+    #[test]
+    fn heterogeneous_field_sequence_round_trips_and_lands_at_end() {
+        // Writing a mixed sequence of field kinds and reading them back in the same order recovers every
+        // value AND consumes exactly the written bytes (`at_end`). This pins the readers' COMPOSITION —
+        // each read must advance `position` by precisely the width the matching writer emitted — so a
+        // future off-by-one in `take`/`byte`/`read_*_be` (which would silently desync every following
+        // field) is caught, not just an in-isolation round-trip.
+        let mut rng = Rng(0xf1e1_d5ec_0dea_5f17);
+        for _ in 0..10_000 {
+            let count = 1 + (rng.next() % 8) as usize;
+            let mut fields = Vec::with_capacity(count);
+            let mut buf = Vec::new();
+            for _ in 0..count {
+                let field = match rng.next() % 4 {
+                    0 => Field::Var(rng.next()),
+                    1 => Field::U64Be(rng.next()),
+                    2 => Field::I64Be(rng.next() as i64),
+                    _ => Field::Raw((rng.next() & 0xff) as u8, 1 + (rng.next() % 5) as u8),
+                };
+                match field {
+                    Field::Var(v) => write_u64(&mut buf, v),
+                    Field::U64Be(v) => write_u64_be(&mut buf, v),
+                    Field::I64Be(v) => write_i64_be(&mut buf, v),
+                    Field::Raw(b, n) => buf.extend(vec![b; n as usize]),
+                }
+                fields.push(field);
+            }
+            let mut r = Reader::new(&buf);
+            for (i, field) in fields.iter().enumerate() {
+                match *field {
+                    Field::Var(v) => assert_eq!(r.read_varu64(), Some(v), "field {i} varu64"),
+                    Field::U64Be(v) => assert_eq!(r.read_u64_be(), Some(v), "field {i} u64_be"),
+                    Field::I64Be(v) => assert_eq!(r.read_i64_be(), Some(v), "field {i} i64_be"),
+                    Field::Raw(b, n) => {
+                        let want = vec![b; n as usize];
+                        assert_eq!(r.take(n as usize), Some(want.as_slice()), "field {i} raw");
+                    }
+                }
+            }
+            assert!(
+                r.at_end(),
+                "reader must consume exactly the written bytes; pos {} of {} for {fields:?}",
+                r.position(),
+                buf.len()
+            );
+            // One more read past the end is `None`, never a panic or an over-read.
+            assert_eq!(r.byte(), None, "byte past end");
+            assert_eq!(r.read_varu64(), None, "varu64 past end");
+            assert_eq!(r.read_u64_be(), None, "u64_be past end");
+            assert!(r.position() <= buf.len(), "no over-read past end");
+        }
+    }
+
     #[test]
     fn read_varu64_over_arbitrary_bytes_never_panics_and_accept_implies_canonical() {
         // The bijection is TOTAL over arbitrary bytes: `read_varu64` on ANY byte prefix (a) never PANICS
