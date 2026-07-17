@@ -68,12 +68,25 @@ def c-shadowing() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(1), Tok
 def c-unbound-declines() = Case.Case([Tok.TName(1)], Expect.Declines)
 /// `x + 1` (unbound x) → Declines.
 def c-unbound-in-arith-declines() = Case.Case([Tok.TName(1), Tok.TOp(43), Tok.TNum(1)], Expect.Declines)
+/// `1 < 2` → Runs 1 (comparison true = 1).
+def c-lt-true() = Case.Case([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2)], Expect.Runs(1))
+/// `5 < 2` → Runs 0 (comparison false).
+def c-lt-false() = Case.Case([Tok.TNum(5), Tok.TOp(60), Tok.TNum(2)], Expect.Runs(0))
+/// `3 == 3` → Runs 1.
+def c-eq-true() = Case.Case([Tok.TNum(3), Tok.TOp(61), Tok.TNum(3)], Expect.Runs(1))
+/// `3 == 4` → Runs 0.
+def c-eq-false() = Case.Case([Tok.TNum(3), Tok.TOp(61), Tok.TNum(4)], Expect.Runs(0))
+/// `1 + 2 < 4` → Runs 1 (comparison looser than additive).
+def c-cmp-of-arith() = Case.Case([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2), Tok.TOp(60), Tok.TNum(4)], Expect.Runs(1))
+/// `let b = 2 < 3 in b` → Runs 1 (a Bool-valued binding).
+def c-let-bool() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TOp(60), Tok.TNum(3), Tok.TIn, Tok.TName(1)], Expect.Runs(1))
 
 /// THE CORPUS: every conformance case. Widening the language = appending here (start-low-and-climb).
 def corpus() = [
   c-literal(), c-add(), c-sub(), c-mul(), c-precedence(),
   c-let-trivial(), c-milestone(), c-nested-lets(), c-shadowing(),
-  c-unbound-declines(), c-unbound-in-arith-declines()
+  c-unbound-declines(), c-unbound-in-arith-declines(),
+  c-lt-true(), c-lt-false(), c-eq-true(), c-eq-false(), c-cmp-of-arith(), c-let-bool()
 ]
 
 /// THE SCOREBOARD: `(passed, total)` over the corpus — what the `cadenza-ml` gate target prints as `X/N`.
@@ -104,9 +117,9 @@ def cf-declines-mismatch-is-fail() =
 
 @test
 def cf-corpus-all-pass() =
-  // the whole integer corpus is at 100% — the current conformance floor.
+  // the whole corpus is at 100% — the current conformance floor.
   (match conformance() with | (passed, total) =>
-    (if passed == total then (if total == 11 then unit else trap("11 cases")) else trap("all cases pass")))
+    (if passed == total then (if total == 17 then unit else trap("17 cases")) else trap("all cases pass")))
 
 @test
 def cf-count-passing-partial() =
@@ -144,5 +157,17 @@ def conformance-shadowing() = (if check-case(c-shadowing()) then unit else trap(
 def conformance-unbound-declines() = (if check-case(c-unbound-declines()) then unit else trap("unbound x declines"))
 @test
 def conformance-unbound-in-arith-declines() = (if check-case(c-unbound-in-arith-declines()) then unit else trap("unbound x in arith declines"))
+@test
+def conformance-lt-true() = (if check-case(c-lt-true()) then unit else trap("1 < 2 → 1"))
+@test
+def conformance-lt-false() = (if check-case(c-lt-false()) then unit else trap("5 < 2 → 0"))
+@test
+def conformance-eq-true() = (if check-case(c-eq-true()) then unit else trap("3 == 3 → 1"))
+@test
+def conformance-eq-false() = (if check-case(c-eq-false()) then unit else trap("3 == 4 → 0"))
+@test
+def conformance-cmp-of-arith() = (if check-case(c-cmp-of-arith()) then unit else trap("1 + 2 < 4 → 1"))
+@test
+def conformance-let-bool() = (if check-case(c-let-bool()) then unit else trap("let b = 2 < 3 in b → 1"))
 
 export { Expect.*, Case.*, case-passes, check-case, count-passing, corpus, conformance, all-pass }
