@@ -772,6 +772,7 @@ pass	a list of records with different field sets is a type error
 pass	a list of records: a runtime index then reads a field of the found record
 pass	a list of tuples with different arities is a type error
 pass	a list operation applied to a non-list names the expected argument type
+pass	a list pattern in a sum-variant payload matches a runtime node by its child count
 pass	a list pattern over a map scrutinee is a type error
 pass	a list pattern over a non-list scrutinee is a type error
 pass	a list type whose element position holds a value is rejected
@@ -924,6 +925,7 @@ pass	a multi-variant-sum binding pattern is refutable and rejected
 pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a multibyte-UTF-8 Ast.Str round-trips through encode and decode
 pass	a multibyte-UTF-8 Ast.Str round-trips through print and read
+pass	a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a mutually-recursive check/check-if returning a Result compiles and runs (if-cond is a call)
@@ -1019,6 +1021,7 @@ pass	a nested constructor payload that misses the inner variant falls through to
 pass	a nested constructor value dispatches on both tags in a match
 pass	a nested element kind mismatch in equality is a type error
 pass	a nested element pattern dispatches on a MIDDLE-variant list payload
+pass	a nested element pattern dispatches on a NON-variant-0 list payload
 pass	a nested if of a common constructor builds it once and dispatches to each arm
 pass	a nested if on the same condition collapses the inner test to the known branch
 pass	a nested inner handler that re-threads its own state folds (merged-context seed from init)
@@ -1680,6 +1683,7 @@ pass	a sum variant carrying a Float64 payload boxes it and escapes it as a float
 pass	a sum variant carrying a Map payload is deconstructed and the map queried
 pass	a sum variant carrying a NARROW-int payload boxes and reads it at its width
 pass	a sum variant carrying a String payload matches and reads the string
+pass	a sum variant's list payload split across empty and rest arms is exhaustive and dispatches
 pass	a sum whose variants are named after target-language keywords constructs and matches
 pass	a sum with FOUR type parameters instantiates and matches each at a distinct type
 pass	a sum-match payload's heap child consumed while the scrutinee is live is retained
@@ -2057,6 +2061,7 @@ pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an erased newtype over a sum reads the inner payload, not the whole wrapper
 pass	an erased single-variant newtype wrapping a sum matches through the inner variants
+pass	an erased-newtype's list payload split across empty and rest arms dispatches with vec-get
 pass	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
 pass	an escaping tuple evaluates its trapping element
 pass	an expect of a list index result is an integer usable in arithmetic
@@ -2836,6 +2841,7 @@ pass	the difference of a set with itself is empty
 pass	the display truncation does not lose the stored magnitude (Qty.value reads it back)
 pass	the element tie survives producer self-composition
 pass	the else-branch of an if threads a performed state to the continuation
+pass	the empty and None arms of a list-payload split dispatch to their own values
 pass	the empty byte sequence has length zero
 pass	the empty reader literal is the empty symbol
 pass	the empty set is equal to the empty set
@@ -3406,7 +3412,6 @@ todo	a host op with a String parameter composes with the value-heap runtime
 todo	a host-called closure applied to a different argument tracks the input
 todo	a host-called closure with a different body dispatches the right code
 todo	a list of closures each keeps its own capture, selected by a runtime index
-todo	a list pattern in a sum-variant payload matches a runtime node by its child count
 todo	a list-arm constructor element over a runtime-built list
 todo	a literal narrow-width newtype list element in a constructed list grounds to its inner width
 todo	a multi-argument closure among distinct-signature exports
@@ -3417,10 +3422,8 @@ todo	a multi-argument closure with COMPOUND args round-trips — flat arrow spel
 todo	a multi-export compound-result shared call is a repeatable (borrow<t>) callback
 todo	a multi-export set of parameterized capturing closures is driven per export
 todo	a multi-export shared call is a repeatable (borrow<t>) callback
-todo	a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it
 todo	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
-todo	a nested element pattern dispatches on a NON-variant-0 list payload
 todo	a nested tuple list element is bound over a runtime list and folded across the rest
 todo	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 todo	a parameterized export returning a capturing closure is made and called by the host
@@ -3473,7 +3476,6 @@ todo	a runtime-selected closure survives as a value threaded through a recursive
 todo	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 todo	a scalar BETWEEN two Tuple args with a LIST result
 todo	a second same-signature closure export shares the one call method
-todo	a sum variant's list payload split across empty and rest arms is exhaustive and dispatches
 todo	a three-argument closure exported to the host is called with all three
 todo	a three-parameter closure is applied at full arity through a recursive HOF
 todo	a three-payload constructor partially applied in a runtime tuple completes via eta-closure
@@ -3490,7 +3492,6 @@ todo	an @param with no widget config still generates its typed accessor
 todo	an abortive handler abandons a host call in the path it discards
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
-todo	an erased-newtype's list payload split across empty and rest arms dispatches with vec-get
 todo	an escaping closure captures two values and takes three arguments
 todo	an escaping closure whose body binds a multi-variable let
 todo	an escaping closure whose body is a match hits the literal arm
@@ -3633,7 +3634,6 @@ todo	take-while excludes the failing element and everything after it (content, n
 todo	take-while where every element satisfies the predicate keeps the whole run
 todo	take-while where the first element fails the predicate returns the empty run
 todo	the built variant is the multi-arg one, the unbuilt arm still gets its call type
-todo	the empty and None arms of a list-payload split dispatch to their own values
 todo	the generated Param accessor carries the @param's declared type into arithmetic
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the round trip tracks the produced closure's captured value

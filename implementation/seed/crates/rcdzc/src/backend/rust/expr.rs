@@ -3223,6 +3223,22 @@ fn emit_sum_cont(
                 ));
             }
             let subject = emit_sum_payload(db, scrutinee, scrutinee, path, env, ctx)?;
+            // A LIST-LENGTH probe (`(Call (list _ .. rest))` — a list PATTERN in a sum-variant payload) tests
+            // the subject list's `vec-len`, not a value equality: `== len` for a fixed-arity `(list p0…p{n-1})`,
+            // `>= len` for a rest pattern (`.. rest`). The subject at `path` is the payload's `Vec<T>` (read via
+            // `emit_sum_payload`); mirror `emit_list_match_impl`'s length test. The leading-element binders
+            // (`SumPayload{…,Elem(i)}` → `xs[i]`) and the rest binder (`SumPayload{…,RestFrom(len)}` →
+            // `xs[len..].to_vec()`) already resolve through `emit_sum_payload`'s list arms, so only the length
+            // TEST needed rendering. This is the sum-decision-tree meeting the list matcher — the compiler-AST
+            // shape (a `(Call (List Node))` node dispatched by its child count).
+            if let crate::core::Probe::ListLen { len, at_least } = probe {
+                let op = if *at_least { ">=" } else { "==" };
+                let then_ = emit_sum_cont(db, scrutinee, then_, result_it, env, ctx)?;
+                let els = emit_sum_cont(db, scrutinee, els, result_it, env, ctx)?;
+                return Ok(format!(
+                    "if ({subject}).len() {op} {len} {{ {then_} }} else {{ {els} }}"
+                ));
+            }
             // The literal to compare against, in the sub-value's own type (`5i64`, `true`) so the Rust
             // comparison types. A string probe never reaches a RUNTIME test (it declines at `is_scalar`
             // before a decision tree is built), matching the scalar-match path.
@@ -3628,18 +3644,50 @@ fn emit_sum_payload(
             } else {
                 b.name.clone()
             };
+            // Walk the bind's payload TYPE alongside `rest` so an `Elem(i)` renders correctly per container:
+            // a TUPLE element is a field access `.i`, but a LIST element is an INDEX `[i]` (a `(Some (list x
+            // .. r))` binder reads element 0 of the payload `Vec`, not a `.0` tuple field → E0609 otherwise).
+            // The bind's path type is the entered-variant's payload (`ty_at_sum_path` at `b.path`, or a
+            // recorded hint); `None`/unknown falls back to the tuple `.i` form (the pre-existing behavior).
+            let mut cur_ty = lookup_sum_path_type(ctx, &b.path)
+                .unwrap_or_else(|| ty_at_sum_path(db, scrutinee, &b.path));
             for step in rest {
                 match step {
-                    crate::core::PathStep::Elem(i) => expr = format!("({expr}).{i}"),
+                    crate::core::PathStep::Elem(i) => {
+                        match cur_ty.strip_nominal() {
+                            Ty::List(elem) => {
+                                cur_ty = (**elem).clone();
+                                expr = format!("({expr})[{i}]");
+                            }
+                            Ty::Tuple(elems) => {
+                                cur_ty = elems.get(*i).cloned().unwrap_or(Ty::Any);
+                                expr = format!("({expr}).{i}");
+                            }
+                            // Unknown/other — keep the historical tuple-field form.
+                            _ => {
+                                cur_ty = Ty::Any;
+                                expr = format!("({expr}).{i}");
+                            }
+                        }
+                    }
                     crate::core::PathStep::Payload => {
                         return Err(Reject::decline(
                             "a nested sum payload is not yet rendered by the Rust backend",
                         ));
                     }
-                    crate::core::PathStep::RestFrom(_) => {
-                        return Err(Reject::decline(
-                            "a list rest binder is not yet rendered by the Rust backend",
-                        ));
+                    crate::core::PathStep::RestFrom(k) => {
+                        // A list REST binder — the tail sublist from index `k` (`xs[k..].to_vec()`), an owned
+                        // independent `Vec`. Only valid over a list-typed payload; other shapes decline.
+                        match cur_ty.strip_nominal() {
+                            Ty::List(_) => {
+                                return Ok(format!("({expr})[{k}..].to_vec()"));
+                            }
+                            _ => {
+                                return Err(Reject::decline(
+                                    "a list rest binder over a non-list payload is not rendered by the Rust backend",
+                                ));
+                            }
+                        }
                     }
                 }
             }

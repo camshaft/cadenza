@@ -3672,3 +3672,53 @@ fn rustc_roundtrip_runtime_symbol_is_a_string_leaf() {
         "a Symbol result carries the Symbol type note over a String rep:\n{konst}"
     );
 }
+
+#[test]
+fn rustc_roundtrip_list_pattern_in_a_sum_variant_payload() {
+    // A LIST PATTERN inside a sum-variant payload matched at RUNTIME — the sum decision tree meets the list
+    // matcher (a `(Call (List Node))` compiler-AST node dispatched by its child count). Was a decline ("a
+    // non-scalar literal-payload probe is not rendered"). The ListLen probe now emits `.len() >=/== n`, and a
+    // list-element binder reads `[i]` (a list INDEX, not a `.i` tuple field → E0609).
+    // (a) a recursive sum whose Call payload is a `List Node`, dispatched by child count.
+    let node = compile_rust(
+        "(module m (type Node (Lit Int64) (Call (List Node))) \
+           (def (build (: k Int64)) (if (< k 1) (Lit 7) (Call (list (Lit k) (build (- k 1)))))) \
+           (def (run (: k Int64)) (match (build k) ((Lit v) v) ((Call (list _ .. rest)) 99) (_ 0))) \
+           (export run))",
+    );
+    assert!(
+        node.contains(".len() >= 1"),
+        "the Call payload dispatches on its child-list length:\n{node}"
+    );
+    if let Some(out) = rustc_run(&node, "run(2)") {
+        assert_eq!(out, "99", "a non-empty Call matches the rest arm");
+    }
+    if let Some(out) = rustc_run(&node, "run(0)") {
+        assert_eq!(out, "7", "k<1 builds a Lit, the Lit arm binds 7");
+    }
+
+    // (b) the empty/rest split with an ELEMENT BINDER: `(Some (list x .. r)) x` reads element 0 as a list
+    // index `[0]`, NOT a tuple field `.0`. `mk 0` → (Some []) → the empty arm (100); `mk 5` → None (-1).
+    let split = compile_rust(
+        "(module m (def (mk (: n Int64)) (if (< n 1) (Some (list)) (if (< n 2) (Some (list 7)) (None)))) \
+           (def (f (: o (Option (List Int64)))) \
+             (match o ((Some (list)) 100) ((Some (list x .. r)) x) ((None) -1))) \
+           (def (run (: n Int64)) (f (mk n))) (export run))",
+    );
+    assert!(
+        split.contains(")[0]"),
+        "the element binder reads a list index [0], not a tuple field .0:\n{split}"
+    );
+    if let Some(out) = rustc_run(&split, "run(0)") {
+        assert_eq!(out, "100", "mk 0 → Some [] → the empty-list arm");
+    }
+    if let Some(out) = rustc_run(&split, "run(1)") {
+        assert_eq!(
+            out, "7",
+            "mk 1 → Some [7] → the rest arm binds element 0 = 7"
+        );
+    }
+    if let Some(out) = rustc_run(&split, "run(5)") {
+        assert_eq!(out, "-1", "mk 5 → None");
+    }
+}
