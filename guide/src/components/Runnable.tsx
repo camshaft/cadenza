@@ -20,6 +20,7 @@ import type { Diag } from "../compiler/client.ts";
 import { fixConfidence, fixIsApplicable } from "../playground/applyFix.ts";
 import { runTests, type TestRunOutcome } from "../runner/client.ts";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
+import { assertPreludeFor } from "./assertPrelude.ts";
 
 /// Wrap the editor text into a compilable program for diagnostics/hover, AND report the UTF-8 byte
 /// length of the wrapper prefix so spans map back to the editor text. `wrapModule` trims the snippet,
@@ -50,6 +51,11 @@ interface Props {
    *  program with `@test`-annotated defs (no hardcoded main), and `wrap` is ignored (a test build lays
    *  its boundary out from the @test defs, not an export). */
   mode?: "run" | "test";
+  /** (test mode) The assert prelude prepended before the `@test` defs so examples can call
+   *  `assert`/`assert-eq`/`assert-ne` without redefining them. `true` (default) = the shared
+   *  surface-appropriate prelude; `false` = none (the example defines its own asserts, e.g. one teaching
+   *  example that shows them). */
+  prelude?: boolean;
 }
 
 type Status = { phase: "idle" } | { phase: "busy" } | { phase: "done"; outcome: EditorOutcome };
@@ -58,8 +64,8 @@ type TestStatus =
   | { phase: "busy" }
   | { phase: "done"; outcome: TestRunOutcome };
 
-export function Runnable({ source, authoredIn = "sexpr", wrap = true, expect = "value", title, mode = "run" }: Props) {
-  if (mode === "test") return <TestRunnable source={source} authoredIn={authoredIn} title={title} />;
+export function Runnable({ source, authoredIn = "sexpr", wrap = true, expect = "value", title, mode = "run", prelude = true }: Props) {
+  if (mode === "test") return <TestRunnable source={source} authoredIn={authoredIn} title={title} prelude={prelude} />;
   return <RunRunnable source={source} authoredIn={authoredIn} wrap={wrap} expect={expect} title={title} />;
 }
 
@@ -250,7 +256,7 @@ function fixActionLabel(d: Diag): string {
 /// as tests (like `cdz test`), showing inline ✓/✗ per test. `wrap` is off — a test build lays its
 /// boundary out from the @test defs, not an export/main. Uses the shared editor (same Cadenza IDE
 /// highlighting) so the reader sees + edits real test code.
-function TestRunnable({ source, authoredIn = "sexpr", title }: Pick<Props, "source" | "authoredIn" | "title">) {
+function TestRunnable({ source, authoredIn = "sexpr", title, prelude = true }: Pick<Props, "source" | "authoredIn" | "title" | "prelude">) {
   const editor = useCadenzaEditor(source, authoredIn, false);
   const { surface } = useSyntax();
   const [status, setStatus] = useState<TestStatus>({ phase: "idle" });
@@ -259,7 +265,10 @@ function TestRunnable({ source, authoredIn = "sexpr", title }: Pick<Props, "sour
   async function doRun() {
     setStatus({ phase: "busy" });
     try {
-      setStatus({ phase: "done", outcome: await runTests(editor.text, surface) });
+      // Prepend the shared assert prelude (unless prelude={false}), so the example's @test defs can call
+      // assert/assert-eq/assert-ne without redefining them. The editor shows just the author's @test defs.
+      const program = prelude ? `${assertPreludeFor(surface)}\n${editor.text}` : editor.text;
+      setStatus({ phase: "done", outcome: await runTests(program, surface) });
     } catch (e) {
       setStatus({ phase: "done", outcome: { kind: "error", message: e instanceof Error ? e.message : String(e) } });
     }
