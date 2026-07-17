@@ -2861,6 +2861,13 @@ pub(crate) fn body_diverges(db: &mut Db, id: StructId) -> bool {
         Core::Seq { tail, .. } => body_diverges(db, tail),
         // A `let`'s value is its body; the bindings are evaluated first. Diverges iff the body does.
         Core::Let { body, .. } => body_diverges(db, body),
+        // An `if` whose BOTH branches diverge produces no value on any path — its result type is `Never`
+        // (a fresh var / `Any`, no machine rep). `(if b (trap …) (trap …))`: inference types it `Never`
+        // (cdz check passes), and the emit must NOT decline "no machine representation" — both arms end in
+        // `unreachable`, so the block yields nothing and gets a UNIT/Empty block type at the `Core::If`
+        // emit (mirrors the diverging-fn-body → 0-result signature). Diverges iff BOTH branches do; a
+        // one-sided diverge (`(if b (trap) x)`) still yields `x`'s value, so it does NOT.
+        Core::If { then_, else_, .. } => body_diverges(db, then_) && body_diverges(db, else_),
         _ => false,
     }
 }
@@ -4576,6 +4583,12 @@ fn emit_tail(
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(other) {
                     Some(vt) => BlockType::Val(vt),
+                    // A `Never` result (BOTH branches diverge) has no valtype but yields no value on any
+                    // path — both arms end in `unreachable`, so the block produces nothing: emit an EMPTY
+                    // (0-result) block type rather than declining. Mirrors the diverging-fn-body → UNIT
+                    // signature (`body_diverges` / the `select_function` ret rewrite). A genuinely
+                    // unrepresentable result (a non-diverging compound with no machine rep) still declines.
+                    None if body_diverges(db, id) => BlockType::Empty,
                     None => {
                         return Err(Reject::decline(
                             "if result type has no machine representation",
@@ -8055,6 +8068,12 @@ fn emit(
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(other) {
                     Some(vt) => BlockType::Val(vt),
+                    // A `Never` result (BOTH branches diverge) has no valtype but yields no value on any
+                    // path — both arms end in `unreachable`, so the block produces nothing: emit an EMPTY
+                    // (0-result) block type rather than declining. Mirrors the diverging-fn-body → UNIT
+                    // signature (`body_diverges` / the `select_function` ret rewrite). A genuinely
+                    // unrepresentable result (a non-diverging compound with no machine rep) still declines.
+                    None if body_diverges(db, id) => BlockType::Empty,
                     None => {
                         return Err(Reject::decline(
                             "if result type has no machine representation",

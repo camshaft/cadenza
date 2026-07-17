@@ -31533,6 +31533,26 @@ mod match_engine {
     }
 
     #[test]
+    fn a_both_branches_diverge_if_emits_an_empty_block_not_a_decline() {
+        // `(if b (trap …) (trap …))` — BOTH arms diverge, so the `if` produces no value on any path: its
+        // result type is `Never` (a fresh var / `Any`, no machine rep). Inference types it `Never` (check
+        // passes); before, the `Core::If` emit DECLINED "if result type has no machine representation".
+        // Now `body_diverges` recurses into a `Core::If` (diverges iff BOTH branches do), so the block gets
+        // an EMPTY (0-result) block type and both arms end in `unreachable` — the guest traps at whichever
+        // branch the runtime bool selects. Breaker-found, v-inference ruled option (a). Both selector
+        // values trap (the arm bodies differ only in the trap message).
+        let src = "(module m (def (main (: b Bool)) (if b (trap \"then\") (trap \"else\"))) \
+                   (export main))";
+        let bytes = component(src);
+        for b in [true, false] {
+            assert!(
+                call_traps(&bytes, "main", &[wasmtime::component::Val::Bool(b)]),
+                "both-diverge if (b={b}) must emit a function that TRAPS, not decline"
+            );
+        }
+    }
+
+    #[test]
     fn a_body_that_traps_through_a_seq_emits_a_trapping_function() {
         // The divergence detection peers THROUGH a `Core::Seq` (an effect-statement run then a value) to
         // its trapping tail — the shape a unit-test FAILURE path takes: run a `report`/`log` host effect
