@@ -17,10 +17,14 @@ export const ASSERT_PRELUDE_SEXPR = `(def (assert (: cond Bool) (: msg String)) 
 (def (assert-ne a b (: msg String)) (if (not (= a b)) unit (trap msg)))
 `;
 
-/// The ML assert prelude — the same three helpers in ML surface.
+/// The ML assert prelude — the same three helpers in ML surface. Names are KEBAB (`assert-eq`, not
+/// `assert_eq`): a Cadenza name is kebab across BOTH surfaces (an s-expr `(def (assert-eq …) …)` renders
+/// to ML as `def assert-eq(…) = …`, and `assert_eq` with an underscore is a DIFFERENT name). A test body
+/// authored in s-expr and shown in ML calls `assert-eq`, so the ML prelude MUST define `assert-eq` too —
+/// an underscore spelling here left every ML @test example failing `CDZ0101 unbound name \`assert-eq\``.
 export const ASSERT_PRELUDE_ML = `def assert(cond: Bool, msg: String) = if cond then unit else trap(msg)
-def assert_eq(a, b, msg: String) = if a == b then unit else trap(msg)
-def assert_ne(a, b, msg: String) = if not (a == b) then unit else trap(msg)
+def assert-eq(a, b, msg: String) = if a == b then unit else trap(msg)
+def assert-ne(a, b, msg: String) = if not (a == b) then unit else trap(msg)
 `;
 
 /// The assert prelude for a surface — prepended to a `mode="test"` example's source so the example's
