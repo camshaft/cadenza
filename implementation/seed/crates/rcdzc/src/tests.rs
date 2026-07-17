@@ -44071,6 +44071,65 @@ mod stage1 {
     }
 
     #[test]
+    fn a_scalar_member_access_reports_one_coded_error_not_a_bare_plus_rich_duplicate() {
+        // A direct member access on a non-record scalar `(. 5 x)` used to report TWICE: `infer`'s RICH
+        // "member access requires a record, found Int64" (names the type) AND the emit path's BARE
+        // "member access requires a record" (no type) — at DIFFERENT nodes (the projection vs the enclosing
+        // apply), so the node-keyed dedup missed the pair. `dedup_faults` now drops the bare form when the
+        // rich "…, found <T>" is present. ONE coded error, and it is the type-naming one.
+        let errs: Vec<crate::abi::Diagnostic> = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse("(module m (def (main) ((. 5 x))) (export main))")),
+            )],
+            &[crate::backend::Target::Wasm],
+        )
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == crate::abi::Severity::Error)
+        .collect();
+        assert_eq!(
+            errs.len(),
+            1,
+            "a scalar member access = ONE error, got: {:?}",
+            errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            errs[0].message.contains("found Int64"),
+            "the surviving error is the type-naming one: {}",
+            errs[0].message
+        );
+        // The TUPLE-INDEX twin: `(. (tuple 1 2) 5)` similarly reported the bare "tuple index 5 is out of
+        // range" AND the rich "… for a 2-element tuple"; now ONE, the arity-naming one.
+        let terrs: Vec<crate::abi::Diagnostic> = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) ((. (tuple 1 2) 5))) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        )
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == crate::abi::Severity::Error)
+        .collect();
+        assert_eq!(
+            terrs.len(),
+            1,
+            "a tuple index OOB = ONE error, got: {:?}",
+            terrs.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            terrs[0].message.contains("for a 2-element tuple"),
+            "the surviving error names the arity: {}",
+            terrs[0].message
+        );
+    }
+
+    #[test]
     fn named_member_access_on_a_tuple_points_at_the_numeric_index_form() {
         // A tuple IS a member-access operand — by POSITION, not name. `(. t x)` on a `(Tuple …)` used to
         // give the generic "member access requires a record, found (Tuple …)", a dead end when the real
