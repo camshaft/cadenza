@@ -72824,6 +72824,69 @@ mod cross_component_oracle {
         }
     }
 
+    #[test]
+    fn a_list_argument_crosses_inbound_to_a_peer_as_a_handle() {
+        use crate::testkit::parse;
+        // A LIST argument crosses INBOUND into a provider export as a runtime handle — the inbound twin of
+        // the List-RESULT-escape path. U16/PL17 pin a Tuple/Record compound arg; a List is the same handle
+        // mechanism (`extern_abi_val_type` → `is_extern_heap_type` includes `Ty::List`), but a List has a
+        // DISTINCT runtime rep (an RRB vector, not a flat tuple record), so its inbound crossing deserves
+        // its own guard. (Requested by v-agent-harness for the K0 agent-kernel: `interpret : (tail: List
+        // Event, new: Event) -> (List HostOp)` needs the `List Event` ARG to cross inbound; verified here.)
+        //
+        // PROVIDER (source): `total : (List Int64) -> Int64` = the list's length — it reads a List handed in
+        // as a handle and dereferences it against the shared runtime.
+        let provider = compile_provider(
+            "(do (def (total (: xs (List Int64))) (List.len xs)) (export total))",
+            "cadenza:l/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the list-arg provider validates");
+        }
+        // CONSUMER (source): builds `(list 10 20 30)` on the shared runtime and passes its handle INTO the
+        // peer's `total` op. main = L.total([10,20,30]) = 3 — the List crossed as a handle, read by the peer.
+        let src = "(do \
+            (effect L (op total (-> (List Int64) Int64))) \
+            (bind L \"cadenza:l/api\") \
+            (def (main) (host (L) (L.total (list 10 20 30)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("list-arg consumer compiles: {} [{:?}]", d.message, d.code));
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("list-arg consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[list-arg] runtime wasm not found; skipping the run");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:l/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a list argument crosses to a peer")
+        {
+            // The consumer built [10,20,30] and passed its handle to the peer; the peer read the List and
+            // returned its length → 3. A LIST ARGUMENT crossed the boundary inbound as a shared handle.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "3",
+                "a list argument crosses inbound to a peer as a shared handle and is read there"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("list-argument run trapped: {t}"),
+        }
+    }
+
     // ------------------------------------------------------------------------------------------------
     // PL28 — a STRING ARGUMENT crosses to a peer as a runtime HANDLE (the Bedrock-as-peer critical path).
     // U16/PL17 pin a COMPOUND arg crossing as a handle; a String is the same shape — a rope leaf on the
