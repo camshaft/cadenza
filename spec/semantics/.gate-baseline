@@ -2398,6 +2398,7 @@ pass	an association list is searched by key with a tuple-carrying Option match
 pass	an axiom composes with the inference rules like any other theorem (SYM of ETA)
 pass	an axiom theorem is unforgeable — new_axiom's Thm cannot be fabricated outside the kernel
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
+pass	an earlier name-binding arm shadows a later literal arm — first-match-wins, not specificity-ordered
 pass	an effect discharged by a handler does not escape to the manifest
 pass	an effect in a statically-dead branch is still syntactically reached, so its delegation is not latent
 pass	an effect in a statically-dead branch still requires a grant — ungranted is rejected

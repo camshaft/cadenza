@@ -2149,6 +2149,25 @@
             (def (main) (f 41)) (export main)))
   (output (: 42 Int64)))
 
+(case "an earlier name-binding arm shadows a later literal arm — first-match-wins, not specificity-ordered"
+  (doc    "The precedence direction the two cases above do NOT cover: an earlier GENERAL (name-binding) arm
+           makes a later MORE-SPECIFIC (literal) arm DEAD. `(match n (x (+ x 100)) (5 999))` — the binding
+           `x` matches ANY value including 5, and arms are tried top-to-bottom with the FIRST match winning
+           (core-semantics.md #Matching Is Exhaustive Or Rejected), so the runtime value 5 takes the FIRST
+           arm → 5 + 100 = 105, NOT the later literal-5 arm (999, which is unreachable for EVERY input).
+           n = 7 likewise takes the binding arm → 107. This is the witness that Cadenza matches in SOURCE
+           ORDER, not by pattern specificity: a specificity-ordered matcher (most-specific arm first) would
+           let the literal-5 arm win at n = 5 → 999. The prior cases put the literal FIRST (so the binding
+           arm is genuinely reachable); only a binding-arm-BEFORE-a-matching-literal case distinguishes
+           source-order from specificity-order.")
+  (input  (do
+            (def (main (: n Int64)) (match n (x (+ x 100)) (5 999)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 105 Int64))
+  (call   main (: 7 Int64))
+  (output (: 107 Int64)))
+
 (case "a match on a computed runtime value dispatches on the result"
   (doc    "The scrutinee is the expression `(% n 2)`, computed at run time. Its value (0 for an
            even n) selects the literal arm 0. Exercises a match whose scrutinee is neither a

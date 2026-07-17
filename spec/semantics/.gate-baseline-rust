@@ -3714,3 +3714,4 @@ todo	two same-signature String-returning closures share one call
 pass	a stacked @test @ensures def called as a function returns its value, not unit (value-transparent)
 pass	a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)
 pass	nested-Option equality observes the OUTER variant and matches identical nesting
+pass	an earlier name-binding arm shadows a later literal arm — first-match-wins, not specificity-ordered
