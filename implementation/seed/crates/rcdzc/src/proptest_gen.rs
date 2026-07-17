@@ -223,7 +223,8 @@ fn rewrite_ensures_stacked_tests(ast: &mut Arenas, items: &[StructId]) {
                 let unit_nm = name(ast, "unit");
                 let trap_call = {
                     let trap_head = name(ast, "trap");
-                    let msg = push_atom(ast, Leaf::Str("@ensures postcondition failed".to_string()));
+                    let msg =
+                        push_atom(ast, Leaf::Str("@ensures postcondition failed".to_string()));
                     push_list(ast, vec![trap_head, msg])
                 };
                 push_list(ast, vec![if_head, pred, unit_nm, trap_call])
@@ -975,19 +976,18 @@ mod tests {
     /// that a BARE `@ensures` (no `@test`) is left untouched.
     #[test]
     fn a_test_stacked_ensures_rewrites_the_body_to_check_the_postcondition() {
-        let mut ast = crate::testkit::parse(
-            "(do (@ test (@ (ensures (>= it 0)) (def (f (: n Int64)) n))))",
-        );
+        let mut ast =
+            crate::testkit::parse("(do (@ test (@ (ensures (>= it 0)) (def (f (: n Int64)) n))))");
         super::synthesize(&mut ast);
         // After synthesis the body of `f` should be a `(let ((it n)) (if (>= it 0) unit (trap …)))`. Find a
         // `trap` and an `it` binder anywhere in the arena — their PRESENCE proves the postcondition rewrite
         // ran (the source had neither a `trap` nor a `let`).
         let has_trap = (0..ast.structure.len()).any(|i| {
-            ast.as_form(crate::ast::StructId(i as u32), "trap").is_some()
+            ast.as_form(crate::ast::StructId(i as u32), "trap")
+                .is_some()
         });
-        let has_it_let = (0..ast.structure.len()).any(|i| {
-            ast.as_form(crate::ast::StructId(i as u32), "let").is_some()
-        });
+        let has_it_let = (0..ast.structure.len())
+            .any(|i| ast.as_form(crate::ast::StructId(i as u32), "let").is_some());
         assert!(
             has_trap && has_it_let,
             "a @test @ensures rewrite injects a `let it` + `trap`-guarded postcondition"
@@ -1004,7 +1004,8 @@ mod tests {
         );
         super::synthesize(&mut ast);
         let has_trap = (0..ast.structure.len()).any(|i| {
-            ast.as_form(crate::ast::StructId(i as u32), "trap").is_some()
+            ast.as_form(crate::ast::StructId(i as u32), "trap")
+                .is_some()
         });
         assert!(
             !has_trap,
