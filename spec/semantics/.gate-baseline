@@ -2252,6 +2252,7 @@ pass	an 8-bit-integer closure crosses the host boundary
 pass	an @param of a Bool type generates a Bool-typed accessor
 pass	an @param of a Float64 type generates a Float64-typed accessor
 pass	an @param site generates a Param accessor a host delegation reads at run time
+pass	an @param with no widget config still generates its typed accessor
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an IEC binary prefix converts exactly over Int64
