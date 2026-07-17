@@ -3752,4 +3752,20 @@ fn rustc_roundtrip_nested_tuple_list_element_binder_with_rest_recursion() {
     if let Some(out) = rustc_run(&one, "run()") {
         assert_eq!(out, "14", "the head tuple's a + b = 5 + 9");
     }
+    // PR#522 robustness: the `Elem(j)` walk over the element type handles tuple/record/list EXPLICITLY (a
+    // record maps to a sorted-field tuple → `.{j}`, correct) and DECLINES any other shape rather than the
+    // old catch-all `.{j}` that could emit an uncompilable field access on a scalar/sum/map + drop type
+    // tracking to Any. A doubly-nested tuple `((list (tuple (tuple a _) _) .. rest) …)` exercises the
+    // multi-step walk (Elem[0] list → Elem[0] tuple → Elem[0] tuple) — reads `((xs)[0].0).0`.
+    let deep = compile_rust(
+        "(module m (def (f (: xs (List (Tuple (Tuple Int64 Int64) Int64)))) \
+           (match xs ((list (tuple (tuple a _) _) .. rest) a) (_ (- 0 1)))) \
+           (def (run) (f (list (tuple (tuple 7 8) 9)))) (export run))",
+    );
+    if let Some(out) = rustc_run(&deep, "run()") {
+        assert_eq!(
+            out, "7",
+            "the doubly-nested tuple's innermost first component = 7"
+        );
+    }
 }

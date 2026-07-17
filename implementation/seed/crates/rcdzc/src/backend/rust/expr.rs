@@ -3771,13 +3771,26 @@ fn emit_sum_payload(
                                 cur_ty = elems.get(*j).cloned().unwrap_or(Ty::Any);
                                 expr = format!("({expr}).{j}");
                             }
+                            // A RECORD maps to a Rust tuple in SORTED FIELD-NAME order (see `types::rust_type`
+                            // / `Core::Record`), so an `Elem(j)` is the j-th sorted field → `.{j}`, exactly
+                            // like a tuple. Advance the type through the sorted field values (`BTreeMap`
+                            // iterates sorted) so a deeper step resolves.
+                            Ty::Record(fields) => {
+                                cur_ty = fields.values().nth(*j).cloned().unwrap_or(Ty::Any);
+                                expr = format!("({expr}).{j}");
+                            }
                             Ty::List(elem) => {
                                 cur_ty = (**elem).clone();
                                 expr = format!("({expr})[{j}]");
                             }
+                            // Any OTHER element shape is not a positional projectable (`Elem` is only valid
+                            // over a tuple/record/list) — emitting `.{j}` would be an uncompilable field
+                            // access on, say, a scalar/sum/map. DECLINE with a clear message (Copilot PR#522
+                            // — the old catch-all `.{j}` risked invalid Rust and dropped type-tracking to Any).
                             _ => {
-                                cur_ty = Ty::Any;
-                                expr = format!("({expr}).{j}");
+                                return Err(Reject::decline(
+                                    "a nested list-element `Elem` step over a non-tuple/record/list type is not rendered by the Rust backend",
+                                ));
                             }
                         },
                         // A `Payload`/`RestFrom` beyond the leading list index is a shape this slice does not
