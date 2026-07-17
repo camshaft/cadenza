@@ -1,4 +1,4 @@
-import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
+import { H1, Lede, H2, P, C } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
@@ -82,26 +82,37 @@ export default function PropertyTesting() {
         fails and prints a seed to replay. A property is just a test that should hold for <em>all</em>{" "}
         inputs:
       </P>
-      <Note>
-        <C>{`@test def add_comm(a: Int64, b: Int64) =`}</C>
-        <br />
-        <C>{`  assert_eq(Int64.wrapping-add(a, b), Int64.wrapping-add(b, a), "not commutative")`}</C>
-        <br />
-        <C>cdz test</C> reports: <C>PASS add_comm (100 trials)</C>.
-      </Note>
       <P>
-        You wrote the predicate; the runner wrote the generator. Scalars generate directly; compound types
-        (a <C>(List Int64)</C>, a record, a user sum) generate too — the compiler derives the generator from
-        the type. And a deliberately-wrong property shows the shrink: <C>{`@test def small(n: Int64) = assert(n < 5, "too big")`}</C>{" "}
-        fails and the runner reports <C>counterexample: small(5)</C> — the <em>smallest</em> failing input,
-        not whatever large value it first stumbled on, with a seed to reproduce it.
+        Give this test two <C>Int64</C> parameters and it becomes a property — press Run and the runner
+        generates a hundred pairs, checking commutativity on every one:
       </P>
-      <Note>
-        The runnable panels above use <em>nullary</em> tests, which run live in the browser. Parameterized
-        property tests run in the full <C>cdz test</C> runner (they generate and shrink over many trials);
-        the in-browser panels show them as deferred, so the generative examples here are shown as{" "}
-        <C>cdz test</C> transcripts rather than live runs.
-      </Note>
+      <Runnable
+        mode="test"
+        source={`(@ test (def (add-comm (: a Int64) (: b Int64))
+  (assert-eq (Int64.wrapping-add a b) (Int64.wrapping-add b a) "not commutative")))`}
+      />
+      <P>
+        You wrote the predicate; the runner wrote the generator. It reports <C>PASS add-comm (100 trials)</C>{" "}
+        — a hundred generated pairs, all commuting. Scalars generate directly; compound types (a{" "}
+        <C>(List Int64)</C>, a record, a user sum) generate too — the compiler derives the generator from the
+        type.
+      </P>
+      <P>
+        And a deliberately-wrong property shows the <em>shrink</em>. This one claims every generated{" "}
+        <C>Int64</C> is under 100 — false, so Run it and watch the runner report the <em>smallest</em>{" "}
+        failing input it can find, not whatever large value it first stumbled on:
+      </P>
+      <Runnable
+        mode="test"
+        expect="error"
+        source={`(@ test (def (all-small (: n Int64))
+  (assert (< n 100) "not every Int64 is under 100")))`}
+      />
+      <P>
+        The counterexample is <C>all-small(100)</C> — the runner found a failing draw, then shrank it toward
+        zero to the boundary value, with a seed to reproduce the run. A property that holds passes silently
+        over its trials; one that doesn't hands you the minimal witness.
+      </P>
 
       <H2>Proving a small domain, and tagging</H2>
       <P>

@@ -26,6 +26,14 @@ export interface RunJob {
   mode?: "test";
   /** The nullary `@test` export names to run (from `compile_tests`'s `nullary_test_names`). */
   testNames?: string[];
+  /** SCALAR-param property `@test`s to drive (from `param_test_signatures` with `compound: false`): the
+   *  export takes its params as function args, so the driver generates a value per `paramTypes` entry and
+   *  calls `fn(...args)` over `trials` trials, shrinking a failing input. A `compound: true` (`-gen`
+   *  wrapper) test is NOT here — the client still defers it (phase 2). */
+  scalarProps?: { name: string; paramTypes: string[] }[];
+  /** Property-test trial count (default 100) and base seed (default 0), mirroring `cdz test`. */
+  trials?: number;
+  seed?: number;
 }
 
 export type RunResult =
@@ -44,6 +52,10 @@ export interface TestResult {
   pass: boolean;
   error?: string;
   deferred?: boolean;
+  /** For a SCALAR property test: how many trials ran (a pass shows "(N trials)"). */
+  trials?: number;
+  /** For a FAILED scalar property test: the shrunk failing arguments (rendered) + the replay seed. */
+  counterexample?: { args: string; seed: number };
 }
 
 interface Transpiled {
@@ -159,7 +171,10 @@ async function runTests(job: RunJob): Promise<RunResult> {
       }
     }
   }
-  return { kind: "tests", results };
+  // Drive the SCALAR-param property tests (their params are on the export → generated call-args). Compound
+  // `-gen` tests are not in `scalarProps` (the client defers them), so this only adds real property runs.
+  const propResults = await runScalarProperties(job);
+  return { kind: "tests", results: [...results, ...propResults] };
 }
 
 async function runComponent(job: RunJob): Promise<RunResult> {
@@ -207,6 +222,156 @@ function exportedFunctions(root: Record<string, unknown>): { name: string; fn: (
   return Object.entries(root)
     .filter(([, v]) => typeof v === "function")
     .map(([name, v]) => ({ name, fn: v as (...a: unknown[]) => unknown }));
+}
+
+/// A property test's default trial count, mirroring `cdz test`.
+const DEFAULT_TRIALS = 100;
+
+/// The inclusive value range for each scalar `paramType` enum (from `param_test_signatures`). Signed widths
+/// are [-2^(n-1), 2^(n-1)-1]; unsigned are [0, 2^n-1]; `bool` is 0/1 (mapped to a boolean); float widths
+/// generate an integer-valued magnitude (never NaN, matching the compiler's `float-of-int` generator). A
+/// type not here (`"other"`, a compound) is never a scalar prop (the client routes those to the deferred
+/// phase-2 path), so it is not represented.
+function intRange(t: string): { min: bigint; max: bigint } | null {
+  switch (t) {
+    case "int8": return { min: -128n, max: 127n };
+    case "int16": return { min: -32768n, max: 32767n };
+    case "int32": return { min: -2147483648n, max: 2147483647n };
+    case "int64": return { min: -9223372036854775808n, max: 9223372036854775807n };
+    case "uint8": return { min: 0n, max: 255n };
+    case "uint16": return { min: 0n, max: 65535n };
+    case "uint32": return { min: 0n, max: 4294967295n };
+    case "uint64": return { min: 0n, max: 18446744073709551615n };
+    default: return null;
+  }
+}
+
+/// A seeded 64-bit LCG (the same MMIX constants the corpus generators use), stepping a `bigint` state and
+/// yielding the low 64 bits. Deterministic from the seed → a failing trial is replayable, and the whole
+/// driver is reproducible (property-based-testing.md #Generation Is Seeded And Reproducible).
+function lcgStep(state: bigint): bigint {
+  const M = 0xffffffffffffffffn;
+  return (state * 6364136223846793005n + 1442695040888963407n) & M;
+}
+
+/// Generate one JS argument for a scalar `paramType` from the pool state, returning the arg and the advanced
+/// state. jco lowers every Cadenza int width to a JS `bigint` at the boundary, `Bool` to `boolean`, and a
+/// float to `number` — so an int arg is a `bigint` in its width's range, a bool is the state's low bit, and
+/// a float is an integer-valued `number` (never NaN). The generated int is folded into the width range by
+/// modulo (a uniform-enough draw for property sampling; the shrinker drives it toward the minimal failure).
+function genArg(type: string, state: bigint): { arg: unknown; state: bigint } {
+  const next = lcgStep(state);
+  if (type === "bool") return { arg: (next & 1n) === 0n, state: next };
+  if (type === "float32" || type === "float64") {
+    // An integer-valued float in a modest range (matches `Float64.of-int` — total, never NaN).
+    return { arg: Number(next % 2048n) - 1024, state: next };
+  }
+  const range = intRange(type);
+  if (!range) return { arg: 0n, state: next }; // unreachable for a scalar prop (client filters "other")
+  const span = range.max - range.min + 1n;
+  return { arg: range.min + ((next % span) + span) % span, state: next };
+}
+
+/// Build one trial's argument vector for a scalar property test from a base pool state (one arg per param
+/// type, threading the LCG state). Returns the args + the final state (unused per-trial — each trial reseeds).
+function genArgs(paramTypes: string[], seed: bigint): unknown[] {
+  let state = seed;
+  const args: unknown[] = [];
+  for (const t of paramTypes) {
+    const { arg, state: s } = genArg(t, state);
+    args.push(arg);
+    state = s;
+  }
+  return args;
+}
+
+/// Render a trial's args for a counterexample message (a `bigint` prints without the JS `n` suffix so it
+/// reads like a Cadenza literal).
+function renderArgs(name: string, args: unknown[]): string {
+  return `${name}(${args.map((a) => (typeof a === "bigint" ? a.toString() : String(a))).join(", ")})`;
+}
+
+/// Drive one SCALAR-param property test: call the export with generated args over `trials` trials, seeded
+/// from `seed` (each trial reseeds `seed + trialIndex`, mirroring `cdz test`'s per-trial pool). A trial that
+/// THROWS (a trap — assertion failure or a body trap) is a failure; the first failing arg vector is SHRUNK
+/// (each numeric arg halved toward 0 while the failure persists) to a minimal counterexample, reported with
+/// the base seed to replay. All-pass → `pass` with the trial count.
+async function runScalarProperty(
+  fn: (...a: unknown[]) => unknown,
+  name: string,
+  paramTypes: string[],
+  trials: number,
+  seed: number,
+): Promise<TestResult> {
+  const runArgs = async (args: unknown[]): Promise<boolean> => {
+    // true = the trial FAILED (threw/trapped); false = it passed (returned).
+    try {
+      await (fn as (...a: unknown[]) => unknown)(...args);
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  let failing: unknown[] | null = null;
+  for (let t = 0; t < trials; t++) {
+    const args = genArgs(paramTypes, BigInt(seed) + BigInt(t) + 1n);
+    if (await runArgs(args)) {
+      failing = args;
+      break;
+    }
+  }
+  if (!failing) return { name, pass: true, trials };
+  // SHRINK: halve each numeric arg toward 0 while the failure persists (greedy per-slot, mirroring the
+  // native `shrink_pool`). A boolean arg does not shrink (both values are minimal).
+  const best = failing.slice();
+  for (let i = 0; i < best.length; i++) {
+    let v = best[i];
+    while (typeof v === "bigint" && v !== 0n) {
+      const cand = best.slice();
+      cand[i] = v / 2n;
+      if (await runArgs(cand)) {
+        best[i] = cand[i];
+        v = cand[i] as bigint;
+      } else break;
+    }
+    while (typeof v === "number" && v !== 0) {
+      const cand = best.slice();
+      cand[i] = Math.trunc(v / 2);
+      if (await runArgs(cand)) {
+        best[i] = cand[i];
+        v = cand[i] as number;
+      } else break;
+    }
+  }
+  return {
+    name,
+    pass: false,
+    error: "property failed",
+    counterexample: { args: renderArgs(name, best), seed },
+  };
+}
+
+/// Run each SCALAR-param property test (from `param_test_signatures`, `compound: false`) over generated
+/// inputs — the browser equivalent of `cdz test`'s property driver. Compound (`-gen`) tests are not here
+/// (the client still defers them).
+async function runScalarProperties(job: RunJob): Promise<TestResult[]> {
+  const props = job.scalarProps ?? [];
+  if (props.length === 0) return [];
+  const root = await instantiateComponent(job);
+  const exportsByNorm = new Map<string, (...a: unknown[]) => unknown>();
+  for (const { name, fn } of exportedFunctions(root)) exportsByNorm.set(normalizeName(name), fn);
+  const trials = job.trials ?? DEFAULT_TRIALS;
+  const seed = job.seed ?? 0;
+  const results: TestResult[] = [];
+  for (const { name, paramTypes } of props) {
+    const fn = exportsByNorm.get(normalizeName(name));
+    if (typeof fn !== "function") {
+      results.push({ name, pass: false, error: "property test export not found" });
+      continue;
+    }
+    results.push(await runScalarProperty(fn, name, paramTypes, trials, seed));
+  }
+  return results;
 }
 
 self.onmessage = async (e: MessageEvent<RunJob>) => {
