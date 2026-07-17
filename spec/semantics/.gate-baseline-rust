@@ -2300,6 +2300,7 @@ pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
 pass	at min times -1 the three overflow families diverge: checked None, wrapping min
 pass	b4b denotation: a predicate Ast (<= x 100) denotes to the bounds obligation term le (Var 0) (Num 100)
+pass	b4c(proven): @requires(<= x 100)/@ensures(<= it MAXINT) on (f x)=x+1 discharges — P denoted as hyp, Q[it:=body] as goal
 pass	binding the same effect to a peer twice is rejected
 pass	bit-field segments pack sub-byte values into one byte
 pass	bitwise AND masks bits
@@ -3476,8 +3477,8 @@ todo	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (ho
 todo	a host call's response is an ordinary value that feeds a LATER host call
 todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
-todo	a host op with a String parameter composes with the value-heap runtime
 todo	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
+todo	a host op with a String parameter composes with the value-heap runtime
 todo	a host-called closure applied to a different argument tracks the input
 todo	a host-called closure with a different body dispatches the right code
 todo	a list-arm constructor element over a runtime-built list
