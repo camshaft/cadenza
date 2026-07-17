@@ -207,6 +207,7 @@ pass	a STRING-result effect op resumes with a string that folds through a concat
 pass	a SUM constructor payload that is a compound built from performs threads and destructures
 pass	a SUM is threaded as a handler's folded state across operations
 pass	a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)
+pass	a SYMBOL compound = has DISCRIMINATING power (two runtime-selected interned names separate)
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
@@ -591,6 +592,7 @@ pass	a function-typed parameter with a matching Bool-returning argument is accep
 pass	a general recursive-sum recursion (Nil|Cons count) reads the right payload through the fold
 pass	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
 pass	a generated value with a FLOAT leaf is reproducible (compound = over the canonical float byte form)
+pass	a generated value with a SYMBOL leaf is reproducible (compound = walks the interned-name byte leaf)
 pass	a generic definition takes the type as a type-valued parameter
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
