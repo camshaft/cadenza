@@ -518,6 +518,37 @@ export const EXAMPLES: Example[] = [
     expected: "36",
   },
   {
+    // Shows off: consuming TWO sequences in lockstep — a zip. Walk both Iters together, multiply the
+    // paired heads, and sum, giving the dot product of two vectors. [1,2,3]·[4,5,6] = 4+10+18 = 32.
+    // (Authored with v-iterators; monomorphic Int64 Iter, clean on both surfaces.)
+    name: "Iterator zip: dot product",
+    surface: "sexpr",
+    source: `(do
+  ; A linked sequence of Int64: empty (Nil) or a head paired with the rest.
+  (type Iter (Nil unit) (Cons (Tuple Int64 Iter)))
+  (def (from-list xs)
+    (match xs
+      ((list) (Nil unit))
+      ((list h .. t) (Cons (tuple h (from-list t))))))
+  ; Walk a and b in lockstep: sum head-a * head-b, recurse on both tails.
+  ; Stops at the shorter (either Nil ends it).
+  (def (dot a b)
+    (match a
+      ((Nil _) 0)
+      ((Cons pa)
+       (match pa
+         ((tuple ha ra)
+          (match b
+            ((Nil _) 0)
+            ((Cons pb)
+             (match pb
+               ((tuple hb rb) (+ (* ha hb) (dot ra rb)))))))))))
+  ; [1,2,3] · [4,5,6] = 1*4 + 2*5 + 3*6 = 32
+  (def (main) (dot (from-list (list 1 2 3)) (from-list (list 4 5 6))))
+  (export main))`,
+    expected: "32",
+  },
+  {
     name: "A type error (see the squiggle)",
     surface: "sexpr",
     source: `(do
