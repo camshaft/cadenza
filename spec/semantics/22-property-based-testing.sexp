@@ -147,6 +147,22 @@
   (call   main (: 12345 Int64)) (output (: true Bool))
   (call   main (: -7 Int64)) (output (: true Bool)))
 
+(case "a generated RECORD value is reproducible from its seed (compound = walks the record fields)"
+  (doc    "Witnesses §Generation Is Seeded And Reproducible for a generator that produces a RECORD — the
+           other named product container beside the tuple. The doc of the tuple case promises structural
+           equality is realized for `tuple/record/set/map`; the tuple, set (via the CRDT cases), and map
+           (below) containers are witnessed — this pins the RECORD one. `gen` draws a `(record (x Int64)
+           (y Bool))` from the seed (a masked int field + a threshold bool field), and `(= (gen seed) (gen
+           seed))` = true — the whole record re-generates identically and the compound `=` walks it FIELD
+           by field (a named-field product walk, distinct from the positional tuple walk). Runs at the
+           boundary so the generation + the record field-walk compare are real instructions, not a fold.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (gen (: s Int64)) (record (x (& (next s) 255)) (y (< (& (next (next s)) 255) 128))))
+              (def (main (: seed Int64)) (= (gen seed) (gen seed)))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: true Bool))
+  (call   main (: -7 Int64)) (output (: true Bool)))
+
 (case "a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)"
   (doc    "Deepens the compound-`=`-over-a-bignum-leaf witness with RATIONAL's distinguishing feature:
            equality is by NORMALIZED (reduced) form, not by the stored numerator/denominator. Two tuples
@@ -404,6 +420,27 @@
                     (= (Set.of (list a)) (Set.of (list b))))))
               (export main)))
   (call   main (: 5 Int64)) (output (: false Bool)))
+
+(case "a MAP built from generated pairs is equal regardless of insertion order (the Map analogue of set convergence)"
+  (doc    "Witnesses §Permutation Invariance Is A Property on a MAP — the key/value container the tuple
+           case's doc names alongside tuple/record/set. Like a set, a map's equality is INSERTION-ORDER-
+           INDEPENDENT by construction (the CHAMP canonicalizes, 19-maps): the same two generated key/value
+           pairs inserted in one order equal the same pairs inserted in the REVERSED order — `(= (insert
+           (insert empty a 1) b 2) (insert (insert empty b 2) a 1))` = true. This is the map analogue of the
+           order-independent-set-equality case, and it needs no scalar reduction: the map `=` compares the
+           canonical entry set directly. Both keys are DRAWN from the seed at run time, so nothing folds —
+           the two maps are built and compared as real instructions. (`a` and `b` are masked to distinct
+           bytes only incidentally; even were they equal the second insert would overwrite consistently on
+           both sides, so the equality still holds — order-independence is the load-bearing property.)")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (main (: seed Int64))
+                (let ((a (& (next seed) 255)))
+                  (let ((b (& (next (next seed)) 255)))
+                    (= (Map.insert (Map.insert (Map.empty) a 1) b 2)
+                       (Map.insert (Map.insert (Map.empty) b 2) a 1)))))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: true Bool))
+  (call   main (: -7 Int64)) (output (: true Bool)))
 
 ; --- §Refinements Constrain Generation, by REJECTION SAMPLING ---------------------------------------
 ; The masked-generator case above constrains generation by CONSTRUCTION (a bitmask can only produce an

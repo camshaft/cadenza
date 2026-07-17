@@ -158,6 +158,7 @@ pass	a HOF callback matching its sum argument reaches the nullary arm
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
 pass	a List entry argument is marshalled as a vec!
+pass	a MAP built from generated pairs is equal regardless of insertion order (the Map analogue of set convergence)
 pass	a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds
 pass	a MULTI-PAYLOAD variant with a nested same-sum variant reads the right payload depth (known outer disc)
 pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
@@ -591,6 +592,7 @@ pass	a function-typed parameter annotation is not silently discarded in the body
 pass	a function-typed parameter annotation's result type is checked against the argument
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
 pass	a general recursive-sum recursion (Nil|Cons count) reads the right payload through the fold
+pass	a generated RECORD value is reproducible from its seed (compound = walks the record fields)
 pass	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
 pass	a generated value with a FLOAT leaf is reproducible (compound = over the canonical float byte form)
 pass	a generated value with a SYMBOL leaf is reproducible (compound = walks the interned-name byte leaf)
