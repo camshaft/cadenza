@@ -73532,4 +73532,3 @@ mod ir_payloads_stay_rc_backed_not_arc {
     const _: () = <crate::ty::Ty as AmbiguousIfSend<_>>::MARKER;
     const _: () = <crate::core::Core as AmbiguousIfSend<_>>::MARKER;
 }
-
