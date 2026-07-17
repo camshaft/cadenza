@@ -5365,5 +5365,83 @@ mod tests {
             assert_eq!(count(&pat, &subj("(pair q q)")), 1);
             assert_eq!(count(&pat, &subj("(pair q r)")), 0);
         }
+
+        #[test]
+        fn the_anti_unified_pattern_matches_every_instance_over_generated_sets() {
+            // The SOUNDNESS invariant of anti-unification (the inverse of the matcher), swept: for ANY set
+            // of instances, the least-general generalization must MATCH EVERY instance it was built from —
+            // that is what makes it a valid near-clone / refactor suggestion. Only `the_emitted_pattern_
+            // matches_every_instance` pinned this on ONE hand set (3× `(scale x N)`). A generalization that
+            // failed to match one of its own inputs (a hole/consistency-constraint or shape-alignment bug)
+            // would emit a `cdz clones` / refactor pattern that does not cover its examples. Sweep random
+            // instance-sets built by mutating a shared skeleton (so they DO share structure — the case
+            // anti-unify is for) and assert the rendered pattern re-compiles and matches each instance.
+            use super::{SplitMix64, Tree};
+            fn gen_skeleton(rng: &mut SplitMix64, depth: usize) -> String {
+                // A shared skeleton with `?` placeholders that each instance fills differently.
+                let leaves = ["a", "b", "x", "?"]; // `?` = a per-instance-varying slot
+                if depth == 0 || rng.next().is_multiple_of(3) {
+                    return leaves[(rng.next() as usize) % leaves.len()].to_string();
+                }
+                let heads = ["f", "g", "scale", "pair"];
+                let head = heads[(rng.next() as usize) % heads.len()];
+                let n = 1 + (rng.next() as usize) % 3;
+                let kids: Vec<String> = (0..n).map(|_| gen_skeleton(rng, depth - 1)).collect();
+                format!("({head} {})", kids.join(" "))
+            }
+            // Fill each `?` in the skeleton with a per-instance leaf, so all instances share the skeleton
+            // and differ only at the `?` slots — exactly what anti-unify generalizes.
+            fn fill(skeleton: &str, rng: &mut SplitMix64) -> String {
+                let fillers = ["0", "1", "2", "k", "y", "z"];
+                let mut out = String::new();
+                for ch in skeleton.chars() {
+                    if ch == '?' {
+                        out.push_str(fillers[(rng.next() as usize) % fillers.len()]);
+                    } else {
+                        out.push(ch);
+                    }
+                }
+                out
+            }
+            let mut rng = SplitMix64(0xa274_de50_c0de_1a7e);
+            let mut checked = 0usize;
+            for _ in 0..2000 {
+                let depth = 1 + (rng.next() as usize) % 4;
+                let skeleton = gen_skeleton(&mut rng, depth);
+                let k = 2 + (rng.next() as usize) % 3; // 2..=4 instances
+                let texts: Vec<String> = (0..k).map(|_| fill(&skeleton, &mut rng)).collect();
+                // Each instance must parse (the skeleton is well-formed s-expr with leaves filled in).
+                let arenas: Vec<_> = texts
+                    .iter()
+                    .filter_map(|t| crate::sexpr::read(t).ok())
+                    .collect();
+                if arenas.len() != k {
+                    continue;
+                }
+                let trees: Vec<Tree> = arenas.iter().map(Tree::of).collect();
+                let refs: Vec<&Tree> = trees.iter().collect();
+                let g = anti_unify(&refs);
+                // The rendered pattern must RE-COMPILE (a generalization always renders a valid pattern)…
+                let Ok(pat) = Pattern::compile(&render_pattern(&g.pattern)) else {
+                    panic!(
+                        "anti-unified pattern must compile: {}",
+                        render_pattern(&g.pattern)
+                    );
+                };
+                // …and MATCH EVERY instance it was generalized from (≥1 occurrence at the root).
+                for (t, txt) in trees.iter().zip(&texts) {
+                    assert!(
+                        count(&pat, t) >= 1,
+                        "anti-unified pattern {} must match its instance {txt}",
+                        render_pattern(&g.pattern)
+                    );
+                }
+                checked += 1;
+            }
+            assert!(
+                checked > 500,
+                "swept a meaningful anti-unification space, got {checked}"
+            );
+        }
     }
 }
