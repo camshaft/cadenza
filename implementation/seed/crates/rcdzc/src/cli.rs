@@ -515,6 +515,15 @@ pub fn run_prepared(
         _ => None,
     };
 
+    // A FAILED build writes NO output — like `cargo build`, which leaves no partial artifact on a compile
+    // error. Without this, an errored build still wrote the `link-map` companion (`link-map.txt`) it
+    // produced alongside the — absent — component, leaving a stray sidecar with no `.wasm` beside it (a
+    // confusing partial state that also misleads a follow-up tool reading the map). Bail before the write
+    // loop: the errors were already reported above, so just exit failure with a clean directory.
+    if out.has_error() {
+        return ExitCode::FAILURE;
+    }
+
     // Write each produced artifact. In single-file (`-o FILE`) mode, write ONLY the primary artifact
     // there and skip the `link-map` companion (a `-o FILE` caller named one output). In directory mode,
     // write everything (the `link-map` lands as `link-map.txt` beside the outputs).

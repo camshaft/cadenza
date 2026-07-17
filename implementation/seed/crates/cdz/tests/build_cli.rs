@@ -108,6 +108,44 @@ fn build_with_no_manifest_errors() {
 }
 
 #[test]
+fn a_failed_build_writes_no_partial_artifact() {
+    // Like `cargo build`, a FAILED build must leave NO output — not even the `link-map.txt` companion the
+    // compiler produces alongside the (absent) component. Before the fix, an errored directory-mode build
+    // still wrote `link-map.txt`, leaving a stray sidecar with no `.wasm` beside it (a confusing partial
+    // state). Here the entry exports an invalid-kebab name (`small-5`'s `-5` is a digit-led boundary
+    // segment → CDZ0201), so the build fails; assert non-zero exit, the located error, and a CLEAN dir:
+    // no `.wasm`, no `link-map.txt`.
+    let dir = std::env::temp_dir().join(format!("cdz-build-fail-clean-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Project.cdz"),
+        "def name = \"p\"\ndef entry = \"main.sexp\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.sexp"),
+        "(module m (def (small-5) unit) (export small-5))",
+    )
+    .unwrap();
+    let (ok, _o, err) = run(&["build", dir.to_str().unwrap()]);
+    assert!(!ok, "the invalid-kebab export must fail the build: {err}");
+    assert!(
+        err.contains("[CDZ0201]"),
+        "the failure reports its diagnostic: {err}"
+    );
+    assert!(
+        !dir.join("link-map.txt").exists(),
+        "a FAILED build must not leave the link-map companion behind"
+    );
+    assert!(
+        !dir.join("main.wasm").exists(),
+        "a FAILED build must not leave a component behind"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn build_a_named_manifest_that_does_not_exist_errors_not_dir_walks() {
     // Sibling-consistency with `cdz check`/`cdz test` (PR #422): `cdz build path/to/Project.cdz` when
     // that manifest DOESN'T EXIST must error clearly ("no such file") naming the arg — not resolve to the
