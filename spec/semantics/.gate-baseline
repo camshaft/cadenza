@@ -479,6 +479,7 @@ pass	a boxed nested-unary curried closure applies without trapping
 pass	a boxed runtime closure returning Unit applies without declining
 pass	a boxed runtime closure taking Unit (a lazy thunk) is forced without declining
 pass	a branch perform under two nested handlers threads the inner state to the continuation
+pass	a branch refinement does not leak into the else arm's overflow guard
 pass	a branching recursive tree fold infers its unannotated callback across both arms
 pass	a build-time delegated effect whose result a returned closure captures does not escape
 pass	a built map renders its entries in canonical key order
@@ -1095,6 +1096,7 @@ pass	a loop-invariant computed in both the condition and the body is shared, com
 pass	a loop-invariant heap projection consumed in the loop body is not LICM-hoisted
 pass	a loop-invariant subexpression in a MATCH scrutinee is hoisted to valid wasm
 pass	a loop-invariant trapping expression is not evaluated when the loop runs zero iterations
+pass	a lower-bound branch refinement does NOT license eliding the upper-overflow guard
 pass	a lowercase type variable in a USER-GENERIC parameter annotation is rejected
 pass	a lowercase-named type cross-references another lowercase-named type in a field
 pass	a lowercase-named type is referenceable in a field (types are values, not gated by case)
