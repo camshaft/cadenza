@@ -14,11 +14,12 @@ import { Link } from "react-router-dom";
 import { replEval } from "../compiler/client.ts";
 import { run as runComponent } from "../runner/client.ts";
 import type { Surface } from "../compiler/worker.ts";
-import { parseDocument, type Cell } from "./parseDocument.ts";
+import { parseDocument, assignIds, setCellSource, serializeDocument, type Cell } from "./parseDocument.ts";
 import { parseWidgets, type Widget } from "./parseWidgets.ts";
 import { assembleForRun, type WidgetValues } from "./assembleForRun.ts";
 import { recomputePlan, initialRunOrder } from "./recomputePlan.ts";
 import { renderOutput, type CellOutput, type RunOutcome } from "./renderOutput.ts";
+import { cellIde } from "./cellIde.ts";
 import { ProseView } from "./ProseView.tsx";
 import { OutputView } from "./OutputView.tsx";
 import { WidgetControls } from "./WidgetControls.tsx";
@@ -36,17 +37,13 @@ const STARTER = DEFAULT_EXAMPLE.markdown;
 /// surface toggle are a later slice.
 const NOTEBOOK_SURFACE: Surface = "sexpr";
 
-/// The "Edit source" pane edits the WHOLE notebook DOCUMENT — markdown prose interleaved with ```cadenza
-/// code fences — NOT a single Cadenza program. So it must NOT run the Cadenza language service (error
-/// squiggles / type-hover) over the doc: feeding a markdown+code blob to the compiler flags every prose
-/// line as a parse error → the whole doc renders red (operator IDE #13). We therefore leave `ide`
-/// UNSET on the doc editor — `CodeEditor`'s base still applies the LEXICAL Cadenza highlighter (harmless,
-/// and it colors the code fences), but no linter/hover treats the markdown as one program.
-///
-/// (The RICHER fix — per-cell editable code cells, each Cadenza-linted in its own sequential scope via
-/// `cellIde` (`./cellIde.ts`, which composes `assembleCell`→a `prepare` that maps spans onto the cell) —
-/// is a separate feature: it changes the notebook's interaction model from whole-doc editing to in-place
-/// cell editing. The `cellIde` seam is ready for it; flagged to v-notebook/concierge as a follow-up.)
+/// The notebook is IN-PLACE PER-CELL editable (operator ruling — Jupyter-style): each code cell is its
+/// own Cadenza editor, live-linted in its REAL sequential scope via `cellIde` (`./cellIde.ts`, which
+/// composes `assembleCell` + widget bindings → a `prepare` that maps diagnostics back onto the cell).
+/// There is NO whole-doc "Edit source" editor — editing the whole markdown+code blob as one Cadenza
+/// program was the source of the all-red squiggles (operator IDE #13); per-cell editing scopes the
+/// language service correctly by construction. A cell edit round-trips via `setCellSource` →
+/// `serializeDocument` → the doc, driving the existing debounce → re-parse → re-run.
 
 /// The notebook is a RATIONAL-mode app (operator-directed, app-level like the calculator): a bare numeric
 /// literal — integer OR float — grounds to Rational, so cells compute EXACTLY (right for scientific use).
@@ -59,13 +56,12 @@ type CellState = { phase: "idle" } | { phase: "running" } | { phase: "done"; out
 
 export default function NotebookPage() {
   const surface = NOTEBOOK_SURFACE;
-  // The notebook document — editable via the "Edit source" pane (§ below). `doc` tracks every keystroke
-  // (so the textarea is responsive); `committedDoc` is a DEBOUNCED copy that actually drives parsing +
-  // re-running, so typing doesn't re-parse + thrash the run worker (and flicker every output to "not run")
-  // on each character. They coincide except during an active edit burst.
+  // The notebook document. `doc` is the markdown source of truth (edited PER CELL — a cell editor commits
+  // its change up via `onCellEdit` → `setCellSource` → `serializeDocument`); `committedDoc` is a DEBOUNCED
+  // copy that drives parsing + re-running, so typing in a cell doesn't re-parse + thrash the run worker
+  // (or flicker every output to "not run") on each keystroke. They coincide except during an active edit.
   const [doc, setDoc] = useState(STARTER);
   const [committedDoc, setCommittedDoc] = useState(STARTER);
-  const [editing, setEditing] = useState(false);
   const docDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (docDebounce.current) clearTimeout(docDebounce.current);
@@ -74,7 +70,20 @@ export default function NotebookPage() {
       if (docDebounce.current) clearTimeout(docDebounce.current);
     };
   }, [doc]);
-  const cells = useMemo<Cell[]>(() => parseDocument(committedDoc), [committedDoc]);
+  // Cells carry a stable `id` (via `assignIds`) so the stacked per-cell editor list keys by identity — an
+  // edit keeps a cell's editor mounted (focus/cursor preserved) rather than remounting on re-parse.
+  const cells = useMemo<Cell[]>(() => assignIds(parseDocument(committedDoc)), [committedDoc]);
+
+  // A per-cell source edit: rewrite that cell's source in the LIVE doc and re-serialize (the debounce
+  // above then commits → re-parse → re-run). Parse the live `doc` (not `cells`, which lags at the
+  // committed copy) so concurrent edits compose. Guarded to code cells (prose isn't edited here).
+  const onCellEdit = useCallback((index: number, newSource: string) => {
+    setDoc((prev) => {
+      const current = parseDocument(prev);
+      if (current[index]?.kind !== "code") return prev;
+      return serializeDocument(setCellSource(current, index, newSource));
+    });
+  }, []);
 
   // All widgets declared across every widget cell, and their live values.
   const widgets = useMemo<Widget[]>(
@@ -203,16 +212,8 @@ export default function NotebookPage() {
     <div className="mx-auto min-h-screen max-w-4xl px-4 py-6">
       <div className="mb-4 flex items-baseline justify-between gap-3">
         <h1 className="text-lg font-bold text-slate-100 sm:text-xl">Cadenza Notebook</h1>
-        {/* Mobile touch targets: header actions get a 44px min-height below `sm`, compact text-links at sm+. */}
+        {/* Mobile touch target: the header link gets a 44px min-height below `sm`, compact at sm+. */}
         <div className="flex shrink-0 items-center gap-1 text-xs sm:gap-3">
-          <button
-            type="button"
-            onClick={() => setEditing((e) => !e)}
-            className="flex min-h-11 items-center px-2 text-cadenza-400 hover:text-cadenza-300 sm:min-h-0 sm:px-0"
-            data-testid="edit-toggle"
-          >
-            {editing ? "Hide source" : "Edit source"}
-          </button>
           <Link
             to="/playground"
             className="flex min-h-11 items-center px-2 text-cadenza-400 hover:text-cadenza-300 sm:min-h-0 sm:px-0"
@@ -222,31 +223,24 @@ export default function NotebookPage() {
         </div>
       </div>
 
-      {editing && (
-        <div
-          className="mb-4 overflow-hidden rounded-lg border border-slate-700"
-          aria-label="Notebook source (markdown + Cadenza code cells)"
-          data-testid="doc-editor"
-        >
-          {/* The shared IDE editor (v-guide-infra's LazyCodeEditor) — Cadenza highlighting + squiggles +
-              type-on-hover, code-split behind React.lazy so it never touches first paint. */}
-          {/* No `ide`: the doc is markdown+code, not one Cadenza program — see NOTEBOOK_IDE removal note.
-              CodeEditor's base still applies the lexical Cadenza highlighter (colors the code fences). */}
-          <LazyCodeEditor value={doc} onChange={setDoc} minHeight="16rem" />
-        </div>
-      )}
-
       <div className="space-y-2" data-testid="notebook">
         {cells.map((cell, i) =>
           cell.kind === "prose" ? (
-            <ProseView key={i} markdown={cell.markdown} />
+            <ProseView key={cell.id ?? i} markdown={cell.markdown} />
           ) : cell.directive.kind === "widget" ? (
             (() => {
               const parsed = parseWidgets(cell.source);
-              return <WidgetControls key={i} widgets={parsed.widgets} errors={parsed.errors} values={values} onChange={onWidgetChange} />;
+              return <WidgetControls key={cell.id ?? i} widgets={parsed.widgets} errors={parsed.errors} values={values} onChange={onWidgetChange} />;
             })()
           ) : (
-            <CodeCellView key={i} source={cell.source} hidden={cell.directive.kind === "hidden"} state={states[i]} />
+            <CodeCellView
+              key={cell.id ?? i}
+              source={cell.source}
+              hidden={cell.directive.kind === "hidden"}
+              state={states[i]}
+              ide={cellIde(cells, i, widgets, values, surface)}
+              onEdit={(src) => onCellEdit(i, src)}
+            />
           ),
         )}
       </div>
@@ -276,10 +270,47 @@ function isFailure(output: CellOutput): boolean {
   return output.render === "trap" || output.render === "timeout" || output.render === "error";
 }
 
-function CodeCellView({ source, hidden, state }: { source: string; hidden: boolean; state?: CellState }) {
-  // A HIDDEN cell runs for its scope (defs used downstream) but shows NO source and NO success output —
-  // it's a setup cell, not a result. It renders nothing while idle/running/succeeding; only a FAILURE is
-  // surfaced (so a broken hidden cell isn't invisible). A non-hidden cell shows source + full output.
+/// The IdeConfig a code cell's editor gets (from `cellIde`) — Cadenza highlighting + squiggles + hover,
+/// scoped to this cell in its sequential scope.
+type NotebookIde = ReturnType<typeof cellIde>;
+
+/// An editable code cell: its own Cadenza editor (live per-cell diagnostics via `ide`) + its computed
+/// output. The editor holds a LOCAL buffer seeded from `source` so typing is responsive; each change
+/// commits UP via `onEdit` (the parent debounces the doc → re-parse → re-run). When `source` changes from
+/// OUTSIDE (a fresh load / a programmatic edit), the local buffer re-syncs — guarded so a round-trip of our
+/// own edit (edit → doc → re-parse → same source) doesn't clobber the live buffer.
+function CodeCellView({
+  source,
+  hidden,
+  state,
+  ide,
+  onEdit,
+}: {
+  source: string;
+  hidden: boolean;
+  state?: CellState;
+  ide: NotebookIde;
+  onEdit: (source: string) => void;
+}) {
+  const [text, setText] = useState(source);
+  const lastEmitted = useRef(source);
+  useEffect(() => {
+    if (source !== lastEmitted.current) {
+      setText(source);
+      lastEmitted.current = source;
+    }
+  }, [source]);
+  const onChange = useCallback(
+    (next: string) => {
+      setText(next);
+      lastEmitted.current = next;
+      onEdit(next);
+    },
+    [onEdit],
+  );
+
+  // A HIDDEN cell runs for its scope (defs used downstream) but shows NO source editor and NO success
+  // output — it's a setup cell. Only a FAILURE is surfaced (so a broken hidden cell isn't invisible).
   if (hidden) {
     if (state?.phase === "done" && isFailure(state.output)) {
       return (
@@ -293,9 +324,11 @@ function CodeCellView({ source, hidden, state }: { source: string; hidden: boole
 
   return (
     <div className="my-3 rounded-lg border border-slate-800 bg-slate-900/40">
-      <pre className="overflow-x-auto border-b border-slate-800 px-3 py-2 font-mono text-sm text-slate-300">
-        {source}
-      </pre>
+      {/* Per-cell editable Cadenza editor — live diagnostics/hover in this cell's sequential scope via
+          `ide` (cellIde). Code-split behind React.lazy. */}
+      <div className="overflow-hidden border-b border-slate-800">
+        <LazyCodeEditor value={text} onChange={onChange} ide={ide} minHeight="2.5rem" />
+      </div>
       <div className="px-3 py-2" data-testid="cell-output">
         {!state || state.phase === "idle" ? (
           <span className="text-xs text-slate-600">not run</span>
