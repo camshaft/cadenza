@@ -1681,19 +1681,44 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // would be an E0308 "expected closure, found a different closure". The cast makes every closure
             // of a given `Ty::Fn` the SAME `Rc<dyn Fn>` type, so they compose in a list/if/match.
             //
-            // If the node's solved type does NOT map to a concrete `Rc<dyn Fn>` (an UNANNOTATED lambda
-            // whose arg/result widths the solver left as a var at the closure node — `(fn (x) (+ x k))`
-            // with no annotation, whose type never fully grounds here), DECLINE: the bare `Rc::new` has a
-            // unique per-closure concrete type, so such a closure placed in a `list`/`if`/`match` beside a
-            // sibling is an E0308 non-unification (a BadArtifact fail), and without a concrete `dyn` type
-            // we cannot coerce it. A decline is the honest `todo` (the wasm target represents these via its
-            // handle ABI; the annotated closures — the overwhelming majority — pass). A concretely-typed
-            // closure gets the `as` cast, so it unifies in any position.
-            let dyn_ty = types::rust_type(&type_of(db, id)).ok_or_else(|| {
-                Reject::decline(
-                    "a closure whose function type is not fully solved here has no native Rust representation",
-                )
-            })?;
+            // The `dyn` type comes from the LIFTED LAMBDA'S OWN param + result types (`lam.params[i].1`,
+            // `lam.ret_ty`) — the AUTHORITATIVE concrete machine types the lifted `fn` signature is built
+            // from (they must map, or `emit_lifted_lambda` itself declines). This is more reliable than
+            // `type_of(id)`: a closure literal stored in a heap COMPOUND element (`(tuple (fn (x) …) …)`,
+            // `(list (fn (x) …) …)`) does NOT get its arrow type grounded at the closure NODE from the
+            // compound-element context (the solver leaves a var at the node), so `type_of(id)` returned a
+            // non-concrete `Ty::Fn` → a spurious decline even though the lambda's body fully determines the
+            // arity + types (breaker: closure-in-heap-compound-element). Building from `lam` makes every
+            // closure whose lifted body is representable spell its `Rc<dyn Fn(…)->…>` — and it is the SAME
+            // string for two closures of the same lifted signature, so the `as` cast still unifies them in a
+            // list/if/match. Fall back to `type_of(id)` only if a `lam` param/result somehow does not map
+            // (it would already have declined at the lifted-fn emit, so this is belt-and-suspenders).
+            let dyn_ty = {
+                let mut param_tys = Vec::with_capacity(lam.params.len());
+                let mut ok = true;
+                for (_, ty) in &lam.params {
+                    match types::rust_type(ty) {
+                        Some(rt) => param_tys.push(rt),
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                let ret_ty = types::rust_type(&lam.ret_ty);
+                match (ok, ret_ty) {
+                    (true, Some(ret)) => {
+                        format!("std::rc::Rc<dyn Fn({}) -> {ret}>", param_tys.join(", "))
+                    }
+                    // A `lam` type that does not map (should not happen — the lifted fn would decline) — fall
+                    // back to the node's solved type; decline if that also fails.
+                    _ => types::rust_type(&type_of(db, id)).ok_or_else(|| {
+                        Reject::decline(
+                            "a closure whose function type is not fully solved here has no native Rust representation",
+                        )
+                    })?,
+                }
+            };
             let closure_expr = format!(
                 "std::rc::Rc::new(move |{}| {ident}({})) as {dyn_ty}",
                 params.join(", "),

@@ -440,6 +440,7 @@ pass	a constant-failure `?` in a NESTED let elides a trapping OUTER-let init it 
 pass	a constant-failure `?` short-circuit ELIDES an earlier trapping let-init whose value it discards
 pass	a constant-index String.at result compares equal to a literal by content
 pass	a constant-index String.at result compares unequal to a different literal
+pass	a constant-returning closure threads through a recursive-generic HOF
 pass	a constructed Ast.Bool leaf drives an evaluated conditional
 pass	a constructor CHOSEN by matching one sum is applied to build another
 pass	a constructor STORED in a tuple is extracted and applied as a first-class closure
@@ -798,6 +799,7 @@ pass	a list mixing integer and float elements is a type error
 pass	a list of a nullary sum written in the bare-member form is exhaustive across every variant
 pass	a list of a sum is exhaustive when the empty and every variant's first-element arm are covered
 pass	a list of bools is exhaustive when the empty and both first-element values are covered
+pass	a list of closures each keeps its own capture, selected by a runtime index
 pass	a list of maps with different keys is homogeneous, not a type error
 pass	a list of maps: a runtime index then looks a runtime key up in the found map
 pass	a list of records with different field sets is a type error
@@ -1159,6 +1161,7 @@ pass	a partial constructor passed to a higher-order function completes the varia
 pass	a partial constructor projected from a tuple literal completes when applied
 pass	a partial constructor stored in a record field completes when applied
 pass	a partially-applied function escapes as a value and runs through a recursive HOF
+pass	a pass-through closure that returns its arg via a trivial let composes at one element type
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
@@ -1342,13 +1345,20 @@ pass	a recursive user sum type is built at run time and renders its variant name
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
 pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
+pass	a recursive-generic filter threading a predicate closure composes at two element types
 pass	a recursive-generic flatten over a nested generic iterator composes at two element types
 pass	a recursive-generic flatten over a nested generic iterator monomorphizes and runs at one element type
 pass	a recursive-generic producer composes at two element types (the tied result var)
 pass	a recursive-generic producer over a list of its own generic-producer results monomorphizes and runs
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
 pass	a recursive-generic producer's element is usable at each instantiation
+pass	a recursive-generic producer's result is consumed by an element-typed consumer
+pass	a recursive-generic transformer composes with itself
+pass	a recursive-generic transformer threading a closure composes at two element types
 pass	a recursive-generic transformer threading an IDENTITY closure at TWO types declines pending the multi-instantiation result tie
+pass	a recursive-generic transformer threading an IDENTITY closure composes at a single element type
+pass	a recursive-generic transformer with a bare-Nil STOP branch composes at two element types
+pass	a recursive-generic transformer with an element-CHANGING closure ties domain to codomain
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
@@ -2141,6 +2151,10 @@ pass	an exported closure with an annotation-mismatched body is rejected, not emi
 pass	an exported entry with a String parameter is called with a string argument
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an i16 segment round-trips at its two's-complement minimum
+pass	an identity closure composes at a single Int element type (not only String)
+pass	an identity closure composes over a COMPOUND (tuple) element at one element type
+pass	an identity closure composes through TWO chained recursive-generic maps at one element type
+pass	an identity closure threads through a recursive-generic HOF at one element type
 pass	an identity conversion unwraps the magnitude unchanged
 pass	an if choosing between two nullary enum variants selects branchlessly on the discriminant
 pass	an if on Type.eq selects a branch at compile time
@@ -2210,15 +2224,20 @@ pass	an over-ceiling integer width in an unused parameter is rejected, like a us
 pass	an un-projected tuple element is not evaluated, so its trap does not occur
 pass	an un-read record field is not evaluated, so its trap does not occur
 pass	an unannotated add narrowed by a UInt8 consumer keeps its overflow guard and traps
+pass	an unannotated closure in a Some payload is typed from the Option's element arrow
 pass	an unannotated closure in a user variant payload is typed from the declared arrow
+pass	an unannotated closure is inferred through an unannotated recursive HOF parameter
 pass	an unannotated closure parameter is grounded from its body and applied at runtime
 pass	an unannotated closure typed Int8 from context computes an in-range constant
 pass	an unannotated closure typed Int8 from context overflows a constant like an explicit Int8 param
 pass	an unannotated closure with an unused parameter in a payload takes the declared parameter type
+pass	an unannotated closure with distinct-typed params is inferred through a generic recursive HOF
 pass	an unannotated generic branching sum fold infers its parameter's instantiation from the arms
 pass	an unannotated generic recursive tree consumer whose result is independent of the payload infers
 pass	an unannotated generic sum ACCUMULATOR infers its parameter from the values folded into it
+pass	an unannotated predicate closure is inferred through a recursive counting HOF
 pass	an unannotated program with a valid typing type-checks and runs
+pass	an unannotated two-argument closure is inferred through a generic recursive HOF
 pass	an unbound name as a parameter's annotation type is rejected
 pass	an unbound name in a map key is a scope error, not a coerced string
 pass	an unbound name in a resume's state position is rejected
@@ -2808,6 +2827,10 @@ pass	scaling a Float64 quantity by a bare integer is a numeric-type mismatch
 pass	scaling a quantity by a bare number of its own numeric type keeps its dimension
 pass	scaling a quantity by a dimensionless quantity keeps its dimension
 pass	scaling an integer quantity by a bare integer of its own type keeps its dimension
+pass	scan emits the seed plus one accumulator per element (n+1 outputs)
+pass	scan over an empty iterator emits just the seed
+pass	scan threads its accumulator left-to-right (an order-sensitive folder)
+pass	scan's kth emitted accumulator is the running fold of the first k elements
 pass	self-operand division is NOT folded to one — it still traps at zero
 pass	self-operand subtraction and xor are zero, and-or are the operand, on a runtime value
 pass	set equality is independent of the order elements are written
@@ -2868,6 +2891,10 @@ pass	symbol ordering — greater-than agrees with the byte order
 pass	symbol ordering — greater-than-or-equal is false when strictly less
 pass	symbols interned from different strings are unequal
 pass	symbols order by content-lexicographic UTF-8 byte order — less-than
+pass	take-while composed after a map threads both transformers' closures
+pass	take-while excludes the failing element and everything after it (content, not just count)
+pass	take-while where every element satisfies the predicate keeps the whole run
+pass	take-while where the first element fails the predicate returns the empty run
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
@@ -3419,7 +3446,6 @@ todo	a closure whose CALL returns an Option crosses as the value form
 todo	a closure whose body calls a top-level helper function
 todo	a conditional performs only the taken branch's effect — else
 todo	a conditional performs only the taken branch's effect — then
-todo	a constant-returning closure threads through a recursive-generic HOF
 todo	a consumer applies TWO handed-back closures
 todo	a consumer applies the handed-back closure inside a larger expression
 todo	a consumer applies the handed-back closure to an internal constant
@@ -3452,7 +3478,6 @@ todo	a host op with a String parameter composes with the value-heap runtime
 todo	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
 todo	a host-called closure applied to a different argument tracks the input
 todo	a host-called closure with a different body dispatches the right code
-todo	a list of closures each keeps its own capture, selected by a runtime index
 todo	a list-arm constructor element over a runtime-built list
 todo	a literal narrow-width newtype list element in a constructed list grounds to its inner width
 todo	a multi-argument closure among distinct-signature exports
@@ -3470,7 +3495,6 @@ todo	a parameterized export returning a capturing closure is made and called by 
 todo	a parameterized export returning a multi-argument capturing closure
 todo	a parameterized plain export alongside a closure export applies its argument
 todo	a parameterized plain export alongside a closure export — the closure captures and applies
-todo	a pass-through closure that returns its arg via a trivial let composes at one element type
 todo	a produced closure is handed back into a consumer export (the round trip)
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
@@ -3479,13 +3503,6 @@ todo	a record-returning closure alongside a parameterized plain export — the p
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 todo	a recursive evaluator destructures a built Ast by quote patterns and recurses
-todo	a recursive-generic filter threading a predicate closure composes at two element types
-todo	a recursive-generic producer's result is consumed by an element-typed consumer
-todo	a recursive-generic transformer composes with itself
-todo	a recursive-generic transformer threading a closure composes at two element types
-todo	a recursive-generic transformer threading an IDENTITY closure composes at a single element type
-todo	a recursive-generic transformer with a bare-Nil STOP branch composes at two element types
-todo	a recursive-generic transformer with an element-CHANGING closure ties domain to codomain
 todo	a round-trip alongside a parameterized plain export applies its argument
 todo	a round-trip alongside a plain export — the plain export runs
 todo	a round-trip alongside a plain export — the round-trip still works
@@ -3521,16 +3538,7 @@ todo	an escaping closure whose body binds a multi-variable let
 todo	an escaping closure whose body is a match hits the literal arm
 todo	an escaping closure whose body is a match hits the wildcard arm
 todo	an export name with a digit-led kebab segment is rejected, not silently invalid
-todo	an identity closure composes at a single Int element type (not only String)
-todo	an identity closure composes over a COMPOUND (tuple) element at one element type
-todo	an identity closure composes through TWO chained recursive-generic maps at one element type
-todo	an identity closure threads through a recursive-generic HOF at one element type
 todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
-todo	an unannotated closure in a Some payload is typed from the Option's element arrow
-todo	an unannotated closure is inferred through an unannotated recursive HOF parameter
-todo	an unannotated closure with distinct-typed params is inferred through a generic recursive HOF
-todo	an unannotated predicate closure is inferred through a recursive counting HOF
-todo	an unannotated two-argument closure is inferred through a generic recursive HOF
 todo	an unusual in-range width is a first-class type
 todo	and performs the right operand's effect when the left is true
 todo	and short-circuit does not perform the right operand's effect
@@ -3646,14 +3654,6 @@ todo	round-trip: a scalar consumer + a compound consumer of the same closure —
 todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
 todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
-todo	scan emits the seed plus one accumulator per element (n+1 outputs)
-todo	scan over an empty iterator emits just the seed
-todo	scan threads its accumulator left-to-right (an order-sensitive folder)
-todo	scan's kth emitted accumulator is the running fold of the first k elements
-todo	take-while composed after a map threads both transformers' closures
-todo	take-while excludes the failing element and everything after it (content, not just count)
-todo	take-while where every element satisfies the predicate keeps the whole run
-todo	take-while where the first element fails the predicate returns the empty run
 todo	the generated Param accessor carries the @param's declared type into arithmetic
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the round trip tracks the produced closure's captured value

@@ -3818,3 +3818,46 @@ fn rustc_roundtrip_nested_tuple_list_element_binder_with_rest_recursion() {
         );
     }
 }
+
+#[test]
+fn rustc_roundtrip_closure_stored_in_a_heap_compound_element() {
+    // A closure stored in a LIST/TUPLE element, extracted + applied, declined ("a closure whose function
+    // type is not fully solved here has no native Rust representation") while wasm ran it (breaker). The
+    // closure NODE's arrow type is not grounded at a compound-element position (the solver leaves a var at
+    // the node), so `type_of(id)` gave a non-concrete Ty::Fn. Fix: the `Rc<dyn Fn(…)->…>` type is built from
+    // the LIFTED LAMBDA's own param + result types (authoritative concrete machine types), not `type_of`.
+    // (a) a closure in a TUPLE element: two adders extracted + applied — (adder 1)(10) + (adder 2)(10) = 23.
+    let tup = compile_rust(
+        "(module m (def (adder n) (fn (x) (+ x n))) \
+           (def (run) (let (((tuple f g) (tuple (adder 1) (adder 2)))) (+ (f 10) (g 10)))) (export run))",
+    );
+    assert!(
+        tup.contains("Rc<dyn Fn(i64) -> i64>"),
+        "the closure spells a concrete Rc<dyn Fn(i64) -> i64> from the lifted lambda:\n{tup}"
+    );
+    if let Some(out) = rustc_run(&tup, "run()") {
+        assert_eq!(out, "23", "(adder 1)(10) + (adder 2)(10) = 11 + 12 = 23");
+    }
+
+    // (b) a closure in a LIST element, extracted via List.at + applied — (adder 1)(10) = 11.
+    let lst = compile_rust(
+        "(module m (def (adder n) (fn (x) (+ x n))) \
+           (def (run) (let ((fs (list (adder 1) (adder 2)))) \
+             (match (List.at fs 0) ((Some f) (f 10)) ((None u) -1)))) (export run))",
+    );
+    if let Some(out) = rustc_run(&lst, "run()") {
+        assert_eq!(out, "11", "the head closure (adder 1)(10) = 11");
+    }
+
+    // (c) a DIRECT closure literal in a tuple (no adder wrapper) — also grounded from the lifted lambda.
+    let direct = compile_rust(
+        "(module m (def (run) (let (((tuple f g) (tuple (fn (x) (+ x 1)) (fn (x) (+ x 2))))) \
+           (+ (f 10) (g 10)))) (export run))",
+    );
+    if let Some(out) = rustc_run(&direct, "run()") {
+        assert_eq!(
+            out, "23",
+            "direct closure literals in a tuple: 11 + 12 = 23"
+        );
+    }
+}
