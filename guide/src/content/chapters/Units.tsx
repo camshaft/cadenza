@@ -1,5 +1,6 @@
 import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
+import { Link } from "react-router-dom";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
 
@@ -236,7 +237,10 @@ export default function Units() {
         dimensions and a metric-plus-imperial assembly is precise to the fraction. Float only appears at the
         very end, in the <em>mesh</em> the renderer draws (an arbitrary-angle rotation needs sine and cosine,
         which aren't rational). Exact where it matters, float only at the geometry kernel — and the{" "}
-        <C>/cad</C> page lets you see a model like this rendered.
+        <Link to="/cad" className="font-medium text-cadenza-300 underline-offset-2 hover:underline">
+          CAD page
+        </Link>{" "}
+        lets you see a model like this rendered.
       </P>
 
       <Why tenet="Dimensions are checked, then erased">
