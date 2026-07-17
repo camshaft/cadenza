@@ -58,3 +58,7 @@ pub mod fold;
 /// The DynamoDB log backend (L1d): the real many-writer ordering authority (vision §2.1). The event↔item
 /// MARSHALLING is pure + tested in the default build; the DynamoDB client is behind the `aws` feature.
 pub mod dynamo_log;
+
+/// Messaging over the log (L2a): a [`msg::Message`]/[`msg::Ack`] is a typed durable event (vision §9); the
+/// inbox becomes a fold over these (L2b). Pure encode/decode to the [`Event`] payload — no queue.
+pub mod msg;
