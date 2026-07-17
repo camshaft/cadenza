@@ -1053,6 +1053,26 @@
   (input  (= (Ok 1) (Err 1)))
   (output (: false Bool)))
 
+(case "nested-Option equality observes the OUTER variant and matches identical nesting"
+  (doc    "The DEPTH companion of the `(Ok 1)` vs `(Err 1)` discriminant case: the variant tag must be
+           observed at the OUTER level of a NESTED sum too. At type `Option (Option Int64)`, `(Some (None))`
+           (outer `Some`, inner `None`) and `(None)` (outer `None`) are DIFFERENT values — the outer
+           discriminant differs — so `=` is FALSE; while `(Some (None))` equals itself (identical nesting) →
+           TRUE. Encoded `10·(SomeNone = None ? 1 : 0) + (SomeNone = SomeNone ? 1 : 0)` = `10·0 + 1` = 1. A
+           heap walk that compared payloads without the outer variant tag — conflating the inner `None`
+           payload of `(Some None)` with the outer `None` — would flip the first compare to true → 11. Pins
+           that `=` observes the discriminant at the OUTER level of a nested Option, the runtime/value
+           companion of the match-exhaustiveness cases that distinguish `(Some (None _))` from `(None _)`.")
+  (input  (do
+            (def (main (: k Int64))
+              (+ (* 10 (if (= (: (Some (None)) (Option (Option Int64)))
+                              (: (None)        (Option (Option Int64)))) 1 0))
+                 (if (= (: (Some (None)) (Option (Option Int64)))
+                        (: (Some (None)) (Option (Option Int64)))) 1 0)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
+
 (case "two constant records with the same fields in different written order are equal"
   (doc    "Constant record equality folds structurally and compares fields as a SET keyed by name, not by
            written order: `(= (record (x 1) (y 2)) (record (y 2) (x 1)))` is true — both denote the same
