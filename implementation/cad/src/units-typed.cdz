@@ -18,6 +18,11 @@
 ///
 /// This composes with the existing bare-`Rational` `Vec3r` (exact.cdz): `Vec3m` here IS the meter-model
 /// store; `to-vec3r` bridges to the existing CSG/bbox machinery unchanged (all still exact Rational).
+///
+/// NUMERIC MODE (S1-redux): `@!default-fraction Rational` — exact-by-default, so a bare `n/d` is an exact
+/// Rational (no `Rational.of` noise). Module-local (doesn't leak into imported `exact`); an `Int64` under
+/// this default is forced with an explicit `(… : Int64)` annotation.
+@!default-fraction Rational
 
 import { Vec3r } from "exact"
 import { v3r } from "exact"
@@ -25,8 +30,6 @@ import { v3r } from "exact"
 /// A length in the base METER unit — the type an author supplies for a coordinate/size. Written inline
 /// (a `type Len = …` alias does not bridge the variant-payload path either); this is the ONE spelling of
 /// "an exact length" the API uses. `Length` = `Qty` of `Rational` in the base meter unit.
-///  (When the file-top `default-fraction` pragma capability lands — filed, pending — the `Rational.of`
-///   calls in callers become bare `n/d`; the TYPES here are unaffected.)
 
 /// The meter-model position/size vector: three exact-`Rational` MAGNITUDES, understood as METERS. This is
 /// the storage form (bare Rational, so it rides the existing exact CSG/bbox math); the UNIT lives in the
@@ -56,7 +59,7 @@ def len-m(q: Qty(Rational, Unit.base(#"meter"))) = Qty.value(q)
 
 /// A meter length from an integer count of meters (the everyday constructor: `meters(5)` = a 5-metre
 /// length). Sugar over `Qty.of` so callers rarely spell the unit by hand.
-def meters(n: Int64) = Qty.of(Rational.of(n, 1), Unit.of(#"meter"))
+def meters(n: Int64) = Qty.of(Rational.of(n, (1 : Int64)), Unit.of(#"meter"))
 
 /// Bridge a meter-model vector to the exact bare-`Rational` `Vec3r` the existing CSG/bbox machinery
 /// (exact.cdz) consumes — the magnitudes ARE the (meter) coordinates, so this is a direct re-pack, still
@@ -70,25 +73,25 @@ def v3-len-stores-exact-meters() =
   // Build from three 1/2/3-metre lengths; stored magnitudes are exactly 1, 2, 3 (bare Rational meters).
   let v = v3-len(meters(1), meters(2), meters(3)) in
   match v with | Vec3m.V3m(x, y, z) =>
-    if x == Rational.of(1, 1) then
-      (if y == Rational.of(2, 1) then (if z == Rational.of(3, 1) then unit else trap("z")) else trap("y"))
+    if x == 1 / 1 then
+      (if y == 2 / 1 then (if z == 3 / 1 then unit else trap("z")) else trap("y"))
     else trap("x")
 
 @test
 def a-coordinate-round-trips-out-as-a-meter-length() =
   // m-x is the dual of v3-len: read the x coordinate back as a Qty in meters, magnitude exactly 1.
   let v = v3-len(meters(1), meters(2), meters(3)) in
-  if Qty.value(m-x(v)) == Rational.of(1, 1) then unit else trap("m-x")
+  if Qty.value(m-x(v)) == 1 / 1 then unit else trap("m-x")
 
 @test
 def authoring-in-inches-stores-exact-meters() =
   // THE showcase of the operator's model: author a coordinate in INCHES; the language converts to exact
   // Rational METERS at the boundary. 1 inch = 127/5000 m EXACTLY (no float rounding). Author-unit-agnostic.
-  let one-inch = Qty.of(Rational.of(1, 1), Unit.of(#"inch")) in
+  let one-inch = Qty.of(1 / 1, Unit.of(#"inch")) in
   let as-exact-meters = Qty.of(Qty.value(Unit.in(Unit.of(#"meter"), one-inch)), Unit.of(#"meter")) in
   let v = v3-len(as-exact-meters, meters(0), meters(0)) in
   match v with | Vec3m.V3m(x, _, _) =>
-    if x == Rational.of(127, 5000) then unit else trap("1 inch = 127/5000 m exactly")
+    if x == 127 / 5000 then unit else trap("1 inch = 127/5000 m exactly")
 
 @test
 def to-vec3r-bridges-to-the-exact-csg-model() =
@@ -96,6 +99,6 @@ def to-vec3r-bridges-to-the-exact-csg-model() =
   // magnitudes, so a units-typed build plugs into the existing exact machinery unchanged.
   let v = v3-len(meters(4), meters(5), meters(6)) in
   match to-vec3r(v) with | Vec3r.V3r(x, y, z) =>
-    if x == Rational.of(4, 1) then (if z == Rational.of(6, 1) then unit else trap("z")) else trap("x")
+    if x == 4 / 1 then (if z == 6 / 1 then unit else trap("z")) else trap("x")
 
 export { Vec3m.*, v3-len, m-x, m-y, m-z, len-m, meters, to-vec3r }
