@@ -1,0 +1,19 @@
+// RESIDUAL of the closure-aggregate tie (v-inference, after _w44 fixes the base case). _w44 ties an
+// unannotated closure's DIRECT aggregate result (tuple/user-sum) to its domain, so `gmap (fn (x) (x,x))`
+// at ≥2 distinct domains now compiles+runs. THIS residual: a closure whose result is a COMPOUND that
+// CONTAINS ANOTHER generic call — `(fn (x) (tuple (from-list (list x)) x))` — still DECLINES CDZ0201 at
+// ≥2 distinct domains. The inner `from-list` call's element must tie to the closure param through the
+// enclosing tuple, which _w44's `db.param_types` seeding of the DIRECT param doesn't reach (the inner
+// generic call re-instantiates its own scheme). PREREQ: only manifests once _w44 is on trunk (on bare
+// trunk the base gmap-aggregate case declines first, masking this). Likely a further extension of
+// `solved_lambda_arrow_under` / the scheme solve to propagate the seeded domain into a nested generic
+// call's argument. LOW priority (exotic shape; v-iterators' real giter closures are direct aggregates
+// _w44 covers) — pin so it is not lost; probe after _w44 lands + v-iterators reports which shapes remain.
+type GIter = | Nil | Cons(a, GIter(a))
+def from-list(xs) = match xs with | [] => GIter.Nil(unit) | [h, .. t] => GIter.Cons(h, from-list(t))
+def count(it) = match it with | GIter.Nil(_) => 0 | GIter.Cons(_, r) => 1 + count(r)
+def gmap(it, f) = match it with | GIter.Nil(_) => GIter.Nil(unit) | GIter.Cons(h, rest) => GIter.Cons(f(h), gmap(rest, f))
+@test
+def t() = if count(gmap(from-list([1, 2]), fn(x) => (from-list([x]), x))) == 2 then unit else trap("t")
+@test
+def b() = if count(gmap(from-list([true, false]), fn(x) => (from-list([x]), x))) == 2 then unit else trap("b")
