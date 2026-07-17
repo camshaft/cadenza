@@ -3449,6 +3449,7 @@ todo	a host call's response is an ordinary value that feeds a LATER host call
 todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 todo	a host op with a String parameter composes with the value-heap runtime
+todo	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
 todo	a host-called closure applied to a different argument tracks the input
 todo	a host-called closure with a different body dispatches the right code
 todo	a list of closures each keeps its own capture, selected by a runtime index
