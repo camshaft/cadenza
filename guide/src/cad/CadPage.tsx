@@ -30,13 +30,16 @@ import { MeshView } from "./MeshView.tsx";
 import type { Surface } from "../compiler/client.ts";
 import { LazyCodeEditor } from "../editor/LazyCodeEditor.tsx";
 
-// /cad's IDE config for the shared editor: the program is a self-contained module (no wrapping), so the
-// compiled text IS the editor text (prefix 0), and the surface is fixed to CAD_SURFACE. This turns on the
-// Cadenza lexical + semantic highlighting + squiggles/hover — the operator-requested IDE editor.
-const CAD_IDE = {
-  surface: () => "sexpr" as Surface,
-  prepare: (editorText: string) => ({ compiled: editorText, wrapPrefixBytes: 0 }),
-};
+// /cad's IDE config is built INSIDE the component (it must read the LIVE edit surface) — see `cadIde`
+// below. The program is a self-contained module (no wrapping), so the compiled text IS the editor text
+// (prefix 0). This turns on the Cadenza lexical + semantic highlighting + squiggles/hover.
+//
+// ⚠ The linter surface MUST match the surface the BUFFER is written in. The buffer is seeded per the global
+// toggle (`STARTER[surface]`), so a reader with the toggle on ML edits ML source — hardcoding the linter to
+// "sexpr" (an earlier bug) compiled that ML buffer AS s-expr → every line a parse error → all-red squiggles
+// (operator P-C). The s-expr requirement is for the DRIVER (meshFromSolid parses s-expr), which lives in the
+// RUN path (`runComponent(component, "sexpr")` in `runModel`), NOT the linter — so it's kept separate: the
+// IDE surface tracks the edit surface; the mesh path forces s-expr on the compiled value.
 
 /// The starter Solid model per surface — a 4mm cube with a 2.5-radius spherical dent (the classic CSG
 /// difference). Self-contained (inline `type` defs + `def main`): the CAD library modules aren't resolvable
@@ -74,6 +77,19 @@ export default function CadPage() {
   const [source, setSource] = useState(() => STARTER[surface] ?? STARTER.ml);
   const [status, setStatus] = useState<Status>({ phase: "idle" });
   const runningRef = useRef(false);
+
+  // The IDE config for the editor — the linter surface tracks the LIVE edit surface (the global toggle),
+  // so the buffer is diagnosed in the surface it's written in (fixes the all-red-squiggles P-C bug). The
+  // starter is a complete `(do …)`/module, so the compiled text IS the editor text (no wrap, prefix 0).
+  // `surface` is read through a ref so the getter always sees the current toggle without rebuilding the
+  // editor's extension array (which would remount on every toggle). The s-expr-for-driver requirement is
+  // enforced separately in `runModel` (the mesh path), not here.
+  const surfaceRef2 = useRef(surface);
+  surfaceRef2.current = surface;
+  const cadIde = useRef({
+    surface: () => surfaceRef2.current,
+    prepare: (editorText: string) => ({ compiled: editorText, wrapPrefixBytes: 0 }),
+  }).current;
 
   const runModel = useCallback(
     async (src: string, from: Surface) => {
@@ -152,7 +168,7 @@ export default function CadPage() {
         {/* Editor + Run */}
         <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-slate-800 bg-slate-900/40">
           <div className="min-h-[8rem] flex-1 overflow-auto">
-            <LazyCodeEditor value={source} onChange={setSource} ide={CAD_IDE} minHeight="8rem" />
+            <LazyCodeEditor value={source} onChange={setSource} ide={cadIde} minHeight="8rem" />
           </div>
           <div className="flex items-center justify-between border-t border-slate-800 px-3 py-2">
             <span className="font-mono text-xs text-slate-500">
