@@ -81,3 +81,9 @@ pub mod sub;
 /// events; all event MEANING is in the Cadenza interpret program. This is the codeact-spike shape (compiler +
 /// wasmtime in-process) realized as the deploy-once kernel. See `DESIGN-agent-runtime-minimal-kernel.md`.
 pub mod kernel;
+
+/// Bootstrap + genesis injection (rung KC — the thin CLI's log half): [`boot::inject_genesis`] seeds the log
+/// with the genesis interpret SOURCE as a `program` event; [`boot::latest_program`] is the kernel's genesis
+/// lookup (the latest `program` event's source). No hardcoded genesis — the first program is data in the log
+/// the CLI injects (operator fork-5 ruling), and a later `program` event self-supersedes it.
+pub mod boot;
