@@ -519,6 +519,62 @@ next) proceeds in parallel — it's kernel-location-independent and feeds a3/b3'
 
 ---
 
+## 10. DATA TYPE INVARIANTS — `@invariant` (operator directive, 2026-07-17)
+
+**Operator directive:** *"data type invariants … annotations on data types that must be held. Just like
+requires/ensures these would be included as part of verification as well as optimizations."* This is the
+DATA-level member of the verification-annotation family — `@requires`/`@ensures` are FUNCTION pre/post-
+conditions, `@trap_free` is a whole-function crash-free proof, and `@invariant` is a property EVERY VALUE of
+a type maintains — all discharged by the same HOL kernel, all feeding both verification and optimization.
+
+### 10.1 Surface (fork I1, route to operator)
+`@invariant(<predicate over the value>)` on a type/record/sum declaration, in the `@`-family:
+`@invariant(> (len it) 0) (type NonEmptyList …)` / `@invariant(and (>= it 0) (<= it 100)) (type Percent Int64)`.
+The value is bound to `it` (same result-binder convention as `@ensures` — one implicit-subject name across
+the family, v-syntax's ruling). Fork I1 (naming/placement): `@invariant` on the type decl (my lean — names
+the concept, fits the family) vs a refinement-type surface (`Int64 where (…)`, the 2C option) — the two share
+the `it` binder so they stay consistent; `@invariant` first, refinement-types later. Route to operator.
+
+### 10.2 The obligation — ESTABLISH + PRESERVE (the classic invariant proof shape)
+An invariant `I` on type `T` is really a pair of obligations, both reusing the `@requires`/`@ensures`
+machinery:
+- **ESTABLISH:** every CONSTRUCTOR of `T` must prove its result satisfies `I` — i.e. `I` is an implicit
+  `@ensures(I[it := constructed value])` on each constructor. A constructor that can't establish `I` is a
+  compile error (or, per the failure-mode fork, must carry a `@requires` strong enough to).
+- **PRESERVE:** every operation returning `T` must prove it maintains `I` — `I` is an implicit `@ensures(I)`
+  on the result, AND (the dual) a consumer may ASSUME `I` on any `T` input (an implicit `@requires(I)`
+  granted for free, since every `T` value provably holds `I`). So an invariant is simultaneously a proof
+  OBLIGATION on producers and a proof GIFT to consumers — that gift is what powers the optimization.
+This is exactly `@ensures`-on-every-constructor + `@requires`-you-get-free-on-every-consumer, so b4c's
+denotation + b3's discharge machinery apply unchanged; `@invariant` adds the surface + the establish/preserve
+obligation generation, not new kernel machinery.
+
+### 10.3 Optimization payoff — data-level proof-guided elision
+A held invariant is a proven fact the optimizer consumes, exactly like a proven no-overflow (§3): a
+`NonEmptyList` value provably has `len > 0` → the optimizer ELIDES every empty-guard/`head`-bounds-check on
+it; a `Percent` provably in `[0,100]` → range-guards on it are dead. This is the DATA-level analogue of b3:
+where b3 elides a guard a *proof at a node* discharges, `@invariant` elides a guard the *type's invariant*
+discharges — and because the invariant holds for EVERY value, the elision applies everywhere the typed value
+flows (a stronger, whole-type version of the per-node elision). Same `provably_no_overflow`-style disjunction
+seam, keyed on the value's type-invariant instead of a per-node `Thm`.
+
+### 10.4 Failure mode (fork I2, route to operator) + dependency
+**I2 — a constructor that can't establish `I`:** REJECT (compile error "constructor cannot establish
+invariant `I`") — my lean, consistent with `@ensures`/`@trap_free` (an invariant is a promise). A `@requires`
+on the constructor that makes `I` establishable is the escape hatch. Route to operator.
+**Dependency:** `@invariant` shares the compile-time-discharge path — the kernel-in-prelude (A1) + the b4c
+oracle + b3's elision seam. It lands AFTER the a1/a3/b3 foundation (it reuses all of it); the corpus
+obligation shapes (establish/preserve as `@ensures`-style discharges) can be pinned in parallel now, like the
+`@trap_free` t1 sources.
+
+### 10.5 Forks routed to operator
+- **I1 (surface):** `@invariant(pred)` on the type decl (my lean) vs a refinement-type `where`-surface
+  (defer; shares the `it` binder).
+- **I2 (failure mode):** REJECT a constructor that can't establish the invariant (my lean) vs warn.
+- **(shared) dependencies:** the (A1) kernel-in-prelude + b4c/b3 discharge+elision path `@invariant` reuses.
+
+---
+
 ## References
 - [DESIGN-verification-hol-kernel.md](DESIGN-verification-hol-kernel.md) — the kernel this builds on
   (unforgeable `Thm`, the trust boundary, the LCF check-is-trivial/find-is-untrusted payoff).
