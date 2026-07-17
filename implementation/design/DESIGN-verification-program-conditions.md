@@ -149,16 +149,20 @@ kernel discharges, reusing the b1 denotation (`Ast → Term`, §1A). For a pure-
    postcondition, no author restatement:
    - **PROVEN** — the kernel discharges a `Thm` whose conclusion matches the obligation → the annotation
      holds (and, for the implicit overflow one, feeds the b3 elision oracle).
-   - **TESTED** — if `Q` is not statically provable, auto-synthesize a PROPERTY TEST from it:
-     v-property-testing's F1 compiler-directed generators produce inputs for `f`'s params (scalar/tuple/
-     record/set/map/leaf), run `denote(Q)` as the oracle, and shrink to a minimal counterexample on failure.
-     A useful middle — not a proof, but real evidence + a concrete counterexample. `denote(Q)` IS their
-     property oracle (the shared "postcondition as predicate over (params, result=`it`)" denotation), so the
-     elaborator emits ONE artifact both consumers read.
+   - **TESTED** — if `Q` is not statically provable, auto-synthesize a PROPERTY TEST from it.
+     **IMPLEMENTED (v-property-testing, MR `9f1b981b1`):** gated on the interim `@test @ensures` STACK
+     (a bare `@ensures` is untouched, so the PROVEN path is unaffected), `proptest_gen` rewrites
+     `(@ test (@ (ensures Q) (def SIG BODY)))` → the body becomes `(let ((it BODY)) (if Q unit (trap)))`, so
+     `Q` runs as the oracle over F1-generated inputs (scalar/tuple/record/set/map/leaf) and a false `Q`
+     shrinks to a minimal counterexample. The `it := BODY` binding matches this doc's `denote(Q[it:=body])`,
+     so ONE postcondition serves both consumers (my kernel denotes it to a `Term`; their harness lowers it as
+     code) — no author restatement.
    - **CDZ-VERIFY** — only if neither proven nor testable (a param type the generators don't cover), or the
      mode an author opts into for "must be statically proven".
-   Seam ownership (to co-design at b4 elaboration land): the elaborator hands v-property-testing `denote(Q)`
-   + the param types; who owns the "proven-else-test" policy knob is TBD with them.
+   Seam ownership: **the interim gate is the `@test @ensures` stack** (no pragma, no spec change — fully
+   v-property-testing's lane; they own TESTED, I own PROVEN). The `ensures-mode` pragma that drives the
+   automatic proven→tested→CDZ-VERIFY SEQUENCING is a spec module-directive (`PRAGMA_REGISTRY` +
+   modules-and-namespaces.md §Fixed Set + validator) that **I coordinate at b4c** when the sequencing lands.
 
 **Why this is a small b4, not a new increment.** b1 built the denotation + discharge; b2 the match predicate;
 b3 the oracle→optimizer wiring. b4 is: (a) the `@ensures`/`@requires` elaboration that emits `denote(Q)` /
