@@ -6540,6 +6540,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn debug_module_path_covers_the_documented_edge_specs() {
+        // The doc-comment promises three edges the happy-path test above skips; pin them so DWARF
+        // determinism can't silently regress on an unusual spec (DESIGN-debug-info-rcdzc.md §4).
+        // (1) EMPTY spec (only when a spec is itself empty) — no leading `./` to strip, so verbatim (empty).
+        assert_eq!(debug_module_path(""), "");
+        // (2) A trailing-slash dir-like path is relative → kept verbatim (not an absolute-path reduction).
+        assert_eq!(debug_module_path("src/"), "src/");
+        // (3) On this POSIX host a backslash is NOT a path separator, so a Windows-style relative path is
+        //     kept verbatim (it degrades to file-name only on a Windows host) — still deterministic here.
+        assert_eq!(debug_module_path("a\\b.cdz"), "a\\b.cdz");
+        // A bare `./` strips to empty (the prefix is the whole spec).
+        assert_eq!(debug_module_path("./"), "");
+    }
+
+    #[test]
+    fn program_name_falls_back_to_main_when_a_spec_has_no_file_stem() {
+        // `program_name` is the artifact/query name a spec defaults to; a normal path yields its stem,
+        // but a stem-less spec (root, `..`, or empty) falls back to the literal "main" — pin the fallback
+        // so a query artifact never ends up unnamed.
+        assert_eq!(program_name("src/app.cdz"), "app");
+        assert_eq!(program_name("app.sexp"), "app");
+        assert_eq!(program_name("/"), "main");
+        assert_eq!(program_name(".."), "main");
+        assert_eq!(program_name(""), "main");
+    }
+
     /// A throwaway directory unique to `tag`, created empty. The caller populates + removes it.
     fn tmp(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("cdz-expand-{tag}-{}", std::process::id()));
