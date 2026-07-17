@@ -176,3 +176,23 @@
   (call   main)
   (host-responses (respond Param.width (: 42 Int64)))
   (output (: 42 Int64)))
+
+; PLACEMENT INVARIANT: a `@param` is a v1 TOP-LEVEL annotation only — its `(@ (param …) name)` attaches to a
+; top-level definition slot (wrapped by the `: Type`), NOT to a value position. A `@param` written INSIDE a
+; value position (a `do`-block statement, a nested expression) is a MISPLACED annotation: the front-end's
+; annotation-placement guard rejects the surviving `(@ …)` node as CDZ0201 ("an (@ …) annotation cannot appear
+; here — an annotation attaches to a top-level definition …"), a SINGLE clean diagnostic. This pins the sidecar
+; ↔ annotation-guard interaction: a nested `@param` neither generates a `Param` op (the annotation is rejected
+; before the sidecar's generate would matter) NOR cascades a pile of unbound-name errors over the annotation's
+; internal tokens (@/param/widget/name) — the historical failure mode. Guards that the clean placement reject
+; holds for `@param` specifically, so a future change to either the sidecar scan or the guard can't silently
+; reintroduce the cascade or let a mis-scoped param through.
+(case "a nested @param annotation in a value position is rejected as a misplaced annotation"
+  (doc    "A `@param` is a v1 TOP-LEVEL annotation; written inside a `do`-block (a value position) its
+           `(@ (param …) width)` node is a misplaced annotation. The front-end annotation-placement guard
+           rejects it as CDZ0201 (an (@ …) annotation cannot appear here — it attaches to a top-level
+           definition, not an expression / do-block position) — ONE clean diagnostic, not the historical
+           cascade of unbound-name errors over the annotation's internal tokens (@/param/widget/width) and
+           not a silently-generated Param op. Pins the sidecar ↔ annotation-guard interaction for @param.")
+  (input  (do (: (@ (param (: widget slider)) width) Int64) 1))
+  (error  CDZ0201))
