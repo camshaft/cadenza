@@ -101,7 +101,9 @@ The reader MUST NOT run any program code or learn any grammar when lexing a tagg
 
 The reader MUST, when lexing a tagged template, only split the string body into literal chunks and `{…}` holes.
 
-Each interpolation hole `{expr}` MUST be parsed as an ordinary expression of the language and MUST appear in the node as such.
+Each interpolation hole `{expr}` MUST be parsed as an ordinary expression of the language.
+
+Each parsed interpolation hole MUST appear in the tagged-template node as one of its holes, so that the tag function receives the hole expressions in source order.
 
 The count of literal chunks in a tagged template MUST be exactly one greater than the count of holes, so that the chunks and holes reconstruct the original text in order.
 

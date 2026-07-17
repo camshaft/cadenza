@@ -207,7 +207,7 @@ impl<'a> Parser<'a> {
     // expression of the language.
     //
     //= spec/capabilities/metaprogramming.md#a-tagged-template-is-a-binding-dispatched-compile-time-macro-over-literal-chunks-and-holes
-    //# Each interpolation hole `{expr}` MUST be parsed as an ordinary expression of the language and MUST appear in the node as such.
+    //# Each interpolation hole `{expr}` MUST be parsed as an ordinary expression of the language.
     fn graft_ml_expr(&mut self, src: &str, span: Span) -> StructId {
         let parsed = read_ml(src);
         for e in &parsed.errors {
@@ -1005,6 +1005,8 @@ impl<'a> Parser<'a> {
                 // its own arena; `graft` copies the parsed root's subtree into this builder.
                 let holes_head = self.name("holes", span);
                 let mut holes = vec![holes_head];
+                //= spec/capabilities/metaprogramming.md#a-tagged-template-is-a-binding-dispatched-compile-time-macro-over-literal-chunks-and-holes
+                //# Each parsed interpolation hole MUST appear in the tagged-template node as one of its holes, so that the tag function receives the hole expressions in source order.
                 for src in hole_srcs {
                     holes.push(self.graft_ml_expr(&src, span));
                 }
