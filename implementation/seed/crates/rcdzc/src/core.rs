@@ -869,6 +869,23 @@ pub enum Core {
         lhs: StructId,
         rhs: StructId,
     },
+    /// A runtime ORDERING comparison on two String/Symbol operands — result is a `Bool` (an i32). A
+    /// String/Symbol is a UTF-8 byte leaf (`Shape::Str`), and its blessed total order is CONTENT-
+    /// LEXICOGRAPHIC over the interned bytes (`core-semantics.md` §Ordering, `17-symbols` §order). Kept
+    /// DISTINCT from `Compare` (integer/bool-specialized: an `i64.lt_s` on a String HANDLE would compare
+    /// heap addresses, not content). The wasm backend emits an INLINE byte-lexicographic walk over the two
+    /// leaves (`bytes-len`/`bytes-get`, already-exported — HASH-NEUTRAL, the same ops `String.at`/scalar-len
+    /// use), computing the three-way relation and applying `op`; the rust backend compares the native
+    /// `String`s with `op` directly (Rust's `String`/`str` order IS content-lexicographic). `op` is an
+    /// ordering prim (`Lt`/`Le`/`Gt`/`Ge`) — EQUALITY on String/Symbol goes through `ValueEq` (structural),
+    /// not here. Present only for a RUNTIME operand; two constant strings fold to `ConstBool` in `lower`.
+    /// Both operands are compacted to a canonical flat leaf before the compare (a rope compares by content,
+    /// not header bytes — the same canonicalization `ValueEq` applies).
+    StrCmp {
+        op: Prim,
+        lhs: StructId,
+        rhs: StructId,
+    },
     /// A runtime FLOAT comparison on two float operands — result is a `Bool` (an i32). Kept DISTINCT from
     /// `Compare` (which is integer/bool-specialized: `eqz`, divisibility, type-bound + refinement folds,
     /// all invalid for a float) so the float path has its own clean emit. Only `Prim::FEq` today —

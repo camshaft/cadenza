@@ -778,6 +778,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         }
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
+        | Core::StrCmp { lhs, rhs, .. }
         | Core::FloatCompare { lhs, rhs, .. }
         | Core::ValueEq { lhs, rhs }
         | Core::And { lhs, rhs, .. }
@@ -1029,6 +1030,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         }
         crate::core::Core::Arith { lhs, rhs, .. }
         | crate::core::Core::Compare { lhs, rhs, .. }
+        | crate::core::Core::StrCmp { lhs, rhs, .. }
         | crate::core::Core::FloatCompare { lhs, rhs, .. }
         | crate::core::Core::ValueEq { lhs, rhs }
         | crate::core::Core::And { lhs, rhs, .. }

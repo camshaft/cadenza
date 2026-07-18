@@ -590,6 +590,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         }
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
+        | Core::StrCmp { lhs, rhs, .. }
         | Core::FloatCompare { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. } => {
             binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
@@ -807,6 +808,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::SetAlgebra { lhs: a, rhs: b, .. }
         | Core::Arith { lhs: a, rhs: b, .. }
         | Core::Compare { lhs: a, rhs: b, .. }
+        | Core::StrCmp { lhs: a, rhs: b, .. }
         | Core::FloatCompare { lhs: a, rhs: b, .. }
         | Core::And { lhs: a, rhs: b, .. } => {
             cs.push(a);
@@ -1322,6 +1324,7 @@ fn mark_binder_dups_inner(
         // reach here through a producer, which resets to consuming — matches `binding_escapes`'s `false`).
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
+        | Core::StrCmp { lhs, rhs, .. }
         | Core::FloatCompare { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. } => seq(db, &[(lhs, false), (rhs, false)], live_after, sites),
         Core::Convert { operand, .. } | Core::Not { operand } => {
@@ -2510,6 +2513,16 @@ fn collect_used_ops_into(
             collect_used_ops_into(db, lhs, out);
             collect_used_ops_into(db, rhs, out);
         }
+        // Runtime String/Symbol ordering walks both leaves with `bytes-len`/`bytes-get` and drops an owned-
+        // temporary operand after the borrowing walk (see the `Core::StrCmp` emit). No `bytes-compact` — the
+        // byte walk reads logical bytes through a rope transparently, so no pre-canonicalization is needed.
+        Core::StrCmp { lhs, rhs, .. } => {
+            out.insert(OP_BYTES_LEN);
+            out.insert(OP_BYTES_GET);
+            out.insert(OP_DROP);
+            collect_used_ops_into(db, lhs, out);
+            collect_used_ops_into(db, rhs, out);
+        }
         // Runtime structural equality imports `value-eq` (the compare) AND `drop` (to reclaim an owned
         // temporary operand after the borrowing compare — see the `Core::ValueEq` emit). A STRING/BYTES
         // operand is canonicalized with `bytes-compact` before the compare (a rope vs its flat twin — see
@@ -3628,6 +3641,7 @@ fn licm_invariant(
         // Pure scalar operators — invariant iff every operand is.
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
+        | Core::StrCmp { lhs, rhs, .. }
         | Core::FloatCompare { lhs, rhs, .. } => {
             licm_invariant(db, lhs, inv_params) && licm_invariant(db, rhs, inv_params)
         }
@@ -3723,6 +3737,7 @@ fn licm_children(db: &mut Db, id: StructId) -> Vec<StructId> {
     match core_of(db, id) {
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
+        | Core::StrCmp { lhs, rhs, .. }
         | Core::FloatCompare { lhs, rhs, .. }
         | Core::ValueEq { lhs, rhs }
         | Core::And { lhs, rhs, .. }
@@ -4132,6 +4147,7 @@ fn is_cse_shareable(db: &mut Db, id: StructId) -> bool {
         Core::LocalRef { .. } => false,
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
+        | Core::StrCmp { lhs, rhs, .. }
         | Core::FloatCompare { lhs, rhs, .. } => {
             is_cse_shareable(db, lhs) && is_cse_shareable(db, rhs)
         }
@@ -9534,6 +9550,147 @@ fn emit(
             }
             emit(db, tail, slots, base, high, scratch_ty, layout, out)
         }
+        // RUNTIME STRING/SYMBOL ORDERING — `<`/`<=`/`>`/`>=` on two String/Symbol byte leaves, compared
+        // CONTENT-LEXICOGRAPHICALLY (core-semantics.md §Compound Ordering / 17-symbols §order). Walk both
+        // buffers byte-by-byte via `bytes-get` (which reads the i-th LOGICAL byte, transparently flattening a
+        // rope — so NO pre-compaction is needed, unlike `ValueEq`'s physical `champ_eq`): at the first
+        // differing byte the smaller-byte string is Less; if one is a proper prefix of the other, the SHORTER
+        // is Less. Produce a three-way result `res ∈ {-1,0,1}` (an i32), then map `op` to the bool. HASH-
+        // NEUTRAL: only `bytes-len`/`bytes-get`, both already-exported (the ops `String.at`/scalar-len use).
+        Core::StrCmp { op, lhs, rhs } => {
+            // Operands are String/Symbol HANDLES; an OWNED temporary (a `String.concat` result, say) must be
+            // dropped after the borrowing walk, a borrowed param/local left to its owner.
+            let reclaim_l = matches!(heap_operand_ownership(db, lhs), Ok(HandleOwnership::Owned));
+            let reclaim_r = matches!(heap_operand_ownership(db, rhs), Ok(HandleOwnership::Owned));
+            let sa = *high; // lhs handle
+            let sb = *high + 1; // rhs handle
+            let ia = *high + 2; // loop index
+            let minl = *high + 3; // min(len_a, len_b)
+            let la = *high + 4; // len_a
+            let lb = *high + 5; // len_b
+            let res = *high + 6; // three-way result {-1,0,1}
+            *high = res + 1;
+            scratch_ty.insert(sa, ValType::I32);
+            scratch_ty.insert(sb, ValType::I32);
+            for s in [ia, minl, la, lb, res] {
+                scratch_ty.insert(s, ValType::I32);
+            }
+            // Evaluate both operands (Cadenza order: lhs then rhs) into the handle slots.
+            emit(db, lhs, slots, base + 7, high, scratch_ty, layout, out)?;
+            out.push(Lir::LocalSet(sa));
+            emit(db, rhs, slots, base + 7, high, scratch_ty, layout, out)?;
+            out.push(Lir::LocalSet(sb));
+            // la = bytes-len(sa); lb = bytes-len(sb); minl = min(la, lb) (both borrows).
+            out.push(Lir::LocalGet(sa));
+            out.push(Lir::CallImport(OP_BYTES_LEN));
+            out.push(Lir::LocalSet(la));
+            out.push(Lir::LocalGet(sb));
+            out.push(Lir::CallImport(OP_BYTES_LEN));
+            out.push(Lir::LocalSet(lb));
+            // minl = la < lb ? la : lb  (unsigned; lengths are non-negative)
+            out.push(Lir::LocalGet(la));
+            out.push(Lir::LocalGet(lb));
+            out.push(Lir::LocalGet(la));
+            out.push(Lir::LocalGet(lb));
+            out.push(Lir::I32LtU);
+            out.push(Lir::Select); // [ (la<lb ? la : lb) ]
+            out.push(Lir::LocalSet(minl));
+            out.push(Lir::ConstI32(0));
+            out.push(Lir::LocalSet(ia)); // i = 0
+            out.push(Lir::ConstI32(0));
+            out.push(Lir::LocalSet(res)); // res = 0 (Equal so far)
+            // block { loop { br_out if i>=minl; ca=get(sa,i); cb=get(sb,i);
+            //   if ca!=cb { res = (ca<cb? -1 : 1); br_out }; i++; br loop } }
+            out.push(Lir::Block(BlockType::Empty)); // $done
+            out.push(Lir::Loop(BlockType::Empty)); // $scan
+            out.push(Lir::LocalGet(ia));
+            out.push(Lir::LocalGet(minl));
+            out.push(Lir::I32GeU);
+            out.push(Lir::BrIf(1)); // i >= minl → $done
+            // ca, cb
+            out.push(Lir::LocalGet(sa));
+            out.push(Lir::LocalGet(ia));
+            out.push(Lir::CallImport(OP_BYTES_GET)); // [ca]
+            out.push(Lir::LocalGet(sb));
+            out.push(Lir::LocalGet(ia));
+            out.push(Lir::CallImport(OP_BYTES_GET)); // [ca, cb]
+            // if ca != cb: set res and break. Keep ca,cb on stack for the compare; recompute via slots is
+            // avoided by duplicating through the byte reads — read ca,cb once more is simpler, but we already
+            // popped; instead compute (ca<cb ? -1 : 1) and whether they differ from the two values on stack.
+            // Stack has [ca, cb]. We need both (ca!=cb) and (ca<cb). Spill to two temp slots.
+            {
+                let cb_slot = *high;
+                let ca_slot = *high + 1;
+                *high = ca_slot + 1;
+                scratch_ty.insert(cb_slot, ValType::I32);
+                scratch_ty.insert(ca_slot, ValType::I32);
+                out.push(Lir::LocalSet(cb_slot)); // [ca]
+                out.push(Lir::LocalSet(ca_slot)); // []
+                // if ca != cb { res = (ca <u cb ? -1 : 1); br $done }
+                out.push(Lir::LocalGet(ca_slot));
+                out.push(Lir::LocalGet(cb_slot));
+                out.push(Lir::I32Ne);
+                out.push(Lir::If(BlockType::Empty));
+                out.push(Lir::ConstI32(-1));
+                out.push(Lir::ConstI32(1));
+                out.push(Lir::LocalGet(ca_slot));
+                out.push(Lir::LocalGet(cb_slot));
+                out.push(Lir::I32LtU);
+                out.push(Lir::Select); // [ (ca<cb ? -1 : 1) ]
+                out.push(Lir::LocalSet(res));
+                out.push(Lir::Br(2)); // → $done (out of the `if` and the `loop`)
+                out.push(Lir::End); // end if
+            }
+            // i++
+            out.push(Lir::LocalGet(ia));
+            out.push(Lir::ConstI32(1));
+            out.push(Lir::I32Add);
+            out.push(Lir::LocalSet(ia));
+            out.push(Lir::Br(0)); // → $scan
+            out.push(Lir::End); // end $scan
+            out.push(Lir::End); // end $done
+            // If no differing byte (res still 0), the shorter string is Less: res = la<lb ? -1 : (la>lb ? 1 : 0).
+            out.push(Lir::LocalGet(res));
+            out.push(Lir::I32Eqz);
+            out.push(Lir::If(BlockType::Empty));
+            // res = (la != lb) ? (la <u lb ? -1 : 1) : 0
+            out.push(Lir::ConstI32(-1));
+            out.push(Lir::ConstI32(1));
+            out.push(Lir::LocalGet(la));
+            out.push(Lir::LocalGet(lb));
+            out.push(Lir::I32LtU);
+            out.push(Lir::Select); // [ prev = (la<lb ? -1 : 1) ]
+            out.push(Lir::ConstI32(0));
+            out.push(Lir::LocalGet(la));
+            out.push(Lir::LocalGet(lb));
+            out.push(Lir::I32Ne);
+            // stack [prev, 0, la!=lb] → select = (la!=lb ? prev : 0) = (la==lb ? 0 : (la<lb ? -1 : 1)).
+            out.push(Lir::Select);
+            out.push(Lir::LocalSet(res));
+            out.push(Lir::End);
+            // Reclaim owned-temporary operands now that both walks are done.
+            if reclaim_l {
+                out.push(Lir::LocalGet(sa));
+                out.push(Lir::CallImport(OP_DROP));
+            }
+            if reclaim_r {
+                out.push(Lir::LocalGet(sb));
+                out.push(Lir::CallImport(OP_DROP));
+            }
+            // Map the three-way `res` to the boolean the op wants: Lt res<0, Le res<=0, Gt res>0, Ge res>=0.
+            out.push(Lir::LocalGet(res));
+            out.push(Lir::ConstI32(0));
+            match op {
+                Prim::Lt => out.push(Lir::I32LtS),
+                Prim::Le => out.push(Lir::I32LeS),
+                Prim::Gt => out.push(Lir::I32GtS),
+                Prim::Ge => out.push(Lir::I32GeS),
+                _ => {
+                    return Err(Reject::decline("StrCmp carries a non-ordering prim"));
+                }
+            }
+            Ok(())
+        }
         // The `?`/try boundary block + break are the `block`/`br` emit (BRICK 3): a `Core::Block` emits a
         // wasm `block` whose result type is `T_B`'s core repr, with each contained `Core::Break` emitting a
         // `br` to that block's label. BRICK 1 lays down the node + its non-emit arms; until BRICK 3 fills
@@ -12815,7 +12972,9 @@ fn is_branchless_bool_rhs(db: &mut Db, id: StructId) -> bool {
         Core::Param { .. } | Core::LocalRef { .. } | Core::ConstInt(_) | Core::ConstBool(_) => true,
         // A comparison never traps — safe if its operands are (they are always trap-free scalars, but
         // recurse for uniformity: a comparison operand is a leaf/arith, and only a trap-free one qualifies).
-        Core::Compare { lhs, rhs, .. } | Core::FloatCompare { lhs, rhs, .. } => {
+        Core::Compare { lhs, rhs, .. }
+        | Core::StrCmp { lhs, rhs, .. }
+        | Core::FloatCompare { lhs, rhs, .. } => {
             is_branchless_bool_rhs(db, lhs) && is_branchless_bool_rhs(db, rhs)
         }
         // Bitwise `&`/`|`/`^` are total; `not` is `i32.eqz`; `wrap` truncates — all trap-free.

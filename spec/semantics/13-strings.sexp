@@ -50,6 +50,60 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "a runtime string orders by content-lexicographic byte order"
+  (doc    "Runtime String ORDERING (`<`): `(rep \"app\" …)` builds genuinely-runtime strings whose content is
+           compared content-lexicographically. `\"apple\" < \"applf\"` — same first four bytes, then `e`(0x65)
+           < `f`(0x66) → the first differing byte decides → true → 1. A runtime String is a UTF-8 byte leaf
+           and its blessed total order is the content-lexicographic byte order (core-semantics.md #Compound
+           Ordering Is Lexicographic); the seed walks both leaves' bytes (`bytes-get`/`bytes-len`) rather than
+           declining. The concat forces a runtime value (a bare literal would const-fold the compare).")
+  (input  (do
+            (def (mk (: s String)) (String.concat s ""))
+            (def (main) (if (< (mk "apple") (mk "applf")) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "runtime string ordering makes a proper prefix less than its extension"
+  (doc    "The prefix rule: `\"app\" < \"apple\"` → true → 1. The two share every byte of the shorter string,
+           so no byte differs within the common length; a list/string that is a PROPER PREFIX of another
+           compares LESS than the longer one (core-semantics.md #Compound Ordering Is Lexicographic —
+           shorter-is-less on a common prefix). Pins the length tiebreak of the runtime byte-lexicographic
+           walk, distinct from the first-differing-byte case above.")
+  (input  (do
+            (def (mk (: s String)) (String.concat s ""))
+            (def (main) (if (< (mk "app") (mk "apple")) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "runtime string ordering compares bytes UNSIGNED (a multi-byte scalar exceeds ASCII)"
+  (doc    "Content-lexicographic order compares the UTF-8 bytes as UNSIGNED values: `\"café\" > \"cafz\"`
+           because at byte 3 the `é` encoding's lead byte `0xC3` (195) is GREATER than `z` = `0x7A` (122) —
+           so `(< \"café\" \"cafz\")` is FALSE → 0. A SIGNED byte compare would read `0xC3` as −61 < 122 and
+           wrongly answer true; pins that the walk is unsigned (which for well-formed UTF-8 makes the byte
+           order agree with the Unicode scalar order). The multi-byte companion of the ASCII cases above.")
+  (input  (do
+            (def (mk (: s String)) (String.concat s ""))
+            (def (main) (if (< (mk "café") (mk "cafz")) 1 0))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "runtime string ordering surfaces all four relational operators"
+  (doc    "`<=`, `>`, `>=` over runtime strings agree with `<` and with each other (one total order surfaced
+           through every boolean operator, core-semantics.md #A Total Order Is Observed Through A Three-Way
+           Comparison). Packs four checks: `\"app\" <= \"apple\"` (1), `\"apple\" <= \"apple\"` (1, reflexive),
+           `\"banana\" > \"apple\"` (1), `\"apple\" >= \"apple\"` (1) → 1000+100+10+1 = 1111. Pins that the
+           three-way order derives `<=`/`>`/`>=` consistently, including the equal case on each.")
+  (input  (do
+            (def (le (: a String) (: b String)) (if (<= (String.concat a "") (String.concat b "")) 1 0))
+            (def (gt (: a String) (: b String)) (if (> (String.concat a "") (String.concat b "")) 1 0))
+            (def (ge (: a String) (: b String)) (if (>= (String.concat a "") (String.concat b "")) 1 0))
+            (def (main)
+              (+ (* 1000 (le "app" "apple"))
+                 (+ (* 100 (le "apple" "apple"))
+                    (+ (* 10 (gt "banana" "apple")) (ge "apple" "apple")))))
+            (export main)))
+  (output (: 1111 Int64)))
+
 (case "a runtime string rope compared through a borrowed operand"
   (doc    "The BORROWED-operand remainder of the rope-eq fix. The earlier fix compacted only an OWNED
            String operand (a fresh `String.concat` result); a genuine rope reaching `=` through a

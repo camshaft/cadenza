@@ -17370,6 +17370,24 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                     lhs: args[0],
                     rhs: args[1],
                 }
+            } else if matches!(op, Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge)
+                && operand_is_string_or_symbol(db, args[0])
+            {
+                // RUNTIME STRING/SYMBOL ORDERING — a `<`/`<=`/`>`/`>=` on two String/Symbol values neither of
+                // which folded (built from a parameter / concat / call). A String/Symbol is a UTF-8 byte leaf
+                // whose blessed total order is CONTENT-LEXICOGRAPHIC (core-semantics.md §Compound Ordering /
+                // 17-symbols §order). Emit `Core::StrCmp` (a byte-lex walk on wasm via bytes-len/bytes-get —
+                // HASH-NEUTRAL; native `String` compare on rust). The type checker unified both operands, so a
+                // single-side String/Symbol check proves both are. EQUALITY does NOT reach here (the `Eq` arms
+                // above route `=` to `ValueEq`); only the four ordering ops. Distinct from the compound-value
+                // decline below, which still declines tuple/sum/list ordering (the compound heap walk — a
+                // later slice needing the runtime `value-cmp` op).
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "runtime String/Symbol ordering → StrCmp byte-lexicographic compare");
+                Core::StrCmp {
+                    op,
+                    lhs: args[0],
+                    rhs: args[1],
+                }
             } else {
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "decline: comparison of a compound value needs a heap walk");
                 Core::Poison(Reject::decline(
@@ -21789,6 +21807,15 @@ fn is_scalar(db: &mut Db, id: StructId) -> bool {
     matches!(
         crate::infer::type_of(db, id),
         crate::ty::Ty::Int(_) | crate::ty::Ty::Bool
+    )
+}
+
+/// Whether the node at `id` has a solved type of `String` or `Symbol` — a UTF-8 byte leaf whose blessed
+/// total order is content-lexicographic (routed to `Core::StrCmp` for a runtime ordering compare).
+fn operand_is_string_or_symbol(db: &mut Db, id: StructId) -> bool {
+    matches!(
+        crate::infer::type_of(db, id),
+        crate::ty::Ty::String | crate::ty::Ty::Symbol
     )
 }
 

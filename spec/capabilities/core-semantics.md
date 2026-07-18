@@ -330,6 +330,22 @@ The ordering value's type MUST be an ordinary closed sum type of the language, s
 
 The boolean ordering operators MUST agree with the three-way comparison, so that a type has one total order surfaced two ways that cannot disagree.
 
+### Compound Ordering Is Lexicographic
+
+A compound value — a tuple, a record, a list, or a sum — MUST offer a total order exactly when every one of its component types offers a total order.
+
+A tuple or record MUST be ordered by comparing its components in the same canonical order its equality and canonical byte form use, taking the first component that differs as decisive and comparing equal only when every component compares equal.
+
+A list MUST be ordered lexicographically: comparing elements from the first, the first differing element is decisive, and a list that is a proper prefix of another MUST compare less than that longer list.
+
+A sum MUST be ordered first by the discriminant as encoded in its canonical byte form, and then, for two values of the same variant, lexicographically by payload, so that the order agrees with the canonical byte form equality already requires.
+
+A compound any of whose component types does not, transitively, offer a total order MUST NOT be treated as offering one; in particular a floating-point component makes the compound unordered, because a floating-point type offers only the IEEE partial order. Such a compound remains equality-comparable by its canonical byte form, but is not ordered.
+
+The total order a compound offers MUST agree with its structural equality — two values compare equal under the three-way comparison exactly when they are equal — and MUST be surfaced through the same three-way comparison and boolean ordering operators as any other total order.
+
+This section defines ordering for tuples, records, lists, and sums; a map or a set is a compound value whose ordering is not yet offered and is a later addition.
+
 ## Observable Behavior
 
 ### Observable Behavior Is A Defined Projection Of A Run

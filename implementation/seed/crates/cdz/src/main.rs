@@ -332,6 +332,18 @@ enum Cmd {
     /// produced no verdict is the sole non-zero exit) — IDENTICAL to `cdz run-ml`, so the W4 gate compares
     /// run-emitted's value against run-ml's value case-by-case (emit ≡ interpret).
     RunEmitted(RunEmittedArgs),
+
+    /// Project a CHOREOGRAPHY into one self-contained program per actor (the choreographic-protocols
+    /// sidecar). Given a global-protocol source FILE — a constructor-form Cadenza module that
+    /// `export { protocol, roles }` (protocol : Chor, roles : List(String)) — this runs the projection via
+    /// the `implementation/choreography` package (on the RUST compiler), and for each declared role emits
+    /// that actor's COMPILABLE Cadenza program (an `effect Comm` + a `def main` performing the role's
+    /// projected sends/recvs). With `--out <dir>` it writes `out/<Role>.cdz` per actor; with `--compile` it
+    /// then `cdz compile`s each to `out/<Role>.wasm` — a self-contained wasm component per actor. Without
+    /// `--out` it prints the per-actor bundle to stdout. This is "define the protocol once, shred it into
+    /// one correct-by-construction program per actor at compile time." An un-projectable protocol (a role
+    /// left guessing at a choice) is rejected with the offending role named, before any actor is emitted.
+    Chor(ChorArgs),
 }
 
 fn main() -> ExitCode {
@@ -411,6 +423,7 @@ fn main() -> ExitCode {
         Cmd::RunMl(a) => run_run_ml(&a),
         Cmd::RunRust(a) => run_run_rust(&a),
         Cmd::RunEmitted(a) => run_run_emitted(&a),
+        Cmd::Chor(a) => run_chor(&a),
     }
 }
 
@@ -436,6 +449,20 @@ struct RunMlArgs {
     file: Option<String>,
 }
 
+#[derive(clap::Args)]
+struct ChorArgs {
+    /// The global-protocol SOURCE file: a constructor-form Cadenza module that `export { protocol, roles }`
+    /// (protocol : Chor built from the `chor` package's constructors, roles : List(String)).
+    file: String,
+    /// Directory to write one `<Role>.cdz` per actor into. OMITTED → print the per-actor bundle to stdout.
+    #[arg(long)]
+    out: Option<String>,
+    /// After writing `<Role>.cdz` files (requires `--out`), `cdz compile` each to `<Role>.wasm` — a
+    /// self-contained wasm component per actor.
+    #[arg(long)]
+    compile: bool,
+}
+
 /// `cdz run-ml` — run ONE corpus program through the Cadenza-in-Cadenza (ML) compiler and print a
 /// machine-readable verdict for the gate. Contract (fixed, invariant to the source-reader design):
 ///   - input: program source from FILE, else stdin.
@@ -458,6 +485,35 @@ struct RunMlArgs {
 /// that reded the shared gate). Returns the resolved `…/compiler-ml/src` dir, or `None` if not found.
 fn find_compiler_ml_src() -> Option<std::path::PathBuf> {
     const REL: &str = "implementation/compiler-ml/src";
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd);
+    }
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()))
+    {
+        roots.push(exe_dir);
+    }
+    for start in roots {
+        let mut cur: Option<&std::path::Path> = Some(start.as_path());
+        while let Some(dir) = cur {
+            let candidate = dir.join(REL);
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+            cur = dir.parent();
+        }
+    }
+    None
+}
+
+/// Locate `implementation/choreography/src` by searching UP from the cwd and the exe's dir (same robust
+/// strategy as `find_compiler_ml_src`), so `cdz chor` resolves the sidecar package's sources from any cwd.
+/// The generated driver + copied protocol module must live here so their `import "chor-driver"` /
+/// `import "chor"` resolve (imports are entry-file-dir-relative).
+fn find_choreography_src() -> Option<std::path::PathBuf> {
+    const REL: &str = "implementation/choreography/src";
     let mut roots: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(cwd) = std::env::current_dir() {
         roots.push(cwd);
@@ -693,6 +749,227 @@ fn parse_ml_option_render(rendered: &str) -> String {
         }
     }
     "declined".to_string()
+}
+
+/// `cdz chor <protocol.cdz> [--out <dir>] [--compile]` — project a choreography into one program per actor.
+///
+/// Runs the projection through the `implementation/choreography` Cadenza package (on the rust compiler): it
+/// copies the user's protocol module into the package src dir (so its imports resolve), generates a driver
+/// that calls `render-all(roles, protocol)` and returns the per-actor bundle as a String, compiles+runs it,
+/// then splits the bundle on `==== <Role> ====` markers. With `--out` it writes each actor's module to
+/// `<dir>/<Role>.cdz` (and, with `--compile`, `cdz compile`s each to `<dir>/<Role>.wasm`); otherwise it
+/// prints the bundle. Temp files (the copied protocol + the driver) are removed on every exit via RAII.
+fn run_chor(args: &ChorArgs) -> ExitCode {
+    // 1. Read the protocol module source.
+    let proto_src = match std::fs::read_to_string(&args.file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{PROG} chor: cannot read {}: {e}", args.file);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 2. Locate the choreography package src dir (imports resolve entry-dir-relative, so the driver + the
+    //    copied protocol must live there).
+    let src_dir = match find_choreography_src() {
+        Some(d) => d,
+        None => {
+            eprintln!(
+                "{PROG} chor: choreography src dir not found (searched up from cwd + exe dir for implementation/choreography/src)"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 3. Write the protocol as a temp module + a driver that renders every actor, both pid-stamped (so
+    //    concurrent invocations can't race) and RAII-removed on every exit path.
+    let pid = std::process::id();
+    let proto_mod = format!("zz-chor-proto-{pid}");
+    let proto_path = src_dir.join(format!("{proto_mod}.cdz"));
+    let driver_path = src_dir.join(format!("zz-chor-driver-{pid}.cdz"));
+    struct TempFile(std::path::PathBuf);
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    if let Err(e) = std::fs::write(&proto_path, &proto_src) {
+        eprintln!("{PROG} chor: cannot write protocol temp module: {e}");
+        return ExitCode::FAILURE;
+    }
+    let _proto_guard = TempFile(proto_path.clone());
+    let driver = format!(
+        "import {{ render-all }} from \"chor-driver\"\nimport {{ protocol, roles }} from \"{proto_mod}\"\ndef main() = render-all(roles, protocol)\nexport {{ main }}\n"
+    );
+    if let Err(e) = std::fs::write(&driver_path, &driver) {
+        eprintln!("{PROG} chor: cannot write driver: {e}");
+        return ExitCode::FAILURE;
+    }
+    let _driver_guard = TempFile(driver_path.clone());
+
+    // 4. Compile + run the driver, capturing the rendered String bundle.
+    let bundle = match compile_run_chor_driver(&driver_path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("{PROG} chor: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 5. Split into per-actor sections on the `==== <Role> ====` markers.
+    let actors = split_actor_bundle(&bundle);
+    if actors.is_empty() {
+        eprintln!(
+            "{PROG} chor: no actors emitted (protocol not projectable, or missing `protocol`/`roles` exports). Bundle: {bundle}"
+        );
+        return ExitCode::FAILURE;
+    }
+
+    match &args.out {
+        None => {
+            print!("{bundle}");
+            ExitCode::SUCCESS
+        }
+        Some(dir) => {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                eprintln!("{PROG} chor: cannot create out dir {dir}: {e}");
+                return ExitCode::FAILURE;
+            }
+            for (role, module) in &actors {
+                let cdz_path = std::path::Path::new(dir).join(format!("{role}.cdz"));
+                if let Err(e) = std::fs::write(&cdz_path, module) {
+                    eprintln!("{PROG} chor: cannot write {}: {e}", cdz_path.display());
+                    return ExitCode::FAILURE;
+                }
+                println!("wrote {}", cdz_path.display());
+                if args.compile {
+                    let exe = match std::env::current_exe() {
+                        Ok(e) => e,
+                        Err(e) => {
+                            eprintln!("{PROG} chor: current_exe: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    };
+                    let wasm_path = std::path::Path::new(dir).join(format!("{role}.wasm"));
+                    let out = std::process::Command::new(&exe)
+                        .arg("compile")
+                        .arg(&cdz_path)
+                        .arg("-o")
+                        .arg(&wasm_path)
+                        .output();
+                    match out {
+                        Ok(o) if o.status.success() => {
+                            println!("compiled {}", wasm_path.display());
+                        }
+                        Ok(o) => {
+                            eprintln!(
+                                "{PROG} chor: compiling {} failed:\n{}",
+                                cdz_path.display(),
+                                String::from_utf8_lossy(&o.stderr)
+                            );
+                            return ExitCode::FAILURE;
+                        }
+                        Err(e) => {
+                            eprintln!("{PROG} chor: spawn compile: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                }
+            }
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+/// Compile + run the `cdz chor` driver (shelling `cdz` to itself), returning the rendered String bundle with
+/// the `(: "…" String)` boundary wrapper stripped + unescaped.
+fn compile_run_chor_driver(driver_path: &std::path::Path) -> Result<String, String> {
+    use std::process::Command;
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let tmp_wasm = std::env::temp_dir().join(format!("cdz-chor-{}.wasm", std::process::id()));
+    let compile = Command::new(&exe)
+        .arg("compile")
+        .arg(driver_path)
+        .arg("-o")
+        .arg(&tmp_wasm)
+        .output()
+        .map_err(|e| format!("spawn compile: {e}"))?;
+    if !compile.status.success() {
+        let _ = std::fs::remove_file(&tmp_wasm);
+        return Err(format!(
+            "driver failed to compile (check the protocol module exports `protocol` + `roles`):\n{}",
+            String::from_utf8_lossy(&compile.stderr)
+        ));
+    }
+    let run = Command::new(&exe)
+        .arg("run")
+        .arg(&tmp_wasm)
+        .arg("--call")
+        .arg("main")
+        .output();
+    let _ = std::fs::remove_file(&tmp_wasm);
+    let run = run.map_err(|e| format!("spawn run: {e}"))?;
+    if !run.status.success() {
+        return Err(format!(
+            "driver trapped at run time:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        ));
+    }
+    Ok(unwrap_string_value(
+        String::from_utf8_lossy(&run.stdout).trim(),
+    ))
+}
+
+/// Strip `cdz run`'s String boundary render `(: "<body>" String)` back to `<body>`, unescaping `\n`, `\"`,
+/// `\\`. If the output isn't the expected wrapper (e.g. already bare), return it as-is.
+fn unwrap_string_value(rendered: &str) -> String {
+    let inner = rendered
+        .strip_prefix("(: \"")
+        .and_then(|s| s.strip_suffix("\" String)"))
+        .unwrap_or(rendered);
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Split a `render-all` bundle into (role, module) pairs on `==== <Role> ====` section markers.
+fn split_actor_bundle(bundle: &str) -> Vec<(String, String)> {
+    let mut actors: Vec<(String, String)> = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    for line in bundle.lines() {
+        if let Some(rest) = line.strip_prefix("==== ")
+            && let Some(role) = rest.strip_suffix(" ====")
+        {
+            if let Some((r, m)) = current.take() {
+                actors.push((r, m.trim_end().to_string()));
+            }
+            current = Some((role.trim().to_string(), String::new()));
+        } else if let Some((_, m)) = current.as_mut() {
+            m.push_str(line);
+            m.push('\n');
+        }
+    }
+    if let Some((r, m)) = current.take() {
+        actors.push((r, m.trim_end().to_string()));
+    }
+    actors
 }
 
 #[derive(clap::Args)]
@@ -7934,6 +8211,34 @@ mod tests {
     use super::*;
     // Fix-engine internals the perf-regression tests drive directly (now in the `fix` module).
     use crate::fix::{TRANSFORM_SIBLING_CLONES, localized_change, transform_target};
+
+    #[test]
+    fn chor_unwrap_string_value_strips_boundary_and_unescapes() {
+        // `cdz run` renders a String return as `(: "<escaped>" String)`; unwrap recovers the raw text.
+        assert_eq!(unwrap_string_value("(: \"hello\" String)"), "hello");
+        assert_eq!(
+            unwrap_string_value("(: \"a\\nb\\tc\\\"d\" String)"),
+            "a\nb\tc\"d"
+        );
+        // Not the wrapper → returned as-is (defensive).
+        assert_eq!(unwrap_string_value("bare"), "bare");
+    }
+
+    #[test]
+    fn chor_split_actor_bundle_splits_on_role_markers() {
+        // The `render-all` bundle: `==== <Role> ====` header then that actor's module, per actor.
+        let bundle =
+            "==== Buyer ====\neffect Comm =\ndef main() = 0\n\n==== Seller ====\ndef main() = 1\n";
+        let actors = split_actor_bundle(bundle);
+        assert_eq!(actors.len(), 2);
+        assert_eq!(actors[0].0, "Buyer");
+        assert!(actors[0].1.contains("effect Comm ="));
+        assert!(actors[0].1.contains("def main() = 0"));
+        assert_eq!(actors[1].0, "Seller");
+        assert!(actors[1].1.contains("def main() = 1"));
+        // A bundle with no markers yields no actors (the run_chor empty-guard fires).
+        assert!(split_actor_bundle("no markers here").is_empty());
+    }
 
     #[test]
     fn localized_change_diffs_only_the_target_subtree_not_the_whole_program() {

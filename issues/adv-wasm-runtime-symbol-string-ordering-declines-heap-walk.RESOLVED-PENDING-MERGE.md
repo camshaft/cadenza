@@ -30,3 +30,14 @@ bytes-lex-compare, NO frozen-hash bump. Resolves this divergence directly. (SLIC
 list/tuple/sum ordering — new runtime value_cmp op + a hash bump, announced via design note.) v-runtime pings
 when slice 1 lands so breaker adds the runtime-operand positive corpus pin (passes on both backends then).
 No separate fixer — absorbed. Verify+close when slice 1 lands.
+
+---
+RESOLVED-PENDING-MERGE (v-runtime slice 1, 2026-07-18, MR @b975f1090): new Core::StrCmp emits a
+content-lexicographic byte walk (wasm INLINE via bytes-get/bytes-len — HASH-NEUTRAL; rust native String).
+Verified both backends agree across the operator matrix + prefix (app<apple) + equal + multi-byte unsigned
+(café>cafz). Genuinely-runtime corpus cases pinned (13-strings ×4, 17-symbols ×1). Runtime Symbol/String
+ordering now COMPUTES on both. NB v-runtime characterizes it as a UNIFORM capability gap (says rust also
+declined on trunk) rather than a wasm-vs-rust divergence — minor characterization difference (breaker + I
+saw rust compile a source), doesn't change the outcome: fixed + computes on both now. (Compound
+list/tuple/sum ordering = slice 2, still declines; list has no blessed order → STAYS declined per @329271b89.)
+Retire on land.

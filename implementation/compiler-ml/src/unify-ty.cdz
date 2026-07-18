@@ -2,7 +2,7 @@
 /// lattice (already ported into unify.cdz's own `Ty`) re-expressed over the CANONICAL `ty.cdz` universe —
 /// so infer's operand-combining + if-join and the HM unify converge onto ONE type + one unification, the
 /// last piece of divergence #3 (two type systems → one). Mirrors rcdzc's unify_sign/unify_width (INDEPENDENT
-/// axes) producing a combined `IntTy`, plus type-level unify for Bool.
+/// axes) producing a combined `IntType`, plus type-level unify for Bool.
 ///
 /// `unify-ty(a, b)` returns `Option(Ty)`: `Some(t)` = the two types unify to `t` (a deferred axis GROUNDS to
 /// the other; two concrete axes must AGREE; deferred~deferred stays deferred); `None` = they conflict (a
@@ -11,7 +11,7 @@
 /// substitution (compiler-ml's int types carry no unification VARs yet — that's the deferred Sign/Width
 /// Var slice, later). TyErr never unifies (poison propagates as None → the caller yields TErr).
 
-import { Sign, Width, IntTy, Ty, ty-eq } from "ty"
+import { Sign, Width, IntType, Ty, ty-eq } from "ty"
 
 /// Combine two signs (rcdzc unify_sign): a DEFERRED sign takes the other; two FIXED signs must be EQUAL
 /// (Signed/Signed or Unsigned/Unsigned) else conflict. `Some(sign)` = the combined sign, `None` = mismatch.
@@ -27,12 +27,12 @@ def unify-width(a: Width, b: Width) = match a with
   | Width.WFixed(n) => (match b with | Width.WidthDef => Option.Some(Width.WFixed(n)) | Width.WFixed(m) => (if n == m then Option.Some(Width.WFixed(n)) else Option.None(unit)))
 
 /// Unify two integer types: unify SIGN and WIDTH independently; both must combine (a Fixed mismatch on
-/// EITHER axis is a conflict, checked regardless of the other axis's state). `Some(IntTy)` = the combined
+/// EITHER axis is a conflict, checked regardless of the other axis's state). `Some(IntType)` = the combined
 /// type, `None` = conflict (CDZ0301 analog).
-def unify-int(a: IntTy, b: IntTy) = match a with | IntTy.IntTy(sa, wa) => (match b with | IntTy.IntTy(sb, wb) =>
+def unify-int(a: IntType, b: IntType) = match a with | IntType.IntType(sa, wa) => (match b with | IntType.IntType(sb, wb) =>
   (match unify-sign(sa, sb) with
     | Option.Some(s) => (match unify-width(wa, wb) with
-        | Option.Some(w) => Option.Some(IntTy.IntTy(s, w))
+        | Option.Some(w) => Option.Some(IntType.IntType(s, w))
         | Option.None(_) => Option.None(unit))
     | Option.None(_) => Option.None(unit)))
 
@@ -82,9 +82,9 @@ def ut-sign-conflict() =
 
 @test
 def ut-orthogonal-sign-checked-under-deferred-width() =
-  // a SIGNED deferred-width (IntTy Signed, WidthDef) ~ UInt8 → conflict on SIGN even though a width is
+  // a SIGNED deferred-width (IntType Signed, WidthDef) ~ UInt8 → conflict on SIGN even though a width is
   // deferred (the orthogonal rule: sign checked independent of width).
-  (if conflicts(unify-ty(Ty.TyInt(IntTy.IntTy(Sign.Signed, Width.WidthDef)), ty-fixed-int(false, 8))) then unit else trap("signed-deferred-width ~ UInt8 conflicts on sign"))
+  (if conflicts(unify-ty(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WidthDef)), ty-fixed-int(false, 8))) then unit else trap("signed-deferred-width ~ UInt8 conflicts on sign"))
 
 @test
 def ut-bool-unifies() =

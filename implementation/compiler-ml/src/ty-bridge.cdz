@@ -1,7 +1,7 @@
 /// ty-bridge.cdz — the `Typed` ↔ `Ty` bridge (step (i) of the infer/unify → Ty convergence, divergence #3).
 /// infer-db's pipeline type is `Typed = TIntW(Bool, Int64) | TBool | TErr` (a concrete signed/width int, a
-/// bool, or poison); ty.cdz's canonical universe is `Ty = TyInt(IntTy) | TyBool | TyErr` where
-/// `IntTy = IntTy(Sign, Width)` carries the 3-state orthogonal axes. This module converts between them, so
+/// bool, or poison); ty.cdz's canonical universe is `Ty = TyInt(IntType) | TyBool | TyErr` where
+/// `IntType = IntType(Sign, Width)` carries the 3-state orthogonal axes. This module converts between them, so
 /// infer-db can decide type sameness/combining via ty.cdz's `ty-eq`/`unify-ty` (the shared unification)
 /// WITHOUT a big-bang rewrite of `Typed` across the pipeline (lower-db/db.cdz/db-infer all key on `Typed`).
 /// Keep `Typed` as infer-db's internal/wire form + `Ty` as the semantic form the shared logic operates on,
@@ -14,7 +14,7 @@
 /// deferred, comes back as a concrete pipeline type). Bool and poison map straight across.
 
 import { Typed } from "infer-db"
-import { Ty, IntTy, Sign, Width, ty-fixed-int, ground-default } from "ty"
+import { Ty, IntType, Sign, Width, ty-fixed-int, ground-default } from "ty"
 
 /// `Typed` → `Ty`: a concrete `TIntW(signed, width)` → the fixed `Ty` int; TBool → TyBool; TErr → TyErr.
 def typed-to-ty(t: Typed) = match t with
@@ -26,7 +26,7 @@ def typed-to-ty(t: Typed) = match t with
 /// `TIntW(signed, width)`; TyBool → TBool; TyErr → TErr. Grounding first means a `Ty` left partly-deferred by
 /// unification comes back as a concrete pipeline `Typed` (the pipeline has no deferred state).
 def ty-to-typed(t: Ty) = match ground-default(t) with
-  | Ty.TyInt(it) => (match it with | IntTy.IntTy(s, w) =>
+  | Ty.TyInt(it) => (match it with | IntType.IntType(s, w) =>
       (let signed = (match s with | Sign.Signed => true | Sign.Unsigned => false | Sign.SignDef => true) in
        (let width = (match w with | Width.WFixed(n) => n | Width.WidthDef => 64) in
         Typed.TIntW(signed, width))))
@@ -71,7 +71,7 @@ def tb-round-trip-concrete() =
 def tb-deferred-ty-grounds-back() =
   // a DEFERRED Ty int (from unify leaving it unconstrained) → ty-to-typed GROUNDS it to Int64 (signed,64) —
   // so the pipeline never sees a deferred type (it has no such state).
-  (match ty-to-typed(Ty.TyInt(IntTy.IntTy(Sign.SignDef, Width.WidthDef))) with
+  (match ty-to-typed(Ty.TyInt(IntType.IntType(Sign.SignDef, Width.WidthDef))) with
     | Typed.TIntW(s, w) => (if s then (if w == 64 then unit else trap("grounds to width 64")) else trap("grounds to signed"))
     | _ => trap("deferred grounds to TIntW"))
 

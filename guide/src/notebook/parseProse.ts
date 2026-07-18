@@ -7,9 +7,10 @@
 /// the design's D3 "hand-roll first, add a dep only when the subset can't carry it" stance.
 ///
 /// SUPPORTED (block): ATX headings `#`..`######`, unordered lists (`-`/`*`), ordered lists (`1.`),
-/// blockquotes (`>`), GFM pipe tables (`| a | b |` + a `|---|` delimiter row), and paragraphs. (Code
-/// fences never reach here — `parseDocument` already split them into code cells.) SUPPORTED (inline,
-/// within a block's text): `**bold**`, `*italic*`/`_italic_`, `` `code` ``, and `[label](url)` links.
+/// blockquotes (`>`), GFM pipe tables (`| a | b |` + a `|---|` delimiter row), display-math blocks
+/// `$$…$$` (raw TeX, KaTeX-rendered — operator: KaTeX formulas), and paragraphs. (Code fences never reach
+/// here — `parseDocument` already split them into code cells.) SUPPORTED (inline, within a block's text):
+/// `**bold**`, `*italic*`/`_italic_`, `` `code` ``, inline math `$…$` (raw TeX), and `[label](url)` links.
 /// NOT supported (documented gaps, extend when a notebook needs them): images, nested lists, reference
 /// links, HTML passthrough. A construct we don't parse renders as literal text — never throws.
 ///
@@ -23,6 +24,7 @@ export type Inline =
   | { t: "em"; text: string }
   | { t: "del"; text: string } // GFM strikethrough `~~…~~`
   | { t: "code"; text: string }
+  | { t: "math"; tex: string } // inline math `$…$` — the raw TeX (KaTeX renders it; content is literal)
   | { t: "link"; text: string; href: string };
 
 /// A block-level element.
@@ -32,7 +34,9 @@ export type Block =
   | { t: "list"; ordered: boolean; items: Inline[][] }
   | { t: "blockquote"; spans: Inline[] }
   /// A GFM pipe table: a header row + body rows, each cell a list of inline spans.
-  | { t: "table"; header: Inline[][]; rows: Inline[][][] };
+  | { t: "table"; header: Inline[][]; rows: Inline[][][] }
+  /// A display-math block `$$…$$` (on its own line[s]) — the raw TeX, rendered centered by KaTeX.
+  | { t: "mathblock"; tex: string };
 
 /// Parse inline markdown within a single logical line/paragraph text into spans. A left-to-right scan;
 /// the first matching delimiter wins, so `**a**` is strong and `*a*` is em. Unclosed delimiters render
@@ -54,6 +58,20 @@ export function parseInline(text: string): Inline[] {
       if (end > i) {
         flushPlain();
         spans.push({ t: "code", text: text.slice(i + 1, end) });
+        i = end + 1;
+        continue;
+      }
+    }
+    // inline math `$…$` — same precedence class as code (content is literal TeX, no nested inline). A lone
+    // `$` with no closer stays literal (currency like "$5"); an EMPTY `$$` is not inline math (it's the
+    // block delimiter, and `$$` mid-text renders literal here rather than swallowing to a far `$`). We also
+    // require the closer to not be immediately preceded by whitespace-only emptiness — a `$ $` with just
+    // spaces isn't math. Minimal + robust: match `$<non-empty, no-newline>$`.
+    if (text[i] === "$" && text[i + 1] !== "$") {
+      const end = text.indexOf("$", i + 1);
+      if (end > i + 1 && !text.slice(i + 1, end).includes("\n")) {
+        flushPlain();
+        spans.push({ t: "math", tex: text.slice(i + 1, end) });
         i = end + 1;
         continue;
       }
@@ -155,6 +173,40 @@ export function parseProse(markdown: string): Block[] {
     if (trimmed === "") {
       flushPara();
       i++;
+      continue;
+    }
+    // A display-math block `$$…$$`. Opens on a line starting with `$$`; the TeX is everything up to the
+    // matching closing `$$` (same line for `$$x$$`, or spanning following lines until a line containing the
+    // closer). Highest block precedence (like a fence) so `$$` math isn't mistaken for a paragraph. An
+    // UNCLOSED `$$` runs to EOF (robustness — a half-typed block never throws or drops content).
+    if (trimmed.startsWith("$$")) {
+      flushPara();
+      const afterOpen = trimmed.slice(2);
+      const sameLineClose = afterOpen.indexOf("$$");
+      if (sameLineClose >= 0) {
+        // `$$x$$` on one line → the TeX between the delimiters (ignore any trailing text after the close).
+        blocks.push({ t: "mathblock", tex: afterOpen.slice(0, sameLineClose).trim() });
+        i++;
+        continue;
+      }
+      // Multi-line: collect until a line containing the closing `$$`.
+      const mathLines: string[] = afterOpen.length ? [afterOpen] : [];
+      i++;
+      let closed = false;
+      while (i < lines.length) {
+        const t = lines[i];
+        const closeAt = t.indexOf("$$");
+        if (closeAt >= 0) {
+          if (t.slice(0, closeAt).trim().length) mathLines.push(t.slice(0, closeAt));
+          closed = true;
+          i++;
+          break;
+        }
+        mathLines.push(t);
+        i++;
+      }
+      void closed; // an unclosed block still emits what it accumulated (runs to EOF)
+      blocks.push({ t: "mathblock", tex: mathLines.join("\n").trim() });
       continue;
     }
     const h = HEADING_RE.exec(trimmed);

@@ -13,13 +13,16 @@
 //!     later create with the SAME id SUPERSEDES the prior (self-superseding, same shape as `program`/`policy`).
 //!   • [`SCHEDULE_CANCEL`] — payload is a schedule id; [`active_schedules`] drops it (an operator or a program
 //!     cancels a periodic timer, or a one-shot before it fires).
-//!   • [`SCHEDULE_FIRE`] — the daemon's OWN record that it fired occurrence N of a schedule (payload is the id).
-//!     Counting these per id is how the pure fold knows the NEXT occurrence without any mutable state: a
-//!     one-shot with one fire is done; a periodic with k fires is next due at `first_ms + k*period_ms`.
+//!   • [`SCHEDULE_FIRE`] — the daemon's OWN record that it fired a schedule, carrying the occurrence count it
+//!     advanced TO (`<id>\t<fired_to>`). The MAX `fired_to` per id is the occurrence counter the pure [`due`]
+//!     fold reads (no mutable scheduler state — the log is the state): a one-shot with a fire is done; a periodic
+//!     at `fired_to = k` is next due at `first_ms + k*period_ms`.
 //!
-//! This is the pure substrate slice (types + codec + appenders + the [`due`] fold) — the daemon wiring (fire
-//! due schedules each tick, emitting the trigger + recording a [`SCHEDULE_FIRE`]) is a later increment, exactly
-//! as [`crate::policy`] landed its log-store half before [`crate::daemon`] evaluated it.
+//! COALESCE semantics (operator ruling): when a periodic falls behind by M missed occurrences (the daemon was
+//! down), [`due`] returns ONE entry with `fire_to` jumped to the CURRENT occurrence — the daemon emits a single
+//! trigger and records the jump, so there is NO backlog burst (a self-DoS a periodic-behind-by-1440 would cause
+//! contradicts the capability model's can't-brick principle). An opt-in per-schedule `catch_up` flag (fire every
+//! missed occurrence, for must-not-miss cron/billing jobs) is a clean future add — [`Due::fire_to`] is the seam.
 
 use crate::{Log, Seq};
 use anyhow::Result;
@@ -34,9 +37,9 @@ pub const SCHEDULE_CREATE: &str = "schedule-create";
 /// permanent, it removes the currently-active schedule of that id).
 pub const SCHEDULE_CANCEL: &str = "schedule-cancel";
 
-/// The event `kind` the daemon appends when it FIRES an occurrence of a schedule — payload is the schedule id.
-/// The count of these per id IS the occurrence counter the pure [`due`] fold uses to compute the next fire time
-/// (no mutable scheduler state — the log is the state). Written only by the daemon, never by an operator.
+/// The event `kind` the daemon appends when it FIRES a schedule — payload is `<id>\t<fired_to>` (the occurrence
+/// count advanced to). The MAX `fired_to` per id IS the occurrence counter the pure [`due`] fold uses to compute
+/// the next fire time (no mutable scheduler state — the log is the state). Written only by the daemon.
 pub const SCHEDULE_FIRE: &str = "schedule-fire";
 
 /// A schedule registered in the log: fire the TRIGGER event (`trigger_kind` + `payload`) at `first_ms`, then —
@@ -118,10 +121,13 @@ pub fn append_cancel(log: &mut impl Log, id: &str) -> Result<Seq> {
     log.append(SCHEDULE_CANCEL, id.as_bytes())
 }
 
-/// Append a [`SCHEDULE_FIRE`] record for schedule `id` (the daemon calls this when it fires an occurrence). The
-/// count of these per id is the occurrence counter [`due`] reads to compute the next fire time.
-pub fn append_fire(log: &mut impl Log, id: &str) -> Result<Seq> {
-    log.append(SCHEDULE_FIRE, id.as_bytes())
+/// Append a [`SCHEDULE_FIRE`] record for schedule `id`, recording that occurrences THROUGH `fired_to` have now
+/// fired (payload `<id>\t<fired_to>`, where `fired_to` is the NEW occurrence count k'). The daemon calls this
+/// when it fires; [`due`] reads the MAX `fired_to` per id as the occurrence counter. A single record can jump
+/// the counter past a whole backlog — that's how COALESCE works (a periodic behind by M occurrences fires ONE
+/// trigger and records `fired_to = k + M`, so the next tick sees the counter already caught up, no burst).
+pub fn append_fire(log: &mut impl Log, id: &str, fired_to: u64) -> Result<Seq> {
+    log.append(SCHEDULE_FIRE, format!("{id}\t{fired_to}").as_bytes())
 }
 
 /// The ACTIVE schedules in `events`: the newest [`SCHEDULE_CREATE`] per id (self-superseding), MINUS any id
@@ -155,33 +161,81 @@ pub fn active_schedules(events: &[crate::Event]) -> Vec<Schedule> {
         .collect()
 }
 
-/// The schedules DUE to fire as of `now_ms`: for each [`active_schedules`] entry, count its [`SCHEDULE_FIRE`]
-/// records (`k` = occurrences already fired) and compute the next occurrence:
-///   • ONE-SHOT (`period_ms == None`): next occurrence is `first_ms` if `k == 0`, else already fired (never due
-///     again).
-///   • PERIODIC (`period_ms == Some(p)`): the k-th occurrence is `first_ms + k*p`; due when `now_ms >=` that.
-/// A schedule is DUE when its next occurrence is `<= now_ms`. Pure (time is the `now_ms` argument), so the
-/// daemon computes this deterministically each tick, fires each due schedule (emit trigger + record a
-/// [`SCHEDULE_FIRE`]), and re-derives the same answer on replay. A single tick reports each due schedule ONCE
-/// (the daemon's fire record advances `k`, so the next occurrence moves past `now_ms` for the following tick);
-/// catch-up of multiple missed periodic occurrences in one tick is a later refinement (one-per-tick for now).
-pub fn due(events: &[crate::Event], now_ms: u64) -> Vec<Schedule> {
+/// The occurrence count already fired per schedule id — the MAX `fired_to` across its [`SCHEDULE_FIRE`] records
+/// (each records the resulting count, so max = furthest-advanced; replay-stable regardless of record order). A
+/// legacy bare-id record (no `\t<fired_to>`) counts as one occurrence (`max(current, current+1)`), so an older
+/// log still advances — but the daemon always writes the tab form now.
+fn fired_counts(events: &[crate::Event]) -> std::collections::HashMap<String, u64> {
     use std::collections::HashMap;
     let mut fired: HashMap<String, u64> = HashMap::new();
     for e in events.iter().filter(|e| e.kind == SCHEDULE_FIRE) {
-        if let Ok(id) = String::from_utf8(e.payload.clone()) {
-            *fired.entry(id).or_insert(0) += 1;
+        let Ok(text) = String::from_utf8(e.payload.clone()) else {
+            continue;
+        };
+        match text.split_once('\t') {
+            Some((id, n)) => {
+                if let Ok(fired_to) = n.trim().parse::<u64>() {
+                    let slot = fired.entry(id.to_string()).or_insert(0);
+                    *slot = (*slot).max(fired_to);
+                }
+            }
+            // Legacy bare id: treat as a single occurrence (advance by one).
+            None => {
+                let slot = fired.entry(text).or_insert(0);
+                *slot += 1;
+            }
         }
     }
+    fired
+}
+
+/// How many occurrences of a periodic schedule have come due as of `now_ms` (0 if before `first_ms`): one for
+/// `first_ms`, plus one per elapsed period. `(now - first) / period + 1`. Used to compute the COALESCE target.
+fn occurrences_due(first_ms: u64, period_ms: u64, now_ms: u64) -> u64 {
+    if now_ms < first_ms {
+        return 0;
+    }
+    (now_ms - first_ms) / period_ms + 1
+}
+
+/// One entry the daemon should FIRE this tick: the schedule + the occurrence count to advance TO (`fire_to`).
+/// COALESCE default: a periodic behind by M occurrences yields ONE `Due` with `fire_to` jumped to the current
+/// occurrence, so the daemon emits ONE trigger and records `append_fire(id, fire_to)` — no backlog burst. (A
+/// future opt-in `catch_up` flag would instead yield the full missed range; the `fire_to` field is the seam.)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Due {
+    pub schedule: Schedule,
+    /// The new occurrence count to record via [`append_fire`] after firing — coalesced to the current boundary.
+    pub fire_to: u64,
+}
+
+/// The schedules DUE to fire as of `now_ms`, with the COALESCE target (operator ruling: coalesce is the default,
+/// no backlog burst — matches the can't-brick / no-self-DoS principle). For each [`active_schedules`] entry, read
+/// its already-fired occurrence count `k` ([`fired_counts`]) and compute:
+///   • ONE-SHOT (`period_ms == None`): due iff `k == 0 && now_ms >= first_ms`; `fire_to = 1`.
+///   • PERIODIC (`period_ms == Some(p)`): `occ` = occurrences come due by now ([`occurrences_due`]); due iff
+///     `occ > k` (at least one un-fired occurrence); `fire_to = occ` — COALESCE: one fire jumps straight to the
+///     current occurrence, collapsing any backlog of missed occurrences into a single trigger.
+/// Pure (time is the `now_ms` argument), so the daemon re-derives the same answer on replay. The daemon fires
+/// each `Due` once (emit trigger + [`append_fire`]`(id, fire_to)`); the recorded jump means the following tick
+/// sees the counter already at `fire_to`, so no re-fire and no accumulated burst.
+pub fn due(events: &[crate::Event], now_ms: u64) -> Vec<Due> {
+    let fired = fired_counts(events);
     active_schedules(events)
         .into_iter()
-        .filter(|s| {
+        .filter_map(|s| {
             let k = fired.get(&s.id).copied().unwrap_or(0);
             match s.period_ms {
-                None => k == 0 && now_ms >= s.first_ms,
+                None => (k == 0 && now_ms >= s.first_ms).then_some(Due {
+                    schedule: s,
+                    fire_to: 1,
+                }),
                 Some(p) => {
-                    let next = s.first_ms.saturating_add(k.saturating_mul(p));
-                    now_ms >= next
+                    let occ = occurrences_due(s.first_ms, p, now_ms);
+                    (occ > k).then_some(Due {
+                        schedule: s,
+                        fire_to: occ,
+                    })
                 }
             }
         })
@@ -284,11 +338,12 @@ mod tests {
             due(&log.tail(0).unwrap(), 50).is_empty(),
             "before first_ms → not due"
         );
-        // At/after first_ms with no fire yet: due.
+        // At/after first_ms with no fire yet: due, fire_to = 1.
         let d = due(&log.tail(0).unwrap(), 100);
         assert_eq!(d.len(), 1, "at first_ms with no fire → due");
+        assert_eq!(d[0].fire_to, 1, "one-shot fires occurrence 1");
         // Record the fire → no longer due (a one-shot fires exactly once).
-        append_fire(&mut log, "a").unwrap();
+        append_fire(&mut log, "a", 1).unwrap();
         assert!(
             due(&log.tail(0).unwrap(), 10_000).is_empty(),
             "after its single fire, a one-shot is never due again"
@@ -299,29 +354,56 @@ mod tests {
     #[test]
     fn due_periodic_advances_with_each_fire() {
         // Periodic first_ms=100, period=100 → occurrences at 100, 200, 300, ... Each recorded fire advances the
-        // next occurrence by one period, so the schedule is due again only once now passes the next boundary.
+        // occurrence counter, so the schedule is due again only once now passes the next boundary.
         let (path, mut log) = temp_log();
         append_create(&mut log, &sched("p", 100, Some(100))).unwrap();
 
-        // k=0, next=100: due at now=150.
-        assert_eq!(due(&log.tail(0).unwrap(), 150).len(), 1, "occurrence 0 due");
-        append_fire(&mut log, "p").unwrap();
-        // k=1, next=200: NOT due at 150, due at 200.
+        // k=0, occurrence 1 due at now=150 (fire_to=1).
+        let d = due(&log.tail(0).unwrap(), 150);
+        assert_eq!(d.len(), 1, "occurrence 1 due");
+        assert_eq!(d[0].fire_to, 1);
+        append_fire(&mut log, "p", 1).unwrap();
+        // k=1, occurrence 2 boundary at 200: NOT due at 150, due at 200.
         assert!(
             due(&log.tail(0).unwrap(), 150).is_empty(),
-            "occurrence 1 not yet (next=200)"
+            "occurrence 2 not yet (boundary 200)"
         );
-        assert_eq!(
-            due(&log.tail(0).unwrap(), 200).len(),
-            1,
-            "occurrence 1 due at 200"
-        );
-        append_fire(&mut log, "p").unwrap();
-        // k=2, next=300: not due at 250.
+        let d = due(&log.tail(0).unwrap(), 200);
+        assert_eq!(d.len(), 1, "occurrence 2 due at 200");
+        assert_eq!(d[0].fire_to, 2);
+        append_fire(&mut log, "p", 2).unwrap();
+        // k=2, occurrence 3 boundary at 300: not due at 250.
         assert!(
             due(&log.tail(0).unwrap(), 250).is_empty(),
-            "occurrence 2 not yet (next=300)"
+            "occurrence 3 not yet (boundary 300)"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn due_coalesces_a_periodic_backlog_into_one_fire() {
+        // COALESCE (operator ruling): a periodic behind by MANY occurrences fires ONCE with fire_to jumped to the
+        // current occurrence — no backlog burst. first_ms=0, period=1 → by now=100 there are 101 occurrences
+        // (0,1,..,100) come due; with k=0 the single Due has fire_to=101, and recording it clears the backlog.
+        let (path, mut log) = temp_log();
+        append_create(&mut log, &sched("p", 0, Some(1))).unwrap();
+
+        let d = due(&log.tail(0).unwrap(), 100);
+        assert_eq!(d.len(), 1, "one Due entry, not 101 (coalesced)");
+        assert_eq!(
+            d[0].fire_to, 101,
+            "fire_to jumps to the current occurrence count (0..=100 = 101)"
+        );
+        // Record the coalesced fire → the counter catches up, nothing due until the NEXT future boundary.
+        append_fire(&mut log, "p", d[0].fire_to).unwrap();
+        assert!(
+            due(&log.tail(0).unwrap(), 100).is_empty(),
+            "after the coalesced fire, not due again at the same now"
+        );
+        // Advancing past the next boundary (occurrence 101 at ms 101) makes it due once more, fire_to=102.
+        let d2 = due(&log.tail(0).unwrap(), 101);
+        assert_eq!(d2.len(), 1);
+        assert_eq!(d2[0].fire_to, 102, "next occurrence after catch-up");
         let _ = std::fs::remove_file(&path);
     }
 

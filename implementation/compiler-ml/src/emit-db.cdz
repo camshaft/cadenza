@@ -78,24 +78,26 @@ def export-section() =
 /// The wasm i64 ARITHMETIC opcode for a Core arith op-code (43 `+`, 45 `-`, 42 `*`, 47 `/`, 37 `%`):
 /// i64.add=0x7c, sub=0x7d, mul=0x7e, div_s=0x7f, rem_s=0x81. div_s/rem_s TRAP on /0 (matches eval-db None).
 /// A non-arith op returns 0 (unreachable; arith is gated by `is-arith-op`).
-def wasm-op(op: Int64) =
-  (if op == 43 then 124
-   else (if op == 45 then 125
-   else (if op == 42 then 126
-   else (if op == 47 then 127
-   else (if op == 37 then 129 else 0)))))
+def wasm-op(op: Int64) = match op with
+  | 43 => 124        // i64.add   0x7c
+  | 45 => 125        // i64.sub   0x7d
+  | 42 => 126        // i64.mul   0x7e
+  | 47 => 127        // i64.div_s 0x7f
+  | 37 => 129        // i64.rem_s 0x81
+  | _ => 0           // non-arith (unreachable; gated by is-arith-op)
 
 /// The wasm i64 RELATIONAL opcode for a Core comparison op-code (W3). i64.eq=0x51, ne=0x52, lt_s=0x53,
 /// gt_s=0x55, le_s=0x57, ge_s=0x59. Each yields an i32 0/1; the emitter appends `i64.extend_i32_u` (0xad)
 /// so the result is an i64 0/1 — matching eval-db's Bool-as-Int64 convention. Core ops: 60 `<`, 61 `==`,
 /// 62 `>`, 63 `<=`, 64 `>=`, 65 `!=`.
-def cmp-op(op: Int64) =
-  (if op == 60 then 83                 // <  i64.lt_s 0x53
-   else (if op == 61 then 81            // == i64.eq   0x51
-   else (if op == 62 then 85            // >  i64.gt_s 0x55
-   else (if op == 63 then 87            // <= i64.le_s 0x57
-   else (if op == 64 then 89            // >= i64.ge_s 0x59
-   else (if op == 65 then 82 else 0)))))) // != i64.ne 0x52
+def cmp-op(op: Int64) = match op with
+  | 60 => 83         // <  i64.lt_s 0x53
+  | 61 => 81         // == i64.eq   0x51
+  | 62 => 85         // >  i64.gt_s 0x55
+  | 63 => 87         // <= i64.le_s 0x57
+  | 64 => 89         // >= i64.ge_s 0x59
+  | 65 => 82         // != i64.ne   0x52
+  | _ => 0           // non-comparison (unreachable; gated by is-cmp-op)
 
 /// Whether `op` is an ARITHMETIC op (result already i64, no extend needed).
 def is-arith-op(op: Int64) = (op == 43) or (op == 45) or (op == 42) or (op == 47) or (op == 37)
