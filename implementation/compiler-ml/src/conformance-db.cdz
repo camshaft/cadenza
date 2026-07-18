@@ -148,6 +148,20 @@ def c-cx-bool-let-as-cond() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TN
 def c-cx-paren-overrides-precedence() = Case.Case([Tok.TLParen, Tok.TNum(1), Tok.TOp(43), Tok.TNum(2), Tok.TRParen, Tok.TOp(42), Tok.TNum(3)], Expect.Runs(9))
 /// `2 * (3 + 4)` → 14 (parens on the RIGHT operand of a higher-precedence op).
 def c-cx-paren-right-operand() = Case.Case([Tok.TNum(2), Tok.TOp(42), Tok.TLParen, Tok.TNum(3), Tok.TOp(43), Tok.TNum(4), Tok.TRParen], Expect.Runs(14))
+/// `10 - 3 - 2` → 5 (subtraction is LEFT-associative: `(10-3)-2`=5, not `10-(3-2)`=9). Pins associativity
+/// of a same-precedence chain, which the single-op `c-sub` doesn't exercise.
+def c-cx-sub-left-assoc() = Case.Case([Tok.TNum(10), Tok.TOp(45), Tok.TNum(3), Tok.TOp(45), Tok.TNum(2)], Expect.Runs(5))
+/// `1 + 7 % 2` → 2 (modulo binds TIGHTER than addition: `1 + (7%2)` = 1+1 = 2). The `%`-precedence companion
+/// of `c-div-precedence` (the corpus pinned `/` vs `+` but not `%` vs `+`).
+def c-cx-mod-precedence() = Case.Case([Tok.TNum(1), Tok.TOp(43), Tok.TNum(7), Tok.TOp(37), Tok.TNum(2)], Expect.Runs(2))
+/// `4 + 6 % 3` → 4 (mod tighter: `4 + (6%3)` = 4+0 = 4 — NOT `(4+6)%3`=1). A second `%`-precedence pin whose
+/// operands make the two parses differ in value, so it genuinely distinguishes the precedence.
+def c-cx-mod-precedence-distinguishes() = Case.Case([Tok.TNum(4), Tok.TOp(43), Tok.TNum(6), Tok.TOp(37), Tok.TNum(3)], Expect.Runs(4))
+/// `-12 / 4` → -3 (unary minus on the dividend: `(0-12)/4` = -3). Division with a negated operand.
+def c-cx-neg-dividend() = Case.Case([Tok.TNeg, Tok.TNum(12), Tok.TOp(47), Tok.TNum(4)], Expect.Runs(0 - 3))
+/// `7 % 0` → Declines (modulo-by-zero yields None, like div-by-zero — the trap-free absent outcome). The
+/// `c-div-by-zero` companion for `%`, which the corpus didn't pin.
+def c-cx-mod-by-zero-declines() = Case.Case([Tok.TNum(7), Tok.TOp(37), Tok.TNum(0)], Expect.Declines)
 /// `((5))` → 5 (redundant NESTED parens collapse to the inner literal — the paren-nests-full-grammar recursion).
 /// QUARANTINED-from-corpus repro (see the comment block below): kept as the root-cause reproducer for the
 /// open nested-paren hang (bug #4, v-inference). NOT dead — intentionally retained. Leading `_` marks it
@@ -168,7 +182,9 @@ def corpus() = [
   c-div(), c-div-by-zero(), c-mod(), c-div-precedence(), c-bool-div-declines(),
   c-cx-nested-let-precedence(), c-cx-arith-in-cond(), c-cx-mod-parity(), c-cx-var-in-later-binding(),
   c-cx-div-paren-divisor(), c-cx-bool-let-as-cond(),
-  c-cx-paren-overrides-precedence(), c-cx-paren-right-operand()
+  c-cx-paren-overrides-precedence(), c-cx-paren-right-operand(),
+  c-cx-sub-left-assoc(), c-cx-mod-precedence(), c-cx-mod-precedence-distinguishes(),
+  c-cx-neg-dividend(), c-cx-mod-by-zero-declines()
 ]
 
 /// THE SCOREBOARD: `(passed, total)` over the corpus — what the `cadenza-ml` gate target prints as `X/N`.
@@ -199,16 +215,16 @@ def cf-declines-mismatch-is-fail() =
 
 @test
 def cf-corpus-size-floor() =
-  // The corpus SIZE floor: exactly 47 cases, so a case can't be silently dropped from `corpus()`.
-  // This does NOT re-run the 47 compiles — each case's pass/decline is already proven by its own
-  // `conformance-<case>` @test below (47 of them), and the `count-passing` fold logic by
-  // `cf-count-passing-partial`. The old `cf-corpus-all-pass` re-ran the entire 47-case
+  // The corpus SIZE floor: exactly 54 cases, so a case can't be silently dropped from `corpus()`.
+  // This does NOT re-run the compiles — each case's pass/decline is already proven by its own
+  // `conformance-<case>` @test below, and the `count-passing` fold logic by
+  // `cf-count-passing-partial`. The old `cf-corpus-all-pass` re-ran the entire corpus
   // compile+eval pipeline INLINE as one silent @test (~minutes, zero intermediate output), which
   // duplicated the per-case tests AND read as a silent hang/kill to the gate (localized by
   // v-fleet-tooling as the compiler-ml gate-throughput + false-hang source). The conformance FLOOR
-  // is now: 47 per-case @tests (each case correct) + this size check (no case dropped), with none of
+  // is now: per-case @tests (each case correct) + this size check (no case dropped), with none of
   // the redundant full-corpus re-run.
-  (if List.len(corpus()) == 49 then unit else trap("corpus has 49 cases"))
+  (if List.len(corpus()) == 54 then unit else trap("corpus has 54 cases"))
 
 @test
 def cf-count-passing-partial() =
@@ -322,6 +338,16 @@ def conformance-cx-bool-let-as-cond() = (if check-case(c-cx-bool-let-as-cond()) 
 def conformance-cx-paren-overrides-precedence() = (if check-case(c-cx-paren-overrides-precedence()) then unit else trap("(1 + 2) * 3 → 9"))
 @test
 def conformance-cx-paren-right-operand() = (if check-case(c-cx-paren-right-operand()) then unit else trap("2 * (3 + 4) → 14"))
+@test
+def conformance-cx-sub-left-assoc() = (if check-case(c-cx-sub-left-assoc()) then unit else trap("10 - 3 - 2 → 5 (left-assoc)"))
+@test
+def conformance-cx-mod-precedence() = (if check-case(c-cx-mod-precedence()) then unit else trap("1 + 7 % 2 → 2 (% tighter than +)"))
+@test
+def conformance-cx-mod-precedence-distinguishes() = (if check-case(c-cx-mod-precedence-distinguishes()) then unit else trap("4 + 6 % 3 → 4 (% tighter, not (4+6)%3=1)"))
+@test
+def conformance-cx-neg-dividend() = (if check-case(c-cx-neg-dividend()) then unit else trap("-12 / 4 → -3"))
+@test
+def conformance-cx-mod-by-zero-declines() = (if check-case(c-cx-mod-by-zero-declines()) then unit else trap("7 % 0 declines (None)"))
 // QUARANTINED (2026-07-17): conformance-cx-nested-redundant-parens HANGS the compiler — `((5))` (doubly-
 // parenthesised) sends `run` (parse→…→eval) into non-termination, which timed out `cdz test compiler-ml`
 // every batch and blocked ALL fleet integration. Removed from the gated corpus + size-floor (49) so the

@@ -23,6 +23,7 @@
 //# The compiler MUST lower the AST to an intermediate representation in which every name reference is resolved to the binding it denotes before it selects the instructions to emit, so that instruction selection reads a resolved binding rather than searching a scope.
 
 use crate::ast::StructId;
+use crate::backend::common::diverge::{body_diverges, refined_frame_for_branch};
 use crate::backend::wasm::lir::{BlockType, Lir, ValType, valtype_of};
 use crate::core::Core;
 use crate::db::Db;
@@ -2881,73 +2882,6 @@ fn collect_cont_ops_rec(
                 restore_entered_payload_ty_into(path, restore, recorded);
             }
         }
-    }
-}
-
-/// Whether the body at `id` PROVABLY diverges — its core reduces to an unconditional `Core::Trap`,
-/// possibly THROUGH a sequencing/binding wrapper whose value is that trap. A diverging body's
-/// `unreachable` is stack-polymorphic (validates in any result position), so its function is emitted
-/// with a UNIT (0-result) signature rather than declining "return type has no machine representation".
-///
-/// Peers through the two value-position wrappers whose value is their TAIL: `Core::Seq { tail }` (an
-/// effect-statement run then a value — the `(do (log.emit …) (trap …))` shape a test-failure path takes)
-/// and `Core::Let { body }` (a binding then a body). A bare `Core::Trap` is the base case. Every other
-/// core shape is NOT provably diverging (returns `false`) — so a genuine value-returning body keeps its
-/// solved type and a real "no machine representation" decline still fires for it. Conservative: it proves
-/// divergence only through these value-forwarding wrappers, never guesses.
-///
-/// `pub(crate)` because the component-boundary layer (`wasm::mod`) makes the same "diverging export → a
-/// unit (no-result) boundary entry" decision and must recognize the same shapes (a bare trap AND a
-/// trap-through-`Seq`/`Let`), so both the core-signature site here and the boundary site there share this.
-pub(crate) fn body_diverges(db: &mut Db, id: StructId) -> bool {
-    match core_of(db, id) {
-        Core::Trap => true,
-        // A sequence's value is its tail; the statements run for effect. Diverges iff the tail does.
-        Core::Seq { tail, .. } => body_diverges(db, tail),
-        // A `let`'s value is its body; the bindings are evaluated first. Diverges iff the body does.
-        Core::Let { body, .. } => body_diverges(db, body),
-        // An `if` whose BOTH branches diverge produces no value on any path — its result type is `Never`
-        // (a fresh var / `Any`, no machine rep). `(if b (trap …) (trap …))`: inference types it `Never`
-        // (cdz check passes), and the emit must NOT decline "no machine representation" — both arms end in
-        // `unreachable`, so the block yields nothing and gets a UNIT/Empty block type at the `Core::If`
-        // emit (mirrors the diverging-fn-body → 0-result signature). Diverges iff BOTH branches do; a
-        // one-sided diverge (`(if b (trap) x)`) still yields `x`'s value, so it does NOT.
-        Core::If { then_, else_, .. } => body_diverges(db, then_) && body_diverges(db, else_),
-        // A `match` whose EVERY reachable arm body diverges produces no value on any path — `Never`, same
-        // as the both-diverge `if`. `(match n (0 (trap …)) (_ (trap …)))`: inference types it `Never`, and
-        // the emit must NOT decline "match result type has no machine representation". Diverges iff ALL
-        // arm bodies diverge (a scalar/list match's `arms`, a sum match's decision-tree leaves). An empty
-        // `arms` (a zero-arm match on a `Never` scrutinee) IS diverging — the scrutinee itself never
-        // returns; `Iterator::all` on an empty slice is `true`, which is correct here.
-        Core::Match { arms, .. } => {
-            let bodies: Vec<StructId> = arms.iter().map(|a| a.body).collect();
-            bodies.into_iter().all(|b| body_diverges(db, b))
-        }
-        Core::MatchList { arms, .. } => {
-            let bodies: Vec<StructId> = arms.iter().map(|a| a.body).collect();
-            bodies.into_iter().all(|b| body_diverges(db, b))
-        }
-        Core::MatchSum { root, .. } => sumcont_diverges(db, &root),
-        _ => false,
-    }
-}
-
-/// Whether a sum-match decision-tree continuation PROVABLY diverges on every path — the [`SumCont`]
-/// companion of [`body_diverges`] for `Core::MatchSum`. A continuation diverges iff EVERY body it can
-/// reach diverges: a `Leaf` iff its body does; a `Guarded`/`LitTest` iff BOTH the taken branch (`body`/
-/// `then_`) AND the fall-through (`els`) diverge (either may be selected at run time); a `Switch` iff
-/// every arm's continuation diverges (each disc, plus the default). Used so an all-diverge sum match
-/// (`(match s ((Some _) (trap …)) ((None) (trap …)))`) emits an empty block + trailing `unreachable`
-/// rather than declining "sum match result type has no machine representation".
-fn sumcont_diverges(db: &mut Db, cont: &crate::core::SumCont) -> bool {
-    use crate::core::SumCont;
-    match cont {
-        SumCont::Leaf(body) => body_diverges(db, *body),
-        SumCont::Guarded { body, els, .. } => body_diverges(db, *body) && sumcont_diverges(db, els),
-        SumCont::LitTest { then_, els, .. } => {
-            sumcont_diverges(db, then_) && sumcont_diverges(db, els)
-        }
-        SumCont::Switch { arms, .. } => arms.iter().all(|a| sumcont_diverges(db, &a.cont)),
     }
 }
 
@@ -12368,53 +12302,6 @@ fn emit_branch(
     emit(db, id, slots, base, high, scratch_ty, layout, out)
 }
 
-/// The flow-sensitive range REFINEMENT a branch of `if <cond> …` establishes for a variable — the frame
-/// [`crate::db::Db::push_range_refinements`] pushes while that branch is emitted. Dispatches on the
-/// condition SHAPE, merging every bound the taken branch guarantees into the parent frame (`base`):
-///   • a SIGNED var-vs-const comparison (`(< n 2)`, `(>= n 1)`, either operand order) → its one-sided
-///     bound (negated in the `else` branch);
-///   • `(and a b)` in the THEN branch → BOTH operands hold, so apply both (the range-check idiom
-///     `(and (> n 0) (< n 100))` bounds `n` to `[1,99]`); in the else, De Morgan gives a disjunction — no
-///     clean single-variable bound, so skip;
-///   • `(or a b)` in the ELSE branch → `!(a or b) = !a and !b`, so apply BOTH operands negated; in the
-///     then, skip;
-///   • `(not a)` → refine `a` with the opposite polarity.
-/// Nested `if`s accumulate (each frame merges the parent's). A shape this does not model contributes
-/// NOTHING (returns `base`) — conservative, so no guard is ever wrongly elided. UNSIGNED comparisons and
-/// `Eq`/`Ne` are skipped (no sound one-sided interval). The refinement is a narrowing the branch
-/// GUARANTEES, so a guard the narrowed range proves dead is safe to drop.
-pub(crate) fn refined_frame_for_branch(
-    db: &mut Db,
-    cond: StructId,
-    then_branch: bool,
-    base: crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)>,
-) -> crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)> {
-    match core_of(db, cond) {
-        Core::Compare { op, lhs, rhs } => {
-            refine_from_comparison(db, op, lhs, rhs, then_branch, base)
-        }
-        // `(and a b)` holds in the THEN branch iff BOTH hold — apply each. `(or a b)` fails in the ELSE
-        // branch iff BOTH fail — apply each operand NEGATED (pass `then_branch=false` down). The other
-        // polarity (an `and`'s else, an `or`'s then) is a disjunction of the operands' negations/holds,
-        // which does not yield a single-variable interval — skip it (returns `base` unchanged).
-        Core::And { lhs, rhs, is_and } => {
-            let apply_both = (is_and && then_branch) || (!is_and && !then_branch);
-            if !apply_both {
-                return base;
-            }
-            // Each operand is itself a condition establishing its own bound in this branch's polarity: an
-            // `and`'s THEN wants both operands HELD (then_branch=true), an `or`'s ELSE wants both operands
-            // FAILED (then_branch=false). Recurse so a nested `(and …)`/comparison in either operand is
-            // handled uniformly.
-            let after_lhs = refined_frame_for_branch(db, lhs, is_and, base);
-            refined_frame_for_branch(db, rhs, is_and, after_lhs)
-        }
-        // `(not a)` in this branch's polarity = `a` in the OPPOSITE polarity.
-        Core::Not { operand } => refined_frame_for_branch(db, operand, !then_branch, base),
-        _ => base,
-    }
-}
-
 /// The compile-time-constant value a branch reduces to UNDER THE CURRENTLY-ACTIVE refinement frame, if
 /// any — a `Core::ConstInt`/`ConstBool` directly, or a nested `Core::If` whose condition the active
 /// refinement DECIDES (recurse into the taken branch, having pushed that branch's own refinement frame).
@@ -12446,121 +12333,6 @@ fn refined_const_value(db: &mut Db, branch: StructId) -> Option<Core> {
         }
         _ => None,
     }
-}
-
-/// Merge into `base` the one-sided bound a single SIGNED var-vs-const comparison `(op lhs rhs)` guarantees
-/// in the given branch polarity — the atom [`refined_frame_for_branch`] composes for `and`/`or`/`not`.
-/// `(op var C)` / `(op C var)` (flipped) → in the `then` branch `var op C` holds, in the `else` its
-/// negation; the resulting `[lo, hi]` bound is intersected with any existing refinement for `var`. A
-/// non-comparison, an unsigned variable, or `Eq`/`Ne` contributes nothing (returns `base`).
-pub(crate) fn refine_from_comparison(
-    db: &mut Db,
-    op: Prim,
-    lhs: StructId,
-    rhs: StructId,
-    then_branch: bool,
-    base: crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)>,
-) -> crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)> {
-    let binder_of = |db: &mut Db, id: StructId| -> Option<StructId> {
-        match core_of(db, id) {
-            Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
-            _ => None,
-        }
-    };
-    let const_of = |db: &mut Db, id: StructId| -> Option<i64> {
-        match core_of(db, id) {
-            Core::ConstInt(v) => v.to_i64(),
-            _ => None,
-        }
-    };
-    // `(var, op-with-var-on-left, const)`. `(C op var)` flips to `var op.flip C`.
-    let (var, cmp, c) = if let (Some(v), Some(k)) = (binder_of(db, lhs), const_of(db, rhs)) {
-        (v, op, k)
-    } else if let (Some(k), Some(v)) = (const_of(db, lhs), binder_of(db, rhs)) {
-        let flipped = match op {
-            Prim::Lt => Prim::Gt,
-            Prim::Gt => Prim::Lt,
-            Prim::Le => Prim::Ge,
-            Prim::Ge => Prim::Le,
-            other => other,
-        };
-        (v, flipped, k)
-    } else {
-        return base;
-    };
-    // EQUALITY guard: `(if (= x c) THEN ELSE)` — in the THEN branch `x == c`, so pin `x` to the EXACT
-    // range `[c, c]` (the `if`-guard analogue of a match arm's exact-value refinement). This lets the body
-    // fold a guard/comparison on `x` (`(if (= x 5) (+ x 1) …)` — the `+ 1` under `x == 5` cannot overflow;
-    // a range-comparison on `x` decides). The ELSE branch gives only `x != c` — no interval — so skip it.
-    // Sound for BOTH signednesses: equality does not depend on the order's wraparound. Intersects with any
-    // existing frame bound for `x` (a `[c,c]` is the tightest, so it wins).
-    if matches!(cmp, Prim::Eq) {
-        if !then_branch {
-            return base; // `x != c` — no single interval
-        }
-        // `c` came from `to_i64()`, so it is already an i64 — no clamp needed.
-        let ec = c;
-        let mut frame = base;
-        // Pin `x` to the exact `[c, c]` — but only when `c` lies WITHIN any prior frame bound for `x`. If it
-        // does not, the guard is unsatisfiable (a contradiction the branch never reaches), so leave the
-        // prior frame rather than fabricate an inverted `[c,c]` a downstream consumer might misread.
-        let (plo, phi) = frame
-            .get(&var)
-            .copied()
-            .unwrap_or((i64::MIN, Some(i64::MAX)));
-        if plo <= ec && phi.is_none_or(|h| ec <= h) {
-            frame.insert(var, (ec, Some(ec)));
-        }
-        return frame;
-    }
-    // SIGNED integer variable only — an unsigned comparison's order wraps differently.
-    let signed = matches!(type_of(db, var), Ty::Int(it) if it.ground_signed());
-    if !signed {
-        return base;
-    }
-    // The bound the taken branch establishes; the `else` branch negates the op.
-    let effective = if then_branch {
-        cmp
-    } else {
-        match cmp {
-            Prim::Lt => Prim::Ge,
-            Prim::Le => Prim::Gt,
-            Prim::Gt => Prim::Le,
-            Prim::Ge => Prim::Lt,
-            other => other,
-        }
-    };
-    let c = c as i128;
-    let clamp = |x: i128| -> Option<i64> {
-        if x > i64::MAX as i128 || x < i64::MIN as i128 {
-            None
-        } else {
-            Some(x as i64)
-        }
-    };
-    let (new_lo, new_hi): (Option<i64>, Option<i64>) = match effective {
-        Prim::Lt => (None, clamp(c - 1)),
-        Prim::Le => (None, clamp(c)),
-        Prim::Gt => (clamp(c + 1), None),
-        Prim::Ge => (clamp(c), None),
-        _ => return base, // Eq/Ne/compare — no interval bound
-    };
-    let mut frame = base;
-    let (mut lo, mut hi) = frame
-        .get(&var)
-        .copied()
-        .unwrap_or((i64::MIN, Some(i64::MAX)));
-    if let Some(nl) = new_lo {
-        lo = lo.max(nl);
-    }
-    if let Some(nh) = new_hi {
-        hi = Some(match hi {
-            Some(h) => h.min(nh),
-            None => nh,
-        });
-    }
-    frame.insert(var, (lo, hi));
-    frame
 }
 
 /// The refinement frame active inside a scalar `match` ARM whose literal `Int` probe matched: the

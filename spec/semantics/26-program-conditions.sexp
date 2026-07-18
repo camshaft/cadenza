@@ -2270,3 +2270,45 @@
   (call mk (: 3 Int64) (: 7 Int64)) (output (: 4 Int64))
   (call mk (: 5 Int64) (: 5 Int64)) (output (: 0 Int64))
   (call mk (: 7 Int64) (: 3 Int64)) (trap "unreachable"))
+
+; ── @invariant ESTABLISH divert: NO escape through indirect construction sites ──────────────────────────────
+; The divert is a construction-SITE rewrite (`lower_sum_new` routes `(Percent.Pct v)` through the checked
+; constructor), so its soundness rests on the rewrite reaching EVERY site the lowering walks — a site the
+; visitor missed would build an unchecked, possibly-invalid value silently. The cases above all construct in a
+; def's immediate body; this pins three indirect sites a site-based rewrite historically misses: (1) a
+; construction inside a LAMBDA body, applied at runtime — the divert must fire inside the lifted closure code,
+; not only in def-level bodies; (2) a DECONSTRUCT-then-RECONSTRUCT (an update helper unwraps, adjusts the
+; payload, re-wraps) — the RE-construction is a fresh establish obligation, so an update that pushes the
+; payload out of range traps even though both inputs were valid Percents; (3) a construction as a LIST element
+; — the value is built inside a heap-collection initializer, not a scalar binding position. Each face flows a
+; satisfying value and traps a violating one.
+
+(case "@invariant ESTABLISH divert reaches indirect construction sites: a lambda body, a reconstruct-after-update, and a list element all establish"
+  (doc    "Escape-face pins for the establish divert. `via-lambda` constructs `(Percent.Pct x)` inside a
+           LAMBDA applied to a runtime argument — the divert fires inside the closure body (via-lambda(50)=50,
+           via-lambda(150) traps). `via-bump` deconstructs a VALID Percent, adds a delta, and RE-constructs —
+           the re-wrap is its own establish obligation, so 50+10=60 flows but 90+20=110 traps at the re-wrap
+           (no invalid Percent escapes an update helper). `via-list` constructs as a LIST element and reads it
+           back (via-list(50)=50, via-list(150) traps inside the collection initializer). Together these pin
+           that the divert is reachability-complete over lambda bodies, update re-wraps, and collection
+           element positions — the sites a construction-site rewrite would silently miss.")
+  (input  (do
+            (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64)))
+            (def (unp (: p Percent)) (match p (((. Percent Pct) n) n)))
+            (def (via-lambda (: v Int64))
+              (unp ((fn ((: x Int64)) (Percent.Pct x)) v)))
+            (def (bump (: p Percent) (: d Int64))
+              (match p (((. Percent Pct) n) (Percent.Pct (+ n d)))))
+            (def (via-bump (: v Int64) (: d Int64)) (unp (bump (Percent.Pct v) d)))
+            (def (via-list (: v Int64))
+              (match (list (Percent.Pct v) (Percent.Pct 5))
+                ((list h .. _) (unp h)) (_ 0)))
+            (export via-lambda)
+            (export via-bump)
+            (export via-list)))
+  (call via-lambda (: 50 Int64))              (output (: 50 Int64))
+  (call via-lambda (: 150 Int64))             (trap "unreachable")
+  (call via-bump (: 50 Int64) (: 10 Int64))   (output (: 60 Int64))
+  (call via-bump (: 90 Int64) (: 20 Int64))   (trap "unreachable")
+  (call via-list (: 50 Int64))                (output (: 50 Int64))
+  (call via-list (: 150 Int64))               (trap "unreachable"))

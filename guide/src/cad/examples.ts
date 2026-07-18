@@ -4,8 +4,10 @@
 /// operator P5 ruling A): the reader's buffer holds ONLY the model — BOTH the `import … from "exact"` clause
 /// AND the `@!default-fraction Rational` pragma are auto-injected by CadPage's `injectImport` (not shown), so
 /// the example buffers are clean (no import, no pragma boilerplate — the operator-directed implicit-default-
-/// fraction UX). The injected pragma makes a bare `n/d` an exact Rational (without it `v3r(4/1,…)` rejects
-/// CDZ0203); it's module-scoped and does NOT leak into the imported library. Every model returns
+/// fraction UX). The injected pragma makes a bare integer literal an exact Rational (so a whole dimension is
+/// just `4`, not `4/1` — no divide-by-one noise; a true fraction like `5/2` is written as-is), and a bare
+/// `n/d` an exact Rational; without the pragma `v3r(4, …)` would reject CDZ0203. The pragma is module-scoped
+/// and does NOT leak into the imported library. Every model returns
 /// `lower(<Solid model>)` — `exact.cdz`'s `Solid`
 /// is GENERIC and a generic value can't be host-rendered yet, so `lower` maps it to the monomorphic
 /// `SolidR` the compiler emits + the mesh driver parses. Both surfaces of each example render to the SAME
@@ -41,11 +43,11 @@ const CUBE_WITH_DENT: ExampleModel = {
     ml: `def main() =
   lower(
     Solid.Difference(
-      Solid.Cube(v3r(4/1, 4/1, 4/1)),
+      Solid.Cube(v3r(4, 4, 4)),
       Solid.Sphere(5/2)))`,
     sexpr: `(def (main)
   (lower ((. Solid Difference)
-           ((. Solid Cube) (v3r (/ 4 1) (/ 4 1) (/ 4 1)))
+           ((. Solid Cube) (v3r 4 4 4))
            ((. Solid Sphere) (/ 5 2)))))`,
   },
 };
@@ -60,12 +62,12 @@ const HOLLOW_TUBE: ExampleModel = {
     ml: `def main() =
   lower(
     Solid.Difference(
-      Solid.Cylinder(6/1, 2/1),
-      Solid.Cylinder(6/1, 1/1)))`,
+      Solid.Cylinder(6, 2),
+      Solid.Cylinder(6, 1)))`,
     sexpr: `(def (main)
   (lower ((. Solid Difference)
-           ((. Solid Cylinder) (/ 6 1) (/ 2 1))
-           ((. Solid Cylinder) (/ 6 1) (/ 1 1)))))`,
+           ((. Solid Cylinder) 6 2)
+           ((. Solid Cylinder) 6 1))))`,
   },
 };
 
@@ -79,12 +81,12 @@ const ROUNDED_CUBE: ExampleModel = {
     ml: `def main() =
   lower(
     Solid.Intersection(
-      Solid.Cube(v3r(3/1, 3/1, 3/1)),
-      Solid.Sphere(2/1)))`,
+      Solid.Cube(v3r(3, 3, 3)),
+      Solid.Sphere(2)))`,
     sexpr: `(def (main)
   (lower ((. Solid Intersection)
-           ((. Solid Cube) (v3r (/ 3 1) (/ 3 1) (/ 3 1)))
-           ((. Solid Sphere) (/ 2 1)))))`,
+           ((. Solid Cube) (v3r 3 3 3))
+           ((. Solid Sphere) 2))))`,
   },
 };
 
@@ -98,16 +100,16 @@ const STEPPED_PEDESTAL: ExampleModel = {
     ml: `def main() =
   lower(
     Solid.Union(
-      Solid.Cube(v3r(4/1, 4/1, 1/1)),
+      Solid.Cube(v3r(4, 4, 1)),
       Solid.Translate(
-        v3r(0/1, 0/1, 1/1),
-        Solid.Cube(v3r(2/1, 2/1, 1/1)))))`,
+        v3r(0, 0, 1),
+        Solid.Cube(v3r(2, 2, 1)))))`,
     sexpr: `(def (main)
   (lower ((. Solid Union)
-           ((. Solid Cube) (v3r (/ 4 1) (/ 4 1) (/ 1 1)))
+           ((. Solid Cube) (v3r 4 4 1))
            ((. Solid Translate)
-             (v3r (/ 0 1) (/ 0 1) (/ 1 1))
-             ((. Solid Cube) (v3r (/ 2 1) (/ 2 1) (/ 1 1)))))))`,
+             (v3r 0 0 1)
+             ((. Solid Cube) (v3r 2 2 1))))))`,
   },
 };
 
@@ -122,11 +124,11 @@ const ARCH_FIN: ExampleModel = {
   description: "A straight base + a cubic-Bézier curved top, extruded — a genuinely-curved part via a 2-D path.",
   source: {
     ml: `def main() =
-  let arch = cubic-to(line-to(path-start(), v2(8/1, 0/1)), v2(0/1, 0/1), v2(8/1, 10/1), v2(0/1, 10/1)) in
-  lower(Solid.ExtrudeLinear(Profile.PathProfile(arch), 2/1))`,
+  let arch = cubic-to(line-to(path-start(), v2(8, 0)), v2(0, 0), v2(8, 10), v2(0, 10)) in
+  lower(Solid.ExtrudeLinear(Profile.PathProfile(arch), 2))`,
     sexpr: `(def (main)
-  (let ((arch (cubic-to (line-to (path-start) (v2 (/ 8 1) (/ 0 1))) (v2 (/ 0 1) (/ 0 1)) (v2 (/ 8 1) (/ 10 1)) (v2 (/ 0 1) (/ 10 1)))))
-    (lower ((. Solid ExtrudeLinear) ((. Profile PathProfile) arch) (/ 2 1)))))`,
+  (let ((arch (cubic-to (line-to (path-start) (v2 8 0)) (v2 0 0) (v2 8 10) (v2 0 10))))
+    (lower ((. Solid ExtrudeLinear) ((. Profile PathProfile) arch) 2))))`,
   },
 };
 

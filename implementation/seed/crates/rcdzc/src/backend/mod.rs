@@ -14,6 +14,7 @@
 //! the flat rung is a property of the linearizing backend, not a shared stage
 //! (`backends-and-targets.md` §The Flat Instruction Rung Is A Property Of A Linearizing Backend).
 
+pub mod common;
 pub mod rust;
 pub mod wasm;
 

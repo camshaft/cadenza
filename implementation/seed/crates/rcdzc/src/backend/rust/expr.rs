@@ -746,7 +746,8 @@ where
     F: FnOnce(&mut Db) -> Result<String, Reject>,
 {
     let base = db.current_refinements();
-    let frame = crate::backend::wasm::select::refined_frame_for_branch(db, cond, then_branch, base);
+    let frame =
+        crate::backend::common::diverge::refined_frame_for_branch(db, cond, then_branch, base);
     db.push_range_refinements(frame);
     let out = body(db);
     db.pop_range_refinements();
@@ -2580,7 +2581,7 @@ fn emit_const_int_at(it: IntTy, v: &IntValue) -> Result<String, Reject> {
 /// the nested `(+ (+ (trap) 1) 2)` residue of the direct guard). It does NOT touch shared Core / the wasm
 /// backend — it is a pure rust-emit predicate. Recursion is bounded by the finite operand tree.
 fn arith_operand_diverges(db: &mut Db, id: StructId) -> bool {
-    if crate::backend::wasm::select::body_diverges(db, id) {
+    if crate::backend::common::diverge::body_diverges(db, id) {
         return true;
     }
     match core_of(db, id) {
@@ -4294,7 +4295,21 @@ fn emit_sum_payload(
                             } else {
                                 None
                             };
-                            let mut hit: Option<u32> = None;
+                            // Collect EVERY variant whose payload matches (terminal → agrees with the binder's
+                            // type; deeper → any payload-bearing variant). One match = unambiguous. SEVERAL
+                            // (a HOMOGENEOUS multi-variant sum — `(Op (Add Int64) (Mul Int64))` matched by
+                            // `(Op.Add n)`, where Add and Mul share Int64) is the case the arm's disc-test
+                            // GUARD already resolved: the body only runs for the guard-proven variant. Since
+                            // every candidate shares the payload type (all agree with `target`), we can bind
+                            // the payload with an OR-PATTERN over all of them — `match x { Add(__pv) | Mul(__pv)
+                            // => __pv, _ => panic!() }` — which is type-correct (one shared binder type) and
+                            // value-correct (only the guarded variant reaches here; the others are dead arms).
+                            // This is the disc-threading the decline deferred, realized WITHOUT the disc: the
+                            // guard supplies it at run time and the shared payload type makes the or-pattern
+                            // sound. (A DEEPER walk keeps the single-candidate requirement — its candidates were
+                            // only checked to HAVE a payload, not to share a type, so an or-pattern could
+                            // mis-bind; that stays deferred.)
+                            let mut candidates: Vec<u32> = Vec::new();
                             for d in 0..n as u32 {
                                 let Some(pt) = variant_payload_ty(db, &sum_ty, d) else {
                                     continue;
@@ -4305,30 +4320,49 @@ fn emit_sum_payload(
                                     None => true,
                                 };
                                 if matches {
-                                    if hit.is_some() {
-                                        hit = None; // ambiguous
-                                        break;
-                                    }
-                                    hit = Some(d);
+                                    candidates.push(d);
                                 }
                             }
-                            let disc = hit.ok_or_else(|| {
-                                Reject::decline(
+                            // A multi-candidate OR-PATTERN is sound ONLY for the terminal case (payloads proven
+                            // type-equal via `target`) and when every candidate boxes its payload the same way
+                            // (a `(*__pv)` deref and a bare `__pv` can't share one or-pattern arm). Otherwise a
+                            // single candidate is required; zero or an unresolvable multi stays a decline.
+                            let same_boxing = candidates
+                                .iter()
+                                .map(|&d| super::enums::variant_is_recursive(db, &sum_ty, d))
+                                .collect::<std::collections::BTreeSet<_>>()
+                                .len()
+                                <= 1;
+                            if candidates.is_empty()
+                                || (candidates.len() > 1 && !(terminal && same_boxing))
+                            {
+                                return Err(Reject::decline(
                                     "a sum-constructor list-element payload whose variant is not uniquely determined needs the guard discriminant threaded (deferred)",
-                                )
-                            })?;
-                            let vpath = sum_variant_path_of_ty(db, &sum_ty, disc)?;
-                            let boxed = super::enums::variant_is_recursive(db, &sum_ty, disc);
+                                ));
+                            }
+                            let boxed =
+                                super::enums::variant_is_recursive(db, &sum_ty, candidates[0]);
                             let bind = if boxed { "(*__pv)" } else { "__pv" };
-                            // Extract the payload from the matched variant. `.clone()` the borrowed list element
-                            // into the match so the payload can move out. This becomes the new `expr`; the loop
-                            // then projects any trailing `Elem(j)` steps into it (a TUPLE/record payload).
+                            // The or-pattern head: every candidate variant path, binding the shared `__pv`.
+                            let mut vpaths = Vec::with_capacity(candidates.len());
+                            for &d in &candidates {
+                                vpaths.push(format!(
+                                    "{}(__pv)",
+                                    sum_variant_path_of_ty(db, &sum_ty, d)?
+                                ));
+                            }
+                            let pat = vpaths.join(" | ");
+                            // Extract the payload from the matched variant(s). `.clone()` the borrowed list
+                            // element into the match so the payload can move out. This becomes the new `expr`;
+                            // the loop then projects any trailing `Elem(j)` steps into it (a TUPLE/record payload).
                             expr = format!(
-                                "match ({expr}).clone() {{ {vpath}(__pv) => {bind}, _ => panic!(\"unreachable\") }}"
+                                "match ({expr}).clone() {{ {pat} => {bind}, _ => panic!(\"unreachable\") }}"
                             );
                             // Advance `cur_ty` to the extracted payload's type so a following `Elem(j)` resolves
-                            // (a tuple field `.j`, etc.). Terminal walks stop here (no more steps).
-                            cur_ty = variant_payload_ty(db, &sum_ty, disc).unwrap_or(Ty::Any);
+                            // (a tuple field `.j`, etc.). Terminal walks stop here (no more steps). All candidates
+                            // share the payload type, so candidate[0]'s is authoritative.
+                            cur_ty =
+                                variant_payload_ty(db, &sum_ty, candidates[0]).unwrap_or(Ty::Any);
                         }
                         // A `RestFrom` beyond the leading list index is a shape this slice does not render.
                         _ => {

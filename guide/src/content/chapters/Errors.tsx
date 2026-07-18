@@ -10,13 +10,13 @@ export default function Errors() {
       <Lede>What happens when there's no answer, and how Cadenza makes you deal with it.</Lede>
 
       <P>
-        Not every operation has an answer. Look past the end of a list, look up a missing key, ask for a
-        result that doesn't fit, and a language has to do <em>something</em>. Cadenza's building block for
-        "there might be no value" is the <C>Option</C> type: either <C>(Some x)</C> with a value, or{" "}
-        <C>(None unit)</C> with nothing, and the type system makes a caller acknowledge both cases instead
-        of returning a bogus default. (An operation that's genuinely <em>undefined</em>, like dividing by
-        zero, is a different story: it halts rather than inventing a value; you saw that in{" "}
-        <strong>The numeric model</strong>. Here we're about absence you can <em>handle</em>.)
+        Not every operation has an answer, and a language has to do something when you look past the end
+        of a list or up a missing key or ask for a result that doesn't fit. Cadenza represents a value
+        that might be missing with the <C>Option</C> type, which is either <C>(Some x)</C> with a value
+        or <C>(None unit)</C> with nothing, so the type system makes a caller acknowledge both cases
+        rather than return a bogus default. A genuinely undefined operation like dividing by zero is a
+        different story that halts rather than inventing a value, as you saw in{" "}
+        <strong>The numeric model</strong>, so this chapter is about the kind of absence you can handle.
       </P>
 
       <H2>Returning an Option</H2>
@@ -35,11 +35,12 @@ export default function Errors() {
       <P>Change the <C>2</C> to <C>0</C> and Run: the <C>None</C> arm fires and you get <C>-1</C>, no crash.</P>
 
       <Why tenet="Partiality is data, not a trap">
-        Reading past the end of a list, dividing by zero, a lookup that misses: in Cadenza these are
-        ordinary values your program <em>handles</em>, not crashes it suffers. Absence has a type
-        (<C>Option</C>), so the compiler can see whether you've dealt with it. The alternative,
-        returning a special sentinel like <C>-1</C> or trapping, either invites a caller to forget the
-        edge case or takes the decision out of their hands. An <C>Option</C> puts it back in the type.
+        Reading past the end of a list, dividing by zero, and a lookup that misses are all ordinary
+        values your program handles in Cadenza rather than crashes it suffers, because absence has a type.
+        Since that type is <C>Option</C>, the compiler can see whether you've dealt with it, whereas a
+        special sentinel like <C>-1</C> would invite a caller to forget the edge case and a trap would
+        take the decision out of their hands. An <C>Option</C> keeps the choice in the type where the
+        caller must confront it.
       </Why>
 
       <H2>Safe indexing</H2>

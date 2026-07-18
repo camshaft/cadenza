@@ -243,20 +243,20 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/TypesAsValues.tsx")),
   },
   {
-    slug: "ad-hoc-polymorphism",
-    title: "Ad-hoc polymorphism",
-    blurb: "One name, a per-type meaning: operators dispatch on operand type, generics specialize per type — all at compile time.",
-    section: "What makes Cadenza different",
-    exercises: 2,
-    Component: lazy(() => import("./chapters/AdHocPolymorphism.tsx")),
-  },
-  {
     slug: "const-parameters",
     title: "Const parameters",
     blurb: "Arguments known at compile time: inlined into a specialized copy and erased — a constant, a type, or a dictionary of behaviour.",
     section: "What makes Cadenza different",
     exercises: 2,
     Component: lazy(() => import("./chapters/ConstParameters.tsx")),
+  },
+  {
+    slug: "ad-hoc-polymorphism",
+    title: "Ad-hoc polymorphism",
+    blurb: "One name, a per-type meaning: operators dispatch on operand type, generics specialize per type — all at compile time.",
+    section: "What makes Cadenza different",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/AdHocPolymorphism.tsx")),
   },
   {
     slug: "metaprogramming",

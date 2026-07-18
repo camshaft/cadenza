@@ -5,7 +5,9 @@ pass	@invariant ESTABLISH (divert) over a heap payload: a NonEmptyList newtype t
 pass	@invariant ESTABLISH Part 1: a bare-scalar invariant on a newtype auto-unwraps + type-checks; a satisfying value constructs and is usable
 pass	@invariant ESTABLISH Part 2 (divert): a plain `(Percent.Pct v)` construction auto-establishes — a satisfying value constructs, a violating value traps at the call site (design §10.2, (D))
 pass	@invariant ESTABLISH Part 2: the synthesized checked constructor enforces the invariant at run time — a satisfying value constructs, a violating value traps (design §10.2, (D))
+pass	@invariant ESTABLISH divert reaches indirect construction sites: a lambda body, a reconstruct-after-update, and a list element all establish
 pass	@invariant ESTABLISH over a multi-variant sum: each variant's construction auto-establishes — a satisfying value constructs, a violating one traps (design §10.2, (D))
+pass	@invariant ESTABLISH over a single-variant multi-payload newtype: an ordered Range constructs, a misordered one traps (design §10.2, (D))
 pass	@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)
 pass	@invariant PRESERVE: an operation returning T discharges the result invariant USING the input invariant as a free gift (design §10.2)
 pass	@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `it` + prelude are in scope)
@@ -992,6 +994,7 @@ pass	a multibyte-scalar char orders by scalar value, not UTF-8 byte length
 pass	a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
+pass	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 pass	a mutually-recursive check/check-if returning a Result compiles and runs (if-cond is a call)
 pass	a mutually-recursive fresh-id walk assigns a fresh id at each node and sums them
 pass	a mutually-recursive generic group is instantiated per type
@@ -3130,6 +3133,7 @@ pass	the wrapping identities preserve a runtime narrow UInt8 exactly (add 0, mul
 pass	the λ-extended kernel Thm stays unforgeable — Thm.Seq with an Abs term outside is CDZ0214
 pass	the ∀-extended kernel Thm stays unforgeable — Thm.Seq of a bogus universal outside is CDZ0214
 pass	three leaf variants in one quoted form each dispatch their own tag
+pass	three same-variant literal arms fall through in order
 pass	three sums in a tuple bind three distinct payloads
 pass	triple negation of a runtime boolean is a single negation
 pass	true is greater than false
@@ -3575,7 +3579,6 @@ todo	a multi-argument closure with COMPOUND args round-trips — flat arrow spel
 todo	a multi-export compound-result shared call is a repeatable (borrow<t>) callback
 todo	a multi-export set of parameterized capturing closures is driven per export
 todo	a multi-export shared call is a repeatable (borrow<t>) callback
-todo	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a parameterized export returning a capturing closure is made and called by the host
 todo	a parameterized export returning a multi-argument capturing closure
@@ -3792,7 +3795,6 @@ todo	the same-core-shape sibling dispatches ITS body, not the first
 todo	the second distinct-signature closure export returns its own type
 todo	three closures with a SHARED signature cross as two resource types
 todo	three distinct closure signatures cross as three resource types
-todo	three same-variant literal arms fall through in order
 todo	tuple elements are evaluated left to right
 todo	two @param sites generate two accessors under one Param effect
 todo	two capturing closures stored as runtime tuple elements keep distinct captures

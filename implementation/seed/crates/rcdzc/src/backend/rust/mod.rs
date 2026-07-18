@@ -640,8 +640,8 @@ fn emit_signature(
     // which missed a both-diverge `if`/match (v-wasm-opt + breaker's Never-in-emit-position family).
     // Checked BEFORE the `rust_type` decline so a diverging `Any`/`Var` result is not misdiagnosed as an
     // unrepresentable type. A genuinely-unconstrained (non-diverging) result var still declines below.
-    let diverges =
-        types::rust_type(result).is_none() && crate::backend::wasm::select::body_diverges(db, body);
+    let diverges = types::rust_type(result).is_none()
+        && crate::backend::common::diverge::body_diverges(db, body);
     // An ILL-FORMED integer width in the RESULT type is a REJECT (CDZ0302), not a decline — the twin of
     // the parameter check above, matching the wasm target (`(: 5 (Int -8))` → CDZ0302, not a codeless
     // decline). NOT for a DIVERGING body: it produces no value, so a `!` return is legitimate regardless of
