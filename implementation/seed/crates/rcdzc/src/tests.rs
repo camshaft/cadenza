@@ -17756,6 +17756,56 @@ mod match_engine {
         );
     }
 
+    /// Verification Inc-b @invariant (design §10, DATA-level family member): `@invariant(pred)` on a `(type …)`
+    /// declaration is RECORDED (keyed by the type decl occ, over the value binder `it`) and read by
+    /// `Db::invariant_of` — v-property-testing's `gen<T>` seam. Unlike `@requires`/`@ensures` it annotates a
+    /// TYPE, not a def, so it must NOT trip the "annotation wraps no definition" reject; the type still takes
+    /// effect (a value of it constructs + runs). Behavior-neutral recording (the establish/preserve enforcement
+    /// + elision are later slices).
+    #[test]
+    fn an_invariant_on_a_type_is_recorded_and_the_type_still_works() {
+        use crate::testkit::parse;
+        // `Percent` carries an `@invariant(and (>= it 0) (<= it 100))`; a value constructs + the program runs.
+        let src = "(module m \
+            (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+            (def (mk (: v Int64)) (Percent.Pct v)) \
+            (def (unwrap (: p Percent)) (match p ((Percent.Pct n) n))) \
+            (def (main) (unwrap (mk 42))) (export main))";
+        let db = crate::db::Db::load(parse(src));
+        // The invariant is RECORDED against the `Percent` type decl occ (not a def) — read by invariant_of.
+        let percent = db
+            .type_decls
+            .iter()
+            .find(|t| t.name == "Percent")
+            .expect("type Percent")
+            .occ;
+        assert!(
+            db.invariant_of(percent).is_some(),
+            "the @invariant predicate is recorded for the Percent type declaration"
+        );
+        // A type WITHOUT an @invariant records nothing.
+        let no_inv = "(module m (type Plain (P Int64)) (def (main) 0) (export main))";
+        let db2 = crate::db::Db::load(parse(no_inv));
+        let plain_ty = db2
+            .type_decls
+            .iter()
+            .find(|t| t.name == "Plain")
+            .expect("type Plain")
+            .occ;
+        assert!(
+            db2.invariant_of(plain_ty).is_none(),
+            "a type with no @invariant records no predicate"
+        );
+        // BEHAVIOR-NEUTRAL: the @invariant-annotated type still takes effect — `mk`/`unwrap` compile + run,
+        // and `main` returns 42 (the @invariant wrapper is consumed at strip, the type declaration survives).
+        let comp = compile_component(&crate::codec::encode(&parse(src))).expect("compiles");
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[]),
+            42,
+            "the @invariant-annotated Percent type still constructs + unwraps: main = 42"
+        );
+    }
+
     /// Verification Inc-b (D): a BARE `@ensures(Q)` (not stacked under `@test`) is ENFORCED at body-EXIT —
     /// `verify_enforce::enforce` rewrites the def body to `(let ((it BODY)) (if Q it (trap)))`, so a violated
     /// postcondition TRAPS and a satisfied one is value-transparent (returns the def's own value). This is the
@@ -46100,6 +46150,24 @@ mod stage1 {
             "a genuine typo (no shadowing) keeps the did-you-mean hint: {}",
             typo.message
         );
+        // The SECOND locus: a HANDLER ARM naming a later-effect op gets the shadow hint on its CDZ0403
+        // (`handle E … ((b …))` where `b` is on the later `E`), not the baffling "closest matches: a".
+        let arm_shadow = compile_component(&crate::codec::encode(&parse(
+            "(module m (effect E (op a (-> Int64 Int64))) (effect E (op b (-> Int64 Int64))) \
+             (def (main) (handle E 0 ((b (n) s (resume n s))) (E.a 5))) (export main))",
+        )))
+        .expect_err("must reject");
+        assert!(
+            arm_shadow
+                .message
+                .contains("this handler arm names an operation its effect does not declare")
+                && arm_shadow
+                    .message
+                    .contains("declared on a LATER `(effect E …)`")
+                && arm_shadow.message.contains("discharges the FIRST"),
+            "a handler arm naming a later-effect op explains the shadowing, not a typo list: {}",
+            arm_shadow.message
+        );
     }
 
     #[test]
@@ -57310,6 +57378,81 @@ mod stage1 {
             (export main))";
         let bl = compile_component(&crate::codec::encode(&parse(local_cap))).expect("compile");
         assert_eq!(run_returns_with::<i64>(&bl, "main", &[]), 12);
+    }
+
+    #[test]
+    fn a_let_bound_if_or_match_join_of_capturing_lambdas_applied_folds() {
+        use wasmtime::component::Val;
+        // The CONTROL-FLOW face of the let-bound-closure fold — the fourth face of the same hazard as
+        // `a_capturing_closure_in_a_let_bound_compound_projected_and_applied_folds`. A `let` whose init is an
+        // `if`-JOIN of two CAPTURING lambdas, then applied:
+        // `(let ((f (if b (fn (x) (+ x n)) (fn (x) (* x n))))) (f 10))`. This was a BOTH-BACKEND MISCOMPILE:
+        // wasm b=true trapped `unreachable` and b=false returned 0 (the capture env lost); rust E0425 on an
+        // unbound `__cap0` (the arms β-inlined without their capture bindings).
+        //
+        // Root cause: `should_keep_binding` short-circuits a `Resolved::Lambda` init, a lambda-reducing init,
+        // and a compound-holding-a-closure init — precisely to keep the classification `core_of(init)` from
+        // speculatively LIFTING a closure and polluting `db.captured_ref`. But an `if`/`match` whose ARMS are
+        // lambdas is none of those — it slipped past, was lowered (lifting each arm's closure, recording the
+        // captured `n`), and the case-of-case rewrite β-reduced the selected arm inline (`(if b (+ 10 n) (*
+        // 10 n))`) reusing the SHARED `n` occurrences, which the stale `captured_ref` entries lowered to a
+        // `Core::Captured` env-read in `main` (no closure env). `if_or_match_selects_lambda` (a lift-free
+        // reduce) now keeps a conditionally-chosen-closure binding on the fold-through path, so the selected
+        // arm folds inline exactly as the non-capturing-join and record-held controls do. n = 5: b=true →
+        // 10 + 5 = 15, b=false → 10 * 5 = 50 (a pure fold, no heap round-trip, no runtime import).
+        let src = "(module m \
+            (def (main (: b Bool) (: n Int64)) \
+              (let ((f (if b (fn ((: x Int64)) (+ x n)) (fn ((: x Int64)) (* x n))))) (f 10))) \
+            (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            "the if-join's selected closure folds inline — no heap round-trip, no runtime import"
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "main", &[Val::Bool(true), Val::S64(5)]),
+            15
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "main", &[Val::Bool(false), Val::S64(5)]),
+            50
+        );
+        // The SAME-BODY variant (both arms `(+ x n)`) — the breaker-listed twin where the payload `n` was
+        // read as 0 (b=false → 10 instead of 15). Both arms fold to `(+ 10 n)`; n = 5 → 15 either way.
+        let same_body = "(module m \
+            (def (main (: b Bool) (: n Int64)) \
+              (let ((f (if b (fn ((: x Int64)) (+ x n)) (fn ((: x Int64)) (+ x n))))) (f 10))) \
+            (export main))";
+        let bsb = compile_component(&crate::codec::encode(&parse(same_body))).expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&bsb, "main", &[Val::Bool(false), Val::S64(5)]),
+            15
+        );
+        // The MATCH-JOIN face (the same `if_or_match_selects_lambda` short-circuit covers it): a `let`
+        // whose init is a `match` selecting one of two capturing lambdas, then called. On trunk this was
+        // INVALID WASM (`wasm[0]::function[2]`) for BOTH selectors — worse than the if-join, which at least
+        // ran one arm. The scrutinee is a custom sum built inside the module (an int-literal pattern isn't
+        // lowered yet, and a sum entry-arg doesn't cross the host boundary — both unrelated pre-existing
+        // gaps), so `(pick b)` yields `Sel.A`/`Sel.B` and the case-of-match rewrite β-reduces the selected
+        // arm inline. n = 5: A → 10 + 5 = 15, B → 10 * 5 = 50.
+        let mmatch = "(module m \
+            (type Sel (A) (B)) \
+            (def (pick (: b Bool)) (if b (Sel.A) (Sel.B))) \
+            (def (main (: b Bool) (: n Int64)) \
+              (let ((f (match (pick b) \
+                         ((Sel.A _) (fn ((: x Int64)) (+ x n))) \
+                         ((Sel.B _) (fn ((: x Int64)) (* x n)))))) \
+                (f 10))) \
+            (export main))";
+        let bm = compile_component(&crate::codec::encode(&parse(mmatch))).expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&bm, "main", &[Val::Bool(true), Val::S64(5)]),
+            15
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&bm, "main", &[Val::Bool(false), Val::S64(5)]),
+            50
+        );
     }
 
     #[test]

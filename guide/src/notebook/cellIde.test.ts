@@ -158,3 +158,23 @@ test("prepareCell exports the cell's own def when there is no `main` (no danglin
   const bare = prepareCell([code("(+ 1 2)")], 0, NO_WIDGETS, NO_VALUES, "sexpr", "(+ 1 2)");
   assert.ok(!/\(export/.test(bare.compiled), `a bare expression cell gets no export, got: ${JSON.stringify(bare.compiled)}`);
 });
+
+test("prepareCell exports a def CONSUMED by a LATER cell so it isn't false-flagged unused (CDZ0306)", () => {
+  // The loan-example shape: cell 0 defines `base` + `main`, and a LATER cell (2) plots `base`. Linting cell 0
+  // in ISOLATION would flag `base` as an unused definition — but in the notebook's sequential scope it IS used
+  // downstream. prepareCell exports the downstream-consumed def so the per-cell linter counts it used.
+  const cells: Cell[] = [
+    code("(def (base) 100)\n(def (main) base)"), // cell 0: base used downstream + main
+    code("(def (main) 1)"), // cell 1: unrelated
+    code("(def (main) (* base 2))"), // cell 2: consumes cell 0's `base`
+  ];
+  const r = prepareCell(cells, 0, NO_WIDGETS, NO_VALUES, "sexpr", "(def (base) 100)\n(def (main) base)");
+  // The export must include `base` (downstream-used) alongside `main`.
+  assert.match(r.compiled, /\(export [^)]*\bbase\b[^)]*\)/, `base should be exported (downstream-used), got: ${r.compiled}`);
+  assert.match(r.compiled, /\(export [^)]*\bmain\b[^)]*\)/, `main should still be exported, got: ${r.compiled}`);
+  // A def NOT used downstream (and not main) is NOT force-exported — only main + downstream-used names appear
+  // in the export form. (This cell is the LAST, so `helper` has no downstream consumer.)
+  const noDownstream = prepareCell([code("(def (helper) 9)\n(def (main) helper)")], 0, NO_WIDGETS, NO_VALUES, "sexpr", "(def (helper) 9)\n(def (main) helper)");
+  const exportForm = /\(export ([^)]*)\)/.exec(noDownstream.compiled)?.[1] ?? "";
+  assert.ok(!exportForm.split(/\s+/).includes("helper"), `a non-downstream local def isn't in the export list, got export: (${exportForm})`);
+});

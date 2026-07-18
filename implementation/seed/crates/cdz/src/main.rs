@@ -317,6 +317,19 @@ enum Cmd {
     /// exit is a HARNESS/USAGE failure that produced no verdict — a source READ error, or a usage mistake
     /// (a bad/ambiguous `--call`, or an arg-taking export the nullary driver can't invoke).
     RunRust(RunRustArgs),
+
+    /// Run a program through the Cadenza-in-Cadenza (ML) compiler's WASM-EMIT backend and print a verdict
+    /// — the W4 emit-equals-interpret differential seam. compiler-ml's `emit-src-bytes` compiles the source
+    /// to a CORE wasm MODULE (a nullary `main : () -> i64` that imports nothing), which this runs standalone
+    /// via `wasmtime::Module` (NOT a component — no value-heap runtime), invoking `main` and printing its
+    /// i64. Reads source from a FILE or stdin (like `cdz run-ml`); prints ONE verdict line: `value <n>` (the
+    /// emitted module ran to that i64) | `declined` (out of the emit subset — `emit-src-bytes` returned
+    /// `None`, OR the emitted module TRAPPED at run time: div0/mod0/`MIN/-1` — mapped to `declined` so it
+    /// matches the eval-db oracle `cdz run-ml` produces for those) | `error <msg>` (a harness break: the
+    /// emitted module failed to build/instantiate). Exit 0 for any run outcome (a harness/usage failure that
+    /// produced no verdict is the sole non-zero exit) — IDENTICAL to `cdz run-ml`, so the W4 gate compares
+    /// run-emitted's value against run-ml's value case-by-case (emit ≡ interpret).
+    RunEmitted(RunEmittedArgs),
 }
 
 fn main() -> ExitCode {
@@ -378,6 +391,7 @@ fn main() -> ExitCode {
         Cmd::Lsp => run_lsp(),
         Cmd::RunMl(a) => run_run_ml(&a),
         Cmd::RunRust(a) => run_run_rust(&a),
+        Cmd::RunEmitted(a) => run_run_emitted(&a),
     }
 }
 
@@ -660,6 +674,164 @@ fn parse_ml_option_render(rendered: &str) -> String {
         }
     }
     "declined".to_string()
+}
+
+#[derive(clap::Args)]
+struct RunEmittedArgs {
+    /// The program SOURCE file (s-expr / ml surface). OMITTED → read the program from stdin. Mirrors
+    /// `cdz run-ml`'s input contract so the W4 emit-equals-interpret differential harness is symmetric.
+    file: Option<String>,
+}
+
+/// `cdz run-emitted` — run a program through compiler-ml's WASM-EMIT backend + print a verdict (the W4
+/// emit-equals-interpret seam). See the `RunEmitted` Cmd doc for the contract. MECHANISM (mirrors run-ml):
+/// write a driver `import { emit-src-bytes } from "emit-db"` whose `main = emit-src-bytes("<source>")` into
+/// `implementation/compiler-ml/src/` (imports resolve entry-dir-relative), compile+run it via `cdz` to
+/// SELF; the driver returns `Option(List UInt8)` — `None` → declined; `Some(list …)` → the raw module bytes
+/// (parsed from the rendered decimal-`u8` list, lossless), which we run as a core `wasmtime::Module`
+/// (`cdz_run::run_core_module`): a returned i64 → `value <n>`, a run-time TRAP → `declined` (matches the
+/// eval-db oracle for div0/mod0/`MIN/-1`), an invalid/uninstantiable module → `error <msg>`.
+fn run_run_emitted(args: &RunEmittedArgs) -> ExitCode {
+    use std::io::Read;
+    // 1. Read the program source (file or stdin). A read failure is the reserved harness-error path.
+    let source = match &args.file {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{PROG} run-emitted: cannot read {path}: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => {
+            let mut buf = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
+                eprintln!("{PROG} run-emitted: cannot read stdin: {e}");
+                return ExitCode::FAILURE;
+            }
+            buf
+        }
+    };
+
+    // 2. Generate the driver: embed the source as a Cadenza string literal + call emit-src-bytes. Escape
+    //    `\`/`"` (corpus programs are single-line ASCII; the newline→space is defensive).
+    let escaped = source
+        .trim()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', " ");
+    let driver = format!(
+        "import {{ emit-src-bytes }} from \"emit-db\"\ndef main() = emit-src-bytes(\"{escaped}\")\nexport {{ main }}\n"
+    );
+
+    // 3. Write the driver INTO the compiler-ml src dir (so `import "emit-db"` resolves — imports are
+    //    entry-dir-relative), located robustly (cwd-independent). Pid-stamped + RAII-cleaned like run-ml's.
+    let src_dir = match find_compiler_ml_src() {
+        Some(d) => d,
+        None => {
+            eprintln!(
+                "{PROG} run-emitted: compiler-ml src dir not found (searched up from cwd + exe dir)"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let driver_path = src_dir.join(format!("zz-run-emitted-driver-{}.cdz", std::process::id()));
+    if let Err(e) = std::fs::write(&driver_path, &driver) {
+        eprintln!("{PROG} run-emitted: cannot write driver: {e}");
+        return ExitCode::FAILURE;
+    }
+    struct DriverFile(std::path::PathBuf);
+    impl Drop for DriverFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _driver_guard = DriverFile(driver_path.clone());
+
+    // 4. Compile + run the driver via `cdz` to self → the rendered `Option(List UInt8)`, then map to a
+    //    verdict: None → declined; Some(bytes) → run the core module (i64 → value, trap → declined,
+    //    bad-artifact → error). A harness failure (couldn't invoke the compiler/runner) is non-zero.
+    match emit_and_run_module(&driver_path) {
+        Ok(verdict) => {
+            println!("{verdict}");
+            ExitCode::SUCCESS
+        }
+        Err(msg) => {
+            eprintln!("{PROG} run-emitted: {msg}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Compile + run the run-emitted driver (via `cdz` to self), capture the rendered `Option(List UInt8)`, and
+/// map it to a verdict STRING. A driver COMPILE failure → `declined` (out of subset — the front-end can't
+/// build it). A run that yields `None` → `declined`. `Some(list …)` → parse the raw module bytes and run
+/// them as a core module: i64 → `value <n>`, trap → `declined`, invalid module → `error …`. `Err` is a
+/// harness failure (couldn't spawn the compiler/runner) — the caller makes it a non-zero exit.
+fn emit_and_run_module(driver_path: &std::path::Path) -> Result<String, String> {
+    use std::process::Command;
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let tmp_wasm =
+        std::env::temp_dir().join(format!("cdz-run-emitted-{}.wasm", std::process::id()));
+
+    // Compile the driver. A compile failure → the program is out of the emit subset → declined.
+    let compile = Command::new(&exe)
+        .arg("compile")
+        .arg(driver_path)
+        .arg("-o")
+        .arg(&tmp_wasm)
+        .output()
+        .map_err(|e| format!("spawn compile: {e}"))?;
+    if !compile.status.success() {
+        let _ = std::fs::remove_file(&tmp_wasm);
+        return Ok("declined".to_string());
+    }
+    // Run the driver → the rendered `(: (Some (list <u8>…)) …)` / `(: None …)`.
+    let run = Command::new(&exe)
+        .arg("run")
+        .arg(&tmp_wasm)
+        .arg("--call")
+        .arg("main")
+        .output()
+        .map_err(|e| format!("spawn run: {e}"));
+    let _ = std::fs::remove_file(&tmp_wasm);
+    let run = run?;
+    if !run.status.success() {
+        // The driver (the COMPILER itself) trapped while emitting — a harness-level failure, not a program
+        // verdict. Surface it rather than masking it as declined.
+        return Err(format!(
+            "the emit driver trapped: {}",
+            String::from_utf8_lossy(&run.stderr).trim()
+        ));
+    }
+    let out = String::from_utf8_lossy(&run.stdout);
+    let Some(bytes) = parse_emitted_byte_list(out.trim()) else {
+        // `None` (or an unrecognized render) → the program is out of the emit subset → declined.
+        return Ok("declined".to_string());
+    };
+    // Run the emitted CORE module. A returned i64 → value; a trap (div0/mod0/MIN÷-1) → declined (matches
+    // the eval-db oracle); an invalid/uninstantiable module → error (a bad artifact = a real emit bug).
+    match cdz_run::run_core_module(&bytes, "main") {
+        Ok(cdz_run::Outcome::Value(v)) => Ok(format!("value {v}")),
+        Ok(cdz_run::Outcome::Trap(_)) => Ok("declined".to_string()),
+        Err(e) => Ok(format!("error {e}")),
+    }
+}
+
+/// Parse compiler-ml's `emit-src-bytes` rendered result into the raw module bytes. The render is
+/// `(: (Some (list <u8> <u8> …)) (Option (List UInt8)))` for a Some, or `(: None …)` for a decline. The
+/// byte list is decimal `u8` integers (0..=255) — lossless through text (no escaping, unlike a `Bytes`
+/// `b"…"` render), so we collect them directly. Returns `None` for a `None` result (declined) or any
+/// render without a parseable `(list …)` payload.
+fn parse_emitted_byte_list(rendered: &str) -> Option<Vec<u8>> {
+    // Locate the `(list ` payload of the `Some` (a `None` result has no `(list `). Take up to its close.
+    let after = rendered.split("(list").nth(1)?;
+    let inner = after.split(')').next()?;
+    let mut bytes = Vec::new();
+    for tok in inner.split_whitespace() {
+        // Every token must be a `u8`; anything else means an unexpected render — bail (treat as declined).
+        bytes.push(tok.parse::<u8>().ok()?);
+    }
+    Some(bytes)
 }
 
 #[derive(clap::Args)]
@@ -3061,6 +3233,25 @@ fn run_test(args: &TestArgs) -> ExitCode {
         println!(
             "\n═══ TOTAL: {total_pass} passed, {total_fail} failed (across {} files) ═══",
             files.len()
+        );
+    }
+    // A SINGLE explicit `cdz test <file>` that found ZERO tests is almost always a mistake — the user meant
+    // to test something (e.g. wrote an UNKNOWN test-ish annotation like `@property`, which is silently
+    // stripped so its def is not a test, leaving the file with no `@test`). Without a note this exits 0 with
+    // NO output — a whole file can be dead + "green" by omission (breaker's silent-no-op finding). Print a
+    // hint (still exit 0 — an empty file is not a failure, and this must not red the storeless library case).
+    // Only for a single explicit file: a DIRECTORY/package run legitimately has test-free library modules,
+    // and per-file "0 tests" there would be noise (each already headed by its path). `@test` is the property
+    // spelling (a parameterized `@test`); `@property` is NOT a supported annotation (operator ruling).
+    if !multi
+        && total_pass == 0
+        && total_fail == 0
+        && !any_error
+        && let Some(file) = files.first()
+    {
+        println!(
+            "0 tests found in {file} — a test needs the `@test` annotation (a parameterized `@test` is a \
+             property test); an unrecognized annotation is silently ignored."
         );
     }
     if total_fail == 0 && !any_error {

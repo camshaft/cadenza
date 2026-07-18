@@ -10,7 +10,13 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { CHAPTERS } from "./chapters.ts";
+
+const here = dirname(fileURLToPath(import.meta.url)); // src/content
+const DIFFERENTIATORS_SECTION = "What makes Cadenza different";
 
 /// The sections, in the order a reader walks them. If a section is renamed or a new one added (e.g. an
 /// "Example applications" capstone), update this list deliberately — that edit IS a narrative decision,
@@ -76,4 +82,34 @@ test("the arc opens on Welcome and closes on Where-to-go-next", () => {
     "whats-next",
     "the last chapter should be the Where-to-go-next closer",
   );
+});
+
+// The closer (WhatsNext) recaps the tour with "you've seen what makes Cadenza its own language: <list of
+// every differentiator, each linked>". That recap is the reader's final mental map of the differentiators;
+// if a NEW differentiator chapter is added to the registry but not woven into the recap, the closer
+// silently drops it — the reader finishes with an incomplete picture and nothing else in the suite
+// notices. (links.test.ts checks the recap's links aren't DEAD; this checks the recap is COMPLETE.) Pin
+// it: every chapter in the differentiators section must be linked from the closer.
+test("the Where-to-go-next closer links every differentiator chapter in its recap", () => {
+  const closer = CHAPTERS.find((c) => c.slug === "whats-next");
+  assert.ok(closer, "no whats-next closer chapter");
+  const wn = readFileSync(join(here, "chapters", "WhatsNext.tsx"), "utf8");
+  const linked = new Set([...wn.matchAll(/to="\/([a-z0-9-]+)"/g)].map((m) => m[1]));
+  const differentiators = CHAPTERS.filter((c) => c.section === DIFFERENTIATORS_SECTION).map((c) => c.slug);
+  const missing = differentiators.filter((slug) => !linked.has(slug));
+  assert.equal(
+    missing.length,
+    0,
+    `the closer (WhatsNext) does not recap these differentiator chapter(s): ${missing.join(", ")} — every differentiator needs a place in the reader's final map`,
+  );
+});
+
+test("the differentiators-recap scan finds links (guards against a broken scan)", () => {
+  // A broken link-scan would make the recap-completeness test pass vacuously. Assert the closer links a
+  // healthy number of differentiators so a regex/file-move break trips here instead of hiding.
+  const wn = readFileSync(join(here, "chapters", "WhatsNext.tsx"), "utf8");
+  const linked = new Set([...wn.matchAll(/to="\/([a-z0-9-]+)"/g)].map((m) => m[1]));
+  const differentiators = CHAPTERS.filter((c) => c.section === DIFFERENTIATORS_SECTION).map((c) => c.slug);
+  const found = differentiators.filter((slug) => linked.has(slug)).length;
+  assert.ok(found >= 5, `expected the closer to link many differentiators, found ${found}`);
 });

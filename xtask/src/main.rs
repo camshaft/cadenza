@@ -1391,6 +1391,18 @@ fn run_program_rust(
     // type (not the Rust type) is used because it carries what a boundary render needs: field NAMES and
     // the `Tuple`-vs-`Record` distinction the Rust tuple `(T0,T1)` erases.
     let ret_ty = cdz_return_type(&module, &export);
+    // HOST-CLOSURE FACTORY result peel: a factory export's `cdz-return` note is the CURRIED arrow of the
+    // returned closure — `(-> arg (-> arg2 result))`. The gate applies the factory (`f(caps)(args)`), so the
+    // value it renders is the closure's FINAL result, not the arrow. Peel the leading `(-> X …)` wrappers to
+    // that final type so `cdz_render_expr` renders it structurally (a Tuple/List result → `(tuple …)`, not a
+    // bare `{}` Display that E0277s on a Rust tuple). Only for a factory (its signature returns `Rc<dyn Fn`);
+    // an ordinary export keeps its `ret_ty` unchanged.
+    let ret_ty =
+        if call.is_some() && rust_factory_param_count(&module, &export, async_mode).is_some() {
+            ret_ty.map(|t| peel_arrow_result(&t))
+        } else {
+            ret_ty
+        };
     // The driver's `fn main` calls the export and prints the result the way cdz-run renders it. In ASYNC
     // mode the export is an `async fn` taking `&mut impl CdzEnv` first, so the driver supplies a no-limit
     // gas `Env` + a minimal `block_on` executor and drives `prog::export(&mut env, args)` — the answer
@@ -1601,6 +1613,45 @@ fn rust_panic_message(bytes: &[u8]) -> String {
 /// applies `(args…)`. Counting params is a simple top-level comma count inside the signature's `(...)` (the
 /// only nesting a scalar/compound param type introduces is `<…>`/`(…)` in the type, which we balance). Sync
 /// mode marker `pub fn `; async `pub async fn ` (its `<E: CdzEnv>` generic list precedes the `(`).
+/// Peel a CURRIED arrow type down to its final (non-arrow) RESULT — `(-> Int64 (-> Int64 (Tuple Int64
+/// Int64)))` → `(Tuple Int64 Int64)`. A host-closure factory's `cdz-return` note is the returned closure's
+/// arrow; the gate applies the factory to full arity so the rendered value is this final result. A
+/// non-arrow type is returned unchanged. Balanced-paren aware: the arrow is `(-> <arg> <rest>)` where
+/// `<arg>` may itself be a parenthesized compound, so skip the first top-level sub-term (`<arg>`) and take
+/// `<rest>`, recursing while `<rest>` is itself a `(-> …)`.
+fn peel_arrow_result(ty: &str) -> String {
+    let mut cur = ty.trim();
+    loop {
+        let inner = match cur.strip_prefix("(-> ") {
+            Some(i) => i.trim_end().strip_suffix(')').map(str::trim),
+            None => None,
+        };
+        let Some(inner) = inner else {
+            return cur.to_string();
+        };
+        // `inner` = `<arg> <rest>`. Skip the first top-level term (`<arg>`), balancing parens.
+        let bytes = inner.as_bytes();
+        let mut depth = 0usize;
+        let mut split = None;
+        for (i, &b) in bytes.iter().enumerate() {
+            match b {
+                b'(' => depth += 1,
+                b')' => depth = depth.saturating_sub(1),
+                b' ' if depth == 0 => {
+                    split = Some(i);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        match split {
+            Some(i) => cur = inner[i + 1..].trim(),
+            // No top-level space → a single-token arrow body with no result (malformed); return as-is.
+            None => return cur.to_string(),
+        }
+    }
+}
+
 fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> Option<usize> {
     let marker = if async_mode {
         "pub async fn "

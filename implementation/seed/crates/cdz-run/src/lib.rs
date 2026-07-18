@@ -206,6 +206,35 @@ pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
     run_capturing(component_bytes, opts).map(|(o, _calls)| o)
 }
 
+/// Run a RAW CORE wasm MODULE (not a component): instantiate `module_bytes` with NO imports, invoke the
+/// exported nullary `export` returning a single `i64`, and return `Outcome::Value(<i64>)` / `Outcome::Trap`.
+///
+/// This is the `cdz run-emitted` seam — the compiler-ml wasm-emit backend produces a core `(module (func
+/// (result i64)) (export "main"))` that imports nothing (an integer module needs no value-heap runtime), so
+/// it runs standalone via `wasmtime::Module`, distinct from [`run`]'s component + runtime-compose path. A
+/// trap (div0/mod0/`i64::MIN / -1`) surfaces as `Outcome::Trap` — the caller maps it to the differential's
+/// `declined`. An invalid module / missing-or-wrong-typed export is an `Err` (a harness/build break).
+pub fn run_core_module(module_bytes: &[u8], export: &str) -> Result<Outcome> {
+    let engine = engine();
+    let module = wasmtime::Module::new(&engine, module_bytes)
+        .map_err(|e| anyhow!("invalid core module: {e}"))?;
+    let mut store: Store<()> = Store::new(&engine, ());
+    // No imports: an integer module is self-contained. An unexpected import → a clear error.
+    let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        .map_err(|e| anyhow!("instantiating core module: {e}"))?;
+    let func = instance
+        .get_func(&mut store, export)
+        .ok_or_else(|| anyhow!("core module exports no function `{export}`"))?;
+    // The emit backend's `main` is `() -> i64`. Bind to that typed signature; a shape mismatch is an Err.
+    let typed = func
+        .typed::<(), i64>(&store)
+        .map_err(|e| anyhow!("export `{export}` is not `() -> i64`: {e}"))?;
+    match typed.call(&mut store, ()) {
+        Ok(v) => Ok(Outcome::Value(v.to_string())),
+        Err(e) => Ok(Outcome::Trap(trap_message(&e))),
+    }
+}
+
 /// [`run`], additionally returning the ordered list of HOST OPERATIONS the run performed (each a dotted
 /// `E.op`, in call order) — so a caller (the corpus gate) can verify the observed host-call sequence
 /// against a case's recorded `(host-calls …)`. Empty for a program that makes no host call.

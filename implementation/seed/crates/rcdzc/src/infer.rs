@@ -13050,16 +13050,26 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     // the mistyped key; a FAR miss → `` — closest matches: `a`, `b` `` listing the effect's
                     // ops (a closed set), so a mistyped arm never dead-ends at "does not declare" with no
                     // hint of what the effect actually offers. Only the confident single carries a fix.
+                    // SHADOWED-OP: if the arm's op is declared on a LATER same-named effect (not the one a
+                    // bare `E` resolves to), EXPLAIN the shadowing instead of a baffling "closest matches"
+                    // — the handler-arm twin of `no_field_reject`'s perform-site shadow hint (the
+                    // works-as-specified duplicate-effect diagnostic; two same-named effects are DISTINCT).
+                    // Supersedes the did-you-mean + suppresses the typo-replace fix (the op is real, just on
+                    // another declaration).
+                    let shadow = crate::effects::arm_op_shadow_hint(db, arm.op);
                     match crate::effects::declared_op_hint(db, arm.op) {
                         Some((key_occ, hint, single)) => {
+                            let suffix = shadow.clone().unwrap_or(hint);
                             let mut reject = Reject::coded(
                                 Code::HandlerUndeclaredOp,
                                 format!(
-                                    "this handler arm names an operation its effect does not declare{hint}"
+                                    "this handler arm names an operation its effect does not declare{suffix}"
                                 ),
                             )
                             .at(key_occ);
-                            if let Some(candidate) = single {
+                            if shadow.is_none()
+                                && let Some(candidate) = single
+                            {
                                 reject =
                                     reject.with_fix(Fix::replace_heuristic(key_occ, candidate));
                             }

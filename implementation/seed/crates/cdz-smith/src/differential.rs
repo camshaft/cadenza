@@ -42,6 +42,10 @@
 //!   message) and is not meaningfully comparable, so we do not diff it. (A future refinement could
 //!   compare a normalized trap KIND; today any-trap-vs-any-trap agrees.)
 //!
+//! * An **`ArtifactError`** (the Rust side emitted un-compilable source — `cdz run-rust` → `error …`)
+//!   is a build-blocking miscompile that is ALWAYS a finding, surfaced regardless of the other side —
+//!   even against a wasm trap (a trap-vs-trap would otherwise agree and hide it).
+//!
 //! A crash on EITHER backend is out of scope here — [`crate::oracle::compile_catching`] already mines
 //! both backends for panics. This oracle assumes a non-crashing compile and asks only "do the two
 //! agree on the VALUE?".
@@ -49,7 +53,7 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-/// One backend's outcome for a program, reduced to the three cases the pairing rules compare.
+/// One backend's outcome for a program, reduced to the cases the pairing rules compare.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Side {
     /// Ran to a value, rendered to canonical text (bare scalar / `(tuple …)` / …).
@@ -59,6 +63,12 @@ pub enum Side {
     /// The front-end rejected the program, or this backend does not emit it yet — NOT comparable,
     /// treated as coverage-not-yet. `detail` is a short reason for the triage note.
     Declined(String),
+    /// The backend emitted an artifact that FAILED TO BUILD (`cdz run-rust` → `error …`: the emitted
+    /// `.rs` did not compile under rustc). This is a genuine backend MISCOMPILE — the compiler
+    /// reported success at the emit seam but produced un-compilable source. Unlike a `Trap`, this is
+    /// ALWAYS surfaced (never swallowed by a trap-vs-trap agreement) — see [`compare`]. Only the Rust
+    /// side can produce it; the wasm side's structurally-invalid output is the invalid-wasm oracle's job.
+    ArtifactError(String),
 }
 
 /// The verdict of comparing the two sides.
@@ -85,6 +95,9 @@ pub enum MismatchKind {
     Value,
     /// One backend ran to a value, the other trapped (a liveness disagreement).
     Liveness,
+    /// A backend emitted un-compilable source (`ArtifactError`) — a build-blocking miscompile,
+    /// surfaced regardless of the other side's outcome (even if the other also trapped).
+    Artifact,
 }
 
 impl MismatchKind {
@@ -92,6 +105,7 @@ impl MismatchKind {
         match self {
             MismatchKind::Value => "value",
             MismatchKind::Liveness => "liveness",
+            MismatchKind::Artifact => "artifact",
         }
     }
 }
@@ -101,6 +115,21 @@ impl MismatchKind {
 /// compiler or a subprocess.
 pub fn compare(wasm: &Side, rust: &Side) -> Diff {
     match (wasm, rust) {
+        // An ArtifactError (un-compilable emitted source) is a build-blocking MISCOMPILE that must be
+        // surfaced NO MATTER what the other side did — even a trap-vs-artifact-error, which the
+        // Trap-vs-Trap agreement arm below would otherwise swallow (PR#552 soundness). Checked FIRST,
+        // BEFORE the decline arm, because a genuine artifact miscompile must not be masked by the other
+        // side happening to decline either. (The wasm side never yields ArtifactError — see `Side`.)
+        (Side::ArtifactError(e), other) => Diff::Mismatch {
+            kind: MismatchKind::Artifact,
+            wasm: format!("wasm {}", describe_side(other)),
+            rust: format!("artifact-error {e}"),
+        },
+        (other, Side::ArtifactError(e)) => Diff::Mismatch {
+            kind: MismatchKind::Artifact,
+            wasm: format!("wasm {}", describe_side(other)),
+            rust: format!("artifact-error {e}"),
+        },
         // A decline on EITHER side means "not comparable here" — never a mismatch (soundness).
         (Side::Declined(_), _) | (_, Side::Declined(_)) => Diff::Agree,
         // Both ran to a value: agree iff the canonical strings are identical.
@@ -128,6 +157,16 @@ pub fn compare(wasm: &Side, rust: &Side) -> Diff {
             wasm: format!("trap {t}"),
             rust: format!("value {v}"),
         },
+    }
+}
+
+/// A short label for a [`Side`] in an artifact-error mismatch note (the OTHER side, whatever it was).
+fn describe_side(s: &Side) -> String {
+    match s {
+        Side::Value(v) => format!("value {v}"),
+        Side::Trap(t) => format!("trap {t}"),
+        Side::Declined(d) => format!("declined {d}"),
+        Side::ArtifactError(e) => format!("artifact-error {e}"),
     }
 }
 
@@ -258,13 +297,20 @@ fn strip_value_annotation(payload: &str) -> String {
 /// * `value <sexpr>` → [`Side::Value`]   (same render as `cdz-run`, so byte-comparable to the wasm value)
 /// * `trap <msg>`    → [`Side::Trap`]
 /// * `declined`      → [`Side::Declined`] (front reject / rust-not-yet — coverage-not-yet)
-/// * `error <msg>`   → [`Side::Trap`]   (a bad artifact: emitted `.rs` failed rustc. This IS a
-///   miscompile, but the crash oracle owns "the compiler produced garbage"; here we surface it as a
-///   non-value outcome so a wasm `value` vs rust `error` reads as a liveness mismatch and gets filed.)
+/// * `error <msg>`   → [`Side::ArtifactError`] (emitted `.rs` failed rustc — a build-blocking
+///   miscompile that `compare` ALWAYS surfaces, even against a wasm trap — see [`Side::ArtifactError`]).
 ///
 /// `cdz` is the path to the `cdz` binary (its dir must also hold the `libcdz_rt`/`libcdz_num` rlibs
-/// `cdz run-rust` links). Exit is 0 for any verdict; a NON-zero exit is a harness read-failure that
-/// produced no verdict → [`Diff::Unavailable`] via the returned `Err`.
+/// `cdz run-rust` links).
+///
+/// Exit contract (per `cdz run-rust`, PR#547): exit 0 with a verdict LINE on stdout for a run outcome;
+/// exit NON-ZERO (no verdict line, message on stderr) for a HARNESS/USAGE error — a file/stdin read
+/// failure OR a usage error (e.g. a program with multiple exports and no `--call`). A non-zero exit is
+/// therefore NOT a comparable run: it maps to [`Side::Declined`] (a non-comparable side — the oracle
+/// stays SOUND and simply skips this program), NOT to a `Diff::Unavailable`. `Unavailable` (the `Err`
+/// return) is reserved for a genuine INFRASTRUCTURE failure where the oracle itself could not run —
+/// we couldn't even spawn the binary, write its stdin, or reap it. That distinction matters: a usage
+/// error is per-program (skip it), an infrastructure failure means the whole sweep is misconfigured.
 pub fn run_rust(cdz: &std::path::Path, source: &str) -> Result<Side, String> {
     use std::io::Write;
 
@@ -286,11 +332,14 @@ pub fn run_rust(cdz: &std::path::Path, source: &str) -> Result<Side, String> {
         .wait_with_output()
         .map_err(|e| format!("waiting on `cdz run-rust` failed: {e}"))?;
     if !out.status.success() {
-        // The one reserved non-verdict path: a harness read-failure. Not a compiler outcome.
-        return Err(format!(
-            "`cdz run-rust` exited non-zero (harness failure): {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+        // Non-zero exit = a harness/usage error for THIS program (no verdict line), not an
+        // infrastructure failure. Classify it as a non-comparable Declined side so the oracle stays
+        // sound (never mismatches on it) and simply skips the program — do NOT disable the oracle
+        // (`Unavailable`) for what is a per-program condition.
+        return Ok(Side::Declined(format!(
+            "run-rust usage/harness error: {}",
+            first_line(&String::from_utf8_lossy(&out.stderr))
+        )));
     }
     // The verdict is the last non-empty stdout line (contract: one line; be robust to a trailing
     // newline / an incidental leading line).
@@ -304,6 +353,15 @@ pub fn run_rust(cdz: &std::path::Path, source: &str) -> Result<Side, String> {
     Ok(parse_rust_verdict(verdict))
 }
 
+/// The first non-empty line of `s`, trimmed (for a concise `Declined` reason from multi-line stderr).
+fn first_line(s: &str) -> String {
+    s.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
 /// Map a `cdz run-rust` verdict line to a [`Side`]. Split out so the grammar is unit-testable without
 /// spawning the binary. See [`run_rust`] for the `error`→`Trap` rationale.
 pub fn parse_rust_verdict(verdict: &str) -> Side {
@@ -314,9 +372,10 @@ pub fn parse_rust_verdict(verdict: &str) -> Side {
     } else if let Some(t) = verdict.strip_prefix("trap ") {
         Side::Trap(t.trim().to_string())
     } else if let Some(e) = verdict.strip_prefix("error ") {
-        // A non-compiling emitted artifact. Surface as a non-value outcome so wasm-value vs
-        // rust-error reads as a liveness mismatch (a filable miscompile).
-        Side::Trap(format!("rust-artifact-error: {}", e.trim()))
+        // A non-compiling emitted artifact (rustc rejected the emitted `.rs`) — a build-blocking
+        // MISCOMPILE. Its own `Side::ArtifactError` so `compare` ALWAYS surfaces it, even against a
+        // wasm trap (a `Side::Trap` here would be swallowed by the trap-vs-trap agreement — PR#552).
+        Side::ArtifactError(e.trim().to_string())
     } else {
         // An unrecognized line — treat conservatively as declined (not comparable), never a mismatch.
         Side::Declined(format!("unrecognized run-rust verdict: {verdict}"))
@@ -324,8 +383,10 @@ pub fn parse_rust_verdict(verdict: &str) -> Side {
 }
 
 /// The full differential check for one program: run both backends and compare. `store` is the runtime
-/// store for the wasm run; `cdz` is the `cdz` binary for the rust run. A harness failure driving the
-/// rust side becomes [`Diff::Unavailable`] (logged, never filed).
+/// store for the wasm run; `cdz` is the `cdz` binary for the rust run. A non-zero `run-rust` exit
+/// (per-program usage/harness error) is a non-comparable [`Side::Declined`] (→ `Diff::Agree`, skipped);
+/// only an INFRASTRUCTURE failure that prevented the run entirely (spawn/write/reap) becomes
+/// [`Diff::Unavailable`] (logged, never filed) — see [`run_rust`].
 pub fn differential(source: &str, store: &std::path::Path, cdz: &std::path::Path) -> Diff {
     let wasm = run_wasm(source, store);
     // Cheap short-circuit: a wasm decline is never comparable, so skip the (expensive) rustc run.
@@ -507,13 +568,52 @@ mod tests {
             parse_rust_verdict("trap integer overflow"),
             Side::Trap("integer overflow".into())
         );
-        // `error` surfaces as a Trap so wasm-value-vs-rust-error is a filable liveness mismatch.
+        // `error` is its OWN ArtifactError side (not a Trap) so it is never swallowed by trap-vs-trap.
         match parse_rust_verdict("error E0308 mismatched types") {
-            Side::Trap(m) => assert!(m.contains("rust-artifact-error")),
-            other => panic!("expected Trap, got {other:?}"),
+            Side::ArtifactError(m) => assert!(m.contains("E0308")),
+            other => panic!("expected ArtifactError, got {other:?}"),
         }
         // An unrecognized line is conservatively a decline (never a spurious mismatch).
         assert!(matches!(parse_rust_verdict("weird"), Side::Declined(_)));
+    }
+
+    #[test]
+    fn an_artifact_error_is_a_mismatch_even_against_a_trap() {
+        // The PR#552 soundness gap: a build-blocking rust miscompile (ArtifactError) must be surfaced
+        // even when the wasm side ALSO traps — a Side::Trap here would agree and hide it.
+        let d = compare(
+            &Side::Trap("integer overflow".into()),
+            &Side::ArtifactError("E0308".into()),
+        );
+        assert!(
+            matches!(
+                d,
+                Diff::Mismatch {
+                    kind: MismatchKind::Artifact,
+                    ..
+                }
+            ),
+            "artifact error vs trap must be an Artifact mismatch, got {d:?}"
+        );
+        // …and even against a wasm value, and in either position.
+        assert!(matches!(
+            compare(&Side::ArtifactError("x".into()), &Side::Value("3".into())),
+            Diff::Mismatch {
+                kind: MismatchKind::Artifact,
+                ..
+            }
+        ));
+        // But an artifact error vs a DECLINE is still surfaced (the miscompile is real regardless).
+        assert!(matches!(
+            compare(
+                &Side::Declined("x".into()),
+                &Side::ArtifactError("y".into())
+            ),
+            Diff::Mismatch {
+                kind: MismatchKind::Artifact,
+                ..
+            }
+        ));
     }
 
     // ── value-annotation stripping (the false-positive fix) ──────────────────────────────────
@@ -538,6 +638,25 @@ mod tests {
         assert_eq!(strip_value_annotation("(: 42 Int64)"), "42");
         // A non-value-form payload is returned unchanged.
         assert_eq!(strip_value_annotation("(tuple 1 2)"), "(tuple 1 2)");
+    }
+
+    /// A non-zero `run-rust` exit (a usage/harness error for one program) must classify as a
+    /// non-comparable `Side::Declined`, NOT bubble as an `Err` (→ `Diff::Unavailable`). Driving a
+    /// program `cdz run-rust` rejects at the usage layer would need a multi-export program; instead we
+    /// point `run_rust` at a stand-in binary that always exits non-zero (`false`) and assert the
+    /// contract: a non-zero exit → `Ok(Declined)`, so the oracle stays sound and skips rather than
+    /// disabling itself. (Soundness fix, PR#551 #3.)
+    #[test]
+    fn a_nonzero_run_rust_exit_is_declined_not_unavailable() {
+        let false_bin = std::path::Path::new("/bin/false");
+        if !false_bin.exists() {
+            eprintln!("skipping: no /bin/false");
+            return;
+        }
+        match run_rust(false_bin, "(do (def (main) 1) (export main))") {
+            Ok(Side::Declined(_)) => {} // the sound outcome
+            other => panic!("a non-zero exit must be Ok(Declined), got {other:?}"),
+        }
     }
 
     /// The end-to-end case that a scalar-only test missed: a STRING result. Both backends must AGREE

@@ -1743,8 +1743,19 @@ pub struct Db {
     /// `Db::ensures_of`.
     pub(crate) ensures: crate::fxhash::FxHashMap<StructId, Vec<StructId>>,
 
-    /// `@requires`/`@ensures` heads with not-exactly-one predicate argument (malformed by ARITY). Read by
-    /// `Db::malformed_verify_forms` to REJECT them in `collect_faults` (CDZ0201), like `malformed_tags`.
+    /// `@invariant(pred)` DATA-TYPE-INVARIANT predicate occurrences per annotated type declaration (the
+    /// `(type …)` decl occ → the predicate `StructId`, over the value binder `it`). The DATA-level member of
+    /// the verification-annotation family (design §10): a property EVERY value of the type maintains, verified
+    /// (establish/preserve) + optimized-against + used as the generation constraint for `@test`. Unlike
+    /// `@requires`/`@ensures` (which annotate a `(def …)` and key by BODY occ), `@invariant` annotates a
+    /// `(type …)` and keys by the TYPE decl occ. Recorded by `strip_annotations`; empty in a build with no
+    /// `@invariant`. Read by `Db::invariant_of` (v-property-testing's `gen<T>` seam consumes it). A type may
+    /// declare at most one `@invariant` here (a later stacked one overwrites; a conjunction is the surface).
+    pub(crate) invariants: crate::fxhash::FxHashMap<StructId, StructId>,
+
+    /// `@requires`/`@ensures`/`@invariant` heads with not-exactly-one predicate argument (malformed by
+    /// ARITY). Read by `Db::malformed_verify_forms` to REJECT them in `collect_faults` (CDZ0201), like
+    /// `malformed_tags`.
     pub(crate) malformed_verify: Vec<StructId>,
 
     /// TRANSIENT flow-sensitive value-range REFINEMENTS, active only during wasm emit. A stack of
@@ -1849,6 +1860,7 @@ impl Db {
             malformed_tags,
             requires,
             ensures,
+            invariants,
             malformed_verify,
         } = strip_annotations(&mut ast);
         // `@param` SIDECAR — scan every `@param(widget: …) name : Type` site and GENERATE the `Param`
@@ -2425,6 +2437,7 @@ impl Db {
             malformed_tags,
             requires,
             ensures,
+            invariants,
             malformed_verify,
             range_refinements: Vec::new(),
         };
@@ -3251,6 +3264,17 @@ impl Db {
             .and_then(|d| d.body)
             .and_then(|body| self.ensures.get(&body))
             .map_or(NONE, Vec::as_slice)
+    }
+
+    /// The `@invariant(pred)` DATA-TYPE-INVARIANT predicate the type declared at `type_occ` carries, if any
+    /// — a predicate FORM over the value binder `it` (design §10). Keyed by the `(type …)` declaration
+    /// occurrence (`TypeDecl::occ` — the type's nominal identity), NOT a def BODY occ, since `@invariant`
+    /// annotates a type, not a def. `None` for a type with no `@invariant`. The DATA-level analogue of
+    /// `requires_of`/`ensures_of`: the single source of "what is a valid value of this type", consumed by the
+    /// verification layer (establish/preserve), the optimizer (data-level elision), and v-property-testing's
+    /// `gen<T>` (the generation constraint).
+    pub fn invariant_of(&self, type_occ: StructId) -> Option<StructId> {
+        self.invariants.get(&type_occ).copied()
     }
 
     /// Whether definition `def` is marked `@exhaustive` — a property test the runner drives over its ENTIRE
@@ -4373,6 +4397,7 @@ pub(crate) const KNOWN_ANNOTATIONS: &[&str] = &[
     "exhaustive",
     "requires",
     "ensures",
+    "invariant",
 ];
 /// The strippable annotations a definition carries, each a set of the annotated defs' BODY occurrences.
 pub(crate) struct StrippedAnnotations {
@@ -4411,10 +4436,16 @@ pub(crate) struct StrippedAnnotations {
     /// the implicit result binder `it` (v-syntax's result-binding convention). Denoted + discharged in a
     /// later b4 slice; recorded here (behavior-neutral) as the surface half of the channel.
     pub(crate) ensures: crate::fxhash::FxHashMap<StructId, Vec<StructId>>,
-    /// `(@ (requires …) …)` / `(@ (ensures …) …)` heads whose argument is not exactly one predicate form —
-    /// a malformed `@requires`/`@ensures` (`@requires()`, `@requires(a b)`). Recorded by the offending
-    /// occurrence so `collect_faults` REJECTS it (CDZ0201), the same arity discipline `malformed_tags`
-    /// applies to `@tag` — a silently-unrecorded predicate would mask the author error (b4a2).
+    /// The `@invariant(pred)` DATA-TYPE-INVARIANT predicate each annotated `(type …)` declaration carries,
+    /// keyed by the TYPE decl occ (not a def BODY occ — `@invariant` annotates a type, not a def). The stored
+    /// `StructId` is the predicate-form occurrence, a Cadenza expression over the value binder `it`. Recorded
+    /// here (behavior-neutral) as the surface half of the data-level channel (design §10); consumed by
+    /// `Db::invariant_of`.
+    pub(crate) invariants: crate::fxhash::FxHashMap<StructId, StructId>,
+    /// `(@ (requires …) …)` / `(@ (ensures …) …)` / `(@ (invariant …) …)` heads whose argument is not exactly
+    /// one predicate form — a malformed `@requires`/`@ensures`/`@invariant` (`@requires()`, `@invariant(a b)`).
+    /// Recorded by the offending occurrence so `collect_faults` REJECTS it (CDZ0201), the same arity discipline
+    /// `malformed_tags` applies to `@tag` — a silently-unrecorded predicate would mask the author error (b4a2).
     pub(crate) malformed_verify: Vec<StructId>,
 }
 
@@ -4514,6 +4545,8 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         crate::fxhash::FxHashMap::default();
     let mut ensures: crate::fxhash::FxHashMap<StructId, Vec<StructId>> =
         crate::fxhash::FxHashMap::default();
+    let mut invariants: crate::fxhash::FxHashMap<StructId, StructId> =
+        crate::fxhash::FxHashMap::default();
     let mut malformed_verify: Vec<StructId> = Vec::new();
     for i in 0..ast.structure.len() {
         let id = StructId(i as u32);
@@ -4575,6 +4608,39 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         // once we know the inner is a def, mirroring the `@tag` malformed discipline).
         let malformed_verify_here = (requires_app.is_some() && requires_pred.is_none())
             || (ensures_app.is_some() && ensures_pred.is_none());
+        // `@invariant(pred)` — the DATA-level family member (design §10). UNLIKE `@requires`/`@ensures`, it
+        // annotates a `(type …)` DECLARATION, not a `(def …)`. So it must be handled HERE, before the
+        // def-only path below `continue`s on a non-def inner (which would otherwise route a `@invariant (type
+        // …)` to the "annotation wraps no definition" CDZ0201). `@invariant(> (len it) 0)` reifies to
+        // `(@ (invariant (> (len it) 0)) (type …))`, so the name position is the application `(invariant …)`
+        // with one predicate tail element (over the value binder `it`). Record it keyed by the TYPE decl occ,
+        // then UNWRAP the wrapper to the type decl (adopt its children) so the type still takes effect. Arity
+        // is validated like `@requires`/`@ensures` (b4a2): not-exactly-one arg → `malformed_verify` (CDZ0201).
+        let invariant_app = ast.as_form(name_occ, "invariant");
+        if let Some(app_tail) = invariant_app {
+            // Only meaningful when the inner is a `(type …)` declaration (the `@invariant` annotand). A
+            // `@invariant` on a NON-type is left to the "wraps no definition" path below (not a modeled shape).
+            if ast.as_form(inner, "type").is_some() {
+                match app_tail {
+                    [only] => {
+                        // Key by `id` (the WRAPPER slot) — NOT `inner`. The unwrap below overwrites slot `id`
+                        // with the type's children, so post-strip the `(type …)` DECLARATION lives at `id`,
+                        // and `scan_top_level` computes `TypeDecl::occ = id`. Keying by `inner` would miss
+                        // (`invariant_of(TypeDecl::occ)` looks up `id`).
+                        invariants.insert(id, *only);
+                    }
+                    // not-exactly-one predicate arg → malformed (arity), rejected in `collect_faults`.
+                    _ => malformed_verify.push(name_occ),
+                }
+                // Unwrap the wrapper to BE the inner `(type …)` decl (adopt its full child list), so the type
+                // declaration takes effect exactly as an un-annotated `(type …)` would — the `@invariant`
+                // wrapper is consumed here (recorded above), never surfacing as a top-level annotation form.
+                if let Struct::List(inner_children) = ast.get(inner).clone() {
+                    ast.structure[i] = Struct::List(inner_children);
+                }
+                continue;
+            }
+        }
         // The inner must be a `(def SIG BODY …)` — read its children to adopt them + find the BODY occ.
         // NOTE: this def check is BEFORE the malformed-`@tag` recording below on purpose — the `@tag`
         // contract only applies when the annotation wraps a DEFINITION, so a `@tag` around a NON-def is
@@ -4622,6 +4688,10 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
                             | "exhaustive"
                             | "requires"
                             | "ensures"
+                            // `invariant` is call-style (`(invariant pred)`) so its `name` read is `None` and
+                            // it is handled + `continue`d above, never reaching here as a bare name; listed
+                            // for catalog parity with `KNOWN_ANNOTATIONS` (like `requires`/`ensures`).
+                            | "invariant"
                     )),
             "KNOWN_ANNOTATIONS and the strip_annotations match arms disagree on `{name:?}`"
         );
@@ -4673,6 +4743,7 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         malformed_tags,
         requires,
         ensures,
+        invariants,
         malformed_verify,
     }
 }

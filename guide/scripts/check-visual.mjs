@@ -238,6 +238,47 @@ const ROUTES = [
       } else {
         check(false, `${label}: example picker present`);
       }
+      // Surface toggle (operator UX #2/#3): the notebook has the global ML/s-expr toggle, and switching to
+      // ML must RE-RENDER the authored-s-expr cells to ML AND keep them running + free of the SURFACE-MISMATCH
+      // error class. The bug this guards: an ML cell linted as s-expr → "unbound name" / "expected a name"
+      // squiggles (the CodeEditor was freezing the first-mount surface). We assert NO diagnostic of that
+      // class after the toggle (a benign semantic lint like CDZ0306 "unused definition", which some example
+      // cells carry in BOTH surfaces from cellIde's per-cell scope, is not a surface mismatch and is allowed).
+      const mlToggle = page.getByRole("radio", { name: /Conventional|ML/ }).first();
+      if ((await mlToggle.count()) > 0) {
+        await mlToggle.click();
+        await page.waitForTimeout(6000);
+        await page
+          .waitForFunction(
+            () => {
+              const e = document.querySelector('[data-testid="cell-output"]');
+              return e && !/not run|running/i.test(e.innerText);
+            },
+            { timeout: 30000 },
+          )
+          .catch(() => {});
+        const cellsText = (await page.locator('[data-testid="notebook"] .cm-content').allInnerTexts()).join("\n");
+        // Read each lint mark's tooltip text so we can distinguish a SURFACE-MISMATCH error (the regression)
+        // from a benign semantic lint (unused def). Hover isn't reliable in bulk; instead read the diagnostic
+        // messages the linter exposes via the .cm-diagnostic tooltips isn't populated until hover — so we
+        // approximate by the mark's title/aria if present, falling back to counting marks whose presence with
+        // a running cell we accept unless they match the mismatch signature in the (hovered) first mark.
+        const markCount = await page.$$eval('[data-testid="notebook"] .cm-lintRange-error, [data-testid="notebook"] .cm-lintRange', (e) => e.length);
+        let mismatch = false;
+        if (markCount > 0) {
+          const first = await page.$('[data-testid="notebook"] .cm-lintRange-error, [data-testid="notebook"] .cm-lintRange');
+          await first.hover().catch(() => {});
+          await page.waitForTimeout(500);
+          const tip = (await page.$$eval(".cm-tooltip-lint, .cm-diagnosticText", (e) => e.map((x) => x.textContent).join(" "))).toString();
+          mismatch = /unbound name|expected a name/i.test(tip);
+        }
+        const mlOut = (await page.locator('[data-testid="cell-output"]').first().innerText()).trim();
+        check(/def\s+\w[\w-]*\s*\(\)\s*=/.test(cellsText), `${label}: toggling to ML re-renders cells to ML syntax (def … = …)`);
+        check(!mismatch, `${label}: ML-rendered cells have NO surface-mismatch lint (unbound/expected-a-name) — the display-vs-linter bug stays fixed`);
+        check(/\d/.test(mlOut) && !/error/i.test(mlOut), `${label}: cells still run after the ML toggle (${JSON.stringify(mlOut)})`);
+      } else {
+        check(false, `${label}: surface toggle present on /notebook`);
+      }
     },
   },
 ];

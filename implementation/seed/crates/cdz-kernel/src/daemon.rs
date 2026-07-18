@@ -100,6 +100,78 @@ where
     crate::kernel::run_interpret_hosted(&program, event_kind, runtime, prim)
 }
 
+/// The event kind prefix a DENIED host-op is recorded under (`prim-denied-exec`/…). A perform the Cedar policy
+/// forbids appends this instead of the effect + returns 0, so the log carries the denial (audit trail).
+pub const PRIM_DENIED_PREFIX: &str = "prim-denied-";
+
+/// The agent principal UID authorization requests are made under (the daemon acts as this Cedar entity).
+pub const AGENT_PRINCIPAL: &str = "Agent::\"cdz-agent\"";
+
+/// Like [`tick_hosted`], but GATES each real primitive behind Cedar authorization against an EXTERNAL trust-
+/// anchor policy (the charter's capability boundary; concierge ruling `5828` — build the external anchor
+/// first). `root_policies` is operator-controlled Cedar policy TEXT the agent CANNOT modify or widen (a
+/// `--policies` file at the CLI); before performing each op the closure asks
+/// [`cdz_agent::cedar::authorize`]`(root_policies, `[`AGENT_PRINCIPAL`]`, Action::"prim:<op>", <payload>, {})`.
+/// ALLOW → perform + record `prim-<op>` (as [`tick_hosted`]); DENY (Cedar is deny-by-default) → record
+/// `prim-denied-<op>` + return 0, skipping the effect. So an op runs ONLY if the external policy permits it.
+///
+/// This is the external-anchor half of the hybrid; attenuation-only `policy` LOG EVENTS (narrow-never-widen,
+/// via `authorize_on_behalf_of`) are the follow-on. Still record-only for the effect body (no live subprocess/
+/// network yet) — this rung proves the AUTHORIZE GATE sits on the perform path. `resource` is derived from the
+/// op's payload as a `Resource` UID so a policy can condition on it (`Resource::"<payload>"`).
+pub fn tick_hosted_authorized<L>(
+    log: std::sync::Arc<std::sync::Mutex<L>>,
+    event_kind: i64,
+    runtime: Vec<u8>,
+    root_policies: String,
+) -> Result<i64>
+where
+    L: Log + Send + 'static,
+{
+    let program = {
+        let l = log.lock().map_err(|_| anyhow!("log mutex poisoned"))?;
+        crate::boot::latest_program(&l.tail(0)?).ok_or_else(|| {
+            anyhow!("no genesis program in the log (CLI must inject one before the daemon runs)")
+        })?
+    };
+    let prim = {
+        let log = std::sync::Arc::clone(&log);
+        move |op: &str, payload: String| -> i64 {
+            // Authorize against the external root policy BEFORE performing. A policy PARSE error or any
+            // authz error is treated as DENY (fail-closed — never perform an op we couldn't authorize).
+            let action = format!("Action::\"prim:{op}\"");
+            let resource = format!("Resource::\"{payload}\"");
+            let allowed = cdz_agent::cedar::authorize(
+                &root_policies,
+                AGENT_PRINCIPAL,
+                &action,
+                &resource,
+                "{}",
+            )
+            .map(|d| d.is_allow())
+            .unwrap_or(false);
+            if !allowed {
+                // Denied (or unauthorizable) → record the denial, do NOT perform, contribute 0 to the sum.
+                if let Ok(mut l) = log.lock() {
+                    let _ = l.append(&format!("{PRIM_DENIED_PREFIX}{op}"), payload.as_bytes());
+                }
+                return 0;
+            }
+            // Allowed → perform (record-only body) + record the effect, same as tick_hosted.
+            if let Ok(mut l) = log.lock() {
+                let _ = l.append(&format!("{PRIM_RECORD_PREFIX}{op}"), payload.as_bytes());
+            }
+            match op {
+                "exec" => 2,
+                "http" => 3,
+                "append" => 1,
+                _ => 0,
+            }
+        }
+    };
+    crate::kernel::run_interpret_hosted(&program, event_kind, runtime, prim)
+}
+
 /// Drive `step` over every log event NOT YET processed (seq >= `from`), in order, and return the NEW cursor
 /// (the seq AFTER the last event seen, i.e. the `from` to pass next time) — the event-source LOOP's pure,
 /// single-pass core (the "start the daemon" half's load-bearing step). A real daemon calls this repeatedly
@@ -394,6 +466,96 @@ mod tests {
             tick_hosted(Arc::new(Mutex::new(log)), 1, Vec::new()).is_err(),
             "no genesis → tick_hosted errors (like tick/tick_performing)"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn tick_hosted_authorized_gates_each_op_on_the_external_policy() {
+        // The capability boundary (concierge ruling 5828, external-anchor half): tick_hosted_authorized
+        // authorizes each op against an EXTERNAL root policy BEFORE performing. Policy permits ONLY prim:append
+        // (not prim:exec). kind=1 → [Append "ack", Exec "handle"]: append ALLOWED → performed (1) + prim-append
+        // recorded; exec DENIED → NOT performed (0) + prim-denied-exec recorded. So sum = 1 (not 3), proving the
+        // gate sits on the perform path per-op. Deny-by-default: an op with no matching permit is denied.
+        use std::sync::{Arc, Mutex};
+        let (path, mut log0) = temp_log();
+        crate::boot::inject_genesis(&mut log0, GENESIS).unwrap();
+        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let provider = match crate::kernel::compile_interpret_provider(GENESIS) {
+            Ok(p) => p,
+            Err(e) => panic!("genesis compiles: {e}"),
+        };
+        let Some(runtime) = crate::kernel::find_runtime_for(&provider, store_root) else {
+            eprintln!("[cdz-kernel::daemon] runtime absent/stale; skipping tick_hosted_authorized");
+            let _ = std::fs::remove_file(&path);
+            return;
+        };
+        // External root policy: permit ONLY prim:append; everything else (prim:exec) is deny-by-default.
+        let root = r#"permit(principal, action == Action::"prim:append", resource);"#.to_string();
+        let log = Arc::new(Mutex::new(log0));
+        let sum = tick_hosted_authorized(Arc::clone(&log), 1, runtime, root)
+            .expect("the authorized hosted tick runs");
+        assert_eq!(
+            sum, 1,
+            "append allowed (1) + exec denied (0) → sum 1, not 3 — the policy gates per op"
+        );
+        let events = log.lock().unwrap().tail(0).unwrap();
+        let kinds: Vec<String> = events
+            .iter()
+            .filter(|e| {
+                e.kind.starts_with(PRIM_RECORD_PREFIX) || e.kind.starts_with(PRIM_DENIED_PREFIX)
+            })
+            .map(|e| e.kind.clone())
+            .collect();
+        assert!(
+            kinds.contains(&"prim-append".to_string()),
+            "the allowed append was performed + recorded; got {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"prim-denied-exec".to_string()),
+            "the denied exec was recorded as prim-denied-exec, not performed; got {kinds:?}"
+        );
+        assert!(
+            !kinds.contains(&"prim-exec".to_string()),
+            "the denied exec must NOT produce a prim-exec (performed) event; got {kinds:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn tick_hosted_authorized_denies_all_under_an_empty_policy() {
+        // Deny-by-default end to end: an empty policy set permits nothing → every op denied → sum 0, and only
+        // prim-denied-* events recorded (no effect performed). Proves the gate fails CLOSED.
+        use std::sync::{Arc, Mutex};
+        let (path, mut log0) = temp_log();
+        crate::boot::inject_genesis(&mut log0, GENESIS).unwrap();
+        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let provider = match crate::kernel::compile_interpret_provider(GENESIS) {
+            Ok(p) => p,
+            Err(e) => panic!("genesis compiles: {e}"),
+        };
+        let Some(runtime) = crate::kernel::find_runtime_for(&provider, store_root) else {
+            eprintln!("[cdz-kernel::daemon] runtime absent/stale; skipping empty-policy authz");
+            let _ = std::fs::remove_file(&path);
+            return;
+        };
+        let log = Arc::new(Mutex::new(log0));
+        let sum = tick_hosted_authorized(Arc::clone(&log), 1, runtime, String::new())
+            .expect("the authorized hosted tick runs under an empty policy");
+        assert_eq!(
+            sum, 0,
+            "empty policy → every op denied → sum 0 (deny-by-default)"
+        );
+        let performed = log
+            .lock()
+            .unwrap()
+            .tail(0)
+            .unwrap()
+            .iter()
+            .filter(|e| {
+                e.kind.starts_with(PRIM_RECORD_PREFIX) && !e.kind.starts_with(PRIM_DENIED_PREFIX)
+            })
+            .count();
+        assert_eq!(performed, 0, "no op performed under an empty policy");
         let _ = std::fs::remove_file(&path);
     }
 

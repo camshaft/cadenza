@@ -182,6 +182,12 @@ pub enum Keyword {
     /// "keyword outside its form" error. Reserved so it can never be a bare name (the printer
     /// backtick-escapes a name `as`).
     As,
+    /// The explicit generic binder `forall a b. TYPE` in a TYPE position — an explicit way to write a
+    /// generic signature so a lowercase type var BINDS instead of erroring CDZ0101. Contextual: it is
+    /// only meaningful at the start of a type (the parser's `type_ref`); a bare `forall` elsewhere is an
+    /// ordinary name. Sugar for the pinned "generics are type-valued parameters" model — a `forall a.`
+    /// desugars to an implicit `(: a Type)` binding (v-inference's I2), so it introduces no new ∀ engine.
+    Forall,
 }
 
 /// The keyword an identifier's text denotes, if any.
@@ -204,6 +210,7 @@ pub fn keyword(text: &str) -> Option<Keyword> {
         "handle" => Keyword::Handle,
         "host" => Keyword::Host,
         "as" => Keyword::As,
+        "forall" => Keyword::Forall,
         _ => return None,
     })
 }
@@ -475,6 +482,7 @@ mod tests {
         ("handle", Keyword::Handle),
         ("host", Keyword::Host),
         ("as", Keyword::As),
+        ("forall", Keyword::Forall),
     ];
 
     #[test]
@@ -563,6 +571,7 @@ mod tests {
             Keyword::Handle => "handle",
             Keyword::Host => "host",
             Keyword::As => "as",
+            Keyword::Forall => "forall",
         }
     }
 
@@ -591,6 +600,7 @@ mod tests {
         Keyword::Handle,
         Keyword::Host,
         Keyword::As,
+        Keyword::Forall,
     ];
 
     // The number of `Keyword` variants, defined by an EXHAUSTIVE match: adding a variant to the enum
@@ -615,9 +625,10 @@ mod tests {
             Keyword::Handle => 14,
             Keyword::Host => 15,
             Keyword::As => 16,
+            Keyword::Forall => 17,
         }
     }
-    const KEYWORD_COUNT: usize = keyword_ordinal(Keyword::As) + 1;
+    const KEYWORD_COUNT: usize = keyword_ordinal(Keyword::Forall) + 1;
 
     // COMPILE-TIME completeness: `ALL_KEYWORDS` must list exactly one entry per variant. A new variant
     // (once given a `keyword_ordinal`, which raises `KEYWORD_COUNT`) makes this fail to compile until it
