@@ -1013,6 +1013,28 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 }
             }
         }
+        // RUNTIME STRING/SYMBOL ORDERING — a `<`/`<=`/`>`/`>=` on two String/Symbol values. Rust's `String`
+        // (and `str`) ordering IS content-lexicographic (byte order over the UTF-8), matching the blessed
+        // total order (core-semantics.md §Compound Ordering / 17-symbols §order) — so emit the operands
+        // compared with the native operator directly. A String value in the Rust backend is a `String`, so
+        // `(l < r)` compiles and gives lexicographic order; the wasm backend does the equivalent byte-lex
+        // walk. `=`/`≠` do NOT reach here (equality routes to the structural `ValueEq`); only the four
+        // ordering ops, so `compare_sym` always yields a relational operator.
+        Core::StrCmp { op, lhs, rhs } => {
+            let sym =
+                compare_sym(op).ok_or_else(|| Reject::decline("StrCmp carries a non-compare prim"))?;
+            if arith_operand_diverges(db, lhs) {
+                return emit(db, lhs, env, ctx);
+            }
+            if arith_operand_diverges(db, rhs) {
+                let l = emit(db, lhs, env, ctx)?;
+                let r = emit(db, rhs, env, ctx)?;
+                return Ok(format!("{{ let _ = {l}; {r} }}"));
+            }
+            let l = emit(db, lhs, env, ctx)?;
+            let r = emit(db, rhs, env, ctx)?;
+            Ok(format!("({l} {sym} {r})"))
+        }
         // RUNTIME FLOAT EQUALITY under the CANONICAL BYTE FORM — `nan == nan` TRUE, `-0.0 != +0.0`, all
         // NaN equal (core-semantics.md §Floating-Point Equality Follows The Canonical Byte Form). NOT
         // Rust's `==` on floats (IEEE: `nan != nan`, `-0.0 == 0.0` — a miscompile). Canonicalize each
@@ -2593,7 +2615,9 @@ fn arith_operand_diverges(db: &mut Db, id: StructId) -> bool {
     }
     match core_of(db, id) {
         // An arithmetic/comparison node is dead if either operand diverges (operands run before the op).
-        Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {
+        Core::Arith { lhs, rhs, .. }
+        | Core::Compare { lhs, rhs, .. }
+        | Core::StrCmp { lhs, rhs, .. } => {
             arith_operand_diverges(db, lhs) || arith_operand_diverges(db, rhs)
         }
         _ => false,

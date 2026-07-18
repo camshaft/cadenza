@@ -18,6 +18,15 @@ function renderInline(spans: Inline[]): ReactNode[] {
         return <del key={i} className="text-slate-500 line-through">{s.text}</del>;
       case "code":
         return <C key={i}>{s.text}</C>;
+      case "math":
+        // Inline math `$…$`. Until KaTeX is wired (operator's KaTeX ask, next increment), render the raw TeX
+        // in a math-styled span so the content is VISIBLE (never dropped) — a `data-math` hook the KaTeX
+        // pass replaces in place. Serif-italic reads as math, distinct from `code`.
+        return (
+          <span key={i} data-math="inline" className="font-serif italic text-slate-100">
+            {s.tex}
+          </span>
+        );
       case "link":
         return (
           <a key={i} href={s.href} className="text-cadenza-400 underline hover:text-cadenza-300">
@@ -90,6 +99,14 @@ function renderBlock(block: Block, key: number): ReactNode {
               ))}
             </tbody>
           </table>
+        </div>
+      );
+    case "mathblock":
+      // Display math `$$…$$`. Until KaTeX is wired (next increment), render the raw TeX centered + serif so
+      // it reads as a formula and is never dropped — a `data-math` hook the KaTeX pass replaces in place.
+      return (
+        <div key={key} data-math="display" className="my-4 text-center font-serif text-lg text-slate-100">
+          {block.tex}
         </div>
       );
   }

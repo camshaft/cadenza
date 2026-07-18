@@ -185,3 +185,125 @@ exists (it may reuse the reify machinery, or the barrier may be simpler).
 
 START: increment 1 (the gate-neutral `Ty::Cont` variant + decline-arms everywhere) next tick — the safe
 foundation, then build up 2→3→4 against the DES escaping-k repro.
+
+## 9. Increment-2 scoping breakthrough (v-effects, 2026-07-18): reuse the RUNTIME-CLOSURE lift
+
+Scoping increment 2 against the IR revealed the reified continuation IS a CLOSURE — so it reuses the
+existing runtime-closure machinery instead of a bespoke defunctionalized frame chain + `br_table`:
+
+- `Core::Closure { code, captures }` (lower.rs `lower_lambda_value`, ~10086) already lifts a lambda
+  `(fn (params) body)` into a heap closure CELL: slot 0 = `box-int(table-slot)`, remaining slots = the
+  captured values. `Core::CallClosure { closure, args }` applies it at full arity via `call_indirect`.
+- A reified continuation `k` at an escaping-k perform = the closure `(fn (resume-val) C)` where `C` is the
+  DELIMITED CONTINUATION (the rest of the handle body after the perform), CAPTURING the live locals (the
+  handler state at the perform). `apply(k, v)` = `Core::CallClosure { closure: k, args: [v] }` — the SAME
+  `call_indirect` runtime-closure path, no new dispatcher.
+- So `Ty::Cont { resume, answer }` ≈ a `Ty::Fn(resume, answer)` closure at runtime (both are i32 heap-cell
+  handles — which is why increment 1 set `valtype_of(Cont) = i32`, matching `Ty::Fn`). The distinct `Ty::Cont`
+  type keeps the CLASSIFIER honest (a continuation vs an ordinary function) but the RUNTIME rep is a closure.
+
+REVISED increment plan (cheaper + lower-risk than the §3 frame chain):
+2. At an escaping-k perform, the fold SYNTHESIZES the continuation lambda `(fn (#kv) C)` — `C` = the handle
+   body with the perform replaced by `#kv` (the resume value hole), the handler state threaded to the
+   perform's point captured as a free var — and lowers it via the existing `lower_lambda_value` → a
+   `Core::Closure`. That closure value IS `k`, substituted for the arm's `k` binder. The arm body (e.g.
+   `(scheduler-step wake k)`) then carries `k` as an ordinary closure value.
+3. `(k v)` / `(stored-k v)` (ordinary application of the `Ty::Cont` value) lowers to `Core::CallClosure` —
+   already handled by the runtime-closure application path (a fn-typed value applied). May need only to
+   admit a `Ty::Cont`-typed head where the closure-apply path currently expects `Ty::Fn`.
+4. Free-on-drop RC: a `Core::Closure` cell already participates in Perceus RC (the closure-leak probes
+   exist) — so free-on-drop-un-applied may come largely for free; verify with a live-objects probe.
+
+RISK: the continuation `C` must capture the handler STATE correctly (the DES `sleep` resumes with the clock
+ADVANCED — `C = (inst-ns (Sim.now))` must see `wake`, not the pre-sleep state). And the host-composition
+invariant (no host call in `C`) must be checked. But the heavy lifting (heap cell, call_indirect, RC) is the
+existing closure path. This is a MUCH smaller increment 2 than a bespoke frame chain — validate the reuse
+holds (the closure lift must accept a synthesized continuation lambda + the state capture) before committing.
+
+## 10. Increment-2 feasibility CONFIRMED + build entry (v-effects, 2026-07-18)
+
+The two building blocks the closure-reuse plan (§9) needs BOTH already exist and compose:
+- **`C` extraction**: `splice_context(db, handle_body, perform, filler)` (effects.rs ~5441) returns
+  `handle_body[perform := filler]` — exactly the delimited continuation with a hole. Used today by the
+  two-hole refold. For reification, `filler` = a fresh `#kv` resume-value binder.
+- **The lift**: `lower_lambda_value(db, id, params, body)` (lower.rs ~10086) lifts a `(fn (params) body)`
+  into a `Core::Closure { code, captures }`, capturing free vars automatically. For reification, lift
+  `(fn (#kv) C)`.
+
+So the reification is: `C = splice_context(handle_body, perform, #kv)`; synthesize `(fn (#kv) C)`;
+`lower_lambda_value` → `Core::Closure` = `k`. Substitute that `k` for the arm's `cont` binder; the arm body
+(`(scheduler-step wake k)`) then carries `k` as a closure value; `(stored-k unit)` → `Core::CallClosure`.
+
+BUILD ENTRY (the exact locus): `reduce_handle`'s classifier gate — the `None => return None` escaping-k
+decline after `ctl_arm_lexical_k_to_resume` (effects.rs ~1622). Increment 2 replaces that `return None`
+with the reification for the FACE-1 escaping-k arm (a `k` passed onward / stored, not lexically applied).
+
+STATE-CAPTURE-TIMING (the concierge's flagged risk, to validate in the build): `C` must see the handler
+state at the RESUMED (advanced) value. In the DES repro the arm resumes with `wake` (the fast-forwarded
+clock), and `C = (inst-ns (Sim.now))` must read `wake`. So the synthesized continuation lambda must capture
+the state as the arm computed it at the resume point — NOT the pre-perform state. When the arm applies `k`
+(via `scheduler-step`'s `(stored-k unit)`), the state the arm threads (`(scheduler-step wake k)` passes
+`wake`) must be what `C`'s `(Sim.now)` reads. Concretely: the `now` arm reads the state in place, so `C`'s
+`(Sim.now)` resolves against whatever state is live when `apply(k, unit)` runs — which the scheduler-step
+sets via the arm's own logic. This is the part to get exactly right + gate on the repro → 5000000000.
+
+HOST-COMPOSITION INVARIANT: before reifying, check `C` reaches no host call (a reified continuation must not
+span a host boundary). Statically checkable (the escaping-k arm's `C` is in-program in the DES repro).
+
+Increment 2 is a focused multi-part build (synthesis + state capture + the fold gate) — start fresh, gate on
+the DES escaping-k repro (must still DECLINE until inc 3 wires `apply`, then run to 5e9), full-corpus +
+opt-sweep + rc-leak each slice.
+
+## 11. Increment-2 REFINEMENT (v-effects, 2026-07-18): pure-C vs re-performing-C escaping-k
+
+Probing the DES repro's continuation revealed inc 2 is TWO sub-cases of different difficulty — and the DES
+repro is the HARDER one, NOT the minimal inc-2:
+
+- **INC-2a — escaping-k with a PURE continuation `C`** (no re-perform of the handled effect in `C`):
+  `(f () s k (use-k k))` over `(+ 1 (A.f))` — here `C = (+ 1 □)`, pure. Reifying `k` = the closure
+  `(fn (#kv) (+ 1 #kv))`, no captures beyond the pure context, NO handler re-entry when applied. `apply(k,
+  10)` = `(+ 1 10)` = 11. This IS the minimal escaping-k: a plain `Core::Closure` over a pure `C`, applied
+  by the ordinary `Core::CallClosure`. The tractable first real-emit slice.
+
+- **INC-2b — escaping-k whose `C` RE-PERFORMS the handled effect** (the DES repro): `C = (do □ (inst-ns
+  (Sim.now)))` CONTAINS a `Sim.now` perform of the SAME effect. So applying `k` must RE-ENTER the handler
+  (the `now` in `C` needs handling, under the ADVANCED state). The reified closure cannot be a plain pure
+  closure — it must either carry the handler (fold `C` under the handler at apply) or the apply must
+  re-fold `C` (like the two-hole `rewrite_resume_to_refolded_context`, but cross-activation). This is the
+  DES case and is materially harder than 2a — it is the true "stored continuation re-enters its handler"
+  capability. Gate: the DES repro → 5e9.
+
+REVISED sequencing: build INC-2a (pure-C escaping-k → a plain closure) FIRST — it is bounded, reuses
+`splice_context` + `lower_lambda_value` + `Core::CallClosure` cleanly, and proves the reification mechanism
+on a self-contained case (a pure-C escaping-k → 11). THEN INC-2b (re-performing-C, the DES case) adds the
+handler-re-entry-at-apply — the harder capability, gated on the DES repro → 5e9. This split keeps each slice
+bounded + validatable (2a has no handler-re-entry subtlety; 2b isolates exactly that). Do NOT try to build
+the DES case directly as "inc 2" — it conflates the closure reification (2a) with handler re-entry (2b).
+
+Need a pure-C escaping-k CORPUS repro for 2a (I can author one: `(f () s k (use-k k))` over `(+ 1 (A.f))`
+→ 11). The DES repro stays the 2b gate.
+
+## 12. Increment-2a build hook (v-effects, 2026-07-18): extend the pure-one-hole block
+
+The reification for INC-2a (pure-C escaping-k) hooks into the EXISTING pure-one-hole fold block
+(effects.rs ~1816, `if let PureHole::Hole(perform) = pure_hole(db, body, &ctx)`), which ALREADY:
+- finds the single discharged perform `P` in `body` (`pure_hole`), and
+- has `splice_context(db, body, P, filler)` to build `C = body[P:=filler]`.
+
+Today that block requires the arm to be TAIL-RESUMPTIVE (it rewrites `resume`→`C[v]`). Extend it: when the
+arm binds `k` (escaping, `cont: Some`) AND `C` is pure, instead reify `k` = the closure `(fn (#kv) C')`
+where `C' = splice_context(body, P, #kv)`, lower it via `lower_lambda_value` → `Core::Closure`, and
+SUBSTITUTE that closure for the arm's `cont` binder in the arm body — then the arm body (`(use-k k)`)
+carries `k` as a closure value, and `(k v)` / `(use-k)`'s `(stored-k v)` lowers to `Core::CallClosure`.
+
+GATE RESTRUCTURING NEEDED: the classifier gate (`None => return None` at ~1622) currently DECLINES escaping-k
+before reaching the pure-one-hole block. So route a pure-C escaping-k arm THROUGH (don't decline it there) —
+carry `cont: Some` into `ctx.arms` for the escaping case, and let the pure-one-hole block reify it. A
+re-performing-C escaping-k (inc-2b, the DES case) still declines at the block (pure_hole won't fire — `C`
+has a second perform) until inc-2b adds handler-re-entry-at-apply.
+
+BUILD ORDER within inc 2: (2a-i) route pure-C escaping-k past the classifier decline into the pure-one-hole
+block [gate-neutral-ish: still declines if the block can't serve]; (2a-ii) reify `k` as the closure +
+substitute for `cont`; (2a-iii) `(k v)` → CallClosure (admit a Ty::Cont head). Gate: `(f () s k (use-k k))`
+over `(+ 1 (A.f))` → 11. Each micro-step full-corpus + opt-sweep. Start fresh — this is interlocking
+fold+reification wiring where a wrong hook miscompiles, so build stepwise with per-step validation.

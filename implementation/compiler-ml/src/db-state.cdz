@@ -1,0 +1,97 @@
+/// db-state.cdz — P1b of the rcdzc port: the Db STATE-EFFECT carrier (the operator's ruling: "put the whole
+/// Db record inside a state effect to make mutation easier — avoid manually threading everywhere"). The Db
+/// pipeline (db-resolve/db-infer/db-lower/db-eval) threads the `Db` EXPLICITLY (`(db', fact)` returns); this
+/// module wraps that same memoized-column `Db` in a `DbState` EFFECT so a driver reads+updates it via
+/// `DbState.get()` / `DbState.put(db)` instead of hand-threading — Cadenza-idiomatic (dogfoods effects, the
+/// operator's "lean HARD into effects"), same memo semantics.
+///
+/// UNBLOCKED: this needs the nested-effectful-let composition v-effects fixed (a producer does
+/// `let x = f(get(), ..) in (put(x); ..)` under a handler that itself performs) — the bug my port surfaced,
+/// now landed (verified: the repro composes). So the state-effect carrier compiles + runs.
+///
+/// `run-with-db(tree, thunk)` = `handle DbState(db-of(tree)) with get/put in thunk()` — seeds a fresh Db over
+/// the source tree and threads it as the effect state. A driver run under it performs get/put; the handler
+/// carries the whole memoized-column Db as its state (get resumes with state unchanged; put resumes unit with
+/// the new Db). This mirrors rcdzc's compile driving queries over one Db — here the Db lives in the effect.
+
+import { Tree } from "parse-db"
+import { Db, db-of, fill-typed, require-typed, typed-filled } from "db"
+import { Typed } from "infer-db"
+
+/// The Db STATE effect: `get` reads the current Db, `put` replaces it. One state (the whole column record).
+effect DbState =
+  | get : -> Db
+  | put : Db -> Unit
+
+/// A memoizing producer over the EFFECT (not explicit threading): return the type fact at `id`, computing
+/// `deflt` on a MISS and caching it via `put` so a second demand HITS the memo. This is the shape the real
+/// producers take once on the effect — get → require (memo check) → compute-on-miss + put → return; NO db
+/// threaded by hand. (Demo fills a supplied default; a real producer computes from upstream get()s.)
+def demand-typed-eff(id: Int64, deflt: Typed) =
+  (match require-typed(DbState.get(), id) with
+    | Option.Some(t) => t                                        // memo HIT — no put
+    | Option.None(_) => cache-typed-eff(id, deflt))              // MISS — compute + cache
+
+/// MISS path (separate def — the nested `let x = fill(get(),..) in (put(x); ..)` shape v-effects fixed):
+/// fill the column, put the new Db (caches it in the effect state), return the fact.
+def cache-typed-eff(id: Int64, deflt: Typed) =
+  (let filled = fill-typed(DbState.get(), id, deflt) in
+   (match DbState.put(filled) with | _ => deflt))
+
+// ---- TESTS: the state-effect carrier memoizes without manual threading (unblocked by the eff-let fix) ----
+
+import { Tok, parse-tokens } from "parse-db"
+
+def sample-tree() = match parse-tokens([Tok.TNum(5)]) with | (_, tree) => tree
+
+@test
+def ds-get-returns-fresh-db() =
+  // inside the handler, get() yields the seeded fresh Db (typed column empty → 0 filled).
+  (if (handle DbState(db-of(sample-tree())) with
+         | get(state) => resume(state, state)
+         | put(nd, state) => resume(unit, nd)
+       in typed-filled(DbState.get())) == 0
+   then unit else trap("fresh Db has 0 filled"))
+
+@test
+def ds-demand-caches-via-put() =
+  // demand@0 MISSES → computes + caches via put → the column now has 1 fact (put threaded the new Db through
+  // the effect state, no manual db passing). This is the nested-eff-let shape the fix enables.
+  (if (handle DbState(db-of(sample-tree())) with
+         | get(state) => resume(state, state)
+         | put(nd, state) => resume(unit, nd)
+       in (let _t = demand-typed-eff(0, Typed.TIntW(true, 64)) in typed-filled(DbState.get()))) == 1
+   then unit else trap("a demand caches one fact via the effect"))
+
+@test
+def ds-demand-memoizes-second-hit() =
+  // demand@0 twice: the 2nd is a memo HIT (no 2nd put) → still exactly 1 fact. THE caching essential over
+  // the effect carrier — the state carries the memo across performs.
+  (if (handle DbState(db-of(sample-tree())) with
+         | get(state) => resume(state, state)
+         | put(nd, state) => resume(unit, nd)
+       in (let _a = demand-typed-eff(0, Typed.TIntW(true, 64)) in
+           (let _b = demand-typed-eff(0, Typed.TIntW(true, 64)) in typed-filled(DbState.get())))) == 1
+   then unit else trap("second demand HITS the memo via the effect (1 fact, not 2)"))
+
+@test
+def ds-demand-returns-fact() =
+  // the demanded fact flows back out through the effect.
+  (match (handle DbState(db-of(sample-tree())) with
+            | get(state) => resume(state, state)
+            | put(nd, state) => resume(unit, nd)
+          in demand-typed-eff(0, Typed.TBool)) with
+    | Typed.TBool => unit | _ => trap("demand returns the fact"))
+
+/// A HANDLER-PROVIDING driver (the export): demand a type fact for `id` under the DbState handler seeded over
+/// `tree`, returning the fact. The effect has its HOME here — an effectful producer is reached UNDER a
+/// handler, never exported as a bare boundary (that's why demand-typed-eff/cache-typed-eff stay internal and
+/// this driver is the export). The real pipeline driver (run-src) provides this handler around the whole
+/// resolve→infer→lower→eval demand once the pipeline moves onto the effect carrier.
+def demand-typed-under-state(tree: Tree, id: Int64, deflt: Typed) =
+  handle DbState(db-of(tree)) with
+    | get(state) => resume(state, state)
+    | put(nd, state) => resume(unit, nd)
+  in demand-typed-eff(id, deflt)
+
+export { demand-typed-under-state }

@@ -170,3 +170,62 @@ test("GFM strikethrough ~~…~~ parses to a del span", () => {
 test("an unclosed ~~ renders as literal text (never throws)", () => {
   assert.deepEqual(parseInline("a ~~ b"), [{ t: "text", text: "a ~~ b" }]);
 });
+
+// ── inline + block math `$…$` / `$$…$$` (operator: KaTeX-quality formula rendering) — parse to raw-TeX
+// spans/blocks the KaTeX render layer typesets. Content is LITERAL (no nested inline); graceful on a lone
+// `$` (currency) and an unclosed delimiter. ──
+test("inline math $…$ parses to a math span carrying the raw TeX", () => {
+  assert.deepEqual(parseInline("mass-energy $E = mc^2$ holds"), [
+    { t: "text", text: "mass-energy " },
+    { t: "math", tex: "E = mc^2" },
+    { t: "text", text: " holds" },
+  ]);
+});
+
+test("inline math content is LITERAL — no nested inline parsing inside $…$", () => {
+  // `_` and `*` inside math must NOT become em/strong (they're TeX subscripts/operators).
+  assert.deepEqual(parseInline("$a_i * b^*$"), [{ t: "math", tex: "a_i * b^*" }]);
+});
+
+test("a lone $ (currency) with no closer stays literal text (never throws)", () => {
+  assert.deepEqual(parseInline("it costs $5 today"), [{ t: "text", text: "it costs $5 today" }]);
+});
+
+test("an empty $$ mid-text is NOT inline math (it's the block delimiter) — stays literal", () => {
+  // `$$` inline shouldn't swallow to a far `$`; the leading `$` is followed by `$`, so the inline rule skips.
+  const spans = parseInline("a $$ b");
+  assert.equal(spans.some((s) => s.t === "math"), false, "no inline math span from a bare $$");
+});
+
+test("two inline math spans on one line both parse", () => {
+  assert.deepEqual(parseInline("$x$ and $y$"), [
+    { t: "math", tex: "x" },
+    { t: "text", text: " and " },
+    { t: "math", tex: "y" },
+  ]);
+});
+
+test("a single-line display-math block $$…$$ parses to a mathblock", () => {
+  const b = parseProse("$$\\int_0^1 x\\,dx$$");
+  assert.equal(b.length, 1);
+  assert.deepEqual(b[0], { t: "mathblock", tex: "\\int_0^1 x\\,dx" });
+});
+
+test("a multi-line display-math block collects its TeX until the closing $$", () => {
+  const b = parseProse("intro\n\n$$\na = b\n+ c\n$$\n\nafter");
+  assert.deepEqual(b.map((x) => x.t), ["paragraph", "mathblock", "paragraph"]);
+  const mb = b[1];
+  assert.equal(mb.t, "mathblock");
+  if (mb.t === "mathblock") assert.equal(mb.tex, "a = b\n+ c");
+});
+
+test("an unclosed $$ block runs to EOF with what it accumulated (never drops content)", () => {
+  const b = parseProse("$$\na = b");
+  assert.equal(b.length, 1);
+  assert.deepEqual(b[0], { t: "mathblock", tex: "a = b" });
+});
+
+test("a display-math block is not mistaken for a paragraph (block precedence)", () => {
+  const b = parseProse("$$x^2$$");
+  assert.equal(b[0].t, "mathblock");
+});

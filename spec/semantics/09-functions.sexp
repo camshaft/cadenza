@@ -1611,6 +1611,35 @@
             (export main)))
   (output (: 49 Int64)))
 
+; The count-past-two companion: the SAME closure-taking `fold-list` instantiated at THREE distinct closure
+; types in one program — an Int64-element sum, a String-element byte-length fold, AND a Bool-element
+; predicate count (`f : (-> Bool (-> Int64 Int64))`). Three closure PARAMETER types → three monomorphized
+; functions with distinct machine signatures (i64 slot / i32 heap handle / i32 discriminant element). This
+; is the closure-carrying twin of the `loopn`-at-three-machine-shapes case — extending the two-closure-type
+; pin to confirm closure-taking recursive-generic monomorphization is not capped at two and that a
+; discriminant-element instantiation coexists with the scalar + heap-handle ones. Int64 fold `5+7+30 = 42`;
+; String fold `2+4+1 = 7`; Bool count (2 trues) `2`; total `51`.
+
+(case "a generic recursive HOF taking a closure is monomorphized at three distinct closure types"
+  (doc    "The count-past-two companion of the two-closure-type case: the same generic recursive
+           `fold-list` instantiated at THREE closure types in one program — an Int64-element sum, a
+           String-element byte-length fold, and a Bool-element predicate count (`f : (-> Bool (-> Int64
+           Int64))`). Three monomorphized functions with distinct machine signatures (i64 / i32 heap
+           handle / i32 discriminant element). Confirms closure-taking recursive-generic monomorphization
+           scales past two and a discriminant-element instantiation coexists with the scalar + heap ones —
+           the closure twin of `loopn`-at-three-machine-shapes. `42 + 7 + 2 = 51`.")
+  (input  (do
+            (def (fold-list f acc xs)
+              (match xs
+                ((list) acc)
+                ((list h .. t) (fold-list f (f h acc) t))))
+            (def (main)
+              (+ (fold-list (fn (x a) (+ a x)) 0 (list 5 7 30))
+                 (+ (fold-list (fn (s a) (+ a (String.byte-len s))) 0 (list "ab" "abcd" "x"))
+                    (fold-list (fn (b a) (if b (+ a 1) a)) 0 (list true false true)))))
+            (export main)))
+  (output (: 51 Int64)))
+
 ; A MULTI-PARAMETER runtime closure, applied at FULL arity. `core-semantics.md` §Functions Are
 ; Single-Arity says a multi-param `(fn (a b) …)` is curried sugar; when the whole function is applied to
 ; all its arguments at once through a recursive HOF, it lifts to one `(env, a, b) → result` function and

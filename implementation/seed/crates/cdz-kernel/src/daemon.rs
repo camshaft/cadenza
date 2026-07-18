@@ -361,13 +361,16 @@ where
     let mut l = log.lock().map_err(|_| anyhow!("log mutex poisoned"))?;
     let due = crate::schedule::due(&l.tail(0)?, now_ms);
     let mut fired = 0usize;
-    for s in &due {
+    for d in &due {
+        let s = &d.schedule;
         // A schedule must not forge kernel bookkeeping (genesis/policy/prim/schedule-*) via its trigger.
         if is_reserved_kind(&s.trigger_kind) {
             continue;
         }
+        // COALESCE (operator ruling): emit ONE trigger and record the occurrence count jumped to `fire_to`, so
+        // a periodic behind by many occurrences fires once and the counter catches up — no backlog burst.
         l.append(&s.trigger_kind, &s.payload)?;
-        crate::schedule::append_fire(&mut *l, &s.id)?;
+        crate::schedule::append_fire(&mut *l, &s.id, d.fire_to)?;
         fired += 1;
     }
     Ok(fired)
@@ -980,8 +983,8 @@ mod tests {
 
         let due_now = Schedule {
             id: "hb".to_string(),
-            first_ms: 0, // epoch → always due vs the real clock
-            period_ms: Some(1),
+            first_ms: 0,     // epoch → always due vs the real clock
+            period_ms: None, // one-shot → deterministic: fires once, never again (no real-clock timing dep)
             trigger_kind: "heartbeat".to_string(),
             payload: b"tick".to_vec(),
         };
@@ -1041,19 +1044,19 @@ mod tests {
             );
         }
 
-        // Second fire: the periodic advances by one period (period=1ms) — with the real clock well past 1ms,
-        // it is due again, so exactly one more heartbeat fires (one occurrence per call).
+        // Second fire: the one-shot already fired, so nothing more fires (deterministic — no real-clock timing
+        // dependency; coalesce/periodic advancement is covered by schedule.rs's pure unit tests with fixed now).
         let fired2 = fire_due_schedules(&log).expect("fire again");
         assert_eq!(
-            fired2, 1,
-            "the periodic fires once more (occurrence advanced by the prior fire record)"
+            fired2, 0,
+            "the one-shot does not re-fire after its single occurrence"
         );
         {
             let events = log.lock().unwrap().tail(0).unwrap();
             assert_eq!(
                 events.iter().filter(|e| e.kind == "heartbeat").count(),
-                2,
-                "two heartbeats total after two fire rounds (one per round)"
+                1,
+                "still one heartbeat total (the one-shot fired exactly once)"
             );
         }
         let _ = std::fs::remove_file(&path);

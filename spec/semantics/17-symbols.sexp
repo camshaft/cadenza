@@ -100,6 +100,18 @@
   (input  (>= (Symbol.of "a") (Symbol.of "b")))
   (output (: false Bool)))
 
+(case "a genuinely-runtime symbol orders by content-lexicographic byte order"
+  (doc    "The cases above compare CONSTANT symbols (folded before emit). Forcing genuinely-runtime symbols —
+           `(Symbol.of (String.concat s \"\"))` off a parameter — makes the backend WALK the interned byte
+           leaves rather than fold: `(< (mk \"alpha\") (mk \"beta\"))` is true ('a'=0x61 < 'b'=0x62) → 1. Pins
+           the runtime Symbol-ordering emit (the byte-lexicographic leaf walk, backend-consistent: rust's
+           String Ord agrees with the wasm byte-leaf order), distinct from the constant-fold cases above.")
+  (input  (do
+            (def (mk (: s String)) (Symbol.of (String.concat s "")))
+            (def (main) (if (< (mk "alpha") (mk "beta")) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "a symbol's identity is its content, not how the content was derived"
   (doc    "`(= (Symbol.of (String.concat \"map\" \"-insert\")) (Symbol.of \"map-insert\"))` is true: a
            Symbol interned from a COMPUTED string equals one interned from the literal of the same

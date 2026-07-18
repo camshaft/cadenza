@@ -3,7 +3,7 @@
 /// divergent type representations — infer-db's monomorphic `Typed = TIntW|TBool|TErr` and unify.cdz's HM
 /// `Ty = Var|Con|Arrow|IntW`. This module is the single universe they CONVERGE onto (the operator's
 /// divergence #3), scoped to the int/bool subset the pipeline covers (rcdzc's Record/Tuple/List/Sum/Fn are
-/// breadth, hard-blocked). It mirrors rcdzc's `IntTy { sign, width }` with the 3-state Sign/Width axes (the
+/// breadth, hard-blocked). It mirrors rcdzc's `IntType { sign, width }` with the 3-state Sign/Width axes (the
 /// orthogonal-unification model already ported into unify.cdz) as first-class data, not a hard-coded case.
 ///
 /// This is the "tested foundation, wired later" shape (like db.cdz/unify.cdz): infer + unify converge onto
@@ -24,33 +24,33 @@ type Width =
   | WFixed(Int64)
   | WidthDef
 
-/// An integer type: a `(Sign, Width)` pair (rcdzc `IntTy { sign, width }`). Both axes unify INDEPENDENTLY
+/// An integer type: a `(Sign, Width)` pair (rcdzc `IntType { sign, width }`). Both axes unify INDEPENDENTLY
 /// (see unify.cdz's orthogonal sign-agrees/width-agrees) and both can be deferred (a bare literal) — so a
 /// width AND a signedness are DATA the compiler unifies, never a hard-coded case.
-type IntTy =
-  | IntTy(Sign, Width)
+type IntType =
+  | IntType(Sign, Width)
 
-/// The solved-type universe (int/bool subset of rcdzc `ty.rs` `Ty`). `TyInt(IntTy)` = a fixed/deferred
+/// The solved-type universe (int/bool subset of rcdzc `ty.rs` `Ty`). `TyInt(IntType)` = a fixed/deferred
 /// integer; `TyBool` = the boolean; `TyErr` = the type-level poison (a decline carried as a filled value —
 /// the poison-as-filled-value discipline, distinct from "unanswered"). Breadth constructors (Record/Tuple/
 /// List/Sum/Fn) are deferred — hard-blocked until the subset is rock-solid.
 type Ty =
-  | TyInt(IntTy)
+  | TyInt(IntType)
   | TyBool
   | TyErr
 
-/// A bare integer literal's type: BOTH axes deferred (rcdzc `IntTy::deferred`) — grounds to the default via
+/// A bare integer literal's type: BOTH axes deferred (rcdzc `IntType::deferred`) — grounds to the default via
 /// unification/root-defaulting. This is the type a literal STARTS as; an annotation or operator fixes it.
-def ty-deferred-int() = Ty.TyInt(IntTy.IntTy(Sign.SignDef, Width.WidthDef))
+def ty-deferred-int() = Ty.TyInt(IntType.IntType(Sign.SignDef, Width.WidthDef))
 
 /// The canonical signed 64-bit integer (`Int64`) — what an unresolved sign+width grounds to (rcdzc
-/// `IntTy::i64`).
-def ty-int64() = Ty.TyInt(IntTy.IntTy(Sign.Signed, Width.WFixed(64)))
+/// `IntType::i64`).
+def ty-int64() = Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(64)))
 
-/// A concrete `(signed, width)` integer (rcdzc `IntTy::fixed`) — the ordinary fixed integer type an
+/// A concrete `(signed, width)` integer (rcdzc `IntType::fixed`) — the ordinary fixed integer type an
 /// annotation names. `signed` as a Bool; width as the bit count.
 def ty-fixed-int(signed: Bool, width: Int64) =
-  Ty.TyInt(IntTy.IntTy((if signed then Sign.Signed else Sign.Unsigned), Width.WFixed(width)))
+  Ty.TyInt(IntType.IntType((if signed then Sign.Signed else Sign.Unsigned), Width.WFixed(width)))
 
 /// Is this an integer type (any sign/width state)?
 def is-int-ty(t: Ty) = match t with | Ty.TyInt(_) => true | _ => false
@@ -65,16 +65,16 @@ def width-deferred(w: Width) = match w with | Width.WidthDef => true | _ => fals
 /// still-deferred type must be defaulted at the root first. Binds sign/width one level, then tests each
 /// (avoids the deep-nested-pattern compiler limitation).
 def is-ground-int(t: Ty) = match t with
-  | Ty.TyInt(it) => (match it with | IntTy.IntTy(s, w) => (if sign-deferred(s) then false else (if width-deferred(w) then false else true)))
+  | Ty.TyInt(it) => (match it with | IntType.IntType(s, w) => (if sign-deferred(s) then false else (if width-deferred(w) then false else true)))
   | _ => false
 
 /// GROUND a (possibly-deferred) type to its default (rcdzc's backend grounding of an unresolved sign/width):
 /// a deferred sign → Signed, a deferred width → 64. A fixed axis is unchanged; a non-int type is unchanged.
 def ground-default(t: Ty) = match t with
-  | Ty.TyInt(it) => (match it with | IntTy.IntTy(s, w) =>
+  | Ty.TyInt(it) => (match it with | IntType.IntType(s, w) =>
       (let s2 = (if sign-deferred(s) then Sign.Signed else s) in
        (let w2 = (if width-deferred(w) then Width.WFixed(64) else w) in
-        Ty.TyInt(IntTy.IntTy(s2, w2)))))
+        Ty.TyInt(IntType.IntType(s2, w2)))))
   | _ => t
 
 /// SIGN equality — two signs are equal iff the SAME state (Signed=Signed, Unsigned=Unsigned,
@@ -96,7 +96,7 @@ def width-eq(a: Width, b: Width) = match a with
 /// `Ty` (replacing infer-db's monomorphic `type-eq`). Bind-per-level (deep-nested-match limitation).
 def ty-eq(a: Ty, b: Ty) = match a with
   | Ty.TyInt(ita) => (match b with
-      | Ty.TyInt(itb) => (match ita with | IntTy.IntTy(sa, wa) => (match itb with | IntTy.IntTy(sb, wb) => (if sign-eq(sa, sb) then width-eq(wa, wb) else false)))
+      | Ty.TyInt(itb) => (match ita with | IntType.IntType(sa, wa) => (match itb with | IntType.IntType(sb, wb) => (if sign-eq(sa, sb) then width-eq(wa, wb) else false)))
       | _ => false)
   | Ty.TyBool => (match b with | Ty.TyBool => true | _ => false)
   | Ty.TyErr => false
@@ -126,7 +126,7 @@ def ty-bool-not-int() =
 /// Test helper: extract a ground int type's `(signed?, width)` — bind-then-match per level (flat), returning
 /// `(is-signed 1|0, width)`; `(−1, −1)` for a non-int or non-fixed axis. Avoids deep-nested patterns.
 def int-parts(t: Ty) = match t with
-  | Ty.TyInt(it) => (match it with | IntTy.IntTy(s, w) =>
+  | Ty.TyInt(it) => (match it with | IntType.IntType(s, w) =>
       (match w with
         | Width.WFixed(n) => ((match s with | Sign.Signed => 1 | Sign.Unsigned => 0 | Sign.SignDef => (0 - 1)), n)
         | Width.WidthDef => (0 - 1, 0 - 1)))
@@ -145,7 +145,7 @@ def ty-ground-default-keeps-fixed() =
 @test
 def ty-ground-default-partial-deferred-sign() =
   // a deferred SIGN with a fixed width grounds the sign to Signed, keeps the width (orthogonal axes).
-  (match int-parts(ground-default(Ty.TyInt(IntTy.IntTy(Sign.SignDef, Width.WFixed(16))))) with | (sg, w) => (if (sg == 1) and (w == 16) then unit else trap("deferred-sign→Signed, width 16 kept")))
+  (match int-parts(ground-default(Ty.TyInt(IntType.IntType(Sign.SignDef, Width.WFixed(16))))) with | (sg, w) => (if (sg == 1) and (w == 16) then unit else trap("deferred-sign→Signed, width 16 kept")))
 
 // ---- ty-eq tests (structural type equality — the convergence primitive) ----
 
@@ -185,4 +185,4 @@ def ty-eq-deferred-matches-deferred() =
   // equality; unify handles grounding, ty-eq is structural state-equality.
   (if ty-eq(ty-deferred-int(), ty-deferred-int()) then unit else trap("deferred == deferred (same state)"))
 
-export { Sign.*, Width.*, IntTy.*, Ty.*, ty-deferred-int, ty-int64, ty-fixed-int, is-int-ty, is-ground-int, ground-default, sign-eq, width-eq, ty-eq }
+export { Sign.*, Width.*, IntType.*, Ty.*, ty-deferred-int, ty-int64, ty-fixed-int, is-int-ty, is-ground-int, ground-default, sign-eq, width-eq, ty-eq }
