@@ -81,3 +81,7 @@
 ; (3ac208f93) — ((selfp 2) 5) -> 105 (was "not applyable"). HANDLE column STILL PENDING — ((handle Env 0
 ; (arm) (fn (x) (+ x 1))) 10) still declines "value is not applyable" (331283703 is the STACKED TIP on
 ; 3ac208f93, not yet through pr-sync). Keep item PENDING-MERGE until the handle tip lands + verifies 11.
+
+; BOTH COLUMNS LANDED + content-verified (corpus-bugfix 2026-07-18, trunk aaf51027c): recursion col
+; ((selfp 2) 5) -> 105 (3ac208f93); handle col ((handle Env 0 (arm) (fn (x) (+ x 1))) 10) -> 11 (331283703).
+; Fully closed.

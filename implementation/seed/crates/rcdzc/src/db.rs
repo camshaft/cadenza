@@ -1688,6 +1688,14 @@ pub struct Db {
     /// what is compile-time, the compiler obeys.
     pub(crate) const_params: crate::fxhash::FxHashSet<StructId>,
 
+    /// The RAW-CONSTRUCTION node ids inside the synthesized `__invariant_construct_<T>` defs — each
+    /// `((. T V) __inv_p)` a checked constructor builds. These are the construct sites `lower_sum_new` must
+    /// EXEMPT from the `@invariant` establish divert: they ARE the checked constructor's own construction, so
+    /// routing them back through `__invariant_construct_<T>` would recurse forever. Populated ONCE by
+    /// `invariant_establish::synthesize` at load (append-only synthesis keeps the ids stable through the later
+    /// load passes). Empty for a program with no `@invariant` newtype. See [`crate::invariant_establish`].
+    pub(crate) invariant_exempt_ctors: crate::fxhash::FxHashSet<StructId>,
+
     /// The BODY occurrences of definitions marked `inline-never` — an INLINE-POLICY marker
     /// (`DESIGN-…-monomorphization-rcdzc.md` Addendum 4). The default is always-inline (every
     /// non-recursive call β-reduces); `inline-never` forces the def to be EMITTED as ONE real wasm
@@ -1838,13 +1846,16 @@ impl Db {
         // every node it appends is ordinary AST (`proptest_gen`, no name special-casing). A no-op for a
         // program with no compound-param `@test`.
         crate::proptest_gen::synthesize(&mut ast);
-        // DATA-TYPE INVARIANT ESTABLISH (Part 1): for each type carrying `@invariant(PRED)`, synthesize a
-        // typed checker `(def (__invariant_check_<T> (: it <T>)) <check-body>)` appended to the top-level
-        // items — auto-unwrapping a single-payload newtype so a bare scalar predicate type-checks — so PRED
-        // is RESOLVED + TYPE-CHECKED with `it : T` in scope (a malformed invariant is caught) and it is the
-        // callee the construct-site establish check (Part 2) invokes. BEFORE `strip_annotations` (wrapper
-        // present) + `scan_top_level`; all appended nodes are ordinary AST. No-op with no `@invariant`.
-        crate::invariant_establish::synthesize(&mut ast);
+        // DATA-TYPE INVARIANT ESTABLISH (Part 1 + Part 2): for each type carrying `@invariant(PRED)`,
+        // synthesize a typed checker `(def (__invariant_check_<T> (: it <T>)) <check-body>)` and, for a
+        // single-payload newtype, a checked constructor `(def (__invariant_construct_<T> (: __inv_p U)) …)`,
+        // both appended to the top-level items — auto-unwrapping a single-payload newtype so a bare scalar
+        // predicate type-checks — so PRED is RESOLVED + TYPE-CHECKED with `it : T` in scope (a malformed
+        // invariant is caught). BEFORE `strip_annotations` (wrapper present) + `scan_top_level`; all appended
+        // nodes are ordinary AST. Returns the RAW-CONSTRUCTION node ids inside the construct-defs — the
+        // construct sites `lower_sum_new` must EXEMPT from the establish divert (they are the checked
+        // constructor's own `(T.V …)`, so re-routing them would recurse). No-op with no `@invariant`.
+        let invariant_exempt_ctors = crate::invariant_establish::synthesize(&mut ast);
         // Normalize away a `(const BINDER)` PARAMETER wrapper on every `def`/`fn` signature BEFORE anything
         // reads a parameter: `const` marks a COMPILE-TIME parameter (`DESIGN-…-monomorphization` Addendum
         // 3), a declaration the specializer consumes — not part of the binder shape the resolver/typer
@@ -2436,6 +2447,7 @@ impl Db {
             called: crate::fxhash::FxHashSet::default(),
             transformed: accum_links.into_iter().collect(),
             const_params,
+            invariant_exempt_ctors,
             inline_never,
             inline_always,
             tests,

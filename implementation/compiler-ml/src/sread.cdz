@@ -151,22 +151,38 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
 /// A NON-literal operand (`(: (+ 1 2) Int8)`) is out of THIS slice → decline (a later slice threads the
 /// annotated type through infer for arbitrary expressions). Stays OUTSIDE the parse-db grammar SCC — it's a
 /// sread paren-form arm, a caller of `read-form`, not a new mutually-recursive grammar member.
+/// Finish an annotation once the literal VALUE `v` (already signed) is read and the operand ended at a token
+/// boundary at index `k`: read the type-name atom, `recognize` it, and `fits-width`-gate the value. In range
+/// → `NLit(v)`; out of range / non-int type → decline. Shared by the non-negative and negative operand paths.
+def ann-with-value(s: String, k: Int64, v: Int64, tree: Tree) =
+  (let t0 = skip-space(s, k) in
+   (match scan-atom(s, t0, "") with | (tyname, a2) =>
+     (let a3 = close-paren(s, a2) in
+      (if (is-int-type(tyname)) then
+         (if (fits-width(v, ty-signed(tyname), ty-width(tyname)))
+          then (match add-node(tree, Node.NLit(v)) with | (id, t1) => (id, a3, t1))   // in range → runs
+          else unsupported-at(tree, a3))                                              // out of range → decline
+       else unsupported-at(tree, a3)))))                                              // non-int type → decline
+
 def read-ann-form(s: String, i: Int64, tree: Tree) =
   (let v0 = skip-space(s, i) in
    (let c = char-at(s, v0) in
     (if (is-digit(c)) then
+       // non-negative literal operand.
        (match scan-number(s, v0, 0) with | (v, k) =>
-         (if (ends-token(s, k)) then
-            (let t0 = skip-space(s, k) in
-             (match scan-atom(s, t0, "") with | (tyname, a2) =>
-               (let a3 = close-paren(s, a2) in
-                (if (is-int-type(tyname)) then
-                   (if (fits-width(v, ty-signed(tyname), ty-width(tyname)))
-                    then (match add-node(tree, Node.NLit(v)) with | (id, t1) => (id, a3, t1))   // in range → runs
-                    else unsupported-at(tree, a3))                                              // out of range → decline
-                 else unsupported-at(tree, a3)))))                                              // non-int type → decline
-          else (match scan-atom(s, k, "") with | (_junk, k2) => unsupported-at(tree, k2))))     // malformed literal → decline
-     else (match unsupported(tree) with | (id, t1) => (id, v0, t1)))))                          // non-literal operand → out of slice, decline
+         (if (ends-token(s, k)) then ann-with-value(s, k, v, tree)
+          else (match scan-atom(s, k, "") with | (_junk, k2) => unsupported-at(tree, k2))))   // malformed literal → decline
+     else (if (c == "-") then
+       // NEGATIVE literal operand `-N`: a `-` immediately followed by digits, negated. A signed narrow type
+       // holds negatives (`(: -5 Int8)` fits Int8's -128..127); an unsigned type will fail fits-width (no
+       // negatives) → decline, matching rcdzc. A bare `-` not followed by a digit is not a literal → decline.
+       (let d0 = v0 + 1 in
+        (if (is-digit(char-at(s, d0))) then
+           (match scan-number(s, d0, 0) with | (mag, k) =>
+             (if (ends-token(s, k)) then ann-with-value(s, k, 0 - mag, tree)
+              else (match scan-atom(s, k, "") with | (_junk, k2) => unsupported-at(tree, k2))))
+         else (match unsupported(tree) with | (id, t1) => (id, d0, t1))))                     // bare `-` → decline
+     else (match unsupported(tree) with | (id, t1) => (id, v0, t1))))))                       // non-literal operand → out of slice, decline
 
 /// After `(do` (index `i` past the `do` atom): peel the canonical corpus MODULE wrapper
 /// `(do (def (main) <body>) (export main))` and read `<body>` as the program's value — the corpus tool
@@ -455,5 +471,31 @@ def sr-ann-negative-fits-int8() =
   // `(: 100 Int8)` fits (Int8 holds -128..127); confirms a mid-range signed value runs.
   (match read-source("(: 100 Int8)") with | (root, tree) =>
     (if is-lit(tree, root, 100) then unit else trap("(: 100 Int8) → NLit 100 (in range)")))
+
+@test
+def sr-ann-neg-literal-fits-int8() =
+  // `(: -5 Int8)` → -5 fits Int8's -128..127 → NLit(-5) runs. (The negative-operand path.)
+  (match read-source("(: -5 Int8)") with | (root, tree) =>
+    (if is-lit(tree, root, 0 - 5) then unit else trap("(: -5 Int8) → NLit -5 (fits signed)")))
+
+@test
+def sr-ann-neg-min-fits-int8() =
+  // `(: -128 Int8)` → Int8.min fits → runs.
+  (match read-source("(: -128 Int8)") with | (root, tree) =>
+    (if is-lit(tree, root, 0 - 128) then unit else trap("(: -128 Int8) → NLit -128 (Int8.min)")))
+
+@test
+def sr-ann-neg-under-int8-declines() =
+  // `(: -129 Int8)` → below Int8.min -128 → decline.
+  (match read-source("(: -129 Int8)") with | (root, tree) =>
+    (if is-lit(tree, root, 0 - 129) then trap("(: -129 Int8) must DECLINE (below Int8.min)")
+     else (if is-var(tree, root, 0) then unit else trap("Int8 underflow → unsupported"))))
+
+@test
+def sr-ann-neg-into-unsigned-declines() =
+  // `(: -1 UInt8)` → unsigned holds no negatives → fits-width false → decline (matches rcdzc).
+  (match read-source("(: -1 UInt8)") with | (root, tree) =>
+    (if is-lit(tree, root, 0 - 1) then trap("(: -1 UInt8) must DECLINE (unsigned has no negatives)")
+     else (if is-var(tree, root, 0) then unit else trap("negative into unsigned → unsupported"))))
 
 export { skip-space, read-form, read-source, scan-atom, op-code-of, name-id }

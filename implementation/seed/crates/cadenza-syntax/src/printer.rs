@@ -5070,4 +5070,19 @@ mod tests {
             "def mk() -> forall a. a -> a = fn(x) => x"
         );
     }
+
+    #[test]
+    fn def_sig_leading_forall_prints_as_canonical_type_params() {
+        // The P1 ergonomic spelling `def forall a b. f(…)` is also INPUT-ONLY sugar: it desugars to leading
+        // `(: a Type)` params at parse time, so it PRINTS BACK as `f(a: Type, …)` (the canonical form), not
+        // `def forall`. Round-trip is idempotent at that canonical form.
+        assert_eq!(
+            assert_roundtrip("def forall a. id(x: a) = x", 80),
+            "def id(a: Type, x: a) = x"
+        );
+        assert_eq!(
+            assert_roundtrip("def forall a b. apply(f: a -> b, x: a) = f(x)", 80),
+            "def apply(a: Type, b: Type, f: a -> b, x: a) = f(x)"
+        );
+    }
 }

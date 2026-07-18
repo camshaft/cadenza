@@ -14,7 +14,7 @@
 
 @!default-fraction Rational
 
-import { Solid, Vec3, Vec2, Profile } from "exact"
+import { Solid, Vec3, Vec2, Profile, Path, PathSeg } from "exact"
 
 /// A length in the base METER unit — the type every model dimension carries. A coordinate IS a length.
 ///  `Qty(Rational, Unit.base(#"meter"))` = an exact-Rational magnitude in meters.
@@ -63,11 +63,35 @@ def translate-m(by: Vec3(Qty(Rational, Unit.base(#"meter"))), s: Solid(Qty(Ratio
 def lower-v(v: Vec3(Qty(Rational, Unit.base(#"meter")))) =
   match v with | Vec3.V3(x, y, z) => Vec3.V3(Qty.value(x), Qty.value(y), Qty.value(z))
 
+/// Unwrap a 2-D vector's `Qty[meter]` coords to bare-Rational meters.
+def lower-v2(v: Vec2(Qty(Rational, Unit.base(#"meter")))) =
+  match v with | Vec2.V2(x, y) => Vec2.V2(Qty.value(x), Qty.value(y))
+
+/// Unwrap one path segment's `Qty[meter]` coords to bare-Rational meters.
+def lower-pathseg-q(s: PathSeg(Qty(Rational, Unit.base(#"meter")))) = match s with
+  | PathSeg.MoveToAbs(p) => PathSeg.MoveToAbs(lower-v2(p))
+  | PathSeg.MoveToRel(p) => PathSeg.MoveToRel(lower-v2(p))
+  | PathSeg.LineToAbs(p) => PathSeg.LineToAbs(lower-v2(p))
+  | PathSeg.LineToRel(p) => PathSeg.LineToRel(lower-v2(p))
+  | PathSeg.CubicToAbs(e, c0, c1) => PathSeg.CubicToAbs(lower-v2(e), lower-v2(c0), lower-v2(c1))
+  | PathSeg.CubicToRel(e, c0, c1) => PathSeg.CubicToRel(lower-v2(e), lower-v2(c0), lower-v2(c1))
+
+/// Unwrap a path's `Qty[meter]` coords to bare-Rational meters (recursive; `List` has no map).
+def lower-path-q(p: Path(Qty(Rational, Unit.base(#"meter")))) =
+  match p with | Path.Segs(xs) => Path.Segs(lower-path-q-go(xs, (0 : Int64), []))
+def lower-path-q-go(xs: List(PathSeg(Qty(Rational, Unit.base(#"meter")))), i: Int64,
+                    acc: List(PathSeg(Rational))) =
+  if i == List.len(xs) then acc
+  else (match List.at(xs, i) with
+    | Option.Some(s) => lower-path-q-go(xs, i + (1 : Int64), List.push(acc, lower-pathseg-q(s)))
+    | Option.None => acc)
+
 /// Unwrap a 2-D profile's `Qty[meter]` coords to bare-Rational meters (the render-edge twin of `lower-v`
 /// for the extrude/revolve profile arms).
 def lower-p(p: Profile(Qty(Rational, Unit.base(#"meter")))) = match p with
   | Profile.Rect(sz) => (match sz with | Vec2.V2(w, h) => Profile.Rect(Vec2.V2(Qty.value(w), Qty.value(h))))
   | Profile.Circle(r) => Profile.Circle(Qty.value(r))
+  | Profile.PathProfile(pth) => Profile.PathProfile(lower-path-q(pth))
 
 def lower(s: Solid(Qty(Rational, Unit.base(#"meter")))) = match s with
   | Solid.Empty => Solid.Empty

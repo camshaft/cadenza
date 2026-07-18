@@ -19,7 +19,7 @@ import { Core, lower-tree } from "lower-db"
 
 /// Evaluate a Core term under `env` (binderId → value). Total: an unbound var or divide-by-zero → `None`.
 def eval-core(c: Core, env: Map(Int64, Int64)) = match c with
-  | Core.CNum(v) => Option.Some(v)
+  | Core.CNum(v, _, _) => Option.Some(v)   // the interpreter oracle reads the VALUE; width is an emit concern
   | Core.CVar(b) => Map.lookup(env, b)
   | Core.CBin(op, l, r) =>
       (match eval-core(l, env) with
@@ -199,7 +199,7 @@ def ev-if-untaken-branch-not-evaluated() =
   // passed for the wrong reason — Copilot on PR #519 caught this. Constructing the Core directly pins the
   // evaluator's laziness without depending on an unsupported surface operator.) A non-zero cond takes the
   // then-branch; the else `1 / 0` would eval to `None` if evaluated, so getting `Some 7` proves it is NOT.
-  (match eval-core(Core.CIf(Core.CNum(1), Core.CNum(7), Core.CBin(47, Core.CNum(1), Core.CNum(0))), (Map.empty : Map(Int64, Int64))) with
+  (match eval-core(Core.CIf(Core.CNum(1, true, 64), Core.CNum(7, true, 64), Core.CBin(47, Core.CNum(1, true, 64), Core.CNum(0, true, 64))), (Map.empty : Map(Int64, Int64))) with
     | Option.Some(v) => (if v == 7 then unit else trap("taken branch only → 7"))
     | Option.None(_) => trap("lazy if: the untaken 1/0 else must NOT be evaluated"))
 
@@ -208,7 +208,7 @@ def ev-if-taken-branch-divide-by-zero-does-sink() =
   // The complement, to prove the above isn't vacuous: if the DIVIDE-BY-ZERO is in the TAKEN branch, eval
   // DOES reach it and yields None. `if 1 then (1 / 0) else 7` → None. Together these pin that laziness is
   // branch-selective, not a blanket skip.
-  (match eval-core(Core.CIf(Core.CNum(1), Core.CBin(47, Core.CNum(1), Core.CNum(0)), Core.CNum(7)), (Map.empty : Map(Int64, Int64))) with
+  (match eval-core(Core.CIf(Core.CNum(1, true, 64), Core.CBin(47, Core.CNum(1, true, 64), Core.CNum(0, true, 64)), Core.CNum(7, true, 64)), (Map.empty : Map(Int64, Int64))) with
     | Option.None(_) => unit
     | Option.Some(_) => trap("a divide-by-zero in the TAKEN branch must sink to None"))
 

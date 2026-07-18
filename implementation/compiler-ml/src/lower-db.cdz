@@ -21,11 +21,16 @@ import { Typed, infer-tree } from "infer-db"
 /// The integer Core IR. `CVar` carries the BINDER node-id (canonical unique name); `CLet` is keyed by its
 /// own let-node-id. Op codes match the parser/token codes (43 +, 45 -, 42 *).
 type Core =
-  | CNum(Int64)
+  | CNum(Int64, Bool, Int64)  // CNum(value, signed, width) — a fixed-width int constant; (true,64)=Int64
   | CVar(Int64)               // CVar(binderId) — canonical, resolved
   | CBin(Int64, Core, Core)   // CBin(op, left, right)
   | CLet(Int64, Core, Core)   // CLet(binderId, value, body)
   | CIf(Core, Core, Core)     // CIf(cond, then, else)
+
+/// The canonical Int64 constant — the width the monomorphic-i64 pipeline lowers every literal to today (a
+/// narrow-width annotation will lower to a NARROW CNum in a later sub-slice; emit reads the width to pick
+/// i32-vs-i64 codegen). A single name so construct sites don't repeat the `(true, 64)`.
+def cnum64(v: Int64) = Core.CNum(v, true, 64)
 
 /// Lower the subtree at `id`, reading the pre-built resolve column `rcol` (for var canonicalization) and
 /// type column `tcol` (the well-typed gate). Returns `Option(Core)` — `None` if this node or any descendant
@@ -43,8 +48,8 @@ def lower-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
 /// The typed-node case: build the Core node, canonicalizing a var to its binder id via `rcol`.
 def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
   match node-at(tree, id) with
-    | Option.Some(Node.NLit(v)) => Option.Some(Core.CNum(v))
-    | Option.Some(Node.NBoolLit(b)) => Option.Some(Core.CNum(b))   // Bool is Int 0/1 in Core
+    | Option.Some(Node.NLit(v)) => Option.Some(cnum64(v))
+    | Option.Some(Node.NBoolLit(b)) => Option.Some(cnum64(b))   // Bool is Int 0/1 in Core (i64)
     | Option.Some(Node.NVar(_)) =>
         // canonicalize: replace the source name with the binder's node-id (resolve already proved RBound
         // since the type fact was TInt). Defensive: a non-RBound fact yields no core form.
@@ -86,7 +91,7 @@ def lower-tree(tree: Tree, root: Int64) =
   lower-node(tree, root, resolve-tree(tree, root), infer-tree(tree, root))
 
 /// Probe: is this Core a `CNum v`?
-def is-cnum(c: Core, v: Int64) = match c with | Core.CNum(x) => x == v | _ => false
+def is-cnum(c: Core, v: Int64) = match c with | Core.CNum(x, _, _) => x == v | _ => false
 
 /// Probe: is this Core a `CVar` with binder id `b`?
 def is-cvar(c: Core, b: Int64) = match c with | Core.CVar(x) => x == b | _ => false
@@ -181,4 +186,4 @@ def lw-milestone-lowers() =
          else trap("CLet keyed by root"))
       | _ => trap("milestone lowers to CLet")))
 
-export { Core.*, lower-tree, lower-node, is-cnum, is-cvar }
+export { Core.*, lower-tree, lower-node, cnum64, is-cnum, is-cvar }

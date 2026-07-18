@@ -35,14 +35,37 @@ type Vec3 =
 type Vec2 =
   | V2(a, a)
 
+/// A 2-D PATH segment — an outline built as a sequence of these (P-D: paths/splines, matching rsolid's
+/// path API ergonomics — see the `path-start`/`line-to`/… builders). rsolid's absolute (`_to`) vs
+/// relative-offset (`_by`) distinction is an `Abs`/`Rel` constructor pair per segment kind (the
+/// forward-at-heading `_fwd` variants need a running angle, deferred). A `Line`/`Move` segment is fully
+/// EXACT over Rational; a `Cubic` (cubic Bézier: end + two control points) carries EXACT control points but
+/// the mesh driver SAMPLES it to a Rational polygon at a chosen segment count (fork-1 — the float lives only
+/// at the mesh edge, like `Circle`/`Sphere` tessellation; the model stays exact). `Move` starts a new
+/// subpath without drawing.
+type PathSeg =
+  | MoveToAbs(Vec2(a)) | MoveToRel(Vec2(a))
+  | LineToAbs(Vec2(a)) | LineToRel(Vec2(a))
+  | CubicToAbs(Vec2(a), Vec2(a), Vec2(a))  // end, start-control, end-control (rsolid `cubic_curve_to`)
+  | CubicToRel(Vec2(a), Vec2(a), Vec2(a))  // same, relative to the current point (`cubic_curve_by`)
+
+/// A 2-D PATH — an ordered sequence of segments describing an outline (the value form of rsolid's fluent
+/// `Path` builder chain). Built with `path-start` + `line-to`/`move-to`/`cubic-to` (which thread a `Path`
+/// through, the Cadenza analogue of `.line_to(…).cubic_curve_to(…)`). Closed into a fillable region by
+/// `Profile.PathProfile`; the mesh driver walks the segments (a line contributes a vertex; a curve samples
+/// to N Rational points) into a polygon.
+type Path =
+  | Segs(List(PathSeg(a)))
+
 /// A closed 2-D region in the XY plane — the cross-section an EXTRUDE or REVOLVE lifts into a `Solid` (P-D:
-/// profiles/extrusions). Exact where it can be: `Rect` (full w×h) and an explicit `Polygon` are fully exact
-/// over Rational; `Circle` stores an exact radius but the mesh driver segment-approximates it (a tessellation
-/// count, exactly like `Sphere`/`Cylinder` today — the model stays exact, the float lives only at the mesh
-/// edge). (`PathProfile`, for spline/curve outlines, is a follow-up slice once the `Path` type lands.)
+/// profiles/extrusions). Exact where it can be: `Rect` (full w×h) is fully exact over Rational; `Circle`
+/// stores an exact radius but the mesh driver segment-approximates it (a tessellation count, exactly like
+/// `Sphere`/`Cylinder` today — the model stays exact, the float lives only at the mesh edge); `PathProfile`
+/// bounds the region by a `Path` (for spline/curve outlines — sampled to a Rational polygon at the driver).
 type Profile =
   | Rect(Vec2(a))                  // an axis-aligned rectangle of FULL size (w, h), centred at the origin
   | Circle(a)                      // a disc of the given radius (segment-approximated at the mesh edge)
+  | PathProfile(Path(a))           // a region bounded by a Path (line/curve outline) — sampled at the driver
 
 /// The exact CSG tree — the FULL model: primitives (Empty/Cube/Sphere/Cylinder), the three booleans,
 /// and the affine transforms that stay exact over Rational (Translate, per-axis Scale). NOTE: no `Rotate` —
@@ -90,12 +113,59 @@ def v3r(x: Rational, y: Rational, z: Rational) = Vec3.V3(x, y, z)
 /// Build an exact 2-D vector.
 def v2(x: Rational, y: Rational) = Vec2.V2(x, y)
 
+/// ---- Path builders (rsolid-matched ergonomics: start a path, then chain segments) -------------------
+/// Cadenza has no `self`-consuming method chain, so a path is a VALUE threaded through these fns — the
+/// analogue of rsolid's `Path::default().line_to(…).cubic_curve_to(…)` is `cubic-to(line-to(path-start(),…),…)`.
+
+/// Start a new path at the origin (a leading `MoveToAbs (0,0)`, like rsolid's `Path::default()` cursor).
+def path-start() = Path.Segs(List.push([], PathSeg.MoveToAbs(v2(rzero(), rzero()))))
+/// Append a segment (the shared spine of the chainable builders below).
+def path-append(p: Path(Rational), s: PathSeg(Rational)) =
+  match p with | Path.Segs(xs) => Path.Segs(List.push(xs, s))
+/// Move the cursor to an absolute point (starts a new subpath, no line) — rsolid `move_to`.
+def move-to(p: Path(Rational), pt: Vec2(Rational)) = path-append(p, PathSeg.MoveToAbs(pt))
+/// Draw a straight line to an absolute point — rsolid `line_to`. Fully exact.
+def line-to(p: Path(Rational), pt: Vec2(Rational)) = path-append(p, PathSeg.LineToAbs(pt))
+/// Draw a straight line by a relative offset — rsolid `line_by`.
+def line-by(p: Path(Rational), d: Vec2(Rational)) = path-append(p, PathSeg.LineToRel(d))
+/// Cubic Bézier to an absolute end with two control points — rsolid `cubic_curve_to`. Exact control points;
+/// the driver samples the curve to a Rational polygon.
+def cubic-to(p: Path(Rational), end: Vec2(Rational), c0: Vec2(Rational), c1: Vec2(Rational)) =
+  path-append(p, PathSeg.CubicToAbs(end, c0, c1))
+
+/// A segment's farthest point from the origin, component-wise ABS (for a path's bounding extent). A line/move
+/// contributes its endpoint; a cubic contributes the max abs over its end + both control points (the control
+/// hull bounds the curve, so this over-approximates safely — an exact enclosing box, like revolve's).
+def path-seg-extent(s: PathSeg(Rational)) =
+  let ax = (fn (v: Vec2(Rational)) => match v with | Vec2.V2(x, y) => Vec2.V2(rmax(x, rzero() - x), rmax(y, rzero() - y))) in
+  match s with
+    | PathSeg.MoveToAbs(p) => ax(p) | PathSeg.MoveToRel(p) => ax(p)
+    | PathSeg.LineToAbs(p) => ax(p) | PathSeg.LineToRel(p) => ax(p)
+    | PathSeg.CubicToAbs(e, c0, c1) => v2max(ax(e), v2max(ax(c0), ax(c1)))
+    | PathSeg.CubicToRel(e, c0, c1) => v2max(ax(e), v2max(ax(c0), ax(c1)))
+
+/// Component-wise max of two 2-D vectors.
+def v2max(a: Vec2(Rational), b: Vec2(Rational)) =
+  match a with | Vec2.V2(ax, ay) => (match b with | Vec2.V2(bx, by) => Vec2.V2(rmax(ax, bx), rmax(ay, by)))
+
+/// A path's ±x/±y half-extent — the max abs over all its segments' points (recursive fold; `List` has no map).
+def path-half-extent(p: Path(Rational)) =
+  match p with | Path.Segs(xs) => path-extent-go(xs, (0 : Int64), Vec2.V2(rzero(), rzero()))
+def path-extent-go(xs: List(PathSeg(Rational)), i: Int64, acc: Vec2(Rational)) =
+  if i == List.len(xs) then acc
+  else (match List.at(xs, i) with
+    | Option.Some(s) => path-extent-go(xs, i + (1 : Int64), v2max(acc, path-seg-extent(s)))
+    | Option.None => acc)
+
 /// The profile's ±x/±y HALF-EXTENT in its own XY plane, as a `Vec2(Rational)` (halfWidth, halfHeight). A
 /// `Rect(V2(w, h))` is FULL size centred at the origin → half-extent (w/2, h/2); a `Circle(r)` fills
-/// [-r, r]² → half-extent (r, r). The exact 2-D bound that `bounding-box`'s extrude/revolve arms lift into 3-D.
+/// [-r, r]² → half-extent (r, r); a `PathProfile` → the max abs extent over its segments' points (the exact
+/// enclosing 2-D bound — over-approximates a curve via its control hull). `bounding-box`'s extrude/revolve
+/// arms lift this into 3-D.
 def profile-half-extent(p: Profile(Rational)) = match p with
   | Profile.Rect(sz) => (match sz with | Vec2.V2(w, h) => Vec2.V2(rhalf(w), rhalf(h)))
   | Profile.Circle(r) => Vec2.V2(r, r)
+  | Profile.PathProfile(pth) => path-half-extent(pth)
 
 def v3r-x(v: Vec3(Rational)) = match v with | Vec3.V3(x, _, _) => x
 def v3r-y(v: Vec3(Rational)) = match v with | Vec3.V3(_, y, _) => y
@@ -284,20 +354,28 @@ def aabb-is-a-direct-compound-walk() =
   else trap("whole-Aabb == must walk the nested Vec3(Rational) pair, normalizing (1/2 == 2/4)")
 
 @test
-def solid-is-a-direct-compound-walk() =
-  // The DEEPEST case: a whole `Solid(Rational)` `==` — a recursive sum of Rationals to a data-determined depth.
-  // Two structurally-identical trees whose only difference is a NORMALIZED Rational leaf (5/2 vs 10/4) are
-  // equal; a differing leaf value or a differing tree SHAPE makes them unequal. This pins that the heap walk
-  // handles a recursive-sum-of-Rational at arbitrary depth (not just the flat Vec3/Aabb), the same admission
-  // `lower`/render rely on — a future change that dropped Rational (or recursive sums) from the walk fails here.
+def solid-rational-leaves-compare-under-destructure() =
+  // NOTE (P-D consequence): a WHOLE-`Solid(Rational)` `==` is NO LONGER available — since `Solid` gained the
+  // `ExtrudeLinear`/`Revolve` arms carrying a `Profile`, and `Profile.PathProfile` carries a `Path` = a
+  // `List(PathSeg)`, the `Solid` type now TRANSITIVELY contains a `List`; and the compiler's heap-walk `==`
+  // "comparison of a compound value needs a heap walk (not yet built)" does not yet support LIST comparison,
+  // so `s1 == s2` on a Solid no longer compiles. (Filed as a compiler gap: List-in-heap-walk `==`.) The
+  // Rational-leaf-walk invariant this used to pin via a whole-Solid `==` is still covered by
+  // `v3r-eq`/`aabb-is-a-direct-compound-walk` (List-free); here we pin the leaf-level equality that survives:
+  // destructure two structurally-identical trees + compare the NORMALIZED Rational leaves directly (5/2 == 10/4).
   let s1 = Solid.Difference(Solid.Cube(v3r(4 / 1, 4 / 1, 4 / 1)), Solid.Sphere(5 / 2)) in
-  let s2 = Solid.Difference(Solid.Cube(v3r(4 / 1, 4 / 1, 4 / 1)), Solid.Sphere(10 / 4)) in  // 5/2 == 10/4
-  let s-leaf = Solid.Difference(Solid.Cube(v3r(4 / 1, 4 / 1, 4 / 1)), Solid.Sphere(3 / 1)) in  // radius differs
-  let s-shape = Solid.Cube(v3r(4 / 1, 4 / 1, 4 / 1)) in  // different constructor/shape
-  if (s1 == s2) then
-    (if (s1 == s-leaf) then trap("differing sphere radius must be unequal")
-     else (if (s1 == s-shape) then trap("differing tree shape must be unequal") else unit))
-  else trap("whole-Solid(Rational) == must walk the recursive sum, normalizing (5/2 == 10/4)")
+  let s2 = Solid.Difference(Solid.Cube(v3r(4 / 1, 4 / 1, 4 / 1)), Solid.Sphere(10 / 4)) in
+  match s1 with | Solid.Difference(_, r1) =>
+    (match s2 with | Solid.Difference(_, r2) =>
+      (match r1 with | Solid.Sphere(a) =>
+        (match r2 with | Solid.Sphere(b) =>
+          // the sphere radii 5/2 and 10/4 are the SAME normalized Rational; a differing radius (3/1) is not.
+          (if a == b then (if a == 3 / 1 then trap("5/2 must differ from 3/1") else unit)
+           else trap("5/2 == 10/4 normalized (Rational leaf walk)"))
+         | _ => trap("s2 tool is a Sphere"))
+       | _ => trap("s1 tool is a Sphere"))
+     | _ => trap("s2 is a Difference"))
+    | _ => trap("s1 is a Difference")
 
 @test
 def v3r-eq-and-add() =
@@ -459,6 +537,62 @@ def lower-maps-extrude-and-revolve-to-the-monomorphic-render-form() =
              else trap("ExtrudeLinear Rect dims/height lost")))
         | _ => trap("Extrude profile should be a Rect"))
     | _ => trap("lower(ExtrudeLinear) should be SolidR.ExtrudeLinear"))
+
+// ---- P-D: 2-D paths / splines (rsolid-matched builders) --------------------------------------------
+
+@test
+def path-builders-accumulate-segments-in-order() =
+  // path-start seeds a MoveToAbs(0,0); each line-to/cubic-to appends one segment. A square outline
+  // (3 line-to after the start) has 4 segments; the fluent chain (nested) preserves order.
+  let square = line-to(line-to(line-to(path-start(), v2(4 / 1, rzero())), v2(4 / 1, 2 / 1)), v2(rzero(), 2 / 1)) in
+  match square with | Path.Segs(xs) =>
+    (if List.len(xs) == (4 : Int64) then
+      // the 2nd segment (index 1) is the first line-to → LineToAbs(4, 0).
+      (match List.at(xs, (1 : Int64)) with
+        | Option.Some(s) => (match s with
+            | PathSeg.LineToAbs(p) => (match p with | Vec2.V2(x, y) =>
+                (if x == 4 / 1 and y == rzero() then unit else trap("first line-to is (4,0)")))
+            | _ => trap("segment 1 is a LineToAbs"))
+        | Option.None => trap("segment 1 exists"))
+     else trap("a start + 3 line-to = 4 segments"))
+
+@test
+def path-half-extent-bounds-the-outline() =
+  // a square path from (0,0) via (4,0),(4,2),(0,2) has max-abs extent (4, 2); a cubic's control hull bounds
+  // it — a cubic-to end (6,0) with a control at (3,5) gives y-extent 5 (the control, over-approximating).
+  let square = line-to(line-to(line-to(path-start(), v2(4 / 1, rzero())), v2(4 / 1, 2 / 1)), v2(rzero(), 2 / 1)) in
+  (match path-half-extent(square) with | Vec2.V2(hx, hy) =>
+    (if hx == 4 / 1 and hy == 2 / 1 then
+      (let curved = cubic-to(path-start(), v2(6 / 1, rzero()), v2(3 / 1, 5 / 1), v2(5 / 1, rzero())) in
+        match path-half-extent(curved) with | Vec2.V2(cx, cy) =>
+          if cx == 6 / 1 and cy == 5 / 1 then unit else trap("cubic extent bounds the control hull (6,5)"))
+     else trap("square path extent is (4,2)")))
+
+@test
+def a-path-profile-extrudes-with-the-path-bound() =
+  // a PathProfile(square) extruded height 3 → box = the path's XY extent (full 8×4, since half-extent (4,2))
+  // × height 3. Pins that a Path flows through Profile → ExtrudeLinear → bounding-box.
+  let square = line-to(line-to(line-to(path-start(), v2(4 / 1, rzero())), v2(4 / 1, 2 / 1)), v2(rzero(), 2 / 1)) in
+  let ext = Solid.ExtrudeLinear(Profile.PathProfile(square), 3 / 1) in
+  if v3r-eq(aabbr-size(bounding-box(ext)), v3r(8 / 1, 4 / 1, 3 / 1)) then unit
+  else trap("extruded path-profile box is (2*hx, 2*hy, height) = (8, 4, 3)")
+
+@test
+def lower-maps-a-path-profile-to-the-render-form() =
+  // Pin the render contract for the new nodes: lower maps ExtrudeLinear(PathProfile(path)) → the monomorphic
+  // SolidR/ProfileR.PathProfile(PathR) the host renders as `(ExtrudeLinear (PathProfile (: (list <seg…>) …)) h)`
+  // (verified via cdz run). Here we pin the shape + segment count survive lowering (the coord-level walk is
+  // covered by lower-maps-extrude-and-revolve + path-builders/path-half-extent).
+  let square = line-to(path-start(), v2(4 / 1, 2 / 1)) in   // [MoveToAbs(0,0), LineToAbs(4,2)] → 2 segs
+  match lower(Solid.ExtrudeLinear(Profile.PathProfile(square), 3 / 1)) with
+    | SolidR.ExtrudeLinear(rp, _) =>
+      (match rp with
+        | ProfileR.PathProfile(rpath) =>
+          (match rpath with | PathR.Segs(rxs) =>
+            (if List.len(rxs) == (2 : Int64) then unit
+             else trap("lowered path should have 2 segments")))
+        | _ => trap("lowered profile should be a PathProfile"))
+    | _ => trap("lower(ExtrudeLinear PathProfile) should be SolidR.ExtrudeLinear")
 
 @test
 def negative-scale-keeps-a-well-formed-box() =
@@ -652,9 +786,17 @@ type Vec3R =
 /// generic `Vec2(a)`/`Profile(a)`). `lower` maps the generic profile/extrude arms into these.
 type Vec2R =
   | V2(Rational, Rational)
+type PathSegR =
+  | MoveToAbs(Vec2R) | MoveToRel(Vec2R)
+  | LineToAbs(Vec2R) | LineToRel(Vec2R)
+  | CubicToAbs(Vec2R, Vec2R, Vec2R)
+  | CubicToRel(Vec2R, Vec2R, Vec2R)
+type PathR =
+  | Segs(List(PathSegR))
 type ProfileR =
   | Rect(Vec2R)
   | Circle(Rational)
+  | PathProfile(PathR)
 type SolidR =
   | Empty
   | Cube(Vec3R)
@@ -675,9 +817,26 @@ def lower-vec3(v: Vec3(Rational)) =
 /// Lower a 2-D vector / profile into its monomorphic mirror (identity on the Rational coordinates).
 def lower-vec2(v: Vec2(Rational)) =
   match v with | Vec2.V2(x, y) => Vec2R.V2(x, y)
+/// Lower one path segment (map each Vec2 to its monomorphic mirror).
+def lower-pathseg(s: PathSeg(Rational)) = match s with
+  | PathSeg.MoveToAbs(p) => PathSegR.MoveToAbs(lower-vec2(p))
+  | PathSeg.MoveToRel(p) => PathSegR.MoveToRel(lower-vec2(p))
+  | PathSeg.LineToAbs(p) => PathSegR.LineToAbs(lower-vec2(p))
+  | PathSeg.LineToRel(p) => PathSegR.LineToRel(lower-vec2(p))
+  | PathSeg.CubicToAbs(e, c0, c1) => PathSegR.CubicToAbs(lower-vec2(e), lower-vec2(c0), lower-vec2(c1))
+  | PathSeg.CubicToRel(e, c0, c1) => PathSegR.CubicToRel(lower-vec2(e), lower-vec2(c0), lower-vec2(c1))
+/// Lower a path — recursively lower each segment into a fresh list (`List` has no map).
+def lower-path(p: Path(Rational)) =
+  match p with | Path.Segs(xs) => PathR.Segs(lower-path-go(xs, (0 : Int64), []))
+def lower-path-go(xs: List(PathSeg(Rational)), i: Int64, acc: List(PathSegR)) =
+  if i == List.len(xs) then acc
+  else (match List.at(xs, i) with
+    | Option.Some(s) => lower-path-go(xs, i + (1 : Int64), List.push(acc, lower-pathseg(s)))
+    | Option.None => acc)
 def lower-profile(p: Profile(Rational)) = match p with
   | Profile.Rect(r) => ProfileR.Rect(lower-vec2(r))
   | Profile.Circle(r) => ProfileR.Circle(r)
+  | Profile.PathProfile(pth) => ProfileR.PathProfile(lower-path(pth))
 
 /// Lower a generic `Solid(Rational)` into the monomorphic `SolidR` the host can render + the mesh driver parses.
 /// A structural 1:1 map — every constructor is preserved, so the rendered s-expr is grammar-identical to the
@@ -743,7 +902,8 @@ def lower-preserves-every-constructor-and-coordinate() =
         | _ => trap("Translate lost"))
     | _ => trap("Union lost")
 
-export { Vec3.*, Vec2.*, Profile.*, Solid.*, Aabb.*, SolidR.*, Vec3R.*, Vec2R.*, ProfileR.*, rmin, rmax,
-         rzero, v3r, v2, v3r-x, v3r-y, v3r-z, v3r-add, v3r-mul, v3r-min, v3r-max, v3r-eq, profile-half-extent,
-         aabbr-union, aabbr-intersect, aabbr-empty, aabbr-of-corners, bounding-box, aabbr-size, solidr-is-empty,
-         simplify-r, lower-vec3, lower-vec2, lower-profile, lower }
+export { Vec3.*, Vec2.*, Profile.*, PathSeg.*, Path.*, Solid.*, Aabb.*, SolidR.*, Vec3R.*, Vec2R.*, ProfileR.*,
+         PathSegR.*, PathR.*, rmin, rmax, rzero, v3r, v2, v3r-x, v3r-y, v3r-z, v3r-add, v3r-mul, v3r-min, v3r-max,
+         v3r-eq, profile-half-extent, path-start, path-append, move-to, line-to, line-by, cubic-to, v2max,
+         path-half-extent, aabbr-union, aabbr-intersect, aabbr-empty, aabbr-of-corners, bounding-box, aabbr-size,
+         solidr-is-empty, simplify-r, lower-vec3, lower-vec2, lower-profile, lower-path, lower }
