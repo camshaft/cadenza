@@ -111,3 +111,77 @@ continuation would need to span?** If the latter, we need to discuss (the contin
 I will build steps 1–2 immediately (they are unblocked and prove the primitive); step 3 co-designs with your
 scheduler shape. Sharing this now so you can design the scheduler against the `Cont` value + `apply`
 semantics rather than waiting.
+
+## 7. Step-3 scoping findings (v-effects, 2026-07-18) — TWO distinct escaping-k faces + forcing-consumer status
+
+Scoping step 3 against the filed gates surfaced that "escaping k" is not one shape but TWO, with different
+mechanisms — and that the current DES gate does NOT actually force step 3:
+
+- **The DES 2-task gate ALREADY passes (→ 5000000000) via the tail-resumptive fold, NOT escaping-k.** Its
+  `sleep`/`spawn` arms bind `k` but `(resume unit …)` IN PLACE (the pqueue/store/cross-activation-apply is
+  in comments, not code); step-2's unused-k + let-peel fold it. So it is a fine SINGLE-activation gate but
+  does not require the heap rep. A genuinely-storing repro (real pqueue in handler state, a scheduler-step
+  that POPS + APPLIES a stored k) is needed to force step 3 — requested from v-discrete-event-sim.
+
+- **FACE 1 — reified-continuation-k escape** (the `ctl`-surface case): `(op () s k (g k))` where `k` is
+  passed to another function `g` and applied there (or stored in a data structure, applied cross-activation).
+  Declines cleanly today. THIS is the case that needs the §3 `Ty::Cont` heap rep + defunctionalized frame
+  chain + `apply(k,v)` `br_table` dispatcher — `k` genuinely leaves its activation as a value.
+
+- **FACE 2 — captured-perform-RESULT escape** (the closure-capture tier-1 silent-value bug, `queue/adv-
+  closure-captured-inner-handled-perform-reperforms-at-apply-under-outer.STEP3-GATED.sexp`): `base =
+  (Ctr.tick)` under an inner handler, captured by a returned `(fn (x) (+ x base))`; applied under the OUTER
+  handler → the perform RE-RUNS at apply (miscompiles to 8, want 53). This does NOT use the `ctl` k-surface
+  — it is an ordinary `let`-bound perform captured by an escaping lambda. Its ROOT (diagnosed earlier) is a
+  fold-vs-inline ORDERING problem: `(f 3)` β-reduces the returned closure BEFORE the inner handle folds
+  `base` to its value, pulling the unfolded perform into the outer scope. Its fix is NOT necessarily the
+  full `Ty::Cont` frame chain — it may be a **fold-before-inline barrier** (fold the inner handle's captured
+  perform to a VALUE before the outer β-reduces the closure), which is a smaller (if delicate) change than
+  the general reified-continuation machinery. TBD which; assess when building.
+
+IMPLICATION: FACE 1 is the true `Ty::Cont` build (needs a genuinely-escaping-k forcing repro — the DES
+storing-scheduler, requested). FACE 2 (the silent-value tier-1) may be separable via the ordering barrier
+and is a valid forcing case on its own. Recommend: build the escaping-k heap rep (FACE 1) against a real
+storing repro; assess FACE 2's ordering-barrier fix separately (it may not need the full frame chain). Do
+NOT build the heap rep speculatively against the current DES gate (which folds tail-resumptively already).
+
+## 8. Step-3 concrete build plan (v-effects, 2026-07-18) — GO, forcing repro in hand
+
+FORCING CONSUMER (verified, no longer speculative): `queue/des-e5-step3-escaping-k-stored-apply.STEP3-
+GATED.sexp` — the `sleep` arm hands `(wake, k)` to a SEPARATE top-level `scheduler-step` which applies
+`(stored-k unit)` cross-activation. Declines cleanly today; expected `(: 5000000000 Int64)` when step 3
+lands. `k` genuinely escapes (crosses a function boundary), so it CANNOT fold tail-resumptively.
+
+The delimited continuation here: `main`'s body is `(do (Sim.sleep W) (inst-ns (Sim.now)))`; after `sleep`
+the continuation `C` = `(inst-ns (Sim.now))` under the advanced state. `k` reifies "given resume value
+`unit` + advanced state, run `C`". `scheduler-step` applies it.
+
+BLAST RADIUS: a `Ty::Cont` variant touches ~15 files (every exhaustive `Ty` match — unify/infer/valtype/
+both backends/lower/compile). So stage it; do NOT scatter a half-built variant.
+
+INCREMENTS (each full-corpus + opt-sweep + rc-leak-probe gated):
+1. **`Ty::Cont` variant, gate-neutral.** Add `Ty::Cont { resume: Box<Ty>, answer: Box<Ty> }` to the enum;
+   give EVERY exhaustive match an arm that DECLINES cleanly (no runtime rep yet) — mirror how E2h-1 added
+   `Core::HostCall` decline-arms everywhere. `core_valtype`/`valtype_of` = the heap-handle `I32` when built,
+   `None`/decline until then. Gate-neutral: no program uses it yet, so 0 corpus change. This is the safe
+   foundation slice (the memory trap: a new Ty variant needs a rust-backend arm + every match site).
+2. **Reify the continuation as a frame value at the escaping-k perform.** When the fold sees an escaping `k`
+   (the classifier's FACE-1 case — `k` passed to a fn / stored, not applied lexically), instead of
+   declining, build the delimited continuation `C` as a defunctionalized frame: `sum-new(site-disc, arr-of-
+   captured-locals)` (per §3). `k`'s value = the frame handle (`Ty::Cont`). The captured locals here = the
+   handler state (the clock) — `C` reads `(Sim.now)` which needs the advanced state threaded into the frame.
+3. **The `apply(k, v)` dispatcher.** `(stored-k v)` (ordinary application of a `Ty::Cont` value) lowers to a
+   `br_table` over the site-disc that runs the corresponding `C` with `v` + the frame's captured locals.
+   One compiler-emitted helper. This is where the DES repro's `(scheduler-step wake k)` → `(stored-k unit)`
+   runs `(inst-ns (Sim.now))` under the advanced clock → 5000000000.
+4. **Free-on-drop RC** (design-des's constraint): a `Ty::Cont` handle dropped un-applied frees its frame
+   chain via Perceus RC. Gate with a live-objects probe (a captured-never-resumed k at teardown → 0 live).
+5. **(later, not this repro)** multi-shot (copy the chain per apply, opt-in) + the multi-task pqueue (the
+   DES run-sim: several `Ty::Cont` in a `Map Instant Cont`, popped + applied).
+
+FACE 2 (closure-capture tier-1, the captured-perform-RESULT silent-value bug) is assessed SEPARATELY — it
+may be a fold-before-inline barrier rather than the frame chain (see §7). Do it after the FACE-1 heap rep
+exists (it may reuse the reify machinery, or the barrier may be simpler).
+
+START: increment 1 (the gate-neutral `Ty::Cont` variant + decline-arms everywhere) next tick — the safe
+foundation, then build up 2→3→4 against the DES escaping-k repro.

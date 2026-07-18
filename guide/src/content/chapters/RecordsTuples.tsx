@@ -10,7 +10,7 @@ export default function RecordsTuples() {
       <Lede>Passing structured data around, reaching into it, and nesting it.</Lede>
 
       <P>
-        You met records and tuples in <em>Data</em>. Here we put them to work — the everyday rhythm of
+        You met records and tuples in <em>Data</em>, and here we put them to work in the everyday rhythm of
         building a little bundle of values, handing it to a function, and reaching in for the pieces.
       </P>
 
@@ -26,19 +26,19 @@ export default function RecordsTuples() {
 
       <H2>Updating a field</H2>
       <P>
-        Records are immutable, so you never <em>change</em> a field — you produce a new record that
+        Records are immutable, so you never <em>change</em> a field but instead produce a new record that
         differs in one place. <C>Record.with</C> does exactly that: give it a record, a <C>#field</C>{" "}
         selector naming which field, and the new value, and it hands back a copy with that field replaced.
         Here a price of <C>2</C> becomes <C>9</C>:
       </P>
       <Runnable source={`(. (Record.with (record (item 1) (price 2)) #"price" 9) price)`} />
       <Note>
-        The field is named with a <C>#</C> selector — <C>#"price"</C> in the s-expr surface,{" "}
+        The field is named with a <C>#</C> selector, written <C>#"price"</C> in the s-expr surface and{" "}
         <C>#price</C> in the ML surface (flip the syntax toggle to see it). It's a symbol picking the
         field by name, not a value; the record and the new value are the other two operands.
       </Note>
       <P>
-        "Hands back a copy" is the important part — the original is untouched. Bind a record, make an
+        "Hands back a copy" is the important part, because the original is untouched. Bind a record, make an
         updated version, then read the <em>original</em> back and you'll see it never moved:
       </P>
       <Runnable
@@ -46,18 +46,18 @@ export default function RecordsTuples() {
   (. (Record.with base #"hp" 99) hp))`}
       />
       <P>
-        That reads <C>99</C> — but swap <C>Record.with base #"hp" 99</C> for plain <C>base</C> and Run
-        again: <C>5</C>, the original, still there. Two records, sharing everything but the one field.
+        That reads <C>99</C>, but swap <C>Record.with base #"hp" 99</C> for plain <C>base</C> and Run
+        again to get <C>5</C>, the original, still there. Two records, sharing everything but the one field.
       </P>
       <P>
         <C>Record.with</C> is for a field that already exists; to <em>add</em> a new one, use{" "}
-        <C>Record.extend</C>. Keeping them separate is deliberate — it means a typo'd field name can't
+        <C>Record.extend</C>. Keeping them separate is deliberate, because it means a typo'd field name can't
         silently create a new field where you meant to update an old one:
       </P>
       <Runnable source={`(. (Record.extend (record (x 1) (y 2)) #"z" 3) z)`} />
       <P>
         And the compiler holds the line: use <C>Record.with</C> on a field that isn't there and it
-        won't guess — it tells you to reach for <C>Record.extend</C> instead.
+        won't guess, but tells you to reach for <C>Record.extend</C> instead.
       </P>
       <Runnable
         source={`(. (Record.with (record (a 1)) #"z" 5) z)`}
@@ -72,7 +72,7 @@ export default function RecordsTuples() {
       </P>
       <Runnable source={`(. (Record.merge (record (w 4) (h 5)) (record (r 255))) r)`} />
       <P>
-        The result has all three fields — <C>w</C>, <C>h</C>, and <C>r</C> — so <C>.r</C> reads <C>255</C>.
+        The result has all three fields <C>w</C>, <C>h</C>, and <C>r</C>, so <C>.r</C> reads <C>255</C>.
         And the same no-clobber discipline applies: the two records must have <em>disjoint</em> fields. Ask
         to merge two records that both define <C>x</C> and the compiler refuses rather than silently pick a
         winner:
@@ -84,7 +84,7 @@ export default function RecordsTuples() {
 
       <H2>Nesting</H2>
       <P>
-        Records and tuples nest freely — a field can hold another record, a tuple can hold a record,
+        Records and tuples nest freely, so a field can hold another record and a tuple can hold a record,
         and so on. Chain the accessor to reach inside:
       </P>
       <Runnable source={`(. (. (record (pt (record (x 3) (y 4)))) pt) y)`} />
@@ -93,30 +93,30 @@ export default function RecordsTuples() {
       <P>
         When you just need to carry a couple of values together without naming a record type, a tuple
         is the tool. Access elements by position with <C>.</C> and an index. Here <C>swap</C> flips a
-        pair — and since a tuple is an ordinary value, it can hand the whole flipped pair straight back:
+        pair, and since a tuple is an ordinary value it can hand the whole flipped pair straight back:
       </P>
       <Runnable
         source={`(def (swap p) (tuple (. p 1) (. p 0)))
 (def (main) (swap (tuple 3 7)))`}
       />
       <P>
-        The result is <C>(tuple 7 3)</C> — both elements in their new positions, returned as one value
+        The result is <C>(tuple 7 3)</C>, both elements in their new positions, returned as one value
         you could pass along or reach into further.
       </P>
       <P>
         And just as <C>Record.merge</C> combined two records, <C>Tuple.concat</C> joins two tuples end to end
-        into one wider tuple. It's the positional version, so there's no disjointness rule — the second
+        into one wider tuple. It's the positional version, so there's no disjointness rule, and the second
         tuple's elements simply follow the first, their indices shifting up. Cat a pair onto a triple and
         index <C>3</C> of the result is the first element of the second tuple, <C>4</C>:
       </P>
       <Runnable source={`(. (Tuple.concat (tuple 1 2) (tuple 3 4 5)) 3)`} />
 
       <Why tenet="Records are named, tuples are positional">
-        Why have both? A tuple is a fixed <em>positional</em> product — reach in by index — and reads
+        Why have both? A tuple is a fixed <em>positional</em> product you reach into by index, and it reads
         best when the pieces are obvious from context (a coordinate pair, a swap). A record has fixed{" "}
-        <em>named</em> fields — reach in by name — and reads best when the pieces deserve labels (a
+        <em>named</em> fields you reach into by name, and it reads best when the pieces deserve labels (a
         rectangle's <C>w</C> and <C>h</C>). Both are just values with a fixed shape the compiler knows,
-        so it can check every field access against the actual structure — no "field not found" surprises
+        so it can check every field access against the actual structure, with no "field not found" surprises
         at run time.
       </Why>
 
@@ -159,8 +159,8 @@ export default function RecordsTuples() {
         expected="5"
         hint={
           <>
-            The joined tuple is <C>(tuple 1 2 3 4 5)</C> — five elements, indices <C>0</C> to <C>4</C>. The
-            <C>5</C> is last, so its index is <C>4</C>, not <C>2</C>: the first tuple pushed it two slots
+            The joined tuple is <C>(tuple 1 2 3 4 5)</C>, five elements with indices <C>0</C> to <C>4</C>. The
+            <C>5</C> is last, so its index is <C>4</C>, not <C>2</C>, because the first tuple pushed it two slots
             over.
           </>
         }
@@ -170,8 +170,8 @@ export default function RecordsTuples() {
         id="records-tuples:3"
         prompt={
           <>
-            <C>(record (x 10) (y 20))</C> has no <C>z</C> field. Add one, <C>z = 30</C>, then read it back —
-            the answer is <C>30</C>. Which operation adds a <em>new</em> field, <C>with</C> or{" "}
+            <C>(record (x 10) (y 20))</C> has no <C>z</C> field. Add one, <C>z = 30</C>, then read it back
+            for the answer <C>30</C>. Which operation adds a <em>new</em> field, <C>with</C> or{" "}
             <C>extend</C>? Fill in the blank.
           </>
         }
@@ -181,7 +181,7 @@ export default function RecordsTuples() {
         hint={
           <>
             <C>with</C> only updates a field that already exists; adding a brand-new one is{" "}
-            <C>Record.extend</C>. (Try <C>with</C> and the compiler declines — <C>z</C> isn't there to
+            <C>Record.extend</C>. (Try <C>with</C> and the compiler declines, since <C>z</C> isn't there to
             update.)
           </>
         }

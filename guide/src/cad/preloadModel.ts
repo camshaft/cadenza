@@ -17,6 +17,7 @@ import type { Surface } from "../compiler/client.ts";
 /// reader-authored `@param` parametric model) reach the full vocabulary without writing an import line.
 export const CAD_LIB_NAME = "exact";
 export const CAD_HELPERS_NAME = "helpers";
+export const CAD_UNITS_NAME = "units";
 export const CAD_LIB_FORMAT: Surface = "ml";
 /// The names /cad's model buffer imports from `exact` (the auto-injected superset — a model only uses the
 /// ones it needs; an UNUSED import is benign, verified, so all models share one import clause):
@@ -30,6 +31,11 @@ export const CAD_IMPORTED_NAMES = ["Solid", "v3", "lower", "Profile", "path-star
 /// boolean wrappers (`fuse`/`cut`/`common`/`hole-through`). A parametric model (e.g. the mounting plate)
 /// builds from these; a plain model leaves them unused (benign).
 export const CAD_HELPER_NAMES = ["box", "cube", "ball", "cyl", "move", "move-x", "move-y", "move-z", "scale", "scale-xyz", "fuse", "cut", "common", "hole-through"] as const;
+/// The names /cad's model buffer imports from `units` — the real-world UNIT edge constructors
+/// (`units.cdz`): `inch` (and future mm/cm/…), each converting a Rational magnitude to the model's exact-mm
+/// scale. The units-parametric showcase (an imperial bracket authored in inches) uses `inch`; a plain model
+/// leaves it unused (benign — an unused import is verified).
+export const CAD_UNIT_NAMES = ["inch"] as const;
 
 /// Auto-inject the `import … from "exact"` clause + the `@!default-fraction Rational` pragma + the
 /// `export main` around the reader's model buffer before compiling — so the buffer shows ONLY the model
@@ -52,9 +58,11 @@ export function injectImport(editorText: string, surface: Surface): string {
     // s-expr import spec is a bare name LIST (no commas): `(import "exact" (Solid v3 lower))`.
     const exact = CAD_IMPORTED_NAMES.join(" ");
     const helpers = CAD_HELPER_NAMES.join(" ");
-    return `(do\n(import "${CAD_LIB_NAME}" (${exact}))\n(import "${CAD_HELPERS_NAME}" (${helpers}))\n(pragma default-fraction Rational)\n${t}\n(export main))`;
+    const units = CAD_UNIT_NAMES.join(" ");
+    return `(do\n(import "${CAD_LIB_NAME}" (${exact}))\n(import "${CAD_HELPERS_NAME}" (${helpers}))\n(import "${CAD_UNITS_NAME}" (${units}))\n(pragma default-fraction Rational)\n${t}\n(export main))`;
   }
   const exact = CAD_IMPORTED_NAMES.join(", ");
   const helpers = CAD_HELPER_NAMES.join(", ");
-  return `import { ${exact} } from "${CAD_LIB_NAME}"\nimport { ${helpers} } from "${CAD_HELPERS_NAME}"\n@!default-fraction Rational\n${t}\nexport { main }`;
+  const units = CAD_UNIT_NAMES.join(", ");
+  return `import { ${exact} } from "${CAD_LIB_NAME}"\nimport { ${helpers} } from "${CAD_HELPERS_NAME}"\nimport { ${units} } from "${CAD_UNITS_NAME}"\n@!default-fraction Rational\n${t}\nexport { main }`;
 }

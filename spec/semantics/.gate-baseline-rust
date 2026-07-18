@@ -1,5 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
-pass	@ensures on a def with a parameter named it is REJECTED (would silently not enforce — rename the param)
+pass	@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
 pass	@invariant ESTABLISH (divert) over a heap payload: a NonEmptyList newtype traps on the empty list, constructs a non-empty one (design §10.1/§10.2, (D))
 pass	@invariant ESTABLISH Part 1: a bare-scalar invariant on a newtype auto-unwraps + type-checks; a satisfying value constructs and is usable
@@ -10,7 +10,7 @@ pass	@invariant ESTABLISH over a multi-variant sum: each variant's construction 
 pass	@invariant ESTABLISH over a single-variant multi-payload newtype: an ordered Range constructs, a misordered one traps (design §10.2, (D))
 pass	@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)
 pass	@invariant PRESERVE: an operation returning T discharges the result invariant USING the input invariant as a free gift (design §10.2)
-pass	@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `it` + prelude are in scope)
+pass	@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `self` + prelude are in scope)
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
@@ -72,6 +72,7 @@ pass	DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the
 pass	DISTINCT-SIG: two capturing sum-arg closures of different signatures
 pass	DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a plain export
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
+pass	Float64.of-int is exact at 2^53 and rounds a just-past-2^53 odd integer to nearest-even
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
 pass	Int8.wrap at the sign-bit boundary is the most-negative Int8
@@ -728,6 +729,8 @@ pass	a correctly-annotated function parameter is accepted
 pass	a cross-function recursive fold's out-state threads to a later perform in the caller's continuation
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a crossing text-literal arm is rejected even beside a same-kind sibling arm
+pass	a ctl-style arm applying its continuation inside a match scrutinee resolves and folds
+pass	a ctl-style arm that applies its continuation lexically folds through the delimited context
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a curried function can be partially applied
 pass	a curried function-type annotation checks its inner result type against the argument
@@ -2013,6 +2016,7 @@ pass	a signed-byte entrypoint returns its runtime argument
 pass	a single Map.swap reports the OLD prior value WHILE the new map holds the NEW value (combined atomicity)
 pass	a single-form body admits a sequence by holding a do block
 pass	a single-scalar String.slice equals the String.at of the same index (the two scalar-addressing paths agree)
+pass	a single-task DES scheduler sleeps a task and fast-forwards the clock to its wake instant
 pass	a single-variant Int32 newtype literal-payload arm compiles at the payload width
 pass	a single-variant Int64 newtype literal-payload arm still compiles (the wide control)
 pass	a single-variant NEWTYPE escapes with its tag ERASED, only the type header naming it
@@ -2125,6 +2129,8 @@ pass	a tail-recursive accumulator over a large runtime count iterates in constan
 pass	a tail-recursive countdown loop runs to a very large runtime N
 pass	a tail-recursive function returning a tuple is tuple-valued
 pass	a tail-recursive string accumulator builds a runtime string and its length is measured
+pass	a task that sleeps then reads `now` observes the fast-forwarded clock (E5 step-3 gate)
+pass	a task-facing `sleep` wrapper performs Sim.sleep — the surface a simulation is written against
 pass	a tautology comparison against a masked value's derived range still traps on the operand
 pass	a tautology comparison against the type minimum still traps on a div-by-zero operand
 pass	a tautology comparison still folds when its operand cannot trap
@@ -2364,11 +2370,13 @@ pass	an abortive handler arm performed with a RUNTIME argument abandons the comp
 pass	an abortive handler arm with a runtime perform argument yields that runtime value as the handle's value
 pass	an abortive perform deep in a call chain unwinds every intervening frame to the top handler
 pass	an abortive perform in a conditional let binding abandons the computation
+pass	an abortive perform in a connective that is an if-condition abandons the computation when the connective reaches it
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation
 pass	an abortive perform in an if condition abandons the computation before branching
 pass	an abortive perform in the NON-taken if branch is never evaluated (no speculation)
 pass	an abortive perform in the tail of an if branch abandons only that branch
 pass	an abortive perform in the tail of an if branch inside a let body abandons only that branch
+pass	an abortive perform short-circuited out of a connective condition is never performed
 pass	an abortive perform under THREE nested handlers abandons the two resumptive frames above it
 pass	an abortive perform under a non-tail conditional abandons the enclosing computation
 pass	an absolute-value branch traps on the minimum integer it cannot represent
@@ -2678,8 +2686,8 @@ pass	b4b denotation: a predicate Ast (<= x 100) denotes to the bounds obligation
 pass	b4c(conjunctive) NEG-1: precondition covers only {le x 100} (missing ge x 0) — the 2-hyp proof is NOT licensed
 pass	b4c(conjunctive) NEG-2 (reverse): precondition covers only {ge x 0} (missing le x 100) — NOT licensed though discharged via le
 pass	b4c(conjunctive): two stacked @requires give a 2-hyp proof; licenses requires BOTH hyps covered by the precondition
-pass	b4c(proven): @requires(<= x 100)/@ensures(<= it MAXINT) on (f x)=x+1 discharges — P denoted as hyp, Q[it:=body] as goal
-pass	b4c(unprovable): @ensures(<= it MAXINT) on unbounded (f x)=x+1 is NOT dischargeable — the proof tier correctly MISSES (CDZ-VERIFY)
+pass	b4c(proven): @requires(<= x 100)/@ensures(<= ret MAXINT) on (f x)=x+1 discharges — P denoted as hyp, Q[ret:=body] as goal
+pass	b4c(unprovable): @ensures(<= ret MAXINT) on unbounded (f x)=x+1 is NOT dischargeable — the proof tier correctly MISSES (CDZ-VERIFY)
 pass	binding the same effect to a peer twice is rejected
 pass	bit-field segments pack sub-byte values into one byte
 pass	bitwise AND masks bits
@@ -3744,8 +3752,8 @@ todo	a round-trip consumer binds the applied closure through a let
 todo	a round-trip consumer takes the non-applying match arm
 todo	a round-trip consumer that does NOT apply the closure on the taken branch
 todo	a run's result is a deterministic function of a host call's recorded response
-todo	a task that sleeps then reads `now` observes the fast-forwarded clock (E5 step-3 gate)
-todo	a task-facing `sleep` wrapper performs Sim.sleep — the surface a simulation is written against
+pass	a task that sleeps then reads `now` observes the fast-forwarded clock (E5 step-3 gate)
+pass	a task-facing `sleep` wrapper performs Sim.sleep — the surface a simulation is written against
 todo	an @param of a Bool type generates a Bool-typed accessor
 todo	an @param of a Float64 type generates a Float64-typed accessor
 todo	an @param site generates a Param accessor a host delegation reads at run time
@@ -3843,3 +3851,8 @@ todo	tuple elements are evaluated left to right
 todo	two @param sites generate two accessors under one Param effect
 todo	two host calls consume their responses in order
 todo	two host responses combine in call order through a non-commutative operator
+pass	a deep out-of-order queue drains fully time-sorted with FIFO across every tie-group
+pass	a zero-Duration sleep files at the current instant — pop-min then reinsert keeps order
+pass	interleaved same/different Instants keep FIFO within a time and ascending across times
+pass	the scheduler terminates on zero primaries and detects deadlock when live primaries have no work
+pass	three events at the same Instant drain in FIFO insertion order (tie-break at N=3)

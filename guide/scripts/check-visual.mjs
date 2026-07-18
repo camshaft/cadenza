@@ -102,18 +102,25 @@ const ROUTES = [
       // is the PRIMARY pane, so at desktop width its <canvas> must claim a generous share (≥500px, ≥50% of the
       // editor+preview row) — not get eaten by the editor column. Regression-locks the md:flex-[3] + md:min-w-0
       // fix (a flex item without min-w-0 refuses to shrink below its content min-width → the sliver).
-      const layout = await page.evaluate(() => {
-        const c = document.querySelector("canvas");
-        if (!c) return null;
-        const cw = c.getBoundingClientRect().width;
-        const row = c.closest(".flex.min-h-0");
-        const rw = row ? row.getBoundingClientRect().width : window.innerWidth;
-        return { cw: Math.round(cw), pct: Math.round((100 * cw) / rw) };
-      });
-      if (layout) {
-        check(layout.cw >= 500, `${label}: desktop 3D preview is a large pane, not a sliver (canvas ${layout.cw}px, want ≥500)`);
-        check(layout.pct >= 50, `${label}: desktop 3D preview claims ≥50% of the row (${layout.pct}%)`);
-      }
+      // WAIT for the canvas to SETTLE to its container width first: the react-three <Canvas> has a transient
+      // intrinsic size (~300px) before its ResizeObserver fires + it grows to the flex-[3] pane, so a single
+      // eager measurement is flaky (measured 300 mid-resize). Poll until the layout is steady (≥500 or the
+      // row-share ≥50%), then assert — a genuine sliver never reaches that, so this stays a real regression gate.
+      const layout = await page
+        .waitForFunction(
+          () => {
+            const c = document.querySelector("canvas");
+            if (!c) return false;
+            const cw = c.getBoundingClientRect().width;
+            const row = c.closest(".flex.min-h-0");
+            const rw = row ? row.getBoundingClientRect().width : window.innerWidth;
+            return cw >= 500 && cw / rw >= 0.5 ? { cw: Math.round(cw), pct: Math.round((100 * cw) / rw) } : false;
+          },
+          { timeout: 15000 },
+        )
+        .then((h) => h.jsonValue())
+        .catch(() => null);
+      check(layout !== null, `${label}: desktop 3D preview settles to a large pane, not a ~400px sliver (${layout ? `canvas ${layout.cw}px = ${layout.pct}%` : "never reached ≥500px/≥50% in 15s"})`);
       // Viewer controls (operator feedback): a SPIN toggle exists + defaults to OFF (fixed view — the
       // operator found the constant auto-spin annoying; "↻ Spin" label = currently off, click → "Stop spin").
       const spinBtn = page.locator('[data-testid="cad-spin-toggle"]');

@@ -1056,13 +1056,20 @@ impl<'a> Parser<'a> {
                     // `@tag("slow")` — a call-STYLE annotation argument: an application GLUED to the name
                     // (`tag(…)`) makes the name slot the application `(tag "slow")`, so the tree is
                     // `(@ (tag "slow") form)`. A bare `@test` stays `(@ test form)`. The `(` must be GLUED
-                    // (no intervening whitespace/newline) — `postfix`'s `LParen` arm does NOT check
-                    // adjacency, so without this guard a space-separated `@test (g)` would wrongly eat
-                    // `(g)` as `test`'s call args instead of leaving it as the annotated form. Same
-                    // adjacency discipline the quantity/`.member` sugars use. Once glued, `postfix`
-                    // handles the call (and any chained `.member`/further calls) uniformly.
+                    // (no intervening whitespace/newline) — otherwise a space-separated `@test (g)` would
+                    // wrongly eat `(g)` as `test`'s call args instead of leaving it as the annotated form.
+                    // Same adjacency discipline the quantity/`.member` sugars use. Take EXACTLY the one
+                    // glued call: NOT the general `postfix` loop, which after the glued `("slow")` would
+                    // continue and eat the FOLLOWING (space-separated) annotated form as a second call
+                    // layer (`@tag("t") (a + 1)` → `(tag "t" (a + 1))`) — the round-trip bug a parenthesized
+                    // annotated compound form (`@tag("t") (a + 1)`, printed by the printer) exposed.
                     if self.at(Kind::LParen) && self.prev_span().end == self.cur_span().start {
-                        self.postfix(bare, name_span)
+                        let call_args = self.arg_exprs();
+                        let call_span = name_span.merge(self.prev_span());
+                        let mut items = Vec::with_capacity(call_args.len() + 1);
+                        items.push(bare);
+                        items.extend(call_args);
+                        self.list(items, call_span)
                     } else {
                         bare
                     }
@@ -1348,41 +1355,7 @@ impl<'a> Parser<'a> {
         loop {
             match self.kind() {
                 Kind::Dot if self.dot_is_member() => {
-                    self.bump(); // '.'
-                    let key_span = self.cur_span();
-                    let key = match self.kind() {
-                        Kind::Ident => {
-                            let t = self.bump().unwrap();
-                            self.name(self.text(t), key_span)
-                        }
-                        Kind::BacktickName => {
-                            let t = self.bump().unwrap();
-                            self.name(literal::unescape_backtick_name(self.text(t)), key_span)
-                        }
-                        // A numeric index — positional tuple access `obj.0`. The key is the same `Int`
-                        // atom the corpus `(. obj 0)` head-form carries, so both surfaces agree.
-                        Kind::Int => {
-                            let t = self.bump().unwrap();
-                            self.atom(literal::classify_word(self.text(t)), key_span)
-                        }
-                        // The WILDCARD member `obj.*` — the `(. obj *)` form the export surface uses to
-                        // name a type's WHOLE constructor set (`export { Color.* }`). `*` is a reserved
-                        // final member segment here (recognized only as a member key, so it never
-                        // collides with the multiply operator, which needs an operand before it). The key
-                        // is the bare `*` name atom the s-expr `(. Color *)` carries, so both surfaces
-                        // agree and it round-trips.
-                        Kind::Star => {
-                            self.bump();
-                            self.name("*", key_span)
-                        }
-                        _ => {
-                            self.error("expected a member name or index after `.`");
-                            self.error_node(key_span)
-                        }
-                    };
-                    let dot_span = start.merge(self.prev_span());
-                    let dot = self.name(".", dot_span);
-                    node = self.list(vec![dot, node, key], dot_span);
+                    node = self.member_access(node, start);
                 }
                 Kind::LParen => {
                     let args = self.arg_exprs();
@@ -1413,6 +1386,51 @@ impl<'a> Parser<'a> {
             }
         }
         node
+    }
+
+    /// Fold ONE `.member` access onto `node`: consume the `.` and its key, returning `(. node key)`.
+    /// The key is a field name, an escaped/backtick name, a numeric index (`obj.0`, positional tuple
+    /// access), or the wildcard `*` (`obj.*` — the whole-constructor-set member the export surface uses).
+    /// Shared by the value [`Self::postfix`] and the type [`Self::type_postfix`] (a qualified type name
+    /// `M.T` is the same `.`-chain), so both surfaces build the identical `(. …)` node. `start` is the
+    /// span of the base expression, so the folded node's span covers the whole `base.key`. Call only when
+    /// [`Self::dot_is_member`] holds (a `.` followed by a member key).
+    fn member_access(&mut self, node: StructId, start: Span) -> StructId {
+        self.bump(); // '.'
+        let key_span = self.cur_span();
+        let key = match self.kind() {
+            Kind::Ident => {
+                let t = self.bump().unwrap();
+                self.name(self.text(t), key_span)
+            }
+            Kind::BacktickName => {
+                let t = self.bump().unwrap();
+                self.name(literal::unescape_backtick_name(self.text(t)), key_span)
+            }
+            // A numeric index — positional tuple access `obj.0`. The key is the same `Int`
+            // atom the corpus `(. obj 0)` head-form carries, so both surfaces agree.
+            Kind::Int => {
+                let t = self.bump().unwrap();
+                self.atom(literal::classify_word(self.text(t)), key_span)
+            }
+            // The WILDCARD member `obj.*` — the `(. obj *)` form the export surface uses to
+            // name a type's WHOLE constructor set (`export { Color.* }`). `*` is a reserved
+            // final member segment here (recognized only as a member key, so it never
+            // collides with the multiply operator, which needs an operand before it). The key
+            // is the bare `*` name atom the s-expr `(. Color *)` carries, so both surfaces
+            // agree and it round-trips.
+            Kind::Star => {
+                self.bump();
+                self.name("*", key_span)
+            }
+            _ => {
+                self.error("expected a member name or index after `.`");
+                self.error_node(key_span)
+            }
+        };
+        let dot_span = start.merge(self.prev_span());
+        let dot = self.name(".", dot_span);
+        self.list(vec![dot, node, key], dot_span)
     }
 
     /// A `.` begins member access only when followed by a member key — a field name, an escaped name,
@@ -2766,7 +2784,7 @@ impl<'a> Parser<'a> {
             self.type_brace_record(start)
         } else {
             let head = self.prefix();
-            self.postfix(head, start)
+            self.type_postfix(head, start)
         };
         if self.at(Kind::Arrow) {
             self.bump(); // `->`
@@ -2777,6 +2795,89 @@ impl<'a> Parser<'a> {
         } else {
             left
         }
+    }
+
+    /// The TYPE-position mirror of [`Self::postfix`]: a member/`.` chain plus `(…)` APPLICATION, but each
+    /// application argument is parsed as a TYPE ([`Self::type_ref`]), not a value [`Self::arg_exprs`].
+    /// A type-application argument may itself be any type — including a `forall` or an arrow — which the
+    /// value `arg_exprs` path could NOT parse: `forall` is a contextual keyword recognized only in type
+    /// position, so `Tuple(forall b. L)` routed through the value `expr` misread `forall` as a name and
+    /// let the unit-suffix postfix eat the binder (`(Qty.of forall (Unit.of #"b"))` + `<error>`). Member
+    /// access (`M.T` — a qualified type name) reuses the same `.`-key handling as the value postfix. The
+    /// depth guard mirrors [`Self::postfix`] (a `Foo(Bar(Baz(…)))` chain deepens the tree per layer).
+    fn type_postfix(&mut self, mut node: StructId, start: Span) -> StructId {
+        let mut spine: u32 = 0;
+        loop {
+            match self.kind() {
+                Kind::Dot if self.dot_is_member() => {
+                    node = self.member_access(node, start);
+                }
+                Kind::LParen => {
+                    let args = self.type_arg_exprs();
+                    let span = start.merge(self.prev_span());
+                    let mut items = Vec::with_capacity(args.len() + 1);
+                    items.push(node);
+                    items.extend(args);
+                    node = self.list(items, span);
+                }
+                _ => break,
+            }
+            spine += 1;
+            if !self.depth_exceeded && self.depth + spine >= crate::sexpr::MAX_NESTING_DEPTH {
+                self.error("expression nests too deeply to parse");
+                self.depth_exceeded = true;
+                return node;
+            }
+        }
+        node
+    }
+
+    /// Parse `( arg, … )` in TYPE-application-argument position. Each argument is either:
+    ///   - a LABELED field `name: T` → `(: name T)` — the shape the explicit record TYPE `Record(x: Int64,
+    ///     …)` uses (the canonical `(Record (: x Int64) …)` the brace `{x: Int64}` sugar also builds), or
+    ///   - a bare TYPE [`Self::type_ref`] — a positional type argument (`List(a)`, `Tuple(A, B)`), which
+    ///     may itself be a `forall`/arrow/nested application.
+    ///
+    /// Unlike the value [`Self::arg_exprs`] (which parses each arg with the general `expr`), a bare arg
+    /// here is a TYPE: `forall` is a contextual keyword recognized only in type position, so a value-`expr`
+    /// arg would misread `Tuple(forall b. L)` as a name + unit-suffix. The labeled `name: T` form is kept
+    /// so the explicit `Record(field: T)` application still parses (it produced `(: field T)` via the value
+    /// path's infix `:`). A label is an `Ident`/backtick-name IMMEDIATELY followed by `:` — otherwise the
+    /// arg is a plain type (so a bare `M.T` / `List(a)` positional arg is unaffected).
+    fn type_arg_exprs(&mut self) -> Vec<StructId> {
+        self.expect(Kind::LParen, "`(`");
+        let mut args = Vec::new();
+        if !self.at(Kind::RParen) {
+            loop {
+                let start = self.cur_span();
+                let is_label = matches!(self.kind(), Kind::Ident | Kind::BacktickName)
+                    && self.nth_kind(1) == Kind::Colon;
+                if is_label {
+                    let label = match self.kind() {
+                        Kind::BacktickName => {
+                            let t = self.bump().unwrap();
+                            self.name(literal::unescape_backtick_name(self.text(t)), start)
+                        }
+                        _ => {
+                            let t = self.bump().unwrap();
+                            self.name(self.text(t), start)
+                        }
+                    };
+                    self.expect(Kind::Colon, "`:`");
+                    let ty = self.type_ref();
+                    let colon = self.name(":", start);
+                    let span = start.merge(self.prev_span());
+                    args.push(self.list(vec![colon, label, ty], span));
+                } else {
+                    args.push(self.type_ref());
+                }
+                if !self.sep_continue(Kind::RParen) {
+                    break;
+                }
+            }
+        }
+        self.expect(Kind::RParen, "`)`");
+        args
     }
 
     /// `forall a b . TYPE`  ->  `(forall (a b) TYPE)`. The binder list is one-or-more lowercase names,
@@ -3665,6 +3766,44 @@ mod tests {
         assert_eq!(
             sexpr::print(&parse_ok("f(x : a -> b)")),
             r#"(f (: x (-> a b)))"#
+        );
+    }
+
+    #[test]
+    fn type_application_argument_is_parsed_as_a_type_not_a_value() {
+        use crate::sexpr;
+        // A type-position APPLICATION (`Tuple(A, B)`, `List(T)`) parses each argument as a TYPE via
+        // `type_ref`, not the value `arg_exprs`. This matters for `forall`: a contextual keyword valid
+        // only in type position — the value path misread `Tuple(forall b. L)` as a name + unit-suffix
+        // (`(Tuple (Qty.of forall (Unit.of "b")) …)` + `<error>`). Now a `forall`/arrow/nested-application
+        // argument parses correctly, so the printed `Tuple(forall b. L)` round-trips.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(r: Tuple(forall b. L)) = r")),
+            r#"(def (f (: r (Tuple (forall (b) L)))) r)"#
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(r: List(forall a. a -> a)) = r")),
+            r#"(def (f (: r (List (forall (a) (-> a a))))) r)"#
+        );
+        // A positional NON-forall type argument (application, arrow, qualified name) is unaffected.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(r: Tuple(List(a), Int64)) = r")),
+            r#"(def (f (: r (Tuple (List a) Int64))) r)"#
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(r: List(a -> b)) = r")),
+            r#"(def (f (: r (List (-> a b)))) r)"#
+        );
+        // The LABELED record-type application `Record(field: T, …)` still builds `(Record (: field T) …)`
+        // — a type-application arg may be a `name: T` label OR a bare type. A field type may itself be a
+        // `forall` (the general-type field the value path could not carry).
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(r: Record(x: Int64, y: Int64)) = r")),
+            r#"(def (f (: r (Record (: x Int64) (: y Int64)))) r)"#
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(r: Record(p: forall a. a)) = r")),
+            r#"(def (f (: r (Record (: p (forall (a) a))))) r)"#
         );
     }
 

@@ -128,6 +128,27 @@
   (input  (+ (Float64.of-int 1) 2.0))
   (output (: 3.0 Float64)))
 
+; `Float64.of-int` is exact only up to 2^53 — the largest integer a Float64's 52-bit mantissa (+ implicit
+; leading 1) represents with no gap. At and beyond 2^53 the representable integers thin to every-other,
+; so the conversion of an odd integer just past 2^53 must ROUND to the nearest representable even one
+; under the pinned round-to-nearest-EVEN mode (the same mode float arithmetic uses). These pin the
+; conversion's precision boundary and its rounding TIE-break, over a genuinely-runtime operand (a boundary
+; parameter, so nothing folds): a naive `n as f64` that truncated toward zero, or rounded half-up, would
+; disagree here. Both backends.
+
+(case "Float64.of-int is exact at 2^53 and rounds a just-past-2^53 odd integer to nearest-even"
+  (doc    "`(Float64.of-int n)` over a runtime `n`: 2^53 = 9007199254740992 converts EXACTLY (the last gap-free
+           integer). 2^53+1 = 9007199254740993 is not representable — it rounds DOWN to 9007199254740992.0
+           (nearest even). 2^53+2 = 9007199254740994 is representable (even), exact. 2^53+3 = 9007199254740995
+           rounds UP to 9007199254740996.0 (nearest even — the .5-tie breaks toward the even neighbor, not
+           half-up). Pins the conversion's precision loss at the mantissa boundary and its round-to-nearest-EVEN
+           tie-break, matching the deterministic float mode. Both backends agree.")
+  (input  (do (def (main (: n Int64)) (Float64.of-int n)) (export main)))
+  (call   main (: 9007199254740992 Int64)) (output (: 9007199254740992.0 Float64))
+  (call   main (: 9007199254740993 Int64)) (output (: 9007199254740992.0 Float64))
+  (call   main (: 9007199254740994 Int64)) (output (: 9007199254740994.0 Float64))
+  (call   main (: 9007199254740995 Int64)) (output (: 9007199254740996.0 Float64)))
+
 (case "wrapping arithmetic uses the named wrapping form of the operator"
   (doc    "Witnesses numeric-model.md #A Wrapping Operation Has A Defined Modular Outcome: the wrapping
            overflow behavior is a NAMED FORM of the operator on the integer type, opted into at the call

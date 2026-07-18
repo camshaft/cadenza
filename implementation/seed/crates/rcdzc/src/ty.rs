@@ -946,6 +946,17 @@ pub enum Ty {
     /// fault, not a type error it would otherwise cascade). Behaves as a top type in `agrees_with`
     /// and `unify`.
     Any,
+    /// A reified DELIMITED CONTINUATION — the type of a `k` captured by a general (`ctl`-style) handler
+    /// arm and used as a FIRST-CLASS VALUE (stored in a collection, passed to another function, resumed
+    /// from a different activation). `Cont { resume, answer }`: applying it (`(k v)`, `resume` = `apply`)
+    /// takes a `resume` value and runs the delimited region to an `answer` (the handler's answer type).
+    /// This is the E5 STEP-3 type (general/stored continuations — the DES scheduler's `sleep` stores a
+    /// `Cont`, resumes it later). RUNTIME REP: a defunctionalized frame-chain HANDLE — an ordinary
+    /// value-heap value (so it stores + resumes later), `core_valtype` = the heap-handle `I32`. RESERVED
+    /// here (increment 1, gate-neutral): the variant EXISTS + every exhaustive `Ty` match has an arm, but
+    /// nothing constructs it yet (a general escaping-k arm still declines to lower) — the frame reification
+    /// + `apply` dispatcher land in later increments (`DESIGN-general-continuations-e5.md` §8).
+    Cont { resume: Box<Ty>, answer: Box<Ty> },
 }
 
 /// Structural equality, HAND-WRITTEN so a [`Ty::Nominal`] compares by `decl + args` (its identity), NOT
@@ -991,6 +1002,16 @@ impl PartialEq for Ty {
                 },
             ) => da == db && aa == ab,
             (Ty::Fn(ap, ar), Ty::Fn(bp, br)) => ap == bp && ar == br,
+            (
+                Ty::Cont {
+                    resume: ar,
+                    answer: aa,
+                },
+                Ty::Cont {
+                    resume: br,
+                    answer: ba,
+                },
+            ) => ar == br && aa == ba,
             (
                 Ty::Qty {
                     inner: ai,
@@ -1066,6 +1087,7 @@ impl Ty {
             Ty::Sum { args, .. } => args.iter().any(|t| t.has_any()),
             Ty::Qty { inner, .. } => inner.has_any(),
             Ty::Nominal { args, .. } => args.iter().any(|t| t.has_any()),
+            Ty::Cont { resume, answer } => resume.has_any() || answer.has_any(),
             Ty::Var(_)
             | Ty::Int(_)
             | Ty::Bool
@@ -1144,6 +1166,7 @@ impl Ty {
                 args.iter().any(|t| t.has_type_value())
             }
             Ty::Qty { inner, .. } => inner.has_type_value(),
+            Ty::Cont { resume, answer } => resume.has_type_value() || answer.has_type_value(),
             Ty::Var(_)
             | Ty::Any
             | Ty::Int(_)
@@ -1256,6 +1279,7 @@ impl Ty {
             Ty::Nominal { args, inner, .. } => {
                 args.iter().all(|t| t.is_ground()) && inner.is_ground()
             }
+            Ty::Cont { resume, answer } => resume.is_ground() && answer.is_ground(),
             Ty::Bool
             | Ty::Unit
             | Ty::Type
@@ -1287,6 +1311,7 @@ impl Ty {
             // nominal's inner holds a `Ty::Sum{decl}` back-edge that is not a free var anyway; `args` is
             // the identity/instantiation axis).
             Ty::Nominal { args, .. } => args.iter().any(|t| t.has_free_var()),
+            Ty::Cont { resume, answer } => resume.has_free_var() || answer.has_free_var(),
             // Bytes, String, Char, Symbol, BigInt, and Rational are leaves — no inner type, no free var.
             Ty::Int(_)
             | Ty::Bool
@@ -1331,6 +1356,10 @@ impl Ty {
             Ty::Sum { args, .. } => args.iter().any(|t| t.has_undetermined_escape_component()),
             Ty::Qty { inner, .. } => inner.has_undetermined_escape_component(),
             Ty::Nominal { args, .. } => args.iter().any(|t| t.has_undetermined_escape_component()),
+            Ty::Cont { resume, answer } => {
+                resume.has_undetermined_escape_component()
+                    || answer.has_undetermined_escape_component()
+            }
             Ty::Int(_)
             | Ty::Bool
             | Ty::Unit
@@ -1370,6 +1399,10 @@ impl Ty {
                 v.collect_free_vars(out);
             }
             Ty::Record(fields) => fields.values().for_each(|t| t.collect_free_vars(out)),
+            Ty::Cont { resume, answer } => {
+                resume.collect_free_vars(out);
+                answer.collect_free_vars(out);
+            }
             Ty::Sum { args, .. } | Ty::Nominal { args, .. } => {
                 args.iter().for_each(|t| t.collect_free_vars(out))
             }
@@ -1745,6 +1778,11 @@ impl Ty {
             // as a sum's variant set is not.
             Ty::Nominal { name, .. } => name.clone(),
             Ty::Fn(p, r) => format!("(-> {} {})", p.render_name(), r.render_name()),
+            // A reified continuation renders as `(Cont resume answer)` — the type a stored/escaping `k`
+            // would be named. Compile-time-only until the step-3 heap rep lands; a name for diagnostics.
+            Ty::Cont { resume, answer } => {
+                format!("(Cont {} {})", resume.render_name(), answer.render_name())
+            }
             // A quantity renders as `(Qty <inner> <unit>)` — the corpus form `(: (Qty.of 5.0 meter) (Qty
             // Float64 (Unit.base #"meter")))`. The inner type renders as its ordinary name; the unit
             // renders via `Unit::render` (the canonical written form so the type re-reads to the same

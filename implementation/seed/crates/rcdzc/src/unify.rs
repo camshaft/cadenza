@@ -92,6 +92,10 @@ impl Subst {
                 width: self.apply_width(ft.width),
             }),
             Ty::Fn(p, r) => Ty::Fn(Box::new(self.apply(p)), Box::new(self.apply(r))),
+            Ty::Cont { resume, answer } => Ty::Cont {
+                resume: Box::new(self.apply(resume)),
+                answer: Box::new(self.apply(answer)),
+            },
             Ty::Record(fields) => Ty::Record(std::rc::Rc::new(
                 fields
                     .iter()
@@ -502,6 +506,7 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
             None => v == *w,
         },
         Ty::Fn(p, r) => occurs(subst, v, p) || occurs(subst, v, r),
+        Ty::Cont { resume, answer } => occurs(subst, v, resume) || occurs(subst, v, answer),
         Ty::Record(fields) => fields.values().any(|ft| occurs(subst, v, ft)),
         Ty::Tuple(elems) => elems.iter().any(|ft| occurs(subst, v, ft)),
         // A GENERIC sum's type ARGS may hold a variable (a deferred payload) — check each. A monomorphic
@@ -695,6 +700,10 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
             width: rename_width(ft.width, m),
         }),
         Ty::Fn(p, r) => Ty::Fn(Box::new(rename(p, m)), Box::new(rename(r, m))),
+        Ty::Cont { resume, answer } => Ty::Cont {
+            resume: Box::new(rename(resume, m)),
+            answer: Box::new(rename(answer, m)),
+        },
         Ty::Record(fields) => Ty::Record(std::rc::Rc::new(
             fields
                 .iter()
@@ -837,6 +846,10 @@ fn freshen_free_go(
             Box::new(freshen_free_go(p, fresh, map, wmap, smap)),
             Box::new(freshen_free_go(r, fresh, map, wmap, smap)),
         ),
+        Ty::Cont { resume, answer } => Ty::Cont {
+            resume: Box::new(freshen_free_go(resume, fresh, map, wmap, smap)),
+            answer: Box::new(freshen_free_go(answer, fresh, map, wmap, smap)),
+        },
         Ty::Record(fields) => Ty::Record(std::rc::Rc::new(
             fields
                 .iter()

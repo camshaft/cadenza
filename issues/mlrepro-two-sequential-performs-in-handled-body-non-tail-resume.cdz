@@ -1,0 +1,42 @@
+// mlrepro — TWO SEQUENTIAL performs in one handled body → "handler is not yet reducible by the
+// tail-resumptive fold (cross-function or non-tail resume arrives in a later increment)".
+//
+// A stateful handler with a SINGLE perform reduces fine (see the corpus Db/State examples). But binding two
+// performs in sequence — `let x = op … in let y = op … in x + y` — makes the FIRST resume non-tail (there's
+// still `let y = … in x + y` to do after it resumes), which the current tail-resumptive fold can't lower.
+//
+// This blocks the operator's PRNG-as-effect ask (v-cad snowflake): a procedural model performs MANY sequential
+// draws off one seeded handler (every branch child rolls offset/len/rotation), which is exactly this shape.
+// Reduced to the minimum here. A SINGLE `Prng.roll` in the body compiles + runs; the SECOND sequential roll
+// is what trips it.
+
+@!default-fraction Rational
+
+effect Prng = | roll : Int64 -> Int64
+
+// A MINSTD-style advance (kept inline so this repro is self-contained; no import).
+def next(s: Int64) = ((16807 : Int64) * s) % (2147483647 : Int64)
+
+// Handler carries the LCG state; each roll advances it and resumes with the bounded draw + new state.
+def with-seed(seed0: Int64, body: Unit -> Int64) =
+  handle Prng((seed0 % (2147483646 : Int64)) + (1 : Int64)) with
+    | roll(k, s) => (let s2 = next(s) in resume(s2 % k, s2))
+  in body(unit)
+
+// ONE perform: compiles + runs fine.
+@test
+def one-perform-is-fine() =
+  let r = with-seed((7 : Int64), fn (_) => Prng.roll((1000 : Int64))) in
+  if r >= (0 : Int64) then unit else trap("one roll")
+
+// TWO SEQUENTIAL performs: currently errors "handler is not yet reducible by the tail-resumptive fold".
+// (Uncomment / this file as-is is the repro the moment the second roll is present.)
+@test
+def two-sequential-performs-should-reduce() =
+  let r = with-seed((7 : Int64),
+    fn (_) => (let x = Prng.roll((1000 : Int64)) in
+               let y = Prng.roll((1000 : Int64)) in
+               x + y)) in
+  if r >= (0 : Int64) then unit else trap("two rolls")
+
+export { with-seed }

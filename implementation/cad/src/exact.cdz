@@ -88,6 +88,15 @@ type Solid =
   | Intersection(Solid(a), Solid(a))
   | Translate(Vec3(a), Solid(a))
   | Scale(Vec3(a), Solid(a))     // per-axis exact scale (Rational factors)
+  | Rotate(Vec3(a), Solid(a))    // rotate about the origin by an exact Rational Euler-degree triple (x, y, z).
+                                 // A general angle needs sin/cos (no exact Rational form), so — exactly like
+                                 // Revolve — the model carries the EXACT degrees and the mesh driver does the
+                                 // trig at the f64 leaf (manifold `.rotate`). No in-model trig; the tree stays
+                                 // exact. Enables rotational symmetry (the snowflake's 6-fold) + assembly mating.
+  | Mirror(Vec3(a), Solid(a))    // reflect across the plane through the origin with the given normal. A mirror
+                                 // is a sign flip (NO trig) so it IS exact over Rational for an axis-aligned
+                                 // normal; the mesh driver applies it at the leaf (manifold `.mirror`) for driver
+                                 // uniformity, but bbox stays exact (reflect + renormalize corners).
   | ExtrudeLinear(Profile(a), a) // lift a 2-D profile straight up +z by an exact height (a prism)
   | Revolve(Profile(a), a)       // sweep a 2-D profile about the y-axis by `degrees` (exact Rational angle;
                                  // the angular tessellation is f64 inside the mesh driver, like Sphere/Cylinder —
@@ -100,6 +109,9 @@ type Aabb =
 /// Exact scalar min/max — total order over `Rational`, the operations the float model could not perform.
 def rmin(a: Rational, b: Rational) = if a < b then a else b
 def rmax(a: Rational, b: Rational) = if a > b then a else b
+
+/// Exact absolute value of a Rational (the total order gives it directly — no float `fabs`).
+def rabs(a: Rational) = if a < (0 / 1) then (0 / 1) - a else a
 
 /// The Rational zero — a common corner/identity value.
 def rzero() = 0 / 1
@@ -244,6 +256,25 @@ def aabbr-empty() = Aabb.Box(v3(rzero(), rzero(), rzero()), v3(rzero(), rzero(),
 /// go negative and break the min/max-based union/intersect. Normalizing here keeps the box valid for any sign.
 def aabbr-of-corners(p: Vec3(Rational), q: Vec3(Rational)) = Aabb.Box(v3-min(p, q), v3-max(p, q))
 
+/// Reflect a point across the plane through the origin whose normal picks the flip axes: a NON-ZERO normal
+/// component negates that coordinate (an axis-aligned mirror is exact — a sign flip, no trig). `mirror([1,0,0])`
+/// flips x; `mirror([0,1,0])` flips y; etc. (For a general non-axis normal a true reflection would combine
+/// axes; this component-wise flip matches the axis-aligned mirrors real assemblies use — the common case.)
+def v3-mirror(p: Vec3(Rational), normal: Vec3(Rational)) =
+  match p with | Vec3.V3(px, py, pz) =>
+    (match normal with | Vec3.V3(nx, ny, nz) =>
+      Vec3.V3((if nx == rzero() then px else rzero() - px),
+              (if ny == rzero() then py else rzero() - py),
+              (if nz == rzero() then pz else rzero() - pz)))
+
+/// The maximum |coordinate| over the 8 corners of a box (given its lo/hi corners) — equivalently the max of
+/// |lo| and |hi| component-wise, then over axes. Used to bound a rotation about the origin: every point of the
+/// child lies within this distance on each axis, so `[-m, m]^3` encloses ANY rotation (exact, conservative).
+def aabbr-corner-max-abs(lo: Vec3(Rational), hi: Vec3(Rational)) =
+  match lo with | Vec3.V3(lx, ly, lz) =>
+    (match hi with | Vec3.V3(hx, hy, hz) =>
+      rmax(rmax(rmax(rabs(lx), rabs(ly)), rmax(rabs(lz), rabs(hx))), rmax(rabs(hy), rabs(hz))))
+
 /// The EXACT axis-aligned bounding box of an exact CSG tree — the recursive fold that was BLOCKED over
 /// Float64 (it needs `<`/`>` per node) and is expressible here because Rational has a total order. A cube
 /// A `Cube(w,d,h)` is the FULL size (matching `solid.cdz`'s `Cube`), centred at the origin → it spans
@@ -277,6 +308,21 @@ def bounding-box(s: Solid(Rational)) = match s with
       // be inverted — `aabbr-of-corners` re-normalizes them (identity for a positive factor). Same guard the
       // primitives use.
       | Aabb.Box(lo, hi) => aabbr-of-corners(v3-mul(lo, by), v3-mul(hi, by)))
+  // A mirror across an axis-aligned plane is a sign flip on the corners (exact), re-normalized. For a
+  // non-axis normal the reflection is still exact over Rational (a normal is Rational), but this uses the
+  // component-wise flip: reflecting across the plane with unit-axis normal negates that coordinate. We flip
+  // each corner coordinate whose axis the normal selects (non-zero component), then renormalize.
+  | Solid.Mirror(normal, of) =>
+    (match bounding-box(of) with
+      | Aabb.Box(lo, hi) => aabbr-of-corners(v3-mirror(lo, normal), v3-mirror(hi, normal)))
+  // A rotation about the origin keeps every point within its distance from the origin, so a box symmetric
+  // about the origin with half-extent = the child's max |coordinate| over its 8 corners ENCLOSES any rotation
+  // (exact + always-valid, like the conservative full-Revolve box; a tight rotated box would need trig).
+  | Solid.Rotate(_, of) =>
+    (match bounding-box(of) with
+      | Aabb.Box(lo, hi) =>
+        let m = aabbr-corner-max-abs(lo, hi) in
+        aabbr-of-corners(Vec3.V3(rzero() - m, rzero() - m, rzero() - m), Vec3.V3(m, m, m)))
   // A linear extrude lifts the profile straight up +z by `height` (centred, like Cube): the box is the
   // profile's XY extent × [-height/2, height/2]. `profile-half-extent` gives the profile's ±x/±y half-widths.
   | Solid.ExtrudeLinear(p, height) =>
@@ -312,7 +358,7 @@ def solidr-is-empty(s: Solid(Rational)) = match s with
 ///   • `Difference Empty x` = `Empty`; `Difference x Empty` = `x`  (subtracting nothing is a no-op)
 ///   • `Translate/Scale _ Empty` = `Empty`               (transforming nothing is nothing)
 /// Leaves and genuinely-non-empty nodes rebuild unchanged. Idempotent (a second pass is a no-op) and never
-/// adds geometry. NOTE: no `Rotater` in the exact model (rotation is an f64 mesh-leaf concern), so no rotate arm.
+/// adds geometry. `Rotate`/`Mirror` are transforms like Translate/Scale — a transform of `Empty` is `Empty`.
 def simplify-r(s: Solid(Rational)) = match s with
   | Solid.Empty => Solid.Empty
   | Solid.Cube(v) => Solid.Cube(v)
@@ -336,6 +382,12 @@ def simplify-r(s: Solid(Rational)) = match s with
   | Solid.Scale(by, of) =>
     let so = simplify-r(of) in
     (if solidr-is-empty(so) then Solid.Empty else Solid.Scale(by, so))
+  | Solid.Rotate(by, of) =>
+    let so = simplify-r(of) in
+    (if solidr-is-empty(so) then Solid.Empty else Solid.Rotate(by, so))
+  | Solid.Mirror(n, of) =>
+    let so = simplify-r(of) in
+    (if solidr-is-empty(so) then Solid.Empty else Solid.Mirror(n, so))
   // An extrude/revolve of a profile is genuine geometry (a profile is never the empty solid) — rebuild
   // unchanged, like a primitive leaf. (A future degenerate-profile prune — a zero-size Rect / zero-radius
   // Circle → Empty — is a possible later identity; today a profile always yields geometry.)
@@ -838,6 +890,8 @@ type SolidR =
   | Intersection(SolidR, SolidR)
   | Translate(Vec3R, SolidR)
   | Scale(Vec3R, SolidR)
+  | Rotate(Vec3R, SolidR)
+  | Mirror(Vec3R, SolidR)
   | ExtrudeLinear(ProfileR, Rational)
   | Revolve(ProfileR, Rational)
 
@@ -882,6 +936,8 @@ def lower(s: Solid(Rational)) = match s with
   | Solid.Intersection(a, b) => SolidR.Intersection(lower(a), lower(b))
   | Solid.Translate(by, of) => SolidR.Translate(lower-vec3(by), lower(of))
   | Solid.Scale(by, of) => SolidR.Scale(lower-vec3(by), lower(of))
+  | Solid.Rotate(by, of) => SolidR.Rotate(lower-vec3(by), lower(of))
+  | Solid.Mirror(n, of) => SolidR.Mirror(lower-vec3(n), lower(of))
   | Solid.ExtrudeLinear(p, h) => SolidR.ExtrudeLinear(lower-profile(p), h)
   | Solid.Revolve(p, d) => SolidR.Revolve(lower-profile(p), d)
 
@@ -933,8 +989,58 @@ def lower-preserves-every-constructor-and-coordinate() =
         | _ => trap("Translate lost"))
     | _ => trap("Union lost")
 
+@test
+def lower-maps-rotate-and-mirror-to-the-render-form() =
+  // Pin the new transforms through `lower`: Rotate carries an exact Euler-degree triple, Mirror a plane normal;
+  // both preserve the child + coords 1:1 into SolidR (the driver-parsed render grammar).
+  let tree = Solid.Rotate(v3(rzero(), rzero(), 60 / 1),
+              Solid.Mirror(v3(1 / 1, rzero(), rzero()), Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1)))) in
+  match lower(tree) with
+    | SolidR.Rotate(rv, rc) =>
+      (match rv with | Vec3R.V3(_, _, rz) =>
+        (if rz == 60 / 1 then
+          (match rc with
+            | SolidR.Mirror(nv, mc) =>
+              (match nv with | Vec3R.V3(nx, _, _) =>
+                (if nx == 1 / 1 then
+                  (match mc with | SolidR.Cube(_) => unit | _ => trap("mirror child (Cube) lost"))
+                 else trap("mirror normal x lost")))
+            | _ => trap("Mirror lost"))
+         else trap("rotate z-degrees lost")))
+    | _ => trap("Rotate lost")
+
+@test
+def mirror-across-x-bounds-exactly() =
+  // Mirror is a sign flip → exact bbox. A cube centred at origin is symmetric, so mirroring leaves the box
+  // unchanged; mirror a TRANSLATED cube across x and the box reflects exactly (x-extent flips sign, renormalized).
+  let shifted = Solid.Translate(v3(10 / 1, rzero(), rzero()), Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1))) in
+  // shifted box: x in [9, 11]. Mirror across x (normal [1,0,0]) → x in [-11, -9]. Size stays 2×2×2; centre x = -10.
+  match bounding-box(Solid.Mirror(v3(1 / 1, rzero(), rzero()), shifted)) with
+    | Aabb.Box(lo, hi) =>
+      (match lo with | Vec3.V3(lx, _, _) => (match hi with | Vec3.V3(hx, _, _) =>
+        if lx == (rzero() - (11 / 1)) and hx == (rzero() - (9 / 1)) then unit
+        else trap("mirror-x of [9,11] should be [-11,-9]")))
+
+@test
+def rotate-bounds-conservatively-encloses() =
+  // A rotation about the origin is bounded by the symmetric box of the child's max |coordinate|. A 2×2×2 cube
+  // spans [-1,1]^3 → max |coord| = 1 → the rotate box is [-1,1]^3 (size 2 each axis). It ENCLOSES any rotation
+  // of the cube about the origin (the cube's farthest point from origin is a corner at distance sqrt(3) < ... —
+  // the per-axis bound of 1 is the conservative axis-aligned enclosure the driver-independent bbox guarantees).
+  let box = Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1)) in
+  if v3-eq(aabbr-size(bounding-box(Solid.Rotate(v3(rzero(), rzero(), 45 / 1), box))), v3(2 / 1, 2 / 1, 2 / 1))
+  then unit else trap("rotate of a [-1,1]^3 cube bounds to [-1,1]^3 (size 2)")
+
+@test
+def rotate-and-mirror-of-empty-simplify-to-empty() =
+  // A transform of Empty is Empty (the identity `simplify-r` already applies to Translate/Scale, now Rotate/Mirror).
+  if solidr-is-empty(simplify-r(Solid.Rotate(v3(rzero(), rzero(), 90 / 1), Solid.Empty)))
+  then (if solidr-is-empty(simplify-r(Solid.Mirror(v3(1 / 1, rzero(), rzero()), Solid.Empty))) then unit
+        else trap("mirror of empty is empty"))
+  else trap("rotate of empty is empty")
+
 export { Vec3.*, Vec2.*, Profile.*, PathSeg.*, Path.*, Solid.*, Aabb.*, SolidR.*, Vec3R.*, Vec2R.*, ProfileR.*,
-         PathSegR.*, PathR.*, rmin, rmax, rzero, v3, v2, v3-x, v3-y, v3-z, v3-add, v3-mul, v3-min, v3-max,
-         v3-eq, profile-half-extent, path-start, path-append, move-to, line-to, line-by, cubic-to, v2max,
+         PathSegR.*, PathR.*, rmin, rmax, rabs, rzero, v3, v2, v3-x, v3-y, v3-z, v3-add, v3-mul, v3-min, v3-max,
+         v3-eq, v3-mirror, profile-half-extent, path-start, path-append, move-to, line-to, line-by, cubic-to, v2max,
          path-half-extent, aabbr-union, aabbr-intersect, aabbr-empty, aabbr-of-corners, bounding-box, aabbr-size,
          solidr-is-empty, simplify-r, lower-vec3, lower-vec2, lower-profile, lower-path, lower }

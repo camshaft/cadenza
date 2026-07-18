@@ -21,9 +21,10 @@
 //!     `(Ctor …)` (no per-node annotation);
 //!   * each `Vec3` is annotated `(: (tuple x y z) Vec3)`;
 //!   * a sum constructor is `(Ctor arg…)` — `Union`/`Difference`/`Intersection` take two `Solid` args;
-//!     `Translate`/`Scale` take a `Vec3` then a `Solid`; `Cube` takes a `Vec3` (FULL size);
-//!     `Sphere` one Rational (radius); `Cylinder` two Rationals (FULL height, radius). There is NO
-//!     `Rotate` (a general rotation has no exact Rational form);
+//!     `Translate`/`Scale`/`Rotate`/`Mirror` take a `Vec3` then a `Solid`; `Cube` takes a `Vec3` (FULL
+//!     size); `Sphere` one Rational (radius); `Cylinder` two Rationals (FULL height, radius). `Rotate`
+//!     carries an exact Rational Euler-degree triple (the trig runs at the f64 manifold leaf, like
+//!     `Revolve`); `Mirror` a plane normal;
 //!   * a NULLARY constructor renders WITH a `unit` payload — `Empty` is `(Empty unit)`;
 //!   * a number leaf is a RATIONAL `n/d` (`50/1`, `127/20`), evaluated to `f64` (`n/d`) at the mesh leaf —
 //!     the MODEL stays exact; the geometry kernel works in float. (Bare int / `N.0` accepted defensively.)
@@ -71,6 +72,8 @@ pub enum Solid {
     Intersection(Box<Solid>, Box<Solid>),
     Translate(Vec3, Box<Solid>),
     Rotate(Vec3, Box<Solid>),
+    /// Reflect across the plane through the origin with the given normal — the Cadenza `Mirror`.
+    Mirror(Vec3, Box<Solid>),
     Scale(Vec3, Box<Solid>),
     /// Lift a 2-D profile straight up +z by a full height (a prism) — the Cadenza `ExtrudeLinear`.
     ExtrudeLinear(Profile, f64),
@@ -121,7 +124,9 @@ impl Solid {
             Solid::Union(a, b) | Solid::Difference(a, b) | Solid::Intersection(a, b) => {
                 a.leaf_count() + b.leaf_count()
             }
-            Solid::Translate(_, s) | Solid::Rotate(_, s) | Solid::Scale(_, s) => s.leaf_count(),
+            Solid::Translate(_, s) | Solid::Rotate(_, s) | Solid::Mirror(_, s) | Solid::Scale(_, s) => {
+                s.leaf_count()
+            }
         }
     }
 
@@ -137,7 +142,9 @@ impl Solid {
             Solid::Union(a, b) | Solid::Difference(a, b) | Solid::Intersection(a, b) => {
                 1 + a.node_count() + b.node_count()
             }
-            Solid::Translate(_, s) | Solid::Rotate(_, s) | Solid::Scale(_, s) => 1 + s.node_count(),
+            Solid::Translate(_, s) | Solid::Rotate(_, s) | Solid::Mirror(_, s) | Solid::Scale(_, s) => {
+                1 + s.node_count()
+            }
         }
     }
 }
@@ -291,8 +298,9 @@ impl Parser<'_> {
 
     /// Parse a bare `(Ctor arg…)` Solid constructor (the EXACT model's variants — R4). The Cadenza model
     /// is now the exact `Solid` (Rational coords), so the render form is `Cube`/`Sphere`/`Cylinder`/
-    /// `Union`/`Difference`/`Intersection`/`Translate`/`Scale` with `n/d` Rational numbers. There is no
-    /// `Rotate` (a general rotation has no exact Rational form — see exact.cdz). A `Cube(w,d,h)` /
+    /// `Union`/`Difference`/`Intersection`/`Translate`/`Scale`/`Rotate`/`Mirror` with `n/d` Rational
+    /// numbers. `Rotate` carries an exact Rational Euler-degree triple (trig at the manifold leaf, like
+    /// `Revolve`); `Mirror` a plane normal — see exact.cdz. A `Cube(w,d,h)` /
     /// `Cylinder(height, r)` is FULL size (matching solid.cdz's Cube); the mesh backend's centred
     /// `Manifold::cube`/`cylinder` consume full size directly, so no halving is needed here.
     fn parse_solid_node(&mut self) -> Result<Solid, ParseError> {
@@ -334,6 +342,17 @@ impl Parser<'_> {
                 let v = self.parse_vec3()?;
                 let s = self.parse_solid_value()?;
                 Solid::Scale(v, Box::new(s))
+            }
+            "Rotate" => {
+                // An exact Rational Euler-degree triple; the trig happens at the manifold leaf (see mesh.rs).
+                let v = self.parse_vec3()?;
+                let s = self.parse_solid_value()?;
+                Solid::Rotate(v, Box::new(s))
+            }
+            "Mirror" => {
+                let v = self.parse_vec3()?;
+                let s = self.parse_solid_value()?;
+                Solid::Mirror(v, Box::new(s))
             }
             "ExtrudeLinear" => {
                 let p = self.parse_profile()?;

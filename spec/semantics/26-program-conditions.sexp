@@ -2274,6 +2274,36 @@
   (call mk (: 5 Int64) (: 5 Int64)) (output (: 0 Int64))
   (call mk (: 7 Int64) (: 3 Int64)) (trap "unreachable"))
 
+; ── @invariant ESTABLISH over a NULLARY variant: the unit-construction path (the last establish shape) ───────
+; A nullary variant carries no payload, but it is still a VALUE of the type, so its construction must satisfy
+; the invariant. An `@invariant` that REJECTS the nullary variant — `(match self (((. T A)) false) …)`, making
+; `A` uninhabitable — must TRAP when `A` is constructed. `invariant_establish` synthesizes a NO-ARG checked
+; constructor `__invariant_construct_T__d0` (body `(let ((__inv_v (T.A unit))) (if (check __inv_v) __inv_v
+; (trap)))`), and the nullary-unit path of `lower_sum_new` diverts `(T.A unit)` through it (its own inner
+; construction exempt, no recursion). So constructing the rejected `A` traps; the accepted `B x` (x>0) still
+; constructs. This closes the LAST establish shape — every variant kind (single/multi-payload newtype,
+; multi-variant sum, nullary) now establishes at construction, and PRESERVE follows for free (an op returning T
+; builds its result through the SAME checked constructor, so a result violating the invariant traps there too).
+; (Re-added after v-syntax's ML-printer fix `6496308e7` made a nullary variant under `@invariant` round-trip.)
+
+(case "@invariant ESTABLISH over a nullary variant: a rejected nullary variant traps at construction, an accepted payload variant constructs (design §10.2, (D))"
+  (doc    "The last establish shape — a NULLARY variant. `T = A | B Int64` with an invariant that rejects `A`
+           outright (`false`) and accepts `B x` when x>0. `mka` constructs `A`; because the invariant makes `A`
+           uninhabitable, the synthesized no-arg checked constructor `__invariant_construct_T__d0` traps.
+           `mkb(x)` constructs `B x`: x>0 satisfies (mkb(5)=5), x<=0 traps (mkb(0)). Pins that a nullary variant
+           establishes at its unit-construction path — the invariant holds for EVERY value including the
+           payloadless ones, so an uninhabitable nullary variant is caught at construction. (The invariant
+           value binder is `self`, per the operator's ret/self ruling.)")
+  (input  (do
+            (@ (invariant (match self (((. T A)) false) (((. T B) x) (> x 0)))) (type T (A) (B Int64)))
+            (def (mka) (match (T.A unit) (((. T A)) 0) (((. T B) x) x)))
+            (def (mkb (: x Int64)) (match (T.B x) (((. T A)) 0) (((. T B) y) y)))
+            (export mka)
+            (export mkb)))
+  (call mka)                (trap "unreachable")
+  (call mkb (: 5 Int64))    (output (: 5 Int64))
+  (call mkb (: 0 Int64))    (trap "unreachable"))
+
 ; ── @invariant ESTABLISH divert: NO escape through indirect construction sites ──────────────────────────────
 ; The divert is a construction-SITE rewrite (`lower_sum_new` routes `(Percent.Pct v)` through the checked
 ; constructor), so its soundness rests on the rewrite reaching EVERY site the lowering walks — a site the

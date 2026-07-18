@@ -32,20 +32,21 @@ const pkgDir = join(guideRoot, "src/wasm/pkg");
 const wasm = await import(pathToFileURL(join(pkgDir, "cdz_wasm.js")).href);
 await wasm.default(await readFile(join(pkgDir, "cdz_wasm_bg.wasm")));
 
-let exactSrc, helpersSrc;
+let exactSrc, helpersSrc, unitsSrc;
 try {
   exactSrc = await readFile(join(guideRoot, "src/wasm/cad/exact.cdz"), "utf8");
   helpersSrc = await readFile(join(guideRoot, "src/wasm/cad/helpers.cdz"), "utf8");
+  unitsSrc = await readFile(join(guideRoot, "src/wasm/cad/units.cdz"), "utf8");
 } catch {
   console.error(
-    "\n✗ cad-preload conformance FAILED — a staged CAD lib (src/wasm/cad/exact.cdz or helpers.cdz) is missing " +
+    "\n✗ cad-preload conformance FAILED — a staged CAD lib (src/wasm/cad/{exact,helpers,units}.cdz) is missing " +
       "(run `cargo xtask guide-wasm` to stage it). /cad cannot preload without them.",
   );
   process.exit(1);
 }
 
 // Reuse the REAL injection + preload arrays /cad uses (no private copy — the gate must match what ships).
-const { injectImport, CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_LIB_FORMAT } = await import(
+const { injectImport, CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME, CAD_LIB_FORMAT } = await import(
   pathToFileURL(join(guideRoot, "src/cad/preloadModel.ts")).href
 );
 
@@ -58,12 +59,12 @@ const MODELS = {
   sexpr: `(def (main) (lower ((. Solid Difference) ((. Solid Cube) (v3 (/ 4 1) (/ 4 1) (/ 4 1))) ((. Solid Sphere) (/ 5 2)))))`,
 };
 
-// SINGLE-MODE preloads BOTH modules (exact base vocab + helpers ergonomic wrappers) for every model, and
-// `injectImport` now emits both import clauses — so the gate must preload both or the injected
-// `import "helpers"` faults CDZ0201 (unknown package file). Mirrors CadPage's `runModel` preload arrays.
-const names = [CAD_LIB_NAME, CAD_HELPERS_NAME];
-const sources = [exactSrc, helpersSrc];
-const formats = [CAD_LIB_FORMAT, CAD_LIB_FORMAT];
+// SINGLE-MODE preloads ALL THREE modules (exact base vocab + helpers ergonomic wrappers + units ctors) for
+// every model, and `injectImport` now emits all three import clauses — so the gate must preload all three or
+// the injected `import "units"` faults CDZ0201 (unknown package file). Mirrors CadPage's `runModel` arrays.
+const names = [CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME];
+const sources = [exactSrc, helpersSrc, unitsSrc];
+const formats = [CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT];
 
 const failures = [];
 
@@ -144,6 +145,35 @@ if (!plate) {
       } else {
         console.log(`  ✓ [${surface}] param_manifest: the plate's @params (${names.join(", ")}) surface with types — single-mode sliders auto-populate`);
       }
+    }
+  }
+}
+
+// UNITS-PARAMETRIC showcase (v-cad's inch bracket): a model that imports `inch` from the `units` module must
+// COMPILE against the preloaded units lib (the point of staging units.cdz + injecting the units import) and
+// surface its 4 inch-valued @params. Gates the whole units path: units.cdz staged + preloaded + `inch`
+// injected. A missing units preload would fault CDZ0201 `import "units"`; a missing `inch` import → CDZ0101.
+const bracket = EXAMPLES.find((e) => e.slug === "units-bracket");
+if (!bracket) {
+  failures.push("units: the units-bracket example is missing from EXAMPLES (the units gate can't run)");
+} else {
+  for (const surface of ["ml", "sexpr"]) {
+    const program = injectImport(bracket.source[surface], surface);
+    let cr;
+    try {
+      cr = wasm.compile_with_preloaded(program, surface, names, sources, formats);
+    } catch (e) {
+      failures.push(`[${surface}] units-bracket compile THREW: ${String(e && e.message ? e.message : e).slice(0, 120)}`);
+      continue;
+    }
+    const errs = (cr.diagnostics ?? []).filter((d) => d.error);
+    if (!cr.component || errs.length) {
+      failures.push(`[${surface}] units-bracket did not compile against preloaded units.cdz${errs.length ? ` — ${errs.map((d) => `${d.code ?? ""} ${d.message ?? ""}`.trim()).join("; ")}` : " (no component)"}`);
+    } else {
+      const params = (wasm.param_manifest(program, surface) ?? []).map((x) => x.name);
+      const missing = ["bwidth", "bdepth", "bthickness", "bbore"].filter((n) => !params.includes(n));
+      if (missing.length) failures.push(`[${surface}] units-bracket param_manifest missing @param(s): ${missing.join(", ")}`);
+      else console.log(`  ✓ [${surface}] units-bracket: compiles against preloaded units.cdz (inch) + surfaces its inch @params (${params.join(", ")})`);
     }
   }
 }

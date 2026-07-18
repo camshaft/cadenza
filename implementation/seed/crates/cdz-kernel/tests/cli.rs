@@ -281,6 +281,90 @@ fn schedule_create_and_cancel_register_and_drop_a_timer() {
 }
 
 #[test]
+fn schedule_list_shows_active_schedules_and_reflects_supersede_and_cancel() {
+    // The operator read verb: schedule-list folds the active set (newest create per id minus cancelled). An
+    // empty log → "no active schedules"; after two creates → both listed with cadence + trigger; after a
+    // cancel → the cancelled one drops. Read-only, store-independent (no compile).
+    let log = unique("sched-list-log").with_extension("log");
+    let _ = std::fs::remove_file(&log);
+    Command::new(bin())
+        .args(["bootstrap", log.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+
+    // Empty → "no active schedules".
+    let out = Command::new(bin())
+        .args(["schedule-list", log.to_str().unwrap()])
+        .output()
+        .expect("run cdz-agent schedule-list (empty)");
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("no active schedules"),
+        "empty log lists no schedules"
+    );
+
+    // Two schedules: a periodic and a one-shot.
+    Command::new(bin())
+        .args([
+            "schedule-create",
+            log.to_str().unwrap(),
+            "hb",
+            "heartbeat",
+            "--first-ms",
+            "1000",
+            "--period-ms",
+            "5000",
+        ])
+        .output()
+        .expect("create periodic");
+    Command::new(bin())
+        .args([
+            "schedule-create",
+            log.to_str().unwrap(),
+            "once",
+            "wake",
+            "--first-ms",
+            "2000",
+        ])
+        .output()
+        .expect("create one-shot");
+
+    let out = Command::new(bin())
+        .args(["schedule-list", log.to_str().unwrap()])
+        .output()
+        .expect("run cdz-agent schedule-list (two)");
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(so.contains("2 active schedule(s)"), "both listed: {so}");
+    assert!(
+        so.contains("hb") && so.contains("every 5000ms") && so.contains("heartbeat"),
+        "periodic shown: {so}"
+    );
+    assert!(
+        so.contains("once") && so.contains("one-shot") && so.contains("wake"),
+        "one-shot shown: {so}"
+    );
+
+    // Cancel the periodic → only the one-shot remains.
+    Command::new(bin())
+        .args(["schedule-cancel", log.to_str().unwrap(), "hb"])
+        .output()
+        .expect("cancel hb");
+    let out = Command::new(bin())
+        .args(["schedule-list", log.to_str().unwrap()])
+        .output()
+        .expect("run cdz-agent schedule-list (after cancel)");
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        so.contains("1 active schedule(s)"),
+        "one remains after cancel: {so}"
+    );
+    assert!(!so.contains("hb"), "the cancelled periodic is gone: {so}");
+    assert!(so.contains("once"), "the one-shot remains: {so}");
+
+    let _ = std::fs::remove_file(&log);
+}
+
+#[test]
 fn bootstrap_then_inject_then_run_drives_the_genesis() {
     let log = unique("log").with_extension("log");
     let prog = unique("genesis").with_extension("cdz");
@@ -559,6 +643,84 @@ fn start_runs_the_daemon_loop_bounded_and_stops_cleanly() {
         );
         eprintln!("[cdz-agent it] value-heap runtime absent; skipped the `start` loop assertion");
     }
+
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&prog);
+}
+
+#[test]
+fn start_fires_a_due_schedule_end_to_end_through_the_live_daemon() {
+    // The scheduling read-side END TO END through the CLI: a due schedule (first_ms=0 → always due vs the wall
+    // clock) is registered, then `start --max-rounds 1` runs one live daemon round. fire_due_schedules appends
+    // the schedule's TRIGGER event + a schedule-fire record BEFORE run_once drains, so after the round the log
+    // holds both. This exercises the full clock→due→append-trigger→fire path the unit tests cover in pieces,
+    // but here through the real binary + daemon loop. Store-gated (open_and_resolve needs the value-heap
+    // runtime): a missing store surfaces as runtime-not-found → SKIP (like run/perform/hosted/start).
+    let log = unique("sched-fire-log").with_extension("log");
+    let prog = unique("sched-fire-genesis").with_extension("cdz");
+    let _ = std::fs::remove_file(&log);
+    std::fs::write(&prog, GENESIS).unwrap();
+
+    Command::new(bin())
+        .args(["bootstrap", log.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+    Command::new(bin())
+        .args([
+            "inject-genesis",
+            log.to_str().unwrap(),
+            prog.to_str().unwrap(),
+        ])
+        .output()
+        .expect("inject-genesis");
+    // A one-shot due immediately (first_ms=0), firing a `wake` trigger with a payload.
+    Command::new(bin())
+        .args([
+            "schedule-create",
+            log.to_str().unwrap(),
+            "boot-timer",
+            "wake",
+            "--first-ms",
+            "0",
+            "--payload",
+            "rise",
+        ])
+        .output()
+        .expect("schedule-create");
+
+    // One bounded round of the live daemon.
+    let out = Command::new(bin())
+        .args(["start", log.to_str().unwrap(), "0", "--max-rounds", "1"])
+        .output()
+        .expect("run cdz-agent start");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        assert!(
+            stderr.contains("runtime not found"),
+            "the only acceptable failure is a missing runtime store (skip); got: {stderr}"
+        );
+        eprintln!("[cdz-agent it] value-heap runtime absent; skipped the scheduled-fire assertion");
+        let _ = std::fs::remove_file(&log);
+        let _ = std::fs::remove_file(&prog);
+        return;
+    }
+
+    // The round fired the due schedule. Verify the DURABLE effect: read the raw log and confirm the daemon
+    // wrote both the `wake` trigger (with its payload) and a `schedule-fire` record for the schedule id.
+    let raw = std::fs::read(&log).expect("read the log file");
+    let text = String::from_utf8_lossy(&raw);
+    assert!(
+        text.contains("wake"),
+        "the due schedule's trigger event (`wake`) was appended by fire_due_schedules"
+    );
+    assert!(
+        text.contains("rise"),
+        "the trigger carries the schedule's payload (`rise`)"
+    );
+    assert!(
+        text.contains("schedule-fire"),
+        "a schedule-fire record was appended (advances the occurrence counter)"
+    );
 
     let _ = std::fs::remove_file(&log);
     let _ = std::fs::remove_file(&prog);

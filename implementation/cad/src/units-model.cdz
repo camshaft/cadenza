@@ -103,6 +103,11 @@ def lower(s: Solid(Qty(Rational, Unit.base(#"meter")))) = match s with
   | Solid.Intersection(a, b) => Solid.Intersection(lower(a), lower(b))
   | Solid.Translate(by, of) => Solid.Translate(lower-v(by), lower(of))
   | Solid.Scale(by, of) => Solid.Scale(lower-v(by), lower(of))
+  // Rotate/Mirror: structural passthrough (unwrap the Vec3 like Translate/Scale). This units model exposes no
+  // rotate/mirror builder — a rotation angle or a mirror normal is not a length — so these arms exist only for
+  // exhaustiveness; a units-authored model rotates/mirrors after lowering to bare Rational (the exact model).
+  | Solid.Rotate(by, of) => Solid.Rotate(lower-v(by), lower(of))
+  | Solid.Mirror(n, of) => Solid.Mirror(lower-v(n), lower(of))
   | Solid.ExtrudeLinear(p, h) => Solid.ExtrudeLinear(lower-p(p), Qty.value(h))
   | Solid.Revolve(p, d) => Solid.Revolve(lower-p(p), Qty.value(d))
 
