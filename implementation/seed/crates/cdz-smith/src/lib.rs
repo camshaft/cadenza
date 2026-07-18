@@ -32,6 +32,10 @@
 //! Differential miscompiles (two backends disagreeing on a program's value) are a planned second
 //! oracle; see [`oracle`].
 
+/// The wasm-vs-rust differential oracle. Behind the off-by-default `differential` feature because it
+/// depends on `cdz-run` (wasmtime), which must not link into the instrumented libFuzzer target — see
+/// the crate's `[features]` in Cargo.toml.
+#[cfg(feature = "differential")]
 pub mod differential;
 pub mod driver;
 pub mod finding;

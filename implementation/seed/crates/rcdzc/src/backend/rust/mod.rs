@@ -84,11 +84,13 @@ fn s2_arg_ok(t: &crate::ty::Ty) -> bool {
 }
 
 /// Whether a closure-RESULT `Ty::Fn` is safe for host-closure FACTORY export. Each PARAMETER (the closure's
-/// args) may be an S1 scalar OR an S2 compound (`s2_arg_ok` — Tuple/List the harness rebuilds); the final
-/// RESULT must still be an S1 SCALAR (a compound result needs the S3 render, deferred). A Float arg/result,
-/// a String/Bytes, an Option/Result/sum arg, or a compound result is deferred — the factory emits a valid
-/// `Rc<dyn Fn>` but the harness pass/render isn't wired, so it stays a clean `todo`, not a fail.
-fn fn_result_is_scalar_only(ty: &crate::ty::Ty) -> bool {
+/// args) may be an S1 scalar OR an S2 compound (`s2_arg_ok` — Tuple/List the harness rebuilds), and the
+/// final RESULT (S3) may be an S1 scalar OR a Tuple/List of renderable elements — the gate harness peels the
+/// factory's arrow to the final result type and renders a compound via `cdz_render_expr` (the same path a
+/// non-closure compound return uses). A Float arg/result, a String/Bytes, an Option/Result/user-sum arg or
+/// result stays DEFERRED — the factory emits a valid `Rc<dyn Fn>` but the harness pass/render isn't wired,
+/// so those cases stay a clean `todo`, not a wrong-value/non-build fail.
+fn fn_result_renderable(ty: &crate::ty::Ty) -> bool {
     let mut cur = ty.strip_nominal();
     while let crate::ty::Ty::Fn(p, r) = cur {
         if !s2_arg_ok(p) {
@@ -96,8 +98,10 @@ fn fn_result_is_scalar_only(ty: &crate::ty::Ty) -> bool {
         }
         cur = r.strip_nominal();
     }
-    // `cur` is now the final (non-arrow) result — RESULT stays S1-scalar (S3 wires compound results).
-    is_s1_scalar(cur)
+    // `cur` is the final (non-arrow) result — an S1 scalar OR an S3 Tuple/List of renderable elements.
+    // `s2_arg_ok` captures exactly that structural set (scalar / Tuple / List over the same), and the
+    // harness renders each such shape, so it doubles as the result predicate.
+    s2_arg_ok(cur)
 }
 
 /// If exported definition `e` is a top-level IMMEDIATE, CAPTURE-FREE lambda — `(def (name) (fn (p…)
@@ -494,7 +498,7 @@ fn emit_signature(
     // make-split. Defer compound captures + compound results + Float/String/Bytes/sum args to later slices.
     if public
         && is_fn_ty(result)
-        && (!fn_result_is_scalar_only(result) || !params.iter().all(|(_, t)| is_s1_scalar(t)))
+        && (!fn_result_renderable(result) || !params.iter().all(|(_, t)| is_s1_scalar(t)))
     {
         return Err(Reject::decline(format!(
             "`{name}`: a closure-returning export with a non-scalar capture/arg/result is not yet rendered by the Rust backend (host-closure S2/S3)"

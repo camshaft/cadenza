@@ -2003,3 +2003,74 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 101 Int64)))
+
+; ── @invariant PRESERVE + consumer-gift (design §10.2, paper — reuses the establish/discharge machinery) ──
+; The dual of ESTABLISH (every constructor proves I on its result). PRESERVE: every OPERATION returning T
+; must maintain I on its result — I is an implicit @ensures(I) on the result — AND (the dual gift) a
+; consumer may ASSUME I on any T INPUT for free (an implicit @requires(I) granted, since every T value
+; provably holds I). So an operation `f : Percent -> Percent` discharges `I(result)` USING `I(input)` as a
+; free hypothesis. Here `dec` lowers a Percent by 1: from the input gift `(ge in 0) AND (le in 100)`, the
+; result `in-1` still satisfies `(ge (in-1) MININT-ish) …` — modelled minimally as: the result upper bound
+; `le (result) 100` follows from the input `le in 100` (dec never raises it), discharged via the input-gift
+; hypothesis. This pins that PRESERVE reuses the establish/discharge machinery with the input invariant as
+; a granted precondition — no new kernel; the consumer-gift is exactly @requires-you-get-free.
+
+(case "@invariant PRESERVE: an operation returning T discharges the result invariant USING the input invariant as a free gift (design §10.2)"
+  (doc    "The PRESERVE half + consumer-gift (design §10.2), dual to the ESTABLISH case. An operation
+           `f : Percent -> Percent` must maintain the invariant on its RESULT (implicit @ensures(I)), and may
+           ASSUME the invariant on its Percent INPUT for free (the dual gift — every Percent provably holds
+           I). So `f` discharges `I(result)` USING `I(input)` as a granted hypothesis. Modelled minimally for
+           a `dec` (lower by 1): the result's upper bound `le (dec-result) (Num 100)` follows from the input
+           gift `le in (Num 100)` (dec never raises the value) via mono/trans — the input invariant hypothesis
+           is what makes the result invariant provable. `licenses` accepts the proof under a precondition that
+           INCLUDES the input-invariant gift. Runs to `true`. Pins that PRESERVE reuses the establish/discharge
+           machinery with the input invariant as a granted @requires — the consumer-gift is exactly
+           `@requires`-you-get-free-on-a-T-input, no new kernel (design §10.2: 'simultaneously a proof
+           obligation on producers and a proof gift to consumers').")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (sub (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 4) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      ; PRESERVE step: from `|- (le in c)` derive `|- (le (sub in 1) c)` — decreasing the lhs keeps `<= c`
+      ; (dec never raises the value, so the upper bound is preserved). Hyps carried unchanged (the input gift).
+      (def (dec-le (: th Thm))
+        (match (concl th)
+          ((Term.Comb (Term.Comb (Term.Const 1) x) c)
+            (Option.Some (Thm.Seq (hyps th) (le (sub x (Term.Num 1)) c))))
+          (_ (Option.None))))
+      (def (mem (: q Term) (: ps (List Term)))
+        (match ps ((list) false) ((list h .. t) (if (term-eq q h) true (mem q t)))))
+      (def (hyps-subset (: hs (List Term)) (: pre (List Term)))
+        (match hs ((list) true) ((list h .. t) (if (mem h pre) (hyps-subset t pre) false))))
+      (def (licenses (: thm Thm) (: obligation Term) (: pre (List Term)))
+        (and (term-eq (concl thm) obligation) (hyps-subset (hyps thm) pre)))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq sub le concl hyps assume dec-le licenses)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq sub le concl hyps assume dec-le licenses))
+            (def (main)
+              (let ((in   (Term.Var 0))
+                    (c100 (Term.Num 100)))
+                ; the RESULT-invariant obligation: le (dec in) 100  (the Percent upper bound on the result)
+                (let ((obligation   (le (sub in (Term.Num 1)) c100))
+                      ; the granted consumer-gift: the INPUT invariant `le in 100` (every Percent holds it)
+                      (precondition (list (le in c100))))
+                  ; PRESERVE: assume the input gift, decrement, and the result upper bound follows
+                  (let ((gift (assume (le in c100))))
+                    (match (dec-le gift)
+                      ((Option.Some proof) (licenses proof obligation precondition))
+                      ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))

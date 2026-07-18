@@ -1526,6 +1526,23 @@
             (export main)))
   (output (: 6 Int64)))
 
+(case "List.at over a let-bound constant list folds through the binder on both backends"
+  (doc    "The `List.at` companion of the let-bound `List.len` fold: `(let ((xs (list 10 20 30))) (+
+           (List.at xs 0) (List.at xs 2)))` indexes a CONSTANT list bound to a multi-use `xs` by constant
+           indices. `List.at` over an inline list literal already folds to `Some(elem)`; the let-bound form
+           now folds identically by following the `LocalRef` binder to the bound `ListNew` (the shared
+           `const_list_elems` helper). In-bounds indices 0 and 2 fold to `Some 10` / `Some 30`, so the sum
+           (with `Option.expect`) is 10 + 30 = 40 with NO runtime bounds-checked element read. An
+           OUT-OF-BOUNDS constant index over the constant list would fold to `None` at compile time the same
+           way. Value parity (40) is the observable proof the fold keeps the exact result; folding does not
+           erase the binding (a list used elsewhere is still built).")
+  (input  (do
+            (def (main)
+              (let ((xs (list 10 20 30)))
+                (+ (Option.expect (List.at xs 0) "e") (Option.expect (List.at xs 2) "e"))))
+            (export main)))
+  (output (: 40 Int64)))
+
 (case "a list consumed by List.update in one operand keeps its element view for a later read"
   (doc    "The ELEMENT-view companion: `xs = [7,8]`; `(List.update xs 0 99)` reads element 0 → 99, the
            sibling `(List.at xs 0)` reads the ORIGINAL element 0 → 7, so 99 + 7 = 106. It returned 198

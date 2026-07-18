@@ -7,7 +7,7 @@
 /// The snippet is usually a bare expression, so `ide.prepare` wraps it into a compilable module and
 /// reports the wrapper's byte length, letting spans map back to the editor text.
 
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { EditorView } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
@@ -83,19 +83,36 @@ interface Props {
 }
 
 export function CodeEditor({ value, onChange, readOnly, minHeight = "auto", ide }: Props) {
-  // Only build a per-instance extensions array when IDE features are on; otherwise share the stable
-  // base array (so a page of plain editors doesn't each carry a linter). Keyed on nothing but `ide`
-  // presence — the linter/hover read the live surface through the callbacks `ide` provides.
+  // ⚠ The extensions array is memoized on `[!!ide]` (present/absent) — CodeMirror keeps ONE extension
+  // instance across re-renders (rebuilding it would remount the editor + drop focus/cursor on every
+  // keystroke). So the linter/hover/highlight closures must NOT capture a SNAPSHOT of `ide` — a caller
+  // like NotebookPage rebuilds `ide` each render (a fresh `cellIde(...)` closing over the CURRENT surface),
+  // and a captured snapshot would freeze the FIRST surface forever. Concretely: the notebook mounts in
+  // one surface, then an async re-render flips `docSurface` → a NEW `ide` with the new surface, but the
+  // frozen linter would keep diagnosing against the OLD surface → an ML cell linted as s-expr ("unbound
+  // name main"). We route every extension through a LIVE ref (`ideRef`) updated each render, so the
+  // closures always read the current `ide.surface`/`ide.prepare`/`ide.preload` without rebuilding.
+  const ideRef = useRef<IdeConfig | undefined>(ide);
+  ideRef.current = ide;
   const extensions = useMemo<Extension[]>(() => {
     if (!ide) return BASE_EXTENSIONS;
+    // Stable indirection: each accessor reads the LIVE `ideRef.current` (never the captured `ide`).
+    const surface = () => ideRef.current!.surface();
+    const prepare = (t: string, s: Surface) => ideRef.current!.prepare(t, s);
+    // `preload` is a per-route capability (present on /cad, absent on /notebook) — stable across a route's
+    // life, so gate it on the initial `ide`. When present, route through the ref (live), returning an empty
+    // set if the live `ide` momentarily lacks it (a no-op — the consumers treat 0 names as "no preload").
+    const preload: (() => { names: string[]; sources: string[]; formats: string[] }) | undefined = ide.preload
+      ? () => ideRef.current!.preload?.() ?? { names: [], sources: [], formats: [] }
+      : undefined;
     return [
       ...BASE_EXTENSIONS,
       lintGutter(),
-      cadenzaLinter({ surface: ide.surface, prepare: ide.prepare, preload: ide.preload }),
-      cadenzaHover({ surface: ide.surface, prepare: ide.prepare }),
-      cadenzaGotoDef({ surface: ide.surface, prepare: ide.prepare }),
-      cadenzaHighlightRefs({ surface: ide.surface, prepare: ide.prepare }),
-      cadenzaSemanticHighlight({ surface: ide.surface, prepare: ide.prepare, preload: ide.preload }),
+      cadenzaLinter({ surface, prepare, preload }),
+      cadenzaHover({ surface, prepare }),
+      cadenzaGotoDef({ surface, prepare }),
+      cadenzaHighlightRefs({ surface, prepare }),
+      cadenzaSemanticHighlight({ surface, prepare, preload }),
       cadenzaSemanticTheme,
     ];
     // eslint-disable-next-line react-hooks/exhaustive-deps

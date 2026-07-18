@@ -139,6 +139,34 @@ fn a_failing_test_fails_the_run() {
     assert!(stdout.contains("1 passed, 1 failed"), "{stdout}");
 }
 
+/// A single explicit `cdz test <file>` that contributes ZERO tests must PRINT a "0 tests found" hint, not
+/// exit silently — otherwise a file whose only marker is an UNRECOGNIZED test-ish annotation (`@property`,
+/// which is silently stripped, so its def is NOT a `@test`) is dead + "green" by omission (breaker's
+/// silent-no-op finding). The hint points at `@test` (the property spelling; `@property` is not a supported
+/// annotation — operator ruling). Still exit 0 (an empty file is not a failure). No store needed — the file
+/// has no test to run.
+#[test]
+fn a_single_file_with_zero_tests_prints_a_hint_not_silence() {
+    let d = dir("zero-tests");
+    // `@property` is silently stripped (not in KNOWN_ANNOTATIONS), so this file has NO `@test` → 0 tests.
+    let f = write(
+        &d,
+        "m.cdz",
+        "@property def add_comm(a: Int64, b: Int64) = if a + b == b + a then unit else trap(\"nc\")\n",
+    );
+    let (ok, stdout, _) = run(&["test", &f]);
+    assert!(ok, "a zero-test file is not a failure (exit 0): {stdout}");
+    assert!(
+        stdout.contains("0 tests found"),
+        "a single file with no tests prints a hint, not silence: {stdout:?}"
+    );
+    // The hint names `@test` as the fix (a parameterized @test is the property spelling).
+    assert!(
+        stdout.contains("@test"),
+        "the 0-tests hint points at the @test annotation: {stdout}"
+    );
+}
+
 #[test]
 fn a_test_compile_decline_reports_the_source_location() {
     // A `cdz test` compile DECLINE (here: an invalid-kebab `@test` name — `small-5`'s `-5` segment is a

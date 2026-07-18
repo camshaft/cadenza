@@ -239,6 +239,7 @@ fn file_invalid_wasm(
 // filed as a [`Category::Differential`] finding, shrunk to preserve the same disagreement.
 
 /// Tallies for one differential sweep.
+#[cfg(feature = "differential")]
 #[derive(Default, Debug, Clone)]
 pub struct DiffStats {
     /// Programs where both backends produced a comparable outcome and AGREED (incl. one-side declines).
@@ -261,6 +262,7 @@ pub struct DiffStats {
 /// `Unavailable` the oracle is misconfigured (no runnable `cdz`, missing rlibs) — the caller should
 /// notice `unavailable == count && agreed+mismatched == 0` and report the oracle as down rather than
 /// trust a clean sweep.
+#[cfg(feature = "differential")]
 pub fn differential_sweep(
     cfg: &Config,
     store: &std::path::Path,

@@ -2378,10 +2378,11 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         faults.push(
             Reject::coded(
                 Code::Malformed,
-                "a `@requires`/`@ensures` annotation takes exactly one PREDICATE argument — a boolean \
-                 expression over the def's parameters (and, for `@ensures`, the result binder `it`), e.g. \
-                 `@requires(> x 0)` (`(@ (requires (> x 0)) (def …))`); a missing or multiple argument is \
-                 not a well-formed condition and would be silently ignored"
+                "a `@requires`/`@ensures`/`@invariant` annotation takes exactly one PREDICATE argument — a \
+                 boolean expression over the def's parameters (and, for `@ensures`/`@invariant`, the result/\
+                 value binder `it`), e.g. `@requires(> x 0)` (`(@ (requires (> x 0)) (def …))`) or \
+                 `@invariant(> (len it) 0)` (`(@ (invariant …) (type …))`); a missing or multiple argument \
+                 is not a well-formed condition and would be silently ignored"
                     .to_string(),
             )
             .at(occ),

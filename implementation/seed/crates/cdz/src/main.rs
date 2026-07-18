@@ -3063,6 +3063,25 @@ fn run_test(args: &TestArgs) -> ExitCode {
             files.len()
         );
     }
+    // A SINGLE explicit `cdz test <file>` that found ZERO tests is almost always a mistake — the user meant
+    // to test something (e.g. wrote an UNKNOWN test-ish annotation like `@property`, which is silently
+    // stripped so its def is not a test, leaving the file with no `@test`). Without a note this exits 0 with
+    // NO output — a whole file can be dead + "green" by omission (breaker's silent-no-op finding). Print a
+    // hint (still exit 0 — an empty file is not a failure, and this must not red the storeless library case).
+    // Only for a single explicit file: a DIRECTORY/package run legitimately has test-free library modules,
+    // and per-file "0 tests" there would be noise (each already headed by its path). `@test` is the property
+    // spelling (a parameterized `@test`); `@property` is NOT a supported annotation (operator ruling).
+    if !multi
+        && total_pass == 0
+        && total_fail == 0
+        && !any_error
+        && let Some(file) = files.first()
+    {
+        println!(
+            "0 tests found in {file} — a test needs the `@test` annotation (a parameterized `@test` is a \
+             property test); an unrecognized annotation is silently ignored."
+        );
+    }
     if total_fail == 0 && !any_error {
         ExitCode::SUCCESS
     } else {
