@@ -3641,20 +3641,102 @@ fn perceus_balance_leaves_no_live_objects() {
         );
         return;
     };
-    let src = "(module m (def (pair-sum (: a Int64) (: b Int64)) \
-                 (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export pair-sum))";
+    // ⚠ The tuple must hold a RUNTIME HEAP value (a recursively-built list), else the whole tuple
+    // scalarizes/const-folds away with NO heap alloc and the program no longer imports the runtime — the
+    // probe then can't run (this staleness broke the earlier bare-scalar-tuple form). `pair-sum(3, 22)`
+    // builds `[0,1,2]`, wraps it in `(tuple list 22)`, projects `List.len list` (3) + `22` = 25, then drops
+    // the tuple — which cascades to the list and its boxed elements. A balanced dup/drop nets live-cells 0.
+    let src = "(module m \
+                 (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
+                     (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+                 (def (pair-sum (: a Int64) (: b Int64)) \
+                     (let ((t (tuple (build 0 a (list)) b))) (+ ((. List len) (. t 0)) (. t 1)))) \
+                 (export pair-sum))";
     let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
     assert_eq!(
-        rt.call("pair-sum", &[Val::S64(20), Val::S64(22)]),
-        Val::S64(42),
-        "the round-trip still computes 42"
+        rt.call("pair-sum", &[Val::S64(3), Val::S64(22)]),
+        Val::S64(25),
+        "the round-trip still computes len([0,1,2]) + 22 = 25"
     );
     assert_eq!(
         rt.live_objects(),
         0,
         "Perceus leak: heap cells still live after the round-trip (expected 0)"
     );
+}
+
+/// DIRECT leak witness for the owned-temporary BORROWING-OP reclaim family (List.concat / List.push /
+/// List.update as a `List.len` operand): after the round-trip the runtime's live-cell count must be 0.
+/// This is a STRONGER witness than the drop-IMPORT-presence unit tests (which prove `drop` is imported +
+/// the value is unchanged, but not that the drop actually nets the heap to zero) — it reads the runtime's
+/// `live-objects` counter against the SAME store, so a missing/off-by-one reclaim (a leaked concat/push/
+/// update vector) shows as a nonzero live count even though the value is correct. Each op builds a RUNTIME
+/// list (a recursive `build` over `List.push` — a constant would fold away with no heap alloc / no runtime
+/// import), so the producer's result is a genuine owned temporary the `List.len` borrow must reclaim.
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
+#[test]
+#[ignore]
+fn owned_temporary_list_producers_leave_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "debug-counters runtime not in the store (run `cargo xtask build`); skipping owned-temp leak probe"
+        );
+        return;
+    };
+    // Each `f_*` builds an n-element runtime list, feeds the owned producer result to `List.len`, and
+    // returns the length — the producer's fresh list is an owned temporary that must be reclaimed after the
+    // borrowing `vec-len`. A leak leaves the vector (and its boxed elements) live after the run.
+    let cases: &[(&str, &str, i64, i64)] = &[
+        (
+            "concat",
+            "(module m \
+               (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
+                   (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (f (: n Int64)) ((. List len) ((. List concat) (build 0 n (list)) (build 0 n (list))))) \
+               (export f))",
+            3,
+            6,
+        ),
+        (
+            "push",
+            "(module m \
+               (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
+                   (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (f (: n Int64)) ((. List len) ((. List push) (build 0 n (list)) 99))) \
+               (export f))",
+            3,
+            4,
+        ),
+        (
+            "update",
+            "(module m \
+               (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
+                   (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (f (: n Int64)) ((. List len) ((. List update) (build 0 n (list)) 0 99))) \
+               (export f))",
+            5,
+            5,
+        ),
+    ];
+    for (label, src, arg, want_len) in cases {
+        let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+        assert_eq!(
+            rt.call("f", &[Val::S64(*arg)]),
+            Val::S64(*want_len),
+            "List.len of an owned-temporary List.{label} computes the right length"
+        );
+        assert_eq!(
+            rt.live_objects(),
+            0,
+            "owned-temporary List.{label} leak: the producer's fresh list is still live after the \
+             borrowing List.len (expected 0 — the reclaim must net the heap to zero, not just import drop)"
+        );
+    }
 }
 
 /// COMPOUND EQUALITY over a runtime FLOAT LEAF follows the canonical byte form — the compound analogue of
@@ -17753,6 +17835,82 @@ mod match_engine {
             run_returns_with::<i64>(&plain, "f", &[Val::S64(-5)]),
             -4,
             "the un-annotated plain def has no precondition and returns (+ -5 1) = -4 on x=-5"
+        );
+    }
+
+    /// Verification Inc-b @invariant (design §10, DATA-level family member): `@invariant(pred)` on a `(type …)`
+    /// declaration is RECORDED (keyed by the type decl occ, over the value binder `it`) and read by
+    /// `Db::invariant_of` — v-property-testing's `gen<T>` seam. Unlike `@requires`/`@ensures` it annotates a
+    /// TYPE, not a def, so it must NOT trip the "annotation wraps no definition" reject; the type still takes
+    /// effect (a value of it constructs + runs). Behavior-neutral recording (the establish/preserve enforcement
+    /// + elision are later slices).
+    #[test]
+    fn an_invariant_on_a_type_is_recorded_and_the_type_still_works() {
+        use crate::testkit::parse;
+        // `Percent` carries an `@invariant(and (>= it 0) (<= it 100))`; a value constructs + the program runs.
+        let src = "(module m \
+            (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+            (def (mk (: v Int64)) (Percent.Pct v)) \
+            (def (unwrap (: p Percent)) (match p ((Percent.Pct n) n))) \
+            (def (main) (unwrap (mk 42))) (export main))";
+        let db = crate::db::Db::load(parse(src));
+        // The invariant is RECORDED against the `Percent` type decl occ (not a def) — read by invariant_of.
+        let percent = db
+            .type_decls
+            .iter()
+            .find(|t| t.name == "Percent")
+            .expect("type Percent")
+            .occ;
+        assert!(
+            db.invariant_of(percent).is_some(),
+            "the @invariant predicate is recorded for the Percent type declaration"
+        );
+        // A type WITHOUT an @invariant records nothing.
+        let no_inv = "(module m (type Plain (P Int64)) (def (main) 0) (export main))";
+        let db2 = crate::db::Db::load(parse(no_inv));
+        let plain_ty = db2
+            .type_decls
+            .iter()
+            .find(|t| t.name == "Plain")
+            .expect("type Plain")
+            .occ;
+        assert!(
+            db2.invariant_of(plain_ty).is_none(),
+            "a type with no @invariant records no predicate"
+        );
+        // BEHAVIOR-NEUTRAL: the @invariant-annotated type still takes effect — `mk`/`unwrap` compile + run,
+        // and `main` returns 42 (the @invariant wrapper is consumed at strip, the type declaration survives).
+        let comp = compile_component(&crate::codec::encode(&parse(src))).expect("compiles");
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[]),
+            42,
+            "the @invariant-annotated Percent type still constructs + unwraps: main = 42"
+        );
+    }
+
+    /// Verification Inc-b @invariant NAME-RESOLUTION: an `@invariant(pred)` predicate references only the value
+    /// binder `it` (the value of the type) and prelude/global names — no def params (a type has none). A stray
+    /// name is UNBOUND → CDZ0101 at the annotation (the b4c pattern, reused for the data-level member). A valid
+    /// invariant over `it` + prelude ops is NOT flagged.
+    #[test]
+    fn an_invariant_predicate_with_an_unbound_name_is_rejected() {
+        use crate::testkit::parse;
+        // `zzz` is neither the value binder `it` nor a prelude op → unbound.
+        let bad = "(module m (@ (invariant (and (>= it 0) (< it zzz))) (type Percent (Pct Int64))) \
+            (def (main) 0) (export main))";
+        let d = crate::diagnostics(&mut crate::db::Db::load(parse(bad)))
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("zzz"))
+            .expect("an unbound name in an @invariant predicate is rejected CDZ0101");
+        assert!(d.message.contains("zzz"), "got: {}", d.message);
+        // NO false positive: an invariant over `it` + prelude ops only is accepted.
+        let ok = "(module m (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+            (def (main) 0) (export main))";
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0101")),
+            "a valid @invariant over `it` + prelude ops is not flagged unbound"
         );
     }
 
@@ -38642,6 +38800,29 @@ mod match_engine {
     }
 
     #[test]
+    fn a_nominal_over_float32_qty_stored_as_a_map_value_emits_valid_wasm() {
+        // MISCOMPILE REGRESSION (v-rust-backend flagged the wasm twin of their rust float_width_of fix): a
+        // NOMINAL newtype over a Float32 quantity — `(type Len (Q (Qty Float32 meter)))` — stored as a map
+        // value emitted INVALID wasm (`expected f32, found f64`). `peel_qty_ty` peeled a RAW `Ty::Qty` with
+        // NO strip_nominal, so a `Nominal(Len, Qty{Float32})` missed the `Ty::Qty` arm and fell to the f64
+        // default → an `f64.const` where `box-float32` wanted f32. Fixed: `peel_qty_ty` now does
+        // strip_nominal → peel Ty::Qty → strip_nominal (the strip_nominal lockstep the integer `int_ty_of`
+        // maintains). `cdz check` passed the mis-lowered program, so the guard is that it VALIDATES.
+        let src = "(module m \
+                     (type Len (Q (Qty Float32 (Unit.base #\"meter\")))) \
+                     (def (main) \
+                       (match ((. Map lookup) \
+                                ((. Map insert) ((. Map empty)) 1 \
+                                 (Len.Q ((. Qty of) ((. Float32 of) 2.5) ((. Unit base) #\"meter\")))) 1) \
+                         ((Some _) 1) \
+                         ((None) 0))) \
+                     (export main))";
+        let bytes = component(src);
+        wasmparser::validate(&bytes)
+            .expect("a nominal newtype over a Float32 Qty as a map value must emit valid wasm (f32, not f64)");
+    }
+
+    #[test]
     fn a_float32_qty_stored_as_a_map_value_emits_valid_wasm_through_lookup() {
         // MISCOMPILE REGRESSION (the Float32 twin of the narrow-Int map-value case): a `(Qty Float32 meter)`
         // stored as a MAP VALUE, read back via `Map.lookup` + unwrapped, emitted an INVALID module —
@@ -46099,6 +46280,24 @@ mod stage1 {
                 && !typo.message.contains("declared on a LATER"),
             "a genuine typo (no shadowing) keeps the did-you-mean hint: {}",
             typo.message
+        );
+        // The SECOND locus: a HANDLER ARM naming a later-effect op gets the shadow hint on its CDZ0403
+        // (`handle E … ((b …))` where `b` is on the later `E`), not the baffling "closest matches: a".
+        let arm_shadow = compile_component(&crate::codec::encode(&parse(
+            "(module m (effect E (op a (-> Int64 Int64))) (effect E (op b (-> Int64 Int64))) \
+             (def (main) (handle E 0 ((b (n) s (resume n s))) (E.a 5))) (export main))",
+        )))
+        .expect_err("must reject");
+        assert!(
+            arm_shadow
+                .message
+                .contains("this handler arm names an operation its effect does not declare")
+                && arm_shadow
+                    .message
+                    .contains("declared on a LATER `(effect E …)`")
+                && arm_shadow.message.contains("discharges the FIRST"),
+            "a handler arm naming a later-effect op explains the shadowing, not a typo list: {}",
+            arm_shadow.message
         );
     }
 
@@ -57310,6 +57509,81 @@ mod stage1 {
             (export main))";
         let bl = compile_component(&crate::codec::encode(&parse(local_cap))).expect("compile");
         assert_eq!(run_returns_with::<i64>(&bl, "main", &[]), 12);
+    }
+
+    #[test]
+    fn a_let_bound_if_or_match_join_of_capturing_lambdas_applied_folds() {
+        use wasmtime::component::Val;
+        // The CONTROL-FLOW face of the let-bound-closure fold — the fourth face of the same hazard as
+        // `a_capturing_closure_in_a_let_bound_compound_projected_and_applied_folds`. A `let` whose init is an
+        // `if`-JOIN of two CAPTURING lambdas, then applied:
+        // `(let ((f (if b (fn (x) (+ x n)) (fn (x) (* x n))))) (f 10))`. This was a BOTH-BACKEND MISCOMPILE:
+        // wasm b=true trapped `unreachable` and b=false returned 0 (the capture env lost); rust E0425 on an
+        // unbound `__cap0` (the arms β-inlined without their capture bindings).
+        //
+        // Root cause: `should_keep_binding` short-circuits a `Resolved::Lambda` init, a lambda-reducing init,
+        // and a compound-holding-a-closure init — precisely to keep the classification `core_of(init)` from
+        // speculatively LIFTING a closure and polluting `db.captured_ref`. But an `if`/`match` whose ARMS are
+        // lambdas is none of those — it slipped past, was lowered (lifting each arm's closure, recording the
+        // captured `n`), and the case-of-case rewrite β-reduced the selected arm inline (`(if b (+ 10 n) (*
+        // 10 n))`) reusing the SHARED `n` occurrences, which the stale `captured_ref` entries lowered to a
+        // `Core::Captured` env-read in `main` (no closure env). `if_or_match_selects_lambda` (a lift-free
+        // reduce) now keeps a conditionally-chosen-closure binding on the fold-through path, so the selected
+        // arm folds inline exactly as the non-capturing-join and record-held controls do. n = 5: b=true →
+        // 10 + 5 = 15, b=false → 10 * 5 = 50 (a pure fold, no heap round-trip, no runtime import).
+        let src = "(module m \
+            (def (main (: b Bool) (: n Int64)) \
+              (let ((f (if b (fn ((: x Int64)) (+ x n)) (fn ((: x Int64)) (* x n))))) (f 10))) \
+            (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            "the if-join's selected closure folds inline — no heap round-trip, no runtime import"
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "main", &[Val::Bool(true), Val::S64(5)]),
+            15
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "main", &[Val::Bool(false), Val::S64(5)]),
+            50
+        );
+        // The SAME-BODY variant (both arms `(+ x n)`) — the breaker-listed twin where the payload `n` was
+        // read as 0 (b=false → 10 instead of 15). Both arms fold to `(+ 10 n)`; n = 5 → 15 either way.
+        let same_body = "(module m \
+            (def (main (: b Bool) (: n Int64)) \
+              (let ((f (if b (fn ((: x Int64)) (+ x n)) (fn ((: x Int64)) (+ x n))))) (f 10))) \
+            (export main))";
+        let bsb = compile_component(&crate::codec::encode(&parse(same_body))).expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&bsb, "main", &[Val::Bool(false), Val::S64(5)]),
+            15
+        );
+        // The MATCH-JOIN face (the same `if_or_match_selects_lambda` short-circuit covers it): a `let`
+        // whose init is a `match` selecting one of two capturing lambdas, then called. On trunk this was
+        // INVALID WASM (`wasm[0]::function[2]`) for BOTH selectors — worse than the if-join, which at least
+        // ran one arm. The scrutinee is a custom sum built inside the module (an int-literal pattern isn't
+        // lowered yet, and a sum entry-arg doesn't cross the host boundary — both unrelated pre-existing
+        // gaps), so `(pick b)` yields `Sel.A`/`Sel.B` and the case-of-match rewrite β-reduces the selected
+        // arm inline. n = 5: A → 10 + 5 = 15, B → 10 * 5 = 50.
+        let mmatch = "(module m \
+            (type Sel (A) (B)) \
+            (def (pick (: b Bool)) (if b (Sel.A) (Sel.B))) \
+            (def (main (: b Bool) (: n Int64)) \
+              (let ((f (match (pick b) \
+                         ((Sel.A _) (fn ((: x Int64)) (+ x n))) \
+                         ((Sel.B _) (fn ((: x Int64)) (* x n)))))) \
+                (f 10))) \
+            (export main))";
+        let bm = compile_component(&crate::codec::encode(&parse(mmatch))).expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&bm, "main", &[Val::Bool(true), Val::S64(5)]),
+            15
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&bm, "main", &[Val::Bool(false), Val::S64(5)]),
+            50
+        );
     }
 
     #[test]

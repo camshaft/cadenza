@@ -784,6 +784,33 @@ pub fn declared_op_hint(db: &mut Db, op: StructId) -> Option<(StructId, String, 
     Some((key_occ, hint, single))
 }
 
+/// A SHADOWED-OP hint for a handler arm `(. E k)` whose op `k` is NOT declared on the effect a bare `E`
+/// resolves to (the FIRST same-named declaration) but IS declared on a DIFFERENT, LATER `(effect E …)` —
+/// the handler-arm twin of `no_field_reject`'s perform-site shadow hint. Two same-named effects are DISTINCT
+/// (an effect's identity is its declaration, not its name — `14-effects:3129`), so a handler on a bare `E`
+/// discharges only the FIRST declaration's ops; an arm naming a LATER `E`'s op is out of reach. Returns the
+/// explanatory hint suffix (leading ` — `, so a downstream dedup keying on the sentence core is unaffected),
+/// or `None` if `op` is not `(. E k)` on an effect, or `k` is a genuine typo (not on any same-named later
+/// `E`) — in which case the ordinary `declared_op_hint` did-you-mean stands.
+pub fn arm_op_shadow_hint(db: &mut Db, op: StructId) -> Option<String> {
+    let Resolved::Member { operand, key } = resolved_of(db, op) else {
+        return None;
+    };
+    let name = db.ast.as_name(operand)?.to_string();
+    let first_occ = db.effect_decl_by_name(&name)?;
+    if op_on_other_same_named_effect(db, &name, first_occ, &key.name) {
+        Some(format!(
+            " — operation `{}` is declared on a LATER `(effect {name} …)`; a handler on a bare `{name}` \
+             discharges the FIRST declaration (an effect's identity is its declaration, not its name), so \
+             that operation is out of reach here — merge the operations into one `(effect {name} …)` or \
+             handle the intended declaration",
+            key.name
+        ))
+    } else {
+        None
+    }
+}
+
 /// The CANONICAL identity of a handler arm's operation `(. E k)` — `(effect-declaration-occurrence,
 /// op-name)`. Two arms discharge the SAME operation exactly when their identities are equal, so this is
 /// the key a duplicate-arm check dedups on. Keyed by the effect's DECLARATION (not just the name) so two

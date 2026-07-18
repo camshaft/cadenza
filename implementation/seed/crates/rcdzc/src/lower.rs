@@ -1572,28 +1572,19 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // `vec-len`). One operand: the list.
                 Some(Prim::ListLen) if args.len() == 1 => {
                     let operand = args[0];
-                    match core_of(db, operand) {
-                        Core::ListNew { elems } => {
-                            trace!(target: "rcdzc::fold", node = id.0, len = elems.len(), "List.len folds to a constant (visible list literal)");
-                            Core::ConstInt(IntValue::from_i64(elems.len() as i64))
-                        }
-                        // A `let`-BOUND constant list: `(let ((xs (list 1 2 3))) (List.len xs))`. The
-                        // operand's core is a `LocalRef` to a kept multi-use binding, so it is not DIRECTLY
-                        // a `ListNew`; follow the binder to the value it names and fold if THAT is a visible
-                        // list literal. `List.len` = the spine ARITY, which is fixed at construction, so the
-                        // len is the literal's element count regardless of how the value is bound (sound —
-                        // only `Set.len`/`Map.size` are unsafe to fold, since dedup can shrink them). This
-                        // only folds the LEN read to a constant; it does NOT erase the binding, so if `xs`
-                        // is used elsewhere the list is still built (the len just stops re-reading it).
-                        Core::LocalRef { binder } => match core_of(db, binder) {
-                            Core::ListNew { elems } => {
-                                trace!(target: "rcdzc::fold", node = id.0, len = elems.len(), "List.len folds to a constant (let-bound list literal)");
-                                Core::ConstInt(IntValue::from_i64(elems.len() as i64))
-                            }
-                            _ => Core::ListLen { operand },
-                        },
-                        Core::Poison(r) => Core::Poison(r),
-                        _ => Core::ListLen { operand },
+                    if let Core::Poison(r) = core_of(db, operand) {
+                        Core::Poison(r)
+                    } else if let Some(elems) = const_list_elems(db, operand) {
+                        // A compile-time-visible constant list, inline (`(list 1 2 3)`) or `let`-bound (a
+                        // kept multi-use binding lowers the reference to a `LocalRef`, which the helper
+                        // follows to the bound literal). `List.len` = the spine ARITY, fixed at construction,
+                        // so the len folds to the element count regardless of how the value is bound (sound —
+                        // only `Set.len`/`Map.size` are unsafe, since dedup can shrink them). Folds only the
+                        // LEN read; the binding is not erased (a list used elsewhere is still built).
+                        trace!(target: "rcdzc::fold", node = id.0, len = elems.len(), "List.len folds to a constant list arity");
+                        Core::ConstInt(IntValue::from_i64(elems.len() as i64))
+                    } else {
+                        Core::ListLen { operand }
                     }
                 }
                 // `List.push` / `List.concat` — runtime `vec-push`/`vec-concat`. A poison operand
@@ -3377,10 +3368,70 @@ fn lower_let(
         // Nothing named — the ordinary erase: the `let`'s value is its body's value.
         return core_of(db, body);
     }
+    // POST-FOLD DEAD-BINDING RECLAIM: `should_keep_binding` decides on the PRE-fold use count, but a use
+    // can then FOLD AWAY (e.g. `List.len`/`List.at` over a `let`-bound constant list follow the binder and
+    // fold to a constant — the `LocalRef` disappears from the lowered core). A binding all of whose uses
+    // folded is now DEAD: the kept slot is read nowhere, yet its init (a pure `ListNew` build) would still
+    // be emitted for nothing. Recount LIVE `LocalRef` reads over the now-lowered body AND every kept init
+    // (a kept binding can be read by a LATER kept init, not only the body), then drop a binder with ZERO
+    // live reads — UNLESS its init reaches a HOST CALL / perform (`subtree_reaches_host_call`), which is
+    // OBSERVABLE and must run exactly once even when its value is unread (the same force-keep invariant
+    // `should_keep_binding` applies at @host-call). This runs AFTER lowering, so it reads memoized
+    // `core_of` results (no re-lowering, no lambda-lift/`captured_ref` hazard) and walks via the
+    // maintained `core_child_ids` enumeration (no hand-rolled per-variant walk that could undercount →
+    // wrongly drop a live binding). Dropping a dead pure binding changes no observable value (a Perceus
+    // drop of an unread list is a net no-op). If every kept binding drops, the `let` erases to its body.
+    let live = kept
+        .iter()
+        .filter(|(binder, _)| {
+            let mut n = 0usize;
+            count_localref_reads(db, body, *binder, &mut n);
+            for &(other, _) in kept.iter() {
+                count_localref_reads(db, other, *binder, &mut n);
+            }
+            n > 0 || subtree_reaches_host_call(db, *binder)
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    if live.len() < kept.len() {
+        // Some kept binding folded dead — un-record it so a stray later reference (there is none by
+        // construction, but keep `db.kept_bindings` consistent with the emitted `Core::Let`) does not
+        // lower to a `LocalRef` for a slot that no longer exists.
+        for (binder, _) in &kept {
+            if !live.iter().any(|(b, _)| b == binder) {
+                db.kept_bindings.remove(binder);
+            }
+        }
+        trace!(target: "rcdzc::lower", body = body.0, dropped = kept.len() - live.len(), "let: reclaimed dead bindings whose uses all folded");
+        if live.is_empty() {
+            return core_of(db, body);
+        }
+        return Core::Let {
+            bindings: live,
+            body,
+        };
+    }
     trace!(target: "rcdzc::lower", body = body.0, kept = kept.len(), "let: A-normalized (named multi-use runtime bindings)");
     Core::Let {
         bindings: kept,
         body,
+    }
+}
+
+/// Recursively count the occurrences of `Core::LocalRef { binder }` reading `binder` within the node `id`
+/// (and its whole subtree), adding to `n`. Walks the LOWERED core via the maintained `core_child_ids`
+/// enumeration — so it is exhaustive over every `Core` variant without a hand-rolled per-variant match
+/// (an undercount would wrongly reclaim a LIVE binding = miscompile). Reads memoized `core_of` results, so
+/// it neither re-lowers nor perturbs `db.kept_bindings`/`captured_ref`. Used by `lower_let`'s post-fold
+/// dead-binding reclaim to detect a kept binding whose every use folded away.
+fn count_localref_reads(db: &mut Db, id: StructId, binder: StructId, n: &mut usize) {
+    if let Core::LocalRef { binder: b } = core_of(db, id)
+        && b == binder
+    {
+        *n += 1;
+    }
+    for child in crate::backend::wasm::select::core_child_ids(db, id) {
+        count_localref_reads(db, child, binder, n);
     }
 }
 
@@ -11207,6 +11258,28 @@ fn should_keep_binding(db: &mut Db, init: StructId, uses: &BindingUses) -> bool 
     if crate::eval::lambda_body(db, init).is_some() {
         return false;
     }
+    // An `if`/`match` whose ARMS are capturing lambdas — `(let ((f (if b (fn (x) (+ x n)) (fn (x) (* x
+    // n))))) (f 10))` — is the FOURTH face of the same hazard, one control-flow step from the plain
+    // lambda. The init is a `Resolved::If`/`Match`, not a `Resolved::Lambda` nor a value that
+    // `lambda_body`-reduces to one (a conditional does not reduce to a SINGLE lambda), so it slips past
+    // the two lambda short-circuits above — but the `is_runtime_computation` / host-call gates below all
+    // call `core_of(init)`, which LOWERS the conditional and thereby SPECULATIVELY LIFTS each arm's
+    // capturing lambda (`lower_lambda_value`), polluting `db.captured_ref` with the arm bodies'
+    // capturing-reference occurrences. Those occurrences are SHARED with the fold of the selected-and-
+    // called closure — `(f 10)` copy-propagates `f` and the CASE-OF-CASE rewrite β-reduces `((if b (fn
+    // (x) (+ x n)) (fn (x) (* x n))) 10)` to `(if b (+ 10 n) (* 10 n))`, reusing the ORIGINAL `n`
+    // occurrences — so the stale `captured_ref` entries make the folded `n` lower to a `Core::Captured`
+    // env-read in the ENCLOSING scope (which has no closure env): wasm reads a nonexistent capture env
+    // (garbage → wrong value or an overflow-guard trap) and rust references an unbound `__cap0` (E0425).
+    // Detect it STRUCTURALLY (`reduce_to_if`/`reduce_to_match` + `lambda_body`, all of which reduce but
+    // do NOT lower, so the detection never lifts) and propagate, so the selected arm folds inline through
+    // the case-of-case / case-of-match rewrite exactly as the non-capturing join and the record-field-
+    // held join (7fdb1dcb8) controls do. No escape guard (unlike the compound case): like the plain
+    // lambda short-circuit above, a conditionally-chosen closure is ALWAYS copy-propagated so its
+    // application folds — it is a lambda-valued binding, never a kept runtime slot.
+    if if_or_match_selects_lambda(db, init) {
+        return false;
+    }
     // A COMPOUND (record/tuple/list) init that CONTAINS a lambda and is only PROJECTED — never used as a
     // whole value — is the THIRD face of the same hazard. It is neither a `Resolved::Lambda` nor a value
     // that `lambda_body`-reduces to one (it is a `Resolved::Record`/`Tuple`/`List`), so it slips past both
@@ -11322,6 +11395,56 @@ fn compound_contains_lambda(db: &mut Db, init: StructId) -> bool {
         && let Resolved::Record { fields } = resolved_of(db, rec)
     {
         return fields.values().copied().any(|v| elem_holds(db, v));
+    }
+    false
+}
+
+/// Whether `init` reduces to an `if`/`match` whose EVERY arm is a function value (a lambda, directly or
+/// through a nested conditional). This is the control-flow analogue of [`compound_contains_lambda`]: a
+/// conditionally-selected closure `(if b (fn …) (fn …))` / `(match c (p0 (fn …)) …)` must be
+/// copy-propagated (not kept as a runtime `let` slot) so the case-of-case / case-of-match rewrite β-
+/// reduces the selected arm inline against the call args, without ever LOWERING the conditional (which
+/// would speculatively lift each arm's capturing lambda and pollute `db.captured_ref`, miscompiling the
+/// inline fold). Uses only the eval-side reducers (`reduce_to_if` / `reduce_to_match` + `lambda_body`),
+/// which β-reduce/select but never `core_of`-lower — so, like `compound_contains_lambda`, the detection
+/// itself is lift-free. Requires EVERY arm to select a function (they share the conditional's type, so a
+/// single lambda arm implies all are functions — the all-arms check just guards against a false positive
+/// on a non-function `if`). Nested conditionals recurse. `None`-shaped (non-if, non-match) → `false`.
+//
+// TERMINATION (no visited-set / depth guard needed): the recursion descends only into arm BODIES, which
+// are strictly-smaller arena nodes — the arena is append-only (`Arenas::push` assigns `len()` then never
+// reassigns a slot; quote/metaprogramming uses the same append-only builder), so a child StructId is
+// always < its parent and the raw AST is acyclic by construction. The only non-structural excursions are
+// the eval-side reducers (`reduce_to_if`/`reduce_to_match`), whose `Apply` β-reduction runs under
+// `Db::enter_reduction` (bounded by `REDUCE_DEPTH_LIMIT` + the cumulative `REDUCE_NODE_BUDGET`, declining
+// rather than diverging) and whose `Ref` arm stops at any kept multi-use binding. So this walk terminates
+// by construction. (amazon-q PR#556 flag — dismissed after verifying the arena invariant.)
+fn if_or_match_selects_lambda(db: &mut Db, init: StructId) -> bool {
+    // An arm body selects a function if it is a lambda, or itself a nested conditional of lambdas.
+    let arm_selects = |db: &mut Db, body: StructId| {
+        crate::eval::lambda_body(db, body).is_some() || if_or_match_selects_lambda(db, body)
+    };
+    if let Some((_, then_, else_)) = crate::eval::reduce_to_if(db, init) {
+        return arm_selects(db, then_) && arm_selects(db, else_);
+    }
+    // A `match` — reduce to the `(match scrutinee (pat body)…)` form, then require every arm body to
+    // select a function. `as_form` borrows the AST; collect the arm bodies first so `arm_selects` can
+    // mutably borrow `db` in the walk. A malformed arm (not a `(pattern body)` pair) or an empty arm list
+    // makes the whole probe FALSE (keep the binding) — the conservative side, never a vacuous pass.
+    if let Some(match_form) = crate::eval::reduce_to_match(db, init) {
+        let mut bodies: Vec<StructId> = Vec::new();
+        match db.ast.as_form(match_form, "match") {
+            Some([_scrutinee, arm_occs @ ..]) if !arm_occs.is_empty() => {
+                for &arm in arm_occs {
+                    match db.ast.get(arm) {
+                        crate::ast::Struct::List(kv) if kv.len() == 2 => bodies.push(kv[1]),
+                        _ => return false,
+                    }
+                }
+            }
+            _ => return false,
+        }
+        return bodies.into_iter().all(|b| arm_selects(db, b));
     }
     false
 }
@@ -18462,6 +18585,30 @@ fn success_disc_of(db: &mut Db, id: StructId) -> Option<u32> {
 /// the `None` discriminant). Both fold to the ordinary sum construction, so a constant `List.at` renders
 /// through the sum escape/fold with no heap. Otherwise emit the runtime `Core::ListAt` (a bounds-checked
 /// `vec-get`). A poison list/index propagates.
+/// The ELEMENT occurrences of a compile-time-visible constant list at `list`, whether it is a DIRECT
+/// list literal (`(list 1 2 3)` → `Core::ListNew`) or a `let`-BOUND one (`(let ((xs (list 1 2 3))) …)`,
+/// whose kept multi-use binding lowers the reference to a `Core::LocalRef` — in which case we follow the
+/// binder to the value it names. `None` when the list is not a visible constant literal (a runtime list,
+/// a `List.push`/`concat` result, a param). Used by the `List.len`/`List.at` folds so a let-bound constant
+/// list folds exactly like the inline form. Following the binder does NOT erase the binding — the list is
+/// still built if used elsewhere; only the len/at READ becomes a constant. The returned StructIds are the
+/// bound literal's own element occurrences (the value heap is immutable, so sharing them is sound).
+//
+// TERMINATION (no cycle detection needed): this follows a `LocalRef` binder exactly ONE hop and does NOT
+// self-recurse — the inner `match core_of(db, binder)` only matches `ListNew` or returns `None`, never
+// re-enters `const_list_elems`. (amazon-q PR#556 flagged this as an unbounded recursive walk; that is a
+// misread — there is no recursion here. Dismissed.)
+fn const_list_elems(db: &mut Db, list: StructId) -> Option<Vec<StructId>> {
+    match core_of(db, list) {
+        Core::ListNew { elems } => Some(elems),
+        Core::LocalRef { binder } => match core_of(db, binder) {
+            Core::ListNew { elems } => Some(elems),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn lower_list_at(db: &mut Db, id: StructId, list: StructId, index: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, list) {
         return Core::Poison(r);
@@ -18474,8 +18621,9 @@ fn lower_list_at(db: &mut Db, id: StructId, list: StructId, index: StructId) -> 
             "List.at result is not the built-in Option sum",
         ));
     };
-    // FOLD a constant list literal indexed by a constant integer.
-    if let (Core::ListNew { elems }, Core::ConstInt(i)) = (core_of(db, list), core_of(db, index)) {
+    // FOLD a constant list literal indexed by a constant integer. The list may be inline (`(list …)`) or
+    // `let`-bound (a kept multi-use binding lowers the reference to a `LocalRef`, followed by the helper).
+    if let (Some(elems), Core::ConstInt(i)) = (const_list_elems(db, list), core_of(db, index)) {
         // The index is a signed Int64; a negative value or one `>= arity` is out of bounds → `None`.
         match i.to_i64() {
             Some(n) if n >= 0 && (n as usize) < elems.len() => {
@@ -21863,6 +22011,108 @@ mod tests {
             }
             other => panic!("expected an Add over a folded len, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn list_at_over_a_let_bound_constant_list_folds_through_the_binder() {
+        // `(let ((xs (list 10 20 30))) (List.at xs 1))` — a CONSTANT list bound to a multi-use `xs`,
+        // indexed by a constant. `List.at` over an inline list literal already folds to `Some(elem)`; the
+        // let-bound form must fold identically by following the `LocalRef` binder to the bound `ListNew`
+        // (via `const_list_elems`). The IN-BOUNDS index 1 folds to `Some 20` — a `Core::SumNew` on the
+        // Option's Some disc carrying the bound list's element occurrence. Pins the both-backend Core fold.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (g) (let ((xs (list 10 20 30))) (List.at xs 1))) (export g))",
+        ));
+        let body = body_of(&mut db, "g");
+        // The multi-use `xs` (also read below in the OOB test) here is single-use, so the body may be the
+        // folded `SumNew` directly or wrapped in a residual `Let`; unwrap a `Let` body if present.
+        let core = match core_of(&mut db, body) {
+            Core::Let { body: let_body, .. } => core_of(&mut db, let_body),
+            other => other,
+        };
+        match core {
+            Core::SumNew { payloads, .. } => {
+                assert_eq!(payloads.len(), 1, "Some carries one payload");
+                assert_eq!(
+                    core_of(&mut db, payloads[0]),
+                    Core::ConstInt(IntValue::from_i64(20)),
+                    "List.at xs 1 folds to Some(20) through the binder"
+                );
+            }
+            other => panic!("expected a folded Some(20) SumNew, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_at_over_a_let_bound_list_folds_out_of_bounds_to_none_through_the_binder() {
+        // The OOB companion: `(List.at xs 5)` over a 3-element let-bound constant list folds to `None` (a
+        // `Core::SumNew` on the None disc with no payload) — the constant-index/constant-list bounds check
+        // resolves at compile time through the binder, exactly like the inline form. `xs` is multi-use here
+        // (also fed to `List.len`), so the binding is kept but the `List.at` read folds.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (g) (let ((xs (list 10 20 30))) (match (List.at xs 5) ((Some v) v) ((None) (List.len xs))))) (export g))",
+        ));
+        let body = body_of(&mut db, "g");
+        // The `List.at xs 5` folds to None, so the match takes the None arm → `List.len xs` folds to 3.
+        // The whole body folds to `ConstInt(3)` (possibly under a residual `Let` for the kept binding).
+        let core = match core_of(&mut db, body) {
+            Core::Let { body: let_body, .. } => core_of(&mut db, let_body),
+            other => other,
+        };
+        assert_eq!(
+            core,
+            Core::ConstInt(IntValue::from_i64(3)),
+            "OOB List.at folds to None → the None arm (List.len xs = 3) is taken"
+        );
+    }
+
+    #[test]
+    fn a_multi_use_binding_whose_every_use_folds_is_reclaimed_no_dead_build() {
+        // Post-fold dead-binding reclaim: `(let ((xs (list 1 2 3))) (+ (List.len xs) (List.len xs)))` —
+        // `xs` is read twice, so `should_keep_binding` keeps it (pre-fold count 2); then BOTH `List.len xs`
+        // fold to 3 through the binder, so the kept slot has ZERO live `LocalRef` reads. The reclaim drops
+        // the now-dead pure `ListNew` binding, so the whole body is the bare `ConstInt(6)` — NO residual
+        // `Core::Let` (the list is not built at runtime for nothing). Pins that the fold→DCE phase-ordering
+        // gap is closed: a binding whose only uses folded away is not emitted.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (g) (let ((xs (list 1 2 3))) (+ (List.len xs) (List.len xs)))) (export g))",
+        ));
+        let body = body_of(&mut db, "g");
+        assert_eq!(
+            core_of(&mut db, body),
+            Core::ConstInt(IntValue::from_i64(6)),
+            "the dead let-binding is reclaimed; the body is a bare constant, no Core::Let"
+        );
+    }
+
+    #[test]
+    fn a_multi_use_binding_with_one_live_and_one_folded_use_stays_kept() {
+        // Partial fold: `xs` feeds a `List.len` (folds to 3) AND a `List.concat` (a runtime op that reads
+        // the list live). The concat keeps a live `LocalRef` to `xs`, so the reclaim must NOT drop it — the
+        // body stays a `Core::Let`. Guards the reclaim against over-eagerly dropping a still-read binding.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (g) (let ((xs (list 10 20 30))) (+ (List.len xs) (List.len (List.concat xs xs))))) (export g))",
+        ));
+        let body = body_of(&mut db, "g");
+        assert!(
+            matches!(core_of(&mut db, body), Core::Let { .. }),
+            "a binding with a surviving live use (List.concat) is kept, not reclaimed"
+        );
+    }
+
+    #[test]
+    fn a_genuinely_multi_use_runtime_binding_is_not_reclaimed() {
+        // Regression guard for the reclaim: `(let ((s (+ a b))) (+ s s))` — `s` is a runtime add read
+        // twice, its uses do NOT fold (a, b are params), so both `LocalRef` reads are live. The reclaim
+        // must leave the `Core::Let` intact (dropping it would re-emit the add twice — a de-optimization).
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (let ((s (+ a b))) (+ s s))) (export f))",
+        ));
+        let body = body_of(&mut db, "f");
+        assert!(
+            matches!(core_of(&mut db, body), Core::Let { .. }),
+            "a live multi-use runtime binding stays named (reclaim only drops folded-dead bindings)"
+        );
     }
 
     #[test]

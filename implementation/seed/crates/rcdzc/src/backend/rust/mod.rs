@@ -79,16 +79,41 @@ fn s2_arg_ok(t: &crate::ty::Ty) -> bool {
         Ty::Int(_) | Ty::Bool => true,
         Ty::Tuple(elems) => elems.iter().all(s2_arg_ok),
         Ty::List(elem) => s2_arg_ok(elem),
+        // Option/Result (the WELL-KNOWN 2-variant sums the harness rebuilds — `(Some v)`→`Some(v)`,
+        // `(Ok v)`/`(Err e)`→`Ok(v)`/`Err(e)`, `(None …)`→`None`) over S2-OK payloads. Identified by the
+        // sum's NAME (its type args ARE the payloads: `Option Int64`→`[Int64]`, `Result a b`→`[a, b]`); a
+        // USER sum stays deferred (the harness has no constructor rebuild for it). Recurse over the args so
+        // a nested `Option (Tuple …)` / `Result (List …) …` is admitted iff its payloads are.
+        Ty::Sum { name, args, .. } if name == "Option" || name == "Result" => {
+            args.iter().all(s2_arg_ok)
+        }
+        _ => false,
+    }
+}
+
+/// Whether a closure RESULT type is renderable by the gate harness (S1 scalar OR S3 Tuple/List). NARROWER
+/// than `s2_arg_ok`: an Option/Result RESULT is DEFERRED — the harness renders a sum result as the bare
+/// `(Some 5)` while the corpus expects the TYPE-ANNOTATED value form `(: (Some 5) (Option Int64))`, a
+/// separate sum-result render slice. (An Option/Result ARG is fine — the harness has a constructor rebuild
+/// for it, `s2_arg_ok` — but the RESULT render path differs.) So the arg set ⊋ the result set here.
+fn s3_result_ok(t: &crate::ty::Ty) -> bool {
+    use crate::ty::Ty;
+    match t.strip_nominal() {
+        Ty::Int(_) | Ty::Bool => true,
+        Ty::Tuple(elems) => elems.iter().all(s3_result_ok),
+        Ty::List(elem) => s3_result_ok(elem),
         _ => false,
     }
 }
 
 /// Whether a closure-RESULT `Ty::Fn` is safe for host-closure FACTORY export. Each PARAMETER (the closure's
-/// args) may be an S1 scalar OR an S2 compound (`s2_arg_ok` — Tuple/List the harness rebuilds); the final
-/// RESULT must still be an S1 SCALAR (a compound result needs the S3 render, deferred). A Float arg/result,
-/// a String/Bytes, an Option/Result/sum arg, or a compound result is deferred — the factory emits a valid
-/// `Rc<dyn Fn>` but the harness pass/render isn't wired, so it stays a clean `todo`, not a fail.
-fn fn_result_is_scalar_only(ty: &crate::ty::Ty) -> bool {
+/// args) may be an S1 scalar OR an S2 compound (`s2_arg_ok` — Tuple/List/Option/Result the harness rebuilds),
+/// and the final RESULT (S3) may be an S1 scalar OR a Tuple/List (`s3_result_ok` — NARROWER: no Option/
+/// Result result, whose type-annotated value-form render is a later slice). The gate peels the factory's
+/// arrow to the final result type and renders a Tuple/List via `cdz_render_expr`. A Float, String/Bytes, or
+/// user-sum anywhere stays DEFERRED — the factory emits a valid `Rc<dyn Fn>` but the harness pass/render
+/// isn't wired, so those stay a clean `todo`, not a wrong-value/non-build fail.
+fn fn_result_renderable(ty: &crate::ty::Ty) -> bool {
     let mut cur = ty.strip_nominal();
     while let crate::ty::Ty::Fn(p, r) = cur {
         if !s2_arg_ok(p) {
@@ -96,8 +121,10 @@ fn fn_result_is_scalar_only(ty: &crate::ty::Ty) -> bool {
         }
         cur = r.strip_nominal();
     }
-    // `cur` is now the final (non-arrow) result — RESULT stays S1-scalar (S3 wires compound results).
-    is_s1_scalar(cur)
+    // `cur` is the final (non-arrow) result — renderable iff scalar / Tuple / List (NOT an Option/Result
+    // result, whose value-form render is deferred; `s3_result_ok` excludes it while `s2_arg_ok` admits it
+    // as an arg).
+    s3_result_ok(cur)
 }
 
 /// If exported definition `e` is a top-level IMMEDIATE, CAPTURE-FREE lambda — `(def (name) (fn (p…)
@@ -494,7 +521,7 @@ fn emit_signature(
     // make-split. Defer compound captures + compound results + Float/String/Bytes/sum args to later slices.
     if public
         && is_fn_ty(result)
-        && (!fn_result_is_scalar_only(result) || !params.iter().all(|(_, t)| is_s1_scalar(t)))
+        && (!fn_result_renderable(result) || !params.iter().all(|(_, t)| is_s1_scalar(t)))
     {
         return Err(Reject::decline(format!(
             "`{name}`: a closure-returning export with a non-scalar capture/arg/result is not yet rendered by the Rust backend (host-closure S2/S3)"

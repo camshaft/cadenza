@@ -28,7 +28,16 @@ fn main() -> ExitCode {
     let cmd = args.first().map(String::as_str).unwrap_or("fuzz");
     match cmd {
         "fuzz" => cmd_fuzz(&args[1..]),
+        #[cfg(feature = "differential")]
         "differential" => cmd_differential(&args[1..]),
+        #[cfg(not(feature = "differential"))]
+        "differential" => {
+            eprintln!(
+                "cdz-smith: the `differential` subcommand needs the `differential` feature \
+                 (rebuild: `cargo run --features differential -- differential …`)."
+            );
+            ExitCode::from(2)
+        }
         "once" => cmd_once(&args[1..]),
         "gen" => cmd_gen(&args[1..]),
         "verify" => cmd_verify(&args[1..]),
@@ -65,6 +74,7 @@ fn usage() {
 /// (default: the workspace `target/cadenza-store`); `--cdz` overrides the `cdz` binary (default:
 /// `CDZ_SMITH_CDZ` or a discovered `target/{release,debug}/cdz`). If no `cdz` is found the sweep
 /// cannot run and exits FAILURE without filing anything.
+#[cfg(feature = "differential")]
 fn cmd_differential(args: &[String]) -> ExitCode {
     let mut count: u64 = 1000;
     let mut seed: Option<u64> = None;

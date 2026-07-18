@@ -1061,15 +1061,13 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // `f32::from_bits` of the canonical bit pattern so the EXACT value (incl. `-0.0`, a subnormal)
         // round-trips — a decimal spelling could lose a bit. The width is the node's solved type.
         Core::ConstFloat(d) => {
-            // PEEL `Ty::Qty`: a quantity over a Float32 — `(Qty Float32 u)` — erases to its inner f32 (the
-            // unit is a compile-time value), so the literal must render at width 32. Without the peel a
-            // `(Qty Float32)` node fell to the DEFAULT (f64) → `f64::from_bits(…)` stored into an `f32`-typed
-            // slot (e.g. a `BTreeMap<_, f32>` map value) → Rust E0308. The float twin of the rust `int_ty_of`
-            // Qty peel; mirrors the wasm backend's ConstFloat Qty-peel.
-            let width = match peel_qty(type_of(db, id)) {
-                Ty::Float(ft) => ft.ground_width(),
-                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
-            };
+            // `float_width_of` = strip_nominal → peel `Ty::Qty` → strip_nominal (the float twin of
+            // `int_ty_of`). A `(Qty Float32 u)` magnitude — AND a NOMINAL newtype wrapping such a Qty as a
+            // heap value (`(type Len (Q (Qty Float32 …)))`, `Ty::Nominal { inner: Qty }`) — grounds to f32.
+            // Without the leading strip a nominal wrapper falls to the f64 DEFAULT → `f64::from_bits(…)`
+            // into an `f32` slot (`BTreeMap<_, f32>`) → Rust E0308 / invalid wasm. Mirrors the wasm
+            // backend's ConstFloat width reader (also strip→peel→strip now).
+            let width = float_width_of(db, id);
             if width == 32 {
                 let bits = (f64::from_bits(d.to_f64_bits()) as f32).to_bits();
                 Ok(format!("f32::from_bits({bits}u32)"))
@@ -1085,11 +1083,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // ConstFloatNan value byte-identical to the canonical NaN across backends regardless of the
         // platform payload — no reliance on `f64::NAN`'s payload. (Width from the node's solved type.)
         Core::ConstFloatNan => {
-            // PEEL `Ty::Qty` — a `(Qty Float32)` NaN emits at width 32 (see the `ConstFloat` arm's peel).
-            let width = match peel_qty(type_of(db, id)) {
-                Ty::Float(ft) => ft.ground_width(),
-                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
-            };
+            // strip→peel→strip via `float_width_of` — a `(Qty Float32)` or nominal-over-Qty NaN emits at
+            // width 32 (see the `ConstFloat` arm — strip→peel→strip catches a nominal-over-Qty wrapper).
+            let width = float_width_of(db, id);
             Ok(if width == 32 {
                 "f32::from_bits(0x7FC0_0000u32)".to_string()
             } else {
@@ -3296,11 +3292,29 @@ fn op_name(op: Prim) -> &'static str {
 /// Peel a `Ty::Qty` to its inner type — a quantity erases to its inner numeric's machine slot, so a
 /// value-form width reader (the `ConstFloat`/`ConstFloatNan` f32-vs-f64 emit) must see through the wrapper.
 /// A non-quantity type passes through unchanged. (The float twin of `int_ty_of`'s Qty peel.)
-fn peel_qty(ty: Ty) -> Ty {
-    match ty {
-        Ty::Qty { inner, .. } => *inner,
+/// The FLOAT width (32/64) a `Ty` grounds to after strip_nominal → peel `Ty::Qty` → strip_nominal, or
+/// `None` when it is not a float under those erasures. The float twin of `int_ty_of`'s width read: the
+/// bare `peel_qty` alone (a RAW `Ty::Qty` match, no strip_nominal) MISSES a NOMINAL-over-Qty wrapper
+/// (`(type Len (Q (Qty Float32 …)))` stored as a heap value = `Ty::Nominal { inner: Qty { Float32 } }`),
+/// so it defaults to f64 → `f64::from_bits` into an `f32` slot → rustc E0308 / invalid wasm (the reviewer-
+/// flagged gap the integer `int_ty_of` already fixed). Strip → peel → strip sees the inner float in every
+/// wrapping. Returns `None` for a non-float so a caller can DISTINGUISH "not a float" (fall through).
+fn float_width_of_ty(ty: &Ty) -> Option<u32> {
+    let inner = match ty.strip_nominal() {
+        Ty::Qty { inner, .. } => inner.strip_nominal(),
         other => other,
+    };
+    match inner {
+        Ty::Float(ft) => Some(ft.ground_width()),
+        _ => None,
     }
+}
+
+/// The FLOAT width of the node at `id` (strip_nominal → peel `Ty::Qty` → strip_nominal), defaulting to
+/// `DEFAULT_FLOAT_WIDTH`. The float twin of `int_ty_of`'s width read — used by the `ConstFloat`/
+/// `ConstFloatNan` emit to ground a wrapped f32 const to f32 (see `float_width_of_ty`).
+fn float_width_of(db: &mut Db, id: StructId) -> u32 {
+    float_width_of_ty(&type_of(db, id)).unwrap_or(crate::ty::DEFAULT_FLOAT_WIDTH)
 }
 
 fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
@@ -4424,10 +4438,19 @@ fn emit_branch(
     env: &Env,
     ctx: &Ctx,
 ) -> Result<String, Reject> {
-    match type_of(db, construct_id) {
-        Ty::Int(it) => emit_grounded(db, branch, it, env, ctx),
-        _ => emit(db, branch, env, ctx),
+    let cty = type_of(db, construct_id);
+    if let Ty::Int(it) = cty {
+        return emit_grounded(db, branch, it, env, ctx);
     }
+    // A FLOAT `if`/scalar-`match` result: a bare-literal branch (`(if b x 0.0)` with `x: Float32`) defaults
+    // its `ConstFloat` to Float64, so emitting it as-is renders `f64::from_bits(…)` in an `-> f32` branch →
+    // rustc E0308. Ground the branch literal to the construct's float width — the float twin of the `Ty::Int`
+    // grounding above. `float_width_of_ty` strips a nominal/Qty wrapper (so a `(Qty Float32 …)`-typed result
+    // grounds to f32); `None` (not a float) falls through to the plain emit.
+    if let Some(w) = float_width_of_ty(&cty) {
+        return emit_grounded_float(db, branch, w, env, ctx);
+    }
+    emit(db, branch, env, ctx)
 }
 
 /// The shared integer type of a comparison's two operands — the width/signedness both must be rendered

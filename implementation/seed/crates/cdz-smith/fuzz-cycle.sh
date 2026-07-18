@@ -33,6 +33,9 @@
 #   CDZ_SMITH_TIMEOUT     per-input compile budget, s (default: 10)
 #   CDZ_SMITH_ITERATIONS  PRNG-fallback programs/cycle (default: 50000)
 #   CDZ_SMITH_ENGINE      force "libfuzzer" or "prng" (default: auto-detect)
+#   CDZ_SMITH_DIFF_COUNT  differential-sweep programs/cycle (default: 400; 0 disables the sweep)
+#   CDZ_SMITH_CDZ         the `cdz` binary for the differential rust side (default: auto-discover)
+#   CDZ_SMITH_STORE       the value-heap runtime store for the differential wasm side (default: <root>/target/cadenza-store)
 set -uo pipefail
 
 # ── locate the checkout ─────────────────────────────────────────────────────────────────────────
@@ -135,6 +138,46 @@ else
   CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$CYCLE_CAP" \
     "$BIN" fuzz --iterations "$ITERATIONS" --seed "$(date +%s)" \
       --timeout "$TIMEOUT_S" --findings "$FINDINGS"
+fi
+
+# ── differential-oracle sweep (SEPARATE, lower-cadence pass) ─────────────────────────────────────
+# After the crash/invalid-wasm campaign, run the DIFFERENTIAL oracle over a modest batch of seeds:
+# each program is run on BOTH backends (wasm in-process via cdz-run; rust by shelling `cdz run-rust`)
+# and their canonical values compared — a disagreement is a valid-artifact wrong-value miscompile the
+# crash/validity oracles can't see. It is deliberately lower-cadence (it `rustc`-compiles every
+# program, orders of magnitude slower), and gated behind the off-by-default `differential` cargo
+# feature (whose `cdz-run`/wasmtime dep must NOT link into the instrumented libFuzzer target). Findings
+# file into the SAME fleet queue as `differential-*.smith.{sexp,md}`. Best-effort: skip cleanly if the
+# `cdz` binary (+ its cdz-rt/cdz-num rlibs) or the runtime store isn't available.
+DIFF_COUNT="${CDZ_SMITH_DIFF_COUNT:-400}"
+if [ "$DIFF_COUNT" -gt 0 ]; then
+  # The rust side needs the `cdz` binary with its rlibs beside it (target/<profile>/). The fleet agent
+  # rebuilds `cdz` release each tick; discover it (env override wins), else look beside the workspace target.
+  DIFF_CDZ="${CDZ_SMITH_CDZ:-}"
+  if [ -z "$DIFF_CDZ" ]; then
+    for cand in "$ROOT/target/release/cdz" "$ROOT/target/debug/cdz"; do
+      [ -x "$cand" ] && { DIFF_CDZ="$cand"; break; }
+    done
+  fi
+  DIFF_STORE="${CDZ_SMITH_STORE:-$ROOT/target/cadenza-store}"
+  if [ -z "$DIFF_CDZ" ] || [ ! -x "$DIFF_CDZ" ]; then
+    log "differential: no cdz binary found (build \`cargo build --release --bin cdz\` or set CDZ_SMITH_CDZ); skipping sweep"
+  elif [ ! -d "$DIFF_STORE" ]; then
+    log "differential: runtime store $DIFF_STORE absent (\`cargo xtask build\`); skipping sweep"
+  else
+    log "differential sweep | count $DIFF_COUNT | cdz $DIFF_CDZ | store $DIFF_STORE"
+    # Build the differential-featured cdz-smith binary (pulls cdz-run/wasmtime — NOT the fuzz target,
+    # so no libFuzzer link concern). A build failure just skips the sweep this cycle.
+    if ( cd "$CRATE_DIR" && cargo build -q --release --features differential 2>/dev/null ); then
+      DIFF_BIN="$CRATE_DIR/target/release/cdz-smith"
+      # A wide backstop timeout — the sweep is bounded by --count, this is a pure safety net.
+      CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$(( CYCLE_CAP * 2 + 120 ))" \
+        "$DIFF_BIN" differential --count "$DIFF_COUNT" --seed "$(date +%s)" \
+          --findings "$FINDINGS" --store "$DIFF_STORE" --cdz "$DIFF_CDZ" 2>&1 | tail -4 || true
+    else
+      log "differential: cdz-smith --features differential build failed; skipping sweep"
+    fi
+  fi
 fi
 
 after="$(ls "$FINDINGS"/*.smith.md 2>/dev/null | wc -l | tr -d ' ')"

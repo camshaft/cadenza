@@ -470,6 +470,24 @@ def em-src-ill-typed-declines() =
     | Option.None(_) => unit | Option.Some(_) => trap("unbound x declines"))
 
 @test
+def em-src-corpus-module-wrapper-emits() =
+  // THE W4 INPUT SHAPE: the corpus normalizes every case to `(do (def (main) <body>) (export main))`, and
+  // `read-source` peels that nullary-main wrapper to its body — so emit-src must emit a real module for the
+  // module-wrapped form (not just a bare expr). This is exactly what `cdz run-emitted` feeds emit-src-bytes
+  // per corpus case; a gap here would break the W4 emit≡interpret gate on real corpus programs.
+  (match emit-src("(do (def (main) (+ 1 2)) (export main))") with
+    | Option.Some(m) => (if (byte-of(m, 0) == 0) then unit else trap("module-wrapper emits a wasm module"))
+    | Option.None(_) => trap("corpus module-wrapper (do (def (main) …)) must emit"))
+
+@test
+def em-src-corpus-module-with-let-and-if() =
+  // a module-wrapped let and a module-wrapped if both emit — the corpus feeds these module-normalized.
+  (match emit-src("(do (def (main) (let ((x 2)) (* x 3))) (export main))") with
+    | Option.Some(_) => (match emit-src("(do (def (main) (if (< 1 2) 10 20)) (export main))") with
+        | Option.Some(_) => unit | Option.None(_) => trap("module-wrapped if emits"))
+    | Option.None(_) => trap("module-wrapped let emits"))
+
+@test
 def em-src-bytes-matches-emit-src-len() =
   // emit-src-bytes is emit-src with Bytes→List(UInt8): Some when emit-src is Some, and the list length
   // equals the module's byte length (the conversion preserves every byte, in order).

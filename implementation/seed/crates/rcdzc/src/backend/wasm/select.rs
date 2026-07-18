@@ -14357,9 +14357,16 @@ fn operand_int_ty(db: &mut Db, lhs: StructId, rhs: StructId) -> IntTy {
 /// wrapper. Used by the const-width emit arms (`ConstFloat`/`ConstFloatNan`) alongside `int_ty_of`'s and
 /// `is_narrow_int`'s own inline peels. A non-quantity type passes through unchanged.
 fn peel_qty_ty(ty: Ty) -> Ty {
-    match ty {
-        Ty::Qty { inner, .. } => *inner,
-        other => other,
+    // STRIP_NOMINAL → PEEL `Ty::Qty` → STRIP_NOMINAL, mirroring `int_ty_of` EXACTLY (the strip_nominal
+    // lockstep the integer side maintains). Two erasures compose: a NOMINAL newtype over a quantity —
+    // `(type Len (Q (Qty Float32 u)))` — must reach the inner Float32, and a nominal INSIDE the quantity is
+    // stripped too. WITHOUT the outer strip, a `Nominal(Len, Qty{Float32})` missed the `Ty::Qty` arm and
+    // fell to the f64 default → an `f64.const` where `box-float32` wanted f32 → INVALID wasm when a
+    // nominal-over-Qty-Float32 was boxed as a heap value (v-rust-backend flagged the wasm twin of their
+    // rust `float_width_of` strip→peel→strip fix). Returns an owned `Ty` (clones the final stripped inner).
+    match ty.strip_nominal() {
+        Ty::Qty { inner, .. } => inner.strip_nominal().clone(),
+        other => other.clone(),
     }
 }
 
