@@ -2838,6 +2838,17 @@ impl<'a> Parser<'a> {
     fn at_pattern_param_start(&self) -> bool {
         matches!(self.kind(), Kind::LParen | Kind::LBracket | Kind::BinOpen)
             || (self.at(Kind::Hash) && self.nth_kind(1) == Kind::LBrace)
+            // A CONSTRUCTOR pattern `Ctor(binders…)` / `Mod.Ctor(binders…)` in binding position — an
+            // `Ident` that HEADS a constructor pattern, i.e. immediately followed by `(` (an application,
+            // `Some(x)`) or `.` (a qualified path, `Id.Mk(n)` / `W.Wrap(…)`). This is the same
+            // single-constructor destructure the corpus binds in a `let`/param (`(let (((Id.Mk n) …)) …)`,
+            // "binds exactly as a tuple pattern"), so `def f(Some(x)) = …` and `let C(c) = v in …` parse
+            // via `pattern()` (which already deconstructs ctor patterns for match arms). A PLAIN binder
+            // (`x`, `x: Type`) is an `Ident` followed by `,`/`)`/`:`/`=` — NOT `(`/`.` — so it stays on the
+            // fast `binder()` path; only a ctor-application/qualified head takes the pattern route.
+            || (self.at(Kind::Ident)
+                && keyword(self.cur_text()).is_none()
+                && matches!(self.nth_kind(1), Kind::LParen | Kind::Dot))
     }
 
     /// A type reference in a binder/return/payload position (a parameter annotation, a function's

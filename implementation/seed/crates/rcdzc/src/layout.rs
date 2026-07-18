@@ -920,6 +920,10 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
             collect_closure_codes(db, bytes, out)
         }
+        Core::BinSizedRead { bytes, len, .. } => {
+            collect_closure_codes(db, bytes, out);
+            collect_closure_codes(db, len, out);
+        }
         Core::Proj { operand, .. } => collect_closure_codes(db, operand, out),
         Core::SumNew { payloads, .. } => {
             for p in payloads {
@@ -1166,6 +1170,10 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         }
         crate::core::Core::BinIntRead { bytes, .. }
         | crate::core::Core::BinRestRead { bytes, .. } => collect_call_callees(db, bytes, out),
+        crate::core::Core::BinSizedRead { bytes, len, .. } => {
+            collect_call_callees(db, bytes, out);
+            collect_call_callees(db, len, out);
+        }
         crate::core::Core::Proj { operand, .. }
         | crate::core::Core::ListLen { operand }
         | crate::core::Core::BytesLen { operand }

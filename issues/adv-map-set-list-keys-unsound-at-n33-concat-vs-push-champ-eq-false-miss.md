@@ -12,3 +12,11 @@ Insert a CONCAT-built [1..40] key into a Map, then lookup a PUSH-built [1..40] k
 
 ## Routing
 OWNED by v-runtime (their rep + the champ key path). FIX (their plan): canonicalize list keys on insert, OR route list-key compare through the element-wise walk (the same value_eq_shaped that fixes standalone List =). Queued after slice-2 + a clean base. Sibling of the built-in-List runtime-= gap (same RRB-element-canonical-not-shape-canonical root). Corpus witness (concat-key vs push-key lookup miss at n>=33) worth adding once fixed.
+
+---
+⚠ RELATED PIN CAVEAT (corpus-bugfix 2026-07-18): breaker's pin b96ae47a5 "a concat-built and a push-built
+list ... are the same map key" (05-compound-types.sexp) uses a 3-ELEMENT list — n<=32, where concat+push
+produce identical strict leaves, so it PASSES correctly BUT its title claims the GENERAL shape-independence
+invariant, which THIS bug proves FALSE at n>=33. Flagged to breaker to scope the pin doc to n<=32 / caveat
+the n>=33 gap, so the passing pin doesn't read as "list keys are shape-independent generally" + de-prioritize
+this fix. The pin is a valid small-n property; just don't let it mask the n>=33 unsoundness.

@@ -42,7 +42,11 @@ def db-tree(db: Db) = let (Db.Db(t, _, _, _)) = db in t
 
 // ---- the RESOLVED column (filled by resolve) --------------------------------------------------------
 
-/// FILL the resolved fact for `id` (a producer records what it determined; fill-once, monotone).
+/// FILL the resolved fact for `id` (a producer records what it determined). NOTE: this is a plain
+/// `Map.insert` — it OVERWRITES an already-filled slot. The FILL-ONCE / monotone discipline is enforced by
+/// the PRODUCER (the `demand-*` layer, e.g. db-demand's `demand-typed`), which checks `require-*` and fills
+/// ONLY on a MISS — so a determined fact is never clobbered. `fill-*` itself is the low-level column write;
+/// callers must go through a demand producer (not call `fill-*` on a slot they haven't required Absent).
 def fill-resolved(db: Db, id: Int64, r: Resolved) = let (Db.Db(t, rc, tc, cc)) = db in Db.Db(t, Map.insert(rc, id, r), tc, cc)
 
 /// REQUIRE the resolved fact at `id`: `Some(fact)` if filled (incl. a filled RPoison decline), `None` if the
@@ -129,5 +133,18 @@ def db-fill-count-tracks-memo() =
   // the filled-count grows as facts memoize: 0 → fill two type facts → 2.
   (let db = fill-typed(fill-typed(sample-db(), 0, Typed.TBool), 1, Typed.TBool) in
    (if typed-filled(db) == 2 then (if resolved-filled(db) == 0 then unit else trap("resolved still 0")) else trap("2 type facts memoized")))
+
+@test
+def db-fill-is-a-raw-overwrite-not-fill-once() =
+  // TRUTHFUL-BEHAVIOR pin (the doc claimed "fill-once, monotone" — corrected): the low-level `fill-typed` is
+  // a plain Map.insert that OVERWRITES a filled slot (fill @0 = TBool, then fill @0 = Int64 → the slot is now
+  // Int64, count stays 1). The FILL-ONCE discipline is NOT here — it lives in the demand producer, which
+  // guards on require-* (see db-demand's dd-hit-does-not-recompute-poison). Pins the real contract: callers
+  // MUST route through a demand-* producer, never call fill-* on a slot they haven't required Absent.
+  (let db1 = fill-typed(sample-db(), 0, Typed.TBool) in
+   (let db2 = fill-typed(db1, 0, Typed.TIntW(true, 64)) in
+    (match require-typed(db2, 0) with
+      | Option.Some(Typed.TIntW(s, w)) => (if s and (w == 64) then (if typed-filled(db2) == 1 then unit else trap("overwrite keeps count 1, not 2")) else trap("overwritten to Int64"))
+      | _ => trap("fill-typed OVERWROTE @0 to Int64 (raw insert, not fill-once)"))))
 
 export { Db.*, db-of, db-tree, fill-resolved, require-resolved, fill-typed, require-typed, fill-core, require-core, resolved-filled, typed-filled, core-filled }

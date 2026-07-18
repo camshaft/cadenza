@@ -570,6 +570,18 @@ pub enum Core {
     /// (the arm's length probe), so the slice is in bounds. `byte_offset` is static (a final rest after
     /// fixed-width int segments; a dependent-size `(bytes b n)` with a dynamic offset is a later slice).
     BinRestRead { bytes: StructId, byte_offset: u32 },
+    /// Read a DEPENDENT-SIZE `(bytes payload n)` segment out of a runtime `Bytes` scrutinee — exactly `n`
+    /// bytes at a static `byte_offset`, where `n` is the RUNTIME value of an earlier integer segment
+    /// (`len` is a `Core::BinIntRead` of that segment). Emits `bytes-slice(bytes, byte_offset, n)` — the
+    /// same slice as `BinRestRead` but with a runtime length instead of `bytes-len - byte_offset`. The
+    /// caller (`lower_match_bin`) guarded `bytes-len >= byte_offset + n` (the arm's length probe), so the
+    /// slice is in bounds. `byte_offset` is static (a dependent-size segment after fixed-width int segments;
+    /// a size whose OWN offset is dynamic — a second dependent size before it — is a later slice).
+    BinSizedRead {
+        bytes: StructId,
+        byte_offset: u32,
+        len: StructId,
+    },
     /// `Bytes.slice` — the FALLIBLE sub-range read, present when the operand is a RUNTIME value (a
     /// constant `Bytes.of` + constant `start`/`len` FOLDS to a `SumNew` in `lower`). The backend
     /// bounds-checks (`start >= 0 && len >= 0 && start + len <= bytes-len`), and in range builds

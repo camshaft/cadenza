@@ -2883,7 +2883,38 @@ impl<'a> Printer<'a> {
             return false;
         };
         let name = self.head_ctor(head).or_else(|| self.head_name(head));
-        matches!(name.as_deref(), Some("tuple" | "list" | "map" | "bin"))
+        if matches!(name.as_deref(), Some("tuple" | "list" | "map" | "bin")) {
+            return true;
+        }
+        // A CONSTRUCTOR pattern in binding position — `Ctor(p…)` (name-headed application, e.g. `(C c)` /
+        // `(Some x)`) or a qualified `Mod.Ctor(p…)` whose head is the member-access list `(. Mod Ctor)`
+        // (so the whole binder is `((. Id Mk) n)`). The parser now routes such a head to `pattern()` in a
+        // `let`/param binder (a single-constructor destructure binds like a tuple — the corpus
+        // `(let (((Id.Mk n) …)) …)`), and the printer's `pattern` already renders `Ctor(p…)` / `A.B(p…)`,
+        // so the `let` prints its proper surface instead of the backtick-`let` fallback. A head that is a
+        // special-form / infix operator is NOT a constructor (guarded so only a genuine ctor application
+        // binder — a name head, or a member-access head — is recognized).
+        if items.len() < 2 {
+            return false; // a bare atom / 1-element list is not a ctor APPLICATION binder
+        }
+        match self.a.get(head) {
+            // qualified constructor head: the member-access list `(. Mod Ctor)`
+            Struct::List(_) => self.head_name(head).is_none() && self.is_member_access_chain(head),
+            // a plain name-headed application `(Ctor p…)` — not an infix operator / special form.
+            Struct::Atom(_) => {
+                matches!(&name, Some(h) if infix_prec(h).is_none())
+                    && !self.is_self_delimiting_form(id)
+            }
+        }
+    }
+
+    /// Whether `id` is a member-access chain `(. base key …)` (a qualified name like `Mod.Ctor`), so it
+    /// heads a qualified constructor pattern. The chain's own head is the `.` name; a plain-key member
+    /// walk (reusing `unquote_atomic`, which validates `(. a b)` chains with plain keys) confirms it.
+    fn is_member_access_chain(&self, id: StructId) -> bool {
+        matches!(self.a.get(id), Struct::List(items)
+            if items.first().and_then(|&h| self.head_name(h)).as_deref() == Some("."))
+            && self.unquote_atomic(id)
     }
 
     fn is_match_shape(&self, args: &[StructId]) -> bool {
@@ -4907,6 +4938,30 @@ mod tests {
             assert_roundtrip("def head([x, .. rest]) = x", 80),
             "def head([x, .. rest]) = x"
         );
+        // CONSTRUCTOR patterns in a parameter — a single-constructor destructure binds like a tuple
+        // (the v-guide-editor issue 2026-07-18): a bare `Ctor(c)`, a qualified `Mod.Ctor(n)`, and a
+        // multi-payload / nested one all round-trip through the ML surface (parser gained the ctor-pattern
+        // binder route; printer's `pattern` already renders `Ctor(p…)` / `A.B(p…)`).
+        assert_eq!(
+            assert_roundtrip("def to-f(C(c)) = c", 80),
+            "def to-f(C(c)) = c"
+        );
+        assert_eq!(
+            assert_roundtrip("def f(Some(x)) = x", 80),
+            "def f(Some(x)) = x"
+        );
+        assert_eq!(
+            assert_roundtrip("def f(Id.Mk(n)) = n", 80),
+            "def f(Id.Mk(n)) = n"
+        );
+        assert_eq!(
+            assert_roundtrip("def f(P.Mk(a, b)) = a + b", 80),
+            "def f(P.Mk(a, b)) = a + b"
+        );
+        assert_eq!(
+            assert_roundtrip("def f(W.Wrap(Id.Mk(n))) = n", 80),
+            "def f(W.Wrap(Id.Mk(n))) = n"
+        );
         // `let` binder patterns — tuple, list-rest, and a mix with a plain name.
         assert_eq!(
             assert_roundtrip("let (a, b) = p in a + b", 80),
@@ -4939,14 +4994,43 @@ mod tests {
             print(&sexpr::read("(let (((tuple a b) p)) (+ a b))").unwrap(), 80),
             "let (a, b) = p in\na + b"
         );
-        // A CONSTRUCTOR-application pattern binder (`Mk(n)` = `((. Id Mk) n)`) has no reader binder
-        // surface, so it must stay the generic call form (round-tripping via idempotence), NOT sugar to
-        // a pattern binder the reader could not parse back (the regression `is_binder_pattern` guards).
-        let ctor = print(&sexpr::read("(let ((((. Id Mk) n) v)) n)").unwrap(), 80);
-        assert!(
-            !ctor.contains("let Id.Mk(n) ="),
-            "a ctor-pattern let binder must not sugar to a pattern binder, got {ctor:?}"
+        // A CONSTRUCTOR-application pattern binder now sugars to the proper `let Ctor(p…) = v in …`
+        // surface (both a bare `Ctor` and a qualified `Mod.Ctor`), the parser having gained the
+        // ctor-pattern binder route — a single-constructor destructure binds like a tuple (corpus
+        // `(let (((Id.Mk n) …)) …)`), so it round-trips through the ML surface instead of the old
+        // backtick-`let` fallback. (v-guide-editor issue 2026-07-18.)
+        assert_eq!(
+            print(&sexpr::read("(let ((((. Id Mk) n) v)) n)").unwrap(), 80),
+            "let Id.Mk(n) = v in\nn"
         );
+        assert_eq!(
+            print(&sexpr::read("(let (((C c) x)) c)").unwrap(), 80),
+            "let C(c) = x in\nc"
+        );
+        assert_eq!(
+            print(
+                &sexpr::read("(let (((P.Mk a b) (P.Mk 5 6))) (+ a b))").unwrap(),
+                80
+            ),
+            "let P.Mk(a, b) = P.Mk(5, 6) in\na + b"
+        );
+        // …and the whole thing round-trips through the ML reader (no backtick fallback).
+        for sx in [
+            "(let ((((. Id Mk) n) v)) n)",
+            "(let (((C c) x)) c)",
+            "(let (((P.Mk a b) (P.Mk 5 6))) (+ a b))",
+        ] {
+            let a = sexpr::read(sx).unwrap();
+            let ml = print(&a, 80);
+            assert!(
+                !ml.contains("`let`"),
+                "ctor-pattern let must not backtick-fallback: {ml:?}"
+            );
+            assert!(
+                parser::read_ml(&ml).arenas.structurally_eq(&a),
+                "ctor-pattern let round-trips: {ml:?}"
+            );
+        }
     }
 
     #[test]

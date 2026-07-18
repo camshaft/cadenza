@@ -502,6 +502,11 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
             binding_escapes(db, bytes, binder, false)
         }
+        // A `BinSizedRead` borrows both its bytes operand (sliced) and its runtime length operand (a
+        // `BinIntRead` read); the binding escapes if it flows into either.
+        Core::BinSizedRead { bytes, len, .. } => {
+            binding_escapes(db, bytes, binder, false) || binding_escapes(db, len, binder, false)
+        }
         // `List.push`/`concat` CONSUME both operands (the persistent op takes ownership of the list and
         // the pushed/concatenated value into the result).
         Core::ListPush { list, elem } => {
@@ -990,6 +995,11 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::StrToBytes { string: operand }
         | Core::Convert { operand, .. }
         | Core::Not { operand } => cs.push(operand),
+        // A `BinSizedRead` has two children: the sliced bytes and the runtime length read.
+        Core::BinSizedRead { bytes, len, .. } => {
+            cs.push(bytes);
+            cs.push(len);
+        }
         Core::ListAt {
             list: a, index: b, ..
         }
@@ -1494,6 +1504,10 @@ fn mark_binder_dups_inner(
         }
         Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
             consume(db, bytes, live_after, sites)
+        }
+        // A `BinSizedRead` reads its bytes + its runtime length (both borrowing reads of the scrutinee).
+        Core::BinSizedRead { bytes, len, .. } => {
+            seq(db, &[(bytes, false), (len, false)], live_after, sites)
         }
         Core::ListPush { list, elem } => {
             seq(db, &[(list, false), (elem, false)], live_after, sites)
@@ -2246,6 +2260,15 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_LEN);
             out.insert(OP_BYTES_SLICE);
             collect_used_ops_into(db, bytes, out);
+        }
+        // A `BinSizedRead` slices exactly `len` bytes at a static offset: `dup` the shared scrutinee, then
+        // `bytes-slice(bytes, off, len)` on the copy. `len` is a runtime `BinIntRead` (its own `bytes-get`
+        // + operand come in via the recurse), so no `bytes-len` here (unlike the rest read).
+        Core::BinSizedRead { bytes, len, .. } => {
+            out.insert(OP_DUP);
+            out.insert(OP_BYTES_SLICE);
+            collect_used_ops_into(db, bytes, out);
+            collect_used_ops_into(db, len, out);
         }
         // `Bytes.len` uses `bytes-len` and evaluates its operand.
         Core::BytesLen { operand } => {
@@ -6632,6 +6655,32 @@ fn emit(
             out.push(Lir::I32Sub); // [bytes, off, len - off]
             out.push(Lir::CallImport(OP_BYTES_SLICE)); // [slice-handle] (consumes the copied bytes)
             Ok(()) // leaves [rest:bytes-handle]
+        }
+        // A `BinSizedRead` binds a DEPENDENT-SIZE `(bytes payload n)` segment: exactly `n` bytes at a static
+        // `byte_offset`, as a fresh `Bytes` handle. Emit `bytes-slice(bytes, off, n)` — the same shape as
+        // `BinRestRead` but the length is the RUNTIME `n` (a `BinIntRead` of the earlier size segment, an
+        // i64) narrowed to i32, not `bytes-len - off`. `bytes-slice` CONSUMES its source, so DUP the shared
+        // scrutinee (rc++) and slice the copy; the original survives the enclosing `let`'s scope-end drop.
+        // The arm's length probe already required `bytes-len >= off + n`, so the slice is in bounds.
+        Core::BinSizedRead {
+            bytes,
+            byte_offset,
+            len,
+        } => {
+            let handle_slot = base;
+            if handle_slot + 1 > *high {
+                *high = handle_slot + 1;
+            }
+            scratch_ty.insert(handle_slot, ValType::I32);
+            emit(db, bytes, slots, base + 1, high, scratch_ty, layout, out)?; // [bytes]
+            out.push(Lir::LocalTee(handle_slot)); // [bytes], slot = bytes
+            out.push(Lir::CallImport(OP_DUP)); // pops the copy, rc++ → []
+            out.push(Lir::LocalGet(handle_slot)); // [bytes] (owned copy for bytes-slice to consume)
+            out.push(Lir::ConstI32(byte_offset as i32)); // [bytes, off]
+            emit(db, len, slots, base + 1, high, scratch_ty, layout, out)?; // [bytes, off, n:i64]
+            out.push(Lir::I32WrapI64); // [bytes, off, n:i32] (a byte count fits i32)
+            out.push(Lir::CallImport(OP_BYTES_SLICE)); // [slice-handle] (consumes the copied bytes)
+            Ok(()) // leaves [payload:bytes-handle]
         }
         // `Bytes.len` — emit the bytes handle, then `bytes-len` (→ u32, an i32 slot), then extend to i64
         // (a length is non-negative), since `Bytes.len : Int64`. Mirrors `List.len` exactly.

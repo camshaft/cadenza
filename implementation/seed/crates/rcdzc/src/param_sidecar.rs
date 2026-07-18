@@ -107,11 +107,21 @@ pub fn generate(ast: &mut Arenas) {
     // DIFFERENT binder ids, so the real dup-name soundness check (a later CDZ0201) still sees both.
     let mut seen_binders: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
+    // Only DIRECT top-level members are `@!param` module directives; a `(pragma param …)` nested in a def
+    // body / value position is misplaced (rejected as CDZ0602 by the compile.rs pragma pass) and must NOT
+    // generate an accessor. Compute the root-member set once and gate the scan on it.
+    let top_level = root_member_ids(ast);
     for i in 0..original_len {
         let id = StructId(i);
         // A well-formed site is a `(pragma param (param <kv>…) (: name Type))` node — read its NAME + TYPE
         // off the `(: name Type)` binder (the config group is read separately for the manifest).
         if let Some((name, ty)) = param_pragma_name_ty(ast, id) {
+            // Skip a nested pragma — only a top-level `@!param` declares a module parameter. (A comment-peel
+            // alias of a top-level `@!param` lands ON the root member slot, so it is kept; the deeper
+            // original copy is filtered here, and the `seen_binders` dedup below covers any residual.)
+            if !top_level.contains(&id) {
+                continue;
+            }
             // `name` is the binder's name occurrence — its node id uniquely identifies the physical site,
             // so a comment-peel alias (same id) is skipped while a distinct same-name site (different id) is
             // kept for the dup-name check.
@@ -220,8 +230,15 @@ pub struct ParamRecord {
 /// manifest; v-cdz-tooling's `Query::ParamManifest` + `cdz param-manifest` renders these to JSON.
 pub fn scan_manifest(ast: &Arenas) -> Vec<ParamRecord> {
     let mut records = Vec::new();
+    // Only DIRECT top-level members are `@!param` module parameters; a nested `(pragma param …)` is a
+    // misplaced form (CDZ0602), not a widget the manifest should surface. Gate the scan on the root-member
+    // set so `cdz param-manifest` / the browser binding never render a slider for a buried pragma.
+    let top_level = root_member_ids(ast);
     for i in 0..ast.structure.len() as u32 {
         let id = StructId(i);
+        if !top_level.contains(&id) {
+            continue;
+        }
         // A `@!param` site `(pragma param (param <kv>…) (: name Type))` → config group + name + type node.
         let Some((app, name_node, ty)) = param_pragma_parts(ast, id) else {
             continue;
@@ -461,6 +478,33 @@ fn build_member_access(ast: &mut Arenas, recv: &str, member: &str) -> StructId {
     let recv_atom = push_atom(ast, Leaf::Name(recv.to_string()));
     let member_atom = push_atom(ast, Leaf::Name(member.to_string()));
     push_list(ast, vec![dot, recv_atom, member_atom])
+}
+
+/// The root's DIRECT member ids — the forms a `@!param` may legally sit among. A `@!param` is a MODULE
+/// directive (operator ruling 2026-07-18: it parameterizes the whole module, like `@!default-fraction`),
+/// so it is well-placed ONLY as a direct member of the program root: `(module NAME item…)` → the items
+/// after NAME; `(do item…)` → the whole tail; a bare single-form root → the root itself. A `(pragma param
+/// …)` anywhere DEEPER (in a def body, a `(do …)` value position, an argument) is MISPLACED — it is not a
+/// module directive there. Mirrors `accum::index_def_forms`'s root-member reckoning so the placement guard
+/// and the def-form indexer agree on what "top level" means.
+fn root_member_ids(ast: &Arenas) -> Vec<StructId> {
+    match ast.get(ast.root) {
+        Struct::List(top) => match top.first().and_then(|&h| ast.as_name(h)) {
+            Some("module") => top.get(2..).unwrap_or(&[]).to_vec(),
+            Some("do") => top.get(1..).unwrap_or(&[]).to_vec(),
+            _ => vec![ast.root],
+        },
+        _ => vec![ast.root],
+    }
+}
+
+/// Is `id` a direct top-level member of the program root — the only placement at which a `@!param` is a
+/// module directive rather than a misplaced form? Used by both the sidecar scans (skip a nested pragma so
+/// it generates no `Param` op / no manifest row) and the `compile.rs` pragma pass (a nested `(pragma param
+/// …)` is the coded placement reject CDZ0602, not the confusing CDZ0101 cascade its unbound config names
+/// would otherwise raise).
+pub fn is_top_level_member(ast: &Arenas, id: StructId) -> bool {
+    root_member_ids(ast).contains(&id)
 }
 
 /// Append `member` as a top-level member of the `(module NAME …)` root (or a `(do …)` root). The module's

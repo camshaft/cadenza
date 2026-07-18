@@ -6867,18 +6867,20 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                     acc = Some(*body);
                 }
                 BinArm::Bin(segs, body) => {
-                    // Handled at runtime: fixed-width INT segments, plus (optionally) a FINAL UNSIZED
-                    // `(bytes rest)` — a header + a variable-length tail (static offsets throughout). A
-                    // bit-field, or a dependent-size `(bytes b n)` (dynamic offset), is a later slice.
+                    // Handled at runtime: fixed-width INT segments, plus (optionally) a FINAL bytes segment
+                    // that is either UNSIZED `(bytes rest)` (the tail) OR DEPENDENT-SIZE `(bytes payload n)`
+                    // — a header + a variable-length tail/payload (static offsets throughout the int prefix).
+                    // A bit-field `(bits …)`, or a NON-FINAL / mid-stream dependent-size segment (which makes
+                    // a following offset dynamic), is still a later slice.
                     let ok = segs.iter().enumerate().all(|(i, s)| match &s.kind {
                         crate::resolved::SegKind::Int { .. } => true,
-                        // A final unsized bytes segment is the LAST segment with no dependent size.
-                        crate::resolved::SegKind::Bytes { size: None } => i + 1 == segs.len(),
+                        // A final bytes segment (unsized rest OR dependent-size payload) is the LAST segment.
+                        crate::resolved::SegKind::Bytes { .. } => i + 1 == segs.len(),
                         _ => false,
                     });
                     if !ok {
                         return Core::Poison(Reject::decline(
-                            "a runtime bin match with a bit-field or dependent-size segment is not yet lowered",
+                            "a runtime bin match with a bit-field or non-final variable-length segment is not yet lowered",
                         ));
                     }
                     let Some(else_body) = acc else {
@@ -7336,11 +7338,115 @@ pub(crate) fn check_binding_pattern(
         pattern_constraints(db, pat, value_ty, Vec::new(), &mut lit_tests)?;
         return Ok(());
     }
-    // A `(record …)` binding pattern is irrefutable in principle but a later increment — DECLINE.
-    if db.ast.as_form(pat, "record").is_some() {
-        return Err(Reject::decline(
-            "a record binding pattern is not yet supported (Increment B)",
-        ));
+    // A `(record (field p) …)` binding pattern — destructuring a record BY FIELD. Like a tuple, a record
+    // is a fixed-shape product with an irrefutable destructure: `(record (x a) (y b))` names the `x`/`y`
+    // fields' sub-values with NO discriminant test, so it is IRREFUTABLE iff each field's value sub-pattern
+    // is. Its binders resolve field-by-field to a projection of the bound value (`a` ≡ `(. value x)`,
+    // `resolve::last_binder_named`'s record arm → `Resolved::Member`, folding to a `Core::Proj` at the
+    // field's SORTED slot) — the record analogue of the tuple's `SumPayload{Elem(i)}` binder, with the
+    // name→index mapping handled by `runtime_member_index` where the record type is solved. This shape is
+    // more flexible than a tuple: a PARTIAL record pattern `(record (x a))` over `(Record (x …)(y …))` binds
+    // only `x` and is still irrefutable (a record pattern names the fields it wants; the rest are ignored),
+    // whereas a tuple pattern must match the full arity.
+    //= spec/capabilities/core-semantics.md#a-binding-position-accepts-an-irrefutable-pattern
+    //# A record pattern whose every named field's sub-pattern is irrefutable is itself irrefutable, matched recursively to any depth in the sense of *Patterns Compose*; it binds the named fields' sub-values and ignores any unnamed field, so a record pattern may name a subset of the record's fields.
+    if let Some(fields) = db.ast.as_form(pat, "record").map(<[_]>::to_vec) {
+        // Linearity across the WHOLE pattern (CDZ0102) — two field values may not bind the same name.
+        check_pattern_linear(db, pat)?;
+        // The record's field types by name (when the value type is a solved record — else each field value
+        // is checked against `Any`, the permissive treatment a wrong/unsolved value type gets: refutability
+        // is a property of the pattern shape, not the value type, and a genuine field/type mismatch is
+        // faulted by `pattern_constraints` below).
+        let field_tys: Option<
+            std::rc::Rc<std::collections::BTreeMap<crate::resolved::Symbol, crate::ty::Ty>>,
+        > = match value_ty.strip_nominal() {
+            crate::ty::Ty::Record(fs) => Some(fs.clone()),
+            _ => None,
+        };
+        // Each `(key value)` field pair: the KEY is a field LABEL (never a binder), the VALUE sub-pattern is
+        // a binder position — recurse `check_binding_pattern` into it with the field's own type, exactly as
+        // the tuple arm recurses each element. A literal value → CDZ0210, a multi-variant-ctor value →
+        // CDZ0210, a bare-binder / nested-irrefutable value → Ok, at any depth.
+        for &pair in &fields {
+            let crate::ast::Struct::List(kv) = db.ast.get(pair) else {
+                continue; // a malformed field pair is faulted by `pattern_constraints` below
+            };
+            if kv.len() != 2 {
+                continue;
+            }
+            let (key_occ, value_pat) = (kv[0], kv[1]);
+            let key = crate::resolve::read_key(db, key_occ);
+            // FIELD EXISTENCE (CDZ0201): when the value type is a SOLVED record, every named field the
+            // pattern destructures must be a field of that record — a `(record (z a))` over `(Record (x
+            // …)(y …))` names a field the value does not have. Anchor the fault at the field pair, the
+            // minimal locus of the mistake. (An unsolved/`Any` value type grounds no such check here; a
+            // non-record value type is faulted below.) This is the record analogue of the tuple arm's
+            // arity check, and it fires EAGERLY at the pattern rather than only at the binder's projection
+            // (where a missing field would otherwise surface as a `Member`-fold CDZ0201 pointing at the
+            // body reference — the less actionable locus).
+            if let (Some(fs), Some(sym)) = (field_tys.as_ref(), key.clone())
+                && !fs.contains_key(&sym)
+            {
+                return Err(Reject::coded(
+                    Code::TypeMismatch,
+                    format!(
+                        "a record binding pattern names field `{}`, which the bound value of type {} \
+                         does not have",
+                        sym.name,
+                        value_ty.render_name()
+                    ),
+                )
+                .at(pair));
+            }
+            // FIELD-VALUE SCOPE (Increment B): a field's value sub-pattern is a bare BINDER `a` or a
+            // WILDCARD `_`. A NESTED compound field value (`(record (p (tuple a b)))`) is irrefutable in
+            // principle, but its binders cannot yet be WIRED — a record field projects by NAME→sorted-slot
+            // (`Resolved::Member`, folding to `Core::Proj`), and `PathStep` has no name-keyed step to
+            // COMPOSE a projection with a further sub-path, so `resolve::last_binder_named`'s record arm
+            // wires only a bare-binder field. DECLINE a nested field value cleanly here (an honest coded
+            // outcome), keeping LOWER and RESOLVE in lockstep — never a silent CDZ0101 on an unwired binder.
+            // (A literal / multi-variant-ctor field value is REFUTABLE — routed to `check_binding_pattern`
+            // for its CDZ0210, the same fault the tuple arm gives such an element.)
+            let field_ty = key
+                .and_then(|sym| field_tys.as_ref().and_then(|fs| fs.get(&sym).cloned()))
+                .unwrap_or(crate::ty::Ty::Any);
+            // Recurse first: a literal / multi-variant-ctor / refutable field value faults CDZ0210 (the same
+            // fault the tuple arm gives such an element), winning over the scope decline below.
+            check_binding_pattern(db, value_pat, &field_ty)?;
+            // A field value that PASSED the irrefutability check but is NOT a bare binder / wildcard is a
+            // NESTED irrefutable compound (`(record (p (tuple a b)))`). Its binders cannot yet be WIRED — a
+            // record field projects by NAME→sorted-slot (`Resolved::Member` → `Core::Proj`), and `PathStep`
+            // has no name-keyed step to COMPOSE a projection with a further sub-path, so
+            // `resolve::last_binder_named`'s record arm wires only a bare-binder field. DECLINE cleanly here,
+            // keeping LOWER and RESOLVE in lockstep — never a silent CDZ0101 on an unwired nested binder.
+            let is_bare_binder_or_wild = db.ast.as_name(value_pat).is_some();
+            if !is_bare_binder_or_wild {
+                return Err(Reject::decline(
+                    "a nested compound sub-pattern inside a record binding pattern is not yet supported \
+                     (Increment B binds a record's fields to bare names; destructure a nested field with \
+                     a further `let`)",
+                ));
+            }
+        }
+        // The bound value must BE a record (or an unsolved/`Any` type the pattern grounds) — a `(record
+        // …)` binding pattern over a non-record value (`((record (x a)) 5)`) is a type mismatch (CDZ0203).
+        // Checked AFTER the per-field refutability + existence checks so a field-level fault (the more
+        // specific mistake) wins. (`pattern_constraints` — the tuple arm's shape checker — DECLINES a
+        // record pattern outright, so the record shape check is inline here rather than delegated.)
+        if !matches!(
+            value_ty.strip_nominal(),
+            crate::ty::Ty::Record(_) | crate::ty::Ty::Any
+        ) {
+            return Err(Reject::coded(
+                Code::TypeMismatch,
+                format!(
+                    "a record binding pattern destructures a record, but the bound value has type {}",
+                    value_ty.render_name()
+                ),
+            )
+            .at(pat));
+        }
+        return Ok(());
     }
     // A `(list …)` binding pattern. A binding position is IRREFUTABLE, and a list pattern is irrefutable
     // ONLY in the REST form `(list p… .. rest)` — it matches ANY length ≥ the leading count, and the empty
@@ -17096,9 +17202,110 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
                 payloads: Vec::new(),
             }
         }
-        None => Core::Poison(Reject::decline(
-            "compare of a runtime/compound operand (or a NaN pair) is not yet computed (constant scalars only)",
-        )),
+        None => {
+            // The constant fold did not decide it. A RUNTIME SCALAR pair (two Int/Bool operands neither
+            // of which is a compile-time constant) is a TOTAL order the machine can compare directly — the
+            // §331 requirement that `compare` AGREE with the boolean ordering operators. Desugar to the
+            // nested-`if` over the existing scalar boolean `Core::Compare` ops (the same machine `lt`/`gt`
+            // the `<`/`>` operators emit), yielding the Ordering variant — NO new runtime op:
+            //   `compare a b`  →  `if (a < b) Less else if (a > b) Greater else Equal`
+            // Both operands are read TWICE (the `<` and the `>`), so each is MATERIALIZED ONCE via a
+            // `Core::Let { (op, op) }` self-keyed binding read through a shared `LocalRef` — an operand can
+            // carry a trap or a perform (`(compare (/ a b) c)`), and re-emitting its computation would
+            // double-evaluate it (the same materialize-once discipline the runtime bin-match scrutinee uses).
+            //= spec/capabilities/core-semantics.md#a-total-order-is-observed-through-a-three-way-comparison
+            //# The boolean ordering operators MUST agree with the three-way comparison.
+            // Float is NOT `is_scalar` (Int/Bool only) — a runtime float `compare` (a NaN operand is
+            // unordered) and a compound operand (the descriptor-guided `value-cmp` heap walk, a later slice)
+            // still decline here.
+            if is_scalar(db, lhs) && is_scalar(db, rhs) {
+                lower_scalar_compare(db, id, lhs, rhs, lt, eq, gt)
+            } else {
+                Core::Poison(Reject::decline(
+                    "compare of a runtime/compound operand (or a NaN pair) is not yet computed (constant scalars only)",
+                ))
+            }
+        }
+    }
+}
+
+/// Build the runtime three-way `(compare a b)` over two RUNTIME SCALAR operands (Int/Bool) as the nested-`if`
+/// `if (a < b) Less else if (a > b) Greater else Equal`, yielding the built-in `Ordering` sum (its
+/// Less/Equal/Greater discs `lt`/`eq`/`gt`). Reuses the existing scalar boolean `Core::Compare` machine op —
+/// no new runtime op. Each operand is read twice (the `<` and the `>`), so BOTH are materialized ONCE into a
+/// self-keyed `Core::Let` binding read through a shared `Core::LocalRef` — an operand may trap or perform, so
+/// re-emitting its computation would double-evaluate it (the runtime-bin-match materialize-once precedent).
+fn lower_scalar_compare(
+    db: &mut Db,
+    id: StructId,
+    lhs: StructId,
+    rhs: StructId,
+    lt: u32,
+    eq: u32,
+    gt: u32,
+) -> Core {
+    let ordering_ty = crate::infer::type_of(db, id);
+    let lhs_ty = crate::infer::type_of(db, lhs);
+    let rhs_ty = crate::infer::type_of(db, rhs);
+    // Materialize each operand once — a shared `LocalRef` the two comparisons both read (keyed by the
+    // operand's own occurrence, so the wrapping `Core::Let { (op, op) }` names the computation exactly once).
+    db.kept_bindings.insert(lhs);
+    db.kept_bindings.insert(rhs);
+    let lhs_ref = synth_core(db, Core::LocalRef { binder: lhs }, lhs_ty);
+    let rhs_ref = synth_core(db, Core::LocalRef { binder: rhs }, rhs_ty);
+    // `a < b` and `a > b` — the existing scalar boolean machine comparisons (the emit widths them from the
+    // operands' solved scalar type, the same path the `<`/`>` operators lower to).
+    let lt_cmp = synth_core(
+        db,
+        Core::Compare {
+            op: Prim::Lt,
+            lhs: lhs_ref,
+            rhs: rhs_ref,
+        },
+        crate::ty::Ty::Bool,
+    );
+    let gt_cmp = synth_core(
+        db,
+        Core::Compare {
+            op: Prim::Gt,
+            lhs: lhs_ref,
+            rhs: rhs_ref,
+        },
+        crate::ty::Ty::Bool,
+    );
+    // The three nullary Ordering variants (`Less`/`Greater`/`Equal`), built at this node's solved Ordering
+    // type — the same `Core::SumNew { disc, payloads: [] }` a constant `compare` fold produces.
+    let less = synth_core(
+        db,
+        Core::SumNew {
+            disc: lt,
+            payloads: Vec::new(),
+        },
+        ordering_ty.clone(),
+    );
+    let greater = synth_core(
+        db,
+        Core::SumNew {
+            disc: gt,
+            payloads: Vec::new(),
+        },
+        ordering_ty.clone(),
+    );
+    let equal = synth_core(
+        db,
+        Core::SumNew {
+            disc: eq,
+            payloads: Vec::new(),
+        },
+        ordering_ty.clone(),
+    );
+    // `if (a > b) Greater else Equal`, then `if (a < b) Less else <that>`.
+    let inner = synth_if(db, gt_cmp, greater, equal);
+    let outer = synth_if(db, lt_cmp, less, inner);
+    trace!(target: "rcdzc::lower", node = id.0, "compare of runtime scalars → nested-if over scalar Compare (three-way, materialize-once)");
+    Core::Let {
+        bindings: vec![(lhs, lhs), (rhs, rhs)],
+        body: outer,
     }
 }
 
@@ -17459,6 +17666,14 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 // unified both operands, so the single-side orderability check covers both. A float/bytes/set/
                 // map leaf makes the compound UN-orderable (`is_orderable_compound` false) → the decline below,
                 // matching the spec's carve-outs (§319 float partial; no blessed Bytes/Set/Map order).
+                //= spec/capabilities/core-semantics.md#compound-ordering-is-lexicographic
+                //# A tuple or record MUST be ordered by comparing its components in the same canonical order its equality and canonical byte form use, taking the first component that differs as decisive and comparing equal only when every component compares equal.
+                //= spec/capabilities/core-semantics.md#compound-ordering-is-lexicographic
+                //# A list MUST be ordered lexicographically: comparing elements from the first, the first differing element is decisive, and a list that is a proper prefix of another MUST compare less than that longer list.
+                //= spec/capabilities/core-semantics.md#compound-ordering-is-lexicographic
+                //# A sum MUST be ordered first by the discriminant as encoded in its canonical byte form, and then, for two values of the same variant, lexicographically by payload, so that the order agrees with the canonical byte form equality already requires.
+                //= spec/capabilities/core-semantics.md#compound-ordering-is-lexicographic
+                //# The total order a compound offers MUST agree with its structural equality — two values compare equal under the three-way comparison exactly when they are equal — and MUST be surfaced through the same three-way comparison and boolean ordering operators as any other total order.
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "runtime compound ordering → ValueCmp (value-cmp heap walk)");
                 Core::ValueCmp {
                     op,
@@ -21576,12 +21791,89 @@ fn decode_bin_field_runtime(
                 )),
             }
         }
+        // A DEPENDENT-SIZE `(bytes payload n)` binder — exactly `n` bytes at the segment's static offset,
+        // where `n` is the RUNTIME value of an EARLIER integer segment (named by `n_occ`). Read it as
+        // `bytes-slice(scrutinee, off, n)` via `Core::BinSizedRead`, whose `len` child is a `BinIntRead` of
+        // the named earlier segment. The offset must be static (a preceding dependent-size segment would
+        // make it dynamic → decline); `n`'s own segment must be a fixed-width int at a static offset. The
+        // caller's predicate guaranteed `bytes-len >= off + n`, so the slice is in bounds.
+        SegKind::Bytes { size: Some(n_occ) } if seg_index + 1 == segs.len() => {
+            // The size `n` reads off its own materialized `LocalRef` to the kept scrutinee binding.
+            let len_src = synth_core(
+                db,
+                Core::LocalRef { binder: scrutinee },
+                crate::ty::Ty::Bytes,
+            );
+            match (
+                bin_static_offset(segs, seg_index),
+                bin_size_len_read(db, len_src, segs, seg_index, *n_occ),
+            ) {
+                (Some(byte_offset), Some(len)) => {
+                    let scrut_ref = synth_core(
+                        db,
+                        Core::LocalRef { binder: scrutinee },
+                        crate::ty::Ty::Bytes,
+                    );
+                    Core::BinSizedRead {
+                        bytes: scrut_ref,
+                        byte_offset,
+                        len,
+                    }
+                }
+                _ => Core::Poison(Reject::decline(
+                    "a runtime dependent-size bin binder needs a static offset and a fixed-int size segment",
+                )),
+            }
+        }
         SegKind::Bits { .. } | SegKind::Bytes { .. } | SegKind::Utf8 { .. } => {
             Core::Poison(Reject::decline(
-                "a runtime bin bit-field / sized-bytes / utf8 binder is not yet decoded",
+                "a runtime bin bit-field / non-final sized-bytes / utf8 binder is not yet decoded",
             ))
         }
     }
+}
+
+/// Build the `Core::BinIntRead` occurrence that reads the DEPENDENT-SIZE operand `n` of a `(bytes payload
+/// n)` segment out of the runtime scrutinee: `n_occ` names an EARLIER integer segment binder, so find that
+/// segment by name, confirm it is a fixed-width int at a static byte offset, and emit a `BinIntRead` of it
+/// (typed Int64 — a `BinIntRead` always yields an i64). Returns `None` if `n_occ` is not a name / does not
+/// resolve to an earlier fixed-int segment / that segment has no static offset (a dynamic offset from a
+/// preceding dependent size). Mirrors the const path's by-name resolution (`bin_match_decode`).
+fn bin_size_len_read(
+    db: &mut Db,
+    bytes_src: StructId,
+    segs: &[crate::resolved::Segment],
+    seg_index: usize,
+    n_occ: StructId,
+) -> Option<StructId> {
+    use crate::resolved::SegKind;
+    let size_name = db.ast.as_name(n_occ)?;
+    // Find the EARLIER segment whose binder is `size_name` and that is a fixed-width int.
+    let (idx, width, signed, little_endian) =
+        segs.iter().take(seg_index).enumerate().find_map(|(i, s)| {
+            if db.ast.as_name(s.slot) != Some(size_name) {
+                return None;
+            }
+            match &s.kind {
+                SegKind::Int { width, signed } => Some((i, *width, *signed, s.little_endian)),
+                _ => None,
+            }
+        })?;
+    let byte_offset = bin_static_offset(segs, idx)?;
+    // `bytes_src` is the already-materialized read of the scrutinee (a `LocalRef` to the kept binding, or
+    // the predicate path's `scrut_ref`) — read the size field off it directly (do NOT re-wrap: wrapping a
+    // ref in another `LocalRef` yields "no local slot").
+    Some(synth_core(
+        db,
+        Core::BinIntRead {
+            bytes: bytes_src,
+            byte_offset,
+            width,
+            signed,
+            little_endian,
+        },
+        crate::ty::Ty::int(),
+    ))
 }
 
 /// Synthesize a fresh node carrying `core` with solved type `ty` (its `core`/`ty` columns pre-filled, so
@@ -21644,15 +21936,20 @@ fn build_bin_arm_predicate(
             _ => 0,
         })
         .sum();
-    // Length probe. Whole-scrutinee accounting: a `bin` pattern with no trailing unsized bytes matches
+    // Length probe. Whole-scrutinee accounting: a `bin` pattern with no trailing variable segment matches
     // only the EXACT fixed length (`bytes-len == total`); one ending in a final `(bytes rest)` matches any
-    // length `>= total` (the fixed int prefix, with the rest absorbing the remainder). `BytesLen` yields
-    // Int64; type both compare operands FIXED Int64 so the literal grounds to i64 (an i32-vs-i64 compare
-    // is an invalid module).
+    // length `>= total` (the fixed int prefix, rest absorbs the remainder); one ending in a DEPENDENT-SIZE
+    // `(bytes payload n)` matches EXACTLY `total + n` (n = the runtime value of an earlier int segment).
+    // `BytesLen` yields Int64; type both compare operands FIXED Int64 so the literal grounds to i64 (an
+    // i32-vs-i64 compare is an invalid module).
     let has_final_rest = matches!(
         segs.last().map(|s| &s.kind),
         Some(SegKind::Bytes { size: None })
     );
+    let final_dep_size = match segs.last().map(|s| &s.kind) {
+        Some(SegKind::Bytes { size: Some(n_occ) }) => Some(*n_occ),
+        _ => None,
+    };
     let len_node = synth_core(
         db,
         Core::BytesLen { operand: scrutinee },
@@ -21663,12 +21960,33 @@ fn build_bin_arm_predicate(
         Core::ConstInt(IntValue::from_i64(total as i64)),
         crate::ty::Ty::Int(crate::ty::IntTy::i64()),
     );
+    // The right-hand side of the length compare: `total`, or `total + n` for a dependent-size tail.
+    let rhs_node = match final_dep_size {
+        None => total_node,
+        Some(n_occ) => {
+            // `n` is the runtime value of the earlier int segment named by `n_occ` — a `BinIntRead`.
+            let Some(n_read) = bin_size_len_read(db, scrutinee, segs, segs.len() - 1, n_occ) else {
+                return Err(Reject::decline(
+                    "a runtime dependent-size bin match needs a fixed-int size segment at a static offset",
+                ));
+            };
+            synth_core(
+                db,
+                Core::Arith {
+                    op: Prim::Add,
+                    lhs: total_node,
+                    rhs: n_read,
+                },
+                crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+            )
+        }
+    };
     let mut pred = synth_core(
         db,
         Core::Compare {
             op: if has_final_rest { Prim::Ge } else { Prim::Eq },
             lhs: len_node,
-            rhs: total_node,
+            rhs: rhs_node,
         },
         crate::ty::Ty::Bool,
     );
@@ -21886,6 +22204,10 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
 /// compound containing one is NOT orderable (the whole compound declines). Requires the ROOT to be a genuine
 /// COMPOUND (a bare scalar/String takes the scalar/StrCmp path, not here). Mirrors `ty_heap_walkable`'s
 /// structure but with the ORDER-offering leaf set (v-inference's ruling), not the equality-walkable one.
+//= spec/capabilities/core-semantics.md#compound-ordering-is-lexicographic
+//# A compound value — a tuple, a record, a list, or a sum — MUST offer a total order exactly when every one of its component types offers a total order.
+//= spec/capabilities/core-semantics.md#compound-ordering-is-lexicographic
+//# A compound any of whose component types does not, transitively, offer a total order MUST NOT be treated as offering one; in particular a floating-point component makes the compound unordered, because a floating-point type offers only the IEEE partial order.
 fn is_orderable_compound(db: &mut Db, ty: &crate::ty::Ty) -> bool {
     use crate::ty::Ty;
     // The root must be a compound; a bare orderable leaf is handled by the scalar / StrCmp paths.

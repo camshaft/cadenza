@@ -1308,9 +1308,28 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             // than reaching the sidecar (the B-invariant: a `@!param` MUST carry an explicit type). A valid
             // one is accepted (Ok — no fault); the sidecar consumes it in `Db::load`.
             Some("param") => {
+                // PLACEMENT first: `@!param` is a MODULE directive (operator ruling 2026-07-18 — it
+                // parameterizes the whole module, like `@!default-fraction`), so it is well-placed ONLY as a
+                // direct top-level member of the program root. A `(pragma param …)` nested in a def body / a
+                // `(do …)` value position is misplaced — there it is not a module directive, and the sidecar
+                // scans skip it (no accessor / no manifest row). Report the placement as a coded CDZ0602
+                // rather than letting its unbound config names (`widget`, `slider`, …) raise a confusing
+                // CDZ0101 cascade at value positions. (The default-* pragmas have no analogous guard because
+                // a nested one already CDZ0101s as an unbound `(pragma …)` call; `@!param` deserves the
+                // actionable placement message since it is the directive a user is most likely to misplace.)
+                if !crate::param_sidecar::is_top_level_member(&db.ast, form) {
+                    faults.push(
+                        Reject::coded(
+                            Code::MalformedDirective,
+                            "an `@!param` module parameter must be a top-level module directive, not nested \
+                             inside a definition or a value position — move it to the module's top level",
+                        )
+                        .at(form),
+                    );
+                }
                 // tail = [param-key, config-group, binder]; the binder must be a `(: name Type)` colon node
                 // and the config-group a `(param …)` app. `param_sidecar::is_param_site` checks exactly this.
-                if !crate::param_sidecar::is_param_site(&db.ast, form) {
+                else if !crate::param_sidecar::is_param_site(&db.ast, form) {
                     faults.push(
                         Reject::coded(
                             Code::MalformedDirective,
@@ -4086,6 +4105,10 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         }
         Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
             collect_reached_poisons(db, bytes, out)
+        }
+        Core::BinSizedRead { bytes, len, .. } => {
+            collect_reached_poisons(db, bytes, out);
+            collect_reached_poisons(db, len, out);
         }
         Core::Proj { operand, .. }
         | Core::ListLen { operand }

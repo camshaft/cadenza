@@ -22,17 +22,17 @@ export default function WhatsNext() {
         You can bind values and write functions (<Ch to="/basics">Values &amp; functions</Ch>), pipe
         and compose them (<Ch to="/functions">Composing functions</Ch>), branch and recurse{" "}
         (<Ch to="/control-flow">Control flow</Ch>), compare and order{" "}
-        (<Ch to="/ordering">Comparison &amp; ordering</Ch>), and bundle data into tuples and records —
+        (<Ch to="/ordering">Comparison &amp; ordering</Ch>), and bundle data into tuples and records,
         reading, nesting, and functionally updating it (<Ch to="/data">Tuples &amp; records</Ch>,{" "}
         <Ch to="/records-tuples">Working with records &amp; tuples</Ch>). You decide by shape with{" "}
-        <Ch to="/pattern-matching">pattern matching</Ch>, and you've met the collections —{" "}
+        <Ch to="/pattern-matching">pattern matching</Ch>, and you've met the collections, namely{" "}
         <Ch to="/lists">lists</Ch>, <Ch to="/maps-sets">maps &amp; sets</Ch>, and lazy{" "}
-        <Ch to="/iterators">iterators &amp; ranges</Ch> — and the text and binary
+        <Ch to="/iterators">iterators &amp; ranges</Ch>, along with the text and binary
         types, <Ch to="/strings">strings</Ch>, <Ch to="/bytes">bytes</Ch> (and{" "}
         <Ch to="/binary-matching">binary matching</Ch> to build and destructure them), and{" "}
         <Ch to="/symbols">symbols</Ch>. You handle{" "}
         <Ch to="/errors">absence and errors</Ch> with <C>Option</C>/<C>Result</C>, and you know how
-        Cadenza's numbers behave — checked <Ch to="/numbers">integers</Ch>,{" "}
+        Cadenza's numbers behave, from checked <Ch to="/numbers">integers</Ch>,{" "}
         <Ch to="/sized-integers">sized integers</Ch>,{" "}
         <Ch to="/floats">floating-point numbers</Ch>, and{" "}
         <Ch to="/rationals">exact fractions</Ch>, none of them ever converting silently.
@@ -50,15 +50,15 @@ export default function WhatsNext() {
         compare, and branch on at compile time; <Ch to="/ad-hoc-polymorphism">ad-hoc polymorphism</Ch>{" "}
         where one operator name dispatches on operand type and a generic function specializes per type,
         all resolved at compile time; <Ch to="/const-parameters">const parameters</Ch> that fix an
-        argument at compile time — a constant, a type, or a dictionary — inlined into a specialized copy
-        and then erased; <Ch to="/metaprogramming">metaprogramming</Ch> where a
+        argument at compile time, whether a constant, a type, or a dictionary, inlined into a specialized
+        copy and then erased; <Ch to="/metaprogramming">metaprogramming</Ch> where a
         program is an ordinary AST value you can quote, take apart, build, and eval; and{" "}
         <Ch to="/property-testing">testing</Ch>, where <C>@test</C> marks a function as a test and
-        parameters make it generative — the runner synthesizes the inputs and shrinks any failure, no
+        parameters make it generative, so the runner synthesizes the inputs and shrinks any failure, no
         testing DSL required.
       </P>
       <P>
-        More importantly, you've seen the ideas underneath — the{" "}
+        More importantly, you've seen the ideas underneath, the{" "}
         <Ch to="/philosophy">tenets</Ch> that explain <em>why</em> the language makes the choices it
         does. Determinism and capability-safety as the floor. Declining rather than miscompiling. One
         program, many syntaxes. Refusing the ambiguous conversion. These aren't trivia; they're the
@@ -67,7 +67,7 @@ export default function WhatsNext() {
 
       <H2>One last program</H2>
       <P>
-        A little of everything: a recursive helper, a comparison, and a record — computing the larger
+        A little of everything: a recursive helper, a comparison, and a record, computing the larger
         coordinate of a point, doubled.
       </P>
       <Runnable
@@ -77,14 +77,14 @@ export default function WhatsNext() {
     (* 2 (max (. p x) (. p y)))))`}
       />
       <P>
-        Edit it — change the point, the factor, swap <C>max</C> for <C>min</C> — and Run. Then flip the
+        Edit it, changing the point or the factor, or swapping <C>max</C> for <C>min</C>, and Run. Then flip the
         syntax toggle in the header and watch the very same program re-appear in the other surface.
       </P>
 
       <H2>Keep exploring</H2>
       <P>
         The best way forward is to keep an example open and change it. Every code block in this guide is
-        a scratchpad — break it, fix it, and press Run. That loop, with the compiler answering
+        a scratchpad, so break it, fix it, and press Run. That loop, with the compiler answering
         instantly, is the fastest way to build a feel for the language.
       </P>
       <P>
@@ -95,7 +95,7 @@ export default function WhatsNext() {
       </P>
       <P>
         And to see the language doing real work, browse the{" "}
-        <Ch to="/example-apps">example applications</Ch> — the calculator, CAD preview, notebook, and
+        <Ch to="/example-apps">example applications</Ch>: the calculator, CAD preview, notebook, and
         playground, each a differentiator you learned running as a full program.
       </P>
     </article>

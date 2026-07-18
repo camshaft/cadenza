@@ -2363,6 +2363,21 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 "{{ let __bytes = {v}; __bytes[{byte_offset}usize..].to_vec() }}"
             ))
         }
+        // Read a DEPENDENT-SIZE `(bytes payload n)` segment — exactly `n` bytes from a STATIC offset, as an
+        // owned `Vec<u8>`, where `n` is the runtime value of an earlier segment (`len` emits an i64). The
+        // caller's length probe guaranteed `byte_offset + n <= len`. Mirror the wasm `BinSizedRead`
+        // (`bytes-slice(bytes, off, n)`).
+        Core::BinSizedRead {
+            bytes,
+            byte_offset,
+            len,
+        } => {
+            let v = emit(db, bytes, env, ctx)?;
+            let n = emit(db, len, env, ctx)?;
+            Ok(format!(
+                "{{ let __bytes = {v}; let __n = ({n}) as usize; __bytes[{byte_offset}usize..{byte_offset}usize + __n].to_vec() }}"
+            ))
+        }
         // A host call OR a cross-component call crosses a component boundary — the Rust backend emits no
         // component imports, so it declines (the wasm backend is the boundary target). A sequencing block
         // only ever holds a host-call statement today, so the Rust backend declines it too.

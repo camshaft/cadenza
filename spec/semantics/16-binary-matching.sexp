@@ -838,6 +838,26 @@
   (call   main (: 7 UInt8))
   (output (: 0 Int64)))
 
+(case "a runtime bin match binds a dependent-size bytes segment over a runtime scrutinee"
+  (doc    "The length-prefixed-frame parse (the dependent-size crown jewel) over a RUNTIME scrutinee: a
+           `(bin (u8 n) (bytes payload n))` pattern reads a one-byte header `n` then binds EXACTLY `n`
+           payload bytes. The arm's length probe is `bytes-len == fixed_prefix(1) + n` — `n` read at runtime
+           via a fixed-offset int read — and the payload binds as `bytes-slice(scrutinee, 1, n)`. The
+           scrutinee is a three-byte frame `[h, 7, 8]` built from a RUNTIME header `h` (so the bin cannot
+           fold), and the arm returns the payload length. h=2 → the frame is exactly prefix(1)+2 = 3 bytes,
+           so the two payload bytes bind → `Bytes.len payload = 2`. Pins runtime dependent-size decoding —
+           read a size, then that many bytes — the wasm companion of the constant dependent-size cases
+           above (was declined on wasm, computed on rust; now lowered via a sized bytes-slice).")
+  (input  (do (def (main (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
+                  ((bin (u8 n) (bytes payload n)) (Bytes.len payload))
+                  (_ -1)))
+              (export main)))
+  (call   main (: 2 Int64))
+  (output (: 2 Int64))
+  (call   main (: 1 Int64))
+  (output (: -1 Int64)))
+
 (case "a runtime bit-field packs a runtime value into a nibble"
   (doc    "`(bin (bits ((UInt 4).wrap n) 4) (bits 5 4))` with a RUNTIME `n` packs the low nibble of `n`
            into the HIGH nibble and the constant 5 into the low nibble of one byte (most-significant field

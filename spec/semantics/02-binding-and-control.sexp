@@ -2811,6 +2811,48 @@
   (input  (let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c))))
   (output (: 6 Int64)))
 
+; A RECORD binding pattern. A record is a fixed-shape product like a tuple, so `(record (x a) (y b))` in a
+; binder position destructures the value BY FIELD — binding `a`/`b` to the `x`/`y` fields — with NO
+; discriminant test, hence IRREFUTABLE iff each named field's sub-pattern is (core-semantics.md #A Binding
+; Position Accepts An Irrefutable Pattern). Unlike a tuple, a record pattern is projected by NAME, so it
+; MAY name fields in a different order than the value writes them and MAY name a SUBSET of the fields (a
+; partial pattern). A field binder resolves to a PROJECTION of the bound value (`a` ≡ `(. v x)`), the
+; record analogue of a tuple element's positional read.
+
+(case "a let binder may be a record pattern that destructures by field"
+  (doc    "`(let (((record (x a) (y b)) (record (x 3) (y 4)))) (+ a b))` binds `a`/`b` to the `x`/`y` fields
+           of the bound record (core-semantics.md #A Binding Position Accepts An Irrefutable Pattern) — the
+           record analogue of the tuple destructure above, and the same binding a `(match r ((record (x a)
+           (y b)) …))` arm would make. A record field is read by name, so this destructure reuses the
+           ordinary member-access projection. `(+ a b)` = 7.")
+  (input  (let (((record (x a) (y b)) (record (x 3) (y 4)))) (+ a b)))
+  (output (: 7 Int64)))
+
+(case "a record binding pattern binds fields by name, out of order and partial"
+  (doc    "A record pattern projects each field by NAME, not position: `(let (((record (z b) (a c)) (record
+           (a 10) (z 20)))) …)` names `z`/`a` in the OPPOSITE order the value writes them and each binder
+           still reads its own field — `c` = field `a` = 10, `b` = field `z` = 20 → 100*10+20 = 1020. This
+           is the flexibility a tuple lacks (positional), and a partial pattern that names a subset of the
+           fields is equally valid. Pins field-order-independence + partiality of a record binding pattern.")
+  (input  (let (((record (z b) (a c)) (record (a 10) (z 20)))) (+ (* 100 c) b)))
+  (output (: 1020 Int64)))
+
+; NOTE: a record pattern in PARAMETER position (`(def (f (record (x a) (y b))) …)`) is supported by the
+; compiler (it desugars to a destructuring `let`, the SAME path the let-binder cases above exercise; a Rust
+; regression test `a_record_binding_pattern_in_a_parameter_destructures_by_field` pins it end-to-end), but
+; the ML SURFACE parser does not yet accept a record pattern in a parameter slot (`def f({ x = a })` →
+; "expected a name"), so a param-position case cannot yet round-trip through the ML surface the corpus gate
+; requires. Filed with v-syntax; the case is promoted here once the ML parser admits it — the record twin of
+; the list-rest / tuple param patterns the ML surface already spells.
+
+(case "a record binding pattern naming an absent field is rejected"
+  (doc    "The contrast: a record binding pattern that names a field the bound value's record type does NOT
+           have is a type mismatch (CDZ0203), not a silent miss. `(let (((record (nope a)) (record (x 3) (y
+           4)))) a)` names `nope`, absent from `(Record (x Int64) (y Int64))`. Pins that a record binding
+           pattern's fields must exist on the value — the record analogue of a tuple pattern's arity check.")
+  (input  (let (((record (nope a)) (record (x 3) (y 4)))) a))
+  (error  CDZ0203))
+
 (case "a let binder may be a single-variant-sum pattern that destructures the payload"
   (doc    "A SINGLE-VARIANT sum's sole constructor ALWAYS matches, so it is an IRREFUTABLE pattern — valid
            in a `let` binder position (core-semantics.md #A Binding Position Accepts An Irrefutable
