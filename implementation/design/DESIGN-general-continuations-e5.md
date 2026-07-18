@@ -307,3 +307,62 @@ block [gate-neutral-ish: still declines if the block can't serve]; (2a-ii) reify
 substitute for `cont`; (2a-iii) `(k v)` → CallClosure (admit a Ty::Cont head). Gate: `(f () s k (use-k k))`
 over `(+ 1 (A.f))` → 11. Each micro-step full-corpus + opt-sweep. Start fresh — this is interlocking
 fold+reification wiring where a wrong hook miscompiles, so build stepwise with per-step validation.
+
+## 13. Increment-2b scoping (v-effects, 2026-07-18): re-performing-C escaping-k = bake the refold into the closure
+
+inc-2a reifies an escaping k over a PURE C as `(fn (#kv) C)` — a plain closure. inc-2b is the crux: C
+RE-PERFORMS the handled effect (DES: `C = (do □ (inst-ns (Sim.now)))` reads `(Sim.now)`; my `/tmp/2b.sexp`:
+`C = (+ □ (St.tick))`). Applying the reified closure must RE-ENTER the handler (the inner perform in C needs
+handling under the state at apply time) — but k escapes to a fn where the handler isn't lexically present.
+
+MECHANISM (confirmed present): the TWO-HOLE refold `rewrite_resume_to_refolded_context` ALREADY folds a
+re-performing continuation under the handler — `(+ (St.tick) (St.tick))` with a resume arm → 1 (it re-folds
+C[v] under the handler via `reduce_handle(next_state, arms, C[v])`). So the machinery to handle a
+re-performing C exists; inc-2b must BAKE that refold into the reified closure body.
+
+inc-2b reification = `k = (fn (#kv) <C refolded under the handler, with #kv the resume value>)` — i.e. the
+closure body is NOT the raw C but the RESULT of folding C[#kv] under the handler (so the inner perform is
+already handled), with the handler STATE threaded through. The hard part: the state at apply time. For a
+re-performing C the state ADVANCES (the DES sleep resumes with the clock fast-forwarded); so the reified
+closure must thread the state — either (a) the closure captures the state and the refold threads it as a
+closure-local, or (b) the state is a second closure param `(fn (#kv #state) …)`. The DES `sleep` arm's
+`scheduler-step` sets the clock then applies k — so the state at apply is the scheduler's, passed IN. This
+suggests the reified continuation is `(fn (#kv) …)` where the state it reads is captured from the ARM's
+resume logic (the arm computes the advanced state + applies k). VALIDATE against the DES repro: the arm
+`(sleep (wake) s k (scheduler-step wake k))` — scheduler-step applies `(stored-k unit)`; the reified k must,
+when applied, read the clock as `wake` (the arm passed `wake` to scheduler-step, which sets clock:=wake).
+
+This is the deepest slice — the state-capture-at-advanced-value + refold-in-closure interaction. Build it
+carefully next tick: reuse `rewrite_resume_to_refolded_context` to fold C[#kv] under the handler as the
+closure body; thread the state; gate on /tmp/2b.sexp (→ 0+1=1? recompute) + the DES repro → 5e9 + the
+no-host-span invariant. It likely SUBSUMES v-cad's two-hole PRNG gap (same re-performing-C shape).
+
+## 14. Increment-2b semantic finding (v-effects, 2026-07-18): the reified k captures the ARM's NEW state
+
+Spiking the DES escaping-k repro surfaced the crux subtlety. The sleep arm is
+`(sleep (wake) s k (scheduler-step wake k))`: it binds the NEW state as `wake` (the op's arg), ESCAPES `k`
+to `scheduler-step` WITHOUT resuming, and scheduler-step applies `(stored-k unit)`. The continuation
+`C = (inst-ns (Sim.now))` re-performs `Sim.now`, which must read `clock = wake = 5e9`.
+
+KEY: the arm does NOT `resume` — it discards the incoming state `s` and hands `wake` + `k` to scheduler-step.
+So the state the reified `k` must read when applied is NOT `s` (the pre-perform state) and NOT threaded via
+`resume` — it is `wake`, which the ARM computes and (implicitly, by the DES contract) is the state at which
+the continuation resumes. In this repro `wake` is the sleep op's ARGUMENT; the scheduler applies k "at" wake.
+
+So the reified continuation closure must capture/read the state AS THE ARM SET IT. For the DES sleep,
+`wake` is the op arg the arm threads to scheduler-step; the reified `k`'s `(Sim.now)` must resolve against
+`wake`. Mechanically: reify `k = (fn (#kv) C-refolded-with-state=wake)` where the state the refold seeds is
+the arm's new-state expression. But the arm here doesn't NAME its new state via `resume` — it's implicit in
+`(scheduler-step wake k)`. This is subtler than a `resume`-based next-state: the DES contract is "the
+scheduler applies k at the wake time it stored". So the reified k likely needs the state as a CLOSURE PARAM
+(`(fn (#kv #state) C)`) that the scheduler supplies — OR the `now` op reads a scheduler-maintained clock
+passed at apply. NEEDS co-design with v-discrete-event-sim on the exact clock-at-apply contract (does the
+scheduler pass the wake-state when it applies k, or does k close over it?).
+
+REVISED inc-2b plan: (1) the SIMPLE re-performing-C where the arm RESUMES (the two-hole shape, state via
+resume's next-state) — bake the refold into the closure, state from the resume next-state (tractable, +
+subsumes v-cad's PRNG which DOES resume). (2) the DES sleep shape (arm escapes k WITHOUT resume, state
+implicit) — needs the clock-at-apply contract clarified with v-discrete-event-sim. Do (1) first (it's the
+v-cad PRNG unblock + a clean state source); co-design (2) with the DES PM. FLAG the DES PM: your escaping-k
+repro's sleep arm doesn't `resume` — how does the reified k learn the wake-state? Is it a closure param the
+scheduler supplies at apply, or does `now` read a scheduler clock?

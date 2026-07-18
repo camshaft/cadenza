@@ -80,6 +80,7 @@ pass	String.concat with an empty operand is the identity on a RUNTIME string (th
 pass	String.from-bytes accepts a two-byte sequence split across a concat seam
 pass	String.from-bytes decodes a RUNTIME byte sequence built by a recursive appender
 pass	String.from-bytes decodes a multibyte RUNTIME Bytes ROPE, flattening before validation
+pass	String.from-bytes does not NFC-normalize — a decomposed form stays distinct (known gap)
 pass	String.from-bytes of an ill-formed RUNTIME byte sequence yields None (never traps)
 pass	String.from-bytes rejects a lone continuation byte
 pass	String.from-bytes rejects an overlong encoding

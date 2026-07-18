@@ -15,3 +15,11 @@ So the same abstract "café" has two identities (literal/normalized vs a from-by
 
 ## Routing
 ASKED concierge (corpus-bugfix 2026-07-18) for the ruling — it's a spec-intent call, not a fixer job. Will route/pin per the answer. NOT filing a passing/failing corpus case until settled. Repro: `(= (String.from-bytes (Bytes.of (list 99 97 102 101 204 129))) (String.from-bytes (Bytes.of (list 99 97 102 195 169))))` → 0 on both backends.
+
+---
+RULED + PINNED (operator via concierge + v-runtime, 2026-07-18): resolution (b) — from-bytes INTENTIONALLY
+does NOT normalize (the Unicode NFC tables would bloat the dep-free core). So a from-bytes result is
+normalized only if its input was; string identity is construction-path-dependent by design. v-runtime pinned
+the documented known-gap case in 13-strings.sexp (MR @04dd367ac): (= (from-bytes decomposed-café-bytes)
+(Some café-literal)) = FALSE, documented as INTENDED. The spec's "equality follows normalization" holds for
+normalized-construction paths (literals). WORKS-AS-SPECIFIED — no fix, documented gap. Closed.

@@ -325,6 +325,27 @@ def compilable-sender-is-exact-golden() =
   if render-compilable(g, "Buyer") == expect then unit
   else trap("the emitted compilable module matches the compile-verified golden")
 
+@test
+def compilable-chooser-is-compilable-golden() =
+  // GOLDEN: the CHOOSER's emitted module for a choice takes the first arm (mock-deterministic), performing
+  // that arm's send. VERIFIED via `cdz chor` end-to-end: Buyer's module for yes-no cdz-compiles to a wasm
+  // that runs → 0. Pins the LIntC (internal-choice) emit path is compilable, not just the linear path.
+  let expect = String.concat("effect Comm =\n  | send : String -> Int64\n  | recv : String -> String\n\n",
+    String.concat("def main() =\n  handle Comm(0) with\n    | send(l, s) => resume(0, 0)\n    | recv(f, s) => resume(\"\", 0)\n  in\n  ",
+      String.concat("let _ = Comm.send(\"Yes\") in\n  0", "\n\nexport { main }\n"))) in
+  if render-compilable(yes-no(), "Buyer") == expect then unit
+  else trap("the chooser's emitted choice module matches the compile-verified golden")
+
+@test
+def compilable-told-role-is-compilable-golden() =
+  // GOLDEN: the TOLD role (LExtC) recvs the selection then takes the first arm's continuation. VERIFIED via
+  // `cdz chor`: Seller's yes-no module cdz-compiles + runs → 0.
+  let expect = String.concat("effect Comm =\n  | send : String -> Int64\n  | recv : String -> String\n\n",
+    String.concat("def main() =\n  handle Comm(0) with\n    | send(l, s) => resume(0, 0)\n    | recv(f, s) => resume(\"\", 0)\n  in\n  ",
+      String.concat("let _ = Comm.recv(\"Buyer\") in\n  let _ = Comm.recv(\"Buyer\") in\n  0", "\n\nexport { main }\n"))) in
+  if render-compilable(yes-no(), "Seller") == expect then unit
+  else trap("the told role's emitted choice module matches the compile-verified golden")
+
 // Cheap `contains` helpers for the compilable-module shape tests (walk the char stream).
 def contains-main(s: String) -> Bool = contains-sub-str(s, "def main()")
 

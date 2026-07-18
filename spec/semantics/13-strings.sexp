@@ -1256,6 +1256,37 @@
             ((None _) false)))
   (output (: true Bool)))
 
+; --- KNOWN GAP (operator ruling 2026-07-18): String.from-bytes does NOT NFC-normalize --------------
+; A string LITERAL is NFC-normalized at parse time (the reader; 01-literals + the normalization cases
+; above), so two literals differing only in normalization denote ONE value. `String.from-bytes` is
+; DIFFERENT: it is a FAITHFUL byte decode — it validates UTF-8 well-formedness (the None cases above) but
+; PRESERVES the exact scalar sequence, WITHOUT re-normalizing to NFC. This is a DELIBERATE known gap, not a
+; bug: NFC normalization needs the Unicode canonical-composition DATA TABLES, and the operator ruled that
+; carrying those in the dependency-free compiler core (which must port cleanly to the Cadenza self-host) is
+; not worth the bloat right now. CONSEQUENCE: `from-bytes` obeys "equality follows normalization" only if
+; the input bytes were ALREADY NFC — normalization is the CALLER'S responsibility on the from-bytes path
+; (a literal on the reader path is already normalized; bytes from an external source may not be). So a
+; DECOMPOSED "café" (e + U+0301, bytes `63 61 66 65 CC 81`) decodes to a String that is NOT `=` to the
+; composed literal "café" (U+00E9) — because the seed does not normalize either side of `from-bytes`, the
+; decoded decomposed form keeps its 6 bytes / 5 scalars and differs from the 5-byte / 4-scalar NFC literal.
+; (If the "equal strings differing only in normalization" cases above are ever satisfied by adding NFC at
+; the reader, this from-bytes case STILL declines-to-normalize until NFC is carried into the core — track
+; both as the same Unicode-normalization gap.) A future `from-bytes-normalizing` (or carrying the tables)
+; would flip this; a `from-bytes-raw` escape hatch is MOOT while the default already preserves bytes.
+(case "String.from-bytes does not NFC-normalize — a decomposed form stays distinct (known gap)"
+  (doc    "`from-bytes` is a faithful byte decode: it does NOT re-normalize to NFC (a deliberate known gap —
+           the Unicode composition tables would bloat the dependency-free core; operator ruling 2026-07-18).
+           So decoding the DECOMPOSED \"café\" bytes (`e` + U+0301 combining acute = `… 101 204 129`) yields
+           a String whose scalars are the decomposed sequence, which is NOT `=` to the COMPOSED literal
+           \"café\" (U+00E9) — the seed normalizes NEITHER side of from-bytes. NFC is the caller's
+           responsibility on the from-bytes path (a literal is normalized at parse; external bytes are not).
+           Pins the non-normalization as INTENDED, documented behavior: `(= (from-bytes decomposed) \"café\")`
+           is FALSE. Contrast the well-formed-decode case above (composed bytes → Some \"café\", which DOES
+           equal the literal because those bytes are already NFC). Flips only when NFC is carried into the
+           core; a from-bytes-raw hatch is moot while the default preserves bytes.")
+  (input  (= (String.from-bytes (Bytes.of (list 99 97 102 101 204 129))) (Some "café")))
+  (output (: false Bool)))
+
 (case "an encode-decode round-trip preserves an ASCII string's byte length"
   (doc    "The length face of the inverse round-trip: `(String.from-bytes (String.to-bytes \"hi\"))` decodes
            the encoded bytes back to a `Some s'` whose `String.byte-len` is 2 — the original length. Pins

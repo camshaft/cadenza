@@ -468,9 +468,13 @@ impl HandlerCtx {
         let key = parts.join(",");
         // An arm is ABORTIVE when its body has NO `resume` (neither a bare `(resume …)` nor a
         // `(do … (resume …))`): performing it abandons the computation, yielding the arm body's value.
+        // EXCLUDE a general `ctl`-style arm that BINDS `k` (`cont: Some`): it has no `resume` (it invokes
+        // the continuation via `k`, not `resume`), but it is E5-GENERAL, not abortive — the escaping-k
+        // reification consumes it. Misclassifying it abortive makes the fold treat the arm body (which uses
+        // `k` as a value) as an abort value → a "value is not applyable" lowering error on the unreified `k`.
         let abortive = arms
             .iter()
-            .filter(|(_, arm)| !arm_has_resume(db, arm.body))
+            .filter(|(_, arm)| arm.cont.is_none() && !arm_has_resume(db, arm.body))
             .map(|(&k, _)| k)
             .collect();
         HandlerCtx {
@@ -1619,7 +1623,11 @@ pub fn reduce_handle(
                     cont: None,
                     body: rewritten_body,
                 },
-                None => return None, // `k` escapes — defer to step 3
+                // `k` ESCAPES (passed onward / stored) — carry the arm through WITH `cont: Some` so the
+                // pure-one-hole block below can REIFY `k` as a closure `(fn (#kv) C)` when `C` is pure
+                // (step-3 inc-2a). If that block does not serve it, the fold declines at the end (never a
+                // mis-fold — the pure-one-hole block is the ONLY consumer of a `cont: Some` arm).
+                None => arm.clone(),
             }
         } else {
             arm.clone()
@@ -1841,12 +1849,37 @@ pub fn reduce_handle(
             return None;
         }
         subst.insert(arm.state, init);
-        let substituted = crate::eval::beta_reduce(db, arm.body, &subst);
-        // Rewrite every `(resume v s)` → `C[v]` (the pure delimited continuation applied to the resume
-        // value). The arm body's free names keep their pinned resolution through `beta_reduce`; `C`'s free
-        // names resolve against the handle scope (the structural splice copy re-parents them). The
-        // next-state is dead — nothing after the perform reads state on a pure spine.
-        let folded = rewrite_resume_to_context(db, substituted, body, perform);
+        // E5 ESCAPING-K REIFICATION (step-3 inc-2a): a general `ctl`-style arm that BINDS `k` (`cont: Some`)
+        // and lets it ESCAPE (passes it to a fn / stores it — `ctl_arm_lexical_k_to_resume` returned None,
+        // so the classifier carried it here). Over a PURE continuation `C` (`pure_hole` succeeded), reify
+        // `k` as the CLOSURE `(fn (#kv) C)` where `C = body[perform := #kv]` — a lambda taking the resume
+        // value `#kv` and running the delimited continuation. Substituting that lambda for the arm's `k`
+        // binder makes the arm body carry `k` as an ordinary closure value; the runtime-closure machinery
+        // lifts it (`Core::Closure`) and applies it (`Core::CallClosure`) at each `(k v)` — so `(use-k k)`
+        // over `(+ 1 (A.f))` folds to `(use-k (fn (#kv) (+ 1 #kv)))` → 11. NO bespoke frame chain: a reified
+        // continuation over a pure `C` IS a closure. (A `C` that re-performs the handled effect needs
+        // handler-re-entry-at-apply, inc-2b — `pure_hole` fails on the second perform, so this never fires
+        // for it.) The `#kv` binder is fresh (keyed on the perform node); the lambda captures `C`'s free
+        // names, which the closure lift resolves into its env.
+        let folded = if let Some(k_binder) = arm.cont {
+            let kv_name = format!("#kv{}", perform.0);
+            let kv_binder = db.push_atom(Leaf::Name(kv_name.clone()));
+            let kv_ref = db.push_atom(Leaf::Name(kv_name));
+            let cont_body = splice_context(db, body, perform, kv_ref);
+            let fn_head = db.push_atom(Leaf::Name("fn".to_string()));
+            let params_list = db.push_list(vec![kv_binder]);
+            let k_lambda = db.push_list(vec![fn_head, params_list, cont_body]);
+            let mut subst_k = subst.clone();
+            subst_k.insert(k_binder, k_lambda);
+            crate::eval::beta_reduce(db, arm.body, &subst_k)
+        } else {
+            let substituted = crate::eval::beta_reduce(db, arm.body, &subst);
+            // Rewrite every `(resume v s)` → `C[v]` (the pure delimited continuation applied to the resume
+            // value). The arm body's free names keep their pinned resolution through `beta_reduce`; `C`'s
+            // free names resolve against the handle scope (the structural splice copy re-parents them). The
+            // next-state is dead — nothing after the perform reads state on a pure spine.
+            rewrite_resume_to_context(db, substituted, body, perform)
+        };
         // Graft the synthesized `folded` UNDER the original handle's site BEFORE the type-check below, so a
         // FREE name inside it — an enclosing function's parameter or a match-arm binder used in the handle
         // body, `(handle … (+ x (Amb.flip)))` — resolves up the original lexical chain instead of reading

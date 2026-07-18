@@ -4634,11 +4634,22 @@ fn run_one_trial_with_pool(
             let gens = count_gen_calls(&observed);
             let trial = match outcome {
                 cdz_run::Outcome::Value(_) => TrialOutcome::Pass,
-                // A trapping test FAILS. The assertion message the test emitted (via its report host effect,
-                // e.g. `Test.fail("…")`) rides an OBSERVED op entry as `<op>\t<message>` — recover it so the
-                // report names WHY, exactly as the subprocess path read it off the `host-arg` stderr line.
-                cdz_run::Outcome::Trap(_) => {
-                    TrialOutcome::Fail(observed_failure_message(&observed))
+                // A trapping test FAILS. Prefer the assertion message the test emitted (via its report host
+                // effect, e.g. `Test.fail("…")`) — it rides an OBSERVED op entry as `<op>\t<message>`. But if
+                // there is NO such op, the body TRAPPED for another reason (an arithmetic OVERFLOW `+ traps:
+                // overflows Int64`, a div-by-zero, an explicit `trap("…")`) — and that reason is exactly what
+                // distinguishes "the property BODY TRAPPED" from "the property RETURNED FALSE". The runtime's
+                // `Trap(reason)` carries that reason, so fall back to it (prefixed so the author sees the body
+                // trapped rather than the property being false — a very different diagnosis, e.g. a full-domain
+                // Int64 generator whose unguarded `+` overflows on two large samples is NOT a real violation).
+                cdz_run::Outcome::Trap(reason) => {
+                    TrialOutcome::Fail(observed_failure_message(&observed).or_else(|| {
+                        // Trim to the FIRST line — a wasmtime trap renders as `wasm trap: integer overflow`
+                        // followed by a multi-line backtrace; the first line is the actionable reason and
+                        // keeps the one-line counterexample report legible.
+                        let first = reason.lines().next().unwrap_or("").trim();
+                        (!first.is_empty()).then(|| format!("body trapped: {first}"))
+                    }))
                 }
             };
             (trial, gens)
