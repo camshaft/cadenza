@@ -9481,12 +9481,47 @@ fn check_application(
         //     faults with their param index and flush only those step (2) will NOT cover (an UNREFERENCED
         //     param — step (2) is silent — or a callee whose reduction declines, e.g. recursion). The
         //     "covered" test mirrors step (3)'s exactly (`reduced_ok && param_is_referenced`).
-        let mut arg_faults: Vec<(usize, Reject)> = Vec::new();
+        // Each buffered fault carries `always_flush`: `true` for a type-valued-param BOUNDARY-CHECK
+        // violation (see `boundary_vars`), which β-reduction erases so step 2 can't re-detect it — it must
+        // never be dropped as a "step-2 twin"; `false` for an ordinary annotated-param fault (droppable
+        // when step 2 covers it).
+        let mut arg_faults: Vec<(usize, Reject, bool)> = Vec::new();
+        // Vars bound by a type-valued param (a `(: t Type)` checking boundary). A value-arg fault at a
+        // param whose type mentions one of these is a BOUNDARY-CHECK violation β-reduction erases (step 2
+        // can't re-detect it, since substituting the arg drops the `(: x t)` annotation), so it must ALWAYS
+        // flush — never dropped as a "step-2 twin". (An ordinary annotated-param fault stays droppable.)
+        let mut boundary_vars: crate::fxhash::FxHashSet<u32> = crate::fxhash::FxHashSet::default();
         if let Some(params) = crate::eval::lambda_params_of(db, head) {
             let mut subst = Subst::new();
             for (i, (&param_occ, &arg)) in params.iter().zip(args.iter()).enumerate() {
                 let pt = type_of(db, param_occ);
                 let at = type_of(db, arg);
+                // BIDIRECTIONAL-CHECKING BOUNDARY (type-system.md #Generics Are Type-Valued Parameters,
+                // line 60): a `(: t Type)` param is a checking boundary — the type it binds must be
+                // CHECKED against a sibling annotation `(: x t)`, NOT solved by unification. A sibling
+                // annotation reduces `t` to `Ty::Var(param_occ.0)` (`eval::typeval_of` →
+                // `type_valued_param_binder` returns the SAME binder id as the var), but NOTHING bound that
+                // var to the type VALUE the caller passed for `t` — so `f(Bool, 41)` for `(f (: t Type) (:
+                // x t))` accepted (41's Int64 solved the var by unification, the passed `Bool` dead), an
+                // over-accept the spec forbids. Bind it here: when this param is type-valued (its type is
+                // `Ty::Type`) and the arg is a concrete type VALUE, unify `Ty::Var(param_occ.0)` :=
+                // reflected(arg) into `subst` BEFORE the later sibling-value args unify against that var —
+                // so `x`'s `41` (Int64) now conflicts with the bound `Bool` and rejects. Reflection via
+                // `typeval_of`; a non-concrete type-value (a var / `Any`) binds nothing (stays generic,
+                // solved by the value arg as before — no false reject on an undetermined type arg).
+                //= spec/capabilities/type-system.md#generics-are-type-valued-parameters-not-a-separate-polymorphism-mechanism
+                //# A position that binds a type-valued parameter MUST be a bidirectional-checking boundary, at which a type is either synthesized by monomorphization from the concrete type-value supplied or checked against an explicit annotation, rather than solved by unification.
+                if matches!(pt, Ty::Type)
+                    && let Some(tv) = crate::eval::typeval_of(db, arg)
+                    && !matches!(tv, Ty::Any)
+                    && !tv.has_free_var()
+                {
+                    // A sibling annotation `(: x t)` reduces `t` to `Ty::Var(param_occ.0)` — the SAME
+                    // binder id (`type_valued_param_binder`). Bind that var to the passed type value, and
+                    // record it as a boundary var so a downstream sibling-value mismatch always flushes.
+                    boundary_vars.insert(param_occ.0);
+                    let _ = crate::unify::unify(&mut subst, &Ty::Var(param_occ.0), &tv);
+                }
                 if let Err(reject) = crate::unify::unify(&mut subst, &pt, &at) {
                     trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, "apply: argument conflicts with parameter annotation (type fault)");
                     // REWORD to the call-ARGUMENT phrasing (M106): this fault is a wrong-typed call
@@ -9560,7 +9595,14 @@ fn check_application(
                     } else {
                         reject
                     };
-                    arg_faults.push((i, tagged));
+                    // ALWAYS-FLUSH iff this param's type mentions a boundary var (a `(: t Type)` bound the
+                    // var earlier this loop) — β-reduction erases the `(: x t)` annotation, so step 2 never
+                    // re-detects the boundary-check violation; it is the SOLE report even for a referenced
+                    // param. An ordinary annotated-param fault (no boundary var) stays droppable.
+                    let mut pt_vars = Vec::new();
+                    pt.collect_free_vars(&mut pt_vars);
+                    let always_flush = pt_vars.iter().any(|v| boundary_vars.contains(v));
+                    arg_faults.push((i, tagged, always_flush));
                 }
             }
             // OVER-APPLICATION: more arguments than the lambda's arity, and the body's result is not
@@ -9728,9 +9770,9 @@ fn check_application(
                 collect(db, arg, out);
             }
         }
-        for (i, reject) in arg_faults {
+        for (i, reject, always_flush) in arg_faults {
             let covered = reduced_ok && params.get(i).is_some_and(|&p| referenced.contains(&p));
-            if !covered {
+            if always_flush || !covered {
                 out.push(reject);
             }
         }

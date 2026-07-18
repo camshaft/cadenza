@@ -76,3 +76,11 @@
     (match l ((Lst.Nil) 0) ((Lst.Cons h tl) (+ 1 (len t tl)))))
   (def (main) (len Int64 (Lst.Cons true (Lst.Cons false Lst.Nil))))
   (export main))
+
+; ---
+; RESOLVED-PENDING-MERGE (v-inference, 2026-07-18, MR 119db7522): root exactly as the queue analysis — the
+; (: t Type) param slot and the sibling var were disconnected, so the passed type value never bound the var
+; a sibling (: x t)/(Lst t) used. FIX ties them at the call's arg-check: unify Ty::Var(param_occ.0) :=
+; reflected type-value BEFORE sibling args unify (spec-mandated type-system.md L60). Both repro defs (len
+; over (Lst Bool) at t=Int64) now REJECT; correct-type calls + monomorphization unaffected. The '_'-render
+; cosmetic twin was already fixed (subst.apply). 2104/2104 pass. Retire on land.
