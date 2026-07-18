@@ -76,3 +76,8 @@
 ; is_refused_not_miscompiled); the first whole-handle attempt wrongly ENABLED it -> invalid wasm, so the
 ; narrowed body-check admits only closure-IS-the-body + keeps the escaping-arm refused. 2103/2103 pass.
 ; BOTH columns (recursion 3ac208f93 + handle 331283703) resolved-pending-merge. Retire on land.
+
+; VERIFY UPDATE (corpus-bugfix 2026-07-18, content-checked trunk 3b16b2745): RECURSION column LANDED
+; (3ac208f93) — ((selfp 2) 5) -> 105 (was "not applyable"). HANDLE column STILL PENDING — ((handle Env 0
+; (arm) (fn (x) (+ x 1))) 10) still declines "value is not applyable" (331283703 is the STACKED TIP on
+; 3ac208f93, not yet through pr-sync). Keep item PENDING-MERGE until the handle tip lands + verifies 11.

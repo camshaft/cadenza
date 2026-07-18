@@ -56,6 +56,22 @@ pub fn compile_interpret_provider(src: &str) -> Result<Vec<u8>> {
         .ok_or_else(|| anyhow!("interpret provider did not compile: {:?}", out.diagnostics))
 }
 
+/// Like [`compile_interpret_provider`], but compiles by RUNNING the compiler-wasm (`rcdzc_wasm`) instead of
+/// native rcdzc — the operator-#54 wasm-swap at the KERNEL API level. Parses the s-expr source → encodes AST →
+/// drives `rcdzc.wasm`'s `compile_named` export via [`crate::wasm_compiler::compile_via_wasm_named`], publishing
+/// the provider under [`KERNEL_IFACE`]. Same `(src) -> provider component` contract as the native fn (the
+/// differential test proves byte-identical output), so a caller holding the compiler-wasm bytes can swap the
+/// kernel's compile path with no other change. `rcdzc_wasm` is the wasm32-wasip1 build the caller supplies (a
+/// daemon reads it once; falling back to [`compile_interpret_provider`] when absent is the caller's choice).
+/// Feature-gated (`wasm-compiler`) alongside the host glue.
+#[cfg(feature = "wasm-compiler")]
+pub fn compile_interpret_provider_via_wasm(rcdzc_wasm: &[u8], src: &str) -> Result<Vec<u8>> {
+    let arenas = cadenza_syntax::sexpr::read(src)
+        .map_err(|e| anyhow!("interpret source did not parse: {e:?}"))?;
+    let ast = cadenza_syntax::codec::encode(&arenas);
+    crate::wasm_compiler::compile_via_wasm_named(rcdzc_wasm, &ast, KERNEL_IFACE)
+}
+
 /// The Cadenza EXECUTOR peer source: binds the kernel provider, performs `interpret`, and consumes the
 /// crossed `(List HostOp)` — here reduced with `List.len` to a scalar (K1 proves the handle crossed + is a
 /// live list; K1b replaces `List.len` with per-op dispatch to the broad primitives). The `HostOp` type is
@@ -359,6 +375,47 @@ mod tests {
         (def (interpret (: kind Int64) (: turn Int64)) \
           (if (= kind 1) (list (Append \"ack\") (Exec \"handle\")) (list (Noop 0)))) \
         (export interpret))";
+
+    /// Locate the built `rcdzc.wasm` (wasm32-wasip1 artifact). Returns None if not built (test skips).
+    #[cfg(feature = "wasm-compiler")]
+    fn find_rcdzc_wasm() -> Option<Vec<u8>> {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()?
+            .join("rcdzc-wasm/target/wasm32-wasip1");
+        for profile in ["debug", "release"] {
+            let p = base.join(profile).join("rcdzc_wasm.wasm");
+            if let Ok(bytes) = std::fs::read(&p) {
+                return Some(bytes);
+            }
+        }
+        None
+    }
+
+    #[cfg(feature = "wasm-compiler")]
+    #[test]
+    fn provider_via_wasm_matches_native_at_the_kernel_api() {
+        // The kernel-API wasm-swap (operator #54): compile_interpret_provider_via_wasm produces a BYTE-IDENTICAL
+        // provider to the native compile_interpret_provider for the same source — so a caller can swap the
+        // kernel's compile path (native ↔ wasm) with no downstream change. Skips if rcdzc.wasm isn't built or
+        // predates the compile_named export (older artifact → missing-export error).
+        let Some(rcdzc_wasm) = find_rcdzc_wasm() else {
+            eprintln!("[kernel] rcdzc.wasm not built; skipping provider_via_wasm differential");
+            return;
+        };
+        let via_wasm = match compile_interpret_provider_via_wasm(&rcdzc_wasm, INTERPRET_SRC) {
+            Ok(bytes) => bytes,
+            Err(e) if format!("{e:#}").contains("compile_named` export") => {
+                eprintln!("[kernel] rcdzc.wasm predates compile_named; skipping");
+                return;
+            }
+            Err(e) => panic!("compile the interpret provider via wasm: {e:#}"),
+        };
+        let native = compile_interpret_provider(INTERPRET_SRC).expect("native provider compile");
+        assert_eq!(
+            via_wasm, native,
+            "the kernel-API wasm-swap produces the SAME provider as native (faithful, drop-in)"
+        );
+    }
 
     #[test]
     fn the_interpret_provider_compiles_as_a_provider() {
