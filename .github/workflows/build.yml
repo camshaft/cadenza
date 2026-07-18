@@ -38,7 +38,7 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: release-${{ matrix.target }}
@@ -66,7 +66,7 @@ jobs:
           ( cd dist && shasum -a 256 "$stage.tar.gz" > "$stage.tar.gz.sha256" )
           ls -la dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.target }}
           path: |
@@ -82,7 +82,7 @@ jobs:
     # the aarch64 artifact so its hash is the one programs pin. See runtime-cross-arch-determinism.
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           wasm-tools: "true"
@@ -108,7 +108,7 @@ jobs:
           ( cd dist && shasum -a 256 "cadenza-runtime-$hash.wasm" > "cadenza-runtime-$hash.wasm.sha256" )
           ls -la dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: runtime
           path: |
