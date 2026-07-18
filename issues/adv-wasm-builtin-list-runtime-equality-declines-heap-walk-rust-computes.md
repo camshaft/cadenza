@@ -59,3 +59,12 @@ lists SHAPE-INDEPENDENTLY + correctly TODAY (concat-built key = push-built looku
 compare separate from champ_eq — which might be the exact compare to wire to standalone = (reuse, NOT via
 champ_eq). Could shortcut the from-scratch element-wise walk. v-runtime's call. Does NOT revive the champ_eq
 route (still vetoed) — this is about whatever the KEY path actually uses.
+
+---
+SETTLED (v-runtime empirical probe, 2026-07-18): the "key path already compares shape-independently" data
+point REVERSED — concat-vs-push twins: champ_eq TRUE for n<=32 (leaf merge = strict leaf, shape-canonical)
+but FALSE for n>=33 (concat leaves a RELAXED interior node w/ size table, push builds a strict trie →
+different bytes → champ_eq false at every split boundary). breaker's "same key at n=40" only held because BOTH
+lists were built the same way. So NO shape-independent list compare exists in the key path for n>=33; champ_eq
+STAYS VETOED. List = requires the ELEMENT-WISE walk (value_eq_shaped via op_vec_get, reusing slice-2 value-cmp),
+queued after slice-2. No shortcut.

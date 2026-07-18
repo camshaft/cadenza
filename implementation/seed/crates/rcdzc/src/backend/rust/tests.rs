@@ -2952,6 +2952,28 @@ fn rustc_roundtrip_recursive_match_scrutinee_materializes_once_not_exponentially
             "the materialized recursive match runs (linear, not 2^40)"
         );
     }
+
+    // SINGLE-VARIANT face: `(type P (Mk Int64 Int64))` (one variant). `lower` keeps the `Core::MatchSum`
+    // wrapper for a recursive-call scrutinee at ANY variant count (v-compiler-perf's keep-wrapper), so the
+    // single-variant match is a MatchSum too and this materialize fires on it — `let __ms; ((__ms).0,
+    // (__ms).0)`, the recursive call bound ONCE. Without EITHER piece it re-emits `f(…)` per tuple field →
+    // 2^depth. Pins that the single-variant recursive match is also linear on the rust backend.
+    let sv = compile_rust(
+        "(module m (type P (Mk Int64 Int64)) \
+           (def (f (: n Int64)) (if (= n 0) (P.Mk 1 1) \
+             (match (f (+ n 1)) (((. P Mk) (tuple a _)) (P.Mk a a))))) \
+           (def (run) (match (f -40) (((. P Mk) (tuple x _)) x))) (export run))",
+    );
+    assert!(
+        sv.contains("let __ms"),
+        "a single-variant recursive-call match scrutinee also materializes once:\n{sv}"
+    );
+    if let Some(out) = rustc_run(&sv, "run()") {
+        assert_eq!(
+            out, "1",
+            "the single-variant materialized recursive match runs (linear, not 2^40)"
+        );
+    }
 }
 
 #[test]

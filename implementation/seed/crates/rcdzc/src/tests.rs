@@ -6126,6 +6126,52 @@ fn a_curried_closure_capturing_an_inner_handled_result_closes_over_the_value() {
     }
 }
 
+/// DISCHARGE-THEN-CAPTURE (the sound half of the escaping-closure boundary; was a PARKED reject-gap,
+/// resolved incidentally by the `lambda_of` handler-discharge fix): a closure capturing a value COMPUTED
+/// under a handler may escape the handle. `(handle St k (arm) (let ((v (St.get))) (fn (x) (+ x v))))` —
+/// the `St.get` runs IN-EXTENT (handler live) and the escaping closure captures the pure Int64 `v`. Applied
+/// directly `((handle …) 10)` with k=7: v folds to 7, the escaped closure is `(fn (x) (+ x 7))`, so it
+/// yields 17. Was over-rejected CDZ0401 (escape analysis conflated a lexically-inner perform with an
+/// escaping one); the `lambda_of` discharge folds the in-extent `St.get` to its value first. Uses a
+/// parameterized main to keep `k` a genuine runtime value (a const would fold it away).
+#[test]
+fn a_closure_capturing_a_value_computed_under_a_handler_may_escape() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(do (effect St (op get (-> Unit Int64))) \
+               (def (main (: k Int64)) \
+                 ((handle St k ((get (u) s (resume s s))) \
+                    (let ((v (St.get))) (fn ((: x Int64)) (+ x v)))) \
+                  10)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "a closure capturing a value computed under a handler may escape (discharge-then-capture)",
+    );
+    let got: i64 = run_returns_with(&bytes, "main", &[Val::S64(7)]);
+    assert_eq!(
+        got, 17,
+        "v = k = 7 captured by value → (fn (x) (+ x 7)) applied to 10 = 17"
+    );
+}
+
+/// The UNSOUND TWIN of discharge-then-capture MUST stay rejected: a closure whose BODY performs the handled
+/// effect and ESCAPES the handle — `(handle St k (arm) (fn (x) (+ x (St.get))))` applied outside — runs the
+/// perform on OUTSIDE-application (out of the handler's dynamic extent), so it has no home → CDZ0401. Pins
+/// that the `lambda_of` discharge fix (which admits the pure-capture sibling above) does NOT accidentally
+/// home an escaping closure-BODY perform (a soundness regression the parked note warned about).
+#[test]
+fn an_escaping_closure_whose_body_performs_still_declines() {
+    use crate::testkit::parse;
+    let src = "(do (effect St (op get (-> Unit Int64))) \
+               (def (main (: k Int64)) \
+                 ((handle St k ((get (u) s (resume s s))) \
+                    (fn ((: x Int64)) (+ x (St.get)))) \
+                  10)) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(src))).is_err(),
+        "an escaping closure whose BODY performs runs out-of-extent → must stay CDZ0401 (soundness)"
+    );
+}
+
 /// A recursive effectful walk whose self-call and a following perform sit in a `do`-SEQUENCE — `(do (walk
 /// (- n 1)) (Ctr.tick))` — is the SAME out-state-observing shape: the `do` runs the self-call for effect,
 /// then the perform reads the recursion's OUT-state. This used to DECLINE (single-return did not carry the
@@ -37239,6 +37285,42 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0602"),
             "an untyped @!param (bare-name binder, no `: Type`) is rejected — the B-invariant, an accessor needs a result type"
+        );
+    }
+
+    #[test]
+    fn the_old_at_param_annotation_still_generates_a_param_accessor_migration_compat() {
+        // MIGRATION COMPAT (the `@param`→`@!param` transition): the sidecar scans BOTH the new module-
+        // directive `(pragma param (param …) (: name Type))` AND the OLD following-form annotation
+        // `(: (@ (param …) name) Type)` (`param_pragma_parts`'s second arm). The old annotation STILL PARSES
+        // (v-syntax kept it), so accepting it keeps every not-yet-migrated consumer working — the CAD `.cdz`
+        // showcases and the guide's embedded `.cdz` model strings still write `@param` while they migrate at
+        // their own pace. The whole corpus + every other lib test uses the NEW pragma shape, so WITHOUT this
+        // test the compat arm has NO behavioral coverage: a refactor dropping it would keep the gate green
+        // while silently unbinding `Param.*` in every unmigrated consumer. This pins the arm until the
+        // later cleanup (dropped only once no `@param` annotation remains tree-wide).
+        assert!(
+            reject_code(
+                "(module m \
+                   (: (@ (param (: widget slider)) width) Int64) \
+                   (def (main) (host (Param) (Param.width))) \
+                 (export main))"
+            )
+            .is_none(),
+            "the OLD `(: (@ (param …) name) Type)` annotation still generates the Param effect so (Param.width) resolves — dual-scan migration compat"
+        );
+        // The old-annotation arm honors the SAME multi-site contract as the new pragma: two old-annotation
+        // @param sites generate two ops under one Param effect, both resolve.
+        assert!(
+            reject_code(
+                "(module m \
+                   (: (@ (param (: widget slider)) width) Int64) \
+                   (: (@ (param (: widget number)) height) Int64) \
+                   (def (main) (host (Param) (+ (Param.width) (Param.height)))) \
+                 (export main))"
+            )
+            .is_none(),
+            "two OLD-annotation @param sites generate two accessors under one Param effect, both resolve"
         );
     }
 

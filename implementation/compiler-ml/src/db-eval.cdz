@@ -9,7 +9,7 @@
 /// caller can inspect the memo or run further queries off the same Db.
 
 import { Tok, Tree, parse-tokens } from "parse-db"
-import { eval-core } from "eval-db"
+import { eval-core, run } from "eval-db"
 import { Db, db-of } from "db"
 import { lower-of-db } from "db-lower"
 
@@ -70,4 +70,31 @@ def de-comparison-runs() =
   // 1 < 2 → 1 (Bool-as-0/1 over the Db).
   (match run-tokens-db([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2)]) with | Option.Some(v) => (if v == 1 then unit else trap("1<2=1")) | Option.None(_) => trap("comparison runs"))
 
-export { run-of-db, run-tokens-db }
+/// Do the two run paths AGREE on `ts`? — the memoized Db pipeline (`run-tokens-db`) vs the whim
+/// (`eval-db.run`, resolve+infer recomputed per demand). Both return `Option(Int64)`; agreement = same
+/// Some/None and same value. This is the SAFETY INVARIANT for the run-of-db-primary migration: the Db path
+/// (now the source-differential primary) computes IDENTICALLY to the whim it replaces. When eval-tree/run are
+/// finally nuked, this witnesses they matched first (nuke-as-you-replace, proven-equivalent).
+def paths-agree(ts: List(Tok)) =
+  (match run-tokens-db(ts) with
+    | Option.Some(dv) => (match run(ts) with | Option.Some(wv) => dv == wv | Option.None(_) => false)
+    | Option.None(_) => (match run(ts) with | Option.None(_) => true | Option.Some(_) => false))
+
+@test
+def de-db-and-whim-agree() =
+  // the Db pipeline ≡ the whim run across a representative spread: literal, arith+precedence, let, nested
+  // let, shadowing, comparison, if-both-branches, div-by-zero (both None), unbound (both None). If any pair
+  // disagreed, the run-of-db-primary switch would have changed a value — this pins they don't.
+  (if paths-agree([Tok.TNum(42)]) then
+   (if paths-agree([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2), Tok.TOp(42), Tok.TNum(3)]) then          // 1+2*3=7
+   (if paths-agree(milestone-tokens()) then                                                          // let x=2 in x*3+1
+   (if paths-agree([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(1), Tok.TIn, Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1)]) then  // shadowing
+   (if paths-agree([Tok.TNum(5), Tok.TOp(60), Tok.TNum(2)]) then                                     // 5<2=0
+   (if paths-agree([Tok.TIf, Tok.TNum(1), Tok.TOp(60), Tok.TNum(2), Tok.TThen, Tok.TNum(10), Tok.TElse, Tok.TNum(20)]) then  // if 1<2 then 10 else 20
+   (if paths-agree([Tok.TNum(5), Tok.TOp(47), Tok.TNum(0)]) then                                     // 5/0 → both None
+   (if paths-agree([Tok.TName(9)]) then unit                                                         // unbound → both None
+    else trap("unbound: Db≡whim")) else trap("div0: Db≡whim")) else trap("if: Db≡whim"))
+    else trap("cmp: Db≡whim")) else trap("shadow: Db≡whim")) else trap("milestone: Db≡whim"))
+    else trap("precedence: Db≡whim")) else trap("literal: Db≡whim"))
+
+export { run-of-db, run-tokens-db, paths-agree }

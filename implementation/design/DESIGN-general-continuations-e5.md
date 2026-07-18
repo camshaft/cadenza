@@ -366,3 +366,45 @@ implicit) — needs the clock-at-apply contract clarified with v-discrete-event-
 v-cad PRNG unblock + a clean state source); co-design (2) with the DES PM. FLAG the DES PM: your escaping-k
 repro's sleep arm doesn't `resume` — how does the reified k learn the wake-state? Is it a closure param the
 scheduler supplies at apply, or does `now` read a scheduler clock?
+
+## 15. inc-2b-1 LANDED + the compile-fold boundary is now EXHAUSTED for FACE-1 (v-effects, 2026-07-18)
+
+STATUS: inc-2b-1 (the RESUME-based re-performing-C, plan item (1) above) LANDED — the two-hole refold now
+folds a let-wrapped resume (v-cad's PRNG → 1392). FACE-2 (closure-capture-reperform, the captured-perform-
+RESULT sibling) also LANDED (→53). Both were COMPILE-TIME folds.
+
+CLOCK-AT-APPLY CONTRACT — RESOLVED (v-discrete-event-sim answered §14's open question): the clock is the
+`handle Sim` STATE (SchedState{clock,pqueue,ready}); `now` is tail-resumptive `(now (u) s (resume (clock-of
+s) s))`; `sleep` files (waketime,k) + returns to the loop WITHOUT resuming; scheduler-step pops (waketime,k),
+SETS clock:=waketime in the threaded state, THEN applies k — all INSIDE the same `handle Sim` activation
+(scheduler-step is called FROM arm bodies, under the handle). So `apply(k, unit)` must RE-ESTABLISH the live
+`handle Sim` context so k's subsequent `Sim.now` performs re-dispatch into the scheduler handler with the
+CURRENT (advanced) threaded state — NOT a capture-time snapshot. k is the delimited computation; the handler
+owns the clock.
+
+KEY RECON FINDING (why plan item (2) canNOT reuse the compile-time refold): `rewrite_resume_to_refolded_
+context` (effects.rs ~5560) is KEYED ON A `resume` NODE (line ~5604). It served inc-2b-1 because that arm
+RESUMES (there is a `resume` to rewrite, and the continuation is lexically inside the arm). The DES escaping-k
+arm `(sleep (wake) s k (scheduler-step wake k))` has NO `resume` and applies `k` via ordinary `(k unit)` in a
+SEPARATE fn (a DIFFERENT activation) — so there is no `resume` to rewrite and no compile-time continuation to
+statically refold (the apply site is not lexically inside the arm). CONCLUSION: FACE-1 (the genuinely-escaping
+DES case, plan item (2)) genuinely requires the RUNTIME `Ty::Cont` HEAP REP — the reified continuation must be
+a heap value that `apply(k, v)` RE-ENTERS at runtime, re-establishing the handler with the current threaded
+state. The compile-time-fold approaches (inc-2a pure-C, inc-2b-1 resume-based) are EXHAUSTED for this shape.
+
+FACE-1 STAGED BUILD (each brick gate-neutral or full-corpus+opt-sweep+rc-leak gated; multi-tick):
+- B0 ✅ `Ty::Cont { resume, answer }` reserved + predicates recurse (inc-1, landed); re-performing-C escaping-k
+  clean-decline pinned (`a_ctl_arm_whose_escaping_k_continuation_reperforms_still_declines`).
+- B1: reify the escaping-k continuation as a runtime heap value (a `Core::Closure`-like frame capturing the
+  live handler context + the delimited computation C), at the escaping-k classifier gate — constructs a
+  `Ty::Cont` value, still declines to RUN until B2 (or emits an inert handle). Validate the closure lift
+  accepts a synthesized continuation that reaches a discharged perform (today `subtree_performs` on a lambda
+  body returns false — the continuation's inner perform must be recognized as handler-bound at apply, not
+  standalone-lowered → the crux risk).
+- B2: `apply(k, unit)` dispatcher that RE-ENTERS the handler activation with clock=handler-state — the DES
+  contract. Makes `des-e5-step3-escaping-k-stored-apply` run → (: 5000000000 Int64).
+- B3: free-on-drop RC (a `Cont` dropped un-resumed reclaims its frame chain — DES background tasks parked at
+  sim end); live-objects gated (captured-never-resumed k → 0 live at teardown).
+CONSUMER READY: the DES inc-4 SchedState skeleton (`queue/des-inc4-schedstate-skeleton.PRE-STEP3.sexp`)
+COMPILES+RUNS today → 5e9; its only step-3 hole = swap PQ payload Int64→Cont + wire the cross-activation
+apply. So B2 landing unblocks the full DES run-sim immediately.
