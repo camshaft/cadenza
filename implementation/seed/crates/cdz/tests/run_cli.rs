@@ -414,3 +414,24 @@ fn cdz_run_a_bad_opt_level_errors_naming_the_choices() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn cdz_run_on_a_source_file_gives_an_actionable_diagnostic_not_a_wasm_parse_error() {
+    // `cdz run foo.sexp` (a SOURCE file passed by mistake) must NOT surface the cryptic
+    // "invalid component: failed to parse WebAssembly module" — it should point at the real paths
+    // (compile-then-run, or run the project). Exit non-zero (a usage mistake).
+    let dir = temp_dir("run-source");
+    let src = dir.join("prog.sexp");
+    std::fs::write(&src, "(do (def (main) 1) (export main))").unwrap();
+    let (ok, _out, err) = run(&["run", src.to_str().unwrap()]);
+    assert!(!ok, "running a source file is a usage error (non-zero)");
+    assert!(
+        err.contains("is a SOURCE file") && err.contains("cdz compile"),
+        "the diagnostic names the source-file mistake + the compile-first fix: {err}"
+    );
+    assert!(
+        !err.contains("failed to parse WebAssembly"),
+        "must NOT leak the cryptic wasm-parse error: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

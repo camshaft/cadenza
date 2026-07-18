@@ -5436,6 +5436,29 @@ fn callee_head_name(db: &Db, head: StructId) -> Option<String> {
     db.ast.as_name(head).map(str::to_string)
 }
 
+/// Whether the application head names a NAMED definition — a top-level `(def (f …) …)`, a lambda-valued
+/// `(def f (fn …))`, or a module member reached by name — as opposed to an INLINE / anonymous `(fn …)`
+/// literal applied in place. A named def's body is INDEPENDENTLY collected by `compile::collect_faults`
+/// (so a call site must NOT re-report its body faults — the baseline-subtraction de-duplicates them); an
+/// inline lambda's body is checked ONLY at its β-reduction call site, so its faults must NOT be
+/// subtracted. Follows a `Ref`/`Member` chain to the def the way `callee_def_index_for_infer` does, but
+/// answers "is this a named def?" via the head resolving to a `Lambda` reached THROUGH a name — robust for
+/// a lambda-valued def whose registered body node differs from the head's resolved inner body (which is
+/// exactly what makes `callee_def_index_for_infer`'s `def_index_by_body` miss it).
+fn named_callee_head(db: &mut Db, head: StructId) -> bool {
+    // A direct name application `(helper x)` — the head IS a name occurrence.
+    if db.ast.as_name(head).is_some() {
+        return true;
+    }
+    // A `Ref`/`Member` chain to a named def (`(m.f x)`, or a name that resolved to a Ref). An inline
+    // `(fn …)` head resolves straight to `Lambda` with no intervening name → false.
+    match crate::resolve::resolved_of(db, head) {
+        crate::resolved::Resolved::Ref { value } if value != head => named_callee_head(db, value),
+        crate::resolved::Resolved::Member { .. } => true,
+        _ => false,
+    }
+}
+
 /// The wrong-typed-CALL-ARGUMENT message: the argument's type does not satisfy the parameter's declared
 /// type at a call site. Framed as an ARGUMENT ("this argument is a Bool, but …"), NOT an annotation — the
 /// author wrote no annotation — the same phrasing the synthesized-parameter-annotation path (M106) uses,
@@ -9623,8 +9646,28 @@ fn check_application(
                 // ~28s). The reduced-body collect alone is unavoidable, but the baseline was pure waste when
                 // there are no faults to filter — and a well-typed deep chain has none. (A body WITH faults
                 // still computes the baseline, so a genuine callee-defect is still de-duplicated exactly.)
+                // The baseline exists ONLY to avoid DUPLICATING a NAMED DEF callee's body faults — those
+                // the callee's own `compile::collect_faults` reports at the definition (with its fix). It
+                // must NOT fire for an INLINE lambda (`((fn (v0) (* (tuple) 0)) 0)`): an inline lambda's
+                // body is never independently collected, so subtracting its unreduced-body faults DELETES
+                // them entirely — `(* (tuple) 0)` (CDZ0201) slips past check and the backend emits invalid
+                // wasm (the `v0`-unused case: reduction leaves the body unchanged, so its fault IS in the
+                // baseline and gets filtered). Gate the baseline on the callee having a DEF INDEX (a named
+                // def, top-level or a module member) — the only case whose body is separately collected.
+                // An inline lambda (`callee_def_index_for_infer` = `None`) keeps an EMPTY baseline, so its
+                // body faults surface here, exactly as the bare expression's do.
+                // Is the callee a NAMED def (top-level `(def (f …) …)`, lambda-valued `(def f (fn …))`, or
+                // a module member reached by name)? Only then is its body independently collected by
+                // `compile::collect_faults`, making the baseline-subtraction a genuine DE-DUPLICATION. An
+                // inline / anonymous `(fn …)` head has no name — its body is NOT separately collected, so
+                // subtracting it would DELETE the fault. Keyed on the head resolving to a NAME (directly, or
+                // through a `Ref`/`Member` chain to a named def), NOT on `callee_def_index_for_infer` — that
+                // helper's `def_index_by_body` misses a lambda-valued def (its registered body is the `fn`
+                // node, while the head resolves to the inner body), which would wrongly treat a named
+                // lambda-valued def as inline and DOUBLE-report its body fault at every call site.
+                let callee_is_named_def = named_callee_head(g, head);
                 let baseline: std::collections::HashSet<(Option<crate::diag::Code>, String)> =
-                    if body_faults.is_empty() {
+                    if body_faults.is_empty() || !callee_is_named_def {
                         std::collections::HashSet::new()
                     } else {
                         match crate::eval::lambda_body(g, head) {

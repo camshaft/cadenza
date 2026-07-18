@@ -5164,6 +5164,14 @@ fn collect_discarded_value_warnings(db: &mut Db) -> Vec<Diagnostic> {
             ) {
                 continue;
             }
+            // A `@param` site `(: (@ (param …) name) Type)` is also a DECLARATION — a runtime input the
+            // `param_sidecar` pass consumes to generate the `Param` effect, not an expression evaluated for a
+            // value. It reaches here as a non-final colon-annotation form (not a `def`/`effect` head), so the
+            // head-name skip above misses it; without this guard EVERY `@param` declaration spuriously warns
+            // CDZ0307 "computed but discarded" (its declared type is read as a thrown-away value). Skip it.
+            if crate::param_sidecar::is_param_site(&db.ast, s) {
+                continue;
+            }
             // Only a USER node has a span the warning can anchor to.
             if !db.is_user_node(s) {
                 continue;

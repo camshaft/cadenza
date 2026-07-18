@@ -36,7 +36,7 @@ def lower-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
   // represented in Core as an Int (0/1) — comparison `CBin`s evaluate to 0/1 — so the Core stays minimal and
   // uniform; the type column already proved the shape well-typed.
   (match Map.lookup(tcol, id) with
-    | Option.Some(Typed.TInt) => lower-ok(tree, id, rcol, tcol)
+    | Option.Some(Typed.TIntW(_, _)) => lower-ok(tree, id, rcol, tcol)
     | Option.Some(Typed.TBool) => lower-ok(tree, id, rcol, tcol)
     | _ => Option.None(unit))
 

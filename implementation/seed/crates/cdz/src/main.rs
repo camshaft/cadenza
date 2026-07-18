@@ -358,6 +358,23 @@ fn main() -> ExitCode {
         // BUILDS the manifest's entry first (the `cargo run` analogue), then runs the produced component;
         // otherwise it runs the given `.wasm`/stdin component directly.
         Cmd::Run(a) if run_target_is_project(a.component.as_deref()) => run_project(&a),
+        // A SOURCE file passed to `cdz run` (`cdz run foo.sexp`) is a common mistake — `cdz run` runs a
+        // COMPILED component, so it would otherwise fail with the cryptic "invalid component: failed to
+        // parse WebAssembly module". Catch it early with an actionable message pointing at the two real
+        // paths: compile-then-run, or run the whole project.
+        Cmd::Run(a) if run_arg_is_source_file(a.component.as_deref()) => {
+            let path = a
+                .component
+                .as_deref()
+                .unwrap_or(std::path::Path::new(""))
+                .display();
+            eprintln!(
+                "{PROG} run: `{path}` is a SOURCE file, but `cdz run` runs a COMPILED component. \
+                 Compile it first — `cdz compile {path} -o out.wasm && cdz run out.wasm` (or pipe: \
+                 `cdz compile {path} -o - | cdz run -`); or run the whole project with `cdz run <dir>`."
+            );
+            ExitCode::FAILURE
+        }
         Cmd::Run(a) => cdz_run::cli::run(&a, PROG),
         // `cdz corpus` — mounted from the `cdz-corpus` lib; the same code the standalone bin runs.
         Cmd::Corpus(a) => cdz_corpus::cli::run(&a, PROG),
@@ -1581,6 +1598,16 @@ fn run_target_is_project(component: Option<&std::path::Path>) -> bool {
         None => true, // bare `cdz run` — the current-directory project
         Some(p) => p.is_dir() || p.file_name().and_then(|n| n.to_str()) == Some(MANIFEST_NAME),
     }
+}
+
+/// Whether the `cdz run` component arg names a SOURCE file (`.cdz`/`.ml`/`.sexp`/`.sexpr`) rather than a
+/// compiled `.wasm` component — the common `cdz run foo.sexp` mistake. Checked AFTER `run_target_is_project`
+/// (a dir/`Project.cdz` is a project, not a loose source) and only for a real path arg (`None`/`-` stdin
+/// are not source-file specs). Reuses [`is_source_file`]'s extension set.
+fn run_arg_is_source_file(component: Option<&std::path::Path>) -> bool {
+    component
+        .and_then(|p| p.to_str())
+        .is_some_and(|s| s != "-" && is_source_file(s))
 }
 
 /// `cdz run <project>` — BUILD the project's manifest entry, then RUN the produced component (the `cargo

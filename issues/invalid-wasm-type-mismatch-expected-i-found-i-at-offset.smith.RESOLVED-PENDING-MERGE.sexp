@@ -9,3 +9,11 @@ emits invalid wasm. So the closure BODY arith-type-check is bypassed on the appl
 closure body like any expr — (* (Tuple) Int64) must reject CDZ0201 inside a lambda too; that closes the
 invalid-wasm before emit. v-inference (arith operand check through closure-apply). Root = check over-accept,
 not a backend bug (backend correctly can't emit arith over a unit tuple).
+
+; ---
+; RESOLVED-PENDING-MERGE (v-inference, 2026-07-18, MR e070bc737): the isolation was exact — the
+; immediately-applied INLINE lambda body bypassed the arith type-check. ROOT: the apply-path fault-collection
+; baseline-subtraction (de-dupes a NAMED def's body faults) wrongly ALSO deleted an INLINE lambda's body
+; faults (whose body is never separately collected), so (* (tuple) 0) + unused param slipped past. FIX gates
+; the baseline on the callee being a named def -> inline lambdas surface their body faults -> check REJECTS
+; CDZ0201 before emit, closing the invalid-wasm downstream. 2101/2101 pass. Retire on land.

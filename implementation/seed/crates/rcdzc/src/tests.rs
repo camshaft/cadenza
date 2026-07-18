@@ -44537,6 +44537,26 @@ mod stage1 {
                 "a well-typed lambda body must produce no error: {ok} → {clean:?}"
             );
         }
+        // REGRESSION (corpus-bugfix/fuzzer, invalid-wasm miscompile): an ILL-TYPED body of an
+        // IMMEDIATELY-APPLIED INLINE lambda must be rejected, same as the bare expression. `(* (tuple) 0)`
+        // rejects CDZ0201 bare, but WRAPPED in `((fn (v0) (* (tuple) 0)) 0)` it slipped past check (only an
+        // unused-param warning) and the backend emitted INVALID WASM. Root: the apply-path body-fault
+        // collection SUBTRACTS a baseline of the callee's UNREDUCED body faults (to avoid duplicating a
+        // NAMED def's independently-collected body faults) — but an inline lambda's body is NOT separately
+        // collected, so with `v0` unused (reduction leaves the body unchanged) the fault WAS in the
+        // baseline and got filtered, deleting it entirely. Fix: gate the baseline on the callee being a
+        // NAMED def (`named_callee_head`); an inline lambda keeps an empty baseline so its body faults
+        // surface. The `else`-companion of the lambda-valued-def case above (which MUST still de-dup).
+        let inline_bug = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(do (def (main) (match ((fn (v0) (* (tuple) 0)) 0) (_ 0))) (export main))",
+        )));
+        assert!(
+            inline_bug
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0201")),
+            "an ill-typed body of an immediately-applied inline lambda must be rejected (was: invalid \
+             wasm): {inline_bug:?}"
+        );
     }
 
     #[test]
@@ -45159,6 +45179,61 @@ mod stage1 {
         assert!(
             discarded_of("(module m (def (main) (do (def x 5) (+ x 1))) (export main))").is_empty(),
             "a do-local declaration is not a discarded statement"
+        );
+    }
+
+    #[test]
+    fn an_at_param_site_is_a_declaration_not_a_discarded_value() {
+        // A `@param(…) name : Type` site parses to `(: (@ (param …) name) Type)` — a top-level colon-
+        // annotation form the `param_sidecar` pass consumes to GENERATE the `Param` effect. It is a
+        // DECLARATION (a runtime input), not an expression evaluated for a thrown-away value, so it must NOT
+        // warn CDZ0307 — like a `def`/`effect` decl. (It reaches the discarded-value pass as a non-`def`-head
+        // non-final form, so the head-name skip misses it; `param_sidecar::is_param_site` is the guard.)
+        assert!(
+            discarded_of(
+                "(module m \
+                   (: (@ (param (: widget slider)) a) Int64) \
+                   (def (main) (host (Param) (+ (Param.a) 1))) \
+                 (export main))"
+            )
+            .is_empty(),
+            "a scalar @param site is a declaration, not a discarded value"
+        );
+        // Two @param sites → still zero warnings (the guard is per-site, and both are declarations).
+        assert!(
+            discarded_of(
+                "(module m \
+                   (: (@ (param (: widget slider)) a) Int64) \
+                   (: (@ (param (: widget slider)) b) Int64) \
+                   (def (main) (host (Param) (+ (Param.a) (Param.b)))) \
+                 (export main))"
+            )
+            .is_empty(),
+            "every @param site is skipped — no per-param discarded-value noise"
+        );
+        // A Rational @param (heap-typed, desugars to num/den) is ALSO a declaration — same skip, no warning.
+        assert!(
+            discarded_of(
+                "(module m \
+                   (: (@ (param (: widget slider)) rate) Rational) \
+                   (def (main) (host (Param) (Rational.value (Param.rate)))) \
+                 (export main))"
+            )
+            .is_empty(),
+            "a Rational @param site is a declaration too — the guard keys on the site, not the accessor type"
+        );
+        // GUARD-DOES-NOT-OVER-SUPPRESS: a genuine discarded pure value alongside a @param still warns exactly
+        // once — the skip is surgical to the `@param` site, not the whole block.
+        let ws = discarded_of(
+            "(module m \
+               (: (@ (param (: widget slider)) a) Int64) \
+               (def (main) (host (Param) (do (+ 1 2) (Param.a)))) \
+             (export main))",
+        );
+        assert_eq!(
+            ws.len(),
+            1,
+            "the @param site is skipped but a real discarded `(+ 1 2)` still warns once: {ws:?}"
         );
     }
 
