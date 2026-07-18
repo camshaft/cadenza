@@ -122,6 +122,56 @@ const ROUTES = [
       } else {
         check(false, `${label}: example picker present`);
       }
+      // PARAMETRIC mode (operator "super cool" payoff): switch to the Parametric tab → sliders render + the
+      // model meshes → drag the (fractional) thickness slider → the value shows an EXACT fraction (7/2, the
+      // floats-can't payoff) AND the canvas re-meshes (no compile/run error). Guards the whole @param
+      // host-response → recompute → re-mesh loop (v-cad's model + manifest + my run-worker wiring + UI).
+      const paramTab = page.locator('[data-testid="cad-mode-parametric"]');
+      if ((await paramTab.count()) > 0) {
+        await paramTab.click();
+        const sliders = await page
+          .waitForSelector('[data-testid="cad-param-controls"] input[type="range"]', { timeout: 10000 })
+          .then(() => page.locator('[data-testid="cad-param-controls"] input[type="range"]').count())
+          .catch(() => 0);
+        check(sliders > 1, `${label}: parametric mode shows a slider per @param (found ${sliders})`);
+        // Wait for the parametric model to mesh (a fresh canvas after the mode switch).
+        await page.waitForSelector("canvas", { timeout: 30000 }).catch(() => {});
+        // Drag the fractional thickness slider to 3.5 → expect an exact 7/2 + a re-mesh.
+        const thick = page.locator('[data-testid="cad-param-thickness"] input[type="range"]');
+        if ((await thick.count()) > 0) {
+          await thick.fill("3.5");
+          const exact = await page
+            .waitForFunction(
+              () => {
+                const v = document.querySelector('[data-testid="cad-param-thickness-value"]');
+                return v && v.textContent && v.textContent.trim() === "7/2";
+              },
+              { timeout: 10000 },
+            )
+            .then(() => true)
+            .catch(() => false);
+          check(exact, `${label}: a fractional slider carries an EXACT Rational (thickness → 7/2)`);
+          // After the drag, the model re-meshes (async: compile→run→mesh). Wait for the status to SETTLE
+          // (leave "meshing…") to a non-error, with the canvas still present — then it re-meshed live.
+          const meshed = await page
+            .waitForFunction(
+              () => {
+                const s = document.querySelector('[data-testid="cad-status"]');
+                const settled = s && !/meshing/i.test(s.textContent || "");
+                const ok = s && !/error|declined|trap/i.test(s.textContent || "");
+                return settled && ok && !!document.querySelector("canvas");
+              },
+              { timeout: 30000 },
+            )
+            .then(() => true)
+            .catch(() => false);
+          check(meshed, `${label}: the slider drag re-meshes live (canvas present, no error)`);
+        } else {
+          check(false, `${label}: parametric thickness slider present`);
+        }
+      } else {
+        check(false, `${label}: parametric mode toggle present`);
+      }
     },
   },
   {

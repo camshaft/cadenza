@@ -95,6 +95,12 @@ pub mod kernel;
 /// the CLI injects (operator fork-5 ruling), and a later `program` event self-supersedes it.
 pub mod boot;
 
+/// Capability policies in the log (capability-attenuation — operator ruling): [`policy::append_policy`] writes
+/// a CEDAR policy doc to the log as a `policy` event; [`policy::latest_policy`] is the invocation path's
+/// lookup (the latest `policy` event's Cedar text). The kernel grants broad primitives; the Cedar doc from the
+/// log attenuates each invocation to its minimal privilege set. The log-store half; evaluation is `cdz_agent::cedar`.
+pub mod policy;
+
 /// The daemon loop (rung KC-daemon — the "start the daemon" half of fork-5): [`daemon::tick`] runs one step —
 /// read the log, find the latest genesis `program` ([`boot::latest_program`]), and drive an interpret turn
 /// ([`kernel::run_interpret`]). Ties the boot half (genesis lookup) + the kernel half (compile+run) into the

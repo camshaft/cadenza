@@ -29,3 +29,11 @@
     (handle Bail 0 ((bail (n) s n))
       (if (and b (> (Bail.bail 7) 0)) 100 200)))
   (export main))
+
+;; REFINED ROOT-CAUSE (v-effects 2026-07-18): the And-desugar (effects.rs:2391) DOES fire —
+;; `(and b (> (Bail.bail 7) 0))` → `(if b (> (Bail.bail 7) 0) false)`. But that lands as the
+;; CONDITION of the enclosing `(if <cond> 100 200)`. hoist_once has no site for an `if` whose
+;; CONDITION is itself an `if`-with-abort. Sound fix = distribute the outer if into the inner
+;; branches: `(if (if b X false) t e)` ≡ `(if b (if X t e) (if false t e))`. Bounded + sound
+;; (t/e duplicated statically, each path runs one copy). PARKED: no forcing consumer; won't build
+;; a speculative hoist site. Bare abort-in-if-condition (no connective) already folds.

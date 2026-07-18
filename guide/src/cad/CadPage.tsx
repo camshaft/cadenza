@@ -38,13 +38,16 @@ import { MeshView } from "./MeshView.tsx";
 import { wrapPrefixOf } from "../components/wrapModule.ts";
 import { injectImport, CAD_LIB_NAME, CAD_LIB_FORMAT } from "./preloadModel.ts";
 import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
+import { DEFAULT_PARAMETRIC } from "./parametric.ts";
+import { ParametricControls, fracOf, type Frac } from "./ParametricControls.tsx";
 import type { Surface } from "../compiler/client.ts";
 import { LazyCodeEditor } from "../editor/LazyCodeEditor.tsx";
-// The CAD library source (`implementation/cad/src/exact.cdz`), staged into the guide tree by
-// `stage-wasm.mjs` (same pattern as runtime.wasm) and `?raw`-imported here as a string. It's PRELOADED
-// via `compile_with_preloaded` (operator P5, ruling A) so the reader's buffer holds only the model — the
-// CAD vocabulary (`Solid`/`Vec3`/`v3r`/`lower`/…) is link-merged from this module, not authored inline.
+// The CAD library sources, staged into the guide tree by `stage-wasm.mjs` (same pattern as runtime.wasm)
+// and `?raw`-imported here as strings. PRELOADED via `compile_with_preloaded` (operator P5, ruling A) so a
+// buffer holds only the model — the CAD vocab (`Solid`/`v3r`/`lower`/…) is link-merged. `exact` is the base
+// geometry lib; `helpers` (box/cyl/hole-through/…) is the ergonomic surface the PARAMETRIC models import.
 import EXACT_CDZ from "../wasm/cad/exact.cdz?raw";
+import HELPERS_CDZ from "../wasm/cad/helpers.cdz?raw";
 
 // /cad's IDE config is built INSIDE the component (it must read the LIVE edit surface) — see `cadIde`
 // below. The program is a self-contained module (no wrapping), so the compiled text IS the editor text
@@ -83,6 +86,23 @@ export default function CadPage() {
   const [source, setSource] = useState(() => DEFAULT_EXAMPLE.source[surface] ?? DEFAULT_EXAMPLE.source.ml);
   const [status, setStatus] = useState<Status>({ phase: "idle" });
   const runningRef = useRef(false);
+
+  // MODE: "edit" = the reader edits a model buffer (the example-picker + editor above); "parametric" = a
+  // PARAMETRIC showcase driven by sliders (operator directive — the @param models). Distinct affordance
+  // (v-cad Q3) since it's a different interaction (drag sliders vs edit source). Parametric compiles the
+  // fixed showcase model against exact+helpers + supplies each @param's {num,den} as a host-response
+  // (run-worker step-2 wiring) → recompute+re-mesh — an EXACT fractional dim (7/2) is carried live.
+  const [mode, setMode] = useState<"edit" | "parametric">("edit");
+  const paramModel = DEFAULT_PARAMETRIC;
+  // Each @param's current value as an exact fraction, seeded from the manifest defaults.
+  const [paramValues, setParamValues] = useState<Record<string, Frac>>(() => {
+    const init: Record<string, Frac> = {};
+    for (const p of paramModel.params) {
+      const den = p.fractional ? 2 : 1;
+      init[p.name] = fracOf(p.default[1] === 0 ? 0 : p.default[0] / p.default[1], den);
+    }
+    return init;
+  });
 
   // The IDE config for the editor — the linter surface tracks the LIVE edit surface (the global toggle),
   // so the buffer is diagnosed in the surface it's written in (fixes the all-red-squiggles P-C bug).
@@ -147,19 +167,93 @@ export default function CadPage() {
     [],
   );
 
+  // Run the PARAMETRIC showcase model with the given @param values: compile it (preloaded against BOTH
+  // exact + helpers — it imports both), run supplying each @param's {num,den} as a host-response (the
+  // run-worker step-2 wiring), render the SolidR value in s-expr, and mesh it. Driven by the sliders.
+  const runParametric = useCallback(
+    async (from: Surface, values: Record<string, Frac>) => {
+      if (runningRef.current) return;
+      runningRef.current = true;
+      setStatus({ phase: "running" });
+      try {
+        // The manifest's model source carries its own imports + @param decls + `def main`, but NO export —
+        // add one so `main` is public (else "nothing is public"). ML: append `export { main }`. s-expr: wrap
+        // the top-level forms in `(do … (export main))` (s-expr has no bare multi-form top level).
+        const raw = (paramModel.source[from] ?? paramModel.source.ml).trim();
+        const program = from === "sexpr" ? `(do\n${raw}\n(export main))` : `${raw}\nexport { main }`;
+        const out = await compileWithPreloaded(
+          program,
+          from,
+          [CAD_LIB_NAME, "helpers"],
+          [EXACT_CDZ, HELPERS_CDZ],
+          [CAD_LIB_FORMAT, CAD_LIB_FORMAT],
+        );
+        if (!out.component) {
+          const d = out.diagnostics.find((x) => x.error) ?? out.diagnostics[0];
+          setStatus({ phase: "error", message: d ? `${d.code} ${d.message}` : "compile declined" });
+          return;
+        }
+        // Supply the @param host-responses (name → {num,den}); the model reads them + renders a driven SolidR.
+        const params: Record<string, { num: number; den: number }> = {};
+        for (const [name, f] of Object.entries(values)) params[name] = { num: f.num, den: f.den };
+        const result = await runComponent(out.component, "sexpr", false, params);
+        if (result.kind !== "value") {
+          const msg =
+            result.kind === "trap" ? `trap: ${result.message}`
+            : result.kind === "timeout" ? "timed out"
+            : `error: ${result.message}`;
+          setStatus({ phase: "error", message: msg });
+          return;
+        }
+        const mesh = await meshFromSolid(result.text);
+        if (!mesh.ok) {
+          setStatus({ phase: "error", message: mesh.error });
+          return;
+        }
+        setStatus({ phase: "meshed", mesh });
+      } catch (e) {
+        setStatus({ phase: "error", message: e instanceof Error ? e.message : String(e) });
+      } finally {
+        runningRef.current = false;
+      }
+    },
+    [paramModel],
+  );
+
+  // A slider change: update that param's value + re-run the parametric model with the new values.
+  const onParamChange = useCallback(
+    (name: string, value: Frac) => {
+      setParamValues((prev) => {
+        const next = { ...prev, [name]: value };
+        void runParametric(surface, next);
+        return next;
+      });
+    },
+    [surface, runParametric],
+  );
+
   // On a surface change, re-seed the CURRENT example in the new surface (a source typed in the old surface
   // can't be blindly reinterpreted — same as /calculator) and re-run. Also covers the initial mount, so the
   // reader sees a meshed shape immediately.
-  const surfaceRef = useRef<Surface | null>(null);
+  // Re-run on a surface change OR a mode switch. EDIT mode: re-seed the current example in the new surface
+  // (source can't cross surfaces — like /calculator) + run it. PARAMETRIC mode: run the showcase model with
+  // the current slider values. Fires on initial mount too, so the reader sees a meshed shape immediately.
+  const lastRun = useRef<{ surface: Surface; mode: "edit" | "parametric" } | null>(null);
   useEffect(() => {
-    if (surfaceRef.current === surface) return;
-    const first = surfaceRef.current === null;
-    surfaceRef.current = surface;
+    const prev = lastRun.current;
+    const first = prev === null;
+    if (prev && prev.surface === surface && prev.mode === mode) return;
+    lastRun.current = { surface, mode };
+    if (mode === "parametric") {
+      void runParametric(surface, paramValues);
+      return;
+    }
+    // edit mode
     const next = first ? source : (example.source[surface] ?? example.source.ml);
     if (!first) setSource(next);
     void runModel(next, surface);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [surface]);
+  }, [surface, mode]);
 
   // Switch to another example model: seed the editor with its source in the CURRENT surface + re-run.
   const onSelectExample = useCallback(
@@ -181,29 +275,53 @@ export default function CadPage() {
           all three on one line). */}
       <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-2">
         <h1 className="text-lg font-bold text-slate-100 sm:text-xl">Cadenza CAD</h1>
-        {/* Mobile touch target: the controls get a 44px min-height below `sm`, compact at sm+. */}
-        <div className="flex min-w-0 shrink items-center gap-1 text-xs sm:gap-3">
+        {/* Mobile touch target: the controls get a 44px min-height below `sm`, compact at sm+. `flex-wrap`
+            so the mode toggle + surface toggle + picker + link wrap across rows on a narrow phone (390px)
+            instead of overflowing horizontally (there are now up to 4 control groups). */}
+        <div className="flex min-w-0 shrink flex-wrap items-center justify-end gap-1 text-xs sm:gap-3">
+          {/* Mode toggle: EDIT a model (picker + editor) vs the PARAMETRIC showcase (sliders). Parametric is
+              the operator's "super cool" payoff — drag a slider, the model re-meshes live w/ exact dims. */}
+          <div className="flex items-center rounded-md border border-slate-700 p-0.5" role="radiogroup" aria-label="Mode">
+            {(["edit", "parametric"] as const).map((m) => (
+              <button
+                key={m}
+                role="radio"
+                aria-checked={mode === m}
+                data-testid={`cad-mode-${m}`}
+                onClick={() => setMode(m)}
+                className={
+                  "flex min-h-11 items-center rounded px-2 font-medium transition sm:min-h-0 sm:py-1 " +
+                  (mode === m ? "bg-cadenza-600 text-white" : "text-slate-400 hover:text-slate-200")
+                }
+              >
+                {m === "edit" ? "Model" : "Parametric"}
+              </button>
+            ))}
+          </div>
           {/* The GLOBAL surface toggle (ML / s-expr) — /cad reads the live surface for editing (the model
               buffer is re-seeded per surface), but the app routes render under RootLayout, which has no
               header nav, so the chapter Layout's toggle isn't reachable here. Surface it so a reader can
               switch + STICK the surface on /cad too (operator UX: the same toggle everywhere). */}
           <SyntaxToggle />
-          {/* Example picker — swap between the CAD models (cad/examples.ts, v-cad-authored). */}
-          <label className="flex min-h-11 items-center gap-1 sm:min-h-0">
-            <span className="sr-only">Example model</span>
-            <select
-              data-testid="cad-example-picker"
-              value={exampleSlug}
-              onChange={(e) => onSelectExample(e.target.value)}
-              className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-200 focus:border-cadenza-500 focus:outline-none"
-            >
-              {EXAMPLES.map((e) => (
-                <option key={e.slug} value={e.slug}>
-                  {e.title}
-                </option>
-              ))}
-            </select>
-          </label>
+          {/* Example picker — swap between the CAD models (cad/examples.ts, v-cad-authored). Edit-mode only
+              (the parametric showcase is a single slider-driven model, no example list). */}
+          {mode === "edit" && (
+            <label className="flex min-h-11 items-center gap-1 sm:min-h-0">
+              <span className="sr-only">Example model</span>
+              <select
+                data-testid="cad-example-picker"
+                value={exampleSlug}
+                onChange={(e) => onSelectExample(e.target.value)}
+                className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-200 focus:border-cadenza-500 focus:outline-none"
+              >
+                {EXAMPLES.map((e) => (
+                  <option key={e.slug} value={e.slug}>
+                    {e.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <Link
             to="/playground"
             className="flex min-h-11 items-center px-2 text-cadenza-400 hover:text-cadenza-300 sm:min-h-0 sm:px-0"
@@ -218,29 +336,49 @@ export default function CadPage() {
       </p>
 
       <div className="flex min-h-0 flex-1 flex-col gap-4 md:flex-row">
-        {/* Editor + Run */}
+        {/* Left pane: EDIT = the model editor + Run; PARAMETRIC = the @param sliders (drag → re-mesh live). */}
         <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-slate-800 bg-slate-900/40">
-          <div className="min-h-[8rem] flex-1 overflow-auto">
-            <LazyCodeEditor value={source} onChange={setSource} ide={cadIde} minHeight="8rem" />
-          </div>
-          <div className="flex items-center justify-between border-t border-slate-800 px-3 py-2">
-            <span className="font-mono text-xs text-slate-500">
-              {status.phase === "error" ? (
-                <span className="text-rose-300">{status.message}</span>
-              ) : status.phase === "running" ? (
-                "meshing…"
-              ) : (
-                "a Solid → 3D mesh"
-              )}
-            </span>
-            <button
-              onClick={() => void runModel(source, surface)}
-              disabled={status.phase === "running"}
-              className="flex min-h-11 items-center justify-center rounded bg-cadenza-600 px-3 text-xs font-semibold text-white transition enabled:hover:bg-cadenza-500 disabled:opacity-40 sm:min-h-0 sm:py-1"
-            >
-              ▶ Run
-            </button>
-          </div>
+          {mode === "parametric" ? (
+            <div className="min-h-[8rem] flex-1 overflow-auto p-3">
+              <p className="mb-3 text-xs text-slate-500">
+                {paramModel.description ?? "Drag a slider — the model recomputes and re-meshes live, with exact (Rational) dimensions."}
+              </p>
+              <ParametricControls params={paramModel.params} values={paramValues} onChange={onParamChange} />
+              <p className="mt-3 font-mono text-xs text-slate-500" data-testid="cad-status">
+                {status.phase === "error" ? (
+                  <span className="text-rose-300">{status.message}</span>
+                ) : status.phase === "running" ? (
+                  "meshing…"
+                ) : (
+                  "exact Rational dimensions — a fractional slider (e.g. 7/2) is carried precisely"
+                )}
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="min-h-[8rem] flex-1 overflow-auto">
+                <LazyCodeEditor value={source} onChange={setSource} ide={cadIde} minHeight="8rem" />
+              </div>
+              <div className="flex items-center justify-between border-t border-slate-800 px-3 py-2">
+                <span className="font-mono text-xs text-slate-500">
+                  {status.phase === "error" ? (
+                    <span className="text-rose-300">{status.message}</span>
+                  ) : status.phase === "running" ? (
+                    "meshing…"
+                  ) : (
+                    "a Solid → 3D mesh"
+                  )}
+                </span>
+                <button
+                  onClick={() => void runModel(source, surface)}
+                  disabled={status.phase === "running"}
+                  className="flex min-h-11 items-center justify-center rounded bg-cadenza-600 px-3 text-xs font-semibold text-white transition enabled:hover:bg-cadenza-500 disabled:opacity-40 sm:min-h-0 sm:py-1"
+                >
+                  ▶ Run
+                </button>
+              </div>
+            </>
+          )}
         </div>
 
         {/* 3D preview. On MOBILE (stacked, flex-col) the preview is the star: give it a tall
