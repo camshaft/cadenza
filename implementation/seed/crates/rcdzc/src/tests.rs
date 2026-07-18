@@ -3776,6 +3776,22 @@ fn owned_temporary_list_producers_leave_no_live_objects() {
             5,
             5,
         ),
+        (
+            // NESTED owned producers: `List.concat` of two `List.push` results, each over a fresh `build`.
+            // Every push result AND the concat result are owned temporaries; the reclaim must COMPOSE — each
+            // push list consumed exactly once by `vec-concat`, and the concat result dropped after `vec-len`.
+            // A double-count or a missed drop anywhere in the chain would leave a live cell. `f(n)` = len of
+            // `concat(push([0..n),99), push([0..n),88))` = (n+1) + (n+1) = 2n+2; n=3 → 8.
+            "nested-concat-of-pushes",
+            "(module m \
+               (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
+                   (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (f (: n Int64)) ((. List len) ((. List concat) \
+                   ((. List push) (build 0 n (list)) 99) ((. List push) (build 0 n (list)) 88)))) \
+               (export f))",
+            3,
+            8,
+        ),
     ];
     for (label, src, arg, want_len) in cases {
         let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
@@ -63505,7 +63521,7 @@ mod sidecar_driven {
     fn the_copied_interface_name_validator_agrees_with_cadenza_syntax_over_a_fuzz_corpus() {
         // COPY-INVARIANT GUARD. `cadenza-syntax` is a DEV-only dependency for the pure-lib core, so the
         // wasm backend keeps its OWN copy of the peer-BINDING validator
-        // (`crate::backend::wasm::is_valid_interface_name`) rather than call the reference at emit time —
+        // (`crate::backend::common::export_name::is_valid_interface_name`) rather than call the reference at emit time —
         // this is the guard that turns a silent invalid-component miscompile (an author's malformed
         // `(bind E "ns:pkg/iface")` string) into a compile-time CDZ0201. Nothing ENFORCED that the copy
         // stays faithful to `cadenza_syntax::extern_name::is_valid_interface_name` — a drift in either
@@ -63524,7 +63540,7 @@ mod sidecar_driven {
         // rename the author's identifier across the component / path-deps boundary). Earlier the reference
         // silently collapsed; this test drove the discovery, the concierge ruled decline-with-rename, and
         // the reference was conformed to the backend copy — so the two now agree here too and stay pinned.
-        use crate::backend::wasm::{is_valid_interface_name, kebab_extern_name};
+        use crate::backend::common::export_name::{is_valid_interface_name, kebab_extern_name};
         use cadenza_syntax::extern_name as reference;
 
         // Hand cases bracketing the grammar edges (valid names, and each rejection cause).

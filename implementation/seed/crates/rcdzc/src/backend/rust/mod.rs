@@ -317,10 +317,11 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
     // (`kebab_export_collision`/`invalid_kebab_export_name`); the rust backend emits no component, so it
     // would otherwise silently emit a `pub fn` where wasm rejects — a differential outcome. Apply the SAME
     // two checks here so both backends agree (the corpus grades these `(error CDZ0201)`).
-    if let Some(reject) = super::wasm::kebab_export_collision(layout) {
+    if let Some(reject) = crate::backend::common::export_name::kebab_export_collision(layout) {
         return Err(reject);
     }
-    if let Some(reject) = super::wasm::invalid_kebab_export_name(db, layout) {
+    if let Some(reject) = crate::backend::common::export_name::invalid_kebab_export_name(db, layout)
+    {
         return Err(reject);
     }
     let mut out = String::new();

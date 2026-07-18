@@ -792,6 +792,7 @@ pass	a dependent-size segment binding exactly the remaining bytes leaves an empt
 pass	a dependent-size segment binds exactly the number of bytes an earlier segment named
 pass	a dependent-size segment that overruns the remaining bytes falls through
 pass	a depth-3 erased-and-boxed nested-sum match reads every level's discriminant at the right offset
+pass	a derived dimension composes across a def boundary through annotated Qty parameters
 pass	a destructuring let over a runtime value binds its parts
 pass	a dictionary consumer called at two dictionaries is monomorphized per dictionary
 pass	a different function argument through the same recursive higher-order function
@@ -1876,6 +1877,7 @@ pass	a runtime record nested in a tuple compares component-wise
 pass	a runtime record whose field is a runtime tuple escapes to the host
 pass	a runtime remainder takes the dividend's sign
 pass	a runtime right shift by the bit width or more traps
+pass	a runtime same-dimension quotient is dimensionless and its value joins bare integer arithmetic
 pass	a runtime scrutinee keeps the full switch and nested dispatch
 pass	a runtime scrutinee matching no arm traps
 pass	a runtime scrutinee of one sum type rejects a foreign sum's pattern
@@ -1935,6 +1937,7 @@ pass	a runtime unsigned-byte subtraction traps below zero
 pass	a runtime value is constructed into a fixed-width segment and its length read
 pass	a runtime value narrowed to the segment width constructs without trapping
 pass	a runtime value under a const key binds through the map pattern
+pass	a runtime velocity multiplied by a time cancels back to the base dimension
 pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime width NESTED in a compound annotation is rejected
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern

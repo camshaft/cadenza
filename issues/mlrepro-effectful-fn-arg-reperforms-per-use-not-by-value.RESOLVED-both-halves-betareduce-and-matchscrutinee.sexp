@@ -56,3 +56,12 @@
 ; SumPayload emit), NOT β-reduce. FIX = A-normalize a host-reaching match scrutinee (bind once above the
 ; match so every SumPayload reads a LocalRef). NEXT increment (touches hot match-lowering + backend select).
 ; The known-miscompile pin test is updated (documents the 2nd bug, still asserts 3).
+
+; ── BOTH HALVES FIXED (v-effects, 2026-07-18, MR f35ccfb72 supersedes cbe42eddf) ──
+; (2) the match-payload scrutinee re-eval is FIXED: lower_match_sum's Leaf arm keeps the Core::MatchSum
+; wrapper (materializes the host-reaching scrutinee ONCE) instead of folding to a bare Leaf that re-emits
+; the scrutinee per SumPayload binder. Gate = core_of-FREE resolved walk scrutinee_reaches_host_perform
+; (NOT subtree_reaches_host_call — that forced core_of mid-lower + perturbed unrelated matches: caught 2 lib
+; regressions, a curried-ctor invalid-module + newtype-erasure byte-identity, both fixed by the resolved
+; walk). sum3(mk(E.get)) now = ONE host call (scalar AND compound-destructuring-match). Corpus: 2 value-
+; graded cases (value 15/15, one ask.ask). Full corpus 3799/0, opt-sweep 178/0, lib 2117/0. RESOLVED.

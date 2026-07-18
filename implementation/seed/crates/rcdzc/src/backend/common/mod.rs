@@ -8,3 +8,4 @@
 //!   "does this body/continuation diverge on every path?" and "what interval does a branch guarantee?").
 
 pub(crate) mod diverge;
+pub(crate) mod export_name;

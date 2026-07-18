@@ -441,6 +441,59 @@
                               (Qty.of 1 (Unit.base #"meter"))))) (export main)))
   (call   main (: 3 Int64)) (error CDZ0501))
 
+; Runtime cancellation companions (breaker). The cancel-through-DIVIDE runtime case above (`m·s / s = m`)
+; has three siblings still unpinned on runtime magnitudes: cancelling through a MULTIPLY (a stored
+; velocity times a time — the derived m·s⁻¹ QUOTIENT flowing on into a product), the same-dimension
+; quotient collapsing to a DIMENSIONLESS value that then participates in BARE integer arithmetic (the
+; erasure boundary: a fully-cancelled quantity's value is a plain number), and a derived dimension
+; crossing a DEF boundary through explicitly-annotated `(Qty Int64 (Unit.base …))` parameters (the
+; dimension algebra composing across a call, not only within one expression).
+
+(case "a runtime velocity multiplied by a time cancels back to the base dimension"
+  (doc    "`(* (/ dist time) time)` over runtime magnitudes: `(/ (Qty.of d meter) (Qty.of t second))`
+           derives m·s⁻¹ at compile time; multiplying by the same `time` cancels the s⁻¹·s to meter. The
+           erased arithmetic is `(d / t) * t` — with d=100, t=5 the checked integer ops give 20·5 = 100.
+           The runtime companion of the constant velocity-times-time case: the QUOTIENT-derived dimension
+           flows through a let into a later product and cancels correctly there, with all magnitudes
+           runtime parameters (nothing folds).")
+  (input  (do (def (main (: d Int64) (: t Int64))
+                (let ((dist (Qty.of d (Unit.base #"meter")))
+                      (time (Qty.of t (Unit.base #"second"))))
+                  (let ((speed (/ dist time)))
+                    (Qty.value (* speed time))))) (export main)))
+  (call   main (: 100 Int64) (: 5 Int64)) (output (: 100 Int64))
+  (call   main (: 9 Int64) (: 2 Int64)) (output (: 8 Int64)))
+
+(case "a runtime same-dimension quotient is dimensionless and its value joins bare integer arithmetic"
+  (doc    "`(/ (Qty.of a meter) (Qty.of a meter))` over a runtime magnitude cancels to the dimensionless
+           unit; `Qty.value` of the fully-cancelled quantity is a PLAIN Int64 that participates in bare
+           arithmetic (`+ 41` = 42 at a=9, where 9/9=1). The erasure boundary of the group identity: once
+           every exponent cancels, the value re-enters the ordinary numeric world with no unit residue.
+           (The 9/2 call pins the truncating integer quotient under the unit layer too: 4+41 = 45.)")
+  (input  (do (def (main (: a Int64) (: b Int64))
+                (let ((x (Qty.of a (Unit.base #"meter")))
+                      (y (Qty.of b (Unit.base #"meter"))))
+                  (+ (Qty.value (/ x y)) 41))) (export main)))
+  (call   main (: 9 Int64) (: 9 Int64)) (output (: 42 Int64))
+  (call   main (: 9 Int64) (: 2 Int64)) (output (: 45 Int64)))
+
+(case "a derived dimension composes across a def boundary through annotated Qty parameters"
+  (doc    "`area` takes two explicitly-annotated `(Qty Int64 (Unit.base #\"meter\"))` parameters and
+           returns their product — the derived meter² crosses the CALL boundary as the def's result
+           dimension. Two areas from different call sites then ADD (same derived dimension, well-formed)
+           and `Qty.value` recovers the erased 3·4 + 5·5 = 37. Pins that dimension derivation is not
+           expression-local: a def's annotated Qty parameters participate in the group algebra, the
+           derived result dimension survives the return, and same-derived-dimension results from separate
+           calls are addable.")
+  (input  (do (def (area (: w (Qty Int64 (Unit.base #"meter"))) (: h (Qty Int64 (Unit.base #"meter"))))
+                (* w h))
+              (def (main (: a Int64) (: b Int64) (: c Int64))
+                (Qty.value (+ (area (Qty.of a (Unit.base #"meter")) (Qty.of b (Unit.base #"meter")))
+                              (area (Qty.of c (Unit.base #"meter")) (Qty.of c (Unit.base #"meter"))))))
+              (export main)))
+  (call   main (: 3 Int64) (: 4 Int64) (: 5 Int64)) (output (: 37 Int64))
+  (call   main (: 0 Int64) (: 7 Int64) (: 2 Int64)) (output (: 4 Int64)))
+
 ; SAME-BASE POWER dimension distinctions (breaker): the mismatch case above uses a MIXED product
 ; (meter·second) vs meter. These pin the subtler SAME-BASE-EXPONENT distinction: meter² (from meter·meter)
 ; is a DIFFERENT dimension from meter¹, and meter³ from meter², so adding across exponents is a mismatch —
