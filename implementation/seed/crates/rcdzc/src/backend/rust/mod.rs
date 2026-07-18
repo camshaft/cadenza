@@ -100,6 +100,11 @@ fn s3_result_ok(t: &crate::ty::Ty) -> bool {
     use crate::ty::Ty;
     match t.strip_nominal() {
         Ty::Int(_) | Ty::Bool => true,
+        // A String/Bytes RESULT crosses the host boundary AS `list<u8>` — the gate harness renders a factory
+        // String/Bytes result as the byte-int list `(104 105)` (`cdz_render_bytes_list`), the observable form
+        // the wasm `call` method produces (it copies the handle into linear memory + returns list<u8>). NOT
+        // the quoted `"hi"`/`b"…"` a plain export uses — the factory-result render path special-cases these.
+        Ty::String | Ty::Bytes => true,
         Ty::Tuple(elems) => elems.iter().all(s3_result_ok),
         Ty::List(elem) => s3_result_ok(elem),
         _ => false,

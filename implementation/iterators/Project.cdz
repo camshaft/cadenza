@@ -1,0 +1,24 @@
+// The project manifest for the Cadenza iterators library, written in Cadenza itself.
+// `cdz` reads these well-known top-level defs to know how to build / run / test the project.
+//
+//   cdz test          — search up for this Project.cdz and run its suite (like cargo)
+//   cdz test .        — same, naming this directory
+//
+// Extracted from the compiler-ml package (operator directive 2026-07-18) so compiler-ml stays
+// laser-focused on the integer spine; the iterator library is a pure prelude-only consumer with no
+// dependency on the compiler pipeline, so it lives as its own sibling package (like cad / agent-harness).
+
+def name = "iterators"
+
+// The iterator library modules — every source file under src/ (a wildcard, so a new combinator module
+// just drops into src/ and is picked up automatically). Today: iter.cdz (monomorphic-Int64 reified
+// pull-iterator + range family), giter.cdz (generic strict cons-cell iterator), giter-flat.cdz (nested
+// flatten). The monomorphic/generic/fusing adapter-record redesign (operator re-charter) lands here too.
+def modules = ["src/*.cdz"]
+
+// The modules whose `@test` definitions form the suite. Same-file with their code (a cross-file test
+// cannot yet construct a type whose variant shadows a prelude name — see the shared issue queue).
+def tests = ["src/*.cdz"]
+
+// Files removed from the globs above. Empty — every src/*.cdz is a real library module.
+def exclude = []

@@ -773,16 +773,19 @@ fn a_top_level_immediate_capture_free_lambda_export_eta_peels_to_a_plain_fn() {
         );
     }
 
-    // GATED to a render-agreeing RESULT: a `Bytes`/`String`/`Sum` result degrades DIFFERENTLY across the
-    // wasm closure-resource boundary vs a direct Rust return, so it must NOT peel (it stays a decline, matching
-    // the wasm-graded expectation). A `Bytes`-returning immediate lambda therefore still declines.
-    let bytes_result = try_compile_rust(
+    // A `Bytes`-RESULT immediate lambda does NOT eta-PEEL (a peeled plain `fn -> Vec<u8>` would render its
+    // result via the direct-return form `b"…"`, which DISAGREES with the wasm closure-resource boundary's
+    // `list<u8>`). Instead it now crosses as a host-closure FACTORY (`pub fn mk() -> Rc<dyn Fn(i64) ->
+    // Vec<u8>>`), whose result the gate harness renders as the byte-int `list<u8>` form (`cdz_render_bytes_list`)
+    // — matching the wasm boundary. So it EMITS (was a decline before the String/Bytes-result factory slice).
+    let bytes_result = compile_rust(
         "(module m (def (mk) (fn ((: n Int64)) \
            (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1)))))) (export mk))",
     );
     assert!(
-        bytes_result.is_err(),
-        "a Bytes-RESULT lambda does not peel (resource-vs-direct render differ) — stays a decline: {bytes_result:?}"
+        bytes_result.contains("pub fn mk() -> std::rc::Rc<dyn Fn(i64) -> Vec<u8>>")
+            && !bytes_result.contains("__lifted_0(__a0, "), // a factory (1 closure arg), not eta-peeled
+        "a Bytes-RESULT lambda crosses as a factory returning `Rc<dyn Fn(..)->Vec<u8>>`:\n{bytes_result}"
     );
 }
 
@@ -4602,6 +4605,19 @@ fn rustc_roundtrip_host_closure_factory_compound_result_s3() {
     assert!(
         lst.contains("-> std::rc::Rc<dyn Fn(i64) -> Vec<i64>>"),
         "the S3 list-result factory emits `Rc<dyn Fn(..)->Vec<..>>`:\n{lst}"
+    );
+
+    // S3-extension: a STRING/BYTES closure RESULT crosses the host boundary AS `list<u8>` — the factory
+    // emits `Rc<dyn Fn(..)->String>` / `->Vec<u8>`, and the gate renders the result as the byte-int list
+    // `(104 105)` (`cdz_render_bytes_list`), NOT the quoted `"hi"`/`b"…"` a plain export uses. (End-to-end
+    // make/call + byte-list render is gate-covered by the 21-host-closures String/Bytes cases; here pin the
+    // EMIT shape — `rustc_run`'s bare `{}` can't format the byte-list, that's the gate's structured render.)
+    let strr = compile_rust(
+        "(module m (def (mk (: k Int64)) (fn ((: n Int64)) ((. String concat) \"x\" \"y\"))) (export mk))",
+    );
+    assert!(
+        strr.contains("-> std::rc::Rc<dyn Fn(i64) -> String>"),
+        "the String-result factory emits `Rc<dyn Fn(..)->String>` (rendered as list<u8> by the gate):\n{strr}"
     );
 }
 

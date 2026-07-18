@@ -4080,10 +4080,16 @@ fn decode_value(
         GenTy::Bool => Some((next(cursor)?.rem_euclid(2) == 0).to_string()),
         // A Float consumes one int, converted to an integer-valued float (`FloatN.of-int`).
         GenTy::Float(_) => Some(format!("{}.0", next(cursor)?)),
-        // A variable-length list: a count `c = gen % (LEN+1)` then LEN candidate elements (all drawn), value
-        // = the first `c`. The decoder draws in the SAME order so the cursor stays in lockstep with the run.
-        GenTy::List(elem) => {
-            let c = (next(cursor)?.rem_euclid((RUNNER_LIST_LEN + 1) as i64)) as usize;
+        // A variable-length list: a count `c = MIN + (gen % (LEN+1-MIN))` then LEN candidate elements (all
+        // drawn), value = the first `c`. `min_len` (a min-length refinement floor, clamped to LEN) mirrors
+        // the generator's `build_var_list_gen` count formula EXACTLY so the decode stays in lockstep with the
+        // run. The decoder draws all LEN elements regardless of `c`, same as the wrapper.
+        GenTy::List(elem, min_len) => {
+            let min = (*min_len).min(RUNNER_LIST_LEN);
+            let span = (RUNNER_LIST_LEN + 1 - min) as i64;
+            // Mirror the generator EXACTLY: `(gen & i64::MAX) % span` (mask non-negative, then mod), NOT
+            // rem_euclid — the wrapper masks the sign bit, which differs from rem_euclid for a negative gen.
+            let c = min + ((next(cursor)? & i64::MAX) % span) as usize;
             let mut elems = Vec::with_capacity(RUNNER_LIST_LEN);
             for _ in 0..RUNNER_LIST_LEN {
                 elems.push(decode_value(elem, pool, cursor)?);

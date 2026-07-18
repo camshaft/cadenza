@@ -1175,6 +1175,34 @@ fn a_range_invariant_constrains_generation_in_domain() {
     );
 }
 
+/// END-TO-END: a MIN-LENGTH `@invariant` constrains a newtype-List to non-empty generation. `NEList = Mk
+/// (List Int64)` with `@invariant(< 0 (List.len it))`: every generated `NEList` wraps a NON-EMPTY list, so
+/// a property asserting `List.len > 0` PASSES all trials (before the constraint the generator drew the empty
+/// list and the body trapped). Store-guarded — building the nominal heap value needs the store.
+#[test]
+fn a_min_length_invariant_constrains_a_list_non_empty() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — building a nominal value needs the store"
+        );
+        return;
+    }
+    let d = dir("invariant-nonempty");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do (@ (invariant (< 0 (List.len it))) (type NEList (Mk (List Int64)))) \
+           (@ test (def (p (: x NEList)) \
+             (match x (((. NEList Mk) xs) (if (< 0 (List.len xs)) unit (trap \"generated an empty list\")))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--trials", "50"]);
+    assert!(
+        ok && stdout.contains("PASS p-gen (50 trials)"),
+        "a min-length @invariant generates non-empty lists so 50 trials pass: {stdout}{stderr}"
+    );
+}
+
 /// END-TO-END: a COMPOUND-param `@test` that is ALSO `@requires`/`@ensures`-annotated must SYNTHESIZE its
 /// `-gen` wrapper and RUN (before the peel fix, the compound param under the verification wrapper declined at
 /// the export boundary — a hard compile error). A PERMISSIVE precondition/postcondition over a `List` param

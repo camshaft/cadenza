@@ -119,6 +119,15 @@ fn run_emitted_out_of_range_literal_declines_not_harness_error() {
     // An out-of-range Int64 literal (2^63) makes the emit DRIVER trap (checked-arith overflow embedding
     // it). That is the program being inexpressible → `declined` (exit 0), AGREEING with run-ml — NOT a
     // non-zero harness error (which would grade harness-broken / NotYet). Breaker + v-compiler-ml W4.
+    // Like the sibling decline test: run-emitted resolves the runtime before reporting (the driver is the
+    // full ML compiler), so skip storeless (the storeless `cargo test --workspace` CI job) — the
+    // store-having gate exercises it. Without this guard the test reds that job (it landed unguarded).
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — run-emitted resolves the runtime"
+        );
+        return;
+    }
     let (ok, out) = run_emitted("(do (def (main) (- 0 9223372036854775808)) (export main))");
     assert!(
         ok,
