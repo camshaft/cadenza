@@ -159,6 +159,7 @@ pub(crate) fn ty_has_free_var(db: &mut Db, t: &Ty) -> bool {
         // N-wide payload), so a direct walk is fine — the wide case is the `Record`/`Tuple` above.
         Ty::Var(_) => true,
         Ty::Fn(p, r) => ty_has_free_var(db, p) || ty_has_free_var(db, r),
+        Ty::Cont { resume, answer } => ty_has_free_var(db, resume) || ty_has_free_var(db, answer),
         Ty::List(elem) | Ty::Set(elem) => ty_has_free_var(db, elem),
         Ty::Map(k, v) => ty_has_free_var(db, k) || ty_has_free_var(db, v),
         Ty::Sum { args, .. } | Ty::Nominal { args, .. } => {

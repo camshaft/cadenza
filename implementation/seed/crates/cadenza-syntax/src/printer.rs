@@ -529,7 +529,7 @@ impl<'a> Printer<'a> {
                     self.doc.word("@");
                     self.doc.word(emit_name(name));
                     self.doc.hardbreak();
-                    self.expr(args[1], parent_prec);
+                    self.annotated_form(args[1]);
                     self.doc.end();
                     return;
                 }
@@ -542,7 +542,7 @@ impl<'a> Printer<'a> {
                     self.doc.word("@");
                     self.expr(args[0], PREC_MEMBER);
                     self.doc.hardbreak();
-                    self.expr(args[1], parent_prec);
+                    self.annotated_form(args[1]);
                     self.doc.end();
                     return;
                 }
@@ -2302,6 +2302,110 @@ impl<'a> Printer<'a> {
         }
     }
 
+    /// Print the FORM an annotation wraps (`args[1]` of `(@ name form)`). The parser re-reads the
+    /// annotated form via `prefix()` (PREFIX position — no infix/postfix loop), so a form that `prefix()`
+    /// would NOT recapture whole must be PARENTHESIZED here or the round-trip breaks: `@inline a + 1` (no
+    /// parens) re-reads as `(+ (@ inline a) 1)` — the `@` binding only the leading atom `a` — instead of
+    /// the intended `(@ inline (+ a 1))`. The forms `prefix()` does NOT recapture are exactly the ones the
+    /// Pratt/`postfix` loops build AFTER the prefix atom: an INFIX operator application, a computed/name
+    /// APPLICATION (a call), and a `.member` access. Every other form round-trips bare — an atom, a keyword
+    /// form (`if`/`let`/`match`/`fn`/`do`/`type`/…, each self-delimiting in prefix position), a
+    /// bracket-delimited literal (`[…]`/`(…,)`/`{…}`/`#{…}`), or a nested `@`. Wrapping only the three
+    /// post-prefix shapes keeps the multi-line keyword forms unparenthesized (an `@inline (if …)` would be
+    /// ugly and needless). The wrapped form prints at prec 0 inside the parens (a fresh sub-expression).
+    fn annotated_form(&mut self, form: StructId) {
+        if self.form_needs_prefix_parens(form) {
+            self.doc.word("(");
+            self.expr(form, 0);
+            self.doc.word(")");
+        } else {
+            self.expr(form, 0);
+        }
+    }
+
+    /// Whether `form` is one of the three shapes the parser's `prefix()` would NOT recapture whole (so it
+    /// needs parens when it appears in a prefix-only position — the annotated form of an `@`): an INFIX
+    /// application (head in `infix_prec`), a `.member` access, or a bare APPLICATION/call (a list whose
+    /// head is not a recognized special form and whose shape the generic call path renders as `head(args)`
+    /// / `expr(args)`). A special-form/keyword/ctor list (`if`/`let`/`match`/`list`/`tuple`/`record`/`map`/
+    /// `@`/…) is self-delimiting and does NOT need parens. Mirrors the parse asymmetry, not a full re-derivation
+    /// of dispatch — conservative in the safe direction: an unrecognized name-headed list is treated as a
+    /// call (needs parens), which is exactly how `prefix()`+`postfix` would (fail to) round-trip it.
+    fn form_needs_prefix_parens(&self, form: StructId) -> bool {
+        let items = match self.a.get(form) {
+            Struct::List(items) if !items.is_empty() => items,
+            _ => return false, // an atom (or empty list) is a prefix atom — no parens
+        };
+        // A member access `(. obj key)` — postfix, not recaptured by prefix alone.
+        if self.head_name(items[0]).as_deref() == Some(".") {
+            return true;
+        }
+        // An INFIX application `(op a b)` — a binary operator head with two operands.
+        if items.len() == 3
+            && let Some(h) = self.head_name(items[0])
+            && infix_prec(&h).is_some()
+        {
+            return true;
+        }
+        // A special form / keyword / ctor list is self-delimiting (prints as a keyword form or a
+        // bracketed literal, each recaptured whole by `prefix()`); anything else name-headed is a
+        // generic call `head(args)`, and a non-name head is a computed application `expr(args)` — both
+        // postfix-built, so they need parens.
+        !self.is_self_delimiting_form(form)
+    }
+
+    /// Whether `form` prints as a SELF-DELIMITING surface form — a keyword form (`if`/`let`/`match`/`fn`/
+    /// `do`/`type`/`effect`/`handle`/`host`/`module`/`export`/`import`/`comment`/`bin`/`forall`/
+    /// `tagged-template`), a bracket-delimited compound literal (`list`/`tuple`/`record`/`map`), a nested
+    /// annotation/pragma (`@`/`pragma`), or a quote/unquote sigil form — i.e. a form the parser's
+    /// `prefix()` recaptures whole (it begins with a keyword, sigil, or opening bracket, never fusing with
+    /// a following infix/postfix). Used by [`Self::form_needs_prefix_parens`] to leave these unparenthesized
+    /// as an annotated form. A NAME head that merely SHADOWS one of these ctors (`list`/`tuple`/… as a user
+    /// value) is a call, not the literal — but those print via the string-headed ctor path, so a NAME-headed
+    /// `list` is correctly NOT matched here (it falls through to the call case → parens).
+    fn is_self_delimiting_form(&self, form: StructId) -> bool {
+        let items = match self.a.get(form) {
+            Struct::List(items) if !items.is_empty() => items,
+            _ => return false,
+        };
+        // A compound literal `("list" …)`/`("tuple" …)`/`("record" …)`/`("map" …)` — string-headed, or a
+        // non-shadowed NAME alias — prints bracket-delimited (`[…]`/`(…,)`/`{…}`/`#{…}`), self-delimiting.
+        // `literal_ctor` is the same gate the ctor sugar uses, so a SHADOWED `list`/… (an ordinary value)
+        // correctly returns `None` here and falls through to the call case (→ parens).
+        if self.literal_ctor(items[0]).is_some() {
+            return true;
+        }
+        let Some(head) = self.head_name(items[0]) else {
+            return false; // computed-callee application — a call, needs parens
+        };
+        let args = &items[1..];
+        match head.as_str() {
+            "let" => self.is_let_shape(args),
+            "if" => args.len() == 3,
+            "fn" => args.len() == 2,
+            "match" => self.is_match_shape(args),
+            // A `def` (function or value) is keyword-led and self-delimiting — the common annotated form
+            // (`@inline def …`, `@test def …`). Both def shapes the print dispatch recognizes.
+            "def" => self.is_def_shape(args) || self.is_value_def_shape(args),
+            "do" => !args.is_empty(),
+            "type" => self.is_type_shape(args),
+            "effect" => self.is_effect_shape(args),
+            "handle" => self.is_handle_shape(args),
+            "host" => self.is_host_shape(args),
+            "module" => self.is_module_shape(args),
+            "export" => self.is_export_shape(args),
+            "import" => self.is_import_shape(args),
+            "comment" => args.len() == 2 && self.is_string(args[0]),
+            "bin" => true,
+            "tagged-template" => self.is_tagged_template_shape(args),
+            "forall" => self.is_forall_shape(args),
+            // A nested annotation/pragma is itself self-delimiting (leads with `@`/`@!`).
+            "@" => args.len() == 2,
+            "pragma" => args.len() == 2 && self.a.as_name(args[0]).is_some(),
+            _ => false, // a generic name-headed call — needs parens
+        }
+    }
+
     fn unquote_atomic(&self, id: StructId) -> bool {
         match self.a.get(id) {
             Struct::Atom(_) => true,
@@ -3807,6 +3911,68 @@ mod tests {
         let prop_ml = print(&sexpr::read(prop).unwrap(), 80);
         assert!(prop_ml.starts_with("@property\n"), "{prop_ml}");
         assert_eq!(sexpr::print(&parser::read_ml(&prop_ml).arenas), prop);
+    }
+
+    #[test]
+    fn annotation_on_a_compound_expression_parenthesizes_so_it_round_trips() {
+        // The parser re-reads an annotated form in PREFIX position, so an annotated INFIX / APPLICATION /
+        // MEMBER-access form (the shapes the Pratt/postfix loops build AFTER the prefix atom) must be
+        // PARENTHESIZED by the printer — else `@inline a + 1` re-reads as `(+ (@ inline a) 1)` (the `@`
+        // binding only the leading atom), NOT the intended `(@ inline (+ a 1))`. Pin each post-prefix shape.
+        for form_sx in [
+            "(+ a 1)",           // infix
+            "(f x)",             // application (call)
+            "((g y) x)",         // computed-callee application
+            "(. a b)",           // member access
+            "(. (. a b) c)",     // member chain
+            "(+ (* a b) (f x))", // nested infix + call
+        ] {
+            let sx = format!("(def (main) (@ inline {form_sx}))");
+            let a = sexpr::read(&sx).unwrap();
+            let ml = print(&a, 80);
+            // The annotated form prints parenthesized (a `(` on the line below the `@inline`).
+            let back = parser::read_ml(&ml);
+            assert!(
+                back.ok(),
+                "annotated compound re-parses: {ml:?} errs={:?}",
+                back.errors
+            );
+            assert!(
+                back.arenas.structurally_eq(&a),
+                "annotated compound round-trips (parens keep the `@` on the WHOLE form):\n  ml: {ml}\n  back: {}",
+                sexpr::print(&back.arenas)
+            );
+        }
+        // A SELF-DELIMITING annotated form (keyword form, bracketed literal, nested `@`) is NOT
+        // parenthesized — it round-trips bare (and parens would be ugly/needless).
+        for (form_sx, want_no_paren) in [
+            ("(if a b c)", "@inline\nif a then b else c"),
+            ("(\"list\" 1 2)", "@inline\n[1, 2]"),
+            ("(def (f) 1)", "@inline\ndef f() = 1"),
+        ] {
+            let sx = format!("(def (main) (@ inline {form_sx}))");
+            // For the def case the wrapper is a module-ish do; just assert the annotated-form render + round-trip.
+            let a = sexpr::read(&format!("(@ inline {form_sx})")).unwrap();
+            let ml = print(&a, 80);
+            assert_eq!(
+                ml, want_no_paren,
+                "self-delimiting annotated form must not be parenthesized"
+            );
+            assert!(
+                parser::read_ml(&ml).arenas.structurally_eq(&a),
+                "self-delimiting annotated form round-trips: {ml}"
+            );
+            let _ = sx;
+        }
+        // A PARAMETERIZED annotation on a compound form round-trips too — the `@tag("t")` name-call takes
+        // ONLY its glued arg, leaving the parenthesized form as the annotated target.
+        let a = sexpr::read(r#"(def (main) (@ (tag "t") (+ a 1)))"#).unwrap();
+        let ml = print(&a, 80);
+        assert!(
+            parser::read_ml(&ml).arenas.structurally_eq(&a),
+            "parameterized annotation on a compound form round-trips:\n  ml: {ml}\n  back: {}",
+            sexpr::print(&parser::read_ml(&ml).arenas)
+        );
     }
 
     #[test]

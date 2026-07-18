@@ -227,6 +227,51 @@ fn two_deps_with_the_same_interface_fail_with_a_clear_diagnostic() {
 }
 
 #[test]
+fn a_dep_name_that_is_not_a_valid_interface_segment_fails_with_a_clear_diagnostic() {
+    // A dependency's `def name` becomes a component-model interface SEGMENT (`cadenza:<name>/api`), which
+    // admits only lowercase ASCII letters/digits/hyphens. A `name` with a space (or other out-of-alphabet
+    // char) would build a malformed interface string and fail OPAQUELY deep in wasmtime at compose. It must
+    // be caught early with a clear diagnostic naming the dep + the offending name + the rule (the sibling of
+    // the same-interface collision check).
+    let root = std::env::temp_dir().join(format!("cdz-pathdep-badname-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("lib")).unwrap();
+    // `def name = "my lib"` — a space is not a valid interface-segment char.
+    std::fs::write(
+        root.join("lib/Project.cdz"),
+        "def name = \"my lib\"\ndef entry = \"l.sexp\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("lib/l.sexp"),
+        "(do (def (f (: x Int64)) x) (export f))",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(
+        root.join("app/Project.cdz"),
+        "def name = \"app\"\ndef entry = \"main.sexp\"\ndef deps = [\"../lib\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app/main.sexp"),
+        "(do (def (main (: x Int64)) x) (export main))",
+    )
+    .unwrap();
+    let (ok, _o, err) = run_in(&root.join("app"), &["run", "--call", "main", "--arg", "5"]);
+    assert!(!ok, "a dep with a non-identifier name must fail (non-zero)");
+    assert!(
+        err.contains("my lib") && err.contains("valid interface segment"),
+        "the bad name is diagnosed early, naming the offending name + the rule: {err}"
+    );
+    assert!(
+        !err.to_lowercase().contains("wasmtime") && !err.contains("cadenza:my lib/api"),
+        "the failure is the CLEAR diagnostic, not an opaque compose/wasmtime error: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn a_dep_build_failure_leaves_no_temp_dep_components_behind() {
     // REGRESSION (Copilot PR #511): when a LATER dep fails to build, the temp components of EARLIER deps
     // (already written) were leaked — only the consumer's own temp was cleaned. Now `build_path_deps`

@@ -419,6 +419,10 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // `Ty::Fn`-typed parameter / local / argument lives here. (A lambda that FOLDS away at compile
         // time never reaches a slot; only one that survives as a runtime value does — via `call_indirect`.)
         Ty::Fn(_, _) => Some(ValType::I32),
+        // A reified continuation is a value-heap frame-chain HANDLE — an i32 machine slot, like a closure
+        // handle. (Reserved: no program constructs a `Ty::Cont` until the step-3 heap rep lands; the slot
+        // width is fixed here so the later reify/apply emit has it.)
+        Ty::Cont { .. } => Some(ValType::I32),
         // A quantity ERASES to its inner numeric type before emission (`lower` strips the `Qty`), so its
         // machine slot IS the inner type's — a `(Qty Float64 meter)` occupies an f64 slot, byte-identical
         // to a bare `Float64`. A `Ty::Qty` should not survive to selection, but classify it by its inner
@@ -557,6 +561,9 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // A function value does not cross the boundary (generics/functions monomorphize away or
         // decline); no boundary valtype.
         Ty::Fn(_, _) => None,
+        // A reified continuation NEVER crosses the host boundary (the host-composition invariant: a `k` is
+        // a chain of run-local heap handles a re-deriving host cannot reconstruct). So no boundary form.
+        Ty::Cont { .. } => None,
         // A quantity ERASES to its inner numeric type — it crosses the boundary as that inner type
         // (`units-of-measure.md` §A quantity crossing a signature crosses as its underlying `T`). A
         // `(Qty Float64 meter)` export crosses as `f64`, byte-identical to a bare `Float64`.

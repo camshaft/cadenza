@@ -93,40 +93,97 @@ the grammar-change rule). This is the critical-path enabler for BOTH the snowfla
 - An **assembly** positions + combines parts in ordinary Cadenza code: transforms (translate / rotate /
   mirror / scale), "mates" (place part B relative to a feature of part A), and a **part tree**
   (sub-assemblies compose).
-- Study `printing`'s part-list patterns for what real assemblies need. *(Detailed survey in progress —
-  Explore agent reading family-room, clock-*, stick-up-cam, weather-station, can-attachment, etc. This
-  section fills in once that lands.)*
+### Survey findings (from `printing`'s real parts — clock-*, family-room, stick-up-cam, gingerbread, goggle-clip, weather-station, can-attachment)
+The survey **confirmed the sketch below** and sharpened it. Key facts about how his real assemblies
+actually work:
+- **No formal mate/constraint system, no explicit part-tree data structure.** "Assembly" = ordinary
+  function composition: each component is a `fn foo() -> Object`, and `main` unions them
+  (`face() + dial() + rim() + posts()`). The **call graph of the component functions IS the part tree.**
+- **Placement is origin-relative transform chains**, not B-relative-to-A frames. `part >> right(x) >>
+  back(y) >> up(z)`, with shared `const`s (BASE_R, WIDTH…) so parts line up by construction.
+- **Mirror is the primary symmetry/mating tool**: `shape += &shape >> mirror([1,0,0])` (bilateral
+  parts) is pervasive.
+- **Reference/background parts** (`.bg()`) show hardware being mounted-to; the real part is carved to
+  fit (`c -= power_supply() >> scale(1.02)`). The closest thing to a "mate against existing hardware."
+- **The one genuine B-relative-to-A mate** (stick-up-cam): `mount >> rotate_y(90) >> fwd(CLIP_W*0.5 +
+  MOUNT_D*0.5 + 1.0)` — a rotation plus a dimension-arithmetic offset. That's the manual mate idiom.
+- **Rotational arrays via loops**: `>> rotate([0,0, i/total*360.0])` — exactly the snowflake's 6-fold.
+- **Only snowflake is `Config`-driven** (a struct of knobs); other parts parameterize via top-level
+  `const`s + fn args.
 
-### Design sketch (pre-survey, to refine)
-- **A part is just a `Solid`** (or a named `def part-name() = lower(...)`). No new type needed for
-  "a part."
-- **An assembly is a `Solid` too** — built by `Union`-ing transformed parts. "Mating" = expressing part
-  B's placement as `Translate`/`Rotate` relative to part A's known features (dimensions the parametric
-  model already carries exactly). Construct-style: `assembly = fuse(base, move-z(base-height,
-  rotate-z(90, lid)))`.
-- **A part tree** falls out of nesting: an assembly is a `Solid`, so a bigger assembly unions
-  sub-assemblies. Optional: a lightweight `Assembly` record `{ name, solid, children }` for
-  export/BOM metadata, if the survey shows real assemblies want named-part export + a bill of materials.
-- **Multi-model export**: the reference `main()` iterates a list of `(name, seed, solid)` and exports
-  each. Cadenza analog: a project exposes several `@export`-ed part defs; `/cad` (v-guide-infra) offers
-  a per-part export picker + the STL/3MF download button (writers already exist: `stl.ts`,
-  `threemf.ts`). CLI: `cdz run` per part, or a manifest of parts.
+### Design (confirmed)
+- **A part is just a `Solid`** (a named `def part-name() = lower(...)`). No new type needed. The part
+  tree is the call graph of these defs — exactly rsolid's model.
+- **An assembly is a `Solid` too** — `Union` of transformed parts, positioned origin-relative with the
+  ergonomic helpers. Construct-style: `assembly = fuse(base, move-z(h, rotate-z(90, lid)))`. "Mating" =
+  a `Rotate` + a `Translate` whose offset is dimension arithmetic over the parts' known exact
+  dimensions (the parametric model already carries them exactly). No constraint solver — matches how
+  his parts actually mate.
+- **Bilateral symmetry** = `fuse(s, mirror-x(s))`; **rotational arrays** = fold `Union` over
+  `rotate-z(i/n * 360, s)`. Both fall out of `Rotate`/`Mirror` + `Union`.
+- **Multi-model export**: a project exposes several part defs; `/cad` (v-guide-infra) offers a per-part
+  picker + the STL/3MF download button (writers already exist: `stl.ts`, `threemf.ts`). CLI: `cdz run`
+  per part. A named-part collection (rsolid's `Vec<(name, solid)>`) maps to several exported defs.
+- **Assembly metadata record** — DEFER. The survey shows no real need for a BOM/`Assembly {name,
+  children}` type; "an assembly is just a `Solid`" is sufficient for the showcase. Add only if a
+  concrete need appears.
 
-### CAPABILITY GAP #2 — mating needs `Rotate` (shared with Part 1) + likely nothing else
-Real assemblies rotate parts to mate them → same `Rotate` enabler as the snowflake. Beyond that,
-positioning is `Translate`/`Scale`/`Union` which the model already has. A named-part/BOM record is
-additive metadata, not a core-model change. *(Confirm against the survey.)*
+### CAPABILITY GAP #2 — mating needs `Rotate`/`Mirror` (shared with Part 1); nothing else core
+Real assemblies rotate + mirror parts to mate them → the **same `Rotate`/`Mirror` enabler** as the
+snowflake, and nothing else in the core model (positioning is `Translate`/`Scale`/`Union`, already
+present). Confirmed by the survey.
+
+**Exactness sharpening (important survey insight):** most *mating* rotations in his parts are
+**90°/180°/±90° and axis-aligned mirrors — which ARE exactly Rational** (a 90° rotation permutes/negates
+coordinates; an axis mirror is a sign flip). Only *decorative* rotations (arrays, the snowflake's 60°
+and 30–170° children) need arbitrary angles = f64 at the mesh leaf. So the `Rotate`/`Mirror` design
+splits cleanly:
+- **`Mirror(normal, Solid)`** across an axis-aligned plane → **exact in-model** (sign flip on one
+  coordinate; bbox stays exact). Cheap, exact, do it properly.
+- **`Rotate(euler-degrees, Solid)`** → **mesh-leaf f64** (the `Revolve` precedent), because a general
+  angle isn't Rational. A future refinement could keep 90°-multiples exact in-model (exact bbox, exact
+  coords) and only defer arbitrary angles — worth doing since assemblies lean on 90° mates, but v1 can
+  treat all `Rotate` as mesh-leaf and note the 90°-exact optimization as follow-up.
+
+### Deferred capabilities the survey surfaced (NOT needed for snowflake or basic assembly; logged)
+Real reproduction of his full part catalog would also want: **cone / tapered cylinder** (`cone(h,r1,r2)`
+— dishes/rims), a **2D sketch subsystem** (Square/Circle/Polygon — the DSL is sketch-then-extrude; we
+have `ExtrudeLinear`/`Revolve` + `Profile` but a fuller 2D primitive set would help), **Minkowski sum**
+(fillets/rounding — hard to make exact, needs an approximation policy), **offset** (2D), and
+convenience **up/down/left/right/fwd/back** sugar over `Translate`. None gate the two showcases; logged
+here for the roadmap. `hull` is unused in his repo — skip.
 
 ## Open questions (for async operator review — non-blocking; I proceed on my best call)
-1. `Rotate`/`Mirror` as mesh-leaf f64 transforms (matching `Revolve`) — OK? (My plan: yes.)
-2. Assembly metadata: is a named-part + BOM record wanted, or is "an assembly is just a `Solid`"
-   enough for the showcase? (My plan: start with Solid-only; add a record only if the survey shows a
-   real need.)
+1. `Rotate` as a mesh-leaf f64 transform (matching `Revolve`), `Mirror` exact in-model — OK? (My plan:
+   yes; a 90°-exact `Rotate` optimization is a noted follow-up.)
+2. Assembly metadata: named-part + BOM record, or "an assembly is just a `Solid`"? (**Resolved by the
+   survey: Solid-only is sufficient; no BOM type. Deferred.**)
 3. Snowflake magnet feature (the reference adds/subtracts a magnet mount) — include, or keep the
-   showcase pure-geometry (no printer-specific mount)? (My plan: pure geometry for the showcase, note
-   the magnet as an optional config.)
+   showcase pure-geometry? (My plan: pure geometry for the showcase; magnet as an optional config knob.)
+4. Deferred capabilities (cone, fuller 2D primitives, Minkowski, offset) — roadmap priority? (My plan:
+   none gate the showcases; revisit after snowflake + assembly ship.)
 
 ## Progress log
 - 2026-07-18: doc created. PRNG solved + built (`prng.cdz`, MINSTD LCG, MR sent) — Part 1's capability
   #2 closed. Studied `printing/snowflake` — algorithm understood. Identified capability gap #1
-  (`Rotate`/`Mirror`) as the shared critical-path enabler. Assembly survey (Explore) in progress.
+  (`Rotate`/`Mirror`) as the shared critical-path enabler.
+- 2026-07-18: assembly survey (Explore over `printing`'s real parts + `rsolid` API) DONE. Confirmed
+  "an assembly is just a `Solid`" (no formal mates/part-tree in his repo — it's function composition +
+  origin-relative transform chains + mirror symmetry). Sharpened the `Rotate`/`Mirror` design:
+  axis-mirror + 90°-rotate are exactly Rational (do Mirror exact in-model), arbitrary angles are
+  mesh-leaf f64 (`Revolve` precedent). Logged deferred caps (cone/2D-primitives/Minkowski/offset).
+  Assembly-metadata record dropped (no real need). Next: build `Rotate`/`Mirror`, then snowflake.
+- 2026-07-18: `Rotate`/`Mirror` BUILT end-to-end — model (`exact.cdz`/`units-model.cdz`/`helpers.cdz`,
+  6 @tests) + both mesh drivers (native `cdz-cad` + browser `index.ts`, 7 tests). cad 96/96; cdz-cad
+  lib 52/0; guide tsc + 423/423. The shared enabler is done.
+- 2026-07-18: OPERATOR refined Part 1 — the PRNG should be an EFFECT (no manual state threading):
+  a `Prng` effect performed freely, the LCG state carried in the handler (state-in-a-handler, seeded
+  from the `@param` seed). Built it — a SINGLE perform reduces + is deterministic. BLOCKED, though, on a
+  real v-effects limitation: **two SEQUENTIAL performs in one handled body** (`let x = roll … in
+  let y = roll … in …`) errors "handler not yet reducible by the tail-resumptive fold (non-tail resume
+  arrives in a later increment)." A procedural model does many sequential draws, so this is the norm,
+  not an edge case. Routed to v-effects with a minimal repro
+  (`issues/mlrepro-two-sequential-performs-in-handled-body-non-tail-resume.cdz`). DECISION: build the
+  snowflake NOW on the pure state-threaded `prng.cdz` (landed, works for many draws — same deterministic
+  unique-per-seed result the operator wants), and SWAP to the effect surface once v-effects lands
+  non-tail resume. The showcase ships either way; the effect is an internal ergonomics upgrade.

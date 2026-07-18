@@ -169,6 +169,42 @@ def main() = host Param in
   },
 };
 
+/// A UNITS-PARAMETRIC imperial bracket (v-cad's P4 showcase, `showcase-units-parametric.cdz`) — sliders whose
+/// values are read in INCHES and converted, exactly over Rational, to the model's millimetres via `inch`. A
+/// quarter-inch bore is 127/20 mm exactly; a 3-inch plate is 381/5 mm exactly — mixed-unit authoring with zero
+/// float drift, the reason Rational + Qty exist. In single-mode this is just another example whose `@param`s
+/// auto-surface as sliders; the difference is each magnitude is fed through `inch` (from the injected `units`
+/// superset) so the slider reads inches. Bare like every example (imports + pragma + export auto-injected).
+const UNITS_BRACKET: ExampleModel = {
+  slug: "units-bracket",
+  title: "Imperial bracket (inch sliders)",
+  description: "A plate + bolt hole authored in INCHES, converted exactly to model mm — unit-aware sliders, zero float drift.",
+  source: {
+    ml: `@param(widget: slider, range: [1, 8], default: 3) bwidth : Rational
+@param(widget: slider, range: [1, 6], default: 2) bdepth : Rational
+@param(widget: slider, range: [1, 4], default: 1) bthickness : Rational
+@param(widget: slider, range: [1, 2], default: 1) bbore : Rational
+def bracket(w: Rational, d: Rational, t: Rational, r: Rational) =
+  hole-through(box(inch(w), inch(d), inch(t)), inch(r), inch(t))
+def main() = host Param in
+  (let w = Param.bwidth() in
+   let d = Param.bdepth() in
+   let t = Param.bthickness() in
+   let r = Param.bbore() in
+     lower(bracket(w, d, t, r)))`,
+    sexpr: `(: (@ (param (: widget slider) (: range (list 1 8)) (: default 3)) bwidth) Rational)
+(: (@ (param (: widget slider) (: range (list 1 6)) (: default 2)) bdepth) Rational)
+(: (@ (param (: widget slider) (: range (list 1 4)) (: default 1)) bthickness) Rational)
+(: (@ (param (: widget slider) (: range (list 1 2)) (: default 1)) bbore) Rational)
+(def (bracket (: w Rational) (: d Rational) (: t Rational) (: r Rational))
+  (hole-through (box (inch w) (inch d) (inch t)) (inch r) (inch t)))
+(def (main)
+  (host (Param)
+    (let ((w (Param.bwidth)) (d (Param.bdepth)) (t (Param.bthickness)) (r (Param.bbore)))
+      (lower (bracket w d t r)))))`,
+  },
+};
+
 /// The example models the /cad example-switcher offers, in display order. Every one is verified to compile
 /// + mesh against the preloaded library. Keep the FIRST entry the canonical simple starter (the /cad route
 /// opens with `DEFAULT_EXAMPLE`). The parametric plate is one of these — in single-mode a parametric model
@@ -180,6 +216,7 @@ export const EXAMPLES: ExampleModel[] = [
   STEPPED_PEDESTAL,
   ARCH_FIN,
   PARAMETRIC_PLATE,
+  UNITS_BRACKET,
 ];
 
 /// The model the /cad route opens with (the canonical cube-with-dent starter).

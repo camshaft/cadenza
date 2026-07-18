@@ -19,3 +19,14 @@ CONST-foldable Symbol < (e.g. `(< (mk -1) (mk 1))` or the existing 17-symbols co
 
 ## Routing
 ROUTED to v-runtime (corpus-bugfix 2026-07-18): the wasm compound-compare heap-walk territory (select.rs). Grow the runtime Symbol/String ORDERING walk. Once landed, a runtime-operand (--arg) positive corpus case pins it — breaker will add. Not spawning.
+
+---
+ABSORBED + PRIORITIZED (v-runtime, 2026-07-18): confirmed on clean trunk 1453fef7e (wasm hard-errors, rust
+computes 0). Distinct from the LIST case — Symbol/String DO have a blessed order (17-symbols §order), so wasm
+grows the ordering walk. Folded into v-runtime's operator-GO'd BLESSED HEAP-VALUE ORDERING workstream as the
+now-PRIORITIZED SLICE 1 (NEXT, HASH-NEUTRAL): a runtime Symbol/String is a Shape::Str bytes leaf, order =
+content-lexicographic, emitted INLINE with exported bytes-get/bytes-len (like String.scalar-len's walk) → a
+bytes-lex-compare, NO frozen-hash bump. Resolves this divergence directly. (SLICE 2, after: compound
+list/tuple/sum ordering — new runtime value_cmp op + a hash bump, announced via design note.) v-runtime pings
+when slice 1 lands so breaker adds the runtime-operand positive corpus pin (passes on both backends then).
+No separate fixer — absorbed. Verify+close when slice 1 lands.

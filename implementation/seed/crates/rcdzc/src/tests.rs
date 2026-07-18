@@ -54974,6 +54974,42 @@ mod stage1 {
     }
 
     #[test]
+    fn ty_cont_variant_is_reserved_and_its_predicates_recurse() {
+        // E5 STEP 3 increment 1 (gate-neutral): the `Ty::Cont { resume, answer }` variant EXISTS + every
+        // exhaustive `Ty` match has an arm. Nothing CONSTRUCTS one yet (an escaping-k arm still declines to
+        // lower until the frame reification + apply dispatcher land in later increments), so this just pins
+        // that the variant is well-formed and its recursive predicates thread into both components (a
+        // `Cont` over a free-var/type-value/any component carries it — like `Ty::Fn`). Guards the foundation
+        // slice so a later increment builds on a variant that behaves structurally, not a stub.
+        use crate::ty::Ty;
+        let free = Ty::Cont {
+            resume: Box::new(Ty::Var(7)),
+            answer: Box::new(Ty::int64()),
+        };
+        assert!(free.has_free_var(), "a Cont over a free var has a free var");
+        assert!(!free.is_ground(), "a Cont over a free var is not ground");
+        let typev = Ty::Cont {
+            resume: Box::new(Ty::Unit),
+            answer: Box::new(Ty::Type),
+        };
+        assert!(
+            typev.has_type_value(),
+            "a Cont over Type carries a type value"
+        );
+        let ground = Ty::Cont {
+            resume: Box::new(Ty::Unit),
+            answer: Box::new(Ty::int64()),
+        };
+        assert!(
+            ground.is_ground(),
+            "a Cont over ground components is ground"
+        );
+        assert_eq!(ground.render_name(), "(Cont Unit Int64)");
+        // A Cont has NO boundary form (host-composition invariant) but IS an i32 machine slot when built.
+        assert_eq!(crate::backend::wasm::lir::comp_valtype_of(&ground), None);
+    }
+
+    #[test]
     fn a_ctl_arm_applying_k_inside_a_match_scrutinee_resolves_k() {
         // REGRESSION (a bogus CDZ0101 my E5 step-2 surfaced): a ctl-style arm applying `k` INSIDE a MATCH
         // SCRUTINEE — `(flip () s k (match (k 10) (z (* z 2))))` — reported `CDZ0101 unbound k`, even though

@@ -28,6 +28,7 @@ pass	Char.from-int at U+E000 (first scalar after the surrogate block) is Some
 pass	Char.from-int at the last surrogate U+DFFF is None
 pass	Char.from-int at the maximum valid scalar U+10FFFF is Some
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
+pass	Float64.of-int is exact at 2^53 and rounds a just-past-2^53 odd integer to nearest-even
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
 pass	Int8.wrap at the sign-bit boundary is the most-negative Int8
@@ -495,6 +496,7 @@ pass	a correctly-annotated function parameter is accepted
 pass	a cross-function recursive fold's out-state threads to a later perform in the caller's continuation
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a crossing text-literal arm is rejected even beside a same-kind sibling arm
+pass	a ctl-style arm that applies its continuation lexically folds through the delimited context
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a curried function can be partially applied
 pass	a curried function-type annotation checks its inner result type against the argument
@@ -2067,11 +2069,13 @@ pass	an abortive handler arm performed with a RUNTIME argument abandons the comp
 pass	an abortive handler arm with a runtime perform argument yields that runtime value as the handle's value
 pass	an abortive perform deep in a call chain unwinds every intervening frame to the top handler
 pass	an abortive perform in a conditional let binding abandons the computation
+pass	an abortive perform in a connective that is an if-condition abandons the computation when the connective reaches it
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation
 pass	an abortive perform in an if condition abandons the computation before branching
 pass	an abortive perform in the NON-taken if branch is never evaluated (no speculation)
 pass	an abortive perform in the tail of an if branch abandons only that branch
 pass	an abortive perform in the tail of an if branch inside a let body abandons only that branch
+pass	an abortive perform short-circuited out of a connective condition is never performed
 pass	an abortive perform under THREE nested handlers abandons the two resumptive frames above it
 pass	an abortive perform under a non-tail conditional abandons the enclosing computation
 pass	an absolute-value branch traps on the minimum integer it cannot represent
@@ -3658,8 +3662,8 @@ todo	a runtime-selected closure survives as a value threaded through a recursive
 todo	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 todo	a scalar BETWEEN two Tuple args with a LIST result
 todo	a second same-signature closure export shares the one call method
-todo	a task that sleeps then reads `now` observes the fast-forwarded clock (E5 step-3 gate)
-todo	a task-facing `sleep` wrapper performs Sim.sleep — the surface a simulation is written against
+pass	a task that sleeps then reads `now` observes the fast-forwarded clock (E5 step-3 gate)
+pass	a task-facing `sleep` wrapper performs Sim.sleep — the surface a simulation is written against
 todo	a three-argument closure exported to the host is called with all three
 todo	a three-parameter closure is applied at full arity through a recursive HOF
 todo	a three-payload constructor partially applied in a runtime tuple completes via eta-closure
@@ -3843,3 +3847,8 @@ todo	two same-signature String-returning closures share one call
 todo	two same-signature closures alongside a plain export all coexist
 todo	two same-signature closures alongside a plain export — the plain export runs
 todo	two specializations of one driver on different closures do not collide in the spec memo
+pass	a deep out-of-order queue drains fully time-sorted with FIFO across every tie-group
+pass	a zero-Duration sleep files at the current instant — pop-min then reinsert keeps order
+pass	interleaved same/different Instants keep FIFO within a time and ascending across times
+pass	the scheduler terminates on zero primaries and detects deadlock when live primaries have no work
+pass	three events at the same Instant drain in FIFO insertion order (tie-break at N=3)

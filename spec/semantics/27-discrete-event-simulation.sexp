@@ -368,3 +368,186 @@
                 (do (Sim.sleep (secs 3)) (inst-ns (Sim.now)))))
             (export main)))
   (output (: 3000000000 Int64)))
+
+; ────────────────────────────────────────────────────────────────────────────────────────────────
+; Increment 1 — event-queue determinism edge cases (design §8: guard the §3.4 FIFO tie-break at N=3,
+; interleaved times, and the sleep(0)/pop-then-reinsert scheduler-step primitive). Pure substrate.
+; ────────────────────────────────────────────────────────────────────────────────────────────────
+
+(case "three events at the same Instant drain in FIFO insertion order (tie-break at N=3)"
+  (doc    "The §3.4 FIFO same-time tie-break must hold beyond the N=2 case already pinned: THREE events
+           all at 1 s, inserted A then B then C, drain `A,B,C` — insertion order preserved because
+           `q-insert` splices each equal-key entry AFTER the existing ones (strict `<` in `before?`). A
+           `<=`-based insert would reverse them. Determinism at N≥3 is what makes a multi-event same-tick
+           simulation reproducible.")
+  (input  (do
+            (type Instant (Instant UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (def (before? (: a Instant) (: b Instant)) (< (inst-ns a) (inst-ns b)))
+            (type Q QNil (QCons (Tuple Instant String Q)))
+            (def (q-insert (: q Q) (: t Instant) (: v String))
+              (match q
+                ((Q.QNil _) (Q.QCons (tuple t v (Q.QNil ()))))
+                ((Q.QCons (tuple ht hv rest))
+                  (if (before? t ht)
+                      (Q.QCons (tuple t v (Q.QCons (tuple ht hv rest))))
+                      (Q.QCons (tuple ht hv (q-insert rest t v)))))))
+            (def (q-drain (: q Q))
+              (match q
+                ((Q.QNil _) "")
+                ((Q.QCons (tuple _ hv rest))
+                  (match rest
+                    ((Q.QNil _) hv)
+                    ((Q.QCons _) (String.concat hv (String.concat "," (q-drain rest))))))))
+            (def (I (: n UInt64)) (Instant.Instant n))
+            (def (main)
+              (let ((q0 (Q.QNil ()))
+                    (q1 (q-insert q0 (I 1000000000) "A"))
+                    (q2 (q-insert q1 (I 1000000000) "B"))
+                    (q3 (q-insert q2 (I 1000000000) "C")))
+                (q-drain q3)))
+            (export main)))
+  (output (: "A,B,C" String)))
+
+(case "interleaved same/different Instants keep FIFO within a time and ascending across times"
+  (doc    "The combined ordering invariant: insert X@2s, P@1s, Y@2s, Q@1s (interleaving two times, two
+           events each) and the drain is `P,Q,X,Y` — the 1-second pair first in insertion order, then the
+           2-second pair in insertion order. Pins that the queue is BOTH globally time-ascending AND
+           per-instant FIFO simultaneously (not just one or the other) — the exact ordering the scheduler
+           fast-forward loop relies on to pick the next event deterministically.")
+  (input  (do
+            (type Instant (Instant UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (def (before? (: a Instant) (: b Instant)) (< (inst-ns a) (inst-ns b)))
+            (type Q QNil (QCons (Tuple Instant String Q)))
+            (def (q-insert (: q Q) (: t Instant) (: v String))
+              (match q
+                ((Q.QNil _) (Q.QCons (tuple t v (Q.QNil ()))))
+                ((Q.QCons (tuple ht hv rest))
+                  (if (before? t ht)
+                      (Q.QCons (tuple t v (Q.QCons (tuple ht hv rest))))
+                      (Q.QCons (tuple ht hv (q-insert rest t v)))))))
+            (def (q-drain (: q Q))
+              (match q
+                ((Q.QNil _) "")
+                ((Q.QCons (tuple _ hv rest))
+                  (match rest
+                    ((Q.QNil _) hv)
+                    ((Q.QCons _) (String.concat hv (String.concat "," (q-drain rest))))))))
+            (def (I (: n UInt64)) (Instant.Instant n))
+            (def (main)
+              (let ((q0 (Q.QNil ()))
+                    (q1 (q-insert q0 (I 2000000000) "X"))
+                    (q2 (q-insert q1 (I 1000000000) "P"))
+                    (q3 (q-insert q2 (I 2000000000) "Y"))
+                    (q4 (q-insert q3 (I 1000000000) "Q")))
+                (q-drain q4)))
+            (export main)))
+  (output (: "P,Q,X,Y" String)))
+
+(case "a deep out-of-order queue drains fully time-sorted with FIFO across every tie-group"
+  (doc    "A larger stress of the ordering invariant: eight events at times 5,2,8,2,1,8,3,2 (labels a..h)
+           inserted in that order drain `e,b,d,h,g,a,c,f` — ascending by time (1,2,2,2,3,5,8,8) with FIFO
+           preserved WITHIN each of the three tie-groups (b,d,h at 2s; c,f at 8s). Confirms the recursive
+           insert keeps a correct total order at realistic depth, not just at 2-3 entries.")
+  (input  (do
+            (type Instant (Instant UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (def (before? (: a Instant) (: b Instant)) (< (inst-ns a) (inst-ns b)))
+            (type Q QNil (QCons (Tuple Instant String Q)))
+            (def (q-insert (: q Q) (: t Instant) (: v String))
+              (match q
+                ((Q.QNil _) (Q.QCons (tuple t v (Q.QNil ()))))
+                ((Q.QCons (tuple ht hv rest))
+                  (if (before? t ht)
+                      (Q.QCons (tuple t v (Q.QCons (tuple ht hv rest))))
+                      (Q.QCons (tuple ht hv (q-insert rest t v)))))))
+            (def (q-drain (: q Q))
+              (match q
+                ((Q.QNil _) "")
+                ((Q.QCons (tuple _ hv rest))
+                  (match rest
+                    ((Q.QNil _) hv)
+                    ((Q.QCons _) (String.concat hv (String.concat "," (q-drain rest))))))))
+            (def (I (: n UInt64)) (Instant.Instant n))
+            (def (main)
+              (let ((q (q-insert (q-insert (q-insert (q-insert (q-insert (q-insert (q-insert (q-insert
+                        (Q.QNil ())
+                        (I 5) "a") (I 2) "b") (I 8) "c") (I 2) "d") (I 1) "e") (I 8) "f") (I 3) "g") (I 2) "h")))
+                (q-drain q)))
+            (export main)))
+  (output (: "e,b,d,h,g,a,c,f" String)))
+
+(case "a zero-Duration sleep files at the current instant — pop-min then reinsert keeps order"
+  (doc    "The `sleep(0)` / scheduler-step primitive edge: a zero-`Duration` wake files at the CURRENT
+           clock (`(at clock (ns 0))` = clock), so it sorts before any positive-delay event. Insert A@1s
+           and B@0ns: B is the front (pop-min). Pop B (drop the front), then a zero-sleep from the
+           fast-forwarded clock reinserts C at 0 — still before A@1s. Result `B|C`: B popped first, C now
+           the front. Pins that zero durations and the pop-then-reinsert step (the scheduler loop's core
+           op) do not misorder the queue.")
+  (input  (do
+            (type Duration (Duration UInt64))
+            (type Instant  (Instant UInt64))
+            (def (ns (: n UInt64)) (Duration.Duration n))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (def (dur-ns (: d Duration)) (match d ((Duration.Duration n) n)))
+            (def (at (: t Instant) (: d Duration)) (Instant.Instant (+ (inst-ns t) (dur-ns d))))
+            (def (before? (: a Instant) (: b Instant)) (< (inst-ns a) (inst-ns b)))
+            (type Q QNil (QCons (Tuple Instant String Q)))
+            (def (q-insert (: q Q) (: t Instant) (: v String))
+              (match q
+                ((Q.QNil _) (Q.QCons (tuple t v (Q.QNil ()))))
+                ((Q.QCons (tuple ht hv rest))
+                  (if (before? t ht)
+                      (Q.QCons (tuple t v (Q.QCons (tuple ht hv rest))))
+                      (Q.QCons (tuple ht hv (q-insert rest t v)))))))
+            (def (q-pop (: q Q))
+              (match q ((Q.QNil _) (Q.QNil ())) ((Q.QCons (tuple _ _ rest)) rest)))
+            (def (q-front-label (: q Q))
+              (match q ((Q.QNil _) "empty") ((Q.QCons (tuple _ hv _)) hv)))
+            (def (q-front-inst (: q Q))
+              (match q ((Q.QNil _) (Instant.Instant 0)) ((Q.QCons (tuple ht _ _)) ht)))
+            (def (main)
+              (let ((clock (Instant.Instant 0))
+                    (q0 (Q.QNil ()))
+                    (q1 (q-insert q0 (at clock (ns 1000000000)) "A"))
+                    (q2 (q-insert q1 (at clock (ns 0)) "B"))
+                    (front (q-front-label q2))
+                    (q3 (q-pop q2))
+                    (q4 (q-insert q3 (at (q-front-inst q2) (ns 0)) "C")))
+                (String.concat front (String.concat "|" (q-front-label q4)))))
+            (export main)))
+  (output (: "B|C" String)))
+
+; ────────────────────────────────────────────────────────────────────────────────────────────────
+; Increment 4 (partial) — the PRIMARY/SECONDARY termination decision (§7.4, §7.5; operator-required).
+; Pure logic (no continuations): the scheduler-step consults this each loop to decide Running/Done/
+; Deadlock. Sim ends when the PRIMARY count hits zero (parked background tasks are discarded), NOT when
+; the queue drains; deadlock = live primaries with no ready work and an empty timer queue.
+; ────────────────────────────────────────────────────────────────────────────────────────────────
+
+(case "the scheduler terminates on zero primaries and detects deadlock when live primaries have no work"
+  (doc    "The §7.4 termination rule the operator required (§7.5: distinguish background tasks from ones
+           the sim cares about completing): `sched-status(ready-nonempty?, timers-nonempty?, primaries)`
+           returns Done when the primary count is 0 — the sim ends even if background continuations are
+           still parked (bach's `.primary()` Guard hitting zero, `task.rs:85`) — Running when live
+           primaries still have ready work or pending timers, and Deadlock when live primaries have
+           NEITHER (zero ready work AND an empty timer queue with a nonzero primary count — a detectable
+           error state, §7.4). Graded across all five branches: 0=Running, 1=Done, 2=Deadlock. Pins that
+           termination is PRIMARY-driven (not queue-drain), so a server-loop background task cannot hold
+           the sim open and a genuine deadlock is distinguished from normal completion.")
+  (input  (do
+            (type Status Running Done Deadlock)
+            (def (sched-status (: ready-nonempty Bool) (: timers-nonempty Bool) (: primaries UInt64))
+              (if (= primaries 0)
+                  (Status.Done)
+                  (if (or ready-nonempty timers-nonempty) (Status.Running) (Status.Deadlock))))
+            (def (show-status (: st Status))
+              (match st ((Status.Running _) 0) ((Status.Done _) 1) ((Status.Deadlock _) 2)))
+            (def (main (: rn Bool) (: tn Bool) (: p UInt64)) (show-status (sched-status rn tn p)))
+            (export main)))
+  (call   main (: true Bool)  (: false Bool) (: 2 UInt64)) (output (: 0 UInt64))
+  (call   main (: false Bool) (: true Bool)  (: 1 UInt64)) (output (: 0 UInt64))
+  (call   main (: false Bool) (: false Bool) (: 0 UInt64)) (output (: 1 UInt64))
+  (call   main (: true Bool)  (: true Bool)  (: 0 UInt64)) (output (: 1 UInt64))
+  (call   main (: false Bool) (: false Bool) (: 3 UInt64)) (output (: 2 UInt64)))

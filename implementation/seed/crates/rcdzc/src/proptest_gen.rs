@@ -197,7 +197,7 @@ pub enum GenTy {
     /// An integer type (`Int8`…`UInt64`): `<gen>` = `((. Test gen))` (the int at the element width).
     Int,
     /// An integer CONSTRAINED to an inclusive range `[lo, hi]` — from a type-level `@invariant` whose
-    /// predicate is a recognized range over `it` (`(and (>= it LO) (<= it HI))` and mirrors). `<gen>` maps a
+    /// predicate is a recognized range over `self` (`(and (>= self LO) (<= self HI))` and mirrors). `<gen>` maps a
     /// fresh `Test.gen` int into the range so the generated value ALWAYS satisfies the invariant (no wasted
     /// reject cycle): `(+ LO (Int64.rem-euclid ((. Test gen)) SPAN))` where `SPAN = HI-LO+1`. This is the
     /// constrained-generation path (operator directive: "invariants inform how random values are generated,
@@ -212,7 +212,7 @@ pub enum GenTy {
     Float(u32),
     /// `(List ELEM)`: `<gen>` = a VARIABLE-length list, length in `[min_len, G1_LIST_LEN]`, drawn from the
     /// gen pool. `min_len` (0 by default = unconstrained) is a floor from a recognized MIN-LENGTH refinement
-    /// — a param-level `@requires`/type-level `@invariant` `(< 0 (List.len it))` / `(<= K (List.len it))` —
+    /// — a param-level `@requires`/type-level `@invariant` `(< 0 (List.len self))` / `(<= K (List.len self))` —
     /// so a "non-empty"/"at least K" precondition GENERATES in-domain rather than drawing a shorter list that
     /// trips the enforced precondition (the reject-free constrained-gen path). `min_len` is clamped to
     /// `G1_LIST_LEN` (a floor above the max candidate count would be unsatisfiable — capped, not an error).
@@ -562,7 +562,7 @@ fn type_invariant_pred(ast: &Arenas, item: StructId) -> Option<StructId> {
 }
 
 /// The generation WINDOW width used to close a ONE-SIDED integer `@invariant` bound. A lower-bound-only
-/// invariant `(>= it LO)` admits every value in `[LO, i64::MAX]` — too wide to sample uniformly, but the
+/// invariant `(>= self LO)` admits every value in `[LO, i64::MAX]` — too wide to sample uniformly, but the
 /// generator only needs to draw values that SATISFY the bound. So we map into `[LO, LO+WINDOW]` (or, for an
 /// upper-only bound, `[HI-WINDOW, HI]`): every drawn value is in-domain (the whole point — §Refinements
 /// Constrain Generation), and the window is wide enough to exercise the property meaningfully. Chosen as a
@@ -570,13 +570,14 @@ fn type_invariant_pred(ast: &Arenas, item: StructId) -> Option<StructId> {
 const ONE_SIDED_INVARIANT_WINDOW: i64 = 1_000_000;
 
 /// Recognize an inclusive integer RANGE `[lo, hi]` from a type-level `@invariant` predicate over the value
-/// binder `it` — `(and (>= it LO) (<= it HI))`, `(<= LO it)`/mirrors, a lone bound, or `(= it K)`. A
+/// binder `self` — `(and (>= self LO) (<= self HI))`, `(<= LO self)`/mirrors, a lone bound, or `(= self K)`. A
 /// TWO-SIDED range maps in directly; a ONE-SIDED bound is CLOSED with a generation window
-/// ([`ONE_SIDED_INVARIANT_WINDOW`]) so a lower-bound-only `(>= it 0)` still generates in-domain (was: fell
+/// ([`ONE_SIDED_INVARIANT_WINDOW`]) so a lower-bound-only `(>= self 0)` still generates in-domain (was: fell
 /// through to unconstrained → drew out-of-domain values the construct-site `@invariant` trap then rejected
-/// as a spurious counterexample). `None` only for an unrecognized shape (no bound on `it`, a non-linear /
+/// as a spurious counterexample). `None` only for an unrecognized shape (no bound on `self`, a non-linear /
 /// opaque predicate) or a contradictory two-sided range (`lo > hi`) → generation stays unconstrained
-/// (reject-free fallback). Mirrors the scalar `@requires` bound recognizer, but over `it` and guest-side.
+/// (reject-free fallback). Mirrors the scalar `@requires` bound recognizer, but over `self` and guest-side.
+/// (`self` = [`crate::invariant_establish::VALUE_BINDER`], the operator-canonical `@invariant` binder.)
 fn invariant_int_range(ast: &Arenas, pred: StructId) -> Option<(i64, i64)> {
     let (mut lo, mut hi): (Option<i64>, Option<i64>) = (None, None);
     // Collect comparison conjuncts: descend a top-level `(and …)`/`(& …)`, else treat `pred` as one cmp.
@@ -636,10 +637,10 @@ fn invariant_int_range(ast: &Arenas, pred: StructId) -> Option<(i64, i64)> {
     match (lo, hi) {
         // A fully-bounded range maps in directly (a contradictory `l > h` is rejected → unconstrained).
         (Some(l), Some(h)) => (l <= h).then_some((l, h)),
-        // Lower-bound only `(>= it LO)`: generate `[LO, LO+WINDOW]` — every value satisfies `>= LO`. Clamp
+        // Lower-bound only `(>= self LO)`: generate `[LO, LO+WINDOW]` — every value satisfies `>= LO`. Clamp
         // the top with a saturating add so a LO near i64::MAX doesn't overflow (it degenerates to `[LO, MAX]`).
         (Some(l), None) => Some((l, l.saturating_add(ONE_SIDED_INVARIANT_WINDOW))),
-        // Upper-bound only `(<= it HI)`: generate `[HI-WINDOW, HI]` — every value satisfies `<= HI`. Clamp
+        // Upper-bound only `(<= self HI)`: generate `[HI-WINDOW, HI]` — every value satisfies `<= HI`. Clamp
         // the bottom with a saturating sub so a HI near i64::MIN doesn't underflow.
         (None, Some(h)) => Some((h.saturating_sub(ONE_SIDED_INVARIANT_WINDOW), h)),
         // No bound on `it` recognized → don't constrain.
@@ -652,7 +653,7 @@ fn invariant_int_range(ast: &Arenas, pred: StructId) -> Option<(i64, i64)> {
 /// long-enough list rather than drawing a shorter one that trips the enforced precondition. Recognizes
 /// `(< K (List.len p))` → K+1, `(<= K (List.len p))` → K, `(> (List.len p) K)` → K+1, `(>= (List.len p) K)`
 /// → K (and the mirrors), AND descends a top-level `(and …)`/`(& …)` — taking the MAX floor across its
-/// lower-bound conjuncts — so a compound `(and (< 0 (List.len it)) (<= (List.len it) 10))` still floors the
+/// lower-bound conjuncts — so a compound `(and (< 0 (List.len self)) (<= (List.len self) 10))` still floors the
 /// length (was: matched only a BARE comparison, so a conjunction fell through to unconstrained and drew the
 /// empty list the construct-site `@invariant` trap then rejected as a spurious counterexample). Upper-bound
 /// conjuncts (`<`/`<=`) don't floor the length (the generator already caps at `G1_LIST_LEN`). `None` if no
@@ -732,7 +733,7 @@ fn min_len_for_param(ast: &Arenas, pred: StructId, param: &str) -> Option<usize>
 fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize) -> Option<GenTy> {
     // Find `(type NAME variant…)` with a matching NAME — SEEING THROUGH any annotation wrapper. A type
     // declaration may be bare `(type NAME …)` OR annotated `(@ (invariant …) (type NAME …))` (a type-level
-    // `@invariant` records a refinement over the value binder `it`; verify_enforce/strip_annotations leave
+    // `@invariant` records a refinement over the value binder `self`; verify_enforce/strip_annotations leave
     // the `(@ …)` wrapper in place). `type_decl_form` peels the wrapper so an `@invariant`-refined type is
     // still recognized as generatable (its underlying variants), not declined as an unknown type.
     let decl_item = items.iter().copied().find(|&it| {
@@ -770,9 +771,9 @@ fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize)
         }
         variants.push((vname, payload));
     }
-    // Apply a recognized type-level `@invariant` RANGE to a NEWTYPE-int: `it` (the whole nominal value)
+    // Apply a recognized type-level `@invariant` RANGE to a NEWTYPE-int: `self` (the whole nominal value)
     // maps to the underlying int of a single-variant, single-Int-payload type (`Percent = Pct(Int64)` — a
-    // range `(and (>= it 0) (<= it 100))` on the Percent value IS a bound on the Pct payload int). Replace
+    // range `(and (>= self 0) (<= self 100))` on the Percent value IS a bound on the Pct payload int). Replace
     // that payload's `Int` with an `IntRange` so it generates in-domain. Only the newtype shape (one variant,
     // one Int payload) is constrained here — a multi-variant or non-Int-payload type keeps its raw generator
     // (a range invariant over such a value doesn't map to a single int; unconstrained + reject-free fallback).
@@ -782,7 +783,7 @@ fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize)
         variants[0].1 = Some(GenTy::IntRange { lo, hi });
     }
     // A recognized MIN-LENGTH invariant on a newtype-List (`NonEmpty = Mk (List T)` with `@invariant(< 0
-    // (List.len it))`): floor that payload list's length so it generates non-empty (in-domain). Same
+    // (List.len self))`): floor that payload list's length so it generates non-empty (in-domain). Same
     // newtype shape (one variant, one List payload); multi-variant/other keeps its raw generator.
     if let Some(min) = inv_min_len
         && let [(_, Some(GenTy::List(_, ml)))] = variants.as_mut_slice()
@@ -1467,9 +1468,9 @@ mod tests {
     }
 
     /// A recognized RANGE `@invariant` over a newtype-int constrains generation: the payload becomes a
-    /// `GenTy::IntRange{lo,hi}` (generate in-domain), not a plain `Int`. `(and (>= it 0) (<= it 100))` on
+    /// `GenTy::IntRange{lo,hi}` (generate in-domain), not a plain `Int`. `(and (>= self 0) (<= self 100))` on
     /// `Percent = Pct(Int64)` → the Pct payload is `IntRange{0,100}`. A ONE-SIDED bound is CLOSED with a
-    /// generation window (`(>= it 0)` → `IntRange{0, 1_000_000}`) so it too generates in-domain. Checks the
+    /// generation window (`(>= self 0)` → `IntRange{0, 1_000_000}`) so it too generates in-domain. Checks the
     /// `GenTy` classification directly.
 
     #[test]
@@ -1488,7 +1489,7 @@ mod tests {
             },
             other => panic!("expected a Sum GenTy, got {other:?}"),
         }
-        // A ONE-SIDED lower-bound invariant `(>= it 0)` is closed with the generation window → the payload
+        // A ONE-SIDED lower-bound invariant `(>= self 0)` is closed with the generation window → the payload
         // is `IntRange{0, ONE_SIDED_INVARIANT_WINDOW}`, so generation stays in-domain (never draws a value
         // below the bound that the construct-site @invariant trap would reject as a spurious counterexample).
         let ast2 = crate::testkit::parse(
@@ -1507,7 +1508,7 @@ mod tests {
     }
 
     /// A recognized MIN-LENGTH `@invariant` over a newtype-List constrains its payload list to be non-empty:
-    /// `@invariant(< 0 (List.len it))` on `NEList = Mk (List Int64)` → the Mk payload is `List(_, min_len=1)`,
+    /// `@invariant(< 0 (List.len self))` on `NEList = Mk (List Int64)` → the Mk payload is `List(_, min_len=1)`,
     /// so generation floors the length at 1 (never draws the empty list that would violate the invariant).
     #[test]
     fn a_min_length_invariant_constrains_a_newtype_list_to_non_empty() {
@@ -1527,7 +1528,7 @@ mod tests {
 
     /// A min-length `@invariant` inside a CONJUNCTION still floors the length: `min_len_for_param` descends a
     /// top-level `(and …)` (like `invariant_int_range`) and takes the MAX lower-bound floor. `(and (<= 2
-    /// (List.len it)) (<= (List.len it) 8))` on `Buf = Mk (List Int64)` → the Mk payload is `List(_,
+    /// (List.len self)) (<= (List.len self) 8))` on `Buf = Mk (List Int64)` → the Mk payload is `List(_,
     /// min_len=2)` (the `<= 2` conjunct floors; the upper-bound conjunct is ignored). REGRESSION: a bare-
     /// comparison-only recognizer missed the conjunction, so generation drew the empty list the construct-site
     /// @invariant trap rejected as a spurious counterexample.
@@ -1549,7 +1550,7 @@ mod tests {
         }
     }
 
-    /// A CONTRADICTORY range invariant `(and (>= it 10) (<= it 5))` — an empty range no value satisfies —
+    /// A CONTRADICTORY range invariant `(and (>= self 10) (<= self 5))` — an empty range no value satisfies —
     /// must NOT produce a broken `IntRange` (a negative SPAN = HI-LO+1 = -4 would generate garbage). The
     /// `lo <= hi` guard in `invariant_int_range` returns `None`, so the payload stays a PLAIN `Int`
     /// (unconstrained): generation falls back safely and the unsatisfiable invariant surfaces as an honest
@@ -1572,7 +1573,7 @@ mod tests {
     /// (point equality, one-sided upper, negative/strict bounds, no-bound). Extracts the `(invariant Q)`
     /// predicate from a parsed decl via `type_invariant_pred`, then asserts the exact `(lo, hi)` the range
     /// recognizer distills — pinning the arithmetic (strict `>`/`<` = ±1, `saturating` one-sided window,
-    /// mirrored `(op K it)`, point `(= it K)`) that the generator + decoder both depend on.
+    /// mirrored `(op K self)`, point `(= self K)`) that the generator + decoder both depend on.
     #[test]
     fn invariant_int_range_distills_bounds_across_shapes() {
         // Parse a `(@ (invariant Q) (type T (V Int64)))` decl and hand the predicate Q to the recognizer.
@@ -1602,12 +1603,12 @@ mod tests {
             ),
             Some((1, 9))
         );
-        // Point equality `(= it 5)` ⇒ the singleton range [5, 5].
+        // Point equality `(= self 5)` ⇒ the singleton range [5, 5].
         assert_eq!(
             range_of("(do (@ (invariant (= self 5)) (type T (V Int64))) (def (o) 1))"),
             Some((5, 5))
         );
-        // One-sided lower `(>= it 0)` ⇒ [0, WINDOW]; mirrored `(<= 0 it)` is the same bound.
+        // One-sided lower `(>= self 0)` ⇒ [0, WINDOW]; mirrored `(<= 0 self)` is the same bound.
         assert_eq!(
             range_of("(do (@ (invariant (>= self 0)) (type T (V Int64))) (def (o) 1))"),
             Some((0, win))
@@ -1616,17 +1617,17 @@ mod tests {
             range_of("(do (@ (invariant (<= 0 self)) (type T (V Int64))) (def (o) 1))"),
             Some((0, win))
         );
-        // One-sided upper `(<= it 100)` ⇒ [100-WINDOW, 100].
+        // One-sided upper `(<= self 100)` ⇒ [100-WINDOW, 100].
         assert_eq!(
             range_of("(do (@ (invariant (<= self 100)) (type T (V Int64))) (def (o) 1))"),
             Some((100i64.wrapping_sub(win), 100))
         );
-        // Negative lower bound `(>= it -100)` ⇒ [-100, -100+WINDOW].
+        // Negative lower bound `(>= self -100)` ⇒ [-100, -100+WINDOW].
         assert_eq!(
             range_of("(do (@ (invariant (>= self -100)) (type T (V Int64))) (def (o) 1))"),
             Some((-100, (-100i64).saturating_add(win)))
         );
-        // No bound on `it` (an opaque predicate) ⇒ None (unconstrained fallback).
+        // No bound on `self` (an opaque predicate) ⇒ None (unconstrained fallback).
         assert_eq!(
             range_of("(do (@ (invariant (> other 0)) (type T (V Int64))) (def (o) 1))"),
             None

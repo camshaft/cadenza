@@ -13333,7 +13333,9 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         Ty::Type => Some(b.name("Type".to_string())),
         // A function has no boundary value form, so no type surface. A still-free type variable / `Any`
         // has no determined serialization. A program that would escape one declines before the escape.
-        Ty::Fn(_, _) | Ty::Var(_) | Ty::Any => None,
+        // A reified continuation has no value-form surface (like a function) — it never crosses as a
+        // rendered value.
+        Ty::Fn(_, _) | Ty::Cont { .. } | Ty::Var(_) | Ty::Any => None,
     }
 }
 
@@ -18649,7 +18651,7 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         // form needs machinery this increment does not emit, or it is not a runtime value that reaches a
         // compound equality — `Ty::Type`/`Ty::Any`/`Ty::Fn` never cross `=`). A `Char` has no runtime
         // machine rep yet (its equality folds at compile time).
-        Ty::List(_) | Ty::Char | Ty::Fn(_, _) | Ty::Type | Ty::Any => false,
+        Ty::List(_) | Ty::Char | Ty::Fn(_, _) | Ty::Cont { .. } | Ty::Type | Ty::Any => false,
     }
 }
 

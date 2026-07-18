@@ -1214,7 +1214,7 @@ fn a_failing_tuple_or_record_property_reports_the_decoded_value() {
 /// END-TO-END: `@invariant`-CONSTRAINED generation. A type-level `@invariant` with a recognized integer
 /// RANGE over `it` makes the generator draw ONLY invariant-satisfying values — no wasted reject cycle
 /// (operator directive: "invariants inform how random values are generated"). `Percent = Pct(Int64)` with
-/// `@invariant(0 <= it <= 100)`: every generated `Percent` has its `Pct` payload in `[0, 100]`, so a property
+/// `@invariant(0 <= self <= 100)`: every generated `Percent` has its `Pct` payload in `[0, 100]`, so a property
 /// asserting that range PASSES all trials. Before constrained-gen it drew any Int64 (e.g. Pct(195)) and the
 /// body trapped. Store-guarded — building the nominal heap value needs the runtime store.
 #[test]
@@ -1242,7 +1242,7 @@ fn a_range_invariant_constrains_generation_in_domain() {
     );
 }
 
-/// A ONE-SIDED lower-bound `@invariant (>= it 0)` also constrains generation in-domain. REGRESSION: a
+/// A ONE-SIDED lower-bound `@invariant (>= self 0)` also constrains generation in-domain. REGRESSION: a
 /// one-sided bound used to fall through to unconstrained generation (`invariant_int_range` required BOTH
 /// ends), so the generator drew negatives; the construct-site `@invariant` trap then rejected each as a
 /// spurious out-of-domain counterexample (every seed reported `NN(-1)`). The fix closes a one-sided bound
@@ -1450,7 +1450,7 @@ fn a_failing_property_over_a_doubly_nested_refined_newtype_renders_the_counterex
 }
 
 /// END-TO-END: a MIN-LENGTH `@invariant` constrains a newtype-List to non-empty generation. `NEList = Mk
-/// (List Int64)` with `@invariant(< 0 (List.len it))`: every generated `NEList` wraps a NON-EMPTY list, so
+/// (List Int64)` with `@invariant(< 0 (List.len self))`: every generated `NEList` wraps a NON-EMPTY list, so
 /// a property asserting `List.len > 0` PASSES all trials (before the constraint the generator drew the empty
 /// list and the body trapped). Store-guarded — building the nominal heap value needs the store.
 #[test]
@@ -1478,7 +1478,7 @@ fn a_min_length_invariant_constrains_a_list_non_empty() {
 }
 
 /// END-TO-END: a min-length `@invariant` inside a CONJUNCTION still floors the list length. `NEList = Mk
-/// (List Int64)` with `@invariant(and (< 0 (List.len it)) (<= (List.len it) 10))`: the non-empty conjunct
+/// (List Int64)` with `@invariant(and (< 0 (List.len self)) (<= (List.len self) 10))`: the non-empty conjunct
 /// must floor generation at length 1 even though it sits in an `(and …)`. REGRESSION: `min_len_for_param`
 /// matched only a BARE comparison and missed the conjunction, so generation drew the empty list and every
 /// seed reported a spurious `Mk([])` counterexample (the construct-site @invariant trap firing on an

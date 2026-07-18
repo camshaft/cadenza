@@ -15,6 +15,7 @@
 //!   `cdz-agent schedule-create <log> <id> <trigger-kind> --first-ms <ms> [--period-ms <ms>] [--payload <t>]`
 //!                                               — register a one-shot/periodic timer that fires <trigger-kind>.
 //!   `cdz-agent schedule-cancel <log> <id>`     — cancel a schedule by id.
+//!   `cdz-agent schedule-list <log>`            — list the active schedules (read-only).
 //!   `cdz-agent run <log> <event-kind>`        — one daemon step: read the log → latest genesis → drive an
 //!                                               interpret turn on the scalar <event-kind>. (The full event-
 //!                                               source loop is a later rung; this runs ONE tick.)
@@ -197,6 +198,34 @@ fn run() -> Result<()> {
             println!("cancelled schedule `{id}` (cancel event at seq {seq})");
             Ok(())
         }
+        Some("schedule-list") => {
+            // Inspect the ACTIVE schedules (operator read verb): fold the log for the newest create per id minus
+            // cancelled ones (schedule::active_schedules), and print each — so an operator can see what timers
+            // are registered before cancelling/superseding. Read-only (no append). One line per schedule:
+            // `<id>  <one-shot|every <period>ms>  first=<first_ms>ms  -> <trigger-kind>`.
+            let log_path = args
+                .get(2)
+                .ok_or_else(|| anyhow!("usage: cdz-agent schedule-list <log>"))?;
+            let log =
+                FileLog::open(log_path).with_context(|| format!("open log {log_path}"))?;
+            let active = cdz_kernel::schedule::active_schedules(&log.tail(0)?);
+            if active.is_empty() {
+                println!("no active schedules");
+            } else {
+                println!("{} active schedule(s):", active.len());
+                for s in &active {
+                    let cadence = match s.period_ms {
+                        Some(p) => format!("every {p}ms"),
+                        None => "one-shot".to_string(),
+                    };
+                    println!(
+                        "  {}  {cadence}  first={}ms  -> {}",
+                        s.id, s.first_ms, s.trigger_kind
+                    );
+                }
+            }
+            Ok(())
+        }
         Some("emit") => {
             // Append an external TRIGGER event to the log — a minimal event SOURCE so the live daemon
             // (`start`) has something to perform. `<kind>` is a free event-kind tag + `<payload>` its body.
@@ -373,7 +402,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         _ => Err(anyhow!(
-            "usage: cdz-agent <bootstrap|inject-genesis|emit-policy|authz-grant|authz-revoke|schedule-create|schedule-cancel|emit|run|perform|hosted|start> ...\n\
+            "usage: cdz-agent <bootstrap|inject-genesis|emit-policy|authz-grant|authz-revoke|schedule-create|schedule-cancel|schedule-list|emit|run|perform|hosted|start> ...\n\
              \x20 bootstrap <log>                    — create/open the event log\n\
              \x20 inject-genesis <log> <program.cdz> — append the genesis program\n\
              \x20 emit-policy <log> <policy.cedar>    — append a Cedar capability policy (attenuates each invocation; latest supersedes)\n\
@@ -381,6 +410,7 @@ fn run() -> Result<()> {
              \x20 authz-revoke <log> <grant-seq>      — operator REVOKE: pull a prior grant by its seq (the effective policy thereafter excludes it)\n\
              \x20 schedule-create <log> <id> <trigger-kind> --first-ms <ms> [--period-ms <ms>] [--payload <t>] — register a one-shot/periodic timer\n\
              \x20 schedule-cancel <log> <id>          — cancel a schedule by id (a later create re-registers)\n\
+             \x20 schedule-list <log>                 — list the active schedules (read-only)\n\
              \x20 emit <log> <kind> <payload>        — append an external trigger event (a minimal event source; refuses reserved kinds)\n\
              \x20 run <log> <event-kind>             — one daemon tick (COUNT the scheduled host-ops)\n\
              \x20 perform <log> <event-kind>         — one daemon tick that EXECUTES the ops (K1c, in-program mock), summing per-op results\n\

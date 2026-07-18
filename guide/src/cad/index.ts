@@ -7,7 +7,8 @@
 ///   (: (Difference (Cube (: (tuple 50/1 30/1 5/1) Vec3)) (Sphere 127/20)) Solid)
 /// The exact `Solid` model (implementation/cad) uses Rational coordinates (`n/d`); this parser reads the
 /// numerator/denominator and evaluates to a JS number (n/d) at the mesh leaf — the MODEL is exact, the
-/// geometry kernel (manifold) is float. Full-size Cube/Cylinder, no Rotate (no exact rotation).
+/// geometry kernel (manifold) is float. Full-size Cube/Cylinder. Rotate carries an exact Rational
+/// Euler-degree triple (the trig runs at the manifold leaf, like Revolve); Mirror a plane normal.
 
 import Module from "manifold-3d";
 import type { ManifoldToplevel } from "manifold-3d";
@@ -58,6 +59,8 @@ type Solid =
   | { t: "intersection"; a: Solid; b: Solid }
   | { t: "translate"; v: Vec3; of: Solid }
   | { t: "scale"; v: Vec3; of: Solid }
+  | { t: "rotate"; v: Vec3; of: Solid }
+  | { t: "mirror"; v: Vec3; of: Solid }
   | { t: "extrudeLinear"; profile: Profile; height: number }
   | { t: "revolve"; profile: Profile; degrees: number };
 
@@ -172,6 +175,13 @@ class Parser {
         break;
       case "Scale":
         node = { t: "scale", v: this.parseVec3(), of: this.parseSolid() };
+        break;
+      case "Rotate":
+        // Exact Rational Euler-degree triple; the trig runs at the manifold leaf (see toManifold).
+        node = { t: "rotate", v: this.parseVec3(), of: this.parseSolid() };
+        break;
+      case "Mirror":
+        node = { t: "mirror", v: this.parseVec3(), of: this.parseSolid() };
         break;
       case "ExtrudeLinear":
         node = { t: "extrudeLinear", profile: this.parseProfile(), height: this.parseRational() };
@@ -427,6 +437,13 @@ function toManifold(M: ManifoldStatic, CS: CrossSectionStatic, s: Solid): Manifo
       return toManifold(M, CS, s.of).translate(s.v);
     case "scale":
       return toManifold(M, CS, s.of).scale(s.v);
+    case "rotate":
+      // manifold's rotate takes DEGREES per axis (Vec3) — matching the Rotate(euler-degrees, …) model +
+      // the native cdz-cad driver. The exact Rational degrees were evaluated to number at parse.
+      return toManifold(M, CS, s.of).rotate(s.v);
+    case "mirror":
+      // reflect across the plane through the origin with normal `s.v` — matching Mirror(normal, …) + native.
+      return toManifold(M, CS, s.of).mirror(s.v);
     case "extrudeLinear":
       // Lift the profile straight up +z by `height`, then centre it in z (extrude runs 0..height, shift down
       // height/2 — matches the origin-centred primitives + the native cdz-cad driver). 🪤 NOT the

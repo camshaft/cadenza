@@ -45,6 +45,24 @@ def scale(f: Rational, s: Solid(Rational)) = Solid.Scale(v3(f, f, f), s)
 /// Per-axis scale.
 def scale-xyz(fx: Rational, fy: Rational, fz: Rational, s: Solid(Rational)) = Solid.Scale(v3(fx, fy, fz), s)
 
+/// ---- rotation + mirror (the transforms whose trig/reflection is applied at the f64 mesh leaf) -------
+/// `Rotate` carries an exact Rational Euler-degree triple; the mesh driver does the trig. Single-axis
+/// helpers are the common case (spin about z for rotational arrays; tilt about x/y for mating).
+
+/// Rotate a solid about the origin by an exact Euler-degree triple (degrees about x, y, z).
+def rotate(rx: Rational, ry: Rational, rz: Rational, s: Solid(Rational)) = Solid.Rotate(v3(rx, ry, rz), s)
+
+/// Single-axis rotations (degrees). `rotate-z(60, s)` spins 60° about z — the rotational-array workhorse.
+def rotate-x(deg: Rational, s: Solid(Rational)) = Solid.Rotate(v3(deg, rzero-h(), rzero-h()), s)
+def rotate-y(deg: Rational, s: Solid(Rational)) = Solid.Rotate(v3(rzero-h(), deg, rzero-h()), s)
+def rotate-z(deg: Rational, s: Solid(Rational)) = Solid.Rotate(v3(rzero-h(), rzero-h(), deg), s)
+
+/// Mirror across an axis-aligned plane through the origin (a sign flip, exact). `mirror-x(s)` reflects across
+/// the y-z plane (flips x) — the bilateral-symmetry workhorse: `fuse(s, mirror-x(s))`.
+def mirror-x(s: Solid(Rational)) = Solid.Mirror(v3(1 / 1, rzero-h(), rzero-h()), s)
+def mirror-y(s: Solid(Rational)) = Solid.Mirror(v3(rzero-h(), 1 / 1, rzero-h()), s)
+def mirror-z(s: Solid(Rational)) = Solid.Mirror(v3(rzero-h(), rzero-h(), 1 / 1), s)
+
 /// ---- combinators (friendly booleans, incl. the common "hole" idiom) --------------------------------
 
 /// Union two solids (fuse).
@@ -110,4 +128,21 @@ def cut-fuse-common-are-the-boolean-wrappers() =
         (if v3-eq(aabbr-size(bounding-box(cut(a, b))), aabbr-size(bounding-box(a))) then unit
          else trap("cut never grows the base")) else trap("fuse encloses both (width 12)")))
 
-export { box, cube, ball, cyl, move, move-x, move-y, move-z, scale, scale-xyz, fuse, cut, common, hole-through }
+@test
+def rotate-array-and-mirror-build-symmetric-solids() =
+  // rotate-z(90) of a translated cube spins it about the origin; the conservative rotate bbox stays symmetric.
+  // And mirror-x of a right-shifted cube reflects it to the left (bilateral pair via fuse).
+  let bar = move-x(10 / 1, cube(2 / 1)) in                 // a 2×2×2 cube centred at x=10 → box x∈[9,11]
+  // rotate-z(45, bar): conservative box is symmetric [-11,11] on x and y (max |coord| = 11), size 22.
+  match bounding-box(rotate-z(45 / 1, bar)) with | Aabb.Box(lo, hi) =>
+    (match lo with | Vec3.V3(lx, _, _) => (match hi with | Vec3.V3(hx, _, _) =>
+      if (hx - lx) == 22 / 1 then
+        // mirror-x(bar) → box x∈[-11,-9]; fuse with bar → x∈[-11,11], width 22 (a bilateral pair).
+        (match bounding-box(fuse(bar, mirror-x(bar))) with | Aabb.Box(mlo, mhi) =>
+          (match mlo with | Vec3.V3(mlx, _, _) => (match mhi with | Vec3.V3(mhx, _, _) =>
+            if (mhx - mlx) == 22 / 1 then unit else trap("bilateral fuse spans [-11,11]"))))
+      else trap("rotate-z conservative box is symmetric (width 22)")))
+
+export { box, cube, ball, cyl, move, move-x, move-y, move-z, scale, scale-xyz,
+         rotate, rotate-x, rotate-y, rotate-z, mirror-x, mirror-y, mirror-z,
+         fuse, cut, common, hole-through }

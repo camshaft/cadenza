@@ -76,6 +76,11 @@ pub fn to_manifold_with_segments(solid: &Solid, segments: i32) -> Manifold {
         Solid::Rotate(Vec3 { x, y, z }, of) => {
             to_manifold_with_segments(of, segments).rotate(*x, *y, *z)
         }
+        // manifold's mirror reflects across the plane through the origin with the given normal — matching the
+        // library's `Mirror(normal, …)`. (An axis-aligned normal like [1,0,0] is the exact-in-model case.)
+        Solid::Mirror(Vec3 { x, y, z }, of) => {
+            to_manifold_with_segments(of, segments).mirror([*x, *y, *z])
+        }
         Solid::Scale(Vec3 { x, y, z }, of) => {
             to_manifold_with_segments(of, segments).scale(*x, *y, *z)
         }
@@ -253,13 +258,57 @@ mod tests {
 
     #[test]
     fn a_transform_chain_meshes() {
-        // scale ∘ translate ∘ cube — the transform arms all evaluate (the exact model has no Rotate).
+        // scale ∘ translate ∘ cube — the transform arms all evaluate.
         let s = parse_solid(
             "(: (Scale (: (tuple 2/1 2/1 2/1) Vec3) (Translate (: (tuple 1/1 0/1 0/1) Vec3) (Cube (: (tuple 1/1 1/1 1/1) Vec3)))) Solid)",
         )
         .unwrap();
         let m = mesh(&s);
         assert_eq!(m.triangle_count(), 12); // a transformed cube is still 12 triangles
+    }
+
+    #[test]
+    fn rotate_of_a_cube_still_meshes_a_cube() {
+        // Rotate carries an exact Rational Euler-degree triple; the trig runs at the manifold leaf. A rotated
+        // cube is still a watertight 12-triangle box (rotation preserves topology).
+        let s = parse_solid(
+            "(: (Rotate (: (tuple 0/1 0/1 45/1) Vec3) (Cube (: (tuple 2/1 2/1 2/1) Vec3))) Solid)",
+        )
+        .unwrap();
+        let m = mesh(&s);
+        assert_eq!(m.triangle_count(), 12);
+        assert!(!m.is_empty());
+    }
+
+    #[test]
+    fn mirror_of_a_cube_still_meshes_a_cube() {
+        // Mirror reflects across the plane with the given normal; a mirrored cube is still a 12-triangle box.
+        let s = parse_solid(
+            "(: (Mirror (: (tuple 1/1 0/1 0/1) Vec3) (Translate (: (tuple 5/1 0/1 0/1) Vec3) (Cube (: (tuple 2/1 2/1 2/1) Vec3)))) Solid)",
+        )
+        .unwrap();
+        let m = mesh(&s);
+        assert_eq!(m.triangle_count(), 12);
+        assert!(!m.is_empty());
+    }
+
+    #[test]
+    fn six_fold_rotational_array_unions_into_more_geometry() {
+        // The snowflake idiom: union a bar with a rotated copy → more geometry than one bar (the copies don't
+        // fully overlap). Pins that Rotate + Union compose the way the 6-fold symmetry relies on.
+        let one = mesh(
+            &parse_solid(
+                "(: (Translate (: (tuple 5/1 0/1 0/1) Vec3) (Cube (: (tuple 8/1 1/1 1/1) Vec3))) Solid)",
+            )
+            .unwrap(),
+        );
+        let two = mesh(
+            &parse_solid(
+                "(: (Union (Translate (: (tuple 5/1 0/1 0/1) Vec3) (Cube (: (tuple 8/1 1/1 1/1) Vec3))) (Rotate (: (tuple 0/1 0/1 60/1) Vec3) (Translate (: (tuple 5/1 0/1 0/1) Vec3) (Cube (: (tuple 8/1 1/1 1/1) Vec3))))) Solid)",
+            )
+            .unwrap(),
+        );
+        assert!(two.triangle_count() > one.triangle_count());
     }
 
     #[test]

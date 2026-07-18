@@ -1775,6 +1775,25 @@ fn build_path_deps_into(
                 .unwrap_or("dep")
                 .to_string()
         });
+        // The dep name becomes a COMPONENT-MODEL interface SEGMENT (`cadenza:<dep-name>/api`), which admits
+        // only lowercase ASCII letters/digits/hyphens (the kebab convention). A `name` with a space or other
+        // out-of-alphabet char (e.g. `def name = "my lib"`) would build a malformed interface string and
+        // fail OPAQUELY deep in wasmtime at compose. Reject it HERE with a clear diagnostic naming the dep +
+        // the offending name + the rule — the same "name the real problem before an opaque downstream error"
+        // shape as the collision check just below. (Empty is also invalid — an interface segment needs ≥1
+        // char.)
+        let name_ok = !dep_name.is_empty()
+            && dep_name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !name_ok {
+            eprintln!(
+                "{PROG}: dependency `{dep_path}` has a `name` (`{dep_name}`) that is not a valid interface \
+                 segment — a dependency's `def name` becomes `cadenza:<name>/api`, so it must be lowercase \
+                 ASCII letters, digits, and hyphens only (e.g. `my-lib`, not `{dep_name}`)"
+            );
+            return Err(());
+        }
         let iface = format!("cadenza:{dep_name}/api");
         // Two deps publishing the SAME interface (same `name`) would collide — the runner binds each peer
         // under its interface name, so a duplicate is an opaque wasmtime-linker failure at compose. Detect

@@ -178,3 +178,37 @@ test("a cube is all-outward-wound (baseline for the winding check)", async () =>
   assert.equal(r.ok, true);
   if (r.ok) assert.equal(windingBalance(r.positions, r.indices).inward, 0, "a cube has no inward faces");
 });
+
+// ── Rotate / Mirror (the browser twin of cdz-cad's mesh.rs rotate/mirror cases) ──────────────────────
+
+test("a rotated cube still meshes a watertight 12-triangle box (rotate = trig at the manifold leaf)", async () => {
+  const r = await meshFromSolid(
+    "(: (Rotate (: (tuple 0/1 0/1 45/1) Vec3) (Cube (: (tuple 2/1 2/1 2/1) Vec3))) Solid)",
+  );
+  assert.equal(r.ok, true, "a rotated cube meshes");
+  if (r.ok) assert.equal(r.indices.length / 3, 12, "a rotated cube is still 12 triangles");
+});
+
+test("a mirrored cube still meshes a 12-triangle box (mirror across an axis plane)", async () => {
+  const r = await meshFromSolid(
+    "(: (Mirror (: (tuple 1/1 0/1 0/1) Vec3) (Translate (: (tuple 5/1 0/1 0/1) Vec3) (Cube (: (tuple 2/1 2/1 2/1) Vec3)))) Solid)",
+  );
+  assert.equal(r.ok, true, "a mirrored cube meshes");
+  if (r.ok) assert.equal(r.indices.length / 3, 12, "a mirrored cube is still 12 triangles");
+});
+
+test("a 6-fold rotational array (Union of rotated bars) meshes more geometry than one bar", async () => {
+  const bar = "(Translate (: (tuple 5/1 0/1 0/1) Vec3) (Cube (: (tuple 8/1 1/1 1/1) Vec3)))";
+  const one = await meshFromSolid(`(: ${bar} Solid)`);
+  const two = await meshFromSolid(
+    `(: (Union ${bar} (Rotate (: (tuple 0/1 0/1 60/1) Vec3) ${bar})) Solid)`,
+  );
+  assert.equal(one.ok, true);
+  assert.equal(two.ok, true);
+  if (one.ok && two.ok) {
+    assert.ok(
+      two.indices.length > one.indices.length,
+      "the 6-fold-style union of a bar with its 60-degree-rotated copy has more geometry than one bar",
+    );
+  }
+});

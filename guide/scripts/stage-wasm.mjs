@@ -85,12 +85,13 @@ if (!runtimePath) {
 // Stage the CAD library sources into the guide tree so /cad can PRELOAD them via `compile_with_preloaded`
 // — the reader's buffer holds only the model, the CAD vocab is link-merged from these preloaded modules
 // (operator P5, ruling A). `exact.cdz` is the base geometry lib (Solid/Vec3/v3r/lower/…); `helpers.cdz` is
-// the ergonomic surface (box/cyl/hole-through/…) the PARAMETRIC showcase models import. They live OUTSIDE
-// guide/src (a raw `../../../implementation/cad/src/*.cdz` import is blocked by Vite's dev `server.fs.allow`
-// with project root = guide/), so staging them here (git-ignored, regenerated with the wasm — SAME pattern
-// as runtime.wasm) is the single-source, dev-and-build-safe way. CadPage `?raw`-imports the staged copies.
-// Non-fatal if absent (only /cad needs them).
-const cadLibs = ["exact.cdz", "helpers.cdz"];
+// the ergonomic surface (box/cyl/hole-through/…) the PARAMETRIC showcase models import; `units.cdz` is the
+// UNIT edge constructors (inch/…) the units-parametric showcase uses (a slider read in inches, converted
+// exactly over Rational to model mm). They live OUTSIDE guide/src (a raw `../../../implementation/cad/src/
+// *.cdz` import is blocked by Vite's dev `server.fs.allow` with project root = guide/), so staging them here
+// (git-ignored, regenerated with the wasm — SAME pattern as runtime.wasm) is the single-source, dev-and-
+// build-safe way. CadPage `?raw`-imports the staged copies. Non-fatal if absent (only /cad needs them).
+const cadLibs = ["exact.cdz", "helpers.cdz", "units.cdz"];
 await mkdir(join(dest, "cad"), { recursive: true });
 for (const lib of cadLibs) {
   const src = join(guide, "..", "implementation", "cad", "src", lib);

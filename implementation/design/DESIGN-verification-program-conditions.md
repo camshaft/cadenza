@@ -725,6 +725,60 @@ obligation shapes (establish/preserve as `@ensures`-style discharges) can be pin
 
 ---
 
+## 11. STATUS — the (D) run-time tier is COMPLETE + at-rest; (A) is the remaining boundary (2026-07-18)
+
+This section records what has SHIPPED (the design above is the plan; this is the realized state), so a reader
+knows the (D)/(A) line without re-deriving it from the increment prose.
+
+### 11.1 (D) run-time enforcement — LANDED, feature-complete
+
+The whole verification-annotation family is enforced AT RUN TIME (a violation TRAPS), the (D) tier the operator
+confirmed (2026-07-17). No annotation is silently ignored — it is enforced, or (where enforcement is impossible)
+the author is told precisely why (a coded reject), never dropped.
+
+- **`@requires(PRE)`** — checked at BODY-ENTRY: `(if PRE BODY (trap))` (`verify_enforce`). LANDED.
+- **`@ensures(Q)`** — checked at BODY-EXIT, value-transparent: `(let ((ret BODY)) (if Q ret (trap)))`. The
+  result binder is **`ret`** (operator ruling 2026-07-18, renamed from the too-common `it`). A def with a param
+  named `ret` carrying `@ensures` is a coded REJECT (the capture guard, not a silent skip). LANDED.
+- **`@invariant(PRED)` ESTABLISH** — every CONSTRUCTION of an `@invariant` type is routed through a synthesized
+  checked constructor (`invariant_establish` + the `lower_sum_new` divert), so a value that violates the invariant
+  TRAPS at construction. Complete across EVERY variant shape: single-payload newtype (scalar + heap payload),
+  single-variant multi-payload newtype (tuple-erased), multi-variant sum (per-variant, keyed by discriminant),
+  and nullary variant (unit-construction path). The value binder is **`self`** (operator ruling — distinct from
+  `@ensures`'s `ret`, since it means "the value being checked", not "the return"). LANDED.
+- **`@invariant` PRESERVE** — an operation returning `T` that produces a violating result TRAPS *for free* under
+  (D): it builds its `T` result through the SAME checked constructor as any other construction, so the establish
+  trap fires at that internal construction. No separate PRESERVE machinery is needed at the run-time tier. LANDED.
+- **`@invariant` GENERATION** — the invariant predicate is exposed via `Db::invariant_of` and consumed by
+  v-property-testing's `gen<T>` (constrained generation reads the predicate SHAPE via the `self`-keyed
+  recognizer). LANDED (v-property-testing owns the generation policy).
+
+Auto-unwrap: a bare scalar predicate on a single-payload newtype (`@invariant(>= self 0)` on `Percent`) is
+transparently unwrapped to the payload so it type-checks past the nominal boundary; a self-destructuring
+predicate is used as-is. Malformed/unbound-name predicates are coded rejects (CDZ0201/CDZ0101) at the annotation.
+
+### 11.2 What (D) does NOT do — the (A) boundary (still blocked on the CTFE kernel)
+
+The (D) tier CHECKS at run time; it never PROVES or ELIDES at compile time. Everything below needs the bounded
+compile-time kernel interpreter (A1, the kernel-in-prelude of §9) and is therefore still blocked:
+
+- **Proof-guided ELISION (b3, §3):** compiling a check AWAY when a real kernel `Thm` discharges it (a proven
+  no-overflow drops the overflow guard; a proven-in-range `@requires`/`@invariant` drops the run-time check).
+  The (D) traps are the SOUND fallback until this lands; the elision seam (`opt.rs`, co-owned with v-core-opt)
+  is the first consumer. The `discharged_no_overflow` oracle is a dormant-correct `false` stub today.
+- **`@trap_free` (§8):** a whole-function crash-free PROOF — the generalization of proof-guided elision to every
+  trap source in a function. Needs the kernel to discharge each trap's unreachability. A-blocked.
+- **Proven-unsatisfiable `@invariant` diagnosis (§10.2):** a compile-time `⊢ ∀v. ¬I(v)` reject for an
+  uninhabitable invariant. Until (A), such a type is sound-but-uninhabitable (every construction traps) — the
+  run-time trap keeps it safe; the compile-time diagnostic is the (A) upgrade.
+
+**Bottom line:** the (D) run-time tier is complete and correct on its own (verify-don't-miscompile); (A) is a
+pure OPTIMIZATION + earlier-diagnostic layer on top — it changes WHEN a violation is caught (compile vs run) and
+lets proven-safe checks vanish, but never changes what a program MEANS. v-verification pings v-core-opt when the
+CTFE kernel oracle lands (the elision seam is ready and dormant-correct).
+
+---
+
 ## References
 - [DESIGN-verification-hol-kernel.md](DESIGN-verification-hol-kernel.md) — the kernel this builds on
   (unforgeable `Thm`, the trust boundary, the LCF check-is-trivial/find-is-untrusted payoff).
