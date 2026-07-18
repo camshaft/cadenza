@@ -217,16 +217,18 @@ where
 }
 
 /// The daemon's real-primitive step with the Cedar policy RETRIEVED FROM THE LOG (the operator's capability
-/// model, retrieve-at-invocation half): read the LATEST `policy` event ([`crate::policy::latest_policy`]) and,
-/// if one is in force, gate every op against it via [`tick_hosted_authorized`]; if the log holds NO policy
-/// event, fall back to the ungated record-only [`tick_hosted`]. So a `policy` Cedar doc APPENDED to the log
-/// governs the NEXT invocation — no external `--policies` file, no kernel redeploy: the policy is data in the
-/// log, exactly like the genesis program. A later `policy` event supersedes (attenuation is re-evaluated fresh
-/// each invocation against whatever doc is latest — a program can't escalate past it).
+/// model, retrieve-at-invocation half): read the LATEST `policy` event ([`crate::policy::latest_policy`]) and
+/// gate every op against it via [`tick_hosted_authorized`]. So a `policy` Cedar doc APPENDED to the log governs
+/// the NEXT invocation — no external `--policies` file, no kernel redeploy: the policy is data in the log,
+/// exactly like the genesis program. A later `policy` event supersedes (attenuation is re-evaluated fresh each
+/// invocation against whatever doc is latest — a program can't escalate past it).
 ///
-/// (No-policy → ungated is the current default while the log has no policy; a deployment that wants
-/// deny-by-default with no policy would seed a restrictive `policy` event at bootstrap. The de-escalate-to-
-/// minimal default + publish→callable flow build on this retrieval seam.)
+/// DENY-BY-DEFAULT, STRICT (operator ruling: "actions should never go through without a policy"): if the log
+/// holds NO `policy` event, every op is DENIED — gated against an EMPTY policy (Cedar is deny-by-default: no
+/// matching `permit` → deny). There is NO permissive bootstrap seed; the out-of-box state is deny. The
+/// can't-brick escape hatch is a SEPARATE request→grant→revoke lifecycle (an agent requests narrow
+/// authorization from the operator; the operator grants with optional expiry, or denies, or revokes later) —
+/// NOT a broad default grant. This fn's job is enforcement; the request/grant lifecycle rides on top.
 pub fn tick_hosted_log_policy<L>(
     log: std::sync::Arc<std::sync::Mutex<L>>,
     event_kind: i64,
@@ -239,10 +241,10 @@ where
         let l = log.lock().map_err(|_| anyhow!("log mutex poisoned"))?;
         crate::policy::latest_policy(&l.tail(0)?)
     };
-    match policy {
-        Some(doc) => tick_hosted_authorized(log, event_kind, runtime, doc),
-        None => tick_hosted(log, event_kind, runtime),
-    }
+    // No policy in the log → deny-by-default: gate against an EMPTY policy (Cedar denies with no permit), so a
+    // program with no granting policy gets zero capabilities. Actions never go through without a policy.
+    let doc = policy.unwrap_or_default();
+    tick_hosted_authorized(log, event_kind, runtime, doc)
 }
 
 /// Drive `step` over every log event NOT YET processed (seq >= `from`), in order, and return the NEW cursor
@@ -290,9 +292,9 @@ where
 /// `policies` selects the capability boundary: `Some(root)` is an explicit external Cedar trust-anchor that
 /// OVERRIDES the log — every op gates against `root` via [`tick_hosted_authorized`]; `None` is the operator's
 /// default — the policy is read FROM THE LOG per invocation via [`tick_hosted_log_policy`] (the latest `policy`
-/// event governs; no policy in the log → ungated record-only). So a live daemon started with no `--policies`
-/// file automatically enforces whatever `policy` Cedar doc is appended to the log — the retrieve-at-invocation
-/// model — while an explicit file is the override for a fixed external anchor.
+/// event governs; NO policy in the log → DENY-BY-DEFAULT, every op denied). So a live daemon started with no
+/// `--policies` file enforces whatever `policy` Cedar doc is appended to the log — and denies until one is —
+/// the retrieve-at-invocation model; an explicit file is the override for a fixed external anchor.
 pub fn run_once<L, K>(
     log: &std::sync::Arc<std::sync::Mutex<L>>,
     from: crate::Seq,
@@ -745,7 +747,8 @@ mod tests {
         // The operator's retrieve-at-invocation model: tick_hosted_log_policy reads the LATEST `policy` Cedar
         // doc FROM THE LOG and gates on it — no external --policies file. A policy permitting ONLY prim:append
         // → kind=1 [Append, Exec] → append performed(1) + exec DENIED(0) → sum 1. With NO policy event in the
-        // log, it falls back to ungated record-only → sum 3. So an APPENDED policy governs the invocation.
+        // log, DENY-BY-DEFAULT (operator ruling: actions never go through without a policy) → sum 0. So an
+        // APPENDED policy governs the invocation, and no-policy means zero privileges.
         use std::sync::{Arc, Mutex};
         let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let provider = match crate::kernel::compile_interpret_provider(GENESIS) {
@@ -757,15 +760,15 @@ mod tests {
             return;
         };
 
-        // (a) NO policy event → ungated fallback → sum 3.
+        // (a) NO policy event → DENY-BY-DEFAULT → sum 0 (zero privileges without a granting policy).
         let (path_a, mut log_a) = temp_log();
         crate::boot::inject_genesis(&mut log_a, GENESIS).unwrap();
         let log_a = Arc::new(Mutex::new(log_a));
-        let sum_ungated = tick_hosted_log_policy(Arc::clone(&log_a), 1, runtime.clone())
-            .expect("no-policy fallback runs");
+        let sum_denied = tick_hosted_log_policy(Arc::clone(&log_a), 1, runtime.clone())
+            .expect("no-policy deny-by-default runs");
         assert_eq!(
-            sum_ungated, 3,
-            "no policy in the log → ungated record-only → sum 3"
+            sum_denied, 0,
+            "no policy in the log → deny-by-default → every op denied → sum 0 (actions never go through without a policy)"
         );
         let _ = std::fs::remove_file(&path_a);
 

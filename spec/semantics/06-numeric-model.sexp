@@ -182,6 +182,37 @@
   (input  (= (Rational.of 9223372036854775806 4611686018427387903) (Rational.of 2 1)))
   (output (: true Bool)))
 
+(case "a rational with the Int64 minimum as denominator normalizes past the i64 sign-flip"
+  (doc    "`(Rational.of 1 -9223372036854775808)` — the denominator is Int64.min, whose sign-flip does
+           not exist at i64 width (negating -2^63 overflows). Sign normalization must therefore move the
+           sign to the numerator on the bigint limbs, yielding -1/9223372036854775808 with the
+           denominator's MAGNITUDE kept exactly (numeric-model.md #An Exact Rational Has A Canonical
+           Normalized Form). A normalizer that negated the denominator at i64 width would wrap or trap
+           here. Verified by scaling: multiplying by the whole rational -2 gives exactly
+           1/4611686018427387904 (the sign cancels, the denominator halves), so the canonical pair
+           round-trips through exact arithmetic. Both backends.")
+  (input  (= (* (Rational.of 1 -9223372036854775808) (Rational.of-int -2))
+             (Rational.of 1 4611686018427387904)))
+  (output (: true Bool)))
+
+(case "a rational of Int64 minimum over Int64 minimum normalizes to one"
+  (doc    "`(Rational.of -9223372036854775808 -9223372036854775808)` = 1/1: the both-negative sign
+           cancellation and the gcd reduction both run at the exact boundary where |Int64.min| is not an
+           Int64 value. The gcd here IS the common magnitude 2^63, so the reduction must divide it out on
+           the bigint limbs; the sign convention then makes the result the positive whole 1/1. The extreme
+           companion of the small both-negative case above.")
+  (input  (Rational.of -9223372036854775808 -9223372036854775808))
+  (output (: 1/1 Rational)))
+
+(case "ordering two rationals a hair apart at the i64 boundary is exact"
+  (doc    "`(< (Rational.of 1 9223372036854775807) (Rational.of 1 9223372036854775806))` is true —
+           1/(2^63-1) < 1/(2^63-2) because the LARGER denominator makes the SMALLER value. The two are
+           indistinguishable under any float rounding (both ≈ 1.08e-19), so this pins that rational
+           comparison cross-multiplies exactly on the bigint limbs (numerators 9223372036854775806 vs
+           9223372036854775807) rather than comparing through a lossy approximation.")
+  (input  (< (Rational.of 1 9223372036854775807) (Rational.of 1 9223372036854775806)))
+  (output (: true Bool)))
+
 (case "an integer literal annotated Rational grounds to that integer over one"
   (doc    "`(: 5 Rational)` grounds the bare integer literal 5 to the exact rational 5/1 — the same
            "Annotations Constrain" rule that fixes `(: 200 UInt8)`, extended to Rational with no range
@@ -381,6 +412,34 @@
            component carried the minus.")
   (input  (Rational.of -1 -2))
   (output (: 1/2 Rational)))
+
+(case "a zero rational canonicalizes to zero over one however it was constructed"
+  (doc    "`(Rational.of 0 5)` and `(Rational.of 0 1)` are the SAME value: zero's canonical form is 0/1
+           regardless of the denominator it was constructed with (numeric-model.md #An Exact Rational Has
+           A Canonical Normalized Form). Zero is a special normalization case — gcd(0, 5) is 5, so the
+           reduction step itself must send 0/5 to 0/1 rather than leaving the denominator behind. A
+           normalizer that special-cased away the zero numerator or skipped reduction when the numerator
+           is zero would make these two unequal.")
+  (input  (= (Rational.of 0 5) (Rational.of 0 1)))
+  (output (: true Bool)))
+
+(case "a zero rational produced by arithmetic is the same canonical zero"
+  (doc    "`(- (Rational.of 1 2) (Rational.of 1 2))` = 0, and that computed zero equals the constructed
+           `(Rational.of 0 1)`. The subtraction path produces 0/4 before normalization (cross-multiplied
+           1*2 - 1*2 over 2*2), so this pins that ARITHMETIC results are canonicalized exactly as
+           constructed values are — the one-canonical-form rule holds for every producer, not just
+           `Rational.of` (deterministic-value-form.md #A Value Has One Canonical Byte Form).")
+  (input  (= (- (Rational.of 1 2) (Rational.of 1 2)) (Rational.of 0 1)))
+  (output (: true Bool)))
+
+(case "dividing a rational by a negative rational normalizes the quotient's sign"
+  (doc    "`(/ (Rational.of 1 3) (Rational.of -1 3))` = -1/1: division multiplies by the reciprocal of
+           -1/3, and the reciprocal of a NEGATIVE rational must re-normalize its sign onto the numerator
+           (the raw flip of -1/3 is 3/-1, whose denominator violates the strictly-positive convention).
+           Pins that the sign convention is re-established through division, not just at construction —
+           and the equal magnitudes cancel to the whole -1/1.")
+  (input  (/ (Rational.of 1 3) (Rational.of -1 3)))
+  (output (: -1/1 Rational)))
 
 (case "exact rational division is total and exact for a nonzero divisor"
   (doc    "`(/ (Rational.of 1 2) (Rational.of 3 4))` = (1/2)/(3/4) = 4/6 = 2/3 exactly. Rational `/` by
