@@ -237,6 +237,7 @@ pass	a 32-bit-float closure crosses the host boundary
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a @param accessor splices into a quasiquote and the eval computes with the host value
+pass	a @param of type Rational desugars to two scalar num/den accessors the guest recombines (#13)
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
 pass	a @requires precondition is enforced for a genuinely-runtime argument
 pass	a @requires predicate that itself traps keeps its own trap kind

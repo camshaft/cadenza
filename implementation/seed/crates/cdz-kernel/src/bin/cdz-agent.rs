@@ -53,6 +53,34 @@ fn run() -> Result<()> {
             println!("injected genesis program at seq {seq} (from {prog_path})");
             Ok(())
         }
+        Some("emit") => {
+            // Append an external TRIGGER event to the log — a minimal event SOURCE so the live daemon
+            // (`start`) has something to perform. `<kind>` is a free event-kind tag + `<payload>` its body.
+            // REFUSES a RESERVED kind (`program` = genesis, `prim-*` = the daemon's own effect records): an
+            // operator must not forge a genesis or a fake effect through this door — those are written only by
+            // inject-genesis / the daemon itself. Any other kind is a trigger the daemon's kind_of maps to a run.
+            let log_path = args
+                .get(2)
+                .ok_or_else(|| anyhow!("usage: cdz-agent emit <log> <kind> <payload>"))?;
+            let kind = args
+                .get(3)
+                .ok_or_else(|| anyhow!("usage: cdz-agent emit <log> <kind> <payload>"))?;
+            let payload = args
+                .get(4)
+                .ok_or_else(|| anyhow!("usage: cdz-agent emit <log> <kind> <payload>"))?;
+            if kind == boot::PROGRAM || kind.starts_with(daemon::PRIM_RECORD_PREFIX) {
+                return Err(anyhow!(
+                    "refusing to emit a reserved event kind `{kind}` (genesis is written by inject-genesis; \
+                     `{}`* events are written only by the daemon) — pick a trigger kind",
+                    daemon::PRIM_RECORD_PREFIX
+                ));
+            }
+            let mut log =
+                FileLog::open(log_path).with_context(|| format!("open log {log_path}"))?;
+            let seq = log.append(kind, payload.as_bytes())?;
+            println!("emitted `{kind}` event at seq {seq} ({} byte payload)", payload.len());
+            Ok(())
+        }
         Some("run") => {
             let (log, kind, runtime) = open_and_resolve(&args, "run")?;
             let tick = daemon::tick(&log, kind, runtime)?;
@@ -198,9 +226,10 @@ fn run() -> Result<()> {
             Ok(())
         }
         _ => Err(anyhow!(
-            "usage: cdz-agent <bootstrap|inject-genesis|run|perform|hosted|start> ...\n\
+            "usage: cdz-agent <bootstrap|inject-genesis|emit|run|perform|hosted|start> ...\n\
              \x20 bootstrap <log>                    — create/open the event log\n\
              \x20 inject-genesis <log> <program.cdz> — append the genesis program\n\
+             \x20 emit <log> <kind> <payload>        — append an external trigger event (a minimal event source; refuses reserved kinds)\n\
              \x20 run <log> <event-kind>             — one daemon tick (COUNT the scheduled host-ops)\n\
              \x20 perform <log> <event-kind>         — one daemon tick that EXECUTES the ops (K1c, in-program mock), summing per-op results\n\
              \x20 hosted <log> <event-kind> [--policies <file>] — one daemon tick that PERFORMS via real host primitives (K1c→host); with --policies, each op is Cedar-authorized against the external policy first\n\

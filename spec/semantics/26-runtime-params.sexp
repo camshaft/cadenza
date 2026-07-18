@@ -209,3 +209,20 @@
   (call   main)
   (host-responses (respond Param.width (: 41 Int64)))
   (output (: 42 Int64)))
+
+(case "a @param of type Rational desugars to two scalar num/den accessors the guest recombines (#13)"
+  (doc    "A heap `Rational` has no host boundary form (only scalar/unit results cross), so a
+           `@param(...) rate : Rational` cannot generate one `(op rate (-> Unit Rational))` host accessor.
+           The sidecar desugars it to v-effects' num/den ABI (#13, 14-effects): GENERATE two scalar
+           `Int64` accessors `rate-num`/`rate-den`, and REWRITE each `(Param.rate)` use to `(Rational.of
+           (Param.rate-num) (Param.rate-den))` so the guest recombines the exact rational from the two
+           host-supplied scalars. With the host responding num=7, den=2, `main` builds 7/2 (normalized).
+           Pins that a Rational-typed @param is expressible over the fully-supported scalar host path — the
+           heap-typed @param frontier, closed by desugaring to the operator-ruled minimal #13 boundary.")
+  (input  (do
+            (: (@ (param (: widget slider)) rate) Rational)
+            (def (main) (host (Param) (Param.rate)))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.rate-num (: 7 Int64)) (respond Param.rate-den (: 2 Int64)))
+  (output (: 7/2 Rational)))

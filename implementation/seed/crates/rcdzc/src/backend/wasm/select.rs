@@ -16637,6 +16637,57 @@ mod tests {
     }
 
     #[test]
+    fn a_negative_constant_if_equality_chain_lifts_to_a_br_table() {
+        // The chain constants may be NEGATIVE — the density gate + table index shift compute over the signed
+        // range (`span = max - min + 1` with `min` negative). `(= n -2)/(-1)/0/1` is a dense span-4 range,
+        // so it lifts; the shift `n - (-2)` maps -2→0. Pins that negative literals don't break the span math
+        // (a regression treating the probe's bit pattern as unsigned would wrongly read a negative as huge).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) \
+               (if (= n -2) 10 (if (= n -1) 11 (if (= n 0) 12 (if (= n 1) 13 99))))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::BrTable(_, _))),
+            "a dense negative-constant if-equality chain lifts to a br_table, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn an_if_equality_chain_stops_at_a_non_equality_link() {
+        // The recognizer collects only leading `(= X k)` links on the SAME binder; the FIRST non-equality
+        // condition (`(< n 10)`) ends the chain and becomes the DEFAULT arm's body. So `(= n 0)/(1)/(2)`
+        // still lift to a br_table (≥3 dense consts) with the whole `(if (< n 10) …)` as the default. Pins
+        // that a mid-chain comparison neither aborts the lift nor gets mis-collected as an equality probe (a
+        // regression doing either would drop or mis-route the `< 10` arm — a wrong value).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) \
+               (if (= n 0) 100 (if (= n 1) 101 (if (= n 2) 102 (if (< n 10) 500 999))))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::BrTable(_, _))),
+            "the leading 3 equality links lift to a br_table (the `< 10` link is the default), got: {:?}",
+            f.code
+        );
+        // The `< 10` comparison survives in the default arm (a signed less-than), not dropped.
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::I64LtS)),
+            "the non-equality `< 10` link is emitted in the default arm, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
     fn a_br_table_over_a_zero_based_range_skips_the_index_shift() {
         // A dense `br_table` normalizes the scrutinee to a 0-based table index via `scrutinee - min`. When
         // the covered range STARTS AT 0 — the common `(match x (0 …) (1 …) …)` shape — that shift is the

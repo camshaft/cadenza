@@ -27,6 +27,51 @@ fn unique(tag: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn emit_appends_a_trigger_event_and_refuses_reserved_kinds() {
+    // The minimal event SOURCE: `emit <log> <kind> <payload>` appends an external trigger event (so the live
+    // daemon has something to perform). It REFUSES reserved kinds (`program` = genesis, `prim-*` = the daemon's
+    // own effect records) so an operator can't forge a genesis or a fake effect. Store-independent (no compile).
+    let log = unique("emit-log").with_extension("log");
+    let _ = std::fs::remove_file(&log);
+    Command::new(bin())
+        .args(["bootstrap", log.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+
+    // A free-kind trigger appends successfully.
+    let out = Command::new(bin())
+        .args(["emit", log.to_str().unwrap(), "message", "hello"])
+        .output()
+        .expect("run cdz-agent emit");
+    assert!(
+        out.status.success(),
+        "emit a trigger: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("emitted `message` event"),
+        "emit reports the appended event"
+    );
+
+    // A reserved kind is refused (exit non-zero, loud error).
+    for reserved in ["program", "prim-exec"] {
+        let out = Command::new(bin())
+            .args(["emit", log.to_str().unwrap(), reserved, "x"])
+            .output()
+            .expect("run cdz-agent emit reserved");
+        assert!(
+            !out.status.success(),
+            "emit of reserved kind `{reserved}` must fail"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("reserved event kind"),
+            "emit of `{reserved}` reports the reserved-kind refusal"
+        );
+    }
+    let _ = std::fs::remove_file(&log);
+}
+
+#[test]
 fn bootstrap_then_inject_then_run_drives_the_genesis() {
     let log = unique("log").with_extension("log");
     let prog = unique("genesis").with_extension("cdz");

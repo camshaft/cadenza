@@ -89,3 +89,16 @@ WASM fix b4ce14cb (peel_qty_ty strip->peel->strip + wasm-validates pin) is co-la
 2987e26a9 which just landed -> should land imminently but NOT on trunk yet. STATUS: RUST-CLOSED / WASM-OPEN.
 DO NOT mark fully resolved until b4ce14cb lands + the wasm reproducer validates. (Good thing this was left
 landed-PENDING-VERIFICATION, not closed on the rust landing.)
+
+---
+✅ CLOSED 2026-07-18 (reviewer-verified, trunk 38fe4b04a, store rebuilt): WASM face fixed by b4ce14cb
+(peel_qty_ty now strip_nominal→peel Qty→strip_nominal, select.rs:14359). Re-probed the exact reproducer
+(compile_component + wasmparser::validate, reverted): PROBE nominal-over-Qty-f32 wasm: VALID → CLOSED. BOTH
+faces now on trunk (rust 2987e26a9 float_width_of + wasm b4ce14cb peel_qty_ty). Fully resolved end-to-end.
+
+---
+FULLY RESOLVED (corpus-bugfix 2026-07-18, both faces content-verified): RUST face 2987e26a9 (float_width_of
+strip->peel->strip) + WASM face b4ce14cb (peel_qty_ty strip_nominal->peel Qty->strip_nominal, select.rs:14359).
+Reviewer re-verified wasm VALID via compile_component+wasmparser::validate on 38fe4b04a; I independently
+content-verified on trunk 265496869: nominal-over-Qty-f32 wasm run -> 1.5 (was invalid component function[11]).
+Both backends now correct. The width-reader-forgets-strip_nominal family closed for the float column too.

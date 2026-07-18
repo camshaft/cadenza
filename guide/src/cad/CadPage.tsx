@@ -32,6 +32,7 @@ import { Link } from "react-router-dom";
 import { compileWithPreloaded } from "../compiler/client.ts";
 import { run as runComponent } from "../runner/client.ts";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
+import { SyntaxToggle } from "../syntax/SyntaxToggle.tsx";
 import { meshFromSolid, type MeshResult } from "./index.ts";
 import { MeshView } from "./MeshView.tsx";
 import { wrapPrefixOf } from "../components/wrapModule.ts";
@@ -174,10 +175,18 @@ export default function CadPage() {
 
   return (
     <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-4 py-4">
-      <div className="mb-3 flex items-baseline justify-between gap-3">
+      {/* `flex-wrap` so the controls (surface toggle + example picker + Playground link) drop to a second
+          row on a narrow phone rather than overflowing horizontally (a 390px viewport can't fit the title +
+          all three on one line). */}
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-2">
         <h1 className="text-lg font-bold text-slate-100 sm:text-xl">Cadenza CAD</h1>
         {/* Mobile touch target: the controls get a 44px min-height below `sm`, compact at sm+. */}
-        <div className="flex shrink-0 items-center gap-1 text-xs sm:gap-3">
+        <div className="flex min-w-0 shrink items-center gap-1 text-xs sm:gap-3">
+          {/* The GLOBAL surface toggle (ML / s-expr) — /cad reads the live surface for editing (the model
+              buffer is re-seeded per surface), but the app routes render under RootLayout, which has no
+              header nav, so the chapter Layout's toggle isn't reachable here. Surface it so a reader can
+              switch + STICK the surface on /cad too (operator UX: the same toggle everywhere). */}
+          <SyntaxToggle />
           {/* Example picker — swap between the CAD models (cad/examples.ts, v-cad-authored). */}
           <label className="flex min-h-11 items-center gap-1 sm:min-h-0">
             <span className="sr-only">Example model</span>

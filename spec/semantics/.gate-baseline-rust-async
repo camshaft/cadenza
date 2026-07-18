@@ -3367,6 +3367,7 @@ todo	a 32-bit-float closure crosses the host boundary
 todo	a 32-bit-integer closure crosses the host boundary
 todo	a 64-bit-unsigned closure crosses the host boundary
 todo	a @param accessor splices into a quasiquote and the eval computes with the host value
+todo	a @param of type Rational desugars to two scalar num/den accessors the guest recombines (#13)
 todo	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 todo	a BOOL-field Tuple closure ARG, false discriminant
 todo	a Bytes-returning closure alongside a plain export — the closure runs

@@ -17912,6 +17912,31 @@ mod match_engine {
                 .any(|d| d.code.as_deref() == Some("CDZ0101")),
             "a valid @invariant over `it` + prelude ops is not flagged unbound"
         );
+        // NO false positive on a DESTRUCTURE-form invariant — the canonical @invariant shape (it = whole
+        // value, unwrap the payload via a match arm; the nominal boundary forbids a bare `(>= it 0)`). The
+        // match-arm binder `v` is predicate-LOCAL (in scope in the arm) and must NOT be flagged unbound — the
+        // name-resolution walk threads binder scopes. (Regression pin: a flat walk wrongly reported `v`
+        // unbound, making the mandatory destructure form unusable.)
+        let destructure = "(module m \
+            (@ (invariant (match it ((Percent.Pct v) (and (>= v 0) (<= v 100))))) (type Percent (Pct Int64))) \
+            (def (main) (match (Percent.Pct 50) ((Percent.Pct n) n))) (export main))";
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(destructure)))
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0101")),
+            "a destructure-form @invariant's match-arm binder `v` is in scope, not flagged unbound"
+        );
+        // ...but a genuinely-unbound name INSIDE a destructure arm is still caught (the binder scope does not
+        // hide a stray name).
+        let bad_arm = "(module m \
+            (@ (invariant (match it ((Percent.Pct v) (> v nope)))) (type Percent (Pct Int64))) \
+            (def (main) 0) (export main))";
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(bad_arm)))
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("nope")),
+            "a stray name inside a destructure arm is still CDZ0101 (binder scope doesn't mask it)"
+        );
     }
 
     /// Verification Inc-b (D): a BARE `@ensures(Q)` (not stacked under `@test`) is ENFORCED at body-EXIT —
@@ -36231,6 +36256,51 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0201"),
             "an untyped @param (no `: Type`) is rejected — the B-invariant, an accessor needs a result type"
+        );
+    }
+
+    #[test]
+    fn a_rational_param_desugars_to_num_den_scalar_accessors() {
+        // @param sidecar Rational brick (v-effects #13): a heap `Rational` has no host boundary form, so a
+        // `@param(…) rate : Rational` desugars to TWO scalar `Int64` accessors `rate-num`/`rate-den` and each
+        // `(Param.rate)` USE is rewritten to `(Rational.of (Param.rate-num) (Param.rate-den))`. So a program
+        // using a Rational @param RESOLVES (no CDZ0101) — the rewritten use references the two generated
+        // scalar ops, not a single un-generated `rate` op. (The run-with-host-values path — num=7/den=2 → 7/2
+        // — is covered by the 26-runtime-params corpus; the host-response wiring lives in cdz-run.)
+        assert!(
+            reject_code(
+                "(module m \
+                   (: (@ (param (: widget slider)) rate) Rational) \
+                   (def (main) (host (Param) (Param.rate))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a Rational @param desugars to num/den scalar accessors + a guest Rational.of, so it resolves"
+        );
+        // The desugar is SURGICAL to the rational param: referencing `Param.rate-num` DIRECTLY also resolves
+        // (the generated scalar op exists), confirming the num/den pair — not a `rate` op — is what's emitted.
+        assert!(
+            reject_code(
+                "(module m \
+                   (: (@ (param (: widget slider)) rate) Rational) \
+                   (def (main) (host (Param) (+ (Param.rate-num) (Param.rate-den)))) \
+                 (export main))"
+            )
+            .is_none(),
+            "the generated scalar accessors rate-num/rate-den resolve directly — the num/den pair is emitted"
+        );
+        // A scalar param alongside a rational one is UNAFFECTED: the scalar keeps its single typed op and its
+        // `(Param.width)` use is NOT rewritten (only rational-typed uses recombine). Both resolve together.
+        assert!(
+            reject_code(
+                "(module m \
+                   (: (@ (param (: widget slider)) width) Int64) \
+                   (: (@ (param (: widget slider)) rate) Rational) \
+                   (def (main) (host (Param) (+ (Param.width) (Param.rate-num)))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a scalar @param beside a rational one keeps its single accessor; only the rational use recombines"
         );
     }
 
