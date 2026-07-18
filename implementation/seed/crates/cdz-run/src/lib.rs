@@ -2501,6 +2501,36 @@ mod tests {
     }
 
     #[test]
+    fn run_core_module_returns_an_i64_mains_value() {
+        // The `cdz run-emitted` HAPPY PATH: the compiler-ml emit backend produces a core `(module (func
+        // (result i64)) (export "main"))` and run_core_module invokes it and returns the value. This pins
+        // the ordinary success case — without it the ONLY coverage of this seam was the trap/epoch-deadline
+        // test, so a regression that broke plain value-return (e.g. a wrong typed<> binding) would pass the
+        // suite. A constant `main` needs no runtime import, so this is hermetic (no store).
+        let wasm = wat::parse_str("(module (func (export \"main\") (result i64) (i64.const 42)))")
+            .expect("assemble the i64 module");
+        let outcome = run_core_module(&wasm, "main").expect("an i64 main runs, not Err");
+        assert!(
+            matches!(&outcome, Outcome::Value(v) if v == "42"),
+            "an i64 main returns its value as text, got {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn run_core_module_rejects_a_wrong_typed_main() {
+        // A `main` whose result is NOT `() -> i64` (here `() -> f64`) is a real shape mismatch — a bad
+        // artifact / emit bug — and must be an `Err` naming the expected signature, not a silent misread or
+        // a panic. Pins the guard so a future emit change that ships the wrong signature is caught loudly.
+        let wasm = wat::parse_str("(module (func (export \"main\") (result f64) (f64.const 1)))")
+            .expect("assemble the f64 module");
+        let err = run_core_module(&wasm, "main").expect_err("a non-i64 main is an Err");
+        assert!(
+            format!("{err}").contains("() -> i64"),
+            "the mismatch names the expected signature: {err}"
+        );
+    }
+
+    #[test]
     fn hash_extracted_from_pinned_import() {
         let name = "cadenza:runtime/heap@0.0.0+abc123";
         assert!(import_is_runtime(name));
