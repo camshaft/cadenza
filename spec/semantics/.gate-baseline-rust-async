@@ -61,6 +61,7 @@ pass	Set.contains over negative zero does not find positive zero
 pass	Set.insert does not fold a duplicate against a runtime element
 pass	Set.remove does not fold a set whose element is a runtime scalar
 pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
+pass	Set.to-list canonical order is SIGNED at the integer extremes
 pass	Set.to-list enumerates the elements as a List in canonical (sorted) order
 pass	Set.to-list length is the set's cardinality (deduped)
 pass	Set.to-list of a runtime-empty but element-typed set is the empty list

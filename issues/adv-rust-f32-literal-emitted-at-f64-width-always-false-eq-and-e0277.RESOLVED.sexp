@@ -55,3 +55,10 @@
 ; FACE2: (* x 2.0) now x * f32::from_bits(...), g(3.0)=6=wasm (was E0277). f32-in-sum-payload emits now;
 ; Float64 unchanged. +1 pin, rust --check 0 regress. CLOSES THE WHOLE narrow-literal width family (all
 ; integer members + float). Committed on the pending host-closure S1 stack (4ec31ae41); sends after S1 lands.
+
+; ---
+; LANDED + VERIFIED (corpus-bugfix 2026-07-18, source-grep trunk c9940747e): emit_grounded_float defined
+; (rust backend expr.rs:668) and wired into FloatCompare (2658-9) + float arith (1027-8) + branch (4451);
+; f32 test present (tests.rs:3792/3828 "pick(b, x: f32) -> f32", grounds ConstFloat to f32 width). Both
+; faces closed (silent (= x 1.5)-always-false + loud (* x 2.0) E0277). v-rust's host-closure S1 blocker
+; cleared (stack now at S5 8aff7e373) so the f32 fix drained. Fully resolved.
