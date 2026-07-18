@@ -84,6 +84,15 @@ pub struct Ctx<'a> {
     /// (an empty map used get-only / passed through — e.g. an empty-Map HANDLER STATE), the annotation is
     /// needed (nothing else fixes K/V) and `MapNew` grounds it. `false` in every other context.
     pub map_typed_by_enclosing_insert: bool,
+    /// A MATCH SCRUTINEE pre-bound to a Rust `let` local — `(scrutinee StructId, local name)`. A sum match
+    /// over a NON-TRIVIAL scrutinee (a `Core::Call`/compound, not a pure param/local read) binds it ONCE
+    /// (`{ let __ms = <scrutinee>; <body> }`) and records the mapping here; every `emit_sum_payload` read of
+    /// that scrutinee then references the LOCAL instead of RE-EMITTING the scrutinee expression. Without this
+    /// a match binder used K times re-emits the scrutinee K times — and a RECURSIVE-CALL scrutinee re-emitted
+    /// per binder is `2^depth` calls (an exponential blow-up: `(match (f (+ n 1)) ((Mk a _) (Mk a a)))` calls
+    /// `f` twice per level). The Rust-backend twin of the wasm backend's materialize-scrutinee-once fix
+    /// (keep the `MatchSum` wrapper for a non-reusable scrutinee, read one slot). Empty outside such a match.
+    pub scrut_locals: Vec<(StructId, String)>,
 }
 
 /// A payload bound by a sum-match arm's Rust pattern: the scrutinee occurrence + access path the
@@ -164,6 +173,7 @@ pub fn emit_body(
         sum_binds: Vec::new(),
         sum_path_types: Vec::new(),
         map_typed_by_enclosing_insert: false,
+        scrut_locals: Vec::new(),
     };
     let expr = emit(db, body, &env, &ctx)?;
     Ok(format!("    {expr}"))
@@ -268,6 +278,7 @@ pub(super) fn emit_lifted_lambda(
         sum_binds: Vec::new(),
         sum_path_types: Vec::new(),
         map_typed_by_enclosing_insert: false,
+        scrut_locals: Vec::new(),
     };
     let body = emit(db, lam.body, &env, &ctx)?;
     let ident = lifted_ident(k);
@@ -305,6 +316,7 @@ fn emit_loop_body(
         sum_binds: Vec::new(),
         sum_path_types: Vec::new(),
         map_typed_by_enclosing_insert: false,
+        scrut_locals: Vec::new(),
     };
     // Initialize the shared locals from THIS member's params (its param name → `__pi`), then the body.
     let mut init = String::new();
@@ -1902,6 +1914,24 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 Ty::Int(it) => Some(it),
                 _ => None,
             };
+            // MATERIALIZE a NON-TRIVIAL scrutinee ONCE. Every payload binder reads the scrutinee via
+            // `emit_sum_payload`, which RE-EMITS the scrutinee expression per read — so a binder used K times
+            // re-emits it K times. For a RECURSIVE-CALL scrutinee that is `2^depth` calls (an exponential:
+            // `(match (f (+ n 1)) ((Mk a _) (Mk a a)))` re-emits `f` twice per level → hang). If the scrutinee
+            // is not a trivial re-emittable read (a param/local — cheap + side-effect-free to repeat), bind it
+            // to a fresh `let __ms{n}` ONCE and record `(scrutinee, local)` so each `emit_sum_payload` reads
+            // the LOCAL. This is the Rust twin of the wasm backend's materialize-scrutinee-once fix. The scope
+            // of the `let` is the whole match, wrapped in a block. (A constant `SumNew` scrutinee folds in
+            // `emit_sum_payload` against its payload nodes — no re-emit blow-up — so it needs no binding; only
+            // a runtime non-trivial scrutinee does.)
+            if scrutinee_needs_materialize(db, scrutinee) {
+                let sv = emit(db, scrutinee, env, ctx)?;
+                let local = format!("__ms{}", scrutinee.0);
+                let mut c = ctx.clone();
+                c.scrut_locals.push((scrutinee, local.clone()));
+                let body = emit_sum_match(db, scrutinee, &root, result_it, env, &c)?;
+                return Ok(format!("{{ let {local} = {sv}; {body} }}"));
+            }
             emit_sum_match(db, scrutinee, &root, result_it, env, ctx)
         }
         // A LIST match `(match xs ((list) …) ((list a .. rest) …) …)` → a length-tested `if`/`else if`
@@ -3591,7 +3621,7 @@ fn emit_sum_switch(
     // (a nested switch — read the enclosing arm's payload binding). `emit_sum_payload` folds a constant
     // scrutinee or reads the bound `__pay` name.
     let subject = if sw_path.is_empty() {
-        emit(db, scrutinee, env, ctx)?
+        emit_scrutinee(db, scrutinee, env, ctx)?
     } else {
         emit_sum_payload(db, scrutinee, scrutinee, sw_path, env, ctx)?
     };
@@ -4069,6 +4099,36 @@ fn fold_const_sum_path(
     Some(cur)
 }
 
+/// Whether a match SCRUTINEE is expensive/unsafe to RE-EMIT per payload read, so it must be materialized
+/// into a `let` once (see `Ctx::scrut_locals`). A pure LOCAL/param read (`Core::LocalRef`) — or a CONSTANT
+/// `SumNew` (which `emit_sum_payload` folds against its payload nodes, no re-emit) — is trivial: repeating
+/// it is a cheap, side-effect-free re-read, so no binding is needed (keeps the emitted code + the many
+/// passing simple matches unchanged). Anything else (a `Core::Call` — the exponential case — an arithmetic
+/// expression, another match, a construction) is materialized: re-emitting it K times is wasted work at
+/// best and a `2^depth` blow-up (a recursive-call scrutinee) at worst.
+fn scrutinee_needs_materialize(db: &mut Db, scrutinee: StructId) -> bool {
+    !matches!(
+        crate::lower::core_of(db, scrutinee),
+        Core::LocalRef { .. } | Core::SumNew { .. }
+    )
+}
+
+/// Emit the SCRUTINEE expression — reading its pre-bound `let` local (`Ctx::scrut_locals`) if the enclosing
+/// `Core::MatchSum` materialized it once, else emitting it directly. Every `emit_sum_payload` scrutinee read
+/// routes through here so a materialized scrutinee is read from its ONE local instead of re-emitted (the
+/// exponential-blow-up fix).
+fn emit_scrutinee(
+    db: &mut Db,
+    scrutinee: StructId,
+    env: &Env,
+    ctx: &Ctx,
+) -> Result<String, Reject> {
+    if let Some((_, local)) = ctx.scrut_locals.iter().find(|(s, _)| *s == scrutinee) {
+        return Ok(local.clone());
+    }
+    emit(db, scrutinee, env, ctx)
+}
+
 fn emit_sum_payload(
     db: &mut Db,
     id: StructId,
@@ -4085,7 +4145,7 @@ fn emit_sum_payload(
     // scrutinee is pure (a param/local read), so emitting it is sound; clone a non-Copy read used more
     // than once (the same clone-on-read discipline the bind path below uses).
     if path.is_empty() {
-        let expr = emit(db, scrutinee, env, ctx)?;
+        let expr = emit_scrutinee(db, scrutinee, env, ctx)?;
         if needs_clone_on_read(db, id) {
             return Ok(format!("({expr}).clone()"));
         }
@@ -4220,7 +4280,7 @@ fn emit_sum_payload(
         .all(|s| matches!(s, crate::core::PathStep::Elem(_)))
         && matches!(type_of(db, scrutinee).strip_nominal(), Ty::Tuple(_))
     {
-        let mut expr = emit(db, scrutinee, env, ctx)?;
+        let mut expr = emit_scrutinee(db, scrutinee, env, ctx)?;
         for step in path {
             if let crate::core::PathStep::Elem(i) = step {
                 expr = format!("({expr}).{i}");
@@ -4239,7 +4299,7 @@ fn emit_sum_payload(
             // A leading `RestFrom(k)` — the tail sublist from index `k`, an owned `Vec` slice copy
             // (persistent value semantics; the source list is left intact for a sibling element binder).
             [crate::core::PathStep::RestFrom(k)] => {
-                let xs = emit(db, scrutinee, env, ctx)?;
+                let xs = emit_scrutinee(db, scrutinee, env, ctx)?;
                 return Ok(format!("({xs})[{k}..].to_vec()"));
             }
             // A leading `Elem(i)` — the i-th element, then ANY trailing steps index INTO that element (a
@@ -4250,7 +4310,7 @@ fn emit_sum_payload(
             // a self-recursive arm reads such a binder). Clone a non-Copy final read (the element/subfield
             // moves out of the borrowed list otherwise).
             [crate::core::PathStep::Elem(i), rest @ ..] => {
-                let xs = emit(db, scrutinee, env, ctx)?;
+                let xs = emit_scrutinee(db, scrutinee, env, ctx)?;
                 let mut expr = format!("({xs})[{i}]");
                 let mut cur_ty = match type_of(db, scrutinee).strip_nominal() {
                     Ty::List(elem) => (**elem).clone(),

@@ -6016,6 +6016,60 @@ fn a_closure_capturing_an_inner_handled_perform_result_needs_no_outer_handler() 
     }
 }
 
+/// The NESTED-LET sibling of the closure-capture case: a closure buried at the end of NESTED `let`s
+/// captures TWO inner-handled perform results across those lets — `(let ((a (Ctr.tick))) (let ((b
+/// (Ctr.tick))) (fn (x) (+ x (+ a b)))))`. The OUTER capture `a` is referenced by a closure inside the
+/// INNER let. It over-declined CDZ0401 `unbound a` because the capture-value inline gated on the let body
+/// being DIRECTLY a lambda — here the outer let's body is another `let`. Fixed by peeling let-chains
+/// (`body_returns_lambda`): a = 50, b = 51 (threaded), closure = `(fn (x) (+ x 101))`, so `(f 3)` under
+/// `handle Ctr 5` = 3 + 101 = 104.
+#[test]
+fn a_closure_captures_two_inner_handled_results_across_nested_lets() {
+    use crate::testkit::parse;
+    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
+               (def (main) \
+                 (handle Ctr 5 ((tick (u) s (resume s (+ s 1)))) \
+                   (let ((f (handle Ctr 50 ((tick (u) s (resume s (+ s 1)))) \
+                              (let ((a (Ctr.tick))) \
+                                (let ((b (Ctr.tick))) (fn ((: x Int64)) (+ x (+ a b)))))))) \
+                     (f 3)))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("a closure capturing two inner-handled results across nested lets compiles");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(
+            v, "104",
+            "a = 50, b = 51 captured by value → f(3) = 3 + 101 = 104"
+        );
+    }
+}
+
+/// The CURRY sibling of the closure-capture case (adversarial-sweep regression pin): the inner handle
+/// returns `(fn (a) (fn (b) (+ (+ a b) base)))` capturing the inner-handled `base = (Ctr.tick) = 50`.
+/// Applied `((f 3) 4)` under an OUTER `handle Ctr 5`, the capture must stay the VALUE 50 across BOTH
+/// applications (partial application + the residual), never re-performed: 3 + 4 + 50 = 57. Exercises the
+/// fix through `apply_lambda`'s curry path (the reified closure is lambda-returning), distinct from the
+/// direct and nested-let cases. No new fix — a regression pin that the value-capture fix composes with
+/// currying.
+#[test]
+fn a_curried_closure_capturing_an_inner_handled_result_closes_over_the_value() {
+    use crate::testkit::parse;
+    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
+               (def (main) \
+                 (handle Ctr 5 ((tick (u) s (resume s (+ s 1)))) \
+                   (let ((f (handle Ctr 50 ((tick (u) s (resume s (+ s 1)))) \
+                              (let ((base (Ctr.tick))) \
+                                (fn ((: a Int64)) (fn ((: b Int64)) (+ (+ a b) base))))))) \
+                     ((f 3) 4)))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("a curried closure capturing an inner-handled result compiles");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(
+            v, "57",
+            "base = 50 stays the value across currying → (f 3)(4) = 57"
+        );
+    }
+}
+
 /// A recursive effectful walk whose self-call and a following perform sit in a `do`-SEQUENCE — `(do (walk
 /// (- n 1)) (Ctr.tick))` — is the SAME out-state-observing shape: the `do` runs the self-call for effect,
 /// then the perform reads the recursion's OUT-state. This used to DECLINE (single-return did not carry the
@@ -18194,7 +18248,9 @@ mod match_engine {
     fn a_nested_annotation_reports_one_clean_reject_not_an_unbound_name_cascade() {
         use crate::testkit::parse;
         for (src, internal_tokens) in [
-            // nested @param in a do-block (the reported repro A)
+            // nested @param ANNOTATION in a do-block (the reported repro A) — this tests the `(@ …)`
+            // annotation form (which still parses), NOT the `@!param` pragma; a nested annotation must be
+            // named or it reports one clean reject rather than an unbound-name cascade.
             (
                 "(module m (def (main) (do (: (@ (param (: widget slider)) width) Int64) 1)) (export main))",
                 ["param", "widget", "slider"].as_slice(),
@@ -36933,8 +36989,8 @@ mod match_engine {
         // canonical arena node is `(list lo hi)` either way (bracket sugar desugars to it on the ML side).
         let ast = crate::testkit::parse(
             "(module m \
-               (: (@ (param (: widget slider) (: range (list 0 100))) width) Int64) \
-               (: (@ (param (: widget toggle)) mirror) Bool) \
+               (pragma param (param (: widget slider) (: range (list 0 100))) (: width Int64)) \
+               (pragma param (param (: widget toggle)) (: mirror Bool)) \
                (def (main) 0) \
              (export main))",
         );
@@ -36983,7 +37039,7 @@ mod match_engine {
         // absent). Here assert they are PRESENT (Some) for a param that declares them.
         let ast2 = crate::testkit::parse(
             "(module m \
-               (: (@ (param (: widget dropdown) (: options (list \"m\" \"mm\" \"in\")) (: default \"mm\")) unit) String) \
+               (pragma param (param (: widget dropdown) (: options (list \"m\" \"mm\" \"in\")) (: default \"mm\")) (: unit String)) \
                (def (main) 0) \
              (export main))",
         );
@@ -37024,7 +37080,7 @@ mod match_engine {
         use crate::param_sidecar::scan_manifest;
         let ast = crate::testkit::parse(
             "(module m \
-               (: (@ (param (: widget slider) (: range (\"list\" 2 20))) thickness) Int64) \
+               (pragma param (param (: widget slider) (: range (\"list\" 2 20))) (: thickness Int64)) \
                (def (main) 0) \
              (export main))",
         );
@@ -37048,7 +37104,7 @@ mod match_engine {
         // did not replace the name-head one.
         let ast_name = crate::testkit::parse(
             "(module m \
-               (: (@ (param (: widget slider) (: range (list 2 20))) thickness) Int64) \
+               (pragma param (param (: widget slider) (: range (list 2 20))) (: thickness Int64)) \
                (def (main) 0) \
              (export main))",
         );
@@ -37074,7 +37130,7 @@ mod match_engine {
         assert!(
             reject_code(
                 "(module m \
-                   (: (@ (param (: widget slider)) width) Int64) \
+                   (pragma param (param (: widget slider)) (: width Int64)) \
                    (def (main) (host (Param) (Param.width))) \
                  (export main))"
             )
@@ -37094,8 +37150,8 @@ mod match_engine {
         assert!(
             reject_code(
                 "(module m \
-                   (: (@ (param (: widget slider)) width) Int64) \
-                   (: (@ (param (: widget number)) height) Int64) \
+                   (pragma param (param (: widget slider)) (: width Int64)) \
+                   (pragma param (param (: widget number)) (: height Int64)) \
                    (def (main) (host (Param) (+ (Param.width) (Param.height)))) \
                  (export main))"
             )
@@ -37108,24 +37164,25 @@ mod match_engine {
         assert!(
             reject_code(
                 "(module m \
-                   (: (@ (param) width) Int64) \
+                   (pragma param (param) (: width Int64)) \
                    (def (main) (host (Param) (Param.width))) \
                  (export main))"
             )
             .is_none(),
             "an @param with no widget config still generates its typed accessor"
         );
-        // B-INVARIANT: an UNTYPED @param (no outer `(: … Type)` wrapper) has no accessor type to generate
-        // and is REJECTED (CDZ0201) — the accessor's result type IS the annotation type, so an un-typed
-        // param is not silently dropped. (Enforced upstream: `@param` over a bare name is `strip_annotations`'
-        // wraps-no-definition rejection; the sidecar's typed-shape scan simply never matches it.)
+        // B-INVARIANT: an UNTYPED `@!param` (a `(pragma param (param …) name)` whose binder is a BARE name,
+        // no `(: name Type)`) has no accessor type to generate and is REJECTED (CDZ0602, the malformed-
+        // directive code) by the pragma-registry `param` arm — the accessor's result type IS the annotation
+        // type, so an un-typed param is not silently dropped. (The sidecar's typed-shape scan never matches a
+        // bare-name binder, so it generates nothing; the registry arm is the coded reject.)
         assert_eq!(
             reject_code(
-                "(module m (@ (param (: widget slider)) width) (def (main) 0) (export main))"
+                "(module m (pragma param (param (: widget slider)) width) (def (main) 0) (export main))"
             )
             .as_deref(),
-            Some("CDZ0201"),
-            "an untyped @param (no `: Type`) is rejected — the B-invariant, an accessor needs a result type"
+            Some("CDZ0602"),
+            "an untyped @!param (bare-name binder, no `: Type`) is rejected — the B-invariant, an accessor needs a result type"
         );
     }
 
@@ -37140,7 +37197,7 @@ mod match_engine {
         assert!(
             reject_code(
                 "(module m \
-                   (: (@ (param (: widget slider)) rate) Rational) \
+                   (pragma param (param (: widget slider)) (: rate Rational)) \
                    (def (main) (host (Param) (Param.rate))) \
                  (export main))"
             )
@@ -37152,7 +37209,7 @@ mod match_engine {
         assert!(
             reject_code(
                 "(module m \
-                   (: (@ (param (: widget slider)) rate) Rational) \
+                   (pragma param (param (: widget slider)) (: rate Rational)) \
                    (def (main) (host (Param) (+ (Param.rate-num) (Param.rate-den)))) \
                  (export main))"
             )
@@ -37164,8 +37221,8 @@ mod match_engine {
         assert!(
             reject_code(
                 "(module m \
-                   (: (@ (param (: widget slider)) width) Int64) \
-                   (: (@ (param (: widget slider)) rate) Rational) \
+                   (pragma param (param (: widget slider)) (: width Int64)) \
+                   (pragma param (param (: widget slider)) (: rate Rational)) \
                    (def (main) (host (Param) (+ (Param.width) (Param.rate-num)))) \
                  (export main))"
             )
@@ -37184,7 +37241,7 @@ mod match_engine {
         assert!(
             reject_code(
                 "(module m \
-                   (: (@ (param (: widget slider)) len) (Qty Rational (Unit.base #\"meter\"))) \
+                   (pragma param (param (: widget slider)) (: len (Qty Rational (Unit.base #\"meter\")))) \
                    (def (main) (host (Param) (Qty.value (Param.len)))) \
                  (export main))"
             )
@@ -37196,7 +37253,7 @@ mod match_engine {
         assert!(
             reject_code(
                 "(module m \
-                   (: (@ (param (: widget slider)) len) (Qty Rational (Unit.base #\"meter\"))) \
+                   (pragma param (param (: widget slider)) (: len (Qty Rational (Unit.base #\"meter\")))) \
                    (def (main) (host (Param) (+ (Param.len-num) (Param.len-den)))) \
                  (export main))"
             )
@@ -37209,7 +37266,7 @@ mod match_engine {
         assert!(
             reject_code(
                 "(module m \
-                   (: (@ (param (: widget slider)) size) (Qty Int64 (Unit.base #\"meter\"))) \
+                   (pragma param (param (: widget slider)) (: size (Qty Int64 (Unit.base #\"meter\")))) \
                    (def (main) (host (Param) (Qty.value (Param.size)))) \
                  (export main))"
             )
@@ -46259,7 +46316,7 @@ mod stage1 {
         assert!(
             discarded_of(
                 "(module m \
-                   (: (@ (param (: widget slider)) a) Int64) \
+                   (pragma param (param (: widget slider)) (: a Int64)) \
                    (def (main) (host (Param) (+ (Param.a) 1))) \
                  (export main))"
             )
@@ -46270,8 +46327,8 @@ mod stage1 {
         assert!(
             discarded_of(
                 "(module m \
-                   (: (@ (param (: widget slider)) a) Int64) \
-                   (: (@ (param (: widget slider)) b) Int64) \
+                   (pragma param (param (: widget slider)) (: a Int64)) \
+                   (pragma param (param (: widget slider)) (: b Int64)) \
                    (def (main) (host (Param) (+ (Param.a) (Param.b)))) \
                  (export main))"
             )
@@ -46282,7 +46339,7 @@ mod stage1 {
         assert!(
             discarded_of(
                 "(module m \
-                   (: (@ (param (: widget slider)) rate) Rational) \
+                   (pragma param (param (: widget slider)) (: rate Rational)) \
                    (def (main) (host (Param) (Rational.value (Param.rate)))) \
                  (export main))"
             )
@@ -46293,7 +46350,7 @@ mod stage1 {
         // once — the skip is surgical to the `@param` site, not the whole block.
         let ws = discarded_of(
             "(module m \
-               (: (@ (param (: widget slider)) a) Int64) \
+               (pragma param (param (: widget slider)) (: a Int64)) \
                (def (main) (host (Param) (do (+ 1 2) (Param.a)))) \
              (export main))",
         );
@@ -65322,8 +65379,8 @@ mod sidecar_driven {
         // rendered here (the type column, `Ty::render_name`); the value fields are ARENA NODE IDS (or `-`),
         // which the CLI renders. (Range spelled `(list 0 100)` in s-expr — `[0 100]` is ML-surface sugar.)
         let src = "(module m \
-                   (: (@ (param (: widget slider) (: range (list 0 100))) width) Int64) \
-                   (: (@ (param (: widget toggle)) mirror) Bool) \
+                   (pragma param (param (: widget slider) (: range (list 0 100))) (: width Int64)) \
+                   (pragma param (param (: widget toggle)) (: mirror Bool)) \
                    (def (main) 0) (export main))";
         let out = compile(&inputs(src, &[Request::Query(Query::ParamManifest)]), &[]);
         assert!(!out.has_error(), "{:?}", out.diagnostics);

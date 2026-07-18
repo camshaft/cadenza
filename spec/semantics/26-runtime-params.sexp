@@ -1,22 +1,24 @@
-; Runtime parameters via `@param` annotation-driven codegen — DESIGN-runtime-parameter-host-effect.md
-; (operator direction). A function/value marked `@param(widget: …, …) name : Type` is a RUNTIME INPUT the
-; host supplies; a build-time SIDECAR (v-metaprogramming) scans every `@param` site and GENERATES a single
+; Runtime parameters via `@!param` module-directive-driven codegen — DESIGN-runtime-parameter-host-effect.md
+; (operator direction). A module marked `@!param(widget: …, …) name : Type` declares a RUNTIME INPUT the
+; host supplies; a build-time SIDECAR (v-metaprogramming) scans every `@!param` site and GENERATES a single
 ; strongly-typed effect `Param` with one accessor op per param (`Param.width : Int64`, …), and the host
-; binds each accessor at run time (v-effects' host-effect mechanism). The `@param` annotation surface is
+; binds each accessor at run time (v-effects' host-effect mechanism). The `@!param` directive surface is
 ; v-syntax's; the scan + generate is v-metaprogramming's; the run-time bind is v-effects'.
 ;
-; CANONICAL SHAPE (v-syntax): `@param(widget: slider, …) width : Type` parses to
-;   (: (@ (param (: widget slider) …) width) Type)
-; — the OUTER colon carries the explicit type, its inner is the `@`-annotation over the param name, and
-; the `(param …)` application's tail is the config kv pairs.
+; SIGIL (operator ruling 2026-07-18): `@!param` uses the `@!` MODULE-directive sigil (like `@!default-
+; fraction`), NOT the following-form `@` — a runtime parameter parameterizes the whole MODULE, not one form.
+; CANONICAL SHAPE (v-syntax): `@!param(widget: slider, …) width : Type` parses to
+;   (pragma param (param (: widget slider) …) (: width Type))
+; — a `pragma` head (module-attached), a `(param <kv>…)` config group, and a `(: name Type)` binder.
 ;
-; B-INVARIANT: `@param` MUST carry an explicit type — the generated accessor's result type IS the
-; annotation type, so an un-typed `@param` has no accessor type (and would reintroduce a generate-order
-; circularity, since the accessor is generated before resolve). An untyped `@param(…) name` is rejected.
+; B-INVARIANT: `@!param` MUST carry an explicit type — the generated accessor's result type IS the declared
+; type, so an un-typed `@!param` has no accessor type (and would reintroduce a generate-order circularity,
+; since the accessor is generated before resolve). An untyped `@!param(…) name` (a bare-name binder) is
+; rejected by the pragma-registry `param` arm (CDZ0602 — a malformed module directive).
 ;
-; FIRST BRICK: a single SCALAR `@param` generates one `(op name (-> Unit Type))` accessor. The widget
+; FIRST BRICK: a single SCALAR `@!param` generates one `(op name (-> Unit Type))` accessor. The widget
 ; MANIFEST + the Quantity (num/den) host ABI are later increments; these cases pin the core scan+generate
-; contract — a `@param` site makes `Param.<name>` a host-delegated accessor of the annotated type.
+; contract — a `@!param` site makes `Param.<name>` a host-delegated accessor of the annotated type.
 
 (case "an @param site generates a Param accessor a host delegation reads at run time"
   (doc    "The core contract: `@param(widget: slider) width : Int64` — parsed to `(: (@ (param (: widget
@@ -26,7 +28,7 @@
            responding 7, `main` returns 7. Pins that a @param site alone (no hand-written effect) makes
            its accessor a typed host-delegated op — the scan+generate the sidecar performs.")
   (input  (do
-            (: (@ (param (: widget slider)) width) Int64)
+            (pragma param (param (: widget slider)) (: width Int64))
             (def (main) (host (Param) (Param.width)))
             (export main)))
   (call   main)
@@ -40,7 +42,7 @@
            generated op's result type is the @param's declared type (the accessor is monomorphic in the
            right type, so no runtime type check / no stringly-typed get).")
   (input  (do
-            (: (@ (param (: widget number)) base) Int64)
+            (pragma param (param (: widget number)) (: base Int64))
             (def (main) (host (Param) (+ (Param.base) 1)))
             (export main)))
   (call   main)
@@ -58,7 +60,7 @@
            2.5, `main` returns 2.5. Pins that the accessor's result type follows the annotation for a
            non-Int scalar (Float64), not just Int64.")
   (input  (do
-            (: (@ (param (: widget slider)) ratio) Float64)
+            (pragma param (param (: widget slider)) (: ratio Float64))
             (def (main) (host (Param) (Param.ratio)))
             (export main)))
   (call   main)
@@ -70,7 +72,7 @@
            the host supplies a Bool. With a host response of true, `main` returns true. Pins the Bool arm
            of the type-agnostic accessor generation.")
   (input  (do
-            (: (@ (param (: widget toggle)) mirror) Bool)
+            (pragma param (param (: widget toggle)) (: mirror Bool))
             (def (main) (host (Param) (Param.mirror)))
             (export main)))
   (call   main)
@@ -83,8 +85,8 @@
            with host responses 3 and 4 is 7. Pins that the sidecar collects ALL sites into a single
            generated effect (one effect, one op per param), not one effect per site.")
   (input  (do
-            (: (@ (param (: widget slider)) w) Int64)
-            (: (@ (param (: widget slider)) h) Int64)
+            (pragma param (param (: widget slider)) (: w Int64))
+            (pragma param (param (: widget slider)) (: h Int64))
             (def (main) (host (Param) (+ (Param.w) (Param.h))))
             (export main)))
   (call   main)
@@ -107,8 +109,8 @@
            same-named ops gets. Pins that the sidecar surfaces a name collision as a clean compile error
            rather than silently deduping (dropping a param) or emitting an invalid module.")
   (input  (do
-            (: (@ (param (: widget slider)) width) Int64)
-            (: (@ (param (: widget stepper)) width) Int64)
+            (pragma param (param (: widget slider)) (: width Int64))
+            (pragma param (param (: widget stepper)) (: width Int64))
             (def (main) (host (Param) (Param.width)))
             (export main)))
   (error  CDZ0201))
@@ -120,12 +122,12 @@
 ; still generates its accessor — the type is the load-bearing metadata, the widget is presentational.
 
 (case "an @param with no widget config still generates its typed accessor"
-  (doc    "The config kv is optional to the accessor generation: `(: (@ (param) width) Int64)` — a bare
+  (doc    "The config kv is optional to the accessor generation: `(pragma param (param) (: width Int64))` — a bare
            `(param)` with NO widget/range — still makes the sidecar generate `(op width (-> Unit Int64))`,
            so `(Param.width)` resolves + reads the host value (→ 5). Pins that the SCAN keys on the param
            name + declared type, not on the widget metadata (which only drives the later manifest).")
   (input  (do
-            (: (@ (param) width) Int64)
+            (pragma param (param) (: width Int64))
             (def (main) (host (Param) (Param.width)))
             (export main)))
   (call   main)
@@ -144,9 +146,9 @@
            the realistic parametric-model shape (several heterogeneous params under one delegation, used in
            control flow), beyond the same-type two-site case — each accessor is host-bound at its own type.")
   (input  (do
-            (: (@ (param (: widget slider)) count) Int64)
-            (: (@ (param (: widget slider)) ratio) Float64)
-            (: (@ (param (: widget toggle)) on) Bool)
+            (pragma param (param (: widget slider)) (: count Int64))
+            (pragma param (param (: widget slider)) (: ratio Float64))
+            (pragma param (param (: widget toggle)) (: on Bool))
             (def (main) (host (Param) (if (Param.on) (Param.count) 0)))
             (export main)))
   (call   main)
@@ -170,32 +172,19 @@
            type-agnostic generate composing with v-effects' Quantity-host-op ABI end-to-end (the v-cad
            parametric-dimension / v-notebook length-widget driving case).")
   (input  (do
-            (: (@ (param (: widget slider)) width) (Qty Int64 (Unit.base #"meter")))
+            (pragma param (param (: widget slider)) (: width (Qty Int64 (Unit.base #"meter"))))
             (def (main) (host (Param) (Qty.value (Param.width))))
             (export main)))
   (call   main)
   (host-responses (respond Param.width (: 42 Int64)))
   (output (: 42 Int64)))
 
-; PLACEMENT INVARIANT: a `@param` is a v1 TOP-LEVEL annotation only — its `(@ (param …) name)` attaches to a
-; top-level definition slot (wrapped by the `: Type`), NOT to a value position. A `@param` written INSIDE a
-; value position (a `do`-block statement, a nested expression) is a MISPLACED annotation: the front-end's
-; annotation-placement guard rejects the surviving `(@ …)` node as CDZ0201 ("an (@ …) annotation cannot appear
-; here — an annotation attaches to a top-level definition …"), a SINGLE clean diagnostic. This pins the sidecar
-; ↔ annotation-guard interaction: a nested `@param` neither generates a `Param` op (the annotation is rejected
-; before the sidecar's generate would matter) NOR cascades a pile of unbound-name errors over the annotation's
-; internal tokens (@/param/widget/name) — the historical failure mode. Guards that the clean placement reject
-; holds for `@param` specifically, so a future change to either the sidecar scan or the guard can't silently
-; reintroduce the cascade or let a mis-scoped param through.
-(case "a nested @param annotation in a value position is rejected as a misplaced annotation"
-  (doc    "A `@param` is a v1 TOP-LEVEL annotation; written inside a `do`-block (a value position) its
-           `(@ (param …) width)` node is a misplaced annotation. The front-end annotation-placement guard
-           rejects it as CDZ0201 (an (@ …) annotation cannot appear here — it attaches to a top-level
-           definition, not an expression / do-block position) — ONE clean diagnostic, not the historical
-           cascade of unbound-name errors over the annotation's internal tokens (@/param/widget/width) and
-           not a silently-generated Param op. Pins the sidecar ↔ annotation-guard interaction for @param.")
-  (input  (do (: (@ (param (: widget slider)) width) Int64) 1))
-  (error  CDZ0201))
+; PLACEMENT: a `@!param` is a v1 TOP-LEVEL module directive (like `@!default-fraction`). A nested `@!param`
+; (inside a `do`-block value position) SHOULD be a placement error — but the pragma-placement guard for
+; `param` specifically is a v-syntax follow-up (a nested `(pragma param …)` is currently tolerated as an
+; inert directive rather than rejected). Tracked as a v-syntax coordination item; not pinned here until that
+; guard lands. (The OLD `@param`-annotation placement reject — CDZ0201 on a misplaced `(@ …)` — no longer
+; applies now that `@!param` is a pragma, not a following-form annotation.)
 (case "a @param accessor splices into a quasiquote and the eval computes with the host value"
   (doc    "Composition of the @param sidecar with quasiquote metaprogramming: the generated `Param.width`
            accessor is unquoted into a template `(+ ,(Param.width) 1)`, reified to an AST, and `eval`
@@ -203,7 +192,7 @@
            pins that a host-delegated @param accessor composes as an ordinary runtime Int64 inside a
            quasiquote/eval, the metaprog×runtime-param interaction.")
   (input  (do
-            (: (@ (param (: widget slider)) width) Int64)
+            (pragma param (param (: widget slider)) (: width Int64))
             (def (main) (host (Param) (eval (quasiquote (+ (unquote (Param.width)) 1)))))
             (export main)))
   (call   main)
@@ -220,7 +209,7 @@
            Pins that a Rational-typed @param is expressible over the fully-supported scalar host path — the
            heap-typed @param frontier, closed by desugaring to the operator-ruled minimal #13 boundary.")
   (input  (do
-            (: (@ (param (: widget slider)) rate) Rational)
+            (pragma param (param (: widget slider)) (: rate Rational))
             (def (main) (host (Param) (Param.rate)))
             (export main)))
   (call   main)
@@ -240,7 +229,7 @@
            layer a parametric-CAD `@param Length` (v-cad) desugars to, closing the heap-typed @param frontier
            for quantities as well as bare rationals.")
   (input  (do
-            (: (@ (param (: widget slider)) len) (Qty Rational (Unit.base #"meter")))
+            (pragma param (param (: widget slider)) (: len (Qty Rational (Unit.base #"meter"))))
             (def (main) (host (Param) (Qty.value (Param.len))))
             (export main)))
   (call   main)

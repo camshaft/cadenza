@@ -85,23 +85,39 @@ fn classify_kind(ast: &Arenas, ty: StructId) -> ParamKind {
     ParamKind::Scalar
 }
 
-/// Scan every well-typed `@param` site and GENERATE the `Param` effect, appending it as a module member.
-/// The scan matches only the confirmed shape `(: (@ (param <kv>) name) Type)` — an untyped `@param` (a
-/// bare `(@ (param …) name)` with no `(: … Type)` wrapper) is REJECTED UPSTREAM by `strip_annotations`
-/// (CDZ0201 "wraps no definition") before this pass runs, so it never reaches a generate; this pass need
-/// not (and does not) re-detect it. No `@param` sites → no `Param` effect (an empty program needs none).
+/// Scan every well-typed `@!param` site and GENERATE the `Param` effect, appending it as a module member.
+/// The scan matches the confirmed shape `(pragma param (param <kv>…) (: name Type))` — the module-level
+/// `@!param` directive (operator ruling 2026-07-18: a runtime parameter is a MODULE-scoped input, so it
+/// takes the `@!` module-directive sigil like `@!default-fraction`, not the following-form `@` sigil). The
+/// pragma tail is `[param-key, (param <kv>…) config-group, (: name Type) binder]`. An untyped `@!param`
+/// (no `(: name Type)` binder) simply doesn't match, so it generates nothing (and is caught by the
+/// pragma-registry validation). No `@!param` sites → no `Param` effect (an empty project needs none).
 pub fn generate(ast: &mut Arenas) {
-    // Only ORIGINAL nodes can be a source `@param` site; the generate APPENDS nodes, so bound the scan.
+    // Only ORIGINAL nodes can be a source `@!param` site; the generate APPENDS nodes, so bound the scan.
     let original_len = ast.structure.len() as u32;
     let mut sites: Vec<ParamSite> = Vec::new();
+    // The binder NODE-IDS already scanned — dedup against re-visiting the SAME physical pragma. `@!param`
+    // on a `//`-commented line reifies to `(comment "…" <pragma>)`, and `strip_comments` peels it by
+    // OVERWRITING the comment node's slot with a COPY of the inner pragma's entry (which references the
+    // SAME child node-ids). So a commented `@!param` leaves its pragma reachable at BOTH the comment id AND
+    // the original pragma id (a nested `//`-block aliases it at several) — and a raw `0..original_len` scan
+    // would find the site 2+ times, emitting its op(s) twice → a spurious CDZ0201 "op declared more than
+    // once" (v-cad's comment-near-multi-@param bug). Dedup by the BINDER node id: the peel-aliased copies
+    // share it (same children), so they collapse to one; two GENUINELY-distinct same-name sites have
+    // DIFFERENT binder ids, so the real dup-name soundness check (a later CDZ0201) still sees both.
+    let mut seen_binders: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
     for i in 0..original_len {
         let id = StructId(i);
-        // A well-formed site is a colon node `(: <inner> <Type>)` whose `<inner>` is a `@param`
-        // annotation over the param name. Read the colon's two children.
-        if let Some(&[inner, ty]) = ast.as_form(id, ":")
-            && let Some(name) = param_annotation_name(ast, inner)
-        {
+        // A well-formed site is a `(pragma param (param <kv>…) (: name Type))` node — read its NAME + TYPE
+        // off the `(: name Type)` binder (the config group is read separately for the manifest).
+        if let Some((name, ty)) = param_pragma_name_ty(ast, id) {
+            // `name` is the binder's name occurrence — its node id uniquely identifies the physical site,
+            // so a comment-peel alias (same id) is skipped while a distinct same-name site (different id) is
+            // kept for the dup-name check.
+            if !seen_binders.insert(name.0) {
+                continue;
+            }
             let kind = classify_kind(ast, ty);
             sites.push(ParamSite { name, ty, kind });
         }
@@ -127,31 +143,50 @@ pub fn generate(ast: &mut Arenas) {
     append_module_member(ast, effect);
 }
 
-/// If `inner` is a `@param` annotation `(@ (param <kv>…) <name>)`, return the param NAME occurrence (the
-/// annotation's second child). `None` if it is not a `@param` annotation or has no name.
-fn param_annotation_name(ast: &Arenas, inner: StructId) -> Option<StructId> {
-    Some(param_annotation_parts(ast, inner)?.1)
+/// A `@!param`/`@param` site's `(config-group, name-node, type-node)` — the `(param <kv>…)` config
+/// application (its tail is the `(: key value)` config pairs), the param NAME, and its declared TYPE. `None`
+/// if `id` is not a param site. Accepts BOTH surface shapes during the `@param`→`@!param` migration:
+///   - the NEW module-directive `(pragma param (param <kv>…) (: name Type))` (operator-ruled `@!param`);
+///   - the OLD following-form annotation `(: (@ (param <kv>…) name) Type)` (`@param`) — still parses, so
+///     accepting it keeps every not-yet-migrated consumer (CAD/notebook/guide `.cdz` models) working while
+///     they migrate at their own pace. Dropped in a later cleanup once no `@param` annotation remains.
+fn param_pragma_parts(ast: &Arenas, id: StructId) -> Option<(StructId, StructId, StructId)> {
+    // NEW: `(pragma param (param <kv>…) (: name Type))` — tail `[param-key, config-group, binder]`.
+    if let Some(tail) = ast.as_form(id, "pragma")
+        && let (Some(&key), Some(&config), Some(&binder)) = (tail.first(), tail.get(1), tail.get(2))
+        && ast.as_name(key) == Some("param")
+        && ast.as_form(config, "param").is_some()
+        && let Some(&[name, ty]) = ast.as_form(binder, ":")
+    {
+        return Some((config, name, ty));
+    }
+    // OLD (migration compat): `(: (@ (param <kv>…) name) Type)` — the colon's inner is a `@param` annotation
+    // `(@ (param <kv>…) name)`; the outer colon's 2nd child is the type.
+    if let Some(&[inner, ty]) = ast.as_form(id, ":")
+        && let Some(tail) = ast.as_form(inner, "@")
+        && let (Some(&config), Some(&name)) = (tail.first(), tail.get(1))
+        && ast.as_form(config, "param").is_some()
+    {
+        return Some((config, name, ty));
+    }
+    None
 }
 
-/// If `inner` is a `@param` annotation `(@ (param <kv>…) <name>)`, return `(param-app-node, name-node)` —
-/// the `(param …)` application (whose tail is the config kv pairs) and the annotated param NAME. `None`
-/// otherwise. The `_name`-only [`param_annotation_name`] wraps this for the generate path.
-fn param_annotation_parts(ast: &Arenas, inner: StructId) -> Option<(StructId, StructId)> {
-    let tail = ast.as_form(inner, "@")?;
-    let (&app, &name) = (tail.first()?, tail.get(1)?);
-    // The annotation's name position must be the application `(param …)`.
-    ast.as_form(app, "param")?;
-    Some((app, name))
+/// The `(name, type)` of a `@!param` site — for the generate scan. `None` if `id` is not a well-formed
+/// `@!param` pragma (missing binder / wrong key).
+fn param_pragma_name_ty(ast: &Arenas, id: StructId) -> Option<(StructId, StructId)> {
+    let (_config, name, ty) = param_pragma_parts(ast, id)?;
+    Some((name, ty))
 }
 
-/// Whether `id` is a `@param` SITE — the confirmed shape `(: (@ (param <kv>…) name) Type)` this sidecar
-/// scans and consumes. A `@param` site is a DECLARATION (a runtime input the sidecar turns into a generated
-/// `Param` effect), NOT an evaluated-for-value expression — so passes that reason about statement values
-/// (e.g. the CDZ0307 discarded-value warning) must treat it like a `def`/`effect` declaration and skip it,
-/// rather than flagging its declared type as a computed-then-discarded value. This is the reusable predicate
-/// for that: a colon node whose inner is a `@param` annotation.
+/// Whether `id` is a `@!param` SITE — the shape `(pragma param (param <kv>…) (: name Type))` this sidecar
+/// consumes. A `@!param` is a MODULE DIRECTIVE (a runtime input the sidecar turns into a generated `Param`
+/// effect), harvested by the pragma pass, NOT an evaluated-for-value form — so passes reasoning about
+/// statement values (e.g. the CDZ0307 discarded-value warning) skip it like any `(pragma …)` directive.
+/// (A generic `(pragma …)` is already skipped by the discarded-value pass's head-name check; this stays a
+/// reusable predicate for anything that wants to recognize a param pragma specifically.)
 pub fn is_param_site(ast: &Arenas, id: StructId) -> bool {
-    matches!(ast.as_form(id, ":"), Some(&[inner, _ty]) if param_annotation_name(ast, inner).is_some())
+    param_pragma_parts(ast, id).is_some()
 }
 
 // ── The WIDGET MANIFEST scan (v-metaprogramming's half; v-cdz-tooling plumbs the Query + `cdz
@@ -187,16 +222,16 @@ pub fn scan_manifest(ast: &Arenas) -> Vec<ParamRecord> {
     let mut records = Vec::new();
     for i in 0..ast.structure.len() as u32 {
         let id = StructId(i);
-        let Some(&[inner, ty]) = ast.as_form(id, ":") else {
-            continue;
-        };
-        let Some((app, name_node)) = param_annotation_parts(ast, inner) else {
+        // A `@!param` site `(pragma param (param <kv>…) (: name Type))` → config group + name + type node.
+        let Some((app, name_node, ty)) = param_pragma_parts(ast, id) else {
             continue;
         };
         let Some(name) = ast.as_name(name_node).map(str::to_string) else {
             continue;
         };
-        // The config kv pairs are the `(param …)` application's tail, each a `(: key value)` node.
+        // The config kv pairs are the `(param …)` config-group's tail, each a `(: key value)` node —
+        // read by the SAME `config_*` helpers as the old `@param` inner app (the config sub-node shape is
+        // byte-identical; only its parent moved from an `@`-annotation to the `@!param` pragma).
         records.push(ParamRecord {
             name,
             ty,
@@ -250,6 +285,28 @@ fn config_range(ast: &Arenas, app: StructId) -> Option<(StructId, StructId)> {
 }
 
 /// Build `(effect Param (op <name> (-> Unit <Type>)) …)` from the scanned sites and return its node id.
+/// Deep-copy a subtree into fresh arena nodes (a `Name` atom + every `List` are re-pushed; a constant leaf
+/// resolves to its own value regardless of scope, so it is shared). Used to give the generated `Param`
+/// effect INDEPENDENT name/type nodes — the originals stay under the surviving `(pragma param …)` site, and
+/// reusing them would double-parent (corrupting resolve's parent index). Mirrors the `copy_subtree` other
+/// synthesizing passes (`sums`/`effects`/`accum`) use for the same reparent-safety reason.
+fn copy_subtree(ast: &mut Arenas, node: StructId) -> StructId {
+    match ast.get(node).clone() {
+        Struct::Atom(lid) => match ast.leaf(lid).clone() {
+            Leaf::Name(_) => {
+                let leaf = ast.leaf(lid).clone();
+                push_atom(ast, leaf)
+            }
+            // A constant leaf resolves to its own value regardless of scope — share it.
+            _ => node,
+        },
+        Struct::List(children) => {
+            let copied: Vec<StructId> = children.iter().map(|&c| copy_subtree(ast, c)).collect();
+            push_list(ast, copied)
+        }
+    }
+}
+
 fn build_param_effect(ast: &mut Arenas, sites: &[ParamSite]) -> StructId {
     let effect_head = push_atom(ast, Leaf::Name("effect".to_string()));
     let param_name = push_atom(ast, Leaf::Name("Param".to_string()));
@@ -270,8 +327,13 @@ fn build_param_effect(ast: &mut Arenas, sites: &[ParamSite]) -> StructId {
             }
         } else {
             // A scalar (or unit) type crosses the host boundary directly: one `(op <name> (-> Unit <Type>))`
-            // accessor, result-typed by the annotation (reusing the declared-type occurrence's node).
-            children.push(build_op(ast, site.name, site.ty));
+            // accessor, result-typed by the annotation. COPY the name + type subtrees — the originals stay
+            // under the surviving `(pragma param … (: name Type))` node, so reusing them would DOUBLE-PARENT
+            // them (the effect + the pragma), corrupting the parent index resolve builds (the op's result
+            // type resolved to an `Any`-poisoned effect-op). A fresh copy gives the effect independent nodes.
+            let name = copy_subtree(ast, site.name);
+            let ty = copy_subtree(ast, site.ty);
+            children.push(build_op(ast, name, ty));
         }
     }
     push_list(ast, children)
@@ -356,13 +418,20 @@ fn build_qty_of(ast: &mut Arenas, magnitude: StructId, unit: StructId) -> Struct
 /// If `id` is a `(Param.<name>)` use — the nullary-call `((. Param <name>))` shape — the accessed param NAME.
 /// `None` otherwise. The use is an outer `List` of one element, that element the member access `(. Param x)`.
 fn param_member_use_name(ast: &Arenas, id: StructId) -> Option<String> {
-    let Struct::List(items) = ast.get(id) else {
-        return None;
+    // A `Param.<name>` use has TWO surface spellings that reach here:
+    //   - the ML surface parses `Param.rate` to a BARE member access `(. Param rate)`;
+    //   - the s-expr surface (and a written nullary call) parses `(Param.rate)` to `((. Param rate))`
+    //     — the member access wrapped in a 1-element application list.
+    // Accept both: unwrap a 1-element list to its inner access first, then match the `(. Param <name>)`.
+    let access = match ast.get(id) {
+        Struct::List(items) => match items[..] {
+            // Wrapped nullary-call form `((. Param <name>))` — descend to the sole child.
+            [inner] => inner,
+            // A bare member access is itself a List `[., Param, name]` — try `id` directly.
+            _ => id,
+        },
+        _ => return None,
     };
-    let [access] = items[..] else {
-        return None;
-    };
-    // The single element must be `(. Param <name>)`: a member-access form headed `.` over `Param`.
     let tail = ast.as_form(access, ".")?;
     let (&recv, &member) = (tail.first()?, tail.get(1)?);
     if ast.as_name(recv) != Some("Param") {

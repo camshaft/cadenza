@@ -8,7 +8,7 @@ export default function PatternMatching() {
     <article>
       <H1>Pattern matching</H1>
       <Lede>
-        Deciding by shape — and why <C>match</C> is a set of patterns the compiler can check, not a
+        Deciding by shape, and why <C>match</C> is a set of patterns the compiler can check, not a
         chain of <C>if</C>s.
       </Lede>
 
@@ -24,8 +24,8 @@ export default function PatternMatching() {
       <P>Change the <C>2</C> being matched to <C>1</C> or <C>7</C> and Run to see a different arm fire.</P>
 
       <P>
-        Literals aren't just numbers — you can match a <C>String</C> the same way, and this is the everyday
-        shape for dispatching on a keyword or command name. Here <C>op</C> turns an operation name into a
+        Literals aren't just numbers, since you can match a <C>String</C> the same way, and this is the
+        everyday shape for dispatching on a keyword or command name. Here <C>op</C> turns an operation name into a
         code, falling back to <C>0</C> for anything it doesn't recognise:
       </P>
       <Runnable
@@ -39,7 +39,7 @@ export default function PatternMatching() {
       <P>
         <C>"sub"</C> takes the second arm, <C>2</C>. Change it to <C>"add"</C> or something unknown like{" "}
         <C>"mul"</C> and Run again. The <C>_</C> arm isn't optional here: <C>String</C> (like <C>Int64</C>)
-        has infinitely many values, so the compiler can't see that you've covered them all — leave the
+        has infinitely many values, so the compiler can't see that you've covered them all: leave the
         wildcard off and it declines with a non-exhaustive-match error, the same guarantee you'll meet with
         sums below.
       </P>
@@ -59,17 +59,17 @@ export default function PatternMatching() {
     ((None _) 0)))`}
       />
       <P>
-        Swap <C>(Some 7)</C> for <C>(None unit)</C> and Run to take the other arm — it returns <C>0</C>.
+        Swap <C>(Some 7)</C> for <C>(None unit)</C> and Run to take the other arm, which returns <C>0</C>.
       </P>
 
       <H2>The compiler checks you covered every case</H2>
       <P>
-        Here's the payoff. Drop the <C>None</C> arm and the compiler <em>refuses</em> to compile — it can
-        see, from the type, that a case is unhandled:
+        Here's the payoff. Drop the <C>None</C> arm and the compiler <em>refuses</em> to compile, because it
+        can see, from the type, that a case is unhandled:
       </P>
       <Note>
         This one is <strong>meant to be refused</strong>. Run it and read the status bar:{" "}
-        <C>non-exhaustive match</C> — the missing variant named for you, before the program ever runs.
+        <C>non-exhaustive match</C>, the missing variant named for you, before the program ever runs.
       </Note>
       <Runnable
         source={`(type Opt (Some Int64) (None unit))
@@ -81,17 +81,17 @@ export default function PatternMatching() {
 
       <Why tenet="match is patterns, not predicates">
         Many languages let a branch head be any boolean test. Cadenza deliberately doesn't: a{" "}
-        <C>match</C> arm is always a <em>pattern</em> — a constructor that destructures, a literal, a
+        <C>match</C> arm is always a <em>pattern</em>, whether a constructor that destructures, a literal, a
         binding, or <C>_</C>. Why refuse the more flexible option? Because a head that could be an
-        arbitrary predicate quietly demotes the real question — <em>"did you handle every variant?"</em>{" "}
-        — down to <em>"is there an else?"</em>. Keeping arms as patterns is what lets the compiler check
+        arbitrary predicate quietly demotes the real question, <em>"did you handle every variant?"</em>,
+        down to <em>"is there an else?"</em>. Keeping arms as patterns is what lets the compiler check
         exhaustiveness against the type, and turn a whole class of "forgot a case" bugs into compile
         errors. Value conditions still have a home; it's just <C>if</C>, not <C>match</C>.
       </Why>
 
       <H2>Guards: a pattern plus a condition</H2>
       <P>
-        When you do want to test a value — not just its shape — an arm can carry a <em>guard</em>: a
+        When you do want to test a value, not just its shape, an arm can carry a <em>guard</em>: a
         pattern with an <C>if</C> condition. The arm fires only when the pattern matches <em>and</em> the
         guard holds. Here a number is classified by sign:
       </P>
@@ -106,7 +106,7 @@ export default function PatternMatching() {
       <P>
         <C>(guard x (&lt; x 0))</C> binds the value to <C>x</C> and fires only when <C>x &lt; 0</C>, so{" "}
         <C>-8</C> returns <C>-1</C>; <C>0</C> takes the literal arm, and everything else the wildcard. A
-        guard is the bridge between "match on shape" and "decide on value" — without turning the whole
+        guard is the bridge between "match on shape" and "decide on value", without turning the whole
         arm back into an arbitrary predicate.
       </P>
 
@@ -132,8 +132,8 @@ export default function PatternMatching() {
 
       <H2>Matching a map by key</H2>
       <P>
-        A <C>match</C> can also look <em>inside a collection</em>. A map pattern —{" "}
-        <C>(map (key binder) .. rest)</C> — fires when the map contains that key, binding the associated
+        A <C>match</C> can also look <em>inside a collection</em>. A map pattern,{" "}
+        <C>(map (key binder) .. rest)</C>, fires when the map contains that key, binding the associated
         value to <C>binder</C> (and the leftover entries to <C>rest</C>). It's the pattern-matching
         counterpart to a <C>Map.lookup</C>: here <C>setting</C> reads the <C>"width"</C> from a config map,
         falling back to <C>-1</C> when it's absent:
@@ -148,7 +148,7 @@ export default function PatternMatching() {
       />
       <P>
         The map has a <C>"width"</C>, so the arm fires and binds <C>v</C> to <C>80</C>. Drop that key from
-        the map and the pattern no longer matches — it falls through to the wildcard, <C>-1</C>. Toggle to
+        the map and the pattern no longer matches, so it falls through to the wildcard, <C>-1</C>. Toggle to
         the conventional surface and the pattern reads as <C>{`#{ "width" = v, .. rest }`}</C>, the same
         map-literal shape from <strong>Maps &amp; sets</strong>, now on the left of a match arm.
       </P>
@@ -192,7 +192,7 @@ export default function PatternMatching() {
         expected="1"
         hint={
           <>
-            The guard binds the score to <C>x</C>; the condition for passing is "60 or more" —{" "}
+            The guard binds the score to <C>x</C>; the condition for passing is "60 or more", namely{" "}
             <C>(&gt;= x 60)</C>. <C>75</C> clears it, so the first arm fires.
           </>
         }

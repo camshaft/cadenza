@@ -496,7 +496,12 @@ pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
 /// validation (a key not here is CDZ0601) and the "did you mean?" suggestion an unknown key gets — so the
 /// suggestion can never drift from the accepted set. Small and closed today (`default-integer`,
 /// `default-fraction`, `default-float`); a new spec directive adds its key here.
-const PRAGMA_REGISTRY: &[&str] = &["default-integer", "default-fraction", "default-float"];
+const PRAGMA_REGISTRY: &[&str] = &[
+    "default-integer",
+    "default-fraction",
+    "default-float",
+    "param",
+];
 
 /// The numeric-domain check for a well-formed `(pragma default-integer <T>)`: the directive names the
 /// type OTHERWISE-UNCONSTRAINED integer literals default to, so `<T>` MUST be an integer type
@@ -1293,6 +1298,27 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                     );
                 } else if let Some(reject) = non_float_default_fault(db, form, ptail[1]) {
                     faults.push(reject);
+                }
+            }
+            // `@!param` — the module-level runtime-parameter directive (operator ruling 2026-07-18). Shape:
+            // `(pragma param (param <kv>…) (: name Type))` — the config-group `(param …)` app + the typed
+            // binder `(: name Type)`. The param SEMANTICS (scan → generate the `Param` effect + the widget
+            // manifest) live in `param_sidecar`; this arm is the structural GATE that a well-formed `@!param`
+            // passes and a malformed one (missing binder / no config group / untyped) is rejected here rather
+            // than reaching the sidecar (the B-invariant: a `@!param` MUST carry an explicit type). A valid
+            // one is accepted (Ok — no fault); the sidecar consumes it in `Db::load`.
+            Some("param") => {
+                // tail = [param-key, config-group, binder]; the binder must be a `(: name Type)` colon node
+                // and the config-group a `(param …)` app. `param_sidecar::is_param_site` checks exactly this.
+                if !crate::param_sidecar::is_param_site(&db.ast, form) {
+                    faults.push(
+                        Reject::coded(
+                            Code::MalformedDirective,
+                            "`@!param` must be `@!param(config…) name : Type` — a module parameter with an \
+                             explicit type (e.g. `@!param(widget: slider) width : Int64`)",
+                        )
+                        .at(form),
+                    );
                 }
             }
             // A key the fixed registry does not define — rejected, not ignored. If the typo'd key is a

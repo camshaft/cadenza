@@ -1162,6 +1162,50 @@
             (export main)))
   (output (: 53 Int64)))
 
+(case "a closure captures TWO inner-handled perform results across NESTED lets and escapes under an outer handler"
+  (doc    "The nested-`let` sibling of the capture case: the inner handle's body is a `(let ((a (Ctr.tick)))
+           (let ((b (Ctr.tick))) (fn (x) (+ x (+ a b)))))` — an OUTER `let` binding `a` referenced by a
+           closure buried in the INNER `let`. Both captures must close over their inner-handled VALUES (a =
+           50, b = 51 under `handle Ctr 50`, threading state), so the closure is `(fn (x) (+ x 101))` and
+           `(f 3)` under `handle Ctr 5` = 3 + 101 = 104. It over-declined CDZ0101 `unbound a` because the
+           capture-value inline gated on the let body being DIRECTLY a lambda — here it is another `let`, so
+           the outer capture `a` orphaned. Fixed by peeling let-chains (`body_returns_lambda`) so a closure
+           reached through nested lets still closes over the outer capture.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main)
+              (handle Ctr 5
+                ((tick (u) s (resume s (+ s 1))))
+                (let ((f (handle Ctr 50
+                           ((tick (u) s (resume s (+ s 1))))
+                           (let ((a (Ctr.tick)))
+                             (let ((b (Ctr.tick)))
+                               (fn ((: x Int64)) (+ x (+ a b))))))))
+                  (f 3))))
+            (export main)))
+  (output (: 104 Int64)))
+
+(case "a CURRIED closure capturing an inner-handled perform result closes over it through partial application"
+  (doc    "A curry sibling of the capture case: the inner handle returns `(fn (a) (fn (b) (+ (+ a b) base)))`
+           where `base` is the inner-handled `(Ctr.tick)` = 50. Applied `((f 3) 4)` under `handle Ctr 5`, the
+           OUTER lambda binds a=3 and returns the residual `(fn (b) (+ (+ 3 b) 50))` (base closed over the
+           inner value), then the residual binds b=4 → 3+4+50 = 57. Exercises the closure-capture fix through
+           `apply_lambda`'s partial-application/curry path (the reified closure is itself lambda-returning),
+           distinct from the direct and nested-let cases. Pins that a captured perform result stays the VALUE
+           across currying, never re-performed at either application.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main)
+              (handle Ctr 5
+                ((tick (u) s (resume s (+ s 1))))
+                (let ((f (handle Ctr 50
+                           ((tick (u) s (resume s (+ s 1))))
+                           (let ((base (Ctr.tick)))
+                             (fn ((: a Int64)) (fn ((: b Int64)) (+ (+ a b) base)))))))
+                  ((f 3) 4))))
+            (export main)))
+  (output (: 57 Int64)))
+
 (case "TWO performs in an if condition both fold on the strict-first spine"
   (input  (do
             (effect Amb (op flip (-> Unit Int64)))

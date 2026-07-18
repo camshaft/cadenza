@@ -817,6 +817,7 @@ pass	a let-bound variable derived from a runtime parameter passed as a call argu
 pass	a let-bound variable is in scope inside a boolean connective operand
 pass	a let-bound variable passed as a function-call argument resolves at the call site
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
+pass	a let-wrapped resume in the arm body threads a computed next-state (stateful PRNG)
 pass	a line comment wrapping a top-level form does not hide it
 pass	a line comment wrapping a type declaration is seen through
 pass	a line comment wrapping the entry point is seen through
@@ -1092,7 +1093,6 @@ pass	a negative zero in a record field is distinct from positive zero
 pass	a negative zero nested in a tuple is distinct from positive zero
 pass	a negative-power SI prefix converts over Float
 pass	a negative-power SI prefix is an exact rational scale
-pass	a nested @param annotation in a value position is rejected as a misplaced annotation
 pass	a nested Ast.List match falls through when the inner leaf variant differs
 pass	a nested Ast.List match over a constant quote reads the deep leaf at the right depth
 pass	a nested OR by the same constant collapses to a single OR
@@ -2049,6 +2049,7 @@ pass	addition of two records is rejected — a record is not a number
 pass	addition of two sets is rejected — a set is not a number
 pass	addition of two strings is rejected — text is not a number
 pass	addition of two symbols is rejected — a symbol is not a number
+pass	advancing the clock past the UInt64 nanosecond range traps rather than silently wrapping
 pass	all four leaf kinds in one quoted form dispatch their own tags
 pass	all-nullary enum equality compares discriminants
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
@@ -2912,6 +2913,7 @@ pass	runtime >= and > on a self operand mirror <= and < including the NaN self c
 pass	runtime BigInt addition runs on the arbitrary-precision runtime
 pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime
+pass	runtime Bytes ordering declines uniformly — the spec blesses no Bytes order
 pass	runtime Bytes value-equality distinguishes different content
 pass	runtime Rational arithmetic adds two parameter-built fractions exactly
 pass	runtime String.concat is associative — (a·b)·c equals a·(b·c), both equal the flat concatenation
@@ -3874,11 +3876,3 @@ todo	two same-signature String-returning closures share one call
 todo	two same-signature closures alongside a plain export all coexist
 todo	two same-signature closures alongside a plain export — the plain export runs
 todo	two specializations of one driver on different closures do not collide in the spec memo
-pass	a deep out-of-order queue drains fully time-sorted with FIFO across every tie-group
-pass	a zero-Duration sleep files at the current instant — pop-min then reinsert keeps order
-pass	interleaved same/different Instants keep FIFO within a time and ascending across times
-pass	the scheduler terminates on zero primaries and detects deadlock when live primaries have no work
-pass	three events at the same Instant drain in FIFO insertion order (tie-break at N=3)
-pass	`sleep-until` sleeps to an absolute Instant — the span is target minus now (since t now)
-pass	a run-sim scheduler fast-forwards the clock through two sequential sleeps in one task
-pass	advancing the clock past the UInt64 nanosecond range traps rather than silently wrapping
