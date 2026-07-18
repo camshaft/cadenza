@@ -158,6 +158,30 @@ def se-ann-unsigned-narrow-overflow-declines() =
   (match run-src("(+ (: 200 UInt8) (: 100 UInt8))") with | Option.None(_) => unit | Option.Some(_) => trap("UInt8 200+100 overflows → declines"))
 
 @test
+def se-ann-narrow-sub-in-range-runs() =
+  // corrected-2b extends to ALL arith ops, not just `+`: same-width narrow SUBTRACTION in range RUNS.
+  // `(- (: 5 Int8) (: 3 Int8))` = 2 fits Int8 → 2. (run-ml differential confirmed vs rcdzc.)
+  (match run-src("(- (: 5 Int8) (: 3 Int8))") with | Option.Some(v) => (if v == 2 then unit else trap("Int8 5-3 = 2")) | Option.None(_) => trap("same-width Int8 sub runs"))
+
+@test
+def se-ann-unsigned-narrow-underflow-declines() =
+  // narrow SUBTRACTION that UNDERFLOWS traps (→ declines): `(- (: 0 UInt8) (: 1 UInt8))` = -1 underflows
+  // UInt8 (min 0) → declines (the checked-sub trap, per CDZ0304 — NOT a wrapped 255). Was unpinned (only
+  // narrow ADD overflow had a test); the eval CBin trap arm handles all arith ops uniformly.
+  (match run-src("(- (: 0 UInt8) (: 1 UInt8))") with | Option.None(_) => unit | Option.Some(_) => trap("UInt8 0-1 underflows → declines (not wrapped 255)"))
+
+@test
+def se-ann-narrow-mul-in-range-runs() =
+  // same-width narrow MULTIPLICATION in range RUNS: `(* (: 10 Int8) (: 12 Int8))` = 120 fits Int8 → 120.
+  (match run-src("(* (: 10 Int8) (: 12 Int8))") with | Option.Some(v) => (if v == 120 then unit else trap("Int8 10*12 = 120")) | Option.None(_) => trap("same-width Int8 mul runs"))
+
+@test
+def se-ann-narrow-mul-overflow-declines() =
+  // narrow MULTIPLICATION that OVERFLOWS traps: `(* (: 20 Int8) (: 20 Int8))` = 400 overflows Int8 (max
+  // 127) → declines (NOT a wrapped value). Completes the arith-op coverage (+ - * all trap narrow overflow).
+  (match run-src("(* (: 20 Int8) (: 20 Int8))") with | Option.None(_) => unit | Option.Some(_) => trap("Int8 20*20 = 400 overflows → declines"))
+
+@test
 def se-ann-mixed-width-arith-declines() =
   // `(+ (: 5 Int8) (: 5 Int16))` → mixed width arith → TErr → declines (Q1=A strict same-width, the
   // no-implicit-conversions rule). Was a silent 10 before the gate.
