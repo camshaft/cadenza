@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
+import { SyntaxToggle } from "../syntax/SyntaxToggle.tsx";
 import { Calculator, type Eval } from "./engine.ts";
 
 /// Track the VISUAL viewport height — the area actually visible, EXCLUDING the on-screen keyboard. On
@@ -172,6 +173,11 @@ export default function CalculatorPage() {
           {/* Mobile touch targets: header actions get a 44px min-height (centered) below `sm`, compact
               text-links at `sm`+ where a mouse doesn't need the padding. */}
           <div className="flex shrink-0 items-center gap-1 text-xs sm:gap-3">
+            {/* The GLOBAL surface toggle (ML / s-expr) — switching re-creates the engine in the new surface
+                (expressions are typed in the selected surface). The app routes render under RootLayout (no
+                header nav), so the chapter Layout's toggle isn't reachable here; surface it so a reader can
+                switch + STICK the surface on /calculator too (operator UX: the same toggle everywhere). */}
+            <SyntaxToggle />
             <button
               onClick={reset}
               className="flex min-h-11 items-center px-2 text-slate-400 hover:text-slate-200 sm:min-h-0 sm:px-0"

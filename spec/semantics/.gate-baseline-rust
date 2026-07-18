@@ -3594,6 +3594,7 @@ todo	TWO Tuple args with a BYTE-ROPE result
 todo	Type is a first-class value
 todo	a 32-bit-float closure crosses the host boundary
 todo	a @param accessor splices into a quasiquote and the eval computes with the host value
+todo	a @param of type Rational desugars to two scalar num/den accessors the guest recombines (#13)
 todo	a Bytes-returning closure alongside a plain export — the closure runs
 todo	a Bytes-returning closure alongside a plain export — the plain runs
 todo	a Bytes-returning closure on a different argument

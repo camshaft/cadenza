@@ -37,6 +37,17 @@ struct ParamSite {
     name: StructId,
     /// The declared type occurrence (the outer colon's second child), reused as the op result type.
     ty: StructId,
+    /// The declared type NAME, e.g. `"Int64"` / `"Rational"` — used to pick the boundary shape. A heap
+    /// `Rational` has no host boundary form, so it desugars to two scalar `Int64` num/den accessors that the
+    /// guest recombines with `Rational.of` (v-effects #13); a scalar type generates one op of that type.
+    ty_name: Option<String>,
+}
+
+impl ParamSite {
+    /// Whether this param's declared type is the heap `Rational` — the num/den desugar target (#13).
+    fn is_rational(&self) -> bool {
+        self.ty_name.as_deref() == Some("Rational")
+    }
 }
 
 /// Scan every well-typed `@param` site and GENERATE the `Param` effect, appending it as a module member.
@@ -56,7 +67,8 @@ pub fn generate(ast: &mut Arenas) {
         if let Some(&[inner, ty]) = ast.as_form(id, ":")
             && let Some(name) = param_annotation_name(ast, inner)
         {
-            sites.push(ParamSite { name, ty });
+            let ty_name = ast.as_name(ty).map(str::to_string);
+            sites.push(ParamSite { name, ty, ty_name });
         }
     }
 
@@ -65,6 +77,12 @@ pub fn generate(ast: &mut Arenas) {
         // may emit an empty effect + manifest for tooling uniformity; the first brick simply no-ops.
         return;
     }
+
+    // A heap `Rational` param has no host boundary form, so REWRITE each `(Param.<name>)` use into
+    // `(Rational.of (Param.<name>-num) (Param.<name>-den))` BEFORE generating the effect — the effect
+    // then declares the two scalar num/den ops the rewritten uses call (v-effects #13). Do the rewrite
+    // first so it only ever touches ORIGINAL use sites, not the generated effect's own op declarations.
+    rewrite_rational_uses(ast, &sites);
 
     // GENERATE `(effect Param (op <name> (-> Unit <Type>)) …)` — one op per site, result-typed by the
     // annotation. The op member name reuses the param's name occurrence; the result type reuses the
@@ -185,15 +203,122 @@ fn build_param_effect(ast: &mut Arenas, sites: &[ParamSite]) -> StructId {
     let param_name = push_atom(ast, Leaf::Name("Param".to_string()));
     let mut children = vec![effect_head, param_name];
     for site in sites {
-        // `(op <name> (-> Unit <Type>))` — nullary host-delegated accessor, result-typed by the param.
-        let op_head = push_atom(ast, Leaf::Name("op".to_string()));
-        let arrow_head = push_atom(ast, Leaf::Name("->".to_string()));
-        let unit_ty = push_atom(ast, Leaf::Name("Unit".to_string()));
-        let arrow = push_list(ast, vec![arrow_head, unit_ty, site.ty]);
-        let op = push_list(ast, vec![op_head, site.name, arrow]);
-        children.push(op);
+        if site.is_rational() {
+            // A heap `Rational` has no host boundary form (v-effects #13): declare TWO scalar `Int64`
+            // accessors `<name>-num`/`<name>-den`. The guest recombines them via `Rational.of` — see
+            // `rewrite_rational_uses`, which rewrote each `(Param.<name>)` use to call this pair.
+            let name = ast
+                .as_name(site.name)
+                .expect("a rational param site has a name atom")
+                .to_string();
+            for suffix in ["-num", "-den"] {
+                let op_name = push_atom(ast, Leaf::Name(format!("{name}{suffix}")));
+                children.push(build_scalar_op(ast, op_name, "Int64"));
+            }
+        } else {
+            // A scalar (or unit) type crosses the host boundary directly: one `(op <name> (-> Unit <Type>))`
+            // accessor, result-typed by the annotation (reusing the declared-type occurrence's node).
+            children.push(build_op(ast, site.name, site.ty));
+        }
     }
     push_list(ast, children)
+}
+
+/// Build `(op <name> (-> Unit <ty-node>))` — a nullary host-delegated accessor whose result type reuses the
+/// existing `ty` occurrence (so its span + resolution carry). Used for a scalar param's single accessor.
+fn build_op(ast: &mut Arenas, name: StructId, ty: StructId) -> StructId {
+    let op_head = push_atom(ast, Leaf::Name("op".to_string()));
+    let arrow = build_arrow(ast, ty);
+    push_list(ast, vec![op_head, name, arrow])
+}
+
+/// Build `(op <name> (-> Unit <TyName>))` with a FRESH result-type name atom (e.g. `"Int64"`). Used for the
+/// synthesized num/den accessors, whose `Int64` result is not an existing occurrence in the source.
+fn build_scalar_op(ast: &mut Arenas, name: StructId, ty_name: &str) -> StructId {
+    let ty = push_atom(ast, Leaf::Name(ty_name.to_string()));
+    build_op(ast, name, ty)
+}
+
+/// Build `(-> Unit <ty>)` — the nullary accessor's function type (no argument but `Unit`, result `ty`).
+fn build_arrow(ast: &mut Arenas, ty: StructId) -> StructId {
+    let arrow_head = push_atom(ast, Leaf::Name("->".to_string()));
+    let unit_ty = push_atom(ast, Leaf::Name("Unit".to_string()));
+    push_list(ast, vec![arrow_head, unit_ty, ty])
+}
+
+/// Rewrite every `(Param.<name>)` USE of a heap `Rational` param into `(Rational.of (Param.<name>-num)
+/// (Param.<name>-den))` — the guest-side recombination of the two scalar host accessors the effect declares
+/// (v-effects #13). A `(Param.<name>)` use parses to a nullary call of a member access: `((. Param <name>))`
+/// — an outer `List` whose sole child is the member-access form `(. Param <name>)`. We overwrite that outer
+/// list in place with the `Rational.of` application so the ordinary compile sees the recombined value. Only
+/// ORIGINAL nodes are scanned (the rewrite runs before the effect is appended), and only the exact rational
+/// param names match, so a scalar `(Param.width)` or any unrelated member access is untouched.
+fn rewrite_rational_uses(ast: &mut Arenas, sites: &[ParamSite]) {
+    let rational_names: Vec<String> = sites
+        .iter()
+        .filter(|s| s.is_rational())
+        .filter_map(|s| ast.as_name(s.name).map(str::to_string))
+        .collect();
+    if rational_names.is_empty() {
+        return;
+    }
+
+    let original_len = ast.structure.len() as u32;
+    for i in 0..original_len {
+        let id = StructId(i);
+        // Match `(Param.<name>)` = `((. Param <name>))`: an outer list with exactly one child that is the
+        // member-access `(. Param <name>)`. Read the accessed param name; skip unless it is a rational one.
+        let Some(name) = param_member_use_name(ast, id) else {
+            continue;
+        };
+        if !rational_names.iter().any(|n| n == &name) {
+            continue;
+        }
+        // Build `(Rational.of (Param.<name>-num) (Param.<name>-den))` and overwrite the use node in place.
+        let recombined = build_rational_recombine(ast, &name);
+        ast.structure[id.0 as usize] = ast.get(recombined).clone();
+    }
+}
+
+/// If `id` is a `(Param.<name>)` use — the nullary-call `((. Param <name>))` shape — the accessed param NAME.
+/// `None` otherwise. The use is an outer `List` of one element, that element the member access `(. Param x)`.
+fn param_member_use_name(ast: &Arenas, id: StructId) -> Option<String> {
+    let Struct::List(items) = ast.get(id) else {
+        return None;
+    };
+    let [access] = items[..] else {
+        return None;
+    };
+    // The single element must be `(. Param <name>)`: a member-access form headed `.` over `Param`.
+    let tail = ast.as_form(access, ".")?;
+    let (&recv, &member) = (tail.first()?, tail.get(1)?);
+    if ast.as_name(recv) != Some("Param") {
+        return None;
+    }
+    ast.as_name(member).map(str::to_string)
+}
+
+/// Build `(Rational.of (Param.<name>-num) (Param.<name>-den))` = `((. Rational of) ((. Param <name>-num))
+/// ((. Param <name>-den)))` — the guest recombination for a rational param's num/den accessor pair.
+fn build_rational_recombine(ast: &mut Arenas, name: &str) -> StructId {
+    let of = build_member_access(ast, "Rational", "of");
+    let num = build_param_accessor_call(ast, &format!("{name}-num"));
+    let den = build_param_accessor_call(ast, &format!("{name}-den"));
+    push_list(ast, vec![of, num, den])
+}
+
+/// Build the nullary accessor CALL `(Param.<member>)` = `((. Param <member>))`.
+fn build_param_accessor_call(ast: &mut Arenas, member: &str) -> StructId {
+    let access = build_member_access(ast, "Param", member);
+    push_list(ast, vec![access])
+}
+
+/// Build a member-access form `(. <recv> <member>)`.
+fn build_member_access(ast: &mut Arenas, recv: &str, member: &str) -> StructId {
+    let dot = push_atom(ast, Leaf::Name(".".to_string()));
+    let recv_atom = push_atom(ast, Leaf::Name(recv.to_string()));
+    let member_atom = push_atom(ast, Leaf::Name(member.to_string()));
+    push_list(ast, vec![dot, recv_atom, member_atom])
 }
 
 /// Append `member` as a top-level member of the `(module NAME …)` root (or a `(do …)` root). The module's

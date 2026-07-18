@@ -899,41 +899,129 @@ fn verify_predicates_of(db: &Db, def_ix: usize) -> Vec<(StructId, bool)> {
 }
 
 /// The first NAME the predicate at `pred` references that is neither a def parameter, nor `it` (when
-/// `is_ensures`), nor a name that resolves standalone (a prelude/global) — i.e. an UNBOUND name — as a
-/// `CDZ0101` `Reject` anchored at that occurrence, or `None` if all names are in scope. Iterative walk (a
-/// deep predicate must not overflow). NOTE: a member-access key `(. operand key)` is a label, not a name
-/// lookup, so its `key` child is NOT checked (skipped like the resolver does).
+/// `is_ensures`), nor a name bound by a `match`-arm pattern / `let` INSIDE the predicate, nor a name that
+/// resolves standalone (a prelude/global) — i.e. an UNBOUND name — as a `CDZ0101` `Reject` anchored at that
+/// occurrence, or `None` if all names are in scope. A member-access key `(. operand key)` is a label, not a
+/// name lookup, so its `key` child is NOT checked (skipped like the resolver does).
+///
+/// PREDICATE-LOCAL BINDERS: the predicate may DESTRUCTURE via `match` (`(match it ((T.V v) … v …))`) or bind
+/// via `let` — the binder names (`v`) are in scope in the arm/body and MUST NOT be flagged unbound. This is
+/// ESSENTIAL for `@invariant`, whose canonical form is a destructure (`it` = whole value, predicate reaches
+/// the payload via a match arm — nominal-boundary rule). A recursive walk threads a `bound` set that grows
+/// with each binder scope (match-arm pattern vars, let bindings), so a name introduced in the predicate is
+/// treated as in scope for its subtree.
 fn first_unbound_predicate_name(
     db: &mut Db,
     pred: StructId,
     param_names: &[String],
     is_ensures: bool,
 ) -> Option<Reject> {
-    let mut stack = vec![pred];
-    while let Some(cur) = stack.pop() {
-        // A `(. operand key)` member access: recurse into the operand but NOT the key (a label).
-        if let Some(tail) = db.ast.as_form(cur, ".") {
-            if let Some(&operand) = tail.first() {
-                stack.push(operand);
-            }
-            continue; // key child intentionally not walked (a label, not a name lookup)
-        }
-        if let Some(name) = db.ast.as_name(cur).map(str::to_string) {
-            // A bound name: a def parameter, or `it` in an `@ensures`. In scope — skip.
-            if param_names.contains(&name) || (is_ensures && name == "it") {
+    let mut bound: Vec<String> = param_names.to_vec();
+    if is_ensures {
+        bound.push("it".to_string());
+    }
+    unbound_in(db, pred, &mut bound)
+}
+
+/// Collect the NAMES a match/let PATTERN binds (a bare `name`, or a constructor pattern's payload names
+/// `(T.V a b)` / `(a .. rest)`). A constructor HEAD (`T.V`, a `(. …)`) is not a binder; its payload
+/// sub-patterns are. Conservative: pushes any bare lowercase-ish name occurrence in binder position.
+fn pattern_binder_names(db: &Db, pat: StructId, out: &mut Vec<String>) {
+    if let Some(n) = db.ast.as_name(pat) {
+        out.push(n.to_string());
+        return;
+    }
+    // A `(. T V)` ctor head is not a binder. A `(T.V sub…)` / `(a .. rest)` / nested pattern: recurse into
+    // children, skipping a leading member-access ctor head.
+    if let crate::ast::Struct::List(children) = db.ast.get(pat) {
+        for (i, &c) in children.iter().enumerate() {
+            // The head of a constructor pattern (`(. T V)` or a bare ctor name at position 0 that is a ctor)
+            // is not a binder — but a bare-name head in a list pattern IS unusual; be conservative and treat
+            // a `(. …)` head as non-binding, everything else as a potential sub-pattern.
+            if i == 0 && db.ast.as_form(c, ".").is_some() {
                 continue;
             }
-            // Otherwise it must resolve standalone (a prelude op / global). An unbound name poisons.
-            if let crate::resolved::Resolved::Poison(reject) = crate::resolve::resolved_of(db, cur)
-                && reject.code == Some(Code::Unbound)
-            {
-                return Some(reject);
-            }
-            continue;
+            pattern_binder_names(db, c, out);
         }
-        if let crate::ast::Struct::List(children) = db.ast.get(cur) {
-            for &c in children {
-                stack.push(c);
+    }
+}
+
+/// Recursive predicate walk respecting binder scopes. Returns the first unbound-name reject, or `None`.
+fn unbound_in(db: &mut Db, cur: StructId, bound: &mut Vec<String>) -> Option<Reject> {
+    // A `(. operand key)` member access: check the operand, NOT the key (a label).
+    if let Some(operand) = db.ast.as_form(cur, ".").and_then(|t| t.first().copied()) {
+        return unbound_in(db, operand, bound);
+    }
+    // `(match SCRUT (PAT ARM) …)` — SCRUT is checked in the outer scope; each ARM is checked with the arm's
+    // PATTERN binders added to scope (they are the destructure payload names, in scope only in that arm).
+    if let Some(mtail) = db.ast.as_form(cur, "match").map(<[_]>::to_vec)
+        && let Some((&scrut, arms)) = mtail.split_first()
+    {
+        if let Some(r) = unbound_in(db, scrut, bound) {
+            return Some(r);
+        }
+        for &arm in arms {
+            // An arm is `(PAT BODY…)` — collect PAT's binders, check BODY under them.
+            if let crate::ast::Struct::List(items) = db.ast.get(arm).clone()
+                && let Some((&pat, body)) = items.split_first()
+            {
+                let base = bound.len();
+                pattern_binder_names(db, pat, bound);
+                for &b in body {
+                    if let Some(r) = unbound_in(db, b, bound) {
+                        return Some(r);
+                    }
+                }
+                bound.truncate(base); // pop the arm-local binders
+            }
+        }
+        return None;
+    }
+    // `(let ((n v) …) BODY…)` — each binding value is checked in the outer scope, then BODY under the new
+    // names. (A simple non-recursive `let`; the predicate fragment does not use letrec.)
+    if let Some(ltail) = db.ast.as_form(cur, "let").map(<[_]>::to_vec)
+        && let Some((&binds, body)) = ltail.split_first()
+    {
+        let base = bound.len();
+        if let crate::ast::Struct::List(pairs) = db.ast.get(binds).clone() {
+            for &pair in &pairs {
+                if let crate::ast::Struct::List(nv) = db.ast.get(pair).clone()
+                    && let (Some(&n), Some(&v)) = (nv.first(), nv.get(1))
+                {
+                    if let Some(r) = unbound_in(db, v, bound) {
+                        return Some(r);
+                    }
+                    if let Some(nm) = db.ast.as_name(n) {
+                        bound.push(nm.to_string());
+                    }
+                }
+            }
+        }
+        for &b in body {
+            if let Some(r) = unbound_in(db, b, bound) {
+                return Some(r);
+            }
+        }
+        bound.truncate(base);
+        return None;
+    }
+    // A bare NAME: in scope if a param / `it` / a predicate-local binder; else must resolve standalone.
+    if let Some(name) = db.ast.as_name(cur).map(str::to_string) {
+        if bound.contains(&name) {
+            return None;
+        }
+        if let crate::resolved::Resolved::Poison(reject) = crate::resolve::resolved_of(db, cur)
+            && reject.code == Some(Code::Unbound)
+        {
+            return Some(reject);
+        }
+        return None;
+    }
+    // Any other form: recurse into every child.
+    if let crate::ast::Struct::List(children) = db.ast.get(cur).clone() {
+        for c in children {
+            if let Some(r) = unbound_in(db, c, bound) {
+                return Some(r);
             }
         }
     }

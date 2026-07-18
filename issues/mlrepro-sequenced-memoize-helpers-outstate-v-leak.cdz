@@ -43,3 +43,20 @@ def sequenced-memoize() =
   if run() == 50 then unit else trap("query(3);query(5) should thread the Map and return 50")
 
 export { run }
+
+// ── V-EFFECTS ROOT-CAUSE (2026-07-18, dumped the reduced body) ──
+// Bisected minimal trigger: a cross-fn helper with a LOCAL LET called TWICE sequenced under a state handler —
+//   def store(k) = (let ((v (* k 10))) (do (Db.put (tuple k v)) v))   ; (store 3); (store 5)  → CDZ0101 v
+// WITHOUT the local let (put the expr inline) → WORKS. So the `let v` inside the inlined helper is the trigger.
+// DUMP of the reduced handle body shows the `let ((v ...))` BINDING IS DROPPED during inline+thread — the put
+// arg `(tuple k v)` is left with a BARE `v` (the let-init `(* k 10)` gone), which then either resolves UNBOUND
+// or COLLIDES with the handler arm's OWN pattern binder `v` (arm `(put (kv) s (match kv ((tuple k v) ...)))`
+// — the arm's `v` shares the name!). So TWO compounding issues: (1) the helper's `let`-init is dropped on the
+// inline/thread path (the do/let-collapse family — sibling of the batch-161 beta_reduce do-preservation fix
+// 53d95f103, but for a `let`-init referenced by a performed op's ARG, across a SEQUENCED second helper call);
+// (2) a NAME COLLISION hazard: the helper's local `v` and the handler arm's pattern `v` are the same name, so
+// a dropped/mis-scoped helper `v` can capture against the arm binder. FIX DIRECTION: preserve the inlined
+// helper's `let`-init (don't collapse the do/let when it feeds a perform arg) AND ensure deep_fresh_copy /
+// the inline re-parenting gives the helper's local `let` binder a FRESH unspellable name so it can't collide
+// with an arm binder. Build carefully (state-threading + scope = miscompile-prone); gate: 1-call vs 2-seq,
+// with/without local let, helper-v-name = arm-binder-name vs distinct. Task-#15/#11 family. Owner: v-effects.

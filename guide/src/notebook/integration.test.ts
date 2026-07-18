@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseDocument, type Cell } from "./parseDocument.ts";
+import { parseDocument, serializeDocument, setCellSource, setProseSource, renderDocToSurface, type Cell } from "./parseDocument.ts";
 import { parseWidgets, type Widget } from "./parseWidgets.ts";
 import { assembleForRun } from "./assembleForRun.ts";
 import { recomputePlan, initialRunOrder } from "./recomputePlan.ts";
@@ -131,4 +131,38 @@ test("multiple widgets in ONE widget cell are all collected + independently driv
   assert.deepEqual(widgets.map((w) => w.name), ["a", "b"]);
   assert.deepEqual(recomputePlan(cells, widgets, "a", "ml"), [1]); // code cell at index 1
   assert.deepEqual(recomputePlan(cells, widgets, "b", "ml"), []); // b unused → nothing recomputes
+});
+
+// ── The EDITING round-trip seam NotebookPage relies on (onCellEdit / onProseEdit → serializeDocument) ──
+test("editing a code cell AND a prose cell round-trips through the doc model (the NotebookPage edit seam)", () => {
+  const doc = "# Intro\n\nprose here\n\n```cadenza\n(def (main) 1)\n```";
+  let cells = parseDocument(doc);
+  // onProseEdit(0, …): rewrite the prose cell's markdown → serialize → re-parse (what the debounce commits).
+  cells = parseDocument(serializeDocument(setProseSource(cells, 0, "# Edited\n\nnew prose")));
+  // onCellEdit(1, …): rewrite the code cell's source likewise.
+  cells = parseDocument(serializeDocument(setCellSource(cells, 1, "(def (main) 2)")));
+  assert.equal((cells[0] as Extract<Cell, { kind: "prose" }>).markdown, "# Edited\n\nnew prose");
+  assert.equal((cells[1] as Extract<Cell, { kind: "code" }>).source, "(def (main) 2)");
+  // Kinds + count are preserved across both edits (no cell dropped/duplicated).
+  assert.deepEqual(cells.map((c) => c.kind), ["prose", "code"]);
+});
+
+// ── The SURFACE-TOGGLE seam (renderDocToSurface, operator UX #2): a whole realistic notebook round-trips ──
+test("a realistic notebook survives a full s-expr→ML→s-expr surface round-trip (the toggle seam)", async () => {
+  // A fake render mirroring render_syntax's shape: gathers via the `(do …)` wrap for multi-form s-expr, and a
+  // symmetric ML↔s-expr swap for our simple test forms. (The REAL wasm round-trip is gated by check-examples.)
+  const fakeRender = async (text: string, _from: string, to: string) =>
+    to === "ml"
+      ? text.replace(/^\(do\s+/, "").replace(/\)$/, "").replace(/\(def \(main\) (\d+)\)/g, "def main() = $1")
+      : text.replace(/def main\(\) = (\d+)/g, "(def (main) $1)");
+  const doc = "# T\n\nprose\n\n```cadenza\n(def (main) 1)\n```\n\n```cadenza widget\nx : Int64 = slider(0, 5)\n```";
+  const ml = await renderDocToSurface(doc, "sexpr", "ml", fakeRender);
+  const back = await renderDocToSurface(ml, "ml", "sexpr", fakeRender);
+  const cells = parseDocument(back);
+  // Prose + widget cells are UNTOUCHED by the round-trip; the code cell returns to its s-expr form.
+  assert.equal((cells[0] as Extract<Cell, { kind: "prose" }>).markdown, "# T\n\nprose");
+  assert.equal((cells[1] as Extract<Cell, { kind: "code" }>).source, "(def (main) 1)");
+  assert.equal(cells[2].kind, "code");
+  assert.equal((cells[2] as Extract<Cell, { kind: "code" }>).directive.kind, "widget");
+  assert.equal((cells[2] as Extract<Cell, { kind: "code" }>).source, "x : Int64 = slider(0, 5)"); // widget DSL unchanged
 });
