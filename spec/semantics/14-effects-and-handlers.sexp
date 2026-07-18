@@ -71,6 +71,26 @@
   (host-calls (call env.width))
   (output (: 42 Int64)))
 
+(case "an exact RATIONAL host value crosses as two scalar num/den ops the guest recombines (#13)"
+  (doc    "The num/den Qty ABI (#13): a host cannot supply a heap `Rational` directly (a compound has no host
+           boundary form), so an exact-rational runtime value crosses as TWO SCALAR host ops — `rate-num :
+           Unit -> Int64` and `rate-den : Unit -> Int64` — and the GUEST recombines them with `Rational.of
+           (num, den)`. This reuses the fully-supported scalar host boundary (no tuple/memory/resource
+           envelope surgery) and is exactly what a `@param(...) rate : Rational` (or a Rational-magnitude
+           `Length`) desugars to: two scalar accessors + a guest `Rational.of`. With the host responding num=7,
+           den=2, the guest builds the exact rational 7/2 (normalized). Pins that a Rational runtime value is
+           expressible over the scalar host path — the operator-ruled minimal boundary form for #13 (a single
+           atomic Rational host op is a documented future path, unbuilt — no consumer needs it). The result is
+           a heap Rational, so `main` crosses it via the resource-escape value path.")
+  (input  (do
+            (effect Env (op rate-num (-> Unit Int64)) (op rate-den (-> Unit Int64)))
+            (def (main)
+              (host (Env)
+                (Rational.of (Env.rate-num) (Env.rate-den)))) (export main)))
+  (host-responses (respond env.rate-num (: 7 Int64)) (respond env.rate-den (: 2 Int64)))
+  (host-calls (call env.rate-num) (call env.rate-den))
+  (output (: 7/2 Rational)))
+
 ; The case above fixes ONE response. On its own it cannot distinguish a run that genuinely CONSUMES the
 ; response value from a compiler that hardcoded 100 — both produce 100. This pair pins that the response
 ; VALUE flows into the result: the SAME program with a DIFFERENT response produces a DIFFERENT (but

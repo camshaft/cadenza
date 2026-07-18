@@ -296,6 +296,18 @@ impl Builder {
         matches!(self.get(id), Struct::Atom(l) if matches!(&self.leaves[l.0 as usize], Leaf::Name(n) if n == name))
     }
 
+    /// If `id` is an `Atom` of a `Name`, that name — for inspecting a just-built node during parse
+    /// (the [`Arenas::as_name`] analogue on the in-progress builder).
+    pub fn as_name(&self, id: StructId) -> Option<&str> {
+        match self.get(id) {
+            Struct::Atom(l) => match &self.leaves[l.0 as usize] {
+                Leaf::Name(n) => Some(n),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     pub fn finish(self, root: StructId) -> Arenas {
         Arenas {
             leaves: self.leaves,

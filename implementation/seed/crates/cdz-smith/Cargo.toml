@@ -42,6 +42,18 @@ path = "src/lib.rs"
 name = "cdz-smith"
 path = "src/bin/cdz-smith.rs"
 
+[features]
+# The DIFFERENTIAL oracle (`src/differential.rs`) pulls in `cdz-run` → the whole wasmtime + cranelift
+# + cedar dependency tree. That is FAR too much code to link into the ASan+SanitizerCoverage-
+# instrumented libFuzzer target: with it linked, the fuzz binary's `.text` blows past AArch64's ±128MB
+# branch range and the link fails (`relocation truncated to fit: R_AARCH64_CALL26`). The libFuzzer path
+# only exercises the crash/invalid-wasm oracle, which needs NONE of wasmtime — so the differential
+# oracle (and its heavy dep) is behind this OFF-BY-DEFAULT feature. `cargo bolero` builds the fuzz
+# target with default features (no `differential` → lean binary that links); the `cdz-smith
+# differential` subcommand and the module's tests are built with `--features differential`.
+default = []
+differential = ["dep:cdz-run"]
+
 [dependencies]
 # The compiler under test, linked as a library. `compile_component` already runs the compile on a
 # 64 MB guard-stack worker thread (so deep-but-finite recursion hits the semantic DESCENT_DEPTH_LIMIT
@@ -63,9 +75,10 @@ wasmparser = "0.239"
 # The wasm-VALUE side of the DIFFERENTIAL oracle (`src/differential.rs`): run the emitted component
 # IN-PROCESS and render its result, so it can be compared against the Rust backend's value (obtained
 # by shelling `cdz run-rust`). `cdz-run` owns all the wasmtime + runtime-composition machinery; we
-# hand it component bytes + the resolved runtime and get back a canonical `Outcome`. Verified it
-# co-resolves in this crate's private lockfile (the wasmtime chain does not conflict with bolero's pins).
-cdz-run = { path = "../cdz-run" }
+# hand it component bytes + the resolved runtime and get back a canonical `Outcome`. OPTIONAL + gated
+# behind the `differential` feature: its wasmtime tree must NOT link into the instrumented libFuzzer
+# target (see `[features]` above — it overflows the AArch64 branch range).
+cdz-run = { path = "../cdz-run", optional = true }
 
 [dev-dependencies]
 # Same version the value-heap runtime already fuzzes with. `#[derive(TypeGenerator)]` +

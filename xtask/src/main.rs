@@ -884,6 +884,66 @@ fn run_program_ml(tools: &Tools, program: &str, _call: Option<&Call>) -> Ran {
     }
 }
 
+/// Drive one program through the self-hosted ML compiler's WASM-EMIT backend via `cdz run-emitted` —
+/// source on stdin, one verdict line on stdout. This is the W4 emit≡interpret probe's emit side: unlike
+/// `run_program_ml` (which INTERPRETS the lowered Core via eval-db), `run-emitted` runs the EMITTED wasm
+/// module (emit-src-bytes → a core `wasmtime::Module`, invoke nullary `main`). Same verdict contract as
+/// `run-ml`: `value <n>` → `Ran::Value`; `declined` (out-of-emit-subset OR a runtime trap — div0/mod0/
+/// MIN÷-1, per the agreed trap==declined ruling) → codeless `Ran::Declined`; `error <msg>` → `Ran::Trap`;
+/// a NON-zero exit is the reserved harness-read-failure path (`Ran::BadArtifact` → NotYet, never a diff).
+fn run_program_emitted(tools: &Tools, program: &str) -> Ran {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = match Command::new(&tools.rcdzc)
+        .arg("run-emitted")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return Ran::BadArtifact(format!("cdz run-emitted spawn failed: {e}")),
+    };
+    if let Some(mut stdin) = child.stdin.take()
+        && let Err(e) = stdin.write_all(program.as_bytes())
+    {
+        return Ran::BadArtifact(format!(
+            "cdz run-emitted: writing program to stdin failed: {e}"
+        ));
+    }
+    let out = match wait_with_timeout(child, run_timeout()) {
+        Ok(Some(o)) => o,
+        // A run-emitted hang (a compile-hang in the emit pipeline) — harness-read failure, not a diff.
+        Ok(None) => return Ran::BadArtifact("cdz run-emitted timeout (hang)".to_string()),
+        Err(e) => return Ran::BadArtifact(format!("cdz run-emitted wait failed: {e}")),
+    };
+    if !out.status.success() {
+        return Ran::BadArtifact(format!(
+            "cdz run-emitted exited non-zero: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let verdict = stdout
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    if verdict == "declined" {
+        Ran::Declined { code: None }
+    } else if let Some(v) = verdict.strip_prefix("value ") {
+        Ran::Value(v.trim().to_string(), Vec::new())
+    } else if let Some(msg) = verdict.strip_prefix("error ") {
+        Ran::Trap(msg.trim().to_string())
+    } else {
+        Ran::BadArtifact(format!(
+            "cdz run-emitted: unrecognized verdict line {verdict:?}"
+        ))
+    }
+}
+
 /// Drive one program through cdz-syntax → rcdzc (wasm) → cdz-run — the historical path. A multi-file
 /// PACKAGE case (`modules` non-empty) instead writes the entry + library files to a temp dir and runs
 /// `cdz compile <files> --entry main` (the package path); either way the emitted component is run the
@@ -1391,6 +1451,18 @@ fn run_program_rust(
     // type (not the Rust type) is used because it carries what a boundary render needs: field NAMES and
     // the `Tuple`-vs-`Record` distinction the Rust tuple `(T0,T1)` erases.
     let ret_ty = cdz_return_type(&module, &export);
+    // HOST-CLOSURE FACTORY result peel: a factory export's `cdz-return` note is the CURRIED arrow of the
+    // returned closure — `(-> arg (-> arg2 result))`. The gate applies the factory (`f(caps)(args)`), so the
+    // value it renders is the closure's FINAL result, not the arrow. Peel the leading `(-> X …)` wrappers to
+    // that final type so `cdz_render_expr` renders it structurally (a Tuple/List result → `(tuple …)`, not a
+    // bare `{}` Display that E0277s on a Rust tuple). Only for a factory (its signature returns `Rc<dyn Fn`);
+    // an ordinary export keeps its `ret_ty` unchanged.
+    let ret_ty =
+        if call.is_some() && rust_factory_param_count(&module, &export, async_mode).is_some() {
+            ret_ty.map(|t| peel_arrow_result(&t))
+        } else {
+            ret_ty
+        };
     // The driver's `fn main` calls the export and prints the result the way cdz-run renders it. In ASYNC
     // mode the export is an `async fn` taking `&mut impl CdzEnv` first, so the driver supplies a no-limit
     // gas `Env` + a minimal `block_on` executor and drives `prog::export(&mut env, args)` — the answer
@@ -1601,6 +1673,45 @@ fn rust_panic_message(bytes: &[u8]) -> String {
 /// applies `(args…)`. Counting params is a simple top-level comma count inside the signature's `(...)` (the
 /// only nesting a scalar/compound param type introduces is `<…>`/`(…)` in the type, which we balance). Sync
 /// mode marker `pub fn `; async `pub async fn ` (its `<E: CdzEnv>` generic list precedes the `(`).
+/// Peel a CURRIED arrow type down to its final (non-arrow) RESULT — `(-> Int64 (-> Int64 (Tuple Int64
+/// Int64)))` → `(Tuple Int64 Int64)`. A host-closure factory's `cdz-return` note is the returned closure's
+/// arrow; the gate applies the factory to full arity so the rendered value is this final result. A
+/// non-arrow type is returned unchanged. Balanced-paren aware: the arrow is `(-> <arg> <rest>)` where
+/// `<arg>` may itself be a parenthesized compound, so skip the first top-level sub-term (`<arg>`) and take
+/// `<rest>`, recursing while `<rest>` is itself a `(-> …)`.
+fn peel_arrow_result(ty: &str) -> String {
+    let mut cur = ty.trim();
+    loop {
+        let inner = match cur.strip_prefix("(-> ") {
+            Some(i) => i.trim_end().strip_suffix(')').map(str::trim),
+            None => None,
+        };
+        let Some(inner) = inner else {
+            return cur.to_string();
+        };
+        // `inner` = `<arg> <rest>`. Skip the first top-level term (`<arg>`), balancing parens.
+        let bytes = inner.as_bytes();
+        let mut depth = 0usize;
+        let mut split = None;
+        for (i, &b) in bytes.iter().enumerate() {
+            match b {
+                b'(' => depth += 1,
+                b')' => depth = depth.saturating_sub(1),
+                b' ' if depth == 0 => {
+                    split = Some(i);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        match split {
+            Some(i) => cur = inner[i + 1..].trim(),
+            // No top-level space → a single-token arrow body with no result (malformed); return as-is.
+            None => return cur.to_string(),
+        }
+    }
+}
+
 fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> Option<usize> {
     let marker = if async_mode {
         "pub async fn "
@@ -3018,6 +3129,13 @@ fn check(paths: &Paths, profile: &str) {
     // stub (0 agree / 0 disagree). This is the differential form the operator directed (C + diff).
     report_ml_conformance(paths, profile);
 
+    // W4 EMIT≡INTERPRET conformance — REPORTED, never a baseline gate (yet). For each corpus case, run the
+    // self-hosted WASM-EMIT backend (`cdz run-emitted`) AND the tree-walking interpreter (`cdz run-ml`) and
+    // diff the verdicts: the emitted module MUST compute what the interpreter does. A divergence is an emit
+    // miscompile; both-declined is coverage-not-yet. Report-only while the emit backend is the young integer
+    // subset; promote to blocking-on-disagreement once stable-green (same trajectory as cadenza-ml).
+    report_emit_conformance(paths, profile);
+
     println!("\ncheck: all green ✓  (full log: {})", log.path.display());
 }
 
@@ -3136,6 +3254,121 @@ fn report_ml_conformance(paths: &Paths, profile: &str) {
         for d in &disagreements {
             eprintln!("    • {d}");
         }
+    }
+}
+
+/// Report the W4 EMIT≡INTERPRET conformance (never fails `check`). For each corpus case, drive it through
+/// BOTH self-hosted paths — `cdz run-emitted` (the WASM-EMIT backend: emit the module + run it via
+/// wasmtime) and `cdz run-ml` (the tree-walking INTERPRETER) — and diff the verdicts. The emitted wasm MUST
+/// compute what the interpreter computes; a divergence is an emit miscompile. Both DECLINED (out of the
+/// emit/interpret subset) is coverage-not-yet, never a diff. Prints `emit-conformance: X agree / D disagree
+/// / N total`; a `D>0` loud-warns naming the cases. REPORT-ONLY for now (the emit backend is the young
+/// integer subset); promote to blocking-on-D>0 once stable-green. Mirrors `report_ml_conformance`'s
+/// parallel per-case scaffold, but compares two CLI VERDICTS (emit vs interpret), not a grader backend.
+fn report_emit_conformance(paths: &Paths, profile: &str) {
+    let tools = build_tools(paths, profile);
+    let files = default_corpus_files(paths);
+    let records: Vec<CorpusRecord> = files
+        .iter()
+        .flat_map(|file| read_corpus(&tools, file))
+        .collect();
+
+    enum EmitOutcome {
+        Agree,
+        Disagree(String),
+        NotYet,
+    }
+    let n = records.len();
+    let slots: Vec<std::sync::Mutex<Option<EmitOutcome>>> =
+        (0..n).map(|_| std::sync::Mutex::new(None)).collect();
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism()
+        .map(|w| w.get())
+        .unwrap_or(1)
+        .max(1);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let (cursor, slots, records, tools) = (&cursor, &slots, &records, &tools);
+            scope.spawn(move || {
+                loop {
+                    let i = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= records.len() {
+                        break;
+                    }
+                    let rec = &records[i];
+                    // Both self-hosted paths read the raw corpus s-expr program from stdin (no call/args —
+                    // the emit/interpret subset is nullary-main). Run the INTERPRETER first as the oracle.
+                    let interp = run_program_ml(tools, &rec.program, None);
+                    let outcome = match &interp {
+                        // Interpreter declined = out-of-subset; the emit path declines too — coverage-not-yet.
+                        Ran::Declined { .. } => EmitOutcome::NotYet,
+                        // A harness read-failure (a hang / bad feed) on the interpreter — not a diff.
+                        Ran::BadArtifact(_) => EmitOutcome::NotYet,
+                        // Interpreter produced a value/trap — the emitted module MUST match it.
+                        _ => {
+                            let emit = run_program_emitted(tools, &rec.program);
+                            if emit_agrees_with_interp(&emit, &interp) {
+                                EmitOutcome::Agree
+                            } else {
+                                EmitOutcome::Disagree(format!(
+                                    "{}: emit={} interp={}",
+                                    rec.description,
+                                    ran_summary(&emit),
+                                    ran_summary(&interp)
+                                ))
+                            }
+                        }
+                    };
+                    *slots[i].lock().unwrap() = Some(outcome);
+                }
+            });
+        }
+    });
+    let (mut agree, mut disagree, mut not_yet) = (0usize, 0usize, 0usize);
+    let mut disagreements: Vec<String> = Vec::new();
+    for slot in &slots {
+        match slot.lock().unwrap().take() {
+            Some(EmitOutcome::Agree) => agree += 1,
+            Some(EmitOutcome::Disagree(msg)) => {
+                disagree += 1;
+                disagreements.push(msg);
+            }
+            _ => not_yet += 1,
+        }
+    }
+    let total = agree + disagree + not_yet;
+    println!(
+        "emit-conformance: {agree} agree / {disagree} disagree / {total} total ({not_yet} coverage-not-yet)"
+    );
+    if disagree > 0 {
+        eprintln!(
+            "  ⚠ emit-conformance DIFFERENTIAL DISAGREEMENT(S) — the EMITTED wasm module's result differs \
+             from the INTERPRETER's for the same program (an emit-backend miscompile; report-only, not yet \
+             blocking):"
+        );
+        for d in &disagreements {
+            eprintln!("    • {d}");
+        }
+    }
+}
+
+/// Whether the EMITTED-wasm outcome AGREES with the INTERPRETER's on the same program (the W4 contract).
+/// A shared VALUE must match; a shared trap agrees; an emitted DECLINE agrees with an interpreter trap OR
+/// decline (both are the "no value" verdict — the corpus grades div0/mod0 as declines, and run-emitted maps
+/// a runtime trap to `declined` per the trap==declined ruling, so emit-declined vs interp-trap is agreement).
+/// A value-vs-non-value (either direction) is a DISAGREEMENT. (An interpreter decline is filtered by the
+/// caller before this — coverage-not-yet, never compared.)
+fn emit_agrees_with_interp(emit: &Ran, interp: &Ran) -> bool {
+    match (emit, interp) {
+        (Ran::Value(a, _), Ran::Value(b, _)) => a == b,
+        // interp produced a value but emit did not (declined/trapped/harness) — a miscompile.
+        (_, Ran::Value(_, _)) => false,
+        // interp trapped: emit agrees if it also trapped OR declined (trap==declined) — but NOT if it
+        // produced a value.
+        (Ran::Value(_, _), Ran::Trap(_)) => false,
+        (_, Ran::Trap(_)) => true,
+        // interp neither value nor trap (shouldn't reach here — decline/harness filtered by caller).
+        _ => true,
     }
 }
 

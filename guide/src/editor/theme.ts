@@ -26,7 +26,7 @@ const highlight = HighlightStyle.define([
   { tag: t.typeName, color: "#7dd3fc" },
   { tag: t.variableName, color: "#e5e7eb" },
   { tag: t.operator, color: "#94a3b8" },
-  // Annotation decorators (@test / @property / @tag / @inline-never …) — a keyword-family violet, slightly
+  // Annotation decorators (@test / @exhaustive / @tag / @requires / @inline-never …) — a keyword-family violet, slightly
   // lighter so a decorator reads as related-to but distinct-from a keyword. Parity with the vscode grammar
   // + the LSP semantic-token keyword tone (cadenzaLanguage emits `meta` for the `@name` sigil).
   { tag: t.meta, color: "#d8b4fe", fontWeight: "600" },

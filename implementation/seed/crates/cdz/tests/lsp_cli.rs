@@ -1023,3 +1023,80 @@ fn lsp_diagnostics_are_total_on_a_cyclic_import_pair() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn lsp_diagnostics_surface_a_self_import_as_a_cycle() {
+    // A file that imports ITSELF is a degenerate 1-node cycle. Like the a↔b pair, `link()` rejects it
+    // before the Diagnostics query runs (no KIND_DIAGNOSTICS artifact), so the server must surface the
+    // link fault (`compiled.diagnostics`) rather than falling back to the misleading single-buffer pair.
+    let dir = std::env::temp_dir().join(format!("cdz-lsp-self-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path = dir.join("selfimp.sexp");
+    let text = "(do (import \"selfimp\" (foo)) (def (foo) 1) (export foo))";
+    std::fs::write(&path, text).expect("write");
+    let uri = format!("file://{}", path.display());
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"cadenza","version":1,"text":text}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let pushes = diagnostic_pushes(&msgs);
+    let opened = pushes
+        .last()
+        .expect("a diagnostics push for the self-importing file");
+    assert!(
+        opened.iter().any(|d| d
+            .get("message")
+            .and_then(|m| m.as_str())
+            .is_some_and(|m| m.contains("cyclic"))),
+        "a self-import should surface the cyclic-import diagnostic, not the single-buffer fallback: {opened:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn lsp_diagnostics_surface_a_colliding_import() {
+    // Two libraries export the same name; importing both into one file collides. `link()` rejects it up
+    // front (no Diagnostics artifact), so — like the cyclic case — the server must surface the link fault
+    // (`dup` imported more than once), not the misleading single-buffer fallback.
+    let dir = std::env::temp_dir().join(format!("cdz-lsp-collide-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("libx.sexp"),
+        "(module libx (def (dup) 1) (export dup))",
+    )
+    .expect("write libx");
+    std::fs::write(
+        dir.join("liby.sexp"),
+        "(module liby (def (dup) 2) (export dup))",
+    )
+    .expect("write liby");
+    let path = dir.join("collide.sexp");
+    let text =
+        "(do (import \"libx\" (dup)) (import \"liby\" (dup)) (def (main) (dup)) (export main))";
+    std::fs::write(&path, text).expect("write");
+    let uri = format!("file://{}", path.display());
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"cadenza","version":1,"text":text}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let pushes = diagnostic_pushes(&msgs);
+    let opened = pushes
+        .last()
+        .expect("a diagnostics push for the colliding-import file");
+    assert!(
+        opened.iter().any(|d| d
+            .get("message")
+            .and_then(|m| m.as_str())
+            .is_some_and(|m| m.contains("imported more than once"))),
+        "a colliding import should surface the collision diagnostic, not the single-buffer fallback: {opened:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
