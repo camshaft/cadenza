@@ -619,6 +619,22 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 15 Int64)))
 
+(case "Set.to-list canonical order is SIGNED at the integer extremes"
+  (doc    "A set holding BOTH i64 limits enumerates with the NEGATIVE extreme first and the positive
+           extreme last — the canonical order is the SIGNED value order at the sign boundary. A sort
+           comparing raw two's-complement bytes or unsigned values would place Int64.min (0x8000…)
+           AFTER Int64.max (0x7FFF…), inverting the ends. `(Set.of (list max n 0 min))` with n=5:
+           element 0 is min. The extreme-key companion of the ascending-order pins above, whose keys
+           never cross the sign boundary.")
+  (input  (do
+            (def (main (: n Int64))
+              (Option.expect
+                (List.at (Set.to-list (Set.of (list 9223372036854775807 n 0 -9223372036854775808))) 0)
+                "empty"))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: -9223372036854775808 Int64)))
+
 (case "Set.to-list over a runtime set sums its distinct elements"
   (doc    "`ins n` inserts `(n*7) % 5` for n=n..1 — a runtime set whose elements cycle through {0,1,2,3,4}
            with many collisions (dedup). `Set.to-list` enumerates the distinct elements; a List.at fold sums
