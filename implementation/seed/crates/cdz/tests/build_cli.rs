@@ -181,6 +181,34 @@ fn build_a_manifest_without_an_entry_errors() {
 }
 
 #[test]
+fn build_a_manifest_with_a_non_string_entry_says_entry_must_be_a_string() {
+    // A manifest that HAS a `def entry` whose value is NOT a string (`def entry = 42`) must NOT report
+    // "declares no `entry`" — that misleadingly tells the author to add an entry they already wrote. The
+    // real fault is the wrong TYPE, so the error must say `entry` must be a string. Regression: the parser
+    // drops a non-string value silently, making `entry` None (indistinguishable from absent) — the
+    // `entry_malformed` flag restores the distinction.
+    let dir = std::env::temp_dir().join(format!("cdz-build-badentry-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Project.cdz"),
+        "def name = \"x\"\ndef entry = 42\n",
+    )
+    .unwrap();
+    let (ok, _o, err) = run(&["build", dir.to_str().unwrap()]);
+    assert!(!ok, "a non-string entry should fail");
+    assert!(
+        err.contains("`entry` must be a string"),
+        "names the wrong-type fault, not a missing entry: {err}"
+    );
+    assert!(
+        !err.contains("declares no `entry`"),
+        "must NOT misreport a present-but-mistyped entry as absent: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn build_a_glob_entry_matching_one_file_uses_the_resolved_files_name() {
     // REGRESSION (Copilot PR #413): a GLOB `entry` (`app*.cdz`) must derive the compiler entry NAME from
     // the RESOLVED file (`app_main.cdz` → `app_main`), NOT the glob pattern (which would pass an invalid

@@ -8281,6 +8281,35 @@
   (call   main (: -1 Int64) (: 5 Int64))
   (output (: 105 Int64)))
 
+(case "a deep nested-constructor pattern matching a nullary variant two layers deep solves its switch path"
+  (doc    "A constructor pattern nesting a NULLARY variant two-or-more constructor layers deep —
+           `(match t ((Ty.TyInt (IntTy.IntTy (Sign.Signed) w)) …) (_ …))` where `IntTy` is a single-variant
+           sum (erased to a nominal newtype). The switch on `Sign` sits at `[Payload, Payload, Elem(0)]`:
+           the outer `Ty.TyInt` boxed-sum Payload seeds the path type map at `[Payload]` = `IntTy`, but the
+           INNER Payload (the erased `IntTy` newtype unwrap) is not seeded — so the switch-path type is
+           resolved by walking the suffix from the seeded prefix, PEELING the erased-newtype Payload as a
+           no-op (a nominal unwrap) to reach the inner `(Tuple Sign Width)`, then `Elem(0)` = `Sign`. Pins
+           that deep nested-constructor matching through an erased newtype layer solves (was: `compound
+           match switch path has no solved type`) — the idiomatic shape a deeply-nested-sum compiler AST
+           (Ty/IntTy/Sign) matches on. A runtime-chosen inner variant defeats the const-fold. `mk -1` →
+           `Sign.Signed` → the arm fires → 1.")
+  (input  (do
+            (type Sign (Signed) (Unsigned) (SignDef))
+            (type Width (WFixed Int64) (WidthDef))
+            (type IntTy (IntTy Sign Width))
+            (type Ty (TyInt IntTy) (TyBool) (TyErr))
+            (def (probe (: t Ty))
+              (match t
+                ((Ty.TyInt (IntTy.IntTy (Sign.Signed) w)) 1)
+                (_ 0)))
+            (def (mk (: k Int64)) (if (< k 0) (Sign.Signed) (Sign.Unsigned)))
+            (def (main (: k Int64)) (probe (Ty.TyInt (IntTy.IntTy (mk k) (Width.WidthDef)))))
+            (export main)))
+  (call   main (: -1 Int64))
+  (output (: 1 Int64))
+  (call   main (: 1 Int64))
+  (output (: 0 Int64)))
+
 (case "a top-level tuple pattern matches a tuple produced by a runtime conditional"
   (doc    "A `(tuple a b)` pattern over a scrutinee that is a RUNTIME tuple — one built by an `if`, so the
            scrutinee is neither a compile-time-constant `(tuple …)` nor a bound name. `(g k)` returns

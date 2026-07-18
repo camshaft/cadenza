@@ -141,53 +141,16 @@ export default function Playground() {
         they just render its results as geometry, tables, and charts instead of a single value.
       </P>
 
-      <H2>Beyond the browser: the <C>cdz</C> toolchain</H2>
+      <H2>Beyond the browser</H2>
       <P>
-        Everything here runs the real compiler in your browser, but the same compiler ships as a single
-        command-line tool, <C>cdz</C>, for working on your own machine. One binary carries the whole loop:
-        <C>cdz new</C> scaffolds a project (a <C>Project.cdz</C> manifest, a buildable entry file, and a
-        passing starter <C>@test</C>, so <C>cdz test</C> is green from the first command);{" "}
-        <C>cdz compile</C> lowers a single program to a WebAssembly component and <C>cdz build</C> compiles a
-        whole project into one component; <C>cdz run</C> executes a compiled one, <C>cdz check</C> reports
-        diagnostics without building, and <C>cdz test</C> runs a module's tests while <C>cdz fmt</C> reprints
-        source in canonical form. For the tightest loop of all, <C>cdz watch</C> re-runs any of those on every
-        save: the same instant-feedback cycle you've had in this guide, at your terminal. There's even a{" "}
-        <C>cdz calc</C>, the same exact-arithmetic calculator you met above.
+        Everything here runs the real compiler in your browser, and that same compiler ships as a single
+        command-line tool for working on your own machine, which the next chapter, <Ch to="/cdz-toolchain">The
+        cdz toolchain</Ch>, covers in full.
       </P>
-      <P>
-        And your editor can speak to that compiler directly. <C>cdz lsp</C> is a Language Server, so any
-        editor that speaks the protocol gets the <em>same</em> compiler-backed help the playground has:
-        not a text-based guess, but the type checker's actual understanding. In VS Code (one-step setup
-        with <C>cargo xtask install-lsp</C>) you get, live as you type: diagnostics, hover types, semantic
-        highlighting by role, go-to-definition and find-references, same-symbol highlighting (rest the caret
-        on a name and every other use of it tints, the declaration included, shadowing respected, so a local
-        never lights up an unrelated top-level), scope-aware rename (F2 on a name rewrites its declaration and
-        every reference in one edit, across files, and never touches an unrelated same-spelled name), name
-        completion from what's actually in scope, parameter hints as you fill in a call (the function's real
-        inferred signature, with the argument you're on highlighted), one-click quick-fixes from the
-        compiler's suggested repairs,
-        an outline of a file's definitions, and a project-wide symbol search (jump to any <C>def</C>,{" "}
-        <C>type</C>, or <C>effect</C> across your open files by name, without knowing which file holds it).
-      </P>
-      <P>
-        One of those is unique to Cadenza's compiler. Above every generic definition the compiler{" "}
-        <em>specialized</em>, the editor shows a <em>CodeLens</em> naming its concrete instances, a label
-        like <C>2 instances: [n: Int64, x: Int64] · [n: Int64, x: String]</C> above a generic <C>loopn</C>{" "}
-        used at both types. Cadenza monomorphizes generics (see{" "}
-        <Ch to="/ad-hoc-polymorphism">Ad-hoc polymorphism</Ch>), and this makes that normally-invisible
-        specialization visible right in the source: it's the in-editor face of the same query{" "}
-        <C>cdz instantiations</C> answers on the command line. A plain, non-generic definition gets no
-        lens, because nothing was specialized.
-      </P>
-      <Note>
-        It's the same principle as the playground's editor, carried to your own tools: the colours, the
-        completions, the fixes all come from the compiler that will build your code, so what the editor
-        tells you and what the compiler does never drift apart.
-      </Note>
 
       <P>
-        Open the <PlaygroundLink>playground</PlaygroundLink> and paste in the last program you wrote in
-        this guide, then reach for the REPL and start calling its pieces.
+        For now, open the <PlaygroundLink>playground</PlaygroundLink> and paste in the last program you wrote
+        in this guide, then reach for the REPL and start calling its pieces.
       </P>
     </article>
   );

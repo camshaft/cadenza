@@ -77,6 +77,21 @@ pub fn append_revoke(log: &mut impl Log, grant_seq: Seq) -> Result<Seq> {
     log.append(AUTHZ_REVOKE, grant_seq.to_string().as_bytes())
 }
 
+/// The event `kind` for an agent's authorization REQUEST — the can't-brick escape hatch. When a program's op
+/// is DENIED, the daemon AUTO-EMITS one of these (operator ruling: automatic, so the operator always sees the
+/// ask without the agent needing to know to request). Payload = the NARROW ask: `prim:<op>\t<payload>` (the
+/// specific action + the resource the denied op wanted). The operator answers with a narrow [`AUTHZ_GRANT`]
+/// (optionally time-boxed) or ignores/denies it. This makes deny-by-default un-brickable: a denial leaves a
+/// standing request in the log the operator can grant.
+pub const AUTHZ_REQUEST: &str = "authz-request";
+
+/// Append an authorization REQUEST for a denied `op` on `payload` (the daemon calls this automatically on a
+/// deny). Payload format: `prim:<op>\t<payload>` — the action the program wanted + its resource, so the
+/// operator can write a matching narrow grant. Returns the request's `seq`.
+pub fn append_request(log: &mut impl Log, op: &str, payload: &str) -> Result<Seq> {
+    log.append(AUTHZ_REQUEST, format!("prim:{op}\t{payload}").as_bytes())
+}
+
 /// Parse an [`AUTHZ_GRANT`] payload into `(expiry_ms, permit)`: the first line is the expiry (empty → `None`),
 /// the rest is the Cedar permit. A malformed expiry line → `None` (fail-safe: treat as no expiry rather than
 /// erroring, since the operator wrote it; the permit still gates).

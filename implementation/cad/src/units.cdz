@@ -18,7 +18,7 @@
 @!default-fraction Rational
 
 import { Vec3 } from "exact"
-import { v3r } from "exact"
+import { v3 } from "exact"
 
 /// A `Rational` from an integer (the common case: `ri 50` = 50/1). Sugar over `Rational.of`. Kept with an
 /// `Int64` signature (an importer passes a bare Int64 count); the literal `1` denominator is annotated
@@ -41,7 +41,7 @@ def inch(n: Rational) = in-mm(Qty.of(n, Unit.of(#"inch")))
 def foot(n: Rational) = in-mm(Qty.of(n, Unit.of(#"foot")))
 
 /// A `Vec3` from three lengths given in millimetres (the everyday model-unit vector constructor).
-def v3-mm(x: Rational, y: Rational, z: Rational) = v3r(mm(x), mm(y), mm(z))
+def v3-mm(x: Rational, y: Rational, z: Rational) = v3(mm(x), mm(y), mm(z))
 
 /// Render a bare-Rational model coordinate (millimetres) back out as a `Qty` length, for DISPLAY in a chosen
 /// unit — the OUTPUT edge (the dual of the input constructors). `coord` is the stored mm magnitude.
@@ -100,7 +100,7 @@ def as-mm-wraps-a-bare-mm-coordinate() =
 def v3-mm-builds-a-millimetre-vector() =
   let v = v3-mm(ri(10), ri(20), ri(30)) in
   // component-wise scalar checks (a whole-Vec3 `==` now walks over Rational since the ty_heap_walkable fix,
-  // but this file doesn't import v3r-eq; a per-component scalar compare is equally exact and self-contained).
+  // but this file doesn't import v3-eq; a per-component scalar compare is equally exact and self-contained).
   match v with | Vec3.V3(x, y, z) =>
     if x == ri(10) then (if y == ri(20) then (if z == ri(30) then unit else trap("z")) else trap("y")) else trap("x")
 

@@ -781,6 +781,32 @@ fn an_exhaustive_property_is_driven_over_its_whole_domain() {
         "a multi-scalar @exhaustive enumerates the full Bool×UInt8 product (512 cases): {stdout}"
     );
 
+    // A multi-scalar `@exhaustive` whose parameters are EACH individually bounded but whose PRODUCT exceeds
+    // MAX_EXHAUSTIVE_CASES declines — a DIFFERENT path from the single-unbounded-param decline above (there
+    // `scalar_domain` returns None; here every `scalar_domain` returns Some, and the running `product >
+    // MAX_EXHAUSTIVE_CASES` bail fires). `UInt16 × UInt16` = 65536² ≈ 4.29e9 ≫ 100k. Pins that the product
+    // accumulator declines a combinatorial blowup rather than trying to build billions of cases (a DoS).
+    let product_blowup = write(
+        &d,
+        "blowup.cdz",
+        "@exhaustive def wide2(x: UInt16, y: UInt16) = if x == x then unit else trap(\"x\")\n\
+         @test def anchor7() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, _) = run(&["test", &product_blowup]);
+    assert!(
+        !ok,
+        "a product-exceeds-MAX @exhaustive domain → non-zero exit (declines): {stdout}"
+    );
+    assert!(
+        stdout.contains("FAIL wide2") && stdout.contains("BOUNDED input domain"),
+        "a UInt16×UInt16 @exhaustive (product ≫ MAX) declines with the narrow-the-type message: {stdout}"
+    );
+    // NB: the product-exceeds path declines INSTANTLY (it bails before building any cases), so this pin is
+    // cheap. A wide-but-under-cap proof (e.g. `UInt16` alone = 65536 cases) would exercise the "accumulator
+    // does not prematurely bail" side, but ENUMERATING 65536 real trials costs ~35s wall-clock — too heavy
+    // for the gated suite (v-compiler-perf's wall-clock gate). The existing Bool×UInt8=512 proof already
+    // covers that the accumulator threads the running product correctly under the cap.
+
     // `@exhaustive` composes with `@tag`: a `@tag("fast") @exhaustive` test is selected by `--tag fast`
     // and runs exhaustively. Pins that the two annotations stack (independent metadata + run mode).
     let tagged = write(

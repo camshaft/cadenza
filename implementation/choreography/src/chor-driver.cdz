@@ -15,6 +15,7 @@ import { Ast } from "ast"
 import { projectable } from "chor-project"
 import { unprojectable-role } from "chor-project"
 import { gen-role } from "chor-codegen"
+import { deadlock-free } from "chor-safety"
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Render an Ast (a generated actor program) to s-expr text.
@@ -56,6 +57,33 @@ def drive(roles: List(String), g: Chor) -> String =
        | Option.Some(q) => String.concat("not-projectable: ", q)
        | Option.None(_) => "not-projectable"))
   else "not-well-formed"
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// Report: a sidecar-style header line — the whole-protocol verdict (well-formed / projectable / deadlock-
+// free) above the shredded per-actor programs. This is what a user running the sidecar sees: is my protocol
+// sound, and here is each actor's code.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The one-line verdict for a protocol: `ok` if wf + projectable + deadlock-free, else the first failing
+/// check (with the offending role for un-projectable). This is the sidecar's headline status.
+def verdict(roles: List(String), g: Chor) -> String =
+  if wf(roles, g) then
+    (if projectable(roles, g) then
+      (if deadlock-free(roles, g) then "ok: well-formed, projectable, deadlock-free"
+       else "not-deadlock-free")
+     else (match unprojectable-role(roles, g) with
+       | Option.Some(q) => String.concat("not-projectable: ", q)
+       | Option.None(_) => "not-projectable"))
+  else "not-well-formed"
+
+/// The full sidecar report: the verdict line, then (only when ok) the shredded per-actor programs beneath.
+def report(roles: List(String), g: Chor) -> String =
+  let v = verdict(roles, g) in
+  if is-ok(v) then String.concat(v, String.concat("\n", shred(roles, g)))
+  else v
+
+/// A verdict is "ok" iff it starts with "ok" — reuse the prefix check.
+def is-ok(v: String) -> Bool = starts-with(v, "ok")
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Tests.
@@ -119,6 +147,44 @@ def drive-rejects-ill-formed() =
   if drive(["Buyer"], g) == "not-well-formed" then unit
   else trap("the driver rejects an ill-formed protocol")
 
+@test
+def verdict-ok-on-sound-protocol() =
+  // The linear two-role exchange is well-formed, projectable, and deadlock-free.
+  let g = Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"), Chor.Comm("Seller", "Buyer", "Quote")) in
+  if verdict(["Buyer", "Seller"], g) == "ok: well-formed, projectable, deadlock-free" then unit
+  else trap("a sound protocol gets the ok verdict")
+
+@test
+def verdict-names-unprojectable-role() =
+  let g = Chor.Choice("Buyer", [
+    Chor.Branch("A", Chor.Seq(Chor.Comm("Buyer", "Seller", "Sa"), Chor.Comm("Buyer", "Shipper", "Go"))),
+    Chor.Branch("B", Chor.Comm("Buyer", "Seller", "Sb"))]) in
+  if verdict(["Buyer", "Seller", "Shipper"], g) == "not-projectable: Shipper" then unit
+  else trap("the verdict names the un-projectable role")
+
+@test
+def verdict-flags-ill-formed() =
+  if verdict(["Buyer"], Chor.Comm("Buyer", "Buyer", "X")) == "not-well-formed" then unit
+  else trap("a self-comm is not well-formed")
+
+@test
+def report-ok-carries-the-shred() =
+  // A sound protocol's report = the ok verdict line THEN the shredded per-actor programs.
+  let g = Chor.Comm("Buyer", "Seller", "Title") in
+  let out = report(["Buyer", "Seller"], g) in
+  // First line is the ok verdict; the shred (Buyer:/Seller: blocks) follows.
+  if starts-with(out, "ok: well-formed, projectable, deadlock-free\nBuyer: ") then unit
+  else trap("an ok report leads with the verdict then the shred")
+
+@test
+def report-unsound-is-just-the-verdict() =
+  // An un-projectable protocol's report is the verdict alone (no shred — it can't be shredded).
+  let g = Chor.Choice("Buyer", [
+    Chor.Branch("A", Chor.Seq(Chor.Comm("Buyer", "Seller", "Sa"), Chor.Comm("Buyer", "Shipper", "Go"))),
+    Chor.Branch("B", Chor.Comm("Buyer", "Seller", "Sb"))]) in
+  if report(["Buyer", "Seller", "Shipper"], g) == "not-projectable: Shipper" then unit
+  else trap("an unsound report is just the verdict, no shred")
+
 // Minimal prefix check (String == on a sliced prefix would need substring; compare the built prefix).
 def starts-with(s: String, prefix: String) -> Bool =
   // Compare `prefix` against `s` truncated to prefix's length via a char-walk.
@@ -133,4 +199,4 @@ def prefix-eq(s: String, prefix: String, i: Int64) -> Bool =
         | Option.None(_) => true)
       | Option.None(_) => false))
 
-export { render, shred, drive }
+export { render, shred, drive, verdict, report }

@@ -1515,6 +1515,37 @@
   (call   main (: 0 Int64)) (output (: 2 Int64))
   (call   main (: 100 Int64)) (output (: 102 Int64)))
 
+; The cases above each instantiate a closure-taking recursive HOF at a SINGLE closure type. This one
+; instantiates the SAME generic recursive HOF `fold-list` at TWO distinct closure types in one program:
+; an Int64-element sum `(fn (x a) (+ a x))` (`f : (-> Int64 (-> Int64 Int64))`) AND a String-element
+; byte-length fold `(fn (s a) (+ a (String.byte-len s)))` (`f : (-> String (-> Int64 Int64))`). The
+; closure PARAMETER's type differs per instantiation, so `fold-list` monomorphizes into two functions
+; with distinct machine signatures — the closure-carrying twin of the plain-value `loopn`-at-two-types
+; case below. This is the shape adjacent to the still-open recursive-generic DRIVER tie (a closure param
+; + accumulator threaded through recursion): the transformer/HOF form monomorphizes cleanly TODAY, so
+; pin it so a future inference change to the driver-tie family cannot silently regress the working HOF
+; case. Int64 fold: `5 + 7 + 30 = 42`; String fold: `2 + 4 + 1 = 7`; total `49`.
+
+(case "a generic recursive HOF taking a closure is monomorphized at two distinct closure types"
+  (doc    "The same generic recursive `fold-list` is instantiated at TWO closure types in one program:
+           an Int64-element sum closure (`f : (-> Int64 (-> Int64 Int64))`) and a String-element
+           byte-length closure (`f : (-> String (-> Int64 Int64))`). The closure PARAMETER's type
+           differs per call, so `fold-list` monomorphizes into two functions with distinct machine
+           signatures — the closure-carrying twin of `loopn`-at-two-types. `5+7+30 = 42` and
+           `2+4+1 = 7`, total `49`. Pins that a closure-taking recursive-generic HOF composes at two
+           element types (guards the working HOF case against a regression from the open driver-tie
+           family — a closure param + accumulator threaded through recursion).")
+  (input  (do
+            (def (fold-list f acc xs)
+              (match xs
+                ((list) acc)
+                ((list h .. t) (fold-list f (f h acc) t))))
+            (def (main)
+              (+ (fold-list (fn (x a) (+ a x)) 0 (list 5 7 30))
+                 (fold-list (fn (s a) (+ a (String.byte-len s))) 0 (list "ab" "abcd" "x"))))
+            (export main)))
+  (output (: 49 Int64)))
+
 ; A MULTI-PARAMETER runtime closure, applied at FULL arity. `core-semantics.md` §Functions Are
 ; Single-Arity says a multi-param `(fn (a b) …)` is curried sugar; when the whole function is applied to
 ; all its arguments at once through a recursive HOF, it lifts to one `(env, a, b) → result` function and

@@ -166,19 +166,19 @@ const ROUTES = [
       } else {
         check(false, `${label}: example picker present`);
       }
-      // PARAMETRIC mode (operator "super cool" payoff): switch to the Parametric tab → sliders render + the
-      // model meshes → drag the (fractional) thickness slider → the value shows an EXACT fraction (7/2, the
-      // floats-can't payoff) AND the canvas re-meshes (no compile/run error). Guards the whole @param
-      // host-response → recompute → re-mesh loop (v-cad's model + manifest + my run-worker wiring + UI).
-      const paramTab = page.locator('[data-testid="cad-mode-parametric"]');
-      if ((await paramTab.count()) > 0) {
-        await paramTab.click();
+      // SINGLE-MODE PARAMETRIC (operator "super cool" payoff — no mode toggle now): SELECT the parametric
+      // example → its @param sliders AUTO-SURFACE (read live from the compiled model's manifest) → the model
+      // meshes → drag the (fractional) thickness slider → the value shows an EXACT fraction (7/2, the floats-
+      // can't payoff) AND the canvas re-meshes. Guards the whole single-mode loop: param_manifest → auto
+      // sliders → @param host-response → recompute → re-mesh (v-cad's model + the manifest binding + my UI).
+      const plateOpt = page.locator('[data-testid="cad-example-picker"] option[value="parametric-plate"]');
+      if ((await plateOpt.count()) > 0) {
+        await page.locator('[data-testid="cad-example-picker"]').selectOption("parametric-plate");
         const sliders = await page
-          .waitForSelector('[data-testid="cad-param-controls"] input[type="range"]', { timeout: 10000 })
-          .then(() => page.locator('[data-testid="cad-param-controls"] input[type="range"]').count())
+          .waitForSelector('[data-testid="cad-params"] input[type="range"]', { timeout: 15000 })
+          .then(() => page.locator('[data-testid="cad-params"] input[type="range"]').count())
           .catch(() => 0);
-        check(sliders > 1, `${label}: parametric mode shows a slider per @param (found ${sliders})`);
-        // Wait for the parametric model to mesh (a fresh canvas after the mode switch).
+        check(sliders > 1, `${label}: selecting the parametric example AUTO-SURFACES a slider per @param (found ${sliders})`);
         await page.waitForSelector("canvas", { timeout: 30000 }).catch(() => {});
         // Drag the fractional thickness slider to 3.5 → expect an exact 7/2 + a re-mesh.
         const thick = page.locator('[data-testid="cad-param-thickness"] input[type="range"]');
@@ -195,8 +195,6 @@ const ROUTES = [
             .then(() => true)
             .catch(() => false);
           check(exact, `${label}: a fractional slider carries an EXACT Rational (thickness → 7/2)`);
-          // After the drag, the model re-meshes (async: compile→run→mesh). Wait for the status to SETTLE
-          // (leave "meshing…") to a non-error, with the canvas still present — then it re-meshed live.
           const meshed = await page
             .waitForFunction(
               () => {
@@ -214,8 +212,14 @@ const ROUTES = [
           check(false, `${label}: parametric thickness slider present`);
         }
       } else {
-        check(false, `${label}: parametric mode toggle present`);
+        check(false, `${label}: parametric example present in the picker`);
       }
+      // DOWNLOAD (operator ask — STL/3MF export for real CAD/print use): once a mesh exists, the STL + 3MF
+      // download buttons are present. (The actual byte-format is verified in download.test.ts + a headless
+      // download-capture; here we guard the buttons render on the meshed viewer so the affordance can't vanish.)
+      const stlBtn = await page.locator('[data-testid="cad-download-stl"]').count();
+      const tmfBtn = await page.locator('[data-testid="cad-download-3mf"]').count();
+      check(stlBtn > 0 && tmfBtn > 0, `${label}: STL + 3MF download buttons present on the meshed viewer`);
     },
   },
   {

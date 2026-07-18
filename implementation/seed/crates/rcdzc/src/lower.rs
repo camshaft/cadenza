@@ -9426,9 +9426,18 @@ fn type_from_seeded_prefix(
                         crate::ty::Ty::List(_) => cur.clone(),
                         _ => return None,
                     },
-                    // A `Payload` in the suffix crosses a nested boxed sum — a plain type-walk can't
-                    // supply its instantiation, so decline (the same limit `type_at_path` has).
-                    crate::core::PathStep::Payload => return None,
+                    // A `Payload` step over a NOMINAL NEWTYPE UNWRAPS the tag to its underlying type (a
+                    // runtime no-op) — a newtype imposes no discriminant, so its `Payload` is NOT seeded in
+                    // `path_types`; peel it here so a switch NESTED inside an erased newtype's payload
+                    // resolves. `(Ty.TyInt (IntTy.IntTy (Sign.Signed) w))` switches on `Sign` at
+                    // `[Payload, Payload, Elem(0)]` off the seeded `[Payload]` = `IntTy` (a `Ty::Nominal`
+                    // single-variant newtype): peel the nominal to `(Tuple Sign Width)`, then `Elem(0)` =
+                    // `Sign`. Mirrors `type_at_path`'s `Payload` arm. A `Payload` over a REAL boxed sum still
+                    // declines (its instantiation isn't recoverable from a plain type-walk).
+                    crate::core::PathStep::Payload => match &cur {
+                        crate::ty::Ty::Nominal { inner, .. } => (**inner).clone(),
+                        _ => return None,
+                    },
                 };
             }
             return Some(cur);

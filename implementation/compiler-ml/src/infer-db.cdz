@@ -96,13 +96,17 @@ def bin-type(op: Int64, tcol: Map(Int64, Typed), a: Int64, b: Int64) =
      // relational: any two integer operands (any width) compare → Bool.
      (if both-int(tcol, a, b) then (if (op <= 65) then Typed.TBool else Typed.TErr) else Typed.TErr)
    else
-     // arithmetic: require canonical Int64 operands (narrow arith declines pending the wrap slice).
+     // arithmetic: require canonical Int64 operands (narrow arith declines pending the wrap slice). MATCH on
+     // the op-code (idiomatic dispatch, not an `if op == N` ladder): the five arith ops (43 + / 45 - / 42 * /
+     // 47 / / 37 %) are all Int64→Int64; any other op here is TErr.
      (if both-int64(tcol, a, b) then
-        (if (op == 43) then t-int64()
-         else (if (op == 45) then t-int64()
-         else (if (op == 42) then t-int64()
-         else (if (op == 47) then t-int64()
-         else (if (op == 37) then t-int64() else Typed.TErr)))))
+        (match op with
+          | 43 => t-int64()
+          | 45 => t-int64()
+          | 42 => t-int64()
+          | 47 => t-int64()
+          | 37 => t-int64()
+          | _ => Typed.TErr)
       else Typed.TErr))
 
 /// Bool iff both operands are the canonical `Int64` (`TIntW(true, 64)`) — the gate for ARITHMETIC (which

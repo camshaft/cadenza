@@ -4,7 +4,7 @@
 ///
 /// /cad compiles a BARE model buffer against the preloaded CAD library (`exact.cdz`) via
 /// `compileWithPreloaded` (operator P5, ruling A): the reader edits only the model, the CAD vocabulary
-/// (`Solid`/`v3r`/`lower`) is link-merged. The host AUTO-INJECTS the `import … from "exact"` clause + an
+/// (`Solid`/`v3`/`lower`) is link-merged. The host AUTO-INJECTS the `import … from "exact"` clause + an
 /// `export main` around the reader's buffer — this module is that injection.
 
 import type { Surface } from "../compiler/client.ts";
@@ -20,11 +20,11 @@ export const CAD_HELPERS_NAME = "helpers";
 export const CAD_LIB_FORMAT: Surface = "ml";
 /// The names /cad's model buffer imports from `exact` (the auto-injected superset — a model only uses the
 /// ones it needs; an UNUSED import is benign, verified, so all models share one import clause):
-///   - `Solid` (the CSG type), `v3r` (3-D vector ctor), `lower` (generic `Solid(Rational)` → the
+///   - `Solid` (the CSG type), `v3` (3-D vector ctor), `lower` (generic `Solid(Rational)` → the
 ///     monomorphic `SolidR` the host renders) — the base every model uses;
 ///   - `Profile`, `path-start`, `line-to`, `cubic-to`, `v2` — the 2-D PATH builders a curved part uses
 ///     (a `PathProfile` extruded/revolved — the arch-fin spline showcase).
-export const CAD_IMPORTED_NAMES = ["Solid", "v3r", "lower", "Profile", "path-start", "line-to", "cubic-to", "v2"] as const;
+export const CAD_IMPORTED_NAMES = ["Solid", "v3", "lower", "Profile", "path-start", "line-to", "cubic-to", "v2"] as const;
 /// The names /cad's model buffer imports from `helpers` — the ergonomic wrappers (`helpers.cdz` exports):
 /// primitives (`box`/`cube`/`ball`/`cyl`), moves (`move`/`move-x`/`move-y`/`move-z`), scales, and the
 /// boolean wrappers (`fuse`/`cut`/`common`/`hole-through`). A parametric model (e.g. the mounting plate)
@@ -49,7 +49,7 @@ export const CAD_HELPER_NAMES = ["box", "cube", "ball", "cyl", "move", "move-x",
 export function injectImport(editorText: string, surface: Surface): string {
   const t = editorText.trim();
   if (surface === "sexpr") {
-    // s-expr import spec is a bare name LIST (no commas): `(import "exact" (Solid v3r lower))`.
+    // s-expr import spec is a bare name LIST (no commas): `(import "exact" (Solid v3 lower))`.
     const exact = CAD_IMPORTED_NAMES.join(" ");
     const helpers = CAD_HELPER_NAMES.join(" ");
     return `(do\n(import "${CAD_LIB_NAME}" (${exact}))\n(import "${CAD_HELPERS_NAME}" (${helpers}))\n(pragma default-fraction Rational)\n${t}\n(export main))`;

@@ -13,7 +13,7 @@
 
 @!default-fraction Rational
 
-import { Solid, Vec3, bounding-box, aabbr-size, v3r-x, v3r-y, v3r-z } from "exact"
+import { Solid, Vec3, bounding-box, aabbr-size, v3-x, v3-y, v3-z } from "exact"
 import { meters, cube-m, sphere-m, cylinder-m, difference-m, translate-m, lower } from "units-model"
 
 /// A length in inches, converted to an exact Rational-METER `Qty` at the boundary (1 inch = 127/5000 m).
@@ -41,8 +41,8 @@ def washer-m() = difference-m(cylinder-m(meters(1 / 10), meters(1)), cylinder-m(
 def plinth-authored-in-meters-has-exact-bbox() =
   // Authored as Solid(Qty[meter]); lower → Solid(Rational); bbox is exactly 2 × 1 × 1/2 m (the meter mags).
   let sz = aabbr-size(bounding-box(lower(plinth-m()))) in
-  if v3r-x(sz) == 2 / 1 then
-    (if v3r-y(sz) == 1 / 1 then (if v3r-z(sz) == 1 / 2 then unit else trap("z")) else trap("y"))
+  if v3-x(sz) == 2 / 1 then
+    (if v3-y(sz) == 1 / 1 then (if v3-z(sz) == 1 / 2 then unit else trap("z")) else trap("y"))
   else trap("x")
 
 @test
@@ -51,7 +51,7 @@ def drilled-block-mixes-metric-and-imperial-exactly() =
   // bore is internal so the bbox is the 1m cube; the point is the model type-checks with mixed-unit inputs
   // and the imperial radius carried exactly (1/4 inch = 127/20000 m).
   let sz = aabbr-size(bounding-box(lower(drilled-block-m()))) in
-  if v3r-x(sz) == 1 / 1 then unit else trap("drilled block bbox is the 1m cube")
+  if v3-x(sz) == 1 / 1 then unit else trap("drilled block bbox is the 1m cube")
 
 @test
 def an-imperial-bore-radius-is-exact-meters() =
@@ -63,6 +63,6 @@ def an-imperial-bore-radius-is-exact-meters() =
 def washer-outer-box-is-its-diameter() =
   // outer radius 1m → Ø2m in x/y; thickness 1/10 m in z. Authored in units, lowered, exact.
   let sz = aabbr-size(bounding-box(lower(washer-m()))) in
-  if v3r-x(sz) == 2 / 1 then (if v3r-z(sz) == 1 / 10 then unit else trap("z")) else trap("x")
+  if v3-x(sz) == 2 / 1 then (if v3-z(sz) == 1 / 10 then unit else trap("z")) else trap("x")
 
 export { inches, plinth-m, drilled-block-m, washer-m }

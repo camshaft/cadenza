@@ -13,20 +13,20 @@
 @!default-fraction Rational
 
 import { Solid, Vec3, Aabb } from "exact"
-import { v3r, bounding-box, aabbr-size, v3r-eq, v3r-x } from "exact"
+import { v3, bounding-box, aabbr-size, v3-eq, v3-x } from "exact"
 import { ri, mm, cm, inch, foot } from "units"
 
 /// ---- constructors: exact primitives dimensioned in the model unit (mm), built from length values -------
 
 /// An axis-aligned box of the given width/depth/height (each an exact mm coordinate — pass `mm 50` / `inch
 /// 2` etc). `Cube` stores the FULL size (centred at origin), so `box (mm 50) …` is a 50 mm-wide box.
-def box(w: Rational, d: Rational, h: Rational) = Solid.Cube(v3r(w, d, h))
+def box(w: Rational, d: Rational, h: Rational) = Solid.Cube(v3(w, d, h))
 
 /// A cylinder of the given full height + radius (exact mm). `Cylinder` stores the full height.
 def cyl(height: Rational, radius: Rational) = Solid.Cylinder(height, radius)
 
 /// Translate a solid by exact mm offsets.
-def move(x: Rational, y: Rational, z: Rational, s: Solid(Rational)) = Solid.Translate(v3r(x, y, z), s)
+def move(x: Rational, y: Rational, z: Rational, s: Solid(Rational)) = Solid.Translate(v3(x, y, z), s)
 
 /// ---- the marquee model: a plate with two bolt holes, dimensioned in MIXED units ------------------------
 
@@ -86,7 +86,7 @@ def l-bracket(w: Rational, d: Rational, h: Rational, t: Rational, hole-r: Ration
 def plate-box-is-its-outer-size-in-mm() =
   // a 50mm × 30mm × 5mm plate (holes internal) → bounding box exactly (50, 30, 5) mm.
   let p = plate(mm(ri(50)), mm(ri(30)), mm(ri(5)), inch(1 / 4)) in
-  if v3r-eq(aabbr-size(bounding-box(p)), v3r(ri(50), ri(30), ri(5))) then unit
+  if v3-eq(aabbr-size(bounding-box(p)), v3(ri(50), ri(30), ri(5))) then unit
   else trap("plate outer box is 50×30×5 mm exactly")
 
 @test
@@ -101,14 +101,14 @@ def a_metric_and_imperial_box_agree_when_equal() =
   // a 25.4mm cube and a 1-inch cube have the SAME exact bounding box (25.4mm == 1inch exactly).
   let metric = box(254 / 10, 254 / 10, 254 / 10) in
   let imperial = box(inch(ri(1)), inch(ri(1)), inch(ri(1))) in
-  if v3r-eq(aabbr-size(bounding-box(metric)), aabbr-size(bounding-box(imperial))) then unit
+  if v3-eq(aabbr-size(bounding-box(metric)), aabbr-size(bounding-box(imperial))) then unit
   else trap("25.4mm cube == 1inch cube exactly")
 
 @test
 def tube-outer-box-is-diameter-by-length() =
   // a tube 60mm long, outer radius 20mm → box (40, 40, 60) mm.
   let t = tube(mm(ri(60)), mm(ri(20)), mm(ri(10))) in
-  if v3r-eq(aabbr-size(bounding-box(t)), v3r(ri(40), ri(40), ri(60))) then unit
+  if v3-eq(aabbr-size(bounding-box(t)), v3(ri(40), ri(40), ri(60))) then unit
   else trap("tube outer box (2ro, 2ro, len) = (40,40,60) mm")
 
 @test
@@ -116,14 +116,14 @@ def foot-dimensioned-box-is-exact() =
   // a 1-foot cube → 304.8 mm = 1524/5 per axis, exact.
   let c = box(foot(ri(1)), foot(ri(1)), foot(ri(1))) in
   match bounding-box(c) with | Aabb.Box(_, hi) =>
-    if v3r-x(hi) == 762 / 5 then unit else trap("1-foot cube half-extent = 762/5 mm (full 1524/5)")
+    if v3-x(hi) == 762 / 5 then unit else trap("1-foot cube half-extent = 762/5 mm (full 1524/5)")
 
 @test
 def bolt-flange-box-is-its-diameter-by-thickness() =
   // a flange of radius 60mm, 8mm thick (bore 20, bolt circle 45, 1/4in holes) → outer envelope (2r, 2r, t) =
   // (120, 120, 8) mm: the disc sets the diameter, and the bore + bolt holes (Differences) never grow the box.
   let f = bolt-flange(mm(ri(60)), mm(ri(8)), mm(ri(20)), mm(ri(45)), inch(1 / 4)) in
-  if v3r-eq(aabbr-size(bounding-box(f)), v3r(ri(120), ri(120), ri(8))) then unit
+  if v3-eq(aabbr-size(bounding-box(f)), v3(ri(120), ri(120), ri(8))) then unit
   else trap("bolt-flange envelope is (2r, 2r, t) = (120, 120, 8) mm exactly")
 
 @test
@@ -143,10 +143,10 @@ def bolt-flange-hole-centres-sit-on-the-bolt-circle() =
   let east-hole = move(bcr, ri(0), ri(0), cyl(mm(ri(8)), hole-r)) in
   match bounding-box(east-hole) with | Aabb.Box(lo, hi) =>
     // centre-x = (lo.x + hi.x)/2 must equal bcr = 45; and the west hole (−bcr) mirrors to −45.
-    (if (v3r-x(lo) + v3r-x(hi)) / ri(2) == ri(45) then
+    (if (v3-x(lo) + v3-x(hi)) / ri(2) == ri(45) then
       (let west-hole = move(ri(0) - bcr, ri(0), ri(0), cyl(mm(ri(8)), hole-r)) in
         match bounding-box(west-hole) with | Aabb.Box(wlo, whi) =>
-          if (v3r-x(wlo) + v3r-x(whi)) / ri(2) == ri(0) - ri(45) then unit else trap("west hole centre = -45"))
+          if (v3-x(wlo) + v3-x(whi)) / ri(2) == ri(0) - ri(45) then unit else trap("west hole centre = -45"))
      else trap("east hole centre = +45 (on the 45mm bolt circle)"))
 
 @test
@@ -154,7 +154,7 @@ def l-bracket-box-is-its-envelope-in-mm() =
   // a 50×40×30 mm L-bracket (1/8-inch wall, 3mm hole) → outer envelope exactly (50, 40, 30) mm: the base
   // gives w×d, the upright wall raises z to the full h, and the hole (a Difference) never grows the box.
   let b = l-bracket(mm(ri(50)), mm(ri(40)), mm(ri(30)), inch(1 / 8), mm(ri(3))) in
-  if v3r-eq(aabbr-size(bounding-box(b)), v3r(ri(50), ri(40), ri(30))) then unit
+  if v3-eq(aabbr-size(bounding-box(b)), v3(ri(50), ri(40), ri(30))) then unit
   else trap("L-bracket envelope is 50×40×30 mm exactly (union of base+wall, hole doesn't grow it)")
 
 @test

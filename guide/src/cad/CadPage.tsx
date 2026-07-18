@@ -10,9 +10,9 @@
 /// (`implementation/cad/src/exact.cdz`).
 ///
 /// PRELOADED LIBRARY (operator P5, ruling A): the reader's buffer holds ONLY the model — a program that
-/// builds and returns a `Solid`. The CAD vocabulary (`Solid`/`Vec3`/`v3r`/`lower`/…) is a real Cadenza
+/// builds and returns a `Solid`. The CAD vocabulary (`Solid`/`Vec3`/`v3`/`lower`/…) is a real Cadenza
 /// module (`exact.cdz`) link-merged at compile via `compileWithPreloaded` (no inline `type` defs). The
-/// host AUTO-INJECTS the `import { Solid, v3r, lower } from "exact"` clause before compiling (ruling A),
+/// host AUTO-INJECTS the `import { Solid, v3, lower } from "exact"` clause before compiling (ruling A),
 /// so the buffer stays clean. The model returns `lower(model)`: `exact.cdz`'s `Solid` is GENERIC
 /// (`Solid(a)`), and a generic recursive-sum value can't yet be host-rendered — `lower` maps it to the
 /// monomorphic `SolidR` mirror the compiler CAN emit and the mesh driver parses (v-cad shipped both).
@@ -39,13 +39,14 @@ import { wrapPrefixOf } from "../components/wrapModule.ts";
 import { injectImport, CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_LIB_FORMAT } from "./preloadModel.ts";
 import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
 import { slidersFromManifest } from "./manifestSlider.ts";
+import { downloadMesh } from "./download.ts";
 import { ParametricControls, fracOf, type Frac } from "./ParametricControls.tsx";
 import type { ParamSlider } from "./parametric.ts";
 import type { Surface } from "../compiler/client.ts";
 import { LazyCodeEditor } from "../editor/LazyCodeEditor.tsx";
 // The CAD library sources, staged into the guide tree by `stage-wasm.mjs` (same pattern as runtime.wasm)
 // and `?raw`-imported here as strings. PRELOADED via `compile_with_preloaded` (operator P5, ruling A) so a
-// buffer holds only the model — the CAD vocab (`Solid`/`v3r`/`lower`/…) is link-merged. `exact` is the base
+// buffer holds only the model — the CAD vocab (`Solid`/`v3`/`lower`/…) is link-merged. `exact` is the base
 // geometry lib; `helpers` (box/cyl/hole-through/…) is the ergonomic surface. SINGLE-MODE preloads BOTH for
 // EVERY model, so any buffer (plain, curved, or `@param` parametric) can reach the full vocabulary.
 import EXACT_CDZ from "../wasm/cad/exact.cdz?raw";
@@ -63,10 +64,10 @@ import HELPERS_CDZ from "../wasm/cad/helpers.cdz?raw";
 // IDE surface tracks the edit surface; the mesh path forces s-expr on the compiled value.
 
 /// The starter models now live in `./examples.ts` (v-cad-authored `EXAMPLES`, each a `source: Record<Surface,
-/// string>`): a bare model built against the PRELOADED CAD library (`Solid`/`v3r`/`lower` from `exact.cdz`) —
+/// string>`): a bare model built against the PRELOADED CAD library (`Solid`/`v3`/`lower` from `exact.cdz`) —
 /// no inline `type` defs. Both the `import` AND the `@!default-fraction Rational` pragma are AUTO-INJECTED
 /// (`injectImport`) — the reader's buffer is just the model (no import, no pragma line; the pragma grounds a
-/// bare `n/d` to an exact Rational so `v3r(4/1,…)` type-checks). The model returns `lower(<Solid model>)` (the
+/// bare `n/d` to an exact Rational so `v3(4/1,…)` type-checks). The model returns `lower(<Solid model>)` (the
 /// generic `Solid` isn't host-renderable, so `lower` maps to the monomorphic `SolidR` the driver meshes). The
 /// example-picker swaps `source[surface]`; `/cad` opens with `DEFAULT_EXAMPLE` (the cube-with-dent — the
 /// historical starter). Both surfaces render to the same canonical s-expr `SolidR` value (v-cad-verified:
@@ -116,7 +117,7 @@ export default function CadPage() {
   // so the buffer is diagnosed in the surface it's written in (fixes the all-red-squiggles P-C bug).
   // `prepare` AUTO-INJECTS the `import … from "exact"` clause (the same one `runModel` compiles), and
   // `preload` supplies the CAD library so the linter uses `diagnosticsWithPreloaded` — otherwise the
-  // preloaded vocab (`Solid`/`v3r`/`lower`) would fault as unbound (6 red squiggles) on a program that
+  // preloaded vocab (`Solid`/`v3`/`lower`) would fault as unbound (6 red squiggles) on a program that
   // actually runs. `wrapPrefixBytes` is the injected prefix's byte length (from `wrapPrefixOf`, which
   // locates the reader's verbatim text in the injected output) so a squiggle maps back onto the buffer.
   // `surface` is read through a ref so the getter always sees the current toggle without rebuilding the
@@ -396,6 +397,27 @@ export default function CadPage() {
                   {status.message}
                 </div>
               )}
+              {/* DOWNLOAD the current mesh as STL / 3MF (operator ask — for real CAD/print use). Bottom-left so
+                  it clears the spin toggle (top-left) + meshing/error chips (top). v-cad's serializers take the
+                  mesh's positions+indices directly (no adapter); 3MF defaults to millimeter (printer-world). */}
+              <div className="absolute bottom-2 left-2 flex items-center gap-1">
+                <button
+                  data-testid="cad-download-stl"
+                  onClick={() => downloadMesh(lastMesh, "stl")}
+                  title="Download this model as a binary STL"
+                  className="flex min-h-11 items-center rounded bg-slate-800/80 px-2 text-xs text-slate-300 transition hover:bg-slate-700 sm:min-h-0 sm:py-1"
+                >
+                  ↓ STL
+                </button>
+                <button
+                  data-testid="cad-download-3mf"
+                  onClick={() => downloadMesh(lastMesh, "3mf")}
+                  title="Download this model as a 3MF (unit-declared, for 3D printing)"
+                  className="flex min-h-11 items-center rounded bg-slate-800/80 px-2 text-xs text-slate-300 transition hover:bg-slate-700 sm:min-h-0 sm:py-1"
+                >
+                  ↓ 3MF
+                </button>
+              </div>
             </>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-slate-600">
