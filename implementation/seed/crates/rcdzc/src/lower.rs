@@ -6984,14 +6984,17 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     path_types.insert(Vec::new(), std::rc::Rc::new(scrut_ty));
     match build_tree(db, scrutinee, &rows, &mut path_types) {
         // The whole match reduces to one body (a top-level catch-all, or a fully constant-folded tree).
-        Ok(crate::core::SumCont::Leaf(body)) => core_of(db, body),
+        // `build_tree` now returns `Rc<SumCont>`; match the Leaf shape through the Rc borrow.
+        Ok(root) if matches!(&*root, crate::core::SumCont::Leaf(_)) => {
+            let crate::core::SumCont::Leaf(body) = &*root else {
+                unreachable!("just matched Leaf")
+            };
+            core_of(db, *body)
+        }
         // Otherwise the root is a Switch (the usual case) — or a Guarded, when a disc-fold collapsed the
         // root switch to the selected variant's guarded arm. Either way the backend emits it through the
-        // uniform `emit_sum_cont`, so carry the root continuation directly.
-        Ok(root) => Core::MatchSum {
-            scrutinee,
-            root: Box::new(root),
-        },
+        // uniform `emit_sum_cont`, so carry the root continuation `Rc` directly (the DAG's entry point).
+        Ok(root) => Core::MatchSum { scrutinee, root },
         Err(r) => Core::Poison(r),
     }
 }
@@ -8566,7 +8569,7 @@ fn build_tree(
     scrutinee: StructId,
     rows: &[MatchRow],
     path_types: &mut PathTypes,
-) -> Result<crate::core::SumCont, Reject> {
+) -> Result<std::rc::Rc<crate::core::SumCont>, Reject> {
     build_tree_ft(db, scrutinee, rows, path_types, None)
 }
 
@@ -8588,7 +8591,7 @@ fn build_tree_ft(
     rows: &[MatchRow],
     path_types: &mut PathTypes,
     fallthrough: Option<&std::rc::Rc<crate::core::SumCont>>,
-) -> Result<crate::core::SumCont, Reject> {
+) -> Result<std::rc::Rc<crate::core::SumCont>, Reject> {
     #[cfg(test)]
     crate::db::BUILD_TREE_CALLS.with(|c| c.set(c.get() + 1));
     // The FIRST row whose discriminant constraints are all satisfied (empty) is at a LEAF position. If it
@@ -8604,7 +8607,13 @@ fn build_tree_ft(
             // makes a multi-column arm's chain share one fall-through). Otherwise the matrix is genuinely
             // exhausted with no cover → CDZ0210 (the ordinary, semantics-unchanged path).
             match fallthrough {
-                Some(f) => return Ok((**f).clone()),
+                // Return the fallthrough Rc ITSELF (a refcount bump), NOT a deref-clone of its top node.
+                // This PRESERVES the shared-tail Rc identity: the same `Rc<SumCont>` is reachable from both
+                // this arm's terminus AND the `els` that threaded it, so `Rc::ptr_eq` holds — the decision
+                // tree stays a DAG through emit. A deref-clone here (the old `(**f).clone()`) would flatten
+                // the DAG to a tree before the backend sees it, defeating the emit-side shared-continuation
+                // dedup (v-wasm-opt's `emit_sum_cont` ptr_eq memo) and keeping the O(2^arms) emit blow-up.
+                Some(f) => return Ok(std::rc::Rc::clone(f)),
                 None => {
                     return Err(Reject::coded(
                         Code::NonExhaustive,
@@ -8727,7 +8736,7 @@ fn build_tree_ft(
             );
         }
         Some(row) if row.constraints.is_empty() && row.guard.is_none() => {
-            return Ok(crate::core::SumCont::Leaf(row.body));
+            return Ok(std::rc::Rc::new(crate::core::SumCont::Leaf(row.body)));
         }
         Some(row) if row.constraints.is_empty() => {
             // A GUARDED leaf: `if guard then body else <fall-through over the remaining rows>`.
@@ -8756,17 +8765,17 @@ fn build_tree_ft(
                     // fold consistent with the runtime `Guarded` path below, which builds `els` (and thus
                     // checks the fall-through) unconditionally.
                     let _ = build_tree(db, scrutinee, &rows[1..], path_types)?;
-                    return Ok(crate::core::SumCont::Leaf(body));
+                    return Ok(std::rc::Rc::new(crate::core::SumCont::Leaf(body)));
                 }
                 Core::ConstBool(false) => return build_tree(db, scrutinee, &rows[1..], path_types),
                 _ => {}
             }
             let els = build_tree(db, scrutinee, &rows[1..], path_types)?;
-            return Ok(crate::core::SumCont::Guarded {
+            return Ok(std::rc::Rc::new(crate::core::SumCont::Guarded {
                 cond,
                 body,
-                els: std::rc::Rc::new(els),
-            });
+                els,
+            }));
         }
         _ => {}
     }
@@ -8925,7 +8934,10 @@ fn build_tree_ft(
         }
         sum_arms.push(crate::core::SumArm {
             disc: Some(d),
-            cont: cont?,
+            // `SumArm.cont` is a by-value `SumCont` (a switch arm is not a shared-tail site — the
+            // exponential sharing is the LitTest fall-through, which stays `Rc`). Unwrap the Rc: reuse the
+            // inner value if uniquely owned, else clone it (the common leaf/switch arm is uniquely owned).
+            cont: std::rc::Rc::try_unwrap(cont?).unwrap_or_else(|rc| (*rc).clone()),
         });
     }
     if has_default {
@@ -8933,7 +8945,10 @@ fn build_tree_ft(
         // already constrain (all in `path_types`), so no extension is needed.
         let sub_rows: Vec<MatchRow> = default_rows.into_iter().map(|(_, r)| r).collect();
         let cont = build_tree(db, scrutinee, &sub_rows, path_types)?;
-        sum_arms.push(crate::core::SumArm { disc: None, cont });
+        sum_arms.push(crate::core::SumArm {
+            disc: None,
+            cont: std::rc::Rc::try_unwrap(cont).unwrap_or_else(|rc| (*rc).clone()),
+        });
     }
     // FOLD when the switched sub-value's discriminant is STATICALLY KNOWN (a `SumNew` core — its tag is
     // fixed even if its payload is runtime): pick the matching arm's continuation directly, no runtime
@@ -8943,17 +8958,17 @@ fn build_tree_ft(
         for arm in &sum_arms {
             if arm.disc.is_none() || arm.disc == Some(disc) {
                 trace!(target: "rcdzc::fold", "sum match folds to a selected arm (known discriminant)");
-                return Ok(arm.cont.clone());
+                return Ok(std::rc::Rc::new(arm.cont.clone()));
             }
         }
     }
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, depth = switch_path.len(), arms = sum_arms.len(), "sum switch (decision-tree node)");
-    Ok(crate::core::SumCont::Switch {
+    Ok(std::rc::Rc::new(crate::core::SumCont::Switch {
         // The emitted `SumCont` carries a plain `Vec<PathStep>` (backends read it); convert the shared
         // switch path ONCE here at the tree node, not per level.
         path: switch_path.to_vec(),
         arms: sum_arms,
-    })
+    }))
 }
 
 /// Build a runtime `SumCont::LitTest` node: test the sub-value at `lit_path` against `probe`; on a match
@@ -8972,7 +8987,7 @@ fn build_lit_test(
     else_rows: &[MatchRow],
     path_types: &mut PathTypes,
     fallthrough: Option<&std::rc::Rc<crate::core::SumCont>>,
-) -> Result<crate::core::SumCont, Reject> {
+) -> Result<std::rc::Rc<crate::core::SumCont>, Reject> {
     // A `Str` probe that did NOT fold (the payload is a RUNTIME value, not a constant `Core::ConstStr`) is
     // emitted as a runtime STRING-EQUALITY test: the backend walks `lit_path` to the leaf String handle,
     // `bytes-compact`s it (rope→canonical flat, refcount-neutral — the borrowed payload is not consumed),
@@ -9025,21 +9040,18 @@ fn build_lit_test(
             // the matched arm alone covers the passed world (it is an unconditional leaf after its length
             // test). Thread the OUTER `fallthrough` unchanged there (identical to the pre-S3 append when the
             // tail contributes nothing).
+            // `build_tree_ft` now returns `Rc<SumCont>`, so `then_`/`els` are ALREADY the shared Rc — no
+            // extra `Rc::new` wrap (that would nest `Rc<Rc<…>>` and, worse, break the ptr-identity the
+            // emit-side dedup keys on).
             let then_ = if passed.is_empty() {
                 build_tree_ft(db, scrutinee, matched_rows, path_types, fallthrough)?
             } else {
-                let passed_tail = std::rc::Rc::new(build_tree_ft(
-                    db,
-                    scrutinee,
-                    &passed,
-                    path_types,
-                    fallthrough,
-                )?);
+                let passed_tail = build_tree_ft(db, scrutinee, &passed, path_types, fallthrough)?;
                 build_tree_ft(db, scrutinee, matched_rows, path_types, Some(&passed_tail))?
             };
             let refined = refine_listlen_else_rows(else_rows, &lit_path, len, at_least);
             let els = build_tree_ft(db, scrutinee, &refined, path_types, fallthrough)?;
-            (std::rc::Rc::new(then_), std::rc::Rc::new(els))
+            (then_, els)
         }
         crate::core::Probe::Bool(b) => {
             // Refining: matched arm sees the real tail; els is refined. (No sharing — a Bool test has only
@@ -9050,28 +9062,25 @@ fn build_lit_test(
             let then_ = build_tree_ft(db, scrutinee, &matched, path_types, fallthrough)?;
             let refined = refine_bool_else_rows(db, else_rows, &lit_path, b);
             let els = build_tree_ft(db, scrutinee, &refined, path_types, fallthrough)?;
-            (std::rc::Rc::new(then_), std::rc::Rc::new(els))
+            (then_, els)
         }
         _ => {
             // Non-refining (Int/Str): compile the fall-through ONCE and SHARE it across `then_` and `els`.
-            let tail = std::rc::Rc::new(build_tree_ft(
-                db,
-                scrutinee,
-                else_rows,
-                path_types,
-                fallthrough,
-            )?);
+            // `tail` is the shared `Rc<SumCont>`; threading it as the matched arm's `fallthrough` makes the
+            // arm's terminus return this SAME Rc (see `build_tree_ft`'s empty-matrix arm) — so `els` and
+            // `then_`'s deepest terminus are `Rc::ptr_eq`, the DAG the emit-side dedup relies on.
+            let tail = build_tree_ft(db, scrutinee, else_rows, path_types, fallthrough)?;
             let then_ = build_tree_ft(db, scrutinee, matched_rows, path_types, Some(&tail))?;
-            (std::rc::Rc::new(then_), tail)
+            (then_, tail)
         }
     };
-    Ok(crate::core::SumCont::LitTest {
+    Ok(std::rc::Rc::new(crate::core::SumCont::LitTest {
         // The emitted node carries a plain `Vec<PathStep>`; convert the shared lit path once here.
         path: lit_path.to_vec(),
         probe,
         then_,
         els,
-    })
+    }))
 }
 
 /// Refine `else_rows` for the ELSE branch of a `Bool(tested)` test at `lit_path`: in that branch the

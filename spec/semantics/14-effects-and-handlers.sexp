@@ -165,6 +165,25 @@
   (host-calls (call ask.ask) (call ask.ask))
   (output (: 7 Int64)))
 
+(case "an effectful host arg to a multi-use function parameter is evaluated ONCE, not re-performed per use"
+  (doc    "Witnesses core-semantics.md #Applying A Function (the parameter binds to a single evaluated
+           argument value) + capabilities-and-effects.md #A Run Is A Deterministic Function Of Its Input And
+           Responses (the host-call sequence is deterministic). `(mk (ask.ask))` passes a HOST perform as the
+           argument to `mk`, whose parameter `s` is used THREE times. Strict by-value binding evaluates the
+           argument ONCE at the call and binds its value to `s` — so the run makes exactly ONE host call
+           (consuming the single response 5) and the three uses read the bound 5: (+ (+ 5 5) 5) = 15. A
+           call-by-name substitution would re-perform `ask.ask` per use (three calls) — a duplicated
+           observable effect, which this pins against.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (def (mk (: s Int64)) (+ (+ s s) s))
+            (def (main)
+              (host (ask)
+                (mk (ask.ask)))) (export main)))
+  (host-responses (respond ask.ask (: 5 Int64)))
+  (host-calls (call ask.ask))
+  (output (: 15 Int64)))
+
 (case "a delegated effect performed inside an intra-program handler"
   (doc    "Witnesses the composition of the two routings (capabilities-and-effects.md
            #A Run Is A Deterministic Function Of Its Input And Responses with #An Effect That Does Not

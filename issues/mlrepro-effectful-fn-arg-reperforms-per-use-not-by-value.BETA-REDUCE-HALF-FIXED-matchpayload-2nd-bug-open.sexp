@@ -44,3 +44,15 @@
 ; in-program effect programs are UNAFFECTED; only a HOST op passed as a multi-use fn-arg re-performs. This
 ; further supports PARK (the affected surface is narrow — host-delegated multi-use fn-arg — and the let-idiom
 ; is the clean workaround). If fixed, the trigger can be narrowed to a HostCall-reaching arg specifically.
+
+; ── UNPARKED + β-REDUCE HALF FIXED (v-effects, 2026-07-18, MR cbe42eddf; operator directive: no parking) ──
+; The call-by-name re-perform is FIXED in the β-reduce funnel (apply_lambda_uncached): an effectful arg to a
+; param used >=2x is now LET-BOUND once (evaluate-once), so the SCALAR-continuation shape folds to 1 host
+; call (gated: rcdzc test an_effectful_host_arg_to_a_multiuse_scalar_fn_param_evaluates_once + corpus case
+; "an effectful host arg to a multi-use function parameter is evaluated ONCE", value 15 / one ask.ask).
+; The COMPOUND shape in THIS repro ((T s s s) fed to a destructuring match) STILL emits 3 — the fix EXPOSED
+; a SECOND, INDEPENDENT bug: Core::SumPayload RE-LOWERS a host-reaching match scrutinee once per payload
+; binder (a,b,c). This is a MATCH-LOWERING scrutinee-reevaluation bug (lower.rs lower_match_sum / backend
+; SumPayload emit), NOT β-reduce. FIX = A-normalize a host-reaching match scrutinee (bind once above the
+; match so every SumPayload reads a LocalRef). NEXT increment (touches hot match-lowering + backend select).
+; The known-miscompile pin test is updated (documents the 2nd bug, still asserts 3).

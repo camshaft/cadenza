@@ -8,6 +8,7 @@ import { UpdateToast } from "./components/UpdateToast.tsx";
 import { clearAutoReloadGuard } from "./components/chunkError.ts";
 import { SyntaxProvider } from "./syntax/SyntaxContext.tsx";
 import { ProgressProvider } from "./progress/ProgressContext.tsx";
+import { RunnableRegistryProvider } from "./components/RunnableRegistry.tsx";
 import "./index.css";
 
 // The playground is a heavy, full-screen route — lazy-load it so the guide's first paint stays light.
@@ -92,7 +93,9 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ProgressProvider>
       <SyntaxProvider>
-        <RouterProvider router={router} />
+        <RunnableRegistryProvider>
+          <RouterProvider router={router} />
+        </RunnableRegistryProvider>
       </SyntaxProvider>
     </ProgressProvider>
   </StrictMode>,

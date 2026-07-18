@@ -506,6 +506,42 @@ fn cdz_run_arg_type_error_names_the_cadenza_type_not_the_component_model_spellin
 }
 
 #[test]
+fn cdz_run_arg_coercion_respects_narrow_width_bounds_no_silent_wrap() {
+    // A narrow-width param must ACCEPT its in-range values verbatim and REJECT an out-of-range one — never
+    // silently WRAP it (a `256` taken as `0` for a `UInt8` would be a silent miscompile of the caller's
+    // intent). Pins the boundary behavior EVEN THOUGH it currently holds, so a future `coerce_one` change
+    // (e.g. a wrapping `as` cast instead of a checked parse) can't quietly flip it. `UInt8` identity export:
+    // 255 (max) passes through as 255; 256 (max+1) and -1 (below 0) are rejected, not wrapped to 0/255.
+    let (dir, wasm) = compile_component(
+        "u8bounds",
+        "idu8",
+        "(module m (def (idu8 (: n UInt8)) n) (export idu8))",
+    );
+    let w = wasm.to_str().unwrap();
+
+    let (ok, out, err) = run(&["run", w, "--call", "idu8", "--arg", "255"]);
+    assert!(ok, "the in-range max 255 must run: {err}");
+    assert_eq!(
+        out.trim(),
+        "255",
+        "255 passes through unchanged (no wrap): {out}"
+    );
+
+    let (ok, _o, err) = run(&["run", w, "--call", "idu8", "--arg", "256"]);
+    assert!(
+        !ok && err.contains("as UInt8"),
+        "256 is out of UInt8 range → rejected (NOT silently wrapped to 0): {err}"
+    );
+
+    let (ok, _o, err) = run(&["run", w, "--call", "idu8", "--arg", "-1"]);
+    assert!(
+        !ok && err.contains("as UInt8"),
+        "-1 is below UInt8 range → rejected (NOT wrapped to 255): {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn cdz_run_with_timeout_secs_zero_is_unbounded_not_an_instant_trap() {
     // `CDZ_RUN_TIMEOUT_SECS=0` is the documented UNBOUNDED escape hatch (debugger / a legitimately long
     // run). Regression (breaker): with the shared engine's `epoch_interruption(true)`, a store's DEFAULT

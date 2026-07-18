@@ -54273,17 +54273,21 @@ mod stage1 {
 
     #[test]
     fn an_effectful_host_arg_to_a_multiuse_fn_param_reperforms_is_a_known_miscompile() {
-        // KNOWN MISCOMPILE (PARKED per concierge ruling 2026-07-18, deferred-not-denied — fix needs the hot
-        // universal β-reduce, disproportionate to a rare non-blocking shape; a clean let-idiom workaround
-        // exists). An arg that reaches a HOST CALL, bound to a fn param used MULTIPLE times, is substituted
-        // BY NAME and RE-PERFORMS per use instead of evaluating ONCE by-value (strict-eval violation):
-        // `(sum3 (mk (E.get)))` with `mk s = (T s s s)` emits THREE host `get` calls, WANT ONE. HOST-ONLY —
-        // the in-program-handler analogue evaluates once (the fold binds the resume value once), so memo/DB/
-        // in-program effect programs are unaffected. WORKAROUND: `(let ((s (E.get))) (sum3 (T s s s)))` → 1
-        // call. This test PINS the current wrong count (3) so a regression to a DIFFERENT wrong shape / an
-        // accidental change is caught, and FLIPS to 1 when the β-reduce evaluate-once fix lands (a real
-        // consumer forcing it + a full-corpus regression budget). Ledger: filed
-        // queue/mlrepro-effectful-fn-arg-reperforms-per-use-not-by-value.KNOWN-MISCOMPILE-PARKED.sexp.
+        // KNOWN MISCOMPILE — the β-reduce half is now FIXED (see the SCALAR sibling
+        // `an_effectful_host_arg_to_a_multiuse_scalar_fn_param_evaluates_once`, which folds to 1). This
+        // COMPOUND-into-a-destructuring-match variant STILL emits 3 because of a SECOND, INDEPENDENT bug the
+        // β-reduce fix EXPOSED: the arg is now correctly let-bound once — `(mk (E.get))` reduces to `(let
+        // ((s (E.get))) (T s s s))` — but that `let` sits in the SCRUTINEE position of `(match _ ((T a b c)
+        // …))`, and `Core::SumPayload` RE-LOWERS the scrutinee's `core_of` once PER payload binder (`a`,
+        // `b`, `c`). The scrutinee reaches a host call, so each of the 3 payload reads re-emits it → 3 host
+        // calls, want 1. This is a MATCH-LOWERING scrutinee-reevaluation bug (lower.rs `lower_match_sum` /
+        // the backend `Core::SumPayload` emit), NOT the β-reduce call-by-name bug (that one is closed). The
+        // scalar-continuation shape (`s` used in arithmetic, no destructuring match) already folds to 1. FIX
+        // = A-normalize a host-reaching match scrutinee (bind it to one `Core::Let` above the match so every
+        // `SumPayload` reads a `LocalRef`, not a re-lowered HostCall). Touches the hot match-lowering +
+        // backend select path — its own focused increment. This test PINS the current wrong count (3) so a
+        // regression to a DIFFERENT wrong shape is caught, and FLIPS to 1 when the scrutinee-share fix lands.
+        // Ledger: queue/mlrepro-effectful-fn-arg-reperforms-per-use-not-by-value.KNOWN-MISCOMPILE-PARKED.sexp.
         let src = "(do (effect E (op get (-> Unit Int64))) (type Trip (T Int64 Int64 Int64)) \
                    (def (mk s) (T s s s)) (def (sum3 t) (match t ((T a b c) (+ (+ a b) c)))) \
                    (def (main) (host (E) (sum3 (mk (E.get))))) (export main))";
@@ -54297,6 +54301,36 @@ mod stage1 {
             host_calls, 3,
             "KNOWN MISCOMPILE: an effectful host arg to a multi-use param re-performs (3 host calls); \
              want 1 once the β-reduce evaluate-once fix lands — flip this to 1 then"
+        );
+    }
+
+    #[test]
+    fn an_effectful_host_arg_to_a_multiuse_scalar_fn_param_evaluates_once() {
+        // EVALUATE-ONCE (strict eval, the fix for the call-by-name re-perform miscompile). A HOST-delegated
+        // op passed as the argument to a fn whose param is used MULTIPLY was substituted BY NAME and
+        // re-performed per use: `(mk (E.get))` with `mk s = (+ (+ s s) s)` emitted THREE host `get` calls,
+        // violating strict by-value binding (core-semantics.md §Applying A Function binds the parameter to a
+        // single evaluated value; §283) + the deterministic host-call sequence (capabilities §75). FIX =
+        // `apply_lambda_uncached` LET-BINDS an effectful multi-use argument ONCE at the call site (β-reduce
+        // leaves the param out of the substitution, wraps the reduced body in `(let ((s (E.get))) …)`), so
+        // the perform runs once and every use reads the bound local — the compiler now does automatically
+        // what the hand-written `(let ((s (E.get))) …)` workaround did. A single-use param, or a pure arg,
+        // is untouched (byte-identical). This SCALAR-continuation shape (`s` used in arithmetic) folds to
+        // ONE host call; the `(T s s s)`-into-a-destructuring-match shape hits a SECOND, independent bug
+        // (`Core::SumPayload` re-lowers a host-reaching scrutinee per payload binder — see
+        // `an_effectful_host_arg_to_a_multiuse_fn_param_reperforms_is_a_known_miscompile`).
+        let src = "(do (effect E (op get (-> Unit Int64))) \
+                   (def (mk s) (+ (+ s s) s)) \
+                   (def (main) (host (E) (mk (E.get)))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("compiles (an effectful multi-use arg is now let-bound, not re-performed)");
+        let host_calls = count_opcode(&bytes, |op| {
+            matches!(op, wasmparser::Operator::Call { function_index: 0 })
+        });
+        assert_eq!(
+            host_calls, 1,
+            "evaluate-once: an effectful host arg to a multi-use scalar param is bound once (1 host call), \
+             not re-performed per use"
         );
     }
 

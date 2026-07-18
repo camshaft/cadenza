@@ -735,7 +735,11 @@ pub enum Core {
         /// can collapse the root switch to the selected arm's continuation — a nested [`SumCont::Switch`],
         /// or a [`SumCont::Guarded`] (a guarded arm of the selected variant). A root that is a bare
         /// `Leaf` folds to its body in `lower` and never reaches here.
-        root: Box<SumCont>,
+        /// (An `Rc`, not a `Box`: the decision tree is a DAG — a shared fall-through tail is reachable
+        /// from multiple arms as the SAME `Rc<SumCont>` — and the emit-side dedup keys on that pointer
+        /// identity, so the root must be an `Rc` the backend can thread ptr-equality through, not a
+        /// `Box` that would force a unique owner.)
+        root: std::rc::Rc<SumCont>,
     },
     /// A match over a RUNTIME `List` scrutinee, dispatched by LENGTH (a constant list folds the selected
     /// arm in `lower`). Each arm is a [`ListArm`] — a length CONDITION (exact `n` for a fixed-arity

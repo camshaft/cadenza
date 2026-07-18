@@ -10,9 +10,10 @@
 /// lint gutter + type-on-hover — gated so a chapter full of editors doesn't compile-storm on load.
 /// "Open in playground" hands the current buffer to the full `/playground` experience.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { LazyCodeEditor as CodeEditor } from "../editor/LazyCodeEditor.tsx";
 import { useCadenzaEditor, wrapModule, type EditorOutcome } from "./useCadenzaEditor.ts";
+import { useRunnableRegistry } from "./RunnableRegistry.tsx";
 import { StatusIcon } from "./StatusIcon.tsx";
 import { OpenInPlayground } from "./OpenInPlayground.tsx";
 import type { Surface } from "../syntax/SyntaxContext.tsx";
@@ -45,6 +46,10 @@ function prepareWrapped(editorText: string, surface: Surface, wrap: boolean) {
 }
 
 interface Props {
+  /** Stable id for clickable "change X to Y" prose to target. A `<TryChange example="<id>">` elsewhere
+   *  on the page resolves to THIS Runnable (via the RunnableRegistry) and drives its buffer + run. Only
+   *  needed on a Runnable that clickable prose refers to; the id must be unique on the page (gated). */
+  id?: string;
   /** The snippet source, in `authoredIn` surface. Made runnable (export/main supplied) if `wrap`. */
   source: string;
   /** Surface the `source` prop is written in. Default s-expr (the corpus form). */
@@ -73,17 +78,41 @@ type TestStatus =
   | { phase: "busy" }
   | { phase: "done"; outcome: TestRunOutcome };
 
-export function Runnable({ source, authoredIn = "sexpr", wrap = true, expect = "value", title, mode = "run", prelude = true }: Props) {
+export function Runnable({ id, source, authoredIn = "sexpr", wrap = true, expect = "value", title, mode = "run", prelude = true }: Props) {
   if (mode === "test") return <TestRunnable source={source} authoredIn={authoredIn} title={title} prelude={prelude} />;
-  return <RunRunnable source={source} authoredIn={authoredIn} wrap={wrap} expect={expect} title={title} />;
+  return <RunRunnable id={id} source={source} authoredIn={authoredIn} wrap={wrap} expect={expect} title={title} />;
 }
 
-function RunRunnable({ source, authoredIn = "sexpr", wrap = true, expect = "value", title }: Props) {
+function RunRunnable({ id, source, authoredIn = "sexpr", wrap = true, expect = "value", title }: Props) {
   const editor = useCadenzaEditor(source, authoredIn, wrap);
   const [status, setStatus] = useState<Status>({ phase: "idle" });
   // The minimal IDE (squiggles + hover) turns on once the reader focuses the editor, so a page full
   // of examples doesn't fire a compile per editor on load.
   const [ideOn, setIdeOn] = useState(false);
+
+  // Register this Runnable under its `id` so clickable "change X to Y" prose (`<TryChange>`) can drive
+  // it: apply a variant/patch to the buffer + run, showing the result inline here. Only when an `id` is
+  // set (the common Runnable has none). The handle closes over `editor`, so re-register when it changes;
+  // the phase-setting wrappers below route the run outcome into THIS pane's status just like doRun.
+  const registry = useRunnableRegistry();
+  useEffect(() => {
+    if (!id || !registry) return;
+    // Drive the buffer via an apply-and-run primitive, routing its outcome into THIS pane's status (busy
+    // → done) exactly like doRun. A patch that failed the exactly-once rule resolves to null (no run) —
+    // leave the pane untouched and propagate the null so the caller (<TryChange>) can react.
+    const runInto = async (apply: Promise<EditorOutcome | null>): Promise<EditorOutcome | null> => {
+      setStatus({ phase: "busy" });
+      const outcome = await apply;
+      setStatus(outcome === null ? { phase: "idle" } : { phase: "done", outcome });
+      return outcome;
+    };
+    registry.register(id, {
+      applyVariant: (src, s) => runInto(editor.applyAuthored(src, s)) as Promise<EditorOutcome>,
+      applyPatch: (find, replace) => runInto(editor.applyPatch(find, replace)),
+      reset: () => { editor.reset(); setStatus({ phase: "idle" }); },
+    });
+    return () => registry.unregister(id);
+  }, [id, registry, editor]);
 
   async function doRun() {
     setStatus({ phase: "busy" });

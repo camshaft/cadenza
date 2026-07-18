@@ -9,17 +9,18 @@ export default function Effects() {
     <article>
       <H1>Effects &amp; handlers</H1>
       <Lede>
-        A function can ask for something (a random choice, the current setting, a way to bail out) and
-        leave <em>how</em> it's answered to whoever runs it. That's an effect.
+        An effect lets a function ask for something like a random choice or the current setting or a way
+        to bail out while leaving how that request is answered to whoever runs it.
       </Lede>
 
       <P>
-        Most languages bake the answers in: a function that needs a random number calls the global
-        random generator; one that needs to give up throws an exception. Cadenza splits the two apart. A
-        function <em>performs</em> an operation (it names what it needs) and a <C>handle</C> around it
-        decides what performing means. The performing code doesn't know or care who's listening. We'll
-        build up from a handler right next to the performance to the real payoff: a function that performs
-        an operation some <em>other</em> function, further out, decides how to answer.
+        Most languages bake the answer into the function itself, so one that needs a random number calls
+        the global generator and one that needs to give up throws an exception. Cadenza splits those two
+        apart, because a function performs an operation by naming what it needs while a <C>handle</C>{" "}
+        around it decides what performing that operation means, and the performing code never knows or
+        cares who is listening. We'll build up from a handler sitting right next to the performance toward
+        the real payoff, where a function performs an operation that some other function further out
+        decides how to answer.
       </P>
 
       <H2>Declaring and performing an operation</H2>
