@@ -366,7 +366,47 @@ pub fn gen_ty_of_wrapper_param(db: &crate::db::Db, wrapper_name: &str) -> Option
     } else {
         vec![root]
     };
-    classify_ty(&db.ast, ty_node, &items)
+    let mut gt = classify_ty(&db.ast, ty_node, &items)?;
+    // RE-APPLY a type-level `@invariant` constraint from `db.invariants` (NOT the AST wrapper). This runs at
+    // `cdz test` time — AFTER `strip_annotations`, which REMOVES the `(@ (invariant Q) (type …))` wrapper
+    // (`invariant` is in KNOWN_ANNOTATIONS) but RECORDS the predicate into `db.invariants`. So `classify_sum`
+    // above (reading the now-stripped AST) sees a BARE type and produces an UNCONSTRAINED `Int`/`List` — but
+    // the GENERATOR ran pre-strip and DID constrain it, so the decoder must match or a counterexample renders
+    // the raw pool int (e.g. `Pct(-716…)`) instead of the in-domain value. Re-apply via `Db::invariant_of`.
+    reapply_recorded_invariant(db, &mut gt);
+    Some(gt)
+}
+
+/// Re-apply a type-level `@invariant` (from `db.invariants`, which survives `strip_annotations`) to a
+/// `GenTy::Sum` newtype — mirroring `classify_sum`'s AST-sourced application, but sourcing the predicate from
+/// the Db so it works POST-STRIP (the decoder path). For a single-variant newtype whose payload is an `Int`
+/// with a recognized range invariant → `IntRange`; a `List` with a min-length invariant → floored `min_len`.
+/// Keeps the decoder's `GenTy` identical to the generator's, so a counterexample decodes to the in-domain
+/// value the wrapper actually drew.
+fn reapply_recorded_invariant(db: &crate::db::Db, gt: &mut GenTy) {
+    let GenTy::Sum {
+        type_name,
+        variants,
+    } = gt
+    else {
+        return;
+    };
+    // Resolve the sum's TypeDecl occ by name → its recorded invariant predicate (occ in the same arena).
+    let Some(decl) = db.type_decls.iter().find(|d| &d.name == type_name) else {
+        return;
+    };
+    let Some(pred) = db.invariant_of(decl.occ) else {
+        return;
+    };
+    if let Some((lo, hi)) = invariant_int_range(&db.ast, pred)
+        && let [(_, Some(GenTy::Int))] = variants.as_slice()
+    {
+        variants[0].1 = Some(GenTy::IntRange { lo, hi });
+    } else if let Some(min) = min_len_for_param(&db.ast, pred, "it")
+        && let [(_, Some(GenTy::List(_, ml)))] = variants.as_mut_slice()
+    {
+        *ml = (*ml).max(min);
+    }
 }
 
 /// The type-nesting depth beyond which classification declines. Bounds the recursion so a RECURSIVE sum

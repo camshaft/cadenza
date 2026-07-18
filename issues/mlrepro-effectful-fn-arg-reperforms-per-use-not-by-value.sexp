@@ -34,3 +34,13 @@
   (def (sum3 t) (match t ((T a b c) (+ (+ a b) c))))
   (def (main) (host (E) (sum3 (mk (E.get)))))
   (export main))
+
+; ── SCOPE NARROWING (v-effects, 2026-07-18): HOST-DELEGATED effects ONLY ──
+; The in-program-HANDLER version of the same shape — (handle E 0 ((get (u) s (resume s (+ s 1)))) (sum3 (mk
+; (E.get)))) — returns 0 (evaluate-ONCE: (T 0 0 0) → sum 0), CORRECT. So the effect FOLD already evaluates a
+; handled perform once (its arm-substitution + threading bind the resume value once). The re-perform bug is
+; specific to a HOST-DELEGATED effect (a Core::HostCall, which does NOT go through the fold — it lowers as a
+; real boundary call, and the β-reduce of a pure multi-use helper copies the HostCall node N×). So: memo/DB/
+; in-program effect programs are UNAFFECTED; only a HOST op passed as a multi-use fn-arg re-performs. This
+; further supports PARK (the affected surface is narrow — host-delegated multi-use fn-arg — and the let-idiom
+; is the clean workaround). If fixed, the trigger can be narrowed to a HostCall-reaching arg specifically.

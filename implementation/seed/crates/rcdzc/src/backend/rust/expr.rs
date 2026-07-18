@@ -3720,18 +3720,6 @@ fn emit_sum_cont(
             // this the raw `[Payload]` found no bind and declined "sum payload has no bound match arm".
             let path_owned = erase_nominal_switch_path(db, scrutinee, path);
             let path = &path_owned[..];
-            // A probe path that reads through a LIST ELEMENT (`(list (W.Wrap 5) .. r)`) compares against a
-            // Vec cell — but the ListNew emit WIDENS a narrow-int element to its i64 cell (`vec![(5u8 as i64),
-            // …]`), so `(xs)[0]` reads i64 while the width-keyed literal below is emitted at the element's
-            // narrow logical width (`5u8`) → E0308. Reconciling that needs the ListNew narrow-element-width
-            // slice (store the element unwidened / widen the literal to match the cell); until then DECLINE a
-            // list-element literal probe (a sound todo, not a miscompile). The direct-scrutinee (empty path)
-            // and tuple-element (width-preserving) shapes are unaffected.
-            if path_reads_through_list_element(db, scrutinee, path) {
-                return Err(Reject::decline(
-                    "a narrow literal-payload probe through a list element is not yet width-reconciled by the Rust backend",
-                ));
-            }
             let subject = emit_sum_payload(db, scrutinee, scrutinee, path, env, ctx)?;
             // A LIST-LENGTH probe (`(Call (list _ .. rest))` — a list PATTERN in a sum-variant payload) tests
             // the subject list's `vec-len`, not a value equality: `== len` for a fixed-arity `(list p0…p{n-1})`,
@@ -3909,55 +3897,6 @@ fn variant_arity_of_ty(db: &mut Db, ty: &Ty, disc: u32) -> usize {
             .unwrap_or(0),
         None => 0,
     }
-}
-
-/// Does walking `path` from `scrutinee`'s type pass through a LIST element (an `Elem`/`RestFrom` step over a
-/// `Ty::List`)? A list stores a narrow-int element WIDENED to its i64 cell (the ListNew emit), so a
-/// width-keyed literal compare against `(xs)[i]` mismatches (i64 cell vs narrow literal) until the ListNew
-/// narrow-element-width slice lands — used to DECLINE such a probe rather than emit an E0308 component.
-fn path_reads_through_list_element(
-    db: &mut Db,
-    scrutinee: StructId,
-    path: &[crate::core::PathStep],
-) -> bool {
-    // A LitTest scrutinee is often itself a `SumPayload { scrutinee, path }` node (the element the enclosing
-    // list/tuple/sum match extracted) with an EMPTY probe path — the actual list-element step then lives on
-    // that inner node, not on `path`. Follow the `SumPayload` chain, prepending each inner path, so the walk
-    // below sees the full read (`xs`'s `[Elem(0)]` element read reached through the SumPayload scrutinee).
-    let mut root = scrutinee;
-    let mut full: Vec<crate::core::PathStep> = Vec::new();
-    while let Core::SumPayload {
-        scrutinee: inner,
-        path: p,
-    } = crate::lower::core_of(db, root)
-    {
-        full.splice(0..0, p.iter().copied());
-        root = inner;
-    }
-    full.extend_from_slice(path);
-    let scrutinee = root;
-    let path = &full[..];
-    let mut cur = type_of(db, scrutinee);
-    for step in path {
-        let base = cur.strip_nominal().clone();
-        match step {
-            crate::core::PathStep::Elem(i) => match &base {
-                Ty::List(_) => return true,
-                Ty::Tuple(elems) => cur = elems.get(*i).cloned().unwrap_or(Ty::Any),
-                _ => return false,
-            },
-            crate::core::PathStep::RestFrom(_) => {
-                return matches!(base, Ty::List(_));
-            }
-            crate::core::PathStep::Payload => {
-                cur = match &base {
-                    Ty::Nominal { inner, .. } => (**inner).clone(),
-                    _ => sum_disc0_payload_ty(db, &base).unwrap_or(Ty::Any),
-                };
-            }
-        }
-    }
-    false
 }
 
 fn ty_at_sum_path(db: &mut Db, scrutinee: StructId, sw_path: &[crate::core::PathStep]) -> Ty {

@@ -57912,6 +57912,47 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_def_returning_a_closure_is_applyable() {
+        // REGRESSION (corpus-bugfix/breaker 6360): a RECURSIVE def whose result is a CLOSURE, applied
+        // directly, declined "value is not applyable" (check rc=0, then a lower decline — a false reject of
+        // the factory-selected-by-recursion idiom). `(selfp n)` recurses to `(selfp 0)` = `(fn (x) (+ x
+        // 100))`; `((selfp 2) 5)` = 105. The head `(selfp 2)` is a recursive `Core::Call` returning a
+        // closure — it cannot β-reduce (no compile-time lambda body; the reduction hits the depth guard),
+        // so its result is a runtime closure HANDLE that must apply via `call_indirect`. Before this,
+        // `head_is_runtime_fn_value` had no arm for an application head, so `runtime_fn_spine` returned
+        // `None` and the apply fell to the NOT_APPLYABLE decline. Fix: recognize a non-reducible `Apply`
+        // head of `Ty::Fn` result as a runtime fn value (the emit materializes the call's returned handle
+        // as the closure cell). The NON-recursive control `((pick b) 5)` already worked (case-of-if /
+        // β-reduction) and must stay on that path — verified by the sibling factory tests above.
+        let recursive = "(module m \
+            (def (selfp (: n Int64)) (if (= n 0) (fn ((: x Int64)) (+ x 100)) (selfp (- n 1)))) \
+            (def (main) ((selfp 2) 5)) (export main))";
+        // COMPILE is the precise guard for the bug (the decline was at check/lower — no artifact was
+        // produced). The recursive closure allocates a runtime cell (`arr-alloc`), so RUNNING it needs the
+        // value-heap runtime; run only when it is present, else skip (like the other heap-run tests).
+        let bytes = compile_component(&crate::codec::encode(&parse(recursive))).expect(
+            "compile — a recursive closure-returner must be applyable, not decline 'not applyable'",
+        );
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping recursive-closure-return run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "105", "selfp(2) → (fn x → x+100) applied to 5")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("recursive closure-return trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_returned_capturing_closure_bound_by_let_and_applied_folds() {
         use wasmtime::component::Val;
         // A capturing closure RETURNED by a function, BOUND with `let`, then APPLIED — the discriminator
