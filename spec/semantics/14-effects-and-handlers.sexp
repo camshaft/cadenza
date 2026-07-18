@@ -184,6 +184,44 @@
   (host-calls (call ask.ask))
   (output (: 15 Int64)))
 
+(case "an effectful host arg flowing into a compound then a destructuring match is evaluated ONCE"
+  (doc    "The compound-into-destructuring-match companion of the multi-use evaluate-once case. `(mk (ask.ask))`
+           passes ONE host perform to `mk`, which builds `(T s s s)` (the arg reused three times), and `sum3`
+           DESTRUCTURES that with a match binding a, b, c. Strict by-value binding + a single-materialized
+           match scrutinee mean the host op runs EXACTLY ONCE (response 5, so s = 5) and the three payload
+           binders read the stored value: (+ (+ 5 5) 5) = 15. A per-use re-perform (call-by-name) or a
+           per-payload-binder re-emission of the match scrutinee would make three host calls — this pins one.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (type Trip (T Int64 Int64 Int64))
+            (def (mk (: s Int64)) (T s s s))
+            (def (sum3 (: t Trip)) (match t ((T a b c) (+ (+ a b) c))))
+            (def (main)
+              (host (ask)
+                (sum3 (mk (ask.ask))))) (export main)))
+  (host-responses (respond ask.ask (: 5 Int64)))
+  (host-calls (call ask.ask))
+  (output (: 15 Int64)))
+
+(case "a nested effectful let inlined into a re-performing body keeps its inner binder"
+  (doc    "A cross-function effectful-let inline: `inner` binds an effect result in a local `let` and reads
+           it in a match arm; `outer` binds `inner()` then PERFORMS AGAIN in its body. The fold inlines
+           `inner` into `outer`, producing a nested `let` whose inner binder `a` must stay in scope for the
+           outer body's continuation (whose threaded out-state references it). Witnesses core-semantics.md
+           #Bindings Introduced By A Pattern Are Scoped To Its Branch + the strict left-fold of handler
+           state: get()=10 binds a=10, put(a) sets state to 10, inner()=10; then outer adds a second get()
+           =10 → 20. A regression against the nested-let inline dropping the inner binder (a spanless
+           CDZ0101).")
+  (input  (do
+            (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit)))
+            (def (inner) (let ((a (St.get))) (match (St.put a) (_ a))))
+            (def (outer) (let ((b (inner))) (+ b (St.get))))
+            (def (main)
+              (handle St 10
+                ((get (u) s (resume s s)) (put (v) s (resume unit v)))
+                (outer))) (export main)))
+  (output (: 20 Int64)))
+
 (case "a delegated effect performed inside an intra-program handler"
   (doc    "Witnesses the composition of the two routings (capabilities-and-effects.md
            #A Run Is A Deterministic Function Of Its Input And Responses with #An Effect That Does Not

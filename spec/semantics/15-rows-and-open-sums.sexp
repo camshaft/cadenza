@@ -45,6 +45,32 @@
   (input  (Record.project (record (a 1) (b 2) (c 3)) (a c)))
   (output (: (record (a 1) (c 3)) (Record (a Int64) (c Int64)))))
 
+(case "a row op over a constant record folds through a single-use let binding"
+  (doc    "Witnesses type-system.md #A Record Is Restricted To A Named Set Of Its Fields (the compile-time
+           fold): a `Record.project`-then-`.` over a record bound by a `let` folds to the field's value when
+           the binding is a compile-time-constant record. `r` is `(record (f 5) (g 8))`; projecting `f` and
+           reading `.f` yields `5`. The control for the multi-use case below — a fold that must see through a
+           let binding, not only a record literal written inline at the projection site.")
+  (input  (do
+            (def (main) (let ((r (record (f 5) (g 8)))) (. (Record.project r (f)) f)))
+            (export main)))
+  (output (: 5 Int64)))
+
+(case "a row op over a constant record folds through a multi-use let binding"
+  (doc    "Witnesses type-system.md #A Record Is Restricted To A Named Set Of Its Fields (the compile-time
+           fold sees through a SHARED binding): a constant record bound once and PROJECTED TWICE folds at
+           each site, not just the first. `r` is `(record (f 5) (g 8))`; `.f` over `(project r (f))` is `5`
+           and `.g` over `(project r (g))` is `8`, summing to `13`. Guards against a regression where a
+           multi-use `let` binding is seen as a runtime (Core::LocalRef) record and the row op wrongly
+           declines with a misleading \"runtime record\" message even though every value is constant — the
+           fold must follow the binder to the constant record at every use, not only a singly-used one.")
+  (input  (do
+            (def (main)
+              (let ((r (record (f 5) (g 8))))
+                (+ (. (Record.project r (f)) f) (. (Record.project r (g)) g))))
+            (export main)))
+  (output (: 13 Int64)))
+
 (case "projecting a record onto an absent field is rejected"
   (doc    "Witnesses type-system.md #A Record Is Restricted To A Named Set Of Its Fields (2nd sentence):
            a projection naming a field the operand does not contain is a compile-time rejection (CDZ0212),

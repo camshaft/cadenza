@@ -221,6 +221,40 @@
   (input  (Bytes.slice (Bytes.of (list 10 20 30 40)) -1 2))
   (output (: (None unit) (Option Bytes))))
 
+; The slice bounds above are compile-time constants (the fold decides in/out of bounds statically). A
+; slice whose START and LENGTH are RUNTIME parameters cannot fold: the bounds check `0 <= start` and
+; `start + len <= length` runs as emitted instructions over the erased magnitudes, returning Some/None.
+; This pins the runtime boundary arithmetic — the same-footing fallibility of the const cases, now
+; decided at run time — including the two faces a signed→unsigned confusion would corrupt: a NEGATIVE
+; length and an i64-MAX length must both yield None (the addition `start + len` is a checked signed
+; compare, never a wrap into a huge unsigned window that spuriously "fits").
+
+(case "a runtime-parameter start and length are bounds-checked at run time, yielding Some or None"
+  (doc    "`(Bytes.slice b start len)` with `start` and `len` runtime Int64 parameters over a 5-byte
+           sequence: the fold cannot decide, so the bounds check runs as emitted code and returns Some
+           (whose `Bytes.len` is the slice's length) or None. The grid pins each boundary — whole
+           (0,5)=5, an empty slice AT the end (5,0)=0 present as Some, one byte too long (0,6)=None, the
+           last single byte (4,1)=1, one past (4,2)=None — and the two SIGNEDNESS faces a `start+len`
+           computed in unsigned space would miscompile: a NEGATIVE length (2,-1) and the i64-MAX length
+           (0, 9223372036854775807) must BOTH be None, not a wrap that appears to fit. A start at the
+           length with any positive len (5,1)=None. Companion of the const past-end/negative-start cases,
+           decided at run time; the erased bounds arithmetic is a checked signed compare.")
+  (input  (do
+            (def (sl (: start Int64) (: len Int64))
+              (match (Bytes.slice (Bytes.of (list 10 20 30 40 50)) start len)
+                ((Option.Some s) (Bytes.len s))
+                ((Option.None) -1)))
+            (def (main (: start Int64) (: len Int64)) (sl start len))
+            (export main)))
+  (call main (: 0 Int64) (: 5 Int64))                  (output (: 5 Int64))
+  (call main (: 5 Int64) (: 0 Int64))                  (output (: 0 Int64))
+  (call main (: 0 Int64) (: 6 Int64))                  (output (: -1 Int64))
+  (call main (: 4 Int64) (: 1 Int64))                  (output (: 1 Int64))
+  (call main (: 4 Int64) (: 2 Int64))                  (output (: -1 Int64))
+  (call main (: 2 Int64) (: -1 Int64))                 (output (: -1 Int64))
+  (call main (: 0 Int64) (: 9223372036854775807 Int64)) (output (: -1 Int64))
+  (call main (: 5 Int64) (: 1 Int64))                  (output (: -1 Int64)))
+
 ; --- Compacting a slice preserves its value while releasing shared storage ---------------
 ; A slice MAY retain its parent's whole storage to represent a small range of it (a view holds the
 ; parent alive). `(Bytes.compact b)` derives a value equal to `b` whose storage is independent of what

@@ -6928,6 +6928,47 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     ))
 }
 
+/// Whether the scrutinee subtree reaches a HOST-DELEGATED perform, checked WITHOUT lowering — a purely
+/// resolved/AST walk (no `core_of`). This is the gate for keeping the `MatchSum` scrutinee-materialization
+/// wrapper on a single-arm `Leaf` fold (so a host-reaching scrutinee is evaluated ONCE, not re-emitted per
+/// payload binder). CRITICAL that it does NOT call `core_of`: `subtree_reaches_host_call` (the memoized
+/// lowering-based sibling) forces `core_of` on the scrutinee mid-`lower_match_sum`, locking in a lowering
+/// decision in the wrong order and PERTURBING the emit of UNRELATED matches (a curried-ctor scrutinee
+/// lowered to an invalid module; a newtype-erasure byte-identity broke) — the memoization-order hazard the
+/// `should_keep_binding` lambda short-circuits warn about. A resolved walk sees a perform as an `Apply`
+/// whose head is an `effect_op_of`; a host-delegated one is the concern (an in-program-handled perform folds
+/// away in `reduce_handle` and never re-emits). CONSERVATIVE: reports ANY perform in the scrutinee (a
+/// handled one that survives to a runtime match scrutinee is rare and the wrapper is still correct — it only
+/// binds the scrutinee once); follows NON-RECURSIVE callee bodies, bounded depth, over-reports past the bound.
+fn scrutinee_reaches_host_perform(db: &mut Db, scrutinee: StructId) -> bool {
+    fn walk(db: &mut Db, node: StructId, depth: u32) -> bool {
+        if depth > 24 {
+            return true; // too deep — assume it may perform (safe over-report; forces the wrapper)
+        }
+        if let Resolved::Apply { head, args } = resolved_of(db, node) {
+            if crate::eval::effect_op_of(db, head).is_some() {
+                return true;
+            }
+            if let Some(callee) = crate::eval::lambda_body(db, head)
+                .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+            {
+                if crate::eval::is_recursive(db, callee) {
+                    return false; // a recursive callee is not inlined into the scrutinee — no re-emit dup
+                }
+                if walk(db, callee, depth + 1) {
+                    return true;
+                }
+            }
+            return args.iter().any(|&a| walk(db, a, depth + 1));
+        }
+        match db.ast.get(node).clone() {
+            crate::ast::Struct::List(children) => children.iter().any(|&c| walk(db, c, depth + 1)),
+            crate::ast::Struct::Atom(_) => false,
+        }
+    }
+    walk(db, scrutinee, 0)
+}
+
 fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     // The scrutinee must be a COMPOUND the decision tree matches — a SUM (its type gives the root variant
     // set to switch on), a TUPLE (no discriminant; `Elem`-path binders/lit-tests), or a RECORD (no
@@ -6983,8 +7024,26 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     let mut path_types: PathTypes = std::collections::HashMap::new();
     path_types.insert(Vec::new(), std::rc::Rc::new(scrut_ty));
     match build_tree(db, scrutinee, &rows, &mut path_types) {
-        // The whole match reduces to one body (a top-level catch-all, or a fully constant-folded tree).
-        // `build_tree` now returns `Rc<SumCont>`; match the Leaf shape through the Rc borrow.
+        // The whole match reduces to one body (a top-level catch-all, a single-arm constructor
+        // destructure, or a fully constant-folded tree). `build_tree` returns `Rc<SumCont>`; match the Leaf
+        // shape through the Rc borrow. Normally a Leaf folds to `core_of(body)` — the scrutinee is only
+        // re-read by the body's payload binders, cheap for a param/local. But when the scrutinee REACHES A
+        // HOST perform, folding to the bare body is a MISCOMPILE: each `Core::SumPayload` binder in the body
+        // RE-EMITS the scrutinee (select.rs `emit`), so `(match (mk (E.get)) ((T a b c) (+ (+ a b) c)))`
+        // re-performs `E.get` once PER payload read (three host calls, want one) — the deterministic-host-
+        // sequence violation the evaluate-once β-reduce fix exposed. Keep the `MatchSum` wrapper instead:
+        // its emit MATERIALIZES a non-reusable scrutinee into ONE slot, so the host call runs once and every
+        // payload binder reads the slot. A single-catch-all Leaf through `MatchSum` emits the same body (the
+        // switch is degenerate), only with the scrutinee bound once first. GATED on `scrutinee_reaches_host_
+        // perform` (a core_of-FREE resolved walk — NOT the memoized `subtree_reaches_host_call`, which
+        // forces `core_of` mid-lower and perturbs unrelated matches): a reusable param/local scrutinee never
+        // reaches a host call, so the common match still folds to the bare body, byte-identical to before.
+        Ok(root)
+            if matches!(&*root, crate::core::SumCont::Leaf(_))
+                && scrutinee_reaches_host_perform(db, scrutinee) =>
+        {
+            Core::MatchSum { scrutinee, root }
+        }
         Ok(root) if matches!(&*root, crate::core::SumCont::Leaf(_)) => {
             let crate::core::SumCont::Leaf(body) = &*root else {
                 unreachable!("just matched Leaf")
@@ -18593,39 +18652,18 @@ fn lower_sum_new(db: &mut Db, id: StructId, head: StructId, args: &[StructId]) -
         // modeled shape (`invariant_establish` synthesizes a construct-def only for a single-payload newtype),
         // so it falls through to plain erasure. A `Core::Call` to the (monomorphic) construct-def emits it
         // standalone (layout reaches it via the call — NOT inlined, so the exempt inner id is preserved).
-        if args.len() == 1
-            && !db.invariant_exempt_ctors.contains(&id)
-            && db.invariant_of(decl).is_some()
-            && let Some(type_name) = db.type_decl_by_occ(decl).map(|d| d.name.clone())
-            && let Some(callee) = db.def_by_name(&format!("__invariant_construct_{type_name}"))
+        // @invariant ESTABLISH DIVERT for a NEWTYPE (erased). A single-PAYLOAD newtype routes through
+        // `__invariant_construct_<T>`; a single-variant MULTI-payload newtype (which erases to a `Ty::Tuple`,
+        // not a single value) routes through its sole variant's `__invariant_construct_<T>__d0`. The whole
+        // divert lives in an `#[inline(never)]` helper (see `establish_divert`) so `lower_sum_new`'s own frame
+        // stays small — this function is called at every level of the layout reachability walk's `core_of`
+        // descent of a `Core::SumNew` payload chain, and a frame that grew with the divert's locals overflowed
+        // the compile worker's (walk-depth-bounded but fixed) stack on a pathological deep construction. The
+        // helper is gated on `has_invariants()`, so a no-`@invariant` program never even calls it.
+        if db.has_invariants()
+            && let Some(c) = establish_divert(db, id, head, disc, args)
         {
-            trace!(target: "rcdzc::lower", node = id.0, callee, "sum-new: @invariant newtype → checked-constructor establish divert");
-            db.called.insert(callee);
-            return Core::Call {
-                callee,
-                args: args.to_vec(),
-            };
-        }
-        // @invariant ESTABLISH DIVERT for a SINGLE-VARIANT MULTI-payload newtype (`(type T (Mk A B))`). Such a
-        // type erases to a `Ty::Tuple` (the `_ =>` arm below), NOT a single-payload value — so the `args.len()
-        // == 1` divert above misses it, and without this it would construct with NO establish check. Its sole
-        // variant is disc 0, so it routes through the per-variant `__invariant_construct_<T>__d0`
-        // (`invariant_establish` synthesizes per-variant construct-defs for every non-sole-payload-newtype).
-        // Same exempt-set guard (the construct-def's own inner ctor keeps the plain tuple erasure) + monomorphic
-        // standalone `Core::Call`.
-        if args.len() >= 2
-            && !db.invariant_exempt_ctors.contains(&id)
-            && db.invariant_of(decl).is_some()
-            && let Some(type_name) = db.type_decl_by_occ(decl).map(|d| d.name.clone())
-            && let Some(callee) =
-                db.def_by_name(&format!("__invariant_construct_{type_name}__d{disc}"))
-        {
-            trace!(target: "rcdzc::lower", node = id.0, callee, disc, "sum-new: @invariant multi-payload newtype → per-variant checked-constructor establish divert");
-            db.called.insert(callee);
-            return Core::Call {
-                callee,
-                args: args.to_vec(),
-            };
+            return c;
         }
         return match args.len() {
             0 => Core::Unit,
@@ -18642,6 +18680,16 @@ fn lower_sum_new(db: &mut Db, id: StructId, head: StructId, args: &[StructId]) -
     // unit value, built as an empty array by the backend (`SumNew` with no payloads). Drop the unit arg so
     // it is not boxed as a spurious payload. (A bare `None` used as a value takes the no-arg path directly.)
     if crate::eval::variant_payload_type(db, head).is_none() && args.len() == 1 {
+        // @invariant ESTABLISH DIVERT for a NULLARY variant of an @invariant type (routed through the same
+        // `#[inline(never)]` helper — a nullary variant is still a VALUE that must satisfy the invariant, e.g.
+        // an `@invariant` making the nullary variant uninhabitable must trap when it is constructed). Gated on
+        // `has_invariants()` so a no-`@invariant` program never calls the helper (keeping this hot,
+        // walk-recursion-reachable function's frame small).
+        if db.has_invariants()
+            && let Some(c) = establish_divert(db, id, head, disc, args)
+        {
+            return c;
+        }
         // The argument must BE the unit value — a nullary variant applied to a non-unit is an arity error
         // the type-checker reports; here, lower it as the nullary construction (the type fault surfaces in
         // `type_errors`, and an over-payloaded nullary is caught there, not silently given a payload).
@@ -18680,23 +18728,71 @@ fn lower_sum_new(db: &mut Db, id: StructId, head: StructId, args: &[StructId]) -
     // (recorded in `invariant_exempt_ctors`) so it builds the plain `Core::SumNew` below — no recursion. A
     // nullary variant has no per-variant construct-def (its establish is a later injection point), so the
     // `def_by_name` lookup misses and it falls through to the plain boxed construction.
-    if !db.invariant_exempt_ctors.contains(&id)
-        && let Some(decl) = crate::eval::variant_owner_decl(db, head)
-        && db.invariant_of(decl).is_some()
-        && let Some(type_name) = db.type_decl_by_occ(decl).map(|d| d.name.clone())
-        && let Some(callee) = db.def_by_name(&format!("__invariant_construct_{type_name}__d{disc}"))
+    // @invariant ESTABLISH DIVERT for a MULTI-VARIANT sum (the boxed path) — same `#[inline(never)]` helper,
+    // gated on `has_invariants()`. The gate is LOAD-BEARING: the layout reachability walk descends a
+    // `Core::SumNew` payload chain level-by-level via `core_of`, and running the divert's `variant_owner_decl`
+    // (a `scheme_of` inference query) per level on a pathological unbounded self-application chain (e.g.
+    // `(fn v (Some (v v)))` self-applied) would add native recursion depth on top of the walk. Keeping the
+    // divert in an out-of-line helper AND gating on `has_invariants()` means a no-`@invariant` program's
+    // `lower_sum_new` frame + call graph is byte-identical to trunk (the helper is neither entered nor inlined).
+    if db.has_invariants()
+        && let Some(c) = establish_divert(db, id, head, disc, args)
     {
-        trace!(target: "rcdzc::lower", node = id.0, callee, disc, "sum-new: @invariant multi-variant sum → per-variant checked-constructor establish divert");
-        db.called.insert(callee);
-        return Core::Call {
-            callee,
-            args: args.to_vec(),
-        };
+        return c;
     }
     Core::SumNew {
         disc,
         payloads: args.to_vec(),
     }
+}
+
+/// The `@invariant` ESTABLISH divert, factored OUT of [`lower_sum_new`] and marked `#[inline(never)]` so its
+/// locals (a `String` from `format!`, the resolved decl/type-name) never enlarge `lower_sum_new`'s stack
+/// frame — which matters because `lower_sum_new` is called at every level of the layout reachability walk's
+/// `core_of` descent of a `Core::SumNew` payload chain, and a frame that grew with these locals overflowed the
+/// (walk-depth-bounded but fixed-size) compile worker stack on a pathological deep construction. Callers gate
+/// on [`Db::has_invariants`], so for a program with no `@invariant` this function is never entered.
+///
+/// Returns `Some(Core::Call …)` to route the construction of an `@invariant` type through its synthesized
+/// checked constructor (so a value violating the invariant TRAPS at construction — design §10.2, the (D)
+/// run-time establish enforcement), or `None` to keep the plain construction. Covers all shapes: a single-
+/// payload newtype (`__invariant_construct_<T>`), and — keyed by discriminant — a multi-payload newtype, a
+/// multi-variant sum, and a nullary variant (`__invariant_construct_<T>__d<disc>`). The construct-def's OWN
+/// inner construction is EXEMPT (`invariant_exempt_ctors`), so it builds the plain value — no recursion.
+#[inline(never)]
+fn establish_divert(
+    db: &mut Db,
+    id: StructId,
+    head: StructId,
+    disc: u32,
+    args: &[StructId],
+) -> Option<Core> {
+    if db.invariant_exempt_ctors.contains(&id) {
+        return None;
+    }
+    let decl = crate::eval::variant_owner_decl(db, head)?;
+    db.invariant_of(decl)?;
+    let type_name = db.type_decl_by_occ(decl).map(|d| d.name.clone())?;
+    // A single-PAYLOAD newtype has the bare `__invariant_construct_<T>`; every other shape (multi-payload
+    // newtype, multi-variant sum, nullary variant) has a per-variant `__invariant_construct_<T>__d<disc>`.
+    let callee = db
+        .def_by_name(&format!("__invariant_construct_{type_name}"))
+        .filter(|_| args.len() == 1)
+        .or_else(|| db.def_by_name(&format!("__invariant_construct_{type_name}__d{disc}")))?;
+    trace!(target: "rcdzc::lower", node = id.0, callee, disc, "sum-new: @invariant type → checked-constructor establish divert");
+    db.called.insert(callee);
+    // The synthesized construct-def takes the payloads as its params (a nullary variant's def is no-arg — the
+    // `(T.V unit)` unit is supplied inside the def, so pass no args); the bare single-payload path passes its
+    // one payload; the per-disc path passes all payloads.
+    let call_args = if crate::eval::variant_payload_type(db, head).is_none() {
+        Vec::new()
+    } else {
+        args.to_vec()
+    };
+    Some(Core::Call {
+        callee,
+        args: call_args,
+    })
 }
 
 /// The `(Some-discriminant, None-discriminant)` of the `Option` sum that is the type at `id` (a
@@ -18776,6 +18872,28 @@ fn const_list_elems(db: &mut Db, list: StructId) -> Option<Vec<StructId>> {
         Core::ListNew { elems } => Some(elems),
         Core::LocalRef { binder } => match core_of(db, binder) {
             Core::ListNew { elems } => Some(elems),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The FIELD MAP of a compile-time-visible constant record at `record` — a DIRECT `Core::Record`, or a
+/// `let`-BOUND one whose kept multi-use binding lowers a reference to a `Core::LocalRef` (follow the
+/// binder to the record it names). `None` for a genuinely RUNTIME record (a param, a call result). The
+/// record analogue of [`const_list_elems`]: it lets a record ROW OP (`Record.project`/`Record.without`/
+/// `Record.with`/…) fold over a shared constant-record binding exactly like the inline literal form,
+/// instead of the misleading "over a RUNTIME record" decline (every field is a compile-time constant; a
+/// single-use `r` already folds because it copy-propagates, so multi-use should too). Following the binder
+/// does NOT erase the binding — the record is still built if used as a whole value elsewhere.
+fn const_record_fields(
+    db: &mut Db,
+    record: StructId,
+) -> Option<std::rc::Rc<std::collections::BTreeMap<crate::resolved::Symbol, StructId>>> {
+    match core_of(db, record) {
+        Core::Record { fields } => Some(fields),
+        Core::LocalRef { binder } => match core_of(db, binder) {
+            Core::Record { fields } => Some(fields),
             _ => None,
         },
         _ => None,
@@ -19997,7 +20115,12 @@ fn lower_record_project(
     labels: StructId,
     drop: bool,
 ) -> Core {
-    let Core::Record { fields } = core_of(db, record) else {
+    // FOLD over a compile-time-visible constant record — a DIRECT `Core::Record` OR a shared multi-use
+    // `let` binding of one (`const_record_fields` follows the `LocalRef` binder). A multi-use `(let ((r
+    // (record …))) … r …)` lowers each `r` to a `LocalRef`, so a naive `core_of` sees the binding not the
+    // literal and used to decline "over a RUNTIME record" — misleading (every field is constant; single-use
+    // `r` folds because it copy-propagates). A genuinely runtime record (param/call result) still declines.
+    let Some(fields) = const_record_fields(db, record) else {
         return match core_of(db, record) {
             Core::Poison(r) => Core::Poison(r),
             _ => Core::Poison(Reject::decline(
@@ -20063,7 +20186,12 @@ fn lower_record_insert(
     label_node: StructId,
     value: StructId,
 ) -> Core {
-    let Core::Record { fields } = core_of(db, record) else {
+    // FOLD over a compile-time-visible constant record — a DIRECT `Core::Record` OR a shared multi-use
+    // `let` binding of one (`const_record_fields` follows the `LocalRef` binder). A multi-use `(let ((r
+    // (record …))) … r …)` lowers each `r` to a `LocalRef`, so a naive `core_of` sees the binding not the
+    // literal and used to decline "over a RUNTIME record" — misleading (every field is constant; single-use
+    // `r` folds because it copy-propagates). A genuinely runtime record (param/call result) still declines.
+    let Some(fields) = const_record_fields(db, record) else {
         return match core_of(db, record) {
             Core::Poison(r) => Core::Poison(r),
             _ => Core::Poison(Reject::decline(

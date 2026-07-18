@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseDocument, parseDirective, cellRanges, serializeDocument, setCellSource, setProseSource, renderDocToSurface, assignIds, type Cell } from "./parseDocument.ts";
+import { parseDocument, parseDirective, cellRanges, serializeDocument, setCellSource, setProseSource, insertCell, removeCell, moveCell, renderDocToSurface, assignIds, type Cell } from "./parseDocument.ts";
 
 test("a plain prose-only document is one prose cell", () => {
   const cells = parseDocument("# Title\n\nsome **markdown** prose.");
@@ -319,6 +319,102 @@ test("a prose edit round-trips through serializeDocument (re-parse yields the ed
   assert.equal((reparsed[0] as Extract<Cell, { kind: "prose" }>).markdown, "new prose text");
   // The code cell survives the round-trip unchanged.
   assert.equal((reparsed[1] as Extract<Cell, { kind: "code" }>).source, "(def (main) 1)");
+});
+
+// ── insertCell / removeCell / moveCell: markdown-STRUCTURE editing (operator #2 — add / remove / reorder
+// sections). Pure, immutable, id-aware doc-model ops the v-guide-infra UI (+ insert-below, trash delete,
+// drag/up-down reorder) drives. They keep every surviving cell's identity so a keyed per-cell UI doesn't
+// remount unaffected editors. ──
+test("insertCell adds a cell at the given index, shifting the rest (immutable)", () => {
+  const cells = parseDocument("```cadenza\n(def (main) 1)\n```\n\n```cadenza\n(def (main) 2)\n```");
+  const blank: Cell = { kind: "prose", markdown: "new section" };
+  const next = insertCell(cells, 1, blank); // insert BELOW cell 0 (the "+ insert below" default)
+  assert.deepEqual(next.map((c) => c.kind), ["code", "prose", "code"]);
+  assert.equal((next[1] as Extract<Cell, { kind: "prose" }>).markdown, "new section");
+  assert.equal(next.length, cells.length + 1);
+  assert.notEqual(next, cells); // fresh array
+  assert.equal(next[0], cells[0]); // the cell before the insert keeps its reference (identity)
+});
+
+test("insertCell at 0 prepends and at length appends", () => {
+  const cells = parseDocument("```cadenza\n(def (main) 1)\n```");
+  const head: Cell = { kind: "prose", markdown: "head" };
+  const tail: Cell = { kind: "prose", markdown: "tail" };
+  assert.equal((insertCell(cells, 0, head)[0] as Extract<Cell, { kind: "prose" }>).markdown, "head");
+  const appended = insertCell(cells, cells.length, tail);
+  assert.equal((appended[appended.length - 1] as Extract<Cell, { kind: "prose" }>).markdown, "tail");
+});
+
+test("insertCell into an id-bearing list stamps a FRESH id past the max (no renumber of existing cells)", () => {
+  const cells = assignIds(parseDocument("```cadenza\n(def (main) 1)\n```\n\n```cadenza\n(def (main) 2)\n```"));
+  // ids are [0, 1]; inserting between them must give the new cell id 2 (max+1), NOT renumber 0/1.
+  const next = insertCell(cells, 1, { kind: "prose", markdown: "mid" });
+  assert.deepEqual(next.map((c) => c.id), [0, 2, 1]); // existing ids preserved, new one is max+1
+});
+
+test("insertCell into an id-LESS list leaves the new cell id-less (no injected id)", () => {
+  const cells = parseDocument("```cadenza\n(def (main) 1)\n```");
+  const next = insertCell(cells, 0, { kind: "prose", markdown: "p" });
+  assert.equal(next[0].id, undefined); // no id in play → don't fabricate one
+});
+
+test("insertCell throws on an index outside [0, length]", () => {
+  const cells = parseDocument("```cadenza\n(def (main) 1)\n```");
+  assert.throws(() => insertCell(cells, -1, { kind: "prose", markdown: "x" }), RangeError);
+  assert.throws(() => insertCell(cells, cells.length + 1, { kind: "prose", markdown: "x" }), RangeError);
+});
+
+test("removeCell drops the cell at index, keeping the survivors' identity + ids (no renumber)", () => {
+  const cells = assignIds(parseDocument("```cadenza\n(def (main) 1)\n```\n\nprose\n\n```cadenza\n(def (main) 3)\n```"));
+  const next = removeCell(cells, 1); // delete the prose in the middle
+  assert.deepEqual(next.map((c) => c.kind), ["code", "code"]);
+  assert.deepEqual(next.map((c) => c.id), [0, 2]); // ids NOT renumbered — the hole at 1 stays, keys stable
+  assert.equal(next.length, cells.length - 1);
+  assert.notEqual(next, cells);
+});
+
+test("removeCell throws on an out-of-range index", () => {
+  const cells = parseDocument("```cadenza\n(def (main) 1)\n```");
+  assert.throws(() => removeCell(cells, 99), RangeError);
+  assert.throws(() => removeCell(cells, -1), RangeError);
+});
+
+test("moveCell reorders a cell, preserving every cell's identity + id (order changes, not keys)", () => {
+  const cells = assignIds(parseDocument("```cadenza\n(def (a) 1)\n```\n\n```cadenza\n(def (b) 2)\n```\n\n```cadenza\n(def (c) 3)\n```"));
+  // Move cell 2 (id 2) up to the front — the up-button path.
+  const next = moveCell(cells, 2, 0);
+  assert.deepEqual(next.map((c) => c.id), [2, 0, 1]); // ids ride along with the cells (stable keys)
+  assert.deepEqual(next.map((c) => (c as Extract<Cell, { kind: "code" }>).source), ["(def (c) 3)", "(def (a) 1)", "(def (b) 2)"]);
+  assert.notEqual(next, cells);
+});
+
+test("moveCell down (k → k+1) and a no-op (from === to) both behave", () => {
+  const cells = assignIds(parseDocument("```cadenza\n(def (a) 1)\n```\n\n```cadenza\n(def (b) 2)\n```"));
+  assert.deepEqual(moveCell(cells, 0, 1).map((c) => c.id), [1, 0]); // down
+  const noop = moveCell(cells, 1, 1);
+  assert.deepEqual(noop.map((c) => c.id), [0, 1]); // no-op keeps order
+  assert.notEqual(noop, cells); // still a fresh array (immutable contract)
+});
+
+test("moveCell throws when either index is out of range", () => {
+  const cells = parseDocument("```cadenza\n(def (main) 1)\n```\n\nprose");
+  assert.throws(() => moveCell(cells, 5, 0), RangeError);
+  assert.throws(() => moveCell(cells, 0, 5), RangeError);
+});
+
+test("insert / move / remove all round-trip through serializeDocument (structure edits persist)", () => {
+  // The live edit flow: a structure edit rewrites the cell list, then the notebook re-serializes to markdown
+  // for storage / the run path. Adding a section, reordering, then deleting one must survive a parse round-trip.
+  let cells = parseDocument("```cadenza\n(def (main) 1)\n```\n\n```cadenza\n(def (main) 2)\n```");
+  cells = insertCell(cells, 1, { kind: "prose", markdown: "## Added section" }); // now 3 cells: code, prose, code
+  cells = moveCell(cells, 2, 0); // move the second code cell to the front → code, code, prose
+  cells = removeCell(cells, 2); // drop the last cell (the added prose)
+  const reparsed = parseDocument(serializeDocument(cells));
+  assert.deepEqual(reparsed.map((c) => c.kind), cells.map((c) => c.kind));
+  assert.deepEqual(
+    reparsed.map((c) => (c.kind === "prose" ? c.markdown : c.source)),
+    cells.map((c) => (c.kind === "prose" ? c.markdown : c.source)),
+  );
 });
 
 // ── renderDocToSurface: re-render CADENZA code cells to the selected surface (operator UX #2, my half) ──

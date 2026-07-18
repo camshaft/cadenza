@@ -4,7 +4,8 @@
 /// it's pure + testable (examples.test.ts pins that every one parses into well-formed cells).
 ///
 /// All code cells are s-expr + self-contained (no imports — the browser compiler can't resolve library
-/// modules; the /cad rationale). A Float64 slider value grounds with a decimal point.
+/// modules; the /cad rationale). The notebook is RATIONAL-BY-DEFAULT (operator: no floats) — every literal
+/// grounds to an exact Rational, so widgets are Int64 sliders and cells use exact rational arithmetic.
 
 export interface ExampleNotebook {
   slug: string;
@@ -19,19 +20,19 @@ const COMPOUND_INTEREST = `# Compound interest
 Adjust the **rate** and watch the balance and schedule recompute.
 
 ~~~cadenza widget
-rate : Float64 = slider(0.0, 0.2, step: 0.01, default: 0.05)
+rate : Int64 = slider(0, 20, default: 5)
 ~~~
 
-The balance after one year on a 1000.0 principal:
+The balance after one year on a 1000 principal (rate is a whole-percent; \`rate / 100\` is exact):
 
 ~~~cadenza
-(def (main) (* 1000.0 (+ 1.0 rate)))
+(def (main) (* 1000 (+ 1 (/ rate 100))))
 ~~~
 
 A short growth schedule (year, factor):
 
 ~~~cadenza table
-(def (main) (list (tuple 1 (+ 1.0 rate)) (tuple 2 (* (+ 1.0 rate) (+ 1.0 rate)))))
+(def (main) (list (tuple 1 (+ 1 (/ rate 100))) (tuple 2 (* (+ 1 (/ rate 100)) (+ 1 (/ rate 100))))))
 ~~~`;
 
 /// A table-focused example: structured rows render as an HTML table.
@@ -71,17 +72,18 @@ Set the **principal**, the interest **rate**, and a fixed yearly **payment**, th
 down.
 
 ~~~cadenza widget
-principal : Float64 = number(default: 1000.0)
-rate : Float64 = slider(0.0, 0.2, step: 0.01, default: 0.05)
-payment : Float64 = slider(0.0, 500.0, step: 50.0, default: 200.0)
+principal : Int64 = number(default: 1000)
+rate : Int64 = slider(0, 20, default: 5)
+payment : Int64 = slider(0, 500, step: 50, default: 200)
 ~~~
 
-The balance after each year is last year's balance plus interest, minus the payment:
+The balance after each year is last year's balance plus interest (rate is a whole-percent, so \`rate / 100\`
+is exact), minus the payment:
 
 ~~~cadenza
-(def (year1) (- (+ principal (* principal rate)) payment))
-(def (year2) (- (+ year1 (* year1 rate)) payment))
-(def (year3) (- (+ year2 (* year2 rate)) payment))
+(def (year1) (- (+ principal (* principal (/ rate 100))) payment))
+(def (year2) (- (+ year1 (* year1 (/ rate 100))) payment))
+(def (year3) (- (+ year2 (* year2 (/ rate 100))) payment))
 (def (main) year1)
 ~~~
 
@@ -92,32 +94,32 @@ The balance over three years — drag a control and the curve moves:
 ~~~`;
 
 /// A projectile-motion showcase: two sliders (upward velocity + gravity) drive a live height-vs-time
-/// parabola. Height at time t is v*t - 0.5*g*t*t, evaluated at a few discrete t with +/-/* on Float64
-/// literals (no sqrt/division — keeps it browser-self-contained like the others). The chart:line traces
-/// the arc; drag either slider and the parabola reshapes.
+/// parabola. Height at time t is v·t − ½·g·t·t, evaluated at a few discrete integer t with +/-/* and the
+/// exact rational ½ = `1 / 2` (rational-by-default — no floats, browser-self-contained). The chart:line
+/// traces the arc; drag either slider and the parabola reshapes.
 const PROJECTILE = `# Projectile motion
 
 Launch straight up with a **velocity**, pulled down by **gravity** — the height traces a parabola.
 
 ~~~cadenza widget
-velocity : Float64 = slider(0.0, 50.0, step: 1.0, default: 30.0)
-gravity : Float64 = slider(1.0, 20.0, step: 0.5, default: 9.8)
+velocity : Int64 = slider(0, 50, default: 30)
+gravity : Int64 = slider(1, 20, default: 10)
 ~~~
 
-Height at a few times \`t\` (height = velocity·t − ½·gravity·t·t):
+Height at a few times \`t\` (height = velocity·t − ½·gravity·t·t; ½ is the exact rational \`1 / 2\`):
 
 ~~~cadenza
-(def (h1) (- (* velocity 1.0) (* (* 0.5 gravity) (* 1.0 1.0))))
-(def (h2) (- (* velocity 2.0) (* (* 0.5 gravity) (* 2.0 2.0))))
-(def (h3) (- (* velocity 3.0) (* (* 0.5 gravity) (* 3.0 3.0))))
-(def (h4) (- (* velocity 4.0) (* (* 0.5 gravity) (* 4.0 4.0))))
+(def (h1) (- (* velocity 1) (* (* (/ 1 2) gravity) (* 1 1))))
+(def (h2) (- (* velocity 2) (* (* (/ 1 2) gravity) (* 2 2))))
+(def (h3) (- (* velocity 3) (* (* (/ 1 2) gravity) (* 3 3))))
+(def (h4) (- (* velocity 4) (* (* (/ 1 2) gravity) (* 4 4))))
 (def (main) h2)
 ~~~
 
 The trajectory over time — drag velocity or gravity and the arc moves:
 
 ~~~cadenza chart:line
-(def (main) (list (tuple 0 0.0) (tuple 1 h1) (tuple 2 h2) (tuple 3 h3) (tuple 4 h4)))
+(def (main) (list (tuple 0 0) (tuple 1 h1) (tuple 2 h2) (tuple 3 h3) (tuple 4 h4)))
 ~~~`;
 
 /// A quadratic-explorer showcase: three Int64 sliders (a, b, c) reshape the parabola y = a·x² + b·x + c live.

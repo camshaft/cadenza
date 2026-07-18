@@ -18301,6 +18301,34 @@ mod match_engine {
         );
     }
 
+    /// Verification Inc-b @invariant ESTABLISH over a NULLARY variant: a nullary variant carries no payload but
+    /// is still a VALUE of the type, so its construction must satisfy the invariant. An `@invariant` that
+    /// rejects the nullary variant (`(match it (((. T A)) false) …)`, making `A` uninhabitable) must TRAP when
+    /// `A` is constructed. `invariant_establish` synthesizes a no-arg checked constructor for it
+    /// (`__invariant_construct_T__d0`), and the nullary-unit path of `lower_sum_new` diverts through it. This
+    /// pins the SYNTHESIS (a nullary variant gets a construct-def now, no longer skipped); the run behavior (the
+    /// rejected nullary traps, the accepted payload variant constructs) is a corpus case. This closes the LAST
+    /// ESTABLISH shape — every variant kind (single/multi-payload newtype, multi-variant, nullary) now
+    /// establishes at construction.
+    #[test]
+    fn an_invariant_rejecting_a_nullary_variant_synthesizes_a_checked_constructor_for_it() {
+        use crate::testkit::parse;
+        let src = "(module m \
+            (@ (invariant (match it (((. T A)) false) (((. T B) x) (> x 0)))) (type T (A) (B Int64))) \
+            (def (main) 0) (export main))";
+        let db = crate::db::Db::load(parse(src));
+        // The nullary variant A (disc 0) gets a no-arg checked constructor — no longer skipped.
+        assert!(
+            db.def_by_name("__invariant_construct_T__d0").is_some(),
+            "the nullary variant A (disc 0) gets a checked constructor"
+        );
+        // The payload variant B (disc 1) also gets one.
+        assert!(
+            db.def_by_name("__invariant_construct_T__d1").is_some(),
+            "the payload variant B (disc 1) gets a checked constructor"
+        );
+    }
+
     /// Verification Inc-b @invariant NAME-RESOLUTION: an `@invariant(pred)` predicate references only the value
     /// binder `it` (the value of the type) and prelude/global names — no def params (a type has none). A stray
     /// name is UNBOUND → CDZ0101 at the annotation (the b4c pattern, reused for the data-level member). A valid
@@ -23630,6 +23658,41 @@ mod match_engine {
                     .any(|d| d.message.contains("requires a record")),
                 "a record / unconstrained operand is not flagged: {ok}"
             );
+        }
+    }
+
+    #[test]
+    fn a_record_row_op_over_a_constant_record_folds_through_a_multi_use_let() {
+        // REGRESSION (breaker/corpus-bugfix): a record ROW OP over a CONSTANT record BOUND by a MULTI-USE
+        // `let` declined "over a RUNTIME record" — misleading, since every field is a compile-time constant.
+        // Root: a multi-use `(let ((r (record …))) … r … r …)` lowers each `r` reference to a `Core::LocalRef`
+        // (the shared slot), so `core_of(record)` in `lower_record_project`/`_insert` saw the binding not the
+        // literal `Core::Record` and fell to the non-constant decline — a surprising SINGLE-use-folds /
+        // MULTI-use-declines cliff (single-use `r` copy-propagates to the literal and folds). Fixed by
+        // `const_record_fields` following the `LocalRef` binder to the record it names (the record analogue
+        // of `const_list_elems` for `List.len`/`List.at`), so a shared constant record folds like the inline
+        // form. `(let ((r (record (f 5) (g 8)))) (+ (. (project r (f)) f) (. (project r (g)) g)))` = 5 + 8 = 13.
+        let src = "(module m (def (main) \
+            (let ((r (record (f 5) (g 8)))) \
+              (+ (. (Record.project r (f)) f) (. (Record.project r (g)) g)))) (export main))";
+        // COMPILE is the precise guard (the decline was at lower — no artifact). The multi-use `r` is kept +
+        // built (a heap value), so RUNNING needs the value-heap runtime — run only when present (`run_linked`
+        // skips → `None` if the store is absent).
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a multi-use const-record row op folds (no 'runtime record' decline)");
+        if let Some(v) = super::run_linked(&bytes, "main") {
+            assert_eq!(
+                v, "13",
+                "5 + 8 = 13 (both projections fold through the shared binding)"
+            );
+        }
+        // The single-use form still folds (it always did, via copy-propagation) — pin both sides of the cliff.
+        let single = "(module m (def (main) \
+            (let ((r (record (f 5) (g 8)))) (. (Record.project r (f)) f))) (export main))";
+        let sbytes =
+            compile_component(&crate::codec::encode(&parse(single))).expect("single-use folds");
+        if let Some(v) = super::run_linked(&sbytes, "main") {
+            assert_eq!(v, "5", "single-use projection folds to the field value");
         }
     }
 
@@ -36631,6 +36694,57 @@ mod match_engine {
         assert!(
             ast2.as_form(unit.options.unwrap(), "list").is_some(),
             "the options node is a (list …) the query handler enumerates for the JSON array"
+        );
+    }
+
+    #[test]
+    fn scan_manifest_reads_a_range_with_a_string_head_list_the_ml_surface_lowers_to() {
+        // ML-vs-sexpr discrepancy (v-guide-infra): an ML `@param(range: [lo, hi])` lowers the `[lo, hi]`
+        // bracket to a STRING-literal ctor head `("list" lo hi)`, whereas the s-expr surface's `(list lo hi)`
+        // has a NAME head. `config_range` matched only the name head, so ML parametric models reported NO
+        // range (range_lo/range_hi absent) while s-expr worked. `config_range` now accepts BOTH heads
+        // (as_form for the name, as_ctor_form for the string ctor), so an ML-authored range is scanned too.
+        // Here the string-head `("list" 2 20)` IS the exact node the ML `[2, 20]` lowers to (verified via
+        // `cdz convert --from ml`), and the s-expr reader accepts it — so this exercises the ML path's shape.
+        use crate::param_sidecar::scan_manifest;
+        let ast = crate::testkit::parse(
+            "(module m \
+               (: (@ (param (: widget slider) (: range (\"list\" 2 20))) thickness) Int64) \
+               (def (main) 0) \
+             (export main))",
+        );
+        let recs = scan_manifest(&ast);
+        let thickness = recs
+            .iter()
+            .find(|r| r.name == "thickness")
+            .expect("thickness record");
+        let (lo, hi) = thickness.range.expect(
+            "a string-head (\"list\" 2 20) range — the ML-lowered shape — is scanned, not dropped",
+        );
+        assert_eq!(
+            (
+                ast.as_int(lo).map(|v| v.to_decimal_string()).as_deref(),
+                ast.as_int(hi).map(|v| v.to_decimal_string()).as_deref()
+            ),
+            (Some("2"), Some("20")),
+            "the string-head range's two element nodes are the authored bounds 2 and 20"
+        );
+        // The NAME-head `(list …)` (s-expr surface) still works — the fix ADDED the string-head path, it
+        // did not replace the name-head one.
+        let ast_name = crate::testkit::parse(
+            "(module m \
+               (: (@ (param (: widget slider) (: range (list 2 20))) thickness) Int64) \
+               (def (main) 0) \
+             (export main))",
+        );
+        assert!(
+            scan_manifest(&ast_name)
+                .iter()
+                .find(|r| r.name == "thickness")
+                .expect("thickness")
+                .range
+                .is_some(),
+            "the name-head (list …) range (s-expr surface) still scans — both head spellings accepted"
         );
     }
 
@@ -54288,35 +54402,31 @@ mod stage1 {
     }
 
     #[test]
-    fn an_effectful_host_arg_to_a_multiuse_fn_param_reperforms_is_a_known_miscompile() {
-        // KNOWN MISCOMPILE — the β-reduce half is now FIXED (see the SCALAR sibling
-        // `an_effectful_host_arg_to_a_multiuse_scalar_fn_param_evaluates_once`, which folds to 1). This
-        // COMPOUND-into-a-destructuring-match variant STILL emits 3 because of a SECOND, INDEPENDENT bug the
-        // β-reduce fix EXPOSED: the arg is now correctly let-bound once — `(mk (E.get))` reduces to `(let
-        // ((s (E.get))) (T s s s))` — but that `let` sits in the SCRUTINEE position of `(match _ ((T a b c)
-        // …))`, and `Core::SumPayload` RE-LOWERS the scrutinee's `core_of` once PER payload binder (`a`,
-        // `b`, `c`). The scrutinee reaches a host call, so each of the 3 payload reads re-emits it → 3 host
-        // calls, want 1. This is a MATCH-LOWERING scrutinee-reevaluation bug (lower.rs `lower_match_sum` /
-        // the backend `Core::SumPayload` emit), NOT the β-reduce call-by-name bug (that one is closed). The
-        // scalar-continuation shape (`s` used in arithmetic, no destructuring match) already folds to 1. FIX
-        // = A-normalize a host-reaching match scrutinee (bind it to one `Core::Let` above the match so every
-        // `SumPayload` reads a `LocalRef`, not a re-lowered HostCall). Touches the hot match-lowering +
-        // backend select path — its own focused increment. This test PINS the current wrong count (3) so a
-        // regression to a DIFFERENT wrong shape is caught, and FLIPS to 1 when the scrutinee-share fix lands.
-        // Ledger: queue/mlrepro-effectful-fn-arg-reperforms-per-use-not-by-value.KNOWN-MISCOMPILE-PARKED.sexp.
+    fn an_effectful_host_arg_into_a_destructuring_match_is_evaluated_once() {
+        // FIXED (was a KNOWN MISCOMPILE emitting 3, now 1). TWO independent bugs stacked here, both closed:
+        // (1) the β-reduce call-by-name re-perform — `(mk (E.get))` with `mk s = (T s s s)` substituted the
+        // effectful arg by name at all 3 uses; the evaluate-once let-bind (apply_lambda_uncached) fixed it,
+        // reducing to `(let ((s (E.get))) (T s s s))`. (2) that `let` then sits in the SCRUTINEE position of
+        // `(match _ ((T a b c) …))`, and a single-arm sum match FOLDS to a bare `Leaf` (`core_of(body)`) with
+        // NO scrutinee materialization, so each of the 3 `Core::SumPayload` binders (`a`,`b`,`c`) RE-EMITTED
+        // the host-reaching scrutinee → 3 host calls again. FIX: `lower_match_sum`'s `Leaf` arm keeps the
+        // `Core::MatchSum` wrapper when the scrutinee reaches a host call, so the wrapper's emit
+        // materializes the scrutinee into ONE slot and every payload binder reads it. Now `sum3(mk(E.get))`
+        // makes exactly ONE host `get` call — strict by-value + deterministic host-sequence (core-semantics
+        // §Applying A Function, §283; capabilities §75).
         let src = "(do (effect E (op get (-> Unit Int64))) (type Trip (T Int64 Int64 Int64)) \
                    (def (mk s) (T s s s)) (def (sum3 t) (match t ((T a b c) (+ (+ a b) c)))) \
                    (def (main) (host (E) (sum3 (mk (E.get))))) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("compiles (the miscompile is a duplicated host call, not a decline)");
+            .expect("compiles (an effectful arg into a destructuring match is now evaluated once)");
         // Count core `call 0` — the host `get` import is core func 0 (host imports laid first).
         let host_calls = count_opcode(&bytes, |op| {
             matches!(op, wasmparser::Operator::Call { function_index: 0 })
         });
         assert_eq!(
-            host_calls, 3,
-            "KNOWN MISCOMPILE: an effectful host arg to a multi-use param re-performs (3 host calls); \
-             want 1 once the β-reduce evaluate-once fix lands — flip this to 1 then"
+            host_calls, 1,
+            "evaluate-once through a destructuring match: the host arg is bound once (1 host call), not \
+             re-performed per payload binder"
         );
     }
 
@@ -54374,6 +54484,59 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "recursive effectful string-state walk must compile"
+        );
+    }
+
+    #[test]
+    fn a_nested_effectful_let_inlined_into_a_reperforming_body_keeps_its_binder() {
+        // REGRESSION (nested-effectful-let CDZ0101, compiler-ml Db-port blocker). A helper whose body is a
+        // `let` binding an effect result — `inner = (let a = St.get() in (match St.put(a) with _ => a))` —
+        // inlined as the init of an OUTER `let` whose body PERFORMS AGAIN: `outer = (let b = inner() in b +
+        // St.get())`. Before the fix this emitted a SPANLESS `CDZ0101 unbound a`: after inlining, the handle
+        // body is `(let ((b (let ((a St.get)) (match St.put(a) (_ a))))) (+ b St.get))`, and the fold threads
+        // the outer body's second `St.get` to the `put`-arm's next-state, which is the node `a` — but `a` is
+        // bound INSIDE `b`'s init-let, out of scope in `(+ b …)`. FIX = the nested-let init LET-LIFT in the
+        // `let` thread arm: when a binding's threaded init is itself a `(let ((x e)…) lbody)`, the inner
+        // bindings are hoisted to the enclosing let (siblings of `b`), so `a` is in scope for the
+        // continuation + its threaded out-state. Under `handle St(10) get(s)=>resume(s,s) put(v,s)=>
+        // resume(unit,v)`, run() = b(=10) + get()(=10) = 20. Compile-only here (the corpus case in
+        // 14-effects value-grades the 20 against the real runtime).
+        let src = "(do (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit))) \
+                   (def (inner) (let ((a (St.get))) (match (St.put a) (_ a)))) \
+                   (def (outer) (let ((b (inner))) (+ b (St.get)))) \
+                   (def (main) (handle St 10 \
+                     ((get (u) s (resume s s)) (put (v) s (resume unit v))) \
+                     (outer))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a nested effectful let inlined into a re-performing body must keep its inner binder in scope \
+             (the let-lift), not emit a spanless CDZ0101 unbound name"
+        );
+    }
+
+    #[test]
+    fn a_ctl_style_arm_binds_the_continuation_and_declines_cleanly_for_now() {
+        // E5 STEP 1 (classifier + surface): a 5-part `ctl`-style handler arm `(op (params) state k body)`
+        // binds the continuation `k` as a first-class value. This is the surface a DES scheduler needs
+        // (`sleep` captures `k`, stores it, resumes later). The frame-capture lowering is not built yet, so
+        // a general arm DECLINES CLEANLY (a Todo — `compile_component` errors, never panics, never a
+        // valid-but-wrong fold). Crucially `k` must be IN SCOPE in the body (bound by the arm), NOT a
+        // spurious CDZ0101 unbound name — the arm parses as 5 parts and `handle_arm_binds` resolves `k`.
+        // Here the body references `k` (as a value — the eventual `apply(k, v)`), which must resolve.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s k k)) (Amb.flip))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a ctl-style continuation-binding arm declines cleanly (frame capture not built)",
+        );
+        // The decline must NOT be a scope error about `k` — `k` is bound by the arm. A CDZ0101 naming `k`
+        // would mean the 5-part arm's continuation binder was not wired into scope (the bug this pins
+        // against). Any other clean decline (a Todo — no machine rep / not-yet-lowered) is expected.
+        assert!(
+            !(err.code.as_deref() == Some("CDZ0101") && err.message.contains('k')),
+            "the continuation binder `k` must be IN SCOPE (bound by the ctl-style arm), not a spurious \
+             CDZ0101 unbound-name error: {:?} / {}",
+            err.code,
+            err.message
         );
     }
 

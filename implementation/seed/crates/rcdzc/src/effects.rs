@@ -178,13 +178,16 @@ fn plan_canonical_handle(ast: &Arenas, id: StructId) -> Option<HandlePlan> {
     let Struct::List(arm_nodes) = ast.get(arms_occ) else {
         return None;
     };
-    // Confirm EVERY arm is `(bare-op (params…) state body)` — a 4-part list whose op is a bare NAME (not
-    // an already-projected `(. E op)`). If any arm is not this shape, this is not the canonical form.
+    // Confirm EVERY arm is a bare-op arm: `(bare-op (params…) state body)` (4-part tail/abortive) or
+    // `(bare-op (params…) state k body)` (5-part general `ctl`-style), whose op is a bare NAME (not an
+    // already-projected `(. E op)`). If any arm is not this shape, this is not the canonical form. Both
+    // arities re-project identically (`apply_handle_plan` keeps `parts[1..]`), so a `k`-binding arm desugars
+    // like any other.
     for &arm in arm_nodes {
         let Struct::List(parts) = ast.get(arm) else {
             return None;
         };
-        if parts.len() != 4 || ast.as_name(parts[0]).is_none() {
+        if !matches!(parts.len(), 4 | 5) || ast.as_name(parts[0]).is_none() {
             return None;
         }
     }
@@ -1491,6 +1494,19 @@ pub fn reduce_handle(
         // declining here as well keeps the fold from emitting the mistyped value (belt-and-suspenders —
         // the fault side rejects, the value side declines, so neither a wrong VALUE nor a wrong CODE ships).
         if !resume_result_type_ok(db, arm) {
+            return None;
+        }
+        // E5 GENERAL / `ctl`-style arm: an arm that binds the continuation `k` explicitly (`cont:
+        // Some(_)`) reifies the delimited continuation as a first-class value — it may STORE `k` and resume
+        // it later (`resume` = `apply(k, v)`), the stored/escaping-continuation case a DES scheduler needs
+        // (`DESIGN-general-continuations-e5.md`). The tail-resumptive fold cannot serve it (there is no
+        // single delimited context to splice a resume value into — `k` escapes as a value). Until the E5
+        // frame-capture increment lands (defunctionalized frames + an `apply` `br_table` dispatcher), a
+        // general arm DECLINES cleanly here — a Todo, never a valid-but-wrong fold. This is the classifier +
+        // surface step: the 5-part arm PARSES and binds `k` (scope wired in `handle_arm_binds`), and is
+        // recognized as its own class, distinct from tail-resumptive (has `resume`, no `k`) and abortive
+        // (no `resume`, no `k`).
+        if arm.cont.is_some() {
             return None;
         }
         map.insert((decl.0, idx), arm.clone());
@@ -3742,7 +3758,30 @@ fn thread_bounded(
                 let name_copy = copy_pure(db, kv[0]);
                 let (rinit, next) = thread_bounded(db, kv[1], cur, ctx, inline_depth)?;
                 cur = next;
-                rpairs.push(db.push_list(vec![name_copy, rinit]));
+                // NESTED-LET INIT LET-LIFT (the effectful-let capture fix): if the threaded init is itself a
+                // `(let ((x e)…) lbody)` — the shape an INLINED effectful helper produces, `let b = inner()`
+                // where `inner`'s body is `(let a = S.get() in …)` — LIFT the inner bindings UP into THIS
+                // `let`'s binding list (before this pair), and bind this name to the inner `lbody`. WHY: the
+                // threaded out-state `cur` may REFERENCE an inner binder (`put(a)` threads its arg `a` as the
+                // next state), and that out-state is spliced into the LATER bindings/body of THIS let; left
+                // inside `b`'s init-`let`, `a` is out of scope there → a spanless CDZ0101 (the nested-eff-let
+                // bug: `(let ((b (let ((a 10)) …))) (+ b a))` — the outer body's re-perform resolved to `a`).
+                // Lifting makes `a` a sibling binding of `b`, in scope for the continuation. Sound: the inner
+                // `let`'s inits already ran (in order) to produce `b`'s value; hoisting only WIDENS their
+                // visibility, it does not reorder or duplicate them (a `let` binding list is sequential, same
+                // as nesting). Only fires for a threaded init that IS a `let` (the inline/perform case); a
+                // plain init is pushed as-is. Mirrors the `do`-arm let-lift (`inlined_let_of_do_item`).
+                if let Some(inner) = db.ast.as_form(rinit, "let").map(|t| t.to_vec())
+                    && inner.len() == 2
+                    && let Struct::List(inner_pairs) = db.ast.get(inner[0]).clone()
+                {
+                    for ip in inner_pairs {
+                        rpairs.push(ip);
+                    }
+                    rpairs.push(db.push_list(vec![name_copy, inner[1]]));
+                } else {
+                    rpairs.push(db.push_list(vec![name_copy, rinit]));
+                }
             }
             let (rbody, cur) = thread_bounded(db, body_occ, cur, ctx, inline_depth)?;
             let let_head = db.push_atom(Leaf::Name("let".to_string()));
