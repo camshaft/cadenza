@@ -149,10 +149,11 @@ The parabola from x = −3 to 3 — drag a, b, or c to reshape it:
 ~~~`;
 
 /// A formula-focused example: the `formula` directive typesets a scalar / exact fraction / quantity.
-/// Two Int64 sliders drive `num / den`; because the notebook runs in EXACT mode (int / int → Rational),
-/// the result is a real fraction the FormulaView renders as a stacked n/d. Completes the rich-output
-/// family showcase (value / table / chart / formula). No `pragma` needed — exact mode already makes the
-/// division rational (verified: the `(do (pragma …) …)` wrapper does NOT compile as a top-level cell).
+/// Two Int64 sliders feed `Rational.of num den`, which builds an exact Rational (3, 4 → 3/4) the FormulaView
+/// renders as a stacked n/d. Completes the rich-output family showcase (value / table / chart / formula).
+/// ⚠ `Int64 / Int64` is INTEGER division (3 / 4 → 0, type Int64) — exact mode defaults BARE LITERALS to
+/// Rational but does NOT change typed-Int64 `/`; the operator hit exactly this (reported 0 instead of a
+/// fraction). Use `Rational.of` to make the ratio exact + Rational-typed (verified: type = Rational, 3/4).
 const FORMULA_DEMO = `# Formulas
 
 A **formula** cell typesets a scalar, an exact fraction, or a quantity. Drag **num** and **den** to
@@ -163,10 +164,11 @@ num : Int64 = slider(1, 9, default: 3)
 den : Int64 = slider(1, 9, default: 4)
 ~~~
 
-The ratio, as an exact fraction (the notebook evaluates in exact mode, so \`num / den\` is a Rational):
+The ratio as an **exact fraction** — \`Rational.of\` builds a Rational from the two integers, so 3 and 4
+become 3/4 (one and a half quarters), NOT integer division's 0:
 
 ~~~cadenza formula
-(def (main) (/ num den))
+(def (main) (Rational.of num den))
 ~~~`;
 
 export const EXAMPLES: ExampleNotebook[] = [

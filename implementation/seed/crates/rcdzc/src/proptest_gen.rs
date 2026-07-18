@@ -377,35 +377,56 @@ pub fn gen_ty_of_wrapper_param(db: &crate::db::Db, wrapper_name: &str) -> Option
     Some(gt)
 }
 
-/// Re-apply a type-level `@invariant` (from `db.invariants`, which survives `strip_annotations`) to a
-/// `GenTy::Sum` newtype — mirroring `classify_sum`'s AST-sourced application, but sourcing the predicate from
-/// the Db so it works POST-STRIP (the decoder path). For a single-variant newtype whose payload is an `Int`
-/// with a recognized range invariant → `IntRange`; a `List` with a min-length invariant → floored `min_len`.
-/// Keeps the decoder's `GenTy` identical to the generator's, so a counterexample decodes to the in-domain
-/// value the wrapper actually drew.
+/// Re-apply a type-level `@invariant` (from `db.invariants`, which survives `strip_annotations`) to EVERY
+/// `GenTy::Sum` newtype in `gt` — RECURSIVELY, descending Tuple slots / List elements / Record fields / Sum
+/// payloads — mirroring `classify_sum`'s AST-sourced application (which recurses via `classify_ty_at`), but
+/// sourcing the predicate from the Db so it works POST-STRIP (the decoder path). For a single-variant newtype
+/// whose payload is an `Int` with a recognized range invariant → `IntRange`; a `List` with a min-length
+/// invariant → floored `min_len`. Keeps the decoder's `GenTy` identical to the generator's at every nesting
+/// depth, so a counterexample decodes to the in-domain value the wrapper actually drew — even for a refined
+/// newtype NESTED inside a compound (e.g. `(Tuple Pct Bool)`), not just a top-level newtype param.
 fn reapply_recorded_invariant(db: &crate::db::Db, gt: &mut GenTy) {
-    let GenTy::Sum {
-        type_name,
-        variants,
-    } = gt
-    else {
-        return;
-    };
-    // Resolve the sum's TypeDecl occ by name → its recorded invariant predicate (occ in the same arena).
-    let Some(decl) = db.type_decls.iter().find(|d| &d.name == type_name) else {
-        return;
-    };
-    let Some(pred) = db.invariant_of(decl.occ) else {
-        return;
-    };
-    if let Some((lo, hi)) = invariant_int_range(&db.ast, pred)
-        && let [(_, Some(GenTy::Int))] = variants.as_slice()
-    {
-        variants[0].1 = Some(GenTy::IntRange { lo, hi });
-    } else if let Some(min) = min_len_for_param(&db.ast, pred, "it")
-        && let [(_, Some(GenTy::List(_, ml)))] = variants.as_mut_slice()
-    {
-        *ml = (*ml).max(min);
+    match gt {
+        // A newtype sum: re-source + apply its own recorded invariant, THEN recurse into its payloads (a
+        // payload may itself be / contain a refined newtype).
+        GenTy::Sum {
+            type_name,
+            variants,
+        } => {
+            if let Some(decl) = db.type_decls.iter().find(|d| &d.name == type_name)
+                && let Some(pred) = db.invariant_of(decl.occ)
+            {
+                if let Some((lo, hi)) = invariant_int_range(&db.ast, pred)
+                    && let [(_, Some(GenTy::Int))] = variants.as_slice()
+                {
+                    variants[0].1 = Some(GenTy::IntRange { lo, hi });
+                } else if let Some(min) = min_len_for_param(&db.ast, pred, "it")
+                    && let [(_, Some(GenTy::List(_, ml)))] = variants.as_mut_slice()
+                {
+                    *ml = (*ml).max(min);
+                }
+            }
+            for (_, payload) in variants.iter_mut() {
+                if let Some(p) = payload {
+                    reapply_recorded_invariant(db, p);
+                }
+            }
+        }
+        // Compound shapes: descend into every constituent so a nested refined newtype is re-constrained.
+        GenTy::Tuple(slots) => slots
+            .iter_mut()
+            .for_each(|s| reapply_recorded_invariant(db, s)),
+        GenTy::Record(fields) => fields
+            .iter_mut()
+            .for_each(|(_, f)| reapply_recorded_invariant(db, f)),
+        GenTy::List(elem, _) => reapply_recorded_invariant(db, elem),
+        GenTy::Set(elem) => reapply_recorded_invariant(db, elem),
+        GenTy::Map(k, v) => {
+            reapply_recorded_invariant(db, k);
+            reapply_recorded_invariant(db, v);
+        }
+        // Leaves — nothing nested to re-constrain.
+        GenTy::Int | GenTy::IntRange { .. } | GenTy::Bool | GenTy::Float(_) => {}
     }
 }
 

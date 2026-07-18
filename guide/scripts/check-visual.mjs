@@ -98,6 +98,31 @@ const ROUTES = [
       // The editor must be the shared CodeMirror IDE component (highlighting), not a plain textarea.
       const cm = await page.locator(".cm-editor").count();
       check(cm > 0, `${label}: source editor is the CodeMirror IDE component (Cadenza highlighting)`);
+      // Viewer controls (operator feedback): a SPIN toggle exists + defaults to OFF (fixed view — the
+      // operator found the constant auto-spin annoying; "↻ Spin" label = currently off, click → "Stop spin").
+      const spinBtn = page.locator('[data-testid="cad-spin-toggle"]');
+      if ((await spinBtn.count()) > 0) {
+        const label0 = (await spinBtn.innerText()).trim();
+        check(/spin/i.test(label0) && !/stop/i.test(label0), `${label}: spin toggle present + defaults OFF (${JSON.stringify(label0)})`);
+      } else {
+        check(false, `${label}: spin toggle present`);
+      }
+      // CAMERA PERSISTENCE (top operator irritant): a re-Run must NOT remount the viewer's <canvas> (that
+      // resets the vantage). Tag the canvas, re-Run, and confirm the SAME element survives (not replaced).
+      const canvas0 = await page.locator("canvas").count();
+      if (canvas0 > 0) {
+        await page.evaluate(() => {
+          const c = document.querySelector("canvas");
+          if (c) c.dataset.persistProbe = "1";
+        });
+        await page.locator("button:has-text('Run')").first().click().catch(() => {});
+        await page.waitForTimeout(3000);
+        const persisted = await page.evaluate(() => {
+          const c = document.querySelector("canvas");
+          return !!(c && c.dataset.persistProbe === "1");
+        });
+        check(persisted, `${label}: the 3D <canvas> persists across a re-Run (camera vantage isn't reset)`);
+      }
       // Example picker: present with >1 model, and switching to another model re-seeds the editor +
       // re-meshes (the editor buffer changes to the new model's source). Operator UX example-switcher.
       const picker = page.locator('[data-testid="cad-example-picker"]');

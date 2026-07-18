@@ -666,6 +666,116 @@ pub fn param_test_signatures(text: &str, from: &str) -> Result<Vec<ParamTestSign
     Ok(out)
 }
 
+/// One `@param` site's WIDGET-MANIFEST entry, flattened for JavaScript — the metadata `/cad` (and any
+/// parametric host) reads from a compiled model to render a control per param and drive it over the
+/// host-response path. Mirrors [`ParamTestSignature`]'s role for property tests. All optional fields are
+/// `None` (JS `undefined`) when the `@param`'s config omits them; `type_name` is always present (the
+/// B-invariant requires an explicit type). `range_lo`/`range_hi`/`default` are rendered as STRINGS (not
+/// numbers) so an exact `Rational` default like `1/4` or a `Qty` survives the boundary — JS parses per widget.
+#[wasm_bindgen(getter_with_clone)]
+pub struct ParamManifestEntry {
+    /// The param name — the accessor member (`Param.<name>`), the manifest key, and the host-bind name.
+    pub name: String,
+    /// The declared type, rendered (e.g. `Int64`, `Rational`, `(Qty Rational meter)`) — the accessor's
+    /// result type the host value must satisfy. Reduced via the same evaluator the annotation path uses, so
+    /// it equals what the type checker asserts (falls back to the node's inferred type render if it does not
+    /// reduce to a type value, keeping the field total).
+    pub type_name: String,
+    /// The `(: widget <name>)` config value (e.g. `"slider"`), or `None` if the `@param` declares no widget.
+    pub widget: Option<String>,
+    /// The low / high bound of a `(: range [<lo> <hi>])` config, each rendered to its literal text, or
+    /// `None` when there is no range config.
+    pub range_lo: Option<String>,
+    pub range_hi: Option<String>,
+    /// The `(: default <val>)` config value rendered to its literal text, or `None` when there is no default.
+    pub default: Option<String>,
+}
+
+/// Render a value/config node (a `range`/`default` literal, or a small nested form) to compact source-like
+/// text for the manifest — an integer/float/string/name atom reads directly; a `[a b]`-style `(list …)` or
+/// any other compound renders as a space-joined `(head child…)` s-expression. Total: an unrenderable node
+/// falls back to its head/atom spelling so the field stays a definite string (the manifest is advisory data
+/// the host parses per widget, not a re-parsed program). Bounded recursion — config values are shallow.
+fn render_manifest_node(ast: &rcdzc::ast::Arenas, id: rcdzc::ast::StructId) -> String {
+    if let Some(v) = ast.as_int(id) {
+        // The integer's exact base-10 text (`IntValue` is a big-endian bignum, no `Display`).
+        return v.to_decimal_string();
+    }
+    if let Some(d) = ast.as_float(id) {
+        // A decimal literal has no direct text render on `Decimal`; go through its `f64` bit pattern for a
+        // human-readable magnitude (a range/default bound is a display value the host parses, not a
+        // re-parsed exact literal — the exact value still crosses via the num/den host path at run time).
+        return f64::from_bits(d.to_f64_bits()).to_string();
+    }
+    if let Some(s) = ast.as_str(id) {
+        return s.to_string();
+    }
+    if let Some(n) = ast.as_name(id) {
+        return n.to_string();
+    }
+    // A compound node (e.g. `(list 0 100)` from `[0 100]`, or a `(Unit.base …)`): render its children
+    // space-joined, so a structured default/range value stays legible rather than collapsing to a node id.
+    match ast.get(id) {
+        rcdzc::ast::Struct::List(children) => {
+            let parts: Vec<String> = children
+                .iter()
+                .map(|&c| render_manifest_node(ast, c))
+                .collect();
+            format!("({})", parts.join(" "))
+        }
+        // An atom that matched none of the readers above (should not occur) — an empty, definite fallback.
+        rcdzc::ast::Struct::Atom(_) => String::new(),
+    }
+}
+
+/// The WIDGET MANIFEST of every `@param` site in `text` — the metadata a parametric host (the operator's
+/// single-mode `/cad`) reads from a compiled model to render a slider/control per param and drive it over
+/// the host-response path (`Param.<name>` / the num/den pair for a Rational). Rides `param_sidecar::
+/// scan_manifest` (the SAME scan the `cdz param-manifest` CLI + `Query::ParamManifest` use), rendering each
+/// record's type + config nodes to JS-readable strings. Mirrors [`param_test_signatures`] for the property-
+/// test driver. A parse error / no `@param` yields an empty list (a model with no params needs no controls).
+#[wasm_bindgen]
+pub fn param_manifest(text: &str, from: &str) -> Result<Vec<ParamManifestEntry>, JsError> {
+    let from = parse_format(from)?;
+    let Ok((ast_bytes, _spans)) = parse_spanned(text, from) else {
+        return Ok(Vec::new());
+    };
+    let Some(arenas) = rcdzc::codec::decode(&ast_bytes) else {
+        return Ok(Vec::new());
+    };
+    let mut db = rcdzc::db::Db::load(arenas);
+    // Scan first (an immutable borrow), collecting the records, THEN render types (a mutable borrow of `db`
+    // for `typeval_of`'s memoization) — the two borrows must not overlap. Same ordering as the CLI's
+    // `param_manifest_text`, so the browser manifest's type equals what the type checker asserts.
+    let records = rcdzc::param_sidecar::scan_manifest(&db.ast);
+    let mut out = Vec::with_capacity(records.len());
+    for rec in records {
+        // The declared TYPE-EXPRESSION node reduced to its type VALUE (same as the CLI), falling back to the
+        // node's inferred type render so the field is always a definite string.
+        let type_name = match rcdzc::eval::typeval_of(&mut db, rec.ty) {
+            Some(t) => t.render_name(),
+            None => rcdzc::infer::type_of(&mut db, rec.ty).render_name(),
+        };
+        let (range_lo, range_hi) = match rec.range {
+            Some((lo, hi)) => (
+                Some(render_manifest_node(&db.ast, lo)),
+                Some(render_manifest_node(&db.ast, hi)),
+            ),
+            None => (None, None),
+        };
+        let default = rec.default.map(|d| render_manifest_node(&db.ast, d));
+        out.push(ParamManifestEntry {
+            name: rec.name,
+            type_name,
+            widget: rec.widget,
+            range_lo,
+            range_hi,
+            default,
+        });
+    }
+    Ok(out)
+}
+
 /// The names of every top-level `def` the buffer declares — for the playground REPL's autocomplete.
 /// Parses the buffer (surface-aware) and reads each definition's bound name, in source order. A parse
 /// error yields an empty list (autocomplete is a nicety; a mid-edit unparseable buffer just offers
@@ -2199,6 +2309,69 @@ mod tests {
         assert!(
             toks.is_empty(),
             "a broken preloaded library degrades highlighting to the lexical fallback (no tokens)"
+        );
+    }
+
+    #[test]
+    fn param_manifest_reports_each_at_param_sites_metadata() {
+        // The `/cad` single-mode enabler: `param_manifest` reads every `@param` site from a compiled model
+        // into JS-readable {name, type_name, widget, range, default} so the browser renders a control per
+        // param. A scalar param reports its declared type + widget; a Rational (heap-typed) param reports
+        // `Rational` (the num/den desugar is a compile detail the manifest abstracts over). A model with no
+        // @param yields an empty list.
+        // NOTE: `range` is spelled `(list 0 100)` — the `[0 100]` bracket sugar is ML-surface-only; the
+        // s-expr reader reads `[0` / `100]` as two atoms, so a `.sexp`/s-expr fixture must use `(list …)`
+        // (the canonical arena node `[lo hi]` desugars to on the ML side).
+        let src = "(do \
+                     (: (@ (param (: widget slider) (: range (list 0 100)) (: default 5)) width) Int64) \
+                     (: (@ (param (: widget slider)) rate) Rational) \
+                     (def (main) (host (Param) (+ (Param.width) (Rational.value (Param.rate))))) \
+                     (export main))";
+        let entries = param_manifest(src, "sexpr").expect("param_manifest runs");
+        assert_eq!(entries.len(), 2, "two @param sites → two manifest entries");
+
+        let width = entries
+            .iter()
+            .find(|e| e.name == "width")
+            .expect("the `width` @param is in the manifest");
+        assert_eq!(width.type_name, "Int64", "declared type is reported");
+        assert_eq!(
+            width.widget.as_deref(),
+            Some("slider"),
+            "widget is reported"
+        );
+        assert_eq!(
+            width.range_lo.as_deref(),
+            Some("0"),
+            "range low bound is rendered to its literal text"
+        );
+        assert_eq!(width.range_hi.as_deref(), Some("100"), "range high bound");
+        assert_eq!(
+            width.default.as_deref(),
+            Some("5"),
+            "default is rendered to its literal text"
+        );
+
+        let rate = entries
+            .iter()
+            .find(|e| e.name == "rate")
+            .expect("the `rate` @param is in the manifest");
+        assert_eq!(
+            rate.type_name, "Rational",
+            "a heap-typed Rational @param reports its declared type (num/den desugar is abstracted)"
+        );
+        // No range/default config on `rate` → those fields are None (JS undefined).
+        assert!(
+            rate.range_lo.is_none() && rate.range_hi.is_none() && rate.default.is_none(),
+            "a @param with no range/default config reports None for them"
+        );
+
+        // A model with NO @param yields an empty manifest (no controls to render).
+        assert!(
+            param_manifest("(do (def (main) 42) (export main))", "sexpr")
+                .expect("runs")
+                .is_empty(),
+            "no @param sites → empty manifest"
         );
     }
 }

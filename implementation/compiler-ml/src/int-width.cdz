@@ -78,6 +78,32 @@ def wrapping-add(a: Int64, b: Int64, signed: Bool, width: Int64) = wrap-to(a + b
 def wrapping-sub(a: Int64, b: Int64, signed: Bool, width: Int64) = wrap-to(a - b, signed, width)
 def wrapping-mul(a: Int64, b: Int64, signed: Bool, width: Int64) = wrap-to(a * b, signed, width)
 
+/// Does the EXACT result `v` OVERFLOW a `(signed, width)` integer type? — the negation of `fits-width`, the
+/// predicate the TRAPPING default operator branches on. `numeric-model.md` §"Overflow Is Defined": an
+/// integer op that overflows its type has a defined outcome; §"A Wrapping Operation … opted into by name"
+/// makes clear the UNQUALIFIED `+`/`-`/`*` is the TRAPPING form (wrapping is the named opt-in above). The
+/// reference (rcdzc) rejects a compile-provable overflow with CDZ0304 and traps a runtime one — so this is
+/// the condition the self-hosted compiler's checked arithmetic reports. An out-of-scope width (see
+/// `width-ok`) is treated as NON-overflowing here (the caller handles width-64 natively); `fits-width`
+/// returns false for it, so `overflows` guards on `width-ok` to avoid a spurious "overflow" on Int64.
+def overflows(v: Int64, signed: Bool, width: Int64) =
+  (if width-ok(width) then (if fits-width(v, signed, width) then false else true) else false)
+
+/// TRAPPING (checked) arithmetic at a `(signed, width)` type — the model for the UNQUALIFIED `+`/`-`/`*` on
+/// a narrow integer. Compute the exact result; `Option.Some(result)` when it FITS the width, `Option.None`
+/// when it OVERFLOWS (the trap condition — matching the reference's CDZ0304 overflow trap; distinct from the
+/// `wrapping-*` forms above, which never trap). A narrow-arith interpreter maps a `None` here to its
+/// trap/decline verdict (which the W4 differential grades as agreeing with the emitted module's trap).
+/// NOTE the intermediate `a OP b` uses host Int64 arithmetic, exact for the widths `width-ok` admits (≤ 62;
+/// two values under 2^62 sum/subtract within Int64, and a product of two ≤2^31 values fits — the standard
+/// narrow widths 8/16/32 are comfortably in range).
+def checked-add(a: Int64, b: Int64, signed: Bool, width: Int64) =
+  (let r = a + b in (if overflows(r, signed, width) then Option.None(unit) else Option.Some(r)))
+def checked-sub(a: Int64, b: Int64, signed: Bool, width: Int64) =
+  (let r = a - b in (if overflows(r, signed, width) then Option.None(unit) else Option.Some(r)))
+def checked-mul(a: Int64, b: Int64, signed: Bool, width: Int64) =
+  (let r = a * b in (if overflows(r, signed, width) then Option.None(unit) else Option.Some(r)))
+
 // ---- pow2 / mod-floor ----
 
 @test
@@ -208,4 +234,50 @@ def iw-wrapping-mul-width16() =
   // a wider width: 256 * 256 = 65536 wraps mod 2^16 → 0 at UInt16; in-range 100*100=10000 unchanged.
   if (wrapping-mul(256, 256, false, 16) == 0) and (wrapping-mul(100, 100, false, 16) == 10000) then unit else trap("UInt16 wrapping-mul: 65536→0, 10000 unchanged")
 
-export { fits-width, wrap-to, wrapping-add, wrapping-sub, wrapping-mul, pow2, mod-floor, width-ok }
+// ---- overflows / checked (TRAPPING) arithmetic — the UNQUALIFIED-operator model (reference: CDZ0304) ----
+
+@test
+def iw-overflows-is-fits-negated() =
+  // overflows ⟺ NOT fits-width, for an in-scope width: 255 fits UInt8 (no overflow), 256 overflows;
+  // 127 fits Int8, 128 overflows; a negative under Int8.min overflows.
+  if (if overflows(255, false, 8) then false else true) and overflows(256, false, 8)
+     and (if overflows(127, true, 8) then false else true) and overflows(128, true, 8)
+     and overflows(0 - 129, true, 8)
+  then unit else trap("overflows = !fits-width in-scope")
+
+@test
+def iw-overflows-out-of-scope-is-false() =
+  // width 64 (out of this slice) is handled natively by the caller → overflows returns false (no spurious
+  // trap on Int64), matching fits-width's out-of-scope decline being routed around.
+  if (if overflows(12345, true, 64) then false else true) then unit else trap("width 64 → overflows false")
+
+@test
+def iw-checked-add-in-range-is-some() =
+  // in-range sums compute: 100 + 20 = 120 fits Int8 → Some 120; 100 + 27 = 127 fits UInt8 → Some 127.
+  (match checked-add(100, 20, true, 8) with
+    | Option.Some(v) => (if v == 120 then (match checked-add(100, 27, false, 8) with | Option.Some(w) => (if w == 127 then unit else trap("u8 100+27=127")) | Option.None(_) => trap("u8 in-range Some")) else trap("i8 100+20=120"))
+    | Option.None(_) => trap("i8 in-range → Some"))
+
+@test
+def iw-checked-add-overflow-is-none() =
+  // 100 + 100 = 200 overflows Int8 (max 127) → None (the TRAP condition, matching CDZ0304); 200 + 100 = 300
+  // overflows UInt8 (max 255) → None. This is the checked/trapping default, DISTINCT from wrapping-add's -56/44.
+  (match checked-add(100, 100, true, 8) with
+    | Option.None(_) => (match checked-add(200, 100, false, 8) with | Option.None(_) => unit | Option.Some(_) => trap("u8 300 overflows → None"))
+    | Option.Some(_) => trap("i8 200 overflows → None"))
+
+@test
+def iw-checked-sub-underflow-is-none() =
+  // 0 - 1 = -1 underflows UInt8 (min 0) → None; an in-range signed sub computes: 5 - 8 = -3 fits Int8 → Some.
+  (match checked-sub(0, 1, false, 8) with
+    | Option.None(_) => (match checked-sub(5, 8, true, 8) with | Option.Some(v) => (if v == (0 - 3) then unit else trap("i8 5-8=-3")) | Option.None(_) => trap("i8 5-8 in range → Some"))
+    | Option.Some(_) => trap("u8 0-1 underflows → None"))
+
+@test
+def iw-checked-mul-overflow-is-none() =
+  // 20 * 20 = 400 overflows UInt8 → None; 10 * 12 = 120 fits Int8 → Some 120.
+  (match checked-mul(20, 20, false, 8) with
+    | Option.None(_) => (match checked-mul(10, 12, true, 8) with | Option.Some(v) => (if v == 120 then unit else trap("i8 10*12=120")) | Option.None(_) => trap("i8 10*12 in range → Some"))
+    | Option.Some(_) => trap("u8 400 overflows → None"))
+
+export { fits-width, wrap-to, wrapping-add, wrapping-sub, wrapping-mul, pow2, mod-floor, width-ok, overflows, checked-add, checked-sub, checked-mul }

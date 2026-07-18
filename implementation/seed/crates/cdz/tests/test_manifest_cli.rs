@@ -1251,6 +1251,52 @@ fn a_failing_range_invariant_property_renders_the_counterexample_in_domain() {
     );
 }
 
+/// A refined newtype NESTED inside a compound (`(Tuple Pct Bool)`) also decodes its counterexample IN-DOMAIN.
+/// REGRESSION: `reapply_recorded_invariant` (the post-strip decoder-side re-source) used to handle only a
+/// TOP-LEVEL `GenTy::Sum` — a refined newtype in a Tuple slot / List element / Record field was left
+/// unconstrained on the decode side, so its counterexample rendered a raw out-of-domain driver int (e.g.
+/// `P(-2332…)`) even though the GENERATOR (which recurses) drew it in-domain. The fix makes the re-apply
+/// RECURSE into compound GenTy shapes, mirroring the generator's `classify_sum` recursion. Here `Pct` is
+/// `[0,100]` and the property traps for `x >= 50`, so a failing draw is an in-range `Pct(50..100)`.
+#[test]
+fn a_failing_property_over_a_nested_refined_newtype_renders_the_counterexample_in_domain() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — building a nominal value needs the store"
+        );
+        return;
+    }
+    let d = dir("invariant-nested-counterexample");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do (@ (invariant (and (>= it 0) (<= it 100))) (type Pct (P Int64))) \
+           (@ test (def (p (: pair (Tuple Pct Bool))) \
+             (match pair ((tuple a b) (match a (((. Pct P) x) (if (< x 50) unit (trap \"big\")))))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, _) = run(&["test", &f, "--seed", "3", "--trials", "50"]);
+    assert!(
+        !ok,
+        "the property fails (a draw >= 50 exists in [0,100]): {stdout}"
+    );
+    // Extract the nested `P(N)` from the tuple counterexample and assert N is in [0,100], NOT a raw int.
+    let ce = stdout
+        .lines()
+        .find(|l| l.contains("counterexample: p((P("))
+        .unwrap_or("");
+    let n: i64 = ce
+        .split("P(")
+        .nth(1)
+        .and_then(|s| s.split(')').next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(-1);
+    assert!(
+        (0..=100).contains(&n),
+        "a NESTED @invariant newtype counterexample decodes IN-DOMAIN (0..=100), not a raw driver int: {stdout}"
+    );
+}
+
 /// END-TO-END: a MIN-LENGTH `@invariant` constrains a newtype-List to non-empty generation. `NEList = Mk
 /// (List Int64)` with `@invariant(< 0 (List.len it))`: every generated `NEList` wraps a NON-EMPTY list, so
 /// a property asserting `List.len > 0` PASSES all trials (before the constraint the generator drew the empty

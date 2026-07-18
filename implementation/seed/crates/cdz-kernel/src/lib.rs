@@ -101,6 +101,12 @@ pub mod boot;
 /// log attenuates each invocation to its minimal privilege set. The log-store half; evaluation is `cdz_agent::cedar`.
 pub mod policy;
 
+/// The wall clock (capability + scheduling substrate — operator ruling): [`clock::now_millis`] is the single
+/// ambient wall-clock read (the daemon calls it per tick); [`clock::is_expired`] is the pure time-as-data check
+/// downstream folds use. Shared substrate for authz-grant EXPIRY (time-boxed capabilities) and SCHEDULED EVENTS
+/// (one-shot + periodic). Time is threaded as a `now_ms` argument so the folds stay pure + deterministic.
+pub mod clock;
+
 /// The daemon loop (rung KC-daemon — the "start the daemon" half of fork-5): [`daemon::tick`] runs one step —
 /// read the log, find the latest genesis `program` ([`boot::latest_program`]), and drive an interpret turn
 /// ([`kernel::run_interpret`]). Ties the boot half (genesis lookup) + the kernel half (compile+run) into the
