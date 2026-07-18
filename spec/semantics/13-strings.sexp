@@ -1005,6 +1005,32 @@
              (def (main)   (slen "café")) (export main)))
   (output  (: 4 Int64)))
 
+(case "the scalar length of a GENUINELY-runtime multi-byte string walks the UTF-8 leaf"
+  (doc    "The case above passes a bare literal, which const-FOLDS (`chars().count()`) before emit — it
+           never exercises the runtime `String.scalar-len` path. Forcing a genuine runtime String with
+           `(String.concat s \"\")` (the same runtime-forcing the runtime `String.at` cases use) makes the
+           backend WALK the UTF-8 byte leaf, counting LEAD bytes (`(byte & 0xC0) != 0x80`, not the
+           `10xxxxxx` continuation bytes) — the scalar count for well-formed UTF-8. `\"café\"` is 4 scalars
+           (c,a,f,é) though 5 bytes (é is a 2-byte encoding). Pins the emit-side scalar-len walk (reusing
+           `String.at`'s scalar-scan machinery over the already-exported `bytes-len`/`bytes-get` ops — no
+           new runtime op, frozen hash unchanged); the const case above pins the fold. Was a decline before
+           this (\"a runtime string's scalar length needs a UTF-8 decoding walk\").")
+  (input   (do
+             (def (slen s) (String.scalar-len (String.concat s "")))
+             (def (main)   (slen "café")) (export main)))
+  (output  (: 4 Int64)))
+
+(case "the scalar length of a runtime string spanning every UTF-8 width"
+  (doc    "The full-width witness: a genuinely-runtime `\"café—😀\"` mixes 1-byte (c,a,f), 2-byte (é),
+           3-byte (—, U+2014) and 4-byte (😀, U+1F600) encodings — 6 scalars, 12 bytes. `String.scalar-len`
+           counts 6 (every lead byte), confirming the walk's `(byte & 0xC0) != 0x80` lead-byte test handles
+           all four UTF-8 encoding widths, not just the 2-byte case. Contrast `String.byte-len` = 12. The
+           multi-width companion of the café case.")
+  (input   (do
+             (def (slen s) (String.scalar-len (String.concat s "😀")))
+             (def (main)   (slen "café—")) (export main)))
+  (output  (: 6 Int64)))
+
 (case "a runtime string is indexed by scalar and the extracted scalar is returned"
   (doc    "`String.at` on a RUNTIME string — the reader's scalar cursor — reads the i-th Unicode scalar
            as a one-scalar string, fallibly. `(at (concat s \"\") 3)` on \"café\" reads scalar 3 (é,

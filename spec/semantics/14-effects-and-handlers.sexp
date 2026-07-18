@@ -229,6 +229,44 @@
             (def (main) (run false)) (export main)))
   (output (: 200 Int64)))
 
+(case "a single-task DES scheduler sleeps a task and fast-forwards the clock to its wake instant"
+  (doc    "The discrete-event-simulation single-task gate (v-discrete-event-sim's step-3 forcing repro,
+           minimal distillation). A `worker` task sleeps then returns its label; the `Sim` handler's `sleep`
+           arm computes the wake instant and resumes with the clock advanced (a `let`-wrapped tail resume;
+           the `k` binder is the scheduler ABI's reified-continuation slot, unused in the single-task case
+           which resumes in place). Witnesses capabilities-and-effects.md continuation/resume semantics for
+           the sleep/fast-forward idiom: the task sleeps 3s, the clock fast-forwards, the continuation
+           resumes and returns \"done\". Value-grades the sleep-wake fold (a todo→fail flip here = k not
+           resumed / clock not advanced). The full multi-task pqueue interleave (stored k across activations)
+           is v-discrete-event-sim's follow-on gate.")
+  (input  (do
+            (type Duration (Duration UInt64))
+            (type Instant  (Instant  UInt64))
+            (def (secs (: n UInt64)) (Duration.Duration (* n 1000000000)))
+            (def (inst-ns (: t Instant))  (match t ((Instant.Instant n) n)))
+            (def (dur-ns  (: d Duration)) (match d ((Duration.Duration n) n)))
+            (def (at (: t Instant) (: d Duration)) (Instant.Instant (+ (inst-ns t) (dur-ns d))))
+            (effect Sim (op sleep (-> Duration Unit)) (op now (-> Unit Instant)))
+            (def (worker (: label String) (: d Duration)) (do (Sim.sleep d) label))
+            (def (main)
+              (handle Sim (Instant.Instant 0)
+                ( (now (u) s (resume s s))
+                  (sleep (d) s k (let ((wake (at s d))) (resume unit wake))) )
+                (worker "done" (secs 3)))) (export main)))
+  (output (: "done" String)))
+
+(case "a ctl-style arm applying its continuation inside a match scrutinee resolves and folds"
+  (doc    "The continuation binder `k` of a `ctl`-style arm must be in scope everywhere in the arm body,
+           including inside a MATCH scrutinee. `(flip () s k (match (k 10) (z (* z 2))))` applies `k`
+           lexically as the scrutinee of a match; `(k 10)` returns 10 into the delimited context, the match
+           binds it to `z` and doubles it → 20. Regression pin: `k` used inside a match scrutinee previously
+           reported a spurious CDZ0101 (the continuation binder occurrence was not recognized as a binder on
+           that resolution path), while `k` applied directly in an operator operand worked.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main) (handle Amb 0 ((flip () s k (match (k 10) (z (* z 2))))) (Amb.flip))) (export main)))
+  (output (: 20 Int64)))
+
 (case "a ctl-style arm that applies its continuation lexically folds through the delimited context"
   (doc    "The E5 within-activation continuation surface: a 5-part handler arm `(flip () s k body)` binds the
            delimited continuation `k` as a value and APPLIES it as `(k v)`. When `k` is applied lexically

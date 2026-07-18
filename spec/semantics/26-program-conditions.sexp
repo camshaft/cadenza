@@ -558,27 +558,27 @@
             (export main)))
   (output (: true Bool)))
 
-; ── b4c(proven): a full @requires/@ensures obligation — denote both, discharge P ⇒ Q[it:=body] ─────────
+; ── b4c(proven): a full @requires/@ensures obligation — denote both, discharge P ⇒ Q[ret:=body] ─────────
 ; b4b denotes ONE predicate Ast → Term. b4c(proven) composes the elaboration (§2.1): for
-;   @requires(<= x 100) @ensures(<= it MAXINT) (def (f x) (+ x 1))
-; the obligation is `denote(P) ⊢ denote(Q)[it := denote(body)]` — i.e. from the precondition hypothesis
+;   @requires(<= x 100) @ensures(<= ret MAXINT) (def (f x) (+ x 1))
+; the obligation is `denote(P) ⊢ denote(Q)[ret := denote(body)]` — i.e. from the precondition hypothesis
 ; `le x 100` derive `le (add x 1) MAXINT` (the postcondition with `it` the body's value `x+1`). This is
 ; exactly the b1 discharge chain, now framed as the DENOTED annotations: `it` in Q is replaced by the
 ; denotation of the body `(+ x 1)` → `add (Var 0) (Num 1)`, and the precondition enters via `assume`. Pins
 ; that the §2.1 elaboration target — the whole @requires⇒@ensures obligation — discharges through the SAME
 ; kernel the hand-authored b1 cases use, so the b4c compiler wiring (compile-time-eval) has a proven target.
 
-(case "b4c(proven): @requires(<= x 100)/@ensures(<= it MAXINT) on (f x)=x+1 discharges — P denoted as hyp, Q[it:=body] as goal"
+(case "b4c(proven): @requires(<= x 100)/@ensures(<= ret MAXINT) on (f x)=x+1 discharges — P denoted as hyp, Q[ret:=body] as goal"
   (doc    "The PROVEN-tier obligation for a full @requires/@ensures pair (design §2.1). The elaboration
            denotes @requires(<= x 100) → the hypothesis `le (Var 0) (Num 100)` (via assume) and
-           @ensures(<= it MAXINT) with `it` := the body's denotation `add (Var 0) (Num 1)` → the goal
+           @ensures(<= ret MAXINT) with `ret` := the body's denotation `add (Var 0) (Num 1)` → the goal
            `le (add (Var 0) 1) MAXINT`. Discharging is the b1 chain: mono-add-r on the assumed precondition
            + a CHECKED numeral fact (101 <= MAXINT) + trans-le. The entry builds the denoted obligation and
            discharges it through the kernel, checking the conclusion is the denoted postcondition. Runs to
-           `true`. Pins that the b4 elaboration's whole-obligation target (P ⇒ Q[it:=body]) discharges via
+           `true`. Pins that the b4 elaboration's whole-obligation target (P ⇒ Q[ret:=body]) discharges via
            the SAME kernel machinery b1 exercises — so b4c's compile-time-eval wiring has a proven shape to
            produce, and the discharged Thm is exactly what b3's oracle consumes for the implicit overflow
-           obligation (here `<= it MAXINT` IS the no-overflow condition on `x+1`).")
+           obligation (here `<= ret MAXINT` IS the no-overflow condition on `x+1`).")
   (module "bounds"
     (do
       (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
@@ -637,9 +637,9 @@
               (let ((x    (Term.Var 0))
                     (one  (Term.Num 1))
                     (c100 (Term.Num 100)))
-                ; denote(body) = (+ x 1) → add (Var 0) (Num 1); it := this in the @ensures goal
+                ; denote(body) = (+ x 1) → add (Var 0) (Num 1); ret := this in the @ensures goal
                 (let ((body-den (add x one)))
-                  ; @ensures(<= it MAXINT) with it:=body → goal = le (add x 1) MAXINT
+                  ; @ensures(<= ret MAXINT) with ret:=body → goal = le (add x 1) MAXINT
                   (let ((goal (le body-den (maxint)))
                         ; @requires(<= x 100) → hypothesis, entered via assume
                         (pre  (assume (le x c100))))
@@ -657,16 +657,16 @@
   (output (: true Bool)))
 
 ; ── b4c(unprovable): an @ensures whose obligation is NOT dischargeable → the PROVEN tier fails (CDZ-VERIFY) ─
-; The dual of b4c(proven). For `@ensures(<= it MAXINT) (def (f x) (+ x 1))` with NO (or too-weak)
+; The dual of b4c(proven). For `@ensures(<= ret MAXINT) (def (f x) (+ x 1))` with NO (or too-weak)
 ; @requires, the postcondition obligation `le (add x 1) MAXINT` is NOT provable — x is unbounded, so the
 ; discharge chain has no bounding hypothesis to feed mono-add-r, and le-ax cannot mint a non-ground fact.
 ; At b4c this un-discharged obligation is the PROVEN-tier MISS: the author gets CDZ-VERIFY (or, if @test is
 ; stacked, the TESTED tier runs it — v-property-testing's lane). This pins that a genuinely-unprovable
 ; postcondition does NOT spuriously discharge — the proof tier is SOUND (it never claims a false proof).
 
-(case "b4c(unprovable): @ensures(<= it MAXINT) on unbounded (f x)=x+1 is NOT dischargeable — the proof tier correctly MISSES (CDZ-VERIFY)"
+(case "b4c(unprovable): @ensures(<= ret MAXINT) on unbounded (f x)=x+1 is NOT dischargeable — the proof tier correctly MISSES (CDZ-VERIFY)"
   (doc    "The PROVEN-tier soundness dual. With no bounding @requires, the @ensures postcondition
-           `<= it MAXINT` (it := body `x+1`) denotes to the obligation `le (add x 1) MAXINT`, which is NOT
+           `<= ret MAXINT` (ret := body `x+1`) denotes to the obligation `le (add x 1) MAXINT`, which is NOT
            provable: x is unbounded so there is no `le x c` hypothesis for mono-add-r, and the checked
            le-ax cannot mint the non-ground `le (add x 1) MAXINT` (eval-ground fails on the Var). The entry
            attempts the discharge WITHOUT a precondition and confirms it does not reach the obligation — so
@@ -1643,7 +1643,7 @@
            (the earlier behavior) would make the stacked form silently non-value-transparent — this pins it
            does not. The true postcondition `(>= it 0)` holds for 10, so no trap; the value 10 flows out.")
   (input  (do
-            (@ test (@ (ensures (>= it 0)) (def (dbl (: x Int64)) (+ x x))))
+            (@ test (@ (ensures (>= ret 0)) (def (dbl (: x Int64)) (+ x x))))
             (def (main) (dbl 5))
             (export main)))
   (output (: 10 Int64)))
@@ -1656,7 +1656,7 @@
            returning `it` (not `unit`) on the PASS branch did NOT weaken the check: a true postcondition
            yields the value, a false one still traps — the fix is value-transparent AND test-preserving.")
   (input  (do
-            (@ test (@ (ensures (< it 0)) (def (dbl (: x Int64)) (+ x x))))
+            (@ test (@ (ensures (< ret 0)) (def (dbl (: x Int64)) (+ x x))))
             (def (main) (dbl 5))
             (export main)))
   (trap   "unreachable"))
@@ -1732,7 +1732,7 @@
 
 (case "@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def"
   (doc    "The reviewer's post-merge vector on the (D) @requires enforcement (a natural spelling of the
-           canonical precondition+postcondition contract). `(@ (requires (>= x 0)) (@ (ensures (>= it 0))
+           canonical precondition+postcondition contract). `(@ (requires (>= x 0)) (@ (ensures (>= ret 0))
            (def (f x) (+ x 1))))` — the `@requires` does NOT directly wrap the def; the `@ensures` layer is
            between them. Before the descent fix, `verify_enforce::enforce` only rewrote a `@requires` whose
            INNER was directly a `(def …)`, so this `@requires` (inner = the `(@ (ensures …) …)` node) was
@@ -1746,7 +1746,7 @@
            this case is purely about the @requires precondition firing through the @ensures wrapper.)")
   (input  (do
             (@ (requires (>= x 0))
-            (@ (ensures (>= it 0))
+            (@ (ensures (>= ret 0))
                (def (f (: x Int64)) (+ x 1))))
             (def (main) (f -5))
             (export main)))
@@ -1755,16 +1755,16 @@
 (case "a PLAIN @ensures postcondition is ENFORCED at body-exit: a VIOLATED postcondition traps when the def is called"
   (doc    "The (D) test-tier enforcement of a BARE `@ensures` (NOT stacked under `@test` — that is
            v-property-testing's TESTED tier, which they own). `verify_enforce::enforce` rewrites
-           `(@ (ensures (>= it 0)) (def (f (: x Int64)) (- x 100)))` so the body becomes
+           `(@ (ensures (>= ret 0)) (def (f (: x Int64)) (- x 100)))` so the body becomes
            `(let ((it (- x 100))) (if (>= it 0) it (trap …)))` — the postcondition is checked at body-EXIT
            (the Hoare `{P} body {Q}` reading, `it` bound to the def's RESULT), and is VALUE-TRANSPARENT: the
            pass arm returns `it`, the def's own value, NOT `unit`. `(f 5)` computes `-95`, which violates
-           `(>= it 0)`, so the `if` takes the trap arm — `unreachable`. Before this increment a bare @ensures
+           `(>= ret 0)`, so the `if` takes the trap arm — `unreachable`. Before this increment a bare @ensures
            was RECORDED (db.ensures) but NOT enforced — `(f 5)` returned `-95`. Pins that a plain @ensures now
            actually verifies at run time. (A `@test @ensures` stack is v-property-testing's; this pass skips
            that shape to avoid double-injection — bare @ensures is v-verification's.)")
   (input  (do
-            (@ (ensures (>= it 0)) (def (f (: x Int64)) (- x 100)))
+            (@ (ensures (>= ret 0)) (def (f (: x Int64)) (- x 100)))
             (def (main) (f 5))
             (export main)))
   (trap   "unreachable"))
@@ -1772,28 +1772,31 @@
 (case "a PLAIN @ensures postcondition is value-transparent when SATISFIED: the def returns its computed value"
   (doc    "The value-transparency half of the plain-@ensures enforcement pin above. `(f 200)` computes `100`,
            which SATISFIES `(>= it 0)`, so the injected `(let ((it (- x 100))) (if (>= it 0) it (trap …)))`
-           binds `it = 100`, the `if` takes the pass arm, and the def returns `it` = `100` — its OWN value,
+           binds `ret = 100`, the `if` takes the pass arm, and the def returns `ret` = `100` — its OWN value,
            not `unit`, and no trap. Together with the trap case above this pins that the @ensures enforcement
            rewrite is value-transparent AND checking: a satisfied postcondition yields the computed result, a
            violated one traps.")
   (input  (do
-            (@ (ensures (>= it 0)) (def (f (: x Int64)) (- x 100)))
+            (@ (ensures (>= ret 0)) (def (f (: x Int64)) (- x 100)))
             (def (main) (f 200))
             (export main)))
   (output (: 100 Int64)))
 
-(case "@ensures on a def with a parameter named it is REJECTED (would silently not enforce — rename the param)"
-  (doc    "The `it`-capture guard, as a REJECT (breaker 2026-07-17). `@ensures(Q)` enforcement binds the def's
-           RESULT to `it` (`(let ((it BODY)) (if Q it (trap)))`). If a PARAMETER is literally named `it`, that
-           binder would SHADOW the param, so `verify_enforce` cannot enforce the postcondition for such a def.
-           Rather than SILENTLY skip it (a footgun — the author wrote a contract that is quietly unenforced; a
-           violating result would return with no trap or diagnostic), `collect_faults` REJECTS it: a stated
-           contract is enforced OR the author is told precisely why not (the (D) philosophy). Here
-           `(def (f (: it Int64)) (- it 100))` carries `@ensures(>= it 0)` and has a param named `it` → CDZ0201
-           at the annotation, naming the fix (rename the param). Pins that the guard is a diagnostic, not a
-           silent drop. (An `@requires` on the same def would be fine — only `@ensures` binds `it`.)")
+(case "@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)"
+  (doc    "The result-binder-capture guard, as a REJECT (breaker 2026-07-17). `@ensures(Q)` enforcement binds
+           the def's RESULT to `ret` (`(let ((ret BODY)) (if Q ret (trap)))`). If a PARAMETER is
+           literally named `ret`, that binder would SHADOW the param, so `verify_enforce` cannot enforce the
+           postcondition for such a def. Rather than SILENTLY skip it (a footgun — the author wrote a contract
+           that is quietly unenforced; a violating result would return with no trap or diagnostic),
+           `collect_faults` REJECTS it: a stated contract is enforced OR the author is told precisely why not
+           (the (D) philosophy). Here `(def (f (: ret Int64)) (- ret 100))` carries `@ensures(>=
+           ret 0)` and has a param named `ret` → CDZ0201 at the annotation, naming the fix (rename the
+           param). Pins that the guard is a diagnostic, not a silent drop. (An `@requires` on the same def would
+           be fine — only `@ensures` binds `ret`. The result binder was renamed `it`→`ret` per the
+           operator's collision-safety directive; a user naming a param `ret` is now vanishingly unlikely,
+           but the guard stays for soundness.)")
   (input  (do
-            (@ (ensures (>= it 0)) (def (f (: it Int64)) (- it 100)))
+            (@ (ensures (>= ret 0)) (def (f (: ret Int64)) (- ret 100)))
             (def (main) (f 5))
             (export main)))
   (error  CDZ0201))
@@ -1886,14 +1889,14 @@
 
 (case "a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call"
   (doc    "The def-side composition the constrained-gen ruling relies on: `@test` stacked over
-           `(@ (ensures (> it 0)) (@ (requires (>= x 0)) (def f …)))` leaves the def's OWN contract
+           `(@ (ensures (> ret 0)) (@ (requires (>= x 0)) (def f …)))` leaves the def's OWN contract
            intact for ordinary calls — in-domain `(f 5)` runs pre → body → post and returns 6;
            out-of-domain `(f -5)` still HARD-TRAPS on the pre (the production contract the test
            runner must respect by drawing in-domain, never a soft reject). Pins that the @test wrapper
            is transparent to direct-call enforcement — the test tier changes how INPUTS are drawn,
            not what the contract means.")
   (input  (do
-            (@ test (@ (ensures (> it 0)) (@ (requires (>= x 0)) (def (f (: x Int64)) (+ x 1)))))
+            (@ test (@ (ensures (> ret 0)) (@ (requires (>= x 0)) (def (f (: x Int64)) (+ x 1)))))
             (def (main (: n Int64)) (f n))
             (export main)))
   (call   main (: 5 Int64))
@@ -1906,7 +1909,7 @@
 ; `T` (the ESTABLISH half: each constructor must prove its result satisfies `I`). So the ESTABLISH
 ; obligation for `@invariant(and (>= it 0) (<= it 100)) (type Percent Int64)` with a constructor
 ; `mk(v)` carrying `@requires(and (>= v 0) (<= v 100))` is: from the constructor's precondition hyps,
-; discharge `I[it := v]` = the conjunction `(ge v 0) AND (le v 100)`. This pins that @invariant adds NO new
+; discharge `I[self := v]` = the conjunction `(ge v 0) AND (le v 100)`. This pins that @invariant adds NO new
 ; kernel machinery — the establish obligation denotes + discharges through the SAME `bounds` kernel the
 ; @requires/@ensures cases use (here the conjunction is established directly from the matching precondition,
 ; the trivial-but-load-bearing case: a constructor whose @requires IS the invariant establishes it). A
@@ -1917,7 +1920,7 @@
   (doc    "The DATA-level verification-family member (design §10). An `@invariant(and (>= it 0) (<= it 100))`
            on `type Percent Int64` is an implicit `@ensures(invariant)` on each constructor — the ESTABLISH
            obligation. For a constructor `mk(v)` whose `@requires(and (>= v 0) (<= v 100))` matches the
-           invariant with `it := v`, the establish obligation `(conj (ge v 0) (le v 100))` is discharged
+           invariant with `self := v`, the establish obligation `(conj (ge v 0) (le v 100))` is discharged
            DIRECTLY from the two precondition hypotheses (assume-both) — the constructor's precondition IS the
            invariant, the base establish case. The proof carries {ge v 0, le v 100} and concludes the invariant
            conjunction, so `licenses` accepts it under the 2-element constructor precondition. Runs to `true`.
@@ -1957,7 +1960,7 @@
               (let ((v    (Term.Var 0))
                     (zero (Term.Num 0))
                     (c100 (Term.Num 100)))
-                ; the invariant obligation I[it := v] = (conj (ge v 0) (le v 100))
+                ; the invariant obligation I[self := v] = (conj (ge v 0) (le v 100))
                 (let ((obligation   (conj (ge v zero) (le v c100)))
                       ; the constructor precondition {ge v 0, le v 100} (its @requires = the invariant)
                       (precondition (list (ge v zero) (le v c100))))
@@ -1982,7 +1985,7 @@
 
 (case "@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order"
   (doc    "The cross-vertical composition pin (v-verification contract enforcement × v-effects let-trap
-           lowering). `(@ (ensures (> it 0)) (@ (requires (>= x 0)) (def (f (: x Int64)) (+ x (St.tick)))))`
+           lowering). `(@ (ensures (> ret 0)) (@ (requires (>= x 0)) (def (f (: x Int64)) (+ x (St.tick)))))`
            under a counter handler: the reversed stack's precondition-fail branch binds `it` to the requires
            trap — `(let ((it (trap …))) (if (> it 0) it (trap …)))` — which formerly mis-declined on the
            scalar `(> it 0)` as a compound comparison (the let-bound trap typed as bottom, is_scalar=false),
@@ -1993,7 +1996,7 @@
            and guards the let-bound-trap lowering my composition relies on.")
   (input  (do
             (effect St (op tick (-> Unit Int64)))
-            (@ (ensures (> it 0))
+            (@ (ensures (> ret 0))
               (@ (requires (>= x 0))
                 (def (f (: x Int64)) (+ x (St.tick)))))
             (def (main (: k Int64))
@@ -2076,22 +2079,22 @@
   (output (: true Bool)))
 
 ; ── @invariant NAME-RESOLUTION: a predicate name outside {it, prelude} is unbound (b4c pattern, data-level) ─
-; An `@invariant(pred)` predicate references only the value binder `it` (the value of the type) and prelude/
+; An `@invariant(pred)` predicate references only the value binder `self` (the value of the type) and prelude/
 ; global names — a type declaration has no parameters. A name that is NEITHER is UNBOUND, reported CDZ0101 at
 ; the annotation (the same b4c name-resolution the @requires/@ensures predicates get, reused for the data-
 ; level member via `Db::invariant_preds`). Pins that a stray name in a data invariant is caught locally, not
 ; silently accepted (the soundness discipline: a contract predicate resolves like ordinary code).
 
-(case "@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `it` + prelude are in scope)"
+(case "@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `self` + prelude are in scope)"
   (doc    "The data-level name-resolution pin. `@invariant(and (>= it 0) (< it bogus))` on `type Percent`:
-           `it` is the value binder (in scope) and `>=`/`<`/`and` are prelude ops (resolve), but `bogus` is
+           `self` is the value binder (in scope) and `>=`/`<`/`and` are prelude ops (resolve), but `bogus` is
            neither a prelude name nor the value binder — so it is UNBOUND, CDZ0101 at the annotation. A type
-           has no parameters, so the invariant predicate's scope is exactly {`it`, prelude/global} — anything
+           has no parameters, so the invariant predicate's scope is exactly {`self`, prelude/global} — anything
            else is a stray name. Pins that `collect_faults` name-resolves the invariant predicate (via
            `Db::invariant_preds`) with the same b4c discipline the @requires/@ensures predicates get, so a
            typo'd data invariant fails locally with a clear message rather than being silently recorded.")
   (input  (do
-            (@ (invariant (and (>= it 0) (< it bogus))) (type Percent (Pct Int64)))
+            (@ (invariant (and (>= self 0) (< self bogus))) (type Percent (Pct Int64)))
             (def (main) 0)
             (export main)))
   (error  CDZ0101))
@@ -2115,7 +2118,7 @@
            VIOLATING construction is Part 2; Part 1 is the typed checker, behavior-neutral for a satisfying
            value — construction + use unchanged.)")
   (input  (do
-            (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64)))
+            (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64)))
             (def (mk (: v Int64)) (Percent.Pct v))
             (def (unwrap (: p Percent)) (match p (((. Percent Pct) n) n)))
             (def (main) (unwrap (mk 42)))
@@ -2143,7 +2146,7 @@
            synthesized UNWIRED here (called by name); wiring `lower_sum_new` to route every `(Percent.Pct x)`
            through it is the follow-up sub-slice.")
   (input  (do
-            (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64)))
+            (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64)))
             (def (mk (: v Int64)) (match (__invariant_construct_Percent v) (((. Percent Pct) n) n)))
             (export mk)))
   (call mk (: 50 Int64))  (output (: 50 Int64))
@@ -2171,7 +2174,7 @@
            annotation. The checked constructor's own inner construction is exempt from the divert (no recursion).
            Pins that the run-time establish enforcement is TRANSPARENT — every ordinary construction is checked.")
   (input  (do
-            (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64)))
+            (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64)))
             (def (mk (: v Int64)) (match (Percent.Pct v) (((. Percent Pct) n) n)))
             (export mk)))
   (call mk (: 50 Int64))  (output (: 50 Int64))
@@ -2200,7 +2203,7 @@
            construction (the empty list is not a legal NonEmptyList). Pins the establish path generalizes from
            the scalar newtype (Percent) to a heap payload with an accessor-shaped invariant.")
   (input  (do
-            (@ (invariant (< 0 (List.len it))) (type NEList (Mk (List Int64))))
+            (@ (invariant (< 0 (List.len self))) (type NEList (Mk (List Int64))))
             (def (mkfrom (: n Int64))
               (match (NEList.Mk (if (> n 0) (list n) (list)))
                 (((. NEList Mk) ys) (List.len ys))))
@@ -2228,7 +2231,7 @@
            construction (circ(0), circ(-3), sq(3,0), sq(0,4)). Pins the per-constructor establish obligation
            over a boxed multi-variant sum, including the 2-payload Square arm.")
   (input  (do
-            (@ (invariant (match it (((. Shape Circle) r) (> r 0))
+            (@ (invariant (match self (((. Shape Circle) r) (> r 0))
                                     (((. Shape Square) w h) (and (> w 0) (> h 0)))))
                (type Shape (Circle Int64) (Square Int64 Int64)))
             (def (circ (: r Int64))
@@ -2263,7 +2266,7 @@
            over the multi-payload-newtype shape (a relational invariant across the two payloads), closing the
            gap where a 2-payload newtype used to construct with no check.")
   (input  (do
-            (@ (invariant (match it (((. Range Mk) lo hi) (<= lo hi)))) (type Range (Mk Int64 Int64)))
+            (@ (invariant (match self (((. Range Mk) lo hi) (<= lo hi)))) (type Range (Mk Int64 Int64)))
             (def (mk (: lo Int64) (: hi Int64))
               (match (Range.Mk lo hi) (((. Range Mk) a b) (- b a))))
             (export mk)))
@@ -2293,7 +2296,7 @@
            that the divert is reachability-complete over lambda bodies, update re-wraps, and collection
            element positions — the sites a construction-site rewrite would silently miss.")
   (input  (do
-            (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64)))
+            (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64)))
             (def (unp (: p Percent)) (match p (((. Percent Pct) n) n)))
             (def (via-lambda (: v Int64))
               (unp ((fn ((: x Int64)) (Percent.Pct x)) v)))

@@ -4131,7 +4131,7 @@ mod tests {
         );
         // The full v-verification repro: an @invariant on a multi-variant type with a nullary variant
         // round-trips (the @invariant stays bound to the `(type …)`, not mis-bound to `type` as a value).
-        let src = "(do (@ (invariant (match it (((. T A)) false) (((. T B) x) (> x 0)))) (type T (A) (B Int64))))";
+        let src = "(do (@ (invariant (match self (((. T A)) false) (((. T B) x) (> x 0)))) (type T (A) (B Int64))))";
         let ml = print(&sexpr::read(src).unwrap(), 80);
         assert!(
             ml.contains("type T =") && !ml.contains("`type`"),

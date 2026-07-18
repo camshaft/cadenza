@@ -205,7 +205,7 @@ def ifkw() = Tok.TIf
 def thenkw() = Tok.TThen
 def elsekw() = Tok.TElse
 def truelit() = Tok.TBoolTok(1)
-def falselit() = Tok.TBoolTok(0)
+def _falselit() = Tok.TBoolTok(0)   // kept as a builder for symmetry with truelit; `_` silences CDZ0306 (no test uses false yet)
 
 /// Parse a token list to `(root, tree)`.
 def parse-of(ts: List(Tok)) = parse-tokens(ts)

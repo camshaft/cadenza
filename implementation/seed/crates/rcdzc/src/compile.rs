@@ -898,11 +898,13 @@ fn verify_predicates_of(db: &Db, def_ix: usize) -> Vec<(StructId, bool)> {
     v
 }
 
-/// The first NAME the predicate at `pred` references that is neither a def parameter, nor `it` (when
-/// `is_ensures`), nor a name bound by a `match`-arm pattern / `let` INSIDE the predicate, nor a name that
-/// resolves standalone (a prelude/global) — i.e. an UNBOUND name — as a `CDZ0101` `Reject` anchored at that
-/// occurrence, or `None` if all names are in scope. A member-access key `(. operand key)` is a label, not a
-/// name lookup, so its `key` child is NOT checked (skipped like the resolver does).
+/// The first NAME the predicate at `pred` references that is neither a def parameter, nor the SUBJECT binder
+/// (`subject_binder` — `ret` for an `@ensures` result, `it` for an `@invariant` value; `None` for
+/// `@requires`, which binds no subject), nor a name bound by a `match`-arm pattern / `let` INSIDE the
+/// predicate, nor a name that resolves standalone (a prelude/global) — i.e. an UNBOUND name — as a `CDZ0101`
+/// `Reject` anchored at that occurrence, or `None` if all names are in scope. A member-access key
+/// `(. operand key)` is a label, not a name lookup, so its `key` child is NOT checked (skipped like the
+/// resolver does).
 ///
 /// PREDICATE-LOCAL BINDERS: the predicate may DESTRUCTURE via `match` (`(match it ((T.V v) … v …))`) or bind
 /// via `let` — the binder names (`v`) are in scope in the arm/body and MUST NOT be flagged unbound. This is
@@ -914,11 +916,11 @@ fn first_unbound_predicate_name(
     db: &mut Db,
     pred: StructId,
     param_names: &[String],
-    is_ensures: bool,
+    subject_binder: Option<&str>,
 ) -> Option<Reject> {
     let mut bound: Vec<String> = param_names.to_vec();
-    if is_ensures {
-        bound.push("it".to_string());
+    if let Some(subject) = subject_binder {
+        bound.push(subject.to_string());
     }
     unbound_in(db, pred, &mut bound)
 }
@@ -2493,41 +2495,58 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     for di in 0..db.defs.len() {
         let param_names = def_param_names(db, di);
         for &(pred, is_ens) in &verify_predicates_of(db, di) {
-            if let Some(reject) = first_unbound_predicate_name(db, pred, &param_names, is_ens) {
+            // `@ensures` binds the result subject `ret`; `@requires` binds no subject (only params + prelude).
+            let subject = if is_ens {
+                Some(crate::verify_enforce::RESULT_BINDER)
+            } else {
+                None
+            };
+            if let Some(reject) = first_unbound_predicate_name(db, pred, &param_names, subject) {
                 faults.push(reject);
             }
         }
     }
     // The SAME name-resolution for an `@invariant(pred)` on a TYPE: the predicate references only the value
-    // binder `it` (the value of the type) and prelude/global names — no def params (a type has none). A stray
-    // name is UNBOUND → CDZ0101 at the annotation. Reuse `first_unbound_predicate_name` with an EMPTY param
-    // set and `is_ensures = true` (so the `it` value binder is in scope, exactly like an `@ensures` result).
+    // binder `self` (the value of the type) and prelude/global names — no def params (a type has none). A stray
+    // name is UNBOUND → CDZ0101 at the annotation. `@invariant`'s subject binder is `self` (the value being
+    // checked), a DISTINCT name from `@ensures`'s `ret` (the return value) — the operator ruled each family
+    // member gets the name that fits its meaning (*"ret for ensures and self for invariants"*, 2026-07-18).
     let invariant_preds: Vec<StructId> = db.invariant_preds();
     for pred in invariant_preds {
-        if let Some(reject) = first_unbound_predicate_name(db, pred, &[], true) {
+        if let Some(reject) = first_unbound_predicate_name(
+            db,
+            pred,
+            &[],
+            Some(crate::invariant_establish::VALUE_BINDER),
+        ) {
             faults.push(reject);
         }
     }
     // `@ensures`-CAPTURE-GUARD REJECT (breaker 2026-07-17). `@ensures(Q)` enforcement binds the def's RESULT
-    // to `it` (`(let ((it BODY)) (if Q it (trap)))`, `verify_enforce`). If a PARAMETER is literally named
-    // `it`, that binder would SHADOW the param — so `verify_enforce` SKIPS the `@ensures` enforcement for such
-    // a def. Skipping SILENTLY is a footgun: the author wrote a postcondition that is quietly NOT enforced (a
-    // violating result returns with no trap, no diagnostic). REJECT it instead — a stated contract is enforced
-    // OR the author is told precisely why not, never silently dropped (the (D) philosophy). The fix is trivial
-    // (rename the param), so name it. Anchored at the first `@ensures` predicate occ (good locality).
+    // to `ret` (`(let ((ret BODY)) (if Q ret (trap)))`, `verify_enforce`). If a PARAMETER is
+    // literally named `ret`, that binder would SHADOW the param — so `verify_enforce` SKIPS the `@ensures`
+    // enforcement for such a def. Skipping SILENTLY is a footgun: the author wrote a postcondition that is
+    // quietly NOT enforced (a violating result returns with no trap, no diagnostic). REJECT it instead — a
+    // stated contract is enforced OR the author is told precisely why not, never silently dropped (the (D)
+    // philosophy). The fix is trivial (rename the param), so name it. Anchored at the first `@ensures` predicate
+    // occ (good locality). (The result binder was renamed `it` → `ret` per the operator's collision-safety
+    // directive; a user naming a param `ret` is now vanishingly unlikely, but the guard stays for soundness.)
     for di in 0..db.defs.len() {
         let ensures = db.ensures_of(di);
         let Some(&first_ensures) = ensures.first() else {
             continue; // no @ensures on this def — the guard only applies to @ensures
         };
-        if def_param_names(db, di).iter().any(|n| n == "it") {
+        if def_param_names(db, di)
+            .iter()
+            .any(|n| n == crate::verify_enforce::RESULT_BINDER)
+        {
             faults.push(
                 Reject::coded(
                     Code::Malformed,
-                    "a `def` with a parameter named `it` cannot carry `@ensures`: the `@ensures` result \
-                     binder `it` would shadow the parameter, so the postcondition would be silently \
-                     unenforced — rename the parameter (e.g. `it` → `x`) so the postcondition can bind the \
-                     result"
+                    "a `def` with a parameter named `ret` cannot carry `@ensures`: the `@ensures` result \
+                     binder `ret` would shadow the parameter, so the postcondition would be silently \
+                     unenforced — rename the parameter (e.g. `ret` → `x`) so the postcondition can bind \
+                     the result"
                         .to_string(),
                 )
                 .at(first_ensures),
@@ -4040,9 +4059,10 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
             collect_reached_poisons(db, bytes, out)
         }
-        Core::Proj { operand, .. } | Core::ListLen { operand } | Core::BytesLen { operand } => {
-            collect_reached_poisons(db, operand, out)
-        }
+        Core::Proj { operand, .. }
+        | Core::ListLen { operand }
+        | Core::BytesLen { operand }
+        | Core::StrScalarLen { operand } => collect_reached_poisons(db, operand, out),
         // `List.push`/`concat` unconditionally evaluate both operands — descend into each.
         Core::ListPush { list, elem } => {
             collect_reached_poisons(db, list, out);

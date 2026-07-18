@@ -1665,6 +1665,13 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let v = emit(db, operand, env, ctx)?;
             Ok(format!("(({v}).len() as i64)"))
         }
+        // `String.scalar-len` → the Unicode SCALAR (codepoint) count. A String value is a Rust `String`, so
+        // `.chars().count()` is the scalar count (`.len()` would be the BYTE count — that is `BytesLen`).
+        // The native twin of the wasm lead-byte-counting walk.
+        Core::StrScalarLen { operand } => {
+            let v = emit(db, operand, env, ctx)?;
+            Ok(format!("(({v}).chars().count() as i64)"))
+        }
         // `Bytes.at` → the fallible byte read → native `Option`: a byte is a raw `u8` value zero-extended
         // to the `Int64` `Some` payload (unlike `List.at`, no clone — a `u8` is Copy).
         Core::BytesAt { bytes, index, .. } => {

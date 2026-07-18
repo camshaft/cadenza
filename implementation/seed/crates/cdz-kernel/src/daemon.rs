@@ -1008,7 +1008,10 @@ mod tests {
 
         // First fire: only the due, non-forging schedule fires.
         let fired = fire_due_schedules(&log).expect("fire due schedules");
-        assert_eq!(fired, 1, "only the due, non-reserved schedule fires (future + forger skipped)");
+        assert_eq!(
+            fired, 1,
+            "only the due, non-reserved schedule fires (future + forger skipped)"
+        );
         {
             let events = log.lock().unwrap().tail(0).unwrap();
             assert_eq!(
@@ -1017,17 +1020,23 @@ mod tests {
                 "the trigger event was appended once"
             );
             assert!(
-                events.iter().any(|e| e.kind == "heartbeat" && e.payload == b"tick"),
+                events
+                    .iter()
+                    .any(|e| e.kind == "heartbeat" && e.payload == b"tick"),
                 "the trigger carries the schedule's payload"
             );
             assert_eq!(
-                events.iter().filter(|e| e.kind == schedule::SCHEDULE_FIRE).count(),
+                events
+                    .iter()
+                    .filter(|e| e.kind == schedule::SCHEDULE_FIRE)
+                    .count(),
                 1,
                 "one schedule-fire record advances the occurrence counter"
             );
             assert!(
-                !events.iter().any(|e| e.kind == crate::boot::PROGRAM
-                    && e.payload == b"(do)"),
+                !events
+                    .iter()
+                    .any(|e| e.kind == crate::boot::PROGRAM && e.payload == b"(do)"),
                 "the forging schedule (reserved trigger_kind) never fired"
             );
         }
@@ -1035,7 +1044,10 @@ mod tests {
         // Second fire: the periodic advances by one period (period=1ms) — with the real clock well past 1ms,
         // it is due again, so exactly one more heartbeat fires (one occurrence per call).
         let fired2 = fire_due_schedules(&log).expect("fire again");
-        assert_eq!(fired2, 1, "the periodic fires once more (occurrence advanced by the prior fire record)");
+        assert_eq!(
+            fired2, 1,
+            "the periodic fires once more (occurrence advanced by the prior fire record)"
+        );
         {
             let events = log.lock().unwrap().tail(0).unwrap();
             assert_eq!(

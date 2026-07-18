@@ -186,6 +186,101 @@ fn authz_grant_and_revoke_surface_the_operator_lifecycle() {
 }
 
 #[test]
+fn schedule_create_and_cancel_register_and_drop_a_timer() {
+    // The operator scheduling entry points (counterpart of emit-policy/authz for timers): schedule-create
+    // registers a one-shot/periodic timer that fires a trigger-kind; schedule-cancel drops it by id. Asserts
+    // the CLI surface (store-independent — no compile). A reserved trigger-kind is refused (can't forge kernel
+    // bookkeeping via a timer).
+    let log = unique("sched-log").with_extension("log");
+    let _ = std::fs::remove_file(&log);
+    Command::new(bin())
+        .args(["bootstrap", log.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+
+    // A PERIODIC create with a payload.
+    let out = Command::new(bin())
+        .args([
+            "schedule-create",
+            log.to_str().unwrap(),
+            "heartbeat",
+            "hb-tick",
+            "--first-ms",
+            "1000",
+            "--period-ms",
+            "5000",
+            "--payload",
+            "ping",
+        ])
+        .output()
+        .expect("run cdz-agent schedule-create");
+    assert!(
+        out.status.success(),
+        "schedule-create registers a timer: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        so.contains("scheduled `heartbeat`"),
+        "reports the schedule id: {so}"
+    );
+    assert!(
+        so.contains("periodic"),
+        "reports periodic when --period-ms is given: {so}"
+    );
+
+    // CANCEL by id.
+    let out = Command::new(bin())
+        .args(["schedule-cancel", log.to_str().unwrap(), "heartbeat"])
+        .output()
+        .expect("run cdz-agent schedule-cancel");
+    assert!(
+        out.status.success(),
+        "schedule-cancel drops the timer: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("cancelled schedule `heartbeat`"),
+        "schedule-cancel reports the cancelled id"
+    );
+
+    // A reserved trigger-kind is refused.
+    let out = Command::new(bin())
+        .args([
+            "schedule-create",
+            log.to_str().unwrap(),
+            "evil",
+            "program", // reserved (genesis) — must be refused
+            "--first-ms",
+            "0",
+        ])
+        .output()
+        .expect("run cdz-agent schedule-create reserved");
+    assert!(
+        !out.status.success(),
+        "a reserved trigger-kind must be refused"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("reserved trigger-kind"),
+        "reports the reserved-trigger refusal"
+    );
+
+    // emit still refuses schedule-* kinds too.
+    for reserved in ["schedule-create", "schedule-cancel", "schedule-fire"] {
+        let out = Command::new(bin())
+            .args(["emit", log.to_str().unwrap(), reserved, "x"])
+            .output()
+            .expect("run cdz-agent emit reserved schedule");
+        assert!(
+            !out.status.success(),
+            "emit of reserved schedule kind `{reserved}` must fail"
+        );
+    }
+
+    let _ = std::fs::remove_file(&log);
+}
+
+#[test]
 fn bootstrap_then_inject_then_run_drives_the_genesis() {
     let log = unique("log").with_extension("log");
     let prog = unique("genesis").with_extension("cdz");

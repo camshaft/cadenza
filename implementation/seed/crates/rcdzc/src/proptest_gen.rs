@@ -400,7 +400,8 @@ fn reapply_recorded_invariant(db: &crate::db::Db, gt: &mut GenTy) {
                     && let [(_, Some(GenTy::Int))] = variants.as_slice()
                 {
                     variants[0].1 = Some(GenTy::IntRange { lo, hi });
-                } else if let Some(min) = min_len_for_param(&db.ast, pred, "it")
+                } else if let Some(min) =
+                    min_len_for_param(&db.ast, pred, crate::invariant_establish::VALUE_BINDER)
                     && let [(_, Some(GenTy::List(_, ml)))] = variants.as_mut_slice()
                 {
                     *ml = (*ml).max(min);
@@ -596,9 +597,10 @@ fn invariant_int_range(ast: &Arenas, pred: StructId) -> Option<(i64, i64)> {
             if t.len() != 2 {
                 return None;
             }
-            let it_is = |n: StructId| ast.as_name(n) == Some("it");
+            let it_is =
+                |n: StructId| ast.as_name(n) == Some(crate::invariant_establish::VALUE_BINDER);
             let lit = |n: StructId| ast.as_int(n).and_then(|v| v.to_i64());
-            // `(op it LIT)` or the mirror `(op LIT it)` — normalize to `it OP' LIT`.
+            // `(op self LIT)` or the mirror `(op LIT self)` — normalize to `self OP' LIT`.
             let (val, mirrored) = if it_is(t[0]) {
                 (lit(t[1])?, false)
             } else if it_is(t[1]) {
@@ -741,10 +743,11 @@ fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize)
     })?;
     let decl_tail = type_decl_form(ast, decl_item)?;
     // A recognized type-level `@invariant` constrains the newtype payload's generation (below): an integer
-    // RANGE → an `IntRange` int; a min-length `(< 0 (List.len it))` → a min-length `List`.
+    // RANGE → an `IntRange` int; a min-length `(< 0 (List.len self))` → a min-length `List`.
     let inv_pred = type_invariant_pred(ast, decl_item);
     let inv_range = inv_pred.and_then(|p| invariant_int_range(ast, p));
-    let inv_min_len = inv_pred.and_then(|p| min_len_for_param(ast, p, "it"));
+    let inv_min_len =
+        inv_pred.and_then(|p| min_len_for_param(ast, p, crate::invariant_establish::VALUE_BINDER));
     let variant_forms = decl_tail.get(1..).filter(|v| !v.is_empty())?;
     let mut variants = Vec::with_capacity(variant_forms.len());
     for &vf in variant_forms {
@@ -1300,7 +1303,7 @@ mod tests {
     #[test]
     fn proptest_gen_does_not_touch_a_bare_ensures() {
         let mut ast = crate::testkit::parse(
-            "(do (@ (ensures (>= it 0)) (def (g (: n Int64)) n)) (export g))",
+            "(do (@ (ensures (>= ret 0)) (def (g (: n Int64)) n)) (export g))",
         );
         super::synthesize(&mut ast);
         let has_trap = (0..ast.structure.len()).any(|i| {
@@ -1322,7 +1325,7 @@ mod tests {
     fn synthesizes_a_wrapper_for_a_compound_param_under_a_requires_or_ensures_wrapper() {
         for src in [
             "(do (@ test (@ (requires (< 0 (List.len xs))) (def (f (: xs (List Int64))) unit))) (def (o) 1))",
-            "(do (@ test (@ (ensures (<= 0 (List.len it))) (def (f (: xs (List Int64))) xs))) (def (o) 1))",
+            "(do (@ test (@ (ensures (<= 0 (List.len ret))) (def (f (: xs (List Int64))) xs))) (def (o) 1))",
         ] {
             let db = Db::load(crate::testkit::parse(src));
             let names: Vec<String> = db
@@ -1449,7 +1452,7 @@ mod tests {
     /// CONSTRAIN generation — that's the next increment; this pins that the annotated type at least generates.)
     #[test]
     fn generates_a_type_that_carries_a_type_level_invariant() {
-        let src = "(do (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+        let src = "(do (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64))) \
                      (@ test (def (p (: x Percent)) unit)) (def (o) 1))";
         let db = Db::load(crate::testkit::parse(src));
         let names: Vec<String> = db
@@ -1474,7 +1477,7 @@ mod tests {
         // `classify_sum(name)` resolves the `(type NAME …)` from `items` itself, so we pass the top-level
         // items + the type NAME string — no need to synthesize a name-atom node.
         let ast = crate::testkit::parse(
-            "(do (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) (def (o) 1))",
+            "(do (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64))) (def (o) 1))",
         );
         let items: Vec<_> = ast.as_form(ast.root, "do").unwrap().to_vec();
         let gt = super::classify_sum(&ast, "Percent", &items, 0);
@@ -1489,7 +1492,7 @@ mod tests {
         // is `IntRange{0, ONE_SIDED_INVARIANT_WINDOW}`, so generation stays in-domain (never draws a value
         // below the bound that the construct-site @invariant trap would reject as a spurious counterexample).
         let ast2 = crate::testkit::parse(
-            "(do (@ (invariant (>= it 0)) (type NonNeg (Mk Int64))) (def (o) 1))",
+            "(do (@ (invariant (>= self 0)) (type NonNeg (Mk Int64))) (def (o) 1))",
         );
         let items2: Vec<_> = ast2.as_form(ast2.root, "do").unwrap().to_vec();
         let gt2 = super::classify_sum(&ast2, "NonNeg", &items2, 0);
@@ -1509,7 +1512,7 @@ mod tests {
     #[test]
     fn a_min_length_invariant_constrains_a_newtype_list_to_non_empty() {
         let ast = crate::testkit::parse(
-            "(do (@ (invariant (< 0 (List.len it))) (type NEList (Mk (List Int64)))) (def (o) 1))",
+            "(do (@ (invariant (< 0 (List.len self))) (type NEList (Mk (List Int64)))) (def (o) 1))",
         );
         let items: Vec<_> = ast.as_form(ast.root, "do").unwrap().to_vec();
         let gt = super::classify_sum(&ast, "NEList", &items, 0);
@@ -1531,7 +1534,7 @@ mod tests {
     #[test]
     fn a_conjunction_min_length_invariant_floors_the_newtype_list_length() {
         let ast = crate::testkit::parse(
-            "(do (@ (invariant (and (<= 2 (List.len it)) (<= (List.len it) 8))) (type Buf (Mk (List Int64)))) (def (o) 1))",
+            "(do (@ (invariant (and (<= 2 (List.len self)) (<= (List.len self) 8))) (type Buf (Mk (List Int64)))) (def (o) 1))",
         );
         let items: Vec<_> = ast.as_form(ast.root, "do").unwrap().to_vec();
         let gt = super::classify_sum(&ast, "Buf", &items, 0);
@@ -1555,7 +1558,7 @@ mod tests {
     #[test]
     fn a_contradictory_range_invariant_falls_back_to_unconstrained() {
         let ast = crate::testkit::parse(
-            "(do (@ (invariant (and (>= it 10) (<= it 5))) (type Bad (Mk Int64))) (def (o) 1))",
+            "(do (@ (invariant (and (>= self 10) (<= self 5))) (type Bad (Mk Int64))) (def (o) 1))",
         );
         let items: Vec<_> = ast.as_form(ast.root, "do").unwrap().to_vec();
         let gt = super::classify_sum(&ast, "Bad", &items, 0);
@@ -1588,39 +1591,39 @@ mod tests {
         // Two-sided inclusive.
         assert_eq!(
             range_of(
-                "(do (@ (invariant (and (>= it 0) (<= it 100))) (type T (V Int64))) (def (o) 1))"
+                "(do (@ (invariant (and (>= self 0) (<= self 100))) (type T (V Int64))) (def (o) 1))"
             ),
             Some((0, 100))
         );
         // Strict two-sided: `> 0` ⇒ lo 1, `< 10` ⇒ hi 9.
         assert_eq!(
             range_of(
-                "(do (@ (invariant (and (> it 0) (< it 10))) (type T (V Int64))) (def (o) 1))"
+                "(do (@ (invariant (and (> self 0) (< self 10))) (type T (V Int64))) (def (o) 1))"
             ),
             Some((1, 9))
         );
         // Point equality `(= it 5)` ⇒ the singleton range [5, 5].
         assert_eq!(
-            range_of("(do (@ (invariant (= it 5)) (type T (V Int64))) (def (o) 1))"),
+            range_of("(do (@ (invariant (= self 5)) (type T (V Int64))) (def (o) 1))"),
             Some((5, 5))
         );
         // One-sided lower `(>= it 0)` ⇒ [0, WINDOW]; mirrored `(<= 0 it)` is the same bound.
         assert_eq!(
-            range_of("(do (@ (invariant (>= it 0)) (type T (V Int64))) (def (o) 1))"),
+            range_of("(do (@ (invariant (>= self 0)) (type T (V Int64))) (def (o) 1))"),
             Some((0, win))
         );
         assert_eq!(
-            range_of("(do (@ (invariant (<= 0 it)) (type T (V Int64))) (def (o) 1))"),
+            range_of("(do (@ (invariant (<= 0 self)) (type T (V Int64))) (def (o) 1))"),
             Some((0, win))
         );
         // One-sided upper `(<= it 100)` ⇒ [100-WINDOW, 100].
         assert_eq!(
-            range_of("(do (@ (invariant (<= it 100)) (type T (V Int64))) (def (o) 1))"),
+            range_of("(do (@ (invariant (<= self 100)) (type T (V Int64))) (def (o) 1))"),
             Some((100i64.wrapping_sub(win), 100))
         );
         // Negative lower bound `(>= it -100)` ⇒ [-100, -100+WINDOW].
         assert_eq!(
-            range_of("(do (@ (invariant (>= it -100)) (type T (V Int64))) (def (o) 1))"),
+            range_of("(do (@ (invariant (>= self -100)) (type T (V Int64))) (def (o) 1))"),
             Some((-100, (-100i64).saturating_add(win)))
         );
         // No bound on `it` (an opaque predicate) ⇒ None (unconstrained fallback).

@@ -1770,24 +1770,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                             Core::ConstInt(IntValue::from_i64(n as i64))
                         }
                         Core::Poison(r) => Core::Poison(r),
-                        // A RUNTIME string: its `byte-len` is the byte count of its underlying leaf. A
-                        // runtime String value IS a flat UTF-8 byte leaf (an i32 heap handle — the same rep
-                        // `str-new` would give, built via `bytes-alloc`/`bytes-set`), so its byte length is
-                        // exactly `bytes-len` over that handle — `Core::BytesLen`, the runtime op already
-                        // working for `Bytes.len`. (`scalar-len` is the UTF-8 SCALAR count, which needs a
-                        // decoding walk over the bytes, not a leaf-length read, so it still declines here.)
-                        _ if matches!(prim, Prim::StrByteLen)
-                            && matches!(
-                                crate::infer::type_of(db, args[0]),
-                                crate::ty::Ty::String
-                            ) =>
-                        {
-                            trace!(target: "rcdzc::lower", node = id.0, "String.byte-len on a runtime string → bytes-len over its byte leaf");
-                            Core::BytesLen { operand: args[0] }
-                        }
-                        _ => Core::Poison(Reject::decline(
-                            "a runtime string's scalar length needs a UTF-8 decoding walk (not yet built; byte-len works)",
-                        )),
+                        // A RUNTIME string length. The `type_of` probe + its `Ty` temporary are kept OUT of
+                        // this (huge, per-descent-level recursive) `compute` frame via an `#[inline(never)]`
+                        // helper — inlining them here grew `compute`'s stack frame enough to overflow the
+                        // compile thread on a deeply-nested reduction (the 1024-deep poison-chain tests). See
+                        // `lower_runtime_str_len`.
+                        _ => lower_runtime_str_len(db, prim, args[0], id),
                     }
                 }
                 // `Char.to-int` — the TOTAL scalar-value read `Char → Int64`. FOLD a constant char to a
@@ -2203,6 +2191,44 @@ fn compute(db: &mut Db, id: StructId) -> Core {
 /// reference resolves to) BEFORE the body is lowered, so a `Resolved::Ref` to a kept binding lowers
 /// to a `Core::LocalRef` reading the shared slot. The result is a `Core::Let { bindings, body }` when
 /// any binding is kept, or just the body's core when none is (no residual `let`).
+/// Lower a RUNTIME (non-constant, non-poison) `String.byte-len` / `String.scalar-len` over `operand`. A
+/// runtime String is a flat UTF-8 byte leaf, so `byte-len` reads that leaf's length (`Core::BytesLen`,
+/// the `bytes-len` op) and `scalar-len` WALKS the leaf counting UTF-8 lead bytes (`Core::StrScalarLen`,
+/// reusing `String.at`'s scalar-scan over the exported `bytes-len`/`bytes-get` — HASH-NEUTRAL). A non-
+/// String operand (only reachable if the surface admitted a length op on a non-string) declines.
+///
+/// `#[inline(never)]`: called from `compute`, the per-descent-level recursive core-computation whose stack
+/// frame is on the hot path of a deeply-nested reduction (the 1024-deep poison-chain tests). The `type_of`
+/// probe materializes a `Ty` temporary; keeping it in THIS frame (not `compute`'s) preserves the compile
+/// thread's stack headroom so a diverging reduction still declines at the depth guard instead of crashing.
+#[inline(never)]
+fn lower_runtime_str_len(
+    db: &mut Db,
+    prim: crate::resolved::Prim,
+    operand: StructId,
+    id: StructId,
+) -> Core {
+    use crate::resolved::Prim;
+    if !matches!(crate::infer::type_of(db, operand), crate::ty::Ty::String) {
+        return Core::Poison(Reject::decline(
+            "a runtime string's scalar length needs a UTF-8 decoding walk (not yet built; byte-len works)",
+        ));
+    }
+    match prim {
+        Prim::StrByteLen => {
+            trace!(target: "rcdzc::lower", node = id.0, "String.byte-len on a runtime string → bytes-len over its byte leaf");
+            Core::BytesLen { operand }
+        }
+        Prim::StrScalarLen => {
+            trace!(target: "rcdzc::lower", node = id.0, "String.scalar-len on a runtime string → UTF-8 lead-byte count walk");
+            Core::StrScalarLen { operand }
+        }
+        _ => Core::Poison(Reject::decline(
+            "a runtime string's scalar length needs a UTF-8 decoding walk (not yet built; byte-len works)",
+        )),
+    }
+}
+
 /// The source DISPLAY NAME of a variant-constructor head — a bare name (`Wrap` → `"Wrap"`) or a member
 /// form `(. Sum V)` (→ `"V"`, the variant it names). Used to NAME the constructor in the under-application
 /// diagnostic (`` `Wrap` needs its payload argument ``), the lower-side twin of `infer`'s
@@ -16163,7 +16189,9 @@ pub(crate) fn is_trap_free(db: &mut Db, id: StructId) -> bool {
         // a count of a trapping construction stays tied to that trap). This lets a length feed a discarding
         // fold (`(>= (List.len xs) 0)` → true drops the length) with its `[0, 2^32-1]` range from
         // `value_range`. The operand is the container handle for each.
-        Core::ListLen { operand } | Core::BytesLen { operand } => is_trap_free(db, operand),
+        Core::ListLen { operand } | Core::BytesLen { operand } | Core::StrScalarLen { operand } => {
+            is_trap_free(db, operand)
+        }
         Core::MapSize { map } => is_trap_free(db, map),
         Core::SetLen { set } => is_trap_free(db, set),
         // A TUPLE/RECORD PROJECTION is a total borrowing read: its `index` is WITHIN the operand's static
@@ -17867,6 +17895,7 @@ fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
         // (heap size) is unknown here, so `2^32-1` is the sound envelope.
         Core::ListLen { .. }
         | Core::BytesLen { .. }
+        | Core::StrScalarLen { .. }
         | Core::MapSize { .. }
         | Core::SetLen { .. } => {
             return Some((0, Some(u32::MAX as i64)));

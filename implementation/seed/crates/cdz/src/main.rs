@@ -1956,6 +1956,20 @@ fn resolve_project_manifest(
                     mpath.display()
                 );
             }
+            if !m.duplicate_keys.is_empty() {
+                // Last-wins silently discards the earlier `def` — warn so a duplicated `entry`/`opt-level`/…
+                // (which can quietly change what builds) isn't a surprise.
+                eprintln!(
+                    "{PROG}: warning: {}: manifest declares {} more than once — the LAST value wins, the \
+                     earlier one(s) are ignored",
+                    mpath.display(),
+                    m.duplicate_keys
+                        .iter()
+                        .map(|k| format!("`{k}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
             Ok((dir, mpath, m))
         }
         Ok(None) => {
@@ -3317,7 +3331,14 @@ fn run_test(args: &TestArgs) -> ExitCode {
         // the wrong fix — the file may be full of tests the filter skipped. Only the unfiltered case is a
         // genuine "add a `@test`" situation.
         match (args.tag.as_deref(), args.filter.as_deref()) {
-            (Some(t), _) => println!(
+            // BOTH selectors present: they AND-compose, so either (or their intersection) could be empty.
+            // Don't falsely blame one (a matching `--tag` with a missing `--filter` would be mis-reported) —
+            // name both and point at their empty intersection.
+            (Some(t), Some(f)) => println!(
+                "0 tests matched `--tag {t}` AND `--filter {f}` in {file} — no `@test` both carries \
+                 `@tag(\"{t}\")` and has a name containing `{f}` (loosen or drop a selector)."
+            ),
+            (Some(t), None) => println!(
                 "0 tests matched `--tag {t}` in {file} — no `@test` carries that `@tag(\"{t}\")` (check for a \
                  typo, or drop `--tag` to run every test)."
             ),
@@ -7111,6 +7132,11 @@ struct Manifest {
     /// `entry` (required → hard error), `opt-level` has a safe default, so a consumer WARNS (the setting
     /// was silently dropped) and continues rather than failing. `false` when absent OR a valid string.
     opt_level_malformed: bool,
+    /// Known manifest keys declared MORE THAN ONCE (e.g. two `def entry` lines). The parser is last-wins
+    /// (each arm overwrites), so a duplicate silently discards the earlier value — a `def entry = "a.cdz"`
+    /// followed by `def entry = "b.cdz"` builds `b.cdz` with no hint the first was dropped. A consumer WARNS
+    /// (naming each duplicated key + that the last wins) so the author isn't surprised. Empty = no dup.
+    duplicate_keys: Vec<String>,
     /// DEPENDENCIES (`def deps = ["../mathlib", …]`) — the projects this project links across the component
     /// boundary. Each is a [`DepSource`]; today the only source is a PATH (a sibling project dir), but the
     /// type is an enum so a REGISTRY source (npm first — operator direction) can slot in LATER without a
@@ -7321,6 +7347,10 @@ fn parse_manifest(arenas: &cadenza_syntax::Arenas) -> Manifest {
         None => vec![root],
     };
     let mut m = Manifest::default();
+    // Known keys already seen — to flag a DUPLICATE `def` (last-wins would otherwise silently drop the
+    // earlier value). Only KNOWN keys are tracked (an unrecognized/forward-compat def isn't a duplicate
+    // worth warning about); each key is recorded into `m.duplicate_keys` at most once.
+    let mut seen: Vec<&str> = Vec::new();
     for item in items {
         // Unwrap a leading `(comment TEXT FORM)` / `(doc TEXT FORM)` wrapper: the reader attaches a `//`
         // line comment or `///` doc as `(comment "…" <the form>)`, so a commented `def` is nested one
@@ -7336,6 +7366,19 @@ fn parse_manifest(arenas: &cadenza_syntax::Arenas) -> Manifest {
         let Some(name) = arenas.as_name(name_id) else {
             continue;
         };
+        // A KNOWN key seen before is a duplicate (last-wins); record it once so a consumer can warn.
+        if matches!(
+            name,
+            "name" | "entry" | "modules" | "tests" | "exclude" | "opt-level" | "deps"
+        ) {
+            if seen.contains(&name) {
+                if !m.duplicate_keys.iter().any(|k| k == name) {
+                    m.duplicate_keys.push(name.to_string());
+                }
+            } else {
+                seen.push(name);
+            }
+        }
         match name {
             "name" => m.name = manifest_strings(arenas, value_id).into_iter().next(),
             "entry" => {
