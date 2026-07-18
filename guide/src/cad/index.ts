@@ -428,10 +428,15 @@ function toManifold(M: ManifoldStatic, CS: CrossSectionStatic, s: Solid): Manifo
     case "scale":
       return toManifold(M, CS, s.of).scale(s.v);
     case "extrudeLinear":
-      // lift the profile straight up +z by `height`, centred (matches the origin-centred primitives + the
-      // Rust driver: extrude runs 0..height then shift down height/2).
+      // Lift the profile straight up +z by `height`, then centre it in z (extrude runs 0..height, shift down
+      // height/2 — matches the origin-centred primitives + the native cdz-cad driver). 🪤 NOT the
+      // extrude(h, …, center=true) flag: manifold-3d's built-in centering INVERTS the winding of some faces
+      // (verified: center=true → 8 outward + 4 INWARD-winding tris on a square prism, so those faces render
+      // dark/one-sided — the operator's "extrudes one side, leaves others flat"). extrude(h) + translate is
+      // consistently outward-wound (12 outward, 0 inward), like a cube.
       return profileToCrossSection(CS, s.profile)
-        .extrude(s.height, 0, 0, 1, true);
+        .extrude(s.height)
+        .translate(0, 0, -s.height / 2);
     case "revolve":
       // sweep the profile about the y-axis by `degrees` (SEGMENTS = sweep tessellation).
       return M.revolve(profileToCrossSection(CS, s.profile), SEGMENTS, s.degrees);

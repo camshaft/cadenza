@@ -237,13 +237,16 @@ pub fn tick_hosted_log_policy<L>(
 where
     L: Log + Send + 'static,
 {
-    let policy = {
+    // The EFFECTIVE policy at THIS invocation: the base `policy` doc UNIONED with every active operator GRANT
+    // (not revoked, not expired) — read the wall clock ONCE here and pass it in as data so the fold stays pure
+    // ([`crate::policy::effective_policy`]). No policy + no active grant → empty doc → Cedar deny-by-default
+    // (zero capabilities; actions never go through without a policy). This is the authz request→grant→revoke
+    // lifecycle applied per invocation with WALL-CLOCK expiry (operator ruling).
+    let now_ms = crate::clock::now_millis();
+    let doc = {
         let l = log.lock().map_err(|_| anyhow!("log mutex poisoned"))?;
-        crate::policy::latest_policy(&l.tail(0)?)
+        crate::policy::effective_policy(&l.tail(0)?, now_ms)
     };
-    // No policy in the log → deny-by-default: gate against an EMPTY policy (Cedar denies with no permit), so a
-    // program with no granting policy gets zero capabilities. Actions never go through without a policy.
-    let doc = policy.unwrap_or_default();
     tick_hosted_authorized(log, event_kind, runtime, doc)
 }
 
@@ -800,6 +803,46 @@ mod tests {
             "exec was denied by the log policy → one prim-denied event"
         );
         let _ = std::fs::remove_file(&path_b);
+    }
+
+    #[test]
+    fn tick_hosted_log_policy_honors_an_operator_grant() {
+        // The authz lifecycle THROUGH the daemon: a base policy permitting only prim:append DENIES exec — until
+        // an operator GRANT adds prim:exec. Then kind=1 [Append, Exec] → BOTH performed → sum 3. Proves the
+        // daemon evaluates effective_policy (base ∪ active grants) per invocation, so an operator's grant widens
+        // an agent's capabilities live (the can't-brick escape hatch's grant half). No expiry (never expires).
+        use std::sync::{Arc, Mutex};
+        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let provider = match crate::kernel::compile_interpret_provider(GENESIS) {
+            Ok(p) => p,
+            Err(e) => panic!("genesis compiles: {e}"),
+        };
+        let Some(runtime) = crate::kernel::find_runtime_for(&provider, store_root) else {
+            eprintln!("[cdz-kernel::daemon] runtime absent/stale; skipping grant test");
+            return;
+        };
+        let (path, mut log0) = temp_log();
+        crate::boot::inject_genesis(&mut log0, GENESIS).unwrap();
+        crate::policy::append_policy(
+            &mut log0,
+            r#"permit(principal, action == Action::"prim:append", resource);"#,
+        )
+        .unwrap();
+        // Operator grants prim:exec (no expiry) — widens the base policy.
+        crate::policy::append_grant(
+            &mut log0,
+            r#"permit(principal, action == Action::"prim:exec", resource);"#,
+            None,
+        )
+        .unwrap();
+        let log = Arc::new(Mutex::new(log0));
+        let sum = tick_hosted_log_policy(Arc::clone(&log), 1, runtime)
+            .expect("the daemon evaluates base policy ∪ grant");
+        assert_eq!(
+            sum, 3,
+            "base permits append(1); the operator grant permits exec(2) → both performed → sum 3"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

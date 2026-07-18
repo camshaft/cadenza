@@ -128,3 +128,53 @@ test("meshFromSolid extrudes a PathProfile (line + cubic-Bézier spline) into a 
   assert.equal(spline.ok, true, "an extruded cubic-Bézier spline path meshes");
   if (spline.ok) assert.ok(spline.indices.length / 3 > 12, "a spline outline samples to a curved (many-tri) wall");
 });
+
+// ── winding consistency: an extruded solid must be all-outward-wound (no inverted faces) ──────────────
+// Regression for the operator's "Extrude.Linear extrudes one side, leaves others flat": manifold-3d's
+// extrude(h, …, center=true) INVERTS the winding of some faces (verified: 8 outward + 4 inward on a square
+// prism), so those faces render dark/one-sided. The fix is extrude(h)+translate (consistently outward, like
+// a cube). This pins that every triangle of an extruded solid winds OUTWARD (its face normal points away
+// from the solid's centroid) — the tri-count test alone missed the inverted faces.
+
+/// Count triangles whose winding-normal points outward (away from the mesh centroid) vs inward.
+function windingBalance(positions: Float32Array, indices: Uint32Array): { outward: number; inward: number } {
+  let cx = 0, cy = 0, cz = 0;
+  const n = positions.length / 3;
+  for (let i = 0; i < positions.length; i += 3) {
+    cx += positions[i];
+    cy += positions[i + 1];
+    cz += positions[i + 2];
+  }
+  cx /= n;
+  cy /= n;
+  cz /= n;
+  let outward = 0, inward = 0;
+  for (let t = 0; t < indices.length; t += 3) {
+    const a = indices[t] * 3, b = indices[t + 1] * 3, c = indices[t + 2] * 3;
+    const ux = positions[b] - positions[a], uy = positions[b + 1] - positions[a + 1], uz = positions[b + 2] - positions[a + 2];
+    const vx = positions[c] - positions[a], vy = positions[c + 1] - positions[a + 1], vz = positions[c + 2] - positions[a + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const gx = (positions[a] + positions[b] + positions[c]) / 3 - cx;
+    const gy = (positions[a + 1] + positions[b + 1] + positions[c + 1]) / 3 - cy;
+    const gz = (positions[a + 2] + positions[b + 2] + positions[c + 2]) / 3 - cz;
+    if (nx * gx + ny * gy + nz * gz > 0) outward++;
+    else inward++;
+  }
+  return { outward, inward };
+}
+
+test("an extruded prism is all-outward-wound (no inverted faces → no 'one side flat')", async () => {
+  const r = await meshFromSolid("(: (ExtrudeLinear (Rect (: (tuple 4/1 4/1) Vec2R)) 4/1) SolidR)");
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    const { outward, inward } = windingBalance(r.positions, r.indices);
+    assert.equal(inward, 0, `an extruded prism must have NO inward-wound faces (got ${inward} inward, ${outward} outward)`);
+    assert.ok(outward > 0, "the prism has geometry");
+  }
+});
+
+test("a cube is all-outward-wound (baseline for the winding check)", async () => {
+  const r = await meshFromSolid("(: (Cube (: (tuple 4/1 4/1 4/1) Vec3)) Solid)");
+  assert.equal(r.ok, true);
+  if (r.ok) assert.equal(windingBalance(r.positions, r.indices).inward, 0, "a cube has no inward faces");
+});

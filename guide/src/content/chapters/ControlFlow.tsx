@@ -1,5 +1,6 @@
 import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
+import { TryChange } from "../../components/TryChange.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
 
@@ -16,13 +17,16 @@ export default function ControlFlow() {
         An <C>if</C> is an <em>expression</em>: it evaluates to one branch or the other and yields that
         value. It's a value choice, not a statement you run for its effect.
       </P>
-      <Runnable source={`(if (< 3 5) 100 200)`} />
-      <P>Change <C>&lt;</C> to <C>&gt;</C> and Run again to take the other branch.</P>
+      <Runnable id="if-branch" source={`(if (< 3 5) 100 200)`} />
+      <P>
+        <TryChange example="if-branch" find="<" replace=">">Change <C>&lt;</C> to <C>&gt;</C></TryChange>{" "}
+        and it runs again to take the other branch, giving <C>200</C>.
+      </P>
 
       <P>
-        Because an <C>if</C> <em>produces</em> a value, that value needs one type — so both branches must
-        agree. Ask for one branch that returns a number and another that returns a boolean, and the
-        compiler refuses:
+        Because an <C>if</C> produces a value and that value needs one type, both branches must agree.
+        Ask for one branch that returns a number and another that returns a boolean, and the compiler
+        refuses:
       </P>
       <Note>
         This one is <strong>meant to be refused</strong>. Run it and read the status bar: the branches
@@ -31,11 +35,11 @@ export default function ControlFlow() {
       <Runnable source={`(if (< 1 2) 100 true)`} expect="error" />
 
       <Why tenet="if is an expression, so both branches share a type">
-        That single-type rule isn't fussiness — it's what lets <C>if</C> be used anywhere a value is
-        expected: as a function argument, a let binding, the arm of another <C>if</C>. There's no
-        separate "statement if" you run for effect and "expression if" that yields a value, and none of
-        the "one branch forgot to return" bugs that split brings. One form, always a value, always
-        well-typed — so the type checker can vet it wherever it appears.
+        That single-type rule isn't fussiness, because it's what lets <C>if</C> be used anywhere a value
+        is expected, whether as a function argument, a let binding, or the arm of another <C>if</C>.
+        There's no separate "statement if" you run for effect and "expression if" that yields a value, so
+        none of the "one branch forgot to return" bugs that split brings can happen here. One form is
+        always a value and always well-typed, so the type checker can vet it wherever it appears.
       </Why>
 
       <H2>Nesting choices</H2>
@@ -44,17 +48,17 @@ export default function ControlFlow() {
   (if (< n 0) -1
       (if (= n 0) 0 1)))`} />
       <P>
-        This is the sign of <C>n</C>: <C>-1</C> if negative, <C>0</C> if zero, <C>1</C> if positive. With{" "}
-        <C>n = 0</C> the first test fails and the inner <C>(= n 0)</C> fires, so the answer is <C>0</C> —
-        change <C>n</C> to <C>-4</C> or <C>7</C> and Run to take a different branch.
+        This is the sign of <C>n</C>, giving <C>-1</C> if negative, <C>0</C> if zero, and <C>1</C> if
+        positive. With <C>n = 0</C> the first test fails and the inner <C>(= n 0)</C> fires, so the answer
+        is <C>0</C>. Change <C>n</C> to <C>-4</C> or <C>7</C> and Run to take a different branch.
       </P>
 
-      <H2>Booleans compose — and short-circuit</H2>
+      <H2>Booleans compose and short-circuit</H2>
       <P>
         Comparisons produce <C>Bool</C> values, and <C>and</C>, <C>or</C>, <C>not</C> combine them. They{" "}
-        <em>short-circuit</em>: a false <C>and</C> never evaluates its right side. That's what makes a
-        guard-then-use pattern safe — here <C>safe</C> checks <C>n</C> isn't zero <em>before</em> dividing
-        by it, so the division never runs when it would trap:
+        <em>short-circuit</em>, so a false <C>and</C> never evaluates its right side. That's what makes a
+        guard-then-use pattern safe, because here <C>safe</C> checks <C>n</C> isn't zero <em>before</em>{" "}
+        dividing by it, so the division never runs when it would trap:
       </P>
       <Runnable
         source={`(def (safe n)
@@ -63,13 +67,13 @@ export default function ControlFlow() {
       />
       <P>
         With <C>n = 0</C> the first test is false, so <C>(/ 100 0)</C> is skipped entirely and the whole
-        thing is <C>false</C> — <C>0</C>. Were <C>and</C> not short-circuiting, that division would trap.
+        thing is <C>false</C>, giving <C>0</C>. Were <C>and</C> not short-circuiting, that division would trap.
       </P>
 
       <H2>Recursion</H2>
       <P>
-        A function can call itself — that's how you loop in Cadenza. A base case stops the recursion, and
-        each step reduces toward it. Here <C>sm</C> sums the integers from <C>n</C> down to 0:
+        A function can call itself, and that's how you loop in Cadenza. A base case stops the recursion,
+        and each step reduces toward it. Here <C>sm</C> sums the integers from <C>n</C> down to 0:
       </P>
       <Runnable
         source={`(def (sm n)
@@ -86,9 +90,9 @@ export default function ControlFlow() {
         id="control-flow:1"
         prompt={
           <>
-            Write <C>pow2</C>, which computes 2 to the <C>n</C>. Here <C>n</C> is just a <em>counter</em> —
-            it says how many times to double, but the doubling itself is always the same. Fill in the step
-            so <C>(pow2 5)</C> gives <C>32</C>.
+            Write <C>pow2</C>, which computes 2 to the <C>n</C>. Here <C>n</C> is just a <em>counter</em>{" "}
+            that says how many times to double, while the doubling itself is always the same. Fill in the
+            step so <C>(pow2 5)</C> gives <C>32</C>.
           </>
         }
         starter={`(def (pow2 n)
@@ -100,9 +104,9 @@ export default function ControlFlow() {
         expected="32"
         hint={
           <>
-            Unlike <C>sm</C> above, <C>n</C> doesn't appear in the step — you just double the result of one
-            fewer step: <C>(* 2 (pow2 (- n 1)))</C>. (Write <C>(* n …)</C> by habit and you'd get factorial,
-            <C>120</C>, not <C>32</C>.)
+            Unlike <C>sm</C> above, <C>n</C> doesn't appear in the step, since you just double the result
+            of one fewer step with <C>(* 2 (pow2 (- n 1)))</C>. Writing <C>(* n …)</C> by habit would give
+            factorial, <C>120</C>, not <C>32</C>.
           </>
         }
       />
@@ -113,8 +117,8 @@ export default function ControlFlow() {
           <>
             <C>fare</C> picks a ticket price by age tier: under 5 rides free (<C>0</C>), 65 and over pays{" "}
             <C>5</C>, everyone in between pays <C>10</C>. The free case is done; fill the hole with the{" "}
-            <em>nested</em> <C>if</C> that decides between the adult and senior fares — here{" "}
-            <C>(fare 70)</C> should give <C>5</C>.
+            <em>nested</em> <C>if</C> that decides between the adult and senior fares, so that{" "}
+            <C>(fare 70)</C> gives <C>5</C>.
           </>
         }
         starter={`(def (fare age)
@@ -128,9 +132,9 @@ export default function ControlFlow() {
         expected="5"
         hint={
           <>
-            The hole is a second <C>if</C> in the else position, like the sign-of-<C>n</C> example above:{" "}
-            <C>(if (&lt; age 65) 10 5)</C> — under 65 is the adult fare <C>10</C>, otherwise the senior{" "}
-            <C>5</C>.
+            The hole is a second <C>if</C> in the else position, like the sign-of-<C>n</C> example above.
+            In <C>(if (&lt; age 65) 10 5)</C>, under 65 is the adult fare <C>10</C> and otherwise the
+            senior <C>5</C>.
           </>
         }
       />

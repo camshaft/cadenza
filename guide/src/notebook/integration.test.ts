@@ -54,7 +54,8 @@ test("the balance cell's run buffer carries the widget binding + the cell def; e
   // The balance cell is index 3 (prose,widget,prose,CODE,...).
   const { buffer, entry } = assembleForRun(cells, 3, widgets, { rate: 0.1 }, "ml");
   // Widget binding AND the cell's own def-block are both in the buffer; entry is a CALL (an expression).
-  assert.equal(buffer, "def rate = 0.1\n\ndef main() = 1000.0 * (1.0 + rate)");
+  // The buffer LEADS with the rational-by-default pragma (operator: no floats), then widget binding + cell def.
+  assert.equal(buffer, "@!default-fraction Rational\n\ndef rate = 0.1\n\ndef main() = 1000.0 * (1.0 + rate)");
   assert.equal(entry, "main()");
   assert.ok(!/^def\b/.test(entry), "entry must be an expression, never a def-block (replEval contract)");
 });
@@ -75,7 +76,7 @@ test("a widget whose value is absent falls back to its default in the buffer", (
   const cells = parseDocument(NOTEBOOK);
   const widgets = allWidgets(cells);
   const { buffer } = assembleForRun(cells, 3, widgets, {}, "ml"); // no value supplied
-  assert.match(buffer, /^def rate = 0.05\b/); // widget binding uses the slider's default
+  assert.match(buffer, /def rate = 0.05\b/); // widget binding uses the slider's default (after the leading pragma)
 });
 
 test("a notebook with no widgets: initial run covers all code cells, no recompute plan for a phantom widget", () => {

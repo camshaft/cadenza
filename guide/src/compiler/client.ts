@@ -2,7 +2,7 @@
 /// so any component can `await compiler.compile(...)` as if it were a local async function.
 
 import * as Comlink from "comlink";
-import type { CompilerApi, CompileOutcome, TestCompileOutcome, ParamTestSig, Diag, DiagFix, Surface, TypeAtInfo, DefineAtInfo, SemanticTok, DispositionInfo } from "./worker.ts";
+import type { CompilerApi, CompileOutcome, TestCompileOutcome, ParamTestSig, ParamManifestEntry, Diag, DiagFix, Surface, TypeAtInfo, DefineAtInfo, SemanticTok, DispositionInfo } from "./worker.ts";
 
 let proxy: Comlink.Remote<CompilerApi> | null = null;
 
@@ -43,6 +43,13 @@ export function compileTests(text: string, from: Surface): Promise<TestCompileOu
 /// test name, its scalar param types (arg-driver), and `compound` (a `-gen` wrapper → deferred phase-2).
 export function paramTestSignatures(text: string, from: Surface): Promise<ParamTestSig[]> {
   return client().paramTestSignatures(text, from);
+}
+
+/// The `@param` widget manifest of `text` — one entry per `@param` the model declares (name, reduced type,
+/// widget/range/default). /cad single-mode reads this on each recompile to auto-surface a slider per param
+/// the model itself declares. Empty for a param-free or unparseable buffer.
+export function paramManifest(text: string, from: Surface): Promise<ParamManifestEntry[]> {
+  return client().paramManifest(text, from);
 }
 
 /// Type-check without building a component (as-you-type diagnostics). No export required upstream.
@@ -161,4 +168,4 @@ export function exportTypes(text: string, from: Surface): Promise<string> {
   return client().exportTypes(text, from);
 }
 
-export type { CompileOutcome, TestCompileOutcome, ParamTestSig, Surface, Diag, DiagFix, TypeAtInfo, DefineAtInfo, SemanticTok, DispositionInfo };
+export type { CompileOutcome, TestCompileOutcome, ParamTestSig, ParamManifestEntry, Surface, Diag, DiagFix, TypeAtInfo, DefineAtInfo, SemanticTok, DispositionInfo };

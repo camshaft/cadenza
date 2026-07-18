@@ -132,15 +132,54 @@ const ARCH_FIN: ExampleModel = {
   },
 };
 
+/// A PARAMETRIC mounting plate — a `width × depth × thickness` block with a central bolt hole of radius
+/// `bore`, every dimension a `@param`. In SINGLE-MODE this is just another example: the buffer DECLARES its
+/// own `@param`s, and /cad auto-surfaces a slider per param (read live from the compiled model's manifest —
+/// no hardcoded slider list). Drag a slider and the model recomputes + re-meshes with EXACT (Rational)
+/// dimensions — a fractional thickness (3.5 = 7/2) is the exact-fraction payoff a float slider can't hold.
+/// Bare like every example: the `import`s (exact + helpers), the `@!default-fraction Rational` pragma, and
+/// the `export` are auto-injected by `injectImport`; the buffer shows ONLY the model (@param decls + main).
+/// Uses the ergonomic helpers (`box` + `hole-through`) from the injected `helpers` superset. `main` reads
+/// each `@param` via the `Param` host accessor; /cad supplies each from its slider's exact {num,den}.
+const PARAMETRIC_PLATE: ExampleModel = {
+  slug: "parametric-plate",
+  title: "Parametric mounting plate (sliders)",
+  description: "A width×depth×thickness plate with a central bolt hole — every dimension a live @param slider, exact.",
+  source: {
+    ml: `@param(widget: slider, range: [20, 200], default: 50) width : Rational
+@param(widget: slider, range: [20, 150], default: 30) depth : Rational
+@param(widget: slider, range: [2, 20], default: 5) thickness : Rational
+@param(widget: slider, range: [1, 15], default: 3) bore : Rational
+def plate(w: Rational, d: Rational, t: Rational, r: Rational) = hole-through(box(w, d, t), r, t)
+def main() = host Param in
+  (let w = Param.width() in
+   let d = Param.depth() in
+   let t = Param.thickness() in
+   let r = Param.bore() in
+     lower(plate(w, d, t, r)))`,
+    sexpr: `(: (@ (param (: widget slider) (: range (list 20 200)) (: default 50)) width) Rational)
+(: (@ (param (: widget slider) (: range (list 20 150)) (: default 30)) depth) Rational)
+(: (@ (param (: widget slider) (: range (list 2 20)) (: default 5)) thickness) Rational)
+(: (@ (param (: widget slider) (: range (list 1 15)) (: default 3)) bore) Rational)
+(def (plate (: w Rational) (: d Rational) (: t Rational) (: r Rational)) (hole-through (box w d t) r t))
+(def (main)
+  (host (Param)
+    (let ((w (Param.width)) (d (Param.depth)) (t (Param.thickness)) (r (Param.bore)))
+      (lower (plate w d t r)))))`,
+  },
+};
+
 /// The example models the /cad example-switcher offers, in display order. Every one is verified to compile
 /// + mesh against the preloaded library. Keep the FIRST entry the canonical simple starter (the /cad route
-/// opens with `DEFAULT_EXAMPLE`).
+/// opens with `DEFAULT_EXAMPLE`). The parametric plate is one of these — in single-mode a parametric model
+/// is just an example that declares `@param`s, and its sliders auto-surface from the compiled manifest.
 export const EXAMPLES: ExampleModel[] = [
   CUBE_WITH_DENT,
   HOLLOW_TUBE,
   ROUNDED_CUBE,
   STEPPED_PEDESTAL,
   ARCH_FIN,
+  PARAMETRIC_PLATE,
 ];
 
 /// The model the /cad route opens with (the canonical cube-with-dent starter).

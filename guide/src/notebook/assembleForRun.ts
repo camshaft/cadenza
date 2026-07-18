@@ -32,6 +32,18 @@ export function widgetBinding(widget: Widget, value: number | boolean | string, 
   return surface === "sexpr" ? `(def (${widget.name}) ${lit})` : `def ${widget.name} = ${lit}`;
 }
 
+/// The notebook's DEFAULT LITERAL MODE pragma, surface-appropriate — prepended to every cell's assembled
+/// program so a bare integer literal grounds to an exact `Rational` (operator directive: "just don't use
+/// floats in the notebook at all — default literal mode rational, so division just works"). With it, plain
+/// `num / den` (Int widgets) yields the exact fraction 3/4 rather than Int64 integer division's 0 — no
+/// explicit `Rational.of` needed. It grounds ALL bare literals to Rational (the finance/physics examples'
+/// `1000`/`5` become exact Rationals too — the operator wants exactly this, no floats). ⚠ A cell that
+/// declares an explicit `Float64` type (annotation/literal) will conflict ("no implicit conversion Rational
+/// / Float64"); the shipped examples are authored float-free so they compose with the rational default.
+export function defaultFractionPragma(surface: Surface): string {
+  return surface === "sexpr" ? "(pragma default-fraction Rational)" : "@!default-fraction Rational";
+}
+
 /// The entry-point NAME a cell's source exposes to run: `main` when the cell defines it (the guide
 /// convention), else the cell's first top-level def name, else `main` (a decline the caller surfaces).
 /// Mirrors wrapModule.exportNames' rule so a notebook cell behaves like a wrapped guide snippet.
@@ -68,8 +80,11 @@ export function assembleForRun(
 
   // The cell's OWN source (a def-block) belongs in the buffer, NOT the entry slot — replEval's entry is
   // an expression. Everything (widgets, prior cells, this cell) becomes the buffer's definitions; the
-  // entry is a call to this cell's entry point.
-  const buffer = [widgetBindings, scopeBuffer, cellSource].filter((s) => s.trim().length > 0).join("\n\n");
+  // entry is a call to this cell's entry point. The default-fraction pragma LEADS the buffer so bare int
+  // literals ground to Rational (rational-by-default — plain `/` yields an exact fraction; operator: no floats).
+  const buffer = [defaultFractionPragma(surface), widgetBindings, scopeBuffer, cellSource]
+    .filter((s) => s.trim().length > 0)
+    .join("\n\n");
   const entry = entryCall(entryName(cellSource, surface), surface);
   return { buffer, entry };
 }

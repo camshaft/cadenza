@@ -1796,10 +1796,15 @@ fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> Optio
     } else {
         "pub fn "
     };
-    // Find the exact `<marker><name>` header (name boundary: the char after `name` starts the param list
-    // `(` in sync mode, or the generic list `<` in async mode).
+    // Find the exact `<marker><name>` header. The name boundary matters: a bare `split` on `pub fn both`
+    // also matches `pub fn both2(` (prefix), so a MULTI-export module grabs the wrong occurrence and counts
+    // the wrong arity (Copilot PR#548). Only an occurrence whose next char starts the param list `(` (sync)
+    // or the generic list `<` (async) — never an identifier-continuation char — is the real header.
     let needle = format!("{marker}{name}");
-    let after = module.split(&needle).nth(1)?;
+    let after = module
+        .match_indices(&needle)
+        .map(|(i, _)| &module[i + needle.len()..])
+        .find(|rest| matches!(rest.chars().next(), Some('(') | Some('<')))?;
     // Skip an async generic-parameter list `<…>` if present, to reach the param-list `(`.
     let after = after.trim_start();
     let after = if after.starts_with('<') {
@@ -3308,6 +3313,9 @@ fn report_ml_conformance(paths: &Paths, profile: &str) {
                     let outcome = match &ml {
                         // Not-yet-supported: the ML front-end declined — coverage-not-yet, never a diff.
                         Ran::Declined { .. } => MlOutcome::NotYet,
+                        // An ML-side harness read-failure (hang / bad feed) — not comparable, never a diff.
+                        // Mirrors the emit path's interp-side BadArtifact filter (Copilot PR#559 twin check).
+                        Ran::BadArtifact(_) => MlOutcome::NotYet,
                         // ML produced a value (or error) — compare to the oracle.
                         _ => {
                             let oracle = run_program(
@@ -3319,7 +3327,10 @@ fn report_ml_conformance(paths: &Paths, profile: &str) {
                                 &rec.host_responses,
                                 GateTarget::Wasm,
                             );
-                            if ml_agrees_with_oracle(&ml, &oracle) {
+                            // An oracle-side harness failure is likewise not comparable — not a disagreement.
+                            if matches!(oracle, Ran::BadArtifact(_)) {
+                                MlOutcome::NotYet
+                            } else if ml_agrees_with_oracle(&ml, &oracle) {
                                 MlOutcome::Agree
                             } else {
                                 MlOutcome::Disagree(format!(
@@ -3527,6 +3538,12 @@ fn report_must_compute_floor(tools: &Tools) {
 /// caller before this — coverage-not-yet, never compared.)
 fn emit_agrees_with_interp(emit: &Ran, interp: &Ran) -> bool {
     match (emit, interp) {
+        // An emit-side harness FAILURE (spawn-fail / timeout-hang / unrecognized verdict) is never an
+        // agreement — it is emit-pipeline breakage, not a matching outcome. This arm MUST precede the
+        // `(_, Ran::Trap(_)) => true` catch-all below, which would otherwise silently count a BadArtifact
+        // emit against a trapping interp as GREEN, masking a broken emit pipeline (Copilot PR#559). The
+        // caller filters interp-side BadArtifact to NotYet before comparing, but NOT the emit side.
+        (Ran::BadArtifact(_), _) => false,
         (Ran::Value(a, _), Ran::Value(b, _)) => emit_values_match(a, b),
         // interp produced a value but emit did not (declined/trapped/harness) — a miscompile.
         (_, Ran::Value(_, _)) => false,
@@ -4576,6 +4593,27 @@ mod trap_grading_tests {
     }
 
     #[test]
+    fn emit_side_bad_artifact_never_counts_as_agreement() {
+        // Copilot PR#559: the `(_, Ran::Trap(_)) => true` catch-all would count an emit-side harness
+        // FAILURE (spawn-fail / hang / unrecognized verdict) against a trapping interp as GREEN — masking
+        // a broken emit pipeline. The explicit BadArtifact arm must fire FIRST.
+        assert!(!emit_agrees_with_interp(
+            &Ran::BadArtifact("run-emitted timeout (hang)".into()),
+            &Ran::Trap("overflow".into())
+        ));
+        // …and against a value interp too (already false via `(_, Value) => false`, pinned for safety).
+        assert!(!emit_agrees_with_interp(
+            &Ran::BadArtifact("spawn failed".into()),
+            &Ran::Value("42".into(), vec![])
+        ));
+        // A genuine shared trap still agrees (emit trapped where interp trapped) — the fix is surgical.
+        assert!(emit_agrees_with_interp(
+            &Ran::Trap("divide by zero".into()),
+            &Ran::Trap("overflow".into())
+        ));
+    }
+
+    #[test]
     fn trap_kind_maps_corpus_and_wasmtime_vocabularies_to_one_token() {
         // The corpus's human reasons and wasmtime's actual trap messages must classify to the SAME token
         // per underlying trap, so `grade_trial`'s `trap` arm recognizes an expected trap that fired.
@@ -5010,6 +5048,17 @@ mod trap_grading_tests {
         let nested =
             "pub fn f(m: BTreeMap<i64, i64>, k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { … }";
         assert_eq!(rust_factory_param_count(nested, "f", false), Some(2));
+        // MULTI-export module: a prefix `split("pub fn both")` also matches `pub fn both2(` — the fix must
+        // pick the occurrence whose next char is the name boundary `(`, not the `both2` prefix (Copilot
+        // PR#548). `both` has arity 2, `both2` has arity 3 — asking for `both` must NOT return 3.
+        let multi = "pub fn both2(a: i64, b: i64, c: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { … } \
+                     pub fn both(a: i64, b: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { … }";
+        assert_eq!(rust_factory_param_count(multi, "both", false), Some(2));
+        assert_eq!(rust_factory_param_count(multi, "both2", false), Some(3));
+        // Async factory: the name is followed by the generic list `<`, still a valid boundary.
+        let async_fac =
+            "pub async fn scale<E: CdzEnv>(k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { … }";
+        assert_eq!(rust_factory_param_count(async_fac, "scale", true), Some(1));
     }
 
     #[test]

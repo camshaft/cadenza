@@ -10,8 +10,14 @@ type Ty =
   | Var(Int64)
   | Con(String)
   | Arrow(Ty, Ty)
-  | IntW(Int64, Int64)             // IntW(signed 1|0, width) — a fixed-width integer; width 0 = DEFERRED
-                                   // (a bare literal's width, polymorphic until unification grounds it).
+  | IntW(Int64, Int64)             // IntW(sign, width) — an integer type. SIGN and WIDTH are ORTHOGONAL
+                                   // axes (rcdzc ty.rs: Sign and Width each a 3-state {Fixed|Deferred|Var},
+                                   // unified INDEPENDENTLY). sign: 1=signed, 0=unsigned, 2=DEFERRED (a bare
+                                   // literal's sign, grounds to signed). width: >0=fixed, 0=DEFERRED (a bare
+                                   // literal's width, grounds to the default). A bare literal = IntW(2,0)
+                                   // (both deferred). (rcdzc's Sign/Width Var state — for intrinsic generics
+                                   // like `+:(Int w)->(Int w)` — is a later slice; Fixed+Deferred cover the
+                                   // literal-polymorphism the subset needs.)
                                    // Mirrors rcdzc's `IntTy { sign, width }` with `Fixed|Deferred` (ty.rs).
 
 /// Follow variable bindings to a representative type (path to the end of the chain).
@@ -33,6 +39,16 @@ def bind-var(s: Map(Int64, Ty), v: Int64, t: Ty) -> Result(Map(Int64, Ty), Strin
   | Ty.Var(w) => (if v == w then Result.Ok(s) else Result.Ok(Map.insert(s, v, t)))
   | _ => (if occurs(v, t, s) then Result.Err("occurs check: infinite type") else Result.Ok(Map.insert(s, v, t)))
 
+/// SIGN agreement (rcdzc `unify_sign`): a DEFERRED sign (2) takes the other; two FIXED signs (1 signed /
+/// 0 unsigned) agree iff EQUAL — a mismatch is CDZ0301 (no silent promotion), checked independent of width.
+def sign-agrees(sa: Int64, sb: Int64) =
+  (if (sa == 2) then true else (if (sb == 2) then true else sa == sb))
+
+/// WIDTH agreement (rcdzc `unify_width`): a DEFERRED width (0) takes the other; two FIXED widths agree iff
+/// EQUAL — a mismatch rejects, independent of sign.
+def width-agrees(wa: Int64, wb: Int64) =
+  (if (wa == 0) then true else (if (wb == 0) then true else wa == wb))
+
 /// Unify two non-variable (structural) types.
 def unify-struct(s: Map(Int64, Ty), a: Ty, b: Ty) -> Result(Map(Int64, Ty), String) = match a with
   | Ty.Con(n) => (match b with
@@ -47,10 +63,11 @@ def unify-struct(s: Map(Int64, Ty), a: Ty, b: Ty) -> Result(Map(Int64, Ty), Stri
     // grounding a deferred literal is the CALLER's job (it holds the node→type map); unify only DECIDES
     // whether the two int types are COMPATIBLE and, if so, leaves the substitution unchanged.
     | Ty.IntW(sb, wb) =>
-        (if (wa == 0) then Result.Ok(s)                             // deferred ~ anything int → ok
-         else (if (wb == 0) then Result.Ok(s)                        // anything int ~ deferred → ok
-         else (if ((sa == sb) and (wa == wb)) then Result.Ok(s)      // concrete ~ concrete, same → ok
-         else Result.Err("cannot unify integers of different width or sign"))))
+        // SIGN and WIDTH unify INDEPENDENTLY (rcdzc unify_sign THEN unify_width) — BOTH must agree. A
+        // deferred WIDTH does NOT bypass the SIGN check: a Fixed sign mismatch (signed vs unsigned) rejects
+        // even when a width is deferred. (This closes the prior gap where `wa==0`/`wb==0` short-circuited Ok
+        // before comparing signs, wrongly letting a signed deferred unify with an unsigned concrete.)
+        (if sign-agrees(sa, sb) then (if width-agrees(wa, wb) then Result.Ok(s) else Result.Err("cannot unify integers of different width")) else Result.Err("cannot unify integers of different sign"))
     | _ => Result.Err("cannot unify an integer with a non-integer"))
   | Ty.Arrow(a1, a2) => (match b with
     | Ty.Arrow(b1, b2) => (match unify(s, a1, b1) with
@@ -155,18 +172,44 @@ def unify-intw-sign-mismatch() =
 
 @test
 def unify-intw-deferred-grounds-left() =
-  // a DEFERRED literal (width 0) ~ Int8 unifies (the bare literal takes its context's width).
-  if is-ok(unify(empty(), Ty.IntW(0, 0), Ty.IntW(1, 8))) then unit else trap("deferred ~ Int8 ok")
+  // a BARE LITERAL (sign 2 = deferred, width 0 = deferred) ~ Int8 unifies (takes its context's sign+width).
+  if is-ok(unify(empty(), Ty.IntW(2, 0), Ty.IntW(1, 8))) then unit else trap("deferred literal ~ Int8 ok")
 
 @test
 def unify-intw-deferred-grounds-right() =
-  // Int8 ~ deferred also unifies (symmetry).
-  if is-ok(unify(empty(), Ty.IntW(1, 8), Ty.IntW(0, 0))) then unit else trap("Int8 ~ deferred ok")
+  // Int8 ~ deferred-literal also unifies (symmetry).
+  if is-ok(unify(empty(), Ty.IntW(1, 8), Ty.IntW(2, 0))) then unit else trap("Int8 ~ deferred literal ok")
 
 @test
 def unify-intw-deferred-meets-deferred() =
-  // two unconstrained deferreds unify (stay deferred; ground to the default at the root).
-  if is-ok(unify(empty(), Ty.IntW(0, 0), Ty.IntW(0, 0))) then unit else trap("deferred ~ deferred ok")
+  // two unconstrained deferred literals unify (stay deferred; ground to the default at the root).
+  if is-ok(unify(empty(), Ty.IntW(2, 0), Ty.IntW(2, 0))) then unit else trap("deferred ~ deferred ok")
+
+// ---- SIGN and WIDTH are ORTHOGONAL (rcdzc: a deferred WIDTH does NOT bypass the SIGN check) ----
+
+@test
+def unify-intw-sign-checked-under-deferred-width() =
+  // THE FIX (v-inference finding): a SIGNED value with a deferred WIDTH must NOT unify with an UNSIGNED
+  // concrete — sign is checked independent of width. IntW(1,0) [signed, width-deferred] ~ IntW(0,8) [UInt8]
+  // → sign mismatch (1≠0) → FAIL, even though width 0 is deferred. (Prior code returned Ok here — the bug.)
+  if is-ok(unify(empty(), Ty.IntW(1, 0), Ty.IntW(0, 8))) then trap("signed-deferred-width ~ UInt8 must FAIL on sign") else unit
+
+@test
+def unify-intw-deferred-sign-takes-unsigned() =
+  // a genuinely DEFERRED sign (2) takes the other side's sign: IntW(2,0) [bare literal] ~ IntW(0,8) [UInt8]
+  // unifies (the literal grounds to unsigned) — distinguishing a deferred sign from a Fixed signed (1).
+  if is-ok(unify(empty(), Ty.IntW(2, 0), Ty.IntW(0, 8))) then unit else trap("deferred-sign literal grounds to UInt8")
+
+@test
+def unify-intw-fixed-width-deferred-sign-ok() =
+  // deferred SIGN (2) with a FIXED width (8) ~ Int8: sign grounds to signed, widths agree → ok.
+  if is-ok(unify(empty(), Ty.IntW(2, 8), Ty.IntW(1, 8))) then unit else trap("deferred-sign fixed-width ~ Int8 ok")
+
+@test
+def unify-intw-signed-deferred-width-meets-signed-concrete() =
+  // a signed deferred-width ~ Int16: signs agree (both signed), width grounds → ok (the correct positive
+  // case that the sign-check must NOT over-reject).
+  if is-ok(unify(empty(), Ty.IntW(1, 0), Ty.IntW(1, 16))) then unit else trap("signed-deferred-width ~ Int16 ok")
 
 @test
 def unify-intw-not-a-con() =

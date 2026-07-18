@@ -26,7 +26,7 @@ import type { Surface } from "../compiler/worker.ts";
 import type { Widget } from "./parseWidgets.ts";
 import type { WidgetValues } from "./assembleForRun.ts";
 import { assembleCell } from "./assembleCell.ts";
-import { widgetBinding } from "./assembleForRun.ts";
+import { widgetBinding, defaultFractionPragma } from "./assembleForRun.ts";
 import { exportNames, topLevelDefNames } from "../components/wrapModule.ts";
 
 /// The UTF-8 byte length of a string (the unit `wrapPrefixBytes` is measured in — the compiler reports
@@ -102,7 +102,10 @@ export function prepareCell(
   // The prefix is the in-scope context (widget bindings + prior cells' sources); the cell's own live text
   // comes AFTER it. Only non-empty parts join, with blank lines between (both surfaces accept
   // newline-separated top-level forms — the `assembleForRun` convention).
-  const prefixParts = [widgetBindings, scopeBuffer].filter((s) => s.trim().length > 0);
+  // The default-fraction pragma LEADS the prefix so the linter sees the SAME rational-by-default grounding the
+  // run path does (else lint types a bare int Int64 while the run makes it Rational — a lint/run mismatch). In
+  // the PREFIX so `wrapPrefixBytes` counts it + cell diagnostics still map back exactly (a pragma-line diag drops).
+  const prefixParts = [defaultFractionPragma(surface), widgetBindings, scopeBuffer].filter((s) => s.trim().length > 0);
   const prefix = prefixParts.length > 0 ? prefixParts.join("\n\n") + "\n\n" : "";
   // Append an `export` SUFFIX so the linted module has a public entry — otherwise `compile` declines with
   // "nothing is public" and the cell's `main` is flagged unused (operator UX #1). Suffix, not prefix, so

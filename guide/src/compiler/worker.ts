@@ -11,6 +11,7 @@ import init, {
   compile_with_preloaded as wasmCompileWithPreloaded,
   compile_tests as wasmCompileTests,
   param_test_signatures as wasmParamTestSignatures,
+  param_manifest as wasmParamManifest,
   diagnostics as wasmDiagnostics,
   diagnostics_with_preloaded as wasmDiagnosticsWithPreloaded,
   type_at as wasmTypeAt,
@@ -99,6 +100,20 @@ export interface ParamTestSig {
   name: string;
   paramTypes: string[];
   compound: boolean;
+}
+
+/** One `@param` site's widget metadata, from `param_manifest` — what a parametric host (/cad single-mode)
+ *  renders a control from. `typeName` is always present (the declared, reduced type, e.g. `Int64` /
+ *  `Rational` / `(Qty Rational meter)`); the rest are the `@param`'s config, undefined when omitted.
+ *  `rangeLo`/`rangeHi`/`default` are rendered as STRINGS (an exact Rational default like `1/4` survives —
+ *  the host parses per type). The exact value crosses at RUN time via the `Param.<name>-num/-den` pair. */
+export interface ParamManifestEntry {
+  name: string;
+  typeName: string;
+  widget?: string;
+  rangeLo?: string;
+  rangeHi?: string;
+  default?: string;
 }
 
 /** The inferred type at a source offset, for hover. */
@@ -284,6 +299,29 @@ const api = {
       return [];
     }
     return sigs.map((s) => ({ name: s.name, paramTypes: s.param_types, compound: s.compound }));
+  },
+
+  /// The `@param` WIDGET MANIFEST of `text` (`param_manifest`) — one entry per `@param` site the model
+  /// declares, so /cad single-mode renders a slider per param a model itself declares (not a hardcoded
+  /// list). `widget`/`range_lo`/`range_hi`/`default` are `undefined` (optional wasm-bindgen fields) when the
+  /// `@param` omits that config; the snake_case rendered strings map to camelCase here. A parse error / no
+  /// `@param` yields an empty list (metadata, not a compile — an unparseable buffer just has no params).
+  async paramManifest(text: string, from: Surface): Promise<ParamManifestEntry[]> {
+    await ensureReady();
+    let entries: ReturnType<typeof wasmParamManifest>;
+    try {
+      entries = wasmParamManifest(text, from);
+    } catch {
+      return [];
+    }
+    return entries.map((e) => ({
+      name: e.name,
+      typeName: e.type_name,
+      widget: e.widget ?? undefined,
+      rangeLo: e.range_lo ?? undefined,
+      rangeHi: e.range_hi ?? undefined,
+      default: e.default ?? undefined,
+    }));
   },
 
   /// Type-check `text` and return all diagnostics with source spans — no component built, no export
