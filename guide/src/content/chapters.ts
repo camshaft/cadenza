@@ -91,6 +91,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/PatternMatching.tsx")),
   },
   {
+    slug: "iteration",
+    title: "Iteration without loops",
+    blurb: "Cadenza has no for or while; you repeat work with recursion and the fold family. Here's how, and why.",
+    section: "Fundamentals",
+    exercises: 0,
+    Component: lazy(() => import("./chapters/Iteration.tsx")),
+  },
+  {
     slug: "lists",
     title: "Lists",
     blurb: "Ordered, immutable sequences of values.",

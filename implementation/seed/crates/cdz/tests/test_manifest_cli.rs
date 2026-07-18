@@ -1359,3 +1359,27 @@ fn a_range_requires_constrains_generation_to_the_window() {
         "the range-@requires property passes all trials — generation stayed within [0,99]: {stdout}"
     );
 }
+
+#[test]
+fn cdz_test_on_a_compiled_wasm_gives_an_actionable_diagnostic_not_zero_tests_found() {
+    // `cdz test foo.wasm` (a COMPILED component passed by mistake) must NOT surface the misleading
+    // "0 tests found — add `@test`" (a .wasm has no source to scan) — it should point at the real path:
+    // pass the SOURCE file, and `cdz run` is for the compiled component. The inverse of `cdz run` on a
+    // source file. Exit non-zero (a usage mistake).
+    let d = dir("test-on-wasm");
+    let src = write(&d, "m.sexp", "(do (def (main) 0) (export main))");
+    let wasm = d.join("m.wasm");
+    let (cok, _co, cerr) = run(&["compile", &src, "-o", wasm.to_str().unwrap()]);
+    assert!(cok, "compile the fixture: {cerr}");
+    let (ok, _out, err) = run(&["test", wasm.to_str().unwrap()]);
+    assert!(!ok, "testing a compiled .wasm is a usage error (non-zero)");
+    assert!(
+        err.contains("is a COMPILED component") && err.contains("SOURCE file"),
+        "the diagnostic names the compiled-artifact mistake + the source-file fix: {err}"
+    );
+    assert!(
+        !err.contains("0 tests found"),
+        "must NOT leak the misleading '0 tests found' message: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}

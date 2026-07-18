@@ -63,3 +63,5 @@
 ; still matches -> 1000 = wasm). Verified Int8/UInt16 fixed, Int64 unchanged, multi-variant no regression,
 ; +1 pin, lib 2029/0. 3rd commit on v-rust-backend's same-file dependent stack (555f5a6a0 sum-payload ->
 ; abadd6d3f Never-family -> aae159893 this), serialized per don't-stack rule. Verify + promote once landed.
+
+; LANDED (corpus-bugfix 2026-07-18): aae159893 (key both == sides off literal target width) — v-rust-backend reported fixed + the narrow-literal regression is pinned on trunk. rust-target (owner-gate). Closed.

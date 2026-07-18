@@ -2608,6 +2608,24 @@ fn collect_used_ops_into(
         // scrutinee + the root continuation are emitted (any op reachable in the tree must be imported) —
         // `collect_cont_ops` recurses switches/guards, inserting each switch's disc + walk ops.
         Core::MatchSum { scrutinee, root } => {
+            // Owned-shell reclaim (see the emit): a non-reusable OWNED boxed-sum scrutinee whose variants all
+            // carry SCALAR (or no) payloads has its shell dropped after the match. This collect pass has no
+            // slots/reusability info, so import `drop` whenever the operand is such an owned all-scalar-payload
+            // boxed sum — a superset of the emit's condition (a declared-but-unused import is harmless; the
+            // emit only emits the drop for a freshly-stashed owned i32-handle shell). NOT for an enum-disc
+            // (bare i32, no shell) nor a compound-payload sum (an arm could borrow a handle → the shell must
+            // NOT be dropped, the UAF v-patterns caught).
+            let scrut_ty = type_of(db, scrutinee);
+            if is_heap_type(&scrut_ty)
+                && !ty_is_enum_disc(db, &scrut_ty)
+                && sum_has_only_scalar_payloads(db, &scrut_ty)
+                && matches!(
+                    heap_operand_ownership(db, scrutinee),
+                    Ok(HandleOwnership::Owned)
+                )
+            {
+                out.insert(OP_DROP);
+            }
             collect_used_ops_into(db, scrutinee, out);
             collect_cont_ops(db, scrutinee, &root, out);
         }
@@ -5483,6 +5501,32 @@ fn variant_payload_ty_at(db: &mut Db, sum: &Ty, disc: u32) -> Option<Ty> {
         td.variants.get(disc as usize)?.ctor?
     };
     crate::infer::payload_ty_at_instantiation(db, ctor, &stripped)
+}
+
+/// Whether EVERY variant of the sum type `sum` carries either NO payload (nullary) or a SCALAR payload
+/// (Int/Bool/Float — copied off, never a heap handle). Used to gate the `MatchSum` owned-shell reclaim: it
+/// is only sound to drop the scrutinee shell after the match when NO arm can BORROW a heap payload handle
+/// out of the shell (a borrowed compound/list/string payload is threaded into the arm body — often a
+/// recursive walk — and OUTLIVES the match block, so freeing the shell would free it mid-use → a UAF, the
+/// HOL-kernel `term-eq (Comb x y)` regression v-patterns caught). If every payload is a scalar or absent,
+/// no handle aliases the shell and the drop is safe. Conservative: an `(Option Int64)` / all-scalar-enum
+/// qualifies (the reported List.at/Map.lookup leak), a compound-payload sum does NOT (left un-dropped — a
+/// residual leak there, never a double-free). This mirrors the SumExpect gate's scalar-payload arm applied
+/// to EVERY variant. Returns false for a non-sum or an unresolvable payload (reject-don't-miscompile).
+fn sum_has_only_scalar_payloads(db: &mut Db, sum: &Ty) -> bool {
+    let stripped = sum.strip_nominal().clone();
+    let Ty::Sum { decl, .. } = &stripped else {
+        return false;
+    };
+    let Some(n) = db.type_decl_by_occ(*decl).map(|td| td.variants.len()) else {
+        return false;
+    };
+    (0..n as u32).all(|disc| match variant_payload_ty_at(db, &stripped, disc) {
+        // No payload (nullary variant) — nothing to borrow.
+        None => true,
+        // A scalar payload is copied off (get-int/get-bool), never a handle aliasing the shell.
+        Some(ty) => matches!(ty.strip_nominal(), Ty::Int(_) | Ty::Bool | Ty::Float(_)),
+    })
 }
 
 /// The type reached by a `Payload` step whose FULL path (from the root, INCLUDING this `Payload`) is
@@ -8523,8 +8567,9 @@ fn emit(
             // call) AND its own scratch would clash with the arm bodies' scratch at the shared `base`,
             // producing an invalid module. Materialize it into a fresh i32 slot (a sum is a heap handle)
             // and record `(scrutinee → slot)` so every re-reference reads the slot (top of `emit`).
-            let (arms_slots, arms_base) = if reusable_handle_src(db, scrutinee, slots) {
-                (slots.clone(), base)
+            let (arms_slots, arms_base, stashed_slot) = if reusable_handle_src(db, scrutinee, slots)
+            {
+                (slots.clone(), base, None)
             } else {
                 // Reserve a FRESH slot for the scrutinee (an i32 heap handle) ABOVE the running
                 // high-water — NOT `base` itself. When this `MatchSum` is an OPERAND of an enclosing op
@@ -8559,8 +8604,35 @@ fn emit(
                 out.push(Lir::LocalSet(slot));
                 let mut m = slots.clone();
                 m.insert(scrutinee, slot);
-                (m, (*high).max(slot + 1))
+                (m, (*high).max(slot + 1), Some((slot, scrut_vt)))
             };
+            // RECLAMATION (the SumExpect owned-shell twin, narrowed after v-patterns caught a UAF): the sum
+            // SHELL is a FRESH OWNED TEMPORARY when the scrutinee is an owned producer (a `List.at`/`Map.
+            // lookup` `Some`/`None`, a constructor, a call) not a borrowed param/kept-local — the arms only
+            // BORROW it (`sum-disc`/`sum-payload`), so nothing else drops it and the shell LEAKS one heap
+            // cell per call (a `(match (List.at (build …) i) …)` in a loop leaks N — value-correct, caught by
+            // the live-objects gate). Drop the shell after the match — but ONLY when NO arm can borrow a HEAP
+            // PAYLOAD HANDLE out of the shell that OUTLIVES the block: `sum_has_only_scalar_payloads` (every
+            // variant carries a scalar or nothing). ⚠ A SCALAR-RESULT gate is NOT sufficient (the bug
+            // v-patterns caught): the HOL-kernel `term-eq (Comb x y)` returns a scalar Bool but its arms bind
+            // `x`/`y` = `sum-payload` HANDLES borrowed from the shell and thread them into a recursive walk
+            // that reads them AFTER the match — freeing the shell there frees `x`/`y` mid-use (OOB/UAF). With
+            // all-scalar payloads no handle aliases the shell, so the drop is safe. A compound-payload sum is
+            // left un-dropped (a residual leak, never a double-free — the conservative floor). Also require: a
+            // freshly-stashed owned scrutinee (a reused param/local is borrowed, left to its owner), a REAL
+            // BOXED SUM (`is_heap_type && !ty_is_enum_disc` — an all-nullary enum is a bare i32 disc with NO
+            // shell + imports no value-heap runtime; its i32 slot width alone doesn't exclude it), and a
+            // non-diverging match.
+            let scrut_ty = type_of(db, scrutinee);
+            let reclaim_shell = !never_diverges
+                && is_heap_type(&scrut_ty)
+                && !ty_is_enum_disc(db, &scrut_ty)
+                && sum_has_only_scalar_payloads(db, &scrut_ty)
+                && matches!(stashed_slot, Some((_, ValType::I32)))
+                && matches!(
+                    heap_operand_ownership(db, scrutinee),
+                    Ok(HandleOwnership::Owned)
+                );
             emit_sum_cont(
                 db,
                 scrutinee,
@@ -8575,6 +8647,13 @@ fn emit(
                 out,
                 TailPos::NonTail,
             )?;
+            if reclaim_shell {
+                let slot = stashed_slot
+                    .expect("reclaim_shell implies a stashed slot")
+                    .0;
+                out.push(Lir::LocalGet(slot)); // [result, shell]
+                out.push(Lir::CallImport(OP_DROP)); // → [result] (reclaim the owned all-scalar-payload sum shell)
+            }
             if never_diverges {
                 out.push(Lir::Unreachable);
             }
@@ -9269,21 +9348,45 @@ fn emit(
                 out,
             )?;
             out.push(Lir::LocalSet(cell_slot));
+            // KNOWN-CLOSURE DEVIRTUALIZATION (S1): if the closure operand folds to a compile-time-visible
+            // `Core::Closure { code, .. }` — the closure\'s CONSTRUCTOR SITE is statically known at this
+            // call (a closure stored in a const variant/record field then applied at full arity, the
+            // ad-hoc-poly dispatch shape; and NOT beta-reduced away because the closure survives as a
+            // runtime value, e.g. it captures state and is applied more than once) — then the funcref table
+            // slot is a compile-time constant, so the runtime indirection (read `code` from the cell +
+            // `call_indirect`) is pure overhead. Emit a DIRECT `call` to the lifted function at that slot
+            // instead: the calling convention is IDENTICAL (`(env=cell, args…)`), only the dispatch changes
+            // from indirect to direct. The cell is still built + passed as env (its captures are read back
+            // by the body\'s `Captured` nodes). This makes an ad-hoc-poly call through a known closure a
+            // direct call the wasm engine can inline, matching the rust backend — which already emits a
+            // direct closure call that rustc/LLVM devirtualizes. Falls back to `call_indirect` for a
+            // genuinely runtime closure whose constructor site is NOT visible here (an unknown `Param` /
+            // variant payload threaded through a recursive driver — the case S2 addresses via specialization).
+            let known_code = match core_of(db, closure) {
+                Core::Closure { code, .. } => Some(code),
+                _ => None,
+            };
             // The lifted function is `(env, args…) -> result`, so push env (param 0) THEN each arg, in
-            // order, before the indirection index. Each arg emits above the cell slot (never reusing it).
+            // order, before the call. Each arg emits above the cell slot (never reusing it).
             out.push(Lir::LocalGet(cell_slot)); // env (the cell)
             for &arg in &args {
                 emit(db, arg, slots, cell_slot + 1, high, scratch_ty, layout, out)?;
             }
-            // …then the indirection index: arr-get(cell, 0) → box-int(code); get-int → the table slot as
-            // an i64; `call_indirect` needs the index as an i32, so narrow it (`i32.wrap_i64`). The code
-            // is a small table slot, so the wrap is exact.
-            out.push(Lir::LocalGet(cell_slot));
-            out.push(Lir::ConstI32(0));
-            out.push(Lir::CallImport(OP_ARR_GET));
-            out.push(Lir::CallImport(OP_GET_INT));
-            out.push(Lir::I32WrapI64);
-            out.push(Lir::CallIndirect(type_index));
+            match known_code {
+                // Devirtualized: the table slot is known, so call the lifted function directly.
+                Some(code) => out.push(Lir::Call(layout.lifted_abs(code))),
+                // Runtime closure: read the indirection index — arr-get(cell, 0) -> box-int(code); get-int
+                // -> the table slot as an i64; `call_indirect` needs an i32, so narrow it. The code is a
+                // small table slot, so the wrap is exact.
+                None => {
+                    out.push(Lir::LocalGet(cell_slot));
+                    out.push(Lir::ConstI32(0));
+                    out.push(Lir::CallImport(OP_ARR_GET));
+                    out.push(Lir::CallImport(OP_GET_INT));
+                    out.push(Lir::I32WrapI64);
+                    out.push(Lir::CallIndirect(type_index));
+                }
+            }
             Ok(())
         }
         // A CAPTURED free-variable read inside a lifted closure body — `arr-get(env, 1 + index)` then

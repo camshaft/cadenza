@@ -1,3 +1,23 @@
+;; ANALYSIS SHARPENED 2026-07-18 (v-inference, _w57): SPEC-MANDATED, not a judgment call.
+;;   type-system.md line 60: "A position that binds a type-valued parameter MUST be a bidirectional-
+;;   checking boundary, at which a type is ... CHECKED against an explicit annotation, RATHER THAN SOLVED
+;;   BY UNIFICATION." So f(Bool, 41) for (def (f (: t Type) (: x t)) x) MUST REJECT (Bool binds the var,
+;;   41 is checked against it) — the current accept (41's Int64 solves the var by unification) VIOLATES
+;;   the spec. This is a CONFORMANCE fix; no operator design ack needed.
+;;   EXACT BOUNDARY (re-verified): g(x: a, y: a) called g(1, true) REJECTS (2 errors) — two siblings share
+;;   a bare var, unification catches the conflict. But f(t: Type, x: t) called f(Bool, 41) ACCEPTS (0
+;;   errors) — the Type-param slot and the sibling var are DISCONNECTED in the scheme (-> Type (-> a a)):
+;;   the first slot is the KIND Type (accepts any type value), 'a' is a separate var only the sibling uses,
+;;   and the passed Bool never binds 'a'. pair(Int64,1,true) already REJECTS correctly (both x AND y use
+;;   the SAME var, so x=1 pins it) — and its message now renders "Int64" not "_" (the cosmetic twin was
+;;   fixed earlier by the subst.apply diagnostic work).
+;;   FIX: at a call binding a (: t Type) param to a concrete type VALUE, UNIFY that reflected type value
+;;   into the scheme var the sibling (: x t) uses — making the type-param slot a checking boundary. Locus:
+;;   compute_def_scheme (infer.rs ~3989) must record the t-binder -> sibling-var linkage (today Type and
+;;   'a' are disconnected slots), and apply_scheme_to_args (~4875) / the collect step-1 unify (~9461) must
+;;   bind the reflected arg value to that var BEFORE unifying the sibling args. Deep but well-scoped +
+;;   spec-mandated. READY TO IMPLEMENT (my next dedicated unit).
+;;
 ;; UPDATE 2026-07-18 (v-inference, _w57): NOW USER-FACING via the landed forall-binder sugar (breaker).
 ;;   `def id(x: forall a. a) = x; id(Bool, 41)` checks rc=0 + runs 42 — the explicit Bool type arg is DEAD
 ;;   (same root as below; forall desugars to (: a Type), so the type arg is a first-class user surface).

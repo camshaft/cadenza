@@ -114,6 +114,32 @@ def find(it, p: Int64 -> Bool) = match it with | Iter.Mk(s, step) => find-drive(
 /// `sum(it)` — total of the elements (fold with +, seeded 0). The canonical fused-pipeline consumer.
 def sum(it) = fold(it, 0, fn(a, x) => a + x)
 
+/// `product(it)` — product of the elements (fold with *, seeded 1; empty → 1).
+def product(it) = fold(it, 1, fn(a, x) => a * x)
+
+/// `nth(it, n)` — the `n`-th element (0-based), or `None` if the iterator is shorter. Drives `n` steps.
+def nth-drive(step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), n: Int64) =
+  match step(s) with
+  | Option.None(_) => Option.None(unit)
+  | Option.Some(p) => (match p with | (x, s2) => if n <= 0 then Option.Some(x) else nth-drive(step, s2, n - 1))
+def nth(it, n) = match it with | Iter.Mk(s, step) => nth-drive(step, s, n)
+
+/// `contains(it, target)` — does the iterator yield `target`? Short-circuits at the first match (so it
+/// terminates on an infinite source that contains the target).
+def contains-drive(step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), target: Int64) =
+  match step(s) with
+  | Option.None(_) => false
+  | Option.Some(p) => (match p with | (x, s2) => if x == target then true else contains-drive(step, s2, target))
+def contains(it, target) = match it with | Iter.Mk(s, step) => contains-drive(step, s, target)
+
+/// `last(it)` — the final element, or `None` for an empty iterator. Drains, tracking the most-recent
+/// element via a `have` flag (so an empty source is `None`, not a bogus 0).
+def last-drive(step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), seen: Int64, have: Bool) =
+  match step(s) with
+  | Option.None(_) => (if have then Option.Some(seen) else Option.None(unit))
+  | Option.Some(p) => (match p with | (x, s2) => last-drive(step, s2, x, true))
+def last(it) = match it with | Iter.Mk(s, step) => last-drive(step, s, 0, false)
+
 /// TESTS ----------------------------------------------------------------------------------------------
 
 @test
@@ -207,5 +233,58 @@ def find-after-map-filter() =
   match find(filter(map(from-list([1, 2, 3, 4]), fn(x) => x * 3), fn(x) => x > 5), fn(x) => x > 0) with
   | Option.None(_) => trap("find should hit 6")
   | Option.Some(v) => if v == 6 then unit else trap("first >5 of *3 is 6")
+
+/// scalar consumers: product / nth / contains / last (all same-state).
+@test
+def product-multiplies() =
+  if product(from-list([1, 2, 3, 4])) == 24 then unit else trap("product 1*2*3*4=24")
+
+@test
+def product-of-empty-is-one() =
+  if product(from-list([])) == 1 then unit else trap("product [] = 1")
+
+@test
+def nth-in-bounds() =
+  match nth(from-list([10, 20, 30]), 1) with
+  | Option.None(_) => trap("nth in-bounds must be Some")
+  | Option.Some(v) => if v == 20 then unit else trap("nth 1 = 20")
+
+@test
+def nth-out-of-bounds-is-none() =
+  match nth(from-list([1, 2]), 9) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("nth past end must be None")
+
+@test
+def nth-after-filter() =
+  match nth(filter(from-list([1, 2, 3, 4, 5, 6]), fn(x) => x > 2), 0) with
+  | Option.None(_) => trap("nth 0 of filtered must be Some")
+  | Option.Some(v) => if v == 3 then unit else trap("first >2 is 3")
+
+@test
+def contains-finds-element() =
+  if contains(from-list([1, 2, 3]), 2) then unit else trap("contains 2")
+
+@test
+def contains-missing-is-false() =
+  if contains(from-list([1, 2, 3]), 9) then trap("should not contain 9") else unit
+
+@test
+def last-of-nonempty() =
+  match last(from-list([5, 6, 7])) with
+  | Option.None(_) => trap("last of non-empty must be Some")
+  | Option.Some(v) => if v == 7 then unit else trap("last = 7")
+
+@test
+def last-of-empty-is-none() =
+  match last(from-list([])) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("last of empty must be None")
+
+@test
+def last-after-map() =
+  match last(map(from-list([1, 2, 3]), fn(x) => x * 10)) with
+  | Option.None(_) => trap("last of mapped must be Some")
+  | Option.Some(v) => if v == 30 then unit else trap("last of *10 is 30")
 
 export { Iter.* }

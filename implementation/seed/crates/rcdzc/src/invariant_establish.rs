@@ -47,6 +47,25 @@
 //! The check-body's PRED is a COPY of the recorded node (the `@invariant` wrapper's PRED stays intact for
 //! `strip_annotations` → `db.invariants`). Runs at load BEFORE `strip_annotations` (wrapper still present) +
 //! `scan_top_level` (the synthesized def scans like hand-written source); all appended nodes are ordinary AST.
+//!
+//! ## Part 2 — the CHECKED CONSTRUCTOR (`__invariant_construct_T`)
+//!
+//! For a single-payload newtype this pass ALSO synthesizes the checked constructor the construct-site establish
+//! enforcement routes to (design §10.2 — ESTABLISH: every construction of `T` must satisfy its invariant, else
+//! TRAP; the (D) run-time path):
+//!
+//! ```text
+//! (def (__invariant_construct_T (: __inv_p U))
+//!   (let ((__inv_v ((. T V) __inv_p))) (if (__invariant_check_T __inv_v) __inv_v (trap "…"))))
+//! ```
+//!
+//! It builds the value ONCE (`__inv_v : T`, properly typed — so `__invariant_check_T`'s `it : T` param and its
+//! auto-unwrap match receive the right type) and yields it or traps. Because it flows through the ordinary
+//! resolve/infer/lower, the newtype erasure of `__inv_v` to its payload is uniform across the value + check-call
+//! arms (no erased-arg subtlety). It is WIRED at `lower_sum_new` (a construction of an `@invariant` newtype
+//! becomes a `Core::Call` to this def, with the raw ctor exempt so the def's own construction is not re-wrapped)
+//! in a follow-up sub-slice; until then it is harmless dead code (an unreferenced def is not emitted). A
+//! non-newtype invariant type (multi-variant sum, record) has no single ctor to wrap here — a later increment.
 
 use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::prelude::{push_atom, push_list};
@@ -58,6 +77,27 @@ fn name(ast: &mut Arenas, n: &str) -> StructId {
 /// The fresh payload-binder name the auto-unwrap introduces — chosen not to collide with a user name
 /// (a `__`-prefixed name the reader would not write; and never `it`, which stays in scope for accessor forms).
 const UNWRAP_BINDER: &str = "__inv_u";
+
+/// The checked-constructor's payload PARAMETER binder — the value the raw construction consumes
+/// (`(def (__invariant_construct_T (: __inv_p U)) …)`). A `__`-prefixed fresh name, no user collision.
+const CONSTRUCT_PARAM: &str = "__inv_p";
+
+/// The checked-constructor's local binding for the constructed value — built once, checked, then yielded or
+/// trapped (`(let ((__inv_v ((. T V) __inv_p))) (if (__invariant_check_T __inv_v) __inv_v (trap)))`).
+const CONSTRUCT_VALUE: &str = "__inv_v";
+
+/// One `@invariant`-annotated type's synthesis plan, collected in a first scan and consumed in a second
+/// (append-only) pass — see [`synthesize`].
+struct Plan {
+    /// The annotated type's name (`Percent`) — names both synthesized defs (`__invariant_check_Percent`,
+    /// `__invariant_construct_Percent`) and the checker's `it : T` param + auto-unwrap ctor pattern.
+    type_name: String,
+    /// For a SINGLE-VARIANT, SINGLE-PAYLOAD newtype, its `(ctor-name, payload-type-occ)` — the ctor + payload
+    /// type the auto-unwrap match and the checked constructor synthesize against. `None` for any other shape.
+    sole_variant: Option<(String, StructId)>,
+    /// The recorded `@invariant` PREDICATE occurrence (over `it`), copied into the checker body.
+    pred: StructId,
+}
 
 /// Deep-copy a predicate subtree, rewriting every bare-name occurrence of `from` to `to` (and re-pushing
 /// other names as fresh occurrences so they resolve in the def's scope). Non-name leaves are shared.
@@ -103,9 +143,11 @@ fn self_destructures_it(ast: &Arenas, node: StructId) -> bool {
 }
 
 /// If `type_decl_tail` (the children of a `(type …)` AFTER the head, i.e. `[NAME, variant…]`) describes a
-/// SINGLE-VARIANT, SINGLE-PAYLOAD newtype `(type T (V U))`, return `(V-name)` — the sole variant's ctor name.
-/// Returns `None` for a nullary variant, a multi-payload variant, a multi-variant sum, or a record.
-fn sole_newtype_variant_name(ast: &Arenas, type_decl_tail: &[StructId]) -> Option<String> {
+/// SINGLE-VARIANT, SINGLE-PAYLOAD newtype `(type T (V U))`, return `(V-name, U-type-occ)` — the sole variant's
+/// ctor name and its single payload TYPE occurrence. Returns `None` for a nullary variant, a multi-payload
+/// variant, a multi-variant sum, or a record. The payload occ is what the construct-def's parameter is typed
+/// against (`(: __inv_p U)`); the name is what the auto-unwrap match + the construct-def ctor reference.
+fn sole_newtype_variant(ast: &Arenas, type_decl_tail: &[StructId]) -> Option<(String, StructId)> {
     // `[NAME, variant]` — exactly one variant after the type name.
     let [_name, variant] = type_decl_tail else {
         return None;
@@ -117,7 +159,7 @@ fn sole_newtype_variant_name(ast: &Arenas, type_decl_tail: &[StructId]) -> Optio
     if items.len() != 2 {
         return None; // nullary (`(V)`) or multi-payload (`(V A B)`) — not a single-payload newtype
     }
-    ast.as_name(items[0]).map(str::to_string)
+    ast.as_name(items[0]).map(|n| (n.to_string(), items[1]))
 }
 
 /// Synthesize a `__invariant_check_<T>` def per `@invariant`-annotated type + append to the top-level items.
@@ -139,9 +181,11 @@ pub(crate) fn synthesize(ast: &mut Arenas) {
     }
 
     // Scan ORIGINAL nodes for `(@ (invariant PRED) (type T …))`. Collect (type-name, sole-newtype-variant?,
-    // PRED). Bounded to the pre-pass length so the appended checker defs are not re-scanned.
+    // PRED). The sole-newtype-variant, when present, is `(ctor-name, payload-type-occ)` — the ctor + payload
+    // type the construct-def synthesizes against. Bounded to the pre-pass length so the appended defs are not
+    // re-scanned.
     let original_len = ast.structure.len() as u32;
-    let mut plans: Vec<(String, Option<String>, StructId)> = Vec::new();
+    let mut plans: Vec<Plan> = Vec::new();
     for i in 0..original_len {
         let id = StructId(i);
         let Some(tail) = ast.as_form(id, "@") else {
@@ -166,30 +210,41 @@ pub(crate) fn synthesize(ast: &mut Arenas) {
         else {
             continue;
         };
-        let sole_variant = sole_newtype_variant_name(ast, &type_tail);
-        plans.push((type_name, sole_variant, pred));
+        let sole_variant = sole_newtype_variant(ast, &type_tail);
+        plans.push(Plan {
+            type_name,
+            sole_variant,
+            pred,
+        });
     }
     if plans.is_empty() {
         return;
     }
 
-    // Build one checker def per plan.
+    // Build the defs per plan: the CHECKER (`__invariant_check_T`, Part 1) and — for a single-payload newtype —
+    // the CHECKED CONSTRUCTOR (`__invariant_construct_T`, Part 2), the callee the construct-site establish check
+    // will route to.
     let mut new_defs: Vec<StructId> = Vec::with_capacity(plans.len());
-    for (type_name, sole_variant, pred) in plans {
+    for Plan {
+        type_name,
+        sole_variant,
+        pred,
+    } in plans
+    {
         // CHECK-BODY: for a single-payload newtype whose predicate does NOT self-destructure `it`,
         // AUTO-UNWRAP — `(match it (((. T V) __inv_u) PRED[it:=__inv_u]))`. If PRED already destructures `it`
         // (or the type is not a single-payload newtype), use the predicate over `it` directly.
         let auto_unwrap = sole_variant
             .as_ref()
             .is_some_and(|_| !self_destructures_it(ast, pred));
-        let check_body = match sole_variant {
-            Some(variant) if auto_unwrap => {
+        let check_body = match &sole_variant {
+            Some((variant, _)) if auto_unwrap => {
                 let body_pred = copy_rewrite(ast, pred, "it", UNWRAP_BINDER);
                 // pattern `(. T V)` — the qualified ctor; binds the payload to `__inv_u`.
                 let ctor_pat = {
                     let dot = name(ast, ".");
                     let ty = name(ast, &type_name);
-                    let v = name(ast, &variant);
+                    let v = name(ast, variant);
                     push_list(ast, vec![dot, ty, v])
                 };
                 let payload = name(ast, UNWRAP_BINDER);
@@ -215,6 +270,82 @@ pub(crate) fn synthesize(ast: &mut Arenas) {
         };
         let def_head = name(ast, "def");
         new_defs.push(push_list(ast, vec![def_head, sig, check_body]));
+
+        // CHECKED CONSTRUCTOR (Part 2), single-payload newtype only for now: the callee the construct-site
+        // establish check routes a `(T.V x)` construction to, so a value that VIOLATES the invariant TRAPS at
+        // construction rather than escaping (the (D) run-time establish enforcement — design §10.2). Shape:
+        //
+        // ```text
+        // (def (__invariant_construct_T (: __inv_p U))
+        //   (let ((__inv_v ((. T V) __inv_p))) (if (__invariant_check_T __inv_v) __inv_v (trap "…"))))
+        // ```
+        //
+        // It builds the value ONCE (`__inv_v : T`, a properly-typed nominal — so `__invariant_check_T`'s
+        // `it : T` param + its auto-unwrap match are fed the right type), checks it, and yields it or traps.
+        // Because it flows through the ordinary resolve/infer/lower like a hand-written def, the newtype
+        // erasure of `__inv_v` back to its payload is uniform across the value + the check-call arms (no
+        // erased-arg subtlety). WIRED into `lower_sum_new` in the follow-up sub-slice; harmless dead code
+        // until then (an unreferenced def is not emitted). A non-newtype (multi-variant/record) invariant type
+        // has no single ctor to wrap here — its checked-construct path is a later increment.
+        if let Some((variant, payload_ty)) = sole_variant {
+            let construct_sig = {
+                let fn_name = name(ast, &format!("__invariant_construct_{type_name}"));
+                // `(: __inv_p U)` — the payload param, typed against the newtype's payload occ (copied so it
+                // resolves in the def's own scope, like every other synthesized type reference here).
+                let param = {
+                    let colon = name(ast, ":");
+                    let p = name(ast, CONSTRUCT_PARAM);
+                    let ty = copy_rewrite(ast, payload_ty, "", "");
+                    push_list(ast, vec![colon, p, ty])
+                };
+                push_list(ast, vec![fn_name, param])
+            };
+            // `((. T V) __inv_p)` — the raw construction (the very shape a source `(T.V x)` desugars to).
+            let raw_construct = {
+                let ctor = {
+                    let dot = name(ast, ".");
+                    let ty = name(ast, &type_name);
+                    let v = name(ast, &variant);
+                    push_list(ast, vec![dot, ty, v])
+                };
+                let arg = name(ast, CONSTRUCT_PARAM);
+                push_list(ast, vec![ctor, arg])
+            };
+            // `(if (__invariant_check_T __inv_v) __inv_v (trap "…"))`.
+            let check_and_yield = {
+                let call = {
+                    let check_fn = name(ast, &format!("__invariant_check_{type_name}"));
+                    let v = name(ast, CONSTRUCT_VALUE);
+                    push_list(ast, vec![check_fn, v])
+                };
+                let yield_v = name(ast, CONSTRUCT_VALUE);
+                let trap_call = {
+                    let trap_head = name(ast, "trap");
+                    let msg = push_atom(
+                        ast,
+                        Leaf::Str(format!(
+                            "@invariant violated: a constructed `{type_name}` does not satisfy its invariant"
+                        )),
+                    );
+                    push_list(ast, vec![trap_head, msg])
+                };
+                let if_head = name(ast, "if");
+                push_list(ast, vec![if_head, call, yield_v, trap_call])
+            };
+            // `(let ((__inv_v ((. T V) __inv_p))) <check-and-yield>)`.
+            let construct_body = {
+                let v_binder = name(ast, CONSTRUCT_VALUE);
+                let bind = push_list(ast, vec![v_binder, raw_construct]);
+                let bindings = push_list(ast, vec![bind]);
+                let let_head = name(ast, "let");
+                push_list(ast, vec![let_head, bindings, check_and_yield])
+            };
+            let def_head = name(ast, "def");
+            new_defs.push(push_list(
+                ast,
+                vec![def_head, construct_sig, construct_body],
+            ));
+        }
     }
 
     // Rebuild the root, appending the checker defs after the existing items (ids stay stable — append-only).
