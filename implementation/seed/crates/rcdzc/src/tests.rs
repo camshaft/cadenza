@@ -3962,6 +3962,62 @@ fn match_over_an_owned_all_scalar_payload_sum_shell_leaves_no_live_objects() {
     }
 }
 
+/// MATCH over an owned COMPOUND-payload sum shell whose arm only BORROWS the payload child leaves NO live
+/// objects — the compound-payload companion of `match_over_an_owned_all_scalar_payload_sum_shell_…`. When
+/// the kept-`MatchSum`-wrapper materializes a computed scrutinee into one slot (the fix for the pattern-
+/// binder exponential — a recursive-call scrutinee's binders read ONE slot instead of re-emitting the
+/// call), an OWNED compound-payload shell must still be reclaimed after the match. The original shell-drop
+/// gate was `sum_has_only_scalar_payloads` (a compound shell was left un-dropped — the conservative floor
+/// against the v-patterns UAF where an arm borrows a child handle that outlives the block). This widens it:
+/// a compound shell is deep-`drop`'d when NO arm MOVES a child out (`!sum_payload_child_escapes_cont`) — a
+/// BORROW-ONLY arm (here `List.len xs`, retaining nothing) lets the shell keep sole ownership of its child,
+/// so one deep drop reclaims shell + child cleanly. Here `probe` builds a fresh `Mk(List)` (owned), matches
+/// it binding `xs`, and only reads `List.len xs`; `main` loops so a per-iteration leak accumulates. After
+/// the run `live-objects` must be 0 (was ~2×iterations — the un-reclaimed Mk shell + its list per call).
+///
+/// The CONSUMED-child case (an arm threading the payload into a call/constructor — the `bounding-box`
+/// `aabbr-union` shape) is deliberately NOT reclaimed here (a deep drop would double-free the moved-out
+/// child); it stays a residual leak pending the dup-consumed-children increment, and is covered by its own
+/// probe once that lands. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn match_over_an_owned_compound_payload_borrow_only_shell_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "debug-counters runtime not in the store (run `cargo xtask build`); skipping compound-shell leak probe"
+        );
+        return;
+    };
+    // `probe` builds a fresh owned `Mk(List Int64)`, matches it binding `xs`, reads ONLY `List.len xs` (a
+    // BORROW — retains nothing). `main` loops 4×, so an un-reclaimed shell would leave ~8 cells (the Mk box
+    // + its list per call). With the compound-borrow-only shell reclaim, live-objects nets to 0.
+    let src = "(module m \
+                 (type Box (Mk (List Int64))) \
+                 (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
+                     (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+                 (def (probe (: n Int64)) (match (Mk (build 0 n (list))) ((Mk xs) ((. List len) xs)))) \
+                 (def (loop (: j Int64) (: n Int64) (: tot Int64)) \
+                     (if (< j n) (loop (+ j 1) n (+ tot (probe 3))) tot)) \
+                 (def (main) (loop 0 4 0)) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(12),
+        "4 iterations each add List.len 3 → 12 (the borrow-only compound match computes correctly)"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "compound-shell leak: the owned Mk(List) shells + their lists are still live after the borrow-only \
+         match (expected 0 — MatchSum must deep-drop an owned compound shell whose arm only BORROWS its \
+         payload child; was ~8, the un-reclaimed shell+list per loop iteration)"
+    );
+}
+
 /// COMPOUND EQUALITY over a runtime FLOAT LEAF follows the canonical byte form — the compound analogue of
 /// the scalar `Core::FloatCompare` fix, with NO extra machinery: `box-float` canonicalizes every NaN to
 /// the one quiet-NaN on construct (and keeps ±0.0 distinct), so a float in a compound already has the
@@ -40402,8 +40458,12 @@ mod match_engine {
             "a chained Unit.in (second operand is a bare number) is a coded CDZ0501, not an uncoded decline"
         );
         assert!(
-            err.message.contains("converts a QUANTITY") && err.message.contains("Qty.of"),
-            "the message explains Unit.in converts a quantity + names the Qty.of-rewrap repair: {}",
+            err.message.contains("converts a QUANTITY")
+                && err.message.contains("which is not a quantity")
+                // a NUMERIC operand (this chained result is a bare Rational) keeps the "conversion
+                // unwrapped it — re-wrap with Qty.of" chain hint; the Bool sibling below must NOT.
+                && err.message.contains("Qty.of"),
+            "the message explains Unit.in converts a quantity + names the Qty.of-rewrap repair (numeric operand): {}",
             err.message
         );
         assert!(
@@ -40424,6 +40484,36 @@ mod match_engine {
         assert!(
             rendered.contains("127/50"),
             "the Qty.of-rewrap repair converts 1 inch → cm = 127/50 exactly: {rendered}"
+        );
+    }
+
+    #[test]
+    fn unit_in_of_a_non_numeric_operand_names_the_type_without_the_self_contradictory_plain_number()
+    {
+        // Sibling of the Qty.value fix (Copilot PR#602 pattern), found by a proactive infer.rs audit: the
+        // Unit.in-non-quantity CDZ0501 message ALSO hardcoded "— a plain number, not a quantity", firing for
+        // ANY non-quantity operand → a Bool operand printed the self-contradictory "a Bool — a plain number".
+        // Now: names the real type + "which is not a quantity" generally; the "conversion unwrapped it / chain
+        // re-wrap with Qty.of" hint is appended ONLY for a NUMERIC operand (the chained-Unit.in mistake, pinned
+        // by the test above). This pins the NON-numeric path.
+        let src = "(do (def (main) ((. Unit in) ((. Unit of) #\"meter\") true)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("Unit.in of a Bool must reject");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0501"),
+            "coded CDZ0501: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("a Bool") && err.message.contains("which is not a quantity"),
+            "names the operand's real type (Bool) + not-a-quantity: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("plain number") && !err.message.contains("Qty.of"),
+            "a NON-numeric operand must NOT print 'a plain number' (self-contradictory) nor the numeric-only Qty.of chain hint: {}",
+            err.message
         );
     }
 
@@ -42724,18 +42814,15 @@ mod diagnostics {
                 diags.iter().map(|d| &d.message).collect::<Vec<_>>()
             );
         }
-        // A GENUINELY well-typed compound comparison (same-type tuples) is NOT mismatched, so no "different
-        // types" reject accompanies it — its honest not-yet-built heap-walk decline must survive at compile.
-        let ok = "(module m (def (g (: a (Tuple Int64 Int64)) (: b (Tuple Int64 Int64))) \
-                   (if (< a b) 1 2)) (export g))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(ok))).expect_err(
-            "a well-typed compound comparison still declines (heap walk not yet built)",
-        );
-        assert!(
-            err.message.contains("needs a heap walk") && err.code.is_none(),
-            "the honest decline survives when there is no mismatch to defer to: {}",
-            err.message
-        );
+        // A GENUINELY well-typed compound comparison (same-type tuples) is NOT mismatched, and — since the
+        // blessed compound ORDERING landed (`value-cmp`, slice 2) — it now COMPILES to the lexicographic heap
+        // walk rather than declining. The "needs a heap walk (not yet built)" decline is GONE: a compound `<`
+        // over orderable leaves is built, not refused. (Build the tuples internally so the export is a scalar
+        // bool-as-int — a compound PARAMETER still can't cross the boundary, an orthogonal boundary limit.)
+        let ok = "(module m (def (mk (: n Int64)) (tuple 1 n)) \
+                   (def (main) (if (< (mk 2) (mk 3)) 1 2)) (export main))";
+        crate::compile::compile_component(&crate::codec::encode(&parse(ok)))
+            .expect("a well-typed compound comparison now COMPILES (compound ordering is built, not declined)");
         // NO OVER-REACH: two SAME-kind compounds that differ internally (two records, two tuples of
         // different arity) are NOT relabeled a "kind boundary" (that guard fires only across DISTINCT
         // kinds). The comparison-arg check now names the readable structural DELTA (the tuple arity), not

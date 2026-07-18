@@ -260,35 +260,60 @@
   (call   main)
   (output (: true Bool)))
 
-; --- Runtime compound ORDERING: `<`/`<=`/`>`/`>=` over a runtime compound DECLINES (no blessed order) -----
+; --- Runtime compound ORDERING: `<`/`<=`/`>`/`>=` over a runtime compound COMPUTES (blessed lexicographic) --
 ; The cases above pin runtime structural EQUALITY over a compound (the `value-eq`/`champ_eq` heap walk).
-; ORDERING is a SEPARATE obligation: `<` on two runtime compounds needs a three-way lexicographic heap walk,
-; and — unlike equality, which is defined structurally for EVERY value — the spec blesses a total ORDER only
-; for the types that name one: Int (total), Float (IEEE partial, #Float-Ordering), and Symbol/String (content-
-; lexicographic UTF-8, 17-symbols.sexp §order). A plain LIST/tuple/sum has NO blessed order in the spec, so
-; `(< listA listB)` is UNIFORMLY DECLINED — the reference interpreter (`run-ml`), the Rust backend, AND the
-; wasm backend all refuse it ("comparison of a compound value needs a heap walk (not yet built)", lower.rs
-; ~17244, a TARGET-INDEPENDENT Core-IR decline shared by every backend — NOT a wasm-only divergence). This
-; grades that as a sound reject-don't-miscompile boundary: emitting an INVENTED element-wise order (which the
-; spec never blessed) would be worse than declining. Contrast runtime Symbol/String ordering, which the spec
-; DOES bless and both backends compute. A future ruling that blessed a list/tuple lexicographic order — plus
-; the heap walk to emit it — would flip this `(declines)` to an executing witness; until then, refusing is
-; correct. (Const-list ordering also declines here identically — it does not fold to a bool the way const
-; SCALAR ordering does, because there is no order to fold.)
-(case "runtime list ordering declines uniformly — the spec blesses no list order"
-  (doc    "`(< (mk 2) (mk 3))` where `mk` builds a runtime `(list 1 n)` asks for a THREE-WAY order on two
-           runtime lists. The spec blesses a total order only for Int/Float/Symbol/String — a plain list has
-           none — so all three legs (reference `run-ml`, Rust backend, wasm backend) DECLINE rather than
-           invent an element-wise order the language never defined. Contrast runtime compound EQUALITY (cases
-           above), which IS defined for every value and computes, and runtime Symbol/String ordering, which
-           the spec blesses. Grades the compound-ordering decline as an intentional, tracked reject-don't-
-           miscompile boundary: it is UNIFORM across backends (not a wasm-vs-rust divergence), and would flip
-           to a witness only if a list/tuple order were blessed and its lexicographic heap walk built.")
+; ORDERING is the total-order companion, now BLESSED for compounds (operator ruling 2026-07-18; core-
+; semantics.md #Compound Ordering Is Lexicographic): a tuple/record/list/sum whose components each offer a
+; total order offers one too, LEXICOGRAPHICALLY — a tuple/record by field in canonical order, a list element-
+; wise with a proper prefix LESS than its extension, a sum by discriminant-as-canonical-byte-form then payload.
+; The runtime `value-cmp(a, b, desc)` op (a descriptor-guided three-way walk with the blessed per-leaf orders)
+; emits it on wasm; the Rust backend's native derived `Ord` gives the same lexicographic order. A component
+; whose leaf offers no total order — a FLOAT (IEEE partial, §319), a Bytes/Char/Set/Map (no blessed order) —
+; makes the compound UN-orderable, so such a compound still declines (the reject-don't-miscompile carve-out).
+(case "a runtime list orders lexicographically by its elements"
+  (doc    "`(< (mk 2) (mk 3))` where `mk` builds a runtime `(list 1 n)` compares two runtime lists element-
+           wise: first elements equal (1=1), second decides (2<3) → true → 1. Pins runtime LIST ordering via
+           the blessed lexicographic order (core-semantics.md #Compound Ordering Is Lexicographic) — the
+           runtime `value-cmp` heap walk on wasm, native `Vec` `Ord` on rust, both agreeing. Was a uniform
+           decline before the order was blessed.")
   (input  (do
             (def (mk (: n Int64)) (list 1 n))
             (def (main) (if (< (mk 2) (mk 3)) 1 0))
             (export main)))
-  (declines))
+  (output (: 1 Int64)))
+
+(case "a runtime list that is a proper prefix orders less than its extension"
+  (doc    "The prefix rule: a list that is a proper PREFIX of another compares LESS (core-semantics.md
+           #Compound Ordering Is Lexicographic — shorter-is-less on a common prefix). `(mk true)` = `(list 1)`,
+           `(mk false)` = `(list 1 2)`; `[1] < [1,2]` → true → 1. Pins the length tiebreak of the runtime
+           list-ordering walk, distinct from the first-differing-element case above.")
+  (input  (do
+            (def (mk (: short Bool)) (if short (list 1) (list 1 2)))
+            (def (main) (if (< (mk true) (mk false)) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a runtime tuple orders lexicographically by field"
+  (doc    "`(tuple 1 n)` compared by field in order: `(1,2) < (1,3)` — first field equal, second decides →
+           true → 1. Pins runtime TUPLE ordering (the blessed lexicographic order over a fixed-arity product),
+           the `value-cmp` walk on wasm + native tuple `Ord` on rust.")
+  (input  (do
+            (def (mk (: n Int64)) (tuple 1 n))
+            (def (main) (if (< (mk 2) (mk 3)) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a runtime sum orders by discriminant then payload"
+  (doc    "A sum orders by its VARIANT DISCRIMINANT first (as the canonical byte form encodes it — declaration
+           order), then by payload within the same variant. `type Ord2 = A Int64 | B Int64`; `(A 9) < (B 0)` →
+           true (variant A's disc < B's, payload ignored) → 1. Pins runtime SUM ordering, the discriminant-
+           then-payload rule of the blessed compound order.")
+  (input  (do
+            (type Ord2 (A Int64) (B Int64))
+            (def (mk (: pick Bool) (: v Int64)) (if pick (Ord2.A v) (Ord2.B v)))
+            (def (main) (if (< (mk true 9) (mk false 0)) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
 
 (case "runtime Bytes ordering declines uniformly — the spec blesses no Bytes order"
   (doc    "`(< (mk 2) (mk 3))` where `mk` builds a runtime `(Bytes.of (list 1 n))` asks for a three-way order

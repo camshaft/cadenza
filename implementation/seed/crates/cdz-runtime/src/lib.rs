@@ -5154,6 +5154,33 @@ impl Guest for Component {
         let doc = op_value_encode_form(Handle::from_u32(v), &bytes).unwrap_or_default();
         alloc(Vec::new(), doc).to_u32()
     }
+    // Value-form COMPARE (index 86) — the blessed three-way order over two runtime compound values of the
+    // same type, guided by the compiler-baked shape `desc` (read exactly as `value-encode` reads it). BORROWS
+    // `a`, `b` (an inspector — the caller owns their release) and `desc` (a constant). Returns -1/0/1
+    // (Less/Equal/Greater) or the sentinel 2 when the type offers no total order or the descriptor is
+    // malformed (the compiler declines ordering for a non-orderable type, so 2 is a defensive not-reached).
+    fn value_cmp(a: u32, b: u32, desc: u32) -> i32 {
+        let desc_h = Handle::from_u32(desc);
+        let n = op_bytes_len(desc_h);
+        let mut bytes = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            bytes.push(op_bytes_get(desc_h, i) as u8);
+        }
+        let Some(descriptor) = decode_descriptor(&bytes) else {
+            return 2; // malformed descriptor — unordered sentinel
+        };
+        match value_cmp_shaped(
+            &descriptor,
+            Handle::from_u32(a),
+            Handle::from_u32(b),
+            descriptor.root,
+        ) {
+            Some(core::cmp::Ordering::Less) => -1,
+            Some(core::cmp::Ordering::Equal) => 0,
+            Some(core::cmp::Ordering::Greater) => 1,
+            None => 2, // a non-orderable shape (float/bytes/set/map leaf) — unordered sentinel
+        }
+    }
     // `set-to-list(s, desc)` (index 83) — a SET's elements as a `List a` in canonical element-value order,
     // and `map-to-list(m, desc)` (index 84) — a MAP's entries as a `List (Tuple k v)` in canonical KEY
     // order. Both BORROW their collection + the compiler-baked shape `desc` (a Bytes handle read the same
@@ -5691,7 +5718,6 @@ enum CmpTask {
 /// discriminant then payload, lists element-wise with a proper prefix LESS than its extension. Iterative
 /// (an explicit `CmpTask` stack — wasm-safe, no unbounded native recursion over deep data, like
 /// `champ_key_cmp`); the first non-`Equal` leaf/length decides and the walk returns immediately.
-#[allow(dead_code)]
 fn value_cmp_shaped(
     desc: &Descriptor,
     a: Handle,

@@ -1739,6 +1739,46 @@ fn a_compound_param_test_under_a_requires_or_ensures_wrapper_runs() {
     );
 }
 
+/// A compound-param `@test` with `@requires` written in the NATURAL precondition-first order — `@requires`
+/// OUTER, `@test` inner (`(@ (requires Q) (@ test (def…)))`) — must ALSO synthesize its `-gen` wrapper and
+/// run. REGRESSION: `plan_for_item` used to require the OUTERMOST annotation be `test`/`exhaustive`, so an
+/// outer `@requires` returned None → no wrapper → the compound param hit the export boundary and ABORTED THE
+/// WHOLE FILE (`type (List Int64) has no component boundary representation`, killing sibling tests). The peel
+/// now scans the whole annotation stack for a `test`/`exhaustive` marker in ANY order. A permissive
+/// `@requires(0 <= len)` (always true) → the property passes its trials. Store-guarded (compound heap value).
+#[test]
+fn a_requires_outer_test_inner_compound_synthesizes_and_runs() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — a compound generator builds a heap value"
+        );
+        return;
+    }
+    let d = dir("requires-outer-order");
+    // `@requires` OUTER, `@test` inner — the natural precondition-first spelling. Permissive pre (always true).
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do (@ (requires (<= 0 (List.len xs))) \
+               (@ test (def (p (: xs (List Int64))) (if (<= 0 (List.len xs)) unit (trap \"neg\"))))) \
+           (@ test (def (sibling) (if (= 1 1) unit (trap \"s\")))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--trials", "8"]);
+    assert!(
+        ok,
+        "a @requires-OUTER compound test synthesizes its wrapper + runs (no boundary abort): {stdout}{stderr}"
+    );
+    assert!(
+        !stderr.contains("no component boundary representation"),
+        "the outer-@requires ordering must NOT abort the file at the compound boundary: {stderr}"
+    );
+    assert!(
+        stdout.contains("PASS p-gen (8 trials)") && stdout.contains("PASS sibling"),
+        "the outer-@requires compound property runs AND its sibling runs (no file abort): {stdout}"
+    );
+}
+
 // NOTE: the two TESTED-tier `@test @ensures` integration tests (a true postcondition passes over trials; a
 // false one fails with a counterexample) MOVED OUT of this file in the `@ensures`-ownership lockstep. `@ensures`
 // enforcement — bare AND `@test`-stacked — is now v-verification's `verify_enforce::enforce` pass (it rewrites a

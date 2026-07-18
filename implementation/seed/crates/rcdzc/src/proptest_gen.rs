@@ -257,40 +257,43 @@ fn plan_for_item(
     // `@exhaustive` def gets a wrapper too (else its compound param declines at the export boundary,
     // aborting the whole file); the wrapper carries the `@exhaustive` marker forward so the runner reports
     // it (a compound domain is unbounded → the runner declines it as not-exhaustively-enumerable).
-    let ann = ast.as_form(item, "@")?;
-    let (&name_occ, &inner) = (ann.first()?, ann.get(1)?);
-    let ann_name = ast.as_name(name_occ)?;
-    if ann_name != "test" && ann_name != "exhaustive" {
+    // Peel the ANNOTATION STACK down to the `(def …)`, in ANY order, requiring a `test`/`exhaustive` marker
+    // SOMEWHERE in the stack. The stack is one or more nested `(@ HEAD INNER)` layers:
+    //   • `@exhaustive @test def` → `(@ exhaustive (@ test (def…)))`;
+    //   • `@test @requires(Q) def` → `(@ test (@ (requires Q) (def…)))` — @test OUTER (verify_enforce runs
+    //     before this pass and LEAVES the `(@ (requires|ensures …) …)` wrapper so strip records the predicate);
+    //   • `@requires(Q) @test def` → `(@ (requires Q) (@ test (def…)))` — @requires OUTER, the NATURAL
+    //     precondition-first spelling. This ordering must ALSO synthesize the wrapper, else a compound-param
+    //     def under an outer @requires hits the export boundary and ABORTS THE WHOLE FILE.
+    // A peelable layer's head is `test`/`exhaustive` (bare name) OR a call-style `(requires …)`/`(ensures …)`.
+    // Track whether a `test`/`exhaustive` marker was seen (and whether it was `exhaustive`), and record EVERY
+    // annotation node so `synthesize` neutralizes them (else strip_annotations re-records the compound def as
+    // a test). Anything else (an unknown annotation) stops the peel — the def underneath then isn't ours.
+    let mut node = item;
+    let mut nested_anns: Vec<StructId> = Vec::new();
+    let mut saw_test = false;
+    let mut exhaustive = false;
+    while let Some(layer) = ast.as_form(node, "@") {
+        let &head = layer.first()?;
+        if ast.as_name(head) == Some("test") {
+            saw_test = true;
+        } else if ast.as_name(head) == Some("exhaustive") {
+            saw_test = true;
+            exhaustive = true;
+        } else if ast.as_form(head, "requires").is_none() && ast.as_form(head, "ensures").is_none()
+        {
+            break; // an unknown annotation head — not a peelable test/verification layer
+        }
+        nested_anns.push(node);
+        node = *layer.get(1)?;
+    }
+    // Must have found a `test`/`exhaustive` marker somewhere in the stack (else not a property test we own).
+    if !saw_test {
         return None;
     }
-    let exhaustive = ann_name == "exhaustive";
-    // The inner may itself be one or more STACKED annotations before the `(def …)`:
-    //   • `@exhaustive @test def` → `(@ exhaustive (@ test (def…)))` — a nested `@test`;
-    //   • `@test @requires(Q) def` / `@test @ensures(Q) def` → `(@ test (@ (requires Q) (def…)))` — a
-    //     verification wrapper whose inner-`@` head is a call-style `(requires Q)`/`(ensures Q)` LIST, not a
-    //     bare name. verify_enforce runs BEFORE this pass and rewrites such a def's BODY in place but LEAVES
-    //     the `(@ (requires|ensures …) …)` wrapper (so strip_annotations still records the predicate), so a
-    //     COMPOUND-param def under a @requires/@ensures wrapper must be peeled here too or its `-gen` wrapper
-    //     is never synthesized (→ the compound param declines at the boundary).
-    // Peel every such layer to reach the `(def …)`, remembering each MIDDLE node so `synthesize` neutralizes
-    // it (else strip_annotations re-records the compound def as a test). A single annotation is the common
-    // case (`inner` is already the def, no peel).
-    let mut inner = inner;
-    let mut nested_anns: Vec<StructId> = Vec::new();
-    while let Some(nested) = ast.as_form(inner, "@") {
-        let &head = nested.first()?;
-        // A peelable layer's head is `test`/`exhaustive` (bare name) OR a call-style `(requires …)`/
-        // `(ensures …)` application. Anything else (already a `(def …)`, or an unknown annotation) stops.
-        let peelable = ast.as_name(head) == Some("test")
-            || ast.as_name(head) == Some("exhaustive")
-            || ast.as_form(head, "requires").is_some()
-            || ast.as_form(head, "ensures").is_some();
-        if !peelable {
-            break;
-        }
-        nested_anns.push(inner);
-        inner = *nested.get(1)?;
-    }
+    // `nested_anns` now holds EVERY `@` layer (outermost-first); `node` is the `(def …)`. The OUTERMOST layer
+    // is `item` itself (neutralized by `synthesize` rewriting it to the def); the rest are the middle nodes.
+    let inner = node;
     // INNER must be `(def SIG BODY…)`.
     let def_tail = ast.as_form(inner, "def")?;
     let &sig = def_tail.first()?;
