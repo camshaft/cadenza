@@ -1,0 +1,83 @@
+/// examples-profiles.cdz — worked CAD models showcasing the P-D 2-D PROFILE + EXTRUDE/REVOLVE + PATH/SPLINE
+/// capability (operator: "build out the CAD functionality more with splines and paths"). Each lifts a 2-D
+/// cross-section into a 3-D `Solid`:
+///   • `extrude(profile, height)` — a prism (profile × height along +z)
+///   • `revolve(profile, degrees)` — a lathe/sweep about the y-axis
+/// with profiles built from `Rect`/`Circle` or an arbitrary `Path` (line + cubic-Bézier segments, the
+/// rsolid-matched builder surface). Everything is EXACT Rational: a spline's control points are exact; the
+/// mesh driver samples the curve to a Rational polygon at a chosen segment count (float only at the mesh
+/// edge, exactly like `Circle`/`Sphere` tessellation). The bounding-box of a `PathProfile` uses the control
+/// hull (over-approximating a curve safely, threading the cursor for relative segments).
+///
+/// NUMERIC MODE: `@!default-fraction Rational` so a bare `n/d` dimension is an exact Rational.
+@!default-fraction Rational
+
+import { Solid, Profile, Path } from "exact"
+import { path-start, line-to, line-by, cubic-to, v2, bounding-box, aabbr-size, v3r, v3r-eq } from "exact"
+
+/// ---- ergonomic profile/lift helpers (thin wrappers, matching the helpers.cdz style) ------------------
+
+/// Extrude a profile straight up by a full height (a prism).
+def extrude(p: Profile(Rational), height: Rational) = Solid.ExtrudeLinear(p, height)
+/// Revolve a profile about the y-axis by `degrees`.
+def revolve(p: Profile(Rational), degrees: Rational) = Solid.Revolve(p, degrees)
+/// A rectangular profile of full (w, h).
+def rect(w: Rational, h: Rational) = Profile.Rect(v2(w, h))
+/// A circular profile of the given radius.
+def disc(r: Rational) = Profile.Circle(r)
+/// Close a path into a fillable profile.
+def outline(p: Path(Rational)) = Profile.PathProfile(p)
+
+/// ---- worked models ----------------------------------------------------------------------------------
+
+/// A rectangular PLINTH — a 40×20 profile extruded 10 tall (a prism). The simplest extrude showcase.
+def plinth() = extrude(rect(40 / 1, 20 / 1), 10 / 1)
+
+/// A round DISC/washer stock — a radius-15 circular profile extruded 3 tall (a short cylinder, via extrude
+/// of a circle rather than the `Cylinder` primitive — shows the profile path reaches the same geometry).
+def disc-stock() = extrude(disc(15 / 1), 3 / 1)
+
+/// A REVOLVED bead — a small radius-4 disc, offset in x, swept a full 360° about the y-axis to sweep out a
+/// torus-like ring. Shows revolve of a profile (the lathe operation).
+def bead() = revolve(rect(4 / 1, 2 / 1), 360 / 1)
+
+/// A SPLINE part — an "arch"/rounded-fin profile drawn with a straight base + a cubic Bézier curved top,
+/// then extruded to a thin fin. The curved outline is the payoff of the path/spline layer: the control
+/// points are exact Rationals, the curve is sampled at the mesh edge. Base: (0,0)→(8,0); then a cubic up
+/// and back to the start via controls at (8,10) and (0,10) — a smooth arch. Extruded 2 thick.
+def arch-fin() =
+  let profile = cubic-to(line-to(path-start(), v2(8 / 1, 0 / 1)), v2(0 / 1, 0 / 1), v2(8 / 1, 10 / 1), v2(0 / 1, 10 / 1)) in
+  extrude(outline(profile), 2 / 1)
+
+/// ---- @test suite: pin the extents (the meshable geometry is exercised by the native cdz-cad driver) ----
+
+@test
+def plinth-box-is-the-prism-extent() =
+  // rect(40, 20) extruded 10 → a 40×20×10 prism.
+  if v3r-eq(aabbr-size(bounding-box(plinth())), v3r(40 / 1, 20 / 1, 10 / 1)) then unit
+  else trap("plinth is a 40×20×10 prism")
+
+@test
+def disc-stock-box-is-diameter-by-height() =
+  // disc(15) extruded 3 → box Ø30 × 3 (the circle fills [-15,15]²).
+  if v3r-eq(aabbr-size(bounding-box(disc-stock())), v3r(30 / 1, 30 / 1, 3 / 1)) then unit
+  else trap("disc-stock is Ø30 × 3")
+
+@test
+def bead-revolve-meshes-a-finite-solid() =
+  // a revolved rect sweeps a finite ring; pin its box is finite + well-formed (the conservative full-sweep
+  // envelope: rect half-extent (2,1) → x/z = ±2, y = ±1 → box (4, 2, 4)).
+  if v3r-eq(aabbr-size(bounding-box(bead())), v3r(4 / 1, 2 / 1, 4 / 1)) then unit
+  else trap("revolved rect(4,2) envelope is (4, 2, 4)")
+
+@test
+def arch-fin-spline-box-spans-the-control-hull() =
+  // the arch profile reaches x=8 and y=10 (the cubic's controls). `path-half-extent` is the MAX-ABS over the
+  // reached points (8, 10) — a Path isn't origin-centred like Rect/Circle, so treating the reach as a ±half-
+  // extent gives a symmetric enclosing box [-8,8]×[-10,10]: full (16, 20), extruded 2 → box (16, 20, 2). This
+  // OVER-approximates safely (the true arch sits in the +x/+y quadrant, inside the box) — the sound-not-tight
+  // discipline (like revolve's full-sweep envelope). A tight off-center box would need min+max, not just max-abs.
+  if v3r-eq(aabbr-size(bounding-box(arch-fin())), v3r(16 / 1, 20 / 1, 2 / 1)) then unit
+  else trap("arch-fin spline box is the symmetric control-hull envelope (16, 20, 2)")
+
+export { extrude, revolve, rect, disc, outline, plinth, disc-stock, bead, arch-fin }

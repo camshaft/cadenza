@@ -53,8 +53,8 @@ fn emit_appends_a_trigger_event_and_refuses_reserved_kinds() {
         "emit reports the appended event"
     );
 
-    // A reserved kind is refused (exit non-zero, loud error).
-    for reserved in ["program", "prim-exec"] {
+    // A reserved kind is refused (exit non-zero, loud error) — including `policy` (written via emit-policy).
+    for reserved in ["program", "prim-exec", "policy"] {
         let out = Command::new(bin())
             .args(["emit", log.to_str().unwrap(), reserved, "x"])
             .output()
@@ -69,6 +69,42 @@ fn emit_appends_a_trigger_event_and_refuses_reserved_kinds() {
         );
     }
     let _ = std::fs::remove_file(&log);
+}
+
+#[test]
+fn emit_policy_appends_a_cedar_capability_doc_to_the_log() {
+    // The operator's write-Cedar-docs-to-the-log entry point: `emit-policy <log> <policy.cedar>` reads a Cedar
+    // policy file and appends it as a `policy` event (the counterpart of inject-genesis for programs). The
+    // daemon's tick_hosted_log_policy later retrieves + evaluates it to attenuate each invocation. Store-
+    // independent (no compile).
+    let log = unique("emitpol-log").with_extension("log");
+    let pol = unique("emitpol-policy").with_extension("cedar");
+    let _ = std::fs::remove_file(&log);
+    std::fs::write(
+        &pol,
+        r#"permit(principal, action == Action::"prim:append", resource);"#,
+    )
+    .unwrap();
+    Command::new(bin())
+        .args(["bootstrap", log.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+
+    let out = Command::new(bin())
+        .args(["emit-policy", log.to_str().unwrap(), pol.to_str().unwrap()])
+        .output()
+        .expect("run cdz-agent emit-policy");
+    assert!(
+        out.status.success(),
+        "emit-policy appends a Cedar doc: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("appended capability policy"),
+        "emit-policy reports the appended policy"
+    );
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&pol);
 }
 
 #[test]

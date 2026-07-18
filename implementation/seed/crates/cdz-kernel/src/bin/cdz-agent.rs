@@ -14,7 +14,7 @@
 //!                                               source loop is a later rung; this runs ONE tick.)
 
 use anyhow::{anyhow, Context, Result};
-use cdz_kernel::{boot, daemon, FileLog, Log};
+use cdz_kernel::{boot, daemon, policy, FileLog, Log};
 
 fn main() {
     if let Err(e) = run() {
@@ -53,12 +53,33 @@ fn run() -> Result<()> {
             println!("injected genesis program at seq {seq} (from {prog_path})");
             Ok(())
         }
+        Some("emit-policy") => {
+            // Append a CEDAR capability policy to the log (operator model: capability policies are Cedar docs
+            // written to the log, retrieved + evaluated at invocation to attenuate a program to its minimal
+            // privilege set). Reads the Cedar policy file <policy.cedar> and appends it as a `policy` event; a
+            // later emit-policy SUPERSEDES the prior (the daemon's tick_hosted_log_policy evaluates the latest).
+            // This is the operator's write-Cedar-docs-to-the-log entry point (the policy counterpart of
+            // inject-genesis for programs).
+            let log_path = args
+                .get(2)
+                .ok_or_else(|| anyhow!("usage: cdz-agent emit-policy <log> <policy.cedar>"))?;
+            let pol_path = args
+                .get(3)
+                .ok_or_else(|| anyhow!("usage: cdz-agent emit-policy <log> <policy.cedar>"))?;
+            let doc = std::fs::read_to_string(pol_path)
+                .with_context(|| format!("read Cedar policy {pol_path}"))?;
+            let mut log =
+                FileLog::open(log_path).with_context(|| format!("open log {log_path}"))?;
+            let seq = policy::append_policy(&mut log, &doc)?;
+            println!("appended capability policy at seq {seq} (from {pol_path})");
+            Ok(())
+        }
         Some("emit") => {
             // Append an external TRIGGER event to the log — a minimal event SOURCE so the live daemon
             // (`start`) has something to perform. `<kind>` is a free event-kind tag + `<payload>` its body.
-            // REFUSES a RESERVED kind (`program` = genesis, `prim-*` = the daemon's own effect records): an
-            // operator must not forge a genesis or a fake effect through this door — those are written only by
-            // inject-genesis / the daemon itself. Any other kind is a trigger the daemon's kind_of maps to a run.
+            // REFUSES a RESERVED kind (`program` = genesis, `prim-*` = the daemon's own effect records,
+            // `policy` = a capability doc written via emit-policy): an operator must not forge a genesis, a
+            // fake effect, or a policy through this door. Any other kind is a trigger the daemon's kind_of maps to a run.
             let log_path = args
                 .get(2)
                 .ok_or_else(|| anyhow!("usage: cdz-agent emit <log> <kind> <payload>"))?;
@@ -68,9 +89,12 @@ fn run() -> Result<()> {
             let payload = args
                 .get(4)
                 .ok_or_else(|| anyhow!("usage: cdz-agent emit <log> <kind> <payload>"))?;
-            if kind == boot::PROGRAM || kind.starts_with(daemon::PRIM_RECORD_PREFIX) {
+            if kind == boot::PROGRAM
+                || kind == policy::POLICY
+                || kind.starts_with(daemon::PRIM_RECORD_PREFIX)
+            {
                 return Err(anyhow!(
-                    "refusing to emit a reserved event kind `{kind}` (genesis is written by inject-genesis; \
+                    "refusing to emit a reserved event kind `{kind}` (genesis→inject-genesis; policy→emit-policy; \
                      `{}`* events are written only by the daemon) — pick a trigger kind",
                     daemon::PRIM_RECORD_PREFIX
                 ));
@@ -226,9 +250,10 @@ fn run() -> Result<()> {
             Ok(())
         }
         _ => Err(anyhow!(
-            "usage: cdz-agent <bootstrap|inject-genesis|emit|run|perform|hosted|start> ...\n\
+            "usage: cdz-agent <bootstrap|inject-genesis|emit-policy|emit|run|perform|hosted|start> ...\n\
              \x20 bootstrap <log>                    — create/open the event log\n\
              \x20 inject-genesis <log> <program.cdz> — append the genesis program\n\
+             \x20 emit-policy <log> <policy.cedar>    — append a Cedar capability policy (attenuates each invocation; latest supersedes)\n\
              \x20 emit <log> <kind> <payload>        — append an external trigger event (a minimal event source; refuses reserved kinds)\n\
              \x20 run <log> <event-kind>             — one daemon tick (COUNT the scheduled host-ops)\n\
              \x20 perform <log> <event-kind>         — one daemon tick that EXECUTES the ops (K1c, in-program mock), summing per-op results\n\
