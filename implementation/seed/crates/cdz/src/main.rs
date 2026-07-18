@@ -3813,11 +3813,18 @@ fn run_test_file(
         // path (compound params) draws internally and isn't clamped here (a later increment).
         let bounds = param_bounds(&db, i);
         let gens = param_generators(&mut db, i);
+        // For a `-gen` wrapper, capture its parameter `GenTy` now (db is in scope here, not in the run loop).
+        // Only meaningful for the exhaustive-newtype enumeration below; a non-wrapper test yields `None`.
+        let gen_ty = name
+            .ends_with("-gen")
+            .then(|| rcdzc::proptest_gen::gen_ty_of_wrapper_param(&db, &name))
+            .flatten();
         tests.push(TestSpec {
             name,
             gens,
             exhaustive,
             bounds,
+            gen_ty,
         });
     }
     if tests.is_empty() {
@@ -3887,6 +3894,7 @@ fn run_test_file(
         gens,
         exhaustive,
         bounds,
+        gen_ty,
     } in &tests
     {
         let kebab = cadenza_syntax::extern_name::kebab_extern_name(name);
@@ -3901,6 +3909,71 @@ fn run_test_file(
                     "FAIL {name}: cannot generate inputs — a parameter's type is not a scalar this \
                      runner generates (Int/Bool/Float/Char); annotate it with a scalar type"
                 );
+            }
+            // An `@exhaustive` test whose (original) parameter was COMPOUND: the compiler synthesized a
+            // gen-driven wrapper that builds the value from the runner's random int POOL, which offers no
+            // way to ENUMERATE a domain (it samples). So exhaustive checking is not (yet) supported for a
+            // compound-parameter test — regardless of whether that domain is unbounded (a `List`) or
+            // finite (a small user-sum enum). Decline cleanly, rather than sampling under an `@exhaustive`
+            // label (which would falsely imply a proof) or aborting the file at the compound export
+            // boundary. (Exhaustive enumeration works for a BOUNDED SCALAR signature — the boundary-arg
+            // route above — where the domain is enumerated directly, not drawn from the pool.)
+            // An `@exhaustive` over a BOUNDED `@invariant` NEWTYPE (`Percent = Pct(Int64)` with
+            // `@invariant [0,100]`) CAN be enumerated: its `-gen` wrapper param is a single-variant `Sum`
+            // whose payload is an `IntRange{lo,hi}`, and the `IntRange` decode map `v = lo + (pool & MAX) %
+            // span` is INVERTIBLE — feeding pool int `v-lo` drives the wrapper over the exact value `v`. So
+            // run it once per `v in lo..=hi` (a PROOF over the in-domain set), if `span` fits the cap. Any
+            // other compound shape (a List/Tuple/multi-variant sum, or a too-wide range) falls through to the
+            // clean decline below.
+            Some(gens)
+                if gens.is_empty()
+                    && *exhaustive
+                    && exhaustive_newtype_range(gen_ty.as_ref()).is_some() =>
+            {
+                let (lo, hi) = exhaustive_newtype_range(gen_ty.as_ref()).unwrap();
+                // Render via the WHOLE Sum GenTy (it consumes selector then payload, matching the pool below),
+                // so a failing case decodes to `S(v)`, the full nominal value.
+                let full_gt = gen_ty.as_ref().unwrap();
+                let span = (hi - lo + 1) as usize;
+                let run_pool = |pool: &[i64]| -> TrialOutcome {
+                    run_one_trial_with_pool(
+                        &component,
+                        runtime.as_deref(),
+                        &kebab,
+                        store,
+                        &[],
+                        pool,
+                    )
+                    .0
+                };
+                // The `-gen` wrapper for a single-variant `Sum` newtype draws a variant SELECTOR first
+                // (`sel = gen % k`, here k=1 → any int selects the sole variant), THEN the `IntRange` payload
+                // (`v = lo + (gen & MAX) % span`). So the pool for value `v` is `[selector=0, v-lo]` — mirror
+                // the decode order exactly (a 1-element pool would run dry on the payload draw → a spurious
+                // body trap). `pool_for(v)` builds it; `render_pool_value` decodes the SAME pool to `S(v)`.
+                let pool_for = |v: i64| -> [i64; 2] { [0, v.wrapping_sub(lo)] };
+                let failing =
+                    (lo..=hi).find(|&v| matches!(run_pool(&pool_for(v)), TrialOutcome::Fail(_)));
+                match failing {
+                    None => {
+                        passed += 1;
+                        println!("PASS {name} (exhaustive, {span} cases)");
+                    }
+                    Some(v) => {
+                        failed += 1;
+                        // Render the failing case as the wrapper's decoded VALUE (`S(2)`), not a raw pool int.
+                        let rendered = render_pool_value(full_gt, &pool_for(v))
+                            .unwrap_or_else(|| v.to_string());
+                        let msg = match run_pool(&pool_for(v)) {
+                            TrialOutcome::Fail(Some(m)) => format!(": {m}"),
+                            _ => String::new(),
+                        };
+                        println!(
+                            "FAIL {name}{msg}\n  counterexample: {name}({rendered})  (exhaustive — the \
+                             domain contains a failing case)"
+                        );
+                    }
+                }
             }
             // An `@exhaustive` test whose (original) parameter was COMPOUND: the compiler synthesized a
             // gen-driven wrapper that builds the value from the runner's random int POOL, which offers no
@@ -4306,6 +4379,11 @@ struct TestSpec {
     gens: Option<Vec<GenKind>>,
     exhaustive: bool,
     bounds: Vec<ParamBound>,
+    /// The synthesized `-gen` wrapper's parameter `GenTy` (via `gen_ty_of_wrapper_param`), captured at BUILD
+    /// time because `db` is not in scope in the run loop. `Some` only for a `-gen` wrapper; `None` for a plain
+    /// or scalar test. Used by the `@exhaustive` path to ENUMERATE a bounded newtype domain (a single-variant
+    /// `Sum` whose payload is an `IntRange` — feed pool values `0..span` to drive the wrapper over `lo..=hi`).
+    gen_ty: Option<rcdzc::proptest_gen::GenTy>,
 }
 
 /// The generators for definition `def`'s parameters, or `None` if ANY parameter's solved type is not a
@@ -4500,6 +4578,28 @@ const RUNNER_LIST_LEN: usize = 3;
 fn render_pool_value(gty: &rcdzc::proptest_gen::GenTy, pool: &[i64]) -> Option<String> {
     let mut cursor = 0usize;
     decode_value(gty, pool, &mut cursor)
+}
+
+/// If `gen_ty` is a `-gen` wrapper param that CAN be exhaustively enumerated — a single-variant `Sum` newtype
+/// whose sole payload is an `IntRange{lo,hi}` (a bounded `@invariant` newtype like `Percent = Pct(Int64)` with
+/// `@invariant [0,100]`) AND whose domain size `hi-lo+1` fits [`MAX_EXHAUSTIVE_CASES`] — return `(lo, hi)`.
+/// `None` for any other shape (a List/Tuple/multi-variant sum, a non-IntRange payload, or a range too large to
+/// enumerate) — the caller then declines the `@exhaustive` cleanly. This is what lets `@exhaustive` PROVE a
+/// property over a small refined newtype's whole domain (drive the wrapper over each `v in lo..=hi`) instead
+/// of sampling / declining.
+fn exhaustive_newtype_range(gen_ty: Option<&rcdzc::proptest_gen::GenTy>) -> Option<(i64, i64)> {
+    use rcdzc::proptest_gen::GenTy;
+    let GenTy::Sum { variants, .. } = gen_ty? else {
+        return None;
+    };
+    // A single-variant newtype whose one payload is an IntRange.
+    let [(_, Some(GenTy::IntRange { lo, hi }))] = variants.as_slice() else {
+        return None;
+    };
+    let (lo, hi) = (*lo, *hi);
+    // A valid range (lo<=hi) whose size fits the enumeration cap — else decline (too large to prove).
+    let span = (hi as i128) - (lo as i128) + 1;
+    (span >= 1 && span <= MAX_EXHAUSTIVE_CASES as i128).then_some((lo, hi))
 }
 
 /// One step of the pool→value decode (see [`render_pool_value`]). `cursor` advances by exactly the number of

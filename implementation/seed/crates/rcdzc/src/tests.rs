@@ -40194,6 +40194,46 @@ mod match_engine {
     }
 
     #[test]
+    fn qty_value_of_a_conversion_result_is_a_clean_cdz0501_not_a_no_machine_representation_decline()
+    {
+        // Breaker/corpus-bugfix report: `Qty.value` of a `Unit.in` conversion RESULT — `(Qty.value (Unit.in
+        // inch (Qty.of 5 foot)))` — declined "function return type has no machine representation" at the
+        // backend while `cdz check` passed (a check-vs-compile gap). ROOT: `Unit.in`/`as` UNWRAPS to a bare
+        // number (Q3), so `Qty.value` is applied to a plain Int, and its type arm returned `Ty::Any`
+        // ("faulted elsewhere") — but nothing faulted it, so the un-representable `Any` slipped to the
+        // backend. Now a `Qty.value`-of-a-non-quantity check in check_application rejects it CDZ0501 at
+        // compile, naming the operand type + the "drop the Qty.value" repair. The bare-number sibling of the
+        // chained-Unit.in reject.
+        let src = "(do (def (main) ((. Qty value) ((. Unit in) ((. Unit of) #\"inch\") \
+                     ((. Qty of) 5 ((. Unit of) #\"foot\"))))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("Qty.value of a conversion result (a bare number) must reject");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0501"),
+            "Qty.value of a bare number (a Unit.in result) is a coded CDZ0501, not an uncoded no-machine-rep decline"
+        );
+        assert!(
+            err.message.contains("recovers a quantity") && err.message.contains("plain number"),
+            "the message explains Qty.value needs a quantity + that the operand is a plain number: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("no machine representation"),
+            "the terse backend 'no machine representation' decline must no longer surface: {}",
+            err.message
+        );
+        // The two components each compile ALONE: convert-alone (Unit.in → 60) and extract-alone
+        // (Qty.value of a genuine Qty → 5) — only the redundant composition was the gap. Guard the
+        // extract-alone still type-checks (compiles) so the reject is scoped to the non-quantity operand.
+        let extract_alone = "(do (def (main) ((. Qty value) ((. Qty of) 5 ((. Unit of) #\"foot\")))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(extract_alone))).is_ok(),
+            "Qty.value of a genuine quantity still compiles (the reject is scoped to a non-quantity operand)"
+        );
+    }
+
+    #[test]
     fn registering_a_family_unit_twice_with_conflicting_conversions_is_an_error() {
         // Operator ask: a name→conversion must be a FUNCTION — registering the same unit name with a
         // DIFFERENT dimension or scale is an error (returns the offending name → CDZ0502 at a future user

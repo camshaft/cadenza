@@ -205,6 +205,25 @@ def main() = host Param in
   },
 };
 
+/// An ASSEMBLY-as-code L-bracket (v-cad's assembly showcase, distilled for the picker): a base plate (with a
+/// bolt hole) + a vertical arm, mated at 90° via `rotate-x` and combined with `fuse` — the "multiple parts
+/// combined in code" half of the operator's assembly ask. Uses the `rotate-x`/`fuse`/`cut`/`move-*`/`box`/
+/// `cyl` helpers (from the injected `helpers` superset — the rotation builders were added to CAD_HELPER_NAMES
+/// for this). v-cad's mesh driver handles Rotate/Mirror; here it's just another bare example in the picker.
+const ASSEMBLY_L_BRACKET: ExampleModel = {
+  slug: "assembly-l-bracket",
+  title: "L-bracket (assembly-as-code)",
+  description: "A base plate + a vertical arm mated at 90 degrees — multiple parts combined in code.",
+  source: {
+    ml: `def base() = cut(move-z(2, box(40, 30, 4)), move-x(10, move-z(2, cyl(8, 3))))
+def arm() = move-z(4, rotate-x(90, move-z(2, box(30, 25, 4))))
+def main() = lower(fuse(base(), arm()))`,
+    sexpr: `(def (base) (cut (move-z 2 (box 40 30 4)) (move-x 10 (move-z 2 (cyl 8 3)))))
+(def (arm) (move-z 4 (rotate-x 90 (move-z 2 (box 30 25 4)))))
+(def (main) (lower (fuse (base) (arm))))`,
+  },
+};
+
 /// The example models the /cad example-switcher offers, in display order. Every one is verified to compile
 /// + mesh against the preloaded library. Keep the FIRST entry the canonical simple starter (the /cad route
 /// opens with `DEFAULT_EXAMPLE`). The parametric plate is one of these — in single-mode a parametric model
@@ -217,6 +236,7 @@ export const EXAMPLES: ExampleModel[] = [
   ARCH_FIN,
   PARAMETRIC_PLATE,
   UNITS_BRACKET,
+  ASSEMBLY_L_BRACKET,
 ];
 
 /// The model the /cad route opens with (the canonical cube-with-dent starter).

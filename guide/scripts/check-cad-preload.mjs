@@ -178,6 +178,31 @@ if (!bracket) {
   }
 }
 
+// ASSEMBLY-as-code showcase (v-cad's L-bracket): a model using the ROTATION helper (`rotate-x`) + `fuse`/
+// `cut`/`move-*` must COMPILE against the preloaded helpers — gating that the rotate/mirror transforms were
+// added to CAD_HELPER_NAMES (else the injected `import "helpers"` omits `rotate-x` → CDZ0101 unbound).
+const asm = EXAMPLES.find((e) => e.slug === "assembly-l-bracket");
+if (!asm) {
+  failures.push("assembly: the assembly-l-bracket example is missing from EXAMPLES (the rotate-helper gate can't run)");
+} else {
+  for (const surface of ["ml", "sexpr"]) {
+    const program = injectImport(asm.source[surface], surface);
+    let cr;
+    try {
+      cr = wasm.compile_with_preloaded(program, surface, names, sources, formats);
+    } catch (e) {
+      failures.push(`[${surface}] assembly-l-bracket compile THREW: ${String(e && e.message ? e.message : e).slice(0, 120)}`);
+      continue;
+    }
+    const errs = (cr.diagnostics ?? []).filter((d) => d.error);
+    if (!cr.component || errs.length) {
+      failures.push(`[${surface}] assembly-l-bracket did not compile (rotate-x/fuse against preloaded helpers)${errs.length ? ` — ${errs.map((d) => `${d.code ?? ""} ${d.message ?? ""}`.trim()).join("; ")}` : " (no component)"}`);
+    } else {
+      console.log(`  ✓ [${surface}] assembly-l-bracket: compiles against preloaded helpers (rotate-x + fuse + cut) → component`);
+    }
+  }
+}
+
 if (failures.length) {
   console.error(
     "\n✗ cad-preload conformance FAILED — the /cad preloaded-library path regressed (compiler preload " +

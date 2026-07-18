@@ -1370,6 +1370,20 @@
             (Unit.in (Unit.of #"millimeter") (Qty.of (Rational.of 1 1) (Unit.of #"inch")))))
   (error  CDZ0501))
 
+(case "Qty.value of a conversion result is a compile-time error — the conversion already unwrapped"
+  (doc    "`(Qty.value (Unit.in inch (Qty.of 5 foot)))` — the `Unit.in` UNWRAPS to a bare number (Q3: 60,
+           the inches count), so `Qty.value` is applied to a PLAIN Int64, not a quantity. `Qty.value`
+           recovers a QUANTITY's number, so this is CDZ0501 at COMPILE time. Previously the `Qty.value`-of-
+           a-non-quantity type arm returned `Ty::Any` ('faulted elsewhere') but NOTHING faulted it, so the
+           un-representable `Any` result slipped past `cdz check` and declined only at the backend
+           ('function return type has no machine representation') — a check-vs-compile gap. Now a coded
+           reject names the operand's type + the repair: a conversion result is already the bare number, so
+           drop the `Qty.value`. (The convert-alone `(Unit.in inch (Qty.of 5 foot))` = 60 and the
+           extract-alone `(Qty.value (Qty.of 5 foot))` = 5 both compile; only the redundant composition was
+           the gap.) The bare-number sibling of the chained-`Unit.in` reject above.")
+  (input  (Qty.value (Unit.in (Unit.of #"inch") (Qty.of 5 (Unit.of #"foot")))))
+  (error  CDZ0501))
+
 (case "re-wrapping the intermediate with Qty.of makes a two-step conversion well-formed"
   (doc    "The repair for the chained-`Unit.in` error: wrap the first conversion's bare result back into a
            `Qty.of` at the unit it was converted to, so the second `Unit.in` sees a quantity again. `1 inch

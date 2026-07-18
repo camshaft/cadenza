@@ -73,6 +73,36 @@ export default function CdzToolchain() {
         <C>cdz doctor</C> checks the setup.
       </P>
 
+      <H2>What goes in Project.cdz</H2>
+      <P>
+        The manifest is a handful of top-level definitions, most of them optional. A typical one reads:
+      </P>
+      <Note>
+        <C>{`def name = "my-app"`}</C>
+        <br />
+        <C>{`def entry = "main.cdz"`}</C>
+        <br />
+        <C>{`def modules = ["util.cdz", "helpers/*.cdz"]`}</C>
+        <br />
+        <C>{`def tests = ["main.cdz"]`}</C>
+        <br />
+        <C>{`def deps = ["../mathlib"]`}</C>
+      </Note>
+      <P>
+        Only <C>def entry</C> is required, since it names the file that becomes the component's boundary,
+        and it must be a string (a non-string is a clear error rather than a silent misread). The{" "}
+        <C>def name</C> must be kebab-case (lowercase letters, digits, and hyphens) because a dependency's
+        name becomes its interface as <C>cadenza:&lt;name&gt;/api</C>, so <C>cdz new</C> warns you at
+        creation if you pick something like <C>"My App"</C> that would break when another project depends
+        on it. <C>def modules</C> lists the extra source files compiled into the component and{" "}
+        <C>def tests</C> lists the files whose <C>@test</C> definitions <C>cdz test</C> runs, both accepting
+        globs, while <C>def exclude</C> filters patterns back out of those sets. <C>def deps</C> holds path
+        dependencies to sibling project directories, each built and peer-bound as its own interface, which
+        is what <C>cdz add</C> and <C>cdz remove</C> edit for you. You can also set a default build tier
+        with <C>def opt-level = "O2"</C>, which <C>--opt-level</C> or <C>--release</C> override at the
+        command line.
+      </P>
+
       <H2>Designed for agents as much as for people</H2>
       <P>
         The <Ch to="/welcome">very first chapter</Ch> said Cadenza is written and read by AI agents as much
