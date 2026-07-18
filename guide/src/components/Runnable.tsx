@@ -283,6 +283,16 @@ function TestRunnable({ source, authoredIn = "sexpr", title, prelude = true }: P
     }
   }
 
+  // The IDE lint/hover path must see the SAME text `doRun` compiles — i.e. with the assert prelude
+  // prepended (unless prelude={false}) — or `assert`/`assert-eq`/`assert-ne` read as unbound (a false
+  // CDZ0101). `wrapPrefixBytes` is the prelude's UTF-8 byte length (prelude + the `\n`) so diagnostic
+  // spans map back onto the editor text. Mirrors the Run path's prepend at `doRun`.
+  function prepareTest(t: string): { compiled: string; wrapPrefixBytes: number } {
+    if (!prelude) return { compiled: t, wrapPrefixBytes: 0 };
+    const pre = `${assertPreludeFor(surface)}\n`;
+    return { compiled: `${pre}${t}`, wrapPrefixBytes: new TextEncoder().encode(pre).length };
+  }
+
   const busy = status.phase === "busy";
   return (
     <div className="my-6 overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/70 shadow-lg">
@@ -309,7 +319,7 @@ function TestRunnable({ source, authoredIn = "sexpr", title, prelude = true }: P
         <CodeEditor
           value={editor.text}
           onChange={editor.setText}
-          ide={ideOn ? { surface: () => surface, prepare: (t) => ({ compiled: t, wrapPrefixBytes: 0 }) } : undefined}
+          ide={ideOn ? { surface: () => surface, prepare: prepareTest } : undefined}
         />
       </div>
 
