@@ -140,17 +140,11 @@ fn run() -> Result<()> {
             let payload = args
                 .get(4)
                 .ok_or_else(|| anyhow!("usage: cdz-agent emit <log> <kind> <payload>"))?;
-            if kind == boot::PROGRAM
-                || kind == policy::POLICY
-                || kind == policy::AUTHZ_GRANT
-                || kind == policy::AUTHZ_REVOKE
-                || kind == policy::AUTHZ_REQUEST
-                || kind.starts_with(daemon::PRIM_RECORD_PREFIX)
-            {
+            if daemon::is_reserved_kind(kind) {
                 return Err(anyhow!(
                     "refusing to emit a reserved event kind `{kind}` (genesis→inject-genesis; policy→emit-policy; \
-                     grant→authz-grant; revoke→authz-revoke; `{}`* events + authz-request are written only by the \
-                     daemon) — pick a trigger kind",
+                     grant→authz-grant; revoke→authz-revoke; schedule→schedule-create/schedule-cancel; `{}`* \
+                     effects + authz-request + schedule-fire are written only by the daemon) — pick a trigger kind",
                     daemon::PRIM_RECORD_PREFIX
                 ));
             }
@@ -251,11 +245,13 @@ fn run() -> Result<()> {
                 None => None,
             };
             let log = std::sync::Arc::new(std::sync::Mutex::new(log));
-            // Trigger mapping: every event EXCEPT the daemon's own bookkeeping (the genesis `program` event
-            // and the recorded `prim-*` effects) fires the interpret plan for event-kind 1. Skipping our own
-            // events is load-bearing — else the daemon re-performs its own recorded effects and never converges.
+            // Trigger mapping: every event EXCEPT the daemon's own RESERVED bookkeeping (genesis `program`,
+            // recorded `prim-*` effects, capability `policy`/authz docs, and `schedule-*` events — a fired
+            // schedule's TRIGGER event is a normal kind, only the create/cancel/fire bookkeeping is skipped)
+            // fires the interpret plan for event-kind 1. Skipping our own events is load-bearing — else the
+            // daemon re-performs its own recorded effects/bookkeeping as triggers and never converges.
             let kind_of = |e: &cdz_kernel::Event| {
-                if e.kind == boot::PROGRAM || e.kind.starts_with(daemon::PRIM_RECORD_PREFIX) {
+                if daemon::is_reserved_kind(&e.kind) {
                     None
                 } else {
                     Some(1i64)

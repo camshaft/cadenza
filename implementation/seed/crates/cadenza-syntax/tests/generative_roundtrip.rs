@@ -57,7 +57,7 @@ fn gen_expr(rng: &mut Rng, depth: usize) -> String {
     }
     // A recursive sub-expression at one less depth.
     let sub = |rng: &mut Rng| gen_expr(rng, depth - 1);
-    match rng.below(12) {
+    match rng.below(15) {
         // leaf (bias toward leaves so trees stay finite-ish)
         0..=2 => leaf(rng),
         // infix arithmetic / comparison — a bare glyph head the ML surface prints infix
@@ -117,7 +117,29 @@ fn gen_expr(rng: &mut Rng, depth: usize) -> String {
             format!("(match {} {})", sub(rng), arms.join(" "))
         }
         // member access: (. obj field)
-        _ => format!("(. {} {})", sub(rng), rng.pick(&names)),
+        11 => format!("(. {} {})", sub(rng), rng.pick(&names)),
+        // lambda: (fn (param…) body) — 0–2 params; prints `fn(p, …) => body`
+        12 => {
+            let n = rng.below(3);
+            let params: Vec<&str> = (0..n).map(|i| ["a", "b", "c"][i]).collect();
+            format!("(fn ({}) {})", params.join(" "), sub(rng))
+        }
+        // type ascription: (: expr Type) — prints `expr : Type` (parenthesized where an infix binds
+        // tighter). A bare-name/application type keeps the reparse a plain `:` annotation (a nested
+        // ascription is a real form, distinct from a def-body return type).
+        13 => {
+            let ty_depth = rng.below(2);
+            let ty = gen_type_expr(rng, ty_depth);
+            format!("(: {} {})", sub(rng), ty)
+        }
+        // map literal: (map (key value)…) — prints `#{ k = v, … }` (distinct from a `record`).
+        _ => {
+            let n = 1 + rng.below(3);
+            let entries: Vec<String> = (0..n)
+                .map(|i| format!("({} {})", ["m", "n", "o"][i], sub(rng)))
+                .collect();
+            format!("(map {})", entries.join(" "))
+        }
     }
 }
 

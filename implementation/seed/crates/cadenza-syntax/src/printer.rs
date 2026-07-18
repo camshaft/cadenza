@@ -4108,8 +4108,8 @@ mod tests {
         // with an `(A)` variant failed the shape check and rendered as the backtick-fallback application
         // `` `type`(T, A(), B(Int64)) `` — which does NOT round-trip under an `@invariant`/annotation
         // wrapper (the annotation re-binds to `type` as a value head). v-verification hit this on an
-        // @invariant establish corpus case. Fix: accept a 1-elem list nullary + render `(A)` as the
-        // canonical bare `A`.
+        // @invariant establish corpus case. Fix: accept a 1-elem list nullary + render `(A)` as `A()`
+        // (the empty parens PRESERVED — see the next paragraph for why NOT bare `A`).
         //
         // The 1-elem-list `(A)` variant renders as a proper `type T = | A() | B(Int64)` — the `()`
         // PRESERVED (NOT bare `A`), because `(A)` (1-elem list) and `A` (atom) are DISTINCT arenas and

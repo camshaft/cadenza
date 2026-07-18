@@ -342,13 +342,60 @@ where
     Ok((cursor, processed))
 }
 
+/// FIRE the schedules due as of the wall clock, returning how many fired — the read-side that makes the
+/// [`crate::schedule`] substrate LIVE. Reads [`crate::clock::now_millis`] ONCE (the single ambient-time read),
+/// folds [`crate::schedule::due`] to the due set, and for each: appends the schedule's TRIGGER event (its
+/// `trigger_kind` + `payload`) so [`run_once`] performs it this same round, then appends a
+/// [`crate::schedule::append_fire`] record so the pure `due` fold advances that schedule's occurrence counter
+/// (a one-shot won't re-fire; a periodic's next occurrence moves one period ahead). Fire-record AFTER the
+/// trigger so a crash between them re-fires rather than silently dropping (at-least-once, not at-most-once).
+/// Called at the TOP of each [`run`] round, before [`run_once`] drains — so a fired trigger is picked up in
+/// the same round. One occurrence per schedule per round (the `due` fold reports each due schedule once; its
+/// fire record advances `k`). Skips a schedule whose `trigger_kind` is a RESERVED kind (a genesis/policy/prim/
+/// schedule bookkeeping kind) — a schedule must fire a real trigger, not forge kernel bookkeeping.
+pub fn fire_due_schedules<L>(log: &std::sync::Arc<std::sync::Mutex<L>>) -> Result<usize>
+where
+    L: Log + Send + 'static,
+{
+    let now_ms = crate::clock::now_millis();
+    let mut l = log.lock().map_err(|_| anyhow!("log mutex poisoned"))?;
+    let due = crate::schedule::due(&l.tail(0)?, now_ms);
+    let mut fired = 0usize;
+    for s in &due {
+        // A schedule must not forge kernel bookkeeping (genesis/policy/prim/schedule-*) via its trigger.
+        if is_reserved_kind(&s.trigger_kind) {
+            continue;
+        }
+        l.append(&s.trigger_kind, &s.payload)?;
+        crate::schedule::append_fire(&mut *l, &s.id)?;
+        fired += 1;
+    }
+    Ok(fired)
+}
+
+/// Whether `kind` is a RESERVED event kind the daemon/boot own — a genesis `program`, a `policy`/authz doc, a
+/// `prim-*` effect record, or a `schedule-*` bookkeeping event. A `fire_due_schedules` trigger and the CLI's
+/// free `emit` both refuse these (an operator/schedule can't forge kernel bookkeeping through a trigger door).
+pub fn is_reserved_kind(kind: &str) -> bool {
+    kind == crate::boot::PROGRAM
+        || kind == crate::policy::POLICY
+        || kind == crate::policy::AUTHZ_GRANT
+        || kind == crate::policy::AUTHZ_REVOKE
+        || kind == crate::policy::AUTHZ_REQUEST
+        || kind == crate::schedule::SCHEDULE_CREATE
+        || kind == crate::schedule::SCHEDULE_CANCEL
+        || kind == crate::schedule::SCHEDULE_FIRE
+        || kind.starts_with(PRIM_RECORD_PREFIX)
+}
+
 /// The LIVE daemon: poll `log` for new events and PERFORM each via [`run_once`], sleeping `poll` between
 /// rounds — the "start the daemon" half realized as a blocking loop. Runs until `should_stop()` returns true
 /// (checked each round, before sleeping) or a tick errors. Starts at `from` and advances the cursor across
-/// rounds. A thin wrapper over [`run_once`] (the tested body) + `std::thread::sleep`; the loop itself carries
-/// no logic. `should_stop` lets a caller (a stop-file poll, a signal flag) end the loop cleanly between rounds.
-/// `policies` is the OPTIONAL external Cedar trust-anchor forwarded to each [`run_once`] round (`Some` gates
-/// every op via [`tick_hosted_authorized`]; `None` runs ungated) — the operator's `--policies` flag.
+/// rounds. Each round FIRES due schedules first ([`fire_due_schedules`]) so a timer's trigger is performed the
+/// same round. A thin wrapper over [`run_once`] (the tested body) + `std::thread::sleep`; the loop itself
+/// carries no logic. `should_stop` lets a caller (a stop-file poll, a signal flag) end the loop cleanly between
+/// rounds. `policies` is the OPTIONAL external Cedar trust-anchor forwarded to each [`run_once`] round (`Some`
+/// gates every op via [`tick_hosted_authorized`]; `None` runs ungated) — the operator's `--policies` flag.
 pub fn run<L, K, S>(
     log: std::sync::Arc<std::sync::Mutex<L>>,
     mut from: crate::Seq,
@@ -364,6 +411,8 @@ where
     S: FnMut() -> bool,
 {
     while !should_stop() {
+        // Fire due schedules FIRST — each appends its trigger event, which run_once then drains this same round.
+        fire_due_schedules(&log)?;
         let (next, _processed) = run_once(&log, from, runtime.clone(), policies.clone(), &kind_of)?;
         from = next;
         std::thread::sleep(poll);
@@ -914,6 +963,87 @@ mod tests {
             r.is_err(),
             "a step error propagates out of drain_new_events"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fire_due_schedules_appends_triggers_and_fire_records_and_advances_occurrences() {
+        // The scheduling read-side: a due schedule appends its TRIGGER event + a schedule-fire record; a
+        // not-yet-due schedule is untouched. first_ms=0 is always due (wall clock > 0); a far-future first_ms
+        // is never due. A reserved trigger_kind is refused (can't forge kernel bookkeeping). Uses the REAL
+        // clock (fire_due_schedules reads now_millis) — the schedule module's own tests cover the pure `due`
+        // fold at fixed times; this asserts the daemon side (append trigger + fire, advance the counter).
+        use crate::schedule::{self, Schedule};
+        use std::sync::{Arc, Mutex};
+        let (path, log0) = temp_log();
+        let log = Arc::new(Mutex::new(log0));
+
+        let due_now = Schedule {
+            id: "hb".to_string(),
+            first_ms: 0, // epoch → always due vs the real clock
+            period_ms: Some(1),
+            trigger_kind: "heartbeat".to_string(),
+            payload: b"tick".to_vec(),
+        };
+        let future = Schedule {
+            id: "later".to_string(),
+            first_ms: u64::MAX, // never due
+            period_ms: None,
+            trigger_kind: "wakeup".to_string(),
+            payload: b"x".to_vec(),
+        };
+        let forger = Schedule {
+            id: "evil".to_string(),
+            first_ms: 0,
+            period_ms: None,
+            trigger_kind: crate::boot::PROGRAM.to_string(), // reserved → must be refused
+            payload: b"(do)".to_vec(),
+        };
+        {
+            let mut l = log.lock().unwrap();
+            schedule::append_create(&mut *l, &due_now).unwrap();
+            schedule::append_create(&mut *l, &future).unwrap();
+            schedule::append_create(&mut *l, &forger).unwrap();
+        }
+
+        // First fire: only the due, non-forging schedule fires.
+        let fired = fire_due_schedules(&log).expect("fire due schedules");
+        assert_eq!(fired, 1, "only the due, non-reserved schedule fires (future + forger skipped)");
+        {
+            let events = log.lock().unwrap().tail(0).unwrap();
+            assert_eq!(
+                events.iter().filter(|e| e.kind == "heartbeat").count(),
+                1,
+                "the trigger event was appended once"
+            );
+            assert!(
+                events.iter().any(|e| e.kind == "heartbeat" && e.payload == b"tick"),
+                "the trigger carries the schedule's payload"
+            );
+            assert_eq!(
+                events.iter().filter(|e| e.kind == schedule::SCHEDULE_FIRE).count(),
+                1,
+                "one schedule-fire record advances the occurrence counter"
+            );
+            assert!(
+                !events.iter().any(|e| e.kind == crate::boot::PROGRAM
+                    && e.payload == b"(do)"),
+                "the forging schedule (reserved trigger_kind) never fired"
+            );
+        }
+
+        // Second fire: the periodic advances by one period (period=1ms) — with the real clock well past 1ms,
+        // it is due again, so exactly one more heartbeat fires (one occurrence per call).
+        let fired2 = fire_due_schedules(&log).expect("fire again");
+        assert_eq!(fired2, 1, "the periodic fires once more (occurrence advanced by the prior fire record)");
+        {
+            let events = log.lock().unwrap().tail(0).unwrap();
+            assert_eq!(
+                events.iter().filter(|e| e.kind == "heartbeat").count(),
+                2,
+                "two heartbeats total after two fire rounds (one per round)"
+            );
+        }
         let _ = std::fs::remove_file(&path);
     }
 

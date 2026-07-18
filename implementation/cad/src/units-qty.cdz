@@ -65,7 +65,7 @@ def a-vec3q-field-holds-a-length-quantity() =
     (if Qty.value(q-z(v)) == 3 / 1 then unit else trap("z")) else trap("x")
 
 @test
-def vec3q-bridges-to-the-exact-vec3r-core() =
+def vec3q-bridges-to-the-exact-vec3-core() =
   // Unwrapping to Vec3 gives the exact bare-Rational meter magnitudes the CSG/bbox core uses — a Qty-
   // field build plugs into the existing exact machinery, same magnitudes, no f64.
   let v = v3q(qm(4), qm(5), qm(6)) in
