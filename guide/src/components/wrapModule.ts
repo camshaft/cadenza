@@ -35,6 +35,13 @@ const DECL_HEAD = "def|type|effect";
 // `(def (main) …)`) and needs an `export` appended. `Unit.define` declares a custom unit of measure and
 // only resolves at top level. Escaped for a RegExp (the `.` is literal). Treated like a defs block.
 const STMT_HEAD = "Unit\\.define";
+// A leading compiler PRAGMA is a top-level statement, NOT an expression: ML `@!default-fraction Rational`
+// (line starts `@!`), s-expr `(pragma default-fraction Rational)` (form starts `(pragma`). A snippet may
+// LEAD with a pragma (e.g. a `@!default-fraction Rational` model header) and then declare defs; treated
+// like `Unit.define` — scan past it to the following defs, never bare-expr-wrap it (wrapping
+// `def main() = @!default-fraction Rational` is malformed → CDZ0101 pragma/unbound-name squiggles).
+const PRAGMA_HEAD_SEXPR = /^\(pragma\b/;
+const PRAGMA_HEAD_ML = /^@!/;
 
 /// The names to export from a DEFINITIONS-block snippet. The guide convention is a `(def (main) …)`
 /// entry point, so `main` — when present — is the sole public name (matches the historical behavior).
@@ -70,7 +77,7 @@ export function wrapModule(src: string, surface: Surface): string {
   const trimmed = src.trim();
   if (surface === "sexpr") {
     if (/^\(module\b/.test(trimmed) || /^\(do\b/.test(trimmed)) return trimmed;
-    if (new RegExp(`^\\((${DECL_HEAD}|${STMT_HEAD})\\b`).test(trimmed))
+    if (PRAGMA_HEAD_SEXPR.test(trimmed) || new RegExp(`^\\((${DECL_HEAD}|${STMT_HEAD})\\b`).test(trimmed))
       return `(do ${trimmed} (export ${exportNames(trimmed, surface).join(" ")}))`;
     return `(do (def (main) ${trimmed}) (export main))`;
   }
@@ -79,7 +86,7 @@ export function wrapModule(src: string, surface: Surface): string {
   // `def main() = (module M { … }; M.f x)`), which still needs an `export` appended. Only a real
   // top-level `export` marks a snippet the author already made whole.
   if (/^module\b/.test(trimmed) || /(^|\n)\s*export\b/.test(trimmed)) return trimmed;
-  if (new RegExp(`^(${DECL_HEAD}|${STMT_HEAD})\\b`).test(trimmed))
+  if (PRAGMA_HEAD_ML.test(trimmed) || new RegExp(`^(${DECL_HEAD}|${STMT_HEAD})\\b`).test(trimmed))
     return `${trimmed}\nexport { ${exportNames(trimmed, surface).join(", ")} }`;
   return `def main() = ${trimmed}\nexport { main }`;
 }

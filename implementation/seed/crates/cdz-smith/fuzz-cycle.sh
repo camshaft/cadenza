@@ -33,7 +33,9 @@
 #   CDZ_SMITH_TIMEOUT     per-input compile budget, s (default: 10)
 #   CDZ_SMITH_ITERATIONS  PRNG-fallback programs/cycle (default: 50000)
 #   CDZ_SMITH_ENGINE      force "libfuzzer" or "prng" (default: auto-detect)
-#   CDZ_SMITH_DIFF_COUNT  differential-sweep programs/cycle (default: 400; 0 disables the sweep)
+#   CDZ_SMITH_DIFF_COUNT  differential-sweep programs/cycle (default: 200; 0 disables the sweep)
+#   CDZ_SMITH_DIFF_CAP    differential-sweep wall-clock backstop, s (default: fit under the tick after
+#                         the campaign — a KILL mid-sweep is safe, findings file incrementally to disk)
 #   CDZ_SMITH_CDZ         the `cdz` binary for the differential rust side (default: auto-discover)
 #   CDZ_SMITH_STORE       the value-heap runtime store for the differential wasm side (default: <root>/target/cadenza-store)
 set -uo pipefail
@@ -149,7 +151,7 @@ fi
 # feature (whose `cdz-run`/wasmtime dep must NOT link into the instrumented libFuzzer target). Findings
 # file into the SAME fleet queue as `differential-*.smith.{sexp,md}`. Best-effort: skip cleanly if the
 # `cdz` binary (+ its cdz-rt/cdz-num rlibs) or the runtime store isn't available.
-DIFF_COUNT="${CDZ_SMITH_DIFF_COUNT:-400}"
+DIFF_COUNT="${CDZ_SMITH_DIFF_COUNT:-200}"
 if [ "$DIFF_COUNT" -gt 0 ]; then
   # The rust side needs the `cdz` binary with its rlibs beside it (target/<profile>/). The fleet agent
   # rebuilds `cdz` release each tick; discover it (env override wins), else look beside the workspace target.
@@ -170,8 +172,14 @@ if [ "$DIFF_COUNT" -gt 0 ]; then
     # so no libFuzzer link concern). A build failure just skips the sweep this cycle.
     if ( cd "$CRATE_DIR" && cargo build -q --release --features differential 2>/dev/null ); then
       DIFF_BIN="$CRATE_DIR/target/release/cdz-smith"
-      # A wide backstop timeout — the sweep is bounded by --count, this is a pure safety net.
-      CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$(( CYCLE_CAP * 2 + 120 ))" \
+      # TICK-AWARE backstop: the crash/invalid-wasm campaign already consumed ~CYCLE_CAP of the tick,
+      # so bound the sweep to what's LEFT under a 10-min tick (default: 600 - CYCLE_CAP - 60s slack,
+      # floored at 60s). This keeps a full tick (campaign + sweep + builds) from overrunning the
+      # interval, which was crowding the next tick. A KILL when the backstop trips is SAFE — the sweep
+      # files each finding to disk as it goes, so a clipped sweep just does fewer programs this cycle.
+      DIFF_CAP="${CDZ_SMITH_DIFF_CAP:-$(( 600 - CYCLE_CAP - 60 ))}"
+      [ "$DIFF_CAP" -lt 60 ] && DIFF_CAP=60
+      CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$DIFF_CAP" \
         "$DIFF_BIN" differential --count "$DIFF_COUNT" --seed "$(date +%s)" \
           --findings "$FINDINGS" --store "$DIFF_STORE" --cdz "$DIFF_CDZ" 2>&1 | tail -4 || true
     else

@@ -57,6 +57,16 @@ test("already-complete / hand-authored programs are left untouched", () => {
   assert.equal(wrapModule(doForm, "sexpr"), doForm);
 });
 
+test("a leading compiler pragma is a top-level statement, not a bare expr (both surfaces)", () => {
+  // Regression: wrapModule used to misclassify a leading `@!`/`(pragma …)` as a bare expression and wrap
+  // it `def main() = @!default-fraction Rational` (malformed) → false CDZ0101 squiggles in the editor.
+  // A pragma-led snippet is a defs block: the pragma stays top-level, `main` is the entry.
+  const ml = "@!default-fraction Rational\ndef main() = 1 / 3 + 1 / 3 + 1 / 3";
+  assert.equal(wrapModule(ml, "ml"), `${ml}\nexport { main }`);
+  const sexpr = "(pragma default-fraction Rational)\n(def (main) (+ (/ 1 3) (/ 1 3)))";
+  assert.equal(wrapModule(sexpr, "sexpr"), `(do ${sexpr} (export main))`);
+});
+
 test("topLevelDefNames finds hyphenated names in source order, deduped", () => {
   assert.deepEqual(topLevelDefNames("def c-to-f(c) = 1\ndef helper = 2", "ml"), ["c-to-f", "helper"]);
   assert.deepEqual(topLevelDefNames("(def (f x) 1) (def g 2)", "sexpr"), ["f", "g"]);
