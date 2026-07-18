@@ -5853,7 +5853,7 @@ fn emit(
         // real Float value that crosses the boundary, unlike a char). `f32::NAN`/`f64::NAN` are the one
         // canonical quiet NaN, matching the fold's `to_f64_bits` comparison basis.
         Core::ConstFloatNan => {
-            let width = match crate::infer::type_of(db, id) {
+            let width = match peel_qty_ty(crate::infer::type_of(db, id)) {
                 crate::ty::Ty::Float(ft) => ft.ground_width(),
                 _ => 64,
             };
@@ -5870,7 +5870,14 @@ fn emit(
         // constant rounds the exact `Decimal` through binary32 (`as f32`) and emits `f32.const`. The width
         // is read off the solved type (the same read the boundary valtype uses).
         Core::ConstFloat(d) => {
-            let width = match crate::infer::type_of(db, id) {
+            // PEEL `Ty::Qty`: a quantity over a Float32 — `(Qty Float32 u)` — erases to its inner f32
+            // machine slot (the unit is a compile-time value), so the constant must emit `f32.const`. Without
+            // the peel a `(Qty Float32)` node missed the `Ty::Float` arm and fell to the `_ => 64` default →
+            // an `f64.const` while the heap box/get op is `box-float32`/`get-float32` (f32) → an INVALID
+            // module (`expected f32, found f64`) when a `(Qty Float32)` constant is boxed into a heap slot
+            // (e.g. a `Map.insert` value). The float twin of the `int_ty_of`/`is_narrow_int` Qty peels — the
+            // Float32 value-form width reader was the last un-peeled const-width site.
+            let width = match peel_qty_ty(crate::infer::type_of(db, id)) {
                 crate::ty::Ty::Float(ft) => ft.ground_width(),
                 _ => 64,
             };
@@ -14345,6 +14352,17 @@ fn operand_int_ty(db: &mut Db, lhs: StructId, rhs: StructId) -> IntTy {
 /// The integer type of the node at `id`, if its solved type is an integer — used to ground a literal's
 /// width at selection. Defaults to the signed-64 instance when the node is not an integer (a
 /// defensive fallback; a `ConstInt` node always types as an integer).
+/// Peel a `Ty::Qty` to its inner type — a quantity erases to its inner numeric's machine slot (the unit is
+/// a compile-time value), so a width/valtype reader that classifies the inner must see through the `Qty`
+/// wrapper. Used by the const-width emit arms (`ConstFloat`/`ConstFloatNan`) alongside `int_ty_of`'s and
+/// `is_narrow_int`'s own inline peels. A non-quantity type passes through unchanged.
+fn peel_qty_ty(ty: Ty) -> Ty {
+    match ty {
+        Ty::Qty { inner, .. } => *inner,
+        other => other,
+    }
+}
+
 fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
     // `strip_nominal`: an ERASED single-variant newtype over an int — `(type W (Wrap UInt8))` — has the SAME
     // machine int width as its inner int, so a literal `(W.Wrap 5)` must ground to the INNER width (u8 → an

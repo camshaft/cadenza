@@ -313,7 +313,9 @@ enum Cmd {
     /// that value) | `declined` (front-end reject OR rust-backend not-yet — coverage, not a mismatch) |
     /// `trap <msg>` (a Cadenza trap = a Rust panic) | `error <msg>` (the emitted `.rs` failed to `rustc` — a
     /// MISCOMPILE the fuzzer files). Keeping `declined` and `error` DISTINCT is the fuzzer's one requirement
-    /// beyond run-ml's grammar. Exits 0 for any run outcome; the one non-zero exit is a harness READ error.
+    /// beyond run-ml's grammar. Exits 0 for any RUN outcome (a verdict is not a shell failure); a non-zero
+    /// exit is a HARNESS/USAGE failure that produced no verdict — a source READ error, or a usage mistake
+    /// (a bad/ambiguous `--call`, or an arg-taking export the nullary driver can't invoke).
     RunRust(RunRustArgs),
 }
 
@@ -681,8 +683,11 @@ struct RunRustArgs {
 /// fuzzer files); `trap <msg>` (the program TRAPPED at run time — a Cadenza trap lowered to a Rust panic,
 /// compared by reason); `error <msg>` (the emitted `.rs` FAILED to `rustc` — a bad artifact, a MISCOMPILE
 /// the fuzzer files). `declined` vs `error` are kept DISTINCT (the fuzzer's one requirement beyond run-ml).
-/// Exit is ALWAYS 0 for a run outcome (a verdict is not a shell failure); the one non-zero exit is a HARNESS
-/// failure that produced no verdict (a file/stdin READ error).
+/// Exit is 0 for any RUN outcome (a verdict is not a shell failure); a NON-ZERO exit is a HARNESS/USAGE
+/// failure that produced no verdict — a file/stdin READ error, OR a usage mistake (a bad/ambiguous `--call`,
+/// or an arg-taking export the nullary driver can't invoke). A harness ENVIRONMENT breakage that occurs
+/// mid-run (can't spawn the compiler/rustc) surfaces as an `error <msg>` VERDICT + exit 0, so the oracle
+/// always gets a line (Copilot PR #547/#551).
 ///
 /// MECHANISM (mirrors the gate's `run_program_rust`, now that its render half is the shared crate): shell
 /// `cdz compile - -o - --target rust` (self, via `current_exe`) to emit the `.rs`; wrap it in `mod prog {…}`
