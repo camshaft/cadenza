@@ -36,6 +36,28 @@ jobs:
     with:
       version: nightly
 
+  # The FULL rc-leak (live-objects) probe family — Perceus/FBIP reclaim discipline. Each probe composes a
+  # program with the DEBUG-COUNTERS runtime and asserts the runtime's `live-objects` counter nets to the
+  # expected count after a round-trip: a DIRECT rc-invariant witness catching a reclaim leak the value +
+  # drop-import tests cannot see. The probes are `#[ignore]`d (they need the debug-counters store) so a plain
+  # `cargo test` skips them; `cargo xtask check` runs only a fast CORE-4 subset (~20s) to keep the hot
+  # pr-sync path cheap (concierge ruling 2026-07-18 (c)). This nightly job runs the WHOLE family (~60s) so
+  # the full leak coverage is caught daily without taxing every PR check. Builds the store first (like the
+  # `gate` job) and runs on aarch64 for the runtime-hash match (see runtime-cross-arch-determinism).
+  rc-leak-full:
+    name: rc-leak probe family (full)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          wasm-tools: "true"
+          cache-key: rc-leak-full
+      - name: Build the runtime store (release + debug-counters)
+        run: cargo xtask build
+      - name: Run the full live-objects leak-probe family
+        run: cargo test -p rcdzc --lib leaves_no_live_objects -- --ignored --test-threads=1
+
   publish:
     name: rolling nightly prerelease
     runs-on: ubuntu-latest

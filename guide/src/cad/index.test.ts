@@ -86,3 +86,45 @@ test("a negative-dimension cube meshes to zero triangles (cross-surface: matches
   assert.equal(r.ok, true, "a negative-dimension cube must parse + mesh (not throw)");
   if (r.ok) assert.equal(r.indices.length, 0, "a negative-dimension cube has no triangles");
 });
+
+// ── P-D: extrude / revolve / path profiles (the browser twin of cdz-cad's mesh.rs P-D cases) ──────────
+
+test("meshFromSolid extrudes a Rect profile into a prism (12 triangles)", async () => {
+  // (ExtrudeLinear (Rect (: (tuple 4/1 2/1) Vec2R)) 6/1) — a 4×2 rectangle lifted to height 6 → a box.
+  const r = await meshFromSolid("(: (ExtrudeLinear (Rect (: (tuple 4/1 2/1) Vec2R)) 6/1) SolidR)");
+  assert.equal(r.ok, true, "an extruded rect meshes");
+  if (r.ok) {
+    assert.ok(r.indices.length > 0, "the extruded rect has geometry");
+    assert.equal(r.indices.length / 3, 12, "an extruded rectangle is a 12-triangle box");
+  }
+});
+
+test("meshFromSolid extrudes a Circle profile into a cylinder (curved walls)", async () => {
+  const r = await meshFromSolid("(: (ExtrudeLinear (Circle 3/1) 5/1) SolidR)");
+  assert.equal(r.ok, true, "an extruded circle meshes");
+  if (r.ok) assert.ok(r.indices.length / 3 > 12, "an extruded disc has curved-wall triangles");
+});
+
+test("meshFromSolid revolves a profile into a swept solid", async () => {
+  // a rect revolved 360° about y, offset in x so the sweep encloses volume.
+  const r = await meshFromSolid(
+    "(: (Translate (: (tuple 5/1 0/1 0/1) Vec3) (Revolve (Rect (: (tuple 2/1 4/1) Vec2R)) 360/1)) SolidR)",
+  );
+  assert.equal(r.ok, true, "a revolved profile meshes");
+  if (r.ok) assert.ok(r.indices.length > 0, "the revolved profile has geometry");
+});
+
+test("meshFromSolid extrudes a PathProfile (line + cubic-Bézier spline) into a curved part", async () => {
+  // a triangular path outline (0,0)→(4,0)→(2,3) extruded — the path samples to a polygon (line = vertex).
+  const tri = await meshFromSolid(
+    "(: (ExtrudeLinear (PathProfile (: (list (MoveToAbs (: (tuple 0/1 0/1) Vec2R)) (LineToAbs (: (tuple 4/1 0/1) Vec2R)) (LineToAbs (: (tuple 2/1 3/1) Vec2R))) PathR)) 3/1) SolidR)",
+  );
+  assert.equal(tri.ok, true, "an extruded triangle path meshes");
+  if (tri.ok) assert.ok(tri.indices.length > 0, "the extruded triangle has geometry");
+  // a SPLINE outline (a cubic Bézier) — sampled to many polygon points → a smooth curved wall.
+  const spline = await meshFromSolid(
+    "(: (ExtrudeLinear (PathProfile (: (list (MoveToAbs (: (tuple 0/1 0/1) Vec2R)) (LineToAbs (: (tuple 8/1 0/1) Vec2R)) (CubicToAbs (: (tuple 0/1 0/1) Vec2R) (: (tuple 8/1 10/1) Vec2R) (: (tuple 0/1 10/1) Vec2R))) PathR)) 2/1) SolidR)",
+  );
+  assert.equal(spline.ok, true, "an extruded cubic-Bézier spline path meshes");
+  if (spline.ok) assert.ok(spline.indices.length / 3 > 12, "a spline outline samples to a curved (many-tri) wall");
+});

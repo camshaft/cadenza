@@ -21,16 +21,27 @@ import { Typed, infer-tree } from "infer-db"
 /// The integer Core IR. `CVar` carries the BINDER node-id (canonical unique name); `CLet` is keyed by its
 /// own let-node-id. Op codes match the parser/token codes (43 +, 45 -, 42 *).
 type Core =
-  | CNum(Int64, Bool, Int64)  // CNum(value, signed, width) — a fixed-width int constant; (true,64)=Int64
-  | CVar(Int64)               // CVar(binderId) — canonical, resolved
-  | CBin(Int64, Core, Core)   // CBin(op, left, right)
-  | CLet(Int64, Core, Core)   // CLet(binderId, value, body)
-  | CIf(Core, Core, Core)     // CIf(cond, then, else)
+  | CNum(Int64, Bool, Int64)       // CNum(value, signed, width) — a fixed-width int constant; (true,64)=Int64
+  | CVar(Int64)                    // CVar(binderId) — canonical, resolved
+  | CBin(Int64, Bool, Int64, Core, Core)  // CBin(op, signed, width, left, right) — width = the RESULT's
+                                   // fixed-width int type; eval wraps a narrow result at 2^width, emit masks.
+                                   // (true,64) = Int64 arith (no wrap). A comparison CBin is (true,64) too
+                                   // (its result is a 0/1 Bool-as-i64, not a narrow int).
+  | CLet(Int64, Core, Core)        // CLet(binderId, value, body)
+  | CIf(Core, Core, Core)          // CIf(cond, then, else)
 
 /// The canonical Int64 constant — the width the monomorphic-i64 pipeline lowers every literal to today (a
-/// narrow-width annotation will lower to a NARROW CNum in a later sub-slice; emit reads the width to pick
-/// i32-vs-i64 codegen). A single name so construct sites don't repeat the `(true, 64)`.
+/// narrow-width annotation lowers to a NARROW CNum; emit reads the width). A single name so construct sites
+/// don't repeat the `(true, 64)`.
 def cnum64(v: Int64) = Core.CNum(v, true, 64)
+
+/// Build a CBin, stamping its RESULT width from the node's type fact `t`: a `TIntW(s, w)` result → that
+/// (s, w) (so a narrow-typed arith node carries its width for eval-wrap/emit-mask); anything else (TBool
+/// comparison result, or absent) → the canonical (true, 64). Today arith is gated to Int64 in infer
+/// (2b-ii-c), so this stamps (true,64) until the infer-relax slice types same-width narrow arith TIntW.
+def cbin-of(op: Int64, t: Typed, l: Core, r: Core) = match t with
+  | Typed.TIntW(s, w) => Core.CBin(op, s, w, l, r)
+  | _ => Core.CBin(op, true, 64, l, r)
 
 /// Lower the subtree at `id`, reading the pre-built resolve column `rcol` (for var canonicalization) and
 /// type column `tcol` (the well-typed gate). Returns `Option(Core)` — `None` if this node or any descendant
@@ -64,7 +75,9 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
         (match lower-node(tree, l, rcol, tcol) with
           | Option.Some(cl) =>
             (match lower-node(tree, r, rcol, tcol) with
-              | Option.Some(cr) => Option.Some(Core.CBin(op, cl, cr))
+              // stamp the CBin's result width from THIS node's type fact (narrow arith carries its width;
+              // arithmetic-over-Int64 and comparisons stamp (true,64)).
+              | Option.Some(cr) => Option.Some(cbin-of(op, (match Map.lookup(tcol, id) with | Option.Some(t) => t | Option.None(_) => Typed.TIntW(true, 64)), cl, cr))
               | Option.None(_) => Option.None(unit))
           | Option.None(_) => Option.None(unit))
     | Option.Some(Node.NLet(_, valId, bodyId)) =>
@@ -121,7 +134,7 @@ def lw-add() =
   // "1 + 2" → Some(CBin(+, CNum 1, CNum 2)).
   (match parse-of([n(1), plus(), n(2)]) with | (root, tree) =>
     (match lower-tree(tree, root) with
-      | Option.Some(Core.CBin(op, l, r)) =>
+      | Option.Some(Core.CBin(op, _, _, l, r)) =>
         (if op == 43 then (if is-cnum(l, 1) then (if is-cnum(r, 2) then unit else trap("right CNum 2")) else trap("left CNum 1")) else trap("+ op"))
       | _ => trap("1 + 2 lowers to a CBin")))
 
@@ -176,10 +189,10 @@ def lw-milestone-lowers() =
         (if binderId == root then
            (if is-cnum(cv, 2) then
               (match body with
-                | Core.CBin(addop, mul, one) =>
+                | Core.CBin(addop, _, _, mul, one) =>
                   (if addop == 43 then
                      (match mul with
-                       | Core.CBin(mulop, xv, three) =>
+                       | Core.CBin(mulop, _, _, xv, three) =>
                          (if mulop == 42 then
                             (if is-cvar(xv, root) then (if is-cnum(three, 3) then (if is-cnum(one, 1) then unit else trap("+ right CNum 1")) else trap("* right CNum 3")) else trap("* left CVar(root)"))
                           else trap("inner is *"))
