@@ -232,6 +232,41 @@
             (export main)))
   (output (: 10 Int64)))
 
+; TWO NESTED recursive const-closure drivers — `filter-step` re-passes its const `step` closure AND is
+; itself the const step a `drive` fold consumes. This composition (a const-driver whose closure is
+; another const-driver's specialized output) emitted INVALID WASM ("function index out of bounds") — a
+; nested specialization the layout reachability walk appended to `order` without walking ITS callees, so a
+; `Core::Call` targeted an un-laid-out function slot. The layout fix (a joint fixpoint of the call- and
+; lifted-closure worklists) reaches the nested spec's callees. Value parity is the witness the fusion is
+; correct; that the module is valid wasm is the primary fix (a rcdzc test asserts 0 call_indirect + it
+; validates). `[1,2,3,4,5]` kept (> 2) then summed: 3+4+5 = 12.
+
+(case "two nested recursive const-closure drivers (filter under fold) emit valid wasm and compute correctly"
+  (doc    "A `filter` adapter whose recursive `filter-step` takes a `const` step closure, consumed by a
+           recursive `drive` fold that ALSO takes its step `const` — two nested recursive const-closure
+           specializations. This used to emit INVALID WASM (a nested spec's `Core::Call` referenced an
+           un-laid-out function index) because the layout reachability walk appended the nested spec to the
+           emission order without closing over its own callees. The joint call/lifted-closure fixpoint
+           reaches them. Filters `(list 1 2 3 4 5)` to elements > 2 then sums: 3 + 4 + 5 = 12.")
+  (input  (do
+            (type It (Mk (List Int64) (-> (List Int64) (Option (Tuple Int64 (List Int64))))))
+            (def (from-list (: xs (List Int64)))
+              (It.Mk xs (fn ((: s (List Int64))) (match s ((list) (Option.None)) ((list h .. t) (Option.Some (tuple h t)))))))
+            (def (filter-step (const (: step (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) (: s (List Int64)) (const (: p (-> Int64 Bool))))
+              (match (step s)
+                ((Option.None) (Option.None))
+                ((Option.Some pr) (match pr ((tuple x s2) (if (p x) (Option.Some (tuple x s2)) (filter-step step s2 p)))))))
+            (def (filter (: it It) (: p (-> Int64 Bool)))
+              (match it ((It.Mk s0 step) (It.Mk s0 (fn ((: s (List Int64))) (filter-step step s p))))))
+            (def (drive (const (: step (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) (: s (List Int64)) (: acc Int64))
+              (match (step s)
+                ((Option.None) acc)
+                ((Option.Some p) (match p ((tuple x s2) (drive step s2 (+ acc x)))))))
+            (def (sum (: it It)) (match it ((It.Mk s step) (drive step s 0))))
+            (def (main) (sum (filter (from-list (list 1 2 3 4 5)) (fn ((: x Int64)) (> x 2)))))
+            (export main)))
+  (output (: 12 Int64)))
+
 (case "a let-bound returned closure applied twice folds each application independently"
   (doc    "The multi-use companion: `(let ((f (mk n))) (+ (f 3) (f 4)))` binds the returned capturing closure
            once and applies it twice; each application folds independently, so with `n` = 10 the result is

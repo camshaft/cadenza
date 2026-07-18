@@ -287,8 +287,12 @@ where
 /// would re-process its own bookkeeping as triggers and never converge. The cursor still advances PAST skipped
 /// events (they're seen-and-dismissed, not re-read), so a round always drains to the log tail.
 ///
-/// `policies` is the OPTIONAL external Cedar trust-anchor: `Some(root)` gates every op via
-/// [`tick_hosted_authorized`] (authorize-then-perform); `None` runs the ungated record-only [`tick_hosted`].
+/// `policies` selects the capability boundary: `Some(root)` is an explicit external Cedar trust-anchor that
+/// OVERRIDES the log — every op gates against `root` via [`tick_hosted_authorized`]; `None` is the operator's
+/// default — the policy is read FROM THE LOG per invocation via [`tick_hosted_log_policy`] (the latest `policy`
+/// event governs; no policy in the log → ungated record-only). So a live daemon started with no `--policies`
+/// file automatically enforces whatever `policy` Cedar doc is appended to the log — the retrieve-at-invocation
+/// model — while an explicit file is the override for a fixed external anchor.
 pub fn run_once<L, K>(
     log: &std::sync::Arc<std::sync::Mutex<L>>,
     from: crate::Seq,
@@ -309,6 +313,7 @@ where
     for event in &events {
         if let Some(kind) = kind_of(event) {
             match &policies {
+                // Explicit external anchor: gate against the fixed doc (overrides the log).
                 Some(root) => {
                     tick_hosted_authorized(
                         std::sync::Arc::clone(log),
@@ -317,8 +322,9 @@ where
                         root.clone(),
                     )?;
                 }
+                // Default: policy FROM THE LOG per invocation (latest `policy` event; none → ungated).
                 None => {
-                    tick_hosted(std::sync::Arc::clone(log), kind, runtime.clone())?;
+                    tick_hosted_log_policy(std::sync::Arc::clone(log), kind, runtime.clone())?;
                 }
             }
             processed += 1;
@@ -915,6 +921,55 @@ mod tests {
         assert_eq!(
             processed2, 0,
             "the daemon's own prim events are skipped, not re-performed → converges"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn run_once_with_no_external_policy_reads_the_policy_from_the_log() {
+        // The full operator model at the loop level: run_once(policies=None) reads the policy FROM THE LOG per
+        // invocation (via tick_hosted_log_policy). With a `policy` event permitting ONLY prim:append in the log,
+        // a trigger performs append (1) but exec is DENIED — recording a prim-denied-exec event. Proves a live
+        // daemon (no --policies file) enforces whatever policy is appended to the log: emit-policy → start.
+        use std::sync::{Arc, Mutex};
+        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let provider = match crate::kernel::compile_interpret_provider(GENESIS) {
+            Ok(p) => p,
+            Err(e) => panic!("genesis compiles: {e}"),
+        };
+        let Some(runtime) = crate::kernel::find_runtime_for(&provider, store_root) else {
+            eprintln!("[cdz-kernel::daemon] runtime absent/stale; skipping run_once log-policy");
+            return;
+        };
+        let (path, mut log0) = temp_log();
+        crate::boot::inject_genesis(&mut log0, GENESIS).unwrap();
+        crate::policy::append_policy(
+            &mut log0,
+            r#"permit(principal, action == Action::"prim:append", resource);"#,
+        )
+        .unwrap();
+        log0.append("trigger", b"go").unwrap();
+        let log = Arc::new(Mutex::new(log0));
+        // Only `trigger` fires (kind 1); skip genesis/policy/prim-* bookkeeping.
+        let kind_of = |e: &crate::Event| (e.kind == "trigger").then_some(1i64);
+        // No external --policies → the log policy governs.
+        let (_cursor, processed) = run_once(&log, 0, runtime, None, kind_of)
+            .expect("run_once with the log policy in force");
+        assert_eq!(
+            processed, 1,
+            "the one trigger was processed under the log policy"
+        );
+        let denied = log
+            .lock()
+            .unwrap()
+            .tail(0)
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind.starts_with(PRIM_DENIED_PREFIX))
+            .count();
+        assert_eq!(
+            denied, 1,
+            "the log policy permits only prim:append → exec denied → one prim-denied event (no --policies file)"
         );
         let _ = std::fs::remove_file(&path);
     }

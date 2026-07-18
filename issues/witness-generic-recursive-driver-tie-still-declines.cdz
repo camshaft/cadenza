@@ -1,0 +1,11 @@
+// GENERIC adapter driver: fold over a generic Iter, recursing while threading the stored step closure.
+// This is the shape that still declines — distinct from the transformer-closure-tie v-inference resolved.
+type GIter = | Mk(s, s -> Option((a, s)))
+def gfrom-list(xs) = GIter.Mk(xs, fn(s) => match s with | [] => Option.None(unit) | [h, .. t] => Option.Some((h, t)))
+def gdrive(step, s, acc, g) = match step(s) with
+  | Option.None(_) => acc | Option.Some(p) => (match p with | (x, s2) => gdrive(step, s2, g(acc, x), g))
+def gfold(it, acc, g) = match it with | GIter.Mk(s, step) => gdrive(step, s, acc, g)
+@test
+def gf-int() = if gfold(gfrom-list([1,2,3]), 0, fn(a,x)=>a+x) == 6 then unit else trap("i")
+@test
+def gf-str() = if gfold(gfrom-list(["a","bb"]), 0, fn(a,s)=>a + String.byte-len(s)) == 3 then unit else trap("s")

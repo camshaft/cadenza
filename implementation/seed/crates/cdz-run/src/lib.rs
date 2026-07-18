@@ -22,19 +22,34 @@ pub mod cli;
 /// and for a tiny gate program (which runs once) the total `Component::new`→run time drops. This is the
 /// dominant per-invocation cost across the gate's ~1000 spawns (cdz-run was the slowest pipeline stage).
 fn engine() -> Engine {
-    let mut cfg = Config::new();
-    cfg.cranelift_opt_level(OptLevel::None);
-    // EPOCH INTERRUPTION: cap an in-process run's wall-clock so a MISCOMPILED runtime-looping program
-    // (e.g. an emitted body that loops forever) TRAPS at a deadline instead of spinning a CPU core
-    // indefinitely. This is the durable fleet-health safety net: a runaway corpus case that ran in-process
-    // with no cap previously starved pr-sync + flooded the host (64 orphaned CPU-spinning `cdz run` procs
-    // wedged the integrator ~2h in one session). Each `Store` gets an epoch deadline (see `new_store`),
-    // and a single background thread advances the engine's epoch on a fixed tick, so the deadline is
-    // wall-clock-bounded. `epoch_interruption(true)` is what makes `set_epoch_deadline` effective.
-    cfg.epoch_interruption(true);
-    // A fresh `Config` can only fail to build an `Engine` on an unsupported target/feature combination,
-    // which this host supports; fall back to the default engine if that ever changes rather than panic.
-    Engine::new(&cfg).unwrap_or_default()
+    // ONE shared engine per process, returned as a cheap `Arc`-backed clone. This is a CORRECTNESS
+    // requirement, not just an optimization: the epoch-ticker (`arm_epoch_ticker`) is spawned ONCE (a
+    // `Once`) and increments the epoch of the engine it was handed. If `engine()` minted a FRESH engine
+    // per call, the ticker would advance only the FIRST engine's epoch — every later run's `Store` deadline
+    // would never fire, so a runaway loop on a second-or-later engine spins a core FOREVER (the deadline
+    // trap silently never trips). That regression wedged pr-sync's `cargo test --workspace` gate (the loop
+    // test hung at 99% CPU) because another run had already armed the ticker on a different engine first.
+    // Sharing the engine means the ticker and every `Store` refer to the SAME epoch clock.
+    static ENGINE: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
+    ENGINE
+        .get_or_init(|| {
+            let mut cfg = Config::new();
+            cfg.cranelift_opt_level(OptLevel::None);
+            // EPOCH INTERRUPTION: cap an in-process run's wall-clock so a MISCOMPILED runtime-looping
+            // program (e.g. an emitted body that loops forever) TRAPS at a deadline instead of spinning a
+            // CPU core indefinitely. This is the durable fleet-health safety net: a runaway corpus case that
+            // ran in-process with no cap previously starved pr-sync + flooded the host (64 orphaned
+            // CPU-spinning `cdz run` procs wedged the integrator ~2h in one session). Each `Store` gets an
+            // epoch deadline (see `new_store`), and a single background thread advances the engine's epoch on
+            // a fixed tick, so the deadline is wall-clock-bounded. `epoch_interruption(true)` is what makes
+            // `set_epoch_deadline` effective.
+            cfg.epoch_interruption(true);
+            // A fresh `Config` can only fail to build an `Engine` on an unsupported target/feature
+            // combination, which this host supports; fall back to the default engine if that ever changes
+            // rather than panic.
+            Engine::new(&cfg).unwrap_or_default()
+        })
+        .clone()
 }
 
 /// The wall-clock a single in-process run may take before the epoch deadline TRAPS it. Generous — a
@@ -2480,20 +2495,29 @@ mod tests {
         unsafe {
             std::env::set_var("CDZ_RUN_TIMEOUT_SECS", "1");
         }
-        let wasm = wat::parse_str(
-            "(module (func (export \"main\") (result i64) (loop br 0) (i64.const 0)))",
-        )
-        .expect("assemble the loop module");
-        let start = std::time::Instant::now();
-        let outcome = run_core_module(&wasm, "main").expect("run returns (trap outcome), not Err");
-        let elapsed = start.elapsed();
+        // Run the (would-be-infinite) loop on a WORKER THREAD and join with a HARD wall-clock bound, so a
+        // REGRESSION where the deadline never fires FAILS this test (and doesn't wedge the suite) instead of
+        // spinning a core forever. A previous regression — `engine()` minting a fresh engine per call so the
+        // ticker only advanced the first one's epoch — hung exactly here at 99% CPU and wedged pr-sync's
+        // `cargo test --workspace` gate (no per-test timeout there); the earlier "assert elapsed < 15s AFTER
+        // the call" could never fire because the call never returned. This join-with-timeout is the guard.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let wasm = wat::parse_str(
+                "(module (func (export \"main\") (result i64) (loop br 0) (i64.const 0)))",
+            )
+            .expect("assemble the loop module");
+            let outcome = run_core_module(&wasm, "main");
+            let _ = tx.send(outcome);
+        });
+        let outcome = rx
+            .recv_timeout(std::time::Duration::from_secs(15))
+            .expect("the epoch deadline must TRAP the loop within 15s — a regression hangs here");
+        let _ = worker.join();
+        let outcome = outcome.expect("run returns (trap outcome), not Err");
         assert!(
             matches!(outcome, Outcome::Trap(_)),
             "a runaway loop must TRAP at the deadline, got {outcome:?}"
-        );
-        assert!(
-            elapsed < std::time::Duration::from_secs(15),
-            "the deadline must fire promptly (was {elapsed:?}) — a regression would hang here"
         );
         unsafe {
             std::env::remove_var("CDZ_RUN_TIMEOUT_SECS");

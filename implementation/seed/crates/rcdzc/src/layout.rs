@@ -425,21 +425,34 @@ fn finish_layout(db: &mut Db, exports: Vec<ExportPlan>) -> Result<Layout, Reject
             order.push(e.def);
         }
     }
-    let mut i = 0;
-    while i < order.len() {
-        let def = order[i];
-        if let Some(body) = db.defs[def].body {
-            let mut callees = Vec::new();
-            collect_call_callees(db, body, &mut callees);
-            for c in callees {
-                if in_order.insert(c) {
-                    trace!(target: "rcdzc::layout", def = c, "reachable via a runtime call — added to emission order");
-                    order.push(c);
+    // The `Core::Call`-reachability worklist, resumable from `call_i` — closes `order` over every runtime
+    // callee of the def bodies currently in `order`. Factored out because the LIFTED-closure worklist
+    // below can ADD new defs to `order` (a lifted body specializes + calls a fresh spec — the nested
+    // recursive const-closure-driver case), and those newly-added defs' OWN callees must then be walked
+    // too. Without re-closing, a def reachable only through a lifted body's call chain (e.g. a nested
+    // `filter-step`→`drive` specialization) is appended to `order` but its callee is never discovered →
+    // a `Core::Call` to an un-laid-out function index → INVALID WASM ("function index out of bounds").
+    let mut call_i = 0;
+    let close_call_worklist = |db: &mut Db,
+                               order: &mut Vec<usize>,
+                               in_order: &mut std::collections::HashSet<usize>,
+                               call_i: &mut usize| {
+        while *call_i < order.len() {
+            let def = order[*call_i];
+            if let Some(body) = db.defs[def].body {
+                let mut callees = Vec::new();
+                collect_call_callees(db, body, &mut callees);
+                for c in callees {
+                    if in_order.insert(c) {
+                        trace!(target: "rcdzc::layout", def = c, "reachable via a runtime call — added to emission order");
+                        order.push(c);
+                    }
                 }
             }
+            *call_i += 1;
         }
-        i += 1;
-    }
+    };
+    close_call_worklist(db, &mut order, &mut in_order, &mut call_i);
 
     // LAMBDA-LIFTED closures: lowering the def bodies above (via `collect_call_callees` → `core_of`)
     // registers each surviving `(fn …)` into `db.lifted` (a `Core::Closure` naming its table slot). But
@@ -475,6 +488,29 @@ fn finish_layout(db: &mut Db, exports: Vec<ExportPlan>) -> Result<Layout, Reject
             if in_order.insert(c) {
                 trace!(target: "rcdzc::layout", def = c, "reachable via a lifted closure body — added to emission order");
                 order.push(c);
+            }
+        }
+        // Re-close the `Core::Call` worklist over any defs this lifted body just added to `order`: such a
+        // def (a spec a lifted body specialized + called) has its OWN callees, and its body may build
+        // further closures — both must be reached. `close_call_worklist` resumes from `call_i`, and any
+        // new closure codes it surfaces are picked up by the seed-and-transitively-close pass below (this
+        // `while work` loop) since `collect_closure_codes` runs on the growing `order` too. This is the
+        // joint fixpoint of the call-reachability and lifted-closure worklists — a nested recursive
+        // const-closure driver (filter-step under drive) needs both to converge or a spec dangles.
+        close_call_worklist(db, &mut order, &mut in_order, &mut call_i);
+        // Seed closure codes from any defs just added to `order` (a spec's body may build closures whose
+        // lifted bodies must be reached); push newly-seen codes onto the lifted worklist so this loop
+        // converges to the joint fixpoint.
+        let order_snapshot: Vec<usize> = order.clone();
+        for def in order_snapshot {
+            if let Some(dbody) = db.defs[def].body {
+                let mut more = std::collections::HashSet::new();
+                collect_closure_codes(db, dbody, &mut more);
+                for c in more {
+                    if reached_codes.insert(c) {
+                        work.push(c);
+                    }
+                }
             }
         }
     }

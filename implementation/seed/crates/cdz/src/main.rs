@@ -5030,11 +5030,31 @@ struct FixArgs {
     json: bool,
 }
 
+/// Parse a source BYTE OFFSET argument (`def`/`scope`/`type-at`/`doc-at`) with an ACTIONABLE message.
+/// clap's default `usize` parser rejects a bad value with a bare `invalid digit found in string` — which
+/// doesn't tell an editor/script author WHAT the argument is (a 0-based byte offset) or how it went wrong
+/// (non-numeric vs negative). These are AI-native/editor-facing commands where a caller can easily pass a
+/// stale or mis-typed offset, so name the expectation. A plain `usize::from_str` already rejects a leading
+/// `-` (a negative offset is nonsensical) — surface that as its own note rather than the digit-parse blur.
+fn parse_byte_offset(s: &str) -> Result<usize, String> {
+    s.parse::<usize>().map_err(|_| {
+        if s.starts_with('-') {
+            format!("`{s}` is negative — a source byte offset is a 0-based, non-negative integer")
+        } else {
+            format!(
+                "`{s}` is not a byte offset — expected a 0-based, non-negative integer (the UTF-8 byte \
+                 position in the file, e.g. the editor cursor offset)"
+            )
+        }
+    })
+}
+
 #[derive(clap::Args)]
 struct DefArgs {
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
     /// The source BYTE OFFSET of the reference to jump from (0-based, UTF-8 bytes).
+    #[arg(value_parser = parse_byte_offset)]
     offset: usize,
     /// Emit the definition location as a machine-readable JSON object (`{file, line, col}`) instead of the
     /// human `file:line:col` text — the shape an editor consumes for a go-to-definition jump without
@@ -5049,6 +5069,7 @@ struct ScopeArgs {
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
     /// The source BYTE OFFSET whose visible bindings to list (0-based, UTF-8 bytes).
+    #[arg(value_parser = parse_byte_offset)]
     offset: usize,
     /// Emit each visible binding as a machine-readable JSON object (one per line) instead of the human
     /// `file:line:col: name : type` text — the shape an editor consumes for a scope/completion view
@@ -5125,6 +5146,7 @@ struct TypeAtArgs {
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
     /// The source BYTE OFFSET to type — the cursor position (0-based, UTF-8 bytes).
+    #[arg(value_parser = parse_byte_offset)]
     offset: usize,
 }
 
@@ -5148,6 +5170,7 @@ struct DocAtOffsetArgs {
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
     /// The source BYTE OFFSET whose documentation to show — the cursor position (0-based, UTF-8 bytes).
+    #[arg(value_parser = parse_byte_offset)]
     offset: usize,
 }
 

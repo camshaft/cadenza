@@ -1544,6 +1544,71 @@ mod tests {
         );
     }
 
+    /// Recognizer-level coverage of `invariant_int_range` across the shapes the e2e tests don't pin directly
+    /// (point equality, one-sided upper, negative/strict bounds, no-bound). Extracts the `(invariant Q)`
+    /// predicate from a parsed decl via `type_invariant_pred`, then asserts the exact `(lo, hi)` the range
+    /// recognizer distills — pinning the arithmetic (strict `>`/`<` = ±1, `saturating` one-sided window,
+    /// mirrored `(op K it)`, point `(= it K)`) that the generator + decoder both depend on.
+    #[test]
+    fn invariant_int_range_distills_bounds_across_shapes() {
+        // Parse a `(@ (invariant Q) (type T (V Int64)))` decl and hand the predicate Q to the recognizer.
+        let range_of = |src: &str| -> Option<(i64, i64)> {
+            let ast = crate::testkit::parse(src);
+            let items: Vec<_> = ast.as_form(ast.root, "do").unwrap().to_vec();
+            let decl = *items
+                .iter()
+                .find(|&&it| super::type_decl_form(&ast, it).is_some())
+                .expect("a type decl in the fixture");
+            let pred =
+                super::type_invariant_pred(&ast, decl).expect("an (invariant Q) on the decl");
+            super::invariant_int_range(&ast, pred)
+        };
+        let win = super::ONE_SIDED_INVARIANT_WINDOW;
+        // Two-sided inclusive.
+        assert_eq!(
+            range_of(
+                "(do (@ (invariant (and (>= it 0) (<= it 100))) (type T (V Int64))) (def (o) 1))"
+            ),
+            Some((0, 100))
+        );
+        // Strict two-sided: `> 0` ⇒ lo 1, `< 10` ⇒ hi 9.
+        assert_eq!(
+            range_of(
+                "(do (@ (invariant (and (> it 0) (< it 10))) (type T (V Int64))) (def (o) 1))"
+            ),
+            Some((1, 9))
+        );
+        // Point equality `(= it 5)` ⇒ the singleton range [5, 5].
+        assert_eq!(
+            range_of("(do (@ (invariant (= it 5)) (type T (V Int64))) (def (o) 1))"),
+            Some((5, 5))
+        );
+        // One-sided lower `(>= it 0)` ⇒ [0, WINDOW]; mirrored `(<= 0 it)` is the same bound.
+        assert_eq!(
+            range_of("(do (@ (invariant (>= it 0)) (type T (V Int64))) (def (o) 1))"),
+            Some((0, win))
+        );
+        assert_eq!(
+            range_of("(do (@ (invariant (<= 0 it)) (type T (V Int64))) (def (o) 1))"),
+            Some((0, win))
+        );
+        // One-sided upper `(<= it 100)` ⇒ [100-WINDOW, 100].
+        assert_eq!(
+            range_of("(do (@ (invariant (<= it 100)) (type T (V Int64))) (def (o) 1))"),
+            Some((100i64.wrapping_sub(win), 100))
+        );
+        // Negative lower bound `(>= it -100)` ⇒ [-100, -100+WINDOW].
+        assert_eq!(
+            range_of("(do (@ (invariant (>= it -100)) (type T (V Int64))) (def (o) 1))"),
+            Some((-100, (-100i64).saturating_add(win)))
+        );
+        // No bound on `it` (an opaque predicate) ⇒ None (unconstrained fallback).
+        assert_eq!(
+            range_of("(do (@ (invariant (> other 0)) (type T (V Int64))) (def (o) 1))"),
+            None
+        );
+    }
+
     /// G5: a `@test` over a USER SUM `(type NAME (V PAYLOAD?)…)` gains a wrapper — the generator picks a
     /// variant by `Test.gen % k` and builds its payload. Covers a mix of payload'd + nullary variants,
     /// and a sum nested inside a `List`.
