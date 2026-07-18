@@ -613,6 +613,84 @@ fn hosted_with_policies_gates_each_op_on_the_external_cedar_policy() {
 }
 
 #[test]
+fn a_denied_op_files_an_authz_request_that_authz_requests_lists_end_to_end() {
+    // The can't-brick loop, observable through the real binary end-to-end: run `hosted --policies` with a policy
+    // that permits ONLY prim:append, so kind=1's prim:exec is DENIED — the daemon auto-emits an authz-request for
+    // the denied op. Then `authz-requests` must LIST that standing ask (the operator sees what's waiting on a
+    // grant). This is the safety-critical property (a denial is never silent — it leaves a grantable request in
+    // the log) proven through the CLI, not just the lib fold. Store-gated SKIP like the other daemon-path verbs.
+    let log = unique("cantbrick-log").with_extension("log");
+    let prog = unique("cantbrick-genesis").with_extension("cdz");
+    let pol = unique("cantbrick-policy").with_extension("cedar");
+    let _ = std::fs::remove_file(&log);
+    std::fs::write(&prog, GENESIS).unwrap();
+    // Permit ONLY prim:append → prim:exec is denied → an authz-request is auto-filed for exec.
+    std::fs::write(
+        &pol,
+        r#"permit(principal, action == Action::"prim:append", resource);"#,
+    )
+    .unwrap();
+
+    Command::new(bin())
+        .args(["bootstrap", log.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+    Command::new(bin())
+        .args([
+            "inject-genesis",
+            log.to_str().unwrap(),
+            prog.to_str().unwrap(),
+        ])
+        .output()
+        .expect("inject-genesis");
+
+    let out = Command::new(bin())
+        .args([
+            "hosted",
+            log.to_str().unwrap(),
+            "1",
+            "--policies",
+            pol.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run cdz-agent hosted --policies");
+    if !out.status.success() {
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("runtime not found"),
+            "the only acceptable failure is a missing runtime store (skip); got: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        eprintln!(
+            "[cdz-agent it] value-heap runtime absent; skipped the can't-brick e2e assertion"
+        );
+        let _ = std::fs::remove_file(&log);
+        let _ = std::fs::remove_file(&prog);
+        let _ = std::fs::remove_file(&pol);
+        return;
+    }
+
+    // The denied exec left a standing authz-request → authz-requests lists it (op = exec).
+    let out = Command::new(bin())
+        .args(["authz-requests", log.to_str().unwrap()])
+        .output()
+        .expect("run cdz-agent authz-requests");
+    assert!(
+        out.status.success(),
+        "authz-requests runs: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        so.contains("authorization request(s):") && so.contains("prim:exec"),
+        "the denied exec filed an authz-request that authz-requests lists (can't-brick, observable): {so}"
+    );
+
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&prog);
+    let _ = std::fs::remove_file(&pol);
+}
+
+#[test]
 fn start_runs_the_daemon_loop_bounded_and_stops_cleanly() {
     // The `start` verb runs the LIVE daemon loop (poll → perform → sleep), bounded by --max-rounds so the run
     // terminates deterministically. On a genesis-only log the loop performs nothing (the `program` event is

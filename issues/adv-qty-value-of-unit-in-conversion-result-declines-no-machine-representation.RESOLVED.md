@@ -25,3 +25,10 @@ check -> backend "no machine representation". Simplest form (Qty.value 60) decli
 Unit.in-specific). FIX: a QtyValue-of-non-quantity check in check_application rejects CDZ0501 at compile
 ("Qty.value recovers a quantity's number, but this operand is an Int64 … drop it"), guarded to show the
 operand's own faults first. Corpus reject pin + rcdzc test, backend-agnostic (in infer). Retire on land.
+
+---
+LANDED + SOURCE-VERIFIED (corpus-bugfix 2026-07-18, trunk c905067ef): eb38ae2d on trunk. infer.rs:7876 now
+pushes Reject::coded(Code::DimensionMismatch, "`Qty.value` recovers a quantity's number, but this operand is
+{} — a plain number, not a quantity (an as/in conversion already UNWRAPS to a bare number, so its result
+needs no Qty.value; drop it)"). So Qty.value of a Unit.in result (or any non-quantity) now REJECTS CDZ0501 at
+check instead of slipping past to a backend "no machine representation". Fully resolved.

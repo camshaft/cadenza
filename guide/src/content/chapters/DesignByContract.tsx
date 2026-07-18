@@ -8,22 +8,22 @@ export default function DesignByContract() {
     <article>
       <H1>Design by contract</H1>
       <Lede>
-        A function usually carries assumptions — "this count is never negative", "I always return
+        A function usually carries assumptions, like "this count is never negative" or "I always return
         something in range". Cadenza lets you write those assumptions down as <em>contracts</em>, and
         turns them into checks it enforces every time the function runs.
       </Lede>
 
       <P>
-        Two annotations do it. <C>@requires</C> states a <em>precondition</em> — what must hold when the
-        function is called. <C>@ensures</C> states a <em>postcondition</em> — what must hold about its
+        Two annotations do it. <C>@requires</C> states a <em>precondition</em>, what must hold when the
+        function is called, while <C>@ensures</C> states a <em>postcondition</em>, what must hold about its
         result. Each becomes a check the compiler injects at the function's boundary: violate it and the
         program <em>traps</em> right there, instead of quietly computing on bad data.
       </P>
 
-      <H2>@requires — a precondition</H2>
+      <H2>@requires: a precondition</H2>
       <P>
         Here <C>f</C> promises to work only for non-negative inputs. Called with <C>5</C>, it returns{" "}
-        <C>6</C> — the check passes and doesn't change the value:
+        <C>6</C>, so the check passes and doesn't change the value:
       </P>
       <Runnable
         source={`(def (main) (f 5))
@@ -31,7 +31,7 @@ export default function DesignByContract() {
   (def (f (: x Int64)) (+ x 1)))`}
       />
       <P>
-        Feed it a value that breaks the promise and it stops at the boundary — <C>f(-5)</C> traps,
+        Feed it a value that breaks the promise and it stops at the boundary, so <C>f(-5)</C> traps,
         because <C>-5</C> is not <C>{`>= 0`}</C>:
       </P>
       <Runnable
@@ -41,16 +41,16 @@ export default function DesignByContract() {
   (def (f (: x Int64)) (+ x 1)))`}
       />
       <Note>
-        The precondition is checked <em>once, at entry</em> — the Hoare-logic reading of{" "}
+        The precondition is checked <em>once, at entry</em>, which is the Hoare-logic reading of{" "}
         <C>{`{P} body {Q}`}</C>. Because it lives on the function, not the call, it holds even for
         higher-order or indirect calls. Preconditions also <em>stack</em>: put several <C>@requires</C> on
         one function and all of them are enforced.
       </Note>
 
-      <H2>@ensures — a postcondition</H2>
+      <H2>@ensures: a postcondition</H2>
       <P>
         A postcondition constrains the <em>result</em>. Inside <C>@ensures</C>, the name <C>ret</C>{" "}
-        refers to the value the function returns. This <C>f</C> promises a non-negative result — with{" "}
+        refers to the value the function returns. This <C>f</C> promises a non-negative result, so with{" "}
         <C>200</C> it returns <C>100</C>, honestly:
       </P>
       <Runnable
@@ -59,7 +59,7 @@ export default function DesignByContract() {
   (def (f (: x Int64)) (- x 100)))`}
       />
       <P>
-        But <C>f(5)</C> would compute <C>-95</C> — a broken promise — so it traps on the way out instead
+        But <C>f(5)</C> would compute <C>-95</C>, a broken promise, so it traps on the way out instead
         of returning a wrong answer:
       </P>
       <Runnable
@@ -85,11 +85,11 @@ export default function DesignByContract() {
         Called with <C>200</C> both hold and it returns <C>100</C>. Call it with <C>-5</C> and it traps at{" "}
         <em>entry</em> (the precondition); call it with <C>5</C> and it traps at <em>exit</em> (the
         postcondition catches the <C>-95</C>). A caller can only ever see a result that satisfies the
-        contract — or a clean trap at the exact boundary that broke it.
+        contract, or a clean trap at the exact boundary that broke it.
       </P>
       <Note>
         Two things to know: a contract may reference only the function's parameters (and prelude/global
-        names) — naming something out of scope is a compile error at the annotation. And a function whose
+        names), so naming something out of scope is a compile error at the annotation. And a function whose
         parameter is named <C>ret</C> can't carry an <C>@ensures</C>: the result binder <C>ret</C>{" "}
         would shadow the parameter, so rather than silently ignore the postcondition, the compiler rejects it
         and asks you to rename the parameter.
@@ -98,22 +98,22 @@ export default function DesignByContract() {
       <Why tenet="Make the assumption an enforced check, not a comment">
         Every function has assumptions; usually they live in a comment or someone's head, and a violation
         surfaces far away as corrupted data. A contract puts the assumption where the compiler can enforce
-        it — checked at the boundary, failing loudly and locally the instant it's broken. It's the same{" "}
+        it, checked at the boundary, failing loudly and locally the instant it's broken. It's the same{" "}
         <Link to="/errors" className="text-cadenza-300 underline-offset-2 hover:underline">
           Option and Result
         </Link>{" "}
-        instinct — make the failure a value you must confront — turned on a function's own promises.
+        instinct of making the failure a value you must confront, turned on a function's own promises.
       </Why>
 
       <P>
         These contracts are checked at run time today. They're also the first step of a larger story: the
-        same <C>@requires</C> a compiler could one day <em>prove</em> and remove — the assumption verified
+        same <C>@requires</C> a compiler could one day <em>prove</em> and remove, the assumption verified
         once, statically, instead of on every call. For now, a contract is a guarantee you get for free
         just by writing down what you already assumed. Next,{" "}
         <Link to="/modules" className="text-cadenza-300 underline-offset-2 hover:underline">
           Modules
         </Link>{" "}
-        gather related definitions — contracts and all — under a name.
+        gather related definitions, contracts and all, under a name.
       </P>
     </article>
   );

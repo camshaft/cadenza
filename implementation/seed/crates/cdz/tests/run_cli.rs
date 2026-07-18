@@ -506,6 +506,47 @@ fn cdz_run_arg_type_error_names_the_cadenza_type_not_the_component_model_spellin
 }
 
 #[test]
+fn cdz_run_host_response_errors_surface_the_actionable_cause_not_an_opaque_trap() {
+    // A program that performs a host effect but gets a bad/absent `--host-response` must surface the
+    // ACTIONABLE cause, NOT a bare wasmtime `error while executing at wasm backtrace:` wrapper. Two cases,
+    // both pinning behaviors that exist today (a prior breaker fix + the arg-coercion type-name reuse) so a
+    // future refactor of the host-func error path can't silently regress them back to an opaque trap:
+    //   - NO response supplied  → names the op + the call number + how many responses were given;
+    //   - a non-coercible value → names the Cadenza type (`Int64`), via the shared coercion path.
+    // `main` performs `Ask.ask : () -> Int64` once, so the runner needs one Int64 host-response.
+    let (dir, wasm) = compile_component(
+        "hostresp",
+        "main",
+        "(module m (effect Ask (op ask (-> Int64))) (def (main) (host (Ask) (Ask.ask))) (export main))",
+    );
+    let w = wasm.to_str().unwrap();
+
+    // Missing response: the run fails (non-zero) and the cause names the op, not just the wasm wrapper.
+    let (ok, _o, err) = run(&["run", w, "--call", "main"]);
+    assert!(!ok, "a performed host op with no response must fail");
+    assert!(
+        err.contains("host call `ask.ask` has no recorded response"),
+        "the actionable cause (which op, no response) is surfaced, not buried under the wasm wrapper: {err}"
+    );
+
+    // Non-coercible response value: the cause names the Cadenza type (`Int64`), not the component spelling.
+    let (ok2, _o2, err2) = run(&[
+        "run",
+        w,
+        "--call",
+        "main",
+        "--host-response",
+        "ask.ask=hello",
+    ]);
+    assert!(!ok2, "a non-coercible host-response value must fail");
+    assert!(
+        err2.contains("cannot parse `hello` as Int64"),
+        "the coercion failure names the Cadenza type: {err2}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn cdz_run_arg_coercion_respects_narrow_width_bounds_no_silent_wrap() {
     // A narrow-width param must ACCEPT its in-range values verbatim and REJECT an out-of-range one — never
     // silently WRAP it (a `256` taken as `0` for a `UInt8` would be a silent miscompile of the caller's

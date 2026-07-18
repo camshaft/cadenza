@@ -138,11 +138,14 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
       else (if (sym == "let") then read-let-form(s, a0, tree)
       else (if (sym == "do") then read-do-form(s, a0, tree)
       else (if (sym == ":") then read-ann-form(s, a0, tree)
+      else (if (sym == "and") then read-and-form(s, a0, tree)
+      else (if (sym == "or") then read-or-form(s, a0, tree)
+      else (if (sym == "not") then read-not-form(s, a0, tree)
       else
         (match read-form(s, a0, tree) with | (leftId, a1, t1) =>
           (match read-form(s, a1, t1) with | (rightId, a2, t2) =>
             (let a3 = close-paren(s, a2) in
-             (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a3, t3)))))))))))
+             (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a3, t3))))))))))))))
 
 /// After `(:` (index `i` past the `:` head): a TYPE ANNOTATION `(: <literal> TypeName)` — the range-check
 /// an integer annotation performs. This slice (2a-ii) handles a LITERAL operand at a fixed-width integer
@@ -240,6 +243,37 @@ def read-if-form(s: String, i: Int64, tree: Tree) =
       (match read-form(s, a2, t2) with | (elseId, a3, t3) =>
         (let a4 = close-paren(s, a3) in
          (match add-node(t3, Node.NIf(condId, thenId, elseId)) with | (id, t4) => (id, a4, t4))))))
+
+/// After `(and` (index `i` past the `and` atom): the short-circuit AND, DESUGARED to `NIf(a, b, false)` —
+/// `(and a b)` ≡ `if a then b else false` (verified equivalent to rcdzc's `and` on every truth-table row).
+/// No new Core node: infer types the NIf (cond Bool + branches agree Bool → Bool), lower/eval already handle
+/// NIf. The `false` arm is a fresh `NBoolLit(0)` built before the NIf that references it.
+def read-and-form(s: String, i: Int64, tree: Tree) =
+  (match read-form(s, i, tree) with | (aId, a1, t1) =>
+    (match read-form(s, a1, t1) with | (bId, a2, t2) =>
+      (let a3 = close-paren(s, a2) in
+       (match add-node(t2, Node.NBoolLit(0)) with | (falseId, t3) =>
+         (match add-node(t3, Node.NIf(aId, bId, falseId)) with | (id, t4) => (id, a3, t4))))))
+
+/// After `(or` (index `i` past the `or` atom): the short-circuit OR, DESUGARED to `NIf(a, true, b)` —
+/// `(or a b)` ≡ `if a then true else b`. Same NIf reuse (no new Core node); the `true` arm is a fresh
+/// `NBoolLit(1)` built before the NIf.
+def read-or-form(s: String, i: Int64, tree: Tree) =
+  (match read-form(s, i, tree) with | (aId, a1, t1) =>
+    (match read-form(s, a1, t1) with | (bId, a2, t2) =>
+      (let a3 = close-paren(s, a2) in
+       (match add-node(t2, Node.NBoolLit(1)) with | (trueId, t3) =>
+         (match add-node(t3, Node.NIf(aId, trueId, bId)) with | (id, t4) => (id, a3, t4))))))
+
+/// After `(not` (index `i` past the `not` atom): boolean NOT, DESUGARED to `NIf(a, false, true)` —
+/// `(not a)` ≡ `if a then false else true`. ONE operand. Both branch literals are fresh NBoolLits built
+/// before the NIf. Same NIf reuse (no new Core node).
+def read-not-form(s: String, i: Int64, tree: Tree) =
+  (match read-form(s, i, tree) with | (aId, a1, t1) =>
+    (let a2 = close-paren(s, a1) in
+     (match add-node(t1, Node.NBoolLit(0)) with | (falseId, t2) =>
+       (match add-node(t2, Node.NBoolLit(1)) with | (trueId, t3) =>
+         (match add-node(t3, Node.NIf(aId, falseId, trueId)) with | (id, t4) => (id, a2, t4))))))
 
 /// Consume a `(` at/after index `i` (skipping space); tolerate a missing one. Returns the next index.
 def open-paren(s: String, i: Int64) =
@@ -348,6 +382,37 @@ def sr-prefix-eq-equality() =
   // an equality NBin (was unrecognized → declined before the fix).
   (match read-source("(= 5 5)") with | (root, tree) =>
     (if is-bin-op(tree, root, 61) then unit else trap("root is a = Bin (op 61) — equality is spelled =")))
+
+@test
+def sr-and-desugars-to-if() =
+  // "(and true false)" → NIf(true, false, false): (and a b) ≡ if a then b else false. The else-arm is a
+  // fresh NBoolLit(0). Pins the desugar SHAPE (a b false), so infer/lower/eval — which already handle NIf —
+  // run it with no new Core node.
+  (match read-source("(and true false)") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NIf(cond, thn, els)) =>
+        (if is-bool-lit(tree, cond, 1) then (if is-bool-lit(tree, thn, 0) then (if is-bool-lit(tree, els, 0) then unit else trap("and else-arm is false")) else trap("and then-arm is b")) else trap("and cond is a"))
+      | _ => trap("(and a b) desugars to an NIf")))
+
+@test
+def sr-or-desugars-to-if() =
+  // "(or false true)" → NIf(false, true, true): (or a b) ≡ if a then true else b. The then-arm is a fresh
+  // NBoolLit(1).
+  (match read-source("(or false true)") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NIf(cond, thn, els)) =>
+        (if is-bool-lit(tree, cond, 0) then (if is-bool-lit(tree, thn, 1) then (if is-bool-lit(tree, els, 1) then unit else trap("or else-arm is b")) else trap("or then-arm is true")) else trap("or cond is a"))
+      | _ => trap("(or a b) desugars to an NIf")))
+
+@test
+def sr-not-desugars-to-if() =
+  // "(not true)" → NIf(true, false, true): (not a) ≡ if a then false else true. ONE operand; both branch
+  // arms are fresh NBoolLits.
+  (match read-source("(not true)") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NIf(cond, thn, els)) =>
+        (if is-bool-lit(tree, cond, 1) then (if is-bool-lit(tree, thn, 0) then (if is-bool-lit(tree, els, 1) then unit else trap("not else-arm is true")) else trap("not then-arm is false")) else trap("not cond is a"))
+      | _ => trap("(not a) desugars to an NIf")))
 
 @test
 def sr-if-shape() =

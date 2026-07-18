@@ -6995,6 +6995,48 @@ fn scrutinee_reaches_host_perform(db: &mut Db, scrutinee: StructId) -> bool {
     walk(db, scrutinee, 0)
 }
 
+/// Whether the match scrutinee IS (or heads with) a RECURSIVE call — the twin of the S2 inline-tuple
+/// exponential (`1d568117b`), but for pattern BINDERS. A single-arm `Leaf` fold drops the `MatchSum`
+/// wrapper and lowers the bare body; each payload binder in that body resolves to a `Core::SumPayload`
+/// EMBEDDING the scrutinee expression, so a binder used K times re-emits the scrutinee K times. When the
+/// scrutinee is a RECURSIVE call, that is K self-calls per level → 2^depth runtime recompute (a `(match (f
+/// …) ((Mk a _) (Mk a a)))` where `a` is used twice TRAPS on the step limit past ~n=30; use `a` once and it
+/// is linear — verified). Keeping the `MatchSum` wrapper MATERIALIZES the scrutinee into ONE slot (the same
+/// fix `scrutinee_reaches_host_perform` applies for the effectful case), so the recursive call runs once and
+/// every binder reads the slot. This is the case that walk EXPLICITLY excludes (`is_recursive => false`) —
+/// correct for the host-perform concern (a recursive callee is not INLINED, so no re-perform) but wrong for
+/// the pure recompute concern (the recursive CALL itself is what re-emits). Resolved-only (no `core_of`,
+/// same memoization-order hazard). A NON-recursive call scrutinee does not blow up (its emit is bounded —
+/// verified byte-identical at 1 vs 2 uses), so it stays the byte-identical bare-body fold.
+fn scrutinee_reaches_recursive_call(db: &mut Db, scrutinee: StructId) -> bool {
+    fn walk(db: &mut Db, node: StructId, depth: u32) -> bool {
+        if depth > 24 {
+            return false; // bounded; a too-deep scrutinee is not the shallow call-head this targets
+        }
+        if let Resolved::Apply { head, args } = resolved_of(db, node) {
+            // The call HEAD is a recursive def/lambda — the scrutinee re-runs a recursive computation per
+            // binder use. This is the exponential trigger.
+            if let Some(callee) = crate::eval::lambda_body(db, head)
+                .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+                && crate::eval::is_recursive(db, callee)
+            {
+                return true;
+            }
+            // Otherwise descend the head + args (a recursive call nested in the scrutinee expression, e.g.
+            // `(g (f n))` — `f` recursive under a non-recursive `g`).
+            if walk(db, head, depth + 1) {
+                return true;
+            }
+            return args.iter().any(|&a| walk(db, a, depth + 1));
+        }
+        match db.ast.get(node).clone() {
+            crate::ast::Struct::List(children) => children.iter().any(|&c| walk(db, c, depth + 1)),
+            crate::ast::Struct::Atom(_) => false,
+        }
+    }
+    walk(db, scrutinee, 0)
+}
+
 fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     // The scrutinee must be a COMPOUND the decision tree matches — a SUM (its type gives the root variant
     // set to switch on), a TUPLE (no discriminant; `Elem`-path binders/lit-tests), or a RECORD (no
@@ -7066,8 +7108,15 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
         // reaches a host call, so the common match still folds to the bare body, byte-identical to before.
         Ok(root)
             if matches!(&*root, crate::core::SumCont::Leaf(_))
-                && scrutinee_reaches_host_perform(db, scrutinee) =>
+                && (scrutinee_reaches_host_perform(db, scrutinee)
+                    || scrutinee_reaches_recursive_call(db, scrutinee)) =>
         {
+            // Keep the wrapper — MATERIALIZE the scrutinee into ONE slot — when it either reaches a host
+            // perform (effectful re-perform, v-effects) OR reaches a recursive CALL (pure exponential
+            // recompute: a payload binder used K times re-emits the recursive scrutinee K times → 2^depth,
+            // the twin of the S2 inline-tuple fix `1d568117b`). Both are the same "non-reusable scrutinee
+            // evaluated once" fix; a reusable param/local/constant scrutinee reaches neither and folds to the
+            // bare body byte-identically.
             Core::MatchSum { scrutinee, root }
         }
         Ok(root) if matches!(&*root, crate::core::SumCont::Leaf(_)) => {

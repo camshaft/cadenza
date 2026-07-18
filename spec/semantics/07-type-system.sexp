@@ -796,6 +796,32 @@
   (input  (>= 5 2.0))
   (error  CDZ0301))
 
+; The SAME-DOMAIN width/sign axis of the no-promotion rule for ordering: the cases above mix numeric
+; DOMAINS (Int vs Float). But two INTEGERS of different WIDTH — or the same width but different SIGN —
+; are also distinct types the no-promotion rule forbids comparing without an explicit conversion, exactly
+; as `(+ (: 5 Int8) (: 10 Int16))` is CDZ0301 (numeric-model.md #Numeric Types Do Not Silently Promote).
+; A comparison relates two operands of ONE integer type (∀a. Int a → Int a → Bool); a mixed width or sign
+; is CDZ0301, not a silent widen/reinterpret. These pin the ordering operators obey no-promotion on the
+; WIDTH and SIGN axes too, not only across domains — the seed-side companion of the compiler-ml bin-type
+; relational-arm fix (a mixed-width/sign `<` must unify its operands or reject, never run to a coerced bool).
+
+(case "ordering two integers of different width is rejected, not silently widened"
+  (doc    "`(< (: 5 Int8) (: 10 Int16))` compares an Int8 and an Int16 — same domain, different WIDTH.
+           The no-promotion rule the arithmetic operators obey (`(+ (: 5 Int8) (: 10 Int16))` → CDZ0301)
+           applies to ordering too, so the compiler rejects it (CDZ0301) rather than widening the Int8 to
+           Int16 and answering. A comparison relates two operands of one integer type; a width mismatch is
+           not a licence to widen.")
+  (input  (< (: 5 Int8) (: 10 Int16)))
+  (error  CDZ0301))
+
+(case "ordering two integers of different sign is rejected, not silently reinterpreted"
+  (doc    "The SIGN-axis companion: `(< (: 5 Int8) (: 10 UInt8))` compares an Int8 and a UInt8 — same
+           width, different SIGN — rejected (CDZ0301), not reinterpreted across signedness. Pins that
+           the ordering no-promotion rule covers the sign axis as well as the width axis; a signed and
+           an unsigned integer are distinct types with no shared order without an explicit conversion.")
+  (input  (< (: 5 Int8) (: 10 UInt8)))
+  (error  CDZ0301))
+
 (case "ordering an integer against a boolean is a type error"
   (doc    "`(< 1 true)` compares an Int64 with a Bool — unrelated kinds with no shared order, a
            general type error the compiler rejects (CDZ0203), exactly as `(= 1 true)` is. An

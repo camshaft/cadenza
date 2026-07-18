@@ -132,14 +132,19 @@ async function instantiateComponent(job: RunJob): Promise<Record<string, unknown
   const prog = await loadComponent(job.component, "prog");
   const imports: Record<string, unknown> = heap ? { [HEAP_IMPORT]: heap } : {};
   // A parametric model imports a `param` interface — one accessor per `@param`. A Rational `@param <name>`
-  // needs `<name>Num`/`<name>Den` (jco's camelCase of the WIT `<name>-num`/`-den`), each returning the
-  // slider value's num/den as an i64 (jco lowers i64 ↔ JS bigint, so return BigInt). Supply it when the
-  // job carries `params`; a non-parametric component has no `param` import and ignores this.
+  // desugars to the WIT accessors `<name>-num`/`<name>-den`, which jco binds as CAMELCASE JS names. jco
+  // camelCases the WHOLE kebab identifier, so a KEBAB param name matters: `pa-bolt` → `pa-bolt-num` →
+  // `paBoltNum` (NOT `pa-boltNum`). A single-word name (`width` → `widthNum`) is unaffected — which is why
+  // single-word params worked but a kebab param (the parametric L-bracket's `pa-bolt`) failed with
+  // "undefined instance import 'paBoltDen'". So camelCase the full `<name>-num`/`<name>-den` the same way
+  // jco does. Returns the slider's num/den as an i64 (jco lowers i64 ↔ JS bigint, so return BigInt).
   if (job.params) {
+    // kebab-case → camelCase, matching jco's WIT-identifier binding (foo-bar-baz → fooBarBaz).
+    const camel = (s: string) => s.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase());
     const param: Record<string, () => bigint> = {};
     for (const [name, { num, den }] of Object.entries(job.params)) {
-      param[`${name}Num`] = () => BigInt(num);
-      param[`${name}Den`] = () => BigInt(den);
+      param[camel(`${name}-num`)] = () => BigInt(num);
+      param[camel(`${name}-den`)] = () => BigInt(den);
     }
     imports.param = param;
   }

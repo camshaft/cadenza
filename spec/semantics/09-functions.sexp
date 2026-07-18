@@ -2185,6 +2185,28 @@
   (call   main)
   (output (: 30 Int64)))
 
+; A match/pattern BINDER used more than once must NOT re-emit its whole scrutinee per use. When the
+; scrutinee is a RECURSIVE CALL, a binder used K times re-runs that call K times per recursion level →
+; 2^depth runtime recompute (the pattern-binder twin of the tuple-match fall-through exponential the
+; decision-tree fix closed). Here `f` recurses to its base at n=0, and the recursive arm binds `a` from
+; `(match (f (+ n 1)) ((Mk a _) …))` and USES IT TWICE (`(Mk a a)`). The `MatchSum` wrapper materializes
+; the recursive scrutinee into ONE slot read by every binder (A-normal form), so it runs once per level.
+; This pins the VALUE across both backends at a moderate depth (both run it); the DEEP exponential-
+; regression catch is the wasm unit test `a_recursive_match_binder_scrutinee_is_materialized_once`
+; (BUILD/emit-count, no runtime trap). Value: base `(Mk 1 1)`, every arm rebuilds `(Mk a a)` with `a`=1.
+(case "a match binder used twice binds its recursive scrutinee once (A-normalized, value-correct)"
+  (doc    "`f` recurses to `(Mk 1 1)` at n=0; each recursive arm matches `(f (+ n 1))`, binds `a`, and uses
+           it TWICE in `(Mk a a)`. `(f -20)` returns 1 (the first field, always 1) on both backends. The
+           recursive scrutinee is materialized ONCE per level (the `MatchSum` wrapper's slot), so a payload
+           binder's multiple uses read the slot, not re-run the call. Pins the value; the linear-vs-2^depth
+           regression is caught by the wasm build-count unit test.")
+  (input  (do (type P (Mk Int64 Int64))
+              (def (f (: n Int64)) (if (= n 0) (Mk 1 1) (match (f (+ n 1)) ((Mk a _) (Mk a a)))))
+              (def (main) (match (f -20) ((Mk x _) x)))
+              (export main)))
+  (call   main)
+  (output (: 1 Int64)))
+
 ; --- A recursive Bool-returning function used as a condition, in BOTH branch orders --------------
 ; A recursive predicate — "all elements from i satisfy P" — is a byte/element loop whose recursive
 ; self-call sits in one branch of an inner `if` and a Bool literal in the other: `(if guard (recurse …)

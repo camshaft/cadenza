@@ -7873,12 +7873,24 @@ fn check_application(
         let operand_ty = type_of(db, args[0]);
         if operand_clean && !matches!(operand_ty, Ty::Qty { .. } | Ty::Any | Ty::Var(_)) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: Qty.value operand is not a quantity (CDZ0501)");
+            // The message names the operand's REAL type and says it is not a quantity — GENERALLY, since a
+            // non-quantity operand can be ANY type (a `Bool`/`String`/`Record`, not only a bare number). The
+            // "a conversion already unwrapped it" note is a REPAIR HINT that only applies when the operand is
+            // itself NUMERIC (the common `(Qty.value (Unit.in …))` mistake, where the conversion result is
+            // already the bare number) — so append it only for a numeric operand, not for e.g. a `Bool`
+            // (where "a plain number" was self-contradictory: "this operand is a Bool — a plain number").
+            let numeric = matches!(operand_ty.strip_nominal(), Ty::Int(_) | Ty::Float(_));
+            let hint = if numeric {
+                " (an `as`/`in` conversion already UNWRAPS to a bare number, so its result needs no \
+                 `Qty.value` — drop it)"
+            } else {
+                ""
+            };
             out.push(Reject::coded(
                 Code::DimensionMismatch,
                 format!(
-                    "`Qty.value` recovers a quantity's number, but this operand is {} — a plain number, \
-                     not a quantity (an `as`/`in` conversion already UNWRAPS to a bare number, so its \
-                     result needs no `Qty.value`; drop it)",
+                    "`Qty.value` recovers a quantity's number, but this operand is {}, which is not a \
+                     quantity{hint}",
                     operand_ty.render_with_article(),
                 ),
             ));

@@ -1465,6 +1465,48 @@ fn a_failing_range_invariant_property_renders_the_counterexample_in_domain() {
     );
 }
 
+/// A failing `@invariant`-newtype property shrinks its counterexample to the MINIMAL in-domain failing value
+/// (the boundary), not just any in-domain value. `Pct[0,100]`, body traps for `v >= 50` → the minimal failing
+/// value is exactly 50. Before decoded-space shrinking the runner reported a coarse witness (e.g. Pct(67/73/88))
+/// because the generic shrinker halves the RAW pool int, and the IntRange decode `v = lo + (pool & MAX) % span`
+/// is non-monotonic in the raw int — so it could not converge in value space. The decoded-space pass bisects
+/// the VALUE toward `lo` (via the invertible pool map), converging to the boundary. Store-guarded.
+#[test]
+fn a_failing_invariant_property_shrinks_to_the_minimal_in_domain_value() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — building a nominal value needs the store"
+        );
+        return;
+    }
+    let d = dir("invariant-shrink-minimal");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do (@ (invariant (and (>= self 0) (<= self 100))) (type Pct (P Int64))) \
+           (@ test (def (p (: x Pct)) (match x (((. Pct P) v) (if (< v 50) unit (trap \"big\")))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, _) = run(&["test", &f, "--seed", "0", "--trials", "50"]);
+    assert!(
+        !ok,
+        "the property fails (a draw >= 50 exists in [0,100]): {stdout}"
+    );
+    // The counterexample must be EXACTLY 50 — the minimal failing value — not a coarse in-domain witness.
+    let n: i64 = stdout
+        .lines()
+        .find(|l| l.contains("counterexample: p(P("))
+        .and_then(|l| l.split("P(").nth(1))
+        .and_then(|s| s.split(')').next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(-1);
+    assert_eq!(
+        n, 50,
+        "the failing @invariant counterexample shrinks to the MINIMAL in-domain value (the boundary 50), \
+         not a coarse witness: {stdout}"
+    );
+}
+
 /// A refined newtype NESTED inside a compound (`(Tuple Pct Bool)`) also decodes its counterexample IN-DOMAIN.
 /// REGRESSION: `reapply_recorded_invariant` (the post-strip decoder-side re-source) used to handle only a
 /// TOP-LEVEL `GenTy::Sum` — a refined newtype in a Tuple slot / List element / Record field was left
