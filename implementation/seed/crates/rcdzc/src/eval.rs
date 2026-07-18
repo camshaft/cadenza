@@ -123,6 +123,22 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
     match resolved_of(db, id) {
         // A lambda parameter used as a bare type → its type variable.
         Resolved::Param { binder } => env.get(&binder).map(|v| Ty::Var(v.num)),
+        // A TUPLE-TYPE LITERAL `(a, s)` that resolves to `Resolved::Tuple` (rather than the `(Tuple …)`
+        // application form handled by `Prim::TupleCtor` below) — reduce each element UNDER THE ENV so a
+        // type parameter in an element becomes its type variable. Without this arm a NESTED tuple type in
+        // a variant payload — e.g. the `(a, s)` inside `(type Iter (Mk s (-> s (Option (a, s)))))` — fell
+        // to the concrete `_ => typeval_of` arm, which cannot reduce a param-bearing tuple and returned
+        // `None`. That made `scheme_of` for the whole ctor `None`, so `variant_payload_type` read `None`
+        // and the constructor was wrongly treated as NULLARY (CDZ0201 "a nullary variant takes the unit
+        // value" at every `Mk(x, f)`). The `Prim::TupleCtor` arm handles the `(Tuple …)` spelling; this
+        // handles the comma/`Resolved::Tuple` spelling, the same value either way.
+        Resolved::Tuple { elems } => {
+            let mut tys = Vec::with_capacity(elems.len());
+            for &e in elems.iter() {
+                tys.push(type_in_env(db, e, env)?);
+            }
+            Some(Ty::Tuple(tys.into()))
+        }
         // A bare parameter REFERENCE used as a type (`(-> a (-> a Bool))` — the comparison operand): it
         // resolves to a `Ref` to the parameter occurrence (a body-position name is looked up, not a
         // formal), so follow the ref; if it lands on a parameter in `env`, that is its type variable.
@@ -2468,6 +2484,21 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
             if typeval_of(db, ty_expr) == Some(crate::ty::Ty::Type) =>
         {
             typeval_of(db, expr)
+        }
+        // A TUPLE-TYPE LITERAL in the COMMA spelling `(A, B)` that resolves to `Resolved::Tuple` (rather
+        // than the `(Tuple …)` application the `Prim::TupleCtor` arm below handles) — reduce each element
+        // to its type and build `Ty::Tuple`. Without this arm a comma-spelled tuple type nested in a
+        // variant payload — `(Int64, Int64 -> Option((Bool, Int64)))` — fell through to `_ => None`, so
+        // the ctor's payload type was unreadable and the variant looked NULLARY (CDZ0201 at construction).
+        // The ground-case twin of the `type_in_env` `Resolved::Tuple` arm (this is the concrete reducer;
+        // that one carries the type-lambda env). An element that is not itself a type reduces to `None`,
+        // propagating (a malformed tuple-type is not silently accepted).
+        Resolved::Tuple { elems } => {
+            let mut tys = Vec::with_capacity(elems.len());
+            for &e in elems.iter() {
+                tys.push(typeval_of(db, e)?);
+            }
+            Some(crate::ty::Ty::Tuple(tys.into()))
         }
         // A type-constructor application — reduce it, then read the built value's type.
         Resolved::Apply { head, args } => {

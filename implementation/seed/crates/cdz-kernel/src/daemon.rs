@@ -89,15 +89,41 @@ where
             if let Ok(mut l) = log.lock() {
                 let _ = l.append(&format!("{PRIM_RECORD_PREFIX}{op}"), payload.as_bytes());
             }
-            match op {
-                "exec" => 2,
-                "http" => 3,
-                "append" => 1,
-                _ => 0,
-            }
+            perform_op_body(op, &payload)
         }
     };
     crate::kernel::run_interpret_hosted(&program, event_kind, runtime, prim)
+}
+
+/// The per-op effect BODY: given an op name + payload, do the effect and return its scalar result. The
+/// `append`/`http` ops (and the default) are RECORD-ONLY — the caller already appended the `prim-<op>` event;
+/// this returns the op's tag (Append→1, Http→3, Noop/other→0). `exec` is the one LIVE effect, and only when
+/// built with the `live-exec` feature: it spawns a REAL subprocess (`std::process::Command`, the payload as a
+/// shell line) and returns its exit code — a SECOND, build-time boundary on top of the Cedar gate (a build
+/// WITHOUT `live-exec` cannot spawn, whatever the policy says — the safe default). Without the feature, `exec`
+/// stays record-only (tag 2), identical to before.
+fn perform_op_body(op: &str, _payload: &str) -> i64 {
+    match op {
+        "exec" => {
+            #[cfg(feature = "live-exec")]
+            {
+                // Live: run the payload as a shell command; the exit code is the op's scalar result (127 if
+                // the process couldn't even be spawned — the shell's convention for "command not found").
+                use std::process::Command;
+                match Command::new("sh").arg("-c").arg(_payload).status() {
+                    Ok(status) => status.code().unwrap_or(-1) as i64,
+                    Err(_) => 127,
+                }
+            }
+            #[cfg(not(feature = "live-exec"))]
+            {
+                2 // record-only default: the same tag the mock used (no subprocess spawned).
+            }
+        }
+        "http" => 3, // record-only (no HTTP-client dep in the minimal kernel).
+        "append" => 1,
+        _ => 0,
+    }
 }
 
 /// The event kind prefix a DENIED host-op is recorded under (`prim-denied-exec`/…). A perform the Cedar policy
@@ -180,16 +206,11 @@ where
                 }
                 return 0;
             }
-            // Allowed → perform (record-only body) + record the effect, same as tick_hosted.
+            // Allowed → perform the effect body (live `exec` iff the `live-exec` feature is on) + record it.
             if let Ok(mut l) = log.lock() {
                 let _ = l.append(&format!("{PRIM_RECORD_PREFIX}{op}"), payload.as_bytes());
             }
-            match op {
-                "exec" => 2,
-                "http" => 3,
-                "append" => 1,
-                _ => 0,
-            }
+            perform_op_body(op, &payload)
         }
     };
     crate::kernel::run_interpret_hosted(&program, event_kind, runtime, prim)
@@ -509,6 +530,42 @@ mod tests {
             "no genesis → tick_hosted errors (like tick/tick_performing)"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn perform_op_body_is_record_only_by_default_for_exec() {
+        // The safe DEFAULT (no `live-exec` feature): exec does NOT spawn a process — it returns the record-only
+        // tag (2), identical to the mock. Defense-in-depth: a default build simply cannot run a subprocess.
+        // (This assertion holds in the default build; under --features live-exec the sibling test runs instead.)
+        #[cfg(not(feature = "live-exec"))]
+        {
+            assert_eq!(
+                perform_op_body("exec", "exit 7"),
+                2,
+                "default build: exec is record-only (tag 2), no subprocess spawned"
+            );
+        }
+        // http/append/other are record-only tags in BOTH builds.
+        assert_eq!(perform_op_body("http", "x"), 3, "http record-only tag");
+        assert_eq!(perform_op_body("append", "x"), 1, "append tag");
+        assert_eq!(perform_op_body("noop", "x"), 0, "unknown op → 0");
+    }
+
+    #[cfg(feature = "live-exec")]
+    #[test]
+    fn perform_op_body_runs_a_real_subprocess_under_live_exec() {
+        // With the `live-exec` feature: exec SPAWNS a real subprocess and returns its EXIT CODE. `exit 7` → 7;
+        // `true` → 0. Proves the live path is wired (only compiled + run when the feature is on).
+        assert_eq!(
+            perform_op_body("exec", "exit 7"),
+            7,
+            "live exec returns the subprocess exit code"
+        );
+        assert_eq!(
+            perform_op_body("exec", "true"),
+            0,
+            "a succeeding command exits 0"
+        );
     }
 
     #[test]

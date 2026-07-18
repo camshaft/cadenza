@@ -39542,6 +39542,58 @@ mod match_engine {
     }
 
     #[test]
+    fn a_variant_payload_with_a_nested_comma_tuple_over_two_type_params_is_not_nullary() {
+        // REGRESSION (v-iterators, the fused-iterator `Mk(state, step: state -> Option(elem, state))`
+        // shape): a variant payload containing a NESTED tuple written in the ML COMMA spelling `(a, s)` —
+        // `type Iter = | Mk(s, s -> Option((a, s)))` — could not be CONSTRUCTED: every `Iter.Mk(x, f)`
+        // reported CDZ0201 "a nullary variant takes the unit value", as if `Mk` had no payload. The DECL
+        // type-checked; only construction failed, and it failed for a closure, an annotated closure, OR a
+        // named function — so NOT an inference/element-tie gap (the type was fully known). Root cause: an
+        // ML comma-tuple `(a, s)` resolves to `Resolved::Tuple`, but `type_in_env` (which reduces the
+        // ctor's `(meta t)` type-lambda to its scheme) only had a `Prim::TupleCtor` arm for the `(Tuple …)`
+        // APPLICATION spelling — the `Resolved::Tuple` spelling fell to the concrete `typeval_of` arm,
+        // which cannot reduce a param-bearing tuple → `None`. That made `scheme_of` for the whole ctor
+        // `None`, so `variant_payload_type` read `None` → `Mk` looked NULLARY. Fixed by adding a
+        // `Resolved::Tuple` arm to `type_in_env` (reduce each element under the env), the comma-spelling
+        // twin of the `TupleCtor` arm the previous regression added. This is a compile-time reject, so
+        // COMPILING the construction is the precise guard. ML source (the spelling that produces the
+        // `Resolved::Tuple`); a runtime step is a separate backend concern (a closure-in-variant ownership
+        // decline, not this construction bug).
+        let program = "type Iter = | Mk(s, s -> Option((a, s)))\n\
+                       def popper(s) = match s with\n\
+                       | [] => Option.None(unit)\n\
+                       | [h, .. t] => Option.Some((h, t))\n\
+                       def from_list(xs) = Iter.Mk(xs, popper)\n\
+                       def main() = match from_list([1, 2, 3]) with\n\
+                       | Iter.Mk(_s0, _step) => 0\n\
+                       export { main }";
+        let compile_ml = |program: &str| -> bool {
+            let parsed = cadenza_syntax::parser::read_ml(program);
+            assert!(parsed.ok(), "the ML program parses: {:?}", parsed.errors);
+            let bytes = cadenza_syntax::codec::encode(&parsed.arenas);
+            let arenas = crate::codec::decode(&bytes).expect("rcdzc decode");
+            compile_component(&crate::codec::encode(&arenas)).is_ok()
+        };
+        // GENERIC: the iterator shape, payload nests `(a, s)` over two type params.
+        assert!(
+            compile_ml(program),
+            "constructing a variant whose payload nests a comma-tuple `(a, s)` over TWO type params must \
+             compile — the ctor must not be misread as nullary (CDZ0201)"
+        );
+        // GROUND: the same shape fully monomorphic — `(Bool, Int64)` nested in the payload. This exercised
+        // the `typeval_of` (concrete reducer) sibling gap, which ALSO lacked a `Resolved::Tuple` arm.
+        let ground = "type Pair = | Mk(Int64, Int64 -> Option((Bool, Int64)))\n\
+                      def build(f) = Pair.Mk(1, f)\n\
+                      def main() = 0\n\
+                      export { main }";
+        assert!(
+            compile_ml(ground),
+            "a GROUND variant payload nesting a comma-tuple `(Bool, Int64)` must compile too — the \
+             concrete `typeval_of` reducer must reduce a `Resolved::Tuple`, not read the ctor as nullary"
+        );
+    }
+
+    #[test]
     fn an_unknown_type_in_a_variant_payload_is_rejected() {
         // A garbage type in a variant PAYLOAD — `(type C (A Nonesuch))` — was silently accepted (the
         // unknown name resolved to nothing and `A` was mis-typed as NULLARY, its payload dropped). Now the
