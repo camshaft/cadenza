@@ -7,54 +7,55 @@ export default function Data() {
   return (
     <article>
       <H1>Tuples &amp; records</H1>
-      <Lede>Bundling several values into one — positionally, or by name.</Lede>
+      <Lede>Bundling several values into one, positionally or by name.</Lede>
 
       <P>
         So far our programs have passed around single values. Real programs group values together: a
         point is an <C>x</C> and a <C>y</C>, a result is a value and a status. Cadenza has two ways to
-        bundle values — <strong>tuples</strong> (by position) and <strong>records</strong> (by name).
+        bundle values, namely <strong>tuples</strong> (by position) and <strong>records</strong> (by name).
       </P>
 
       <H2>Tuples</H2>
       <P>
         A tuple is a fixed positional product of values. When you Run this, look at the type the result
-        carries — <C>(Tuple Int64 Bool)</C>: the compiler tracks not just <em>how many</em> elements
+        carries, <C>(Tuple Int64 Bool)</C>: the compiler tracks not just <em>how many</em> elements
         there are but the type of each one, in order. The two slots hold different types, and that's
-        fine — a tuple's shape is part of its type.
+        fine, because a tuple's shape is part of its type.
       </P>
       <Runnable title="A tuple" source={`(tuple 7 true)`} />
 
       <H2>Records</H2>
       <P>
-        A record has a fixed set of <em>named</em> fields. Reach a field with the <C>.</C> accessor —
-        here, the <C>leap</C> flag of a little "year" record:
+        A record has a fixed set of <em>named</em> fields. Reach a field with the <C>.</C> accessor,
+        here the <C>leap</C> flag of a little "year" record:
       </P>
       <Runnable source={`(let ((y (record (year 2026) (leap true))))
   (. y leap))`} />
 
       <P>
-        Return the whole record and, just like the tuple, it carries a structural type — one entry per
+        Return the whole record and, just like the tuple, it carries a structural type, one entry per
         field, each with its own type:
       </P>
       <Runnable source={`(record (year 2026) (leap true))`} />
 
       <Why tenet="Everything is a record">
-        Records aren't just one data type among many — they're the mechanism the whole language is
+        Records aren't just one data type among many, since they're the mechanism the whole language is
         built from. A module is a record of its exports; a built-in like <C>List</C> is a record of its
         operations; a sum type is a record of its constructors. Because the special things are ordinary
         values reached the ordinary way, the compiler needs just <em>one</em> lookup rule instead of
-        dozens of special cases — and a name you define simply shadows a built-in of the same name,
+        dozens of special cases, and a name you define simply shadows a built-in of the same name,
         with no magic.
       </Why>
 
       <H2>Compared by value</H2>
       <P>
-        Two tuples or two records are equal when their contents are — structural equality, not identity.
-        A tuple matches position by position, so <C>(tuple 1 2)</C> equals another <C>(tuple 1 2)</C>:
+        Two tuples or two records are equal when their contents are, which is structural equality, not
+        identity. A tuple matches position by position, so <C>(tuple 1 2)</C> equals another{" "}
+        <C>(tuple 1 2)</C>:
       </P>
       <Runnable source={`(if (= (tuple 1 2) (tuple 1 2)) 1 0)`} />
       <P>
-        A record matches by <em>field name</em>, not field order — so the same fields written in a
+        A record matches by <em>field name</em>, not field order, so the same fields written in a
         different order are still the same record. That's the by-name nature showing through: a record is
         its set of named fields, however you list them.
       </P>
@@ -63,7 +64,7 @@ export default function Data() {
       <H2>Taking one apart in a match</H2>
       <P>
         Beyond reaching a single field, you can bind <em>all</em> of a tuple's parts at once by matching
-        its shape — the same <C>match</C> you use for any value. Here a two-tuple binds <C>a</C> and{" "}
+        its shape, the same <C>match</C> you use for any value. Here a two-tuple binds <C>a</C> and{" "}
         <C>b</C> in one step, then adds them:
       </P>
       <Runnable
@@ -78,14 +79,14 @@ export default function Data() {
 
       <H2>They compose</H2>
       <P>
-        A tuple can hold a record, a record field can hold a tuple, and so on — the shapes nest freely,
+        A tuple can hold a record, a record field can hold a tuple, and so on, so the shapes nest freely,
         and the accessor chains to reach inside. Here a record has one field, <C>pair</C>, holding a
         tuple; we reach the field, then index into the tuple to pull out its second element:
       </P>
       <Runnable source={`(. (. (record (pair (tuple 10 20))) pair) 1)`} />
       <P>
-        Reaching <C>pair</C> gets the tuple, then index <C>1</C> pulls its second element — <C>20</C>.
-        We'll lean on this in the next chapter — for now the point is just that the two ways of bundling
+        Reaching <C>pair</C> gets the tuple, then index <C>1</C> pulls its second element, <C>20</C>.
+        We'll lean on this in the next chapter, but for now the point is just that the two ways of bundling
         stack together, with no special rule for the combination.
       </P>
 
@@ -97,7 +98,7 @@ export default function Data() {
       <Runnable source={`((. (tuple (fn (x) (+ x 1)) 9) 0) 5)`} />
       <P>
         Element <C>0</C> of the tuple is the increment function; applying it to <C>5</C> gives <C>6</C>.
-        The <C>9</C> in the other slot just rides along — a tuple can mix a function and a plain value.
+        The <C>9</C> in the other slot just rides along, since a tuple can mix a function and a plain value.
       </P>
 
       <H2>Your turn</H2>
@@ -105,7 +106,7 @@ export default function Data() {
         id="data:1"
         prompt={
           <>
-            The record has three named fields. Reach the <C>y</C> field with the <C>.</C> accessor — the
+            The record has three named fields. Reach the <C>y</C> field with the <C>.</C> accessor, so the
             answer is <C>20</C>.
           </>
         }
@@ -114,8 +115,8 @@ export default function Data() {
         expected="20"
         hint={
           <>
-            The accessor takes the field's <em>name</em>, not a number — records are reached by name.
-            Write <C>y</C>.
+            The accessor takes the field's <em>name</em>, not a number, because records are reached by
+            name. Write <C>y</C>.
           </>
         }
       />
@@ -141,8 +142,8 @@ export default function Data() {
       />
 
       <P>
-        That's the vocabulary. Next we'll <em>use</em> it — passing records into functions, nesting
-        them, and reaching in for the pieces — in <strong>Working with records &amp; tuples</strong>.
+        That's the vocabulary. Next we'll <em>use</em> it by passing records into functions, nesting
+        them, and reaching in for the pieces, in <strong>Working with records &amp; tuples</strong>.
       </P>
     </article>
   );

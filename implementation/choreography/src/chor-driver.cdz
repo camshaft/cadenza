@@ -11,11 +11,14 @@
 
 import { Chor } from "chor"
 import { wf } from "chor"
+import { from-ast } from "chor"
 import { Ast } from "ast"
 import { projectable } from "chor-project"
 import { unprojectable-role } from "chor-project"
 import { gen-role } from "chor-codegen"
 import { deadlock-free } from "chor-safety"
+import { read } from "chor-sread"
+import { roles-of } from "chor-sread"
 import { Local } from "chor-local"
 import { project } from "chor-local"
 
@@ -159,6 +162,17 @@ def render-all-sections(roles: List(String), g: Chor) -> String = match roles wi
 
 def render-actor-section(g: Chor, r: String) -> String =
   String.concat("==== ", String.concat(r, String.concat(" ====\n", render-compilable(g, r))))
+
+/// Shred a bare protocol S-EXPR string end-to-end: read → from-ast → roles-of → render-all. The `.sexp`
+/// surface entry the `cdz chor <file>.sexp` CLI calls — a self-describing protocol (roles inferred). Returns
+/// the per-actor bundle, or a diagnostic string ("not-a-protocol" if the s-expr doesn't read/parse to a
+/// Chor; the wf/projectable verdict via render-all otherwise). Keeps the CLI's generated driver trivial (one
+/// call) instead of an error-prone inline nested match.
+def shred-sexp(src: String) -> String = match read(src) with
+  | Option.Some(a) => (match from-ast(a) with
+    | Option.Some(g) => render-all(roles-of(g), g)
+    | Option.None(_) => "not-a-protocol")
+  | Option.None(_) => "not-a-protocol"
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Tests.
@@ -331,6 +345,26 @@ def render-all-sections-are-compilable-modules() =
   else trap("Seller's section performs its projected sends")
 
 @test
+def shred-sexp-shreds-a-protocol() =
+  // The .sexp surface end-to-end: a bare protocol s-expr → the per-actor bundle (self-describing roles).
+  let out = shred-sexp("(seq (comm Buyer Seller Title) (comm Seller Buyer Quote))") in
+  if contains-sub-str(out, "==== Buyer ====") then
+    (if contains-sub-str(out, "==== Seller ====") then unit else trap("Seller section"))
+  else trap("shred-sexp shreds a valid protocol s-expr into actor sections")
+
+@test
+def shred-sexp-rejects-nonsense() =
+  // A non-protocol s-expr (unknown head) → from-ast returns None → "not-a-protocol".
+  if shred-sexp("(bogus a b)") == "not-a-protocol" then unit
+  else trap("shred-sexp rejects an s-expr that isn't a protocol")
+
+@test
+def shred-sexp-rejects-malformed() =
+  // An unreadable s-expr (unterminated) → "not-a-protocol".
+  if shred-sexp("(comm Buyer") == "not-a-protocol" then unit
+  else trap("shred-sexp rejects an unreadable s-expr")
+
+@test
 def render-all-rejects-unprojectable() =
   // REGRESSION (soundness): render-all must NOT shred an un-projectable protocol — it returns the verdict
   // (naming the role), NOT actor sections, so `cdz chor` rejects it. Shipper told in only one branch.
@@ -405,4 +439,4 @@ def prefix-eq-at(hay: String, needle: String, start: Int64, j: Int64) -> Bool =
       | Option.None(_) => true)
     | Option.None(_) => false)
 
-export { render, shred, drive, verdict, report, render-compilable, render-all }
+export { render, shred, drive, verdict, report, render-compilable, render-all, shred-sexp }

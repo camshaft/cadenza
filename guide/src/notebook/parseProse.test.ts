@@ -191,6 +191,21 @@ test("a lone $ (currency) with no closer stays literal text (never throws)", () 
   assert.deepEqual(parseInline("it costs $5 today"), [{ t: "text", text: "it costs $5 today" }]);
 });
 
+test("TWO currency amounts don't get swallowed into math (tight-delimiter rule)", () => {
+  // Regression: `$5 and $10` — WITHOUT the tight-close rule, `$5 and $` parsed as math(`5 and `). The close
+  // `$` here is preceded by a space (` $10`), so it's not a valid math close; the run stays literal currency.
+  // (This notebook is finance-flavored — compound interest / loan — so currency-in-prose is a real case.)
+  assert.deepEqual(parseInline("price $5 and $10 total"), [{ t: "text", text: "price $5 and $10 total" }]);
+});
+
+test("tight-delimiter rule: a leading- or trailing-space $ flank is NOT math", () => {
+  // `$ x$` (space after open) and `$x $` (space before close) are rejected — a bare `$` next to whitespace
+  // reads as a literal dollar (currency/text), not a math delimiter. Real math still allowed (internal spaces).
+  assert.equal(parseInline("a $ x$ b").some((s) => s.t === "math"), false, "leading-space open is not math");
+  assert.equal(parseInline("a $x $ b").some((s) => s.t === "math"), false, "trailing-space close is not math");
+  assert.deepEqual(parseInline("$E = mc^2$"), [{ t: "math", tex: "E = mc^2" }], "internal spaces still fine");
+});
+
 test("an empty $$ mid-text is NOT inline math (it's the block delimiter) — stays literal", () => {
   // `$$` inline shouldn't swallow to a far `$`; the leading `$` is followed by `$`, so the inline rule skips.
   const spans = parseInline("a $$ b");

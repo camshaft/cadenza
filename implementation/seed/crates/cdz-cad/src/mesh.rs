@@ -312,6 +312,34 @@ mod tests {
     }
 
     #[test]
+    fn the_l_bracket_assembly_meshes_with_the_arm_standing_above_the_base() {
+        // Mesh the /cad L-bracket ASSEMBLY example end-to-end (the exact rendered sexpr the browser gets) and
+        // verify via the ACTUAL meshed geometry (manifold bounding_box — unaffected by the Cadenza-side bbox
+        // fold): the base plate is a 40×30×4 slab on z∈[0,4] with a bolt hole; the arm is a 30×25×4 box rotated
+        // +90° about x (so it rises in +z) and lifted onto the base top. So the assembly's meshed z-max must be
+        // well ABOVE the base's 4mm thickness (the arm stands up), and the whole thing is a single watertight
+        // solid. This is the mesh-verify v-guide-infra couldn't run (no playwright) — the native driver uses
+        // the SAME manifold .rotate/.union ops as the browser, so a correct native mesh proves the shape.
+        let base = "(Difference (Translate (: (tuple 0/1 0/1 2/1) Vec3) (Cube (: (tuple 40/1 30/1 4/1) Vec3))) (Translate (: (tuple 10/1 0/1 2/1) Vec3) (Cylinder 8/1 3/1)))";
+        let arm = "(Translate (: (tuple 0/1 0/1 4/1) Vec3) (Rotate (: (tuple 90/1 0/1 0/1) Vec3) (Translate (: (tuple 0/1 0/1 2/1) Vec3) (Cube (: (tuple 30/1 25/1 4/1) Vec3)))))";
+        let m = to_manifold(&parse_solid(&format!("(: (Union {base} {arm}) Solid)")).unwrap());
+        let mesh = mesh(&parse_solid(&format!("(: (Union {base} {arm}) Solid)")).unwrap());
+        assert!(
+            !mesh.is_empty(),
+            "the L-bracket assembly meshes to real geometry"
+        );
+        let bb = m
+            .bounding_box()
+            .expect("a non-empty assembly has a bounding box");
+        // z-max must clear the base's 4mm thickness by a wide margin — the arm (25 tall) stands up on the base.
+        assert!(
+            bb.max()[2] > 10.0,
+            "the arm should stand well above the base (meshed z-max = {}, base is only 4mm thick)",
+            bb.max()[2]
+        );
+    }
+
+    #[test]
     fn segment_count_controls_sphere_tessellation() {
         let s = parse_solid("(: (Sphere 1.0) Solid)").unwrap();
         let coarse = mesh_with_segments(&s, 8);

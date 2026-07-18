@@ -902,6 +902,75 @@ fn an_exhaustive_property_is_driven_over_its_whole_domain() {
     );
 }
 
+/// `@exhaustive` over a BOUNDED `@invariant` NEWTYPE is a PROOF over its whole in-domain set — not a decline.
+/// `Small = S(Int64)` with `@invariant [0,3]` has a 4-value domain; its `-gen` wrapper's param is a
+/// single-variant `Sum` whose payload is `IntRange{0,3}`, and the runner ENUMERATES it (driving the wrapper
+/// over each `v in 0..=3` via the inverse of the IntRange pool→value map) rather than sampling/declining. A
+/// property true across [0,3] PASSES as `(exhaustive, 4 cases)`; a property false inside [0,3] FAILS naming
+/// the in-domain value `S(v)`. Store-guarded — constructing the nominal newtype value needs the heap runtime.
+#[test]
+fn exhaustive_over_a_bounded_invariant_newtype_is_a_proof_over_its_domain() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — building a nominal value needs the store"
+        );
+        return;
+    }
+    // A property TRUE across the whole [0,3] domain → a PROOF over 4 cases.
+    let d = dir("exhaustive-invariant-newtype");
+    let proof = write(
+        &d,
+        "proof.sexp",
+        "(do (@ (invariant (and (>= self 0) (<= self 3))) (type Small (S Int64))) \
+           (@ exhaustive (def (p (: x Small)) \
+             (match x (((. Small S) v) (if (and (>= v 0) (<= v 3)) unit (trap \"out\")))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &proof]);
+    assert!(
+        ok,
+        "an @exhaustive over a bounded @invariant newtype proves over its domain: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS p-gen (exhaustive, 4 cases)"),
+        "the [0,3] @invariant newtype domain is enumerated as a 4-case proof: {stdout}"
+    );
+    // A property FALSE inside the domain (traps for v >= 2) → FAIL naming the in-domain value S(2 or 3).
+    let fail = write(
+        &d,
+        "fail.sexp",
+        "(do (@ (invariant (and (>= self 0) (<= self 3))) (type Small (S Int64))) \
+           (@ exhaustive (def (p (: x Small)) \
+             (match x (((. Small S) v) (if (< v 2) unit (trap \"big\")))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, _) = run(&["test", &fail]);
+    assert!(!ok, "a property false inside the domain fails: {stdout}");
+    assert!(
+        stdout.contains("FAIL p-gen") && stdout.contains("counterexample: p-gen(S("),
+        "a failing exhaustive newtype names the in-domain value S(v), not a raw int: {stdout}"
+    );
+    // A NON-bounded (one-sided) invariant → the window [0, 1_000_000] exceeds MAX_EXHAUSTIVE_CASES → DECLINE
+    // (not a false proof over a truncated domain). Confirms the cap guard on the enumeration path.
+    let wide = write(
+        &d,
+        "wide.sexp",
+        "(do (@ (invariant (>= self 0)) (type Nat (N Int64))) \
+           (@ exhaustive (def (p (: x Nat)) \
+             (match x (((. Nat N) v) (if (>= v 0) unit (trap \"neg\")))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, _) = run(&["test", &wide]);
+    assert!(
+        !ok,
+        "a too-wide invariant domain declines (non-zero): {stdout}"
+    );
+    assert!(
+        stdout.contains("not supported for a compound parameter"),
+        "a too-wide @invariant newtype domain declines rather than enumerating millions of cases: {stdout}"
+    );
+}
+
 /// F1 (compiler-directed collection generators): a `@test` whose parameter is a `(List Int64)` is
 /// property-tested by a COMPILER-SYNTHESIZED wrapper — the compiler builds a list from `Test.gen` and
 /// calls the test, so a property over a data structure runs over `--trials` generated inputs and shrinks

@@ -781,11 +781,15 @@ fn run_chor(args: &ChorArgs) -> ExitCode {
         }
     };
 
-    // 3. Write the protocol as a temp module + a driver that renders every actor, both pid-stamped (so
-    //    concurrent invocations can't race) and RAII-removed on every exit path.
+    // 3. Generate a driver that renders every actor. Two input surfaces, chosen by file extension:
+    //    - `.sexp` / `.chor`: the file is a bare protocol S-EXPR — `(seq (comm Buyer Seller Title) …)`. The
+    //      driver embeds it as a string literal and does `from-ast(read(src))` (chor-sread), inferring the
+    //      role set from the protocol via `roles-of` (self-describing — no separate roles decl needed).
+    //    - anything else (`.cdz`): the file is a CONSTRUCTOR-FORM module that `export { protocol, roles }`;
+    //      the driver imports it. Copied into the package src dir so its imports resolve.
+    //    Temp files (driver + any copied module) are pid-stamped (no concurrent-invocation race) and
+    //    RAII-removed on every exit path.
     let pid = std::process::id();
-    let proto_mod = format!("zz-chor-proto-{pid}");
-    let proto_path = src_dir.join(format!("{proto_mod}.cdz"));
     let driver_path = src_dir.join(format!("zz-chor-driver-{pid}.cdz"));
     struct TempFile(std::path::PathBuf);
     impl Drop for TempFile {
@@ -793,14 +797,33 @@ fn run_chor(args: &ChorArgs) -> ExitCode {
             let _ = std::fs::remove_file(&self.0);
         }
     }
-    if let Err(e) = std::fs::write(&proto_path, &proto_src) {
-        eprintln!("{PROG} chor: cannot write protocol temp module: {e}");
-        return ExitCode::FAILURE;
-    }
-    let _proto_guard = TempFile(proto_path.clone());
-    let driver = format!(
-        "import {{ render-all }} from \"chor-driver\"\nimport {{ protocol, roles }} from \"{proto_mod}\"\ndef main() = render-all(roles, protocol)\nexport {{ main }}\n"
-    );
+    let is_sexp = args.file.ends_with(".sexp") || args.file.ends_with(".chor");
+    // `_proto_guard` must outlive the driver run, so bind it in this scope even when unused (the .sexp path).
+    let mut _proto_guard: Option<TempFile> = None;
+    let driver = if is_sexp {
+        // Embed the s-expr as a one-line Cadenza string literal (escape `\`, `"`, newline→space — protocol
+        // s-exprs are whitespace-insensitive, and `read` skips interior whitespace) and call the package's
+        // `shred-sexp` (read → from-ast → roles-of → render-all), which keeps the driver a single call.
+        let escaped = proto_src
+            .trim()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', " ");
+        format!(
+            "import {{ shred-sexp }} from \"chor-driver\"\ndef main() = shred-sexp(\"{escaped}\")\nexport {{ main }}\n"
+        )
+    } else {
+        let proto_mod = format!("zz-chor-proto-{pid}");
+        let proto_path = src_dir.join(format!("{proto_mod}.cdz"));
+        if let Err(e) = std::fs::write(&proto_path, &proto_src) {
+            eprintln!("{PROG} chor: cannot write protocol temp module: {e}");
+            return ExitCode::FAILURE;
+        }
+        _proto_guard = Some(TempFile(proto_path.clone()));
+        format!(
+            "import {{ render-all }} from \"chor-driver\"\nimport {{ protocol, roles }} from \"{proto_mod}\"\ndef main() = render-all(roles, protocol)\nexport {{ main }}\n"
+        )
+    };
     if let Err(e) = std::fs::write(&driver_path, &driver) {
         eprintln!("{PROG} chor: cannot write driver: {e}");
         return ExitCode::FAILURE;
@@ -3813,11 +3836,18 @@ fn run_test_file(
         // path (compound params) draws internally and isn't clamped here (a later increment).
         let bounds = param_bounds(&db, i);
         let gens = param_generators(&mut db, i);
+        // For a `-gen` wrapper, capture its parameter `GenTy` now (db is in scope here, not in the run loop).
+        // Only meaningful for the exhaustive-newtype enumeration below; a non-wrapper test yields `None`.
+        let gen_ty = name
+            .ends_with("-gen")
+            .then(|| rcdzc::proptest_gen::gen_ty_of_wrapper_param(&db, &name))
+            .flatten();
         tests.push(TestSpec {
             name,
             gens,
             exhaustive,
             bounds,
+            gen_ty,
         });
     }
     if tests.is_empty() {
@@ -3887,6 +3917,7 @@ fn run_test_file(
         gens,
         exhaustive,
         bounds,
+        gen_ty,
     } in &tests
     {
         let kebab = cadenza_syntax::extern_name::kebab_extern_name(name);
@@ -3901,6 +3932,71 @@ fn run_test_file(
                     "FAIL {name}: cannot generate inputs — a parameter's type is not a scalar this \
                      runner generates (Int/Bool/Float/Char); annotate it with a scalar type"
                 );
+            }
+            // An `@exhaustive` test whose (original) parameter was COMPOUND: the compiler synthesized a
+            // gen-driven wrapper that builds the value from the runner's random int POOL, which offers no
+            // way to ENUMERATE a domain (it samples). So exhaustive checking is not (yet) supported for a
+            // compound-parameter test — regardless of whether that domain is unbounded (a `List`) or
+            // finite (a small user-sum enum). Decline cleanly, rather than sampling under an `@exhaustive`
+            // label (which would falsely imply a proof) or aborting the file at the compound export
+            // boundary. (Exhaustive enumeration works for a BOUNDED SCALAR signature — the boundary-arg
+            // route above — where the domain is enumerated directly, not drawn from the pool.)
+            // An `@exhaustive` over a BOUNDED `@invariant` NEWTYPE (`Percent = Pct(Int64)` with
+            // `@invariant [0,100]`) CAN be enumerated: its `-gen` wrapper param is a single-variant `Sum`
+            // whose payload is an `IntRange{lo,hi}`, and the `IntRange` decode map `v = lo + (pool & MAX) %
+            // span` is INVERTIBLE — feeding pool int `v-lo` drives the wrapper over the exact value `v`. So
+            // run it once per `v in lo..=hi` (a PROOF over the in-domain set), if `span` fits the cap. Any
+            // other compound shape (a List/Tuple/multi-variant sum, or a too-wide range) falls through to the
+            // clean decline below.
+            Some(gens)
+                if gens.is_empty()
+                    && *exhaustive
+                    && exhaustive_newtype_range(gen_ty.as_ref()).is_some() =>
+            {
+                let (lo, hi) = exhaustive_newtype_range(gen_ty.as_ref()).unwrap();
+                // Render via the WHOLE Sum GenTy (it consumes selector then payload, matching the pool below),
+                // so a failing case decodes to `S(v)`, the full nominal value.
+                let full_gt = gen_ty.as_ref().unwrap();
+                let span = (hi - lo + 1) as usize;
+                let run_pool = |pool: &[i64]| -> TrialOutcome {
+                    run_one_trial_with_pool(
+                        &component,
+                        runtime.as_deref(),
+                        &kebab,
+                        store,
+                        &[],
+                        pool,
+                    )
+                    .0
+                };
+                // The `-gen` wrapper for a single-variant `Sum` newtype draws a variant SELECTOR first
+                // (`sel = gen % k`, here k=1 → any int selects the sole variant), THEN the `IntRange` payload
+                // (`v = lo + (gen & MAX) % span`). So the pool for value `v` is `[selector=0, v-lo]` — mirror
+                // the decode order exactly (a 1-element pool would run dry on the payload draw → a spurious
+                // body trap). `pool_for(v)` builds it; `render_pool_value` decodes the SAME pool to `S(v)`.
+                let pool_for = |v: i64| -> [i64; 2] { [0, v.wrapping_sub(lo)] };
+                let failing =
+                    (lo..=hi).find(|&v| matches!(run_pool(&pool_for(v)), TrialOutcome::Fail(_)));
+                match failing {
+                    None => {
+                        passed += 1;
+                        println!("PASS {name} (exhaustive, {span} cases)");
+                    }
+                    Some(v) => {
+                        failed += 1;
+                        // Render the failing case as the wrapper's decoded VALUE (`S(2)`), not a raw pool int.
+                        let rendered = render_pool_value(full_gt, &pool_for(v))
+                            .unwrap_or_else(|| v.to_string());
+                        let msg = match run_pool(&pool_for(v)) {
+                            TrialOutcome::Fail(Some(m)) => format!(": {m}"),
+                            _ => String::new(),
+                        };
+                        println!(
+                            "FAIL {name}{msg}\n  counterexample: {name}({rendered})  (exhaustive — the \
+                             domain contains a failing case)"
+                        );
+                    }
+                }
             }
             // An `@exhaustive` test whose (original) parameter was COMPOUND: the compiler synthesized a
             // gen-driven wrapper that builds the value from the runner's random int POOL, which offers no
@@ -4306,6 +4402,11 @@ struct TestSpec {
     gens: Option<Vec<GenKind>>,
     exhaustive: bool,
     bounds: Vec<ParamBound>,
+    /// The synthesized `-gen` wrapper's parameter `GenTy` (via `gen_ty_of_wrapper_param`), captured at BUILD
+    /// time because `db` is not in scope in the run loop. `Some` only for a `-gen` wrapper; `None` for a plain
+    /// or scalar test. Used by the `@exhaustive` path to ENUMERATE a bounded newtype domain (a single-variant
+    /// `Sum` whose payload is an `IntRange` — feed pool values `0..span` to drive the wrapper over `lo..=hi`).
+    gen_ty: Option<rcdzc::proptest_gen::GenTy>,
 }
 
 /// The generators for definition `def`'s parameters, or `None` if ANY parameter's solved type is not a
@@ -4500,6 +4601,28 @@ const RUNNER_LIST_LEN: usize = 3;
 fn render_pool_value(gty: &rcdzc::proptest_gen::GenTy, pool: &[i64]) -> Option<String> {
     let mut cursor = 0usize;
     decode_value(gty, pool, &mut cursor)
+}
+
+/// If `gen_ty` is a `-gen` wrapper param that CAN be exhaustively enumerated — a single-variant `Sum` newtype
+/// whose sole payload is an `IntRange{lo,hi}` (a bounded `@invariant` newtype like `Percent = Pct(Int64)` with
+/// `@invariant [0,100]`) AND whose domain size `hi-lo+1` fits [`MAX_EXHAUSTIVE_CASES`] — return `(lo, hi)`.
+/// `None` for any other shape (a List/Tuple/multi-variant sum, a non-IntRange payload, or a range too large to
+/// enumerate) — the caller then declines the `@exhaustive` cleanly. This is what lets `@exhaustive` PROVE a
+/// property over a small refined newtype's whole domain (drive the wrapper over each `v in lo..=hi`) instead
+/// of sampling / declining.
+fn exhaustive_newtype_range(gen_ty: Option<&rcdzc::proptest_gen::GenTy>) -> Option<(i64, i64)> {
+    use rcdzc::proptest_gen::GenTy;
+    let GenTy::Sum { variants, .. } = gen_ty? else {
+        return None;
+    };
+    // A single-variant newtype whose one payload is an IntRange.
+    let [(_, Some(GenTy::IntRange { lo, hi }))] = variants.as_slice() else {
+        return None;
+    };
+    let (lo, hi) = (*lo, *hi);
+    // A valid range (lo<=hi) whose size fits the enumeration cap — else decline (too large to prove).
+    let span = (hi as i128) - (lo as i128) + 1;
+    (span >= 1 && span <= MAX_EXHAUSTIVE_CASES as i128).then_some((lo, hi))
 }
 
 /// One step of the pool→value decode (see [`render_pool_value`]). `cursor` advances by exactly the number of

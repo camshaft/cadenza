@@ -63,10 +63,14 @@ def scan-atom(s: String, i: Int64, acc: String) =
       else scan-atom(s, i + 1, String.concat(acc, c)))))))
 
 /// The op-code for a binary operator SYMBOL, matching parse-db's codes (43 + / 45 - / 42 * / 47 / / 37 % /
-/// 60 < / 61 == / 62 > / 63 <= / 64 >= / 65 !=). Returns -1 for an unrecognized symbol.
+/// 60 < / 61 = (equality) / 62 > / 63 <= / 64 >= / 65 !=). Returns -1 for an unrecognized symbol.
+/// EQUALITY is spelled `=` — the reference (rcdzc) surface + the shared corpus use `(= a b)` (1359 uses),
+/// NOT `==`; mapping only `==` made compiler-ml DECLINE every real corpus equality program (a decline-vs-run
+/// conformance gap vs rcdzc's `= : a -> a -> Bool`). `==` is kept as an accepted ALIAS (compiler-ml's own
+/// Tok-built tests spell op 61 as `==`, and it is not a corpus token, so accepting both is harmless).
 def op-code-of(sym: String) = match sym with
   | "+" => 43 | "-" => 45 | "*" => 42 | "/" => 47 | "%" => 37
-  | "<" => 60 | "==" => 61 | ">" => 62 | "<=" => 63 | ">=" => 64 | "!=" => 65
+  | "<" => 60 | "=" => 61 | "==" => 61 | ">" => 62 | "<=" => 63 | ">=" => 64 | "!=" => 65
   | _ => 0 - 1
 
 /// A DETERMINISTIC name-id for an identifier string: a polynomial hash over its BYTES (`String.to-bytes`,
@@ -333,9 +337,17 @@ def sr-prefix-nested() =
 
 @test
 def sr-prefix-eqeq() =
-  // "(== 5 5)" → op 61 (the two-char == symbol scans as one atom).
+  // "(== 5 5)" → op 61 (the two-char == symbol scans as one atom). `==` is the accepted alias.
   (match read-source("(== 5 5)") with | (root, tree) =>
     (if is-bin-op(tree, root, 61) then unit else trap("root is a == Bin (op 61)")))
+
+@test
+def sr-prefix-eq-equality() =
+  // "(= 5 5)" → op 61: EQUALITY is spelled `=` (the reference/corpus spelling, 1359 corpus uses) — the
+  // single-char `=` symbol scans as one atom and maps to op 61, so a real corpus `(= a b)` program reads as
+  // an equality NBin (was unrecognized → declined before the fix).
+  (match read-source("(= 5 5)") with | (root, tree) =>
+    (if is-bin-op(tree, root, 61) then unit else trap("root is a = Bin (op 61) — equality is spelled =")))
 
 @test
 def sr-if-shape() =

@@ -215,8 +215,8 @@ export default function Units() {
       </P>
       <Runnable
         source={`(def (main)
-  (if (= (Qty.value (Unit.in (Unit.of #"millimeter")
-                     (Qty.of (Rational.of 1 4) (Unit.of #"inch"))))
+  (if (= (Unit.in (Unit.of #"millimeter")
+                  (Qty.of (Rational.of 1 4) (Unit.of #"inch")))
          (Rational.of 127 20))
     1 0))`}
       />
@@ -352,13 +352,13 @@ export default function Units() {
           </>
         }
         starter={`(def (main)
-  (if (= (Qty.value (Unit.in (Unit.of #"millimeter")
-                     (Qty.of (Rational.of ? 4) (Unit.of #"inch"))))
+  (if (= (Unit.in (Unit.of #"millimeter")
+                  (Qty.of (Rational.of ? 4) (Unit.of #"inch")))
          (Rational.of 127 20))
     1 0))`}
         solution={`(def (main)
-  (if (= (Qty.value (Unit.in (Unit.of #"millimeter")
-                     (Qty.of (Rational.of 1 4) (Unit.of #"inch"))))
+  (if (= (Unit.in (Unit.of #"millimeter")
+                  (Qty.of (Rational.of 1 4) (Unit.of #"inch")))
          (Rational.of 127 20))
     1 0))`}
         expected="1"

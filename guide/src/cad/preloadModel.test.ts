@@ -68,5 +68,8 @@ test("the preloaded-library constants match what CadPage passes the compiler", (
   assert.equal(CAD_LIB_FORMAT, "ml"); // exact.cdz + helpers.cdz + units.cdz are authored in ML (.cdz)
   assert.deepEqual([...CAD_IMPORTED_NAMES], ["Solid", "v3", "lower", "Profile", "path-start", "line-to", "cubic-to", "v2"]);
   assert.ok(CAD_HELPER_NAMES.includes("box") && CAD_HELPER_NAMES.includes("hole-through"), "helper superset includes the ergonomic wrappers");
+  // The assembly transforms (rotate/mirror) must be in the superset so an assembly-as-code model's
+  // `rotate-x`/`mirror-x` resolve against the preloaded helpers (else CDZ0101 unbound).
+  assert.ok(CAD_HELPER_NAMES.includes("rotate-x") && CAD_HELPER_NAMES.includes("mirror-x"), "helper superset includes the rotation + mirror transforms");
   assert.ok(CAD_UNIT_NAMES.includes("inch"), "unit superset includes the inch constructor");
 });

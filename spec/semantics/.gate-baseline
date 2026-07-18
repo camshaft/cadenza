@@ -148,6 +148,7 @@ pass	Qty.pow and repeated multiplication produce the same dimension for a matchi
 pass	Qty.unit recovers a derived unit
 pass	Qty.unit recovers a quantity's unit to build another quantity of the same unit
 pass	Qty.unit recovers the unit of a quantity whose magnitude is a runtime value
+pass	Qty.value of a conversion result is a compile-time error — the conversion already unwrapped
 pass	Qty.value recovers the underlying numeric value, discarding the unit
 pass	Result propagates errors without trapping
 pass	Result type for fallible operations

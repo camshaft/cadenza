@@ -62,14 +62,16 @@ export function parseInline(text: string): Inline[] {
         continue;
       }
     }
-    // inline math `$…$` — same precedence class as code (content is literal TeX, no nested inline). A lone
-    // `$` with no closer stays literal (currency like "$5"); an EMPTY `$$` is not inline math (it's the
-    // block delimiter, and `$$` mid-text renders literal here rather than swallowing to a far `$`). We also
-    // require the closer to not be immediately preceded by whitespace-only emptiness — a `$ $` with just
-    // spaces isn't math. Minimal + robust: match `$<non-empty, no-newline>$`.
-    if (text[i] === "$" && text[i + 1] !== "$") {
+    // inline math `$…$` — same precedence class as code (content is literal TeX, no nested inline). TIGHT
+    // delimiters (the CommonMark-math rule): the opening `$` must NOT be followed by whitespace and the
+    // closing `$` must NOT be preceded by whitespace. This is what keeps CURRENCY literal — `price $5 and
+    // $10` would otherwise parse `$5 and $` as math; requiring a tight open (`$5` opens, but its closer `$`
+    // in `and $10` is preceded by a space → rejected) leaves it as text. A lone `$` with no closer, an empty
+    // `$$` (the block delimiter), and a `\n`-spanning run are all non-math too. Real math (`$E = mc^2$`) has
+    // internal spaces but tight flanks, so it still matches.
+    if (text[i] === "$" && text[i + 1] !== "$" && !/\s/.test(text[i + 1] ?? "")) {
       const end = text.indexOf("$", i + 1);
-      if (end > i + 1 && !text.slice(i + 1, end).includes("\n")) {
+      if (end > i + 1 && !/\s/.test(text[end - 1]) && !text.slice(i + 1, end).includes("\n")) {
         flushPlain();
         spans.push({ t: "math", tex: text.slice(i + 1, end) });
         i = end + 1;
