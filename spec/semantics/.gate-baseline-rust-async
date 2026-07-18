@@ -808,6 +808,7 @@ pass	a list consumed by List.concat in one operand keeps its element view for a 
 pass	a list consumed by List.push in one operand is unchanged for a later read of the same binding
 pass	a list consumed by List.update in one operand keeps its element view for a later read
 pass	a list element position composes with a nested tuple pattern
+pass	a list element that is a sum with a tuple payload binds the tuple fields
 pass	a list is exhaustive when the empty, singleton, and two-or-more arms jointly cover every length
 pass	a list match arm may carry a guard on its element binders
 pass	a list mixing integer and boolean elements is a type error
@@ -841,6 +842,7 @@ pass	a literal inside a constructor pattern matches a runtime payload
 pass	a literal inside a tuple pattern matches a runtime element
 pass	a literal inside an Ok pattern refines a Result match
 pass	a literal list element dispatches a runtime list by its value
+pass	a literal narrow-width newtype list element in a constructed list grounds to its inner width
 pass	a literal nested in a compound payload that overflows the annotated width is rejected
 pass	a literal nested in a tuple def-parameter is refutable and rejected
 pass	a literal nested in a tuple let-binder is refutable and rejected
@@ -3551,9 +3553,7 @@ todo	a host op whose result is a QUANTITY crosses the boundary as its inner scal
 todo	a host op with a String parameter composes with the value-heap runtime
 todo	a host-called closure applied to a different argument tracks the input
 todo	a host-called closure with a different body dispatches the right code
-todo	a list element that is a sum with a tuple payload binds the tuple fields
 todo	a list of closures each keeps its own capture, selected by a runtime index
-todo	a literal narrow-width newtype list element in a constructed list grounds to its inner width
 todo	a multi-argument closure among distinct-signature exports
 todo	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
 todo	a multi-argument closure round-trips through a consumer

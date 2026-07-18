@@ -94,6 +94,95 @@ pub fn compile_via_wasm(rcdzc_wasm: &[u8], ast_bytes: &[u8]) -> Result<Vec<u8>> 
     }
 }
 
+/// Compile a Cadenza program's AST bytes into a NAMED PROVIDER component (published under `iface`) by running
+/// the compiler-wasm's `compile_named` export — the named counterpart of [`compile_via_wasm`]. The kernel's
+/// `interpret` is a named provider peer (a peer executor binds its export), so a faithful wasm-swap of the
+/// PROVIDER compile needs the interface string to cross too: this allocs TWO guest regions (AST + iface),
+/// writes both, calls `compile_named(ast_ptr, ast_len, iface_ptr, iface_len)`, and reads the same packed
+/// `[status:1][payload…]` result region. Returns the component bytes, or the compiler's diagnostic (status 1).
+/// Same contract as the native [`crate::kernel::compile_interpret_provider`], executed inside wasmtime.
+pub fn compile_via_wasm_named(rcdzc_wasm: &[u8], ast_bytes: &[u8], iface: &str) -> Result<Vec<u8>> {
+    let engine = Engine::default();
+    let module = Module::new(&engine, rcdzc_wasm).context("load rcdzc.wasm module")?;
+
+    let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t| t)
+        .context("add WASI preview1 to the linker")?;
+    let wasi = WasiCtxBuilder::new().build_p1();
+    let mut store = Store::new(&engine, wasi);
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .context("instantiate rcdzc.wasm")?;
+
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .ok_or_else(|| anyhow!("rcdzc.wasm exports no `memory`"))?;
+    let alloc: TypedFunc<u32, u32> = instance
+        .get_typed_func(&mut store, "alloc")
+        .context("rcdzc.wasm `alloc` export")?;
+    let compile_named: TypedFunc<(u32, u32, u32, u32), u64> = instance
+        .get_typed_func(&mut store, "compile_named")
+        .context("rcdzc.wasm `compile_named` export")?;
+    let dealloc: TypedFunc<(u32, u32), ()> = instance
+        .get_typed_func(&mut store, "dealloc")
+        .context("rcdzc.wasm `dealloc` export")?;
+
+    let ast_len =
+        u32::try_from(ast_bytes.len()).map_err(|_| anyhow!("AST too large for the wasm ABI"))?;
+    let iface_bytes = iface.as_bytes();
+    let iface_len = u32::try_from(iface_bytes.len())
+        .map_err(|_| anyhow!("interface name too large for the wasm ABI"))?;
+
+    // 1) alloc + write BOTH regions: the AST and the interface string.
+    let ast_ptr = alloc
+        .call(&mut store, ast_len)
+        .context("alloc AST region")?;
+    if ast_ptr == 0 {
+        return Err(anyhow!("rcdzc.wasm alloc returned null (out of memory)"));
+    }
+    write_mem(&memory, &mut store, ast_ptr, ast_bytes)?;
+    let iface_ptr = alloc
+        .call(&mut store, iface_len)
+        .context("alloc iface region")?;
+    if iface_ptr == 0 {
+        dealloc.call(&mut store, (ast_ptr, ast_len)).ok();
+        return Err(anyhow!("rcdzc.wasm alloc returned null (out of memory)"));
+    }
+    write_mem(&memory, &mut store, iface_ptr, iface_bytes)?;
+
+    // 2) compile_named → the packed (ptr<<32)|len result region.
+    let packed = compile_named
+        .call(&mut store, (ast_ptr, ast_len, iface_ptr, iface_len))
+        .context("call rcdzc.wasm `compile_named`")?;
+    // Free both input regions now (the result is independent).
+    dealloc.call(&mut store, (ast_ptr, ast_len)).ok();
+    dealloc.call(&mut store, (iface_ptr, iface_len)).ok();
+
+    if packed == 0 {
+        return Err(anyhow!(
+            "rcdzc.wasm compile_named returned null (allocation failure)"
+        ));
+    }
+    let rptr = (packed >> 32) as u32;
+    let rlen = (packed & 0xffff_ffff) as u32;
+
+    // 3) read the result region `[status:1][payload…]`.
+    let region = read_mem(&memory, &mut store, rptr, rlen)?;
+    dealloc.call(&mut store, (rptr, rlen)).ok();
+
+    let (&status, payload) = region
+        .split_first()
+        .ok_or_else(|| anyhow!("empty result region from rcdzc.wasm"))?;
+    match status {
+        0 => Ok(payload.to_vec()),
+        1 => Err(anyhow!(
+            "rcdzc.wasm compile_named error: {}",
+            String::from_utf8_lossy(payload)
+        )),
+        other => Err(anyhow!("rcdzc.wasm returned unknown status byte {other}")),
+    }
+}
+
 /// Write `data` into the guest linear `memory` at `ptr`, bounds-checked.
 fn write_mem(memory: &Memory, store: &mut Store<WasiP1Ctx>, ptr: u32, data: &[u8]) -> Result<()> {
     memory
@@ -158,6 +247,44 @@ mod tests {
         assert_eq!(
             via_wasm, native,
             "the compiler-wasm produces the SAME component as native rcdzc (faithful wasm-swap)"
+        );
+    }
+
+    #[test]
+    fn compile_via_wasm_named_matches_the_native_provider_differentially() {
+        // The PROVIDER wasm-swap proof: running rcdzc.wasm's compile_named produces the SAME named-provider
+        // component the native compile_interpret_provider does — the faithful provider wasm-swap. SKIPS if the
+        // rcdzc.wasm isn't built OR predates the compile_named export (an older artifact → missing-export
+        // error), like the runtime-store gating: this lands before the rebuilt artifact carries the export.
+        let Some(rcdzc_wasm) = find_rcdzc_wasm() else {
+            eprintln!("[wasm_compiler] rcdzc.wasm not built; skipping compile_via_wasm_named");
+            return;
+        };
+        let ast =
+            ast_of("(do (def (interpret (: kind Int64) (: turn Int64)) kind) (export interpret))");
+        let iface = crate::kernel::KERNEL_IFACE;
+
+        let via_wasm = match compile_via_wasm_named(&rcdzc_wasm, &ast, iface) {
+            Ok(bytes) => bytes,
+            Err(e) if format!("{e:#}").contains("compile_named` export") => {
+                eprintln!("[wasm_compiler] rcdzc.wasm predates the compile_named export; skipping");
+                return;
+            }
+            Err(e) => panic!("compile a provider via wasm: {e:#}"),
+        };
+        assert!(
+            !via_wasm.is_empty() && &via_wasm[..4] == b"\0asm",
+            "wasm-compiled provider is a wasm component"
+        );
+
+        // Differential: the native provider compile of the SAME AST + iface is byte-identical.
+        let native = crate::kernel::compile_interpret_provider(
+            "(do (def (interpret (: kind Int64) (: turn Int64)) kind) (export interpret))",
+        )
+        .expect("native provider compile of the same source");
+        assert_eq!(
+            via_wasm, native,
+            "compile_named produces the SAME provider component as native (faithful provider wasm-swap)"
         );
     }
 

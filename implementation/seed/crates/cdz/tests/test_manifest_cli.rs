@@ -1175,6 +1175,51 @@ fn a_range_invariant_constrains_generation_in_domain() {
     );
 }
 
+/// A FAILING @invariant-constrained property renders its counterexample IN-DOMAIN — the payload decodes
+/// through the same IntRange the generator used, NOT the raw driver int. Regression pin: the counterexample
+/// DECODER runs at `cdz test` time AFTER strip_annotations removed the `(@ (invariant …) …)` wrapper, so it
+/// must re-source the invariant from `db.invariants` (via invariant_of); otherwise a Percent [0,100] property
+/// failure rendered a wild raw int like `Pct(-7167677685577955866)` instead of an in-range value. The body
+/// traps for v >= 50, so a failing draw is an in-range `Pct(50..100)`.
+#[test]
+fn a_failing_range_invariant_property_renders_the_counterexample_in_domain() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — building a nominal value needs the store"
+        );
+        return;
+    }
+    let d = dir("invariant-counterexample");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+           (@ test (def (p (: x Percent)) (match x (((. Percent Pct) v) (if (< v 50) unit (trap \"big\")))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, _) = run(&["test", &f, "--seed", "3", "--trials", "50"]);
+    assert!(
+        !ok,
+        "the property fails (a draw >= 50 exists in [0,100]): {stdout}"
+    );
+    // The counterexample must be an IN-RANGE Pct — extract the int and assert it's in [0, 100], NOT a raw
+    // out-of-domain driver int. (Regression: pre-fix it rendered Pct(<huge negative>).)
+    let ce = stdout
+        .lines()
+        .find(|l| l.contains("counterexample: p(Pct("))
+        .unwrap_or("");
+    let n: i64 = ce
+        .split("Pct(")
+        .nth(1)
+        .and_then(|s| s.split(')').next())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(-1);
+    assert!(
+        (0..=100).contains(&n),
+        "the @invariant counterexample decodes IN-DOMAIN (0..=100), not a raw driver int: {stdout}"
+    );
+}
+
 /// END-TO-END: a MIN-LENGTH `@invariant` constrains a newtype-List to non-empty generation. `NEList = Mk
 /// (List Int64)` with `@invariant(< 0 (List.len it))`: every generated `NEList` wraps a NON-EMPTY list, so
 /// a property asserting `List.len > 0` PASSES all trials (before the constraint the generator drew the empty

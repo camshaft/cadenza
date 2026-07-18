@@ -4024,19 +4024,24 @@ fn rustc_roundtrip_single_variant_newtype_literal_payload_arm_at_narrow_widths()
         }
     }
 
-    // A LIST-ELEMENT literal-payload probe (`(list (W.Wrap 5) .. r)`) still DECLINES: a narrow list element
-    // is stored WIDENED to its i64 cell, so a width-keyed literal compare against `(xs)[0]` (i64) would
-    // mismatch (E0308) — reconciling that is the ListNew narrow-element-width slice. Sound todo, not a
-    // miscompile. The declining LitTest scrutinee is a `SumPayload` reading the list element.
-    let list_elem = try_compile_rust(
+    // A LIST-ELEMENT literal-payload probe (`(list (W.Wrap 5) .. r)`) COMPILES and runs. The premise the old
+    // decline guard assumed — that `ListNew` widens a narrow-int element to its i64 cell (`vec![(5u8 as i64),
+    // …]`) so `(xs)[0]` reads i64 while the literal is `5u8` (E0308) — is FALSE: `ListNew` stores the element
+    // UNWIDENED (`vec![5u8, 7u8]`, a `Vec<u8>`), and the LitTest subject-cast below the (removed) guard already
+    // keys both sides off the narrow width — `((xs[0]) as u8) == 5u8` compiles. So the guard was redundant.
+    let list_elem = compile_rust(
         "(module m (type W (Wrap UInt8)) \
-           (def (main) (let ((xs (list (W.Wrap 5) (W.Wrap 7)))) \
-             (match xs ((list (W.Wrap 5) .. r) (List.len xs)) (_ 0)))) (export main))",
+           (def (run) (let ((xs (list (W.Wrap 5) (W.Wrap 7)))) \
+             (match xs ((list (W.Wrap 5) .. r) (List.len xs)) (_ 0)))) (export run))",
     );
     assert!(
-        list_elem.is_err(),
-        "a narrow-newtype literal LIST element still declines (i64 cell vs narrow literal):\n{list_elem:?}"
+        list_elem.contains("== 5u8"),
+        "a narrow-newtype literal LIST element compares at the narrow width u8, not i64:\n{list_elem}"
     );
+    // The head is `(W.Wrap 5)` so the arm hits; `List.len xs` = 2.
+    if let Some(out) = rustc_run(&list_elem, "run()") {
+        assert_eq!(out, "2", "the literal list-element arm hits → List.len = 2");
+    }
 
     // A TUPLE element preserves its width (tuples are not widened), so a narrow-newtype tuple-element
     // literal probe compiles: `(match (tuple (W.Wrap n) 9) ((tuple (W.Wrap 0) b) 100) (_ 5))`.

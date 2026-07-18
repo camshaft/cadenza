@@ -9642,6 +9642,23 @@ fn head_is_runtime_fn_value(db: &mut Db, id: StructId) -> bool {
     match resolved_of(db, id) {
         Resolved::Param { .. } => true,
         Resolved::Ref { value } => head_is_runtime_fn_value(db, value),
+        // A CALL that RETURNS a closure — a head `(selfp n)` where `selfp` is a RECURSIVE def whose result
+        // is a function value (`(def (selfp n) (if (= n 0) (fn (x) …) (selfp (- n 1))))`), applied
+        // `((selfp n) 5)`. The call CANNOT β-reduce (a recursive callee has no compile-time-visible lambda
+        // body — `lambda_body` is `None`, and its reduction hits the depth guard), so its result is a
+        // runtime closure HANDLE that must apply via `call_indirect`. Without this the head fell through to
+        // the "value is not applyable" decline (a false reject of the factory-selected-by-recursion idiom).
+        // Gated on (1) the head being a genuine APPLICATION that does NOT reduce to a lambda (a
+        // NON-recursive closure-returner `((pick b) 5)` DOES reduce — via case-of-if / β-reduction — and
+        // keeps that path, never reaching here), and (2) its result type being `Ty::Fn` (an ordinary
+        // data-returning call is not a runtime fn value). The emit materializes the call's returned handle
+        // as the closure cell (`Core::CallClosure`'s `emit(closure)` handles a `Core::Call` operand).
+        Resolved::Apply { .. }
+            if crate::eval::lambda_body(db, id).is_none()
+                && matches!(crate::infer::type_of(db, id), crate::ty::Ty::Fn(_, _)) =>
+        {
+            true
+        }
         // A payload/element binder — runtime iff the fold can't reduce it to a lambda (a constant compound
         // folds through the projection; a runtime one does not, so its stored closure applies indirect).
         Resolved::SumPayload { .. } | Resolved::Proj { .. } => {

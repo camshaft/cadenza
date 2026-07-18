@@ -1089,6 +1089,7 @@ pass	a literal inside a constructor pattern matches a runtime payload
 pass	a literal inside a tuple pattern matches a runtime element
 pass	a literal inside an Ok pattern refines a Result match
 pass	a literal list element dispatches a runtime list by its value
+pass	a literal narrow-width newtype list element in a constructed list grounds to its inner width
 pass	a literal nested in a compound payload that overflows the annotated width is rejected
 pass	a literal nested in a tuple def-parameter is refutable and rejected
 pass	a literal nested in a tuple let-binder is refutable and rejected
@@ -3670,7 +3671,6 @@ todo	a host effect with a non-kebab NAME crosses under a normalized interface ex
 todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 todo	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
 todo	a host op with a String parameter composes with the value-heap runtime
-todo	a literal narrow-width newtype list element in a constructed list grounds to its inner width
 todo	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
 todo	a multi-argument closure round-trips through a consumer
 todo	a multi-argument closure round-trips through a consumer — FLAT arrow spelling

@@ -15,10 +15,10 @@
 import { Solid, Vec3, lower, v3r, v3r-eq, bounding-box, aabbr-size, solidr-is-empty } from "exact"
 import { box, cyl, hole-through, fuse, move-z } from "helpers"
 
-@param(widget: slider) width : Rational
-@param(widget: slider) depth : Rational
-@param(widget: slider) thickness : Rational
-@param(widget: slider) bore : Rational
+@param(widget: slider, range: [20, 200], default: 50) width : Rational
+@param(widget: slider, range: [20, 150], default: 30) depth : Rational
+@param(widget: slider, range: [2, 20], default: 5) thickness : Rational
+@param(widget: slider, range: [1, 15], default: 3) bore : Rational
 
 /// A parametric mounting PLATE: a `width × depth × thickness` plate with a central bolt hole of radius
 /// `bore` drilled through it. Every dimension is a runtime `@param` — drag the sliders, the plate resizes
