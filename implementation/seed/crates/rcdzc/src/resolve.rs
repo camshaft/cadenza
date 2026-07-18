@@ -3228,6 +3228,46 @@ fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
     db.ast.as_form(id, "tuple").is_some() || db.ast.head_ctor(id) == Some("tuple")
 }
 
+/// Whether a `(record (field value) …)` PATTERN binds `name` anywhere — at a bare field value `(x a)` or
+/// NESTED inside a field's compound value `(p (tuple a b))`. Used only to ATTRIBUTE a body reference to an
+/// unwired Increment-B nested record sub-pattern (a coded decline), so a partial-implementation reference
+/// names the feature rather than falling to a misleading CDZ0101. Recurses into nested tuple/list/record/
+/// ctor field values via the same form-independent walkers the wired cases use.
+fn record_pattern_binds_name(db: &Db, record_pat: StructId, name: &str) -> bool {
+    let Some(fields) = db
+        .ast
+        .as_form(record_pat, "record")
+        .or_else(|| db.ast.as_ctor_form(record_pat, "record"))
+        .map(<[_]>::to_vec)
+    else {
+        return false;
+    };
+    fields.iter().any(|&pair| {
+        let Struct::List(kv) = db.ast.get(pair) else {
+            return false;
+        };
+        if kv.len() != 2 {
+            return false;
+        }
+        let value_pat = kv[1];
+        if let Some(nm) = db.ast.as_name(value_pat) {
+            return nm == name && nm != "_";
+        }
+        let (mut path, mut heads) = (Vec::new(), Vec::new());
+        if is_tuple_pattern(db, value_pat) {
+            find_binder_in_tuple(db, value_pat, name, &mut path, &mut heads)
+        } else if is_list_pattern(db, value_pat) {
+            find_binder_in_list(db, value_pat, name, &mut path, &mut heads)
+        } else if db.ast.as_form(value_pat, "record").is_some()
+            || db.ast.as_ctor_form(value_pat, "record").is_some()
+        {
+            record_pattern_binds_name(db, value_pat, name)
+        } else {
+            find_binder_in_pattern(db, value_pat, name, &mut path, &mut heads)
+        }
+    })
+}
+
 /// Whether `id` is a list PATTERN `(list p0 p1…)` — a `list` NAME head (the shadowable alias) or the
 /// `"list"` string-literal primitive. Routes a variant's list payload into element-by-element binder
 /// descent ([`find_binder_in_list`]), the list analogue of [`is_tuple_pattern`].
@@ -3569,6 +3609,71 @@ fn last_binder_named(
                         steps: vec![crate::core::PathStep::RestFrom(lead)].into(),
                         heads: vec![].into(),
                     });
+                }
+            }
+            // A RECORD destructuring binding `((record (x a) (y b)) V)` — the LHS is a `(record …)` pattern.
+            // A record field is projected by NAME (not position), so a field binder `a` in `(record (x a))`
+            // resolves to the PROJECTION of the bound value at that field — `(. V x)` — which is EXACTLY
+            // `Resolved::Member { operand: V, key: x }`, the same form `(. V x)` resolves to (folding to a
+            // `Core::Proj` at the field's SORTED slot when the record type is solved, `lower`'s `Member` arm
+            // via `runtime_member_index`). Zero new IR — the binding position IS a one-arm irrefutable match,
+            // and a record's field read is the ordinary member access the projection workaround already used.
+            // Refutability + linearity + field existence + the bare-binder scope are enforced at lowering by
+            // `check_binding_pattern` (Increment B) — this lookup only routes an in-scope field binder to its
+            // projection. Only a BARE-binder field value is wired (the scope `check_binding_pattern` admits);
+            // a nested compound field value is declined there, so it never reaches a body reference here.
+            else if let Some(fields) = db
+                .ast
+                .as_form(lhs, "record")
+                .or_else(|| db.ast.as_ctor_form(lhs, "record"))
+                .map(<[_]>::to_vec)
+            {
+                for pair in &fields {
+                    let Struct::List(kv2) = db.ast.get(*pair) else {
+                        continue;
+                    };
+                    if kv2.len() == 2
+                        && db.ast.as_name(kv2[1]) == Some(name)
+                        && name != "_"
+                        && let Some(key) = read_key(db, kv2[0])
+                    {
+                        return Some(Resolved::Member {
+                            operand: kv[1],
+                            key,
+                        });
+                    }
+                }
+                // Not a bare-binder field. If `name` is bound NESTED inside a field's compound value
+                // (`(record (p (tuple a b)))` — `a`/`b` inside the tuple), that is the not-yet-wired
+                // Increment-B case `check_binding_pattern` declines: resolve the reference to a CODED
+                // decline that NAMES the real cause, so the body reference reports the unimplemented
+                // feature rather than a misleading CDZ0101 "unbound name" (the `let` twin of Case 6rec's
+                // match-side suppression). A reference to a genuinely-unbound name (bound by NO field)
+                // falls through to the ordinary resolution below and gets its real CDZ0101.
+                for pair in &fields {
+                    let Struct::List(kv2) = db.ast.get(*pair) else {
+                        continue;
+                    };
+                    if kv2.len() == 2 {
+                        let value_pat = kv2[1];
+                        let (mut path, mut heads) = (Vec::new(), Vec::new());
+                        let bound = if is_tuple_pattern(db, value_pat) {
+                            find_binder_in_tuple(db, value_pat, name, &mut path, &mut heads)
+                        } else if is_list_pattern(db, value_pat) {
+                            find_binder_in_list(db, value_pat, name, &mut path, &mut heads)
+                        } else if db.ast.as_form(value_pat, "record").is_some() {
+                            record_pattern_binds_name(db, value_pat, name)
+                        } else {
+                            find_binder_in_pattern(db, value_pat, name, &mut path, &mut heads)
+                        };
+                        if bound {
+                            return Some(Resolved::Poison(Reject::decline(
+                                "a nested compound sub-pattern inside a record binding pattern is not \
+                                 yet supported (Increment B binds a record's fields to bare names; \
+                                 destructure a nested field with a further `let`)",
+                            )));
+                        }
+                    }
                 }
             }
         }

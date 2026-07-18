@@ -538,6 +538,10 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
             collect_host_imports(db, bytes, out)
         }
+        Core::BinSizedRead { bytes, len, .. } => {
+            collect_host_imports(db, bytes, out);
+            collect_host_imports(db, len, out);
+        }
         Core::Proj { operand, .. } => collect_host_imports(db, operand, out),
         Core::SumNew { payloads, .. } => {
             for p in payloads {

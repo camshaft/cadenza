@@ -7,7 +7,7 @@ export default function Philosophy() {
       <H1>Why Cadenza is the way it is</H1>
       <Lede>
         A short tour of the ideas underneath the language. You don't need these to write your first
-        program — but they explain almost every decision you'll meet later.
+        program, but they explain almost every decision you'll meet later.
       </Lede>
 
       <P>
@@ -19,22 +19,22 @@ export default function Philosophy() {
 
       <H2>Trust is built in, not bolted on</H2>
       <P>
-        Two properties are not features you opt into — they're the floor the language stands on, and no
+        Two properties are not features you opt into, but the floor the language stands on, and no
         compiler flag can turn them off.
       </P>
 
       <Why tenet="Determinism by construction">
         A Cadenza program can't secretly depend on the clock, the weather, or a random number. It's not
-        that those things are forbidden — it's that any outside influence must be a <em>declared
+        that those things are forbidden, but that any outside influence must be a <em>declared
         capability</em>, so a program's determinism is readable straight off its manifest. The compiler
         adds none of its own nondeterminism either. A happy side effect: because a run is a pure function
-        of its inputs, you get perfect replay — the exact thing time-travel debuggers work so hard to
+        of its inputs, you get perfect replay, the exact thing time-travel debuggers work so hard to
         fake.
       </Why>
 
       <Why tenet="Capability-safety is the floor">
         A program declares every outside operation it might perform, and the component it compiles to
-        imports exactly those — and <em>nothing else</em>. There's no ambient authority to reach for,
+        imports exactly those and <em>nothing else</em>. There's no ambient authority to reach for,
         because the means to reach anything undeclared simply isn't present in the compiled component.
         So the manifest is both a description and an enforcement boundary: whoever runs a component can
         decide what to permit from the manifest alone.
@@ -43,19 +43,19 @@ export default function Philosophy() {
       <H2>The source is what's real</H2>
       <Why tenet="The source is the truth; the component is a projection">
         A program's meaning lives in its source. The runnable component is a rebuildable,
-        content-addressed <em>function</em> of that source — so a defect is fixed in the source and
+        content-addressed <em>function</em> of that source, so a defect is fixed in the source and
         recompiled, never by patching the binary. The same source always derives the same bytes, on any
         conforming machine, and when an optimization would break that byte-for-byte reproduction,
         reproduction wins.
       </Why>
 
       <Why tenet="One meaning, checked against one oracle">
-        Every construct's behavior is defined in exactly one runnable place — a conformance corpus of
+        Every construct's behavior is defined in exactly one runnable place, a conformance corpus of
         example programs with their expected results. Every compiler is checked against that corpus
         rather than becoming a second, independent definition of the language. It's the structural fix
         for a language whose meaning could otherwise drift between a document, an interpreter, and an
         implementation. In the same spirit, the <em>specification</em> is the durable artifact and the
-        compiler is disposable — a regenerable projection of the spec.
+        compiler is disposable, a regenerable projection of the spec.
       </Why>
 
       <H2>Refuse rather than guess</H2>
@@ -64,19 +64,19 @@ export default function Philosophy() {
         honest refusal, and a correct answer is best. So a compiler that isn't sure it can compile your
         program <em>correctly</em> declines instead of emitting plausible-but-wrong code. There's a
         subtle asymmetry too: wrongly rejecting a good program is <em>worse</em> than failing to reject a
-        bad one, because it denies a correct program its meaning — so a check it can't prove stays silent
+        bad one, because it denies a correct program its meaning, so a check it can't prove stays silent
         rather than rejecting.
       </Why>
 
       <P>
-        You'll see these ideas show up again and again as concrete features — safe indexing that returns
-        an <C>Option</C>, numbers that refuse to silently convert, a <C>match</C> that insists on
+        You'll see these ideas show up again and again as concrete features, from safe indexing that returns
+        an <C>Option</C>, to numbers that refuse to silently convert, to a <C>match</C> that insists on
         patterns. Each chapter flags the tenet at work in a <span className="text-cadenza-300">✦ Why
         it's this way</span> box. Keep an eye out for them.
       </P>
 
       <P>
-        Enough <em>why</em> — time to write some. The next chapter, <em>Values &amp; functions</em>, starts
+        Enough <em>why</em>, so time to write some. The next chapter, <em>Values &amp; functions</em>, starts
         from the smallest pieces: literals, bindings, and functions the compiler types for you.
       </P>
     </article>

@@ -1124,6 +1124,10 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
         Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
             collect_host_arg_strings(db, bytes, out)
         }
+        Core::BinSizedRead { bytes, len, .. } => {
+            collect_host_arg_strings(db, bytes, out);
+            collect_host_arg_strings(db, len, out);
+        }
         Core::Proj { operand, .. } => collect_host_arg_strings(db, operand, out),
         Core::SumNew { payloads, .. } => {
             for p in payloads {

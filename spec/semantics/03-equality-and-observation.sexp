@@ -315,6 +315,26 @@
             (export main)))
   (output (: 1 Int64)))
 
+; The compound-ordering cases above all bottom out in an INTEGER leaf (the numeric leaf order). This pins
+; that the compound walk uses the BLESSED per-leaf order for a STRING leaf too — a String's order is
+; content-lexicographic over its Unicode scalar values (collections-and-text.md #An ordering over strings…),
+; NOT the raw-byte order Bytes is denied. So a tuple whose decisive field is a runtime String orders by that
+; String's blessed content order, on both backends (wasm value-cmp walk routes the String leaf to the same
+; content compare as scalar `<` on String; rust's native `Vec`/`String` Ord agrees). Confirms the compound
+; walk composes the blessed LEAF orders, not just Int — the String-leaf companion of the Int-leaf tuple case.
+(case "a runtime compound with a String leaf orders by the blessed content-lexicographic String order"
+  (doc    "`(tuple 1 s)` compared by field: the first field (Int 1) ties, so the second (a runtime String s)
+           decides — by the BLESSED content-lexicographic String order (§An ordering over strings…), not a
+           raw-byte order. `(tuple 1 \"ab\") < (tuple 1 \"ac\")` → true (ab < ac) → 1. Pins that the compound
+           `value-cmp` walk routes a String leaf to the same content compare as scalar String `<` (and rust's
+           native Ord agrees) — the String-leaf companion of the Int-leaf tuple ordering; contrast Bytes,
+           whose order is NOT blessed and declines.")
+  (input  (do
+            (def (mk (: s String)) (tuple 1 s))
+            (def (main) (if (< (mk "ab") (mk "ac")) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "runtime Bytes ordering declines uniformly — the spec blesses no Bytes order"
   (doc    "`(< (mk 2) (mk 3))` where `mk` builds a runtime `(Bytes.of (list 1 n))` asks for a three-way order
            on two runtime byte sequences. Bytes is byte-canonical for EQUALITY (`byte sequences are equal by
@@ -1367,6 +1387,60 @@
            cannot diverge.")
   (input  (< 1 2))
   (output (: true Bool)))
+
+; --- Runtime SCALAR three-way `compare`: `(compare a b)` over runtime Int64/Bool COMPUTES -------------
+; core-semantics.md #A Total Order Is Observed Through A Three-Way Comparison (3rd sentence: the boolean
+; ordering operators MUST agree with the three-way comparison). The constant cases above fold at compile
+; time; these pin that a RUNTIME scalar pair (function parameters — no compile-time value) is compared the
+; same way, yielding the same three Ordering variants. No new runtime op: the three-way is the nested-if
+; `if (a < b) Less else if (a > b) Greater else Equal` over the SAME machine `<`/`>` the boolean operators
+; emit — so the two surfaces cannot diverge (the §331 agreement) at runtime as well as at fold time. Each
+; operand is read twice (the `<` and the `>`) but MATERIALIZED ONCE, so a trapping/effectful operand runs
+; exactly once.
+
+(case "the three-way comparison over a runtime lesser scalar yields Less"
+  (doc    "`(compare a b)` over runtime Int64 params `a=3, b=5` selects the `Less` arm → 1. Pins that a
+           runtime scalar three-way compare computes (not just a constant fold), agreeing with `(< 3 5)`.")
+  (input  (do (def (cmp (: a Int64) (: b Int64))
+                (match (compare a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+              (def (main) (cmp 3 5)) (export main)))
+  (output (: 1 Int64)))
+
+(case "the three-way comparison over equal runtime scalars yields Equal"
+  (doc    "`(compare a b)` over runtime Int64 params `a=b=5` selects the `Equal` arm → 2. Pins the middle
+           variant of a runtime scalar three-way compare.")
+  (input  (do (def (cmp (: a Int64) (: b Int64))
+                (match (compare a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+              (def (main) (cmp 5 5)) (export main)))
+  (output (: 2 Int64)))
+
+(case "the three-way comparison over a runtime greater scalar yields Greater"
+  (doc    "`(compare a b)` over runtime Int64 params `a=9, b=5` selects the `Greater` arm → 3. With the two
+           cases above, all three variants of a runtime scalar three-way compare are reachable.")
+  (input  (do (def (cmp (: a Int64) (: b Int64))
+                (match (compare a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+              (def (main) (cmp 9 5)) (export main)))
+  (output (: 3 Int64)))
+
+(case "the three-way comparison over runtime booleans orders false before true"
+  (doc    "`(compare a b)` over runtime Bool params `a=false, b=true` yields `Less` → 1: Bool offers the
+           total order `false < true` (core-semantics.md #Ordering Where Offered Is Total), and the runtime
+           three-way compare surfaces it exactly as the boolean `<` does. `a`/`b` are computed at runtime
+           (`(< 9 2)`=false, `(< 2 9)`=true) so neither folds.")
+  (input  (do (def (cmp (: a Bool) (: b Bool))
+                (match (compare a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+              (def (main) (cmp (< 9 2) (< 2 9))) (export main)))
+  (output (: 1 Int64)))
+
+(case "the three-way comparison over a runtime scalar performs the operand exactly once"
+  (doc    "`(compare (+ a 1) 5)` over runtime Int64 `a=4` computes `(+ 4 1)=5` then compares to 5 →
+           `Equal` → 2. The operand `(+ a 1)` is read by both the internal `<` and `>` but is materialized
+           ONCE (a single evaluation), so an effectful/trapping operand would run exactly once — this pins
+           the value side of that materialize-once lowering.")
+  (input  (do (def (cmp (: a Int64))
+                (match (compare (+ a 1) 5) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+              (def (main) (cmp 4)) (export main)))
+  (output (: 2 Int64)))
 
 (case "the three-way comparison orders strings lexicographically"
   (doc    "`(compare \"a\" \"b\")` is `(Ordering.Less unit)` — String offers a total order (the

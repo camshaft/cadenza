@@ -795,6 +795,7 @@ pass	a left shift by the bit width or more traps rather than wrapping
 pass	a left shift that overflows Int64 traps like multiplication
 pass	a length-prefixed frame is built from a size segment and a bytes segment
 pass	a let binder may be a list rest pattern binding a leading element and the rest
+pass	a let binder may be a record pattern that destructures by field
 pass	a let binder may be a single-variant-sum pattern that destructures the payload
 pass	a let binder may be a tuple pattern that destructures the value
 pass	a let binding is in scope in its body
@@ -1335,6 +1336,8 @@ pass	a recognized pragma with a malformed argument list is rejected
 pass	a recognized string escape denotes its one scalar value
 pass	a record TYPE with a duplicate field name is a type error
 pass	a record annotated with the wrong field type is rejected
+pass	a record binding pattern binds fields by name, out of order and partial
+pass	a record binding pattern naming an absent field is rejected
 pass	a record carrying a field the annotation does not name is rejected
 pass	a record field VALUE still reads the parameter it names after the call
 pass	a record field holding a sum is projected then matched
@@ -1497,6 +1500,7 @@ pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bin construction result compares equal to the Bytes it builds
 pass	a runtime bin construction result unequal to different content is false
+pass	a runtime bin match binds a dependent-size bytes segment over a runtime scrutinee
 pass	a runtime bin match binds the tail after a fixed header via a final rest segment
 pass	a runtime bin match dispatches on a literal tag across arms
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
@@ -1510,6 +1514,7 @@ pass	a runtime bytes value is spliced into a length-prefixed frame
 pass	a runtime char reaches a later char-literal arm by scalar value
 pass	a runtime compound containing a float leaf declines ordering — floats offer no total order (§319)
 pass	a runtime compound structural equality is expressible as a hand-written recursive comparator
+pass	a runtime compound with a String leaf orders by the blessed content-lexicographic String order
 pass	a runtime compound with a float leaf still equality-compares though it declines ordering (§313 vs §319)
 pass	a runtime concat places the second operand's elements after the first's
 pass	a runtime condition selects an abortive branch reading an enclosing parameter
@@ -3180,6 +3185,11 @@ pass	the three-way comparison orders chars by scalar value — Equal
 pass	the three-way comparison orders chars by scalar value — Greater
 pass	the three-way comparison orders chars by scalar value — Less
 pass	the three-way comparison orders strings lexicographically
+pass	the three-way comparison over a runtime greater scalar yields Greater
+pass	the three-way comparison over a runtime lesser scalar yields Less
+pass	the three-way comparison over a runtime scalar performs the operand exactly once
+pass	the three-way comparison over equal runtime scalars yields Equal
+pass	the three-way comparison over runtime booleans orders false before true
 pass	the true-literal coercion of a float ordering compare returns the compare, NaN stays false
 pass	the two variants of Result compare unequal
 pass	the underlying numeric type obeys the numeric core — no silent promotion under a unit

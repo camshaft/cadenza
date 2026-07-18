@@ -2810,6 +2810,113 @@ fn a_let_bound_runtime_tuple_under_a_fn_param_projects() {
     assert_eq!(run_returns::<i64>(&bytes, "main"), 11);
 }
 
+/// A RECORD binding pattern in `let` position (Increment B) — `(record (x a) (y b))` destructures a record
+/// value by field, binding `a`/`b` to the `x`/`y` fields, exactly as a tuple pattern binds its elements.
+/// The field binders resolve to a PROJECTION of the bound value (`a` ≡ `(. r x)`, `Resolved::Member` →
+/// `Core::Proj`), so this reuses the ordinary member-access read with zero new IR. `(+ a b)` = 3 + 4 = 7.
+#[test]
+fn a_record_binding_pattern_in_a_let_destructures_by_field() {
+    use crate::testkit::parse;
+    let src = "(module m (def (main) \
+                 (let (((record (x a) (y b)) (record (x 3) (y 4)))) (+ a b))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile let-record");
+    assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
+}
+
+/// A RECORD binding pattern in PARAMETER position (Increment B) — `(def (f (record (x a) (y b))) …)`
+/// destructures its single record argument by field, keeping arity 1. A destructuring parameter desugars
+/// to a `let` at load (`binding_params::lower`), so the parameter and `let` positions share the ONE
+/// binding-path implementation (`check_binding_pattern` + `last_binder_named`'s record arm). `f (record (x
+/// 3)(y 4))` = 7.
+#[test]
+fn a_record_binding_pattern_in_a_parameter_destructures_by_field() {
+    use crate::testkit::parse;
+    let src = "(module m (def (f (record (x a) (y b))) (+ a b)) \
+                 (def (main) (f (record (x 3) (y 4)))) (export main))";
+    let bytes =
+        compile_component(&crate::codec::encode(&parse(src))).expect("compile param-record");
+    assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
+}
+
+/// A record binding pattern projects each field by NAME→sorted-slot, not by written order — so it binds
+/// correctly when the pattern names fields in a DIFFERENT order than the record value and when it names a
+/// SUBSET of the fields (a partial record pattern, more flexible than a tuple's full-arity match). Here the
+/// pattern writes `z` before `a` while the value writes `a` before `z`, and both are bound by name: `c` =
+/// field `a` = 10, `b` = field `z` = 20 → 100*10 + 20 = 1020. This is the `Member`→`Proj` fold handling the
+/// field order for free (`runtime_member_index`'s sorted slot), the record analogue of a tuple's positional
+/// `Elem(i)`.
+#[test]
+fn a_record_binding_pattern_binds_fields_by_name_out_of_order_and_partial() {
+    use crate::testkit::parse;
+    let src = "(module m (def (main) \
+                 (let (((record (z b) (a c)) (record (a 10) (z 20)))) (+ (* 100 c) b))) (export main))";
+    let bytes =
+        compile_component(&crate::codec::encode(&parse(src))).expect("compile partial-record");
+    assert_eq!(run_returns::<i64>(&bytes, "main"), 1020);
+}
+
+/// A record binding pattern's WELL-FORMEDNESS faults, each with the actionable coded diagnostic (the
+/// binding-position twin of the tuple arm's checks): a REFUTABLE literal field value is CDZ0210; a field
+/// the value's record type does NOT have is CDZ0203 (naming the missing field); a NON-record bound value
+/// is CDZ0203; a NON-LINEAR pattern (two fields binding one name) is CDZ0102; and a NESTED compound field
+/// value — irrefutable but not-yet-wired (Increment B binds fields to bare names) — is a clean DECLINE that
+/// names the feature, NOT a misleading CDZ0101 "unbound name" on the nested binder (the `let` twin of the
+/// match-side Case-6rec cascade suppression).
+#[test]
+fn a_record_binding_pattern_faults_are_actionable_and_lockstep() {
+    use crate::testkit::parse;
+    let code_of = |src: &str| {
+        compile_component(&crate::codec::encode(&parse(src)))
+            .err()
+            .and_then(|d| d.code)
+    };
+    // (a) refutable literal field value → CDZ0210.
+    assert_eq!(
+        code_of(
+            "(module m (def (main) \
+               (let (((record (x 0) (y b)) (record (x 3) (y 4)))) b)) (export main))"
+        )
+        .as_deref(),
+        Some("CDZ0210")
+    );
+    // (b) a field the record type does not have → CDZ0203.
+    assert_eq!(
+        code_of(
+            "(module m (def (main) \
+               (let (((record (nope a)) (record (x 3) (y 4)))) a)) (export main))"
+        )
+        .as_deref(),
+        Some("CDZ0203")
+    );
+    // (c) non-record bound value → CDZ0203.
+    assert_eq!(
+        code_of("(module m (def (main) (let (((record (x a)) 5)) a)) (export main))").as_deref(),
+        Some("CDZ0203")
+    );
+    // (d) non-linear (two fields bind `a`) → CDZ0102.
+    assert_eq!(
+        code_of(
+            "(module m (def (main) \
+               (let (((record (x a) (y a)) (record (x 3) (y 4)))) a)) (export main))"
+        )
+        .as_deref(),
+        Some("CDZ0102")
+    );
+    // (e) nested compound field value → a CLEAN decline (uncoded), NOT a phantom CDZ0101. The reference to
+    // the nested binder `a` must attribute to the unwired feature, so the code is NOT the unbound-name one.
+    let nested = compile_component(&crate::codec::encode(&parse(
+        "(module m (def (main) \
+           (let (((record (p (tuple a b))) (record (p (tuple 1 2))))) (+ a b))) (export main))",
+    )))
+    .expect_err("nested compound record field value declines");
+    assert_ne!(nested.code.as_deref(), Some("CDZ0101"));
+    assert!(
+        nested.message.contains("nested compound sub-pattern"),
+        "nested-field decline should name the feature, got: {}",
+        nested.message
+    );
+}
+
 /// The atom-copy fix must NOT substitute a BINDER occurrence that shadows the parameter. `(def (f x)
 /// (let ((x true)) x))` binds the inner `x = true` shadowing the Int64 param `x`; `(f 99)` must return
 /// `true`. The atom-copy pass resolved the let's BINDER-name occurrence `x` (a `Ref` up to the param,
@@ -29075,6 +29182,52 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_bin_match_binds_a_dependent_size_bytes_segment_under_wasmtime() {
+        // THE SPEC CROWN JEWEL (16-binary-matching): a `(bin …)` PATTERN with a DEPENDENT-SIZE
+        // `(bytes payload n)` — `n` names an EARLIER integer segment binder — over a RUNTIME scrutinee.
+        // Length-prefixed-frame parsing: read a header size, then bind exactly that many payload bytes. The
+        // arm's length probe is `bytes-len == fixed_prefix + n` (n = the runtime `BinIntRead` of the header),
+        // the payload binds via `Core::BinSizedRead` = `bytes-slice(scrutinee, prefix_offset, n)`. Was
+        // declined on wasm ("bit-field or dependent-size not yet lowered"); rust computed it. (corpus-bugfix
+        // routed; v-binary-matching stopped.) Runtime header defeats the const fold.
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping runtime dependent-size bin match run");
+            return;
+        };
+        let run = |src: &str, args: &[&str]| -> String {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: args.iter().map(|s| s.to_string()).collect(),
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&component(src), &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => s,
+                cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+            }
+        };
+        // Scrutinee = a 3-byte frame [h, 7, 8] with a RUNTIME header `h`. Pattern (u8 h)(bytes payload h):
+        // h=2 → the 2 payload bytes [7,8] bind → Bytes.len = 2 (the frame is exactly prefix(1) + h(2) = 3).
+        let src = "(module m (def (main (: h Int64)) \
+             (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8))) \
+               ((bin (u8 n) (bytes payload n)) (Bytes.len payload)) \
+               (_ -1))) (export main))";
+        assert_eq!(
+            run(src, &["2"]),
+            "2",
+            "dependent-size match: header n=2 binds exactly 2 payload bytes"
+        );
+        // h=1 → the frame is 3 bytes but the pattern requires prefix(1)+n(1)=2 → length mismatch →
+        // fall-through to the catch-all (-1). Proves the `== prefix + n` length discrimination.
+        assert_eq!(
+            run(src, &["1"]),
+            "-1",
+            "dependent-size match: header n=1 ≠ actual length → fall-through"
+        );
+    }
+
+    #[test]
     fn bytes_of_out_of_range_element_is_a_width_error() {
         // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
         // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the
@@ -37367,6 +37520,49 @@ mod match_engine {
             )
             .is_none(),
             "two OLD-annotation @param sites generate two accessors under one Param effect, both resolve"
+        );
+    }
+
+    #[test]
+    fn a_nested_at_param_pragma_is_a_misplaced_directive_not_a_module_parameter() {
+        // PLACEMENT (v-syntax coordination 2026-07-18): `@!param` is a MODULE directive — it parameterizes
+        // the whole module (operator ruling, like `@!default-fraction`), so it is well-placed ONLY as a
+        // direct top-level member of the program root. A `(pragma param …)` NESTED in a def body / a value
+        // position is misplaced. v-syntax confirmed the parser does no placement enforcement (it parses a
+        // pragma identically at any depth); the placement judgment is a compile-time semantic one that lives
+        // in this crate's pragma pass (the same pass that owns the `param` registry arm). The guard reports a
+        // coded CDZ0602 placement fault as the PRIMARY (sorted-first) error, rather than letting the nested
+        // pragma's config names (`widget`, `slider`, …) raise only a confusing CDZ0101 unbound cascade.
+        assert_eq!(
+            reject_code(
+                "(module m \
+                   (def (helper) (do (pragma param (param (: widget slider)) (: width Int64)) 5)) \
+                   (def (main) 0) \
+                 (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0602"),
+            "a nested `(pragma param …)` is a misplaced module directive — CDZ0602 is the primary fault"
+        );
+        // And the sidecar does NOT act on a nested pragma: it generates no accessor (so `Param.<name>` from a
+        // nested-only declaration is unbound) and surfaces no manifest row. The scan_manifest half:
+        use crate::param_sidecar::scan_manifest;
+        let ast = crate::testkit::parse(
+            "(module m \
+               (def (helper) (do (pragma param (param (: widget slider)) (: buried Int64)) 5)) \
+               (pragma param (param (: widget slider)) (: real Int64)) \
+               (def (main) 0) \
+             (export main))",
+        );
+        let recs = scan_manifest(&ast);
+        assert_eq!(
+            recs.len(),
+            1,
+            "only the TOP-LEVEL @!param is a manifest row — the nested `buried` pragma is skipped"
+        );
+        assert_eq!(
+            recs[0].name, "real",
+            "the surfaced manifest row is the top-level param, not the nested one"
         );
     }
 

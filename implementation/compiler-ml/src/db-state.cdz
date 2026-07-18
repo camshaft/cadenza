@@ -83,6 +83,19 @@ def ds-demand-returns-fact() =
           in demand-typed-eff(0, Typed.TBool)) with
     | Typed.TBool => unit | _ => trap("demand returns the fact"))
 
+@test
+def ds-demand-hit-does-not-recompute-poison() =
+  // a FILLED poison (TErr) is a memo HIT over the EFFECT carrier too — a determined decline is returned
+  // as-is, NOT recomputed to a different default. Seed the Db with TErr@0 (via fill-typed before handling),
+  // then demand@0 with a DIFFERENT default (Int64) under the handler → the HIT returns the memoized TErr.
+  // Mirrors db-demand's dd-hit-does-not-recompute-poison, but through get/put instead of explicit threading —
+  // pins that the state-effect memo respects a filled poison the same way (the poison-as-filled invariant).
+  (match (handle DbState(fill-typed(db-of(sample-tree()), 0, Typed.TErr)) with
+            | get(state) => resume(state, state)
+            | put(nd, state) => resume(unit, nd)
+          in demand-typed-eff(0, Typed.TIntW(true, 64))) with
+    | Typed.TErr => unit | _ => trap("effect memo HIT returns the filled TErr, not the new Int64 default"))
+
 /// A HANDLER-PROVIDING driver (the export): demand a type fact for `id` under the DbState handler seeded over
 /// `tree`, returning the fact. The effect has its HOME here — an effectful producer is reached UNDER a
 /// handler, never exported as a bare boundary (that's why demand-typed-eff/cache-typed-eff stay internal and
