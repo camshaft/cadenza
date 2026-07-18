@@ -590,18 +590,21 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         }
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
-        | Core::StrCmp { lhs, rhs, .. }
         | Core::FloatCompare { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. } => {
             binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
         }
-        // `value-eq` BORROWS both operands (it drops only an OWNED temporary, never a `LocalRef`), so a
-        // binding used DIRECTLY as an operand does NOT escape — the enclosing `let` still drops it. A
-        // binding that flows into a CONSTRUCTED operand (`(= (Wrap x) …)`) DOES escape: it is consumed
-        // into that owned temporary, which `value-eq` then drops (so the `let` must not double-drop). The
-        // borrow-in-tail recursion (`tail_borrowed: true`) computes exactly this — a direct `LocalRef`
+        // `value-eq` and `StrCmp` BORROW both operands (each drops only an OWNED temporary, never a
+        // `LocalRef`), so a binding used DIRECTLY as an operand does NOT escape — the enclosing `let` still
+        // drops it. A binding that flows into a CONSTRUCTED operand (`(= (Wrap x) …)`) DOES escape: it is
+        // consumed into that owned temporary, which the op then drops (so the `let` must not double-drop).
+        // The borrow-in-tail recursion (`tail_borrowed: true`) computes exactly this — a direct `LocalRef`
         // borrows, a constructor/call arm resets to consuming — mirroring the `Proj`/`ListLen` arm above.
-        Core::ValueEq { lhs, rhs } => {
+        // StrCmp's operands are HEAP String/Symbol handles (a `let`-bound String CAN reach a StrCmp operand
+        // as a direct `LocalRef`), so it MUST classify as borrow like `ValueEq`, NOT with the scalar
+        // compares (whose operands are always scalars) — else a let-bound String operand is wrongly marked
+        // escaping and the `let` skips its drop → a leak (the borrowing StrCmp left it to its owner).
+        Core::ValueEq { lhs, rhs } | Core::StrCmp { lhs, rhs, .. } => {
             binding_escapes(db, lhs, binder, true) || binding_escapes(db, rhs, binder, true)
         }
         Core::Convert { operand, .. } | Core::Not { operand } => {
@@ -1324,9 +1327,13 @@ fn mark_binder_dups_inner(
         // reach here through a producer, which resets to consuming — matches `binding_escapes`'s `false`).
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
-        | Core::StrCmp { lhs, rhs, .. }
         | Core::FloatCompare { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. } => seq(db, &[(lhs, false), (rhs, false)], live_after, sites),
+        // `StrCmp` BORROWS both operands (heap String/Symbol handles; drops only an OWNED temporary — the
+        // `ValueEq` contract, NOT the scalar-compare group whose operands are always scalars). A let-bound
+        // String reaching a StrCmp operand as a direct `LocalRef` is BORROWED, so mark it `true` like
+        // `ValueEq` above — else its dup/drop accounting is wrong (a missing drop → leak).
+        Core::StrCmp { lhs, rhs, .. } => seq(db, &[(lhs, true), (rhs, true)], live_after, sites),
         Core::Convert { operand, .. } | Core::Not { operand } => {
             consume(db, operand, live_after, sites)
         }

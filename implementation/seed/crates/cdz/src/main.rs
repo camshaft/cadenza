@@ -2913,12 +2913,23 @@ fn run_remove(args: &RemoveArgs) -> ExitCode {
         );
         return ExitCode::FAILURE;
     };
-    let new_text = format!(
-        "{}[{}]{}",
-        &text[..lb],
-        remaining.join(", "),
-        &text[rb + 1..]
-    );
+    let new_text = if remaining.is_empty() {
+        // Removing the LAST dep: drop the whole `def deps` line rather than leave a dangling `def deps = []`
+        // (the `cargo remove` behavior — an emptied section is removed, not left as an empty stub). Cut from
+        // the start of `def deps` through the closing `]` PLUS a single trailing newline (so no blank line is
+        // left behind). If the clause has no trailing newline (EOF), just cut through `]`. Any leading
+        // indentation before `def deps` on its line is preserved by cutting from `open` (the `d` of `def`).
+        let after = &text[rb + 1..];
+        let after = after.strip_prefix('\n').unwrap_or(after);
+        format!("{}{}", &text[..open], after)
+    } else {
+        format!(
+            "{}[{}]{}",
+            &text[..lb],
+            remaining.join(", "),
+            &text[rb + 1..]
+        )
+    };
     // Write, then RE-PARSE to confirm the edit is valid AND no longer declares PATH. Roll back on failure.
     if let Err(e) = std::fs::write(&mpath, &new_text) {
         eprintln!("{PROG}: writing {}: {e}", mpath.display());

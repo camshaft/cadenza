@@ -424,3 +424,8 @@ jobs:
           npm run check:tuple-collection
           npm run check:cad-preload
           npm run build
+          # First-paint bundle guard (reads the fresh dist/ from the build above): the entry chunk stays
+          # under the size ceiling AND heavy deps (KaTeX) stay lazy (out of the entry). Catches a static
+          # import of a big lib leaking into every reader's first paint — a silent perf regression a
+          # per-example check can't see. MUST run after `npm run build` (needs dist/assets).
+          npm run check:bundle

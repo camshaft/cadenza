@@ -5670,6 +5670,187 @@ fn champ_key_cmp(a: Handle, b: Handle) -> core::cmp::Ordering {
     Ordering::Equal
 }
 
+/// A work item for [`value_cmp_shaped`]'s iterative three-way walk: either a PAIR of handles to compare
+/// under a shape index, or a LENGTH tiebreak (evaluated only after a list's common-prefix elements all
+/// compared equal — the shorter list is Less).
+enum CmpTask {
+    Pair { a: Handle, b: Handle, shape_ix: u32 },
+    LenTie { la: u32, lb: u32 },
+}
+
+/// The BLESSED total-order three-way comparison of two heap values `a`, `b` of the SAME type, guided by the
+/// compiler-baked shape `desc` (the same descriptor `value_encode` reads). Returns `Some(Less/Equal/Greater)`
+/// for an orderable pair, or `None` when the shape does not offer a total order (a Float/Float32 leaf — the
+/// spec's #319 partial-order carve-out; a Bytes leaf — the spec blesses no Bytes order; a Set/Map — ordering
+/// not yet offered) OR the descriptor is malformed. The compiler DECLINES ordering for those at lower time
+/// (it never emits a `value-cmp` call for a non-orderable type), so `None` here is a defensive not-reached.
+///
+/// LEXICOGRAPHIC per `core-semantics.md` #Compound Ordering Is Lexicographic + #58/#64: leaves by their
+/// blessed order (Int NUMERIC/signed, BigInt/Rational by value, Bool false<true, Str content-lexicographic
+/// over the UTF-8 bytes = scalar order), tuples/records by field in canonical (descriptor) order, sums by
+/// discriminant then payload, lists element-wise with a proper prefix LESS than its extension. Iterative
+/// (an explicit `CmpTask` stack — wasm-safe, no unbounded native recursion over deep data, like
+/// `champ_key_cmp`); the first non-`Equal` leaf/length decides and the walk returns immediately.
+#[allow(dead_code)]
+fn value_cmp_shaped(
+    desc: &Descriptor,
+    a: Handle,
+    b: Handle,
+    root_shape: u32,
+) -> Option<core::cmp::Ordering> {
+    use core::cmp::Ordering;
+    let mut work: Vec<CmpTask> = vec![CmpTask::Pair { a, b, shape_ix: root_shape }];
+    while let Some(task) = work.pop() {
+        match task {
+            CmpTask::LenTie { la, lb } => match la.cmp(&lb) {
+                Ordering::Equal => {}
+                ord => return Some(ord), // a proper prefix is Less than its extension
+            },
+            CmpTask::Pair { a, b, shape_ix } => {
+                // Resolve `Ref`/`Named` indirections to the underlying shape (bounded by `resolve_shape`).
+                let shape = resolve_shape(desc, shape_ix)?;
+                match shape {
+                    Shape::Int => match op_get_int(a).cmp(&op_get_int(b)) {
+                        Ordering::Equal => {}
+                        ord => return Some(ord),
+                    },
+                    Shape::Bool => match op_get_bool(a).cmp(&op_get_bool(b)) {
+                        Ordering::Equal => {}
+                        ord => return Some(ord),
+                    },
+                    Shape::Unit => {} // the unit value is a singleton — always equal
+                    Shape::BigInt => match op_bigint_cmp(a, b) {
+                        0 => {}
+                        n if n < 0 => return Some(Ordering::Less),
+                        _ => return Some(Ordering::Greater),
+                    },
+                    Shape::Rational => match op_rational_cmp(a, b) {
+                        0 => {}
+                        n if n < 0 => return Some(Ordering::Less),
+                        _ => return Some(Ordering::Greater),
+                    },
+                    Shape::Str => {
+                        // Content-lexicographic over the UTF-8 bytes (== Unicode-scalar order for well-formed
+                        // UTF-8, #58). A String may be a ROPE — flatten both to a leaf first (iterative,
+                        // content-preserving/unobservable) so `raw` holds the logical bytes, then compare the
+                        // borrowed slices without allocating (the discipline `canonical_scalar_order` uses).
+                        bytes_flatten(a);
+                        bytes_flatten(b);
+                        let ord = {
+                            let av = unsafe { a.0.as_ref() };
+                            let bv = unsafe { b.0.as_ref() };
+                            let as_ = av.map_or(&[][..], |n| n.raw.as_slice());
+                            let bs = bv.map_or(&[][..], |n| n.raw.as_slice());
+                            as_.cmp(bs)
+                        };
+                        match ord {
+                            Ordering::Equal => {}
+                            o => return Some(o),
+                        }
+                    }
+                    // Non-orderable — the spec offers no total order (defensive; the compiler declines these
+                    // before emitting a value-cmp call). Float/Float32 (#319 partial), Bytes (spec silent),
+                    // Set/Map (not yet offered).
+                    Shape::Float | Shape::Float32 | Shape::Bytes | Shape::Set(_) | Shape::Map(..) => {
+                        return None;
+                    }
+                    Shape::Tuple(elems) => {
+                        let elems = elems.clone();
+                        if (op_arr_len(a) as usize) < elems.len()
+                            || (op_arr_len(b) as usize) < elems.len()
+                        {
+                            return None; // malformed vs the descriptor
+                        }
+                        for (i, &es) in elems.iter().enumerate().rev() {
+                            work.push(CmpTask::Pair {
+                                a: op_arr_get(a, i as u32),
+                                b: op_arr_get(b, i as u32),
+                                shape_ix: es,
+                            });
+                        }
+                    }
+                    Shape::Record(fields) => {
+                        // A record's runtime rep is a `tuple` arr in the descriptor's field order (the same
+                        // canonical order equality/encode use); compare field values in that order.
+                        let fields: Vec<u32> = fields.iter().map(|(_, ix)| *ix).collect();
+                        if (op_arr_len(a) as usize) < fields.len()
+                            || (op_arr_len(b) as usize) < fields.len()
+                        {
+                            return None;
+                        }
+                        for (i, &fs) in fields.iter().enumerate().rev() {
+                            work.push(CmpTask::Pair {
+                                a: op_arr_get(a, i as u32),
+                                b: op_arr_get(b, i as u32),
+                                shape_ix: fs,
+                            });
+                        }
+                    }
+                    Shape::List(elem) => {
+                        // Lexicographic: compare min(la,lb) elements; if all equal, the SHORTER list is Less
+                        // (the LenTie task, pushed FIRST so it evaluates LAST — only after every prefix pair).
+                        let elem = *elem;
+                        let (la, lb) = (op_vec_len(a), op_vec_len(b));
+                        let minl = la.min(lb);
+                        work.push(CmpTask::LenTie { la, lb });
+                        for i in (0..minl).rev() {
+                            work.push(CmpTask::Pair {
+                                a: op_vec_get(a, i),
+                                b: op_vec_get(b, i),
+                                shape_ix: elem,
+                            });
+                        }
+                    }
+                    Shape::Sum(variants) => {
+                        // By discriminant first (the variant's index, as the canonical byte form encodes it),
+                        // then by payload within the same variant. Different discriminants decide immediately.
+                        let variants = variants.clone();
+                        let (da, db) = (op_sum_disc(a), op_sum_disc(b));
+                        match da.cmp(&db) {
+                            Ordering::Equal => {
+                                let (_, payload_shape) = variants.get(da as usize)?;
+                                work.push(CmpTask::Pair {
+                                    a: op_sum_payload(a),
+                                    b: op_sum_payload(b),
+                                    shape_ix: *payload_shape,
+                                });
+                            }
+                            ord => return Some(ord),
+                        }
+                    }
+                    Shape::Spread(elems) => {
+                        // A multi-payload variant's payload is a `Spread` — a tuple arr of the boxed payloads;
+                        // compare element-wise in order (reached only as a Sum payload's shape).
+                        let elems = elems.clone();
+                        if (op_arr_len(a) as usize) < elems.len()
+                            || (op_arr_len(b) as usize) < elems.len()
+                        {
+                            return None;
+                        }
+                        for (i, &es) in elems.iter().enumerate().rev() {
+                            work.push(CmpTask::Pair {
+                                a: op_arr_get(a, i as u32),
+                                b: op_arr_get(b, i as u32),
+                                shape_ix: es,
+                            });
+                        }
+                    }
+                    // A `Framed` frame (`(: value type-node)`) wraps an INNER value shape (like `Named` but
+                    // with a full type node) — transparent for ordering: compare the inner value. Not
+                    // followed by `resolve_shape` (which only chases `Ref`/`Named`), so descend it here.
+                    Shape::Framed(_type_node, inner) => {
+                        let inner = *inner;
+                        work.push(CmpTask::Pair { a, b, shape_ix: inner });
+                    }
+                    // `Ref`/`Named` were resolved by `resolve_shape` above and never reach here.
+                    Shape::Ref(_) | Shape::Named(..) => return None,
+                }
+            }
+        }
+    }
+    Some(Ordering::Equal)
+}
+
 // ─── CHAMP persistent MAP: empty / lookup / insert / size ───────────────────────────────
 // Built on the U1 node core. Map stride = 2: an entry occupies two consecutive handles
 // `[key, value]`. A node's handles are `[k0,v0,k1,v1,…]` (entries, ascending datamap-bit order)
@@ -12576,6 +12757,165 @@ mod tests {
         op_drop(t_inline);
         op_drop(t_boxed);
         assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    /// `value_cmp_shaped` — the descriptor-guided three-way BLESSED order (heap-ordering slice 2's runtime
+    /// core, still UNEXPORTED so hash-neutral). Covers the ordering rules v-inference blessed: Int by
+    /// NUMERIC value (incl. the negative case raw-byte order gets wrong), tuple lexicographic by field,
+    /// list lexicographic with a proper prefix LESS than its extension, sum by discriminant, consistency
+    /// with equality (Equal iff champ_eq), and the non-orderable declines (Float leaf → None).
+    #[test]
+    fn value_cmp_shaped_orders_by_blessed_per_leaf_and_lexicographic_rules() {
+        use super::{Descriptor, Shape};
+        use core::cmp::Ordering;
+        reset();
+        // Int: NUMERIC order, incl. negatives (raw little-endian bytes would sort -1 as huge).
+        let desc_int = Descriptor { table: vec![Shape::Int], root: 0 };
+        assert_eq!(
+            value_cmp_shaped(&desc_int, op_box_int(-5), op_box_int(3), 0),
+            Some(Ordering::Less),
+            "-5 < 3 by numeric value"
+        );
+        assert_eq!(
+            value_cmp_shaped(&desc_int, op_box_int(3), op_box_int(3), 0),
+            Some(Ordering::Equal)
+        );
+        assert_eq!(
+            value_cmp_shaped(&desc_int, op_box_int(10), op_box_int(-10), 0),
+            Some(Ordering::Greater),
+            "10 > -10 (signed; a raw-byte compare would sort -10 as larger)"
+        );
+        // Tuple(Int,Int): lexicographic by field — first decides, then second.
+        let desc_tup = Descriptor { table: vec![Shape::Int, Shape::Tuple(vec![0, 0])], root: 1 };
+        let mk_pair = |x: i64, y: i64| {
+            let t = op_arr_alloc(2);
+            op_arr_set(t, 0, op_box_int(x));
+            op_arr_set(t, 1, op_box_int(y));
+            t
+        };
+        assert_eq!(
+            value_cmp_shaped(&desc_tup, mk_pair(1, 9), mk_pair(2, 0), 1),
+            Some(Ordering::Less),
+            "(1,9) < (2,0): first field 1<2 decides"
+        );
+        assert_eq!(
+            value_cmp_shaped(&desc_tup, mk_pair(2, 3), mk_pair(2, 7), 1),
+            Some(Ordering::Less),
+            "(2,3) < (2,7): first equal, second 3<7 decides"
+        );
+        assert_eq!(
+            value_cmp_shaped(&desc_tup, mk_pair(2, 3), mk_pair(2, 3), 1),
+            Some(Ordering::Equal)
+        );
+        // List(Int): lexicographic; a proper prefix is LESS than its extension.
+        let desc_list = Descriptor { table: vec![Shape::Int, Shape::List(0)], root: 1 };
+        let mk_list = |xs: &[i64]| {
+            let mut v = op_vec_empty();
+            for &x in xs {
+                v = op_vec_push(v, op_box_int(x));
+            }
+            v
+        };
+        assert_eq!(
+            value_cmp_shaped(&desc_list, mk_list(&[1, 2]), mk_list(&[1, 2, 3]), 1),
+            Some(Ordering::Less),
+            "[1,2] < [1,2,3]: a proper prefix is less than its extension"
+        );
+        assert_eq!(
+            value_cmp_shaped(&desc_list, mk_list(&[1, 3]), mk_list(&[1, 2, 9]), 1),
+            Some(Ordering::Greater),
+            "[1,3] > [1,2,9]: first differing element 3>2 decides"
+        );
+        assert_eq!(
+            value_cmp_shaped(&desc_list, mk_list(&[]), mk_list(&[1]), 1),
+            Some(Ordering::Less),
+            "[] < [1]: empty is less than non-empty"
+        );
+        // Non-orderable: a Float leaf → None (the #319 partial-order carve-out; the compiler declines
+        // ordering for it before ever calling this — a defensive not-reached).
+        let desc_float = Descriptor { table: vec![Shape::Float], root: 0 };
+        assert_eq!(
+            value_cmp_shaped(&desc_float, op_box_float(1.0), op_box_float(2.0), 0),
+            None,
+            "a Float leaf offers no total order → None (decline)"
+        );
+        // Consistency with equality: cmp == Equal exactly when champ_eq.
+        let p = mk_pair(5, 6);
+        let q = mk_pair(5, 6);
+        assert_eq!(value_cmp_shaped(&desc_tup, p, q, 1), Some(Ordering::Equal));
+        assert!(champ_eq(p, q), "cmp Equal agrees with champ_eq");
+    }
+
+    /// `value_cmp_shaped` hardening: SUM by discriminant-then-payload, RECORD by field order, and a DEEPLY
+    /// nested list (the iterative-walk / wasm-safety claim — must not overflow the native stack).
+    #[test]
+    fn value_cmp_shaped_sum_record_and_deep_nesting() {
+        use super::{Descriptor, Shape};
+        use core::cmp::Ordering;
+        reset();
+        // Sum with two variants: 0 = A(Int), 1 = B(Int). Discriminant decides first; same variant → payload.
+        let desc_sum = Descriptor {
+            table: vec![
+                Shape::Int,
+                Shape::Sum(vec![("A".into(), 0), ("B".into(), 0)]),
+            ],
+            root: 1,
+        };
+        let a5 = op_sum_new(0, op_box_int(5));
+        let a9 = op_sum_new(0, op_box_int(9));
+        let b0 = op_sum_new(1, op_box_int(0));
+        assert_eq!(
+            value_cmp_shaped(&desc_sum, a5, b0, 1),
+            Some(Ordering::Less),
+            "A(5) < B(0): lower discriminant 0<1 decides, payload ignored"
+        );
+        assert_eq!(
+            value_cmp_shaped(&desc_sum, a5, a9, 1),
+            Some(Ordering::Less),
+            "A(5) < A(9): same discriminant → payload 5<9 decides"
+        );
+        assert_eq!(value_cmp_shaped(&desc_sum, a5, a5, 1), Some(Ordering::Equal));
+        // Record {x:Int, y:Int} — a tuple arr in field order; compare by field.
+        let desc_rec = Descriptor {
+            table: vec![
+                Shape::Int,
+                Shape::Record(vec![("x".into(), 0), ("y".into(), 0)]),
+            ],
+            root: 1,
+        };
+        let rec = |x: i64, y: i64| {
+            let t = op_arr_alloc(2);
+            op_arr_set(t, 0, op_box_int(x));
+            op_arr_set(t, 1, op_box_int(y));
+            t
+        };
+        assert_eq!(
+            value_cmp_shaped(&desc_rec, rec(1, 2), rec(1, 5), 1),
+            Some(Ordering::Less),
+            "record (x:1,y:2) < (x:1,y:5): x equal, y 2<5 decides"
+        );
+        // DEEP nesting: a list of lists … 200 deep (well past any shallow native-recursion limit). The
+        // iterative CmpTask stack must handle it without overflowing. Build `[[…[[1]]…]]` vs `[[…[[2]]…]]`.
+        let mut table = vec![Shape::Int]; // 0 = Int
+        let mut cur = 0u32;
+        for _ in 0..200 {
+            table.push(Shape::List(cur));
+            cur = (table.len() - 1) as u32;
+        }
+        let desc_deep = Descriptor { table, root: cur };
+        let build_deep = |leaf: i64| {
+            let mut v = op_box_int(leaf);
+            for _ in 0..200 {
+                let outer = op_vec_empty();
+                v = op_vec_push(outer, v);
+            }
+            v
+        };
+        assert_eq!(
+            value_cmp_shaped(&desc_deep, build_deep(1), build_deep(2), cur),
+            Some(Ordering::Less),
+            "a 200-deep nested list compares by its innermost leaf without a stack overflow (iterative walk)"
+        );
     }
 
     #[test]
