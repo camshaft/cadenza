@@ -47,3 +47,11 @@
 ; (= x 1.5) ALWAYS FALSE, main(1.5)->0 not 1 (breaker verified via rustc). FACE2 LOUD: (* x 2.0) -> E0277
 ; + E0308 in f32-payload sum arms. FIX (same as integer family): ground literal emit width to solved
 ; operand type (f32::from_bits) for compares AND arith. Not spawning (their family, fresh context). Promote when fixed.
+
+; ---
+; RESOLVED-PENDING-MERGE (v-rust-backend, 2026-07-18, commit 3fd71a7a5): both faces fixed via
+; emit_grounded_float (grounds a ConstFloat operand to the op's float width), wired into FloatCompare +
+; float emit_arith. FACE1: (= x 1.5) f32 now grounds to f32::from_bits(0x3fc00000), f(1.5)=1=wasm (was 0).
+; FACE2: (* x 2.0) now x * f32::from_bits(...), g(3.0)=6=wasm (was E0277). f32-in-sum-payload emits now;
+; Float64 unchanged. +1 pin, rust --check 0 regress. CLOSES THE WHOLE narrow-literal width family (all
+; integer members + float). Committed on the pending host-closure S1 stack (4ec31ae41); sends after S1 lands.

@@ -1826,6 +1826,19 @@
   (call   main (: -2147483648 Int32) (: -2 Int32))
   (output (: 1073741824 Int32)))
 
+(case "a runtime full-width UInt64 subtraction that underflows traps rather than wrapping"
+  (doc    "The FULL-WIDTH companion of the UInt8 runtime-underflow pin: `(- a b)` over UInt64 with
+           a=3, b=5 has no unsigned value, so it traps 'integer overflow' — never the wrap to
+           2^64-2. wasm's `i64.sub` wraps silently, so the emitted underflow guard is load-bearing,
+           and at 64 bits it must be a full-width UNSIGNED compare with no narrowing mask (a guard
+           reusing the narrow-width mask path, or a signed compare, could pass UInt8 yet mishandle
+           the widest unsigned type, whose values exceed Int64.max). a=5, b=3 = 2 is the control.")
+  (input  (do (def (main (: a UInt64) (: b UInt64)) (- a b)) (export main)))
+  (call   main (: 5 UInt64) (: 3 UInt64))
+  (output (: 2 UInt64))
+  (call   main (: 3 UInt64) (: 5 UInt64))
+  (trap   "integer overflow"))
+
 (case "a runtime unsigned division at the maximum by 1 does not trap"
   (doc    "An UNSIGNED type has no MIN/-1 overflow (no negative divisor, no signed minimum), so its `/`
            emits ONLY the zero guard — `(/ UInt64.max 1)` = UInt64.max must run normally, never spuriously

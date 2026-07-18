@@ -5640,15 +5640,37 @@ fn push_discriminant(
     // reads element 0 with `vec-get` (was `arr-get` on a vec — garbage disc, a silent mis-dispatch).
     let mut cur = root.clone();
     let mut prefix: Vec<crate::core::PathStep> = Vec::with_capacity(path.len());
+    // Whether any REAL heap read (`sum-payload`/`arr-get`/`vec-get`) has been emitted so far — i.e. the
+    // value now on the stack came out of a heap slot (boxed) rather than being the scrutinee's own top-level
+    // value. A `Payload` step through an ERASED single-variant newtype (`Ty::Nominal`) emits NOTHING (the
+    // box is erased — the value IS the payload, a compile-time reinterpretation), so it does NOT flip this.
+    // Used below to decide the enum-disc unbox: a boxed enum-disc needs `get-int`, a top-level one is already
+    // the raw i32. Without the nominal no-op, a match through an erased outer newtype (`(Outer.Wrap (Inner…))`,
+    // `Outer` a closed single-variant sum) emitted a spurious `sum-payload` and read the discriminant one
+    // level too deep — a silent wrong-variant dispatch (wasm-only differential).
+    let mut read_from_heap = false;
     for step in path {
         prefix.push(*step);
         match step {
+            // A `Payload` step through an ERASED single-variant newtype (`Ty::Nominal`) is a runtime no-op:
+            // the newtype box is erased (`infer::newtype_underlying`), so the value already IS the payload —
+            // emit nothing, just peel one nominal layer off the type cursor (the `Core::SumPayload` binder
+            // path is erased at construction the same way, `lower.rs erase_nominal_steps`). A `Payload` over a
+            // REAL boxed sum reads `sum-payload`.
+            crate::core::PathStep::Payload if matches!(cur, Ty::Nominal { .. }) => {
+                cur = match &cur {
+                    Ty::Nominal { inner, .. } => (**inner).clone(),
+                    _ => unreachable!("guarded by the matches! above"),
+                };
+            }
             crate::core::PathStep::Payload => {
                 out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+                read_from_heap = true;
                 cur = payload_step_ty_of(db, Some(scrutinee), &cur, &prefix, &out.sum_path_types);
             }
             crate::core::PathStep::Elem(i) => {
                 out.push(Lir::ConstI32(*i as i32));
+                read_from_heap = true;
                 if matches!(cur.strip_nominal(), Ty::List(_)) {
                     out.push(Lir::CallImport(OP_VEC_GET)); // list element → vec-get
                     cur = match cur.strip_nominal() {
@@ -5668,9 +5690,12 @@ fn push_discriminant(
     }
     if sub_is_enum {
         // The sub-value is an enum-disc value. At the TOP level it is already the raw discriminant i32.
-        // At a NESTED position (a non-empty path ending in a Payload/Elem read) it was boxed as an int, so
-        // `get-int` recovers the i64 cell and `i32.wrap_i64` narrows it to the discriminant i32.
-        if !path.is_empty() {
+        // At a NESTED position (an actual Payload/Elem heap read happened) it was boxed as an int, so
+        // `get-int` recovers the i64 cell and `i32.wrap_i64` narrows it to the discriminant i32. An erased
+        // newtype wrapper contributes NO heap read (`read_from_heap` stays false), so an enum-disc reached
+        // only through erased nominal Payloads is still top-level (raw i32) — NOT a `!path.is_empty()` test,
+        // which would wrongly `get-int` a raw enum-disc behind an erased `(Outer.Wrap Color)` wrapper.
+        if read_from_heap {
             out.push(Lir::CallImport(OP_GET_INT));
             out.push(Lir::I32WrapI64);
         }

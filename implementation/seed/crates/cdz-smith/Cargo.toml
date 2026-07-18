@@ -60,6 +60,13 @@ cadenza-syntax = { path = "../cadenza-syntax" }
 # Same version rcdzc pins, so the validator matches exactly what the backend targets.
 wasmparser = "0.239"
 
+# The wasm-VALUE side of the DIFFERENTIAL oracle (`src/differential.rs`): run the emitted component
+# IN-PROCESS and render its result, so it can be compared against the Rust backend's value (obtained
+# by shelling `cdz run-rust`). `cdz-run` owns all the wasmtime + runtime-composition machinery; we
+# hand it component bytes + the resolved runtime and get back a canonical `Outcome`. Verified it
+# co-resolves in this crate's private lockfile (the wasmtime chain does not conflict with bolero's pins).
+cdz-run = { path = "../cdz-run" }
+
 [dev-dependencies]
 # Same version the value-heap runtime already fuzzes with. `#[derive(TypeGenerator)]` +
 # `bolero::check!()` give shrinking and (under `cargo bolero`) coverage-guided engines for free.

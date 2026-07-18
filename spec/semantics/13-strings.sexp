@@ -1489,6 +1489,29 @@
   (input  (< #\a #\b))
   (output (: true Bool)))
 
+(case "a multibyte-scalar char orders by scalar value, not UTF-8 byte length"
+  (doc    "The >127 companion of the ASCII char-order case: ordering is the NUMERIC order of the
+           SCALAR VALUE (collections-and-text.md #A Char Is A Single Unicode Scalar Value), even when
+           the UTF-8 encodings differ in LENGTH. Built via `Char.from-int` (97 = a, 1 byte; 233 = e-acute,
+           2 bytes; 128512 = an emoji, 4 bytes): a < e-acute < emoji by scalar (97 < 233 < 128512) —
+           encoded `10*(a<e) + (e<r)` = 11. The ASCII pins never leave the 1-byte range where scalar
+           and byte order coincide; this is the first multibyte witness, distinguishing scalar order
+           from a byte-length or byte-sequence comparison.")
+  (input  (do
+            (def (main (: k Int64))
+              (match (Char.from-int 97)
+                ((Some a)
+                  (match (Char.from-int 233)
+                    ((Some e)
+                      (match (Char.from-int 128512)
+                        ((Some r) (+ (* 10 (if (< a e) 1 0)) (if (< e r) 1 0)))
+                        (None -3)))
+                    (None -2)))
+                (None -1)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 11 Int64)))
+
 (case "two equal chars compare equal"
   (doc    "`(= #\\a #\\a)` is true — a char's value is its scalar, and two chars are equal exactly when
            their scalar values are equal. Pins Char equality as scalar equality, the equality companion

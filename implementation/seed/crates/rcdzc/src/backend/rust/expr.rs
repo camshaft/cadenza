@@ -657,6 +657,32 @@ fn emit_elem_grounding_empty_list(
     Ok(a)
 }
 
+/// Emit a FLOAT operand grounded to `width` (32/64) — the float twin of `emit_grounded`. A `Core::ConstFloat`
+/// literal's OWN solved type DEFAULTS to Float64 when the checker didn't pin it (a bare `1.5` in `(= x 1.5)`
+/// where `x: Float32`), so emitting it as-is (`f64::from_bits(…)`) then feeding it to the caller's f32
+/// compare/arith is WRONG: the equality path's `.to_bits() as u32` takes the LOW 32 BITS of the f64 pattern
+/// (0x0 for 1.5) instead of the f32 bits (0x3fc00000) → the compare is ALWAYS FALSE (a silent wrong value);
+/// the arith path emits `x * <f64>` → rustc E0277 (`f32 * f64`). Ground the LITERAL to the op's width so
+/// both operands share the type. A NON-literal operand carries its own concrete float type and emits as-is
+/// (a genuine width disagreement is a type fault that aborts before emit, like the integer path).
+fn emit_grounded_float(
+    db: &mut Db,
+    id: StructId,
+    width: u32,
+    env: &Env,
+    ctx: &Ctx,
+) -> Result<String, Reject> {
+    if let Core::ConstFloat(d) = core_of(db, id) {
+        return Ok(if width == 32 {
+            let bits = (f64::from_bits(d.to_f64_bits()) as f32).to_bits();
+            format!("f32::from_bits({bits}u32)")
+        } else {
+            format!("f64::from_bits({}u64)", d.to_f64_bits())
+        });
+    }
+    emit(db, id, env, ctx)
+}
+
 fn emit_grounded(
     db: &mut Db,
     id: StructId,
@@ -994,10 +1020,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // integer `==`. Must be byte-identical to the wasm backend's `select`-based bit compare (the
         // differential sweep checks this). Equality only — float ordering is a separate ruling.
         Core::FloatCompare { op, lhs, rhs, width } => {
-            // Both operands share the op's float type (comparison unifies their widths), so they emit as-is
-            // — like float arithmetic (`emit_arith`'s `is_float_arith` path), no width grounding.
-            let l = emit(db, lhs, env, ctx)?;
-            let r = emit(db, rhs, env, ctx)?;
+            // Both operands share the op's float type, but a bare-literal operand's OWN solved type defaults
+            // to Float64 when unpinned (`(= x 1.5)` with `x: Float32`), so it must be GROUNDED to the op's
+            // `width` — else the f64 literal's low 32 bits feed the f32 equality compare (always false) or a
+            // `f32 </*/…* f64` arith E0277/E0308. `emit_grounded_float` emits a `ConstFloat` at `width`.
+            let l = emit_grounded_float(db, lhs, width, env, ctx)?;
+            let r = emit_grounded_float(db, rhs, width, env, ctx)?;
             if op == Prim::FEq {
                 // EQUALITY under the CANONICAL BYTE FORM (nan==nan, -0.0 != +0.0) — NaN-canonicalizing bit
                 // compare, NOT Rust's `==` (IEEE). Must be byte-identical to the wasm select-based compare.
@@ -2606,7 +2634,10 @@ fn emit_arith(
     }
     // A FLOAT arithmetic op (`+.`/`-.`/`*.`/`/.`) → the native Rust `+`/`-`/`*`/`/` on `f64`/`f32`. IEEE,
     // never traps (no `checked_*`/overflow panic, unlike the integer arith below) — matches the wasm
-    // machine op. Both operands share the op's float type, so they emit as-is (no width grounding).
+    // machine op. Both operands share the op's float type, but a bare LITERAL operand defaults to Float64
+    // when unpinned (`(*. x 2.0)` with `x: Float32`) → `x * <f64>` is rustc E0277 (`f32 * f64`), so GROUND
+    // each operand to the op's float width (`emit_grounded_float` emits a `ConstFloat` at that width). The
+    // width is the op's solved float type (the operands + result share it); default to 64 if not solved.
     if op.is_float_arith() {
         let sym = match op {
             Prim::FAdd => "+",
@@ -2615,8 +2646,15 @@ fn emit_arith(
             Prim::FDiv => "/",
             _ => unreachable!("guarded by is_float_arith"),
         };
-        let l = emit(db, lhs, env, ctx)?;
-        let r = emit(db, rhs, env, ctx)?;
+        let fwidth = match type_of(db, id) {
+            Ty::Float(ft) => ft.ground_width(),
+            _ => match type_of(db, lhs) {
+                Ty::Float(ft) => ft.ground_width(),
+                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
+            },
+        };
+        let l = emit_grounded_float(db, lhs, fwidth, env, ctx)?;
+        let r = emit_grounded_float(db, rhs, fwidth, env, ctx)?;
         return Ok(format!("({l} {sym} {r})"));
     }
     // Both operands share the OP's integer type (its result width == operand width). Ground a bare

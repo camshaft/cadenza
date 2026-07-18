@@ -131,6 +131,49 @@ fn run_rust_arg_taking_export_is_a_usage_error_not_an_error_verdict() {
 }
 
 #[test]
+fn run_rust_multiple_exports_requires_call_not_an_arbitrary_pick() {
+    // With >1 exported fn, run-rust must NOT guess (splitting on the first `pub fn` could run the wrong
+    // one — Copilot PR #547): a no-`--call` invocation is a clean non-zero usage error naming the exports,
+    // and `--call main` then runs the chosen one.
+    let (ok, out, err) =
+        run_stdin("(do (def (main) 1) (def (other) 2) (export main) (export other))");
+    assert!(
+        !ok,
+        "an ambiguous multi-export needs --call (non-zero usage error)"
+    );
+    assert!(
+        !out.starts_with("error "),
+        "must NOT be the `error` (miscompile) verdict — it's a usage error: {out:?}"
+    );
+    assert!(
+        err.contains("exports 2 functions") && err.contains("--call"),
+        "names the exports + points at --call: {err}"
+    );
+    // Selecting one runs it.
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let mut child = Command::new(exe)
+        .args(["run-rust", "--call", "main"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"(do (def (main) 1) (def (other) 2) (export main) (export other))")
+        .unwrap();
+    let sel = child.wait_with_output().expect("wait");
+    assert!(sel.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&sel.stdout).trim(),
+        "value 1",
+        "--call main runs main"
+    );
+}
+
+#[test]
 fn run_rust_on_an_unreadable_file_exits_non_zero() {
     // The ONE non-zero exit: a harness READ failure (no verdict). Distinguishes "the compiler judged it"
     // from "the input couldn't be read".

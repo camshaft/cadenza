@@ -1,5 +1,6 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	@ensures on a def with a parameter named it is REJECTED (would silently not enforce — rename the param)
+pass	@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
@@ -923,6 +924,7 @@ pass	a match over multiple nullary constructors with uniform patterns
 pass	a match pattern naming a non-existent variant is a coded rejection
 pass	a match returning multi-argument closures applies at full arity
 pass	a match takes another match's result as its scrutinee
+pass	a match through an erased single-variant newtype dispatches on the inner sum's discriminant
 pass	a match whose all arms diverge is Never and always traps
 pass	a match whose arm bodies have different types is a type error even when a constant scrutinee selects one
 pass	a match whose only arm is guarded by a literally-true condition is still non-exhaustive
@@ -969,6 +971,7 @@ pass	a multi-variant-sum binding pattern is refutable and rejected
 pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a multibyte-UTF-8 Ast.Str round-trips through encode and decode
 pass	a multibyte-UTF-8 Ast.Str round-trips through print and read
+pass	a multibyte-scalar char orders by scalar value, not UTF-8 byte length
 pass	a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
@@ -1478,6 +1481,7 @@ pass	a runtime float leaf in a tuple compares by the canonical byte form
 pass	a runtime float multiplication emits the machine mul
 pass	a runtime float promotes to a wider width with the machine promote
 pass	a runtime float subtraction emits the machine sub
+pass	a runtime full-width UInt64 subtraction that underflows traps rather than wrapping
 pass	a runtime greater-than compares by signed order
 pass	a runtime greater-than-or-equal holds at the equal-operand boundary
 pass	a runtime increment traps exactly at the maximum integer
@@ -1944,6 +1948,7 @@ pass	a variant with a wrong-type payload as a direct match scrutinee is a type e
 pass	a variant with an explicit EMPTY-TUPLE payload keeps its tuple form, distinct from a nullary unit
 pass	a variant-payload binder shadow is scoped to its arm, not the whole def
 pass	a variant-payload binder shadowing a param in a called def binds the payload
+pass	a velocity multiplied by a time recovers the distance dimension
 pass	a well-formed annotation still checks and accepts a matching type (the control)
 pass	a whole rational carries a denominator of one
 pass	a wide fixed-size integer width is reserved, not yet a valid type
@@ -2472,6 +2477,7 @@ pass	distinct names bound to the same string key the same map entry
 pass	distinct seeds produce distinct generated values (the stream covers, it is not constant)
 pass	dividing a quantity by a bare number keeps its dimension
 pass	dividing quantities divides their dimensions
+pass	dividing two same-dimension quantities cancels to a dimensionless number
 pass	division by zero traps
 pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
