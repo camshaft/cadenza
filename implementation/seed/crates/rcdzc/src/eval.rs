@@ -1415,6 +1415,24 @@ fn lambda_of(db: &mut Db, id: StructId) -> Option<(std::rc::Rc<[StructId]>, Stru
             let elem = *elems.get(index)?;
             lambda_of(db, elem)
         }
+        // A HANDLE whose BODY is itself a CLOSURE — `((handle E init (arms…) (fn (x) …)) 10)`. The handle's
+        // RESULT is that body closure (the arms only discharge performs INSIDE the body; a body that is a
+        // bare lambda performs nothing, so `reduce_handle` returns it unchanged). Reduce the body to a
+        // lambda so an applied handle-result closure β-reduces exactly as any other returned closure
+        // (`lambda_body`/`apply_lambda` then see through the handle). Without this `((handle …) x)` declined
+        // "value is not applyable" (6373, the handle-result twin of the recursive-closure-return gap).
+        //
+        // CRITICAL — check the BODY directly, NOT the `reduce_handle`-folded whole handle: an ESCAPING
+        // CAPTURED CONTINUATION `(handle Amb 0 ((flip (u) s (fn (x) (resume x s)))) (+ 100 (Amb.flip)))`
+        // ALSO folds (via `reduce_handle`) to a closure — but that closure is a captured continuation
+        // escaping an ARM, the design-blocked E5 captured-k that MUST be refused. Its BODY `(+ 100
+        // (Amb.flip))` is NOT a lambda, so gating on `lambda_of(body)` accepts only the closure-IS-the-body
+        // case and leaves the escaping-arm case on the refuse path (it declines "not applyable" downstream).
+        Resolved::Handle { body, .. } => {
+            let mut guard = db.enter_reduction()?;
+            let g = guard.db();
+            lambda_of(g, body)
+        }
         _ => None,
     }
 }

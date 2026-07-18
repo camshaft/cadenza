@@ -550,6 +550,7 @@ pass	a capturing closure stored as a runtime list element is extracted by List.a
 pass	a capturing closure stored in a let-bound record is projected and applied
 pass	a capturing closure stored in a let-bound tuple is projected and applied
 pass	a capturing closure stored in a tuple is extracted and applied
+pass	a capturing closure stored in a variant is applied via a devirtualized direct call
 pass	a capturing closure whose body uses the capture after an inner computation
 pass	a capturing closure with a let binding in its body
 pass	a capturing unannotated closure in a payload is typed from the declared arrow

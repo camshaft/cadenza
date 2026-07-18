@@ -12,6 +12,8 @@
 /// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
 
 import { Node, Tree, empty-tree, add-node, node-at, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let } from "parse-db"
+import { recognize, is-int-type, ty-signed, ty-width } from "int-type"
+import { fits-width } from "int-width"
 
 /// The 1-char string at position `i` of `s`, or `""` past the end. (strlex has an identical private helper;
 /// sread keeps its own so it depends only on parse-db, not strlex's internals.)
@@ -133,11 +135,38 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
      (if (sym == "if") then read-if-form(s, a0, tree)
       else (if (sym == "let") then read-let-form(s, a0, tree)
       else (if (sym == "do") then read-do-form(s, a0, tree)
+      else (if (sym == ":") then read-ann-form(s, a0, tree)
       else
         (match read-form(s, a0, tree) with | (leftId, a1, t1) =>
           (match read-form(s, a1, t1) with | (rightId, a2, t2) =>
             (let a3 = close-paren(s, a2) in
-             (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a3, t3))))))))))
+             (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a3, t3)))))))))))
+
+/// After `(:` (index `i` past the `:` head): a TYPE ANNOTATION `(: <literal> TypeName)` — the range-check
+/// an integer annotation performs. This slice (2a-ii) handles a LITERAL operand at a fixed-width integer
+/// type: read the int literal + the type-name atom, `recognize` the name → `(signed, width)`, and
+/// `fits-width`-check the value. In range → `NLit(v)` (runs, emitted i64 as today — the fit-check is a
+/// STATIC gate, no representation change yet); OUT of range, or a non-integer / unknown type name →
+/// `unsupported()` → decline (matching rcdzc: `(: 200 UInt8)` runs, `(: 300 UInt8)` / `(: 5 Bool)` decline).
+/// A NON-literal operand (`(: (+ 1 2) Int8)`) is out of THIS slice → decline (a later slice threads the
+/// annotated type through infer for arbitrary expressions). Stays OUTSIDE the parse-db grammar SCC — it's a
+/// sread paren-form arm, a caller of `read-form`, not a new mutually-recursive grammar member.
+def read-ann-form(s: String, i: Int64, tree: Tree) =
+  (let v0 = skip-space(s, i) in
+   (let c = char-at(s, v0) in
+    (if (is-digit(c)) then
+       (match scan-number(s, v0, 0) with | (v, k) =>
+         (if (ends-token(s, k)) then
+            (let t0 = skip-space(s, k) in
+             (match scan-atom(s, t0, "") with | (tyname, a2) =>
+               (let a3 = close-paren(s, a2) in
+                (if (is-int-type(tyname)) then
+                   (if (fits-width(v, ty-signed(tyname), ty-width(tyname)))
+                    then (match add-node(tree, Node.NLit(v)) with | (id, t1) => (id, a3, t1))   // in range → runs
+                    else unsupported-at(tree, a3))                                              // out of range → decline
+                 else unsupported-at(tree, a3)))))                                              // non-int type → decline
+          else (match scan-atom(s, k, "") with | (_junk, k2) => unsupported-at(tree, k2))))     // malformed literal → decline
+     else (match unsupported(tree) with | (id, t1) => (id, v0, t1)))))                          // non-literal operand → out of slice, decline
 
 /// After `(do` (index `i` past the `do` atom): peel the canonical corpus MODULE wrapper
 /// `(do (def (main) <body>) (export main))` and read `<body>` as the program's value — the corpus tool
@@ -383,5 +412,48 @@ def sr-do-form-in-cycle-reads() =
   // read-paren-form's in-cycle arm.
   (match read-form("(do (def (main) (+ 4 5)) (export main))", 0, empty-tree()) with | (root, _, tree) =>
     (if is-bin-op(tree, root, 43) then unit else trap("in-cycle (do …) reads its body as a + Bin")))
+
+// ---- type annotations (: <literal> TypeName) — the integer range-check (slice 2a-ii) ----
+
+@test
+def sr-ann-in-range-runs() =
+  // `(: 200 UInt8)` → 200 fits UInt8 → NLit(200) (runs as an ordinary literal; the annotation is a static
+  // fit-check that passed). is-lit at the root confirms the annotated literal reads as its value.
+  (match read-source("(: 200 UInt8)") with | (root, tree) =>
+    (if is-lit(tree, root, 200) then unit else trap("(: 200 UInt8) → NLit 200 (in range)")))
+
+@test
+def sr-ann-int8-in-range() =
+  // `(: 127 Int8)` → 127 = Int8.max fits → NLit(127).
+  (match read-source("(: 127 Int8)") with | (root, tree) =>
+    (if is-lit(tree, root, 127) then unit else trap("(: 127 Int8) → NLit 127")))
+
+@test
+def sr-ann-out-of-range-declines() =
+  // `(: 300 UInt8)` → 300 does NOT fit UInt8 → unsupported() → an NVar(0) poison (root is NOT a literal),
+  // so resolve→infer→eval decline. The range-check REJECTS, matching rcdzc.
+  (match read-source("(: 300 UInt8)") with | (root, tree) =>
+    (if is-lit(tree, root, 300) then trap("(: 300 UInt8) must DECLINE (300 > UInt8.max)")
+     else (if is-var(tree, root, 0) then unit else trap("out-of-range annotation → unsupported NVar(0)"))))
+
+@test
+def sr-ann-int8-over-declines() =
+  // `(: 128 Int8)` → 128 > Int8.max 127 → decline.
+  (match read-source("(: 128 Int8)") with | (root, tree) =>
+    (if is-lit(tree, root, 128) then trap("(: 128 Int8) must DECLINE (128 > Int8.max)")
+     else (if is-var(tree, root, 0) then unit else trap("Int8 overflow annotation → unsupported"))))
+
+@test
+def sr-ann-non-int-type-declines() =
+  // `(: 5 Bool)` → Bool is not an integer type → decline (a later slice may type-annotate to Bool; not here).
+  (match read-source("(: 5 Bool)") with | (root, tree) =>
+    (if is-lit(tree, root, 5) then trap("(: 5 Bool) is out of the integer-annotation slice → decline")
+     else (if is-var(tree, root, 0) then unit else trap("non-int type annotation → unsupported"))))
+
+@test
+def sr-ann-negative-fits-int8() =
+  // `(: 100 Int8)` fits (Int8 holds -128..127); confirms a mid-range signed value runs.
+  (match read-source("(: 100 Int8)") with | (root, tree) =>
+    (if is-lit(tree, root, 100) then unit else trap("(: 100 Int8) → NLit 100 (in range)")))
 
 export { skip-space, read-form, read-source, scan-atom, op-code-of, name-id }

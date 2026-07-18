@@ -2121,3 +2121,33 @@
             (def (main) (unwrap (mk 42)))
             (export main)))
   (output (: 42 Int64)))
+
+; ── @invariant ESTABLISH Part 2: the CHECKED CONSTRUCTOR enforces the invariant at RUN TIME (a violation TRAPS) ─
+; The (D) run-time establish enforcement (design §10.2 — ESTABLISH: every construction of `T` must satisfy `I`,
+; else trap). Part 1 synthesizes the typed `__invariant_check_T`; Part 2 synthesizes the CHECKED CONSTRUCTOR
+; `(def (__invariant_construct_T (: __inv_p U)) (let ((__inv_v (T.V __inv_p))) (if (__invariant_check_T __inv_v)
+; __inv_v (trap))))` — it builds the value once (`__inv_v : T`, properly typed), checks it, and yields it or
+; traps. This slice synthesizes it UNWIRED (the `lower_sum_new` divert that routes every `(T.V x)` through it is
+; the follow-up); a source that calls it BY NAME exercises the establish behavior directly. Pins: a SATISFYING
+; value constructs + flows through (mk 50 = 50), and a VIOLATING value TRAPS at construction (mk 150 > 100).
+; This is the run-time complement of Part 1's type-check-only positive case above.
+
+(case "@invariant ESTABLISH Part 2: the synthesized checked constructor enforces the invariant at run time — a satisfying value constructs, a violating value traps (design §10.2, (D))"
+  (doc    "The (D) run-time establish enforcement. `invariant_establish` synthesizes, per single-payload-newtype
+           @invariant type, a CHECKED CONSTRUCTOR `__invariant_construct_Percent` = `(let ((__inv_v (Percent.Pct
+           __inv_p))) (if (__invariant_check_Percent __inv_v) __inv_v (trap)))`. Called with a value SATISFYING
+           `0 <= it <= 100` it constructs the Percent and yields it (here unwrapped to its Int64 payload — mk(50)
+           = 50); called with a VIOLATING value it TRAPS at construction (mk(150) violates `<= 100`), so no
+           invalid Percent ever escapes. Pins the establish obligation is enforced at run time (the trap), the
+           dynamic complement of the compile-time discharge the establish/preserve corpus above pins. The def is
+           synthesized UNWIRED here (called by name); wiring `lower_sum_new` to route every `(Percent.Pct x)`
+           through it is the follow-up sub-slice.")
+  (input  (do
+            (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64)))
+            (def (mk (: v Int64)) (match (__invariant_construct_Percent v) (((. Percent Pct) n) n)))
+            (export mk)))
+  (call mk (: 50 Int64))  (output (: 50 Int64))
+  (call mk (: 0 Int64))   (output (: 0 Int64))
+  (call mk (: 100 Int64)) (output (: 100 Int64))
+  (call mk (: 150 Int64)) (trap "unreachable")
+  (call mk (: -1 Int64))  (trap "unreachable"))

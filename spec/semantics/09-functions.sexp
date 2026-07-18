@@ -182,6 +182,30 @@
   (call   main (: 10 Int64))
   (output (: 13 Int64)))
 
+; A closure STORED IN A VARIANT FIELD, then matched out and applied — the ad-hoc-polymorphism dispatch
+; shape (a "protocol" = a variant/record of closures). The closure captures `k`, so it CANNOT β-reduce
+; away (it survives as a runtime closure value flowing through the `Box.Mk` destructure); yet its
+; CONSTRUCTOR SITE is statically visible at the call (`mk` inlines, so the `Box.Mk(<closure>)` payload
+; the `match` binds is a compile-time-known `Core::Closure`). The KNOWN-CLOSURE DEVIRTUALIZATION resolves
+; the funcref table slot at compile time and emits a DIRECT call to the lifted function instead of a
+; `call_indirect` (the wasm-side witness pins 0 `call_indirect` in a rcdzc unit test; here the value
+; parity is the behavior witness that devirtualizing keeps the exact result). Zero-cost ad-hoc-poly
+; dispatch — the mechanism the whole const-record/variant-of-closures language model rests on.
+
+(case "a capturing closure stored in a variant is applied via a devirtualized direct call"
+  (doc    "`(mk 5)` builds `Box.Mk((fn (n) (+ n k)))` capturing k=5; `(use2 (mk 5))` matches the variant to
+           bind the closure `f` and applies it twice: (10+5) + (20+5) = 15 + 25 = 40. The closure captures
+           `k` so it survives to run time (does not β-reduce), but its constructor site is visible at the
+           call, so the call devirtualizes to a direct call of the lifted function (no `call_indirect`).
+           Value parity (40) proves the devirtualized direct call computes the identical result.")
+  (input  (do
+            (type Box (Mk (-> Int64 Int64)))
+            (def (mk (: k Int64)) (Box.Mk (fn ((: n Int64)) (+ n k))))
+            (def (use2 (: b Box)) (match b ((Box.Mk f) (+ (f 10) (f 20)))))
+            (def (main) (use2 (mk 5)))
+            (export main)))
+  (output (: 40 Int64)))
+
 (case "a let-bound returned closure applied twice folds each application independently"
   (doc    "The multi-use companion: `(let ((f (mk n))) (+ (f 3) (f 4)))` binds the returned capturing closure
            once and applies it twice; each application folds independently, so with `n` = 10 the result is

@@ -3802,6 +3802,85 @@ fn option_expect_over_an_owned_some_shell_leaves_no_live_objects() {
     }
 }
 
+/// DIRECT leak witness for the `match` (Core::MatchSum) OWNED-sum-SHELL reclaim — the twin of the
+/// `option_expect_…` SumExpect probe, NARROWED after v-patterns caught a UAF: the sound gate is that the
+/// sum's variants ALL carry SCALAR (or no) payloads, NOT merely a scalar RESULT. A fallible read
+/// (`List.at`/`Map.lookup` → `Option Int64`, all-scalar payloads) builds a fresh `sum-new` Some/None shell;
+/// consuming it with a `match` used to LEAK that shell (arms only borrow the scrutinee; nothing dropped an
+/// owned one) — one heap cell PER CALL, value-correct so value/drop-import tests missed it. Driven through a
+/// LOOP so a per-call leak SCALES past the benign entrypoint-return temporary. ⚠ The MUST-NOT-REGRESS
+/// counterexample is the HOL-kernel `term-eq (Comb x y)`: a scalar-Bool-result match whose arms bind
+/// COMPOUND payload handles (`x`/`y`) borrowed from the shell and thread them into a recursive walk that
+/// reads them AFTER the match — a scalar-RESULT gate would free the shell there → OOB/UAF. The all-scalar-
+/// PAYLOAD gate excludes it (a `Term`/`Thm` sum has compound payloads), so its shell is left un-dropped (a
+/// residual leak, never a double-free). That case lives in the corpus (25-verification GEN); here we pin the
+/// all-scalar-payload leak nets to 0. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn match_over_an_owned_all_scalar_payload_sum_shell_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "debug-counters runtime not in the store (run `cargo xtask build`); skipping MatchSum shell leak probe"
+        );
+        return;
+    };
+    // Each `f` loops N, building a fresh runtime collection, reading one element via a fallible op (→ an
+    // (Option Int64), ALL-SCALAR payloads), and MATCHING the Some/None to a scalar. N owned shells → net 0.
+    let cases: &[(&str, &str, i64)] = &[
+        (
+            "List.at Some arm",
+            "(module m \
+               (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
+                   (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (loop (: j Int64) (: n Int64) (: tot Int64)) \
+                   (if (< j n) (loop (+ j 1) n (+ tot (match ((. List at) (build 0 3 (list)) 1) \
+                       ((Option.Some v) v) ((Option.None _) 7)))) tot)) \
+               (def (f (: n Int64)) (loop 0 n 0)) (export f))",
+            500,
+        ),
+        (
+            "List.at None arm",
+            "(module m \
+               (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
+                   (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (loop (: j Int64) (: n Int64) (: tot Int64)) \
+                   (if (< j n) (loop (+ j 1) n (+ tot (match ((. List at) (build 0 3 (list)) 99) \
+                       ((Option.Some v) v) ((Option.None _) 7)))) tot)) \
+               (def (f (: n Int64)) (loop 0 n 0)) (export f))",
+            3500,
+        ),
+        (
+            "Map.lookup Some arm",
+            "(module m \
+               (def (build (: i Int64) (: n Int64) (: mp (Map Int64 Int64))) \
+                   (if (< i n) (build (+ i 1) n ((. Map insert) mp i (* i 10))) mp)) \
+               (def (loop (: j Int64) (: n Int64) (: tot Int64)) \
+                   (if (< j n) (loop (+ j 1) n (+ tot (match ((. Map lookup) (build 0 3 (map)) 1) \
+                       ((Option.Some v) v) ((Option.None _) 7)))) tot)) \
+               (def (f (: n Int64)) (loop 0 n 0)) (export f))",
+            5000,
+        ),
+    ];
+    for (label, src, want) in cases {
+        let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+        assert_eq!(
+            rt.call("f", &[Val::S64(500)]),
+            Val::S64(*want),
+            "match over an owned all-scalar-payload {label} computes the right accumulated value"
+        );
+        assert_eq!(
+            rt.live_objects(),
+            0,
+            "owned sum-shell leak ({label}): the fresh sum-new shell is still live after the match \
+             (expected 0 — MatchSum must drop the owned all-scalar-payload shell after the match; was ~N)"
+        );
+    }
+}
+
 /// COMPOUND EQUALITY over a runtime FLOAT LEAF follows the canonical byte form — the compound analogue of
 /// the scalar `Core::FloatCompare` fix, with NO extra machinery: `box-float` canonicalizes every NaN to
 /// the one quiet-NaN on construct (and keeps ±0.0 distinct), so a float in a compound already has the
@@ -17977,6 +18056,66 @@ mod match_engine {
             !ds2.iter()
                 .any(|d| matches!(d.code.as_deref(), Some("CDZ0202") | Some("CDZ0203"))),
             "a self-destructuring @invariant is used as-is (not double-unwrapped) — clean: {ds2:?}"
+        );
+    }
+
+    /// Verification Inc-b @invariant ESTABLISH Part 2: `invariant_establish::synthesize` ALSO emits a CHECKED
+    /// CONSTRUCTOR `(def (__invariant_construct_T (: __inv_p U)) (let ((__inv_v (T.V __inv_p))) (if
+    /// (__invariant_check_T __inv_v) __inv_v (trap))))` per single-payload-newtype `@invariant` type — the (D)
+    /// run-time establish enforcement (design §10.2: every construction must satisfy the invariant or TRAP).
+    /// It TYPE-CHECKS clean (`__inv_v : T`, so the checker's `it : T` param + auto-unwrap match are fed the
+    /// right type), is found by `def_by_name`, and enforces at run time: a value that SATISFIES the invariant
+    /// constructs + is usable, one that VIOLATES it TRAPS. (This slice synthesizes the def UNWIRED — a source
+    /// that calls it BY NAME exercises the establish behavior directly; the `lower_sum_new` divert that routes
+    /// every `(T.V x)` through it is the follow-up sub-slice.)
+    #[test]
+    fn an_invariant_newtype_synthesizes_a_checked_constructor_that_traps_on_violation() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        // The synthesized `__invariant_construct_Percent` builds a Percent, checks `0 <= it <= 100`, yields it
+        // (unwrapped here so the export is a plain Int64) or traps. Type-checks clean (no CDZ fault) and is
+        // present in the def table.
+        let src = "(module m \
+            (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+            (def (mk (: v Int64)) (match (__invariant_construct_Percent v) ((Percent.Pct n) n))) \
+            (export mk))";
+        let mut db = crate::db::Db::load(parse(src));
+        let ds = crate::diagnostics(&mut db);
+        assert!(
+            ds.iter().all(|d| d.code.as_deref() != Some("CDZ0101")
+                && d.code.as_deref() != Some("CDZ0202")
+                && d.code.as_deref() != Some("CDZ0203")),
+            "the synthesized checked constructor type-checks clean: {ds:?}"
+        );
+        assert!(
+            db.def_by_name("__invariant_construct_Percent").is_some(),
+            "the checked constructor is synthesized + indexed by name"
+        );
+        let bytes =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        // A SATISFYING value constructs + flows through: mk(50) = 50.
+        let got: i64 = crate::tests::run_returns_with(&bytes, "mk", &[Val::S64(50)]);
+        assert_eq!(
+            got, 50,
+            "a value satisfying the invariant constructs and is usable"
+        );
+        // Boundary values are IN-domain (the invariant is inclusive): mk(0) and mk(100) do not trap.
+        assert_eq!(
+            crate::tests::run_returns_with::<i64>(&bytes, "mk", &[Val::S64(0)]),
+            0
+        );
+        assert_eq!(
+            crate::tests::run_returns_with::<i64>(&bytes, "mk", &[Val::S64(100)]),
+            100
+        );
+        // A VIOLATING value TRAPS at construction — above the upper bound and below the lower bound.
+        assert!(
+            crate::tests::call_traps(&bytes, "mk", &[Val::S64(150)]),
+            "constructing a Percent of 150 violates `<= 100` → establish trap"
+        );
+        assert!(
+            crate::tests::call_traps(&bytes, "mk", &[Val::S64(-1)]),
+            "constructing a Percent of -1 violates `>= 0` → establish trap"
         );
     }
 
@@ -44141,7 +44280,9 @@ mod diagnostics {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::{FromVal, count_opcode, find_runtime_wasm, run_returns, run_returns_with};
+    use super::{
+        FromVal, count_opcode, find_runtime_wasm, run_linked, run_returns, run_returns_with,
+    };
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -53965,6 +54106,35 @@ mod stage1 {
     }
 
     #[test]
+    fn an_effectful_host_arg_to_a_multiuse_fn_param_reperforms_is_a_known_miscompile() {
+        // KNOWN MISCOMPILE (PARKED per concierge ruling 2026-07-18, deferred-not-denied — fix needs the hot
+        // universal β-reduce, disproportionate to a rare non-blocking shape; a clean let-idiom workaround
+        // exists). An arg that reaches a HOST CALL, bound to a fn param used MULTIPLE times, is substituted
+        // BY NAME and RE-PERFORMS per use instead of evaluating ONCE by-value (strict-eval violation):
+        // `(sum3 (mk (E.get)))` with `mk s = (T s s s)` emits THREE host `get` calls, WANT ONE. HOST-ONLY —
+        // the in-program-handler analogue evaluates once (the fold binds the resume value once), so memo/DB/
+        // in-program effect programs are unaffected. WORKAROUND: `(let ((s (E.get))) (sum3 (T s s s)))` → 1
+        // call. This test PINS the current wrong count (3) so a regression to a DIFFERENT wrong shape / an
+        // accidental change is caught, and FLIPS to 1 when the β-reduce evaluate-once fix lands (a real
+        // consumer forcing it + a full-corpus regression budget). Ledger: filed
+        // queue/mlrepro-effectful-fn-arg-reperforms-per-use-not-by-value.KNOWN-MISCOMPILE-PARKED.sexp.
+        let src = "(do (effect E (op get (-> Unit Int64))) (type Trip (T Int64 Int64 Int64)) \
+                   (def (mk s) (T s s s)) (def (sum3 t) (match t ((T a b c) (+ (+ a b) c)))) \
+                   (def (main) (host (E) (sum3 (mk (E.get))))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("compiles (the miscompile is a duplicated host call, not a decline)");
+        // Count core `call 0` — the host `get` import is core func 0 (host imports laid first).
+        let host_calls = count_opcode(&bytes, |op| {
+            matches!(op, wasmparser::Operator::Call { function_index: 0 })
+        });
+        assert_eq!(
+            host_calls, 3,
+            "KNOWN MISCOMPILE: an effectful host arg to a multi-use param re-performs (3 host calls); \
+             want 1 once the β-reduce evaluate-once fix lands — flip this to 1 then"
+        );
+    }
+
+    #[test]
     fn a_recursive_effectful_walk_accumulates_into_a_string_state_handler() {
         // The ROPE-STRING analogue of the list-state walk above (the v-runtime rope seam): a recursive
         // effectful walk whose handler state is a heap STRING accumulated with `String.concat` across
@@ -54632,6 +54802,52 @@ mod stage1 {
         assert!(
             !has_call_indirect,
             "the dictionary's op must be inlined (no call_indirect), got a runtime dispatch"
+        );
+    }
+
+    #[test]
+    fn a_known_closure_stored_in_a_variant_is_called_directly_not_via_call_indirect() {
+        // KNOWN-CLOSURE DEVIRTUALIZATION (S1): a closure stored in a variant field, matched out, and
+        // applied — the ad-hoc-poly dispatch shape. The closure captures `k` so it CANNOT β-reduce (it is a
+        // genuine runtime `Core::CallClosure`, not an inlined-away lambda), but its constructor site is
+        // visible at the call (`mk` inlines → the `Box.Mk` payload the `match` binds folds to a
+        // `Core::Closure`), so the funcref table slot is a compile-time constant. The wasm backend must emit
+        // a DIRECT `call` to the lifted function, NOT a `call_indirect` reading the slot from the cell.
+        // WITHOUT the devirt this emits 2 `call_indirect` (the pre-fix baseline, verified); with it, ZERO.
+        // Value parity (40) is the behavior witness that the direct call computes the identical result.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (type Box (Mk (-> Int64 Int64))) \
+               (def (mk (: k Int64)) (Box.Mk (fn ((: n Int64)) (+ n k)))) \
+               (def (use2 (: b Box)) (match b ((Box.Mk f) (+ (f 10) (f 20))))) \
+               (def (main) (use2 (mk 5))) (export main))",
+        )))
+        .expect("a capturing closure stored in a variant compiles");
+        // The closure cell is a heap value (`arr-alloc`), so link the value-heap runtime (skip if absent,
+        // the established heap-test pattern). Value parity 40 proves the devirtualized call is correct.
+        if let Some(v) = run_linked(&bytes, "main") {
+            assert_eq!(v, "40");
+        }
+        // The stored closure's application is DEVIRTUALIZED: the emitted core carries NO `call_indirect`
+        // (the table slot is known, so it is a direct call). Scan the code section with `wasmparser`.
+        let has_call_indirect = {
+            use wasmparser::{Parser, Payload};
+            let mut found = false;
+            for payload in Parser::new(0).parse_all(&bytes) {
+                if let Ok(Payload::CodeSectionEntry(body)) = payload {
+                    let mut ops = body.get_operators_reader().expect("ops");
+                    while let Ok(op) = ops.read() {
+                        if matches!(op, wasmparser::Operator::CallIndirect { .. }) {
+                            found = true;
+                        }
+                    }
+                }
+            }
+            found
+        };
+        assert!(
+            !has_call_indirect,
+            "a known-constructor-site closure call must devirtualize to a direct call (no call_indirect)"
         );
     }
 
@@ -57950,6 +58166,26 @@ mod stage1 {
             }
             cdz_run::Outcome::Trap(t) => panic!("recursive closure-return trapped: {t}"),
         }
+    }
+
+    #[test]
+    fn a_handle_whose_body_is_a_closure_is_applyable() {
+        // REGRESSION (corpus-bugfix/breaker 6373, the handle-result twin of 6360): a `(handle …)` whose
+        // BODY is a closure, applied directly, declined "value is not applyable". `((handle Env 0 ((get (u)
+        // s (resume s s))) (fn (x) (+ x 1))) 10)` = 11 — the handle discharges no perform (the body is a
+        // bare lambda), so its result IS that closure. `lambda_of` did not peer through a `Resolved::Handle`
+        // (not a lambda/def-ref shape), so the applied handle head was neither a lambda nor a runtime fn
+        // value → NOT_APPLYABLE. Fix: `lambda_of` reduces a handle to its BODY's lambda (checked directly,
+        // NOT the `reduce_handle`-folded whole handle — an ESCAPING CAPTURED CONTINUATION from an ARM also
+        // folds to a closure but MUST stay refused, so gating on the BODY being a lambda admits only the
+        // closure-IS-the-body case). Folds to the constant 11 (a no-op handle over a pure applied closure).
+        let src = "(module m (effect Env (op get (-> Unit Int64))) \
+            (def (main) ((handle Env 0 ((get (u) s (resume s s))) (fn ((: x Int64)) (+ x 1))) 10)) \
+            (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "compile — a handle whose body is a closure must be applyable, not 'not applyable'",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 11);
     }
 
     #[test]

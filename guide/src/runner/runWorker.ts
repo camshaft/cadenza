@@ -34,6 +34,13 @@ export interface RunJob {
   /** Property-test trial count (default 100) and base seed (default 0), mirroring `cdz test`. */
   trials?: number;
   seed?: number;
+  /** `@param` HOST-RESPONSES for a parametric model (operator's /cad parametric showcase). A Rational
+   *  `@param <name>` desugars to two Int64 host accessors `<name>-num`/`<name>-den` (guest recombines
+   *  `Rational.of(num, den)`); at the component boundary these are the `param` import's accessor fns, bound
+   *  by jco as camelCase `<name>Num`/`<name>Den`. This maps each param NAME → its `{ num, den }` (the
+   *  slider's current value as an exact fraction). When present, `instantiateComponent` supplies the
+   *  `param` import so a slider drag → new num/den → recompute+re-mesh. Absent for a non-parametric run. */
+  params?: Record<string, { num: number; den: number }>;
 }
 
 export type RunResult =
@@ -123,7 +130,19 @@ async function instantiateComponent(job: RunJob): Promise<Record<string, unknown
     heap = (rtRoot[HEAP_IMPORT] ?? rtRoot["heap"]) as Record<string, unknown>;
   }
   const prog = await loadComponent(job.component, "prog");
-  const imports = heap ? { [HEAP_IMPORT]: heap } : {};
+  const imports: Record<string, unknown> = heap ? { [HEAP_IMPORT]: heap } : {};
+  // A parametric model imports a `param` interface — one accessor per `@param`. A Rational `@param <name>`
+  // needs `<name>Num`/`<name>Den` (jco's camelCase of the WIT `<name>-num`/`-den`), each returning the
+  // slider value's num/den as an i64 (jco lowers i64 ↔ JS bigint, so return BigInt). Supply it when the
+  // job carries `params`; a non-parametric component has no `param` import and ignores this.
+  if (job.params) {
+    const param: Record<string, () => bigint> = {};
+    for (const [name, { num, den }] of Object.entries(job.params)) {
+      param[`${name}Num`] = () => BigInt(num);
+      param[`${name}Den`] = () => BigInt(den);
+    }
+    imports.param = param;
+  }
   return prog.instantiate(prog.getCoreModule, imports);
 }
 

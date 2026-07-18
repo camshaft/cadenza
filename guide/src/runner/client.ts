@@ -76,6 +76,10 @@ export async function run(
   component: Uint8Array,
   surface: Surface = "sexpr",
   display = false,
+  /** `@param` host-responses for a PARAMETRIC model (/cad parametric showcase): each `@param <name>` →
+   *  its current `{ num, den }` (the slider value as an exact fraction). Supplied to the run worker's
+   *  `param` import so the model reads live slider values. Omit for a non-parametric run. */
+  params?: Record<string, { num: number; den: number }>,
 ): Promise<RunOutcome> {
   if (busy) return { kind: "error", message: "a run is already in progress" };
   busy = true;
@@ -105,7 +109,7 @@ export async function run(
         resolve({ kind: "error", message: e.message } as RunResult);
       };
 
-      const job: RunJob = { component, runtime };
+      const job: RunJob = { component, runtime, params };
       w.postMessage(job);
     });
 

@@ -55,3 +55,5 @@
 ; panic!(unreachable), rustc-clean; pin grown with nested + rhs-nested cases. MR serialized behind
 ; v-rust-backend's pending sum-payload MR (same-file dependent stack) — sends once that lands.
 ; Verify rust-target PASS + promote once a15315393 integrates on trunk.
+
+; LANDED (corpus-bugfix 2026-07-18): the arith_operand_diverges regression test is present on trunk (rust backend tests.rs) — the a15315393 transitive-diverging-operand fix landed. rust-target (owner-gate). Closed.

@@ -52,3 +52,27 @@
 ; Controls: ((if b f g) 10) + ((match n ...) 10) with lambda arms RUN (commute); lambda INSIDE a handle
 ; body runs. So applyability fails for RECURSION + HANDLE results (constructs with their OWN result-type
 ; derivation) but not if/match heads. Same fix locus likely covers both — one test each.
+
+; ---
+; RESOLVED-PENDING-MERGE (v-inference, 2026-07-18, MR 3ac208f93, stacked on the inline-lambda MR):
+; recursion column FIXED. ROOT (diagnosis confirmed): the apply head (selfp 2) is a recursive Core::Call
+; returning a closure — can't β-reduce (depth guard) — and head_is_runtime_fn_value (call_indirect vs
+; β-reduce decision) had NO arm for an Apply head, so it fell to "value is not applyable". FIX adds that
+; arm: a non-reducible Apply head of Ty::Fn result = a runtime closure handle, applied via call_indirect
+; (emit already handles a Core::Call closure operand). ((selfp 2) 5) -> valid wasm, runs 105. if/match
+; controls kept working because they COMMUTE the head (β-reduce), never reaching this gate.
+; HANDLE-result column (6373): shares the SAME root; v-inference's Apply-head arm MAY already cover a
+; handle-expression head — they'll build the (effect …) scaffold to confirm/extend as a FOLLOW-UP. Tracked.
+; Retire the recursion face on land; keep an eye on the handle follow-up.
+
+; ---
+; HANDLE COLUMN ALSO FIXED (v-inference, 2026-07-18, MR 331283703, stacked on 3ac208f93): both columns
+; of this consolidated closure-result reject-gap now closed. ((handle Env 0 (arm) (fn (x) (+ x 1))) 10) = 11
+; compiles+folds (was "value is not applyable"). ROOT: lambda_of (eval.rs) reduces through Ref/Annot/Apply/
+; Let/Member/Proj but had NO Resolved::Handle arm — an applied handle head was neither lambda nor runtime-fn
+; -> NOT_APPLYABLE. Fix adds the arm. SOUNDNESS (careful): gated on the handle BODY being a lambda, NOT the
+; reduce_handle-folded whole handle — an ESCAPING CAPTURED CONTINUATION from an arm ((flip (u) s (fn (x)
+; (resume x s)))) also folds to a closure but is design-blocked E5 (test: an_escaping_captured_continuation_
+; is_refused_not_miscompiled); the first whole-handle attempt wrongly ENABLED it -> invalid wasm, so the
+; narrowed body-check admits only closure-IS-the-body + keeps the escaping-arm refused. 2103/2103 pass.
+; BOTH columns (recursion 3ac208f93 + handle 331283703) resolved-pending-merge. Retire on land.

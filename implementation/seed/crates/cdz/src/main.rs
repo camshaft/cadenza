@@ -3222,6 +3222,17 @@ fn run_test(args: &TestArgs) -> ExitCode {
             }
         }
     } else {
+        // A single-file target. If it's a COMPILED artifact (`.wasm`) rather than a source file, guide the
+        // user instead of the misleading "0 tests found — add `@test`" (a `.wasm` has no source to scan):
+        // `cdz test` runs a SOURCE file's `@test`s, the inverse of `cdz run`, which runs the `.wasm`.
+        if !is_source_file(&target) && path.extension().and_then(|e| e.to_str()) == Some("wasm") {
+            eprintln!(
+                "{PROG} test: `{target}` is a COMPILED component, but `cdz test` runs a SOURCE file's \
+                 `@test` definitions. Pass the source (`.cdz`/`.ml`/`.sexp`) instead — e.g. `cdz test \
+                 src.cdz`; `cdz run {target}` is how you run a compiled component."
+            );
+            return ExitCode::FAILURE;
+        }
         vec![target.clone()]
     };
 

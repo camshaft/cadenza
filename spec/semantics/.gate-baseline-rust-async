@@ -3452,6 +3452,7 @@ todo	a capturing closure returning a COMPOUND is a repeatable (borrow<t>) callba
 todo	a capturing closure returning a String
 todo	a capturing closure returning a nominal-over-scalar
 todo	a capturing closure stored as a runtime list element is extracted by List.at and applied
+todo	a capturing closure stored in a variant is applied via a devirtualized direct call
 todo	a capturing closure whose body uses the capture after an inner computation
 todo	a capturing closure with a let binding in its body
 todo	a capturing unannotated closure in a payload is typed from the declared arrow
