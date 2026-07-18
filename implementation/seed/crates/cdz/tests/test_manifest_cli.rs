@@ -1279,6 +1279,37 @@ fn a_min_length_invariant_constrains_a_list_non_empty() {
     );
 }
 
+/// END-TO-END: a min-length `@invariant` inside a CONJUNCTION still floors the list length. `NEList = Mk
+/// (List Int64)` with `@invariant(and (< 0 (List.len it)) (<= (List.len it) 10))`: the non-empty conjunct
+/// must floor generation at length 1 even though it sits in an `(and …)`. REGRESSION: `min_len_for_param`
+/// matched only a BARE comparison and missed the conjunction, so generation drew the empty list and every
+/// seed reported a spurious `Mk([])` counterexample (the construct-site @invariant trap firing on an
+/// out-of-domain draw). The fix descends the conjunction (mirroring the int-range recognizer). Store-guarded.
+#[test]
+fn a_conjunction_min_length_invariant_constrains_a_list_non_empty() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — building a nominal value needs the store"
+        );
+        return;
+    }
+    let d = dir("invariant-conj-nonempty");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do (@ (invariant (and (< 0 (List.len it)) (<= (List.len it) 10))) (type NEList (Mk (List Int64)))) \
+           (@ test (def (p (: x NEList)) \
+             (match x (((. NEList Mk) xs) (if (< 0 (List.len xs)) unit (trap \"generated an empty list past the conjunction\")))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "50"]);
+    assert!(
+        ok && stdout.contains("PASS p-gen (50 trials)"),
+        "a conjunction min-length @invariant floors generation non-empty so 50 trials pass \
+         (regression: it drew the empty list → a spurious Mk([]) counterexample): {stdout}{stderr}"
+    );
+}
+
 /// END-TO-END: a COMPOUND-param `@test` that is ALSO `@requires`/`@ensures`-annotated must SYNTHESIZE its
 /// `-gen` wrapper and RUN (before the peel fix, the compound param under the verification wrapper declined at
 /// the export boundary — a hard compile error). A PERMISSIVE precondition/postcondition over a `List` param

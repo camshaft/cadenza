@@ -1530,14 +1530,14 @@ fn run_program_rust(
             // render the byte list directly; every other type (and a plain export) keeps `cdz_render_expr`.
             if is_factory && (ty == "String" || ty == "Bytes") {
                 cdz_render_bytes_list(ty)
-            } else if is_factory && factory_result_is_value_form_sum(ty) {
-                // HOST-CLOSURE FACTORY Option/Result RESULT (S4a): a sum crossing the host boundary AS A
+            } else if is_factory && factory_result_is_value_form_sum(ty, &sums) {
+                // HOST-CLOSURE FACTORY SUM RESULT (S4a + user-sum): a sum crossing the host boundary AS A
                 // CLOSURE RESULT is value-ENCODED — the corpus records it as the TYPE-ANNOTATED value form
-                // `(: (Some 5) (Option Int64))` (the shape the wasm `call` method's value-encode produces),
-                // NESTED inside the case's own `output (: <that> <type>)`. A PLAIN sum export renders the
-                // bare `(Some 5)` (the grader's `expected_value` unwraps one annotation level), but a factory
-                // sum result needs the INNER annotation too — so wrap `cdz_render_expr`'s bare value in
-                // `(: <value> <type>)`, mirroring the byte-list special-case above.
+                // `(: (Some 5) (Option Int64))` / `(: (N unit) Dir)` (the shape the wasm `call` method's
+                // value-encode produces), NESTED inside the case's own `output (: <that> <type>)`. A PLAIN
+                // sum export renders the bare `(Some 5)` (the grader's `expected_value` unwraps one annotation
+                // level), but a factory sum result needs the INNER annotation too — so wrap `cdz_render_expr`'s
+                // bare value in `(: <value> <type>)`, mirroring the byte-list special-case above.
                 let inner = cdz_render_expr(
                     ty,
                     &sums,
@@ -1708,17 +1708,28 @@ fn rust_panic_message(bytes: &[u8]) -> String {
 /// applies `(args…)`. Counting params is a simple top-level comma count inside the signature's `(...)` (the
 /// only nesting a scalar/compound param type introduces is `<…>`/`(…)` in the type, which we balance). Sync
 /// mode marker `pub fn `; async `pub async fn ` (its `<E: CdzEnv>` generic list precedes the `(`).
-/// Whether a peeled factory-result type is an Option/Result sum whose value crosses the host boundary as
-/// the TYPE-ANNOTATED value form (`(: (Some 5) (Option Int64))`) — the S4a render special-case. A factory
+/// Whether a peeled factory-result type is a SUM whose value crosses the host boundary as the TYPE-ANNOTATED
+/// value form (`(: (Some 5) (Option Int64))` / `(: (N unit) Dir)`) — the S4a render special-case. A factory
 /// sum result is value-encoded, so its rendered value needs the inner `(: value type)` wrapper (a plain sum
-/// export renders bare and the grader unwraps one level). Matches a leading `Option`/`Result` head, bare
-/// (`Option Int64`) or parenthesized (`(Option Int64)`). A user sum stays deferred (not routed here).
-fn factory_result_is_value_form_sum(ty: &str) -> bool {
+/// export renders bare and the grader unwraps one level). Matches (a) a built-in Option/Result head, bare
+/// (`Option Int64`) or parenthesized (`(Option Int64)`); or (b) a USER sum — a bare type NAME (or applied
+/// head `(Box …)`) that has an emitted `// cdz-sum[…]` descriptor (a key in `sums`). A non-sum type
+/// (scalar/Tuple/List) renders bare (no wrapper) as before.
+fn factory_result_is_value_form_sum(
+    ty: &str,
+    sums: &std::collections::HashMap<String, Vec<(String, Vec<String>)>>,
+) -> bool {
     let head = ty.trim().trim_start_matches('(');
-    head.starts_with("Option ")
+    if head.starts_with("Option ")
         || head.starts_with("Result ")
         || head == "Option"
         || head == "Result"
+    {
+        return true;
+    }
+    // A USER sum: the head token (a bare `Dir`, or the applied head of `(Box Int64)`) is a descriptor key.
+    let head_token = head.split_whitespace().next().unwrap_or(head);
+    sums.contains_key(head_token)
 }
 
 /// Peel a CURRIED arrow type down to its final (non-arrow) RESULT — `(-> Int64 (-> Int64 (Tuple Int64

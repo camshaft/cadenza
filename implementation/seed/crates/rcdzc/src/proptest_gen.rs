@@ -628,9 +628,14 @@ fn invariant_int_range(ast: &Arenas, pred: StructId) -> Option<(i64, i64)> {
 /// a recognized lower-bound on `(List.len param)` — so a "non-empty"/"at least K" precondition GENERATES a
 /// long-enough list rather than drawing a shorter one that trips the enforced precondition. Recognizes
 /// `(< K (List.len p))` → K+1, `(<= K (List.len p))` → K, `(> (List.len p) K)` → K+1, `(>= (List.len p) K)`
-/// → K (and the mirrors). `List.len` is the member access `((. List len) p)`. `None` for any other shape →
-/// the list stays unconstrained (reject-free fallback). Only a POSITIVE lower bound yields a floor (a
-/// `min_len` of 0 is the default, no constraint).
+/// → K (and the mirrors), AND descends a top-level `(and …)`/`(& …)` — taking the MAX floor across its
+/// lower-bound conjuncts — so a compound `(and (< 0 (List.len it)) (<= (List.len it) 10))` still floors the
+/// length (was: matched only a BARE comparison, so a conjunction fell through to unconstrained and drew the
+/// empty list the construct-site `@invariant` trap then rejected as a spurious counterexample). Upper-bound
+/// conjuncts (`<`/`<=`) don't floor the length (the generator already caps at `G1_LIST_LEN`). `None` if no
+/// lower-bound conjunct is recognized → the list stays unconstrained (reject-free fallback). Only a POSITIVE
+/// lower bound yields a floor (a `min_len` of 0 is the default, no constraint). Mirrors the conjunct descent
+/// in [`invariant_int_range`].
 fn min_len_for_param(ast: &Arenas, pred: StructId, param: &str) -> Option<usize> {
     // Is `n` the term `(List.len param)` = `((. List len) param)`? (a call of the member access to `param`).
     let is_len_of_param = |n: StructId| -> bool {
@@ -647,37 +652,58 @@ fn min_len_for_param(ast: &Arenas, pred: StructId, param: &str) -> Option<usize>
         })
     };
     let lit = |n: StructId| ast.as_int(n).and_then(|v| v.to_i64());
-    for op in [">=", ">", "<=", "<"] {
-        let Some(t) = ast.as_form(pred, op) else {
-            continue;
-        };
-        if t.len() != 2 {
-            return None;
-        }
-        // Normalize to `len OP' K`: `(op len K)` direct, or `(op K len)` mirrored (flip the operator).
-        let (k, op) = if is_len_of_param(t[0]) {
-            (lit(t[1])?, op)
-        } else if is_len_of_param(t[1]) {
-            let flipped = match op {
-                "<" => ">",
-                ">" => "<",
-                "<=" => ">=",
-                ">=" => "<=",
-                o => o,
-            };
-            (lit(t[0])?, flipped)
+    // Collect comparison conjuncts: descend a top-level `(and …)`/`(& …)`, else treat `pred` as one cmp.
+    let mut stack = vec![pred];
+    let mut conjuncts = Vec::new();
+    while let Some(p) = stack.pop() {
+        if let Some(t) = ast.as_form(p, "and").or_else(|| ast.as_form(p, "&")) {
+            stack.extend(t.iter().copied());
         } else {
-            return None;
-        };
-        // A LOWER bound on the length → a min floor. `len > K` ⇒ ≥ K+1; `len >= K` ⇒ ≥ K. Upper bounds
-        // (`<`/`<=`) don't floor the length (the generator already caps at G1_LIST_LEN) → no constraint.
-        return match op {
-            ">" => usize::try_from(k + 1).ok().filter(|&m| m > 0),
-            ">=" => usize::try_from(k).ok().filter(|&m| m > 0),
-            _ => None,
-        };
+            conjuncts.push(p);
+        }
     }
-    None
+    // The floor is the MAX over every recognized lower-bound conjunct (a stricter bound wins). Non-length
+    // and upper-bound conjuncts contribute nothing (they don't floor the length) and are skipped.
+    let mut floor: Option<usize> = None;
+    for c in conjuncts {
+        for op in [">=", ">", "<=", "<"] {
+            let Some(t) = ast.as_form(c, op) else {
+                continue;
+            };
+            if t.len() != 2 {
+                break; // a malformed comparison of this op — not a length bound
+            }
+            // Normalize to `len OP' K`: `(op len K)` direct, or `(op K len)` mirrored (flip the operator).
+            let (k, op) = if is_len_of_param(t[0]) {
+                let Some(k) = lit(t[1]) else { break };
+                (k, op)
+            } else if is_len_of_param(t[1]) {
+                let Some(k) = lit(t[0]) else { break };
+                let flipped = match op {
+                    "<" => ">",
+                    ">" => "<",
+                    "<=" => ">=",
+                    ">=" => "<=",
+                    o => o,
+                };
+                (k, flipped)
+            } else {
+                break; // not a bound on `(List.len param)`
+            };
+            // A LOWER bound on the length → a min floor. `len > K` ⇒ ≥ K+1; `len >= K` ⇒ ≥ K. Upper bounds
+            // (`<`/`<=`) don't floor the length (the generator already caps at G1_LIST_LEN) → no floor.
+            let this = match op {
+                ">" => usize::try_from(k + 1).ok().filter(|&m| m > 0),
+                ">=" => usize::try_from(k).ok().filter(|&m| m > 0),
+                _ => None,
+            };
+            if let Some(m) = this {
+                floor = Some(floor.map_or(m, |f| f.max(m)));
+            }
+            break;
+        }
+    }
+    floor
 }
 
 fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize) -> Option<GenTy> {
@@ -1470,6 +1496,30 @@ mod tests {
             Some(super::GenTy::Sum { variants, .. }) => match variants.as_slice() {
                 [(v, Some(super::GenTy::List(_, 1)))] if v == "Mk" => {}
                 other => panic!("expected Mk→List(_, min_len=1), got {other:?}"),
+            },
+            other => panic!("expected a Sum GenTy, got {other:?}"),
+        }
+    }
+
+    /// A min-length `@invariant` inside a CONJUNCTION still floors the length: `min_len_for_param` descends a
+    /// top-level `(and …)` (like `invariant_int_range`) and takes the MAX lower-bound floor. `(and (<= 2
+    /// (List.len it)) (<= (List.len it) 8))` on `Buf = Mk (List Int64)` → the Mk payload is `List(_,
+    /// min_len=2)` (the `<= 2` conjunct floors; the upper-bound conjunct is ignored). REGRESSION: a bare-
+    /// comparison-only recognizer missed the conjunction, so generation drew the empty list the construct-site
+    /// @invariant trap rejected as a spurious counterexample.
+    #[test]
+    fn a_conjunction_min_length_invariant_floors_the_newtype_list_length() {
+        let ast = crate::testkit::parse(
+            "(do (@ (invariant (and (<= 2 (List.len it)) (<= (List.len it) 8))) (type Buf (Mk (List Int64)))) (def (o) 1))",
+        );
+        let items: Vec<_> = ast.as_form(ast.root, "do").unwrap().to_vec();
+        let gt = super::classify_sum(&ast, "Buf", &items, 0);
+        match gt {
+            Some(super::GenTy::Sum { variants, .. }) => match variants.as_slice() {
+                [(v, Some(super::GenTy::List(_, 2)))] if v == "Mk" => {}
+                other => {
+                    panic!("expected Mk→List(_, min_len=2) from the conjunction, got {other:?}")
+                }
             },
             other => panic!("expected a Sum GenTy, got {other:?}"),
         }
