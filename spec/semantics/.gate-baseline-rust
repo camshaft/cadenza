@@ -2359,6 +2359,8 @@ pass	an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the 
 pass	an abort abandons a pending borrowed map lookup and the map survives
 pass	an abort abandons a pending consuming op and the shared binding survives
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
+pass	an abortive handler arm performed with a RUNTIME argument abandons the computation and returns it
+pass	an abortive handler arm with a runtime perform argument yields that runtime value as the handle's value
 pass	an abortive perform deep in a call chain unwinds every intervening frame to the top handler
 pass	an abortive perform in a conditional let binding abandons the computation
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation

@@ -74,7 +74,7 @@ def eval-tree(tree: Tree, root: Int64) = match lower-tree(tree, root) with
 
 /// THE DRIVER: a token program → its integer result, source → parse → resolve → infer → lower → run, all via
 /// the lazy query DB. `Some v` = ran to `v`; `None` = ill-typed (no core form) or malformed.
-def run(ts: List(Tok)) = match parse-tokens(ts) with | (root, tree) => eval-tree(tree, root)
+def run(ts: List(Tok)) = let (root, tree) = parse-tokens(ts) in eval-tree(tree, root)
 
 
 /// Builders + the milestone program, so the end-to-end result is demonstrable without hand-tokenizing.

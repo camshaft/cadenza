@@ -536,6 +536,28 @@
               (handle Bail 0 ((bail (n) s n)) (+ 1 (Bail.bail 7)))) (export main)))
   (output (: 7 Int64)))
 
+; The abortive case above performs with a CONSTANT argument `(Bail.bail 7)`, which folds. The runtime
+; companion: the abort argument is a boundary parameter `k`. The abortive arm's value is the handle's
+; value = k, and the surrounding `+ 1` is abandoned, decided at run time. This pins the abort control
+; block carrying a RUNTIME arm value out of the perform (breaker: fixed by v-effects `bd6ff9bd2`
+; "reparent an abortive arm's value → grounds a runtime-arg abort" — the wasm lower previously
+; re-derived the handle result as Any for a non-const abort arg, declining "no machine representation";
+; the reparent grounds it, and wasm now matches rust).
+
+(case "an abortive handler arm with a runtime perform argument yields that runtime value as the handle's value"
+  (doc    "The runtime-argument companion of the abortive-arm case above (which uses a CONST `(Bail.bail
+           7)`). Here the bail argument is the boundary parameter `k`: the arm `(bail (n) s n)` never
+           resumes, so it abandons the surrounding `+ 1` and the handle evaluates to the arm value n = k.
+           run(7) = 7, run(42) = 42 — the abort carries a RUNTIME value out of the perform via the control
+           block, not only a constant. Pins that the abortive early-exit grounds its arm value when the
+           perform argument is decided at run time.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (run (: k Int64)) (handle Bail 0 ((bail (n) s n)) (+ 1 (Bail.bail k))))
+            (export run)))
+  (call run (: 7 Int64)) (output (: 7 Int64))
+  (call run (: 42 Int64)) (output (: 42 Int64)))
+
 (case "an abortive perform deep in a call chain unwinds every intervening frame to the top handler"
   (doc    "The 'bail and catch at the top' pattern across FUNCTIONS (DESIGN-effects-rcdzc.md §4.2 cross-
            function non-local exit): the abort is performed three calls deep and abandons EVERY pending

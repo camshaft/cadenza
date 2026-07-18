@@ -1,0 +1,86 @@
+/// prng.cdz — a seedable deterministic pseudo-random generator for parametric CAD models (operator: "a seed
+/// input that you feed it and it does a prng internally and builds out a unique" model). A @param seed
+/// (Int64) drives this stream, so one integer selects a whole deterministic random model — the "unique from a
+/// seed" UX, exact and reproducible (the same seed always rebuilds the same model).
+///
+/// ALGORITHM: MINSTD (Lehmer / Park-Miller minimal-standard LCG): next = (16807 * state) mod (2^31 - 1). Why
+/// this and not xorshift: Cadenza TRAPS on Int64 overflow (CDZ0304 — no wrapping arithmetic, by design), so a
+/// classic xorshift or a wrapping LCG is out. MINSTD stays small — the largest product is 16807 * (2^31 - 2)
+/// ~= 3.6e13, far under Int64 max (~9.2e18) — so every step is overflow-free with NO wrapping needed. It is a
+/// well-known full-period generator over [1, 2^31 - 2]; more than enough randomness for procedural geometry.
+/// Pure Cadenza (integer *, mod only) — NO runtime/prelude PRNG capability required.
+///
+/// USAGE: `seed(n)` normalizes any Int64 into a valid non-zero state; `next(state)` advances it; `roll(state,
+/// k)` and `between(state, lo, hi)` derive a bounded draw. Thread the state explicitly (a pure stream: each
+/// draw returns the value and you advance with `next` for the following one). A model reads its `@param seed`,
+/// calls `seed(...)`, then walks the stream to make its choices.
+@!default-fraction Rational
+
+/// The MINSTD modulus (2^31 - 1, a Mersenne prime) and its max valid state (modulus - 1). Annotated `: Int64`
+/// so they stay machine integers under this module's `default-fraction Rational`.
+def modulus() = (2147483647 : Int64)
+def max-state() = (2147483646 : Int64)
+
+/// The multiplier (Park-Miller minimal-standard constant).
+def multiplier() = (16807 : Int64)
+
+/// Advance the stream: the next state from the current one. `state` must be in [1, 2^31 - 2] (produced by
+/// `seed` or a prior `next`); the product 16807 * state never overflows Int64, so no wrapping is needed.
+def next(state: Int64) = (multiplier() * state) % modulus()
+
+/// Normalize any Int64 seed into a valid non-zero MINSTD state in [1, 2^31 - 2]. A raw `0` (or a multiple of
+/// the period) is MINSTD's fixed point, so map into [0, m-2] then shift to [1, m-1]; negatives fold up.
+def seed(n: Int64) =
+  let m1 = max-state() in
+  let s = n % m1 in
+  (if s < (0 : Int64) then s + m1 else s) + (1 : Int64)
+
+/// A bounded draw in [0, k): the next state, reduced mod k. `state` is already positive (from `seed`/`next`),
+/// so the result is in [0, k). `k` must be > 0. Returns just the draw — advance separately with `next` for
+/// the following one, or use `next` on the returned-with-state pattern in the caller.
+def roll(state: Int64, k: Int64) = next(state) % k
+
+/// A bounded draw in [lo, hi] inclusive (a range of `hi - lo + 1` values). Convenience over `roll` for the
+/// common "pick a size/count/angle-index between lo and hi" case in a procedural model.
+def between(state: Int64, lo: Int64, hi: Int64) = lo + roll(state, (hi - lo) + (1 : Int64))
+
+/// ============================ @test suite (seedable, deterministic, bounded) ============================
+
+@test
+def next-is-deterministic-and-advances() =
+  // Same state → same next (reproducible); and the stream actually moves (next ≠ state for a normal state).
+  let s = seed((42 : Int64)) in
+  let r1 = next(s) in
+  if r1 == next(s) then (if r1 == s then trap("stream should advance off the seed") else unit)
+  else trap("next must be deterministic")
+
+@test
+def seed-normalizes-into-the-valid-range() =
+  // Any seed — including 0 and a negative — maps into [1, 2^31 - 2] (never MINSTD's 0 fixed point).
+  let a = seed((0 : Int64)) in
+  let b = seed(((0 : Int64) - (123 : Int64))) in
+  if (a >= (1 : Int64)) and (a <= max-state()) then
+    (if (b >= (1 : Int64)) and (b <= max-state()) then unit else trap("negative seed out of range"))
+  else trap("zero seed out of range")
+
+@test
+def roll-is-in-range() =
+  // roll(state, 6) is a d6: always in [0, 6).
+  let s = seed((99 : Int64)) in
+  let m = roll(s, (6 : Int64)) in
+  if (m >= (0 : Int64)) and (m < (6 : Int64)) then unit else trap("roll must be in [0, 6)")
+
+@test
+def between-is-inclusive-in-range() =
+  // between(state, 3, 8) is in [3, 8] inclusive.
+  let s = seed((7 : Int64)) in
+  let v = between(s, (3 : Int64), (8 : Int64)) in
+  if (v >= (3 : Int64)) and (v <= (8 : Int64)) then unit else trap("between must be in [3, 8]")
+
+@test
+def different-seeds-give-different-streams() =
+  // Two distinct seeds produce distinct first draws (the "unique per seed" property the operator wants).
+  if next(seed((1 : Int64))) == next(seed((2 : Int64)))
+  then trap("seeds 1 and 2 should give different streams") else unit
+
+export { next, seed, roll, between }
