@@ -81,10 +81,11 @@ def mixing-units-is-exact() =
 @test
 def a_length_round_trips_mm_to_inch() =
   // the OUTPUT edge: a 127/5 mm (= 1 inch) coordinate, displayed in inches, has magnitude exactly 1 — the
-  // dual of the input constructors, exact both ways. Check the magnitude (bare Rational) via Qty.value.
+  // dual of the input constructors, exact both ways. `display-in` (= Unit.in ∘ as-mm) already returns a bare
+  // Rational, so it's compared directly — no redundant Qty.value (v-quantity's CDZ0501 tightening).
   let one-inch-in-mm = inch(ri(1)) in            // 127/5 mm, stored bare
   let shown = display-in(one-inch-in-mm, Unit.of(#"inch")) in
-  if Qty.value(shown) == ri(1) then unit else trap("127/5 mm displays as exactly 1 inch")
+  if (shown : Rational) == ri(1) then unit else trap("127/5 mm displays as exactly 1 inch")
 
 @test
 def as-mm-wraps-a-bare-mm-coordinate() =

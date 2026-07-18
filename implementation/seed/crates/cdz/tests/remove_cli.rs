@@ -75,18 +75,29 @@ fn remove_drops_one_entry_and_keeps_the_others_and_reparses() {
 }
 
 #[test]
-fn remove_the_only_entry_leaves_an_empty_list() {
+fn remove_the_only_entry_drops_the_deps_line_entirely() {
+    // Removing the LAST dep drops the whole `def deps` line rather than leaving a dangling `def deps = []`
+    // (the `cargo remove` behavior — an emptied section is removed, not left as an empty stub). The other
+    // manifest fields are untouched and no blank line is left behind.
     let app = app_with_deps("only", "def deps = [\"../lib1\"]\n");
     let (ok, _o, err) = run(&["remove", "../lib1", "--manifest", app.to_str().unwrap()]);
     assert!(ok, "remove should succeed: {err}");
     let manifest = std::fs::read_to_string(app.join("Project.cdz")).unwrap();
     assert!(
-        manifest.contains("def deps = []"),
-        "removing the only dep leaves an empty list: {manifest}"
+        !manifest.contains("def deps"),
+        "removing the only dep drops the `def deps` line entirely (no `[]` stub): {manifest}"
     );
-    // The empty-deps manifest still re-parses.
+    assert!(
+        manifest.contains("def name = \"app\"") && manifest.contains("def entry = \"main.sexp\""),
+        "the other manifest fields are preserved: {manifest}"
+    );
+    assert!(
+        !manifest.contains("\n\n"),
+        "no blank line is left where the deps line was: {manifest:?}"
+    );
+    // The manifest still re-parses.
     let (tok, _tout, _e) = run(&["tree", app.to_str().unwrap()]);
-    assert!(tok, "the emptied manifest re-parses");
+    assert!(tok, "the manifest re-parses after dropping the deps line");
     let _ = std::fs::remove_dir_all(app.parent().unwrap());
 }
 

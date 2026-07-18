@@ -1094,14 +1094,35 @@ impl<'a> Parser<'a> {
             Kind::AtBang => {
                 self.bump(); // `@!`
                 let head = self.name("pragma", span);
+                let mut key_text = String::new();
                 let key = if self.at(Kind::Ident) {
                     let key_span = self.cur_span();
                     let t = self.bump().unwrap();
-                    self.name(self.text(t), key_span)
+                    key_text = self.text(t).to_string();
+                    self.name(&key_text, key_span)
                 } else {
                     self.error("expected a pragma key after `@!` (e.g. `@!default-float Float32`)");
                     self.error_node(self.cur_span())
                 };
+                // `@!param` carries a PARAM PAYLOAD, not a single type arg: a glued `(config…)` of
+                // `key: value` kv pairs PLUS a following `name : Type` binder, module-attached (the
+                // operator-ruled module-level `@param`). It parses to `(pragma param (param <kv>…)
+                // (: name Type))` — the `pragma` head marks it module-attached (matching `@!default-fraction`);
+                // the `(param …)` sublist holds the widget/range/default kvs (each a `(: key value)`
+                // ascription, the same kv shape the `@param` annotation's `(param (: widget slider) …)`
+                // config carries); the `(: name Type)` binder gives the param NAME + its declared TYPE.
+                // Without this, the generic single-type-arg path below read `param`'s config as the arg and
+                // then let the general unit-suffix postfix eat the trailing `name` as a unit on the pragma
+                // node (a garbled `Qty.of` tree). v-metaprogramming's sidecar reads name/type/config from
+                // the stable positions of this node. Only `param` takes the payload; every other pragma key
+                // keeps the single-type-arg form.
+                if key_text == "param" {
+                    let payload = self.param_pragma_payload();
+                    let full = span.merge(self.prev_span());
+                    let mut items = vec![head, key];
+                    items.extend(payload);
+                    return self.list(items, full);
+                }
                 // The ARGUMENT is a TYPE expression parsed in prefix+POSTFIX position — so a bare name
                 // (`Float32`), a member access (`Foo.Bar`), and a constructor APPLICATION (`Int(8)` ->
                 // `(Int 8)`) all parse as the single argument, exactly as a type annotation's type does. The
@@ -1431,6 +1452,70 @@ impl<'a> Parser<'a> {
         let dot_span = start.merge(self.prev_span());
         let dot = self.name(".", dot_span);
         self.list(vec![dot, node, key], dot_span)
+    }
+
+    /// The payload of an `@!param` module pragma: a glued `(config kv…)` application followed by a
+    /// `name : Type` binder. Returns `[config, binder]` to append after the `pragma param` head, giving
+    /// `(pragma param (param (: widget slider) …) (: name Type))`. The config kvs are `key: value`
+    /// ascriptions (`(: key value)`), the same kv shape the `@param` annotation's `(param (: widget
+    /// slider) …)` config carries, so the sidecar reads them identically; the binder gives the param NAME
+    /// and its DECLARED TYPE (an `@param` must be typed). A missing/empty config is `(param)`; the binder
+    /// is REQUIRED (an untyped or unnamed `@!param` records an error and recovers — never-panic).
+    fn param_pragma_payload(&mut self) -> Vec<StructId> {
+        // The config kvs group under a `(param <kv>…)` sub-node — BYTE-SIMILAR to the config of today's
+        // `@param` annotation (whose name-slot is the app `(param (: widget slider) …)`), so
+        // v-metaprogramming's `scan_manifest` reads the config off this node exactly as it does today
+        // (v-metaprogramming LOCKED this head — grouped config as one node, unambiguously separate from the
+        // binder sibling — over config kvs as direct pragma children, which it could not tell apart from the
+        // trailing `(: name Type)` binder).
+        let config_start = self.cur_span();
+        let config_head = self.name("param", config_start);
+        let mut config = vec![config_head];
+        // A GLUED `(` (no intervening space — same adjacency the `@tag("…")`/quantity sugars use) opens the
+        // config kv list. Each entry is `key: value` -> `(: key value)`. No glued `(` = an empty config.
+        if self.at(Kind::LParen) && self.prev_span().end == self.cur_span().start {
+            self.bump(); // `(`
+            if !self.at(Kind::RParen) {
+                loop {
+                    let kv_start = self.cur_span();
+                    let label = self.binder();
+                    if self.at(Kind::Colon) {
+                        self.bump(); // `:`
+                        let colon = self.name(":", kv_start);
+                        let value = self.expr(crate::token::PREC_SEQ + 1);
+                        let kv_span = kv_start.merge(self.prev_span());
+                        config.push(self.list(vec![colon, label, value], kv_span));
+                    } else {
+                        // A bare key with no `: value` is malformed config; keep the label so the shape is
+                        // visible and recover.
+                        self.error("expected `key: value` in an `@!param` config");
+                        config.push(label);
+                    }
+                    if !self.sep_continue(Kind::RParen) {
+                        break;
+                    }
+                }
+            }
+            self.expect(Kind::RParen, "`)`");
+        }
+        let config_span = config_start.merge(self.prev_span());
+        let config_node = self.list(config, config_span);
+        // The `name : Type` binder — REQUIRED. `name` is a plain binder; `: Type` is a `type_ref`. Parsed
+        // directly (NOT the general `expr`) so the trailing `name` is not eaten as a unit-suffix on the
+        // pragma (the bug this whole branch fixes) and `: Type` is a type, not a value ascription.
+        let binder_start = self.cur_span();
+        let name = self.binder();
+        let binder = if self.at(Kind::Colon) {
+            self.bump(); // `:`
+            let colon = self.name(":", binder_start);
+            let ty = self.type_ref();
+            let binder_span = binder_start.merge(self.prev_span());
+            self.list(vec![colon, name, ty], binder_span)
+        } else {
+            self.error("an `@!param` needs a `name : Type` binder (e.g. `@!param(widget: slider) width : Int64`)");
+            name
+        };
+        vec![config_node, binder]
     }
 
     /// A `.` begins member access only when followed by a member key — a field name, an escaped name,
@@ -3804,6 +3889,48 @@ mod tests {
         assert_eq!(
             sexpr::print(&parse_ok("def f(r: Record(p: forall a. a)) = r")),
             r#"(def (f (: r (Record (: p (forall (a) a))))) r)"#
+        );
+    }
+
+    #[test]
+    fn at_bang_param_carries_a_config_and_a_name_type_binder() {
+        use crate::sexpr;
+        // `@!param` is the operator's MODULE-level `@param` (module-scoped, like `@!default-fraction`). It
+        // carries a PARAM PAYLOAD — a glued `(config kv…)` of `key: value` pairs PLUS a `name : Type`
+        // binder — parsing to `(pragma param (param (: k v)…) (: name Type))`. Before this, the generic
+        // `@!key <one-type-arg>` path read the config as the arg and let the general unit-suffix postfix
+        // eat the trailing `name` as a unit on the pragma node (a garbled `Qty.of` tree). Pin the shape.
+        assert_eq!(
+            sexpr::print(&parse_ok("@!param(widget: slider) width : Int64")),
+            "(pragma param (param (: widget slider)) (: width Int64))"
+        );
+        // Multiple config kvs; a compound value (tuple).
+        assert_eq!(
+            sexpr::print(&parse_ok(
+                "@!param(widget: slider, range: (1, 10)) width : Int64"
+            )),
+            r#"(pragma param (param (: widget slider) (: range ("tuple" 1 10))) (: width Int64))"#
+        );
+        // Empty / absent config -> `(param)`; both spellings parse to the same node.
+        assert_eq!(
+            sexpr::print(&parse_ok("@!param() width : Int64")),
+            "(pragma param (param) (: width Int64))"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("@!param width : Int64")),
+            "(pragma param (param) (: width Int64))"
+        );
+        // A function-typed param — the binder's type is a full `type_ref` (arrow), not swallowed.
+        assert_eq!(
+            sexpr::print(&parse_ok(
+                "@!param(widget: stepper) transform : Int64 -> Int64"
+            )),
+            "(pragma param (param (: widget stepper)) (: transform (-> Int64 Int64)))"
+        );
+        // A NON-`param` pragma is unchanged — single type-arg form.
+        assert_eq!(
+            sexpr::print(&parse_ok("@!default-fraction Rational")),
+            "(pragma default-fraction Rational)"
         );
     }
 

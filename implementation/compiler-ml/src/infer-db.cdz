@@ -86,39 +86,28 @@ def var-type(tree: Tree, binder: Int64, tcol: Map(Int64, Typed)) =
     | _ => Typed.TErr)
 
 /// The result type of a binary node with op `op` and operands at `a`,`b`. ARITHMETIC (43 `+`, 45 `-`, 42
-/// `*`, 47 `/`, 37 `%`) requires both operands to be the canonical `Int64` (`TIntW(true, 64)`) and → `Int64`.
-/// A NARROW-width operand to arithmetic → `TErr` (DECLINE): narrow arith must WRAP at 2^width to be correct
-/// (a `UInt8 (+ 200 100)` = 44, not 300), and that wrapping (eval-db + emit i32-mask) is a blocked follow-up
-/// (needs runner-i32) — so until it lands, narrow arithmetic is coverage-not-yet (declines, never a silent
-/// wrong value; matches the decline-over-fabricate rule). RELATIONAL (60..65) accepts any two integer widths
-/// (comparison doesn't wrap — comparing in-range integers is width-agnostic) and → `TBool`. Non-Int operand
-/// / unknown op → `TErr`.
+/// `*`, 47 `/`, 37 `%`) requires both operands to be the SAME integer type (via `arith-result-type` → unify-ty
+/// over the shared `Ty`: same width AND sign) and → THAT type. So `Int64+Int64→Int64` AND same-width narrow
+/// `UInt8+UInt8→UInt8` (eval/lower TRAP a narrow result's overflow via `int-width.checked-*`, per spec
+/// §Overflow / CDZ0304 — the unqualified `+`/`-`/`*` trap; wrapping is the opt-in `.wrapping-*` form). A MIXED
+/// width/sign → `TErr` (no silent promotion, the CDZ0301 reject). RELATIONAL (60..65) accepts any two integer
+/// widths (comparison doesn't wrap — comparing in-range integers is width-agnostic) and → `TBool`. Non-Int
+/// operand / unknown op → `TErr`.
 def bin-type(op: Int64, tcol: Map(Int64, Typed), a: Int64, b: Int64) =
   (if (op >= 60) then
      // relational: any two integer operands (any width) compare → Bool.
      (if both-int(tcol, a, b) then (if (op <= 65) then Typed.TBool else Typed.TErr) else Typed.TErr)
    else
-     // arithmetic: require canonical Int64 operands (narrow arith declines pending the wrap slice). MATCH on
-     // the op-code (idiomatic dispatch, not an `if op == N` ladder): the five arith ops (43 + / 45 - / 42 * /
-     // 47 / / 37 %) are all Int64→Int64; any other op here is TErr.
      // arithmetic (corrected-2b): the operands must be the SAME integer type (via unify-ty over the shared
-     // Ty — same width AND sign); the result is THAT type. So Int64+Int64→Int64 AND same-width narrow
-     // UInt8+UInt8→UInt8 (eval/lower TRAP its overflow via int-width.checked-*, per spec CDZ0304); a MIXED
-     // width/sign → TErr (no silent promotion). A non-arith op → TErr.
+     // Ty — same width AND sign); the result is THAT type (Int64+Int64→Int64, same-width UInt8+UInt8→UInt8;
+     // eval/lower TRAP a narrow result's overflow per CDZ0304). A MIXED width/sign → TErr (no promotion). MATCH
+     // on the op-code (idiomatic dispatch, not an `if op == N` ladder): the five arith ops (43 + / 45 - / 42 *
+     // / 47 / / 37 %) all take arith-result-type's type; any other op here is TErr.
      (match arith-result-type(tcol, a, b) with
        | Option.Some(rty) =>
            (match op with
              | 43 => rty | 45 => rty | 42 => rty | 47 => rty | 37 => rty | _ => Typed.TErr)
        | Option.None(_) => Typed.TErr))
-
-/// Bool iff both operands are the canonical `Int64` (`TIntW(true, 64)`) — the gate for ARITHMETIC (which
-/// wraps at the type's width; a narrow operand declines until wrapping lands). Distinct from `both-int`
-/// (any integer width), which gates the non-wrapping relational ops.
-def both-int64(tcol: Map(Int64, Typed), a: Int64, b: Int64) =
-  (match Map.lookup(tcol, a) with
-    | Option.Some(Typed.TIntW(true, 64)) =>
-        (match Map.lookup(tcol, b) with | Option.Some(Typed.TIntW(true, 64)) => true | _ => false)
-    | _ => false)
 
 /// A ground `Ty` int → `Typed.TIntW` (local — infer-db can't import ty-bridge, cyclic; see type-eq's bridge).
 def ty-to-typed-int(t: Ty) = match ground-default(t) with

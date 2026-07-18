@@ -577,6 +577,28 @@ impl<'a> Printer<'a> {
             // the ordinary call rendering and its structure stays visible. The arg prints in the SAME line
             // as an argument (a type name / parenthesized type), NOT wrapped as a call — the `@!` sits at
             // the head of a module member, so no leading break.
+            // The `@!param` module directive: `(pragma param (param <kv>…) (: name Type))` ->
+            // `@!param(k: v, …) name : Type` (the operator's module-level `@param`). The config sub-node is
+            // headed `param` (byte-similar to the `@param` annotation's inner `(param <kv>…)` app, the head
+            // v-metaprogramming's scan reads); its kvs render as the glued `(...)` argument surface (each
+            // `(: k v)` -> `k: v`), and the `(: name Type)` binder renders as `name : Type`. An EMPTY config
+            // prints `@!param name : Type` (no `()`), the inverse of the parser accepting a missing config.
+            // Guarded on the exact shape so a malformed `(pragma param …)` falls through to the generic call
+            // render (structure stays visible).
+            if head == "pragma"
+                && args.len() == 3
+                && self.a.as_name(args[0]) == Some("param")
+                && self.a.as_form(args[1], "param").is_some()
+                && self.a.as_form(args[2], ":").map(<[_]>::len) == Some(2)
+            {
+                // Delegate to a NON-INLINE helper: `expr` is the printer's recursive hub, so keeping its
+                // per-frame locals minimal is what lets a MAX_NESTING_DEPTH-deep arena walk fit the test
+                // thread's stack. Inlining this arm's locals (the config vec + kv loop) into `expr` grew the
+                // frame enough to overflow the deep-flat-chain guard test (pr-sync reject). `#[inline(never)]`
+                // moves them off `expr`'s frame.
+                self.print_param_pragma(args[1], args[2]);
+                return;
+            }
             if head == "pragma"
                 && args.len() == 2
                 && let Some(key) = self.a.as_name(args[0])
@@ -1672,6 +1694,52 @@ impl<'a> Printer<'a> {
             return;
         }
         self.expr(ty, 0);
+    }
+
+    /// Render an `@!param` module directive `(pragma param (param <kv>…) (: name Type))` as
+    /// `@!param(k: v, …) name : Type` (empty config -> `@!param name : Type`, no parens). `config_node` is
+    /// the `(param <kv>…)` sublist, `binder_node` the `(: name Type)` ascription. `#[inline(never)]` so its
+    /// locals (the config/kv vecs) do NOT bloat the recursive `expr` hub's stack frame — inlining them
+    /// tipped a MAX_NESTING_DEPTH-deep arena walk over the test thread's stack (the deep-flat-chain guard).
+    /// The caller has already verified the shape (`param` key, `(param …)` config, 2-element `:` binder).
+    #[inline(never)]
+    fn print_param_pragma(&mut self, config_node: StructId, binder_node: StructId) {
+        let cfg = match self.a.as_form(config_node, "param") {
+            Some(c) => c.to_vec(),
+            None => return,
+        };
+        let binder = match self.a.as_form(binder_node, ":") {
+            Some(b) if b.len() == 2 => b.to_vec(),
+            _ => return,
+        };
+        self.doc.cbox(0);
+        self.doc.word("@!param");
+        // config args `(k: v, …)` — only when non-empty (an empty `(param)` prints no parens).
+        if !cfg.is_empty() {
+            self.doc.word("(");
+            for (i, &kv) in cfg.iter().enumerate() {
+                if i > 0 {
+                    self.doc.word(", ");
+                }
+                // each kv is `(: key value)` -> `key: value`; render defensively via `expr` otherwise.
+                if let Some(pair) = self.a.as_form(kv, ":")
+                    && pair.len() == 2
+                {
+                    let (k, v) = (pair[0], pair[1]);
+                    self.expr(k, 0);
+                    self.doc.word(": ");
+                    self.expr(v, 0);
+                } else {
+                    self.expr(kv, 0);
+                }
+            }
+            self.doc.word(")");
+        }
+        self.doc.word(" ");
+        self.expr(binder[0], 0); // param name
+        self.doc.word(" : ");
+        self.expr(binder[1], PREC_ARROW); // declared type (bind tighter than `->` chains)
+        self.doc.end();
     }
 
     /// `handle E(seed) with | op(p…, state) => body … in body` — the effect-handler surface. `args` is
@@ -4030,6 +4098,49 @@ mod tests {
         assert!(
             stmt.contains("@inline\n") && !stmt.contains("(@inline"),
             "a statement-position annotation must not be parenthesized:\n{stmt}"
+        );
+    }
+
+    #[test]
+    fn at_bang_param_pragma_prints_the_module_directive_surface() {
+        // `(pragma param (param <kv>…) (: name Type))` -> `@!param(k: v, …) name : Type` (the operator's
+        // module-level `@param`). Print + re-read must be structurally faithful, and the surface must be the
+        // `@!param` sugar, not a generic `pragma(param, …)` call.
+        for (sx, want) in [
+            (
+                "(pragma param (param (: widget slider)) (: width Int64))",
+                "@!param(widget: slider) width : Int64",
+            ),
+            (
+                r#"(pragma param (param (: widget slider) (: range ("tuple" 1 10))) (: width Int64))"#,
+                "@!param(widget: slider, range: (1, 10)) width : Int64",
+            ),
+            // empty config -> no `()`
+            (
+                "(pragma param (param) (: width Int64))",
+                "@!param width : Int64",
+            ),
+            // function-typed param
+            (
+                "(pragma param (param (: widget stepper)) (: transform (-> Int64 Int64)))",
+                "@!param(widget: stepper) transform : Int64 -> Int64",
+            ),
+        ] {
+            let a = sexpr::read(sx).unwrap();
+            let ml = print(&a, 80);
+            assert_eq!(ml, want, "@!param surface");
+            assert!(
+                parser::read_ml(&ml).arenas.structurally_eq(&a),
+                "@!param round-trips: {ml}"
+            );
+        }
+        // A non-`param` pragma still prints the plain `@!key arg` form (unchanged).
+        assert_eq!(
+            print(
+                &sexpr::read("(pragma default-fraction Rational)").unwrap(),
+                80
+            ),
+            "@!default-fraction Rational"
         );
     }
 

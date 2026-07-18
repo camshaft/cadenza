@@ -224,6 +224,41 @@ def ev-if-taken-branch-divide-by-zero-does-sink() =
     | Option.Some(_) => trap("a divide-by-zero in the TAKEN branch must sink to None"))
 
 @test
+def ev-narrow-cbin-in-range-is-some() =
+  // corrected-2b at the eval-core UNIT level (the sread path pins it end-to-end; this builds the narrow CBin
+  // DIRECTLY, like the lazy-if tests, so the trap arm is exercised without the reader/infer/lower chain).
+  // `CBin(+, Int8, CNum 100, CNum 20)` = 120 fits Int8 → Some 120 (the width<64 arm checks overflow, passes).
+  (match eval-core(Core.CBin(43, true, 8, Core.CNum(100, true, 8), Core.CNum(20, true, 8)), (Map.empty : Map(Int64, Int64))) with
+    | Option.Some(v) => (if v == 120 then unit else trap("Int8 100+20 = 120 (in range)"))
+    | Option.None(_) => trap("an in-range narrow CBin evaluates to Some"))
+
+@test
+def ev-narrow-cbin-overflow-is-none() =
+  // the trap arm: `CBin(+, Int8, CNum 100, CNum 100)` = 200 OVERFLOWS Int8 (max 127) → None (width<64 +
+  // overflows → the CDZ0304 trap, NOT a wrapped -56, NOT an unchecked 200). The direct-Core complement to
+  // sread-eval's se-ann-narrow-arith-overflow-declines.
+  (match eval-core(Core.CBin(43, true, 8, Core.CNum(100, true, 8), Core.CNum(100, true, 8)), (Map.empty : Map(Int64, Int64))) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("Int8 100+100 = 200 overflows → None (traps, not wraps)"))
+
+@test
+def ev-narrow-cbin-unsigned-overflow-is-none() =
+  // unsigned twin: `CBin(+, UInt8, CNum 200, CNum 100)` = 300 overflows UInt8 (max 255) → None.
+  (match eval-core(Core.CBin(43, false, 8, Core.CNum(200, false, 8), Core.CNum(100, false, 8)), (Map.empty : Map(Int64, Int64))) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("UInt8 200+100 = 300 overflows → None"))
+
+@test
+def ev-width64-cbin-never-overflow-checks() =
+  // the complement proving the guard is width-SELECTIVE, not a blanket check: a width-64 CBin does NOT
+  // overflow-check (the `width < 64` arm is false → straight Some). A large-but-Int64-valued sum evaluates to
+  // its exact value: `CBin(+, Int64, CNum 100, CNum 100)` = 200 → Some 200 (same operands as the Int8 case
+  // above, but at width 64 it is NOT a trap — the width is what distinguishes them).
+  (match eval-core(Core.CBin(43, true, 64, Core.CNum(100, true, 64), Core.CNum(100, true, 64)), (Map.empty : Map(Int64, Int64))) with
+    | Option.Some(v) => (if v == 200 then unit else trap("Int64 100+100 = 200 (no overflow-check at width 64)"))
+    | Option.None(_) => trap("a width-64 CBin never overflow-traps"))
+
+@test
 def ev-nested-else-if() =
   // if 5 < 1 then 100 else if 5 < 10 then 200 else 300  →  200 (else-if chain, middle branch).
   (match run([ifkw(), n(5), lt(), n(1), thenkw(), n(100), elsekw(), ifkw(), n(5), lt(), n(10), thenkw(), n(200), elsekw(), n(300)]) with | Option.Some(v) => (if v == 200 then unit else trap("else-if chain → 200")) | Option.None(_) => trap("runs"))

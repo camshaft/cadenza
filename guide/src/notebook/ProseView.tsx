@@ -5,6 +5,7 @@
 import type { ReactNode } from "react";
 import { parseProse, type Block, type Inline } from "./parseProse.ts";
 import { H1, H2, P, C } from "../components/Prose.tsx";
+import { Math, MathBlock } from "../components/Math.tsx";
 
 /// Render a list of inline spans to React nodes (bold / italic / code / links / text).
 function renderInline(spans: Inline[]): ReactNode[] {
@@ -19,14 +20,9 @@ function renderInline(spans: Inline[]): ReactNode[] {
       case "code":
         return <C key={i}>{s.text}</C>;
       case "math":
-        // Inline math `$…$`. Until KaTeX is wired (operator's KaTeX ask, next increment), render the raw TeX
-        // in a math-styled span so the content is VISIBLE (never dropped) — a `data-math` hook the KaTeX
-        // pass replaces in place. Serif-italic reads as math, distinct from `code`.
-        return (
-          <span key={i} data-math="inline" className="font-serif italic text-slate-100">
-            {s.tex}
-          </span>
-        );
+        // Inline math `$…$` → KaTeX via the shared <Math> (lazy-loads katex, raw-TeX skeleton until it
+        // resolves, throwOnError:false so a bad expression shows its source rather than crashing).
+        return <Math key={i} tex={s.tex} />;
       case "link":
         return (
           <a key={i} href={s.href} className="text-cadenza-400 underline hover:text-cadenza-300">
@@ -102,13 +98,9 @@ function renderBlock(block: Block, key: number): ReactNode {
         </div>
       );
     case "mathblock":
-      // Display math `$$…$$`. Until KaTeX is wired (next increment), render the raw TeX centered + serif so
-      // it reads as a formula and is never dropped — a `data-math` hook the KaTeX pass replaces in place.
-      return (
-        <div key={key} data-math="display" className="my-4 text-center font-serif text-lg text-slate-100">
-          {block.tex}
-        </div>
-      );
+      // Display math `$$…$$` → KaTeX via the shared <MathBlock> (lazy, centered; same skeleton + no-throw
+      // fallback as inline <Math>).
+      return <MathBlock key={key} tex={block.tex} />;
   }
 }
 
