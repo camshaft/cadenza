@@ -1,0 +1,169 @@
+/// chor-sread.cdz — the `.sexp` SURFACE for choreographic protocols (usability slice). A minimal s-expr
+/// READER (`read : String -> Option(Ast)`) so a user can write a protocol as
+///   (seq (comm Buyer Seller Title) (comm Seller Buyer Quote))
+/// instead of the verbose constructor form `Chor.Seq(Chor.Comm(...), ...)`. `chor.from-ast` already parses
+/// exactly this Ast grammar into a `Chor`, so the surface is just String → Ast; `from-ast(read(s))` yields
+/// the protocol. Protocol s-exprs use ONLY Name + List (roles/labels are bare names — no ints/strings/bools),
+/// so the reader emits only `Ast.Name` / `Ast.List` (it never needs int/quote lexing).
+///
+/// Plus `roles-of : Chor -> List(String)` — every role that participates (a comm's from/to, a choice's
+/// chooser), deduplicated. This makes a `.sexp` protocol SELF-DESCRIBING: the `cdz chor` `.sexp` path infers
+/// the role set from the protocol, so the surface needs no separate `roles` declaration.
+
+import { Ast } from "ast"
+import { Chor } from "chor"
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// A minimal s-expr reader: recursive descent over char indices, emitting Ast.Name / Ast.List.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Is char `c` s-expr whitespace or a paren (a token boundary)?
+def is-delim(c: String) -> Bool =
+  if c == " " then true else (if c == "(" then true else (if c == ")" then true
+    else (if c == "\n" then true else (if c == "\t" then true else false))))
+
+/// Skip whitespace from index `i`, returning the first non-whitespace index.
+def skip-ws(s: String, i: Int64) -> Int64 =
+  if i >= String.byte-len(s) then i
+  else (match String.at(s, i) with
+    | Option.Some(c) => (if (if c == " " then true else (if c == "\n" then true else (if c == "\t" then true else false)))
+      then skip-ws(s, i + 1) else i)
+    | Option.None(_) => i)
+
+/// Scan a bare atom (a run of non-delimiter chars) from `i`, accumulating into `acc`; returns (atom, next-i).
+def scan-atom(s: String, i: Int64, acc: String) -> (String, Int64) =
+  if i >= String.byte-len(s) then (acc, i)
+  else (match String.at(s, i) with
+    | Option.Some(c) => (if is-delim(c) then (acc, i) else scan-atom(s, i + 1, String.concat(acc, c)))
+    | Option.None(_) => (acc, i))
+
+/// Parse ONE node starting at index `i` (after ws). Returns Some((node, next-i)) or None (malformed).
+/// A `(` opens a list (read nodes until `)`); anything else is an atom → Ast.Name.
+def parse-node(s: String, i0: Int64) -> Option((Ast, Int64)) =
+  let i = skip-ws(s, i0) in
+  if i >= String.byte-len(s) then Option.None(unit)
+  else (match String.at(s, i) with
+    | Option.Some(c) =>
+      (if c == "(" then parse-list(s, i + 1, [])
+       else (if c == ")" then Option.None(unit)          // unexpected close
+         else (match scan-atom(s, i, "") with
+           | (atom, ni) => (if atom == "" then Option.None(unit)
+             else Option.Some((Ast.Name(atom), ni))))))
+    | Option.None(_) => Option.None(unit))
+
+/// Read list elements from `i` until the matching `)`. `acc` collects children (in order).
+def parse-list(s: String, i0: Int64, acc: List(Ast)) -> Option((Ast, Int64)) =
+  let i = skip-ws(s, i0) in
+  if i >= String.byte-len(s) then Option.None(unit)     // unterminated list
+  else (match String.at(s, i) with
+    | Option.Some(c) =>
+      (if c == ")" then Option.Some((Ast.List(acc), i + 1))
+       else (match parse-node(s, i) with
+         | Option.Some((node, ni)) => parse-list(s, ni, List.concat(acc, [node]))
+         | Option.None(_) => Option.None(unit)))
+    | Option.None(_) => Option.None(unit))
+
+/// Read a whole s-expr string into an Ast (None on malformed / trailing garbage tolerated).
+def read(s: String) -> Option(Ast) = match parse-node(s, 0) with
+  | Option.Some((node, _ni)) => Option.Some(node)
+  | Option.None(_) => Option.None(unit)
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// roles-of: the participating role set of a protocol (dedup), so a `.sexp` protocol is self-describing.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def mem(xs: List(String), x: String) -> Bool = match xs with
+  | [] => false
+  | [h, .. r] => (if h == x then true else mem(r, x))
+
+def add-role(xs: List(String), x: String) -> List(String) =
+  if mem(xs, x) then xs else List.concat(xs, [x])
+
+def roles-into(g: Chor, acc: List(String)) -> List(String) = match g with
+  | Chor.Done => acc
+  | Chor.Comm(f, t, _l) => add-role(add-role(acc, f), t)
+  | Chor.Seq(a, b) => roles-into(b, roles-into(a, acc))
+  | Chor.Choice(chooser, brs) => roles-into-list(brs, add-role(acc, chooser))
+  | Chor.Branch(_l, k) => roles-into(k, acc)
+  | Chor.Rec(_v, body) => roles-into(body, acc)
+  | Chor.Var(_v) => acc
+
+def roles-into-list(brs: List(Chor), acc: List(String)) -> List(String) = match brs with
+  | [] => acc
+  | [b, .. rest] => roles-into-list(rest, roles-into(b, acc))
+
+/// The deduplicated set of roles participating in `g` (in first-seen order).
+def roles-of(g: Chor) -> List(String) = roles-into(g, [])
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// Tests.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+import { from-ast } from "chor"
+import { chor-eq } from "chor"
+
+@test
+def read-an-atom() = match read("Buyer") with
+  | Option.Some(Ast.Name(n)) => (if n == "Buyer" then unit else trap("atom name"))
+  | _ => trap("a bare atom reads to Ast.Name")
+
+@test
+def read-a-flat-list() = match read("(comm Buyer Seller Title)") with
+  | Option.Some(Ast.List(es)) => (match es with
+    | [Ast.Name(a), Ast.Name(b), Ast.Name(c), Ast.Name(d)] =>
+      (if a == "comm" then (if b == "Buyer" then (if c == "Seller" then (if d == "Title" then unit
+        else trap("d")) else trap("c")) else trap("b")) else trap("a"))
+    | _ => trap("comm reads to a 4-element name list"))
+  | _ => trap("(comm …) reads to Ast.List")
+
+@test
+def read-nested-then-from-ast() =
+  // The full surface: read a Purchase-shaped s-expr, from-ast it, and chor-eq the expected Chor.
+  let src = "(seq (comm Buyer Seller Title) (comm Seller Buyer Quote))" in
+  let expect = Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"), Chor.Comm("Seller", "Buyer", "Quote")) in
+  (match read(src) with
+    | Option.Some(a) => (match from-ast(a) with
+      | Option.Some(g) => (if chor-eq(g, expect) then unit else trap("parsed Chor must equal the expected"))
+      | Option.None(_) => trap("from-ast must parse the read Ast"))
+    | Option.None(_) => trap("read must parse the s-expr"))
+
+@test
+def read-rejects-unterminated() = match read("(comm Buyer") with
+  | Option.Some(_) => trap("an unterminated list must not read")
+  | Option.None(_) => unit
+
+@test
+def read-handles-extra-whitespace() =
+  let src = "  ( seq  (comm A B M)   (done) )  " in
+  (match read(src) with
+    | Option.Some(a) => (match from-ast(a) with
+      | Option.Some(_g) => unit
+      | Option.None(_) => trap("from-ast on whitespace-padded parse"))
+    | Option.None(_) => trap("read tolerates surrounding + interior whitespace"))
+
+@test
+def roles-of-purchase() =
+  let g = Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"),
+    Chor.Seq(Chor.Comm("Seller", "Buyer", "Quote"), Chor.Comm("Seller", "Shipper", "Ship"))) in
+  // Buyer, Seller, Shipper — first-seen order, deduplicated.
+  (match roles-of(g) with
+    | [a, b, c] => (if a == "Buyer" then (if b == "Seller" then (if c == "Shipper" then unit
+      else trap("c=Shipper")) else trap("b=Seller")) else trap("a=Buyer"))
+    | _ => trap("Purchase has exactly 3 roles"))
+
+@test
+def roles-of-choice-includes-chooser() =
+  let g = Chor.Choice("Buyer", [Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Y"))]) in
+  (match roles-of(g) with
+    | [a, b] => (if a == "Buyer" then (if b == "Seller" then unit else trap("Seller")) else trap("Buyer chooser first"))
+    | _ => trap("chooser + participant = 2 roles"))
+
+@test
+def roles-of-dedups() =
+  // A role appearing twice is counted once.
+  let g = Chor.Seq(Chor.Comm("A", "B", "M"), Chor.Comm("B", "A", "N")) in
+  (match roles-of(g) with
+    | [a, b] => (if a == "A" then (if b == "B" then unit else trap("B")) else trap("A"))
+    | _ => trap("two roles, deduplicated"))
+
+export { read, roles-of }
