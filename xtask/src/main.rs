@@ -1304,10 +1304,22 @@ fn run_program_rust(
             // Each arg is a canonical sexp VALUE; a scalar passes through, a compound (`(tuple …)`,
             // `(record …)`) is rebuilt as the Rust expression the backend's parameter type expects.
             let args: Vec<String> = c.args.iter().map(|a| rust_call_arg(a)).collect();
-            (
-                rust_ident(&c.export),
-                format!("{}({})", rust_ident(&c.export), args.join(", ")),
-            )
+            let name = rust_ident(&c.export);
+            // HOST-CLOSURE FACTORY export: a def returning a closure (`(def (both (: a)(: b)) (fn (x) …))`)
+            // emits `pub fn both(a, b) -> Rc<dyn Fn(x)->r>` — the captured params (a,b) are the factory's
+            // OWN params, and the returned `Rc<dyn Fn>` is APPLIED to the remaining call args. The gate's
+            // flat `(call both (:10)(:20)(:5))` therefore splits: the first K = factory-param-count args
+            // make the handle (`both(10, 20)`), the rest apply it (`(5)`) — the native equivalent of the
+            // wasm make/call resource-handle ABI. A NON-factory export (return type is not `Rc<dyn Fn`) is
+            // the ordinary single call. Recover K by counting the factory signature's params.
+            match rust_factory_param_count(&module, &name, async_mode) {
+                Some(k) if k <= args.len() => {
+                    let (caps, applied) = args.split_at(k);
+                    let call = format!("{name}({})({})", caps.join(", "), applied.join(", "));
+                    (name, call)
+                }
+                _ => (name.clone(), format!("{name}({})", args.join(", "))),
+            }
         }
         None => {
             // The sole export's name is the fn to call with no args — recover it from the emitted
@@ -1580,6 +1592,69 @@ fn rust_panic_message(bytes: &[u8]) -> String {
         }
     }
     first_line(bytes)
+}
+
+/// If `name`'s emitted signature is a CLOSURE FACTORY — `pub fn <name>(<params>) -> …Rc<dyn Fn(…)…` — return
+/// the factory's PARAMETER COUNT (the split point between make-captures and the applied closure args);
+/// `None` for an ordinary (non-factory) export. A closure-factory def emits its captured params as the
+/// factory's own params and returns the closure as an `Rc<dyn Fn>` VALUE, so the host calls `f(caps…)` then
+/// applies `(args…)`. Counting params is a simple top-level comma count inside the signature's `(...)` (the
+/// only nesting a scalar/compound param type introduces is `<…>`/`(…)` in the type, which we balance). Sync
+/// mode marker `pub fn `; async `pub async fn ` (its `<E: CdzEnv>` generic list precedes the `(`).
+fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> Option<usize> {
+    let marker = if async_mode {
+        "pub async fn "
+    } else {
+        "pub fn "
+    };
+    // Find the exact `<marker><name>` header (name boundary: the char after `name` starts the param list
+    // `(` in sync mode, or the generic list `<` in async mode).
+    let needle = format!("{marker}{name}");
+    let after = module.split(&needle).nth(1)?;
+    // Skip an async generic-parameter list `<…>` if present, to reach the param-list `(`.
+    let after = after.trim_start();
+    let after = if after.starts_with('<') {
+        &after[after.find('>').map(|i| i + 1)?..]
+    } else {
+        after
+    };
+    let after = after.trim_start();
+    if !after.starts_with('(') {
+        return None;
+    }
+    // Walk the param list, tracking nesting depth so a `(…)`/`<…>` inside a param TYPE isn't miscounted.
+    // The RETURN type follows the matching `)`; only a `-> …Rc<dyn Fn(` return marks a factory.
+    let bytes = after.as_bytes();
+    let mut depth = 0usize;
+    let mut params = 0usize;
+    let mut saw_any = false;
+    let mut end = 0usize;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' | b'<' | b'[' => depth += 1,
+            b')' | b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            }
+            b'>' => depth = depth.saturating_sub(1),
+            b',' if depth == 1 => params += 1,
+            b if depth == 1 && !b.is_ascii_whitespace() => saw_any = true,
+            _ => {}
+        }
+    }
+    // `params` counted the commas; the param count is commas+1 if the list is non-empty, else 0.
+    let count = if saw_any { params + 1 } else { 0 };
+    // Confirm the return type is a closure (`-> …Rc<dyn Fn(`) — only then is this a factory.
+    let ret = &after[end + 1..];
+    let ret_head: String = ret.chars().take_while(|&c| c != '{').collect();
+    if ret_head.contains("Rc<dyn Fn(") {
+        Some(count)
+    } else {
+        None
+    }
 }
 
 /// The async gate driver's harness: a no-limit `GateEnv` implementing the emitted `CdzEnv` (the gate
@@ -4497,6 +4572,27 @@ mod trap_grading_tests {
             rust_call_arg("(list (tuple 1 2) (tuple 3 4))"),
             "vec![(1, 2), (3, 4)]"
         );
+    }
+
+    #[test]
+    fn rust_factory_param_count_splits_a_closure_factory_signature() {
+        // A closure-FACTORY export (return type `Rc<dyn Fn(…)>`) → the factory's param count (the make/call
+        // split point); an ordinary export → None (single call).
+        let factory = "pub fn both(a: i64, b: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { … }";
+        assert_eq!(rust_factory_param_count(factory, "both", false), Some(2));
+        // A single-capture factory.
+        let one = "pub fn scale(k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { … }";
+        assert_eq!(rust_factory_param_count(one, "scale", false), Some(1));
+        // A NON-factory export (plain scalar return) → None.
+        let plain = "pub fn add(a: i64, b: i64) -> i64 { … }";
+        assert_eq!(rust_factory_param_count(plain, "add", false), None);
+        // A compound-return export that is NOT a closure → None (only `Rc<dyn Fn` marks a factory).
+        let vecret = "pub fn build(n: i64) -> Vec<i64> { … }";
+        assert_eq!(rust_factory_param_count(vecret, "build", false), None);
+        // A param type containing nested `<…>`/`(…)` must not miscount the param commas.
+        let nested =
+            "pub fn f(m: BTreeMap<i64, i64>, k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { … }";
+        assert_eq!(rust_factory_param_count(nested, "f", false), Some(2));
     }
 
     #[test]

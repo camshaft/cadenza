@@ -234,6 +234,7 @@ pass	a @param accessor splices into a quasiquote and the eval computes with the 
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
 pass	a @requires precondition is enforced for a genuinely-runtime argument
 pass	a @requires predicate that itself traps keeps its own trap kind
+pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
 pass	a BOOL-result effect op threads state across two performs on a boolean connective's operands
@@ -661,6 +662,7 @@ pass	a conditionally-selected nullary variant is returned as a runtime sum resul
 pass	a conditionally-selected variant is returned as a runtime sum result
 pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a conjunction of two float compares preserves NaN-false through the connective fold
+pass	a connective-wrapped perform in an if condition threads its state advance to the taken branch
 pass	a consistent annotation type-checks against the inferred type
 pass	a const collection recursively folded is rejected, not compiled to an infinite loop
 pass	a const parameter rejects an argument that depends on runtime data
@@ -2755,6 +2757,7 @@ pass	comparing two function-typed parameters with = is a type error
 pass	comparing two quantities of the same dimension yields a Bool
 pass	comparing two same-shape nominal sum types is a type error, not false
 pass	comparing two same-unit Float-inner quantities at RUNTIME rides the scalar float compare
+pass	comparing two same-unit scalar-Int quantities at RUNTIME rides the scalar integer compare
 pass	comparing two units of one dimension converts before comparing
 pass	compound equality over a Rational leaf respects normalization (1/2 = 2/4)
 pass	compound equality over a runtime BigInt leaf compares by the canonical bytes

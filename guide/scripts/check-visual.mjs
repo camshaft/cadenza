@@ -188,6 +188,32 @@ const ROUTES = [
         .then(() => page.locator('[data-testid="notebook"] .cm-editor').count())
         .catch(() => 0);
       check(cmCount > 1, `${label}: per-cell CodeMirror editors (found ${cmCount}, want >1 — stacked cells)`);
+      // Example picker: present with >1 option, and SWITCHING to another example replaces the notebook
+      // content (a different example renders different prose/first-cell text). The picker lets a reader
+      // pick between the canonical notebooks (operator UX ask #2).
+      const picker = page.locator('[data-testid="notebook-example-picker"]');
+      if ((await picker.count()) > 0) {
+        const optCount = await picker.locator("option").count();
+        check(optCount > 1, `${label}: example picker offers multiple notebooks (found ${optCount})`);
+        const before = (await page.locator('[data-testid="notebook"]').innerText()).slice(0, 400);
+        // Select the 2nd example (index 1) and wait for the doc to re-render to different content.
+        const secondVal = await picker.locator("option").nth(1).getAttribute("value");
+        await picker.selectOption(secondVal);
+        const changed = await page
+          .waitForFunction(
+            (prev) => {
+              const nb = document.querySelector('[data-testid="notebook"]');
+              return nb && nb.innerText.slice(0, 400) !== prev;
+            },
+            before,
+            { timeout: 20000 },
+          )
+          .then(() => true)
+          .catch(() => false);
+        check(changed, `${label}: switching the example picker loads a different notebook`);
+      } else {
+        check(false, `${label}: example picker present`);
+      }
     },
   },
 ];

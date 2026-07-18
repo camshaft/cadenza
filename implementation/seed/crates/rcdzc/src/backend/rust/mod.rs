@@ -56,6 +56,33 @@ fn is_fn_ty(ty: &crate::ty::Ty) -> bool {
     matches!(ty.strip_nominal(), crate::ty::Ty::Fn(_, _))
 }
 
+/// A SCALAR the host-closure FACTORY S1 slice handles: an Int/UInt of any width or a Bool — a value the
+/// gate harness passes as a plain literal and renders without the compound machinery a later slice adds.
+/// Float is DEFERRED (its result renders without the `.0` the corpus expects — a float render slice) and
+/// so is every COMPOUND (Tuple/List/Option/Result/String/Bytes/sum). A nominal wrapper is stripped.
+fn is_s1_scalar(t: &crate::ty::Ty) -> bool {
+    matches!(
+        t.strip_nominal(),
+        crate::ty::Ty::Int(_) | crate::ty::Ty::Bool
+    )
+}
+
+/// Whether a closure-RESULT `Ty::Fn` is safe for host-closure FACTORY S1: EVERY arrow element (each
+/// parameter AND the final result) is an S1 scalar. A compound/Float arg or result is deferred (S2/S3) —
+/// the factory still emits a valid `Rc<dyn Fn>`, but the harness arg-rebuild / result-render for those is
+/// not yet wired, so those cases stay a clean `todo` rather than a wrong-value / non-build fail.
+fn fn_result_is_scalar_only(ty: &crate::ty::Ty) -> bool {
+    let mut cur = ty.strip_nominal();
+    while let crate::ty::Ty::Fn(p, r) = cur {
+        if !is_s1_scalar(p) {
+            return false;
+        }
+        cur = r.strip_nominal();
+    }
+    // `cur` is now the final (non-arrow) result.
+    is_s1_scalar(cur)
+}
+
 /// If exported definition `e` is a top-level IMMEDIATE, CAPTURE-FREE lambda — `(def (name) (fn (p…)
 /// body))`, a nullary def whose whole body is a `(fn …)` value — return the lifted-lambda slot its body
 /// builds; else `None`. This is the ETA-PEEL shape: on the wasm target such an export crosses as a
@@ -427,16 +454,40 @@ fn emit_signature(
     layout: &Layout,
     mode: Mode,
 ) -> Result<String, Reject> {
-    // A closure (`Ty::Fn`) crossing the EXPORT boundary declines: an exported fn is called by the gate
+    // A closure PARAMETER crossing the EXPORT boundary declines: an exported fn is called by the gate
     // driver (and any real consumer) with VALUE arguments written as literals, and there is no way to
-    // synthesize an `Rc<dyn Fn>` argument at that boundary — nor to render a returned closure as a value.
-    // (The corpus's closure round-trip cases pass a scalar where the export's closure PARAM sits, expecting
-    // the wasm handle-ABI to route it; the Rust target has no such boundary.) An INTERNAL closure — passed
-    // to a recursive helper, the case runtime closures exist for — is unaffected: it never crosses an
-    // export edge, so this guard (gated on `public`) does not touch it. Decline cleanly (todo), not fail.
-    if public && (params.iter().any(|(_, t)| is_fn_ty(t)) || is_fn_ty(result)) {
+    // synthesize an `Rc<dyn Fn>` argument at that boundary. (The corpus's closure round-trip cases pass a
+    // scalar where the export's closure PARAM sits, expecting the wasm handle-ABI to route it; the Rust
+    // target has no such boundary.) An INTERNAL closure — passed to a recursive helper — is unaffected: it
+    // never crosses an export edge, so this guard (gated on `public`) does not touch it. Decline cleanly.
+    //
+    // A closure RESULT (a "closure FACTORY" export — `(def (both (: a)(: b)) (fn (x) …))`) IS representable:
+    // the def's captured params stay ordinary leading params, and the returned `(fn …)` is already emitted
+    // as an `Rc<dyn Fn(…)->…>` VALUE (the internal-closure lowering — `Core::Closure` → `Rc::new(move |args|
+    // __lifted_k(captures, args))`), which `types::rust_type(Ty::Fn)` maps to the `-> Rc<dyn Fn(…)->…>`
+    // return type. So the host calls `both(10, 20)` → an `Rc<dyn Fn>` handle, then applies it `(5)` — the
+    // native equivalent of the wasm make/call handle ABI (the gate harness splits the flat call args at the
+    // factory param count). S1 SCOPE: allow it only when the returned closure is SCALAR-ONLY (every arg +
+    // the result a scalar) — the shape the harness passes + renders today. A compound arg (S2) or compound
+    // result (S3) still declines cleanly (a `todo`, not a wrong-value/non-build fail): the factory emits a
+    // valid `Rc<dyn Fn>`, but the harness arg-rebuild / result-render for those is a later slice.
+    // S1 also requires the factory's OWN params (the CAPTURES — the leading `both(a, b)` args the host
+    // supplies at `make`) to be S1 scalars: the harness passes them as literals in the make-call split, and
+    // a compound capture (a host-supplied Tuple/record — e.g. the "producer capturing a host-supplied
+    // COMPOUND parameter is declined" corpus case) is not yet rebuilt there. Defer those to a later slice.
+    if public
+        && is_fn_ty(result)
+        && (!fn_result_is_scalar_only(result) || !params.iter().all(|(_, t)| is_s1_scalar(t)))
+    {
         return Err(Reject::decline(format!(
-            "`{name}`: a function-typed value cannot cross the Rust export boundary (no closure handle ABI)"
+            "`{name}`: a closure-returning export with a non-scalar capture/arg/result is not yet rendered by the Rust backend (host-closure S2/S3)"
+        )));
+    }
+    // A closure PARAMETER crossing the export boundary declines regardless — no way to synthesize an
+    // `Rc<dyn Fn>` argument at the boundary from a literal.
+    if public && params.iter().any(|(_, t)| is_fn_ty(t)) {
+        return Err(Reject::decline(format!(
+            "`{name}`: a closure PARAMETER cannot cross the Rust export boundary (no way to synthesize an Rc<dyn Fn> argument)"
         )));
     }
     // Whether this function is compiled as a `loop` (it self-tail-calls). A looped function REASSIGNS

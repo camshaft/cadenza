@@ -102,3 +102,22 @@
 ; effect-lowering: lower a let-bound perform correctly regardless of surrounding if/let nesting + node
 ; order. v-verification filing a NON-VERIFICATION minimal repro ((if c (let ((r (E.op))) (if (> r 0) r
 ; (trap))) (trap)) under a handler) that isolates it with zero annotations. Promote when v-effects fixes.
+
+; SHARPENED (v-verification negative result, 2026-07-17): NO hand-source witness exists — the exact
+; reversed shape hand-written ((def (f (: x Int64)) (if (>= x 0) (let ((it (+ x (St.tick)))) (if (> it 0)
+; it (trap))) (trap)))) RETURNS 101 (works). ONLY the verify_enforce-CONSTRUCTED AST declines. Trigger is
+; INTRINSIC to verify_enforce's node construction (predicate/let/it/if appended at HIGH arena indices after
+; the body + it-binding occ-sharing), not tree shape. effect-lowering lower.rs:16930 (it operand reads
+; is_scalar=FALSE) sensitive to arena index/order. => THIS repro IS the canonical minimal witness; v-effects
+; must test their fix against IT, not a hand-written equivalent (which lowers fine = false green).
+
+; ---
+; ROOT-FIXED-PENDING-MERGE (v-effects, 2026-07-17, commit 74bdb093b, stacked after connective MR):
+; NOT effect-specific after all. The reversed desugar emits (let ((it (trap "@requires…"))) (if (> it 0)
+; …)) in the precond-fail branch; a let binding a TRAP types the binding as Never/Any, so (> it 0) hits
+; is_scalar=FALSE and mis-declines compound-compare. MINIMAL NON-EFFECT repro confirms: (if b 1 (let
+; ((it (trap "x"))) (if (> it 0) it (trap "y")))) declines identically — no effects, no verify_enforce.
+; So the node-provenance "mystery" = the desugar builds a let-binding-a-bare-trap that hand source didn't
+; (which is why v-verification's hand-written equivalent worked = the false-green trap I warned v-effects
+; about). FIX: lower_let diverging-init short-circuit (a trap init folds the whole let to the trap). eoR
+; runs 101. Corpus case is v-verification's (26-program-conditions, order-insensitivity). Promote on land.

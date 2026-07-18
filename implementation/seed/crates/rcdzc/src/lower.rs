@@ -1331,6 +1331,30 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: mixed-unit combine (convert to reference)");
                     lower_quantity_combine(db, id, prim, args[0], args[1])
                 }
+                // SAME-UNIT quantity COMPARISON: two quantities of the SAME unit (same dimension AND scale)
+                // compared with `< > <= >= =`. The units are identical, so no conversion is needed — the
+                // comparison is exactly the erased inner magnitudes' comparison. A CONSTANT pair already
+                // folds below (both reach as `Core::ConstInt`/etc.), and same-unit ARITHMETIC `+`/`-` already
+                // runs via the inner-type arith path — but a RUNTIME comparison (a `q` bound from a
+                // `Map.lookup`/`List.at` Option arm, or a parameter) fell to the generic `is_scalar` gate,
+                // which does NOT peel `Ty::Qty`, so `(< q …)` declined "comparison of a compound value needs
+                // a heap walk". Rewrite it as `(op (Qty.value a) (Qty.value b))` — the explicit unwrap that
+                // erases both units to their bare inner numerics — and re-lower, so it takes the ordinary
+                // scalar/float/bigint/rational comparison path over the inners. GUARDED on `same-unit`: a
+                // DIFFERENT-scale pair is handled by the `quantity_scales_differ` arm ABOVE (which CONVERTS
+                // first), so this never compares raw across scales (verified: a `km` vs `m` param routes to
+                // conversion, not here — the scale now survives the type round-trip after the encode_ty fix).
+                // Same-DIMENSION is required — a cross-dimension pair is CDZ0501 in `check_application`.
+                Some(prim @ (Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge | Prim::Eq))
+                    if args.len() == 2 && quantity_same_unit_pair(db, &args) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: same-unit quantity comparison → compare erased magnitudes");
+                    let lv = qty_magnitude_occ(db, args[0]);
+                    let rv = qty_magnitude_occ(db, args[1]);
+                    let head = db.push_name(intrinsic_name(prim));
+                    let app = db.push_list(vec![head, lv, rv]);
+                    core_of(db, app)
+                }
                 // A quantity over a FLOAT magnitude combined with `+`/`-`/`*`/`/` runs the INNER numeric
                 // type's operation — the plain `T` op (units-of-measure.md §A Unit Conversion Is The
                 // Arithmetic The Source Denotes: the running arithmetic is the plain `T` operation on erased
@@ -13044,6 +13068,24 @@ fn quantity_scales_differ(db: &mut Db, args: &[StructId]) -> bool {
     match (&a, &b) {
         (crate::ty::Ty::Qty { unit: ua, .. }, crate::ty::Ty::Qty { unit: ub, .. }) => {
             ua.same_dimension(ub) && ua.scale() != ub.scale()
+        }
+        _ => false,
+    }
+}
+
+/// Whether the two operands are quantities of the SAME unit — same dimension AND same scale (`meter` vs
+/// `meter`, NOT `km` vs `m`). Routes a same-unit quantity COMPARISON through the erased-magnitude compare
+/// (the units are identical, so no conversion). The both-quantity complement of `quantity_scales_differ`
+/// (which routes the DIFFERENT-scale case through conversion); a cross-DIMENSION pair is neither (CDZ0501
+/// in `infer`). Reads the operands' solved units.
+fn quantity_same_unit_pair(db: &mut Db, args: &[StructId]) -> bool {
+    let (a, b) = (
+        crate::infer::type_of(db, args[0]),
+        crate::infer::type_of(db, args[1]),
+    );
+    match (&a, &b) {
+        (crate::ty::Ty::Qty { unit: ua, .. }, crate::ty::Ty::Qty { unit: ub, .. }) => {
+            ua.same_dimension(ub) && ua.scale() == ub.scale()
         }
         _ => false,
     }

@@ -4196,6 +4196,13 @@ fn partition_batch(n: usize, mut gate: impl FnMut(&[usize]) -> bool) -> (Vec<usi
 fn ensure_gate_batch_worktree(fleet: &Fleet) -> Option<PathBuf> {
     let wt = fleet.worktrees.join("fleet-gate-batch");
     if wt.join(".git").exists() {
+        // CRASH-RECOVERY SCRUB. A prior gate-batch run SIGKILLed mid-`git merge` (the 137/SIGTERM
+        // scenario the whole hardening arc addresses) leaves the reused worktree with a half-done merge
+        // (`.git/MERGE_HEAD` + a conflicted index) and/or a dirty tree + stray untracked files. The
+        // per-round `cleanup` closure's `checkout --detach trunk` FAILS on an in-progress merge ("you
+        // need to resolve your current index first"), so without this scrub every subsequent run would
+        // abort at `git_branch_at`. Reset it to pristine detached-trunk before reuse.
+        scrub_gate_batch_worktree(&wt);
         return Some(wt);
     }
     std::fs::create_dir_all(&fleet.worktrees).ok();
@@ -4217,6 +4224,31 @@ fn ensure_gate_batch_worktree(fleet: &Fleet) -> Option<PathBuf> {
         );
         None
     }
+}
+
+/// Scrub a REUSED gate-batch worktree back to a pristine detached-trunk state, recovering from a prior
+/// run that was killed mid-operation. Idempotent, and a no-op cost when the worktree is already clean:
+///   1. `git merge --abort` — clear a half-finished merge (`MERGE_HEAD` + conflicted index) left by a
+///      SIGKILL mid-`git merge`; harmless (nonzero, ignored) when no merge is in progress.
+///   2. `git checkout --detach trunk` — get off any scratch branch onto trunk (now possible: the merge
+///      is aborted, so the index is clean).
+///   3. `git reset --hard trunk` — discard any residual staged/worktree changes.
+///   4. `git clean -fd -e target` — remove stray untracked files (a killed store-build's partial
+///      artifacts, a foreign leaked `.cdz`) that could perturb the next gate, PRESERVING `target/`
+///      (the warm build cache — the whole reason the worktree is reused) via `-e target`.
+///
+/// Every step ignores its exit status: on an already-clean tree each is a benign no-op, and we want the
+/// scrub to push as far toward pristine as it can rather than bail on the first no-op.
+fn scrub_gate_batch_worktree(wt: &Path) {
+    let git = |args: &[&str]| {
+        let _ = Command::new("git").current_dir(wt).args(args).output();
+    };
+    git(&["merge", "--abort"]);
+    git(&["checkout", "--detach", TRUNK]);
+    git(&["reset", "--hard", TRUNK]);
+    // `-e target` keeps the reused worktree's warm `target/` (build cache + cadenza-store); `-ffd` would
+    // nuke it and force a full rebuild every gate, defeating the reuse.
+    git(&["clean", "-fd", "-e", "target"]);
 }
 
 /// Build the value-heap runtime store in the gate-batch scratch worktree (`cargo xtask build`), so the
