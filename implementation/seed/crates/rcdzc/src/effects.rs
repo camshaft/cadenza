@@ -3944,8 +3944,22 @@ fn thread_bounded(
             let Struct::List(pairs) = db.ast.get(bindings_occ).clone() else {
                 return None;
             };
+            // CAPTURED-VALUE INLINE (the closure-capture-reperform fix), gated on the let BODY being a
+            // RETURNED LAMBDA — the ONLY shape that suffers capture orphaning. A returned lambda capturing a
+            // binding — `(let ((base (Ctr.tick))) (fn (x) (+ x base)))` — has its body `copy_pure`d by the
+            // `thread_bounded` no-perform arm, DETACHING `base` (it resolves to Poison-unbound in the copy),
+            // so a substitution AFTER the copy has no resolvable `Ref` to match. We instead SUBSTITUTE each
+            // pure threaded init into the ORIGINAL body BEFORE threading copies it (below), where `base`
+            // still resolves to `Ref { value: kv[1] }` (the init occ, per inc-2b-1) — closing the lambda over
+            // the FOLDED value (`(fn (x) (+ x 50))`), so when it escapes + is re-reduced by `lambda_of`/
+            // `apply_lambda` (which re-derive from source, bypassing this threaded binding) it carries the
+            // value, not the perform. Gated on the closure shape SYNTACTICALLY so a non-closure let body (a
+            // recursive multi-value fold, an arithmetic tail, …) is byte-identical — the collect below (and
+            // its `strongly_pure` probes, which touch shared caches) only runs for the closure case.
+            let body_is_closure = matches!(resolved_of(db, body_occ), Resolved::Lambda { .. });
             let mut cur = states;
             let mut rpairs = Vec::with_capacity(pairs.len());
+            let mut capture_subst: HashMap<StructId, StructId> = HashMap::default();
             for pair in pairs {
                 let Struct::List(kv) = db.ast.get(pair).clone() else {
                     return None;
@@ -3958,6 +3972,12 @@ fn thread_bounded(
                 let name_copy = copy_pure(db, kv[0]);
                 let (rinit, next) = thread_bounded(db, kv[1], cur, ctx, inline_depth)?;
                 cur = next;
+                // A pure threaded init captured by a returned-lambda body → substitute it into the body
+                // (see the block comment above). GATED to the closure shape + an effect-FREE init (an
+                // effectful init would duplicate its effect on inline).
+                if body_is_closure && strongly_pure(db, rinit, ctx) {
+                    capture_subst.insert(kv[1], rinit);
+                }
                 // NESTED-LET INIT LET-LIFT (the effectful-let capture fix): if the threaded init is itself a
                 // `(let ((x e)…) lbody)` — the shape an INLINED effectful helper produces, `let b = inner()`
                 // where `inner`'s body is `(let a = S.get() in …)` — LIFT the inner bindings UP into THIS
@@ -3983,6 +4003,13 @@ fn thread_bounded(
                     rpairs.push(db.push_list(vec![name_copy, rinit]));
                 }
             }
+            // Close any captured pure binding into the body BEFORE threading detaches it (see the collect
+            // comment above). A no-op when nothing captured (non-closure body → empty subst).
+            let body_occ = if capture_subst.is_empty() {
+                body_occ
+            } else {
+                crate::eval::beta_reduce(db, body_occ, &capture_subst)
+            };
             let (rbody, cur) = thread_bounded(db, body_occ, cur, ctx, inline_depth)?;
             let let_head = db.push_atom(Leaf::Name("let".to_string()));
             let rbindings = db.push_list(rpairs);

@@ -61,7 +61,12 @@ def eval-bin(op: Int64, a: Int64, b: Int64) =
     | 45 => Option.Some(a - b)
     | 42 => Option.Some(a * b)
     | 47 => (if b == 0 then Option.None(unit) else Option.Some(a / b))
-    | 37 => (if b == 0 then Option.None(unit) else Option.Some(a % b))   // modulo; %0 → None
+    | 37 =>
+        // modulo; %0 → None (trap). `Int64.min % -1` is mathematically 0 (no overflow), but the host `%`
+        // FAULTS on it (the same INT_MIN/-1 hardware trap as division) → special-case b == -1 to 0, matching
+        // rcdzc's rule (lower.rs: "MIN % -1 is 0 … but Rust's % panics there — special-case it to 0"). Without
+        // this, `(% (: Int64.min Int64) (: -1 Int64))` wrongly DECLINED where rcdzc returns 0.
+        (if b == 0 then Option.None(unit) else (if b == (0 - 1) then Option.Some(0) else Option.Some(a % b)))
     | 60 => Option.Some(if a < b then 1 else 0)
     | 61 => Option.Some(if a == b then 1 else 0)
     | 62 => Option.Some(if b < a then 1 else 0)                  // a > b  ≡ b < a
@@ -347,6 +352,17 @@ def ev-mod() =
 def ev-mod-by-zero-is-none() =
   // 7 % 0 → None.
   (match run([n(7), modop(), n(0)]) with | Option.None(_) => unit | Option.Some(_) => trap("7%0 must be None"))
+
+@test
+def ev-mod-by-neg-one-is-zero() =
+  // x % -1 = 0 for ALL x (the divisor -1 divides everything evenly). The load-bearing case is Int64.min % -1:
+  // mathematically 0 (no overflow), but the HOST `%` FAULTS on it (the same INT_MIN/-1 hardware trap as
+  // division) — so eval-bin special-cases b == -1 to 0, matching rcdzc (lower.rs: "MIN % -1 is 0 … Rust's %
+  // panics there — special-case it to 0"). Was wrongly declining (host trap). Test via eval-bin directly:
+  // Int64.min % -1 and a plain 7 % -1 both = 0.
+  (match eval-bin(37, (0 - 9223372036854775807) - 1, 0 - 1) with
+    | Option.Some(v) => (if v == 0 then (match eval-bin(37, 7, 0 - 1) with | Option.Some(w) => (if w == 0 then unit else trap("7 % -1 = 0")) | Option.None(_) => trap("7 % -1 runs")) else trap("Int64.min % -1 = 0"))
+    | Option.None(_) => trap("Int64.min % -1 must be 0 (special-cased), not a decline"))
 
 @test
 def ev-div-precedence() =

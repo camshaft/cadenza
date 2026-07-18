@@ -919,10 +919,18 @@ fn compile_run_chor_driver(driver_path: &std::path::Path) -> Result<String, Stri
         .map_err(|e| format!("spawn compile: {e}"))?;
     if !compile.status.success() {
         let _ = std::fs::remove_file(&tmp_wasm);
-        return Err(format!(
-            "driver failed to compile (check the protocol module exports `protocol` + `roles`):\n{}",
-            String::from_utf8_lossy(&compile.stderr)
-        ));
+        let stderr = String::from_utf8_lossy(&compile.stderr);
+        // The common author mistake is a constructor-form protocol file that doesn't export `protocol` /
+        // `roles`. rcdzc surfaces that as a `does not export …` diagnostic naming the INTERNAL temp module
+        // (`zz-chor-proto-<pid>`), which leaks an implementation detail. Give a clean, actionable message
+        // instead; other compile failures still dump the raw diagnostics (which point at the user's source).
+        if stderr.contains("does not export") {
+            return Err(
+                "the protocol file must export both `protocol` (a Chor) and `roles` (a List(String)) — e.g. `export { protocol, roles }` — or use a bare `.sexp`/`.chor` protocol file (no exports needed)."
+                    .to_string(),
+            );
+        }
+        return Err(format!("the protocol file did not compile:\n{stderr}"));
     }
     let run = Command::new(&exe)
         .arg("run")
@@ -4021,7 +4029,15 @@ fn run_test_file(
             // unit test (pulls no generated int). Decide it by RUNNING once under a seeded int pool and
             // counting the `Test.gen` calls the guest made.
             Some(gens) if gens.is_empty() => {
-                match run_gen_driven(&component, runtime.as_deref(), &kebab, store, trials, seed) {
+                match run_gen_driven(
+                    &component,
+                    runtime.as_deref(),
+                    &kebab,
+                    store,
+                    trials,
+                    seed,
+                    gen_ty.as_ref(),
+                ) {
                     // The test consumed NO generated int → a plain unit test; report its single run.
                     GenDrivenOutcome::Plain(TrialOutcome::Pass) => {
                         passed += 1;
@@ -4931,6 +4947,7 @@ fn run_gen_driven(
     store: &std::path::Path,
     trials: u64,
     seed: u64,
+    gen_ty: Option<&rcdzc::proptest_gen::GenTy>,
 ) -> GenDrivenOutcome {
     let run_pool = |pool: &[i64]| -> (TrialOutcome, usize) {
         run_one_trial_with_pool(component, runtime, kebab, store, &[], pool)
@@ -4944,14 +4961,18 @@ fn run_gen_driven(
     }
     // A property test. Trial 0's result counts; if it already failed, shrink + report.
     if let TrialOutcome::Fail(message) = outcome0 {
-        return GenDrivenOutcome::Property(Some(shrink_pool(&pool0, gens0, message, &run_pool)));
+        return GenDrivenOutcome::Property(Some(shrink_pool(
+            &pool0, gens0, message, gen_ty, &run_pool,
+        )));
     }
     // Remaining trials, each a fresh seeded pool.
     for trial in 1..trials {
         let pool = gen_pool(seed.wrapping_add(trial), GEN_POOL_SIZE);
         let (outcome, gens) = run_pool(&pool);
         if let TrialOutcome::Fail(message) = outcome {
-            return GenDrivenOutcome::Property(Some(shrink_pool(&pool, gens, message, &run_pool)));
+            return GenDrivenOutcome::Property(Some(shrink_pool(
+                &pool, gens, message, gen_ty, &run_pool,
+            )));
         }
     }
     GenDrivenOutcome::Property(None)
@@ -4989,11 +5010,57 @@ fn shrink_pool(
     pool: &[i64],
     gens: usize,
     message: Option<String>,
+    gen_ty: Option<&rcdzc::proptest_gen::GenTy>,
     run_pool: &dyn Fn(&[i64]) -> (TrialOutcome, usize),
 ) -> PropertyFailure {
     // Only the CONSUMED prefix matters — the generator pulled `gens` ints; the rest of the pool is inert.
     let mut best: Vec<i64> = pool.iter().take(gens).copied().collect();
     let mut best_msg = message;
+    // DECODED-SPACE shrink for a single-IntRange newtype (`Percent = Pct(Int64)` with `@invariant [0,100]`):
+    // the wrapper pool is `[selector, payload]` and the payload decodes `v = lo + (payload & MAX) % span`,
+    // which is NOT monotonic in the raw payload int — so the generic raw-int halving below cannot converge to
+    // the domain-minimal (it reported e.g. Pct(67), not the true boundary). Here we bisect the DECODED value
+    // toward `lo` directly (candidate value `c` ⇒ pool payload `c - lo`, the invertible map), keeping any `c`
+    // that still fails, so the counterexample shrinks to the smallest in-domain failing value. Only this
+    // single-IntRange-newtype shape is handled (its pool layout is known: selector at 0, payload at 1);
+    // compound/multi-leaf shapes fall through to the generic pass unchanged.
+    if let Some((lo, hi)) = exhaustive_newtype_range(gen_ty)
+        && best.len() >= 2
+    {
+        // DECODED-SPACE shrink toward the boundary. The generic raw-int halving below cannot converge for an
+        // IntRange leaf (decode `v = lo + (payload & MAX) % span` is non-monotonic in the raw int), so bisect
+        // the DECODED value: find the LEAST `v in [lo, hi]` that still fails, via the invertible map (pool
+        // payload = v - lo). This assumes the common upward-closed fail-set (`v >= threshold`), the shape a
+        // refined-newtype property almost always has; a fail-set that isn't upward-closed still yields a
+        // VALID failing value (never a wrong one — every kept candidate is RE-RUN and confirmed to fail),
+        // just not necessarily the global minimum. `hi_fail` = a known-failing upper bound (the current
+        // counterexample's value); `lo_pass` = the greatest value known to PASS (or lo-1 if lo itself fails).
+        let decoded = |payload: i64| lo.wrapping_add((payload & i64::MAX).rem_euclid(hi - lo + 1));
+        let mut hi_fail = decoded(best[1]); // the current failing value
+        let mut lo_pass = lo - 1; // exclusive lower fence: everything <= lo_pass is presumed passing
+        while lo_pass + 1 < hi_fail {
+            let mid = lo_pass + (hi_fail - lo_pass) / 2;
+            // Run the property at decoded value `mid` (pool payload = mid - lo), without holding a borrow of
+            // `best` across the mutation below.
+            let outcome = {
+                let mut trial = best.clone();
+                trial[1] = mid.wrapping_sub(lo);
+                run_pool(&trial).0
+            };
+            match outcome {
+                TrialOutcome::Fail(m) => {
+                    hi_fail = mid; // mid fails → the boundary is at or below mid
+                    best[1] = mid.wrapping_sub(lo);
+                    best_msg = m;
+                }
+                _ => lo_pass = mid, // mid passes → the boundary is above mid
+            }
+        }
+        return PropertyFailure {
+            inputs: best.iter().map(|n| n.to_string()).collect(),
+            message: best_msg,
+        };
+    }
     for i in 0..best.len() {
         let mut n = best[i];
         while n != 0 {

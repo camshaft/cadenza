@@ -4124,6 +4124,53 @@ fn runtime_string_ordering_over_a_let_bound_operand_leaves_no_live_objects() {
     );
 }
 
+/// `String.scalar-len` OWNED-temporary reclaim leak balance: `Core::StrScalarLen` walks its string leaf
+/// with borrowing `bytes-len`/`bytes-get` reads and reclaims an OWNED-temporary operand after the walk
+/// (the SAME `heap_operand_ownership==Owned` gate as `Core::BytesLen`/`Core::ListLen`, with which it is
+/// grouped in every classification/emit site). This pins that reclaim directly: `scalar-len` over a
+/// fresh runtime rope must leave NO live heap cells. Without it, `String.scalar-len` — a newly-landed
+/// borrowing op (`809d5a1c1`) that shares the `ListLen`/`BytesLen` arm — had a VALUE test but no
+/// live-objects probe, the exact coverage gap that let the sibling `StrCmp` mis-classification reach
+/// review instead of the gate. Verified DISCRIMINATING: with the reclaim gate forced off this shape
+/// emits 0 body drops (the owned rope leaks); the correct gate emits 1 and nets to 0 — both value-
+/// correct (5), so only the live-object count sees it.
+///
+/// Shape: `main` returns the scalar `scalar-len` of an OWNED runtime rope "hixxx" (built by `rep`, un-
+/// foldable so it genuinely allocates), so the ONLY heap traffic is that rope; after the run
+/// `live-objects` must be 0. `#[ignore]` — needs the debug-counters store (`cargo xtask build`; run with
+/// `-- --ignored`).
+#[test]
+#[ignore]
+fn string_scalar_len_over_an_owned_temporary_rope_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[scalar-len] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // `rep` appends "x" three times via `String.concat` → an OWNED rope "hixxx" (5 unicode scalars).
+    // `String.scalar-len` borrows it (bytes-len/bytes-get walk) and must drop the owned rope after.
+    let src = "(module m \
+                 (def (rep (: s String) (: n Int64)) \
+                    (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+                 (def (main) ((. String scalar-len) (rep \"hi\" 3))) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(5),
+        "scalar-len of the owned rope 'hixxx' is 5 unicode scalars"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "scalar-len leak: the owned rope operand's heap cells are still live after the borrowing \
+         String.scalar-len walk (expected 0 — the `heap_operand_ownership==Owned` gate must drop the \
+         owned rope after the walk, exactly like Core::BytesLen)"
+    );
+}
+
 /// A RUNTIME STRING ROPE compared with `=` is canonicalized (`bytes-compact`) before `value-eq`, so a
 /// rope and its flat twin compare EQUAL — the miscompile fix — AND the compact-then-drop leaves NO live
 /// heap cells. `value-eq` is `champ_eq`, a PHYSICAL-byte compare; a `String.concat` produces a ROPE whose
@@ -5920,6 +5967,52 @@ fn a_let_bound_selfcall_then_perform_folds_via_multivalue_return() {
         .expect("the let-bound selfcall-then-perform shape folds via multi-value return");
     if let Some(v) = run_linked(&bytes, "main") {
         assert_eq!(v, "3");
+    }
+}
+
+/// A CLOSURE capturing an inner-handled perform RESULT, applied under an OUTER handler of the SAME effect,
+/// closes over the inner-handled VALUE — NOT a re-perform. `base` is `let`-bound to `(Ctr.tick)` under the
+/// INNER `handle Ctr 50` (so base = 50, the closure is `(fn (x) (+ x 50))`); applied under `handle Ctr 5`
+/// as `(f 3)` the result is 3 + 50 = 53. It MISCOMPILED to 8 = 3 + 5 (each apply RE-performed the tick at
+/// the apply site, re-homed by the OUTER handler — the capture was compiled as the perform EXPRESSION, not
+/// its value). Fixed by (a) discharging the inner handle when `lambda_of` reduces the returned closure, and
+/// (b) closing the pure captured binding into the closure body before threading detaches it (the let-thread
+/// capture-value inline). The single-arg PARAMETERIZED `main` witnesses the value; corpus mirrors it.
+#[test]
+fn a_closure_capturing_an_inner_handled_perform_result_captures_the_value_not_a_reperform() {
+    use crate::testkit::parse;
+    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
+               (def (main) \
+                 (handle Ctr 5 ((tick (u) s (resume s (+ s 1)))) \
+                   (let ((f (handle Ctr 50 ((tick (u) s (resume s (+ s 1)))) \
+                              (let ((base (Ctr.tick))) (fn ((: x Int64)) (+ x base)))))) \
+                     (f 3)))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("a closure capturing an inner-handled perform result compiles");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(
+            v, "53",
+            "the capture must be the inner-handled value 50, so f(3) = 53"
+        );
+    }
+}
+
+/// The NO-OUTER-HANDLER twin of the closure-capture case: the same inner-handled captured closure applied
+/// with no enclosing handler. It once OVER-DECLINED (CDZ0401 "no home") because `lambda_of` peeled the inner
+/// handle, exposing the inner-handled `(Ctr.tick)` as an unhomed perform. Discharging the inner handle in
+/// `lambda_of` closes the closure over base = 50, so `(f 3)` = 53 with no outer handler needed.
+#[test]
+fn a_closure_capturing_an_inner_handled_perform_result_needs_no_outer_handler() {
+    use crate::testkit::parse;
+    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
+               (def (main) \
+                 (let ((f (handle Ctr 50 ((tick (u) s (resume s (+ s 1)))) \
+                            (let ((base (Ctr.tick))) (fn ((: x Int64)) (+ x base)))))) \
+                   (f 3))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("an inner-handled captured closure needs no outer handler (no CDZ0401)");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(v, "53");
     }
 }
 
@@ -15549,6 +15642,37 @@ mod match_engine {
             cdz_run::Outcome::Value(s) => Some(s),
             cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
         }
+    }
+
+    #[test]
+    fn a_recursive_match_binder_scrutinee_is_materialized_once() {
+        // REGRESSION (perf, S2-twin): a match/pattern BINDER used more than once must NOT re-emit its
+        // whole scrutinee per use. When the scrutinee is a RECURSIVE CALL, a binder used K times re-runs
+        // that call K times per recursion level → 2^depth runtime recompute (the pattern-binder twin of the
+        // inline-tuple fall-through exponential `1d568117b`). `f` recurses to `(Mk 1 1)` at n=0; each
+        // recursive arm matches `(f (+ n 1))`, binds `a`, and uses it TWICE in `(Mk a a)`. FIX: the
+        // single-arm `Leaf` fold keeps the `Core::MatchSum` wrapper (materializing the scrutinee into ONE
+        // slot) when the scrutinee reaches a recursive call, so it runs once per level — LINEAR. This runs
+        // `(f -60)`: linear is 60 self-calls (instant); the pre-fix 2^60 self-calls hit the run deadline and
+        // TRAP. So this PASSES fast when materialized-once and TRAPS (run panics) on a regression to per-use
+        // re-emission — a runtime witness of the linear-vs-exponential compile. (wasm target; the Rust
+        // backend's `emit_sum_match` twin still re-emits — tracked separately, routed to v-rust-backend.)
+        let Some(v) = run_heap_value(
+            "(module m (type P (Mk Int64 Int64)) \
+               (def (f (: n Int64)) (if (= n 0) (Mk 1 1) (match (f (+ n 1)) ((Mk a _) (Mk a a))))) \
+               (def (main) (match (f -60) ((Mk x _) x))) (export main))",
+            vec![],
+        ) else {
+            eprintln!(
+                "runtime wasm not found; skipping recursive-match-binder materialization run"
+            );
+            return;
+        };
+        assert_eq!(
+            v, "1",
+            "a recursive match binder used twice must be linear (scrutinee materialized once), not 2^depth \
+             — (f -60) is 1 fast; a regression re-emits the recursive scrutinee per use and hits the deadline"
+        );
     }
 
     #[test]
@@ -40267,8 +40391,13 @@ mod match_engine {
             "Qty.value of a bare number (a Unit.in result) is a coded CDZ0501, not an uncoded no-machine-rep decline"
         );
         assert!(
-            err.message.contains("recovers a quantity") && err.message.contains("plain number"),
-            "the message explains Qty.value needs a quantity + that the operand is a plain number: {}",
+            err.message.contains("recovers a quantity")
+                && err.message.contains("which is not a quantity")
+                // A NUMERIC operand (this Unit.in result is a bare Int) keeps the "conversion already
+                // unwrapped it — drop the Qty.value" repair hint; a non-numeric operand does not (see the
+                // Bool sibling below, which must NOT print the self-contradictory "a plain number").
+                && err.message.contains("already UNWRAPS to a bare number"),
+            "the message names the operand type + that it is not a quantity + the numeric-operand unwrap repair hint: {}",
             err.message
         );
         assert!(
@@ -40283,6 +40412,37 @@ mod match_engine {
         assert!(
             compile_component(&crate::codec::encode(&parse(extract_alone))).is_ok(),
             "Qty.value of a genuine quantity still compiles (the reject is scoped to a non-quantity operand)"
+        );
+    }
+
+    #[test]
+    fn qty_value_of_a_non_numeric_operand_names_the_type_without_the_self_contradictory_plain_number()
+     {
+        // Copilot (PR#602): the CDZ0501 Qty.value-not-a-quantity message hardcoded "— a plain number, not a
+        // quantity", which fires for ANY non-quantity operand — so a Bool operand printed the
+        // self-contradictory "this operand is a Bool — a plain number, not a quantity". The message now names
+        // the real type + "which is not a quantity" GENERALLY, and appends the "a conversion already unwrapped
+        // it — drop the Qty.value" hint ONLY for a numeric operand (the numeric sibling test above pins that
+        // hint). This pins the NON-numeric path: a Bool operand is named + declared not-a-quantity, and must
+        // NOT be called "a plain number".
+        let src = "(do (def (main) ((. Qty value) true)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("Qty.value of a Bool must reject");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0501"),
+            "coded CDZ0501: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("a Bool") && err.message.contains("which is not a quantity"),
+            "names the operand's real type (Bool) + not-a-quantity: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("plain number") && !err.message.contains("UNWRAPS"),
+            "a NON-numeric operand must NOT print 'a plain number' (self-contradictory) nor the numeric-only unwrap hint: {}",
+            err.message
         );
     }
 

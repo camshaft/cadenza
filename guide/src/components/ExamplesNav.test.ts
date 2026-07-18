@@ -70,5 +70,7 @@ test("the nav data scan found examples + buckets (guards against a vacuous pass)
   assert.ok(PLAYGROUND_EXAMPLES.length >= 30, `expected many playground examples, found ${PLAYGROUND_EXAMPLES.length}`);
   assert.ok(CAD_EXAMPLES.length >= 5, `expected several cad examples, found ${CAD_EXAMPLES.length}`);
   assert.ok(NOTEBOOK_EXAMPLES.length >= 5, `expected several notebook examples, found ${NOTEBOOK_EXAMPLES.length}`);
-  assert.equal(renderedThemes().size, 4, `expected 4 rendered playground theme buckets, found ${renderedThemes().size}`);
+  // Lower bound, not exact: like the array-count siblings above, this guards against a broken scan (0
+  // buckets) without spuriously failing when a theme bucket is intentionally added or removed.
+  assert.ok(renderedThemes().size >= 2, `expected the playground theme buckets to be found, got ${renderedThemes().size}`);
 });

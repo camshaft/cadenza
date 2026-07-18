@@ -1227,6 +1227,7 @@ pass	a match arm mixes a payload LITERAL, a wildcard, and a nested-Option patter
 pass	a match arm reading two elements of a boxed payload tuple shares the sum-payload prefix
 pass	a match arm's DESTRUCTURED payload is the argument to a perform in that arm's body
 pass	a match binder over a narrow scrutinee returns the bound value
+pass	a match binder used twice binds its recursive scrutinee once (A-normalized, value-correct)
 pass	a match binds an Ast.Bool payload
 pass	a match binds an Ast.Float payload
 pass	a match binds an Ast.Str payload
@@ -3244,6 +3245,8 @@ pass	ordering a string against an integer is a type error regardless of operand 
 pass	ordering an integer against a boolean is a type error
 pass	ordering an integer against a float is rejected, not silently promoted
 pass	ordering an integer against a string is a type error
+pass	ordering two integers of different sign is rejected, not silently reinterpreted
+pass	ordering two integers of different width is rejected, not silently widened
 pass	ordering two rationals a hair apart at the i64 boundary is exact
 pass	over-applying a constructor by several arguments is a type error
 pass	over-applying a constructor is a type error, not a silent argument drop

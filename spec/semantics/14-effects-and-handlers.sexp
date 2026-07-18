@@ -1138,6 +1138,30 @@
                 (let ((x (Prng.roll 1000))) (let ((y (Prng.roll 1000))) (+ x y))))) (export main)))
   (output (: 1392 Int64)))
 
+(case "a closure capturing an inner-handled perform result is applied under an OUTER handler of the same effect"
+  (doc    "A CLOSURE built inside an INNER handle captures a `let`-bound perform RESULT (`base`), then escapes
+           to be applied under an OUTER handler of the SAME effect. The capture must be the inner-handled
+           VALUE, NOT a re-perform: `base` is bound to `(Ctr.tick)` under `handle Ctr 50` (a get/set arm),
+           so base = 50 and the closure is `(fn (x) (+ x 50))`. Applied under `handle Ctr 5` as `(f 3)`, the
+           result must be 3 + 50 = 53. It MISCOMPILED to 8 = 3 + 5 (each apply RE-performed the tick at the
+           apply site, re-homed by the OUTER handler) because the capture was compiled as the perform
+           EXPRESSION, not its value — the closure-capture-reperform miscompile. Fixed by discharging the
+           inner handle when reducing the returned closure (`lambda_of`) AND closing a pure captured binding
+           into the closure body before threading detaches it (the let-thread capture-value inline), so the
+           closure closes over the value 50, not the perform.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main)
+              (handle Ctr 5
+                ((tick (u) s (resume s (+ s 1))))
+                (let ((f (handle Ctr 50
+                           ((tick (u) s (resume s (+ s 1))))
+                           (let ((base (Ctr.tick)))
+                             (fn ((: x Int64)) (+ x base))))))
+                  (f 3))))
+            (export main)))
+  (output (: 53 Int64)))
+
 (case "TWO performs in an if condition both fold on the strict-first spine"
   (input  (do
             (effect Amb (op flip (-> Unit Int64)))

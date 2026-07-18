@@ -20,3 +20,18 @@ ROUTED to v-runtime (corpus-bugfix 2026-07-18): the ty_heap_walkable / compound-
 SHARPENED (breaker, 2026-07-18): probed all heap types — runtime Set/Bytes/String(rope)/Map/Tuple/user-sum =
 ALL COMPUTE on wasm; ONLY built-in LIST = declines. The LONE gap → a SINGLE missing ty_heap_walkable / value-eq
 arm for the List rep (all siblings already covered). Small, high-confidence, well-scoped one-arm add for v-runtime.
+
+---
+REFINED (breaker, 2026-07-18) — LOWER-RISK FIX: the List equality capability ALREADY EXISTS (used for Map
+KEYS + Set ELEMENTS — proven: (list 5 5) dedups as a Map key to len 1; {[3,8],[8,3]} as Set elems to len 2).
+It is just NOT wired to the standalone = operators compound-value dispatch (ty_heap_walkable / value-eq),
+even though the CHAMP key-comparison path covers List. FIX: route = on a List through the SAME list-compare
+the Map/Set key path already uses (dispatch-wiring add), NOT a fresh walk — smaller + lower-risk. List is
+the lone operator-dispatch omission; all other collections route = to their walk fine.
+
+---
+BLAST RADIUS (breaker, 2026-07-18) — PRIORITY-RAISER: the missing List arm blocks = on ANY compound
+CONTAINING a list (the walk recurses into the list element + hits the missing arm), not just top-level
+list =. Verified wasm: (= (Option.Some (list a b)) …) DECLINES; (= (tuple (list a b) 9) …) DECLINES; rust
+computes both; control (tuple, no list) computes. So = on a record-with-a-list-field / Option-of-list /
+tuple-with-a-list is unusable on wasm. The SAME one-arm dispatch fix clears the whole family at once.

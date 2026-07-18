@@ -224,6 +224,49 @@ def main() = lower(fuse(base(), arm()))`,
   },
 };
 
+/// A PARAMETRIC ASSEMBLY (v-cad's showcase-assembly-parametric.cdz, distilled): the L-bracket — a base plate
+/// + a 90°-rotated standing arm, each with a bolt hole — where EVERY dimension is a `@param` slider. This is
+/// the one example that combines BOTH the assembly-as-code story (rotate-x mated parts, fuse) AND the
+/// parametric story (5 live sliders, exact Rational dims) — neither the plain L-bracket nor the mounting
+/// plate does both. Single-mode auto-surfaces its 5 @params (pa-len/wid/thick/rise/bolt); the transforms
+/// (rotate-x/move-*/cut/fuse/box/cyl) are all in the injected `helpers` superset. Mesh = v-cad's driver.
+const ASSEMBLY_PARAMETRIC_BRACKET: ExampleModel = {
+  slug: "assembly-parametric-bracket",
+  title: "Parametric L-bracket (assembly + sliders)",
+  description: "An L-bracket assembly (base + a 90-degree arm) with every dimension a live @param slider.",
+  source: {
+    ml: `@param(widget: slider, range: [20, 80], default: 40) pa-len : Rational
+@param(widget: slider, range: [15, 50], default: 30) pa-wid : Rational
+@param(widget: slider, range: [2, 10], default: 4) pa-thick : Rational
+@param(widget: slider, range: [10, 50], default: 25) pa-rise : Rational
+@param(widget: slider, range: [1, 8], default: 3) pa-bolt : Rational
+def base-plate(len: Rational, wid: Rational, t: Rational, r: Rational) =
+  cut(move-z(t / (2 / 1), box(len, wid, t)), move-z(t / (2 / 1), move-x(len / (4 / 1), cyl(t * (2 / 1), r))))
+def arm-flat(wid: Rational, rise: Rational, t: Rational, r: Rational) =
+  cut(move-z(t / (2 / 1), box(wid, rise, t)), move-z(t / (2 / 1), move-y(rise / (3 / 1), cyl(t * (2 / 1), r))))
+def standing-arm(wid: Rational, rise: Rational, t: Rational, r: Rational) =
+  move-y((0 / 1 - wid) / (2 / 1), move-z(t, rotate-x(90 / 1, arm-flat(wid, rise, t, r))))
+def main() = host Param in
+  (let len = Param.pa-len() in let wid = Param.pa-wid() in let t = Param.pa-thick() in let rise = Param.pa-rise() in let r = Param.pa-bolt() in
+     lower(fuse(base-plate(len, wid, t, r), standing-arm(wid, rise, t, r))))`,
+    sexpr: `(: (@ (param (: widget slider) (: range (list 20 80)) (: default 40)) pa-len) Rational)
+(: (@ (param (: widget slider) (: range (list 15 50)) (: default 30)) pa-wid) Rational)
+(: (@ (param (: widget slider) (: range (list 2 10)) (: default 4)) pa-thick) Rational)
+(: (@ (param (: widget slider) (: range (list 10 50)) (: default 25)) pa-rise) Rational)
+(: (@ (param (: widget slider) (: range (list 1 8)) (: default 3)) pa-bolt) Rational)
+(def (base-plate (: len Rational) (: wid Rational) (: t Rational) (: r Rational))
+  (cut (move-z (/ t (/ 2 1)) (box len wid t)) (move-z (/ t (/ 2 1)) (move-x (/ len (/ 4 1)) (cyl (* t (/ 2 1)) r)))))
+(def (arm-flat (: wid Rational) (: rise Rational) (: t Rational) (: r Rational))
+  (cut (move-z (/ t (/ 2 1)) (box wid rise t)) (move-z (/ t (/ 2 1)) (move-y (/ rise (/ 3 1)) (cyl (* t (/ 2 1)) r)))))
+(def (standing-arm (: wid Rational) (: rise Rational) (: t Rational) (: r Rational))
+  (move-y (/ (- (/ 0 1) wid) (/ 2 1)) (move-z t (rotate-x (/ 90 1) (arm-flat wid rise t r)))))
+(def (main)
+  (host (Param)
+    (let ((len ((. Param pa-len))) (wid ((. Param pa-wid))) (t ((. Param pa-thick))) (rise ((. Param pa-rise))) (r ((. Param pa-bolt))))
+      (lower (fuse (base-plate len wid t r) (standing-arm wid rise t r))))))`,
+  },
+};
+
 /// The example models the /cad example-switcher offers, in display order. Every one is verified to compile
 /// + mesh against the preloaded library. Keep the FIRST entry the canonical simple starter (the /cad route
 /// opens with `DEFAULT_EXAMPLE`). The parametric plate is one of these — in single-mode a parametric model
@@ -237,6 +280,7 @@ export const EXAMPLES: ExampleModel[] = [
   PARAMETRIC_PLATE,
   UNITS_BRACKET,
   ASSEMBLY_L_BRACKET,
+  ASSEMBLY_PARAMETRIC_BRACKET,
 ];
 
 /// The model the /cad route opens with (the canonical cube-with-dent starter).

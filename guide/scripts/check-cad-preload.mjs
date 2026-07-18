@@ -203,6 +203,35 @@ if (!asm) {
   }
 }
 
+// PARAMETRIC ASSEMBLY showcase (v-cad's parametric L-bracket): assembly (rotate-x/fuse) + parametric (@param
+// sliders) together. Must compile against preloaded helpers AND surface its 5 @params (single-mode drives
+// them). Gates the combined path — the rotate helpers + the @param manifest scan over an assembly model.
+const pbracket = EXAMPLES.find((e) => e.slug === "assembly-parametric-bracket");
+if (!pbracket) {
+  failures.push("assembly: the assembly-parametric-bracket example is missing from EXAMPLES");
+} else {
+  const EXPECTED = ["pa-len", "pa-wid", "pa-thick", "pa-rise", "pa-bolt"];
+  for (const surface of ["ml", "sexpr"]) {
+    const program = injectImport(pbracket.source[surface], surface);
+    let cr;
+    try {
+      cr = wasm.compile_with_preloaded(program, surface, names, sources, formats);
+    } catch (e) {
+      failures.push(`[${surface}] assembly-parametric-bracket compile THREW: ${String(e && e.message ? e.message : e).slice(0, 120)}`);
+      continue;
+    }
+    const errs = (cr.diagnostics ?? []).filter((d) => d.error);
+    if (!cr.component || errs.length) {
+      failures.push(`[${surface}] assembly-parametric-bracket did not compile${errs.length ? ` — ${errs.map((d) => `${d.code ?? ""} ${d.message ?? ""}`.trim()).join("; ")}` : " (no component)"}`);
+    } else {
+      const params = (wasm.param_manifest(program, surface) ?? []).map((x) => x.name);
+      const missing = EXPECTED.filter((n) => !params.includes(n));
+      if (missing.length) failures.push(`[${surface}] assembly-parametric-bracket param_manifest missing @param(s): ${missing.join(", ")} (got ${params.join(", ") || "none"})`);
+      else console.log(`  ✓ [${surface}] assembly-parametric-bracket: compiles (rotate-x + fuse) + surfaces its 5 @params (${params.join(", ")})`);
+    }
+  }
+}
+
 if (failures.length) {
   console.error(
     "\n✗ cad-preload conformance FAILED — the /cad preloaded-library path regressed (compiler preload " +

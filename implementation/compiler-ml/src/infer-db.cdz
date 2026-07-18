@@ -102,7 +102,13 @@ def bin-type(op: Int64, tcol: Map(Int64, Typed), a: Int64, b: Int64) =
      // accepted ANY two integer widths → let `(< (: 5 Int8) (: 10 Int16))` wrongly RUN to `true` (a
      // ran-when-should-decline miscompile vs rcdzc, both mixed-width and mixed-sign).
      (if (op <= 65) then
-        (match arith-result-type(tcol, a, b) with | Option.Some(_) => Typed.TBool | Option.None(_) => Typed.TErr)
+        // operands must be ONE type: BOTH the same integer type (arith-result-type unifies them) OR BOTH
+        // Bool — rcdzc's relational ops are `∀a. a → a → Bool` for an orderable `a` (Int OR Bool: `false <
+        // true`, `(= true false)`, all defined; Bool encodes 0/1 so eval's 0/1 comparison already matches).
+        // A mixed Int~Bool (or mixed int width/sign) → TErr (CDZ0301). Bool-Bool was declining before.
+        (match arith-result-type(tcol, a, b) with
+          | Option.Some(_) => Typed.TBool
+          | Option.None(_) => (if both-bool(tcol, a, b) then Typed.TBool else Typed.TErr))
       else Typed.TErr)
    else
      // arithmetic (corrected-2b): the operands must be the SAME integer type (via unify-ty over the shared
@@ -138,6 +144,16 @@ def arith-result-type(tcol: Map(Int64, Typed), a: Int64, b: Int64) =
                 | Option.None(_) => Option.None(unit))
           | _ => Option.None(unit))
     | _ => Option.None(unit))
+
+/// Bool iff BOTH operands are `TBool` — the second accepted shape for a RELATIONAL op (the first being two
+/// unifying integers). rcdzc's comparison/equality is `∀a. a → a → Bool` for an orderable `a`, and Bool IS
+/// orderable (`false < true`) + equatable; Bool encodes 0/1 in Core, so eval's 0/1 comparison already gives
+/// the right answer. Distinct from the integer path (`arith-result-type`); a mixed Int~Bool satisfies neither
+/// → TErr (CDZ0301).
+def both-bool(tcol: Map(Int64, Typed), a: Int64, b: Int64) =
+  (match Map.lookup(tcol, a) with
+    | Option.Some(Typed.TBool) => (match Map.lookup(tcol, b) with | Option.Some(Typed.TBool) => true | _ => false)
+    | _ => false)
 
 /// The type of a `let`: the body's type, provided neither value nor body is `TErr` (a well-typed binding of
 /// any ground type). `TErr` if either part is erroneous.
@@ -229,7 +245,7 @@ def ifkw() = Tok.TIf
 def thenkw() = Tok.TThen
 def elsekw() = Tok.TElse
 def truelit() = Tok.TBoolTok(1)
-def _falselit() = Tok.TBoolTok(0)   // kept as a builder for symmetry with truelit; `_` silences CDZ0306 (no test uses false yet)
+def falselit() = Tok.TBoolTok(0)
 
 /// Parse a token list to `(root, tree)`.
 def parse-of(ts: List(Tok)) = parse-tokens(ts)
@@ -358,6 +374,27 @@ def id-bool-in-arith-is-err() =
   // "true + 1" → a Bool operand to arithmetic → TErr (bin-type requires Int operands).
   (match parse-of([truelit(), plus(), n(1)]) with | (root, tree) =>
     (if type-err-at(tree, root, root) then unit else trap("true + 1 is TErr (no bool arithmetic)")))
+
+@test
+def id-bool-comparison-is-bool() =
+  // "true == false" → both operands TBool → the == node is TBool. rcdzc's relational ops are `∀a. a → a →
+  // Bool` for an orderable `a`, and Bool IS equatable/orderable — so a Bool-Bool comparison is well-typed
+  // (was declining before both-bool was added). Bool encodes 0/1, so eval's 0/1 comparison matches rcdzc.
+  (match parse-of([truelit(), eqop(), falselit()]) with | (root, tree) =>
+    (if is-bool-at(tree, root, root) then unit else trap("true == false is TBool (Bool is equatable)")))
+
+@test
+def id-bool-lt-is-bool() =
+  // "false < true" → both TBool → the < node is TBool (Bool is ordered: false < true, i.e. 0 < 1).
+  (match parse-of([falselit(), lt(), truelit()]) with | (root, tree) =>
+    (if is-bool-at(tree, root, root) then unit else trap("false < true is TBool (Bool is ordered)")))
+
+@test
+def id-mixed-int-bool-comparison-is-err() =
+  // "true == 1" → a Bool operand vs an Int operand → neither both-int (unify) nor both-bool → TErr, matching
+  // rcdzc's CDZ0301 (Bool vs Int don't unify; no cross-kind comparison).
+  (match parse-of([truelit(), eqop(), n(1)]) with | (root, tree) =>
+    (if type-err-at(tree, root, root) then unit else trap("true == 1 is TErr (Int~Bool don't unify)")))
 
 // ---- width-aware type facts (slice-2a: Typed carries (signed, width)) ----
 

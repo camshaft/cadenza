@@ -1554,10 +1554,30 @@ fn lambda_of(db: &mut Db, id: StructId) -> Option<(std::rc::Rc<[StructId]>, Stru
         // escaping an ARM, the design-blocked E5 captured-k that MUST be refused. Its BODY `(+ 100
         // (Amb.flip))` is NOT a lambda, so gating on `lambda_of(body)` accepts only the closure-IS-the-body
         // case and leaves the escaping-arm case on the refuse path (it declines "not applyable" downstream).
-        Resolved::Handle { body, .. } => {
+        Resolved::Handle { init, arms, body } => {
             let mut guard = db.enter_reduction()?;
             let g = guard.db();
-            lambda_of(g, body)
+            // GATE (discriminator, unchanged): applyable only when the BODY reduces to a closure. An
+            // escaping continuation from an arm folds to a closure whose RAW body is not lambda-shaped, so
+            // this gate leaves that design-blocked case on the refuse path.
+            lambda_of(g, body)?;
+            // DISCHARGE the handler over the body BEFORE closing the closure, so a captured perform RESULT
+            // closes over its inner-handled VALUE, not the raw perform. `(handle Ctr 50 (arm) (let ((base
+            // (Ctr.tick))) (fn (x) (+ x base))))` — the naive `lambda_of(body)` recurses into the `let` arm
+            // and closes the closure over `base := (Ctr.tick)` (the RAW perform), so applying it under an
+            // OUTER Ctr handler re-performs the tick (→ 8 not 53) / CDZ0401s with no outer handler.
+            // `reduce_handle` folds the capture to its value → `(let ((base 50)) (fn (x) (+ x base)))`,
+            // reparented under the handle site. RE-RESOLVE it so `base` inside the closure re-binds to the
+            // folded `50` occurrence (the synthesized node was built by `push_list`, unresolved), then close
+            // the closure via the `Let` arm over that value. If the fold declines, keep the old behavior
+            // (fall back to the raw body-lambda) so no previously-working shape regresses.
+            match crate::effects::reduce_handle(g, init, &arms, body) {
+                Some(folded) => {
+                    crate::resolve::resolve_subtree(g, folded);
+                    lambda_of(g, folded)
+                }
+                None => lambda_of(g, body),
+            }
         }
         _ => None,
     }
