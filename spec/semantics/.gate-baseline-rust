@@ -1137,6 +1137,7 @@ pass	a match over multiple nullary constructors with uniform patterns
 pass	a match pattern naming a non-existent variant is a coded rejection
 pass	a match returning multi-argument closures applies at full arity
 pass	a match takes another match's result as its scrutinee
+pass	a match through an erased single-variant newtype dispatches on the inner sum's discriminant
 pass	a match whose all arms diverge is Never and always traps
 pass	a match whose arm bodies have different types is a type error even when a constant scrutinee selects one
 pass	a match whose only arm is guarded by a literally-true condition is still non-exhaustive
@@ -2200,6 +2201,7 @@ pass	a variant with a wrong-type payload as a direct match scrutinee is a type e
 pass	a variant with an explicit EMPTY-TUPLE payload keeps its tuple form, distinct from a nullary unit
 pass	a variant-payload binder shadow is scoped to its arm, not the whole def
 pass	a variant-payload binder shadowing a param in a called def binds the payload
+pass	a velocity multiplied by a time recovers the distance dimension
 pass	a well-formed annotation still checks and accepts a matching type (the control)
 pass	a whole rational carries a denominator of one
 pass	a wide fixed-size integer width is reserved, not yet a valid type
@@ -2757,6 +2759,7 @@ pass	distinct-signature closures alongside a plain export — the Int64->Int64 c
 pass	distinct-signature closures alongside a plain export — the plain export runs
 pass	dividing a quantity by a bare number keeps its dimension
 pass	dividing quantities divides their dimensions
+pass	dividing two same-dimension quantities cancels to a dimensionless number
 pass	division by zero traps
 pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps

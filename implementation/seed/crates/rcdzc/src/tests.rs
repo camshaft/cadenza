@@ -15299,6 +15299,74 @@ mod match_engine {
     }
 
     #[test]
+    fn a_match_through_an_erased_single_variant_newtype_dispatches_on_the_inner_disc() {
+        // REGRESSION (silent MISCOMPILE, wasm-only differential — breaker/corpus-bugfix find): a match over a
+        // nested sum whose OUTER type is a CLOSED single-variant newtype (`(type Outer (Wrap Inner))`, which
+        // ERASES to `Ty::Nominal` — `infer::newtype_underlying`) read the INNER discriminant one level too
+        // deep and always dispatched to the FIRST inner variant. `(match (Outer.Wrap <runtime Inner>)
+        // ((Outer.Wrap (Inner.P x)) …) ((Outer.Wrap (Inner.W y)) …))` on a runtime `Inner.W` took the `P`
+        // arm. Rust computed it correctly (wasm-only). ROOT: construction correctly ERASES the outer Wrap
+        // (no `sum-new` — the value IS the inner), but the match's `SumCont::Switch` carried the RAW
+        // `switch_path` `[Payload]` (through the erased Wrap) and `push_discriminant` emitted a spurious
+        // `sum-payload` for that erased step, unwrapping the inner sum's payload BOX, so `sum-disc` read the
+        // box → 0 → always the first variant. FIX: a `Payload` step through a `Ty::Nominal` (erased newtype)
+        // is a runtime NO-OP in `push_discriminant` (peel one nominal layer, emit nothing) — the disc-dispatch
+        // twin of `Core::SumPayload`'s `erase_nominal_steps`. A runtime inner (chosen by a param) defeats the
+        // const-fold that would otherwise resolve the variant statically.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Inner (P Int64) (W Int64)) (type Outer (Wrap Inner)) \
+                   (def (pick (: k Int64) (: n Int64)) (if (< k 0) (Inner.P n) (Inner.W n))) \
+                   (def (main (: k Int64) (: n Int64)) \
+                     (match (Outer.Wrap (pick k n)) \
+                       ((Outer.Wrap (Inner.P x)) (+ x 100)) \
+                       ((Outer.Wrap (Inner.W y)) (+ y 200)))) \
+                   (export main))",
+                vec!["1".into(), "5".into()],
+            )
+            .unwrap(),
+            "205",
+            "k>=0 picks Inner.W → the W arm (y+200 = 205); the erased outer Wrap Payload must NOT unwrap the \
+             inner box before reading the inner disc"
+        );
+        // The P face: k<0 picks Inner.P → the P arm (x+100 = 105). Confirms the fix dispatches BOTH inner
+        // variants (not just collapsing everything to the other arm).
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Inner (P Int64) (W Int64)) (type Outer (Wrap Inner)) \
+                   (def (pick (: k Int64) (: n Int64)) (if (< k 0) (Inner.P n) (Inner.W n))) \
+                   (def (main (: k Int64) (: n Int64)) \
+                     (match (Outer.Wrap (pick k n)) \
+                       ((Outer.Wrap (Inner.P x)) (+ x 100)) \
+                       ((Outer.Wrap (Inner.W y)) (+ y 200)))) \
+                   (export main))",
+                vec!["-1".into(), "5".into()],
+            )
+            .unwrap(),
+            "105",
+            "k<0 picks Inner.P → the P arm (x+100 = 105)"
+        );
+        // The LITERAL-payload face on the LATER inner variant (the original find's exact shape): the
+        // `(Inner.W 5)` literal arm must fire on a runtime-`W` value, not fall through to the binder arm.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Inner (P Int64) (W Int64)) (type Outer (Wrap Inner)) \
+                   (def (main (: sel Int64) (: n Int64)) \
+                     (match (if (= sel 0) (Outer.Wrap (Inner.P n)) (Outer.Wrap (Inner.W n))) \
+                       ((Outer.Wrap (Inner.P 3)) 1000) \
+                       ((Outer.Wrap (Inner.P x)) x) \
+                       ((Outer.Wrap (Inner.W 5)) 2000) \
+                       ((Outer.Wrap (Inner.W y)) y))) \
+                   (export main))",
+                vec!["1".into(), "5".into()],
+            )
+            .unwrap(),
+            "2000",
+            "sel=1,n=5 → Inner.W 5 → the W-literal arm (2000), not the W-binder fall-through (5)"
+        );
+    }
+
+    #[test]
     fn a_nested_match_on_a_recursive_sum_with_a_known_outer_disc_reads_the_right_payload_depth() {
         // These asserts run heap values; skip when the value-heap runtime store is absent (CI's bare
         // `cargo test` builds no store), matching the established heap-test pattern — else the

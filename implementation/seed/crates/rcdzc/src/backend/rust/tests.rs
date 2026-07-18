@@ -3755,6 +3755,46 @@ fn rustc_roundtrip_float_arithmetic_and_of_int() {
 }
 
 #[test]
+fn rustc_roundtrip_float32_literal_grounds_to_operand_width() {
+    // The FLOAT column of the narrow-literal width family: a bare `1.5` in `(= x 1.5)` / `(* x 2.0)` where
+    // `x: Float32` defaults its OWN solved type to Float64, so it emitted `f64::from_bits(…)` — and the
+    // equality path's canonical-bits compare `.to_bits() as u32` then took the LOW 32 BITS of the f64
+    // pattern (0x0 for 1.5, ≠ the f32 0x3fc00000) → ALWAYS FALSE (silent wrong value); the arith path
+    // emitted `x * <f64>` → rustc E0277. Fix: `emit_grounded_float` grounds a ConstFloat operand to the
+    // op's float width, so both operands share the type. Compare + arith, f32 + f64.
+    // FACE 1 (equality — the silent one): (= x 1.5) at f32 must be TRUE for x=1.5 (was always false).
+    let eq = compile_rust("(module m (def (f (: x Float32)) (if (= x 1.5) 1 0)) (export f))");
+    assert!(
+        eq.contains("f32::from_bits(1069547520u32)"), // 0x3fc00000 = 1.5f32
+        "the f32 literal grounds to the f32 bit pattern, not the truncated f64 low bits:\n{eq}"
+    );
+    if let Some(out) = rustc_run(&eq, "f(1.5)") {
+        assert_eq!(
+            out, "1",
+            "f32 x=1.5 == literal 1.5 is TRUE (was silently false)"
+        );
+    }
+    if let Some(out) = rustc_run(&eq, "f(2.5)") {
+        assert_eq!(out, "0", "f32 x=2.5 != 1.5");
+    }
+    // FACE 2 (arith — the loud E0277 one): (* x 2.0) at f32 emits `x * f32::from_bits(..)`, rustc-compiles.
+    let mul = compile_rust("(module m (def (g (: x Float32)) (* x 2.0)) (export g))");
+    assert!(
+        mul.contains("f32::from_bits(1073741824u32)"), // 0x40000000 = 2.0f32
+        "the f32 arith literal grounds to f32 (no `f32 * f64` E0277):\n{mul}"
+    );
+    if let Some(out) = rustc_run(&mul, "g(3.0)") {
+        assert_eq!(out, "6", "f32 3.0 * 2.0 = 6");
+    }
+    // CONTROL: a Float64 literal still emits at f64 (no over-narrowing regression).
+    let f64c = compile_rust("(module m (def (d (: x Float64)) (* x 2.0)) (export d))");
+    assert!(
+        f64c.contains("f64::from_bits("),
+        "a Float64 operand's literal stays f64:\n{f64c}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_const_float_nan_emits_and_compares_by_canonical_bits() {
     // A constant NaN float (`Float64.nan`/`(. Float64 nan)`) → the EXPLICIT canonical NaN bits (not
     // `f64::NAN`, whose payload is platform-defined) — matching the runtime/wasm `CANON_NAN_BITS` so the

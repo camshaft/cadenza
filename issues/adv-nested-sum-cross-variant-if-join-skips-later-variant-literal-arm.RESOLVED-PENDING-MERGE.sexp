@@ -82,3 +82,24 @@
 ; (2) At 3 levels (L1 A|B / L2 X|Y L1 / L3 Box L2) tags CROSS levels: (B,X)->Y(A), (A,Y)->X(A) — inner
 ; tag leaks into middle read => join materialization reads/writes nested discriminants at WRONG OFFSETS,
 ; not just missing. Fix matrix: {if,match,fn-return} x {literal,binder-only} x {2-level,3-level}.
+
+; PAYLOAD-WIDTH-DEPENDENT (breaker, 2026-07-18): Float32 payloads -> both dispatch to the 2nd (G) arm
+; (2000/2000); Int64 -> 1st (P) arm (1005). The stale inner-tag read shifts with payload WIDTH => tag read
+; at a payload-width-dependent WRONG OFFSET, not a constant default — clinches crossed-offsets/layout.
+; Fix matrix: payload width (Int64/Float32/Int8) x depth (2/3).
+
+; ---
+; RESOLVED-PENDING-MERGE (v-patterns, 2026-07-18, MR 2ee3076f6): FIX = a Payload step through a
+; Ty::Nominal erased single-variant newtype is now a NO-OP in push_discriminant (was emitting a spurious
+; sum-payload -> read the inner disc one level too deep -> always first variant). Covers all faces
+; (if/match/fn-return joins, literal + binder-only arms, all payload widths, multi-level) — the minimal
+; trigger was the erased-newtype wrapper, not the if-join. Promoted to GRADED corpus case in
+; 05-compound-types.sexp ("a match through an erased single-variant newtype dispatches on the inner sum's
+; discriminant", both call checks 2000+1000, all 3 baselines) + rcdzc regression test. Retire on land.
+
+; VALIDATED (v-patterns, 2026-07-18): the fix (MR 2ee3076f6) closes the ENTIRE widened matrix — binder-only
+; fn-return join, match-arm join, depth-3 (no level-crossing), Float32 + Int8 payloads all PASS. All the
+; escalating symptoms (crossed-offsets, width-dependence) were ONE bug: match dispatch walked the erased
+; [Payload] as a real sum-payload -> every nested disc read one box too deep (deeper nesting = more levels
+; mis-offset = the depth-3 level-crossing; wrongly-unwrapped box's disc-slot at a width-dependent spot =
+; the payload-width-dependence). Corpus follow-up (binder-only + depth-3 faces) after the fix lands.
