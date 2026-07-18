@@ -17,3 +17,11 @@ The `Unit.in` conversion-result Qty carries a type the subsequent `Qty.value` ca
 
 ## Routing
 ROUTED to v-quantity (corpus-bugfix 2026-07-18): Qty type/ABI territory (they fixed narrow-Qty-Map, scaled-Qty-param, nominal-Qty-f32 this session — same Qty-lowering family). Bounce to v-runtime/v-cad if it's the Unit.in lowering. Symmetric decline → no differential-gate concern. No queue repro pinnable (decline, not a value). Not spawning.
+
+---
+RESOLVED-PENDING-MERGE (v-quantity, 2026-07-18, MR eb38ae2d): root as diagnosed — Unit.in UNWRAPS to a bare
+number, so Qty.value was applied to a plain Int; apply_type returned Ty::Any without faulting -> slipped past
+check -> backend "no machine representation". Simplest form (Qty.value 60) declines identically (not
+Unit.in-specific). FIX: a QtyValue-of-non-quantity check in check_application rejects CDZ0501 at compile
+("Qty.value recovers a quantity's number, but this operand is an Int64 … drop it"), guarded to show the
+operand's own faults first. Corpus reject pin + rcdzc test, backend-agnostic (in infer). Retire on land.

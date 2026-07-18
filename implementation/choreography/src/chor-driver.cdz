@@ -130,6 +130,19 @@ def render-compilable(g: Chor, r: String) -> String =
   String.concat(compile-preamble(),
     String.concat(compile-body(project(g, r)), "\n\nexport { main }\n"))
 
+/// Emit EVERY actor's compilable module, one labelled section per role — the per-actor artifact set the
+/// `cdz chor` sidecar writes to `out/<Role>.cdz` and `cdz compile`s. Each section is a file-marker header
+/// (`==== <Role> ====`) followed by that actor's complete module. This is the whole "one self-contained
+/// program per actor" bundle from a single global protocol (operator #53), rendered as text for the CLI to
+/// split into files (or a human to inspect).
+def render-all(roles: List(String), g: Chor) -> String = match roles with
+  | [] => ""
+  | [r] => render-actor-section(g, r)
+  | [r, .. rest] => String.concat(render-actor-section(g, r), String.concat("\n", render-all(rest, g)))
+
+def render-actor-section(g: Chor, r: String) -> String =
+  String.concat("==== ", String.concat(r, String.concat(" ====\n", render-compilable(g, r))))
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -277,6 +290,29 @@ def compilable-receiver-performs-recv() =
   if contains-sub-str(m, "Comm.recv(\"Buyer\")") then unit
   else trap("the receiver's compilable body performs Comm.recv(\"Buyer\")")
 
+def purchase-linear() =
+  Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"),
+    Chor.Seq(Chor.Comm("Seller", "Buyer", "Quote"),
+      Chor.Comm("Seller", "Shipper", "Ship")))
+
+@test
+def render-all-emits-every-actor-section() =
+  // The 3-party Purchase renders one ==== <Role> ==== section per actor, each a full compilable module.
+  let out = render-all(["Buyer", "Seller", "Shipper"], purchase-linear()) in
+  if contains-sub-str(out, "==== Buyer ====") then
+    (if contains-sub-str(out, "==== Seller ====") then
+       (if contains-sub-str(out, "==== Shipper ====") then unit else trap("Shipper section"))
+     else trap("Seller section"))
+  else trap("render-all emits a labelled section per actor")
+
+@test
+def render-all-sections-are-compilable-modules() =
+  // Each section carries a complete module (effect Comm + main). Spot-check Seller performs its 2 sends.
+  let out = render-all(["Buyer", "Seller", "Shipper"], purchase-linear()) in
+  if contains-sub-str(out, "Comm.send(\"Quote\")") then
+    (if contains-sub-str(out, "Comm.send(\"Ship\")") then unit else trap("Seller sends Ship"))
+  else trap("Seller's section performs its projected sends")
+
 @test
 def compilable-sender-is-exact-golden() =
   // GOLDEN: pin the EXACT emitted module for a single send. Verified (hand-mirrored) to `cdz compile` to a
@@ -306,4 +342,4 @@ def prefix-eq-at(hay: String, needle: String, start: Int64, j: Int64) -> Bool =
       | Option.None(_) => true)
     | Option.None(_) => false)
 
-export { render, shred, drive, verdict, report, render-compilable }
+export { render, shred, drive, verdict, report, render-compilable, render-all }

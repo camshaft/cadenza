@@ -8,6 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   parseRational,
+  exactRational,
   isFractionalType,
   sliderFromManifest,
   slidersFromManifest,
@@ -48,6 +49,49 @@ test("sliderFromManifest: a Rational param → fractional slider (the exact-frac
   const s = sliderFromManifest(e);
   assert.equal(s.fractional, true);
   assert.deepEqual(s.default, [7, 2]); // 3.5 held exactly
+});
+
+test("exactRational: prefers the num/den pair over the text string", () => {
+  // num/den present → use it (exact, even if the text render is a source-expr).
+  assert.deepEqual(exactRational("1", "4", "((. Rational of) 1 4)"), [1, 4]);
+  assert.deepEqual(exactRational("7", "2", "7/2"), [7, 2]);
+  // num/den absent → fall back to the string.
+  assert.deepEqual(exactRational(undefined, undefined, "50"), [50, 1]);
+  assert.deepEqual(exactRational(undefined, undefined, "3/4"), [3, 4]);
+  // den 0 in the pair → fall back to the string (not a divide-by-zero bound).
+  assert.deepEqual(exactRational("1", "0", "5"), [5, 1]);
+  // neither → null.
+  assert.equal(exactRational(undefined, undefined, undefined), null);
+});
+
+test("sliderFromManifest: a Rational param uses the EXACT num/den fields when present (not the text)", () => {
+  // The text render is a non-parseable source-expr, but the num/den fields carry the exact value.
+  const e: ParamManifestEntry = {
+    name: "ratio",
+    typeName: "Rational",
+    rangeLo: "((. Rational of) 0 1)",
+    rangeLoNum: "0",
+    rangeLoDen: "1",
+    rangeHi: "((. Rational of) 5 1)",
+    rangeHiNum: "5",
+    rangeHiDen: "1",
+    default: "((. Rational of) 1 4)",
+    defaultNum: "1",
+    defaultDen: "4",
+  };
+  const s = sliderFromManifest(e);
+  assert.equal(s.fractional, true);
+  assert.deepEqual(s.default, [1, 4], "exact 1/4 default from num/den, not a parse of the source-expr text");
+  assert.deepEqual(s.min, [0, 1]);
+  assert.deepEqual(s.max, [5, 1]);
+});
+
+test("sliderFromManifest: an Int64 param (no num/den) still reads its clean integer string bounds", () => {
+  const e: ParamManifestEntry = { name: "count", typeName: "Int64", rangeLo: "1", rangeHi: "10", default: "3" };
+  const s = sliderFromManifest(e);
+  assert.equal(s.fractional, false);
+  assert.deepEqual(s.min, [1, 1]);
+  assert.deepEqual(s.default, [3, 1]);
 });
 
 test("sliderFromManifest: derives a readable label from a kebab/snake name", () => {

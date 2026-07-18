@@ -114,6 +114,16 @@ export interface ParamManifestEntry {
   rangeLo?: string;
   rangeHi?: string;
   default?: string;
+  /** EXACT bound/default as a num/den pair (strings — BigInt them), present for a RATIONAL `@param` (from
+   *  the compiler's Core::ConstRational, gcd-reduced). Undefined for an Int64 param (read the string fields)
+   *  or when the config omits that bound. Lets /cad's fraction sliders carry the exact value (7/2), not a
+   *  parsed float. `typeName === "Rational"` (or a Qty) discriminates. */
+  rangeLoNum?: string;
+  rangeLoDen?: string;
+  rangeHiNum?: string;
+  rangeHiDen?: string;
+  defaultNum?: string;
+  defaultDen?: string;
 }
 
 /** The inferred type at a source offset, for hover. */
@@ -321,6 +331,13 @@ const api = {
       rangeLo: e.range_lo ?? undefined,
       rangeHi: e.range_hi ?? undefined,
       default: e.default ?? undefined,
+      // Exact num/den (Rational params) — snake→camel; undefined for Int64 / when the config omits the bound.
+      rangeLoNum: e.range_lo_num ?? undefined,
+      rangeLoDen: e.range_lo_den ?? undefined,
+      rangeHiNum: e.range_hi_num ?? undefined,
+      rangeHiDen: e.range_hi_den ?? undefined,
+      defaultNum: e.default_num ?? undefined,
+      defaultDen: e.default_den ?? undefined,
     }));
   },
 

@@ -15,6 +15,7 @@
 
 import { Tok, Node, Tree, node-at, parse-tokens } from "parse-db"
 import { Resolved, resolve-tree } from "resolve-db"
+import { Ty, ty-eq, ty-fixed-int } from "ty"
 
 /// The type fact. `TInt`/`TBool` = the two ground types; `TErr` = type-level poison (unbound name / ill-typed
 /// child / operator-operand mismatch). The language stopped being purely monomorphic once comparison landed:
@@ -139,10 +140,20 @@ def both-int(tcol: Map(Int64, Typed), a: Int64, b: Int64) =
 /// makes an `if` well-typed). Two integer types are equal iff SAME signedness AND width — so an `if` whose
 /// branches are different-width integers is `TErr` (they don't share a ground type), the correctness rule
 /// a later narrow-width slice relies on. Today everything is `TIntW(true, 64)`, so this is behavior-neutral.
-def type-eq(a: Typed, b: Typed) = match a with
-  | Typed.TIntW(sa, wa) => (match b with | Typed.TIntW(sb, wb) => (if (if sa then sb else (if sb then false else true)) then wa == wb else false) | _ => false)
-  | Typed.TBool => (match b with | Typed.TBool => true | _ => false)
-  | Typed.TErr => false
+/// `Typed` → ty.cdz's `Ty` (a LOCAL bridge — infer-db can't import the standalone ty-bridge.cdz, which
+/// imports `Typed` from here = a cycle; so the conversion lives where `Typed` does, importing only ty.cdz).
+/// A concrete `TIntW(s,w)` → a fixed `Ty` int; Bool/Err across.
+def typed-to-ty(t: Typed) = match t with
+  | Typed.TIntW(s, w) => ty-fixed-int(s, w)
+  | Typed.TBool => Ty.TyBool
+  | Typed.TErr => Ty.TyErr
+
+/// Structural type equality — now DELEGATES to ty.cdz's `ty-eq` (the shared type universe) via the local
+/// `Typed`→`Ty` bridge (convergence step ii, divergence #3): infer's if-join decides sameness with the SAME
+/// logic HM unify uses, not a private copy. Behavior-preserving — ty-eq encodes the identical rule (two ints
+/// equal iff same sign AND width; Bool=Bool; TErr never equal, so a poison branch never makes an `if`
+/// well-typed). The two divergent type systems now share one equality.
+def type-eq(a: Typed, b: Typed) = ty-eq(typed-to-ty(a), typed-to-ty(b))
 
 /// The type of an `if`: its two branches' shared type, provided the condition is `TBool` and the then/else
 /// branches have the SAME ground type. A non-Bool cond, mismatched branches, or any missing/erroneous fact

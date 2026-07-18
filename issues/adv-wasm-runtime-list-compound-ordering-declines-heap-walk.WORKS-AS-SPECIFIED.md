@@ -34,3 +34,11 @@ EQUALITY works (defined for every value); only ORDERING declines, correctly. PIN
 in 03-equality-and-observation.sexp. DESIGN QUESTION (should list/tuple lexicographic order be blessed?) is an
 operator/spec ruling — backlogged to concierge. No differential gate should grade this (uniform decline,
 baselined all 3 targets).
+
+---
+CORRECTION (corpus-bugfix 2026-07-18): this file's claim that "Symbol/String < compute on BOTH" is only
+true for the CONST-FOLDED path. GENUINELY-RUNTIME Symbol/String < (non-foldable operand, --arg/call boundary)
+STILL DECLINES on wasm / computes on rust — a real gap, now routed separately to v-runtime
+(adv-wasm-runtime-symbol-string-ordering-declines-heap-walk-rust-computes.md). Only the LIST < uniform-decline
+part of THIS file is settled (no blessed order). corpus-bugfix + v-runtime both initially missed the runtime
+Symbol/String gap because their checks used const-foldable shapes (a false-green — const folds away the gap).

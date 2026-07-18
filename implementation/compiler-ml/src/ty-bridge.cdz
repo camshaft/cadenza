@@ -1,0 +1,78 @@
+/// ty-bridge.cdz — the `Typed` ↔ `Ty` bridge (step (i) of the infer/unify → Ty convergence, divergence #3).
+/// infer-db's pipeline type is `Typed = TIntW(Bool, Int64) | TBool | TErr` (a concrete signed/width int, a
+/// bool, or poison); ty.cdz's canonical universe is `Ty = TyInt(IntTy) | TyBool | TyErr` where
+/// `IntTy = IntTy(Sign, Width)` carries the 3-state orthogonal axes. This module converts between them, so
+/// infer-db can decide type sameness/combining via ty.cdz's `ty-eq`/`unify-ty` (the shared unification)
+/// WITHOUT a big-bang rewrite of `Typed` across the pipeline (lower-db/db.cdz/db-infer all key on `Typed`).
+/// Keep `Typed` as infer-db's internal/wire form + `Ty` as the semantic form the shared logic operates on,
+/// bridging at the call site — the small, non-rippling first convergence step.
+///
+/// `Typed` carries only CONCRETE ints (a `TIntW(signed, width)` — infer-db has no deferred literal state
+/// yet; the deferred-width literal is a later slice). So `typed-to-ty` maps a `TIntW(s, w)` to a FIXED
+/// `Ty` int (`ty-fixed-int`), never a deferred one; `ty-to-typed` grounds any deferred `Ty` int back to a
+/// concrete `Typed.TIntW` via `ground-default` (so a round-trip through the shared unify, which may leave a
+/// deferred, comes back as a concrete pipeline type). Bool and poison map straight across.
+
+import { Typed } from "infer-db"
+import { Ty, IntTy, Sign, Width, ty-fixed-int, ground-default } from "ty"
+
+/// `Typed` → `Ty`: a concrete `TIntW(signed, width)` → the fixed `Ty` int; TBool → TyBool; TErr → TyErr.
+def typed-to-ty(t: Typed) = match t with
+  | Typed.TIntW(s, w) => ty-fixed-int(s, w)
+  | Typed.TBool => Ty.TyBool
+  | Typed.TErr => Ty.TyErr
+
+/// `Ty` → `Typed`: a `TyInt` GROUNDED to concrete (deferred sign→signed, width→64 via ground-default) → its
+/// `TIntW(signed, width)`; TyBool → TBool; TyErr → TErr. Grounding first means a `Ty` left partly-deferred by
+/// unification comes back as a concrete pipeline `Typed` (the pipeline has no deferred state).
+def ty-to-typed(t: Ty) = match ground-default(t) with
+  | Ty.TyInt(it) => (match it with | IntTy.IntTy(s, w) =>
+      (let signed = (match s with | Sign.Signed => true | Sign.Unsigned => false | Sign.SignDef => true) in
+       (let width = (match w with | Width.WFixed(n) => n | Width.WidthDef => 64) in
+        Typed.TIntW(signed, width))))
+  | Ty.TyBool => Typed.TBool
+  | Ty.TyErr => Typed.TErr
+
+// ---- TESTS: round-trip + cross-mapping -------------------------------------------------------------
+
+import { ty-eq, ty-int64 } from "ty"
+
+@test
+def tb-typed-int-to-ty() =
+  // TIntW(true,64) → Ty Int64 (ty-eq confirms the shape).
+  (if ty-eq(typed-to-ty(Typed.TIntW(true, 64)), ty-int64()) then
+     (if ty-eq(typed-to-ty(Typed.TIntW(false, 8)), ty-fixed-int(false, 8)) then unit else trap("UInt8 maps"))
+   else trap("Int64 maps"))
+
+@test
+def tb-bool-and-err-across() =
+  // TBool ↔ TyBool, TErr ↔ TyErr.
+  (match typed-to-ty(Typed.TBool) with
+    | Ty.TyBool => (match typed-to-ty(Typed.TErr) with | Ty.TyErr => unit | _ => trap("TErr→TyErr"))
+    | _ => trap("TBool→TyBool"))
+
+@test
+def tb-ty-to-typed-int() =
+  // Ty Int64 → TIntW(true,64); UInt8 → TIntW(false,8).
+  (match ty-to-typed(ty-int64()) with
+    | Typed.TIntW(s, w) => (if s then (if w == 64 then
+        (match ty-to-typed(ty-fixed-int(false, 8)) with | Typed.TIntW(s2, w2) => (if (if s2 then false else true) and (w2 == 8) then unit else trap("UInt8 back")) | _ => trap("UInt8 is TIntW"))
+      else trap("width 64")) else trap("signed"))
+    | _ => trap("Int64 back to TIntW"))
+
+@test
+def tb-round-trip-concrete() =
+  // Typed → Ty → Typed is identity for concrete ints/bool/err (the pipeline's types survive the bridge).
+  (match ty-to-typed(typed-to-ty(Typed.TIntW(false, 16))) with
+    | Typed.TIntW(s, w) => (if (if s then false else true) and (w == 16) then unit else trap("UInt16 round-trips"))
+    | _ => trap("round-trip is TIntW"))
+
+@test
+def tb-deferred-ty-grounds-back() =
+  // a DEFERRED Ty int (from unify leaving it unconstrained) → ty-to-typed GROUNDS it to Int64 (signed,64) —
+  // so the pipeline never sees a deferred type (it has no such state).
+  (match ty-to-typed(Ty.TyInt(IntTy.IntTy(Sign.SignDef, Width.WidthDef))) with
+    | Typed.TIntW(s, w) => (if s then (if w == 64 then unit else trap("grounds to width 64")) else trap("grounds to signed"))
+    | _ => trap("deferred grounds to TIntW"))
+
+export { typed-to-ty, ty-to-typed }
