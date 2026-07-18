@@ -40,8 +40,11 @@ for (const ex of EXAMPLES as ExampleModel[]) {
       // The preloaded-library contract: the model returns `lower(...)` (generic Solid → monomorphic SolidR
       // the host can render) — without it a generic `Solid(Rational)` result declines host-render.
       assert.match(src, /\blower\b/, `${surface} source returns lower(...)`);
-      // Each carries the exact-Rational pragma so a bare `n/d` is a Rational, not Int64 division.
-      assert.match(src, /default-fraction Rational/, `${surface} source carries the exact-Rational pragma`);
+      // The example buffer is a CLEAN model — it must NOT carry the `@!default-fraction Rational` pragma:
+      // CadPage's injectImport prepends the pragma (+ the exact import) so the reader never writes it (the
+      // operator-directed implicit-default-fraction UX). An example that re-declared the pragma would be
+      // redundant boilerplate (and re-introduce the red-squiggle the injection removed).
+      assert.doesNotMatch(src, /default-fraction/, `${surface} source is pragma-free (injected by CadPage)`);
     }
   });
 }

@@ -1054,6 +1054,7 @@ pass	a list consumed by List.concat in one operand keeps its element view for a 
 pass	a list consumed by List.push in one operand is unchanged for a later read of the same binding
 pass	a list consumed by List.update in one operand keeps its element view for a later read
 pass	a list element position composes with a nested tuple pattern
+pass	a list element that is a sum with a tuple payload binds the tuple fields
 pass	a list is exhaustive when the empty, singleton, and two-or-more arms jointly cover every length
 pass	a list match arm may carry a guard on its element binders
 pass	a list mixing integer and boolean elements is a type error
@@ -3669,7 +3670,6 @@ todo	a host effect with a non-kebab NAME crosses under a normalized interface ex
 todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 todo	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
 todo	a host op with a String parameter composes with the value-heap runtime
-todo	a list element that is a sum with a tuple payload binds the tuple fields
 todo	a literal narrow-width newtype list element in a constructed list grounds to its inner width
 todo	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
 todo	a multi-argument closure round-trips through a consumer

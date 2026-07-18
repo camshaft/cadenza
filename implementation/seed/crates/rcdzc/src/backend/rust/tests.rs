@@ -4494,6 +4494,31 @@ fn rustc_roundtrip_sum_constructor_list_element_payload_binder() {
         ambiguous.is_err(),
         "an ambiguous-payload-type sum-element binder declines, not miscompiles:\n{ambiguous:?}"
     );
+
+    // DEEP-BIND: a list element that is a sum whose payload is a TUPLE, binding the tuple fields —
+    // `(match xs ((list (Pt (tuple a b))) (+ a b)) …)`, path `[Elem(0), Payload, Elem(j)]`. The `Payload`
+    // step extracts the variant payload (via a single-variant match), then the trailing `Elem(j)` projects
+    // the tuple field. (Was "a nested list-element binder beyond a tuple projection" — my terminal-only arm
+    // now continues the walk past the Payload.) The rust counterpart of the wasm tuple-payload fix; the
+    // corpus case flips todo→PASS. `build 3` → [(Pt (tuple 3 9))] → a=3 b=9 → 12; `build 0` → [(Nil)] → 0.
+    let deep = compile_rust(
+        "(module m (type P (Pt (Tuple Int64 Int64)) (Nil)) \
+           (def (build (: k Int64)) (if (< k 1) (list (Nil)) (list (Pt (tuple k 9))))) \
+           (def (f (: xs (List P))) (match xs ((list (Pt (tuple a b))) (+ a b)) (_ 0))) \
+           (def (run (: k Int64)) (f (build k))) (export run))",
+    );
+    if let Some(out) = rustc_run(&deep, "run(3)") {
+        assert_eq!(
+            out, "12",
+            "the tuple-payload list element binds a=3 b=9 → 12"
+        );
+    }
+    if let Some(out) = rustc_run(&deep, "run(0)") {
+        assert_eq!(
+            out, "0",
+            "the head is (Nil), no (Pt _) match → the fallthrough arm"
+        );
+    }
 }
 
 #[test]
