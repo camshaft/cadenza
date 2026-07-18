@@ -15,7 +15,8 @@
 
 import { Tok, Node, Tree, node-at, parse-tokens } from "parse-db"
 import { Resolved, resolve-tree } from "resolve-db"
-import { Ty, ty-eq, ty-fixed-int } from "ty"
+import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ground-default } from "ty"
+import { unify-ty } from "unify-ty"
 
 /// The type fact. `TInt`/`TBool` = the two ground types; `TErr` = type-level poison (unbound name / ill-typed
 /// child / operator-operand mismatch). The language stopped being purely monomorphic once comparison landed:
@@ -100,15 +101,15 @@ def bin-type(op: Int64, tcol: Map(Int64, Typed), a: Int64, b: Int64) =
      // arithmetic: require canonical Int64 operands (narrow arith declines pending the wrap slice). MATCH on
      // the op-code (idiomatic dispatch, not an `if op == N` ladder): the five arith ops (43 + / 45 - / 42 * /
      // 47 / / 37 %) are all Int64→Int64; any other op here is TErr.
-     (if both-int64(tcol, a, b) then
-        (match op with
-          | 43 => t-int64()
-          | 45 => t-int64()
-          | 42 => t-int64()
-          | 47 => t-int64()
-          | 37 => t-int64()
-          | _ => Typed.TErr)
-      else Typed.TErr))
+     // arithmetic (corrected-2b): the operands must be the SAME integer type (via unify-ty over the shared
+     // Ty — same width AND sign); the result is THAT type. So Int64+Int64→Int64 AND same-width narrow
+     // UInt8+UInt8→UInt8 (eval/lower TRAP its overflow via int-width.checked-*, per spec CDZ0304); a MIXED
+     // width/sign → TErr (no silent promotion). A non-arith op → TErr.
+     (match arith-result-type(tcol, a, b) with
+       | Option.Some(rty) =>
+           (match op with
+             | 43 => rty | 45 => rty | 42 => rty | 47 => rty | 37 => rty | _ => Typed.TErr)
+       | Option.None(_) => Typed.TErr))
 
 /// Bool iff both operands are the canonical `Int64` (`TIntW(true, 64)`) — the gate for ARITHMETIC (which
 /// wraps at the type's width; a narrow operand declines until wrapping lands). Distinct from `both-int`
@@ -118,6 +119,29 @@ def both-int64(tcol: Map(Int64, Typed), a: Int64, b: Int64) =
     | Option.Some(Typed.TIntW(true, 64)) =>
         (match Map.lookup(tcol, b) with | Option.Some(Typed.TIntW(true, 64)) => true | _ => false)
     | _ => false)
+
+/// A ground `Ty` int → `Typed.TIntW` (local — infer-db can't import ty-bridge, cyclic; see type-eq's bridge).
+def ty-to-typed-int(t: Ty) = match ground-default(t) with
+  | Ty.TyInt(it) => (match it with | IntType.IntType(s, w) =>
+      (let signed = (match s with | Sign.Signed => true | Sign.Unsigned => false | Sign.SignDef => true) in
+       (let width = (match w with | Width.WFixed(n) => n | Width.WidthDef => 64) in Typed.TIntW(signed, width))))
+  | Ty.TyBool => Typed.TBool
+  | Ty.TyErr => Typed.TErr
+
+/// The ARITHMETIC result type of operands `a`,`b` (corrected-2b): both must be the SAME integer type — UNIFY
+/// their `Ty` (via the bridge + unify-ty's orthogonal sign/width). `Some(shared TIntW)` when they unify to an
+/// integer (Int64+Int64→Int64, UInt8+UInt8→UInt8); `None` when they conflict (mixed width/sign → CDZ0301) or
+/// either isn't an integer. eval/lower TRAP a narrow result's overflow (int-width.checked-*).
+def arith-result-type(tcol: Map(Int64, Typed), a: Int64, b: Int64) =
+  (match Map.lookup(tcol, a) with
+    | Option.Some(Typed.TIntW(sa, wa)) =>
+        (match Map.lookup(tcol, b) with
+          | Option.Some(Typed.TIntW(sb, wb)) =>
+              (match unify-ty(ty-fixed-int(sa, wa), ty-fixed-int(sb, wb)) with
+                | Option.Some(rty) => Option.Some(ty-to-typed-int(rty))
+                | Option.None(_) => Option.None(unit))
+          | _ => Option.None(unit))
+    | _ => Option.None(unit))
 
 /// The type of a `let`: the body's type, provided neither value nor body is `TErr` (a well-typed binding of
 /// any ground type). `TErr` if either part is erroneous.

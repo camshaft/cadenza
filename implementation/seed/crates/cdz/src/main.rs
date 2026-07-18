@@ -2743,6 +2743,26 @@ fn run_add(args: &AddArgs) -> ExitCode {
         );
         return ExitCode::SUCCESS;
     }
+    // Refuse a SELF-dependency: a path that resolves to the project's OWN directory (`cdz add .`, or a
+    // `../proj` pointing back). A project depending on itself is meaningless — `cdz run` would build the
+    // project a second time as its own "peer" (wasted work; a nonsensical manifest entry). Compare
+    // CANONICALIZED paths so `.`, `./`, and a roundabout `../proj` are all caught; fall back to a literal
+    // `.`/empty check if canonicalize fails (e.g. a not-yet-existing path can't be a self-dep anyway).
+    let is_self = match (
+        std::fs::canonicalize(dir.join(&args.path)),
+        std::fs::canonicalize(&dir),
+    ) {
+        (Ok(dep), Ok(proj)) => dep == proj,
+        _ => matches!(args.path.trim_end_matches('/'), "." | ""),
+    };
+    if is_self {
+        eprintln!(
+            "{PROG}: `{}` resolves to the project's own directory — a project cannot depend on itself \
+             (a `def deps` entry names ANOTHER project to compose with); not adding",
+            args.path
+        );
+        return ExitCode::FAILURE;
+    }
     // A dep that doesn't resolve to a `Project.cdz` YET is a warning, not a refusal (the dir may be added
     // later; `cdz build`/`cdz tree` handle an unresolvable dep gracefully). Resolve relative to the
     // manifest dir, exactly as `build_path_deps` / `cdz tree` do.

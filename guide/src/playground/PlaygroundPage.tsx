@@ -11,6 +11,7 @@ import { PlaygroundEditor } from "./PlaygroundEditor.tsx";
 import { OutputPanel, type RunView, type CompiledInfo } from "./OutputPanel.tsx";
 import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
 import { decodeShareHash, encodeShareHash } from "./share.ts";
+import { readExampleParam, writeExampleParam } from "../components/exampleParam.ts";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
 import { compile, renderSyntax, emitRust, coreModule, replEval, definedNames, type Diag, type Surface } from "../compiler/client.ts";
 import type { ReplEntry } from "./ReplPanel.tsx";
@@ -29,6 +30,14 @@ const BUFFER_KEY = "cadenza.playground.buffer";
 function initialBuffer(): { src: string; surface: Surface } {
   const shared = decodeShareHash(window.location.hash);
   if (shared) return { src: shared.src, surface: shared.s };
+  // A `?example=<id>` deep-link (operator: per-example nav) opens the playground with THAT example. Below
+  // the share hash (a shared edit wins), ABOVE the saved buffer + default: a deep-link is a deliberate
+  // "show me this example" that should override the last-session buffer. Unknown id → fall through.
+  const reqId = readExampleParam();
+  if (reqId) {
+    const ex = EXAMPLES.find((e) => e.id === reqId);
+    if (ex) return { src: ex.source, surface: ex.surface };
+  }
   try {
     const saved = localStorage.getItem(BUFFER_KEY);
     if (saved) {
@@ -271,9 +280,10 @@ export default function PlaygroundPage() {
   }, [text, surface]);
 
   const loadExample = useCallback(
-    async (name: string) => {
-      const ex = EXAMPLES.find((e) => e.name === name);
+    async (id: string) => {
+      const ex = EXAMPLES.find((e) => e.id === id);
       if (!ex) return;
+      writeExampleParam(id); // reflect the picked example in the URL (?example=…) — a copy-shareable deep-link
       // Examples are authored in s-expr; render into the active surface so the toggle stays honored.
       const src = ex.surface === surface ? ex.source : await renderSyntax(ex.source, ex.surface, surface).catch(() => ex.source);
       setText(src);
@@ -343,7 +353,7 @@ export default function PlaygroundPage() {
             Examples…
           </option>
           {EXAMPLES.map((e) => (
-            <option key={e.name} value={e.name}>
+            <option key={e.id} value={e.id}>
               {e.name}
             </option>
           ))}

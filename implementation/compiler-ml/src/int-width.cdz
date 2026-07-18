@@ -164,6 +164,19 @@ def iw-fits-width-zero-declines() = if fits-width(0, false, 0) then trap("width 
 @test
 def iw-fits-width-w64-declines() = if fits-width(5, true, 64) then trap("width 64 is out of this slice → declines") else unit
 
+@test
+def iw-width-w62-w63-scope-boundary() =
+  // THE scope edge (the module's SCOPE/SAFETY claim: 1..=62 supported with exact Int64 arithmetic, 63+ out).
+  // Width 62 is the LAST in-scope width and its arithmetic is exact — 2^62 fits Int64, so UInt62.max = 2^62-1
+  // fits and 2^62 does not; width 63 (where 2^63 would overflow Int64) DECLINES (fits-width false), and
+  // `overflows` treats it as non-overflowing (caller handles it natively) rather than fabricating a verdict.
+  if width-ok(62) and (if width-ok(63) then false else true)
+     and fits-width(4611686018427387903, false, 62)                        // UInt62.max = 2^62 - 1 fits
+     and (if fits-width(4611686018427387904, false, 62) then false else true)  // 2^62 does NOT fit UInt62
+     and (if fits-width(5, false, 63) then false else true)                // width 63 out of scope → declines
+     and (if overflows(5, false, 63) then false else true)                 // and overflows → false (not a trap)
+  then unit else trap("62 is the last in-scope width; 63 declines")
+
 // ---- wrap-to: unsigned ----
 
 @test

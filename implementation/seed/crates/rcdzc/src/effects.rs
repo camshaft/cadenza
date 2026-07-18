@@ -5514,6 +5514,43 @@ fn rewrite_resume_to_refolded_context(
     perform: StructId,
     arms: &[HandleArm],
 ) -> Option<StructId> {
+    // A `(let ((x e)…) resume-bearing-body)` — a LET-WRAPPED resume (v-cad's PRNG: `roll(k,s) => let s2 =
+    // next(s) in resume(s2%k, s2)`). `resolved_of` peels the let SEMANTICALLY and would hand back a `Resume`
+    // whose value/next-state reference the let binder (`s2`) DANGLING — the enclosing let is dropped, so the
+    // recursive re-seed `reduce_handle(next_state=s2, …)` sees `s2` unbound → decline. Match the let
+    // STRUCTURALLY *before* the Resume check and INLINE the bindings (`x := e`) into the body, so the resume's
+    // value/next-state become closed expressions the recursive refold can re-seed.
+    if let Some(tail) = db.ast.as_form(node, "let").map(<[_]>::to_vec)
+        && tail.len() == 2
+        && count_resumes(db, tail[1]) >= 1
+    {
+        let (bindings, lbody) = (tail[0], tail[1]);
+        let mut subst: HashMap<StructId, StructId> = HashMap::default();
+        if let Struct::List(pairs) = db.ast.get(bindings).clone() {
+            for pair in pairs {
+                if let Struct::List(kv) = db.ast.get(pair).clone()
+                    && kv.len() == 2
+                {
+                    // SOUNDNESS: a let binder may be referenced MORE THAN ONCE in the body (v-cad's PRNG uses
+                    // `s2` in both the resume value AND the next-state), so inlining DUPLICATES the init. That
+                    // is sound only if the init is PURE — an effectful init (`(let ((v (Amb.flip))) …)`)
+                    // duplicated would re-perform. Decline (leave the let for a later increment) if any init
+                    // reaches a perform. (A perform-bearing init is properly a two-hole SEQUENCE — its own
+                    // leading hole — not this let-refold's job.)
+                    if reaches_any_perform(db, kv[1]) {
+                        return None;
+                    }
+                    // A `let` reference resolves to `Ref { value: kv[1] }` — the INITIALIZER occurrence,
+                    // not the binder-name occurrence — so `beta_reduce` matches `subst` keyed by the
+                    // initializer. Map `initializer := initializer` so each body reference to the let binder
+                    // splices the (pure, closed) initializer expression in place.
+                    subst.insert(kv[1], kv[1]);
+                }
+            }
+        }
+        let inlined = crate::eval::beta_reduce(db, lbody, &subst);
+        return rewrite_resume_to_refolded_context(db, inlined, handle_body, perform, arms);
+    }
     if let Resolved::Resume { value, next_state } = resolved_of(db, node) {
         // Build `C[value]` (the continuation with the hole filled by the resume value), then re-reduce it
         // under the same handler seeded with the resume's next-state — so a further discharged perform in
@@ -5735,12 +5772,19 @@ fn count_param_refs(db: &mut Db, node: StructId, binder: StructId) -> u32 {
 /// and declining it is sound). Combines the discharged-op detection (`is_perform`) with the foreign-op one
 /// (`effect_op_of` outside `ctx.arms`).
 fn arg_reaches_any_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
-    // The inner walk takes NO `HandlerCtx`: an `effect_op_of` head is a perform regardless of which handler
-    // owns it, so this ANY-perform detector never consults `ctx` (unlike its sibling
-    // `body_reaches_foreign_perform`, which needs it to distinguish a FOREIGN op). Dropping the pass-through
-    // parameter clears clippy's only-used-in-recursion lint; `ctx` stays in the outer signature for a
-    // uniform call shape with the sibling detector.
+    // An `effect_op_of` head is a perform regardless of which handler owns it, so this ANY-perform detector
+    // never consults `ctx` (unlike its sibling `body_reaches_foreign_perform`, which needs it to distinguish
+    // a FOREIGN op). `ctx` stays in the signature for a uniform call shape with the sibling detector; the
+    // ctx-free core is `reaches_any_perform` so callers without a `HandlerCtx` can reuse the same walk.
     let _ = ctx;
+    reaches_any_perform(db, node)
+}
+
+/// Whether the subtree at `node` transitively reaches ANY perform (this handler's discharged op, a foreign
+/// op, or a bare `resume`), following NON-RECURSIVE calls into their bodies (bounded depth). CONSERVATIVE:
+/// a recursive/unresolvable call, or a chain deeper than the bound, reports `true`. No `HandlerCtx` needed —
+/// an effect-op head performs regardless of the handler in scope.
+fn reaches_any_perform(db: &mut Db, node: StructId) -> bool {
     fn walk(db: &mut Db, node: StructId, depth: u32) -> bool {
         if depth > 32 {
             return true; // too deep — assume it may perform (safe over-report)

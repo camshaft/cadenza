@@ -135,3 +135,33 @@ fn add_warns_but_adds_an_unresolvable_path() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn add_refuses_a_self_dependency() {
+    // `cdz add .` (or a roundabout `../app` pointing back at the project) is a SELF-dependency — a project
+    // cannot depend on itself (a `def deps` entry names ANOTHER project). It must be refused (non-zero) with
+    // a clear message, and NOT written to the manifest. Both the literal `.` and the roundabout `../app`
+    // form (which canonicalizes to the same dir) are caught.
+    let root = workspace("selfdep", "");
+    let app = root.join("app");
+
+    let (ok, _o, err) = run(&["add", ".", "--manifest", app.to_str().unwrap()]);
+    assert!(!ok, "`cdz add .` (self-dep) must be refused: {err}");
+    assert!(
+        err.contains("own directory") && err.contains("cannot depend on itself"),
+        "the refusal names the self-dependency: {err}"
+    );
+
+    let (ok2, _o2, err2) = run(&["add", "../app", "--manifest", app.to_str().unwrap()]);
+    assert!(
+        !ok2,
+        "a roundabout self-dep (`../app`) must also be refused: {err2}"
+    );
+
+    let manifest = std::fs::read_to_string(app.join("Project.cdz")).unwrap();
+    assert!(
+        !manifest.contains("def deps"),
+        "no `def deps` was written for the refused self-dependency: {manifest}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

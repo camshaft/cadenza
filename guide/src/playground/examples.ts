@@ -471,7 +471,7 @@ export const EXAMPLES: Example[] = [
     // number by repeatedly taking n mod 2 and dividing by 2. 2730 = 0b101010101010 has 6 one-bits.
     id: "population-count",
     name: "Population count (bits)",
-    theme: "numbers",
+    theme: "algorithms",
     surface: "sexpr",
     source: `(do
   ; Count the 1-bits of n: the low bit is n mod 2; shift right by dividing by 2.

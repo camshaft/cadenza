@@ -1120,6 +1120,24 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 50) (+ 1 (Amb.flip)) 0))) (export main)))
   (output (: 13 Int64)))
 
+(case "a let-wrapped resume in the arm body threads a computed next-state (stateful PRNG)"
+  (doc    "The two-hole refold handles an arm body that is a `let` whose binder feeds BOTH the resume value
+           and the resume next-state: `(roll (k) s (let ((s2 (* s 16807))) (resume (% s2 k) s2)))` — a linear-
+           congruential PRNG draw. `resolved_of` peels the `let` and would hand back a `Resume` whose value
+           `(% s2 k)` and next-state `s2` reference the let binder `s2` DANGLING (the enclosing `let` dropped),
+           so the recursive re-seed would see `s2` unbound. The refold matches the `let` STRUCTURALLY before
+           the resume check and INLINES the (pure) binding `s2 := (* s 16807)`, closing the resume's value and
+           next-state so each draw re-seeds the recursive fold with the advanced state. Two sequential draws:
+           seed 7 → s1 = 7*16807 = 117649, x = 117649 % 1000 = 649; s2 = 117649*16807, y = s2 % 1000 = 743;
+           `(+ x y)` = 1392. One resume per arm activation, so each `C` is spliced once — the LCG step runs
+           exactly once per draw (no effect duplication).")
+  (input  (do
+            (effect Prng (op roll (-> Int64 Int64)))
+            (def (main)
+              (handle Prng 7 ((roll (k) s (let ((s2 (* s 16807))) (resume (% s2 k) s2))))
+                (let ((x (Prng.roll 1000))) (let ((y (Prng.roll 1000))) (+ x y))))) (export main)))
+  (output (: 1392 Int64)))
+
 (case "TWO performs in an if condition both fold on the strict-first spine"
   (input  (do
             (effect Amb (op flip (-> Unit Int64)))

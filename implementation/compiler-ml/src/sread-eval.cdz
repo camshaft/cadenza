@@ -134,12 +134,28 @@ def se-ann-out-of-range-declines() =
   (match run-src("(: 300 UInt8)") with | Option.None(_) => unit | Option.Some(_) => trap("(: 300 UInt8) must decline"))
 
 @test
-def se-ann-narrow-arith-declines() =
-  // a NARROW operand to arithmetic DECLINES (coverage-not-yet): narrow arith must wrap at 2^width to be
-  // correct, and that wrapping (eval + emit i32-mask) is a blocked follow-up — so `(+ (: 100 Int8) 20)`
-  // declines rather than silently giving an unwrapped 120. (Was a run→120 in 2b-ii-a, before the bin-type
-  // narrow-arith gate; declining is the correct pre-wrap behavior — never a fabricated narrow value.)
-  (match run-src("(+ (: 100 Int8) 20)") with | Option.None(_) => unit | Option.Some(_) => trap("narrow-operand arith declines pending the wrap slice"))
+def se-ann-narrow-plus-bare-int64-declines() =
+  // `(+ (: 100 Int8) 20)` — the bare `20` is default Int64; Int8 + Int64 is a MIXED type → declines (no
+  // silent promotion, the reference's CDZ0301). (A bare literal does NOT yet width-unify to the annotated
+  // operand — that's the deferred-literal slice; today a bare literal is concrete Int64.)
+  (match run-src("(+ (: 100 Int8) 20)") with | Option.None(_) => unit | Option.Some(_) => trap("Int8 + bare-Int64 declines (mixed type)"))
+
+@test
+def se-ann-same-width-narrow-arith-runs() =
+  // corrected-2b: SAME-width narrow arith RUNS — `(+ (: 100 Int8) (: 20 Int8))` = 120 (fits Int8, both Int8).
+  (match run-src("(+ (: 100 Int8) (: 20 Int8))") with | Option.Some(v) => (if v == 120 then unit else trap("Int8 100+20 = 120")) | Option.None(_) => trap("same-width Int8 arith runs"))
+
+@test
+def se-ann-narrow-arith-overflow-declines() =
+  // corrected-2b: a narrow arith that OVERFLOWS its type TRAPS (→ declines), matching the reference's CDZ0304
+  // (the unqualified `+` traps; wrapping is the opt-in .wrapping-* form). `(+ (: 100 Int8) (: 100 Int8))` =
+  // 200 overflows Int8 (max 127) → declines (NOT a wrapped -56, NOT an unwrapped 200).
+  (match run-src("(+ (: 100 Int8) (: 100 Int8))") with | Option.None(_) => unit | Option.Some(_) => trap("Int8 100+100 overflows → declines (traps, not wraps)"))
+
+@test
+def se-ann-unsigned-narrow-overflow-declines() =
+  // `(+ (: 200 UInt8) (: 100 UInt8))` = 300 overflows UInt8 (max 255) → declines (traps).
+  (match run-src("(+ (: 200 UInt8) (: 100 UInt8))") with | Option.None(_) => unit | Option.Some(_) => trap("UInt8 200+100 overflows → declines"))
 
 @test
 def se-ann-mixed-width-arith-declines() =
