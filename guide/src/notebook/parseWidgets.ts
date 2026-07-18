@@ -194,14 +194,27 @@ function parseLine(raw: string): Widget | string {
 export function parseWidgets(source: string): ParsedWidgets {
   const widgets: Widget[] = [];
   const errors: WidgetError[] = [];
+  const seen = new Set<string>();
   const lines = source.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmed = line.trim();
     if (trimmed === "" || trimmed.startsWith("--") || trimmed.startsWith("#")) continue;
     const r = parseLine(trimmed);
-    if (typeof r === "string") errors.push({ line: i + 1, source: trimmed, message: r });
-    else widgets.push(r);
+    if (typeof r === "string") {
+      errors.push({ line: i + 1, source: trimmed, message: r });
+      continue;
+    }
+    // A DUPLICATE widget name is an error, not a second control: each widget splices a `def <name> = …`
+    // binding into the run buffer, so two same-named widgets emit two `def <name>` — a duplicate top-level
+    // definition that fails to compile (CDZ0201) with no obvious cause. Flag it here (like min>max) so the
+    // IDE surfaces it, and keep only the FIRST (the binding a downstream cell's `name` reference resolves to).
+    if (seen.has(r.name)) {
+      errors.push({ line: i + 1, source: trimmed, message: `duplicate widget name \`${r.name}\` — each widget name must be unique (it becomes a top-level binding)` });
+      continue;
+    }
+    seen.add(r.name);
+    widgets.push(r);
   }
   return { widgets, errors };
 }

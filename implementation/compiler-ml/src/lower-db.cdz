@@ -100,6 +100,10 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                   | Option.None(_) => Option.None(unit))
               | Option.None(_) => Option.None(unit))
           | Option.None(_) => Option.None(unit))
+    | Option.Some(Node.NApp(_, _)) => Option.None(unit)   // SLICE-1 foundation: a call has no core form yet
+                                            // (infer types it TErr → lower-node declines before reaching here;
+                                            // this arm keeps the exhaustive match compiling). The def-table
+                                            // slice lowers a nullary call to the inlined body Core.
     | Option.None(_) => Option.None(unit)
 
 /// The lower COLUMN builder: build resolve + infer columns (demanding parse under them), then lower over

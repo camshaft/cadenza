@@ -184,3 +184,20 @@ test("a text default containing escaped quotes + a backslash round-trips (PR #47
   const w = parseWidgets('t : String = text(default: "a \\"q\\" and \\\\ slash")').widgets[0] as Extract<Widget, { control: "text" }>;
   assert.equal(w.default, 'a "q" and \\ slash');
 });
+
+test("a DUPLICATE widget name is an error (would emit two top-level bindings → CDZ0201); first is kept", () => {
+  // Each widget splices `def <name> = …` into the run buffer, so two same-named widgets compile to a duplicate
+  // definition — flag it in the IDE (like min>max) instead of a mysterious runtime compile failure.
+  const { widgets, errors } = parseWidgets("a : Int64 = slider(0, 1)\na : Int64 = slider(0, 2)");
+  assert.equal(widgets.length, 1, "only the FIRST `a` is kept");
+  assert.equal(widgets[0].max, 1, "the kept widget is the first declaration");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /duplicate widget name `a`/);
+  assert.equal(errors[0].line, 2, "the error points at the SECOND (duplicate) line");
+});
+
+test("distinct widget names across lines all parse (the duplicate check doesn't false-positive)", () => {
+  const { widgets, errors } = parseWidgets("a : Int64 = slider(0, 1)\nb : Int64 = slider(0, 2)");
+  assert.deepEqual(errors, []);
+  assert.deepEqual(widgets.map((w) => w.name), ["a", "b"]);
+});

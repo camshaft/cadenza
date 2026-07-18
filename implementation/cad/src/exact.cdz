@@ -267,13 +267,20 @@ def v3-mirror(p: Vec3(Rational), normal: Vec3(Rational)) =
               (if ny == rzero() then py else rzero() - py),
               (if nz == rzero() then pz else rzero() - pz)))
 
-/// The maximum |coordinate| over the 8 corners of a box (given its lo/hi corners) — equivalently the max of
-/// |lo| and |hi| component-wise, then over axes. Used to bound a rotation about the origin: every point of the
-/// child lies within this distance on each axis, so `[-m, m]^3` encloses ANY rotation (exact, conservative).
-def aabbr-corner-max-abs(lo: Vec3(Rational), hi: Vec3(Rational)) =
+/// A SOUND enclosing radius for a rotation about the origin: the farthest any point of the box can be from
+/// the origin is its farthest corner's distance `sqrt(mx² + my² + mz²)`, where `mx/my/mz` are the per-axis
+/// max |coordinate|. sqrt has no exact Rational form, so we use the L1 upper bound `mx + my + mz` (which is
+/// ≥ the L2 distance for all non-negative mx,my,mz), so the symmetric box `[-R, R]^3` with `R = mx+my+mz`
+/// SOUNDLY ENCLOSES the rotated shape for ANY angle — exact + conservative.
+///   (An earlier `max(mx,my,mz)` was UNSOUND: a corner at (1,1,1) can rotate onto one axis at distance
+///    sqrt(3) > 1, escaping `[-1,1]^3` — the reviewer-flagged under-approximation. The L1 sum fixes it.)
+def aabbr-rotate-radius(lo: Vec3(Rational), hi: Vec3(Rational)) =
   match lo with | Vec3.V3(lx, ly, lz) =>
     (match hi with | Vec3.V3(hx, hy, hz) =>
-      rmax(rmax(rmax(rabs(lx), rabs(ly)), rmax(rabs(lz), rabs(hx))), rmax(rabs(hy), rabs(hz))))
+      let mx = rmax(rabs(lx), rabs(hx)) in
+      let my = rmax(rabs(ly), rabs(hy)) in
+      let mz = rmax(rabs(lz), rabs(hz)) in
+      mx + my + mz)
 
 /// The EXACT axis-aligned bounding box of an exact CSG tree — the recursive fold that was BLOCKED over
 /// Float64 (it needs `<`/`>` per node) and is expressible here because Rational has a total order. A cube
@@ -321,8 +328,11 @@ def bounding-box(s: Solid(Rational)) = match s with
   | Solid.Rotate(_, of) =>
     (match bounding-box(of) with
       | Aabb.Box(lo, hi) =>
-        let m = aabbr-corner-max-abs(lo, hi) in
-        aabbr-of-corners(Vec3.V3(rzero() - m, rzero() - m, rzero() - m), Vec3.V3(m, m, m)))
+        // SOUND conservative bound: the symmetric box of the child's L1 corner-radius encloses ANY rotation
+        // about the origin (a corner can rotate onto one axis at its full distance-from-origin; the L1 sum
+        // upper-bounds that L2 distance without needing an irrational sqrt).
+        let r = aabbr-rotate-radius(lo, hi) in
+        aabbr-of-corners(Vec3.V3(rzero() - r, rzero() - r, rzero() - r), Vec3.V3(r, r, r)))
   // A linear extrude lifts the profile straight up +z by `height` (centred, like Cube): the box is the
   // profile's XY extent × [-height/2, height/2]. `profile-half-extent` gives the profile's ±x/±y half-widths.
   | Solid.ExtrudeLinear(p, height) =>
@@ -1022,14 +1032,15 @@ def mirror-across-x-bounds-exactly() =
         else trap("mirror-x of [9,11] should be [-11,-9]")))
 
 @test
-def rotate-bounds-conservatively-encloses() =
-  // A rotation about the origin is bounded by the symmetric box of the child's max |coordinate|. A 2×2×2 cube
-  // spans [-1,1]^3 → max |coord| = 1 → the rotate box is [-1,1]^3 (size 2 each axis). It ENCLOSES any rotation
-  // of the cube about the origin (the cube's farthest point from origin is a corner at distance sqrt(3) < ... —
-  // the per-axis bound of 1 is the conservative axis-aligned enclosure the driver-independent bbox guarantees).
+def rotate-bounds-soundly-encloses() =
+  // A rotation about the origin is bounded by the symmetric box of the child's L1 corner-radius. A 2×2×2 cube
+  // spans [-1,1]^3 → per-axis max |coord| = 1 each → R = 1+1+1 = 3 → the rotate box is [-3,3]^3 (size 6 each
+  // axis). This SOUNDLY encloses ANY rotation: the cube's farthest corner is at distance sqrt(3) ≈ 1.73 from
+  // the origin, which a rotation could land on a single axis — well within ±3. (An earlier max(mx,my,mz)=1
+  // bound gave [-1,1]^3, which sqrt(3) ESCAPES — the reviewer-flagged unsound under-approximation, now fixed.)
   let box = Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1)) in
-  if v3-eq(aabbr-size(bounding-box(Solid.Rotate(v3(rzero(), rzero(), 45 / 1), box))), v3(2 / 1, 2 / 1, 2 / 1))
-  then unit else trap("rotate of a [-1,1]^3 cube bounds to [-1,1]^3 (size 2)")
+  if v3-eq(aabbr-size(bounding-box(Solid.Rotate(v3(rzero(), rzero(), 45 / 1), box))), v3(6 / 1, 6 / 1, 6 / 1))
+  then unit else trap("rotate of a [-1,1]^3 cube soundly bounds to [-3,3]^3 (size 6, via the L1 radius 3)")
 
 @test
 def rotate-and-mirror-of-empty-simplify-to-empty() =

@@ -132,16 +132,17 @@ def cut-fuse-common-are-the-boolean-wrappers() =
 def rotate-array-and-mirror-build-symmetric-solids() =
   // rotate-z(90) of a translated cube spins it about the origin; the conservative rotate bbox stays symmetric.
   // And mirror-x of a right-shifted cube reflects it to the left (bilateral pair via fuse).
-  let bar = move-x(10 / 1, cube(2 / 1)) in                 // a 2×2×2 cube centred at x=10 → box x∈[9,11]
-  // rotate-z(45, bar): conservative box is symmetric [-11,11] on x and y (max |coord| = 11), size 22.
+  let bar = move-x(10 / 1, cube(2 / 1)) in                 // a 2×2×2 cube centred at x=10 → box x∈[9,11], y,z∈[-1,1]
+  // rotate-z(45, bar): SOUND conservative box is symmetric [-R,R]^3 with R = the L1 corner-radius
+  // (mx + my + mz = 11 + 1 + 1 = 13), so size 26 each axis (soundly encloses any rotation of the shifted bar).
   match bounding-box(rotate-z(45 / 1, bar)) with | Aabb.Box(lo, hi) =>
     (match lo with | Vec3.V3(lx, _, _) => (match hi with | Vec3.V3(hx, _, _) =>
-      if (hx - lx) == 22 / 1 then
+      if (hx - lx) == 26 / 1 then
         // mirror-x(bar) → box x∈[-11,-9]; fuse with bar → x∈[-11,11], width 22 (a bilateral pair).
         (match bounding-box(fuse(bar, mirror-x(bar))) with | Aabb.Box(mlo, mhi) =>
           (match mlo with | Vec3.V3(mlx, _, _) => (match mhi with | Vec3.V3(mhx, _, _) =>
             if (mhx - mlx) == 22 / 1 then unit else trap("bilateral fuse spans [-11,11]"))))
-      else trap("rotate-z conservative box is symmetric (width 22)")))
+      else trap("rotate-z sound box is symmetric (width 26 via the L1 radius 13)")))
 
 export { box, cube, ball, cyl, move, move-x, move-y, move-z, scale, scale-xyz,
          rotate, rotate-x, rotate-y, rotate-z, mirror-x, mirror-y, mirror-z,

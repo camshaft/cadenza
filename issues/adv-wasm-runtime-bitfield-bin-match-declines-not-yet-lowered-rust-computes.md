@@ -25,3 +25,13 @@ n)) (Bytes.len payload)) (_ -1)) runtime k -> wasm declines / rust value 2. So w
 ONLY fixed byte-aligned; sub-byte bit-fields AND value-dependent sizes both decline. Length-prefixed protocol
 frame parsing (read size, then that many bytes) is blocked on wasm — high-value real-world idiom. Same one
 lowering gap (const path already does both; runtime scrutinee path needs the same). Raises priority.
+
+---
+FACE A (dependent-size) RESOLVED-PENDING-MERGE (v-patterns, 2026-07-18, MR 9b9d39760): the crown-jewel
+length-prefixed-frame parse now lowers on wasm. New Core::BinSizedRead = bytes-slice(scrutinee, off, n) where
+n is the runtime BinIntRead of the earlier header segment; arm length-probe = bytes-len == prefix + n; both
+backends emit. Verified n=2->2 payload bytes, n=1->fall-through; gate green all 3 backends; graded corpus pin
+in 16-binary (--arg driven, runtime). Real protocol-frame parsing (read a size, then that many bytes) works
+on wasm now. The priority-context relay (dependent-size first) was validated by v-patterns.
+FACE B (BIT-FIELD, sub-byte (bits x k)) STILL OPEN — separate follow-up increment (BinIntRead the byte-run +
+shift/mask); v-patterns building it next. Item stays open until Face B lands too.

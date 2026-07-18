@@ -273,6 +273,10 @@ fn plan_for_item(
     let mut nested_anns: Vec<StructId> = Vec::new();
     let mut saw_test = false;
     let mut exhaustive = false;
+    // Also collect any `@requires(Q)` predicate nodes in the stack — a param-level precondition constrains
+    // generation (a min-length `(<= K (List.len xs))` floors the drawn list so the enforced (D) pre never
+    // spuriously trips). `(@ (requires Q) …)` → the head is `(requires Q)`, whose first child is `Q`.
+    let mut requires_preds: Vec<StructId> = Vec::new();
     while let Some(layer) = ast.as_form(node, "@") {
         let &head = layer.first()?;
         if ast.as_name(head) == Some("test") {
@@ -280,8 +284,11 @@ fn plan_for_item(
         } else if ast.as_name(head) == Some("exhaustive") {
             saw_test = true;
             exhaustive = true;
-        } else if ast.as_form(head, "requires").is_none() && ast.as_form(head, "ensures").is_none()
-        {
+        } else if let Some(req) = ast.as_form(head, "requires") {
+            if let Some(&q) = req.first() {
+                requires_preds.push(q);
+            }
+        } else if ast.as_form(head, "ensures").is_none() {
             break; // an unknown annotation head — not a peelable test/verification layer
         }
         nested_anns.push(node);
@@ -315,6 +322,7 @@ fn plan_for_item(
     let mut any_compound = false;
     for &p in params {
         let ann_param = ast.as_form(p, ":")?; // `(: name TYPE)`
+        let &param_name_occ = ann_param.first()?;
         let &ty = ann_param.get(1)?;
         // A COMPOUND param is a type FORM (`(List …)`, `(Tuple …)`, `(Record …)`) or a bare user-sum NAME —
         // it has no component-boundary representation, so a `@test` over it needs the synthesized wrapper
@@ -323,7 +331,20 @@ fn plan_for_item(
         // and an ungeneratable bare name (`Char` scalar) is a LAYOUT/boundary matter, not proptest_gen's.
         let is_compound_form = ast.as_name(ty).is_none();
         match classify_ty(ast, ty, items) {
-            Some(gt) => {
+            Some(mut gt) => {
+                // Apply a param-level `@requires` MIN-LENGTH to a `(List …)` param: a precondition like
+                // `@requires(<= 2 (List.len xs))` floors the drawn list at 2, so generation stays IN-DOMAIN
+                // and the enforced (D) precondition trap never spuriously trips (mirrors the type-level
+                // `@invariant` min-length path, but keyed on the PARAM NAME here, not the invariant binder).
+                if let (GenTy::List(_, ml), Some(pname)) = (&mut gt, ast.as_name(param_name_occ)) {
+                    let floor = requires_preds
+                        .iter()
+                        .filter_map(|&q| min_len_for_param(ast, q, pname))
+                        .max();
+                    if let Some(m) = floor {
+                        *ml = (*ml).max(m);
+                    }
+                }
                 // A SCALAR param (`Int`/`Bool`/`Float`) has a boundary representation → boundary-arg route,
                 // no wrapper. Only a COMPOUND param (no boundary form) forces the synthesized wrapper.
                 if !matches!(gt, GenTy::Int | GenTy::Bool | GenTy::Float(_)) {
@@ -410,6 +431,14 @@ pub fn gen_ty_of_wrapper_param(db: &crate::db::Db, wrapper_name: &str) -> Option
     // the GENERATOR ran pre-strip and DID constrain it, so the decoder must match or a counterexample renders
     // the raw pool int (e.g. `Pct(-716…)`) instead of the in-domain value. Re-apply via `Db::invariant_of`.
     reapply_recorded_invariant(db, &mut gt);
+    // NOTE: a param-level `@requires` MIN-LENGTH is applied to GENERATION (plan_for_item) but NOT re-applied
+    // here on the DECODE side — because `synthesize` NEUTRALIZES the `(@ (requires …) …)` wrapper (rewrites it
+    // to the def) before `strip_annotations` runs, so `db.requires_of` does not carry the predicate for this
+    // def. Consequence: a GENUINELY-failing min-length `@requires` property renders a wrong-LENGTH list in the
+    // counterexample (the decode count-draw uses min_len 0, not the floored min). The spurious-FAILURE bug (a
+    // too-short draw tripping the pre) IS fixed by the generation-side floor; only the counterexample RENDER
+    // of a real failure is affected. Fixing it needs `synthesize` to preserve the `@requires` wrapper on the
+    // neutralized def (so strip records it) — a larger change that risks the verify_enforce seam; deferred.
     Some(gt)
 }
 

@@ -74,6 +74,10 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
          (let t2 = infer-node(tree, thenId, rcol, t1) in
           (let t3 = infer-node(tree, elseId, rcol, t2) in
            (match if-type(t3, condId, thenId, elseId) with | ty => Map.insert(t3, id, ty)))))
+    | Option.Some(Node.NApp(_, _)) => Map.insert(tcol, id, Typed.TErr)   // SLICE-1 foundation: a call node
+                                            // is not yet typed (the def-table slice types it as the callee's
+                                            // result). Until then it's TErr (declines) — never a fabricated
+                                            // type; the exhaustive-match arm that keeps infer compiling.
     | Option.None(_) => tcol
 
 /// The type of a variable reference bound at `binder` (an `NLet` node-id): the type of that let's VALUE

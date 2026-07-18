@@ -48,6 +48,12 @@ type Node =
   | NAnnLit(Int64, Int64, Int64)  // NAnnLit(value, signed(1|0), width) — a WIDTH-ANNOTATED int literal
                                   // `(: v IntN)`; carries its (signed, width) so infer types it TIntW and
                                   // lower builds a NARROW CNum. Bool-as-Int64 for the signed flag (1|0).
+  | NApp(Int64, Int64)            // NApp(calleeId, argId) — a function APPLICATION `(f arg)` / `(mk)`. `calleeId`
+                                  // is the callee's DEF-BODY node (resolve wires a call head to the def it
+                                  // names); `argId` is the single argument's node, or -1 = the NULLARY-call
+                                  // sentinel `(mk)` (no argument). The nullary slice uses argId = -1 and lowers
+                                  // by inlining the callee body; a param slice (later) lowers `(f a)` to
+                                  // CLet(param, arg, body) — a call binds its param exactly like a let.
 
 /// The arena: nodes keyed by NodeId, plus the next fresh id. (Named `Tree`, NOT `Ast` — a type named `Ast`
 /// collides with the built-in metaprog `Ast`, drawing CDZ0201 "two types with the same name".)
@@ -204,6 +210,12 @@ def is-bool-lit(tree: Tree, id: Int64, b: Int64) = match node-at(tree, id) with
 /// Is the node at `id` a width-annotated literal `NAnnLit(v, signed(1|0), width)`? Checks value + signed + width.
 def is-annlit(tree: Tree, id: Int64, v: Int64, sflag: Int64, width: Int64) = match node-at(tree, id) with
   | Option.Some(Node.NAnnLit(x, s, w)) => (x == v) and ((s == sflag) and (w == width))
+  | _ => false
+
+/// Is the node at `id` a function application `NApp(callee, arg)` with the given callee + arg node-ids?
+/// (`arg` = -1 pins a NULLARY call.) The probe downstream columns + tests use to recognize a call node.
+def is-app(tree: Tree, id: Int64, callee: Int64, arg: Int64) = match node-at(tree, id) with
+  | Option.Some(Node.NApp(c, a)) => (c == callee) and (a == arg)
   | _ => false
 
 /// Builders (test ergonomics).
@@ -469,4 +481,26 @@ def pd-mod-same-precedence-as-mul() =
         (if op == 43 then (if is-bin-op(tree, r, 37) then unit else trap("+ 's right is a % Bin")) else trap("root is +"))
       | _ => trap("root is a Bin")))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit }
+// ---- NApp: the function-application node (SLICE-1 foundation for USER FUNCTIONS) ----
+// NApp has no producing Tok yet (calls come from the sread s-expr surface, added in a later slice); this
+// slice lands the arena NODE + probe as the tested foundation the resolve/infer/lower/eval arms build on.
+// Build the arena DIRECTLY (like the lower-db NAnnLit tests).
+
+@test
+def pd-nullary-app-node() =
+  // a NULLARY call `(mk)` → NApp(bodyId, -1): callee = the def-body node it names, arg = -1 (no argument).
+  // Build a body `42` (NLit), then the NApp referencing it. is-app pins the (callee, arg) shape.
+  (match add-node(empty-tree(), Node.NLit(42)) with | (bodyId, t1) =>
+    (match add-node(t1, Node.NApp(bodyId, 0 - 1)) with | (appId, t2) =>
+      (if is-app(t2, appId, bodyId, 0 - 1) then unit else trap("NApp(bodyId, -1) is a nullary application node"))))
+
+@test
+def pd-app-with-arg-node() =
+  // a 1-arg call `(f a)` → NApp(bodyId, argId) with a real arg node (argId != -1) — the shape the param
+  // slice will lower to CLet(param, arg, body). Here just pins the node carries both child ids.
+  (match add-node(empty-tree(), Node.NLit(7)) with | (bodyId, t1) =>
+    (match add-node(t1, Node.NLit(5)) with | (argId, t2) =>
+      (match add-node(t2, Node.NApp(bodyId, argId)) with | (appId, t3) =>
+        (if is-app(t3, appId, bodyId, argId) then unit else trap("NApp(bodyId, argId) carries callee + arg")))))
+
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
