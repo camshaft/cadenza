@@ -2561,6 +2561,7 @@ pass	an i16 segment round-trips at its two's-complement minimum
 pass	an identity closure composes at a single Int element type (not only String)
 pass	an identity closure composes over a COMPOUND (tuple) element at one element type
 pass	an identity closure composes through TWO chained recursive-generic maps at one element type
+pass	an identity closure threads through a recursive-generic HOF at TWO element types
 pass	an identity closure threads through a recursive-generic HOF at one element type
 pass	an identity conversion unwraps the magnitude unchanged
 pass	an if choosing between two nullary enum variants selects branchlessly on the discriminant

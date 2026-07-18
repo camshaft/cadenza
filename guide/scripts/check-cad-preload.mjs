@@ -32,19 +32,20 @@ const pkgDir = join(guideRoot, "src/wasm/pkg");
 const wasm = await import(pathToFileURL(join(pkgDir, "cdz_wasm.js")).href);
 await wasm.default(await readFile(join(pkgDir, "cdz_wasm_bg.wasm")));
 
-let exactSrc;
+let exactSrc, helpersSrc;
 try {
   exactSrc = await readFile(join(guideRoot, "src/wasm/cad/exact.cdz"), "utf8");
+  helpersSrc = await readFile(join(guideRoot, "src/wasm/cad/helpers.cdz"), "utf8");
 } catch {
   console.error(
-    "\n✗ cad-preload conformance FAILED — the staged CAD lib src/wasm/cad/exact.cdz is missing " +
-      "(run `cargo xtask guide-wasm` to stage it). /cad cannot preload without it.",
+    "\n✗ cad-preload conformance FAILED — a staged CAD lib (src/wasm/cad/exact.cdz or helpers.cdz) is missing " +
+      "(run `cargo xtask guide-wasm` to stage it). /cad cannot preload without them.",
   );
   process.exit(1);
 }
 
 // Reuse the REAL injection + preload arrays /cad uses (no private copy — the gate must match what ships).
-const { injectImport, CAD_LIB_NAME, CAD_LIB_FORMAT } = await import(
+const { injectImport, CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_LIB_FORMAT } = await import(
   pathToFileURL(join(guideRoot, "src/cad/preloadModel.ts")).href
 );
 
@@ -57,9 +58,12 @@ const MODELS = {
   sexpr: `(def (main) (lower ((. Solid Difference) ((. Solid Cube) (v3r (/ 4 1) (/ 4 1) (/ 4 1))) ((. Solid Sphere) (/ 5 2)))))`,
 };
 
-const names = [CAD_LIB_NAME];
-const sources = [exactSrc];
-const formats = [CAD_LIB_FORMAT];
+// SINGLE-MODE preloads BOTH modules (exact base vocab + helpers ergonomic wrappers) for every model, and
+// `injectImport` now emits both import clauses — so the gate must preload both or the injected
+// `import "helpers"` faults CDZ0201 (unknown package file). Mirrors CadPage's `runModel` preload arrays.
+const names = [CAD_LIB_NAME, CAD_HELPERS_NAME];
+const sources = [exactSrc, helpersSrc];
+const formats = [CAD_LIB_FORMAT, CAD_LIB_FORMAT];
 
 const failures = [];
 
@@ -106,6 +110,41 @@ for (const surface of ["ml", "sexpr"]) {
     );
   } else {
     console.log(`  ✓ [${surface}] diagnostics_with_preloaded: preloaded vocab (Solid/v3r/lower) resolves — 0 lint errors`);
+  }
+}
+
+// SINGLE-MODE (operator #6820): a model DECLARES its own `@param`s and /cad auto-surfaces a slider per param
+// from the compiled manifest. Gate the enabler: the real parametric example's `@param`s must be read by
+// `param_manifest` (over the injected buffer) — this is the binding + injection the single-mode UI depends on.
+// Uses the actual PARAMETRIC_PLATE example so a drift between the model source and the manifest scan trips here.
+const { EXAMPLES } = await import(pathToFileURL(join(guideRoot, "src/cad/examples.ts")).href);
+const plate = EXAMPLES.find((e) => e.slug === "parametric-plate");
+if (!plate) {
+  failures.push("single-mode: the parametric-plate example is missing from EXAMPLES (the manifest gate can't run)");
+} else {
+  const EXPECTED_PARAMS = ["width", "depth", "thickness", "bore"];
+  for (const surface of ["ml", "sexpr"]) {
+    const program = injectImport(plate.source[surface], surface);
+    let entries;
+    try {
+      entries = wasm.param_manifest(program, surface);
+    } catch (e) {
+      failures.push(`[${surface}] param_manifest THREW: ${String(e && e.message ? e.message : e).slice(0, 120)}`);
+      continue;
+    }
+    const names = (entries ?? []).map((x) => x.name);
+    const missing = EXPECTED_PARAMS.filter((n) => !names.includes(n));
+    if (missing.length) {
+      failures.push(`[${surface}] param_manifest missing @param(s): ${missing.join(", ")} (got ${names.join(", ") || "none"})`);
+    } else {
+      // Each entry must carry a type_name (the B-invariant) so the slider knows integer vs fractional steps.
+      const noType = (entries ?? []).filter((x) => !x.type_name);
+      if (noType.length) {
+        failures.push(`[${surface}] param_manifest entr(y/ies) missing type_name: ${noType.map((x) => x.name).join(", ")}`);
+      } else {
+        console.log(`  ✓ [${surface}] param_manifest: the plate's @params (${names.join(", ")}) surface with types — single-mode sliders auto-populate`);
+      }
+    }
   }
 }
 

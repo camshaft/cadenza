@@ -3654,6 +3654,7 @@ todo	an exact RATIONAL host value crosses as two scalar num/den ops the guest re
 todo	an identity closure composes at a single Int element type (not only String)
 todo	an identity closure composes over a COMPOUND (tuple) element at one element type
 todo	an identity closure composes through TWO chained recursive-generic maps at one element type
+todo	an identity closure threads through a recursive-generic HOF at TWO element types
 todo	an identity closure threads through a recursive-generic HOF at one element type
 todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
 todo	an unannotated closure in a Some payload is typed from the Option's element arrow

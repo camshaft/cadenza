@@ -120,40 +120,42 @@ The trajectory over time — drag velocity or gravity and the arc moves:
 (def (main) (list (tuple 0 0.0) (tuple 1 h1) (tuple 2 h2) (tuple 3 h3) (tuple 4 h4)))
 ~~~`;
 
-/// A quadratic-explorer showcase: three sliders (a, b, c) reshape the parabola y = a·x² + b·x + c live.
-/// Evaluated at a spread of x (including NEGATIVE x, exercising the chart's negative-coordinate axis) with
-/// +/* on Float64 literals only — browser-self-contained like the others. Drag a/b/c and the curve bends.
+/// A quadratic-explorer showcase: three Int64 sliders (a, b, c) reshape the parabola y = a·x² + b·x + c live.
+/// Evaluated at a spread of x (including NEGATIVE x, exercising the chart's negative-coordinate axis). The
+/// notebook is rational-by-default (no floats), so `y-at`'s param is `Rational` to compose with the
+/// coefficients; +/* on the rational-grounded integers. Drag a/b/c and the curve bends.
 const QUADRATIC = `# Quadratic explorer
 
 Shape the parabola **y = a·x² + b·x + c** — drag the coefficients and watch it bend.
 
 ~~~cadenza widget
-a : Float64 = slider(-5.0, 5.0, step: 0.5, default: 1.0)
-b : Float64 = slider(-5.0, 5.0, step: 0.5, default: 0.0)
-c : Float64 = slider(-5.0, 5.0, step: 0.5, default: 0.0)
+a : Int64 = slider(-5, 5, default: 1)
+b : Int64 = slider(-5, 5, default: 0)
+c : Int64 = slider(-5, 5, default: 0)
 ~~~
 
-Evaluate y at each x (y = a·x·x + b·x + c):
+Evaluate y at each x (y = a·x·x + b·x + c). The parameter is \`Rational\` so it composes with the
+rational-by-default coefficients:
 
 ~~~cadenza
-(def (y-at (: x Float64)) (+ (+ (* a (* x x)) (* b x)) c))
-(def (main) (y-at 0.0))
+(def (y-at (: x Rational)) (+ (+ (* a (* x x)) (* b x)) c))
+(def (main) (y-at 0))
 ~~~
 
 The parabola from x = −3 to 3 — drag a, b, or c to reshape it:
 
 ~~~cadenza chart:line
 (def (main) (list
-  (tuple -3.0 (y-at -3.0)) (tuple -2.0 (y-at -2.0)) (tuple -1.0 (y-at -1.0))
-  (tuple 0.0 (y-at 0.0)) (tuple 1.0 (y-at 1.0)) (tuple 2.0 (y-at 2.0)) (tuple 3.0 (y-at 3.0))))
+  (tuple -3 (y-at -3)) (tuple -2 (y-at -2)) (tuple -1 (y-at -1))
+  (tuple 0 (y-at 0)) (tuple 1 (y-at 1)) (tuple 2 (y-at 2)) (tuple 3 (y-at 3))))
 ~~~`;
 
 /// A formula-focused example: the `formula` directive typesets a scalar / exact fraction / quantity.
-/// Two Int64 sliders feed `Rational.of num den`, which builds an exact Rational (3, 4 → 3/4) the FormulaView
-/// renders as a stacked n/d. Completes the rich-output family showcase (value / table / chart / formula).
-/// ⚠ `Int64 / Int64` is INTEGER division (3 / 4 → 0, type Int64) — exact mode defaults BARE LITERALS to
-/// Rational but does NOT change typed-Int64 `/`; the operator hit exactly this (reported 0 instead of a
-/// fraction). Use `Rational.of` to make the ratio exact + Rational-typed (verified: type = Rational, 3/4).
+/// Two Int64 sliders drive plain `num / den` — the notebook runs RATIONAL-BY-DEFAULT (assembleForRun/cellIde
+/// prepend `default-fraction Rational`), so the bare integers ground to exact Rationals and `/` yields the
+/// exact fraction 3/4 (NOT integer division's 0) the FormulaView renders as a stacked n/d. Completes the
+/// rich-output family showcase (value / table / chart / formula). Operator directive: no floats, division
+/// just works under the rational default — no `Rational.of` workaround.
 const FORMULA_DEMO = `# Formulas
 
 A **formula** cell typesets a scalar, an exact fraction, or a quantity. Drag **num** and **den** to
@@ -164,11 +166,11 @@ num : Int64 = slider(1, 9, default: 3)
 den : Int64 = slider(1, 9, default: 4)
 ~~~
 
-The ratio as an **exact fraction** — \`Rational.of\` builds a Rational from the two integers, so 3 and 4
-become 3/4 (one and a half quarters), NOT integer division's 0:
+The ratio as an **exact fraction** — the notebook uses rational-by-default literals, so plain \`num / den\`
+is exact (3 / 4 = 3/4, not integer division's 0):
 
 ~~~cadenza formula
-(def (main) (Rational.of num den))
+(def (main) (/ num den))
 ~~~`;
 
 export const EXAMPLES: ExampleNotebook[] = [

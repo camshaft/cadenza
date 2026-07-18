@@ -4863,16 +4863,14 @@
   (call   main (: 0 Int64))
   (output (: 8 Int64)))
 
-; --- Identity/constant closures through a recursive-generic HOF: the single-type working faces ------
-; The transformer closure-tie fix pins that an IDENTITY closure at TWO element types DECLINES (the
-; result var can't unify across both — residual gap). These pin the faces that DO work at a SINGLE
-; element type, promoted from passing breaker probes — the boundary the decline sits just past.
+; --- Identity/constant closures through a recursive-generic HOF -----------------------------------
+; An IDENTITY closure through a recursive-generic list HOF composes at ONE element type AND at TWO
+; (the transformer closure-tie fix — `solved_lambda_arrow_under` — ties the closure's result to its
+; domain, so the two coexisting monomorphizations each bind their own element). Both faces pin here.
 
 (case "an identity closure threads through a recursive-generic HOF at one element type"
   (doc    "`gmap (fn (x) x) [3 4]` → [3 4] (len 2): a pure IDENTITY closure works when the HOF is used
-           at ONE element type — the result var ties from the single call site's element. The
-           two-types version declines (the identity's result can't unify Int and String); this pins
-           that the single-type case is NOT over-rejected by that decline.")
+           at ONE element type — the result var ties from the single call site's element.")
   (input  (do
             (def (gmap f xs)
               (match xs ((list) (list)) ((list h .. t) (List.concat (List.push (list) (f h)) (gmap f t)))))
@@ -4881,6 +4879,22 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 2 Int64)))
+
+(case "an identity closure threads through a recursive-generic HOF at TWO element types"
+  (doc    "The multi-instantiation face: the SAME `gmap` list HOF used with a pure IDENTITY closure at
+           Int64 `[3 4]` (len 2) AND String `[\"a\" \"b\" \"c\"]` (len 3) in one program → 2 + 3 = 5.
+           Previously this DECLINED (the two identity instantiations' result vars could not unify Int
+           and String); now composes — the transformer closure-tie ties each closure's result to its
+           OWN domain, so each monomorphization binds its element independently. Runs on both backends.")
+  (input  (do
+            (def (gmap f xs)
+              (match xs ((list) (list)) ((list h .. t) (List.concat (List.push (list) (f h)) (gmap f t)))))
+            (def (main (: d Int64))
+              (+ (List.len (gmap (fn (x) x) (list 3 4)))
+                 (List.len (gmap (fn (s) s) (list "a" "b" "c")))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 5 Int64)))
 
 (case "a constant-returning closure threads through a recursive-generic HOF"
   (doc    "`gmap (fn (x) 9) [1 2]` → [9 9], element 0 = 9: a closure that IGNORES its parameter and

@@ -23,12 +23,16 @@ const NO_VALUES: WidgetValues = Object.create(null);
 // UX #1) — a SUFFIX, so it never shifts `wrapPrefixBytes`. These helpers isolate the cell-body slice.
 const ML_EXPORT = "\nexport { main }";
 const SEXPR_EXPORT = "\n(export main)";
+// The compiled text LEADS with the notebook's rational-by-default pragma (operator: no floats) — it's in the
+// PREFIX (before the cell text), so `wrapPrefixBytes` counts it. Surface-appropriate.
+const SX_PRAGMA = "(pragma default-fraction Rational)\n\n";
+const ML_PRAGMA = "@!default-fraction Rational\n\n";
 
 test("the first code cell: prepare is identity + export suffix (no prior scope, no widgets)", () => {
   const cells: Cell[] = [code("def main() = 1 + 2")];
   const r = prepareCell(cells, 0, NO_WIDGETS, NO_VALUES, "ml", "def main() = 1 + 2");
-  assert.equal(r.compiled, "def main() = 1 + 2" + ML_EXPORT);
-  assert.equal(r.wrapPrefixBytes, 0);
+  assert.equal(r.compiled, ML_PRAGMA + "def main() = 1 + 2" + ML_EXPORT);
+  assert.equal(r.wrapPrefixBytes, Buffer.byteLength(ML_PRAGMA, "utf8"));
 });
 
 test("a later cell: prior cells' defs are prepended and counted in wrapPrefixBytes", () => {
@@ -36,8 +40,8 @@ test("a later cell: prior cells' defs are prepended and counted in wrapPrefixByt
   const cellText = "def main() = x + y";
   const r = prepareCell(cells, 2, NO_WIDGETS, NO_VALUES, "ml", cellText);
   // prefix = the two prior cells joined + a trailing blank-line separator, then the cell text + export.
-  assert.equal(r.compiled, "def x = 10\n\ndef y = 20\n\ndef main() = x + y" + ML_EXPORT);
-  const prefix = "def x = 10\n\ndef y = 20\n\n";
+  assert.equal(r.compiled, ML_PRAGMA + "def x = 10\n\ndef y = 20\n\ndef main() = x + y" + ML_EXPORT);
+  const prefix = ML_PRAGMA + "def x = 10\n\ndef y = 20\n\n";
   assert.equal(r.wrapPrefixBytes, Buffer.byteLength(prefix, "utf8"));
   // The cell text sits exactly at the prefix boundary (so a diagnostic at cell offset 0 maps to editor 0);
   // the export suffix follows it (cadenzaLint clamps suffix diagnostics to the cell-content end).
@@ -53,7 +57,7 @@ test("widget bindings are prepended before prior cells (in scope for the linter)
   const cellText = "def main() = rate * 100";
   const r = prepareCell(cells, 0, widgets, values, "ml", cellText);
   // The widget binding uses the LIVE value (0.2), ML surface `def rate = <lit>`.
-  assert.ok(r.compiled.startsWith("def rate = "), `expected widget binding first, got: ${r.compiled.slice(0, 40)}`);
+  assert.ok(r.compiled.startsWith(ML_PRAGMA + "def rate = "), `expected pragma+widget binding first, got: ${r.compiled.slice(0, 60)}`);
   assert.ok(r.compiled.endsWith(ML_EXPORT), "export suffix roots the module");
   assert.equal(r.compiled.slice(r.wrapPrefixBytes), cellText + ML_EXPORT);
 });
@@ -73,7 +77,7 @@ test("wrapPrefixBytes counts UTF-8 bytes, not UTF-16 code units", () => {
   // length, since the compiler reports UTF-8 offsets that cadenzaLint subtracts this from.
   const cells: Cell[] = [code('def label = "café"'), code("def main() = 1")];
   const r = prepareCell(cells, 1, NO_WIDGETS, NO_VALUES, "ml", "def main() = 1");
-  const prefix = 'def label = "café"\n\n';
+  const prefix = ML_PRAGMA + 'def label = "café"\n\n';
   assert.equal(r.wrapPrefixBytes, Buffer.byteLength(prefix, "utf8"));
   // "café" is 5 UTF-16 units but 5 chars / 6 UTF-8 bytes for the é — so byte length > char length.
   assert.ok(Buffer.byteLength(prefix, "utf8") > prefix.length, "é should make byte length exceed char length");
@@ -87,16 +91,16 @@ test("wrapPrefixBytes counts UTF-8 bytes, not UTF-16 code units", () => {
 test("s-expr: the first code cell — prepare is identity + export suffix (no prior scope, no widgets)", () => {
   const cells: Cell[] = [code("(def (main) (+ 1 2))")];
   const r = prepareCell(cells, 0, NO_WIDGETS, NO_VALUES, "sexpr", "(def (main) (+ 1 2))");
-  assert.equal(r.compiled, "(def (main) (+ 1 2))" + SEXPR_EXPORT);
-  assert.equal(r.wrapPrefixBytes, 0);
+  assert.equal(r.compiled, SX_PRAGMA + "(def (main) (+ 1 2))" + SEXPR_EXPORT);
+  assert.equal(r.wrapPrefixBytes, Buffer.byteLength(SX_PRAGMA, "utf8"));
 });
 
 test("s-expr: a later cell — prior cells' defs are prepended and counted in wrapPrefixBytes", () => {
   const cells: Cell[] = [code("(def (x) 10)"), code("(def (y) 20)"), code("(def (main) (+ x y))")];
   const cellText = "(def (main) (+ x y))";
   const r = prepareCell(cells, 2, NO_WIDGETS, NO_VALUES, "sexpr", cellText);
-  assert.equal(r.compiled, "(def (x) 10)\n\n(def (y) 20)\n\n(def (main) (+ x y))" + SEXPR_EXPORT);
-  const prefix = "(def (x) 10)\n\n(def (y) 20)\n\n";
+  assert.equal(r.compiled, SX_PRAGMA + "(def (x) 10)\n\n(def (y) 20)\n\n(def (main) (+ x y))" + SEXPR_EXPORT);
+  const prefix = SX_PRAGMA + "(def (x) 10)\n\n(def (y) 20)\n\n";
   assert.equal(r.wrapPrefixBytes, Buffer.byteLength(prefix, "utf8"));
   assert.equal(r.compiled.slice(r.wrapPrefixBytes), cellText + SEXPR_EXPORT);
 });
@@ -110,7 +114,7 @@ test("s-expr: widget bindings are prepended before prior cells using the live va
   const cellText = "(def (main) (* rate 100.0))";
   const r = prepareCell(cells, 0, widgets, values, "sexpr", cellText);
   // s-expr binding is `(def (rate) <lit>)` using the LIVE value (0.2).
-  assert.ok(r.compiled.startsWith("(def (rate) "), `expected widget binding first, got: ${r.compiled.slice(0, 40)}`);
+  assert.ok(r.compiled.startsWith(SX_PRAGMA + "(def (rate) "), `expected pragma+widget binding first, got: ${r.compiled.slice(0, 60)}`);
   assert.ok(r.compiled.endsWith(SEXPR_EXPORT), "export suffix roots the module");
   assert.equal(r.compiled.slice(r.wrapPrefixBytes), cellText + SEXPR_EXPORT);
 });

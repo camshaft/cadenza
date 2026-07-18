@@ -12,6 +12,10 @@ import type { Widget } from "./parseWidgets.ts";
 
 const code = (source: string, directive: CellDirective = { kind: "none" }): Cell => ({ kind: "code", source, directive });
 const slider = (name: string, def = 0): Widget => ({ name, type: "Float64", control: "slider", min: 0, max: 100, step: 1, default: def });
+// The assembled buffer LEADS with the notebook's rational-by-default pragma (operator: no floats — bare ints
+// ground to Rational so plain `/` is exact). Surface-appropriate; every buffer assertion accounts for it.
+const SX = "(pragma default-fraction Rational)\n\n"; // s-expr pragma prefix
+const ML = "@!default-fraction Rational\n\n"; //          ML pragma prefix
 
 test("widgetBinding emits the surface-appropriate def with a grounded Float64 literal", () => {
   assert.equal(widgetBinding(slider("rate"), 10, "ml"), "def rate = 10.0");
@@ -33,7 +37,7 @@ test("the ENTRY is a call to main (an expression), the cell's def-block goes in 
   ];
   const r = assembleForRun(cells, 1, [slider("principal")], { principal: 25 }, "ml");
   // widget binding + the cell's own def both in the buffer; entry is a call (NOT a def).
-  assert.equal(r.buffer, "def principal = 25.0\n\ndef main() = principal * 2.0");
+  assert.equal(r.buffer, ML + "def principal = 25.0\n\ndef main() = principal * 2.0");
   assert.equal(r.entry, "main()");
   assert.ok(!/^def\b/.test(r.entry), "entry must not be a def-block");
 });
@@ -41,7 +45,7 @@ test("the ENTRY is a call to main (an expression), the cell's def-block goes in 
 test("s-expr: the cell def goes in the buffer, entry is `(main)`", () => {
   const cells: Cell[] = [code("(def (main) (* 1000.0 (+ 1.0 rate)))")];
   const r = assembleForRun(cells, 0, [], {}, "sexpr");
-  assert.equal(r.buffer, "(def (main) (* 1000.0 (+ 1.0 rate)))");
+  assert.equal(r.buffer, SX + "(def (main) (* 1000.0 (+ 1.0 rate)))");
   assert.equal(r.entry, "(main)");
 });
 
@@ -51,7 +55,7 @@ test("an absent widget value falls back to the widget's declared default", () =>
     code("def main() = k"),
   ];
   const r = assembleForRun(cells, 1, [slider("k", 7)], {}, "ml");
-  assert.equal(r.buffer, "def k = 7.0\n\ndef main() = k");
+  assert.equal(r.buffer, ML + "def k = 7.0\n\ndef main() = k");
   assert.equal(r.entry, "main()");
 });
 
@@ -62,14 +66,14 @@ test("buffer order: widget bindings → prior-cell scope → this cell's own def
     code("def main() = base * rate"),
   ];
   const r = assembleForRun(cells, 2, [slider("rate", 0.5)], { rate: 0.5 }, "ml");
-  assert.equal(r.buffer, "def rate = 0.5\n\ndef base = 100.0\n\ndef main() = base * rate");
+  assert.equal(r.buffer, ML + "def rate = 0.5\n\ndef base = 100.0\n\ndef main() = base * rate");
   assert.equal(r.entry, "main()");
 });
 
 test("a cell defining a non-main entry: entry calls that def", () => {
   const cells: Cell[] = [code("def total = 42")];
   const r = assembleForRun(cells, 0, [], {}, "ml");
-  assert.equal(r.buffer, "def total = 42");
+  assert.equal(r.buffer, ML + "def total = 42");
   assert.equal(r.entry, "total()");
 });
 
@@ -79,7 +83,7 @@ test("multiple widgets bind in list order (all in the buffer, before the cell de
     code("def main() = a + b"),
   ];
   const r = assembleForRun(cells, 1, [slider("a", 1), slider("b", 2)], { a: 1, b: 2 }, "ml");
-  assert.equal(r.buffer, "def a = 1.0\ndef b = 2.0\n\ndef main() = a + b");
+  assert.equal(r.buffer, ML + "def a = 1.0\ndef b = 2.0\n\ndef main() = a + b");
   assert.equal(r.entry, "main()");
 });
 
@@ -95,7 +99,7 @@ test("a later cell assembles exactly ONE `main` — prior cells' `main` stripped
     code("(def (main) (* base rate))"), // this cell's main uses the helper + the widget
   ];
   const r = assembleForRun(cells, 2, [slider("rate", 0.5)], { rate: 0.5 }, "sexpr");
-  assert.equal(r.buffer, "(def (rate) 0.5)\n\n(def (base) 100.0)\n\n(def (main) (* base rate))");
+  assert.equal(r.buffer, SX + "(def (rate) 0.5)\n\n(def (base) 100.0)\n\n(def (main) (* base rate))");
   assert.equal((r.buffer.match(/\(def \(main\)/g) ?? []).length, 1, "exactly one `main` — no CDZ0201 collision");
   assert.equal(r.entry, "(main)");
 });
@@ -106,7 +110,7 @@ test("a later cell assembles exactly ONE `main` — prior cells' `main` stripped
     code("def main() = base * 2.0"), // this cell's main uses the prior helper
   ];
   const r = assembleForRun(cells, 1, [], {}, "ml");
-  assert.equal(r.buffer, "def base = 100.0\n\ndef main() = base * 2.0");
+  assert.equal(r.buffer, ML + "def base = 100.0\n\ndef main() = base * 2.0");
   assert.equal((r.buffer.match(/\bdef main\(\)/g) ?? []).length, 1, "exactly one `main` — no CDZ0201 collision");
   assert.equal(r.entry, "main()");
 });

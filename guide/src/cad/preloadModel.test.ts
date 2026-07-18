@@ -10,8 +10,10 @@ import assert from "node:assert/strict";
 import {
   injectImport,
   CAD_LIB_NAME,
+  CAD_HELPERS_NAME,
   CAD_LIB_FORMAT,
   CAD_IMPORTED_NAMES,
+  CAD_HELPER_NAMES,
 } from "./preloadModel.ts";
 
 // Clean model buffers — NO import, NO pragma (both are auto-injected; this is what the reader edits).
@@ -19,20 +21,22 @@ const ML_MODEL = `def main() = lower(Solid.Difference(Solid.Cube(v3r(4/1, 4/1, 4
 
 const SEXPR_MODEL = `(def (main) (lower ((. Solid Difference) ((. Solid Cube) (v3r (/ 4 1) (/ 4 1) (/ 4 1))) ((. Solid Sphere) (/ 5 2)))))`;
 
-test("ML: injects the import PREFIX line + the default-fraction pragma + a trailing export", () => {
+test("ML: injects the exact + helpers import lines + the default-fraction pragma + a trailing export", () => {
   const out = injectImport(ML_MODEL, "ml");
-  assert.ok(/^import \{ [^}]*\bSolid\b[^}]*\blower\b[^}]* \} from "exact"\n/.test(out), "import (of the CAD superset) is the first line");
+  assert.ok(/^import \{ [^}]*\bSolid\b[^}]*\blower\b[^}]* \} from "exact"\n/.test(out), "exact import (of the CAD superset) is the first line");
+  assert.ok(/\nimport \{ [^}]*\bbox\b[^}]*\bhole-through\b[^}]* \} from "helpers"\n/.test(out), "helpers import (the ergonomic superset) follows");
   assert.ok(out.includes("@!default-fraction Rational"), "the default-fraction pragma is injected");
   assert.ok(out.trimEnd().endsWith("export { main }"), "export is appended");
 });
 
-test("s-expr: wraps the inner forms in (do (import …) (pragma …) … (export main))", () => {
+test("s-expr: wraps the inner forms in (do (import exact) (import helpers) (pragma …) … (export main))", () => {
   const out = injectImport(SEXPR_MODEL, "sexpr");
-  assert.ok(/^\(do\n\(import "exact" \([^)]*\bSolid\b[^)]*\blower\b[^)]*\)\)\n/.test(out), "opens with (do (import …) of the CAD superset)");
+  assert.ok(/^\(do\n\(import "exact" \([^)]*\bSolid\b[^)]*\blower\b[^)]*\)\)\n/.test(out), "opens with (do (import exact …))");
+  assert.ok(/\(import "helpers" \([^)]*\bbox\b[^)]*\bhole-through\b[^)]*\)\)/.test(out), "includes (import helpers …)");
   assert.ok(out.includes("(pragma default-fraction Rational)"), "the default-fraction pragma is injected");
   assert.ok(out.trimEnd().endsWith("(export main))"), "closes with (export main))");
   // The s-expr import spec is a bare name LIST — no commas (commas are an ML-surface artifact).
-  assert.ok(!/\(import "exact" \([^)]*,/.test(out), "no commas in the s-expr import spec");
+  assert.ok(!/\(import "(exact|helpers)" \([^)]*,/.test(out), "no commas in the s-expr import specs");
 });
 
 // CONTIGUITY — the invariant the linter's span-mapping depends on. The reader's trimmed buffer must be a
@@ -55,6 +59,8 @@ test("trims surrounding whitespace before embedding (stable prefix length)", () 
 
 test("the preloaded-library constants match what CadPage passes the compiler", () => {
   assert.equal(CAD_LIB_NAME, "exact");
-  assert.equal(CAD_LIB_FORMAT, "ml"); // exact.cdz is authored in ML (.cdz)
+  assert.equal(CAD_HELPERS_NAME, "helpers");
+  assert.equal(CAD_LIB_FORMAT, "ml"); // exact.cdz + helpers.cdz are authored in ML (.cdz)
   assert.deepEqual([...CAD_IMPORTED_NAMES], ["Solid", "v3r", "lower", "Profile", "path-start", "line-to", "cubic-to", "v2"]);
+  assert.ok(CAD_HELPER_NAMES.includes("box") && CAD_HELPER_NAMES.includes("hole-through"), "helper superset includes the ergonomic wrappers");
 });

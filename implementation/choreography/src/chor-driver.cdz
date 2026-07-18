@@ -1,0 +1,136 @@
+/// chor-driver.cdz — the SIDECAR DRIVER (Layer 1, operator ruling 2026-07-18): the whole choreography
+/// pipeline as a single runnable program. Given a global protocol `Chor` + its role list, `shred` renders
+/// each actor's GENERATED program as s-expr text — the "define once, project into one program per actor"
+/// story as a command you run via the RUST compiler (`cdz run` this program). No new rust; pure Cadenza
+/// over the projection core (chor-project → chor-local → chor-codegen). A later layer wraps this as a
+/// `cdz chor <file>` subcommand that `cdz compile`s each rendered actor into its own wasm component.
+///
+/// The renderer handles the node shapes the code generator actually emits — `Ast.Name` (roles/labels/ops)
+/// and `Ast.List` (forms). `Int`/`Bool` leaves never occur in a generated actor program (labels are names),
+/// so they render as placeholders rather than pulling in an itoa the sidecar doesn't need.
+
+import { Chor } from "chor"
+import { wf } from "chor"
+import { Ast } from "ast"
+import { projectable } from "chor-project"
+import { unprojectable-role } from "chor-project"
+import { gen-role } from "chor-codegen"
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// Render an Ast (a generated actor program) to s-expr text.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def render(a: Ast) -> String = match a with
+  | Ast.Name(n) => n
+  | Ast.List(es) => String.concat("(", String.concat(render-list(es), ")"))
+  | Ast.Int(_) => "<int>"      // generated actor programs carry no int leaves (labels are names)
+  | Ast.Str(s) => String.concat("\"", String.concat(s, "\""))
+  | Ast.Bool(_) => "<bool>"
+
+/// Render list elements space-separated.
+def render-list(es: List(Ast)) -> String = match es with
+  | [] => ""
+  | [e] => render(e)
+  | [e, .. rest] => String.concat(render(e), String.concat(" ", render-list(rest)))
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// Shred: render every role's generated program, one labelled block per actor.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// One actor's block: `role: <program>`.
+def render-role(g: Chor, r: String) -> String =
+  String.concat(r, String.concat(": ", render(gen-role(g, r))))
+
+/// Render every declared role's program, newline-separated — the shredded protocol.
+def shred(roles: List(String), g: Chor) -> String = match roles with
+  | [] => ""
+  | [r] => render-role(g, r)
+  | [r, .. rest] => String.concat(render-role(g, r), String.concat("\n", shred(rest, g)))
+
+/// The sidecar entry: reject an un-projectable protocol (naming the role), else shred it. Returns the
+/// rendered actors, or a `not-projectable: <role>` line (the driver's user-facing verdict).
+def drive(roles: List(String), g: Chor) -> String =
+  if wf(roles, g) then
+    (if projectable(roles, g) then shred(roles, g)
+     else (match unprojectable-role(roles, g) with
+       | Option.Some(q) => String.concat("not-projectable: ", q)
+       | Option.None(_) => "not-projectable"))
+  else "not-well-formed"
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// Tests.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def yes-no() =
+  Chor.Choice("Buyer", [
+    Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Yes")),
+    Chor.Branch("No", Chor.Comm("Buyer", "Seller", "No"))])
+
+@test
+def render-a-send() =
+  // Buyer's generated program for a single send renders as the s-expr the codegen emits.
+  let g = Chor.Comm("Buyer", "Seller", "Title") in
+  if render(gen-role(g, "Buyer")) == "(seq (perform (send Seller Title)) (done))" then unit
+  else trap("a send renders to its perform-send s-expr")
+
+@test
+def render-a-recv() =
+  let g = Chor.Comm("Buyer", "Seller", "Title") in
+  if render(gen-role(g, "Seller")) == "(let Title (perform (recv Buyer)) (done))" then unit
+  else trap("a recv renders to its let-bound perform-recv s-expr")
+
+@test
+def render-bystander-is-done() =
+  let g = Chor.Comm("Buyer", "Seller", "Title") in
+  if render(gen-role(g, "Shipper")) == "(done)" then unit
+  else trap("an uninvolved role renders to (done)")
+
+@test
+def shred-renders-every-role() =
+  // The shredded single comm: Buyer sends, Seller recvs, Shipper idle — one block per actor.
+  let g = Chor.Comm("Buyer", "Seller", "Title") in
+  let expect = String.concat("Buyer: (seq (perform (send Seller Title)) (done))\n",
+    String.concat("Seller: (let Title (perform (recv Buyer)) (done))\n",
+      "Shipper: (done)")) in
+  if shred(["Buyer", "Seller", "Shipper"], g) == expect then unit
+  else trap("shred renders one labelled program block per declared role")
+
+@test
+def drive-rejects-unprojectable-naming-role() =
+  // A protocol where Shipper is told only in one branch → the driver's verdict names it, not a shred.
+  let g = Chor.Choice("Buyer", [
+    Chor.Branch("A", Chor.Seq(Chor.Comm("Buyer", "Seller", "Sa"), Chor.Comm("Buyer", "Shipper", "Go"))),
+    Chor.Branch("B", Chor.Comm("Buyer", "Seller", "Sb"))]) in
+  if drive(["Buyer", "Seller", "Shipper"], g) == "not-projectable: Shipper" then unit
+  else trap("the driver rejects an un-projectable protocol, naming the offending role")
+
+@test
+def drive-shreds-a-projectable-choice() =
+  // A projectable choice drives to a shred containing each role's ichoice/ematch program.
+  let out = drive(["Buyer", "Seller"], yes-no()) in
+  // Buyer is the chooser → its block starts with "Buyer: (ichoice".
+  if starts-with(out, "Buyer: (ichoice") then unit
+  else trap("a projectable choice shreds; the chooser's block is an internal choice")
+
+@test
+def drive-rejects-ill-formed() =
+  // A self-comm is not well-formed → the driver says so (before projectability).
+  let g = Chor.Comm("Buyer", "Buyer", "X") in
+  if drive(["Buyer"], g) == "not-well-formed" then unit
+  else trap("the driver rejects an ill-formed protocol")
+
+// Minimal prefix check (String == on a sliced prefix would need substring; compare the built prefix).
+def starts-with(s: String, prefix: String) -> Bool =
+  // Compare `prefix` against `s` truncated to prefix's length via a char-walk.
+  prefix-eq(s, prefix, 0)
+
+def prefix-eq(s: String, prefix: String, i: Int64) -> Bool =
+  if i >= String.byte-len(prefix) then true
+  else (if i >= String.byte-len(s) then false
+    else (match String.at(s, i) with
+      | Option.Some(cs) => (match String.at(prefix, i) with
+        | Option.Some(cp) => (if cs == cp then prefix-eq(s, prefix, i + 1) else false)
+        | Option.None(_) => true)
+      | Option.None(_) => false))
+
+export { render, shred, drive }

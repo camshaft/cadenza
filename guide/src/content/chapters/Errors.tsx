@@ -11,7 +11,7 @@ export default function Errors() {
 
       <P>
         Not every operation has an answer, and a language has to do something when you look past the end
-        of a list or up a missing key or ask for a result that doesn't fit. Cadenza represents a value
+        of a list or look up a missing key or ask for a result that doesn't fit. Cadenza represents a value
         that might be missing with the <C>Option</C> type, which is either <C>(Some x)</C> with a value
         or <C>(None unit)</C> with nothing, so the type system makes a caller acknowledge both cases
         rather than return a bogus default. A genuinely undefined operation like dividing by zero is a
@@ -35,8 +35,8 @@ export default function Errors() {
       <P>Change the <C>2</C> to <C>0</C> and Run: the <C>None</C> arm fires and you get <C>-1</C>, no crash.</P>
 
       <Why tenet="Partiality is data, not a trap">
-        Reading past the end of a list, dividing by zero, and a lookup that misses are all ordinary
-        values your program handles in Cadenza rather than crashes it suffers, because absence has a type.
+        Reading past the end of a list and looking up a missing key are ordinary values your program
+        handles in Cadenza rather than crashes it suffers, because absence has a type.
         Since that type is <C>Option</C>, the compiler can see whether you've dealt with it, whereas a
         special sentinel like <C>-1</C> would invite a caller to forget the edge case and a trap would
         take the decision out of their hands. An <C>Option</C> keeps the choice in the type where the

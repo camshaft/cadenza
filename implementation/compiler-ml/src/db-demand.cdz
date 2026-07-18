@@ -1,0 +1,68 @@
+/// db-demand.cdz — P1c (explicit-threading form) of the rcdzc port: the MEMOIZING PRODUCER pattern over the
+/// Db columns, proving the caching model end-to-end for a column. This is rcdzc's `X_of(db, id)` backward-
+/// demand shape (resolve.rs `resolved_of`, infer.rs `type_of`, lower.rs `core_of`): check the column; on a
+/// FILLED slot return the memoized fact (no recompute); on ABSENT compute it, FILL the column, and return
+/// BOTH the fact AND the updated Db so the memo persists.
+///
+/// THREADING: this is the EXPLICIT-Db form — a producer takes `db` and returns `(db', fact)` (the updated Db
+/// threaded out). The operator's preferred CARRIER is a state effect (get/put the Db without threading), but
+/// that is BLOCKED on a surfaced compiler bug (nested effectful-let drops an inner binding — filed to the
+/// concierge). The explicit-threading form here delivers the MEMOIZATION ESSENTIAL now (the whim pipeline
+/// RE-RAN resolve on every demand; this fills-once), over the SAME `db.cdz` columns; swapping the carrier to
+/// the state effect once the bug lands is a mechanical change to HOW db moves, not the memo semantics.
+///
+/// The demo memoizes the TYPES column (a `demand-typed` returning `(db', Typed)`): a real infer producer
+/// would COMPUTE the fact from upstream (resolve + child types); this fills a supplied default, to prove the
+/// check→compute-on-miss→fill→return-updated-db memo loop and that a second demand HITS the memo.
+
+import { Typed } from "infer-db"
+import { Db, require-typed, fill-typed } from "db"
+
+/// Demand the type fact at `id`, threading the Db explicitly. Returns `(db', fact)`:
+///   - FILLED slot → `(db, memoized-fact)` — the Db is UNCHANGED (no recompute, no re-fill).
+///   - ABSENT slot → `(fill-typed(db, id, deflt), deflt)` — compute the fact, FILL the column (the memo),
+///     return the UPDATED Db so the caller keeps the memo. (A real producer computes `deflt` from upstream
+///     facts demanded off the same threaded Db; the demo takes it as an argument.)
+def demand-typed(db: Db, id: Int64, deflt: Typed) =
+  (match require-typed(db, id) with
+    | Option.Some(fact) => (db, fact)                          // memo HIT — Db unchanged
+    | Option.None(_) => (fill-typed(db, id, deflt), deflt))    // MISS — fill (memoize) + thread out
+
+// ---- TESTS: the memoizing-producer loop over explicit-threaded Db columns ---------------------------
+
+import { Tok, parse-tokens } from "parse-db"
+import { db-of, typed-filled } from "db"
+
+def sample-db() = match parse-tokens([Tok.TNum(5)]) with | (_, tree) => db-of(tree)
+
+@test
+def dd-miss-fills-and-returns() =
+  // a demand on an ABSENT slot computes the fact, fills the column (memo now 1), and returns the fact.
+  (match demand-typed(sample-db(), 0, Typed.TIntW(true, 64)) with
+    | (db1, fact) => (match fact with
+        | Typed.TIntW(s, w) => (if s and (w == 64) then (if typed-filled(db1) == 1 then unit else trap("filled 1")) else trap("Int64"))
+        | _ => trap("demand returns the fact")))
+
+@test
+def dd-second-demand-hits-memo() =
+  // demand@0 twice, threading the Db: the 2nd HITS the memo — the column stays at 1 fact (no re-fill), and
+  // the fact matches. This is the caching essential: a fact is computed ONCE, then read from the column.
+  (match demand-typed(sample-db(), 0, Typed.TIntW(true, 64)) with
+    | (db1, _f1) => (match demand-typed(db1, 0, Typed.TIntW(true, 64)) with
+        | (db2, _f2) => (if typed-filled(db2) == 1 then unit else trap("second demand HITS memo — still 1 fact"))))
+
+@test
+def dd-distinct-ids-accumulate() =
+  // demand@0 then demand@1 (threading) → two facts memoized (column grows to 2). Columns key by id.
+  (match demand-typed(sample-db(), 0, Typed.TBool) with
+    | (db1, _) => (match demand-typed(db1, 1, Typed.TBool) with
+        | (db2, _) => (if typed-filled(db2) == 2 then unit else trap("distinct ids accumulate to 2"))))
+
+@test
+def dd-hit-does-not-recompute-poison() =
+  // a FILLED poison (TErr) is a memo HIT too — a decline is a determined fact, returned as-is, not recomputed
+  // to a different value. Fill TErr, then demand with a DIFFERENT default → the HIT returns the memoized TErr.
+  (match demand-typed(fill-typed(sample-db(), 0, Typed.TErr), 0, Typed.TIntW(true, 64)) with
+    | (_db, fact) => (match fact with | Typed.TErr => unit | _ => trap("memo HIT returns the filled TErr, not the new default")))
+
+export { demand-typed }

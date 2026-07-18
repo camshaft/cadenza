@@ -1297,6 +1297,91 @@ fn a_failing_property_over_a_nested_refined_newtype_renders_the_counterexample_i
     );
 }
 
+/// A refined newtype nested as ANOTHER SUM's PAYLOAD (`type Box (B Pct)`, `Pct = P(Int64) @invariant
+/// [0,100]`) decodes its counterexample IN-DOMAIN. This guards the SUM-PAYLOAD recursion arm of
+/// `reapply_recorded_invariant` (it recurses into each variant's payload) — a face breaker verified on
+/// trunk (`p(B(P(84)))`) that the top-level nested-Tuple pin does not cover. The property traps for x >= 50,
+/// so a failing draw is an in-range `B(P(50..100))`.
+#[test]
+fn a_failing_property_over_a_newtype_wrapped_in_a_sum_renders_the_counterexample_in_domain() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — building a nominal value needs the store"
+        );
+        return;
+    }
+    let d = dir("invariant-sum-payload-counterexample");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do (@ (invariant (and (>= it 0) (<= it 100))) (type Pct (P Int64))) \
+           (type Box (B Pct)) \
+           (@ test (def (p (: bx Box)) \
+             (match bx (((. Box B) pc) (match pc (((. Pct P) x) (if (< x 50) unit (trap \"big\")))))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, _) = run(&["test", &f, "--seed", "2", "--trials", "50"]);
+    assert!(
+        !ok,
+        "the property fails (a draw >= 50 exists in [0,100]): {stdout}"
+    );
+    // Extract the `P(N)` from `p(B(P(N)))` — the lowercase `p(` does not match the uppercase `P(` split, so
+    // the single `P(` is `nth(1)` — and assert N is in [0,100].
+    let n: i64 = stdout
+        .lines()
+        .find(|l| l.contains("counterexample: p(B(P("))
+        .and_then(|l| l.split("P(").nth(1))
+        .and_then(|s| s.split(')').next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(-1);
+    assert!(
+        (0..=100).contains(&n),
+        "a sum-wrapped @invariant newtype counterexample decodes IN-DOMAIN (0..=100): {stdout}"
+    );
+}
+
+/// A DOUBLY-nested refined newtype — `(Tuple (List Pct) Bool)`, so `Pct` sits under a List under a Tuple —
+/// decodes its counterexample IN-DOMAIN, exercising `reapply_recorded_invariant`'s recursion to DEPTH 2.
+/// A face breaker verified on trunk (`p(([P(0), P(0), P(99)], true))`) beyond the single-level Tuple pin.
+/// The property traps if a list element's `x >= 50`, so a failing element is an in-range `P(50..100)`.
+#[test]
+fn a_failing_property_over_a_doubly_nested_refined_newtype_renders_the_counterexample_in_domain() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — building a nominal value needs the store"
+        );
+        return;
+    }
+    let d = dir("invariant-doubly-nested-counterexample");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do (@ (invariant (and (>= it 0) (<= it 100))) (type Pct (P Int64))) \
+           (@ test (def (p (: pair (Tuple (List Pct) Bool))) \
+             (match pair ((tuple xs b) \
+               (match xs ((list) unit) \
+                 ((list h .. t) (match h (((. Pct P) x) (if (< x 50) unit (trap \"big\")))))))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, _) = run(&["test", &f, "--seed", "3", "--trials", "50"]);
+    assert!(
+        !ok,
+        "the property fails (a list element >= 50 exists in [0,100]): {stdout}"
+    );
+    // The counterexample renders `p(([P(N), …], b))`; extract the FIRST in-range element's int and check it.
+    let n: i64 = stdout
+        .lines()
+        .find(|l| l.contains("counterexample: p(([P("))
+        .and_then(|l| l.split("P(").nth(1))
+        .and_then(|s| s.split(')').next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(-1);
+    assert!(
+        (0..=100).contains(&n),
+        "a doubly-nested @invariant newtype counterexample decodes IN-DOMAIN (0..=100) at depth 2: {stdout}"
+    );
+}
+
 /// END-TO-END: a MIN-LENGTH `@invariant` constrains a newtype-List to non-empty generation. `NEList = Mk
 /// (List Int64)` with `@invariant(< 0 (List.len it))`: every generated `NEList` wraps a NON-EMPTY list, so
 /// a property asserting `List.len > 0` PASSES all trials (before the constraint the generator drew the empty
