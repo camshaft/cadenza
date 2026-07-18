@@ -12047,6 +12047,18 @@ pub fn map_shape_descriptor(
     Some(builder.encode(root))
 }
 
+/// Build a bare-`ty`-ROOTED shape descriptor for the runtime `value-cmp` op: `value_cmp_shaped` resolves
+/// the descriptor's ROOT to the operands' shape DIRECTLY and walks it (blessed per-leaf orders + compound
+/// lexicographic) — NOT the `Framed(<type-node>, …)` value-form wrapper `sum_shape_descriptor` produces.
+/// So encode the bare `shape_of(ty)` root (the same discipline as `set_shape_descriptor`/`map_shape_
+/// descriptor`). `None` if the type has no descriptor (a component the shape table can't encode — the emit
+/// then declines cleanly, matching the compiler's decision not to order it).
+pub fn value_cmp_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
+    let mut builder = ShapeTableBuilder::default();
+    let root = builder.shape_of(db, ty)?;
+    Some(builder.encode(root))
+}
+
 pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
     let mut builder = ShapeTableBuilder::default();
     match ty {
@@ -17437,6 +17449,23 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                     lhs: args[0],
                     rhs: args[1],
                 }
+            } else if matches!(op, Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge) && {
+                let opnd_ty = crate::infer::type_of(db, args[0]);
+                is_orderable_compound(db, &opnd_ty)
+            } {
+                // RUNTIME COMPOUND ORDERING — a `<`/`<=`/`>`/`>=` on two tuple/record/list/sum values whose
+                // leaves are all orderable (core-semantics.md §Compound Ordering Is Lexicographic). Emit
+                // `Core::ValueCmp` (the runtime `value-cmp` descriptor-guided three-way walk). The type checker
+                // unified both operands, so the single-side orderability check covers both. A float/bytes/set/
+                // map leaf makes the compound UN-orderable (`is_orderable_compound` false) → the decline below,
+                // matching the spec's carve-outs (§319 float partial; no blessed Bytes/Set/Map order).
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "runtime compound ordering → ValueCmp (value-cmp heap walk)");
+                Core::ValueCmp {
+                    op,
+                    lhs: args[0],
+                    rhs: args[1],
+                    ty: crate::infer::type_of(db, args[0]),
+                }
             } else {
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "decline: comparison of a compound value needs a heap walk");
                 Core::Poison(Reject::decline(
@@ -21847,6 +21876,81 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
                 ))
             }
         }
+    }
+}
+
+/// Whether `ty` is an ORDERABLE COMPOUND — a tuple/record/list/sum whose leaves each offer a blessed total
+/// order, so a runtime `<`/`<=`/`>`/`>=` on it routes to `Core::ValueCmp` (the `value-cmp` walk). Recursive:
+/// a leaf is orderable iff Int/Bool/Unit/String/Symbol/BigInt/Rational; a Float/Float32/Bytes/Char/Set/Map
+/// leaf is NOT (core-semantics.md — floats are IEEE-partial §319; no blessed Bytes/Set/Map/Char order), so a
+/// compound containing one is NOT orderable (the whole compound declines). Requires the ROOT to be a genuine
+/// COMPOUND (a bare scalar/String takes the scalar/StrCmp path, not here). Mirrors `ty_heap_walkable`'s
+/// structure but with the ORDER-offering leaf set (v-inference's ruling), not the equality-walkable one.
+fn is_orderable_compound(db: &mut Db, ty: &crate::ty::Ty) -> bool {
+    use crate::ty::Ty;
+    // The root must be a compound; a bare orderable leaf is handled by the scalar / StrCmp paths.
+    matches!(
+        ty,
+        Ty::Tuple(_) | Ty::Record(_) | Ty::List(_) | Ty::Sum { .. }
+    ) && orderable_leaf_or_compound(db, ty, &mut Vec::new())
+}
+
+/// The recursive orderability predicate: a leaf offers a blessed total order, or a compound whose every
+/// component is itself orderable. A recursive sum closes on `seen` (a self-referential type is orderable iff
+/// its payloads are — the cycle doesn't change that).
+fn orderable_leaf_or_compound(
+    db: &mut Db,
+    ty: &crate::ty::Ty,
+    seen: &mut Vec<crate::ast::StructId>,
+) -> bool {
+    use crate::ty::Ty;
+    match ty {
+        // Blessed-order leaves.
+        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Symbol | Ty::BigInt | Ty::Rational => {
+            true
+        }
+        // Non-orderable leaves — float (IEEE partial), Bytes/Char/Set/Map (no blessed order).
+        Ty::Float(_) | Ty::Bytes | Ty::Char | Ty::Set(_) | Ty::Map(..) => false,
+        Ty::Tuple(elems) => elems
+            .iter()
+            .all(|e| orderable_leaf_or_compound(db, e, seen)),
+        Ty::List(elem) => orderable_leaf_or_compound(db, elem, seen),
+        Ty::Record(fields) => {
+            let vals: Vec<Ty> = fields.values().cloned().collect();
+            vals.iter().all(|v| orderable_leaf_or_compound(db, v, seen))
+        }
+        // A sum — orderable iff every variant's payload type is. Recursive sum broken by `seen`. Mirrors
+        // `ty_heap_walkable`'s Sum arm: walk each variant's ctor, resolve its payload at this instantiation.
+        Ty::Sum { decl, .. } => {
+            if seen.contains(decl) {
+                return true; // recursive back-edge — already being checked
+            }
+            seen.push(*decl);
+            let variant_count = db.type_decl_by_occ(*decl).map(|t| t.variants.len());
+            let mut ok = variant_count.is_some();
+            if let Some(vc) = variant_count {
+                for disc in 0..vc {
+                    let ctor = db
+                        .type_decl_by_occ(*decl)
+                        .and_then(|t| t.variants.get(disc))
+                        .and_then(|v| v.ctor);
+                    // A nullary variant (no ctor) is a bare discriminant — orderable. A payload-carrying
+                    // variant's payload type must itself be orderable.
+                    if let Some(ctor) = ctor
+                        && let Some(payload_ty) =
+                            crate::infer::payload_ty_at_instantiation(db, ctor, ty)
+                        && !orderable_leaf_or_compound(db, &payload_ty, seen)
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            seen.pop();
+            ok
+        }
+        // Anything else (a bare var, a function, Any, a nominal we can't resolve) — not orderable.
+        _ => false,
     }
 }
 

@@ -911,6 +911,25 @@ pub enum Core {
     /// equal, variant discriminant before payload (core-semantics.md §Equality Is Structural). `value-eq`
     /// BORROWS both operands, so an owned-temporary operand is dropped after the compare.
     ValueEq { lhs: StructId, rhs: StructId },
+    /// A runtime ORDERING comparison on two COMPOUND operands (a tuple/record/list/sum heap value whose
+    /// leaves are all orderable) — result is a `Bool`. Present only for `<`/`<=`/`>`/`>=` when the fold
+    /// could not decide it (a runtime compound operand; two constant compounds fold in `lower`). The backend
+    /// emits a `value-cmp` runtime call (the descriptor-guided three-way `value_cmp_shaped` walk): the blessed
+    /// lexicographic order (core-semantics.md §Compound Ordering Is Lexicographic) — leaves by their blessed
+    /// order, tuple/record by field, sum by discriminant-then-payload, list element-wise with proper-prefix-
+    /// less. `value-cmp` returns -1/0/1 (2 = the non-orderable sentinel, never emitted-for since the compiler
+    /// declines ordering on a float/bytes/set/map leaf); the emit maps it to the boolean `op` wants. Carries
+    /// the shape descriptor like `value-encode`. `value-cmp` BORROWS both operands (an owned temporary is
+    /// dropped after the compare, like `ValueEq`). `op` is an ordering prim (`Lt`/`Le`/`Gt`/`Ge`).
+    ValueCmp {
+        op: Prim,
+        lhs: StructId,
+        rhs: StructId,
+        /// The operands' solved type — the emit bakes its shape descriptor (via `ShapeTableBuilder`) as the
+        /// `desc` arg the runtime `value-cmp` walk reads (the same descriptor `value-encode`/`set-to-list`
+        /// bake). Both operands share this type (the type checker unified them before lowering).
+        ty: crate::ty::Ty,
+    },
     /// A runtime integer CONVERSION on one operand (child by AST `StructId`) — present only when the
     /// fold could not reduce it (the operand is a runtime value). `Prim::Wrap` truncates the operand to
     /// the node's solved TARGET width/signedness (read off at selection); a constant operand folds to a

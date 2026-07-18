@@ -40,6 +40,7 @@ use xshell::Shell;
 #[derive(Clone, Copy)]
 enum AbiTy {
     U32,  // a heap handle or a small unsigned scalar
+    S32,  // a signed 32-bit result (e.g. `value-cmp`'s three-way -1/0/1 order); lowers to core i32
     S64,  // a boxed signed 64-bit integer
     Bool, // a boxed boolean
     F64,  // a boxed Float64
@@ -52,6 +53,7 @@ impl AbiTy {
     fn from_wit(t: WitType) -> Option<AbiTy> {
         match t {
             WitType::U32 => Some(AbiTy::U32),
+            WitType::S32 => Some(AbiTy::S32),
             WitType::Bool => Some(AbiTy::Bool),
             WitType::S64 => Some(AbiTy::S64),
             WitType::F64 => Some(AbiTy::F64),
@@ -65,6 +67,7 @@ impl AbiTy {
     fn variant_tokens(self) -> TokenStream {
         match self {
             AbiTy::U32 => quote!(AbiValType::U32),
+            AbiTy::S32 => quote!(AbiValType::S32),
             AbiTy::S64 => quote!(AbiValType::S64),
             AbiTy::Bool => quote!(AbiValType::Bool),
             AbiTy::F64 => quote!(AbiValType::F64),

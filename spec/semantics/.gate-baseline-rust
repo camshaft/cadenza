@@ -1829,7 +1829,9 @@ pass	a runtime less-than-or-equal holds at the equal-operand boundary
 pass	a runtime less-than-or-equal is signed at the integer extremes
 pass	a runtime list consumed by push in one operand is unchanged when read in a later operand
 pass	a runtime list of lists escapes with its nested element type
+pass	a runtime list orders lexicographically by its elements
 pass	a runtime list parameter consumed by push in a self-recursive call's sibling operand is unchanged
+pass	a runtime list that is a proper prefix orders less than its extension
 pass	a runtime magnitude unwraps through a unit conversion
 pass	a runtime map shared across two recursive-call operands is not mutated by an insert in one
 pass	a runtime mixed-scale combine converts a COMPUTED BigInt quantity operand
@@ -1887,6 +1889,7 @@ pass	a runtime subtraction that overflows traps
 pass	a runtime sum equality as a match SCRUTINEE drives a tail-recursive loop
 pass	a runtime sum equality drives a tail-recursive loop
 pass	a runtime sum match drives a tail-recursive loop
+pass	a runtime sum orders by discriminant then payload
 pass	a runtime sum whose payload comes from recursion compares equal by a heap walk
 pass	a runtime sum whose payload comes from recursion compares unequal by a heap walk
 pass	a runtime sum whose payload is a runtime tuple nests across the boundary
@@ -1903,6 +1906,7 @@ pass	a runtime three-variant classifier dispatches to the negative arm
 pass	a runtime truncation into a signed byte sign-extends
 pass	a runtime truncation to an unsigned byte keeps the low bits, total on negatives
 pass	a runtime tuple built behind a recursive call escapes to the host
+pass	a runtime tuple orders lexicographically by field
 pass	a runtime tuple with a boolean element is returned as a result
 pass	a runtime unsigned division at the maximum by 1 does not trap
 pass	a runtime unsigned division by zero traps as divide-by-zero
@@ -3275,7 +3279,6 @@ pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	runtime float ordering is a strict/non-strict partial order over finite values
 pass	runtime float ordering treats negative and positive zero as equal, unlike equality
-pass	runtime list ordering declines uniformly — the spec blesses no list order
 pass	runtime string ordering compares bytes UNSIGNED (a multi-byte scalar exceeds ASCII)
 pass	runtime string ordering makes a proper prefix less than its extension
 pass	runtime string ordering surfaces all four relational operators

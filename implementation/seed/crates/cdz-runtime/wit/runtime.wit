@@ -396,6 +396,21 @@ interface heap {
   //    traps — ill-formed bytes are DATA (`None`), the point of a total decode; the compiler builds the
   //    `(Option String)` sum from the handle-or-NULL. APPENDED last (frozen-contract rule).
   str-from-bytes: func(buf: u32) -> u32;               // 85 — Option String from a runtime Bytes (NULL = invalid UTF-8)
+
+  // ── Value-form COMPARE (index 86) — the blessed THREE-WAY total order over two RUNTIME compound heap
+  //    values of the same type, guided by the SAME shape descriptor `value-encode` reads. Returns `-1`/`0`/
+  //    `1` (Less/Equal/Greater) for an orderable pair, or the sentinel `2` when the type offers NO total
+  //    order (a Float/Float32 leaf — the IEEE-partial carve-out; a Bytes leaf — no blessed Bytes order; a
+  //    Set/Map — ordering not yet offered) or the descriptor is malformed. The compiler DECLINES ordering
+  //    for a non-orderable type at lower time (it never emits a `value-cmp` call for one), so the sentinel
+  //    is a defensive not-reached. LEXICOGRAPHIC (`core-semantics.md` #Compound Ordering Is Lexicographic):
+  //    leaves by their blessed order (Int/BigInt/Rational by value, Bool false<true, String content-
+  //    lexicographic UTF-8); tuples/records by field in canonical order; sums by discriminant then payload;
+  //    lists element-wise with a proper prefix LESS than its extension. Ownership: an INSPECTOR of both `a`
+  //    and `b` (BORROWS them — the caller/escape owns the drop; identical to `value-eq`) and of `desc` (a
+  //    constant). Consistent with `value-eq`: `value-cmp == 0` iff `value-eq == true`. APPENDED last
+  //    (frozen-contract rule). See `value_cmp_shaped`.
+  value-cmp: func(a: u32, b: u32, desc: u32) -> s32;   // 86 — blessed three-way order (-1/0/1, 2=unordered; borrows a+b)
 }
 
 world runtime {

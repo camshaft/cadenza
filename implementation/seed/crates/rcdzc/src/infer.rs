@@ -7879,7 +7879,10 @@ fn check_application(
             // itself NUMERIC (the common `(Qty.value (Unit.in …))` mistake, where the conversion result is
             // already the bare number) — so append it only for a numeric operand, not for e.g. a `Bool`
             // (where "a plain number" was self-contradictory: "this operand is a Bool — a plain number").
-            let numeric = matches!(operand_ty.strip_nominal(), Ty::Int(_) | Ty::Float(_));
+            let numeric = matches!(
+                operand_ty.strip_nominal(),
+                Ty::Int(_) | Ty::Float(_) | Ty::BigInt | Ty::Rational
+            );
             let hint = if numeric {
                 " (an `as`/`in` conversion already UNWRAPS to a bare number, so its result needs no \
                  `Qty.value` — drop it)"
@@ -7929,12 +7932,25 @@ fn check_application(
             // millimeter))`) if the intermediate is meant to carry a unit. Names the operand's type so the
             // reader sees it is a plain `T`, not a quantity.
             trace!(target: "rcdzc::infer", head = head.0, "fault: Unit.in second operand is not a quantity (CDZ0501)");
+            // Name the operand's REAL type + "not a quantity" GENERALLY (the operand can be ANY non-quantity
+            // type — a `Bool`/`String`/`Record`, not only a bare number). The "a conversion unwrapped it /
+            // chain re-wrap with `Qty.of`" note is a REPAIR HINT that only applies when the operand is
+            // NUMERIC (the common `(Unit.in cm (Unit.in mm x))` chaining mistake) — append it only then, not
+            // for e.g. a `Bool` (where "a plain number" was self-contradictory). Mirrors the `Qty.value` fix.
+            let numeric = matches!(
+                operand_ty.strip_nominal(),
+                Ty::Int(_) | Ty::Float(_) | Ty::BigInt | Ty::Rational
+            );
+            let hint = if numeric {
+                " (a conversion UNWRAPS to a bare number, so chaining `Unit.in (Unit.in …)` feeds the \
+                 second one a bare number); wrap it with `Qty.of` if it should carry a unit"
+            } else {
+                ""
+            };
             out.push(Reject::coded(
                 Code::DimensionMismatch,
                 format!(
-                    "`Unit.in`/`as` converts a QUANTITY, but this operand is {} — a plain number, not a \
-                     quantity (a conversion UNWRAPS to a bare number, so chaining `Unit.in (Unit.in …)` \
-                     feeds the second one a bare number); wrap it with `Qty.of` if it should carry a unit",
+                    "`Unit.in`/`as` converts a QUANTITY, but this operand is {}, which is not a quantity{hint}",
                     operand_ty.render_with_article(),
                 ),
             ));

@@ -2415,6 +2415,29 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 ))
             }
         }
+        // RUNTIME COMPOUND ORDERING (`value-cmp`) — the Rust twin of the wasm value-cmp walk. The operand
+        // type is an ORDERABLE compound (lower's `is_orderable_compound` routes ONLY tuple/record/list/sum
+        // with all-orderable leaves here — a float/char/bytes/set/map leaf declines at lower, never reaching
+        // this), and Rust's DERIVED `Ord` on those reps is EXACTLY the blessed lexicographic order: a tuple
+        // by field, a `Vec` (List) element-wise with a proper prefix less, a derived-`Ord` enum by
+        // discriminant-then-payload — matching core-semantics §Compound Ordering Is Lexicographic and the
+        // wasm walk. So emit the native `(l <op> r)`, mirroring `Core::StrCmp`'s native-String compare. A
+        // diverging operand short-circuits like `Core::Compare`/`StrCmp`.
+        Core::ValueCmp { op, lhs, rhs, .. } => {
+            let sym = compare_sym(op)
+                .ok_or_else(|| Reject::decline("ValueCmp carries a non-compare prim"))?;
+            if arith_operand_diverges(db, lhs) {
+                return emit(db, lhs, env, ctx);
+            }
+            if arith_operand_diverges(db, rhs) {
+                let l = emit(db, lhs, env, ctx)?;
+                let r = emit(db, rhs, env, ctx)?;
+                return Ok(format!("{{ let _ = {l}; {r} }}"));
+            }
+            let l = emit(db, lhs, env, ctx)?;
+            let r = emit(db, rhs, env, ctx)?;
+            Ok(format!("({l} {sym} {r})"))
+        }
     }
 }
 

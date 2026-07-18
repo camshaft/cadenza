@@ -10,7 +10,8 @@
 //! LTO'd symbol layout and varies by build env, so three machines produced three different
 //! `REQUIRED_RUNTIME_HASH` values; debug matched because dev has no cross-crate LTO merge). v-runtime
 //! (frozen-hash owner) RULED: keep `Big` PHYSICALLY IN `cdz-runtime` as a plain module (its single-crate
-//! LTO stays reproducible, hash stays `def9d173`, nothing to re-freeze) and share the SOURCE here.
+//! LTO stays reproducible, the frozen hash is stable per runtime revision — `818759e9` after the
+//! `value-cmp` op landed, was `def9d173`) and share the SOURCE here.
 //!
 //! So this crate brings in `cdz-runtime/src/bigint.rs` VERBATIM as a `#[path]` module: `Big` is compiled
 //! as part of THIS crate's own build (a normal rlib the gate links via `--extern`), while `cdz-runtime`

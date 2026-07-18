@@ -794,6 +794,17 @@ pub mod exports {
                     let result0 = T::str_from_bytes(arg0 as u32);
                     _rt::as_i32(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_value_cmp_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                    arg2: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::value_cmp(arg0 as u32, arg1 as u32, arg2 as u32);
+                    _rt::as_i32(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -1217,6 +1228,21 @@ pub mod exports {
                     ///    traps — ill-formed bytes are DATA (`None`), the point of a total decode; the compiler builds the
                     ///    `(Option String)` sum from the handle-or-NULL. APPENDED last (frozen-contract rule).
                     fn str_from_bytes(buf: u32) -> u32;
+                    /// 85 — Option String from a runtime Bytes (NULL = invalid UTF-8)
+                    /// ── Value-form COMPARE (index 86) — the blessed THREE-WAY total order over two RUNTIME compound heap
+                    ///    values of the same type, guided by the SAME shape descriptor `value-encode` reads. Returns `-1`/`0`/
+                    ///    `1` (Less/Equal/Greater) for an orderable pair, or the sentinel `2` when the type offers NO total
+                    ///    order (a Float/Float32 leaf — the IEEE-partial carve-out; a Bytes leaf — no blessed Bytes order; a
+                    ///    Set/Map — ordering not yet offered) or the descriptor is malformed. The compiler DECLINES ordering
+                    ///    for a non-orderable type at lower time (it never emits a `value-cmp` call for one), so the sentinel
+                    ///    is a defensive not-reached. LEXICOGRAPHIC (`core-semantics.md` #Compound Ordering Is Lexicographic):
+                    ///    leaves by their blessed order (Int/BigInt/Rational by value, Bool false<true, String content-
+                    ///    lexicographic UTF-8); tuples/records by field in canonical order; sums by discriminant then payload;
+                    ///    lists element-wise with a proper prefix LESS than its extension. Ownership: an INSPECTOR of both `a`
+                    ///    and `b` (BORROWS them — the caller/escape owns the drop; identical to `value-eq`) and of `desc` (a
+                    ///    constant). Consistent with `value-eq`: `value-cmp == 0` iff `value-eq == true`. APPENDED last
+                    ///    (frozen-contract rule). See `value_cmp_shaped`.
+                    fn value_cmp(a: u32, b: u32, desc: u32) -> i32;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1528,7 +1554,10 @@ pub mod exports {
                         "cadenza:runtime/heap#str-from-bytes")] unsafe extern "C" fn
                         export_str_from_bytes(arg0 : i32,) -> i32 { unsafe {
                         $($path_to_types)*:: _export_str_from_bytes_cabi::<$ty > (arg0) }
-                        } };
+                        } #[unsafe (export_name = "cadenza:runtime/heap#value-cmp")]
+                        unsafe extern "C" fn export_value_cmp(arg0 : i32, arg1 : i32,
+                        arg2 : i32,) -> i32 { unsafe { $($path_to_types)*::
+                        _export_value_cmp_cabi::<$ty > (arg0, arg1, arg2) } } };
                     };
                 }
                 #[doc(hidden)]
@@ -1737,9 +1766,9 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2121] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xcb\x0f\x01A\x02\x01\
-A\x02\x01B\x86\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2152] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xea\x0f\x01A\x02\x01\
+A\x02\x01B\x88\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0\
 x\x04\0\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bool\x01\x02\x01@\x01\
 \x06handley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\x04\0\x09box-float\
 \x01\x04\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01@\x01\x03leny\0y\x04\
@@ -1783,9 +1812,10 @@ my\x03deny\0y\x04\0\x0brational-of\x01,\x01@\x01\x01ry\0y\x04\0\x0crational-num\
 \x01\x1d\x04\0\x0crational-mul\x01\x1d\x04\0\x0crational-div\x01\x1d\x04\0\x0cra\
 tional-cmp\x01+\x04\0\x0fbigint-of-bytes\x01\x0e\x01@\x02\x01sy\x04descy\0y\x04\0\
 \x0bset-to-list\x01.\x01@\x02\x01my\x04descy\0y\x04\0\x0bmap-to-list\x01/\x04\0\x0e\
-str-from-bytes\x01\x0e\x04\0\x14cadenza:runtime/heap\x05\0\x04\0\x17cadenza:runt\
-ime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cproces\
-sed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+str-from-bytes\x01\x0e\x01@\x03\x01ay\x01by\x04descy\0z\x04\0\x09value-cmp\x010\x04\
+\0\x14cadenza:runtime/heap\x05\0\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\
+\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x07\
+0.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

@@ -781,6 +781,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         | Core::StrCmp { lhs, rhs, .. }
         | Core::FloatCompare { lhs, rhs, .. }
         | Core::ValueEq { lhs, rhs }
+        | Core::ValueCmp { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. }
         | Core::ListConcat { lhs, rhs }
         | Core::BytesConcat { lhs, rhs }
@@ -1033,6 +1034,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         | crate::core::Core::StrCmp { lhs, rhs, .. }
         | crate::core::Core::FloatCompare { lhs, rhs, .. }
         | crate::core::Core::ValueEq { lhs, rhs }
+        | crate::core::Core::ValueCmp { lhs, rhs, .. }
         | crate::core::Core::And { lhs, rhs, .. }
         | crate::core::Core::ListConcat { lhs, rhs } => {
             collect_call_callees(db, lhs, out);

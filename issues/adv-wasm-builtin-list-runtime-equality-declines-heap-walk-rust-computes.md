@@ -50,3 +50,12 @@ a sibling of the value_cmp_shaped v-runtime built for slice-2 (compound ordering
 INCREMENT (~value-cmp shape, not a one-liner), QUEUED AFTER slice-2. Blast radius (Option-of-list,
 tuple-with-list-field) all need the same element-wise list leaf; the increment clears them. NOT the earlier
 one-arm flip — that passes same-shape tests but miscompiles concat-vs-push twins.
+
+---
+DATA POINT (breaker, 2026-07-18, v-runtime's call on relevance): the Map/Set LIST-KEY path already compares
+lists SHAPE-INDEPENDENTLY + correctly TODAY (concat-built key = push-built lookup -> same key, even n=40;
+[1,2,3] vs [1,2] stay distinct). So NOT naive champ_eq. Either (a) RRB is canonicalized-on-construction
+(shape concern moot for current rep) or (b) the key path routes through a shape-independent element-wise
+compare separate from champ_eq — which might be the exact compare to wire to standalone = (reuse, NOT via
+champ_eq). Could shortcut the from-scratch element-wise walk. v-runtime's call. Does NOT revive the champ_eq
+route (still vetoed) — this is about whatever the KEY path actually uses.

@@ -279,6 +279,13 @@ const OP_DUP: &str = "dup";
 /// so an owned-temporary operand is `drop`ped by the emit AFTER the compare. The runtime `=` on two
 /// runtime compounds neither of which the compiler folded.
 const OP_VALUE_EQ: &str = "value-eq";
+/// `value-cmp(a, b, desc) -> s32` — the blessed THREE-WAY order over two compound heap values, guided by
+/// the shape descriptor `desc` (baked as a Bytes constant, the same descriptor `value-encode` reads).
+/// Returns -1/0/1 (Less/Equal/Greater) or 2 (non-orderable sentinel — never emitted-for, the compiler
+/// declines ordering on a float/bytes/set/map leaf). BORROWS both operands (like `value-eq`), so an
+/// owned-temporary operand is `drop`ped after the compare. The runtime `<`/`<=`/`>`/`>=` on two runtime
+/// compounds the compiler could not fold.
+const OP_VALUE_CMP: &str = "value-cmp";
 /// Persistent CHAMP map ops. `map-empty() -> handle` — the canonical empty map; `map-insert(m, key, val)
 /// -> handle` — add-or-replace (CONSUMES m, key, val; returns the new map); `map-lookup(m, key) -> handle`
 /// — the value for `key` or NULL when absent (BORROWS m + key); `map-remove(m, key) -> handle` — m without
@@ -604,7 +611,9 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // as a direct `LocalRef`), so it MUST classify as borrow like `ValueEq`, NOT with the scalar
         // compares (whose operands are always scalars) — else a let-bound String operand is wrongly marked
         // escaping and the `let` skips its drop → a leak (the borrowing StrCmp left it to its owner).
-        Core::ValueEq { lhs, rhs } | Core::StrCmp { lhs, rhs, .. } => {
+        Core::ValueEq { lhs, rhs }
+        | Core::StrCmp { lhs, rhs, .. }
+        | Core::ValueCmp { lhs, rhs, .. } => {
             binding_escapes(db, lhs, binder, true) || binding_escapes(db, rhs, binder, true)
         }
         Core::Convert { operand, .. } | Core::Not { operand } => {
@@ -682,6 +691,198 @@ fn cont_binding_escapes(db: &mut Db, cont: &crate::core::SumCont, binder: Struct
         crate::core::SumCont::Switch { arms, .. } => arms
             .iter()
             .any(|a| cont_binding_escapes(db, &a.cont, binder)),
+    }
+}
+
+/// Whether any arm of the sum-match rooted at `cont` EXTRACTS A HEAP PAYLOAD CHILD out of the scrutinee
+/// `scrut` in a way that could OUTLIVE the match block — i.e. a `Core::SumPayload`/`Core::Proj` chain
+/// rooted at `scrut` whose extracted leaf is a COMPOUND heap handle (`get_op` None — not an unboxed
+/// scalar) reached in a CONSUMING position (a call arg, a constructor element, the arm result). Used to
+/// gate the wrapper-kept-scrutinee SHELL DROP (`reclaim_shell`, the non-tail `MatchSum` emit): a deep
+/// `drop` of the scrutinee shell is only SAFE when NO such child escapes — else the child was moved out
+/// (into the result / a call) and the shell no longer solely owns it, so deep-dropping the shell would
+/// double-free the moved-out child (the UAF v-patterns caught, generalized to the materialized-wrapper
+/// case). A borrow-only arm (every payload use is a `List.len`/`=`/scalar unbox that retains nothing)
+/// does NOT escape, so the shell + its still-owned children reclaim cleanly with one deep drop.
+///
+/// This is NOT `cont_binding_escapes`: that keys on a `LocalRef`/`Param` binder, but a match PAYLOAD
+/// binder references the scrutinee by its NODE ID embedded in `Core::SumPayload { scrutinee }` — so the
+/// escape must be detected on the `SumPayload`/`Proj`-chain-rooted-at-`scrut` node itself (via
+/// `payload_or_proj_chain_roots_at_binder`), not on a `LocalRef`. Conservative: any UNCERTAIN shape (a
+/// scalar leaf that still walks through, a chain not clearly rooted at `scrut`) is treated as escaping so
+/// the drop is suppressed — a residual leak, never a double-free (the analysis's stated safe-floor bias).
+fn sum_payload_child_escapes_cont(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    scrut: StructId,
+) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => sum_payload_child_escapes_expr(db, *body, scrut, true),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            sum_payload_child_escapes_expr(db, *body, scrut, true)
+                || sum_payload_child_escapes_cont(db, els, scrut)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_payload_child_escapes_cont(db, then_, scrut)
+                || sum_payload_child_escapes_cont(db, els, scrut)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| sum_payload_child_escapes_cont(db, &a.cont, scrut)),
+    }
+}
+
+/// Whether `id` is a chain of BORROWING heap-child extractions (`Core::Proj`/`Core::SumPayload`/
+/// `Core::SumExpect`, in any mix) ultimately rooted at the NODE `root` (`id == root`) — the node-keyed
+/// twin of [`payload_or_proj_chain_roots_at_binder`] (which bottoms at a `LocalRef`/`Param` binder). A
+/// match PAYLOAD binder lowers to `Core::SumPayload { scrutinee: <the-match-scrutinee-node-id> }`, so a
+/// payload use is a chain whose ROOT is the scrutinee's own node id — not a `LocalRef`. Used by the
+/// wrapper-scrutinee shell-drop escape analysis to find where a child extracted from the scrutinee is
+/// consumed.
+fn payload_proj_chain_roots_at_node(db: &mut Db, id: StructId, root: StructId) -> bool {
+    if id == root {
+        return true;
+    }
+    match core_of(db, id) {
+        Core::Proj { operand, .. }
+        | Core::SumPayload {
+            scrutinee: operand, ..
+        }
+        | Core::SumExpect {
+            scrutinee: operand, ..
+        } => payload_proj_chain_roots_at_node(db, operand, root),
+        _ => false,
+    }
+}
+
+/// The expression walker for [`sum_payload_child_escapes_cont`]. `consuming` is whether THIS position
+/// consumes its value (the arm result, a call arg, a constructor element are consuming; a borrowing-op
+/// operand — `List.len`, `=`, a `Proj`/`SumPayload` OPERAND — is not). Returns true if a COMPOUND heap
+/// payload child of `scrut` is reached in a consuming position. Mirrors the borrow/consume classification
+/// of `binding_escapes`, but the "reference" it hunts for is a `SumPayload`/`Proj` chain rooted at the
+/// scrutinee NODE (`payload_or_proj_chain_roots_at_binder`), not a `LocalRef` occurrence.
+fn sum_payload_child_escapes_expr(
+    db: &mut Db,
+    id: StructId,
+    scrut: StructId,
+    consuming: bool,
+) -> bool {
+    // A payload/proj chain rooted at the scrutinee NODE `scrut`: if its extracted leaf is a COMPOUND heap
+    // handle and this position CONSUMES it, the child escapes the shell. A SCALAR leaf copies out (retains
+    // nothing). `payload_proj_chain_roots_at_node` bottoms out at `id == scrut` — a match PAYLOAD binder
+    // lowers to `Core::SumPayload { scrutinee: scrut }` (the scrutinee's OWN node id embedded), so the
+    // chain roots at the NODE, NOT at a `LocalRef`/`Param` (which the general `..._at_binder` helper keys
+    // on and would MISS here — the flaw that made an early version drop a shell whose child escaped).
+    if payload_proj_chain_roots_at_node(db, id, scrut) {
+        let scalar_leaf = matches!(get_op(db, id), Ok(Some(_)));
+        return consuming && !scalar_leaf;
+    }
+    match core_of(db, id) {
+        // Borrowing reads: the OPERAND is not consumed (it is read in place), so descend borrowing.
+        Core::ListLen { operand } | Core::BytesLen { operand } | Core::StrScalarLen { operand } => {
+            sum_payload_child_escapes_expr(db, operand, scrut, false)
+        }
+        Core::Proj { operand, .. } => {
+            // A scalar-element projection borrows its operand; a nested-compound projection transfers the
+            // child out (consuming). But a `Proj` whose operand is the scrut-rooted chain was already
+            // handled by the chain check above; here `operand` is some other sub-value.
+            let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
+            sum_payload_child_escapes_expr(db, operand, scrut, !scalar_element)
+        }
+        Core::ListAt { list, index, .. }
+        | Core::BytesAt {
+            bytes: list, index, ..
+        } => {
+            sum_payload_child_escapes_expr(db, list, scrut, false)
+                || sum_payload_child_escapes_expr(db, index, scrut, false)
+        }
+        Core::StrAt { string, index, .. } => {
+            sum_payload_child_escapes_expr(db, string, scrut, false)
+                || sum_payload_child_escapes_expr(db, index, scrut, false)
+        }
+        Core::StrSlice {
+            string, start, end, ..
+        } => {
+            sum_payload_child_escapes_expr(db, string, scrut, false)
+                || sum_payload_child_escapes_expr(db, start, scrut, false)
+                || sum_payload_child_escapes_expr(db, end, scrut, false)
+        }
+        // Borrowing compares/ops: operands read in place (like `binding_escapes`'s borrow arms).
+        Core::ValueEq { lhs, rhs }
+        | Core::StrCmp { lhs, rhs, .. }
+        | Core::BigIntCmp { lhs, rhs, .. }
+        | Core::RationalCmp { lhs, rhs, .. }
+        | Core::BigIntBinOp { lhs, rhs, .. }
+        | Core::RationalBinOp { lhs, rhs, .. } => {
+            sum_payload_child_escapes_expr(db, lhs, scrut, false)
+                || sum_payload_child_escapes_expr(db, rhs, scrut, false)
+        }
+        Core::MapLookup { map, key, .. } => {
+            sum_payload_child_escapes_expr(db, map, scrut, false)
+                || sum_payload_child_escapes_expr(db, key, scrut, true)
+        }
+        Core::MapSize { map } => sum_payload_child_escapes_expr(db, map, scrut, false),
+        Core::SetContains { set, elem, .. } => {
+            sum_payload_child_escapes_expr(db, set, scrut, false)
+                || sum_payload_child_escapes_expr(db, elem, scrut, true)
+        }
+        Core::SetLen { set } => sum_payload_child_escapes_expr(db, set, scrut, false),
+        // Scalar arith/logic: operands are scalars (no heap child can flow here) — but recurse
+        // borrowing to be safe (a scalar-unbox of a scrut child copies out, never escapes).
+        Core::Arith { lhs, rhs, .. }
+        | Core::Compare { lhs, rhs, .. }
+        | Core::FloatCompare { lhs, rhs, .. }
+        | Core::And { lhs, rhs, .. } => {
+            sum_payload_child_escapes_expr(db, lhs, scrut, false)
+                || sum_payload_child_escapes_expr(db, rhs, scrut, false)
+        }
+        Core::Convert { operand, .. } | Core::Not { operand } => {
+            sum_payload_child_escapes_expr(db, operand, scrut, consuming)
+        }
+        // Control flow: propagate the consuming position into every reachable sub-position.
+        Core::If { cond, then_, else_ } => {
+            sum_payload_child_escapes_expr(db, cond, scrut, false)
+                || sum_payload_child_escapes_expr(db, then_, scrut, consuming)
+                || sum_payload_child_escapes_expr(db, else_, scrut, consuming)
+        }
+        Core::Seq { stmts, tail } => {
+            stmts
+                .iter()
+                .any(|&s| sum_payload_child_escapes_expr(db, s, scrut, false))
+                || sum_payload_child_escapes_expr(db, tail, scrut, consuming)
+        }
+        Core::Block { body, .. } => sum_payload_child_escapes_expr(db, body, scrut, consuming),
+        Core::Break { value } => sum_payload_child_escapes_expr(db, value, scrut, consuming),
+        Core::Let { bindings, body } => {
+            bindings
+                .iter()
+                .any(|(_, v)| sum_payload_child_escapes_expr(db, *v, scrut, true))
+                || sum_payload_child_escapes_expr(db, body, scrut, consuming)
+        }
+        // A nested match: descend the scrutinee (borrowed) and every arm (consuming as this position).
+        Core::MatchSum { scrutinee: s, root } => {
+            sum_payload_child_escapes_expr(db, s, scrut, false)
+                || sum_payload_child_escapes_cont(db, &root, scrut)
+        }
+        Core::Match { scrutinee: s, arms } => {
+            sum_payload_child_escapes_expr(db, s, scrut, false)
+                || arms.iter().any(|a| {
+                    a.guard
+                        .is_some_and(|g| sum_payload_child_escapes_expr(db, g, scrut, false))
+                        || sum_payload_child_escapes_expr(db, a.body, scrut, consuming)
+                })
+        }
+        Core::MatchList { scrutinee: s, arms } => {
+            sum_payload_child_escapes_expr(db, s, scrut, false)
+                || arms
+                    .iter()
+                    .any(|a| sum_payload_child_escapes_expr(db, a.body, scrut, consuming))
+        }
+        // CONSUMING containers/ops: every operand is consumed into the result — a scrut child reached
+        // here escapes. This is the conservative case (a call, a constructor, a persistent collection op).
+        _ => core_child_ids(db, id)
+            .into_iter()
+            .any(|c| sum_payload_child_escapes_expr(db, c, scrut, true)),
     }
 }
 
@@ -794,6 +995,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::RationalCmp { lhs: a, rhs: b, .. }
         | Core::RationalOfInts { num: a, den: b }
         | Core::ValueEq { lhs: a, rhs: b }
+        | Core::ValueCmp { lhs: a, rhs: b, .. }
         | Core::BytesConcat { lhs: a, rhs: b }
         | Core::ListConcat { lhs: a, rhs: b }
         | Core::ListPush { list: a, elem: b }
@@ -1243,7 +1445,9 @@ fn mark_binder_dups_inner(
             seq(db, &[(num, false), (den, false)], live_after, sites)
         }
         // `value-eq` BORROWS both operands.
-        Core::ValueEq { lhs, rhs } => seq(db, &[(lhs, true), (rhs, true)], live_after, sites),
+        Core::ValueEq { lhs, rhs } | Core::ValueCmp { lhs, rhs, .. } => {
+            seq(db, &[(lhs, true), (rhs, true)], live_after, sites)
+        }
         // Consuming constructors / ops: every operand is consumed into the result.
         Core::BytesConcat { lhs, rhs } | Core::ListConcat { lhs, rhs } => {
             seq(db, &[(lhs, false), (rhs, false)], live_after, sites)
@@ -2543,6 +2747,18 @@ fn collect_used_ops_into(
             collect_used_ops_into(db, lhs, out);
             collect_used_ops_into(db, rhs, out);
         }
+        // Runtime compound ORDERING imports `value-cmp` (the compare) + `drop` (reclaim the descriptor Bytes
+        // AND an owned-temporary operand after the borrowing compare) + `bytes-alloc`/`bytes-set` (the emit
+        // BAKES the shape descriptor inline as a Bytes constant, exactly like `Set.to-list`). Mirrors ValueEq's
+        // borrow contract plus the descriptor-baking op set.
+        Core::ValueCmp { lhs, rhs, .. } => {
+            out.insert(OP_VALUE_CMP);
+            out.insert(OP_DROP);
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+            collect_used_ops_into(db, lhs, out);
+            collect_used_ops_into(db, rhs, out);
+        }
         Core::Convert { operand, .. } | Core::Not { operand } => {
             collect_used_ops_into(db, operand, out)
         }
@@ -2648,15 +2864,15 @@ fn collect_used_ops_into(
         Core::MatchSum { scrutinee, root } => {
             // Owned-shell reclaim (see the emit): a non-reusable OWNED boxed-sum scrutinee whose variants all
             // carry SCALAR (or no) payloads has its shell dropped after the match. This collect pass has no
-            // slots/reusability info, so import `drop` whenever the operand is such an owned all-scalar-payload
-            // boxed sum — a superset of the emit's condition (a declared-but-unused import is harmless; the
-            // emit only emits the drop for a freshly-stashed owned i32-handle shell). NOT for an enum-disc
-            // (bare i32, no shell) nor a compound-payload sum (an arm could borrow a handle → the shell must
-            // NOT be dropped, the UAF v-patterns caught).
+            // slots/reusability info, so import `drop` whenever the operand is an owned boxed sum — a SUPERSET
+            // of the emit's condition (a declared-but-unused import is harmless; the emit only emits the drop
+            // for a freshly-stashed owned i32-handle shell whose payloads are reclaim-safe: all-scalar OR
+            // compound-but-borrow-only). Broadened from the all-scalar-only test to cover the compound-borrow-
+            // only shell reclaim too (else the emit's drop would lack its import → invalid module). NOT for an
+            // enum-disc (bare i32, no shell).
             let scrut_ty = type_of(db, scrutinee);
             if is_heap_type(&scrut_ty)
                 && !ty_is_enum_disc(db, &scrut_ty)
-                && sum_has_only_scalar_payloads(db, &scrut_ty)
                 && matches!(
                     heap_operand_ownership(db, scrutinee),
                     Ok(HandleOwnership::Owned)
@@ -3747,6 +3963,7 @@ fn licm_children(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::StrCmp { lhs, rhs, .. }
         | Core::FloatCompare { lhs, rhs, .. }
         | Core::ValueEq { lhs, rhs }
+        | Core::ValueCmp { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. }
         | Core::ListConcat { lhs, rhs }
         | Core::BytesConcat { lhs, rhs } => vec![lhs, rhs],
@@ -8673,10 +8890,24 @@ fn emit(
             // shell + imports no value-heap runtime; its i32 slot width alone doesn't exclude it), and a
             // non-diverging match.
             let scrut_ty = type_of(db, scrutinee);
+            // The shell-reclaim safety condition. An owned freshly-stashed boxed-sum scrutinee's shell is a
+            // dead temporary after the match and should be deep-`drop`'d — but ONLY when no arm moves a HEAP
+            // PAYLOAD CHILD out of the shell that outlives the block (that child would be double-freed by the
+            // deep drop = UAF). TWO sufficient conditions, either safe:
+            //   (a) sum_has_only_scalar_payloads — every variant carries a scalar/nothing, so NO handle can
+            //       alias the shell (the original conservative floor).
+            //   (b) COMPOUND payloads BUT !sum_payload_child_escapes_cont — every arm only BORROWS its payload
+            //       children (a `List.len`/`=`/scalar-unbox that retains nothing); none is consumed/moved out,
+            //       so the shell still solely owns every child and one deep drop reclaims shell + children
+            //       cleanly. (The CONSUMED-child case — a child threaded into a call/constructor, e.g. the
+            //       bounding-box `aabbr-union` passing bound corners to `v3-min`/`v3-max` — is left un-dropped
+            //       here, a residual leak never a double-free, pending the dup-consumed-children increment.)
+            let payload_reclaim_safe = sum_has_only_scalar_payloads(db, &scrut_ty)
+                || !sum_payload_child_escapes_cont(db, &root, scrutinee);
             let reclaim_shell = !never_diverges
                 && is_heap_type(&scrut_ty)
                 && !ty_is_enum_disc(db, &scrut_ty)
-                && sum_has_only_scalar_payloads(db, &scrut_ty)
+                && payload_reclaim_safe
                 && matches!(stashed_slot, Some((_, ValType::I32)))
                 && matches!(
                     heap_operand_ownership(db, scrutinee),
@@ -9079,6 +9310,75 @@ fn emit(
             if ro == HandleOwnership::Owned {
                 out.push(Lir::LocalGet(slot_r));
                 out.push(Lir::CallImport(OP_DROP));
+            }
+            Ok(())
+        }
+        // RUNTIME COMPOUND ORDERING — a `value-cmp(a, b, desc)` call: the blessed three-way lexicographic
+        // walk over two compound heap values (core-semantics.md §Compound Ordering Is Lexicographic). Bake
+        // the operands' shape descriptor as a Bytes constant (the same discipline as `Set.to-list`), emit
+        // both operands (owned-temporaries dropped after the borrowing compare, like `ValueEq`), call
+        // `value-cmp` → i32 in {-1,0,1} (2 = unordered, never reached — the compiler declines a non-orderable
+        // type at lower time), then map the three-way result to the bool `op` wants (`res <ₛ 0` for `<`, etc.).
+        Core::ValueCmp { op, lhs, rhs, ty } => {
+            let Some(desc) = crate::lower::value_cmp_shape_descriptor(db, &ty) else {
+                return Err(Reject::decline(
+                    "runtime compound ordering: operand shape has no orderable descriptor",
+                ));
+            };
+            let lo = heap_operand_ownership(db, lhs)?;
+            let ro = heap_operand_ownership(db, rhs)?;
+            // Scratch slots (above the running high-water): the two operand handles (dropped if owned) + the
+            // descriptor Bytes (a borrowed-only owned temporary, dropped after the compare — as `Set.to-list`).
+            let slot_l = *high;
+            let slot_r = *high + 1;
+            let desc_slot = *high + 2;
+            *high = desc_slot + 1;
+            for s in [slot_l, slot_r, desc_slot] {
+                scratch_ty.insert(s, ValType::I32);
+            }
+            let op_base = *high;
+            // BAKE THE DESCRIPTOR FIRST — into desc_slot, with NOTHING else on the stack — so the operand
+            // emits (which build tuples/lists via their own arr/vec scratch) never sit under a partially-baked
+            // descriptor. (An earlier order that baked between the tee'd operands produced invalid wasm.) The
+            // bake leaves the buffer on the stack; store it to desc_slot (and DROP the value the ConstI32/
+            // bytes-alloc left — no, LocalSet consumes it), clearing the stack for the operands.
+            out.push(Lir::ConstI32(desc.len() as i32));
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // [desc-buf]
+            for (j, &byte) in desc.iter().enumerate() {
+                out.push(Lir::ConstI32(j as i32));
+                out.push(Lir::ConstI32(byte as i32));
+                out.push(Lir::CallImport(OP_BYTES_SET)); // [desc-buf] (bytes-set returns the buffer)
+            }
+            out.push(Lir::LocalSet(desc_slot)); // [] — descriptor stored, stack clear
+            // a, b — emitted onto the clean stack, tee'd into slots (kept for the call AND a possible drop).
+            emit(db, lhs, slots, op_base, high, scratch_ty, layout, out)?;
+            out.push(Lir::LocalTee(slot_l)); // [a]
+            emit(db, rhs, slots, op_base, high, scratch_ty, layout, out)?;
+            out.push(Lir::LocalTee(slot_r)); // [a, b]
+            out.push(Lir::LocalGet(desc_slot)); // [a, b, desc]
+            out.push(Lir::CallImport(OP_VALUE_CMP)); // → [res:i32 ∈ {-1,0,1}]
+            // Drop the borrowed-only descriptor Bytes (a fresh owned temporary), then any owned operand.
+            out.push(Lir::LocalGet(desc_slot));
+            out.push(Lir::CallImport(OP_DROP));
+            if lo == HandleOwnership::Owned {
+                out.push(Lir::LocalGet(slot_l));
+                out.push(Lir::CallImport(OP_DROP));
+            }
+            if ro == HandleOwnership::Owned {
+                out.push(Lir::LocalGet(slot_r));
+                out.push(Lir::CallImport(OP_DROP));
+            }
+            // Map the three-way result (still on top) to the boolean `op` wants: Lt res<0, Le res<=0,
+            // Gt res>0, Ge res>=0 (signed compare against 0).
+            out.push(Lir::ConstI32(0));
+            match op {
+                Prim::Lt => out.push(Lir::I32LtS),
+                Prim::Le => out.push(Lir::I32LeS),
+                Prim::Gt => out.push(Lir::I32GtS),
+                Prim::Ge => out.push(Lir::I32GeS),
+                _ => {
+                    return Err(Reject::decline("ValueCmp carries a non-ordering prim"));
+                }
             }
             Ok(())
         }
