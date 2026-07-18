@@ -344,3 +344,58 @@ export function setProseSource(cells: Cell[], index: number, newMarkdown: string
 export function assignIds(cells: Cell[]): Cell[] {
   return cells.map((cell, i) => ({ ...cell, id: i }));
 }
+
+/// The next fresh `id` for a cell inserted into `cells`: one past the current MAX id (never a renumber —
+/// see `assignIds`, which warns that re-stamping on insert would break existing React keys). Returns 0 for
+/// an id-less list (no ids in play yet). Used by `insertCell` so a newly-added cell gets a stable key that
+/// can't collide with an existing one, while every other cell keeps its identity.
+function nextId(cells: Cell[]): number {
+  let max = -1;
+  for (const c of cells) if (c.id !== undefined && c.id > max) max = c.id;
+  return max + 1;
+}
+
+/// Insert `newCell` at position `index` (0..length — `length` appends), returning a NEW cell list (immutable:
+/// a fresh array, existing cells keep their identity/ids). The add half of markdown-structure editing
+/// (operator #2 — "how do I add a new section?"): the UI's "+ insert below cell k" calls `insertCell(cells,
+/// k + 1, blank)`. If the list carries `id`s (a live UI keys by them), the new cell is stamped a FRESH id
+/// past the current max (never renumbering the others — stable React keys, per `assignIds`); an id-LESS list
+/// stays id-less (the new cell inherits whatever id it came with, typically none). Throws on an index outside
+/// [0, length] (an unreachable insert slot is a caller bug, like `setCellSource`'s range guard).
+export function insertCell(cells: Cell[], index: number, newCell: Cell): Cell[] {
+  if (index < 0 || index > cells.length) throw new RangeError(`insertCell: index ${index} out of range [0, ${cells.length}]`);
+  // Stamp a fresh id ONLY when the list is id-bearing and the incoming cell lacks one — so a live keyed UI
+  // gets a collision-free key, but an id-less doc model (fresh parseDocument output) stays id-less.
+  const idBearing = cells.some((c) => c.id !== undefined);
+  const stamped = idBearing && newCell.id === undefined ? { ...newCell, id: nextId(cells) } : newCell;
+  const next = cells.slice();
+  next.splice(index, 0, stamped);
+  return next;
+}
+
+/// Remove the cell at `index`, returning a NEW cell list (immutable; the survivors keep their identity/ids —
+/// so a keyed UI only unmounts the deleted editor). The delete half of markdown-structure editing (operator
+/// #2 — "how do I remove one?"): the per-cell trash control calls `removeCell(cells, k)`. Throws on an
+/// out-of-range index (like `setCellSource`). Ids are NOT renumbered — deleting cell 1 of [0,1,2] leaves
+/// ids [0,2], so no surviving editor remounts (a renumber would shift every key after the hole).
+export function removeCell(cells: Cell[], index: number): Cell[] {
+  if (index < 0 || index >= cells.length) throw new RangeError(`removeCell: index ${index} out of range [0, ${cells.length})`);
+  const next = cells.slice();
+  next.splice(index, 1);
+  return next;
+}
+
+/// Move the cell at `from` to position `to`, returning a NEW cell list (immutable; every cell keeps its
+/// identity/id — a reorder only changes ORDER, so a keyed UI animates rather than remounts). The reorder
+/// half of markdown-structure editing (operator #2 — "how do I reorder them?"): drag-to-reorder and the
+/// up/down fallback both land here — up = `moveCell(cells, k, k - 1)`, down = `moveCell(cells, k, k + 1)`.
+/// `to` is the target index in the ORIGINAL coordinate space (the cell ends up at `to` after removal +
+/// reinsert). A no-op `from === to` returns a fresh copy unchanged. Throws if either index is out of range.
+export function moveCell(cells: Cell[], from: number, to: number): Cell[] {
+  if (from < 0 || from >= cells.length) throw new RangeError(`moveCell: from ${from} out of range [0, ${cells.length})`);
+  if (to < 0 || to >= cells.length) throw new RangeError(`moveCell: to ${to} out of range [0, ${cells.length})`);
+  const next = cells.slice();
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
+}

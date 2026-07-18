@@ -3303,6 +3303,18 @@ impl Db {
         self.invariants.values().copied().collect()
     }
 
+    /// Whether the program declares ANY `@invariant` type — an O(1) check the establish-divert gate (in
+    /// `lower_sum_new`) tests FIRST, before the per-construction `variant_owner_decl` (a type-inference
+    /// query). A program with no `@invariant` (the overwhelming majority, incl. every non-verification test)
+    /// then pays only this one hashmap-emptiness check per construction — NOT a second `scheme_of` on top of
+    /// the newtype-erasure branch's. That matters on the layout reachability walk, which descends a
+    /// `Core::SumNew` payload chain level-by-level: an extra `scheme_of` per level (on a pathological unbounded
+    /// self-application chain) adds native recursion depth and overflows the compile worker's stack before the
+    /// walk's own depth guard stops it. Gating on this keeps a no-`@invariant` program byte-identical to before.
+    pub(crate) fn has_invariants(&self) -> bool {
+        !self.invariants.is_empty()
+    }
+
     /// Whether definition `def` is marked `@exhaustive` — a property test the runner drives over its ENTIRE
     /// finite input domain rather than by random sampling (`property-based-testing.md` §Exhaustive). Keyed
     /// by the def's BODY occurrence, the same identity `is_test`/`tags_of` use. Backs the `cdz test`

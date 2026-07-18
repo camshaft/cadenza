@@ -1383,16 +1383,26 @@ pub struct Segment {
     pub little_endian: bool,
 }
 
-/// One arm of a [`Resolved::Handle`] — the discharge of a single operation `(E.op (params…) state body)`.
+/// One arm of a [`Resolved::Handle`] — the discharge of a single operation. Two surfaces. The TAIL/abortive
+/// form (the shipping 4-part arm) is `(E.op (params…) state body)`: the continuation is implicit; `body`
+/// contains `Resume` node(s) (tail-resumptive) or none (abortive). The GENERAL / `ctl`-style form (the E5
+/// 5-part arm) is `(E.op (params…) state k body)`: `k` is an explicit binder for the delimited CONTINUATION
+/// as a first-class value (a `Ty::Cont`), so `body` may STORE it (in a list/map) and `resume` becomes
+/// `apply(k, v)` — the STORED/RESUMABLE-later case a DES scheduler needs (`DESIGN-general-continuations-e5.md`).
+/// `cont` is `Some(k)` for the general form, `None` for the tail/abortive form.
 /// `op` is the operation's projection occurrence (`(. E op)`), which carries the op's identity via its
 /// `(meta effect-op)` channel; `params` are the operation's parameter binders (bound in `body`); `state`
-/// is the current-state binder (the left-fold accumulator, bound in `body`); `body` is the arm body,
-/// containing the `Resume` node(s). Children are AST occurrences; scope for `params`/`state` is handled by
-/// the ordinary parent-walk (a reference in `body` finds its binder), so the arm records only the shape.
+/// is the current-state binder (the left-fold accumulator, bound in `body`); `body` is the arm body.
+/// Children are AST occurrences; scope for `params`/`state`/`cont` is handled by the ordinary parent-walk (a
+/// reference in `body` finds its binder), so the arm records only the shape.
 #[derive(Clone, PartialEq, Debug)]
 pub struct HandleArm {
     pub op: StructId,
     pub params: Vec<StructId>,
     pub state: StructId,
+    /// The explicit continuation binder `k` of a general (`ctl`-style) 5-part arm, or `None` for the
+    /// tail/abortive 4-part arm. An arm with `cont: Some(_)` is E5-general — it binds the continuation as a
+    /// value; classified distinctly and (until the E5 frame-capture increment lands) declined cleanly.
+    pub cont: Option<StructId>,
     pub body: StructId,
 }

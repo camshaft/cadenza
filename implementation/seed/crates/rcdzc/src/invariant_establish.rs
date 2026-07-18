@@ -93,8 +93,14 @@
 //! SINGLE-VARIANT MULTI-payload newtype `(type Range (Mk A B))`, whose sole variant (disc 0) gets
 //! `__invariant_construct_Range__d0`. Such a type erases to a `Ty::Tuple` (not a single-payload value), so the
 //! divert for it is in `lower_sum_new`'s tuple-erase arm (keyed `__d<disc>`), not the `args.len()==1` path.
-//! A NULLARY variant (empty payload) gets no construct-def — its establish (via the nullary-unit construction
-//! path) is the one remaining injection point.
+//! A NULLARY variant also gets a (no-arg) construct-def — `(let ((__inv_v (T.V unit))) (if (check __inv_v)
+//! __inv_v (trap)))` — diverted at `lower_sum_new`'s nullary-unit path, so an invariant that rejects a nullary
+//! variant (making it uninhabitable) traps when it is constructed.
+//!
+//! With single/multi-payload newtypes, multi-variant sums, and nullary variants all covered, ESTABLISH is
+//! complete across every variant shape. PRESERVE (design §10.2 — an op returning `T` maintains `I`) follows
+//! for FREE under the (D) run-time tier: an op building its `T` result does so through the SAME checked
+//! constructor, so a result violating the invariant traps at that construction — no separate machinery.
 
 use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::prelude::{push_atom, push_list};
@@ -442,10 +448,8 @@ pub(crate) fn synthesize(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId>
         // nullary-unit path, a distinct injection point deferred to a later increment.
         if sole_variant.is_none() {
             for (disc, (variant, payload_tys)) in variants.iter().enumerate() {
-                if payload_tys.is_empty() {
-                    continue; // nullary variant — no payload param; establish for it is a later increment
-                }
-                // `(: __inv_p0 T0) (: __inv_p1 T1) …` — one param per payload, typed against its occ.
+                // `(: __inv_p0 T0) (: __inv_p1 T1) …` — one param per payload, typed against its occ. A NULLARY
+                // variant has no payloads → an empty param list (a nullary construct-def).
                 let params: Vec<StructId> = payload_tys
                     .iter()
                     .enumerate()
@@ -462,7 +466,8 @@ pub(crate) fn synthesize(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId>
                     sig.extend(params);
                     push_list(ast, sig)
                 };
-                // `((. T V) __inv_p0 __inv_p1 …)` — the raw boxed construction.
+                // The raw construction: for a payload variant, `((. T V) __inv_p0 …)`; for a NULLARY variant,
+                // `((. T V) unit)` — the canonical nullary construction form (core-semantics.md: "(None unit)").
                 let raw_construct = {
                     let ctor = {
                         let dot = name(ast, ".");
@@ -471,8 +476,12 @@ pub(crate) fn synthesize(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId>
                         push_list(ast, vec![dot, ty, v])
                     };
                     let mut app = vec![ctor];
-                    for i in 0..payload_tys.len() {
-                        app.push(name(ast, &format!("{CONSTRUCT_PARAM}{i}")));
+                    if payload_tys.is_empty() {
+                        app.push(name(ast, "unit"));
+                    } else {
+                        for i in 0..payload_tys.len() {
+                            app.push(name(ast, &format!("{CONSTRUCT_PARAM}{i}")));
+                        }
                     }
                     push_list(ast, app)
                 };

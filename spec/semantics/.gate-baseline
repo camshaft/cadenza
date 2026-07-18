@@ -1382,6 +1382,7 @@ pass	a nested constructor match on a variant past the first dispatches on that v
 pass	a nested constructor pattern dispatches a RUNTIME two-sum value
 pass	a nested constructor payload that misses the inner variant falls through to the outer sibling
 pass	a nested constructor value dispatches on both tags in a match
+pass	a nested effectful let inlined into a re-performing body keeps its inner binder
 pass	a nested element kind mismatch in equality is a type error
 pass	a nested element pattern dispatches on a MIDDLE-variant list payload
 pass	a nested element pattern dispatches on a NON-variant-0 list payload
@@ -1747,6 +1748,8 @@ pass	a round-trip consumer applies the closure only in the taken if-branch
 pass	a round-trip consumer binds the applied closure through a let
 pass	a round-trip consumer takes the non-applying match arm
 pass	a round-trip consumer that does NOT apply the closure on the taken branch
+pass	a row op over a constant record folds through a multi-use let binding
+pass	a row op over a constant record folds through a single-use let binding
 pass	a run's result is a deterministic function of a host call's recorded response
 pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
@@ -1970,6 +1973,7 @@ pass	a runtime-magnitude quantity raised to a power emits the repeated multiply
 pass	a runtime-magnitude quotient divides the erased magnitudes
 pass	a runtime-magnitude same-unit difference subtracts the erased magnitudes
 pass	a runtime-magnitude same-unit sum adds the erased magnitudes
+pass	a runtime-parameter start and length are bounds-checked at run time, yielding Some or None
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
 pass	a runtime-selected branch with a runtime-divisor div-by-zero traps only when taken
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
@@ -2498,6 +2502,7 @@ pass	an effectful helper called twice (nested) in a self-call arg folds each inl
 pass	an effectful helper reading TWO driver parameters folds in a self-call arg
 pass	an effectful helper that also reads an outer/driver parameter folds in a self-call arg
 pass	an effectful helper whose own parameter name shadows a driver parameter folds in a self-call arg
+pass	an effectful host arg flowing into a compound then a destructuring match is evaluated ONCE
 pass	an effectful host arg to a multi-use function parameter is evaluated ONCE, not re-performed per use
 pass	an effectful init before a failing `?` performs exactly once
 pass	an effectful match scrutinee is performed exactly once across a two-position sink

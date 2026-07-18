@@ -2026,13 +2026,31 @@ fn module_members_bind(db: &Db, module_form: StructId, name: &str) -> Option<Res
 /// name binds (an ordinary formal, resolved to a `Param` at that occurrence via `is_param_occurrence`).
 /// `None` otherwise. The state binder shadows a same-named parameter (checked first, last-wins).
 fn handle_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option<StructId> {
-    // `form` must be a 4-element arm whose 4th element (the body) is `from`, and it must actually be a
-    // handle arm (parent shape), not any incidental 4-element list.
+    // `form` must be a handle arm (parent shape) whose BODY is `from`. Two shapes: the 4-element tail/
+    // abortive arm `(op (params) state body)` (body = parts[3]) and the 5-element general `ctl`-style arm
+    // `(op (params) state k body)` (body = parts[4], with `k` the continuation binder at parts[3]).
     let Struct::List(parts) = db.ast.get(form) else {
         return None;
     };
-    if parts.len() != 4 || parts[3] != from || !is_handle_arm(db, form) {
+    if !is_handle_arm(db, form) {
         return None;
+    }
+    // Locate the body slot + the extra continuation binder (if any) by arm arity.
+    let (body_ix, cont_binder) = match parts.len() {
+        4 => (3, None),
+        5 => (4, Some(parts[3])),
+        _ => return None,
+    };
+    if parts[body_ix] != from {
+        return None;
+    }
+    // The CONTINUATION binder `k` (element 3 of a 5-part arm) — a bare name binding the reified delimited
+    // continuation as a value. Shadows the state/params (the innermost binder for that name).
+    if let Some(k) = cont_binder
+        && db.ast.as_name(k) == Some(name)
+        && name != "_"
+    {
+        return Some(k);
     }
     // The STATE binder (element 2) — a bare name binding the current fold state. Shadows a param.
     if db.ast.as_name(parts[2]) == Some(name) && name != "_" {
@@ -2078,9 +2096,13 @@ pub(crate) fn is_handle_arm(db: &Db, arm: StructId) -> bool {
 pub(crate) fn is_stray_resume(db: &Db, node: StructId) -> bool {
     let mut child = node;
     while let Some(parent) = db.parent_of(child) {
+        // A handler-arm BODY is the last element of a 4-part (tail/abortive) or 5-part (general ctl-style)
+        // arm. A `resume` inside that body is well-placed. (A 5-part arm's body is parts[4], its `k` binder
+        // parts[3]; a `resume` there is still well-placed — the general arm's lowering consumes it as
+        // `apply(k, v)` once the E5 increment lands.)
         if let Struct::List(parts) = db.ast.get(parent)
-            && parts.len() == 4
-            && parts[3] == child
+            && matches!(parts.len(), 4 | 5)
+            && parts[parts.len() - 1] == child
             && is_handle_arm(db, parent)
         {
             return false; // well-placed inside a handler arm body
@@ -4341,15 +4363,24 @@ fn resolve_handle(db: &Db, id: StructId) -> Resolved {
         let Struct::List(parts) = db.ast.get(arm) else {
             return Resolved::Poison(Reject::coded(
                 Code::Malformed,
-                "a handle arm must be `(<op> (params…) <state> <body>)`",
+                "a handle arm must be `(<op> (params…) <state> <body>)` \
+                 or `(<op> (params…) <state> <k> <body>)` (the `ctl`-style continuation form)",
             ));
         };
-        if parts.len() != 4 {
-            return Resolved::Poison(Reject::coded(
-                Code::Malformed,
-                "a handle arm must be `(<op> (params…) <state> <body>)`",
-            ));
-        }
+        // FOUR parts = the tail/abortive form `(op (params) state body)`; FIVE parts = the general
+        // `ctl`-style form `(op (params) state k body)`, where `k` binds the delimited CONTINUATION as a
+        // first-class value (E5). The last part is always the body; a 5th (middle) part is the `k` binder.
+        let (cont, state, body) = match parts.len() {
+            4 => (None, parts[2], parts[3]),
+            5 => (Some(parts[3]), parts[2], parts[4]),
+            _ => {
+                return Resolved::Poison(Reject::coded(
+                    Code::Malformed,
+                    "a handle arm must be `(<op> (params…) <state> <body>)` \
+                     or `(<op> (params…) <state> <k> <body>)` (the `ctl`-style continuation form)",
+                ));
+            }
+        };
         let op = parts[0];
         let params = match db.ast.get(parts[1]) {
             Struct::List(ps) => ps.clone(),
@@ -4359,8 +4390,9 @@ fn resolve_handle(db: &Db, id: StructId) -> Resolved {
         arms.push(HandleArm {
             op,
             params,
-            state: parts[2],
-            body: parts[3],
+            state,
+            cont,
+            body,
         });
     }
     if arms.is_empty() {

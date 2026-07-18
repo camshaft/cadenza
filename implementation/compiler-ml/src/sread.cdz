@@ -154,6 +154,18 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
 /// Finish an annotation once the literal VALUE `v` (already signed) is read and the operand ended at a token
 /// boundary at index `k`: read the type-name atom, `recognize` it, and `fits-width`-gate the value. In range
 /// → `NLit(v)`; out of range / non-int type → decline. Shared by the non-negative and negative operand paths.
+/// Does `v` fit a `(signed, width)` annotation? Widths 1..=62 delegate to `int-width.fits-width` (its exact
+/// range check). Width 64 is the NATIVE identity, which fits-width can't check (2^63 overflows its Int64
+/// arithmetic, so width-ok caps at 62): a signed Int64 annotation ALWAYS fits (the value was read as an
+/// Int64), and an unsigned UInt64 fits iff `v >= 0` (UInt64's range is 0..2^64-1; a negative can't be
+/// UInt64). This closes the gap breaker found — `(: 5 Int64)` declined while bare `5` (default Int64)
+/// computed; rcdzc accepts `(: 5 Int64)`→5, `(: 5 UInt64)`→5, `(: -1 Int64)`→-1, so the identity-width
+/// annotation must compute. (Widths 63 are still out of scope — width-ok admits only up to 62 plus this
+/// explicit 64 native case; a `63` type name isn't recognized anyway.)
+def fits-ann(v: Int64, signed: Bool, width: Int64) =
+  (if (width == 64) then (if signed then true else (v >= 0))
+   else fits-width(v, signed, width))
+
 def ann-with-value(s: String, k: Int64, v: Int64, tree: Tree) =
   (let t0 = skip-space(s, k) in
    (match scan-atom(s, t0, "") with | (tyname, a2) =>
@@ -161,7 +173,7 @@ def ann-with-value(s: String, k: Int64, v: Int64, tree: Tree) =
       (if (is-int-type(tyname)) then
          (let signed = ty-signed(tyname) in
           (let width = ty-width(tyname) in
-           (if (fits-width(v, signed, width))
+           (if (fits-ann(v, signed, width))
             // in range → a WIDTH-ANNOTATED literal node: infer types it TIntW(signed,width), lower builds a
             // narrow CNum, emit picks i32-vs-i64 by width. The signed flag rides as 1|0 (Node payload is Int64).
             then (match add-node(tree, Node.NAnnLit(v, (if signed then 1 else 0), width)) with | (id, t1) => (id, a3, t1))
@@ -501,5 +513,33 @@ def sr-ann-neg-into-unsigned-declines() =
   (match read-source("(: -1 UInt8)") with | (root, tree) =>
     (if is-lit(tree, root, 0 - 1) then trap("(: -1 UInt8) must DECLINE (unsigned has no negatives)")
      else (if is-var(tree, root, 0) then unit else trap("negative into unsigned → unsupported"))))
+
+// ---- native 64-bit annotation (Int64/UInt64) — the identity width fits-width can't check (breaker gap) ----
+
+@test
+def sr-ann-int64-identity-fits() =
+  // `(: 5 Int64)` — annotating to the NATIVE signed width. fits-width can't check width 64 (its exact-Int64
+  // range caps at 62), so the old fits-width gate wrongly DECLINED it while bare `5` (default Int64) ran.
+  // `fits-ann` treats signed-64 as always-fitting → NAnnLit(5, signed, 64). rcdzc: (: 5 Int64) → 5.
+  (match read-source("(: 5 Int64)") with | (root, tree) =>
+    (if is-annlit(tree, root, 5, 1, 64) then unit else trap("(: 5 Int64) → NAnnLit(5, signed, 64)")))
+
+@test
+def sr-ann-uint64-nonneg-fits() =
+  // `(: 5 UInt64)` — native unsigned width. fits-ann: unsigned-64 fits iff v >= 0. rcdzc: (: 5 UInt64) → 5.
+  (match read-source("(: 5 UInt64)") with | (root, tree) =>
+    (if is-annlit(tree, root, 5, 0, 64) then unit else trap("(: 5 UInt64) → NAnnLit(5, unsigned, 64)")))
+
+@test
+def sr-ann-int64-negative-fits() =
+  // `(: -1 Int64)` — a negative fits signed Int64 (rcdzc: → -1). Signed-64 always fits.
+  (match read-source("(: -1 Int64)") with | (root, tree) =>
+    (if is-annlit(tree, root, 0 - 1, 1, 64) then unit else trap("(: -1 Int64) → NAnnLit(-1, signed, 64)")))
+
+@test
+def sr-ann-uint64-negative-declines() =
+  // `(: -1 UInt64)` — a negative CANNOT be UInt64 (fits-ann: unsigned-64 needs v >= 0) → decline.
+  (match read-source("(: -1 UInt64)") with | (root, tree) =>
+    (if is-var(tree, root, 0) then unit else trap("(: -1 UInt64) must DECLINE (unsigned has no negatives)")))
 
 export { skip-space, read-form, read-source, scan-atom, op-code-of, name-id }

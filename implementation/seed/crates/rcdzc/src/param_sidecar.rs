@@ -235,8 +235,15 @@ fn config_name(ast: &Arenas, app: StructId, key: &str) -> Option<String> {
 /// The value is the `list`-headed 2-element form v-syntax's `[lo hi]` parses to.
 fn config_range(ast: &Arenas, app: StructId) -> Option<(StructId, StructId)> {
     let v = config_value(ast, app, "range")?;
-    // `[lo hi]` parses to a `(list lo hi)` form; take its two elements.
-    match ast.as_form(v, "list")? {
+    // `[lo hi]` desugars to a two-element `list` form — take its two elements. The head spelling DIFFERS
+    // by surface: the s-expr reader gives a NAME head `(list lo hi)` (`as_form`), while the ML surface's
+    // `[lo, hi]` lowers to a STRING-literal ctor head `("list" lo hi)` (`as_ctor_form`, the ctor-spelling
+    // twin). Accept BOTH so an ML `@param(range: [a, b])` reports its authored bounds like the s-expr form
+    // does — otherwise `range_lo`/`range_hi` come back absent for every ML parametric model.
+    let elems = ast
+        .as_form(v, "list")
+        .or_else(|| ast.as_ctor_form(v, "list"))?;
+    match elems {
         [lo, hi] => Some((*lo, *hi)),
         _ => None,
     }

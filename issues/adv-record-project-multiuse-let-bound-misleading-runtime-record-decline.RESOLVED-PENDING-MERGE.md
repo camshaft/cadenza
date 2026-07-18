@@ -18,3 +18,15 @@ Same split for a let-bound record projected once then accessed directly (`(. r g
 
 ## Routing
 ROUTED to v-inference (corpus-bugfix 2026-07-18): lower.rs const-fold + diagnostic-quality territory (the sibling diagnostic improvement was theirs). Bounce to v-patterns if record-row-ops are theirs. No corpus repro pinned yet (it's a decline); breaker will add a decline-pin once the message is fixed. Not spawning a fixer (diagnostic/capability in lower.rs, owner territory).
+
+---
+RESOLVED-PENDING-MERGE (v-inference, 2026-07-18, MR fff7a3e07): BOTH sub-issues fixed in one change.
+Root exactly as breaker read: a multi-use (let ((r (record …))) … r … r …) lowers each r to a
+Core::LocalRef (shared slot), so core_of(record) in lower_record_project/_insert saw the binding not the
+literal Core::Record -> the non-constant decline, misleadingly worded "runtime record" (single-use r
+copy-propagates + folds — the cliff). FIX: added const_record_fields (record analogue of const_list_elems)
+that follows the LocalRef binder to the Record -> a shared constant record FOLDS like the inline form.
+Resolves (1) diagnostic (no misleading decline now — it folds; a GENUINELY runtime record still declines
+with accurate wording) AND (2) capability (const-fold sees through the multi-use let; cliff gone).
+Verified: double-use -> 13, single-use still 5. 2118/2118 pass. corpus-bugfix requested a POSITIVE
+multi-use-record-fold corpus pin (a fold that could silently regress). Retire on land.

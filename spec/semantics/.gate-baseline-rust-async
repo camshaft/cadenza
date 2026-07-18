@@ -1415,6 +1415,8 @@ pass	a rope in a record field equals its flat-twin field
 pass	a rope in a sum payload inside a record field equals its flat twin
 pass	a rope in an Option payload equals its flat-twin payload
 pass	a rope two levels deep (tuple in a tuple) equals its flat twin
+pass	a row op over a constant record folds through a multi-use let binding
+pass	a row op over a constant record folds through a single-use let binding
 pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
 pass	a runtime -0.0 float leaf two levels deep stays distinct from positive zero
@@ -1634,6 +1636,7 @@ pass	a runtime-magnitude quantity raised to a power emits the repeated multiply
 pass	a runtime-magnitude quotient divides the erased magnitudes
 pass	a runtime-magnitude same-unit difference subtracts the erased magnitudes
 pass	a runtime-magnitude same-unit sum adds the erased magnitudes
+pass	a runtime-parameter start and length are bounds-checked at run time, yielding Some or None
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
 pass	a runtime-selected branch with a runtime-divisor div-by-zero traps only when taken
 pass	a runtime-selected function chosen directly at the application head is applied
@@ -3644,6 +3647,7 @@ todo	an @param of a Float64 type generates a Float64-typed accessor
 todo	an @param site generates a Param accessor a host delegation reads at run time
 todo	an @param with no widget config still generates its typed accessor
 todo	an abortive handler abandons a host call in the path it discards
+todo	an effectful host arg to a multi-use function parameter is evaluated ONCE, not re-performed per use
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
 todo	an escaping closure captures two values and takes three arguments
