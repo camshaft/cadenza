@@ -27,8 +27,9 @@ target/
 implementation/stable
 Cargo.lock
 
-# `cdz run-ml` writes a pid-stamped driver into the compiler-ml src dir (imports resolve
-# entry-dir-relative, so it MUST live beside the sources — not a temp dir). It cleans up on a
-# normal exit, but a SIGTERM'd run under gate-batch contention can leave one behind; ignore the
-# whole prefix so a stray driver never pollutes git status or gets caught by a `git add -A`.
+# `cdz run-ml` / `cdz run-emitted` write a pid-stamped driver into the compiler-ml src dir (imports
+# resolve entry-dir-relative, so it MUST live beside the sources — not a temp dir). They clean up on a
+# normal exit, but a SIGKILL'd run (gate-batch contention, or a killed test) can leave one behind; ignore
+# the whole `zz-run-…-driver-` prefix so a stray driver never pollutes git status or a `git add -A`.
 implementation/compiler-ml/src/zz-run-ml-driver-*.cdz
+implementation/compiler-ml/src/zz-run-emitted-driver-*.cdz

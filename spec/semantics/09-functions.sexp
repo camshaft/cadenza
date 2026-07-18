@@ -238,6 +238,66 @@
   (call   main (: 1 Int64))
   (output (: 11 Int64)))
 
+; The CONTROL-FLOW face of the let-bound-closure fold: a `let` whose init is an `if`-JOIN of two CAPTURING
+; lambdas, then called — `(let ((f (if b (fn (x) (+ x n)) (fn (x) (* x n))))) (f 10))`, the runtime-select
+; twin of the compound-held-closure binding above. This was the 4th face of the both-backend
+; speculative-lift MISCOMPILE (wasm: b=true trapped `unreachable`, b=false returned 0 — the capture env
+; lost; rust: E0425 on an unbound `__cap0`): `should_keep_binding` short-circuits a `Resolved::Lambda`
+; init, a lambda-reducing init, and a compound-holding-a-closure init — but an `if`/`match` whose ARMS are
+; lambdas is none of those, so it slipped past, `core_of` LOWERED the conditional (lifting each arm's
+; closure, recording the captured `n`), and the case-of-case rewrite β-reduced the selected arm inline
+; (`(if b (+ 10 n) (* 10 n))`) reusing the SHARED `n` occurrences — which the stale `captured_ref` lowered
+; to a `Core::Captured` env-read in `main` (no closure env). The fix adds an `if_or_match_selects_lambda`
+; short-circuit (a lift-free reduce), so a conditionally-chosen closure is copy-propagated and its
+; application folds inline through the case-of-case rewrite exactly as the non-capturing-join,
+; record-field-held, and direct-let controls do. n = 5: b=true → 10 + 5 = 15, b=false → 10 * 5 = 50.
+(case "an if-join of two capturing lambdas let-bound and called applies the selected closure"
+  (doc    "`(let ((f (if b (fn (x) (+ x n)) (fn (x) (* x n))))) (f 10))` with `n` a def param — conditional
+           closure choice, the runtime-select twin of the pinned single-lambda and compound-held-lambda
+           bindings. Both arms capture the enclosing `n`; the selected one β-reduces inline against the call
+           arg. n = 5: b=true → 10 + 5 = 15, b=false → 10 * 5 = 50. Pins the 4th face of the speculative-lift
+           family, where an `if`-of-lambdas init was lowered (lifting the arm closures) and the inline fold
+           of the selected arm read a nonexistent capture env (wasm trap / wrong value, rust unbound cap).")
+  (input  (do
+            (def (main (: b Bool) (: n Int64))
+              (let ((f (if b (fn ((: x Int64)) (+ x n)) (fn ((: x Int64)) (* x n)))))
+                (f 10)))
+            (export main)))
+  (call   main (: true Bool) (: 5 Int64))
+  (output (: 15 Int64))
+  (call   main (: false Bool) (: 5 Int64))
+  (output (: 50 Int64)))
+
+; The MATCH-JOIN twin of the case above — the SAME `if_or_match_selects_lambda` short-circuit covers it. A
+; `let` whose init is a `match` selecting one of two capturing lambdas, then called. On trunk this was even
+; WORSE than the if-join: INVALID WASM (`wasm[0]::function[2]`) for BOTH selectors, where the if-join at
+; least ran one arm and returned a wrong value. Same root cause (the join arms' closures were speculatively
+; lifted, then β-inlined at the call site reading a nonexistent capture env); the fix keeps a conditionally-
+; chosen closure lift-free whether the conditional is an `if` or a `match`. The scrutinee is a custom sum
+; built inside the module (`(pick b)` → `Sel.A`/`Sel.B`) so the case reaches full lowering — an int-literal
+; match pattern isn't lowered yet, and a sum entry-arg doesn't cross the host boundary, both pre-existing
+; gaps unrelated to the lambda-join. n = 5: A → 10 + 5 = 15, B → 10 * 5 = 50.
+(case "a match-join of two capturing lambdas let-bound and called applies the selected closure"
+  (doc    "`(let ((f (match (pick b) ((Sel.A _) (fn (x) (+ x n))) ((Sel.B _) (fn (x) (* x n)))))) (f 10))`
+           — the `match` analogue of the if-join, both arms capturing the def parameter `n`; the case-of-
+           match rewrite β-reduces the selected arm inline. `pick` returns a custom sum so the match reaches
+           full lowering (a supported pattern kind). n = 5: A → 10 + 5 = 15, B → 10 * 5 = 50. On trunk this
+           was INVALID WASM for both selectors — the match-join cell of the speculative-lift family, closed
+           by the same `if_or_match_selects_lambda` fix as the if-join.")
+  (input  (do
+            (type Sel (A) (B))
+            (def (pick (: b Bool)) (if b (Sel.A) (Sel.B)))
+            (def (main (: b Bool) (: n Int64))
+              (let ((f (match (pick b)
+                         ((Sel.A _) (fn ((: x Int64)) (+ x n)))
+                         ((Sel.B _) (fn ((: x Int64)) (* x n))))))
+                (f 10)))
+            (export main)))
+  (call   main (: true Bool) (: 5 Int64))
+  (output (: 15 Int64))
+  (call   main (: false Bool) (: 5 Int64))
+  (output (: 50 Int64)))
+
 ; The case above FOLDS (a constant tuple whose closure β-reduces through the projection). These two exercise
 ; the RUNTIME closure-in-heap-compound REP: closures bound via `let` into a runtime list/tuple, extracted by
 ; `List.at`/a pattern binder, and applied — a `call_indirect` on a heap-stored closure cell, not a fold. This

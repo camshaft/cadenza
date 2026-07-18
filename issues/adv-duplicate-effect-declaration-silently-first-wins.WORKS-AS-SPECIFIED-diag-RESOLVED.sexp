@@ -64,3 +64,11 @@
 ; is on a LATER same-named effect gives a baffling "effect E has no operation b" — re-filed as a diag
 ; improvement below (v-inference owns it, no soundness change). LESSON: check the corpus/spec ruling
 ; BEFORE routing a "reject-gap" — this one had a standing case ruling the behavior correct.
+
+; ---
+; DIAGNOSTIC RESOLVED-PENDING-MERGE (v-inference, 2026-07-18): the diag half is done both loci —
+; (1) PERFORM site E.b -> CDZ0201 "operation b is declared on a LATER (effect E …); a bare E resolves the
+;     FIRST …" (LANDED 9f81d5c5d); (2) HANDLER ARM handle E ((b …)) -> CDZ0403 same shadow explanation
+;     (MR 76d655039 sent, gate 3767/0). A genuine typo still gets the did-you-mean. The dup-effect
+; DECLARATION stays WORKS-AS-SPECIFIED (distinct effects, 14-effects:3129) — no rejection, just the clearer
+; diagnostic. Fully closes the dup-effect thread. Retire once 76d655039 lands.

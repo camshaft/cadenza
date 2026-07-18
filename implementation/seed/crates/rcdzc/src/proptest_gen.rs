@@ -438,10 +438,32 @@ fn classify_ty_at(ast: &Arenas, ty: StructId, items: &[StructId], depth: usize) 
 /// any variant's payload is not generatable. A variant is `(VNAME PAYLOAD)` (one payload type) or
 /// `(VNAME)` (nullary); a multi-field payload is written as a single `(Tuple …)`/`(Record …)`, so exactly
 /// zero or one payload occurrence per variant.
+/// The `(type NAME variant…)` tail of `item`, seeing through any annotation wrapper — `item` may be a bare
+/// `(type …)` or an annotated `(@ ANN (type …))` (e.g. a type-level `@invariant`, whose `(@ (invariant Q)
+/// (type …))` wrapper is left in place by strip_annotations). Peels annotation layers until it reaches a
+/// `(type …)` form, returning its tail (`[NAME, variant…]`); `None` if `item` is not a (possibly annotated)
+/// type declaration. Mirrors the `plan_for_item` def-annotation peel.
+fn type_decl_form(ast: &Arenas, item: StructId) -> Option<&[StructId]> {
+    let mut node = item;
+    // Peel annotation wrappers `(@ ANN INNER)` — bounded by arena size (each step descends to a child).
+    for _ in 0..=MAX_GEN_DEPTH {
+        if let Some(tail) = ast.as_form(node, "type") {
+            return Some(tail);
+        }
+        let ann = ast.as_form(node, "@")?;
+        node = *ann.get(1)?;
+    }
+    None
+}
+
 fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize) -> Option<GenTy> {
-    // Find `(type NAME variant…)` with a matching NAME.
+    // Find `(type NAME variant…)` with a matching NAME — SEEING THROUGH any annotation wrapper. A type
+    // declaration may be bare `(type NAME …)` OR annotated `(@ (invariant …) (type NAME …))` (a type-level
+    // `@invariant` records a refinement over the value binder `it`; verify_enforce/strip_annotations leave
+    // the `(@ …)` wrapper in place). `type_decl_form` peels the wrapper so an `@invariant`-refined type is
+    // still recognized as generatable (its underlying variants), not declined as an unknown type.
     let decl_tail = items.iter().find_map(|&it| {
-        let tail = ast.as_form(it, "type")?;
+        let tail = type_decl_form(ast, it)?;
         (ast.as_name(*tail.first()?) == Some(type_name)).then_some(tail)
     })?;
     let variant_forms = decl_tail.get(1..).filter(|v| !v.is_empty())?;
@@ -1075,6 +1097,27 @@ mod tests {
                 "{def}: expected wrapper {wrapper}, got {names:?}"
             );
         }
+    }
+
+    /// A `@test` over a type carrying a TYPE-LEVEL `@invariant` — `(@ (invariant Q) (type NAME …))` — must
+    /// still recognize the type as generatable: the `@invariant` wrapper leaves the `(type …)` nested under
+    /// `(@ …)`, so `classify_sum`'s decl scan sees through it (`type_decl_form`). Without the peel the type
+    /// would be unrecognized and its `@test` decline as "not a scalar". (The invariant itself does not yet
+    /// CONSTRAIN generation — that's the next increment; this pins that the annotated type at least generates.)
+    #[test]
+    fn generates_a_type_that_carries_a_type_level_invariant() {
+        let src = "(do (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+                     (@ test (def (p (: x Percent)) unit)) (def (o) 1))";
+        let db = Db::load(crate::testkit::parse(src));
+        let names: Vec<String> = db
+            .test_defs()
+            .into_iter()
+            .map(|i| db.defs[i].name.clone())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "p-gen") && !names.iter().any(|n| n == "p"),
+            "an @invariant-annotated type is still generatable (its `@test` gains p-gen): got {names:?}"
+        );
     }
 
     /// G5: a `@test` over a USER SUM `(type NAME (V PAYLOAD?)…)` gains a wrapper — the generator picks a

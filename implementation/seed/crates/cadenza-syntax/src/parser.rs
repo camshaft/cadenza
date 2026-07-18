@@ -2642,6 +2642,15 @@ impl<'a> Parser<'a> {
     /// bare `:` re-ascription. `A -> B -> C` right-associates to `(-> A (-> B C))`.
     fn type_ref(&mut self) -> StructId {
         let start = self.cur_span();
+        // `forall a b. TYPE` — an explicit generic binder heading a type. Binds the lowercase names
+        // `a`/`b` so they resolve as bound type variables inside TYPE instead of erroring CDZ0101
+        // (unbound). It builds the canonical `(forall (binders…) TYPE)` node; a later lowering desugars
+        // that to the pinned "generics are type-valued parameters" model — a `forall a.` becomes an
+        // implicit `(: a Type)` binding — so it introduces no new ∀ engine (v-inference's I2). Contextual:
+        // `forall` is only a keyword at the START of a type, so a plain name `forall` elsewhere is free.
+        if self.at_keyword(Keyword::Forall) {
+            return self.forall_type(start);
+        }
         // A parenthesized form in TYPE position is a tuple TYPE (or a grouping), NOT the tuple VALUE
         // constructor the shared `prefix`/`paren` path would build. `(A, B)` here is `Tuple(A, B)` and
         // `(A)` is just `A` (a grouping) — the same surface `(a, b)` a tuple VALUE/pattern uses, but on
@@ -2664,6 +2673,40 @@ impl<'a> Parser<'a> {
         } else {
             left
         }
+    }
+
+    /// `forall a b . TYPE`  ->  `(forall (a b) TYPE)`. The binder list is one-or-more lowercase names,
+    /// terminated by `.`; TYPE is an ordinary [`Self::type_ref`] (so the arrow `forall a. a -> a` binds
+    /// looser than `->` and reads as `forall a. (a -> a)`, the natural curried generic). The binder
+    /// names are recorded as a nested `(binders…)` list, then TYPE — matching the canonical s-expr form.
+    /// A missing binder or missing `.` records an error and recovers by treating what follows as the
+    /// type (so a malformed `forall` never panics — the crate's never-panic contract).
+    fn forall_type(&mut self, start: Span) -> StructId {
+        self.expect_keyword(Keyword::Forall, "`forall`");
+        let head = self.name("forall", start);
+        // Binder names: one-or-more bare identifiers before the `.`. `type`/other keywords are not names.
+        let binders_start = self.cur_span();
+        let mut binders = Vec::new();
+        while self.at(Kind::Ident) && keyword(self.cur_text()).is_none() {
+            let name_span = self.cur_span();
+            let text = self.cur_text().to_string();
+            self.bump();
+            binders.push(self.name(text, name_span));
+        }
+        if binders.is_empty() {
+            self.error("a `forall` needs at least one type-variable name, e.g. `forall a. …`");
+        }
+        let binders_span = binders_start.merge(self.prev_span());
+        let binder_list = self.list(binders, binders_span);
+        // The `.` terminator between the binders and the type.
+        if self.at(Kind::Dot) {
+            self.bump();
+        } else {
+            self.error("expected `.` after the `forall` binders, e.g. `forall a. T`");
+        }
+        let body = self.type_ref();
+        let span = start.merge(self.prev_span());
+        self.list(vec![head, binder_list, body], span)
     }
 
     /// `( T, … )` in TYPE position → the tuple TYPE node `(Tuple T …)` (head is the `Tuple` type name,
@@ -3404,6 +3447,31 @@ mod tests {
         assert_eq!(
             sexpr::print(&parse_ok("dist(5 feet)")),
             r#"(dist ((. Qty of) 5 ((. Unit of) #"feet")))"#
+        );
+    }
+
+    #[test]
+    fn forall_binder_in_a_type_position_parses_to_the_canonical_form() {
+        use crate::sexpr;
+        // `forall a b. TYPE` in type position builds the canonical `(forall (a b) TYPE)` node — the
+        // explicit generic binder (v-inference desugars it to the pinned `(: a Type)` model). The binder
+        // list scopes the type; the arrow binds tighter, so `forall a. a -> a` groups the whole arrow.
+        assert_eq!(
+            sexpr::print(&parse_ok("def id(x: forall a. a) = x")),
+            "(def (id (: x (forall (a) a))) x)"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def apply(f: forall a b. a -> b, x: a) = f(x)")),
+            "(def (apply (: f (forall (a b) (-> a b))) (: x a)) (f x))"
+        );
+        // `forall` is a RESERVED keyword (like `as`): it is recognized in type position and cannot be a
+        // bare value name — a value-position `forall` is the usual "keyword outside its form" error, and
+        // the printer backtick-escapes a name `forall`. Confirm the reject (documents the reservation).
+        let bare = read_ml("forall");
+        assert!(
+            !bare.ok() && bare.errors.iter().any(|e| e.message.contains("keyword")),
+            "a bare value-position `forall` is a reserved-keyword error: {:?}",
+            bare.errors
         );
     }
 

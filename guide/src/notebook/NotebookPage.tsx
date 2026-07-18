@@ -11,10 +11,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { replEval } from "../compiler/client.ts";
+import { replEval, renderSyntax } from "../compiler/client.ts";
 import { run as runComponent } from "../runner/client.ts";
 import type { Surface } from "../compiler/worker.ts";
-import { parseDocument, assignIds, setCellSource, serializeDocument, type Cell } from "./parseDocument.ts";
+import { useSyntax } from "../syntax/SyntaxContext.tsx";
+import { SyntaxToggle } from "../syntax/SyntaxToggle.tsx";
+import { parseDocument, assignIds, setCellSource, serializeDocument, renderDocToSurface, type Cell } from "./parseDocument.ts";
 import { parseWidgets, type Widget } from "./parseWidgets.ts";
 import { assembleForRun, type WidgetValues } from "./assembleForRun.ts";
 import { recomputePlan, initialRunOrder } from "./recomputePlan.ts";
@@ -30,12 +32,15 @@ import { LazyCodeEditor } from "../editor/LazyCodeEditor.tsx";
 /// `examples` module, so the route, the docs, and check:visual all draw from one source of truth).
 const STARTER = DEFAULT_EXAMPLE.markdown;
 
-/// Notebook cells are authored + run in s-expr, FIXED regardless of the guide's global editing surface
-/// (the /cad rationale, confirmed by v-guide-infra): the example cells are s-expr, and the driver
-/// consumes the canonical s-expr render — compiling a fixed-surface starter in the wrong global surface
-/// errors (an ML compile of an s-expr cell fails "expected a name"). Per-surface starters / an editable
-/// surface toggle are a later slice.
-const NOTEBOOK_SURFACE: Surface = "sexpr";
+/// The notebook honors the guide's GLOBAL surface toggle (like /calculator, /playground, /cad): the reader
+/// edits cells in whichever surface is selected, and the pick STICKS (SyntaxContext persists it to
+/// localStorage + the URL). The examples are authored s-expr, so on a surface change the whole document's
+/// code cells are RE-RENDERED through the target surface (`renderDocToSurface`, v-notebook's doc-model half,
+/// using the compiler's `renderSyntax`) — flipping the surface without re-rendering would feed s-expr cells
+/// to the ML compiler (the /cad-class "expected a name" bug). The RUN path compiles each cell in the LIVE
+/// surface (`assembleForRun(...,from)` + `replEval(...,from)`) and renders the OUTPUT value in s-expr
+/// (`runComponent(...,"sexpr")`, the canonical form the output parser reads) — so run/lint stay correct in
+/// either surface.
 
 /// The notebook is IN-PLACE PER-CELL editable (operator ruling — Jupyter-style): each code cell is its
 /// own Cadenza editor, live-linted in its REAL sequential scope via `cellIde` (`./cellIde.ts`, which
@@ -55,7 +60,7 @@ const NOTEBOOK_EXACT = true;
 type CellState = { phase: "idle" } | { phase: "running" } | { phase: "done"; output: CellOutput };
 
 export default function NotebookPage() {
-  const surface = NOTEBOOK_SURFACE;
+  const { surface } = useSyntax();
   // The notebook document. `doc` is the markdown source of truth (edited PER CELL — a cell editor commits
   // its change up via `onCellEdit` → `setCellSource` → `serializeDocument`); `committedDoc` is a DEBOUNCED
   // copy that drives parsing + re-running, so typing in a cell doesn't re-parse + thrash the run worker
@@ -74,6 +79,48 @@ export default function NotebookPage() {
       if (docDebounce.current) clearTimeout(docDebounce.current);
     };
   }, [doc]);
+
+  // Honor the GLOBAL surface: the examples + STARTER are AUTHORED in s-expr, so whenever the live surface
+  // isn't s-expr the document's code cells must be RE-RENDERED through it (`renderDocToSurface` — prose +
+  // widget cells pass through). This fires on BOTH the initial mount (the persisted/default surface may be
+  // ML — the global DEFAULT is `ml`, so a fresh visitor lands in ML and the authored s-expr cells MUST be
+  // converted or they'd compile as ML → "expected a name") AND on every toggle.
+  //
+  // 🔑 `docSurface` is STATE, not a ref: it is the surface the current `committedDoc` cells are ACTUALLY in,
+  // and EVERYTHING that consumes the cells (cellIde's linter, assembleForRun/replEval, the run path) reads
+  // `docSurface` — NOT the raw `surface` toggle. The render is ASYNC, so between a toggle and the render
+  // completing (or if one cell's render transiently rejects and keeps its old source) the displayed cells
+  // lag the toggle; linting them against the raw (new) `surface` is a DISPLAY-vs-LINTER mismatch (the
+  // "expected a name" squiggle v-guide-infra co-verified). Advancing `docSurface` only WHEN the rendered doc
+  // is committed keeps the linter/runner in lockstep with what's actually displayed.
+  const [docSurface, setDocSurface] = useState<Surface>("sexpr");
+  // A monotonic token for ASYNC doc re-renders (surface toggle + example switch). `renderDocToSurface` is
+  // async, so a render started earlier can resolve LATER and clobber newer doc state (last-write-wins races,
+  // PR #556). Every async doc-render bumps this token + captures its value; on resolution it commits ONLY if
+  // still current. Shared by the toggle effect and `onSelectExample` so a toggle mid-example-switch (or vice
+  // versa) also can't stomp the newer one.
+  const docRenderToken = useRef(0);
+  useEffect(() => {
+    if (docSurface === surface) return;
+    const from = docSurface;
+    const token = ++docRenderToken.current;
+    let cancelled = false;
+    void renderDocToSurface(committedDoc, from, surface, renderSyntax).then((rendered) => {
+      // Drop a stale render: the effect re-ran (a newer commit/toggle) OR another async doc-render superseded
+      // this one. Guarding on BOTH `cancelled` (this effect instance) and the shared token (any newer render).
+      if (cancelled || docRenderToken.current !== token) return;
+      setDoc(rendered);
+      setCommittedDoc(rendered);
+      setDocSurface(surface); // advance ONLY after the render is committed — keeps lint/run in lockstep
+    });
+    return () => {
+      cancelled = true;
+    };
+    // Depend on committedDoc + docSurface too: if the doc changes (an edit / debounce commit) mid-conversion,
+    // the effect re-runs → cleanup cancels the in-flight render → the LATEST doc is what gets converted,
+    // rather than a stale render resolving and overwriting newer edits (PR #556 race #1).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [surface, committedDoc, docSurface]);
   // Cells carry a stable `id` (via `assignIds`) so the stacked per-cell editor list keys by identity — an
   // edit keeps a cell's editor mounted (focus/cursor preserved) rather than remounting on re-parse.
   const cells = useMemo<Cell[]>(() => assignIds(parseDocument(committedDoc)), [committedDoc]);
@@ -98,14 +145,37 @@ export default function NotebookPage() {
   // Switch to another example notebook: replace the whole document (live AND committed, so the switch
   // re-parses + re-runs at once rather than waiting on the edit-debounce) and reset widget values (the new
   // notebook declares its own widgets; `setValues({})` lets the reconcile effect re-seed them from defaults).
-  const onSelectExample = useCallback((slug: string) => {
-    const example = EXAMPLES.find((e) => e.slug === slug);
-    if (!example) return;
-    setExampleSlug(slug);
-    setDoc(example.markdown);
-    setCommittedDoc(example.markdown);
-    setValues({});
-  }, []);
+  // The example markdown is AUTHORED s-expr — so if the live surface is ML, render it through first (and
+  // reset `docSurface` to the authored s-expr baseline either way, so the surface-effect stays consistent).
+  const onSelectExample = useCallback(
+    (slug: string) => {
+      const example = EXAMPLES.find((e) => e.slug === slug);
+      if (!example) return;
+      setExampleSlug(slug);
+      setValues({});
+      // Bump the doc-render token up-front so ANY in-flight async render (from a prior toggle or example
+      // switch) is invalidated — even the synchronous s-expr branch below must not be stomped by a stale
+      // render resolving late (PR #556).
+      const token = ++docRenderToken.current;
+      if (surface === "sexpr") {
+        // Authored s-expr goes in as-is; the doc IS s-expr now.
+        setDoc(example.markdown);
+        setCommittedDoc(example.markdown);
+        setDocSurface("sexpr");
+      } else {
+        // Render the authored s-expr example → the live surface; advance docSurface only when committed.
+        // Token-guard the async render: selecting example A then B must not let A's later-resolving render
+        // overwrite B (PR #556 race #2). Commit only if `token` is still current.
+        void renderDocToSurface(example.markdown, "sexpr", surface, renderSyntax).then((rendered) => {
+          if (docRenderToken.current !== token) return; // a newer selection/toggle superseded this render
+          setDoc(rendered);
+          setCommittedDoc(rendered);
+          setDocSurface(surface);
+        });
+      }
+    },
+    [surface],
+  );
   // A ref mirror of `values`, so the debounced widget-change handler can read the LATEST committed values
   // to build the recompute buffer WITHOUT running a side effect inside a setState updater (that updater
   // can be double-invoked under StrictMode/batching, which would enqueue duplicate runs).
@@ -188,9 +258,11 @@ export default function NotebookPage() {
     setStates({});
     // Null-prototype merge (defaults ∪ live values) so `__proto__`/`toString`-named widgets are plain keys.
     const runValues: WidgetValues = Object.assign(Object.create(null), defaultsOf(widgets), values);
-    runCells(initialRunOrder(cells), runValues, surface, token);
+    // Run the cells in the surface they're ACTUALLY in (`docSurface`), not the raw toggle — the doc lags an
+    // async re-render, and compiling a not-yet-rendered cell in the new surface would spuriously error.
+    runCells(initialRunOrder(cells), runValues, docSurface, token);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cells, surface]);
+  }, [cells, docSurface]);
 
   // A widget change: debounce (a slider drag fires many events), then recompute only the dependent cells.
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -217,10 +289,10 @@ export default function NotebookPage() {
         // Build the recompute values from the live ref (+ this change) and kick the run OUTSIDE any state
         // updater — a side effect in a setState updater can double-fire under StrictMode/batching.
         const next = withValue(valuesRef.current, name, value);
-        runCells(recomputePlan(cells, widgets, name, surface), next, surface, token);
+        runCells(recomputePlan(cells, widgets, name, docSurface), next, docSurface, token);
       }, 150);
     },
-    [cells, widgets, surface, runCells],
+    [cells, widgets, docSurface, runCells],
   );
 
   return (
@@ -229,6 +301,11 @@ export default function NotebookPage() {
         <h1 className="text-lg font-bold text-slate-100 sm:text-xl">Cadenza Notebook</h1>
         {/* Mobile touch target: the controls get a 44px min-height below `sm`, compact at sm+. */}
         <div className="flex shrink-0 items-center gap-1 text-xs sm:gap-3">
+          {/* The GLOBAL surface toggle (ML / s-expr) — the app routes (/notebook, /cad, …) render under
+              RootLayout, which has no header nav, so the chapter Layout's toggle isn't here; surfacing it
+              lets a reader switch + STICK the surface on the notebook too (operator UX: same toggle
+              everywhere). On change, the surface-effect above re-renders the cells through the new surface. */}
+          <SyntaxToggle />
           {/* Example picker — swap between the canonical notebooks (examples.ts). */}
           <label className="flex min-h-11 items-center gap-1 sm:min-h-0">
             <span className="sr-only">Example notebook</span>
@@ -269,7 +346,7 @@ export default function NotebookPage() {
               source={cell.source}
               hidden={cell.directive.kind === "hidden"}
               state={states[i]}
-              ide={cellIde(cells, i, widgets, values, surface)}
+              ide={cellIde(cells, i, widgets, values, docSurface)}
               onEdit={(src) => onCellEdit(i, src)}
             />
           ),
