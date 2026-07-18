@@ -29,6 +29,23 @@ const SEGMENTS = 32;
 const MAX_DEPTH = 256;
 
 type Vec3 = [number, number, number];
+type Vec2 = [number, number];
+
+/// A 2-D path segment (mirror of cdz-cad's `PathSeg`) — absolute (`*Abs`) or relative (`*Rel`) to the
+/// running cursor. A cubic Bézier carries end + two control points.
+type PathSeg =
+  | { k: "moveAbs"; p: Vec2 }
+  | { k: "moveRel"; d: Vec2 }
+  | { k: "lineAbs"; p: Vec2 }
+  | { k: "lineRel"; d: Vec2 }
+  | { k: "cubicAbs"; e: Vec2; c0: Vec2; c1: Vec2 }
+  | { k: "cubicRel"; e: Vec2; c0: Vec2; c1: Vec2 };
+
+/// A 2-D cross-section (mirror of cdz-cad's `Profile`) — the input an extrude/revolve lifts.
+type Profile =
+  | { p: "rect"; w: number; h: number }
+  | { p: "circle"; r: number }
+  | { p: "path"; segs: PathSeg[] };
 
 /// The parsed CSG tree — mirror of cdz-cad's `Solid` enum, coordinates already evaluated (n/d → number).
 type Solid =
@@ -40,7 +57,9 @@ type Solid =
   | { t: "difference"; a: Solid; b: Solid }
   | { t: "intersection"; a: Solid; b: Solid }
   | { t: "translate"; v: Vec3; of: Solid }
-  | { t: "scale"; v: Vec3; of: Solid };
+  | { t: "scale"; v: Vec3; of: Solid }
+  | { t: "extrudeLinear"; profile: Profile; height: number }
+  | { t: "revolve"; profile: Profile; degrees: number };
 
 // ── s-expr tokenizer + recursive-descent parser (twin of cdz-cad's lib.rs) ──────────────────────────
 
@@ -154,6 +173,12 @@ class Parser {
       case "Scale":
         node = { t: "scale", v: this.parseVec3(), of: this.parseSolid() };
         break;
+      case "ExtrudeLinear":
+        node = { t: "extrudeLinear", profile: this.parseProfile(), height: this.parseRational() };
+        break;
+      case "Revolve":
+        node = { t: "revolve", profile: this.parseProfile(), degrees: this.parseRational() };
+        break;
       default:
         throw new Error(`unknown Solid constructor \`${head}\``);
     }
@@ -175,6 +200,104 @@ class Parser {
     const v: Vec3 = [this.parseRational(), this.parseRational(), this.parseRational()];
     this.expectClose();
     return v;
+  }
+
+  /// A `Vec2` — `(: (tuple x y) Vec2R)` annotation or bare `(tuple x y)` (type-name atom discarded).
+  private parseVec2(): Vec2 {
+    if (this.annotationAhead()) {
+      this.expectOpen();
+      this.expectAtom(); // :
+      const v = this.parseVec2();
+      this.expectAtom(); // Vec2R
+      this.expectClose();
+      return v;
+    }
+    this.expectOpen();
+    if (this.expectAtom() !== "tuple") throw new Error("expected a Vec2 `(tuple …)`");
+    const v: Vec2 = [this.parseRational(), this.parseRational()];
+    this.expectClose();
+    return v;
+  }
+
+  /// A `Profile` — `(Rect <Vec2>)` / `(Circle <r>)` / `(PathProfile <Path>)` (outer annotation discarded).
+  private parseProfile(): Profile {
+    if (this.annotationAhead()) {
+      this.expectOpen();
+      this.expectAtom(); // :
+      const p = this.parseProfile();
+      this.expectAtom(); // ProfileR
+      this.expectClose();
+      return p;
+    }
+    this.expectOpen();
+    const head = this.expectAtom();
+    let prof: Profile;
+    switch (head) {
+      case "Rect": {
+        const [w, h] = this.parseVec2();
+        prof = { p: "rect", w, h };
+        break;
+      }
+      case "Circle":
+        prof = { p: "circle", r: this.parseRational() };
+        break;
+      case "PathProfile":
+        prof = { p: "path", segs: this.parsePath() };
+        break;
+      default:
+        throw new Error(`unknown Profile constructor \`${head}\``);
+    }
+    this.expectClose();
+    return prof;
+  }
+
+  /// A `Path` — `(: (list <seg…>) PathR)` or bare `(list <seg…>)` (type-name atom discarded).
+  private parsePath(): PathSeg[] {
+    if (this.annotationAhead()) {
+      this.expectOpen();
+      this.expectAtom(); // :
+      const segs = this.parsePath();
+      this.expectAtom(); // PathR
+      this.expectClose();
+      return segs;
+    }
+    this.expectOpen();
+    if (this.expectAtom() !== "list") throw new Error("expected a Path `(list …)`");
+    const segs: PathSeg[] = [];
+    while (this.toks[this.pos] === "(") segs.push(this.parsePathSeg());
+    this.expectClose();
+    return segs;
+  }
+
+  /// One `PathSeg` — `(MoveToAbs <Vec2>)` / `LineToRel` / `(CubicToAbs <Vec2> <Vec2> <Vec2>)` etc.
+  private parsePathSeg(): PathSeg {
+    this.expectOpen();
+    const head = this.expectAtom();
+    let seg: PathSeg;
+    switch (head) {
+      case "MoveToAbs":
+        seg = { k: "moveAbs", p: this.parseVec2() };
+        break;
+      case "MoveToRel":
+        seg = { k: "moveRel", d: this.parseVec2() };
+        break;
+      case "LineToAbs":
+        seg = { k: "lineAbs", p: this.parseVec2() };
+        break;
+      case "LineToRel":
+        seg = { k: "lineRel", d: this.parseVec2() };
+        break;
+      case "CubicToAbs":
+        seg = { k: "cubicAbs", e: this.parseVec2(), c0: this.parseVec2(), c1: this.parseVec2() };
+        break;
+      case "CubicToRel":
+        seg = { k: "cubicRel", e: this.parseVec2(), c0: this.parseVec2(), c1: this.parseVec2() };
+        break;
+      default:
+        throw new Error(`unknown PathSeg constructor \`${head}\``);
+    }
+    this.expectClose();
+    return seg;
   }
 
   /// A RATIONAL number leaf `n/d` → the JS number n/d (division at the leaf; the model stays exact). A bare
@@ -211,8 +334,76 @@ function parseSolid(text: string): Solid {
 
 type ManifoldStatic = ManifoldToplevel["Manifold"];
 type ManifoldObj = InstanceType<ManifoldStatic>;
+type CrossSectionStatic = ManifoldToplevel["CrossSection"];
+type CrossSectionObj = InstanceType<CrossSectionStatic>;
 
-function toManifold(M: ManifoldStatic, s: Solid): ManifoldObj {
+/// Build a 2-D `CrossSection` from a [`Profile`] — the twin of cdz-cad's `profile_to_cross_section`. `rect`/
+/// `circle` map onto manifold's centred `square`/`circle`; a `path` is sampled to a polygon (`samplePath`)
+/// then built as a single-contour CrossSection.
+function profileToCrossSection(CS: CrossSectionStatic, p: Profile): CrossSectionObj {
+  switch (p.p) {
+    case "rect":
+      return CS.square([p.w, p.h], true);
+    case "circle":
+      return CS.circle(p.r, SEGMENTS);
+    case "path":
+      return new CS([samplePath(p.segs)]);
+  }
+}
+
+/// Sample a path's segments to a flat polygon (`[x,y]` points), walking the cursor — the twin of cdz-cad's
+/// `sample_path`. A line/move contributes its (absolute) endpoint; a cubic Bézier is sampled at `SEGMENTS`
+/// points via the Bernstein form; relative segments offset the running cursor.
+function samplePath(segs: PathSeg[]): Vec2[] {
+  const pts: Vec2[] = [];
+  let cur: Vec2 = [0, 0];
+  const add = (a: Vec2, b: Vec2): Vec2 => [a[0] + b[0], a[1] + b[1]];
+  for (const seg of segs) {
+    switch (seg.k) {
+      case "moveAbs":
+      case "lineAbs":
+        cur = seg.p;
+        pts.push(cur);
+        break;
+      case "moveRel":
+      case "lineRel":
+        cur = add(cur, seg.d);
+        pts.push(cur);
+        break;
+      case "cubicAbs":
+        sampleCubic(pts, cur, seg.c0, seg.c1, seg.e);
+        cur = seg.e;
+        break;
+      case "cubicRel": {
+        const e = add(cur, seg.e);
+        sampleCubic(pts, cur, add(cur, seg.c0), add(cur, seg.c1), e);
+        cur = e;
+        break;
+      }
+    }
+  }
+  return pts;
+}
+
+/// Push `SEGMENTS` sample points of the cubic Bézier `p0→p3` (controls `p1`,`p2`) for `t` in (0,1] — `p0` is
+/// assumed already emitted by the prior segment, so we sample the interior + endpoint (Bernstein form).
+function sampleCubic(pts: Vec2[], p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2): void {
+  const n = Math.max(1, SEGMENTS);
+  for (let i = 1; i <= n; i++) {
+    const t = i / n;
+    const u = 1 - t;
+    const b0 = u * u * u;
+    const b1 = 3 * u * u * t;
+    const b2 = 3 * u * t * t;
+    const b3 = t * t * t;
+    pts.push([
+      b0 * p0[0] + b1 * p1[0] + b2 * p2[0] + b3 * p3[0],
+      b0 * p0[1] + b1 * p1[1] + b2 * p2[1] + b3 * p3[1],
+    ]);
+  }
+}
+
+function toManifold(M: ManifoldStatic, CS: CrossSectionStatic, s: Solid): ManifoldObj {
   switch (s.t) {
     case "empty":
       // An empty solid → manifold's canonical EMPTY (no geometry), matching the Rust cdz-cad driver's
@@ -227,29 +418,38 @@ function toManifold(M: ManifoldStatic, s: Solid): ManifoldObj {
     case "cylinder":
       return M.cylinder(s.h, s.r, s.r, SEGMENTS, true); // constant-radius, FULL height, centred
     case "union":
-      return toManifold(M, s.a).add(toManifold(M, s.b));
+      return toManifold(M, CS, s.a).add(toManifold(M, CS, s.b));
     case "difference":
-      return toManifold(M, s.a).subtract(toManifold(M, s.b));
+      return toManifold(M, CS, s.a).subtract(toManifold(M, CS, s.b));
     case "intersection":
-      return toManifold(M, s.a).intersect(toManifold(M, s.b));
+      return toManifold(M, CS, s.a).intersect(toManifold(M, CS, s.b));
     case "translate":
-      return toManifold(M, s.of).translate(s.v);
+      return toManifold(M, CS, s.of).translate(s.v);
     case "scale":
-      return toManifold(M, s.of).scale(s.v);
+      return toManifold(M, CS, s.of).scale(s.v);
+    case "extrudeLinear":
+      // lift the profile straight up +z by `height`, centred (matches the origin-centred primitives + the
+      // Rust driver: extrude runs 0..height then shift down height/2).
+      return profileToCrossSection(CS, s.profile)
+        .extrude(s.height, 0, 0, 1, true);
+    case "revolve":
+      // sweep the profile about the y-axis by `degrees` (SEGMENTS = sweep tessellation).
+      return M.revolve(profileToCrossSection(CS, s.profile), SEGMENTS, s.degrees);
   }
 }
 
 // The manifold-3d WASM module is initialized once (async) and memoized — v-cad owns this init; the whole
 // module is lazy-loaded behind the /cad route so the wasm never touches the guide's critical path.
 let toplevelPromise: Promise<ManifoldToplevel> | null = null;
-async function manifoldStatic(): Promise<ManifoldStatic> {
+async function manifoldStatics(): Promise<{ M: ManifoldStatic; CS: CrossSectionStatic }> {
   if (!toplevelPromise) {
     toplevelPromise = Module().then((tl) => {
       tl.setup();
       return tl;
     });
   }
-  return (await toplevelPromise).Manifold;
+  const tl = await toplevelPromise;
+  return { M: tl.Manifold, CS: tl.CrossSection };
 }
 
 /// Mesh a rendered `Solid` value into triangle buffers (never throws — a typed error on parse/mesh failure).
@@ -261,8 +461,8 @@ export async function meshFromSolid(solidText: string): Promise<MeshResult> {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
   try {
-    const M = await manifoldStatic();
-    const gl = toManifold(M, tree).getMesh();
+    const { M, CS } = await manifoldStatics();
+    const gl = toManifold(M, CS, tree).getMesh();
     // MeshGL packs vertex properties as [x, y, z, …extra] per vertex, stride = numProp. With numProp === 3
     // it IS the flat position array; otherwise strip out the first 3 (position) props per vertex.
     const numProp = gl.numProp;

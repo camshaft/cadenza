@@ -18218,6 +18218,43 @@ mod match_engine {
         );
     }
 
+    /// Verification Inc-b @invariant ESTABLISH over a MULTI-VARIANT sum: `invariant_establish` synthesizes a
+    /// per-variant checked constructor (`__invariant_construct_Shape__d<disc>`, keyed by discriminant) for a
+    /// ≥2-variant sum carrying an `@invariant`, and both are indexed by name (the callee the boxed-construction
+    /// divert routes to). This pins the SYNTHESIS + name-indexing at the unit level; the run-time establish
+    /// behavior (a satisfying value constructs, a violating value traps, per variant, including the 2-payload
+    /// arm) is a heap-constructing run pinned in the corpus (`26-program-conditions.sexp`), which links the
+    /// value-heap runtime the boxed `Core::SumNew` needs.
+    #[test]
+    fn an_invariant_on_a_multi_variant_sum_synthesizes_a_per_variant_checked_constructor() {
+        use crate::testkit::parse;
+        let src = "(module m \
+            (@ (invariant (match it (((. Shape Circle) r) (> r 0)) \
+                (((. Shape Square) w h) (and (> w 0) (> h 0))))) \
+             (type Shape (Circle Int64) (Square Int64 Int64))) \
+            (def (main) 0) (export main))";
+        let db = crate::db::Db::load(parse(src));
+        // One checked constructor per variant, keyed by discriminant (Circle=0, Square=1).
+        assert!(
+            db.def_by_name("__invariant_construct_Shape__d0").is_some(),
+            "the Circle (disc 0) variant gets a checked constructor"
+        );
+        assert!(
+            db.def_by_name("__invariant_construct_Shape__d1").is_some(),
+            "the Square (disc 1) variant gets a checked constructor"
+        );
+        // The whole-value checker (Part 1) is the callee both construct-defs invoke.
+        assert!(
+            db.def_by_name("__invariant_check_Shape").is_some(),
+            "the whole-value checker is synthesized for the multi-variant sum"
+        );
+        // A multi-variant sum is NOT a single-payload newtype, so no bare `__invariant_construct_Shape`.
+        assert!(
+            db.def_by_name("__invariant_construct_Shape").is_none(),
+            "a multi-variant sum has per-variant construct-defs, not a single bare one"
+        );
+    }
+
     /// Verification Inc-b @invariant NAME-RESOLUTION: an `@invariant(pred)` predicate references only the value
     /// binder `it` (the value of the type) and prelude/global names — no def params (a type has none). A stray
     /// name is UNBOUND → CDZ0101 at the annotation (the b4c pattern, reused for the data-level member). A valid

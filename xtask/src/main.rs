@@ -3123,6 +3123,33 @@ fn check(paths: &Paths, profile: &str) {
         repo,
     );
 
+    // RC-LEAK gate — a CORE SUBSET of the `..._leaves_no_live_objects` probe family (Perceus/FBIP reclaim
+    // discipline). These compose a program with the DEBUG-COUNTERS runtime and assert the runtime's
+    // `live-objects` counter nets to the expected count after a round-trip — a DIRECT rc-invariant witness
+    // that catches a reclaim leak (a missing/off-by-one drop) which the value + drop-import tests CANNOT see
+    // (the value is correct; only the heap-cell count is wrong). They are `#[ignore]`d because they need the
+    // debug-counters runtime in the store, so a plain `cargo test` skips them and NO gate/CI ran them — a
+    // real coverage gap (a leak regression was invisible to `check`). Run a CORE-4 here (concierge ruling
+    // 2026-07-18 (c): the pr-sync hot path is a documented contention point, so the FULL 12-probe family
+    // (~60s) runs in the NIGHTLY CI job, and `check` runs only the cheapest core invariants ~20s): the
+    // dup/drop BASELINE (`perceus_balance`), a BORROWING-OP reclaim (`runtime_value_eq`), an OWNED-SHELL
+    // reclaim (`option_expect_…`), and an OWNED-TEMP producer (`owned_temporary_list_producers`) — the
+    // classes that let real leaks slip past value gates (the SumExpect/MatchSum leaks). Each probe SKIPS
+    // GRACEFULLY (prints + returns) when the debug store is absent, so a dev `check` without `cargo xtask
+    // build` is not a hard fail; but pr-sync rebuilds the store per batch, so in the integrator's flow (the
+    // one that guards trunk) this is a HARD leak-regression gate. `--test-threads=1` keeps the shared global
+    // live-objects counter deterministic. NOTE: a SKIP is logged (the probes' own eprintln) so a silent
+    // no-gate is visible.
+    log.step(
+        "rc-leak-probes",
+        "cargo test -p rcdzc --lib -- --ignored --test-threads=1 \
+         perceus_balance_leaves_no_live_objects \
+         runtime_value_eq_leaves_no_live_objects \
+         option_expect_over_an_owned_some_shell_leaves_no_live_objects \
+         owned_temporary_list_producers_leave_no_live_objects",
+        repo,
+    );
+
     // The Cadenza-SOURCE @test suites — libraries written IN Cadenza (the CAD `Solid` model library and
     // the self-hosted compiler-ml port), run via `cdz test` (compile a separate wasm test component from
     // each `@test` def, run it under wasmtime, PASS if it returns / FAIL if it traps). These are NOT

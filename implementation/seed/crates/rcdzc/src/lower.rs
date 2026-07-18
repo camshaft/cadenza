@@ -18614,6 +18614,27 @@ fn lower_sum_new(db: &mut Db, id: StructId, head: StructId, args: &[StructId]) -
              form); a finite float reifies, matching how `,@` of a NaN list and `Ast.Float` of +inf decline",
         ));
     }
+    // @invariant ESTABLISH DIVERT for a MULTI-VARIANT sum (the boxed path). A multi-variant sum is not erased
+    // (it boxes as this `Core::SumNew`), so it never hit the newtype block above. If its owning type carries an
+    // `@invariant`, route this construction through the PER-VARIANT checked constructor
+    // `__invariant_construct_<T>__d<disc>` (keyed by the discriminant, which we have in hand) so a value that
+    // VIOLATES the invariant TRAPS at construction. EXEMPT the checked constructor's OWN inner `((. T V) …)`
+    // (recorded in `invariant_exempt_ctors`) so it builds the plain `Core::SumNew` below — no recursion. A
+    // nullary variant has no per-variant construct-def (its establish is a later injection point), so the
+    // `def_by_name` lookup misses and it falls through to the plain boxed construction.
+    if !db.invariant_exempt_ctors.contains(&id)
+        && let Some(decl) = crate::eval::variant_owner_decl(db, head)
+        && db.invariant_of(decl).is_some()
+        && let Some(type_name) = db.type_decl_by_occ(decl).map(|d| d.name.clone())
+        && let Some(callee) = db.def_by_name(&format!("__invariant_construct_{type_name}__d{disc}"))
+    {
+        trace!(target: "rcdzc::lower", node = id.0, callee, disc, "sum-new: @invariant multi-variant sum → per-variant checked-constructor establish divert");
+        db.called.insert(callee);
+        return Core::Call {
+            callee,
+            args: args.to_vec(),
+        };
+    }
     Core::SumNew {
         disc,
         payloads: args.to_vec(),

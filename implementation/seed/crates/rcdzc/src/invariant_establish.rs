@@ -69,8 +69,27 @@
 //! establishes the invariant at run time — the author writes the natural constructor, no call-site annotation.
 //! `synthesize` returns the set of RAW-CONSTRUCTION ids (each `((. T V) __inv_p)` a construct-def contains);
 //! `Db::load` stores it in `invariant_exempt_ctors`, and `lower_sum_new` EXEMPTS those ids from the divert —
-//! they ARE the checked constructor's own construction, so re-routing them would recurse forever. A non-newtype
-//! invariant type (multi-variant sum, record) has no single ctor to wrap here — a later increment.
+//! they ARE the checked constructor's own construction, so re-routing them would recurse forever.
+//!
+//! ## Multi-variant sums — a checked constructor PER VARIANT
+//!
+//! A ≥2-variant sum is not a newtype (it BOXES as `Core::SumNew{disc, payloads}`, not erased), so it has no
+//! single construct-def. Instead this pass synthesizes ONE checked constructor per variant, keyed by the
+//! variant's DISCRIMINANT (declaration index) — `__invariant_construct_<T>__d<i>` — since the divert at the
+//! boxed `Core::SumNew` path has the `disc` in hand:
+//!
+//! ```text
+//! (def (__invariant_construct_Shape__d0 (: __inv_p0 Int64))
+//!   (let ((__inv_v ((. Shape Circle) __inv_p0))) (if (__invariant_check_Shape __inv_v) __inv_v (trap))))
+//! (def (__invariant_construct_Shape__d1 (: __inv_p0 Int64) (: __inv_p1 Int64))
+//!   (let ((__inv_v ((. Shape Square) __inv_p0 __inv_p1))) (if (__invariant_check_Shape __inv_v) __inv_v (trap))))
+//! ```
+//!
+//! Each `__inv_v : Shape` is the properly-typed BOXED sum, fed to the whole-value `__invariant_check_Shape`
+//! (Part 1, no auto-unwrap — the predicate reads `it` directly via the author's match/accessor). Each inner raw
+//! `((. T V) …)` is EXEMPT, so it builds a plain `Core::SumNew` when re-reached (no recursion). A NULLARY
+//! variant (empty payload) gets no construct-def — its establish (via the nullary-unit construction path) is a
+//! later injection point, as is a single-variant MULTI-payload newtype (the `Ty::Tuple`-erased arm).
 
 use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::prelude::{push_atom, push_list};
@@ -100,6 +119,11 @@ struct Plan {
     /// For a SINGLE-VARIANT, SINGLE-PAYLOAD newtype, its `(ctor-name, payload-type-occ)` — the ctor + payload
     /// type the auto-unwrap match and the checked constructor synthesize against. `None` for any other shape.
     sole_variant: Option<(String, StructId)>,
+    /// EVERY variant `(ctor-name, [payload-type-occ…])` in declaration order (index = discriminant). Used to
+    /// synthesize a per-variant checked constructor for a MULTI-variant sum (the `sole_variant` case has its
+    /// own single-construct path; a nullary/empty-payload variant here gets no construct-def — its
+    /// establish is a later injection point).
+    variants: Vec<(String, Vec<StructId>)>,
     /// The recorded `@invariant` PREDICATE occurrence (over `it`), copied into the checker body.
     pred: StructId,
 }
@@ -167,6 +191,27 @@ fn sole_newtype_variant(ast: &Arenas, type_decl_tail: &[StructId]) -> Option<(St
     ast.as_name(items[0]).map(|n| (n.to_string(), items[1]))
 }
 
+/// Enumerate EVERY variant of a `(type T variant…)` declaration: `[(ctor-name, [payload-type-occ…])…]` in
+/// declaration order (so a variant's index IS its discriminant — `type-system.md`, the same order
+/// `variant_disc_of` reads). A variant `(V P0 P1 …)` yields `("V", [P0, P1, …])`; a nullary `(V)` yields
+/// `("V", [])`. Used to synthesize a per-variant checked constructor for a MULTI-variant sum (the sole-newtype
+/// case has its own single-construct path). A malformed variant (not a headed list) is skipped.
+fn all_variants(ast: &Arenas, type_decl_tail: &[StructId]) -> Vec<(String, Vec<StructId>)> {
+    let mut out = Vec::new();
+    for &variant in type_decl_tail.iter().skip(1) {
+        let Struct::List(items) = ast.get(variant) else {
+            continue;
+        };
+        let Some(&head) = items.first() else {
+            continue;
+        };
+        if let Some(vname) = ast.as_name(head) {
+            out.push((vname.to_string(), items[1..].to_vec()));
+        }
+    }
+    out
+}
+
 /// Synthesize a `__invariant_check_<T>` def (Part 1) and, for a single-payload newtype, a
 /// `__invariant_construct_<T>` def (Part 2) per `@invariant`-annotated type + append to the top-level items.
 ///
@@ -224,9 +269,11 @@ pub(crate) fn synthesize(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId>
             continue;
         };
         let sole_variant = sole_newtype_variant(ast, &type_tail);
+        let variants = all_variants(ast, &type_tail);
         plans.push(Plan {
             type_name,
             sole_variant,
+            variants,
             pred,
         });
     }
@@ -241,6 +288,7 @@ pub(crate) fn synthesize(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId>
     for Plan {
         type_name,
         sole_variant,
+        variants,
         pred,
     } in plans
     {
@@ -300,7 +348,8 @@ pub(crate) fn synthesize(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId>
         // erased-arg subtlety). WIRED into `lower_sum_new` in the follow-up sub-slice; harmless dead code
         // until then (an unreferenced def is not emitted). A non-newtype (multi-variant/record) invariant type
         // has no single ctor to wrap here — its checked-construct path is a later increment.
-        if let Some((variant, payload_ty)) = sole_variant {
+        if let Some((variant, payload_ty)) = &sole_variant {
+            let payload_ty = *payload_ty;
             let construct_sig = {
                 let fn_name = name(ast, &format!("__invariant_construct_{type_name}"));
                 // `(: __inv_p U)` — the payload param, typed against the newtype's payload occ (copied so it
@@ -318,7 +367,7 @@ pub(crate) fn synthesize(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId>
                 let ctor = {
                     let dot = name(ast, ".");
                     let ty = name(ast, &type_name);
-                    let v = name(ast, &variant);
+                    let v = name(ast, variant);
                     push_list(ast, vec![dot, ty, v])
                 };
                 let arg = name(ast, CONSTRUCT_PARAM);
@@ -362,6 +411,98 @@ pub(crate) fn synthesize(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId>
                 ast,
                 vec![def_head, construct_sig, construct_body],
             ));
+        }
+
+        // MULTI-VARIANT CHECKED CONSTRUCTORS (Part 2, the ≥2-variant sum). A multi-variant sum is NOT a
+        // newtype (not erased — it boxes as `Core::SumNew{disc, payloads}`), so the sole-newtype construct-def
+        // above is not synthesized for it. Instead synthesize ONE checked constructor PER VARIANT, keyed by
+        // the variant's DISCRIMINANT (its declaration index) — the divert at the boxed `Core::SumNew` path
+        // has the `disc` in hand, so `__invariant_construct_<T>__d<i>` is the lookup key:
+        //
+        // ```text
+        // (def (__invariant_construct_Shape__d0 (: __inv_p0 Int64))
+        //   (let ((__inv_v ((. Shape Circle) __inv_p0))) (if (__invariant_check_Shape __inv_v) __inv_v (trap))))
+        // (def (__invariant_construct_Shape__d1 (: __inv_p0 Int64) (: __inv_p1 Int64))
+        //   (let ((__inv_v ((. Shape Square) __inv_p0 __inv_p1))) (if (__invariant_check_Shape __inv_v) __inv_v (trap))))
+        // ```
+        //
+        // Each `__inv_v : Shape` is the properly-typed BOXED sum, fed to the whole-value `__invariant_check_Shape`
+        // (Part 1, no auto-unwrap — the predicate reads `it` directly via the author's match/accessor). Each
+        // inner raw `((. T V) …)` is EXEMPT (recorded), so it builds a plain `Core::SumNew` when re-reached (no
+        // recursion). Only synthesized when the type is NOT a sole-payload newtype (which has its own path) and
+        // has ≥1 variant. A NULLARY variant (empty payload list) gets NO construct-def here: it constructs via
+        // the nullary-unit path, a distinct injection point deferred to a later increment.
+        if sole_variant.is_none() && variants.len() >= 2 {
+            for (disc, (variant, payload_tys)) in variants.iter().enumerate() {
+                if payload_tys.is_empty() {
+                    continue; // nullary variant — no payload param; establish for it is a later increment
+                }
+                // `(: __inv_p0 T0) (: __inv_p1 T1) …` — one param per payload, typed against its occ.
+                let params: Vec<StructId> = payload_tys
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &pty)| {
+                        let colon = name(ast, ":");
+                        let p = name(ast, &format!("{CONSTRUCT_PARAM}{i}"));
+                        let ty = copy_rewrite(ast, pty, "", "");
+                        push_list(ast, vec![colon, p, ty])
+                    })
+                    .collect();
+                let construct_sig = {
+                    let fn_name = name(ast, &format!("__invariant_construct_{type_name}__d{disc}"));
+                    let mut sig = vec![fn_name];
+                    sig.extend(params);
+                    push_list(ast, sig)
+                };
+                // `((. T V) __inv_p0 __inv_p1 …)` — the raw boxed construction.
+                let raw_construct = {
+                    let ctor = {
+                        let dot = name(ast, ".");
+                        let ty = name(ast, &type_name);
+                        let v = name(ast, variant);
+                        push_list(ast, vec![dot, ty, v])
+                    };
+                    let mut app = vec![ctor];
+                    for i in 0..payload_tys.len() {
+                        app.push(name(ast, &format!("{CONSTRUCT_PARAM}{i}")));
+                    }
+                    push_list(ast, app)
+                };
+                exempt.insert(raw_construct);
+                // `(if (__invariant_check_T __inv_v) __inv_v (trap "…"))`.
+                let check_and_yield = {
+                    let call = {
+                        let check_fn = name(ast, &format!("__invariant_check_{type_name}"));
+                        let v = name(ast, CONSTRUCT_VALUE);
+                        push_list(ast, vec![check_fn, v])
+                    };
+                    let yield_v = name(ast, CONSTRUCT_VALUE);
+                    let trap_call = {
+                        let trap_head = name(ast, "trap");
+                        let msg = push_atom(
+                            ast,
+                            Leaf::Str(format!(
+                                "@invariant violated: a constructed `{type_name}` does not satisfy its invariant"
+                            )),
+                        );
+                        push_list(ast, vec![trap_head, msg])
+                    };
+                    let if_head = name(ast, "if");
+                    push_list(ast, vec![if_head, call, yield_v, trap_call])
+                };
+                let construct_body = {
+                    let v_binder = name(ast, CONSTRUCT_VALUE);
+                    let bind = push_list(ast, vec![v_binder, raw_construct]);
+                    let bindings = push_list(ast, vec![bind]);
+                    let let_head = name(ast, "let");
+                    push_list(ast, vec![let_head, bindings, check_and_yield])
+                };
+                let def_head = name(ast, "def");
+                new_defs.push(push_list(
+                    ast,
+                    vec![def_head, construct_sig, construct_body],
+                ));
+            }
         }
     }
 

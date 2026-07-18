@@ -56,14 +56,16 @@ fn is_fn_ty(ty: &crate::ty::Ty) -> bool {
     matches!(ty.strip_nominal(), crate::ty::Ty::Fn(_, _))
 }
 
-/// A SCALAR the host-closure FACTORY S1 slice handles: an Int/UInt of any width or a Bool — a value the
-/// gate harness passes as a plain literal and renders without the compound machinery a later slice adds.
-/// Float is DEFERRED (its result renders without the `.0` the corpus expects — a float render slice) and
-/// so is every COMPOUND (Tuple/List/Option/Result/String/Bytes/sum). A nominal wrapper is stripped.
-fn is_s1_scalar(t: &crate::ty::Ty) -> bool {
+/// Whether a factory CAPTURE (a `make` parameter the host supplies over the boundary) is a scalar the gate
+/// harness passes as a literal at the make-split: Int/Bool OR Float. An aliased-width scalar crosses the
+/// host→guest boundary directly (`make(1.5, 7)` — the harness renders each capture arg via `rust_call_arg`,
+/// which spells a Float literal too), so a MIXED scalar capture environment (Float64 + Int64) is admitted.
+/// A COMPOUND capture (a host-supplied Tuple/List/record/sum) still declines — it needs a host→guest decode
+/// that does not exist (the "producer capturing a host-supplied COMPOUND parameter is declined" case).
+fn is_capture_scalar(t: &crate::ty::Ty) -> bool {
     matches!(
         t.strip_nominal(),
-        crate::ty::Ty::Int(_) | crate::ty::Ty::Bool
+        crate::ty::Ty::Int(_) | crate::ty::Ty::Bool | crate::ty::Ty::Float(_)
     )
 }
 
@@ -535,7 +537,7 @@ fn emit_signature(
     // make-split. Defer compound captures + compound results + Float/String/Bytes/sum args to later slices.
     if public
         && is_fn_ty(result)
-        && (!fn_result_renderable(result) || !params.iter().all(|(_, t)| is_s1_scalar(t)))
+        && (!fn_result_renderable(result) || !params.iter().all(|(_, t)| is_capture_scalar(t)))
     {
         return Err(Reject::decline(format!(
             "`{name}`: a closure-returning export with a non-scalar capture/arg/result is not yet rendered by the Rust backend (host-closure S2/S3)"

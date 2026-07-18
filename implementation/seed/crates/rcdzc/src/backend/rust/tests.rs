@@ -4567,6 +4567,17 @@ fn rustc_roundtrip_host_closure_factory_export_scalar_capture_s1() {
         );
     }
 
+    // A MIXED-type scalar CAPTURE environment crosses: `mk(base: Float64, n: Int64)` captures a Float AND an
+    // Int (the host supplies both aliased-width scalars at `make`). `is_capture_scalar` admits Int/Bool/Float
+    // captures (a compound capture still declines — no host→guest decode). The closure returns a Float.
+    let mixed_cap = compile_rust(
+        "(module m (def (mk (: base Float64) (: n Int64)) (fn ((: x Float64)) (+ x base))) (export mk))",
+    );
+    assert!(
+        mixed_cap.contains("pub fn mk(base: f64, n: i64) -> std::rc::Rc<dyn Fn(f64) -> f64>"),
+        "a mixed Float64+Int64 scalar-capture factory emits `mk(f64, i64) -> Rc<dyn Fn(f64) -> f64>`:\n{mixed_cap}"
+    );
+
     // A closure PARAMETER export still declines (no way to synthesize an Rc<dyn Fn> arg at the boundary) —
     // the one function-typed shape that stays deferred (compound args/results now cross via S2/S3/S4a/S5).
     let param = compile_rust_result(

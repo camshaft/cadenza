@@ -2207,3 +2207,39 @@
             (export mkfrom)))
   (call mkfrom (: 5 Int64)) (output (: 1 Int64))
   (call mkfrom (: 0 Int64)) (trap "unreachable"))
+
+; ── @invariant ESTABLISH over a MULTI-VARIANT sum: each variant's construction auto-establishes ──────────────
+; The multi-variant generalization (design §10.2 — a per-CONSTRUCTOR obligation). A ≥2-variant sum is BOXED
+; (`Core::SumNew{disc, payloads}`), not erased, so it never hits the newtype path. `invariant_establish`
+; synthesizes ONE checked constructor per variant (`__invariant_construct_Shape__d<disc>`, keyed by the
+; discriminant the boxed-construction divert has in hand), each calling the whole-value `__invariant_check_Shape`
+; (Part 1, `it : Shape`, the author's own match reads the variant). So a construction of EITHER variant is
+; routed through its per-variant checked constructor: a satisfying value constructs, a violating one TRAPS. This
+; pins both the 1-payload `Circle` arm (disc 0) and the 2-payload `Square` arm (disc 1) — a multi-payload
+; construct-def. `circ`/`sq` build a shape then re-match to a scalar so the export crosses the boundary.
+
+(case "@invariant ESTABLISH over a multi-variant sum: each variant's construction auto-establishes — a satisfying value constructs, a violating one traps (design §10.2, (D))"
+  (doc    "The multi-variant establish. `Shape = Circle Int64 | Square Int64 Int64` with a per-variant invariant
+           (a Circle's radius > 0; a Square's sides both > 0). Each variant construction is routed through its
+           synthesized per-variant checked constructor (`__invariant_construct_Shape__d0` for Circle,
+           `__d1` for Square), which calls the whole-value `__invariant_check_Shape`. `circ(r)` builds a Circle
+           and returns its radius (via re-match); `sq(w,h)` builds a Square and returns w+h. A satisfying value
+           of either variant constructs (circ(5)=5, sq(3,4)=7); a violating value of either traps at
+           construction (circ(0), circ(-3), sq(3,0), sq(0,4)). Pins the per-constructor establish obligation
+           over a boxed multi-variant sum, including the 2-payload Square arm.")
+  (input  (do
+            (@ (invariant (match it (((. Shape Circle) r) (> r 0))
+                                    (((. Shape Square) w h) (and (> w 0) (> h 0)))))
+               (type Shape (Circle Int64) (Square Int64 Int64)))
+            (def (circ (: r Int64))
+              (match (Shape.Circle r) (((. Shape Circle) x) x) (((. Shape Square) w h) (+ w h))))
+            (def (sq (: w Int64) (: h Int64))
+              (match (Shape.Square w h) (((. Shape Circle) x) x) (((. Shape Square) a b) (+ a b))))
+            (export circ)
+            (export sq)))
+  (call circ (: 5 Int64))           (output (: 5 Int64))
+  (call circ (: 0 Int64))           (trap "unreachable")
+  (call circ (: -3 Int64))          (trap "unreachable")
+  (call sq (: 3 Int64) (: 4 Int64)) (output (: 7 Int64))
+  (call sq (: 3 Int64) (: 0 Int64)) (trap "unreachable")
+  (call sq (: 0 Int64) (: 4 Int64)) (trap "unreachable"))
