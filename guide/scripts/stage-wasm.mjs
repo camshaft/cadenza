@@ -82,20 +82,24 @@ if (!runtimePath) {
   console.log(`[stage-wasm] staged runtime ${hash.slice(0, 12)}… -> src/wasm/runtime.wasm`);
 }
 
-// Stage the CAD library source (`implementation/cad/src/exact.cdz`) into the guide tree so /cad can
-// PRELOAD it via `compile_with_preloaded` — the reader's buffer holds only the model (def main()), the
-// CAD vocab (Solid.*/Vec3.*/v3r/…) is link-merged from this preloaded module (operator P5, ruling A). It
-// lives OUTSIDE guide/src, and a raw `../../../implementation/cad/src/exact.cdz` import is blocked by
-// Vite's dev `server.fs.allow` (project root = guide/); staging it here (git-ignored, regenerated with the
-// wasm — SAME pattern as runtime.wasm above) is the single-source, dev-and-build-safe way. CadPage
-// `?raw`-imports the staged copy. Non-fatal if absent (only /cad needs it).
-const cadExact = join(guide, "..", "implementation", "cad", "src", "exact.cdz");
-if (existsSync(cadExact)) {
-  await mkdir(join(dest, "cad"), { recursive: true });
-  await writeFile(join(dest, "cad", "exact.cdz"), await readFile(cadExact));
-  console.log("[stage-wasm] staged CAD lib exact.cdz -> src/wasm/cad/exact.cdz");
-} else {
-  console.error(`[stage-wasm] CAD lib not found at ${cadExact} — /cad preload will be unavailable (non-fatal).`);
+// Stage the CAD library sources into the guide tree so /cad can PRELOAD them via `compile_with_preloaded`
+// — the reader's buffer holds only the model, the CAD vocab is link-merged from these preloaded modules
+// (operator P5, ruling A). `exact.cdz` is the base geometry lib (Solid/Vec3/v3r/lower/…); `helpers.cdz` is
+// the ergonomic surface (box/cyl/hole-through/…) the PARAMETRIC showcase models import. They live OUTSIDE
+// guide/src (a raw `../../../implementation/cad/src/*.cdz` import is blocked by Vite's dev `server.fs.allow`
+// with project root = guide/), so staging them here (git-ignored, regenerated with the wasm — SAME pattern
+// as runtime.wasm) is the single-source, dev-and-build-safe way. CadPage `?raw`-imports the staged copies.
+// Non-fatal if absent (only /cad needs them).
+const cadLibs = ["exact.cdz", "helpers.cdz"];
+await mkdir(join(dest, "cad"), { recursive: true });
+for (const lib of cadLibs) {
+  const src = join(guide, "..", "implementation", "cad", "src", lib);
+  if (existsSync(src)) {
+    await writeFile(join(dest, "cad", lib), await readFile(src));
+    console.log(`[stage-wasm] staged CAD lib ${lib} -> src/wasm/cad/${lib}`);
+  } else {
+    console.error(`[stage-wasm] CAD lib not found at ${src} — /cad preload of '${lib}' will be unavailable (non-fatal).`);
+  }
 }
 
 // Sanity: report what we staged.

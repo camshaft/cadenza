@@ -56,3 +56,37 @@
 ; CLOSURE BODY. The unsound twin (closure BODY performs) correctly rejects + MUST stay (E5 captured-k).
 ; Reject-gap, no miscompile; diagnostic misleads (points at homed St.get). Same escape machinery as the
 ; nested-collection escape routing (landed). Not spawning (v-effects territory). Promote when fixed.
+
+; ── V-EFFECTS ANALYSIS (2026-07-18): NOT a quick diagnostic fix — needs the E5 escape-analysis distinction ──
+; ROOT: main = ((handle St 8 (arms) (let ((v (St.get))) (fn (x) (+ x v)))) 9) resolves to Apply{head=<handle>,
+; args=[9]}. check_no_home's Apply arm follows lambda_body(head) — which REDUCES the handle to its closure
+; body and walks it under the OUTER (handle-less) handled set → the captured (St.get) is seen with St NOT
+; handled → false CDZ0401. Tried TWO fixes, BOTH UNSOUND — reverted:
+;   (1) check_no_home: walk the handle HEAD via the Handle arm (adds St). Removes the false CDZ0401 for the
+;       PURE case, BUT also SUPPRESSES the TRUE CDZ0401 for the UNSOUND twin (fn (x)(+ x (St.get)) — closure
+;       BODY performs, must reject): the Handle arm adds St for the WHOLE body incl. the returned closure's
+;       body, but that perform runs on OUTSIDE-application (out of extent) and MUST stay rejected.
+;   (2) lower case-of-handle: push the application into the handle body ((handle .. (body arg))). Broke the
+;       closure param slot ("parameter reference has no local slot") AND made the UNSOUND twin COMPILE (homed
+;       its escaping perform) — a soundness regression.
+; So the correct fix requires the escape analysis to DISTINGUISH: a perform in the let-INIT (computed
+; IN-EXTENT, captured as a pure VALUE → homed, should COMPILE) vs a perform in a RETURNED/ESCAPING lambda
+; BODY (runs on outside-application, out of extent → must REJECT). That's the E5 captured-continuation /
+; closure-captures-effect-result boundary v-inference was careful about in 331283703. NOT a quick patch — it
+; needs the escape analysis to model which performs are in the handle's dynamic extent vs deferred into an
+; escaping closure. REJECT-GAP (over-declines a valid PURE-capture program; no miscompile — the unsound twin
+; correctly rejects on trunk). Likely a joint v-effects + v-inference design increment. Owner: v-effects,
+; but coordinate the escape-analysis semantics with v-inference. Not blocking (no consumer forces it).
+
+; ---
+; PARKED (v-effects analysis, 2026-07-18): NOT a quick fix — a joint v-effects+v-inference DESIGN INCREMENT.
+; ROOT: main = Apply{head=handle}; check_no_home follows lambda_body(head) which REDUCES the handle to its
+; closure body + walks it WITHOUT St handled -> false CDZ0401 at the homed St.get. v-effects tried 2 patches,
+; BOTH UNSOUND (reverted): (1) walk the head via the Handle arm (adds St) — removes the false CDZ0401 but
+; ALSO suppresses the TRUE CDZ0401 for the unsound twin (fn (x)(+ x (St.get))) whose perform runs on
+; OUTSIDE-application; (2) lower case-of-handle — broke the closure param slot + made the unsound twin
+; COMPILE. Correct fix needs escape analysis to DISTINGUISH a perform in the let-INIT (in-extent, captured
+; as a pure VALUE -> compile) from a perform in a RETURNED/ESCAPING lambda BODY (out-of-extent -> reject) —
+; the E5 captured-continuation boundary. REJECT-GAP only (over-declines valid pure-capture; NO miscompile,
+; the unsound twin correctly rejects on trunk). PARKED pending a design pass / forcing consumer (no consumer
+; forces discharge-then-capture yet). v-effects correctly reverted rather than ship a soundness-risking half-fix.
