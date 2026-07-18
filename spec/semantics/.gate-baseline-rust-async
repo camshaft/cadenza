@@ -1,7 +1,11 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	@ensures on a def with a parameter named it is REJECTED (would silently not enforce — rename the param)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
+pass	@invariant ESTABLISH (divert) over a heap payload: a NonEmptyList newtype traps on the empty list, constructs a non-empty one (design §10.1/§10.2, (D))
 pass	@invariant ESTABLISH Part 1: a bare-scalar invariant on a newtype auto-unwraps + type-checks; a satisfying value constructs and is usable
+pass	@invariant ESTABLISH Part 2 (divert): a plain `(Percent.Pct v)` construction auto-establishes — a satisfying value constructs, a violating value traps at the call site (design §10.2, (D))
+pass	@invariant ESTABLISH Part 2: the synthesized checked constructor enforces the invariant at run time — a satisfying value constructs, a violating value traps (design §10.2, (D))
+pass	@invariant ESTABLISH over a multi-variant sum: each variant's construction auto-establishes — a satisfying value constructs, a violating one traps (design §10.2, (D))
 pass	@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)
 pass	@invariant PRESERVE: an operation returning T discharges the result invariant USING the input invariant as a free gift (design §10.2)
 pass	@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `it` + prelude are in scope)
@@ -1287,9 +1291,11 @@ pass	a radix literal with a bad digit is a malformed literal, not an unbound nam
 pass	a radix literal with an empty body is a malformed literal, not an unbound name
 pass	a rate derived by division mixes with a named rate unit of the same dimension
 pass	a rational is normalized to lowest terms on construction
+pass	a rational of Int64 minimum over Int64 minimum normalizes to one
 pass	a rational operation does not silently promote an integer operand
 pass	a rational with near-Int64 numerator and denominator normalizes by gcd exactly
 pass	a rational with numerator and denominator both negative normalizes to positive
+pass	a rational with the Int64 minimum as denominator normalizes past the i64 sign-flip
 pass	a rational's sign is normalized onto the numerator
 pass	a rational-magnitude quantity erases to its exact rational value
 pass	a re-declared same-name theorem type in another module is a distinct type a kernel value does not satisfy
@@ -1974,6 +1980,8 @@ pass	a wrapped byte's zero equality tests the masked value, not the wide slot
 pass	a wrong-arity tuple binding pattern is a shape error
 pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error
 pass	a wrong-width value in a multi-byte bit-field is a compile-time type error
+pass	a zero rational canonicalizes to zero over one however it was constructed
+pass	a zero rational produced by arithmetic is the same canonical zero
 pass	a zero-arm match on an empty-sum scrutinee is exhaustive
 pass	a zero-arm match on an inhabited sum is non-exhaustive
 pass	a zero-bit integer width is rejected
@@ -2493,6 +2501,7 @@ pass	distinct large floats are not equal
 pass	distinct names bound to the same string key the same map entry
 pass	distinct seeds produce distinct generated values (the stream covers, it is not constant)
 pass	dividing a quantity by a bare number keeps its dimension
+pass	dividing a rational by a negative rational normalizes the quotient's sign
 pass	dividing quantities divides their dimensions
 pass	dividing two same-dimension quantities cancels to a dimensionless number
 pass	division by zero traps
@@ -2737,6 +2746,7 @@ pass	ordering a string against an integer is a type error regardless of operand 
 pass	ordering an integer against a boolean is a type error
 pass	ordering an integer against a float is rejected, not silently promoted
 pass	ordering an integer against a string is a type error
+pass	ordering two rationals a hair apart at the i64 boundary is exact
 pass	over-applying a constructor by several arguments is a type error
 pass	over-applying a constructor is a type error, not a silent argument drop
 pass	over-applying a lambda by an extra argument is a type error
