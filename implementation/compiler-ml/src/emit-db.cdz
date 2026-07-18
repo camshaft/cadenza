@@ -74,10 +74,9 @@ def export-section() =
   section(7, Bytes.of([UInt8.wrap(1), UInt8.wrap(4), UInt8.wrap(109), UInt8.wrap(97), UInt8.wrap(105), UInt8.wrap(110),
                        UInt8.wrap(0), UInt8.wrap(0)]))
 
-/// The wasm i64 arithmetic opcode for a Core binary op-code (Core uses the ASCII byte: 43 `+`, 45 `-`,
-/// 42 `*`, 47 `/`, 37 `%`). i64.add=0x7c, sub=0x7d, mul=0x7e, div_s=0x7f, rem_s=0x81. `div_s`/`rem_s` TRAP
-/// on divide-by-zero — which matches `eval-db` returning `None` for `n / 0` (the corpus grades it Declines).
-/// A non-arithmetic op-code (a comparison — W3) returns 0 (an unreachable sentinel; W2 emits only arith).
+/// The wasm i64 ARITHMETIC opcode for a Core arith op-code (43 `+`, 45 `-`, 42 `*`, 47 `/`, 37 `%`):
+/// i64.add=0x7c, sub=0x7d, mul=0x7e, div_s=0x7f, rem_s=0x81. div_s/rem_s TRAP on /0 (matches eval-db None).
+/// A non-arith op returns 0 (unreachable; arith is gated by `is-arith-op`).
 def wasm-op(op: Int64) =
   (if op == 43 then 124
    else (if op == 45 then 125
@@ -85,9 +84,23 @@ def wasm-op(op: Int64) =
    else (if op == 47 then 127
    else (if op == 37 then 129 else 0)))))
 
-/// Whether `op` is one of the W2 arithmetic ops (so a CBin over other ops — comparisons — declines to emit
-/// until W3 adds i64-relational + the i32→i64 result convention).
+/// The wasm i64 RELATIONAL opcode for a Core comparison op-code (W3). i64.eq=0x51, ne=0x52, lt_s=0x53,
+/// gt_s=0x55, le_s=0x57, ge_s=0x59. Each yields an i32 0/1; the emitter appends `i64.extend_i32_u` (0xad)
+/// so the result is an i64 0/1 — matching eval-db's Bool-as-Int64 convention. Core ops: 60 `<`, 61 `==`,
+/// 62 `>`, 63 `<=`, 64 `>=`, 65 `!=`.
+def cmp-op(op: Int64) =
+  (if op == 60 then 83                 // <  i64.lt_s 0x53
+   else (if op == 61 then 81            // == i64.eq   0x51
+   else (if op == 62 then 85            // >  i64.gt_s 0x55
+   else (if op == 63 then 87            // <= i64.le_s 0x57
+   else (if op == 64 then 89            // >= i64.ge_s 0x59
+   else (if op == 65 then 82 else 0)))))) // != i64.ne 0x52
+
+/// Whether `op` is an ARITHMETIC op (result already i64, no extend needed).
 def is-arith-op(op: Int64) = (op == 43) or (op == 45) or (op == 42) or (op == 47) or (op == 37)
+
+/// Whether `op` is a COMPARISON op (result is i32 → needs `i64.extend_i32_u` to become an i64 0/1).
+def is-cmp-op(op: Int64) = (op == 60) or (op == 61) or (op == 62) or (op == 63) or (op == 64) or (op == 65)
 
 /// Is `c` in the current emit SUBSET (so `emit-module` should emit rather than decline)? W2: `CNum` +
 /// `CBin` over arithmetic; W2b: + `CVar`/`CLet` (wasm locals). `CIf`/comparison = W3. A SEPARATE predicate
@@ -98,9 +111,9 @@ def is-arith-op(op: Int64) = (op == 43) or (op == 45) or (op == 42) or (op == 47
 def can-emit(c: Core) = match c with
   | Core.CNum(_) => true
   | Core.CVar(_) => true
-  | Core.CBin(op, l, r) => is-arith-op(op) and can-emit(l) and can-emit(r)
+  | Core.CBin(op, l, r) => (is-arith-op(op) or is-cmp-op(op)) and can-emit(l) and can-emit(r)
   | Core.CLet(_, v, body) => can-emit(v) and can-emit(body)
-  | _ => false
+  | Core.CIf(cond, thn, els) => can-emit(cond) and can-emit(thn) and can-emit(els)
 
 /// The position of `x` in `xs` (0-based), or -1 if absent. Used to map a CLet binder node-id to its wasm
 /// LOCAL INDEX (index = order of the binder in the pre-order binder list). Scalar-only (List Int64), so no
@@ -116,6 +129,7 @@ def index-of-go(xs: List(Int64), x: Int64, i: Int64) = match xs with
 def collect-binders(c: Core) = match c with
   | Core.CLet(b, v, body) => List.push(List.concat(collect-binders(v), collect-binders(body)), b)
   | Core.CBin(_, l, r) => List.concat(collect-binders(l), collect-binders(r))
+  | Core.CIf(cond, thn, els) => List.concat(collect-binders(cond), List.concat(collect-binders(thn), collect-binders(els)))
   | _ => []
 
 /// Emit the INSTRUCTION bytes for a Core term onto the i64 operand stack — TOTAL (`Bytes`, never `Option`).
@@ -128,11 +142,26 @@ def emit-instrs(c: Core, binders: List(Int64)) = match c with
   | Core.CNum(v) => Bytes.concat(b1(66), sleb(v))                       // 0x42 i64.const <sleb v>
   | Core.CVar(b) => Bytes.concat(b1(32), uleb(index-of(binders, b)))    // 0x20 local.get <idx>
   | Core.CBin(op, l, r) =>
-      Bytes.concat(emit-instrs(l, binders), Bytes.concat(emit-instrs(r, binders), b1(wasm-op(op))))
+      // arith: left, right, i64-op (result already i64). comparison: left, right, i64-relational (→ i32),
+      // then i64.extend_i32_u (0xad) so the Bool is an i64 0/1 (eval-db's Bool-as-Int64 convention).
+      (let operands = Bytes.concat(emit-instrs(l, binders), emit-instrs(r, binders)) in
+       (if is-cmp-op(op)
+        then Bytes.concat(operands, Bytes.concat(b1(cmp-op(op)), b1(173)))    // <cmp> ; 0xad extend_i32_u
+        else Bytes.concat(operands, b1(wasm-op(op)))))
   | Core.CLet(b, v, body) =>
       // eval `v`, store into the binder's local, then eval `body` (which reads the local via CVar).
       Bytes.concat(emit-instrs(v, binders),
         Bytes.concat(b1(33), Bytes.concat(uleb(index-of(binders, b)), emit-instrs(body, binders))))  // 0x21 local.set
+  | Core.CIf(cond, thn, els) =>
+      // Core cond is an i64 0/1; wasm `if` consumes an i32, so convert via `i64.const 0 ; i64.ne` (→ i32:
+      // 1 iff cond ≠ 0). Then `if (result i64) <then> else <else> end` — the taken branch's i64 is the value.
+      // Opcodes: i64.const 0x42, i64.ne 0x52, if 0x04, blocktype i64 0x7e, else 0x05, end 0x0b.
+      Bytes.concat(emit-instrs(cond, binders),
+        Bytes.concat(Bytes.concat(b1(66), Bytes.concat(sleb(0), b1(82))),      // i64.const 0 ; i64.ne → i32
+          Bytes.concat(b1(4), Bytes.concat(b1(126),                            // if (result i64)
+            Bytes.concat(emit-instrs(thn, binders),
+              Bytes.concat(b1(5),                                              // else
+                Bytes.concat(emit-instrs(els, binders), b1(11))))))))          // <else> ; end
   | _ => Bytes.of([])
 
 /// Wrap emitted instructions into a function body: the LOCALS vector then the instructions then `0b` end.
@@ -175,9 +204,10 @@ def contains-byte-go(b: Bytes, x: Int64, i: Int64) =
 
 @test
 def em-cnum-emits-a-module() =
-  // a CNum emits Some(bytes); a fully out-of-subset shape (CIf, W3) emits None.
+  // a CNum emits Some(bytes); an out-of-subset shape (a CBin over an UNKNOWN op-code, neither arith nor
+  // comparison) emits None — the subset boundary stays honest.
   (match emit-module(Core.CNum(42)) with
-    | Option.Some(_) => (match emit-module(Core.CIf(Core.CNum(1), Core.CNum(2), Core.CNum(3))) with | Option.None(_) => unit | _ => trap("CIf out of subset"))
+    | Option.Some(_) => (match emit-module(Core.CBin(0, Core.CNum(1), Core.CNum(2))) with | Option.None(_) => unit | _ => trap("unknown-op CBin out of subset"))
     | Option.None(_) => trap("CNum emits a module"))
 
 @test
@@ -266,6 +296,12 @@ def emitted-op-byte(op: Int64) = match emit-module(Core.CBin(op, Core.CNum(1), C
   | Option.Some(m) => byte-of(m, Bytes.len(m) - 2)
   | Option.None(_) => 0 - 1
 
+/// The RELATIONAL opcode of an emitted `CBin cmp 1 1` module — for a comparison the tail is `<cmp> ad 0b`,
+/// so the opcode is 3 bytes before the end (the 0xad extend + 0x0b end follow it). -1 if it declined.
+def cmp-byte(op: Int64) = match emit-module(Core.CBin(op, Core.CNum(1), Core.CNum(1))) with
+  | Option.Some(m) => byte-of(m, Bytes.len(m) - 3)
+  | Option.None(_) => 0 - 1
+
 @test
 def em-cbin-op-mapping() =
   // each Core arith op-code maps to its i64 wasm opcode (add 0x7c, sub 0x7d, mul 0x7e, div_s 0x7f, rem_s 0x81).
@@ -324,10 +360,48 @@ def em-nested-clet-two-locals() =
     | Option.Some(_) => unit
     | Option.None(_) => trap("nested CLet emits a module"))
 
-@test
-def em-cif-still-out-of-subset() =
-  // CIf is W3 — still declines (no wrong module), so the subset boundary stays honest.
-  (match emit-module(Core.CIf(Core.CNum(1), Core.CNum(2), Core.CNum(3))) with
-    | Option.None(_) => unit | _ => trap("CIf is out of subset (W3)"))
+/// W3 -------------------------------------------------------------------------------------------------
 
-export { emit-module, emit-instrs, can-emit, collect-binders, wasm-op, uleb, sleb }
+@test
+def em-cif-emits-a-module() =
+  // `if (1 < 2) then 10 else 20` = CIf(CBin(<, 1, 2), 10, 20) is in the W3 subset → emits Some, and the
+  // module ends with `end end` (the if's end 0x0b then the func body's end 0x0b).
+  (match emit-module(Core.CIf(Core.CBin(60, Core.CNum(1), Core.CNum(2)), Core.CNum(10), Core.CNum(20))) with
+    | Option.Some(m) => (let n = Bytes.len(m) in
+      (if (byte-of(m, n - 1) == 11) then                  // func body end
+        (if (byte-of(m, n - 2) == 11) then unit else trap("if-block end 0x0b before func end")) else trap("func end 0x0b")))
+    | Option.None(_) => trap("CIf emits a module"))
+
+@test
+def em-cif-has-if-opcode-and-blocktype() =
+  // the emitted module contains the `if` opcode 0x04 immediately followed by blocktype i64 0x7e, and an
+  // `else` 0x05 — the structural shape of a value-producing wasm if/else.
+  (match emit-module(Core.CIf(Core.CNum(1), Core.CNum(10), Core.CNum(20))) with
+    | Option.Some(m) =>
+      (if contains-byte(m, 4) then                        // if opcode present
+        (if contains-byte(m, 5) then unit else trap("else 0x05 present")) else trap("if 0x04 present"))
+    | Option.None(_) => trap("CIf emits"))
+
+@test
+def em-comparison-extends-to-i64() =
+  // a comparison `1 < 2` (CBin 60) emits i64.lt_s (0x53) then i64.extend_i32_u (0xad) — the Bool result is
+  // widened from i32 to an i64 0/1. As a bare main body the tail is: 42 01 42 02 53 ad 0b.
+  (match emit-module(Core.CBin(60, Core.CNum(1), Core.CNum(2))) with
+    | Option.Some(m) => (let n = Bytes.len(m) in
+      (if (byte-of(m, n - 3) == 83) then                  // 0x53 i64.lt_s
+        (if (byte-of(m, n - 2) == 173) then                // 0xad i64.extend_i32_u
+          (if (byte-of(m, n - 1) == 11) then unit else trap("ends with end")) else trap("extend_i32_u 0xad")) else trap("i64.lt_s 0x53")))
+    | Option.None(_) => trap("comparison emits"))
+
+@test
+def em-comparison-op-mapping() =
+  // each comparison op maps to its i64 relational opcode (the byte 2 before the trailing end, before the
+  // 0xad extend). < lt_s 0x53, == eq 0x51, > gt_s 0x55, <= le_s 0x57, >= ge_s 0x59, != ne 0x52.
+  (if (cmp-byte(60) == 83) then
+    (if (cmp-byte(61) == 81) then
+      (if (cmp-byte(62) == 85) then
+        (if (cmp-byte(63) == 87) then
+          (if (cmp-byte(64) == 89) then
+            (if (cmp-byte(65) == 82) then unit else trap("!= ne 0x52")) else trap(">= ge_s 0x59")) else trap("<= le_s 0x57")) else trap("> gt_s 0x55")) else trap("== eq 0x51")) else trap("< lt_s 0x53"))
+
+export { emit-module, emit-instrs, can-emit, collect-binders, wasm-op, cmp-op, uleb, sleb }

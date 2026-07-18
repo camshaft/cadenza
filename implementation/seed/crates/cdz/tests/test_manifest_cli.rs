@@ -1073,6 +1073,48 @@ fn a_failing_sum_property_reports_the_decoded_variant_value() {
     );
 }
 
+/// END-TO-END: a COMPOUND-param `@test` that is ALSO `@requires`/`@ensures`-annotated must SYNTHESIZE its
+/// `-gen` wrapper and RUN (before the peel fix, the compound param under the verification wrapper declined at
+/// the export boundary — a hard compile error). A PERMISSIVE precondition/postcondition over a `List` param
+/// (always true) passes the trial count. This pins the compound `-gen` synthesis under a `@requires`/`@ensures`
+/// wrapper end-to-end (the proptest_gen unit test only checks the wrapper appears in the db; this checks it
+/// actually runs through `cdz test`). Store-guarded — a compound `-gen` builds a runtime heap value.
+#[test]
+fn a_compound_param_test_under_a_requires_or_ensures_wrapper_runs() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — a compound generator builds a heap value"
+        );
+        return;
+    }
+    let d = dir("compound-verified");
+    // A permissive @requires (0 <= len, always true) over a List param: synthesizes `f-gen` and passes.
+    let req = write(
+        &d,
+        "req.sexp",
+        "(do (@ test (@ (requires (<= 0 (List.len xs))) \
+           (def (f (: xs (List Int64))) (if (<= 0 (List.len xs)) unit (trap \"neg\"))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &req, "--trials", "8"]);
+    assert!(
+        ok && stdout.contains("PASS f-gen (8 trials)"),
+        "a compound-param @requires def synthesizes + runs its -gen wrapper: {stdout}{stderr}"
+    );
+    // A permissive @ensures (0 <= len of the returned list, always true): same — synthesizes + passes.
+    let ens = write(
+        &d,
+        "ens.sexp",
+        "(do (@ test (@ (ensures (<= 0 (List.len it))) (def (g (: xs (List Int64))) xs))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &ens, "--trials", "8"]);
+    assert!(
+        ok && stdout.contains("PASS g-gen (8 trials)"),
+        "a compound-param @ensures def synthesizes + runs its -gen wrapper: {stdout}{stderr}"
+    );
+}
+
 // NOTE: the two TESTED-tier `@test @ensures` integration tests (a true postcondition passes over trials; a
 // false one fails with a counterexample) MOVED OUT of this file in the `@ensures`-ownership lockstep. `@ensures`
 // enforcement — bare AND `@test`-stacked — is now v-verification's `verify_enforce::enforce` pass (it rewrites a

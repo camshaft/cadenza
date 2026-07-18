@@ -32,6 +32,7 @@
 //! Differential miscompiles (two backends disagreeing on a program's value) are a planned second
 //! oracle; see [`oracle`].
 
+pub mod differential;
 pub mod driver;
 pub mod finding;
 pub mod generator;

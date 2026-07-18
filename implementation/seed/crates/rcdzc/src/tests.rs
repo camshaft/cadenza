@@ -6122,6 +6122,61 @@ fn a_connective_in_an_if_condition_threads_its_state_advance_to_the_branch() {
     );
 }
 
+/// COMPOSITION guard (adversarial, all landed 2026-07-17/18 effect fixes together): a connective in an if
+/// CONDITION (hoist Site 5) whose then-branch is a `(do (cross-fn-fold) (perform))` — the cross-fn recursive
+/// fold's out-state (task #15) must thread through the condition's advance AND into the trailing perform.
+/// Seeded 0: condition `(and true (> (St.tick) 0))` → tick #1 (state 0→1); then-branch `run-ops [1 2 3]` does
+/// 3 ticks (state 1→4), then `(St.tick)` #5 reads state 4 → resume 5. Pins Site 5 × caller-observed-out-state
+/// × do-threading compose soundly (each was fixed separately; this is their conjunction). Nullary `main` (uses
+/// the List runtime, so `run_linked`, not `run_returns_with`).
+#[test]
+fn a_connective_condition_over_a_cross_fn_fold_then_a_perform_composes() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect St (op tick (-> Unit Int64))) \
+        (def (run-ops (: ops (List Int64))) (match ops ((list h .. rest) (do (St.tick) (run-ops rest))) (_ 0))) \
+        (def (main) (handle St 0 ((tick (u) s (resume (+ s 1) (+ s 1)))) \
+          (if (and true (> (St.tick) 0)) (do (run-ops (list 1 2 3)) (St.tick)) -99))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("compiles (Site 5 × cross-fn fold × do-threading composition)");
+    if let Some(v) = run_linked(&bytes, "main") {
+        // cond tick @0→1; run-ops 3 ticks 1→4; trailing tick @4→resume 5.
+        assert_eq!(
+            v, "5",
+            "the composed state threads through condition + fold + trailing perform → 5"
+        );
+    }
+}
+
+/// COMPOSITION guard: the diverging-init trap short-circuit composes with the effect fold — a `let` binding a
+/// TRAP in one branch of an effectful handler body must still lower (the trap short-circuits that branch)
+/// while the OTHER branch threads state normally. `(if b (let ((it (trap …))) (+ it (St.tick))) (St.tick))`:
+/// b=false threads the tick (→ 1); b=true's branch binds a trap → the whole `let` folds to the trap (the
+/// `(+ it (St.tick))` and its perform never run). Pins that the trap-init short-circuit does not perturb the
+/// sibling branch's state threading, nor spuriously force the dead branch's perform.
+#[test]
+fn a_trap_init_let_in_one_handler_branch_short_circuits_while_the_sibling_threads() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(do \
+        (effect St (op tick (-> Unit Int64))) \
+        (def (main (: b Bool)) (handle St 0 ((tick (u) s (resume (+ s 1) (+ s 1)))) \
+          (if b (let ((it (trap \"dead\"))) (+ it (St.tick))) (St.tick)))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("compiles (trap-init short-circuit × effect fold composition)");
+    let vf: i64 = run_returns_with(&bytes, "main", &[Val::Bool(false)]);
+    assert_eq!(
+        vf, 1,
+        "the sibling branch threads the tick normally; b=false → 1"
+    );
+    assert!(
+        call_traps(&bytes, "main", &[Val::Bool(true)]),
+        "the trap-init branch short-circuits to the trap; b=true traps"
+    );
+}
+
 /// ADVERSARIAL companion (task #15, breaker witness): TWO successive self-recursive folds under ONE handler —
 /// the SECOND fold must thread against the state the FIRST advanced, not the seed. `dn(n) = if n==0 then 0
 /// else dn(n-1) + Counter.bump()` counts down performing `bump` (state s→s+1); `(+ (* 1000 (dn 2)) (dn 2))`.
@@ -15295,6 +15350,78 @@ mod match_engine {
             "0",
             "a 3-tuple of sums recurses u3(a2,b2,c2) = u3(Int,Int,Bool) → not all TInt → 0 (three distinct \
              same-length payload prefixes each read from their own slot)"
+        );
+    }
+
+    #[test]
+    fn a_match_through_an_erased_single_variant_newtype_dispatches_on_the_inner_disc() {
+        // REGRESSION (silent MISCOMPILE, wasm-only differential — breaker/corpus-bugfix find): a match over a
+        // nested sum whose OUTER type is a CLOSED single-variant newtype (`(type Outer (Wrap Inner))`, which
+        // ERASES to `Ty::Nominal` — `infer::newtype_underlying`) read the INNER discriminant one level too
+        // deep and always dispatched to the FIRST inner variant. `(match (Outer.Wrap <runtime Inner>)
+        // ((Outer.Wrap (Inner.P x)) …) ((Outer.Wrap (Inner.W y)) …))` on a runtime `Inner.W` took the `P`
+        // arm. Rust computed it correctly (wasm-only). ROOT: construction correctly ERASES the outer Wrap
+        // (no `sum-new` — the value IS the inner), but the match's `SumCont::Switch` carried the RAW
+        // `switch_path` `[Payload]` (through the erased Wrap) and `push_discriminant` emitted a spurious
+        // `sum-payload` for that erased step, unwrapping the inner sum's payload BOX, so `sum-disc` read the
+        // box → 0 → always the first variant. FIX: a `Payload` step through a `Ty::Nominal` (erased newtype)
+        // is a runtime NO-OP in `push_discriminant` (peel one nominal layer, emit nothing) — the disc-dispatch
+        // twin of `Core::SumPayload`'s `erase_nominal_steps`. A runtime inner (chosen by a param) defeats the
+        // const-fold that would otherwise resolve the variant statically.
+        // First run via `let-else` so the storeless `test` job (no runtime wasm) SKIPS rather than
+        // `.unwrap()`-panics on `None`; the store-having gate + @test-suites jobs still exercise it.
+        let Some(w_face) = run_heap_value(
+            "(module m (type Inner (P Int64) (W Int64)) (type Outer (Wrap Inner)) \
+                   (def (pick (: k Int64) (: n Int64)) (if (< k 0) (Inner.P n) (Inner.W n))) \
+                   (def (main (: k Int64) (: n Int64)) \
+                     (match (Outer.Wrap (pick k n)) \
+                       ((Outer.Wrap (Inner.P x)) (+ x 100)) \
+                       ((Outer.Wrap (Inner.W y)) (+ y 200)))) \
+                   (export main))",
+            vec!["1".into(), "5".into()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping erased-newtype inner-disc run");
+            return;
+        };
+        assert_eq!(
+            w_face, "205",
+            "k>=0 picks Inner.W → the W arm (y+200 = 205); the erased outer Wrap Payload must NOT unwrap the \
+             inner box before reading the inner disc"
+        );
+        // The P face: k<0 picks Inner.P → the P arm (x+100 = 105). Confirms the fix dispatches BOTH inner
+        // variants (not just collapsing everything to the other arm).
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Inner (P Int64) (W Int64)) (type Outer (Wrap Inner)) \
+                   (def (pick (: k Int64) (: n Int64)) (if (< k 0) (Inner.P n) (Inner.W n))) \
+                   (def (main (: k Int64) (: n Int64)) \
+                     (match (Outer.Wrap (pick k n)) \
+                       ((Outer.Wrap (Inner.P x)) (+ x 100)) \
+                       ((Outer.Wrap (Inner.W y)) (+ y 200)))) \
+                   (export main))",
+                vec!["-1".into(), "5".into()],
+            )
+            .unwrap(),
+            "105",
+            "k<0 picks Inner.P → the P arm (x+100 = 105)"
+        );
+        // The LITERAL-payload face on the LATER inner variant (the original find's exact shape): the
+        // `(Inner.W 5)` literal arm must fire on a runtime-`W` value, not fall through to the binder arm.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Inner (P Int64) (W Int64)) (type Outer (Wrap Inner)) \
+                   (def (main (: sel Int64) (: n Int64)) \
+                     (match (if (= sel 0) (Outer.Wrap (Inner.P n)) (Outer.Wrap (Inner.W n))) \
+                       ((Outer.Wrap (Inner.P 3)) 1000) \
+                       ((Outer.Wrap (Inner.P x)) x) \
+                       ((Outer.Wrap (Inner.W 5)) 2000) \
+                       ((Outer.Wrap (Inner.W y)) y))) \
+                   (export main))",
+                vec!["1".into(), "5".into()],
+            )
+            .unwrap(),
+            "2000",
+            "sel=1,n=5 → Inner.W 5 → the W-literal arm (2000), not the W-binder fall-through (5)"
         );
     }
 

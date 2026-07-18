@@ -704,11 +704,14 @@ fn run_run_rust(args: &RunRustArgs) -> ExitCode {
     // 2. Emit the Rust module: shell `cdz compile - -o - --target rust` to SELF (install-location-independent
     //    via `current_exe`). A compile FAILURE means the front-end rejected the program or the rust backend
     //    declines it → `declined` (coverage-not-yet), NOT an `error` (an error is a bad ARTIFACT — see step 5).
+    //    An ENVIRONMENT failure (can't find/spawn self) is surfaced as an `error <msg>` VERDICT on stdout + exit
+    //    0, NOT a non-zero shell exit: the fuzzer's oracle always expects a verdict line (the sole non-zero exit
+    //    is a source READ failure above), so a harness breakage must not look like a crash (Copilot PR #547).
     let exe = match std::env::current_exe() {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("{PROG} run-rust: current_exe: {e}");
-            return ExitCode::FAILURE;
+            println!("error current_exe: {e}");
+            return ExitCode::SUCCESS;
         }
     };
     let module = match emit_rust_module(&exe, &source) {
@@ -718,28 +721,39 @@ fn run_run_rust(args: &RunRustArgs) -> ExitCode {
             return ExitCode::SUCCESS;
         }
         EmitOutcome::Harness(msg) => {
-            eprintln!("{PROG} run-rust: {msg}");
-            return ExitCode::FAILURE;
+            // Couldn't even run the compiler (spawn/temp-write failure) — a harness breakage, surfaced as an
+            // `error` verdict + exit 0 so the oracle gets a line rather than a silent non-zero crash.
+            println!("error {msg}");
+            return ExitCode::SUCCESS;
         }
     };
 
     // 3. Determine the export to invoke + its Cadenza result type (read off the `// cdz-return[<ident>]:`
-    //    note the backend emits). With no `--call`, the sole export is the `pub fn <name>` the module
-    //    defines; recover its name from the signature.
+    //    note the backend emits). With no `--call`, use the SOLE exported `pub fn`; if the module has
+    //    SEVERAL (multiple exports), do NOT guess — require `--call` (Copilot PR #547: splitting on the
+    //    first `pub fn` picked an arbitrary export and could run the wrong one).
     let export = match &args.call {
         Some(name) => cdz_rust_render::rust_ident(name),
-        None => match module
-            .split("pub fn ")
-            .nth(1)
-            .map(|s| s.split(['(', '<']).next().unwrap_or("").trim())
-        {
-            Some(name) if !name.is_empty() => name.to_string(),
-            _ => {
-                // No exported fn in the emitted module — the backend produced nothing runnable → declined.
-                println!("declined");
-                return ExitCode::SUCCESS;
+        None => {
+            let names = emitted_pub_fn_names(&module);
+            match names.as_slice() {
+                [one] => one.clone(),
+                [] => {
+                    // No exported fn — the backend produced nothing runnable → declined.
+                    println!("declined");
+                    return ExitCode::SUCCESS;
+                }
+                many => {
+                    eprintln!(
+                        "{PROG} run-rust: the program exports {} functions ({}); pass `--call NAME` to \
+                         pick one",
+                        many.len(),
+                        many.join(", ")
+                    );
+                    return ExitCode::FAILURE;
+                }
             }
-        },
+        }
     };
     // 3b. VALIDATE the chosen export against the emitted module's signature BEFORE building the driver, so
     //     a USAGE problem (a bad `--call` name, or an arg-taking export the nullary driver can't invoke)
@@ -797,16 +811,32 @@ fn run_run_rust(args: &RunRustArgs) -> ExitCode {
     // 5. rustc the driver, linking the pre-built `cdz-rt`/`cdz-num` rlibs beside the `cdz` binary (same
     //    dir `current_exe` is in — `cargo build` puts `libcdz_{rt,num}.rlib` in `target/<profile>/`). A
     //    UNIQUE per-process temp dir (pid-stamped) so concurrent oracle invocations never race prog.rs/prog.
+    // A rustc/driver HARNESS failure (couldn't write prog.rs, spawn rustc, or exec the binary) is surfaced
+    // as an `error <msg>` VERDICT + exit 0 — the oracle always expects a verdict line; a non-zero shell exit
+    // would look like a crash indistinguishable from a real harness break (Copilot PR #547). `compile_and_run_
+    // rust_driver` already returns the value/error/trap VERDICT as `Ok`; its `Err` is only a harness break.
     match compile_and_run_rust_driver(&exe, &driver) {
-        Ok(verdict) => {
-            println!("{verdict}");
-            ExitCode::SUCCESS
-        }
-        Err(msg) => {
-            eprintln!("{PROG} run-rust: {msg}");
-            ExitCode::FAILURE
+        Ok(verdict) => println!("{verdict}"),
+        Err(msg) => println!("error {msg}"),
+    }
+    ExitCode::SUCCESS
+}
+
+/// The names of every top-level `pub fn` the emitted module declares, in source order — used to pick the
+/// default export (exactly one → use it; several → require `--call`). A `pub fn <name>(` / `pub fn
+/// <name><generics>` at line start (the backend emits each export as a top-level `pub fn`); a nested/inner
+/// `pub fn` would not be at column 0, so keying on the line start avoids counting one.
+fn emitted_pub_fn_names(module: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in module.lines() {
+        if let Some(rest) = line.strip_prefix("pub fn ") {
+            let name = rest.split(['(', '<']).next().unwrap_or("").trim();
+            if !name.is_empty() {
+                names.push(name.to_string());
+            }
         }
     }
+    names
 }
 
 /// The parameter arity of the emitted `pub fn <export>(…)` — `Some(n)` with `n` the top-level parameter
@@ -969,22 +999,52 @@ fn compile_and_run_rust_driver(exe: &std::path::Path, driver: &str) -> Result<St
         return Ok(format!("error {first}"));
     }
     // Run the compiled driver. A non-zero exit (a panic) is a TRAP (a Cadenza trap lowered to a Rust
-    // panic); the panic message on stderr is the reason.
+    // panic); the panic MESSAGE is the reason.
     let run = Command::new(&bin)
         .output()
         .map_err(|e| format!("run failed to launch: {e}"))?;
     if !run.status.success() {
         let stderr = String::from_utf8_lossy(&run.stderr);
-        let reason = stderr
-            .lines()
-            .find(|l| l.contains("panicked at") || l.contains("panic"))
-            .or_else(|| stderr.lines().find(|l| !l.trim().is_empty()))
-            .unwrap_or("panic")
-            .trim();
-        return Ok(format!("trap {reason}"));
+        return Ok(format!("trap {}", panic_reason(&stderr)));
     }
     let value = String::from_utf8_lossy(&run.stdout).trim().to_string();
     Ok(format!("value {value}"))
+}
+
+/// Extract a DETERMINISTIC panic reason from a Rust panic's stderr — the trap message the differential
+/// oracle compares. Rust prints `thread 'main' panicked at <FILE>:<LINE>:<COL>:` followed by the payload
+/// message on the NEXT line. The `<FILE>:<LINE>:<COL>` is a per-run temp path (`/tmp/cdz-run-rust-…/prog.rs`),
+/// so returning THAT line makes the reason vary run-to-run (Copilot PR #547). Return the payload MESSAGE
+/// (the line after "panicked at …") instead — stable across runs and the actual reason. Falls back to the
+/// first non-empty line if the format is unexpected.
+fn panic_reason(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr.lines().collect();
+    // Modern format: the line AFTER `… panicked at …:` is the payload message.
+    if let Some(i) = lines.iter().position(|l| l.contains("panicked at")) {
+        if let Some(msg) = lines.get(i + 1) {
+            let m = msg.trim();
+            if !m.is_empty() {
+                return m.to_string();
+            }
+        }
+        // Older format: `… panicked at '<payload>', <file>:<line>` — the quoted payload AFTER "panicked
+        // at" (search from there, so the `'` in `thread 'main'` before it isn't mistaken for the open quote).
+        if let Some(pa) = lines[i].find("panicked at") {
+            let tail = &lines[i][pa..];
+            if let Some(start) = tail.find('\'')
+                && let Some(end) = tail.rfind('\'')
+                && end > start
+            {
+                return tail[start + 1..end].to_string();
+            }
+        }
+    }
+    lines
+        .iter()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or("panic")
+        .to_string()
 }
 
 // ── compile (with in-process source parsing + auto-spans for debug) ──────────────────────────────
@@ -7865,5 +7925,62 @@ mod tests {
         }
         assert!(checked, "expected a CDZ0306 unused-binding warning: {text}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn emitted_pub_fn_names_lists_each_top_level_export() {
+        // `cdz run-rust` picks the sole `pub fn` as the default export; several → require --call. The
+        // list must be by source order and count only TOP-LEVEL (column-0) `pub fn`s (Copilot PR #547).
+        let module =
+            "#![allow(warnings)]\npub fn main() -> i64 { 1 }\npub fn other() -> i64 { 2 }\n";
+        assert_eq!(emitted_pub_fn_names(module), vec!["main", "other"]);
+        // A nested/inner `pub fn` (indented) is not a module export — not counted.
+        let one = "pub fn main() -> i64 {\n    pub fn helper() {}\n    1\n}\n";
+        assert_eq!(emitted_pub_fn_names(one), vec!["main"]);
+        assert!(emitted_pub_fn_names("fn not_pub() {}\n").is_empty());
+    }
+
+    #[test]
+    fn export_param_arity_reads_the_signature() {
+        assert_eq!(
+            export_param_arity("pub fn main() -> i64 { 0 }", "main"),
+            Some(0)
+        );
+        assert_eq!(
+            export_param_arity("pub fn f(n: i64) -> i64 { n }", "f"),
+            Some(1)
+        );
+        // A tuple/generic PARAM type has inner commas that must NOT inflate the arity.
+        assert_eq!(
+            export_param_arity("pub fn g(p: (i64, i64), q: Vec<(A, B)>) -> i64 { 0 }", "g"),
+            Some(2)
+        );
+        // Absent export → None (a bad --call).
+        assert_eq!(
+            export_param_arity("pub fn main() -> i64 { 0 }", "nope"),
+            None
+        );
+        // A name that is only a PREFIX of an emitted fn must not match.
+        assert_eq!(
+            export_param_arity("pub fn main2() -> i64 { 0 }", "main"),
+            None
+        );
+    }
+
+    #[test]
+    fn panic_reason_is_deterministic_no_temp_path() {
+        // Modern Rust: `… panicked at <FILE>:<LINE>:<COL>:` then the payload on the NEXT line. Return the
+        // payload (stable), NOT the temp-path line (per-run — Copilot PR #547).
+        let modern = "thread 'main' panicked at /tmp/cdz-run-rust-123-4/prog.rs:9:14:\nattempt to divide by zero\nnote: run with RUST_BACKTRACE=1 …";
+        assert_eq!(panic_reason(modern), "attempt to divide by zero");
+        // The reason must not carry the per-run temp path or line number.
+        assert!(!panic_reason(modern).contains("/tmp/"));
+        assert!(!panic_reason(modern).contains("prog.rs"));
+        // Older format: `panicked at '<payload>', <file>:<line>` → the quoted payload.
+        let older = "thread 'main' panicked at 'overflow', /tmp/x/prog.rs:1:1";
+        assert_eq!(panic_reason(older), "overflow");
+        // Unexpected format → first non-empty line, never empty.
+        assert_eq!(panic_reason("\n\nboom\n"), "boom");
+        assert_eq!(panic_reason(""), "panic");
     }
 }

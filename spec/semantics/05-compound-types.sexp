@@ -8142,6 +8142,33 @@
             (def (main) (f (E.Lit 3) (E.Lit 4))) (export main)))
   (output (: 7 Int64)))
 
+(case "a match through an erased single-variant newtype dispatches on the inner sum's discriminant"
+  (doc    "`(match (Outer2.Wrap <runtime Inner2>) ((Outer2.Wrap (Inner2.P x)) …) ((Outer2.Wrap (Inner2.W y))
+           …))` where `Outer2 = (Wrap Inner2)` is a CLOSED single-variant sum — a NEWTYPE that ERASES to its
+           inner at run time (type-system.md §A Nominal Value Is Convertible To Its Underlying Structural
+           Value). The outer `Wrap` construction adds no runtime box, so matching it must NOT peel a box
+           before reading the INNER discriminant: the `Payload` step through the erased Wrap is a runtime
+           no-op, exactly as it is for a binder read `(Wrap n)`. Regression: the wasm backend emitted a
+           spurious `sum-payload` for the erased Wrap in the DISPATCH path, reading the inner disc one level
+           too deep → it always took the first inner variant (`P`) regardless of the actual variant. Here the
+           if-join builds a runtime `Inner2.W 5`, so the `(Inner2.W 5)` literal arm must fire → 2000 (not the
+           `(Inner2.P 3)`/binder arms). The first-variant literal (`sel=0,n=3` → `(Inner2.P 3)`) → 1000
+           confirms the P arm still works.")
+  (input  (do
+            (type Inner2 (P Int64) (W Int64))
+            (type Outer2 (Wrap Inner2))
+            (def (main (: sel Int64) (: n Int64))
+              (match (if (= sel 0) (Outer2.Wrap (Inner2.P n)) (Outer2.Wrap (Inner2.W n)))
+                ((Outer2.Wrap (Inner2.P 3)) 1000)
+                ((Outer2.Wrap (Inner2.P x)) x)
+                ((Outer2.Wrap (Inner2.W 5)) 2000)
+                ((Outer2.Wrap (Inner2.W y)) y)))
+            (export main)))
+  (call   main (: 1 Int64) (: 5 Int64))
+  (output (: 2000 Int64))
+  (call   main (: 0 Int64) (: 3 Int64))
+  (output (: 1000 Int64)))
+
 (case "a top-level tuple pattern matches a tuple produced by a runtime conditional"
   (doc    "A `(tuple a b)` pattern over a scrutinee that is a RUNTIME tuple — one built by an `if`, so the
            scrutinee is neither a compile-time-constant `(tuple …)` nor a bound name. `(g k)` returns

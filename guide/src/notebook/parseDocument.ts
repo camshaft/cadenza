@@ -11,6 +11,15 @@
 /// (the run engine concatenates prior code cells' definitions, like the calculator's replEval buffer).
 /// Parsing stays a pure structural split.
 
+// TYPE-ONLY import (erased at compile time — keeps this module worker/runtime-free per the purity note
+// above): `Surface` is a bare string-union, so importing its type pulls in no worker code.
+import type { Surface } from "../compiler/worker.ts";
+// `gatherTestForms`/`ungatherTestForms` are PURE string transforms (no worker) — they wrap a MULTI-form
+// cell into one top-level form the single-form pretty-printer can render, then peel it back. Needed
+// because a notebook code cell may hold several top-level `def`s (e.g. a helper + `main`), which
+// `renderSyntax` (single-form) rejects with "trailing input" unless gathered first.
+import { gatherTestForms, ungatherTestForms } from "../components/wrapModule.ts";
+
 /// A render directive on a ```cadenza fence info string (the token after `cadenza`). `none` = auto-detect
 /// the output renderer from the value's shape (Increment 3). `hidden` runs the cell but shows no source.
 export type CellDirective =
@@ -239,6 +248,42 @@ export function serializeDocument(cells: Cell[]): string {
         : `\`\`\`${directiveToInfo(cell.directive)}\n${cell.source}\n\`\`\``,
     )
     .join("\n\n");
+}
+
+/// Re-render a notebook's CADENZA CODE cells from surface `from` to surface `to`, returning the new
+/// markdown (the operator's "notebook always uses s-expr" fix — my half of the surface toggle). Notebook
+/// examples are authored in ONE surface (s-expr); to let a reader EDIT in the global surface, each code
+/// cell's source is rendered THROUGH the selected surface for display (the /cad + playground `renderSnippet`
+/// pattern), while the RUN/lint paths stay s-expr-canonical (the caller keeps those fixed). `render` is
+/// INJECTED (the compiler client's `renderSyntax`) so this module stays pure/worker-free + node-testable.
+///
+/// ⚠ WIDGET cells are NOT Cadenza (the notebook's `name : T = control(...)` DSL) — rendering one through the
+/// Cadenza surface converter FAILS ("s-expr parse error"), so they pass through UNCHANGED, as does prose. A
+/// cell whose render REJECTS (a transient parse error mid-edit) keeps its original source rather than
+/// dropping content. Cell `id`s are preserved (stable React keys). Async: renders run concurrently.
+export async function renderDocToSurface(
+  markdown: string,
+  from: Surface,
+  to: Surface,
+  render: (text: string, from: Surface, to: Surface) => Promise<string>,
+): Promise<string> {
+  const cells = parseDocument(markdown);
+  if (from === to) return serializeDocument(cells); // no-op transform (normalizes, doesn't re-render)
+  const rendered = await Promise.all(
+    cells.map(async (cell) => {
+      // Only real Cadenza code cells convert; prose + the widget DSL pass through verbatim.
+      if (cell.kind !== "code" || cell.directive.kind === "widget") return cell;
+      try {
+        // GATHER multi-form cells into one top-level form (a cell may hold a helper `def` + `main`), render
+        // that single form, then UNGATHER — else `renderSyntax` rejects a multi-form cell ("trailing input").
+        const rendered = await render(gatherTestForms(cell.source, from), from, to);
+        return { ...cell, source: ungatherTestForms(rendered, to) };
+      } catch {
+        return cell; // a transient/invalid render keeps the original source (never drop content)
+      }
+    }),
+  );
+  return serializeDocument(rendered);
 }
 
 /// Return a NEW cell list with the CODE cell at `index` given `newSource` (immutable — a fresh array +
