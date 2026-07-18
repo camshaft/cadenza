@@ -134,9 +134,25 @@ def se-ann-out-of-range-declines() =
   (match run-src("(: 300 UInt8)") with | Option.None(_) => unit | Option.Some(_) => trap("(: 300 UInt8) must decline"))
 
 @test
-def se-ann-used-in-arith-runs() =
-  // an annotated literal is an ordinary operand: `(+ (: 100 Int8) 20)` → 120 (the annotation types the
-  // operand; arithmetic over it evaluates normally — narrow-arith wrapping is a later slice).
-  (match run-src("(+ (: 100 Int8) 20)") with | Option.Some(v) => (if v == 120 then unit else trap("(+ (: 100 Int8) 20) → 120")) | Option.None(_) => trap("annotated operand in arith runs"))
+def se-ann-narrow-arith-declines() =
+  // a NARROW operand to arithmetic DECLINES (coverage-not-yet): narrow arith must wrap at 2^width to be
+  // correct, and that wrapping (eval + emit i32-mask) is a blocked follow-up — so `(+ (: 100 Int8) 20)`
+  // declines rather than silently giving an unwrapped 120. (Was a run→120 in 2b-ii-a, before the bin-type
+  // narrow-arith gate; declining is the correct pre-wrap behavior — never a fabricated narrow value.)
+  (match run-src("(+ (: 100 Int8) 20)") with | Option.None(_) => unit | Option.Some(_) => trap("narrow-operand arith declines pending the wrap slice"))
+
+@test
+def se-ann-mixed-width-arith-declines() =
+  // `(+ (: 5 Int8) (: 5 Int16))` → mixed width arith → TErr → declines (Q1=A strict same-width, the
+  // no-implicit-conversions rule). Was a silent 10 before the gate.
+  (match run-src("(+ (: 5 Int8) (: 5 Int16))") with | Option.None(_) => unit | Option.Some(_) => trap("mixed-width arith declines (strict same-width)"))
+
+@test
+def se-ann-narrow-comparison-runs() =
+  // narrow COMPARISON does NOT wrap (comparing in-range integers is width-agnostic), so it stays permissive:
+  // `(< (: 5 Int8) (: 10 Int8))` → true (value 1). Only arithmetic is gated pending the wrap slice.
+  (match run-src-typed("(< (: 5 Int8) (: 10 Int8))") with
+   | Option.Some((v, b)) => (if (v == 1 and b == 1) then unit else trap("narrow < → bool true"))
+   | Option.None(_) => trap("narrow comparison runs"))
 
 export { run-src, run-src-typed }

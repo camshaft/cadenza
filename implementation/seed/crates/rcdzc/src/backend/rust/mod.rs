@@ -107,14 +107,15 @@ fn s3_result_ok(t: &crate::ty::Ty) -> bool {
         Ty::String | Ty::Bytes => true,
         Ty::Tuple(elems) => elems.iter().all(s3_result_ok),
         Ty::List(elem) => s3_result_ok(elem),
-        // Option/Result RESULT (S4a) — the well-known 2-variant sums the harness renders via `cdz_render_at`'s
-        // Option/Result arms (`(Some <p>)`/`(None unit)`/`(Ok <p>)`/`(Err <e>)`), the corpus value form. Over
-        // renderable payloads (recurse), matching `s2_arg_ok`'s arg-side Option/Result arm. A USER sum result
-        // stays deferred (the harness renders a user sum via a generated helper, but the factory-result
-        // dispatch does not yet route to it — a later slice).
-        Ty::Sum { name, args, .. } if name == "Option" || name == "Result" => {
-            args.iter().all(s3_result_ok)
-        }
+        // A SUM RESULT (S4a + user-sum extension) — Option/Result (the well-known 2-variant sums) OR a USER
+        // sum (`(type Dir (N) (S))`). The harness renders all of them via `cdz_render_at` into the corpus
+        // value form: `(Some <p>)`/`(None unit)`/`(Ok <p>)`/`(Err <e>)` for the built-ins, `(<Variant> <p>)`/
+        // `(<Variant> unit)` for a user sum (from the emitted `// cdz-sum[…]` descriptor + generated helper).
+        // The factory-result render wraps it in the type-annotated `(: <value> <type>)` value form (the shape
+        // the wasm `call` value-encode produces). Recurse over the type ARGS (a generic sum's instantiation —
+        // `Option Int64`, `Box (Tuple …)`); a monomorphic user sum has no args (trivially OK), its variant
+        // payloads rendered by the descriptor. So a sum result is renderable iff its type-args are.
+        Ty::Sum { args, .. } => args.iter().all(s3_result_ok),
         _ => false,
     }
 }

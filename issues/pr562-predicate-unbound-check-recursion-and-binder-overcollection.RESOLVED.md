@@ -62,3 +62,10 @@ RESOLVED-PENDING-MERGE (v-inference, 2026-07-18, MR 6bef46f34):
     is NOT reachable in today's grammar. Lands as CORRECTNESS/CONSISTENCY hardening (removes a latent
     divergence a future pattern form could make reachable), not a demonstrable-bug fix. Test extended
     (list-rest arm: binds leaf+rest, stray name still CDZ0101). 2096/2096 pass. Retire on land.
+
+---
+LANDED + VERIFIED (corpus-bugfix 2026-07-18, source trunk 28fb7a9a9): 6bef46f34 on trunk. compile.rs:937
+pattern_binder_names now DELEGATES to crate::resolve::arm_pattern_binders (line 939, "well-scoped" doc at
+927) — the over-collection (finding 2) is fixed (skips _/../.-member, binds real leaves only). Finding 1
+(recursion) was dismissed (arena-acyclic). Fully resolved (finding 2 was the correctness/consistency
+hardening; finding 1 dismiss-with-rationale). Closed.

@@ -1,6 +1,7 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	@ensures on a def with a parameter named it is REJECTED (would silently not enforce — rename the param)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
+pass	@invariant ESTABLISH (divert) over a heap payload: a NonEmptyList newtype traps on the empty list, constructs a non-empty one (design §10.1/§10.2, (D))
 pass	@invariant ESTABLISH Part 1: a bare-scalar invariant on a newtype auto-unwraps + type-checks; a satisfying value constructs and is usable
 pass	@invariant ESTABLISH Part 2 (divert): a plain `(Percent.Pct v)` construction auto-establishes — a satisfying value constructs, a violating value traps at the call site (design §10.2, (D))
 pass	@invariant ESTABLISH Part 2: the synthesized checked constructor enforces the invariant at run time — a satisfying value constructs, a violating value traps (design §10.2, (D))
@@ -623,6 +624,7 @@ pass	a closure taking an Option Int32 ARG (narrow-int payload) crosses the direc
 pass	a closure taking an Option Int64 ARG — None crosses the direct-call boundary
 pass	a closure taking an Option Int64 ARG — Some crosses the direct-call boundary
 pass	a closure whose CALL returns a tuple CONTAINING a list
+pass	a closure whose CALL returns a user sum crosses as the value form
 pass	a closure whose CALL returns an Option crosses as the value form
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
 pass	a closure whose body calls a top-level helper function
@@ -3652,7 +3654,6 @@ todo	a closure captures the result of a build-time host op called with an argume
 todo	a closure capturing a build-time host effect preserves the order of two host calls
 todo	a closure capturing values of DIFFERENT types (Float64 + Int64)
 todo	a closure that performs a delegated effect cannot cross the host boundary
-todo	a closure whose CALL returns a user sum crosses as the value form
 todo	a conditional performs only the taken branch's effect — else
 todo	a conditional performs only the taken branch's effect — then
 todo	a consumer applies TWO handed-back closures

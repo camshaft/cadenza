@@ -4624,6 +4624,17 @@ fn rustc_roundtrip_host_closure_factory_compound_arg_s2() {
         sum_result.contains("Rc<dyn Fn(i64) -> Option<i64>>"),
         "an Option-RESULT factory now emits (S4a):\n{sum_result}"
     );
+    // S4a user-sum extension: a factory whose closure returns a USER sum (`(type Dir (N) (S))`) also emits —
+    // the backend produces `Rc<dyn Fn(i64) -> Dir>` and the gate renders it as the value form `(: (N unit)
+    // Dir)` (the user-sum arm of `cdz_render_at` + the factory `(: value type)` wrapper, keyed off the
+    // `// cdz-sum[Dir]` descriptor). A user sum result is no longer deferred.
+    let user_sum_result = compile_rust(
+        "(module m (type Dir (N) (S)) (def (mk) (fn ((: n Int64)) (if (> n 0) (N) (S)))) (export mk))",
+    );
+    assert!(
+        user_sum_result.contains("-> Dir>"),
+        "a USER-sum-RESULT factory now emits (S4a user-sum extension):\n{user_sum_result}"
+    );
 }
 
 #[test]
