@@ -20,17 +20,26 @@ import { Resolved, resolve-tree } from "resolve-db"
 /// child / operator-operand mismatch). The language stopped being purely monomorphic once comparison landed:
 /// a comparison `NBin` (op 60 `<`, 61 `==`) is `TBool`, arithmetic (43/45/42) is `TInt`; both REQUIRE `TInt`
 /// operands (there is no bool arithmetic / no bool-to-bool comparison yet — those would be `TErr`).
+/// The type fact carries an integer's WIDTH now: `TIntW(signed, width)` is a fixed-width integer type
+/// (`TIntW(true, 64)` = the canonical `Int64`, which every literal/arithmetic result is today — the
+/// language is still monomorphic-i64, so this is a behavior-preserving representation widening that lets
+/// widths FLOW once annotations name them). `TBool`/`TErr` unchanged.
 type Typed =
-  | TInt
+  | TIntW(Bool, Int64)
   | TBool
   | TErr
+
+/// The canonical integer type the monomorphic-i64 pipeline produces everywhere: signed, 64-bit. A single
+/// name so the many construct sites don't repeat the `(true, 64)` pair (and a later slice that produces a
+/// narrow width from an annotation changes only the sites that KNOW the width, not this default).
+def t-int64() = Typed.TIntW(true, 64)
 
 /// Infer the type of every node in the subtree at `id`, reading the pre-built resolve column `rcol` and
 /// threading the type column `tcol` (NodeId → Typed) it fills. Reading `rcol` (not re-resolving) is the
 /// producer-reads-producer contract: infer consumes resolve's already-memoized facts.
 def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
   match node-at(tree, id) with
-    | Option.Some(Node.NLit(_)) => Map.insert(tcol, id, Typed.TInt)
+    | Option.Some(Node.NLit(_)) => Map.insert(tcol, id, t-int64())
     | Option.Some(Node.NBoolLit(_)) => Map.insert(tcol, id, Typed.TBool)
     | Option.Some(Node.NVar(_)) =>
         // a var's type is the type of the VALUE its binder binds (not hardcoded Int) — so a var bound to a
@@ -76,11 +85,11 @@ def var-type(tree: Tree, binder: Int64, tcol: Map(Int64, Typed)) =
 /// → `TErr`.
 def bin-type(op: Int64, tcol: Map(Int64, Typed), a: Int64, b: Int64) =
   (if both-int(tcol, a, b) then
-     (if (op == 43) then Typed.TInt
-      else (if (op == 45) then Typed.TInt
-      else (if (op == 42) then Typed.TInt
-      else (if (op == 47) then Typed.TInt
-      else (if (op == 37) then Typed.TInt
+     (if (op == 43) then t-int64()
+      else (if (op == 45) then t-int64()
+      else (if (op == 42) then t-int64()
+      else (if (op == 47) then t-int64()
+      else (if (op == 37) then t-int64()
       else (if (op >= 60) then (if (op <= 65) then Typed.TBool else Typed.TErr)   // relational 60..65 → TBool
       else Typed.TErr))))))
    else Typed.TErr)
@@ -98,14 +107,16 @@ def let-type(tcol: Map(Int64, Typed), valId: Int64, bodyId: Int64) =
 /// Bool iff both operands are `TInt` (the operand rule for every current binary op) — used by `bin-type`.
 def both-int(tcol: Map(Int64, Typed), a: Int64, b: Int64) =
   (match Map.lookup(tcol, a) with
-    | Option.Some(Typed.TInt) =>
-        (match Map.lookup(tcol, b) with | Option.Some(Typed.TInt) => true | _ => false)
+    | Option.Some(Typed.TIntW(_, _)) =>
+        (match Map.lookup(tcol, b) with | Option.Some(Typed.TIntW(_, _)) => true | _ => false)
     | _ => false)
 
-/// Structural equality of two ground types (`TInt`/`TBool`); `TErr` is never equal to anything (an erroneous
-/// branch never makes an `if` well-typed).
+/// Structural equality of two ground types; `TErr` is never equal to anything (an erroneous branch never
+/// makes an `if` well-typed). Two integer types are equal iff SAME signedness AND width — so an `if` whose
+/// branches are different-width integers is `TErr` (they don't share a ground type), the correctness rule
+/// a later narrow-width slice relies on. Today everything is `TIntW(true, 64)`, so this is behavior-neutral.
 def type-eq(a: Typed, b: Typed) = match a with
-  | Typed.TInt => (match b with | Typed.TInt => true | _ => false)
+  | Typed.TIntW(sa, wa) => (match b with | Typed.TIntW(sb, wb) => (if (if sa then sb else (if sb then false else true)) then wa == wb else false) | _ => false)
   | Typed.TBool => (match b with | Typed.TBool => true | _ => false)
   | Typed.TErr => false
 
@@ -134,7 +145,7 @@ def type-at(tree: Tree, root: Int64, id: Int64) = Map.lookup(infer-tree(tree, ro
 
 /// Probe: is the whole program (the root) well-typed (any ground type — TInt or TBool, not TErr/absent)?
 def well-typed(tree: Tree, root: Int64) = match type-at(tree, root, root) with
-  | Option.Some(Typed.TInt) => true
+  | Option.Some(Typed.TIntW(_, _)) => true
   | Option.Some(Typed.TBool) => true
   | _ => false
 
@@ -145,7 +156,7 @@ def is-bool-at(tree: Tree, root: Int64, id: Int64) = match type-at(tree, root, i
 
 /// Probe: is the node at `id` typed `TInt`?
 def is-int-at(tree: Tree, root: Int64, id: Int64) = match type-at(tree, root, id) with
-  | Option.Some(Typed.TInt) => true
+  | Option.Some(Typed.TIntW(_, _)) => true
   | _ => false
 
 /// Probe: is the node at `id` type-erroneous (TErr — type-level poison)?
@@ -299,5 +310,30 @@ def id-bool-in-arith-is-err() =
   // "true + 1" → a Bool operand to arithmetic → TErr (bin-type requires Int operands).
   (match parse-of([truelit(), plus(), n(1)]) with | (root, tree) =>
     (if type-err-at(tree, root, root) then unit else trap("true + 1 is TErr (no bool arithmetic)")))
+
+// ---- width-aware type facts (slice-2a: Typed carries (signed, width)) ----
+
+@test
+def id-literal-is-int64() =
+  // "5" → the canonical width-carrying fact is TIntW(true, 64) = Int64. Match the width explicitly.
+  (match parse-of([n(5)]) with | (root, tree) =>
+    (match type-at(tree, root, root) with
+      | Option.Some(Typed.TIntW(s, w)) => (if s then (if w == 64 then unit else trap("width 64")) else trap("signed"))
+      | _ => trap("a literal is TIntW(true, 64)")))
+
+@test
+def id-type-eq-same-width() =
+  // type-eq is width-aware: Int64 == Int64, but Int64 != Int32 and Int64 != UInt64.
+  (if type-eq(Typed.TIntW(true, 64), Typed.TIntW(true, 64)) then
+     (if type-eq(Typed.TIntW(true, 64), Typed.TIntW(true, 32)) then trap("Int64 != Int32 (width differs)")
+      else (if type-eq(Typed.TIntW(true, 64), Typed.TIntW(false, 64)) then trap("Int64 != UInt64 (sign differs)")
+      else unit))
+   else trap("Int64 == Int64"))
+
+@test
+def id-type-eq-int-not-bool() =
+  // an integer type is never equal to Bool (cross-kind), and TErr is never equal to anything.
+  (if type-eq(Typed.TIntW(true, 64), Typed.TBool) then trap("Int64 != Bool")
+   else (if type-eq(Typed.TErr, Typed.TErr) then trap("TErr != TErr (poison never equal)") else unit))
 
 export { Typed.*, infer-tree, type-at, well-typed, type-err-at, typed-count, is-bool-at, is-int-at }

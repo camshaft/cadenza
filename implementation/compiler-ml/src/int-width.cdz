@@ -66,6 +66,18 @@ def wrap-to(v: Int64, signed: Bool, width: Int64) =
      else low)
   else v
 
+/// Two's-complement WRAPPING arithmetic at a `(signed, width)` type — the `T.wrapping-add/-sub/-mul` ops
+/// (`rcdzc::resolved.rs` WrappingAdd/Sub/Mul): compute the exact result, then TRUNCATE to the width. NEVER
+/// trap (numeric-model §Overflow Is Defined — the modular outcome). Defined as `wrap-to(a OP b, …)`, so an
+/// out-of-scope width is the identity `wrap-to` gives. This is the value-level model slice-2b's i32 codegen
+/// mirrors (wasm i32.add/mul already wrap mod 2^32; a narrower width masks after). NOTE the intermediate
+/// `a OP b` uses host Int64 arithmetic, correct for widths ≤ 32 (the sum/product of two ≤2^32 values fits
+/// Int64) — the widths this slice's `width-ok` admits; a width-64 wrapping op is the native-Int64 identity
+/// the caller handles separately (not via this helper).
+def wrapping-add(a: Int64, b: Int64, signed: Bool, width: Int64) = wrap-to(a + b, signed, width)
+def wrapping-sub(a: Int64, b: Int64, signed: Bool, width: Int64) = wrap-to(a - b, signed, width)
+def wrapping-mul(a: Int64, b: Int64, signed: Bool, width: Int64) = wrap-to(a * b, signed, width)
+
 // ---- pow2 / mod-floor ----
 
 @test
@@ -164,4 +176,36 @@ def iw-fit-implies-wrap-noop() =
   if (wrap-to(100, false, 8) == 100) and (wrap-to(0 - 50, true, 8) == (0 - 50)) and (wrap-to(1000, false, 16) == 1000)
   then unit else trap("a value that fits wraps to itself")
 
-export { fits-width, wrap-to, pow2, mod-floor, width-ok }
+// ---- wrapping arithmetic (T.wrapping-add / -sub / -mul) ----
+
+@test
+def iw-wrapping-add-in-range() =
+  // in-range sums are unchanged: 100 + 27 = 127 fits UInt8; 3 + 4 = 7 fits Int8.
+  if (wrapping-add(100, 27, false, 8) == 127) and (wrapping-add(3, 4, true, 8) == 7) then unit else trap("in-range wrapping-add unchanged")
+
+@test
+def iw-wrapping-add-overflows-unsigned() =
+  // 200 + 100 = 300 wraps mod 256 → 44 at UInt8; 255 + 1 → 0.
+  if (wrapping-add(200, 100, false, 8) == 44) and (wrapping-add(255, 1, false, 8) == 0) then unit else trap("UInt8 wrapping-add: 300→44, 256→0")
+
+@test
+def iw-wrapping-add-overflows-signed() =
+  // 127 + 1 = 128 wraps to Int8.min -128 (signed overflow is DEFINED here, not UB).
+  if wrapping-add(127, 1, true, 8) == (0 - 128) then unit else trap("Int8 wrapping-add 127+1 → -128")
+
+@test
+def iw-wrapping-sub-underflows() =
+  // 0 - 1 wraps to UInt8.max 255; Int8.min - 1 = -128 - 1 wraps to Int8.max 127.
+  if (wrapping-sub(0, 1, false, 8) == 255) and (wrapping-sub(0 - 128, 1, true, 8) == 127) then unit else trap("wrapping-sub: 0-1→255(u8), -128-1→127(i8)")
+
+@test
+def iw-wrapping-mul-overflows() =
+  // 16 * 16 = 256 wraps mod 256 → 0 at UInt8; 20 * 20 = 400 → 400-256 = 144 at UInt8.
+  if (wrapping-mul(16, 16, false, 8) == 0) and (wrapping-mul(20, 20, false, 8) == 144) then unit else trap("UInt8 wrapping-mul: 256→0, 400→144")
+
+@test
+def iw-wrapping-mul-width16() =
+  // a wider width: 256 * 256 = 65536 wraps mod 2^16 → 0 at UInt16; in-range 100*100=10000 unchanged.
+  if (wrapping-mul(256, 256, false, 16) == 0) and (wrapping-mul(100, 100, false, 16) == 10000) then unit else trap("UInt16 wrapping-mul: 65536→0, 10000 unchanged")
+
+export { fits-width, wrap-to, wrapping-add, wrapping-sub, wrapping-mul, pow2, mod-floor, width-ok }

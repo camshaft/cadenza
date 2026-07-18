@@ -144,6 +144,16 @@ fn param_annotation_parts(ast: &Arenas, inner: StructId) -> Option<(StructId, St
     Some((app, name))
 }
 
+/// Whether `id` is a `@param` SITE — the confirmed shape `(: (@ (param <kv>…) name) Type)` this sidecar
+/// scans and consumes. A `@param` site is a DECLARATION (a runtime input the sidecar turns into a generated
+/// `Param` effect), NOT an evaluated-for-value expression — so passes that reason about statement values
+/// (e.g. the CDZ0307 discarded-value warning) must treat it like a `def`/`effect` declaration and skip it,
+/// rather than flagging its declared type as a computed-then-discarded value. This is the reusable predicate
+/// for that: a colon node whose inner is a `@param` annotation.
+pub fn is_param_site(ast: &Arenas, id: StructId) -> bool {
+    matches!(ast.as_form(id, ":"), Some(&[inner, _ty]) if param_annotation_name(ast, inner).is_some())
+}
+
 // ── The WIDGET MANIFEST scan (v-metaprogramming's half; v-cdz-tooling plumbs the Query + `cdz
 // param-manifest` CLI over these records — DESIGN-runtime-parameter-host-effect.md 2nd output). ──
 
