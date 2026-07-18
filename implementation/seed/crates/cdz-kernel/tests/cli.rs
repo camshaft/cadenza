@@ -196,6 +196,54 @@ fn hosted_performs_via_real_primitives_and_records_prim_events() {
 }
 
 #[test]
+fn start_runs_the_daemon_loop_bounded_and_stops_cleanly() {
+    // The `start` verb runs the LIVE daemon loop (poll → perform → sleep), bounded by --max-rounds so the run
+    // terminates deterministically. On a genesis-only log the loop performs nothing (the `program` event is
+    // skipped — not a trigger) and stops cleanly. Store-gated: open_and_resolve needs the value-heap runtime;
+    // a missing store surfaces as a runtime-not-found error (treated as SKIP, like run/perform/hosted).
+    let log = unique("start-log").with_extension("log");
+    let prog = unique("start-genesis").with_extension("cdz");
+    let _ = std::fs::remove_file(&log);
+    std::fs::write(&prog, GENESIS).unwrap();
+
+    Command::new(bin())
+        .args(["bootstrap", log.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+    Command::new(bin())
+        .args([
+            "inject-genesis",
+            log.to_str().unwrap(),
+            prog.to_str().unwrap(),
+        ])
+        .output()
+        .expect("inject-genesis");
+
+    // poll 0ms, exactly 1 round → deterministic termination.
+    let out = Command::new(bin())
+        .args(["start", log.to_str().unwrap(), "0", "--max-rounds", "1"])
+        .output()
+        .expect("run cdz-agent start");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if out.status.success() {
+        assert!(
+            stdout.contains("daemon polling") && stdout.contains("stopped cleanly"),
+            "start runs the bounded loop and stops cleanly; got: {stdout}"
+        );
+    } else {
+        assert!(
+            stderr.contains("runtime not found"),
+            "the only acceptable `start` failure is a missing runtime store (skip); got: {stderr}"
+        );
+        eprintln!("[cdz-agent it] value-heap runtime absent; skipped the `start` loop assertion");
+    }
+
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&prog);
+}
+
+#[test]
 fn unknown_subcommand_prints_usage_and_fails() {
     let out = Command::new(bin())
         .arg("frobnicate")

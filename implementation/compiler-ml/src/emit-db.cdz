@@ -21,7 +21,8 @@
 ///   code    section (id 10): one body, no locals, const+end = 0a <size> 01 <bodysize> 00 42 <sleb v> 0b
 /// Sizes/counts are ULEB128; the `i64.const` value is SLEB128.
 
-import { Core } from "lower-db"
+import { Core, lower-tree } from "lower-db"
+import { read-source } from "sread"
 
 /// A one-byte `Bytes` holding the low 8 bits of `x` (mirrors `encode.cdz`'s `b1`).
 def b1(x: Int64) = Bytes.of([UInt8.wrap(x)])
@@ -189,7 +190,40 @@ def emit-module(c: Core) =
                Bytes.concat(export-section(), code-section(body-of(emit-instrs(c, binders), List.len(binders)))))))))
    else Option.None(unit))
 
+/// `emit-src(s)` — the SOURCE → wasm entry (the W4 host harness's single call point, mirroring
+/// `sread-eval.run-src`): read the program source `s` into a tree (`read-source`), lower it to Core
+/// (`lower-tree`, gated on typing — `None` for ill-typed), then emit the wasm module (`emit-module`, `None`
+/// for out-of-emit-subset). `Some(bytes)` = a complete runnable core-wasm module exporting nullary `main :
+/// () -> i64`; `None` = declined (ill-typed OR not yet in the emit subset). `cdz run-emitted` embeds `s` as
+/// a literal, calls this, captures the returned `Bytes` raw host-side, and runs them via `wasmtime::Module`
+/// — the emit≡interpret gate compares that run-value against `run-src`'s interpreted value per corpus case.
+def emit-src(s: String) = match read-source(s) with
+  | (root, tree) => (match lower-tree(tree, root) with
+      | Option.Some(core) => emit-module(core)
+      | Option.None(_) => Option.None(unit))
+
+/// `bytes-to-list(b)` — the byte values of `b` as a `List(UInt8)`, in order (a fuel-bounded `Bytes.at`
+/// walk; the inverse of `Bytes.of`). The HOST-BOUNDARY shape: a `Bytes`-returning `main` pre-renders to
+/// canonical TEXT (lossy for arbitrary module bytes), but a `List(UInt8)`-returning `main` crosses as a raw
+/// `list<u8>` the host reads element-by-element — so the driver returns the module as this list.
+def bytes-to-list(b: Bytes) = bytes-to-list-go(b, 0, Bytes.len(b), [])
+def bytes-to-list-go(b: Bytes, i: Int64, n: Int64, acc: List(UInt8)) =
+  (if i == n then acc
+   else match Bytes.at(b, i) with
+     | Option.Some(x) => bytes-to-list-go(b, i + 1, n, List.push(acc, UInt8.wrap(x)))   // append in order
+     | Option.None(_) => acc)
+
+/// `emit-src-bytes(s)` — the DRIVER-FACING W4 entry: `emit-src` but returning the module as a
+/// `List(UInt8)` instead of `Bytes`, so `cdz run-emitted`'s `main` hands the host a RAW `list<u8>` (crosses
+/// as `Val::List` of `Val::U8`, no text render) rather than the lossy `Bytes`→string. `Some(list)` = the
+/// runnable core-wasm module's bytes; `None` = declined (ill-typed / out-of-subset). The host unwraps the
+/// `Option`, reads the byte list raw, `wasmtime::Module::new`s it, invokes `main`, prints the i64.
+def emit-src-bytes(s: String) = match emit-src(s) with
+  | Option.Some(b) => Option.Some(bytes-to-list(b))
+  | Option.None(_) => Option.None(unit)
+
 /// TESTS ----------------------------------------------------------------------------------------------
+/// W1 verifies the emitted bytes STRUCTURALLY in-Cadenza (no host wasmtime yet — that gate is W4).
 /// W1 verifies the emitted bytes STRUCTURALLY in-Cadenza (no host wasmtime yet — that gate is W4).
 
 /// Byte `i` of `b`, or -1 if out of range (so a test can assert a fixed offset totally).
@@ -404,4 +438,62 @@ def em-comparison-op-mapping() =
           (if (cmp-byte(64) == 89) then
             (if (cmp-byte(65) == 82) then unit else trap("!= ne 0x52")) else trap(">= ge_s 0x59")) else trap("<= le_s 0x57")) else trap("> gt_s 0x55")) else trap("== eq 0x51")) else trap("< lt_s 0x53"))
 
-export { emit-module, emit-instrs, can-emit, collect-binders, wasm-op, cmp-op, uleb, sleb }
+/// emit-src (SOURCE → wasm) --------------------------------------------------------------------------
+
+@test
+def em-src-literal-emits() =
+  // a bare literal source emits a valid module (the whole source→wasm chain: read-source, lower-tree,
+  // emit-module). Starts with the wasm magic 0x00 0x61 0x73 0x6d.
+  (match emit-src("42") with
+    | Option.Some(m) => (if (byte-of(m, 0) == 0) then (if (byte-of(m, 1) == 97) then unit else trap("magic a")) else trap("magic NUL"))
+    | Option.None(_) => trap("literal emits"))
+
+@test
+def em-src-arith-emits() =
+  // `(+ 1 (* 2 3))` (an s-expr arith program) lowers + emits — proving emit-src threads a multi-node tree.
+  (match emit-src("(+ 1 (* 2 3))") with
+    | Option.Some(_) => unit
+    | Option.None(_) => trap("arith source emits"))
+
+@test
+def em-src-let-and-if-emit() =
+  // a let program and an if program both emit (W2b locals + W3 control flow reached through emit-src).
+  (match emit-src("(let ((x 2)) (* x 3))") with
+    | Option.Some(_) => (match emit-src("(if (< 1 2) 10 20)") with
+        | Option.Some(_) => unit | Option.None(_) => trap("if source emits"))
+    | Option.None(_) => trap("let source emits"))
+
+@test
+def em-src-ill-typed-declines() =
+  // an unbound name is ill-typed → lower-tree declines → emit-src returns None (no wrong module).
+  (match emit-src("x") with
+    | Option.None(_) => unit | Option.Some(_) => trap("unbound x declines"))
+
+@test
+def em-src-bytes-matches-emit-src-len() =
+  // emit-src-bytes is emit-src with Bytes→List(UInt8): Some when emit-src is Some, and the list length
+  // equals the module's byte length (the conversion preserves every byte, in order).
+  (match emit-src("42") with
+    | Option.Some(b) => (match emit-src-bytes("42") with
+        | Option.Some(lst) => (if List.len(lst) == Bytes.len(b) then unit else trap("list len == bytes len"))
+        | Option.None(_) => trap("emit-src-bytes Some when emit-src Some"))
+    | Option.None(_) => trap("42 emits"))
+
+@test
+def em-src-bytes-len-matches-arith-module() =
+  // for an arith program too, the list length equals the emitted module's byte length — every byte is
+  // carried across (bytes-to-list walks all Bytes.len(b) bytes). (Order is guaranteed by the append-in-
+  // order accumulator in bytes-to-list-go; a UInt8→Int cast to check values isn't available, and Bytes.of
+  // rejects a runtime list, so we pin length-preservation here + rely on the accumulator for order.)
+  (match emit-src("(+ 1 2)") with
+    | Option.Some(b) => (match emit-src-bytes("(+ 1 2)") with
+        | Option.Some(lst) => (if List.len(lst) == Bytes.len(b) then unit else trap("arith list len == bytes len"))
+        | Option.None(_) => trap("emit-src-bytes Some"))
+    | Option.None(_) => trap("arith emits"))
+
+@test
+def em-src-bytes-ill-typed-declines() =
+  // an ill-typed program declines through emit-src-bytes too (None), matching emit-src.
+  (match emit-src-bytes("x") with | Option.None(_) => unit | Option.Some(_) => trap("unbound x declines"))
+
+export { emit-module, emit-src, emit-src-bytes, bytes-to-list, emit-instrs, can-emit, collect-binders, wasm-op, cmp-op, uleb, sleb }

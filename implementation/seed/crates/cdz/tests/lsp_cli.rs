@@ -974,3 +974,52 @@ fn lsp_package_references_include_declaration_points_at_the_imported_def() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn lsp_diagnostics_are_total_on_a_cyclic_import_pair() {
+    // A user mid-refactor can create a temporary import CYCLE (a imports b, b imports a). The server's
+    // package-diagnostics path drives `closure::load` on the opened file's closure — it must DETECT the
+    // cycle and publish a clean diagnostic, NEVER hang or crash the editor (queries over incomplete/
+    // malformed source stay TOTAL). Pins that the closure loader's cycle guard reaches the LSP surface.
+    let dir = std::env::temp_dir().join(format!("cdz-lsp-cyc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("b.sexp"),
+        "(do (import \"a\" (aye)) (def (bee) 1) (export bee))",
+    )
+    .expect("write b");
+    let a_path = dir.join("a.sexp");
+    let a_text = "(do (import \"b\" (bee)) (def (aye) (bee)) (export aye))";
+    std::fs::write(&a_path, a_text).expect("write a");
+
+    let uri = format!("file://{}", a_path.display());
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"cadenza","version":1,"text":a_text}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    // The session must COMPLETE (no hang — the test harness would otherwise never return) and publish a
+    // diagnostics push for the opened file. The cycle is a real fault, so the push is NON-empty and names
+    // the cyclic-import error (CDZ0201), not a panic or silence.
+    let pushes = diagnostic_pushes(&msgs);
+    let opened = pushes
+        .last()
+        .expect("a diagnostics push for the opened file in the cycle");
+    assert!(
+        !opened.is_empty(),
+        "a cyclic import is a fault — the server must report it, not silently pass: {opened:?}"
+    );
+    let has_cyclic = opened.iter().any(|d| {
+        d.get("message")
+            .and_then(|m| m.as_str())
+            .is_some_and(|m| m.contains("cyclic"))
+    });
+    assert!(
+        has_cyclic,
+        "the diagnostic should name the cyclic import (CDZ0201 cyclic module imports): {opened:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

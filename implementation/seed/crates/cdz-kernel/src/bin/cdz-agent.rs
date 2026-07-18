@@ -94,15 +94,90 @@ fn run() -> Result<()> {
             );
             Ok(())
         }
+        Some("start") => {
+            // START THE DAEMON (the operator entry point): poll the log and PERFORM each new TRIGGER event via
+            // the real-primitive hosted path (daemon::run over daemon::run_once → tick_hosted). Bounded by
+            // `--max-rounds N` (deterministic, so a smoke run terminates) and/or `--stop-file <path>` (the
+            // operator touches it to stop). `<poll-ms>` is the sleep between rounds. This is the standalone
+            // tool's OWN stop control — NOT coupled to the fleet's orchestration stop dir.
+            let (log, _kind0, runtime) = open_and_resolve(&args, "start")?;
+            let poll_ms: u64 = args
+                .get(3)
+                .ok_or_else(|| anyhow!("usage: cdz-agent start <log> <poll-ms> [--stop-file <path>] [--max-rounds N]"))?
+                .parse()
+                .context("poll-ms must be a non-negative integer")?;
+            let stop_file = flag_value(&args, "--stop-file");
+            let max_rounds: Option<u64> = match flag_value(&args, "--max-rounds") {
+                Some(n) => Some(n.parse().context("--max-rounds must be an integer")?),
+                None => None,
+            };
+            let log = std::sync::Arc::new(std::sync::Mutex::new(log));
+            // Trigger mapping: every event EXCEPT the daemon's own bookkeeping (the genesis `program` event
+            // and the recorded `prim-*` effects) fires the interpret plan for event-kind 1. Skipping our own
+            // events is load-bearing — else the daemon re-performs its own recorded effects and never converges.
+            let kind_of = |e: &cdz_kernel::Event| {
+                if e.kind == boot::PROGRAM || e.kind.starts_with(daemon::PRIM_RECORD_PREFIX) {
+                    None
+                } else {
+                    Some(1i64)
+                }
+            };
+            let mut round = 0u64;
+            let should_stop = || {
+                if let Some(max) = max_rounds {
+                    if round >= max {
+                        return true;
+                    }
+                }
+                if let Some(path) = &stop_file {
+                    if std::path::Path::new(path).exists() {
+                        return true;
+                    }
+                }
+                round += 1;
+                false
+            };
+            println!(
+                "start: daemon polling {} every {poll_ms}ms{}{}",
+                args.get(2).map(String::as_str).unwrap_or("<log>"),
+                stop_file
+                    .as_ref()
+                    .map(|p| format!(" (stop-file {p})"))
+                    .unwrap_or_default(),
+                max_rounds
+                    .map(|n| format!(" (max {n} round(s))"))
+                    .unwrap_or_default(),
+            );
+            daemon::run(
+                log,
+                0,
+                runtime,
+                std::time::Duration::from_millis(poll_ms),
+                kind_of,
+                should_stop,
+            )?;
+            println!("start: daemon stopped cleanly");
+            Ok(())
+        }
         _ => Err(anyhow!(
-            "usage: cdz-agent <bootstrap|inject-genesis|run|perform|hosted> ...\n\
+            "usage: cdz-agent <bootstrap|inject-genesis|run|perform|hosted|start> ...\n\
              \x20 bootstrap <log>                    — create/open the event log\n\
              \x20 inject-genesis <log> <program.cdz> — append the genesis program\n\
              \x20 run <log> <event-kind>             — one daemon tick (COUNT the scheduled host-ops)\n\
              \x20 perform <log> <event-kind>         — one daemon tick that EXECUTES the ops (K1c, in-program mock), summing per-op results\n\
-             \x20 hosted <log> <event-kind>          — one daemon tick that PERFORMS via real host primitives (K1c→host), recording each op in the log"
+             \x20 hosted <log> <event-kind>          — one daemon tick that PERFORMS via real host primitives (K1c→host), recording each op in the log\n\
+             \x20 start <log> <poll-ms> [--stop-file <path>] [--max-rounds N] — START the daemon: poll + perform each new trigger event via real primitives"
         )),
     }
+}
+
+/// Read the value following a `--flag` in `args` (e.g. `--stop-file /tmp/stop` → `Some("/tmp/stop")`), or
+/// `None` if the flag is absent or has no following value. Hand-rolled (no clap — the kernel stays minimal).
+fn flag_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
 }
 
 /// Shared boilerplate for the `run`/`perform` verbs: parse `<log> <event-kind>`, open the log, find the latest

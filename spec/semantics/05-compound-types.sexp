@@ -1508,6 +1508,24 @@
             (export main)))
   (output (: 3 Int64)))
 
+(case "List.len over a let-bound constant list folds to the arity on both backends"
+  (doc    "`(let ((xs (list 1 2 3))) (+ (List.len xs) (List.len xs)))` — a CONSTANT list bound to a
+           multi-use `xs`, whose length is read twice. `List.len` = the spine ARITY, fixed at construction,
+           so each read folds to the literal's element count (3) even though the operand is a `let`-bound
+           `LocalRef` (not a direct list literal): the Core fold follows the binder to the bound `ListNew`.
+           So the whole expression folds to 3 + 3 = 6 with NO runtime length read — the both-backend Core
+           fold this pins (previously only the INLINE `(List.len (list 1 2 3))` folded; the let-bound form
+           built the list and called vec-len twice). Value parity (6) is the observable proof the fold keeps
+           the exact result. Folding the len does NOT erase the binding — if `xs` were used elsewhere the
+           list would still be built; here it is dead but the value is unchanged. Sound because len-to-arity
+           is sound (unlike Set.len/Map.size, which dedup can shrink).")
+  (input  (do
+            (def (main)
+              (let ((xs (list 1 2 3)))
+                (+ (List.len xs) (List.len xs))))
+            (export main)))
+  (output (: 6 Int64)))
+
 (case "a list consumed by List.update in one operand keeps its element view for a later read"
   (doc    "The ELEMENT-view companion: `xs = [7,8]`; `(List.update xs 0 99)` reads element 0 → 99, the
            sibling `(List.at xs 0)` reads the ORIGINAL element 0 → 7, so 99 + 7 = 106. It returned 198
@@ -8168,6 +8186,57 @@
   (output (: 2000 Int64))
   (call   main (: 0 Int64) (: 3 Int64))
   (output (: 1000 Int64)))
+
+(case "an erased-newtype nested-sum match with binder-only arms dispatches on the inner discriminant"
+  (doc    "The binder-only face of the erased single-variant newtype nested-sum dispatch: NO literal
+           tests — just `(Outer.Wrap (Inner.P x))` / `(Outer.Wrap (Inner.W y))` binder arms over a
+           runtime-built value. Regression: the wasm backend read the inner discriminant one box too
+           deep (through the erased outer Wrap) so BOTH constructions dispatched to the FIRST inner
+           variant (P) — a runtime `Inner.W 5` wrongly ran the P arm. Payload bound fine (x=5); ONLY
+           the inner discriminant was corrupt. `build sel n` returns either variant by `sel`; sel=1 →
+           Inner.W → the W arm → 2005. (Pins the severity-upgrade face the literal-arm case above does
+           not exercise: the corruption is the discriminant itself, not a literal test.)")
+  (input  (do
+            (type Inner (P Int64) (W Int64))
+            (type Outer (Wrap Inner))
+            (def (build (: sel Int64) (: n Int64))
+              (if (= sel 0) (Outer.Wrap (Inner.P n)) (Outer.Wrap (Inner.W n))))
+            (def (main (: sel Int64) (: n Int64))
+              (match (build sel n)
+                ((Outer.Wrap (Inner.P x)) (+ 1000 x))
+                ((Outer.Wrap (Inner.W y)) (+ 2000 y))))
+            (export main)))
+  (call   main (: 1 Int64) (: 5 Int64))
+  (output (: 2005 Int64))
+  (call   main (: 0 Int64) (: 5 Int64))
+  (output (: 1005 Int64)))
+
+(case "a depth-3 erased-and-boxed nested-sum match reads every level's discriminant at the right offset"
+  (doc    "Three nesting levels — `L3.Box (L2.X|Y (L1.A|B n))` — built via cross-variant ifs and matched
+           with fully-nested constructor patterns. Regression: the erased-newtype [Payload] mis-walk read
+           inner discriminants one box too deep at EVERY level, so at depth 3 the inner tag LEAKED into the
+           middle read (a (B,X) built value read as Y(A)). Each level's disc must be read at its own offset:
+           all four L2×L1 combinations dispatch to their own arm. (L3 is the erased single-variant newtype
+           wrapper; L2/L1 are real 2-variant sums — the deeper the nesting, the more levels were mis-offset,
+           which is why the wrong-offset symptom grew with depth.)")
+  (input  (do
+            (type L1 (A Int64) (B Int64))
+            (type L2 (X L1) (Y L1))
+            (type L3 (Box L2))
+            (def (build (: s1 Int64) (: s2 Int64) (: n Int64))
+              (L3.Box (if (= s2 0) (L2.X (if (= s1 0) (L1.A n) (L1.B n)))
+                                   (L2.Y (if (= s1 0) (L1.A n) (L1.B n))))))
+            (def (main (: s1 Int64) (: s2 Int64) (: n Int64))
+              (match (build s1 s2 n)
+                ((L3.Box (L2.X (L1.A x))) (+ 1000 x))
+                ((L3.Box (L2.X (L1.B x))) (+ 2000 x))
+                ((L3.Box (L2.Y (L1.A x))) (+ 3000 x))
+                ((L3.Box (L2.Y (L1.B x))) (+ 4000 x))))
+            (export main)))
+  (call   main (: 1 Int64) (: 0 Int64) (: 5 Int64))
+  (output (: 2005 Int64))
+  (call   main (: 0 Int64) (: 1 Int64) (: 5 Int64))
+  (output (: 3005 Int64)))
 
 (case "a top-level tuple pattern matches a tuple produced by a runtime conditional"
   (doc    "A `(tuple a b)` pattern over a scrutinee that is a RUNTIME tuple — one built by an `if`, so the

@@ -1,5 +1,6 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	@ensures on a def with a parameter named it is REJECTED (would silently not enforce — rename the param)
+pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
 pass	@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	Ast.decode converts bytes to an AST sum type value
@@ -44,6 +45,7 @@ pass	DISTINCT-SIG: a scalar-then-NESTED-tuple closure with a LIST result
 pass	DISTINCT-SIG: a two-Tuple-arg group with a LIST result
 pass	DISTINCT-SIG: an Option-arg closure + a Result-arg closure each cross the boundary
 pass	DISTINCT-SIG: an Option-arg group BESIDE a Tuple-arg group
+pass	DISTINCT-SIG: capturing two-Tuple-arg closures of different signatures
 pass	DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair
 pass	DISTINCT-SIG: driving the Bool-returning Tuple-arg closure of the distinct-sig pair
 pass	DISTINCT-SIG: driving the Int32 two-Tuple-arg group
@@ -66,6 +68,7 @@ pass	Int8.wrap at the sign-bit boundary is the most-negative Int8
 pass	Int8.wrap of all-ones-byte is negative one
 pass	List.len of a concat of call-site lists with runtime elements folds to the summed arity
 pass	List.len of a list built at the call site from runtime elements folds to the arity
+pass	List.len over a let-bound constant list folds to the arity on both backends
 pass	MIXED among-scalars: a scalar-then-Tuple closure ALONGSIDE a plain export — driving the closure
 pass	MIXED among-scalars: a scalar-then-Tuple closure with a COMPOUND result ALONGSIDE a plain export
 pass	MIXED among-scalars: a scalar-then-Tuple closure with a LIST result ALONGSIDE a plain export
@@ -102,6 +105,7 @@ pass	MULTI-EXPORT: driving the second scalar-then-NESTED closure (subtract)
 pass	MULTI-EXPORT: two Tuple args with a scalar BETWEEN them, shared `call`
 pass	MULTI-EXPORT: two Tuple-arg closures sharing a List-returning `call`
 pass	MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`
+pass	MULTI-EXPORT: two capturing closures each taking TWO Tuple args
 pass	MULTI-EXPORT: two closures each taking a scalar arg THEN a NESTED tuple
 pass	MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg
 pass	MULTI-EXPORT: two nested-Tuple-arg closures share one call — driving the sum
@@ -248,6 +252,8 @@ pass	a Bool match with only the true arm is non-exhaustive
 pass	a Bytes entry argument is marshalled as a Vec<u8>
 pass	a CALL-returned single-variant newtype with a literal-payload arm spills at the right width
 pass	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
+pass	a CAPTURING closure taking TWO Tuple args
+pass	a CAPTURING closure taking a Tuple ARG crosses the DIRECT-CALL boundary
 pass	a CBOR atom decodes each scalar major type to its value
 pass	a CBOR head decodes its major type and big-endian argument from the input bytes
 pass	a CBOR reader walks a variable-length array using its decoded length as the element count
@@ -720,6 +726,7 @@ pass	a dependent size one past the remaining bytes overruns and falls through
 pass	a dependent-size segment binding exactly the remaining bytes leaves an empty rest
 pass	a dependent-size segment binds exactly the number of bytes an earlier segment named
 pass	a dependent-size segment that overruns the remaining bytes falls through
+pass	a depth-3 erased-and-boxed nested-sum match reads every level's discriminant at the right offset
 pass	a destructuring let over a runtime value binds its parts
 pass	a dictionary consumer called at two dictionaries is monomorphized per dictionary
 pass	a different function argument through the same recursive higher-order function
@@ -2398,6 +2405,7 @@ pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an erased newtype over a sum reads the inner payload, not the whole wrapper
 pass	an erased single-variant newtype wrapping a sum matches through the inner variants
+pass	an erased-newtype nested-sum match with binder-only arms dispatches on the inner discriminant
 pass	an erased-newtype's list payload split across empty and rest arms dispatches with vec-get
 pass	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
 pass	an escaping closure captures two values and takes three arguments
@@ -3562,10 +3570,8 @@ pass	wrapping-sub on a runtime UInt8 wraps modulo 256
 pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
-todo	DISTINCT-SIG: capturing two-Tuple-arg closures of different signatures
 todo	DISTINCT-SIG: two capturing sum-arg closures of different signatures
 todo	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
-todo	MULTI-EXPORT: two capturing closures each taking TWO Tuple args
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 todo	TWO Tuple args with a BYTE-ROPE result
 todo	Type is a first-class value
@@ -3576,11 +3582,9 @@ todo	a Bytes-returning closure alongside a plain export — the plain runs
 todo	a Bytes-returning closure on a different argument
 todo	a CAPTURING closure returning a List
 todo	a CAPTURING closure returning a tuple
-todo	a CAPTURING closure taking TWO Tuple args
 todo	a CAPTURING closure taking TWO Tuple args with a LIST result
 todo	a CAPTURING closure taking a Result Int64 Int64 ARG crosses the direct-call boundary
 todo	a CAPTURING closure taking a Result Int64 Int64 ARG — Err arm uses the captured value
-todo	a CAPTURING closure taking a Tuple ARG crosses the DIRECT-CALL boundary
 todo	a CAPTURING closure taking an Option Int64 ARG crosses the direct-call boundary
 todo	a CAPTURING closure taking an Option Int64 ARG — None takes the captured value
 todo	a Float64 closure captures a Float64 build-time host effect result

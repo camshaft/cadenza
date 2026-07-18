@@ -1020,7 +1020,15 @@ fn package_diagnostics_for(
     ));
     inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
-    let bytes = compiled.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS)?;
+    let Some(bytes) = compiled.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
+        // The `Diagnostics` query produced NO artifact — the package failed to LINK before the query
+        // could run (e.g. a CYCLIC import: `link()` rejects the import graph up front). The compile still
+        // carries the link faults in `compiled.diagnostics`; surface THOSE (mirroring the CLI's
+        // `report_errors`) instead of returning `None`, which would fall back to single-buffer analysis
+        // and emit a MISLEADING "`import` is not modeled" + false "unbound name" pair rather than the
+        // accurate `CDZ0201 cyclic module imports`.
+        return Some(package_link_faults_as_diagnostics(&compiled, &files));
+    };
     let diag_text = String::from_utf8_lossy(bytes);
 
     // Demux a global node id to `(file index, local id)` via the link-map. Empty map (a lone importing
@@ -1058,6 +1066,42 @@ fn package_diagnostics_for(
         }
     }
     Some(out)
+}
+
+/// Surface a package compile's own error diagnostics (`compiled.diagnostics`) as LSP diagnostics on the
+/// ENTRY file, for the case where the `Diagnostics` QUERY produced no artifact because the package failed
+/// to LINK first (a CYCLIC import is the canonical case — `link()` rejects the import graph before the
+/// query runs). Mirrors the CLI's `report_errors`, but maps each fault to a source `Range` via the entry's
+/// span table. Only error-severity faults are surfaced (a link failure is an error), and only those that
+/// belong to (or are unanchored on) the entry file — a fault anchored in an imported sibling is published
+/// when that document is analyzed, matching the artifact path's per-file demux. An anchored node whose id
+/// is out of the entry's span range (a global package id, or a sibling's) is shown at the document start
+/// rather than dropped, so a real package-level fault is never silently lost.
+fn package_link_faults_as_diagnostics(
+    compiled: &rcdzc::CompileOutput,
+    files: &[crate::closure::LoadedFile],
+) -> Vec<Diagnostic> {
+    let entry = &files[0];
+    compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == rcdzc::Severity::Error)
+        .map(|d| {
+            let range = d
+                .node
+                .and_then(|id| entry.spans.get(cadenza_syntax::StructId(id)))
+                .map(|s| byte_range_to_range(&entry.source, s.start, s.end))
+                .unwrap_or_else(|| Range::new(Position::new(0, 0), Position::new(0, 0)));
+            Diagnostic {
+                range,
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: d.code.clone().map(lsp_types::NumberOrString::String),
+                source: Some("cdz".to_string()),
+                message: d.message.clone(),
+                ..Default::default()
+            }
+        })
+        .collect()
 }
 
 /// If a diagnostics line's node belongs to the ENTRY file, rewrite its node column to the entry-LOCAL id

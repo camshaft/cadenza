@@ -364,3 +364,14 @@ test("renderDocToSurface keeps a cell's original source when render REJECTS (nev
   const out = await renderDocToSurface(md, "sexpr", "ml", rejectRender);
   assert.equal((parseDocument(out)[0] as Extract<Cell, { kind: "code" }>).source, "(def (main) 1)"); // original preserved
 });
+
+test("renderDocToSurface un-gathers a `(do …)` whose head has a NEWLINE, not just a space", async () => {
+  // The s-expr pretty-printer emits `(do\n  (def …))` for a multi-LINE body — matching only `(do ` (space)
+  // left large multi-form cells wrapped, dropping their top-level defs (the loan/projectile toggle break).
+  // This is the ML→s-expr direction (`to: "sexpr"`) — the only leg where the s-expr printer emits `(do …)`.
+  const newlineDoRender = async () => "(do\n  (def (year1) 1)\n\n  (def (main) year1))";
+  const out = await renderDocToSurface("```cadenza\ndef main() = 1\n```", "ml", "sexpr", newlineDoRender);
+  const src = (parseDocument(out)[0] as Extract<Cell, { kind: "code" }>).source;
+  assert.ok(!src.startsWith("(do"), `the (do …) wrapper must be peeled, got: ${src}`);
+  assert.ok(src.includes("(def (year1) 1)") && src.includes("(def (main) year1)"), `defs promoted to top level, got: ${src}`);
+});

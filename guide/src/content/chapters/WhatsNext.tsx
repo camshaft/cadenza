@@ -40,7 +40,9 @@ export default function WhatsNext() {
       <P>
         And you've seen what makes Cadenza its own language:{" "}
         <Ch to="/effects">effects &amp; handlers</Ch>, where a handler decides what a performed operation
-        means; <Ch to="/modules">modules</Ch> that are just records of their exports;{" "}
+        means; <Ch to="/contracts">design by contract</Ch>, where <C>@requires</C> and <C>@ensures</C>{" "}
+        turn a function's assumptions and promises into checks enforced at its boundary;{" "}
+        <Ch to="/modules">modules</Ch> that are just records of their exports;{" "}
         <Ch to="/opaque-types">opaque types</Ch> that hide a representation behind a module boundary so an
         invariant can't be broken;{" "}
         <Ch to="/units">units of measure</Ch> that catch a dimensional mistake at compile time and then

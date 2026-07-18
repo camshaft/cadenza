@@ -230,6 +230,98 @@ fn file_invalid_wasm(
     }
 }
 
+// ── the differential sweep (a SEPARATE, lower-cadence pass) ─────────────────────────────────────
+//
+// The differential oracle ([`crate::differential`]) shells `cdz run-rust`, which `rustc`-compiles
+// every program — orders of magnitude slower than the in-process crash/validity oracles. So it is
+// NOT run on the hot libFuzzer path (that would collapse throughput); instead it is a distinct sweep
+// over a batch of seeds (or corpus programs), run at a lower cadence by the fuzz cycle. A mismatch is
+// filed as a [`Category::Differential`] finding, shrunk to preserve the same disagreement.
+
+/// Tallies for one differential sweep.
+#[derive(Default, Debug, Clone)]
+pub struct DiffStats {
+    /// Programs where both backends produced a comparable outcome and AGREED (incl. one-side declines).
+    pub agreed: u64,
+    /// Programs where the backends DISAGREED (a filed finding, modulo dedup).
+    pub mismatched: u64,
+    /// New buckets created this sweep.
+    pub new_buckets: u64,
+    /// Existing buckets re-hit this sweep.
+    pub duplicate_hits: u64,
+    /// Programs the oracle could not evaluate (e.g. `cdz run-rust` harness failure) — logged, skipped.
+    pub unavailable: u64,
+}
+
+/// Run the differential oracle over `count` seeds drawn from `run_seed`, filing any mismatch. `store`
+/// is the value-heap runtime store (for the wasm side); `cdz` is the `cdz` binary (for the rust side).
+/// Findings land in `cfg.findings_dir` bucketed by disagreement. Returns the sweep tallies.
+///
+/// The FIRST `Unavailable` is not fatal (a single flaky spawn); but if EVERY program comes back
+/// `Unavailable` the oracle is misconfigured (no runnable `cdz`, missing rlibs) — the caller should
+/// notice `unavailable == count && agreed+mismatched == 0` and report the oracle as down rather than
+/// trust a clean sweep.
+pub fn differential_sweep(
+    cfg: &Config,
+    store: &std::path::Path,
+    cdz: &std::path::Path,
+    count: u64,
+) -> std::io::Result<DiffStats> {
+    use crate::differential::{Diff, differential, shrink_differential};
+    let fstore = FindingStore::open(&cfg.findings_dir)?;
+    let mut stats = DiffStats::default();
+    let mut rng = SplitMix64::new(cfg.run_seed);
+    for i in 0..count {
+        let seed = rng.next();
+        let source = program_for_seed(seed);
+        match differential(&source, store, cdz) {
+            Diff::Agree => stats.agreed += 1,
+            Diff::Unavailable(msg) => {
+                stats.unavailable += 1;
+                // Log only the first few to avoid flooding on a misconfigured oracle.
+                if stats.unavailable <= 3 {
+                    eprintln!("[cdz-smith] differential unavailable (seed {seed}): {msg}");
+                }
+            }
+            Diff::Mismatch { kind, wasm, rust } => {
+                stats.mismatched += 1;
+                let shrunk = shrink_differential(&source, kind, store, cdz);
+                let detail = format!("[{}] wasm={wasm} rust={rust}", kind.tag());
+                let finding = Finding {
+                    category: Category::Differential,
+                    program: shrunk,
+                    crash: None,
+                    detail: Some(detail),
+                    commit: cfg.commit.clone(),
+                };
+                match fstore.file(&finding) {
+                    Ok(crate::finding::Filed::New(path)) => {
+                        stats.new_buckets += 1;
+                        eprintln!(
+                            "[cdz-smith] NEW differential bucket → {} (seed {seed}, {} mismatch)",
+                            path.display(),
+                            kind.tag()
+                        );
+                    }
+                    Ok(crate::finding::Filed::Duplicate(_)) => stats.duplicate_hits += 1,
+                    Err(e) => eprintln!("[cdz-smith] failed to file differential finding: {e}"),
+                }
+            }
+        }
+        if cfg.progress_every != 0 && (i + 1).is_multiple_of(cfg.progress_every) {
+            eprintln!(
+                "[cdz-smith] differential {}/{count} | {} agreed, {} mismatched ({} buckets), {} unavailable",
+                i + 1,
+                stats.agreed,
+                stats.mismatched,
+                stats.new_buckets,
+                stats.unavailable
+            );
+        }
+    }
+    Ok(stats)
+}
+
 /// The watchdog thread: if the armed deadline passes without the heartbeat advancing, the current
 /// compile has hung — file a timeout finding for its seed and abort the process.
 fn spawn_watchdog(progress: Arc<Progress>, epoch: Instant, cfg: Config) {
