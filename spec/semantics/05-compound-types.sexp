@@ -2383,6 +2383,31 @@
              (List.concat (list 1 2) (List.concat (list 3 4) (list 5 6)))))
   (output (: true Bool)))
 
+; The associativity law above says concat depends only on elements-in-order, not grouping. The map-KEY
+; companion pins that this holds through the CHAMP key path too: a list used as a map key is compared and
+; hashed by its ELEMENTS, not its internal (RRB) shape — so a concat-built list and a push-built list with
+; the SAME elements are the SAME key. This matters because the list rep is element-canonical but NOT
+; shape-canonical (a concat and a push of [1,2,3] have different relaxed-node layouts); a key path that
+; hashed the physical shape would treat them as different keys and MISS the lookup. (Contrast standalone
+; `(= list list)`, a later increment; the key path's element-wise compare is what makes list keys work.)
+
+(case "a concat-built and a push-built list with the same elements are the same map key"
+  (doc    "`concat-key = (List.concat (list a) (List.concat (list b) (list c)))` and `push-key =
+           (List.push (List.push (List.push (list) a) b) c)` build [a,b,c] two ways with DIFFERENT internal
+           RRB shapes but identical elements. Inserting under `concat-key` and looking up under `push-key`
+           finds the entry → 100, NOT the -1 a shape-sensitive key hash would give. Pins that a list map key
+           is compared/hashed by its elements-in-order (shape-independent), the map-key companion of the
+           concat-associativity law — a builder that regroups its concatenations still hits the same key.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64) (: c Int64))
+              (let ((concat-key (List.concat (list a) (List.concat (list b) (list c))))
+                    (push-key (List.push (List.push (List.push (list) a) b) c)))
+                (match (Map.lookup (Map.insert Map.empty concat-key 100) push-key)
+                  ((Some v) v)
+                  ((None) (- 0 1)))))
+            (export main)))
+  (call main (: 1 Int64) (: 2 Int64) (: 3 Int64)) (output (: 100 Int64)))
+
 (case "a list-concatenating helper threads lists through a call"
   (doc    "`(def (cat a b) (List.concat a b))` applied to two literals — concatenation works on list
            PARAMETERS, not only inline literals, so both operands are inferred `Heap` and the helper

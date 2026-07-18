@@ -332,6 +332,41 @@
             (export main)))
   (declines))
 
+; A compound containing a FLOAT leaf offers NO total order — the §319 carve-out, made concrete for a
+; compound. core-semantics.md #Ordering Where Offered Is Total: a floating-point type MUST NOT be treated as
+; offering an ordering (its relational operators are the IEEE PARTIAL order, not total), and #Compound
+; Ordering Is Lexicographic offers a compound's order EXACTLY WHEN every component offers a total order — so
+; a float component makes the compound un-orderable and `<` DECLINES (reject-don't-miscompile, uniform across
+; backends), rather than manufacturing a byte-form total order that would diverge from the float relational
+; ops. The Bytes-declines companion above, on the FLOAT axis (the axis the spec explicitly carves out).
+(case "a runtime compound containing a float leaf declines ordering — floats offer no total order (§319)"
+  (doc    "`(< (tuple 1 (Float64.of a)) (tuple 1 (Float64.of b)))` asks for a three-way order on two tuples
+           whose second field is a Float64. A float offers only the IEEE PARTIAL order (§319), and a compound
+           is ordered only when EVERY component is (§Compound Ordering Is Lexicographic), so the float field
+           makes the tuple un-orderable and `<` DECLINES on all backends — NOT a byte-form order that would
+           disagree with the float relational ops. The float-axis companion of the Bytes-ordering decline;
+           contrast the tuple/list/sum ordering cases above (all-ordered-component compounds compute).")
+  (input  (do
+            (def (mk (: n Int64)) (tuple 1 (Float64.of n)))
+            (def (main) (if (< (mk 2) (mk 3)) 1 0))
+            (export main)))
+  (declines))
+
+; The §313-vs-§319 SPLIT made concrete: the SAME float-containing compound that DECLINES ordering (above)
+; still EQUALITY-compares. Float EQUALITY follows the canonical byte form (§313, total — NaN canonicalized,
+; ±0 distinct), so a float leaf inside a compound is equality-comparable by its bytes even though it is not
+; orderable. So a float-compound is eq-comparable but not orderable — the two are NOT the same capability.
+(case "a runtime compound with a float leaf still equality-compares though it declines ordering (§313 vs §319)"
+  (doc    "The equality companion of the float-compound ordering decline above: `(= (tuple 1 x) (tuple 1 y))`
+           over runtime Float64 params — equality follows the canonical byte form (§313, total), so x=y=3.5 →
+           the tuples compare EQUAL → 1, even though `<` on the same tuple type DECLINES (§319, floats offer
+           no total order). Pins that float EQUALITY (total, canonical byte form) and float ORDERING (IEEE
+           partial, not offered) are DISTINCT capabilities — a float-compound is eq-comparable but not
+           orderable.")
+  (input  (do (def (main (: x Float64) (: y Float64)) (if (= (tuple 1 x) (tuple 1 y)) 1 0)) (export main)))
+  (call   main (: 3.5 Float64) (: 3.5 Float64))
+  (output (: 1 Int64)))
+
 (case "a runtime float is found as a Set element by canonical byte form"
   (doc    "Set membership over a `Set Float64` with a runtime query: `1.5` IS a member of `(Set.of (list
            1.5 2.5))` → true, `9.9` is NOT → false. The float element/query is compared by its canonical

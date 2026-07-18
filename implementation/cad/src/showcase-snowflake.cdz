@@ -1,0 +1,26 @@
+// showcase-snowflake.cdz -- the SEED-DRIVEN parametric snowflake (operator: "a seed input that you feed it
+// and it does a prng internally and builds out a unique snowflake! There's also some config that it would be
+// great to parameterize"). A @param SEED drives the internal MINSTD LCG (prng.cdz) so one integer selects a
+// unique, deterministic, 6-fold-symmetric snowflake; @param sliders tune the config (recursion depth, arm
+// length). Drag the seed -> a different snowflake; drag depth/length -> finer or coarser. This is the
+// code+CAD "really cool results" showcase, and the parametric-@param direction the operator loves.
+//
+// The recursive branch builder lives in snowflake.cdz (uses prng.cdz's threaded LCG; the O(2^n) bounding-box
+// bug that gated it is fixed on trunk). /cad single-mode auto-surfaces the 3 sliders. main lowers for the
+// mesh driver. NOTE: doc comments kept before the pragma (a comment amid a @param block trips a desugar bug).
+@!default-fraction Rational
+
+import { lower } from "exact"
+import { snowflake } from "snowflake"
+
+@param(widget: slider, range: [1, 200], default: 42) seed : Int64
+@param(widget: slider, range: [10, 40], default: 20) arm-length : Rational
+@param(widget: slider, range: [1, 3], default: 2) depth : Int64
+
+def main() = host Param in
+  (let s = Param.seed() in
+   let len = Param.arm-length() in
+   let d = Param.depth() in
+     lower(snowflake(s, len, d)))
+
+export { main }

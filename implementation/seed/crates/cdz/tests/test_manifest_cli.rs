@@ -1779,6 +1779,37 @@ fn a_requires_outer_test_inner_compound_synthesizes_and_runs() {
     );
 }
 
+/// A param-level `@requires` MIN-LENGTH on a `(List …)` param CONSTRAINS generation: `@requires(<= 2
+/// (List.len xs))` floors the drawn list at length 2, so every trial satisfies the precondition and the
+/// enforced (D) body-entry pre never spuriously trips. Before this, `plan_for_item` classified the List with
+/// `min_len` 0, so generation drew length-0/1 lists that violated the pre → a spurious `p([])` FAIL. The
+/// property asserts `List.len(xs) >= 2` and can only PASS if every drawn list is long enough. Store-guarded
+/// (a compound generator builds a heap value).
+#[test]
+fn a_param_requires_min_length_constrains_list_generation() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — a compound generator builds a heap value"
+        );
+        return;
+    }
+    let d = dir("requires-min-len-gen");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do (@ (requires (<= 2 (List.len xs))) \
+               (@ test (def (p (: xs (List Int64))) \
+                 (if (<= 2 (List.len xs)) unit (trap \"too short despite requires\"))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "50"]);
+    assert!(
+        ok && stdout.contains("PASS p-gen (50 trials)"),
+        "a param-level @requires min-length floors List generation so all trials pass (no spurious \
+         too-short draw): {stdout}{stderr}"
+    );
+}
+
 // NOTE: the two TESTED-tier `@test @ensures` integration tests (a true postcondition passes over trials; a
 // false one fails with a counterexample) MOVED OUT of this file in the `@ensures`-ownership lockstep. `@ensures`
 // enforcement — bare AND `@test`-stacked — is now v-verification's `verify_enforce::enforce` pass (it rewrites a

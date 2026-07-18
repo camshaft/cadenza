@@ -1512,6 +1512,22 @@
                 (. (P.pair) 1))) (export main)))
   (output (: 6 Int64)))
 
+(case "an ABORTIVE arm whose value is a COMPOUND matches the handle body type and folds"
+  (doc    "The compound-valued abortive arm (the tuple companion of the scalar abort cases): an operation
+           whose declared RESULT is a `(Tuple Int64 Int64)` is handled by an ABORTIVE arm (no `resume`) that
+           yields a tuple — `(bail (n) s (tuple n n))`. The whole handle body IS the perform `(Bail.bail 7)`,
+           so the arm value becomes the handle value: `(7, 7)`. This exercises the abortive type-consistency
+           guard on the SOUND side — the arm body type `(Tuple Int64 Int64)` equals the op result type AND
+           the handle body type, so it folds (a mismatch would decline, guarding the compound-body-abort
+           miscompile where a scalar abort value disagreed with a compound position). Pins that a
+           compound-valued abort matching its declared type folds rather than over-declining.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 (Tuple Int64 Int64))))
+            (def (main)
+              (handle Bail (tuple 0 0) ((bail (n) s (tuple n n)))
+                (Bail.bail 7))) (export main)))
+  (output (: (tuple 7 7) (Tuple Int64 Int64))))
+
 (case "a TUPLE-result perform's projected field feeds a SECOND perform's argument, threading state across both"
   (doc    "The chained-compound-result shape: a perform returning a TUPLE has one of its fields projected
            and fed as the ARGUMENT to a SECOND perform, with the handler state threading across BOTH. Two

@@ -91,6 +91,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/PatternMatching.tsx")),
   },
   {
+    slug: "irrefutable-patterns",
+    title: "Irrefutable patterns",
+    blurb: "Destructuring that always matches, in a let and in arguments.",
+    section: "Fundamentals",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/IrrefutablePatterns.tsx")),
+  },
+  {
     slug: "iteration",
     title: "Iteration without loops",
     blurb: "Cadenza has no for or while; you repeat work with recursion and the fold family. Here's how, and why.",

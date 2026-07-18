@@ -300,6 +300,7 @@ pass	a CBOR skip steps over a tagged item to the value it wraps
 pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a COMPOUND generated value is reproducible from its seed (a tuple draws identically twice)
 pass	a CONSTANT recursive sum compares equal to a differently-built RUNTIME one
+pass	a CURRIED closure capturing an inner-handled perform result closes over it through partial application
 pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
 pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
@@ -593,6 +594,7 @@ pass	a checked result is consumed by matching its Option at run time
 pass	a checked-add over a RUNTIME operand declines pending the Core::CheckedArith runtime emit
 pass	a closure applied through an unbuilt sibling variant compiles and runs
 pass	a closure argument is another closure's result
+pass	a closure captures TWO inner-handled perform results across NESTED lets and escapes under an outer handler
 pass	a closure captures a boolean and reads it back inside its lifted body through a recursive HOF
 pass	a closure captures a capturing closure and calls it through a recursive HOF
 pass	a closure captures a function value and applies it through a recursive HOF
@@ -605,6 +607,7 @@ pass	a closure captures the binding in scope where it was created
 pass	a closure captures the result of a build-time host op called with an argument
 pass	a closure capturing THREE scalars is made and called
 pass	a closure capturing a build-time host effect preserves the order of two host calls
+pass	a closure capturing an inner-handled perform result is applied under an OUTER handler of the same effect
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
 pass	a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF
 pass	a closure capturing two values is made and called by the host
@@ -671,6 +674,7 @@ pass	a compound map key containing a rope is found by its flat-twin key
 pass	a compound map key whose Bytes element is a rope is found by its flat twin
 pass	a compound map key whose LIST element is a rope is found by its flat-twin key
 pass	a computed float map key is found by its literal twin
+pass	a concat-built and a push-built list with the same elements are the same map key
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
 pass	a conditional on a negated runtime condition selects the correct branch and shields the other
@@ -1841,7 +1845,9 @@ pass	a runtime bytes value is spliced into a length-prefixed frame
 pass	a runtime char reaches a later char-literal arm by scalar value
 pass	a runtime closure compares its argument to a captured value in a branch
 pass	a runtime closure whose body calls a recursive top-level function
+pass	a runtime compound containing a float leaf declines ordering — floats offer no total order (§319)
 pass	a runtime compound structural equality is expressible as a hand-written recursive comparator
+pass	a runtime compound with a float leaf still equality-compares though it declines ordering (§313 vs §319)
 pass	a runtime concat places the second operand's elements after the first's
 pass	a runtime condition selects an abortive branch reading an enclosing parameter
 pass	a runtime conditional selects its then-branch when the runtime condition holds

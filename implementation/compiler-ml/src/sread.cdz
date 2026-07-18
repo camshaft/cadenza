@@ -415,6 +415,28 @@ def sr-not-desugars-to-if() =
       | _ => trap("(not a) desugars to an NIf")))
 
 @test
+def sr-nested-and-desugars-recursively() =
+  // "(and (and true true) false)" → the OUTER NIf's cond is ITSELF an NIf (the inner `and`'s desugar), then
+  // is `false`, else is `false`. Pins that the desugar COMPOSES — an `and` operand that is itself an `and`
+  // recursively desugars to a nested NIf (not a flat/dropped operand). The outer else-arm is NBoolLit(0).
+  (match read-source("(and (and true true) false)") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NIf(cond, thn, els)) =>
+        // outer cond is the inner (and true true) → an NIf; outer then = the bare `false`; outer else = NBoolLit(0)
+        (if is-if(tree, cond) then (if is-bool-lit(tree, thn, 0) then (if is-bool-lit(tree, els, 0) then unit else trap("outer else = false")) else trap("outer then = the `false` operand")) else trap("outer cond is the inner and's NIf"))
+      | _ => trap("nested and desugars to a nested NIf")))
+
+@test
+def sr-not-of-and-desugars-recursively() =
+  // "(not (and true false))" → NIf(<inner-and-NIf>, false, true): (not X) with X an `and` — the cond is the
+  // inner and's desugar (an NIf), then/else the NOT literals. Pins not-over-a-compound-operand composes.
+  (match read-source("(not (and true false))") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NIf(cond, thn, els)) =>
+        (if is-if(tree, cond) then (if is-bool-lit(tree, thn, 0) then (if is-bool-lit(tree, els, 1) then unit else trap("not else = true")) else trap("not then = false")) else trap("not cond is the inner and's NIf"))
+      | _ => trap("not of a compound desugars to a nested NIf")))
+
+@test
 def sr-if-shape() =
   // "(if true 1 2)" → NIf; cond is a bool literal, then/else the int literals.
   (match read-source("(if true 1 2)") with | (root, tree) =>

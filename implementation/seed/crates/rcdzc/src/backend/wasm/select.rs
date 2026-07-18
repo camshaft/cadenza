@@ -694,51 +694,11 @@ fn cont_binding_escapes(db: &mut Db, cont: &crate::core::SumCont, binder: Struct
     }
 }
 
-/// Whether any arm of the sum-match rooted at `cont` EXTRACTS A HEAP PAYLOAD CHILD out of the scrutinee
-/// `scrut` in a way that could OUTLIVE the match block — i.e. a `Core::SumPayload`/`Core::Proj` chain
-/// rooted at `scrut` whose extracted leaf is a COMPOUND heap handle (`get_op` None — not an unboxed
-/// scalar) reached in a CONSUMING position (a call arg, a constructor element, the arm result). Used to
-/// gate the wrapper-kept-scrutinee SHELL DROP (`reclaim_shell`, the non-tail `MatchSum` emit): a deep
-/// `drop` of the scrutinee shell is only SAFE when NO such child escapes — else the child was moved out
-/// (into the result / a call) and the shell no longer solely owns it, so deep-dropping the shell would
-/// double-free the moved-out child (the UAF v-patterns caught, generalized to the materialized-wrapper
-/// case). A borrow-only arm (every payload use is a `List.len`/`=`/scalar unbox that retains nothing)
-/// does NOT escape, so the shell + its still-owned children reclaim cleanly with one deep drop.
-///
-/// This is NOT `cont_binding_escapes`: that keys on a `LocalRef`/`Param` binder, but a match PAYLOAD
-/// binder references the scrutinee by its NODE ID embedded in `Core::SumPayload { scrutinee }` — so the
-/// escape must be detected on the `SumPayload`/`Proj`-chain-rooted-at-`scrut` node itself (via
-/// `payload_or_proj_chain_roots_at_binder`), not on a `LocalRef`. Conservative: any UNCERTAIN shape (a
-/// scalar leaf that still walks through, a chain not clearly rooted at `scrut`) is treated as escaping so
-/// the drop is suppressed — a residual leak, never a double-free (the analysis's stated safe-floor bias).
-fn sum_payload_child_escapes_cont(
-    db: &mut Db,
-    cont: &crate::core::SumCont,
-    scrut: StructId,
-) -> bool {
-    match cont {
-        crate::core::SumCont::Leaf(body) => sum_payload_child_escapes_expr(db, *body, scrut, true),
-        crate::core::SumCont::Guarded { body, els, .. } => {
-            sum_payload_child_escapes_expr(db, *body, scrut, true)
-                || sum_payload_child_escapes_cont(db, els, scrut)
-        }
-        crate::core::SumCont::LitTest { then_, els, .. } => {
-            sum_payload_child_escapes_cont(db, then_, scrut)
-                || sum_payload_child_escapes_cont(db, els, scrut)
-        }
-        crate::core::SumCont::Switch { arms, .. } => arms
-            .iter()
-            .any(|a| sum_payload_child_escapes_cont(db, &a.cont, scrut)),
-    }
-}
-
-/// Whether `id` is a chain of BORROWING heap-child extractions (`Core::Proj`/`Core::SumPayload`/
-/// `Core::SumExpect`, in any mix) ultimately rooted at the NODE `root` (`id == root`) — the node-keyed
-/// twin of [`payload_or_proj_chain_roots_at_binder`] (which bottoms at a `LocalRef`/`Param` binder). A
-/// match PAYLOAD binder lowers to `Core::SumPayload { scrutinee: <the-match-scrutinee-node-id> }`, so a
-/// payload use is a chain whose ROOT is the scrutinee's own node id — not a `LocalRef`. Used by the
-/// wrapper-scrutinee shell-drop escape analysis to find where a child extracted from the scrutinee is
-/// consumed.
+/// Whether `id` is a chain of `Core::Proj`/`Core::SumPayload`/`Core::SumExpect` extractions ultimately
+/// rooted at the NODE `root` (`id == root`) — the node-keyed twin of `payload_or_proj_chain_roots_at_binder`
+/// (which bottoms at a `LocalRef`/`Param`). A match PAYLOAD binder lowers to `Core::SumPayload { scrutinee:
+/// <the-match-scrutinee-node-id> }`, so a payload use is a chain whose ROOT is the scrutinee's own node id —
+/// not a `LocalRef`. Used by the wrapper-scrutinee shell-drop's consumed-child analysis.
 fn payload_proj_chain_roots_at_node(db: &mut Db, id: StructId, root: StructId) -> bool {
     if id == root {
         return true;
@@ -755,134 +715,186 @@ fn payload_proj_chain_roots_at_node(db: &mut Db, id: StructId, root: StructId) -
     }
 }
 
-/// The expression walker for [`sum_payload_child_escapes_cont`]. `consuming` is whether THIS position
-/// consumes its value (the arm result, a call arg, a constructor element are consuming; a borrowing-op
-/// operand — `List.len`, `=`, a `Proj`/`SumPayload` OPERAND — is not). Returns true if a COMPOUND heap
-/// payload child of `scrut` is reached in a consuming position. Mirrors the borrow/consume classification
-/// of `binding_escapes`, but the "reference" it hunts for is a `SumPayload`/`Proj` chain rooted at the
-/// scrutinee NODE (`payload_or_proj_chain_roots_at_binder`), not a `LocalRef` occurrence.
-fn sum_payload_child_escapes_expr(
+/// Collect every `Core::SumPayload`/`Core::Proj` OCCURRENCE (by node id) in the sum-match rooted at
+/// `cont` that (a) is a chain rooted at the scrutinee NODE `scrut`, (b) extracts a COMPOUND heap leaf
+/// (`get_op` None — a real handle, not an unboxed scalar), and (c) sits in a CONSUMING position. These
+/// are the child extractions that MOVE a handle out of the scrutinee shell; to let the shell be deep-
+/// `drop`'d after the match WITHOUT double-freeing a moved-out child, each such occurrence is `dup`'d
+/// (inserted into `dup_sites`) so the shell keeps its own reference. Computed in the UPFRONT dup-sites
+/// pass (NOT mid-emit — the emit's `Core::SumPayload` child-dup reads `dup_sites`, and `collect_used_ops`
+/// reads the same set to decide the `dup` IMPORT, so the two must agree before emit runs). The RECORDING
+/// twin of [`sum_payload_child_escapes_cont`] (same borrow/consume classification; see it for semantics).
+fn collect_consuming_payload_sites_cont(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    scrut: StructId,
+    out: &mut HashSet<StructId>,
+) {
+    match cont {
+        crate::core::SumCont::Leaf(body) => {
+            collect_consuming_payload_sites_expr(db, *body, scrut, true, out)
+        }
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            collect_consuming_payload_sites_expr(db, *body, scrut, true, out);
+            collect_consuming_payload_sites_cont(db, els, scrut, out);
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            collect_consuming_payload_sites_cont(db, then_, scrut, out);
+            collect_consuming_payload_sites_cont(db, els, scrut, out);
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            for a in arms {
+                collect_consuming_payload_sites_cont(db, &a.cont, scrut, out);
+            }
+        }
+    }
+}
+
+/// The expression walker for [`collect_consuming_payload_sites_cont`] — same borrow/consume classification
+/// as [`sum_payload_child_escapes_expr`], but INSERTS each consuming compound-leaf scrutinee-child site
+/// into `out` rather than returning a bool.
+fn collect_consuming_payload_sites_expr(
     db: &mut Db,
     id: StructId,
     scrut: StructId,
     consuming: bool,
-) -> bool {
-    // A payload/proj chain rooted at the scrutinee NODE `scrut`: if its extracted leaf is a COMPOUND heap
-    // handle and this position CONSUMES it, the child escapes the shell. A SCALAR leaf copies out (retains
-    // nothing). `payload_proj_chain_roots_at_node` bottoms out at `id == scrut` — a match PAYLOAD binder
-    // lowers to `Core::SumPayload { scrutinee: scrut }` (the scrutinee's OWN node id embedded), so the
-    // chain roots at the NODE, NOT at a `LocalRef`/`Param` (which the general `..._at_binder` helper keys
-    // on and would MISS here — the flaw that made an early version drop a shell whose child escaped).
+    out: &mut HashSet<StructId>,
+) {
     if payload_proj_chain_roots_at_node(db, id, scrut) {
         let scalar_leaf = matches!(get_op(db, id), Ok(Some(_)));
-        return consuming && !scalar_leaf;
+        if consuming && !scalar_leaf {
+            out.insert(id);
+        }
+        return;
     }
     match core_of(db, id) {
-        // Borrowing reads: the OPERAND is not consumed (it is read in place), so descend borrowing.
         Core::ListLen { operand } | Core::BytesLen { operand } | Core::StrScalarLen { operand } => {
-            sum_payload_child_escapes_expr(db, operand, scrut, false)
+            collect_consuming_payload_sites_expr(db, operand, scrut, false, out)
         }
         Core::Proj { operand, .. } => {
-            // A scalar-element projection borrows its operand; a nested-compound projection transfers the
-            // child out (consuming). But a `Proj` whose operand is the scrut-rooted chain was already
-            // handled by the chain check above; here `operand` is some other sub-value.
             let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
-            sum_payload_child_escapes_expr(db, operand, scrut, !scalar_element)
+            collect_consuming_payload_sites_expr(db, operand, scrut, !scalar_element, out)
         }
         Core::ListAt { list, index, .. }
         | Core::BytesAt {
             bytes: list, index, ..
         } => {
-            sum_payload_child_escapes_expr(db, list, scrut, false)
-                || sum_payload_child_escapes_expr(db, index, scrut, false)
+            collect_consuming_payload_sites_expr(db, list, scrut, false, out);
+            collect_consuming_payload_sites_expr(db, index, scrut, false, out);
         }
         Core::StrAt { string, index, .. } => {
-            sum_payload_child_escapes_expr(db, string, scrut, false)
-                || sum_payload_child_escapes_expr(db, index, scrut, false)
+            collect_consuming_payload_sites_expr(db, string, scrut, false, out);
+            collect_consuming_payload_sites_expr(db, index, scrut, false, out);
         }
         Core::StrSlice {
             string, start, end, ..
         } => {
-            sum_payload_child_escapes_expr(db, string, scrut, false)
-                || sum_payload_child_escapes_expr(db, start, scrut, false)
-                || sum_payload_child_escapes_expr(db, end, scrut, false)
+            collect_consuming_payload_sites_expr(db, string, scrut, false, out);
+            collect_consuming_payload_sites_expr(db, start, scrut, false, out);
+            collect_consuming_payload_sites_expr(db, end, scrut, false, out);
         }
-        // Borrowing compares/ops: operands read in place (like `binding_escapes`'s borrow arms).
         Core::ValueEq { lhs, rhs }
         | Core::StrCmp { lhs, rhs, .. }
         | Core::BigIntCmp { lhs, rhs, .. }
         | Core::RationalCmp { lhs, rhs, .. }
         | Core::BigIntBinOp { lhs, rhs, .. }
         | Core::RationalBinOp { lhs, rhs, .. } => {
-            sum_payload_child_escapes_expr(db, lhs, scrut, false)
-                || sum_payload_child_escapes_expr(db, rhs, scrut, false)
+            collect_consuming_payload_sites_expr(db, lhs, scrut, false, out);
+            collect_consuming_payload_sites_expr(db, rhs, scrut, false, out);
         }
         Core::MapLookup { map, key, .. } => {
-            sum_payload_child_escapes_expr(db, map, scrut, false)
-                || sum_payload_child_escapes_expr(db, key, scrut, true)
+            collect_consuming_payload_sites_expr(db, map, scrut, false, out);
+            collect_consuming_payload_sites_expr(db, key, scrut, true, out);
         }
-        Core::MapSize { map } => sum_payload_child_escapes_expr(db, map, scrut, false),
+        Core::MapSize { map } => collect_consuming_payload_sites_expr(db, map, scrut, false, out),
         Core::SetContains { set, elem, .. } => {
-            sum_payload_child_escapes_expr(db, set, scrut, false)
-                || sum_payload_child_escapes_expr(db, elem, scrut, true)
+            collect_consuming_payload_sites_expr(db, set, scrut, false, out);
+            collect_consuming_payload_sites_expr(db, elem, scrut, true, out);
         }
-        Core::SetLen { set } => sum_payload_child_escapes_expr(db, set, scrut, false),
-        // Scalar arith/logic: operands are scalars (no heap child can flow here) — but recurse
-        // borrowing to be safe (a scalar-unbox of a scrut child copies out, never escapes).
+        Core::SetLen { set } => collect_consuming_payload_sites_expr(db, set, scrut, false, out),
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
         | Core::FloatCompare { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. } => {
-            sum_payload_child_escapes_expr(db, lhs, scrut, false)
-                || sum_payload_child_escapes_expr(db, rhs, scrut, false)
+            collect_consuming_payload_sites_expr(db, lhs, scrut, false, out);
+            collect_consuming_payload_sites_expr(db, rhs, scrut, false, out);
         }
         Core::Convert { operand, .. } | Core::Not { operand } => {
-            sum_payload_child_escapes_expr(db, operand, scrut, consuming)
+            collect_consuming_payload_sites_expr(db, operand, scrut, consuming, out)
         }
-        // Control flow: propagate the consuming position into every reachable sub-position.
         Core::If { cond, then_, else_ } => {
-            sum_payload_child_escapes_expr(db, cond, scrut, false)
-                || sum_payload_child_escapes_expr(db, then_, scrut, consuming)
-                || sum_payload_child_escapes_expr(db, else_, scrut, consuming)
+            collect_consuming_payload_sites_expr(db, cond, scrut, false, out);
+            collect_consuming_payload_sites_expr(db, then_, scrut, consuming, out);
+            collect_consuming_payload_sites_expr(db, else_, scrut, consuming, out);
         }
         Core::Seq { stmts, tail } => {
-            stmts
-                .iter()
-                .any(|&s| sum_payload_child_escapes_expr(db, s, scrut, false))
-                || sum_payload_child_escapes_expr(db, tail, scrut, consuming)
+            for s in &stmts {
+                collect_consuming_payload_sites_expr(db, *s, scrut, false, out);
+            }
+            collect_consuming_payload_sites_expr(db, tail, scrut, consuming, out);
         }
-        Core::Block { body, .. } => sum_payload_child_escapes_expr(db, body, scrut, consuming),
-        Core::Break { value } => sum_payload_child_escapes_expr(db, value, scrut, consuming),
+        Core::Block { body, .. } => {
+            collect_consuming_payload_sites_expr(db, body, scrut, consuming, out)
+        }
+        Core::Break { value } => {
+            collect_consuming_payload_sites_expr(db, value, scrut, consuming, out)
+        }
         Core::Let { bindings, body } => {
-            bindings
-                .iter()
-                .any(|(_, v)| sum_payload_child_escapes_expr(db, *v, scrut, true))
-                || sum_payload_child_escapes_expr(db, body, scrut, consuming)
+            for (_, v) in &bindings {
+                collect_consuming_payload_sites_expr(db, *v, scrut, true, out);
+            }
+            collect_consuming_payload_sites_expr(db, body, scrut, consuming, out);
         }
-        // A nested match: descend the scrutinee (borrowed) and every arm (consuming as this position).
         Core::MatchSum { scrutinee: s, root } => {
-            sum_payload_child_escapes_expr(db, s, scrut, false)
-                || sum_payload_child_escapes_cont(db, &root, scrut)
+            collect_consuming_payload_sites_expr(db, s, scrut, false, out);
+            collect_consuming_payload_sites_cont(db, &root, scrut, out);
         }
         Core::Match { scrutinee: s, arms } => {
-            sum_payload_child_escapes_expr(db, s, scrut, false)
-                || arms.iter().any(|a| {
-                    a.guard
-                        .is_some_and(|g| sum_payload_child_escapes_expr(db, g, scrut, false))
-                        || sum_payload_child_escapes_expr(db, a.body, scrut, consuming)
-                })
+            collect_consuming_payload_sites_expr(db, s, scrut, false, out);
+            for a in &arms {
+                if let Some(g) = a.guard {
+                    collect_consuming_payload_sites_expr(db, g, scrut, false, out);
+                }
+                collect_consuming_payload_sites_expr(db, a.body, scrut, consuming, out);
+            }
         }
         Core::MatchList { scrutinee: s, arms } => {
-            sum_payload_child_escapes_expr(db, s, scrut, false)
-                || arms
-                    .iter()
-                    .any(|a| sum_payload_child_escapes_expr(db, a.body, scrut, consuming))
+            collect_consuming_payload_sites_expr(db, s, scrut, false, out);
+            for a in &arms {
+                collect_consuming_payload_sites_expr(db, a.body, scrut, consuming, out);
+            }
         }
-        // CONSUMING containers/ops: every operand is consumed into the result — a scrut child reached
-        // here escapes. This is the conservative case (a call, a constructor, a persistent collection op).
-        _ => core_child_ids(db, id)
-            .into_iter()
-            .any(|c| sum_payload_child_escapes_expr(db, c, scrut, true)),
+        _ => {
+            for c in core_child_ids(db, id) {
+                collect_consuming_payload_sites_expr(db, c, scrut, true, out);
+            }
+        }
+    }
+}
+
+/// UPFRONT pass companion of the wrapper-scrutinee shell reclaim: walk `id` for every `Core::MatchSum`
+/// whose scrutinee is a NON-reusable (computed) OWNED boxed-sum with COMPOUND payloads, and collect its
+/// arms' CONSUMING scrutinee-child extraction sites into `dup_sites`. Run BEFORE emit (alongside
+/// `collect_dup_sites`), so the `dup` IMPORT decision (`collect_used_ops`) and the emit's child-dup read
+/// the SAME set. A reusable/borrowed/all-scalar scrutinee contributes nothing (the emit reclaims those
+/// with no dup, or leaves a borrowed scrutinee to its owner). This is what makes the deep shell drop in
+/// BOTH the tail and non-tail `MatchSum` emits safe for a consumed-child arm.
+fn collect_shell_reclaim_child_dups(db: &mut Db, id: StructId, dup_sites: &mut HashSet<StructId>) {
+    if let Core::MatchSum { scrutinee, root } = core_of(db, id) {
+        let scrut_ty = type_of(db, scrutinee);
+        let owned_compound_boxed = is_heap_type(&scrut_ty)
+            && !ty_is_enum_disc(db, &scrut_ty)
+            && !sum_has_only_scalar_payloads(db, &scrut_ty)
+            && matches!(
+                heap_operand_ownership(db, scrutinee),
+                Ok(HandleOwnership::Owned)
+            );
+        if owned_compound_boxed {
+            collect_consuming_payload_sites_cont(db, &root, scrutinee, dup_sites);
+        }
+    }
+    for child in core_child_ids(db, id) {
+        collect_shell_reclaim_child_dups(db, child, dup_sites);
     }
 }
 
@@ -2110,6 +2122,9 @@ pub fn collect_used_ops(
     collect_retain_candidate_binders(db, id, &mut retain_binders);
     let mut sites: HashSet<StructId> = HashSet::new();
     collect_dup_sites(db, id, &retain_binders, &mut sites);
+    // Also the wrapper-scrutinee shell-reclaim's consumed-child dups (must match the emit's set so the
+    // `dup` import is present iff the emit dups a consumed shell child) — see `collect_shell_reclaim_child_dups`.
+    collect_shell_reclaim_child_dups(db, id, &mut sites);
     if !sites.is_empty() {
         out.insert(OP_DUP);
     }
@@ -3225,6 +3240,11 @@ pub fn select_function_of(
         let mut heap_binders: Vec<StructId> = Vec::new();
         collect_retain_candidate_binders(db, body, &mut heap_binders);
         collect_dup_sites(db, body, &heap_binders, &mut code.dup_sites);
+        // The wrapper-scrutinee shell-reclaim's consumed-child dups: for each MatchSum over an owned
+        // compound boxed-sum whose shell the emit will deep-drop, `dup` each consuming scrutinee-child
+        // extraction so the drop does not double-free a moved-out child. Computed here (upfront) so the
+        // emit's child-dup + the `dup` import agree. Empty for borrow-only/all-scalar/reusable scrutinees.
+        collect_shell_reclaim_child_dups(db, body, &mut code.dup_sites);
     }
     // Scratch locals start PAST the parameters (slots `0..n` are the params); a guarded op claims scratch
     // slots from `base` up. `high` tracks the highest scratch slot used, and `scratch_ty` records each
@@ -5211,8 +5231,9 @@ fn emit_tail(
             // already in a slot) is re-read per probe; a computed one is materialized ONCE into a fresh i32
             // slot above the high-water so every re-read hits the slot (and its transient scratch never
             // clashes with the arm bodies at `base`).
-            let (arms_slots, arms_base) = if reusable_handle_src(db, scrutinee, slots) {
-                (slots.clone(), base)
+            let (arms_slots, arms_base, stashed_slot) = if reusable_handle_src(db, scrutinee, slots)
+            {
+                (slots.clone(), base, None)
             } else {
                 let slot = *high;
                 *high = slot + 1;
@@ -5237,8 +5258,31 @@ fn emit_tail(
                 out.push(Lir::LocalSet(slot));
                 let mut m = slots.clone();
                 m.insert(scrutinee, slot);
-                (m, (*high).max(slot + 1))
+                (m, (*high).max(slot + 1), Some((slot, scrut_vt)))
             };
+            // SHELL RECLAIM (the tail twin of the non-tail `MatchSum` reclaim): deep-`drop` the owned
+            // freshly-stashed boxed-sum shell after the arms (it is a dead temporary). Consuming child
+            // extractions were `dup`'d upfront (`collect_shell_reclaim_child_dups`), so the deep drop nets
+            // correctly. ⚠ TAIL-SPECIFIC GUARD: skip the reclaim when ANY arm is a MEMBER TAIL-CALL
+            // (`sum_cont_has_member_tail_call`) — that arm `br`s to the loop top and NEVER reaches the post-
+            // match drop, so a drop here would (a) not run on the looping path (leak, harmless) but worse
+            // (b) the shell slot is a fresh scratch above the params that the next iteration's scrutinee emit
+            // reuses, so dropping it is moot AND a return_call tail-call likewise leaves via the call. Only a
+            // VALUE-returning tail match (every arm produces a value that falls through to the block end —
+            // e.g. `(match (f n+1) ((Mk a _) (Mk a a)))` whose arm is a constructor, not a self-call) has a
+            // reclaim point. Also skip a diverging match (no value/return point).
+            let scrut_ty = type_of(db, scrutinee);
+            let arms_tail_call =
+                matches!(tl, Some(t) if sum_cont_has_member_tail_call(db, &root, t.members));
+            let reclaim_shell = !never_diverges
+                && !arms_tail_call
+                && is_heap_type(&scrut_ty)
+                && !ty_is_enum_disc(db, &scrut_ty)
+                && matches!(stashed_slot, Some((_, ValType::I32)))
+                && matches!(
+                    heap_operand_ownership(db, scrutinee),
+                    Ok(HandleOwnership::Owned)
+                );
             emit_sum_cont(
                 db,
                 scrutinee,
@@ -5253,6 +5297,13 @@ fn emit_tail(
                 out,
                 TailPos::Tail(tl),
             )?;
+            if reclaim_shell {
+                let slot = stashed_slot
+                    .expect("reclaim_shell implies a stashed slot")
+                    .0;
+                out.push(Lir::LocalGet(slot)); // [result, shell]
+                out.push(Lir::CallImport(OP_DROP)); // → [result] (reclaim the owned sum shell)
+            }
             if never_diverges {
                 out.push(Lir::Unreachable);
             }
@@ -8890,24 +8941,19 @@ fn emit(
             // shell + imports no value-heap runtime; its i32 slot width alone doesn't exclude it), and a
             // non-diverging match.
             let scrut_ty = type_of(db, scrutinee);
-            // The shell-reclaim safety condition. An owned freshly-stashed boxed-sum scrutinee's shell is a
-            // dead temporary after the match and should be deep-`drop`'d — but ONLY when no arm moves a HEAP
-            // PAYLOAD CHILD out of the shell that outlives the block (that child would be double-freed by the
-            // deep drop = UAF). TWO sufficient conditions, either safe:
-            //   (a) sum_has_only_scalar_payloads — every variant carries a scalar/nothing, so NO handle can
-            //       alias the shell (the original conservative floor).
-            //   (b) COMPOUND payloads BUT !sum_payload_child_escapes_cont — every arm only BORROWS its payload
-            //       children (a `List.len`/`=`/scalar-unbox that retains nothing); none is consumed/moved out,
-            //       so the shell still solely owns every child and one deep drop reclaims shell + children
-            //       cleanly. (The CONSUMED-child case — a child threaded into a call/constructor, e.g. the
-            //       bounding-box `aabbr-union` passing bound corners to `v3-min`/`v3-max` — is left un-dropped
-            //       here, a residual leak never a double-free, pending the dup-consumed-children increment.)
-            let payload_reclaim_safe = sum_has_only_scalar_payloads(db, &scrut_ty)
-                || !sum_payload_child_escapes_cont(db, &root, scrutinee);
+            // Deep-`drop` the owned freshly-stashed boxed-sum shell after the match (it is a dead temporary).
+            // SAFETY vs the v-patterns UAF (an arm MOVES a payload child out that the deep drop would double-
+            // free): every consuming compound-child extraction rooted at the scrutinee was `dup`'d in the
+            // UPFRONT `collect_shell_reclaim_child_dups` pass (→ `dup_sites`, emitted at each `Core::SumPayload`
+            // child), so the shell keeps its own reference and the deep drop nets correctly (dup rc++ → the
+            // consumer takes one → the drop takes the shell's). A borrow-only arm moves nothing (empty dup
+            // set) and reclaims directly; an all-scalar shell copies its payloads out (empty dup set) and
+            // reclaims as before. Requires a freshly-stashed owned scrutinee (a reused param/local is borrowed,
+            // left to its owner), a REAL BOXED SUM (`is_heap_type && !ty_is_enum_disc`), and a non-diverging
+            // match.
             let reclaim_shell = !never_diverges
                 && is_heap_type(&scrut_ty)
                 && !ty_is_enum_disc(db, &scrut_ty)
-                && payload_reclaim_safe
                 && matches!(stashed_slot, Some((_, ValType::I32)))
                 && matches!(
                     heap_operand_ownership(db, scrutinee),
@@ -17859,6 +17905,17 @@ mod tests {
         // (`map-lookup` borrows both). Using a param MAP (not an inline `Map.insert`) isolates the borrowed
         // -key concern from the owned-temporary-map reclaim (a fresh inline map IS an owned temporary the
         // emit now correctly drops — see `an_owned_temporary_map_lookup_map_is_reclaimed`).
+        //
+        // ⚠ EXACTLY ONE drop is now expected — but it is the OWNED OPTION SHELL, not the borrowed key/map.
+        // `Map.lookup` returns a FRESH owned `Option` (Some boxes a scalar copy of the value; None is fresh);
+        // in a TAIL match (this body's whole match is `pv`'s result) the wrapper-scrutinee shell reclaim
+        // deep-drops that dead Option shell. Its payload is a SCALAR (Int64, copied out), so the deep drop
+        // frees only the Option shell — never the borrowed `op` key (not inside the shell) nor `mm` (borrowed
+        // by the lookup). The pre-reclaim assertion "drop NOTHING" was too strong (it predated the tail-shell
+        // reclaim); the invariant that actually guards the two-live-matched-keys UAF is that the borrowed KEY
+        // and MAP survive — which value-correctness + the heap-valued repeated-lookup probe confirm. So assert
+        // the lookup emits and (the real guard) that at most the single owned-shell drop appears, NOT a drop
+        // per borrowed operand.
         let ast = crate::testkit::parse(
             "(module m (def (pv (: mm (Map String Int64)) (: op String)) \
                (match (Map.lookup mm op) \
@@ -17869,10 +17926,15 @@ mod tests {
         let layout = layout_of(&mut db);
         let (params, body) = function_of(&mut db, "pv");
         let f = select_function(&mut db, body, &params, &layout).expect("select");
+        let drops = f
+            .code
+            .iter()
+            .filter(|i| matches!(i, Lir::CallImport("drop")))
+            .count();
         assert!(
-            !f.code.contains(&Lir::CallImport("drop")),
-            "a borrowed String lookup key AND a borrowed map param must not be dropped — \
-             dropping either frees a value still live in the caller; got: {:?}",
+            drops <= 1,
+            "at most the OWNED Option-shell reclaim may drop (a scalar-payload shell frees only itself); a \
+             second drop would be the borrowed key/map freed under their owner (the two-live-keys UAF); got: {:?}",
             f.code
         );
         assert!(
