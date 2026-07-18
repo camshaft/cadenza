@@ -416,6 +416,37 @@ fn cdz_run_a_bad_opt_level_errors_naming_the_choices() {
 }
 
 #[test]
+fn cdz_run_arg_type_error_names_the_cadenza_type_not_the_component_model_spelling() {
+    // A `--arg` that doesn't parse as the export's declared parameter type must name the CADENZA type the
+    // user WROTE (`Int64`), not wasmtime's component-model debug spelling (`S64`). The user annotated
+    // `(: n Int64)`; an error that says "as S64" leaks an internal ABI name they never typed and can't map
+    // back to their source. Regression: the coercion error printed `{t:?}` (the component spelling).
+    let (dir, wasm) = compile_component(
+        "argtype",
+        "inc",
+        "(module m (def (inc (: n Int64)) (+ n 1)) (export inc))",
+    );
+    let (ok, _out, err) = run(&[
+        "run",
+        wasm.to_str().unwrap(),
+        "--call",
+        "inc",
+        "--arg",
+        "hello",
+    ]);
+    assert!(!ok, "a non-numeric arg to an Int64 param must fail");
+    assert!(
+        err.contains("as Int64"),
+        "the error names the Cadenza type the user wrote: {err}"
+    );
+    assert!(
+        !err.contains("S64"),
+        "must NOT leak the component-model spelling `S64`: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn cdz_run_on_a_source_file_gives_an_actionable_diagnostic_not_a_wasm_parse_error() {
     // `cdz run foo.sexp` (a SOURCE file passed by mistake) must NOT surface the cryptic
     // "invalid component: failed to parse WebAssembly module" — it should point at the real paths

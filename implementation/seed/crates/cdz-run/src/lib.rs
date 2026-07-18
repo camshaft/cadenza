@@ -2205,8 +2205,34 @@ fn coerce_args(raw: &[String], types: &[Type]) -> Result<Vec<Val>> {
         .collect()
 }
 
+/// The CADENZA surface name for a boundary parameter type, for user-facing diagnostics. wasmtime's
+/// `Type` Debug prints the component-model spelling (`S64`, `U8`, `Float64`), but the user wrote the
+/// Cadenza type (`Int64`, `UInt8`, `Float64`) in their `(: p Int64)` annotation — an arg-coercion error
+/// must name THAT, not the internal ABI name, so "cannot parse `hello` as Int64" points at the source.
+/// Compound types fall back to the component spelling (no scalar CLI arg reaches them with a parse error).
+fn cadenza_type_name(t: &Type) -> String {
+    match t {
+        Type::Bool => "Bool".into(),
+        Type::S8 => "Int8".into(),
+        Type::S16 => "Int16".into(),
+        Type::S32 => "Int32".into(),
+        Type::S64 => "Int64".into(),
+        Type::U8 => "UInt8".into(),
+        Type::U16 => "UInt16".into(),
+        Type::U32 => "UInt32".into(),
+        Type::U64 => "UInt64".into(),
+        Type::Float32 => "Float32".into(),
+        Type::Float64 => "Float64".into(),
+        Type::Char => "Char".into(),
+        Type::String => "String".into(),
+        other => format!("{other:?}"),
+    }
+}
+
 fn coerce_one(s: &str, t: &Type) -> Result<Val> {
-    let parse = |ok: Option<Val>| ok.ok_or_else(|| anyhow!("cannot parse `{s}` as {t:?}"));
+    let parse = |ok: Option<Val>| {
+        ok.ok_or_else(|| anyhow!("cannot parse `{s}` as {}", cadenza_type_name(t)))
+    };
     Ok(match t {
         Type::Bool => parse(s.parse::<bool>().ok().map(Val::Bool))?,
         Type::S8 => parse(s.parse::<i8>().ok().map(Val::S8))?,

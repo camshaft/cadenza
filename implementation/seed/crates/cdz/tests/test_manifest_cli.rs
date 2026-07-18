@@ -1383,3 +1383,46 @@ fn cdz_test_on_a_compiled_wasm_gives_an_actionable_diagnostic_not_zero_tests_fou
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A FAILING scalar `@requires` property must SHRINK to an IN-DOMAIN counterexample — the shrink search
+/// (`shrink` in main.rs) must not descend a param BELOW its `@requires` lower bound. Here the property
+/// `x >= 100` is FALSE across the whole required window `[10, 99]`, so every trial fails; the shrinker
+/// then halves `x` toward 0. The candidate-skip guard must reject every halved candidate below the bound
+/// (`< 10`), so the reported counterexample stays in `[10, 99]`. WITHOUT the guard, shrink would descend
+/// to values `< 10`; the (D) `@requires` body-entry trap on those out-of-domain inputs would read as
+/// "still fails", and the counterexample would be reported as a spurious out-of-domain value (e.g. `0`).
+/// This is the shrink-side twin of `a_failing_range_invariant_property_renders_the_counterexample_in_domain`
+/// (which pins the compound `-gen` path); this pins the SCALAR `@requires` path's guard.
+#[test]
+fn a_failing_requires_property_shrinks_to_an_in_domain_counterexample() {
+    let d = dir("requires-shrink-in-domain");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(x >= 10 and x < 100)\n\
+         @test def p(x: Int64) = if x >= 100 then unit else trap(\"x below 100\")\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "1", "--trials", "50"]);
+    assert!(
+        !ok,
+        "the property is false across the required window [10,99] so it fails: {stdout}{stderr}"
+    );
+    assert!(stdout.contains("FAIL p"), "the property fails: {stdout}");
+    // Extract the shrunk counterexample `p(N)` and assert N stayed IN-DOMAIN [10, 99] — the shrink guard
+    // must not have descended below the @requires lower bound (10). Pre-guard it would report N < 10.
+    let ce = stdout
+        .lines()
+        .find(|l| l.contains("counterexample: p("))
+        .unwrap_or("");
+    let n: i64 = ce
+        .split("p(")
+        .nth(1)
+        .and_then(|s| s.split(')').next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(-1);
+    assert!(
+        (10..=99).contains(&n),
+        "the shrunk @requires counterexample stays IN-DOMAIN [10,99], not below the bound: {stdout}"
+    );
+}

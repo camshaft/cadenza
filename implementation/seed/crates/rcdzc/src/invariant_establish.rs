@@ -62,10 +62,15 @@
 //! It builds the value ONCE (`__inv_v : T`, properly typed — so `__invariant_check_T`'s `it : T` param and its
 //! auto-unwrap match receive the right type) and yields it or traps. Because it flows through the ordinary
 //! resolve/infer/lower, the newtype erasure of `__inv_v` to its payload is uniform across the value + check-call
-//! arms (no erased-arg subtlety). It is WIRED at `lower_sum_new` (a construction of an `@invariant` newtype
-//! becomes a `Core::Call` to this def, with the raw ctor exempt so the def's own construction is not re-wrapped)
-//! in a follow-up sub-slice; until then it is harmless dead code (an unreferenced def is not emitted). A
-//! non-newtype invariant type (multi-variant sum, record) has no single ctor to wrap here — a later increment.
+//! arms (no erased-arg subtlety).
+//!
+//! It is WIRED at `lower_sum_new`: a single-payload construction `(T.V x)` of an `@invariant` newtype in user
+//! code becomes a `Core::Call` to this def (instead of erasing straight to the payload), so EVERY construction
+//! establishes the invariant at run time — the author writes the natural constructor, no call-site annotation.
+//! `synthesize` returns the set of RAW-CONSTRUCTION ids (each `((. T V) __inv_p)` a construct-def contains);
+//! `Db::load` stores it in `invariant_exempt_ctors`, and `lower_sum_new` EXEMPTS those ids from the divert —
+//! they ARE the checked constructor's own construction, so re-routing them would recurse forever. A non-newtype
+//! invariant type (multi-variant sum, record) has no single ctor to wrap here — a later increment.
 
 use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::prelude::{push_atom, push_list};
@@ -162,22 +167,30 @@ fn sole_newtype_variant(ast: &Arenas, type_decl_tail: &[StructId]) -> Option<(St
     ast.as_name(items[0]).map(|n| (n.to_string(), items[1]))
 }
 
-/// Synthesize a `__invariant_check_<T>` def per `@invariant`-annotated type + append to the top-level items.
-/// A no-op for a program with no `@invariant`. See the module docs.
-pub(crate) fn synthesize(ast: &mut Arenas) {
+/// Synthesize a `__invariant_check_<T>` def (Part 1) and, for a single-payload newtype, a
+/// `__invariant_construct_<T>` def (Part 2) per `@invariant`-annotated type + append to the top-level items.
+///
+/// RETURNS the set of RAW-CONSTRUCTION node ids the construct-defs contain — the `((. T V) __inv_p)` inside
+/// each `__invariant_construct_<T>`. These are the construct sites that must be EXEMPT from the establish
+/// divert (`lower_sum_new`): they ARE the checked constructor's own construction, so re-routing them through
+/// `__invariant_construct_<T>` would recurse forever. `Db::load` records this set in `invariant_exempt_ctors`
+/// (append-only synthesis keeps these ids stable through the later load passes). A no-op — returning an empty
+/// set — for a program with no `@invariant`. See the module docs.
+pub(crate) fn synthesize(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId> {
+    let mut exempt = crate::fxhash::FxHashSet::default();
     let root = ast.root;
     let prefix_len = if ast.as_form(root, "do").is_some() {
         1
     } else if ast.as_form(root, "module").is_some() {
         2
     } else {
-        return;
+        return exempt;
     };
     let Struct::List(root_children) = ast.get(root).clone() else {
-        return;
+        return exempt;
     };
     if root_children.len() <= prefix_len {
-        return;
+        return exempt;
     }
 
     // Scan ORIGINAL nodes for `(@ (invariant PRED) (type T …))`. Collect (type-name, sole-newtype-variant?,
@@ -218,7 +231,7 @@ pub(crate) fn synthesize(ast: &mut Arenas) {
         });
     }
     if plans.is_empty() {
-        return;
+        return exempt;
     }
 
     // Build the defs per plan: the CHECKER (`__invariant_check_T`, Part 1) and — for a single-payload newtype —
@@ -311,6 +324,10 @@ pub(crate) fn synthesize(ast: &mut Arenas) {
                 let arg = name(ast, CONSTRUCT_PARAM);
                 push_list(ast, vec![ctor, arg])
             };
+            // EXEMPT this raw construction from the establish divert: it IS the checked constructor's own
+            // `(T.V …)`, so routing it back through `__invariant_construct_T` would recurse forever. The id is
+            // stable through the remaining (append-only) load passes, so `lower_sum_new` can test membership.
+            exempt.insert(raw_construct);
             // `(if (__invariant_check_T __inv_v) __inv_v (trap "…"))`.
             let check_and_yield = {
                 let call = {
@@ -353,4 +370,5 @@ pub(crate) fn synthesize(ast: &mut Arenas) {
     children.extend(new_defs);
     let new_root = push_list(ast, children);
     ast.root = new_root;
+    exempt
 }

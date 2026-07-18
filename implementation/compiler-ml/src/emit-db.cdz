@@ -21,7 +21,7 @@
 ///   code    section (id 10): one body, no locals, const+end = 0a <size> 01 <bodysize> 00 42 <sleb v> 0b
 /// Sizes/counts are ULEB128; the `i64.const` value is SLEB128.
 
-import { Core, lower-tree } from "lower-db"
+import { Core, lower-tree, cnum64 } from "lower-db"
 import { read-source } from "sread"
 
 /// A one-byte `Bytes` holding the low 8 bits of `x` (mirrors `encode.cdz`'s `b1`).
@@ -110,7 +110,7 @@ def is-cmp-op(op: Int64) = (op == 60) or (op == 61) or (op == 62) or (op == 63) 
 /// self-hosted-compiler invalid-wasm emit (log), so the decline decision (a scalar `Bool`) stays OFF the
 /// heap-`Bytes` path.
 def can-emit(c: Core) = match c with
-  | Core.CNum(_) => true
+  | Core.CNum(_, _, _) => true
   | Core.CVar(_) => true
   | Core.CBin(op, l, r) => (is-arith-op(op) or is-cmp-op(op)) and can-emit(l) and can-emit(r)
   | Core.CLet(_, v, body) => can-emit(v) and can-emit(body)
@@ -140,7 +140,7 @@ def collect-binders(c: Core) = match c with
 /// `binders` list is READ-ONLY + scalar (like eval-db's env threading), so no heap payload crosses the
 /// recursion. Out-of-subset (unreached — `emit-module` gates on `can-emit`) → empty.
 def emit-instrs(c: Core, binders: List(Int64)) = match c with
-  | Core.CNum(v) => Bytes.concat(b1(66), sleb(v))                       // 0x42 i64.const <sleb v>
+  | Core.CNum(v, _, _) => Bytes.concat(b1(66), sleb(v))                 // 0x42 i64.const <sleb v> (width read in 2b-ii for i32)
   | Core.CVar(b) => Bytes.concat(b1(32), uleb(index-of(binders, b)))    // 0x20 local.get <idx>
   | Core.CBin(op, l, r) =>
       // arith: left, right, i64-op (result already i64). comparison: left, right, i64-relational (→ i32),
@@ -240,14 +240,14 @@ def contains-byte-go(b: Bytes, x: Int64, i: Int64) =
 def em-cnum-emits-a-module() =
   // a CNum emits Some(bytes); an out-of-subset shape (a CBin over an UNKNOWN op-code, neither arith nor
   // comparison) emits None — the subset boundary stays honest.
-  (match emit-module(Core.CNum(42)) with
-    | Option.Some(_) => (match emit-module(Core.CBin(0, Core.CNum(1), Core.CNum(2))) with | Option.None(_) => unit | _ => trap("unknown-op CBin out of subset"))
+  (match emit-module(cnum64(42)) with
+    | Option.Some(_) => (match emit-module(Core.CBin(0, cnum64(1), cnum64(2))) with | Option.None(_) => unit | _ => trap("unknown-op CBin out of subset"))
     | Option.None(_) => trap("CNum emits a module"))
 
 @test
 def em-module-has-wasm-magic-and-version() =
   // the first 8 bytes are the wasm magic `\0asm` + version 1.
-  (match emit-module(Core.CNum(7)) with
+  (match emit-module(cnum64(7)) with
     | Option.Some(m) =>
       (if (byte-of(m, 0) == 0) then
         (if (byte-of(m, 1) == 97) then
@@ -287,7 +287,7 @@ def em-sleb-negative-one-is-hex7f() =
 def em-code-section-tag-and-body-ends-with-const-and-end() =
   // the module ends with the code section: … 0a <size> 01 <bodylen> 00 42 <sleb v> 0b. For v=3 the tail is
   // 00 42 03 0b (no locals, i64.const 3, end). Check the last 4 bytes.
-  (match emit-module(Core.CNum(3)) with
+  (match emit-module(cnum64(3)) with
     | Option.Some(m) =>
       (let n = Bytes.len(m) in
        (if (byte-of(m, n - 4) == 0) then          // zero local groups
@@ -302,7 +302,7 @@ def em-code-section-tag-and-body-ends-with-const-and-end() =
 def em-cbin-add-emits-a-module() =
   // `1 + 2` (CBin 43 (CNum 1) (CNum 2)) is in the W2 subset → emits Some. The tail is …42 01 42 02 7c 0b
   // (i64.const 1, i64.const 2, i64.add, end).
-  (match emit-module(Core.CBin(43, Core.CNum(1), Core.CNum(2))) with
+  (match emit-module(Core.CBin(43, cnum64(1), cnum64(2))) with
     | Option.Some(m) =>
       (let n = Bytes.len(m) in
        (if (byte-of(m, n - 2) == 124) then          // i64.add opcode 0x7c right before end
@@ -313,7 +313,7 @@ def em-cbin-add-emits-a-module() =
 def em-cbin-postfix-order() =
   // postfix: left operand bytes, then right, then op. For (CNum 5) op (CNum 6): … 42 05 42 06 <op> 0b.
   // Check the const operands appear in source order before the op.
-  (match emit-module(Core.CBin(42, Core.CNum(5), Core.CNum(6))) with
+  (match emit-module(Core.CBin(42, cnum64(5), cnum64(6))) with
     | Option.Some(m) =>
       (let n = Bytes.len(m) in
        // tail: 42 05 42 06 7e 0b → bytes n-6..n-1
@@ -326,13 +326,13 @@ def em-cbin-postfix-order() =
 
 /// The op-byte of an emitted `CBin op 1 1` module — the byte right before the trailing `0x0b` end — or -1
 /// if it declined to emit. A test helper so the op-mapping check stays flat (no deep nested matches).
-def emitted-op-byte(op: Int64) = match emit-module(Core.CBin(op, Core.CNum(1), Core.CNum(1))) with
+def emitted-op-byte(op: Int64) = match emit-module(Core.CBin(op, cnum64(1), cnum64(1))) with
   | Option.Some(m) => byte-of(m, Bytes.len(m) - 2)
   | Option.None(_) => 0 - 1
 
 /// The RELATIONAL opcode of an emitted `CBin cmp 1 1` module — for a comparison the tail is `<cmp> ad 0b`,
 /// so the opcode is 3 bytes before the end (the 0xad extend + 0x0b end follow it). -1 if it declined.
-def cmp-byte(op: Int64) = match emit-module(Core.CBin(op, Core.CNum(1), Core.CNum(1))) with
+def cmp-byte(op: Int64) = match emit-module(Core.CBin(op, cnum64(1), cnum64(1))) with
   | Option.Some(m) => byte-of(m, Bytes.len(m) - 3)
   | Option.None(_) => 0 - 1
 
@@ -349,7 +349,7 @@ def em-cbin-op-mapping() =
 @test
 def em-nested-cbin-emits() =
   // `1 + 2 * 3` (CBin 43 (CNum 1) (CBin 42 (CNum 2) (CNum 3))) — nested arith stays in-subset → emits.
-  (match emit-module(Core.CBin(43, Core.CNum(1), Core.CBin(42, Core.CNum(2), Core.CNum(3)))) with
+  (match emit-module(Core.CBin(43, cnum64(1), Core.CBin(42, cnum64(2), cnum64(3)))) with
     | Option.Some(_) => unit
     | Option.None(_) => trap("nested arith emits a module"))
 
@@ -358,7 +358,7 @@ def em-nested-cbin-emits() =
 @test
 def em-clet-emits-a-module() =
   // `let x = 2 in x * 3` = CLet(7, CNum 2, CBin(*, CVar 7, CNum 3)) is in the W2b subset → emits Some.
-  (match emit-module(Core.CLet(7, Core.CNum(2), Core.CBin(42, Core.CVar(7), Core.CNum(3)))) with
+  (match emit-module(Core.CLet(7, cnum64(2), Core.CBin(42, Core.CVar(7), cnum64(3)))) with
     | Option.Some(_) => unit
     | Option.None(_) => trap("CLet emits a module"))
 
@@ -366,7 +366,7 @@ def em-clet-emits-a-module() =
 def em-clet-declares-one-local() =
   // one CLet → the code-section body starts (after the bodylen) with a locals vector `01 01 7e` (1 group,
   // 1 i64). Verify the module contains the local.set (0x21) and local.get (0x20) opcodes for the binding.
-  (match emit-module(Core.CLet(7, Core.CNum(2), Core.CVar(7))) with
+  (match emit-module(Core.CLet(7, cnum64(2), Core.CVar(7))) with
     | Option.Some(m) =>
       (if contains-byte(m, 33) then                       // 0x21 local.set present
         (if contains-byte(m, 32) then unit else trap("local.get 0x20 present")) else trap("local.set 0x21 present"))
@@ -376,7 +376,7 @@ def em-clet-declares-one-local() =
 def em-cvar-is-local-get-index() =
   // in `let x = 5 in x`, binder x gets local index 0, so the body's tail is: 42 05 21 00 20 00 0b
   // (i64.const 5, local.set 0, local.get 0, end). Check the last 5 bytes: 21 00 20 00 0b.
-  (match emit-module(Core.CLet(9, Core.CNum(5), Core.CVar(9))) with
+  (match emit-module(Core.CLet(9, cnum64(5), Core.CVar(9))) with
     | Option.Some(m) =>
       (let n = Bytes.len(m) in
        (if (byte-of(m, n - 5) == 33) then                 // 0x21 local.set
@@ -390,7 +390,7 @@ def em-cvar-is-local-get-index() =
 def em-nested-clet-two-locals() =
   // `let x = 1 in let y = 2 in x + y` → two CLet binders → two locals; module emits. collect-binders puts
   // both binder ids in the pre-order list (indices 0 and 1), so x→local i, y→local j.
-  (match emit-module(Core.CLet(1, Core.CNum(1), Core.CLet(2, Core.CNum(2), Core.CBin(43, Core.CVar(1), Core.CVar(2))))) with
+  (match emit-module(Core.CLet(1, cnum64(1), Core.CLet(2, cnum64(2), Core.CBin(43, Core.CVar(1), Core.CVar(2))))) with
     | Option.Some(_) => unit
     | Option.None(_) => trap("nested CLet emits a module"))
 
@@ -400,7 +400,7 @@ def em-nested-clet-two-locals() =
 def em-cif-emits-a-module() =
   // `if (1 < 2) then 10 else 20` = CIf(CBin(<, 1, 2), 10, 20) is in the W3 subset → emits Some, and the
   // module ends with `end end` (the if's end 0x0b then the func body's end 0x0b).
-  (match emit-module(Core.CIf(Core.CBin(60, Core.CNum(1), Core.CNum(2)), Core.CNum(10), Core.CNum(20))) with
+  (match emit-module(Core.CIf(Core.CBin(60, cnum64(1), cnum64(2)), cnum64(10), cnum64(20))) with
     | Option.Some(m) => (let n = Bytes.len(m) in
       (if (byte-of(m, n - 1) == 11) then                  // func body end
         (if (byte-of(m, n - 2) == 11) then unit else trap("if-block end 0x0b before func end")) else trap("func end 0x0b")))
@@ -410,7 +410,7 @@ def em-cif-emits-a-module() =
 def em-cif-has-if-opcode-and-blocktype() =
   // the emitted module contains the `if` opcode 0x04 immediately followed by blocktype i64 0x7e, and an
   // `else` 0x05 — the structural shape of a value-producing wasm if/else.
-  (match emit-module(Core.CIf(Core.CNum(1), Core.CNum(10), Core.CNum(20))) with
+  (match emit-module(Core.CIf(cnum64(1), cnum64(10), cnum64(20))) with
     | Option.Some(m) =>
       (if contains-byte(m, 4) then                        // if opcode present
         (if contains-byte(m, 5) then unit else trap("else 0x05 present")) else trap("if 0x04 present"))
@@ -420,7 +420,7 @@ def em-cif-has-if-opcode-and-blocktype() =
 def em-comparison-extends-to-i64() =
   // a comparison `1 < 2` (CBin 60) emits i64.lt_s (0x53) then i64.extend_i32_u (0xad) — the Bool result is
   // widened from i32 to an i64 0/1. As a bare main body the tail is: 42 01 42 02 53 ad 0b.
-  (match emit-module(Core.CBin(60, Core.CNum(1), Core.CNum(2))) with
+  (match emit-module(Core.CBin(60, cnum64(1), cnum64(2))) with
     | Option.Some(m) => (let n = Bytes.len(m) in
       (if (byte-of(m, n - 3) == 83) then                  // 0x53 i64.lt_s
         (if (byte-of(m, n - 2) == 173) then                // 0xad i64.extend_i32_u

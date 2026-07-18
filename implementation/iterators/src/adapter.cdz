@@ -287,4 +287,40 @@ def last-after-map() =
   | Option.None(_) => trap("last of mapped must be Some")
   | Option.Some(v) => if v == 30 then unit else trap("last of *10 is 30")
 
+/// ALGEBRAIC LAWS — cross-combinator invariants pinned so a future change (ESPECIALLY the coming
+/// fusion/devirtualization optimization, which literally rewrites map∘map and folds step layers) cannot
+/// silently alter observable results. Each law equates two expressions that must compute the same value.
+
+/// map fusion: map(map(it, f), g) == map(it, g∘f). The optimizer WILL fuse these; this pins that the
+/// fusion is value-preserving.
+@test
+def law-map-fusion() =
+  if sum(map(map(from-list([1, 2, 3]), fn(x) => x + 1), fn(x) => x * 2))
+     == sum(map(from-list([1, 2, 3]), fn(x) => (x + 1) * 2))
+  then unit else trap("map(map(f),g) == map(g.f)")
+
+/// filter never grows the count: count(filter(it, p)) <= count(it).
+@test
+def law-filter-does-not-grow() =
+  if count(filter(from-list([1, 2, 3, 4, 5]), fn(x) => x > 2)) <= count(from-list([1, 2, 3, 4, 5]))
+  then unit else trap("filter count <= source count")
+
+/// sum is fold(+, 0) — the definitional identity (pins sum's meaning across a fold rewrite).
+@test
+def law-sum-is-fold-plus() =
+  if sum(from-list([3, 4, 5])) == fold(from-list([3, 4, 5]), 0, fn(a, x) => a + x)
+  then unit else trap("sum == fold(+,0)")
+
+/// count is the sum of ones: count(it) == sum(map(it, _ -> 1)).
+@test
+def law-count-is-sum-of-ones() =
+  if count(from-list([9, 8, 7, 6])) == sum(map(from-list([9, 8, 7, 6]), fn(_x) => 1))
+  then unit else trap("count == sum(map(->1))")
+
+/// take-while then count never exceeds the source count (take-while is a prefix).
+@test
+def law-take-while-is-a-prefix() =
+  if count(take-while(from-list([1, 2, 3, 4, 5]), fn(x) => x < 4)) <= count(from-list([1, 2, 3, 4, 5]))
+  then unit else trap("take-while count <= source count")
+
 export { Iter.* }

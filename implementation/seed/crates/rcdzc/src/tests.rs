@@ -18119,6 +18119,50 @@ mod match_engine {
         );
     }
 
+    /// Verification Inc-b @invariant ESTABLISH Part 2 sub-slice 2 (the DIVERT): a PLAIN `(Percent.Pct v)` in
+    /// ordinary user code — NO `__invariant_construct` named call — now AUTO-ESTABLISHES. `lower_sum_new`
+    /// routes a single-payload construction of an @invariant newtype through the synthesized checked
+    /// constructor (`Core::Call { __invariant_construct_Percent, [v] }`) instead of erasing straight to the
+    /// payload, so a violating value TRAPS at the construction site. The checked constructor's OWN inner
+    /// `((. Percent Pct) __inv_p)` is EXEMPT (`invariant_exempt_ctors`), so the divert does not recurse. This
+    /// is the run-time establish enforcement made TRANSPARENT — the author writes the natural constructor and
+    /// the invariant is enforced without any annotation at the call site.
+    #[test]
+    fn a_plain_invariant_newtype_construction_auto_establishes_at_the_call_site() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        // `mk` builds a Percent with the PLAIN `(Percent.Pct v)` — no `__invariant_construct` by name.
+        let src = "(module m \
+            (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+            (def (mk (: v Int64)) (match (Percent.Pct v) (((. Percent Pct) n) n))) \
+            (export mk))";
+        let bytes =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        // A satisfying value constructs + flows through — the divert is value-transparent for a valid value.
+        assert_eq!(
+            crate::tests::run_returns_with::<i64>(&bytes, "mk", &[Val::S64(50)]),
+            50,
+            "a plain construction of a satisfying value is unchanged (divert yields the value)"
+        );
+        assert_eq!(
+            crate::tests::run_returns_with::<i64>(&bytes, "mk", &[Val::S64(0)]),
+            0
+        );
+        assert_eq!(
+            crate::tests::run_returns_with::<i64>(&bytes, "mk", &[Val::S64(100)]),
+            100
+        );
+        // A VIOLATING value TRAPS at the PLAIN construction site — the establish check the divert injected.
+        assert!(
+            crate::tests::call_traps(&bytes, "mk", &[Val::S64(150)]),
+            "a plain `(Percent.Pct 150)` violates `<= 100` → establish trap at the construction site"
+        );
+        assert!(
+            crate::tests::call_traps(&bytes, "mk", &[Val::S64(-1)]),
+            "a plain `(Percent.Pct -1)` violates `>= 0` → establish trap at the construction site"
+        );
+    }
+
     /// Verification Inc-b @invariant NAME-RESOLUTION: an `@invariant(pred)` predicate references only the value
     /// binder `it` (the value of the type) and prelude/global names — no def params (a type has none). A stray
     /// name is UNBOUND → CDZ0101 at the annotation (the b4c pattern, reused for the data-level member). A valid

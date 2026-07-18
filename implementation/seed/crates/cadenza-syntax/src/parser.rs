@@ -1590,10 +1590,17 @@ impl<'a> Parser<'a> {
         let def_head = self.keyword_head("def", start);
         self.bump(); // `def`
         let sig_start = self.cur_span();
+        // A leading `forall a b.` (P1 ergonomic generic-def spelling: `def forall a. f(x: a) = …`) —
+        // consumed BEFORE the name, since it precedes it. Yields synthesized `(: a Type)` params to
+        // PREPEND to the signature (pure sugar; the same arena a hand-written leading `(: a Type)` param
+        // or the param-annotation `forall` desugar produces). A `forall`-prefixed def is always a
+        // FUNCTION def (a generic value def is meaningless), so the value-def branch below is skipped.
+        let sig_type_params = self.forall_sig_type_params();
         let name = self.binder();
 
         // ---- value definition: `def name = value` -> (def name value) ----
-        if self.at(Kind::Eq) {
+        // (Not reachable when a leading `forall` was consumed — that forces the function-def form.)
+        if sig_type_params.is_none() && self.at(Kind::Eq) {
             self.bump(); // `=`
             // A value def binds a single expression (`PREC_SEQ + 1`), like a `let` binding — NOT a
             // sequence. A `;` after it belongs to the enclosing sequence, so `def x = 5; rest` is
@@ -1633,6 +1640,13 @@ impl<'a> Parser<'a> {
         // Desugar any `forall` binder in a parameter annotation into leading `(: a Type)` params.
         let params = self.hoist_forall_params(params, sig_span);
         let mut sig = vec![name];
+        // A leading `def forall a b. …` clause prepends its `(: a Type)` params ahead of the value params
+        // (source order), so both the leading-clause form and the param-annotation form desugar to the
+        // SAME signature. `forall a. f(x: forall b. …)` composes: the leading `a` comes first, then the
+        // annotation-hoisted `b` (in `hoist_forall_params` order).
+        if let Some(tps) = sig_type_params {
+            sig.extend(tps);
+        }
         sig.extend(params);
         let signature = self.list(sig, sig_span);
         // Optional return-type annotation `-> R` between the signature and `=`. It desugars to a body
@@ -2786,6 +2800,48 @@ impl<'a> Parser<'a> {
         self.list(vec![head, binder_list, body], span)
     }
 
+    /// A leading `forall a b .` clause in a DEF SIGNATURE (`def forall a b. f(x: a) = …`) — the P1
+    /// ergonomic spelling for a generic def. Consumes `forall <name>+ .` and returns one synthesized
+    /// `(: name Type)` parameter node PER binder (source order), ready to PREPEND to the def's parameter
+    /// list. It is pure sugar: `def forall a. f(x: a) = x` produces the SAME signature as writing the
+    /// leading `(: a Type)` param by hand (or as the param-annotation `def f(x: forall a. a) = x`
+    /// desugar) — so infer sees the identical arena, no ∀ engine. Returns `None` (consuming nothing) when
+    /// not at a `forall`. A missing binder / missing `.` records an error and recovers (never-panic).
+    fn forall_sig_type_params(&mut self) -> Option<Vec<StructId>> {
+        if !self.at_keyword(Keyword::Forall) {
+            return None;
+        }
+        let start = self.cur_span();
+        self.expect_keyword(Keyword::Forall, "`forall`");
+        // Collect the binder names, then synthesize a `(: name Type)` param for each.
+        let mut names: Vec<(String, Span)> = Vec::new();
+        while self.at(Kind::Ident) && keyword(self.cur_text()).is_none() {
+            names.push((self.cur_text().to_string(), self.cur_span()));
+            self.bump();
+        }
+        if names.is_empty() {
+            self.error(
+                "a `forall` needs at least one type-variable name, e.g. `def forall a. f(…) = …`",
+            );
+        }
+        if self.at(Kind::Dot) {
+            self.bump();
+        } else {
+            self.error("expected `.` after the `forall` binders, e.g. `def forall a. f(…) = …`");
+        }
+        let span = start.merge(self.prev_span());
+        let params = names
+            .into_iter()
+            .map(|(text, name_span)| {
+                let colon = self.name(":", span);
+                let nm = self.name(text, name_span);
+                let type_kw = self.name("Type", span);
+                self.list(vec![colon, nm, type_kw], span)
+            })
+            .collect();
+        Some(params)
+    }
+
     /// `( T, … )` in TYPE position → the tuple TYPE node `(Tuple T …)` (head is the `Tuple` type name,
     /// the same node `Tuple(A, B)` builds — one canonical type spelling). A single `( T )` is a grouping
     /// (returns `T`); `()` is the `unit` type. Each element is parsed by `type_ref`, so a nested tuple
@@ -3558,6 +3614,32 @@ mod tests {
             "a bare value-position `forall` is a reserved-keyword error: {:?}",
             bare.errors
         );
+    }
+
+    #[test]
+    fn def_sig_leading_forall_prepends_type_params_same_as_param_annotation() {
+        use crate::sexpr;
+        // P1 ergonomic spelling: a LEADING `def forall a b. f(…)` clause prepends a `(: a Type)` param per
+        // binder to the signature (source order), the SAME arena the param-annotation `forall` desugar and
+        // a hand-written leading `(: a Type)` param produce — pure sugar, infer sees the identical tree.
+        assert_eq!(
+            sexpr::print(&parse_ok("def forall a. id(x: a) = x")),
+            "(def (id (: a Type) (: x a)) x)"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def forall a b. apply(f: a -> b, x: a) = f(x)")),
+            "(def (apply (: a Type) (: b Type) (: f (-> a b)) (: x a)) (f x))"
+        );
+        // All three spellings — leading `def forall`, param-annotation `forall`, and hand-written
+        // `(: a Type)` — desugar to the EXACT SAME signature arena (the pure-sugar property).
+        let p1 = sexpr::print(&parse_ok("def forall a. id(x: a) = x"));
+        let annot = sexpr::print(&parse_ok("def id(x: forall a. a) = x"));
+        let hand = sexpr::print(&parse_ok("def id(a: Type, x: a) = x"));
+        assert_eq!(p1, annot, "leading-forall == param-annotation-forall");
+        assert_eq!(p1, hand, "leading-forall == hand-written (: a Type)");
+        // A malformed leading forall recovers (never panics): missing binder, missing `.`.
+        assert!(!read_ml("def forall . f() = 1").ok());
+        assert!(!read_ml("def forall a f() = 1").ok());
     }
 
     #[test]

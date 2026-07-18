@@ -2151,3 +2151,31 @@
   (call mk (: 100 Int64)) (output (: 100 Int64))
   (call mk (: 150 Int64)) (trap "unreachable")
   (call mk (: -1 Int64))  (trap "unreachable"))
+
+; ── @invariant ESTABLISH Part 2 (the DIVERT): a PLAIN construction AUTO-ESTABLISHES at the call site ─────────
+; The wiring. `lower_sum_new` routes a single-payload construction `(Percent.Pct v)` of an @invariant newtype
+; through the synthesized checked constructor (`Core::Call { __invariant_construct_Percent, [v] }`) instead of
+; erasing straight to the payload — so EVERY construction establishes the invariant at run time, with NO
+; `__invariant_construct` named call in the source. The author writes the natural `(Percent.Pct v)` and a
+; violating value TRAPS at the construction site. The checked constructor's OWN inner `((. Percent Pct) __inv_p)`
+; is EXEMPT (recorded at load), so the divert does not recurse. This is the run-time establish enforcement made
+; TRANSPARENT — the previous case pins the checked constructor's behavior when called BY NAME; this pins that an
+; ordinary construction is diverted through it automatically.
+
+(case "@invariant ESTABLISH Part 2 (divert): a plain `(Percent.Pct v)` construction auto-establishes — a satisfying value constructs, a violating value traps at the call site (design §10.2, (D))"
+  (doc    "The establish DIVERT wiring. `mk` builds a Percent with the PLAIN constructor `(Percent.Pct v)` — no
+           `__invariant_construct` by name. `lower_sum_new` diverts that single-payload construction of the
+           @invariant newtype through the synthesized checked constructor, so a satisfying value constructs and
+           flows through (mk(50) = 50, value-transparent) while a VIOLATING value traps at the construction site
+           (mk(150) violates `<= 100`). No invalid Percent is ever built, and the author wrote no call-site
+           annotation. The checked constructor's own inner construction is exempt from the divert (no recursion).
+           Pins that the run-time establish enforcement is TRANSPARENT — every ordinary construction is checked.")
+  (input  (do
+            (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64)))
+            (def (mk (: v Int64)) (match (Percent.Pct v) (((. Percent Pct) n) n)))
+            (export mk)))
+  (call mk (: 50 Int64))  (output (: 50 Int64))
+  (call mk (: 0 Int64))   (output (: 0 Int64))
+  (call mk (: 100 Int64)) (output (: 100 Int64))
+  (call mk (: 150 Int64)) (trap "unreachable")
+  (call mk (: -1 Int64))  (trap "unreachable"))

@@ -1036,7 +1036,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 && !all_args.is_empty()
             {
                 trace!(target: "rcdzc::lower", node = id.0, head = ctor.0, n_args = all_args.len(), "apply: curried constructor spine → flat sum construction");
-                return lower_sum_new(db, ctor, &all_args);
+                return lower_sum_new(db, id, ctor, &all_args);
             }
             // A RUNTIME CLOSURE APPLICATION: the head is a runtime FUNCTION VALUE that does NOT reduce to
             // a compile-time lambda and is NOT a known constructor/operator/type-builder — a
@@ -1524,7 +1524,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // `sum-new(disc, payload)`.
                 Some(Prim::SumNew) => {
                     trace!(target: "rcdzc::lower", node = id.0, "apply: sum variant constructor");
-                    lower_sum_new(db, head, &args)
+                    lower_sum_new(db, id, head, &args)
                 }
                 // `List.len` applied to a list — FOLD when the operand is a compile-time-visible list
                 // literal (its length is statically known), else emit `Core::ListLen` (the runtime
@@ -18466,7 +18466,7 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
 /// head's `(meta variant)` channel; the args are the payloads (an empty payload for a nullary variant,
 /// which normally reaches here bare — handled in the `Resolved::Record` arm — but an explicit `(None)`
 /// application is fine too). Produces `Core::SumNew` the backend builds as `sum-new(disc, payload)`.
-fn lower_sum_new(db: &mut Db, head: StructId, args: &[StructId]) -> Core {
+fn lower_sum_new(db: &mut Db, id: StructId, head: StructId, args: &[StructId]) -> Core {
     let Some(disc) = crate::eval::variant_disc_of(db, head) else {
         return Core::Poison(Reject::decline(
             "a sum constructor has no discriminant metadata",
@@ -18514,6 +18514,31 @@ fn lower_sum_new(db: &mut Db, head: StructId, args: &[StructId]) -> Core {
     if let Some(decl) = crate::eval::variant_owner_decl(db, head)
         && db.newtype_inner.contains_key(&decl)
     {
+        // @invariant ESTABLISH DIVERT (the (D) run-time establish enforcement — design §10.2). If the newtype
+        // being constructed carries an `@invariant`, route the single-payload construction through the
+        // synthesized CHECKED CONSTRUCTOR `__invariant_construct_<T>` instead of erasing straight to the
+        // payload — so a value that VIOLATES the invariant TRAPS at construction rather than escaping. The
+        // checked constructor builds the value, calls `__invariant_check_<T>`, and yields it or traps
+        // (`invariant_establish`). EXEMPT its OWN inner `((. T V) __inv_p)` (recorded in
+        // `invariant_exempt_ctors`): that construction IS the checked constructor, so re-routing it would
+        // recurse forever — it keeps the plain erasure below. Only the SINGLE-payload case diverts (the
+        // checked constructor takes one payload param); a 0/n-payload newtype with an invariant is not the
+        // modeled shape (`invariant_establish` synthesizes a construct-def only for a single-payload newtype),
+        // so it falls through to plain erasure. A `Core::Call` to the (monomorphic) construct-def emits it
+        // standalone (layout reaches it via the call — NOT inlined, so the exempt inner id is preserved).
+        if args.len() == 1
+            && !db.invariant_exempt_ctors.contains(&id)
+            && db.invariant_of(decl).is_some()
+            && let Some(type_name) = db.type_decl_by_occ(decl).map(|d| d.name.clone())
+            && let Some(callee) = db.def_by_name(&format!("__invariant_construct_{type_name}"))
+        {
+            trace!(target: "rcdzc::lower", node = id.0, callee, "sum-new: @invariant newtype → checked-constructor establish divert");
+            db.called.insert(callee);
+            return Core::Call {
+                callee,
+                args: args.to_vec(),
+            };
+        }
         return match args.len() {
             0 => Core::Unit,
             1 => core_of(db, args[0]),
