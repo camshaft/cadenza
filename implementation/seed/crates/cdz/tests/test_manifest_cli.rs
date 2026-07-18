@@ -1129,6 +1129,44 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
     );
 }
 
+/// A `@test` whose compound param has a NON-GENERATABLE LEAF (`(List Char)` — `Char` unsupported) DECLINES
+/// CLEANLY PER-TEST and does NOT abort the whole file — a SIBLING test in the same file still runs. Before
+/// this, no `-gen` wrapper was synthesized for a non-generatable-leaf compound, so the compound param hit the
+/// export boundary and produced a file-level compile error (`type (List Char) has no component boundary
+/// representation`, exit 1) that killed every sibling. The fix synthesizes a DECLINING wrapper (a trapping
+/// nullary def) so the runner reports a per-test `FAIL charlist-gen` while the sibling PASSES — test
+/// isolation (concierge ruling 2026-07-18). No store needed (the declining wrapper traps before any heap use).
+#[test]
+fn a_nongeneratable_leaf_compound_test_declines_cleanly_and_siblings_run() {
+    let d = dir("nongeneratable-leaf-decline");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@test def charlist(cs: List(Char)) = if List.len(cs) >= 0 then unit else trap(\"x\")\n\
+         @test def sibling_runs() = if 1 == 1 then unit else trap(\"sibling should run\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f]);
+    // The run FAILS overall (the un-generatable test declines), but it must NOT be a file-level compile abort.
+    assert!(
+        !ok,
+        "the non-generatable test declines → non-zero exit: {stdout}{stderr}"
+    );
+    assert!(
+        !stderr.contains("no component boundary representation"),
+        "the compound param must NOT abort the file at the boundary (declining wrapper intercepts): {stderr}"
+    );
+    // The KEY property — test isolation: the sibling still RUNS and passes.
+    assert!(
+        stdout.contains("PASS sibling_runs"),
+        "a sibling test still runs despite the un-generatable compound test: {stdout}"
+    );
+    // The un-generatable test is reported as a clean per-test FAIL (not a silent drop, not a file abort).
+    assert!(
+        stdout.contains("FAIL charlist-gen"),
+        "the non-generatable-leaf compound test declines as a per-test FAIL: {stdout}"
+    );
+}
+
 /// The counterexample-VALUE render covers a user SUM parameter: a failing property over a `(type Res (Ok
 /// Int64) (Err Int64))` reports the concrete failing VALUE (`never_ok(Ok(0))` — the variant name + its
 /// decoded payload) rather than the raw driver ints. The runner classifies the wrapper's param via

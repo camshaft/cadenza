@@ -43,7 +43,7 @@ function ungatherAfterRender(rendered: string, to: Surface): string {
 export type CellDirective =
   | { kind: "none" }
   | { kind: "table" }
-  | { kind: "chart"; chart: "line" | "bar" | "scatter" }
+  | { kind: "chart"; chart: "line" | "bar" | "scatter" | "area" | "stacked" }
   | { kind: "formula" }
   | { kind: "widget" }
   | { kind: "hidden" };
@@ -82,6 +82,11 @@ export function parseDirective(info: string): CellDirective {
   if (d === "chart" || d === "chart:line") return { kind: "chart", chart: "line" };
   if (d === "chart:bar") return { kind: "chart", chart: "bar" };
   if (d === "chart:scatter") return { kind: "chart", chart: "scatter" };
+  // `area` = a filled line (the region under the curve shaded); `stacked` = bars accumulated per x-slot
+  // (each series sits on top of the previous, so the column total reads as the sum) — the two most-common
+  // "more chart types" a reader expects beyond line/bar/scatter (operator: more chart types).
+  if (d === "chart:area") return { kind: "chart", chart: "area" };
+  if (d === "chart:stacked") return { kind: "chart", chart: "stacked" };
   return { kind: "none" };
 }
 
@@ -243,7 +248,7 @@ export function parseDocument(markdown: string): Cell[] {
 
 /// The fence info-string token for a code cell's directive — the inverse of `parseDirective`, for
 /// `serializeDocument`. `none` has NO token (a bare ` ```cadenza `); every other directive round-trips to
-/// its keyword (`table`, `formula`, `widget`, `hidden`, `chart:line`/`bar`/`scatter`).
+/// its keyword (`table`, `formula`, `widget`, `hidden`, `chart:line`/`bar`/`scatter`/`area`/`stacked`).
 function directiveToInfo(d: CellDirective): string {
   switch (d.kind) {
     case "none": return "cadenza";

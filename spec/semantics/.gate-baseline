@@ -1,4 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+pass	@ensures on a def returning an @invariant type: establish (on construction) AND the postcondition (on ret) both fire (design §10, (D))
 pass	@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
 pass	@invariant ESTABLISH (divert) over a heap payload: a NonEmptyList newtype traps on the empty list, constructs a non-empty one (design §10.1/§10.2, (D))
@@ -244,6 +245,7 @@ pass	`at` advances an Instant by a Duration (wake-time computation)
 pass	`before?` is a STRICT order — an Instant is not before an equal Instant (same-time is a tie-break)
 pass	`before?` orders two Instants (the event-queue comparison)
 pass	`since` is the span between two Instants (later minus earlier)
+pass	`sleep-until` sleeps to an absolute Instant — the span is target minus now (since t now)
 pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
@@ -330,6 +332,7 @@ pass	a MULTI-shot arm whose FIRST resume value is chosen by an if on the state
 pass	a MULTI-shot arm whose each resume CONSUMES a captured heap list dups it per resume
 pass	a MULTI-shot handler arm folds a two-hole body by re-reducing per resume
 pass	a MUTUALLY-recursive effectful group is specialized under a state handler
+pass	a Map accumulator threaded through a non-tail double tree recursion accumulates both subtrees
 pass	a Map-returning closure alongside a parameterized plain export — the closure
 pass	a Map-returning closure alongside a parameterized plain export — the plain
 pass	a Map.lookup over a map literal with a runtime key finds it by value
@@ -1768,6 +1771,7 @@ pass	a round-trip consumer that does NOT apply the closure on the taken branch
 pass	a row op over a constant record folds through a multi-use let binding
 pass	a row op over a constant record folds through a single-use let binding
 pass	a run's result is a deterministic function of a host call's recorded response
+pass	a run-sim scheduler fast-forwards the clock through two sequential sleeps in one task
 pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
 pass	a runtime -0.0 float leaf two levels deep stays distinct from positive zero
@@ -2043,7 +2047,9 @@ pass	a set consumed by Set.insert in one operand is unchanged for a later read o
 pass	a set dedups NaN elements and keeps zero signs distinct
 pass	a set is constructed from a list of its elements
 pass	a set nested in a tuple compares equal with a runtime element, order-independent
+pass	a set of lists deduplicates by the whole list, distinguishing element order
 pass	a set of negative zero and positive zero keeps both (distinct sign bits)
+pass	a set of tuples deduplicates by the whole tuple and its membership is component-order-sensitive
 pass	a set of two NaN floats dedups to one (canonical quiet-NaN)
 pass	a set of two identical positive floats dedups to one
 pass	a set of user-sum elements tests membership by variant

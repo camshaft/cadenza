@@ -3210,6 +3210,24 @@ fn scaffold_project(dir: &std::path::Path, sexpr: bool, created: bool) -> ExitCo
                 .and_then(|c| c.file_name().and_then(|n| n.to_str()).map(String::from))
         })
         .unwrap_or_else(|| "app".to_string());
+    // WARN if the derived project name won't be a valid component-model interface SEGMENT (lowercase ASCII
+    // letters/digits/hyphens). A standalone project with any name builds+runs fine, so this is NOT a
+    // failure — but the moment another project takes THIS one as a `def deps` dependency, its name becomes
+    // `cadenza:<name>/api` and `cdz run` rejects it (the dep-name validation). Warn HERE, where the author
+    // is choosing the name, rather than letting it surprise them (or a consumer) later. Same alphabet as
+    // the dep-name check, kept in sync.
+    let name_ok = !proj_name.is_empty()
+        && proj_name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !name_ok {
+        eprintln!(
+            "{PROG}: warning: project name `{proj_name}` is not a valid interface segment (lowercase ASCII \
+             letters, digits, hyphens) — it builds fine standalone, but a project that depends on this one \
+             (`def deps`) will be rejected, since a dependency's name becomes `cadenza:<name>/api`. Consider \
+             a kebab-case name (e.g. `my-app`) + editing `def name` in the generated {MANIFEST_NAME}"
+        );
+    }
     // The scaffolded entry is written in its CANONICAL (`cdz fmt`) form, so a fresh project passes
     // `cdz fmt --check` immediately (a CI that fmt-checks shouldn't fail on the scaffold). The ML printer
     // puts a blank line between a top-level `def` and the `export` block — the previous single-line-gap

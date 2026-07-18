@@ -136,7 +136,7 @@ def a-difference-of-units-solids-lowers-recursively() =
 def a-component-authored-in-inches-lowers-to-exact-meters() =
   // THE showcase: author a dimension in INCHES; it converts to exact Rational METERS (1 inch = 127/5000 m),
   // the model carries it as a length, and lower unwraps it to that exact meter magnitude — no float.
-  let inch-x = Qty.of(Qty.value(Unit.in(Unit.of(#"meter"), Qty.of(1/1, Unit.of(#"inch")))), Unit.of(#"meter")) in
+  let inch-x = Qty.of(Unit.in(Unit.of(#"meter"), Qty.of(1/1, Unit.of(#"inch"))), Unit.of(#"meter")) in
   let model = cube-m(inch-x, meters(1/1), meters(1/1)) in
   match lower(model) with
     | Solid.Cube(v) =>

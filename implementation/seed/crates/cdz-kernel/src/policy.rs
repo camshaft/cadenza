@@ -92,6 +92,38 @@ pub fn append_request(log: &mut impl Log, op: &str, payload: &str) -> Result<Seq
     log.append(AUTHZ_REQUEST, format!("prim:{op}\t{payload}").as_bytes())
 }
 
+/// One authorization REQUEST standing in the log: its `seq`, the `op` denied (e.g. `exec`), and the `payload`
+/// (the resource the denied op wanted). Decoded from an [`AUTHZ_REQUEST`] event's `prim:<op>\t<payload>` body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthzRequest {
+    pub seq: Seq,
+    pub op: String,
+    pub payload: String,
+}
+
+/// Every authorization REQUEST in `events`, oldest-first — the standing asks an operator can answer with a
+/// narrow [`AUTHZ_GRANT`]. Each denied op auto-emits one ([`append_request`]); this fold decodes them for an
+/// operator to inspect (the `authz-requests` CLI verb). Deliberately lists ALL requests, NOT just "unanswered"
+/// ones: deciding whether a given grant satisfies a request needs full Cedar evaluation (a grant is a permit,
+/// not a request id), so this surfaces the raw asks and leaves the grant/deny decision to the operator. A
+/// malformed payload (no `prim:` prefix / no tab) is skipped (the daemon always writes the canonical form).
+pub fn requests(events: &[crate::Event]) -> Vec<AuthzRequest> {
+    events
+        .iter()
+        .filter(|e| e.kind == AUTHZ_REQUEST)
+        .filter_map(|e| {
+            let text = String::from_utf8(e.payload.clone()).ok()?;
+            let rest = text.strip_prefix("prim:")?;
+            let (op, payload) = rest.split_once('\t')?;
+            Some(AuthzRequest {
+                seq: e.seq,
+                op: op.to_string(),
+                payload: payload.to_string(),
+            })
+        })
+        .collect()
+}
+
 /// Parse an [`AUTHZ_GRANT`] payload into `(expiry_ms, permit)`: the first line is the expiry (empty → `None`),
 /// the rest is the Cedar permit. A malformed expiry line → `None` (fail-safe: treat as no expiry rather than
 /// erroring, since the operator wrote it; the permit still gates).
@@ -269,5 +301,29 @@ mod tests {
             "",
             "no base + no grants → empty (deny-by-default)"
         );
+    }
+
+    #[test]
+    fn requests_decodes_every_standing_authz_request_oldest_first() {
+        // The operator inspection fold: each denied op's auto-emitted authz-request decodes to (seq, op,
+        // payload), oldest-first. A non-request event is ignored; a malformed request payload is skipped.
+        let (path, mut log) = temp_log();
+        append_request(&mut log, "exec", "rm -rf /tmp/x").unwrap(); // seq 0
+        append_policy(&mut log, "// not a request\n").unwrap(); // seq 1 — ignored
+        append_request(&mut log, "http", "https://api").unwrap(); // seq 2
+        let reqs = requests(&log.tail(0).unwrap());
+        assert_eq!(
+            reqs.len(),
+            2,
+            "two authz-requests decoded (policy event ignored)"
+        );
+        assert_eq!(reqs[0].seq, 0);
+        assert_eq!(reqs[0].op, "exec");
+        assert_eq!(reqs[0].payload, "rm -rf /tmp/x");
+        assert_eq!(reqs[1].seq, 2);
+        assert_eq!(reqs[1].op, "http");
+        assert_eq!(reqs[1].payload, "https://api");
+        assert!(requests(&[]).is_empty(), "empty log → no requests");
+        let _ = std::fs::remove_file(&path);
     }
 }

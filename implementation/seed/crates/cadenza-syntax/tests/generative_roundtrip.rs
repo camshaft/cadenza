@@ -133,6 +133,10 @@ fn gen_expr(rng: &mut Rng, depth: usize) -> String {
             format!("(: {} {})", sub(rng), ty)
         }
         // map literal: (map (key value)…) — prints `#{ k = v, … }` (distinct from a `record`).
+        // NOTE: an annotation arm `(@ name form)` was trialed here but exposed a PRE-EXISTING printer
+        // LAYOUT non-idempotence (an `@name`-on-its-own-line inside a deeply-nested breaking box re-measures
+        // to a different indentation on the second print pass — structurally faithful, byte-non-idempotent).
+        // Deferred to its own slice so this sweep stays green; see the syntax-vertical-log.
         _ => {
             let n = 1 + rng.below(3);
             let entries: Vec<String> = (0..n)
@@ -143,22 +147,40 @@ fn gen_expr(rng: &mut Rng, depth: usize) -> String {
     }
 }
 
-/// Generate a random s-expr TYPE-EXPRESSION string — a type name optionally APPLIED to arguments, used
-/// as a variant payload. `depth` bounds recursion (at 0, only a bare name). The forms mirror the corpus:
-/// a bare type name (`Int64`, `a`, `T`), or an application `(List T)` / `(Tuple A B)` that prints as
-/// `List(T)` / `Tuple(A, B)`.
+/// Generate a random s-expr TYPE-EXPRESSION string — used as a sum-variant payload or an ascription RHS.
+/// `depth` bounds recursion (at 0, only a bare name). The forms: a bare type name (`Int64`, `a`, `T`), an
+/// application `(List T)` / `(Tuple A B)` (prints `List(T)` / `Tuple(A, B)`), an arrow `(-> A B)`
+/// (prints `A -> B`), or a generic `(forall (a) T)` (prints `forall a. T`). The application args and the
+/// forall/arrow forms exercise the landed forall-in-nested-type-position parse (`type_postfix`/
+/// `type_arg_exprs`): a `forall`/arrow argument to a type application (`Tuple(forall a. a)`) parses as a
+/// type, not a value.
 fn gen_type_expr(rng: &mut Rng, depth: usize) -> String {
     let atoms = ["Int64", "Bool", "a", "b", "T", "L"];
     if depth == 0 {
         return rng.pick(&atoms).to_string();
     }
-    match rng.below(4) {
+    match rng.below(6) {
         0 | 1 => rng.pick(&atoms).to_string(),
-        _ => {
+        2 | 3 => {
+            // application `(List T)` / `(Tuple A B)` — a type-position application, so its args parse via
+            // `type_ref` (the landed `type_postfix`/`type_arg_exprs` path). Nesting a `forall`/arrow arg
+            // here exercises that fix.
             let head = rng.pick(&["List", "Tuple", "Option"]);
             let n = 1 + rng.below(2);
             let args: Vec<String> = (0..n).map(|_| gen_type_expr(rng, depth - 1)).collect();
             format!("({} {})", head, args.join(" "))
+        }
+        // arrow type `(-> A B)` -> `A -> B` (right-associative on the surface)
+        4 => format!(
+            "(-> {} {})",
+            gen_type_expr(rng, depth - 1),
+            gen_type_expr(rng, depth - 1)
+        ),
+        // generic `(forall (a) T)` -> `forall a. T` — the contextual keyword whose parse in a nested type
+        // position (ascription RHS, type-application argument) the landed forall fixes cover.
+        _ => {
+            let binder = rng.pick(&["a", "b"]);
+            format!("(forall ({}) {})", binder, gen_type_expr(rng, depth - 1))
         }
     }
 }

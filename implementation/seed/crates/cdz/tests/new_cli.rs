@@ -179,6 +179,36 @@ fn new_escapes_the_project_name_in_the_manifest() {
 }
 
 #[test]
+fn new_warns_when_the_project_name_is_not_a_valid_interface_segment() {
+    // A project name with a space/caps (e.g. `My App`) builds fine STANDALONE, but the moment another
+    // project takes it as a `def deps` dependency its name becomes `cadenza:<name>/api` and `cdz run`
+    // rejects it (the dep-name validation). `cdz new` must WARN at name-choice time — not fail (the project
+    // is still valid standalone), not stay silent (letting it surprise a consumer later). A kebab name is
+    // unaffected. Warns AND still scaffolds.
+    let root = scratch("badname");
+    let (ok, _o, err) = run_in(&root, &["new", "My App"]);
+    assert!(ok, "cdz new still scaffolds (warning, not failure): {err}");
+    assert!(
+        err.contains("warning")
+            && err.contains("not a valid interface segment")
+            && err.contains("cadenza:<name>/api"),
+        "warns that the name breaks as a dependency, naming the rule: {err}"
+    );
+    assert!(
+        root.join("My App").join("Project.cdz").is_file(),
+        "the project is still created despite the warning"
+    );
+    // A kebab-case name draws NO warning.
+    let (ok2, _o2, err2) = run_in(&root, &["new", "good-name"]);
+    assert!(ok2, "kebab name scaffolds: {err2}");
+    assert!(
+        !err2.contains("warning"),
+        "a valid kebab name draws no warning: {err2}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn new_scaffolds_a_gitignore_covering_the_build_artifacts() {
     // `cdz new` writes a `.gitignore` (the `cargo new`→`/target` convention) covering the EXACT build
     // outputs of the scaffolded entry (which exports `main` → `main.{wasm,rs,dwarf}`) + `link-map.txt` +

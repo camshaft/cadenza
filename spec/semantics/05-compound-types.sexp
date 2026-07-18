@@ -9100,6 +9100,41 @@
   (call   main (: 5 Int64)) (output (: 50 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64)))
 
+; The NON-TAIL DOUBLE-recursion companion of the tail-recursive map builders above. `walk` descends a binary
+; `Tree`, and at a `Node` it threads the Map accumulator through BOTH children with a DATA DEPENDENCY: `let
+; a1 = walk(l, acc) in walk(r, a1)` — the SECOND recursive call takes the FIRST call's RESULT as its
+; accumulator argument (unlike the `pc` tree-fold in 13-strings, which SUMS independent `(+ (pc l) (pc r))`
+; results with no accumulator threaded between them). This is the environment/symbol-table walk idiom a
+; self-hosted compiler is built on — accumulate bindings while descending a tree, each subtree seeing the
+; accumulator its left sibling produced. The compound `(Map Int64 Int64)` accumulator (an i32 heap handle)
+; must survive as the FIRST call's result while the SECOND call's other args are emitted (the nested-Call
+; accumulator-arg emit): a slot-reuse that clobbered `a1` before the second call consumed it would drop the
+; left subtree's insertions. Over `Node(Node(Leaf 1, Leaf 2), Leaf 3)` all three leaves' keys accumulate:
+; `1 + 2 + 3 = 6`.
+
+(case "a Map accumulator threaded through a non-tail double tree recursion accumulates both subtrees"
+  (doc    "`walk(Node l r) = let a1 = walk(l, acc) in walk(r, a1)` threads a `(Map Int64 Int64)` accumulator
+           through a binary tree's LEFT then RIGHT child, the second recursive call consuming the first's
+           result (a data-dependent thread, not an independent `(+ (walk l) (walk r))` sum). Each `Leaf v`
+           inserts `v↦v`. The compound accumulator (an i32 heap handle) must survive as the first call's
+           result across the second call's argument emit — a nested-Call accumulator-arg. Over
+           `Node(Node(Leaf 1, Leaf 2), Leaf 3)` the three leaves accumulate to keys 1,2,3, looked up and
+           summed to `6`. Pins that a compound accumulator threaded through non-tail double recursion keeps
+           the left subtree's insertions when the right subtree runs — the symbol-table tree-walk idiom.")
+  (input  (do
+            (type Tree (Leaf Int64) (Node Tree Tree))
+            (def (walk (: t Tree) (: acc (Map Int64 Int64)))
+              (match t
+                ((Tree.Leaf v) (Map.insert acc v v))
+                ((Tree.Node l r) (let ((a1 (walk l acc))) (walk r a1)))))
+            (def (main)
+              (let ((m (walk (Tree.Node (Tree.Node (Tree.Leaf 1) (Tree.Leaf 2)) (Tree.Leaf 3)) Map.empty)))
+                (+ (match (Map.lookup m 1) ((Some v) v) (None 0))
+                   (+ (match (Map.lookup m 2) ((Some v) v) (None 0))
+                      (match (Map.lookup m 3) ((Some v) v) (None 0))))))
+            (export main)))
+  (output (: 6 Int64)))
+
 (case "a built map renders its entries in canonical key order"
   (doc    "A map returned as the program RESULT renders its entries as key-value pairs in the
            deterministic canonical key order (collections-and-text.md §A Map Renders As Its Entries In

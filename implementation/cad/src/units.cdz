@@ -29,7 +29,7 @@ def ri(n: Int64) = Rational.of(n, (1 : Int64))
 /// rescales to millimeter over Rational (exact direct ratio); `Qty.value` drops the now-mm unit wrapper. The
 /// `: Rational` body annotation PINS the return type — without it each call site infers independently and a
 /// `mm(..) + inch(..)` sum collides (CDZ0301 Int64-vs-Rational); the model unit is exact Rational millimetres.
-def in-mm(q) = (Qty.value(Unit.in(Unit.of(#"millimeter"), q)) : Rational)
+def in-mm(q) = (Unit.in(Unit.of(#"millimeter"), q) : Rational)
 
 /// ---- Length constructors: a magnitude in a named unit → exact model millimetres (bare Rational) --------
 /// Each accepts a `Rational` magnitude so fractional real-world lengths (`inch (1/4)`, `mm (5/2)`) stay exact.
@@ -94,7 +94,7 @@ def as-mm-wraps-a-bare-mm-coordinate() =
   let coord = 127 / 20 in            // 6.35 mm (a 1/4-inch hole radius), exact
   let q = as-mm(coord) in
   if Qty.value(q) == coord then
-    (if Qty.value(Unit.in(Unit.of(#"millimeter"), q)) == coord then unit else trap("re-read in mm")) else trap("as-mm value")
+    (if (Unit.in(Unit.of(#"millimeter"), q) : Rational) == coord then unit else trap("re-read in mm")) else trap("as-mm value")
 
 @test
 def v3-mm-builds-a-millimetre-vector() =

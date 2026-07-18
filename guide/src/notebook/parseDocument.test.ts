@@ -35,6 +35,8 @@ test("fence directives parse: table, chart:line/bar/scatter, formula, widget, hi
   assert.deepEqual(dir("cadenza chart:line"), { kind: "chart", chart: "line" });
   assert.deepEqual(dir("cadenza chart:bar"), { kind: "chart", chart: "bar" });
   assert.deepEqual(dir("cadenza chart:scatter"), { kind: "chart", chart: "scatter" });
+  assert.deepEqual(dir("cadenza chart:area"), { kind: "chart", chart: "area" }); // filled line (operator: more chart types)
+  assert.deepEqual(dir("cadenza chart:stacked"), { kind: "chart", chart: "stacked" }); // stacked bars
   assert.deepEqual(dir("cadenza formula"), { kind: "formula" });
   assert.deepEqual(dir("cadenza widget"), { kind: "widget" });
   assert.deepEqual(dir("cadenza hidden"), { kind: "hidden" });
@@ -232,6 +234,17 @@ test("serializeDocument preserves each directive's fence token (none has no toke
   assert.match(md, /```cadenza chart:scatter\n/);
   assert.match(md, /```cadenza hidden\n/);
   assert.deepEqual(parseDocument(md), cells);
+});
+
+test("new chart kinds area + stacked round-trip through serialize/parse (operator: more chart types)", () => {
+  const cells: Cell[] = [
+    { kind: "code", source: "(def (main) (list 1 2 3))", directive: { kind: "chart", chart: "area" } },
+    { kind: "code", source: "(def (main) (list (tuple 1 2 3)))", directive: { kind: "chart", chart: "stacked" } },
+  ];
+  const md = serializeDocument(cells);
+  assert.match(md, /```cadenza chart:area\n/);
+  assert.match(md, /```cadenza chart:stacked\n/);
+  assert.deepEqual(parseDocument(md), cells); // fence token round-trips both new kinds
 });
 
 test("setCellSource replaces one code cell's source immutably, preserving the directive + other cells", () => {

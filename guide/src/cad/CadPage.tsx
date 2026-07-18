@@ -41,6 +41,7 @@ import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
 import { slidersFromManifest } from "./manifestSlider.ts";
 import { downloadMesh } from "./download.ts";
 import { encodeCadShareUrl, decodeCadShare } from "./cadShare.ts";
+import { resolveExampleParam, writeExampleParam } from "../components/exampleParam.ts";
 import { ParametricControls, fracOf, type Frac } from "./ParametricControls.tsx";
 import type { ParamSlider } from "./parametric.ts";
 import type { Surface } from "../compiler/client.ts";
@@ -89,12 +90,17 @@ export default function CadPage() {
   // shared PARAMETRIC model restores its exact dragged dims. Null (the common case) → the normal default.
   const sharedRef = useRef(typeof window !== "undefined" ? decodeCadShare(window.location.hash) : null);
   const shared = sharedRef.current;
+  // A `?example=<slug>` deep-link (operator: per-example nav) opens /cad with THAT model selected. The share
+  // hash WINS if present (a shared edit shouldn't be clobbered by a stale example id); else the deep-link
+  // slug (when it names a known example) selects it, else the default. Resolved once at first render.
+  const initialSlug = shared ? DEFAULT_EXAMPLE.slug : resolveExampleParam(EXAMPLES.map((e) => e.slug), DEFAULT_EXAMPLE.slug);
   // The loaded example (drives the picker). Its `source[surface]` seeds the editor; switching examples or
   // toggling the surface re-seeds from `example.source[newSurface]` (v-cad ships every example in BOTH
   // surfaces, so a toggle is a clean re-seed — source can't be reinterpreted across surfaces, same as /calc).
-  const [exampleSlug, setExampleSlug] = useState(DEFAULT_EXAMPLE.slug);
+  const [exampleSlug, setExampleSlug] = useState(initialSlug);
   const example = EXAMPLES.find((e) => e.slug === exampleSlug) ?? DEFAULT_EXAMPLE;
-  const [source, setSource] = useState(() => shared?.src ?? DEFAULT_EXAMPLE.source[surface] ?? DEFAULT_EXAMPLE.source.ml);
+  const initialExample = EXAMPLES.find((e) => e.slug === initialSlug) ?? DEFAULT_EXAMPLE;
+  const [source, setSource] = useState(() => shared?.src ?? initialExample.source[surface] ?? initialExample.source.ml);
   const [status, setStatus] = useState<Status>({ phase: "idle" });
   // The most recent SUCCESSFUL mesh — kept SEPARATELY from `status` so the 3D viewer stays MOUNTED across a
   // recompute (a param drag / re-Run cycles status meshed→running→meshed). Unmounting MeshView on every
@@ -283,6 +289,7 @@ export default function CadPage() {
       const picked = EXAMPLES.find((e) => e.slug === slug);
       if (!picked) return;
       setExampleSlug(slug);
+      writeExampleParam(slug); // reflect the selection in the URL (?example=…) so it's a copy-shareable deep-link
       const next = picked.source[surface] ?? picked.source.ml;
       setSource(next);
       // Clear any dragged values from the previous example so the new one seeds fresh from its own defaults.

@@ -88,7 +88,7 @@ def authoring-in-inches-stores-exact-meters() =
   // THE showcase of the operator's model: author a coordinate in INCHES; the language converts to exact
   // Rational METERS at the boundary. 1 inch = 127/5000 m EXACTLY (no float rounding). Author-unit-agnostic.
   let one-inch = Qty.of(1 / 1, Unit.of(#"inch")) in
-  let as-exact-meters = Qty.of(Qty.value(Unit.in(Unit.of(#"meter"), one-inch)), Unit.of(#"meter")) in
+  let as-exact-meters = Qty.of(Unit.in(Unit.of(#"meter"), one-inch), Unit.of(#"meter")) in
   let v = v3-len(as-exact-meters, meters(0), meters(0)) in
   match v with | Vec3m.V3m(x, _, _) =>
     if x == 127 / 5000 then unit else trap("1 inch = 127/5000 m exactly")

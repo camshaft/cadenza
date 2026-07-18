@@ -77,7 +77,7 @@ def a-vec3q-component-authored-in-inches-is-exact-meters() =
   // Author a component in INCHES; it converts to exact Rational METERS and the field carries that exact
   // quantity. 1 inch = 127/5000 m EXACTLY. The strong-field type + exact conversion together.
   let one-inch = Qty.of(1 / 1, Unit.of(#"inch")) in
-  let as-meters = Qty.of(Qty.value(Unit.in(Unit.of(#"meter"), one-inch)), Unit.of(#"meter")) in
+  let as-meters = Qty.of(Unit.in(Unit.of(#"meter"), one-inch), Unit.of(#"meter")) in
   let v = v3q(as-meters, qm(0), qm(0)) in
   if Qty.value(q-x(v)) == 127 / 5000 then unit else trap("1 inch = 127/5000 m")
 
