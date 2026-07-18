@@ -1175,6 +1175,37 @@ fn a_range_invariant_constrains_generation_in_domain() {
     );
 }
 
+/// A ONE-SIDED lower-bound `@invariant (>= it 0)` also constrains generation in-domain. REGRESSION: a
+/// one-sided bound used to fall through to unconstrained generation (`invariant_int_range` required BOTH
+/// ends), so the generator drew negatives; the construct-site `@invariant` trap then rejected each as a
+/// spurious out-of-domain counterexample (every seed reported `NN(-1)`). The fix closes a one-sided bound
+/// with a generation window (`[0, 1_000_000]`), so every drawn value satisfies `>= 0`. The body asserts
+/// `v >= 0` and can only PASS if generation stayed in-domain across all trials.
+#[test]
+fn a_one_sided_lower_bound_invariant_constrains_generation_in_domain() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — building a nominal value needs the store"
+        );
+        return;
+    }
+    let d = dir("invariant-one-sided");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do (@ (invariant (>= it 0)) (type NonNeg (NN Int64))) \
+           (@ test (def (p (: x NonNeg)) \
+             (match x (((. NonNeg NN) v) (if (>= v 0) unit (trap \"negative leaked past the one-sided invariant\")))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok && stdout.contains("PASS p-gen (100 trials)"),
+        "a one-sided lower-bound @invariant constrains generation to [0, WINDOW] so 100 trials pass \
+         (regression: it drew negatives → a spurious NN(-1) counterexample): {stdout}{stderr}"
+    );
+}
+
 /// A FAILING @invariant-constrained property renders its counterexample IN-DOMAIN — the payload decodes
 /// through the same IntRange the generator used, NOT the raw driver int. Regression pin: the counterexample
 /// DECODER runs at `cdz test` time AFTER strip_annotations removed the `(@ (invariant …) …)` wrapper, so it

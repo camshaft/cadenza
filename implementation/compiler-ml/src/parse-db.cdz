@@ -45,6 +45,9 @@ type Node =
   | NBin(Int64, Int64, Int64)     // NBin(op, leftId, rightId)
   | NLet(Int64, Int64, Int64)     // NLet(nameId, valueId, bodyId)
   | NIf(Int64, Int64, Int64)      // NIf(condId, thenId, elseId) — children by id
+  | NAnnLit(Int64, Int64, Int64)  // NAnnLit(value, signed(1|0), width) — a WIDTH-ANNOTATED int literal
+                                  // `(: v IntN)`; carries its (signed, width) so infer types it TIntW and
+                                  // lower builds a NARROW CNum. Bool-as-Int64 for the signed flag (1|0).
 
 /// The arena: nodes keyed by NodeId, plus the next fresh id. (Named `Tree`, NOT `Ast` — a type named `Ast`
 /// collides with the built-in metaprog `Ast`, drawing CDZ0201 "two types with the same name".)
@@ -196,6 +199,11 @@ def is-if(tree: Tree, id: Int64) = match node-at(tree, id) with
 /// Is the node at `id` a boolean literal with value `b` (1|0)?
 def is-bool-lit(tree: Tree, id: Int64, b: Int64) = match node-at(tree, id) with
   | Option.Some(Node.NBoolLit(x)) => x == b
+  | _ => false
+
+/// Is the node at `id` a width-annotated literal `NAnnLit(v, signed(1|0), width)`? Checks value + signed + width.
+def is-annlit(tree: Tree, id: Int64, v: Int64, sflag: Int64, width: Int64) = match node-at(tree, id) with
+  | Option.Some(Node.NAnnLit(x, s, w)) => (x == v) and ((s == sflag) and (w == width))
   | _ => false
 
 /// Builders (test ergonomics).
@@ -461,4 +469,4 @@ def pd-mod-same-precedence-as-mul() =
         (if op == 43 then (if is-bin-op(tree, r, 37) then unit else trap("+ 's right is a % Bin")) else trap("root is +"))
       | _ => trap("root is a Bin")))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit }
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit }

@@ -2179,3 +2179,31 @@
   (call mk (: 100 Int64)) (output (: 100 Int64))
   (call mk (: 150 Int64)) (trap "unreachable")
   (call mk (: -1 Int64))  (trap "unreachable"))
+
+; ── @invariant ESTABLISH (divert) over a HEAP payload: NonEmptyList — the design's second canonical example ──
+; The establish divert is payload-KIND-general: it works for a newtype over a HEAP value (a `(List …)`), not
+; only a scalar. `NEList = Mk (List Int64)` with `@invariant(< 0 (List.len it))` — the design's `NonEmptyList`
+; case (§10.1). `mkfrom` builds the list in-body (a `list` of one for n>0, the empty `list` otherwise) and
+; constructs `(NEList.Mk …)`; the divert routes it through the checked constructor, whose auto-unwrap accessor
+; `(< 0 (List.len it))` reads the underlying list length. A non-empty list satisfies (mkfrom(5) → len 1); the
+; EMPTY list violates and TRAPS at construction (mkfrom(0)). Pins that the single-payload-newtype establish
+; path landed for the scalar case generalizes to a heap payload with an accessor-shaped invariant — no invalid
+; NonEmptyList is ever built. (The value is used in-body, not exported: a `(List …)` has no boundary rep.)
+
+(case "@invariant ESTABLISH (divert) over a heap payload: a NonEmptyList newtype traps on the empty list, constructs a non-empty one (design §10.1/§10.2, (D))"
+  (doc    "The establish divert is general over the payload KIND — here a HEAP `(List Int64)`, the design's
+           `NonEmptyList`. `NEList = Mk (List Int64)` carries `@invariant(< 0 (List.len it))`. `mkfrom` builds
+           the payload list in-body — `(list n)` for n>0 (length 1, satisfies) else the empty `(list)` (length
+           0, violates) — and constructs `(NEList.Mk …)`, which the divert routes through the checked
+           constructor; its accessor invariant `(< 0 (List.len it))` reads the underlying list length. So
+           mkfrom(5) yields 1 (a non-empty list constructs and its length reads back) and mkfrom(0) TRAPS at
+           construction (the empty list is not a legal NonEmptyList). Pins the establish path generalizes from
+           the scalar newtype (Percent) to a heap payload with an accessor-shaped invariant.")
+  (input  (do
+            (@ (invariant (< 0 (List.len it))) (type NEList (Mk (List Int64))))
+            (def (mkfrom (: n Int64))
+              (match (NEList.Mk (if (> n 0) (list n) (list)))
+                (((. NEList Mk) ys) (List.len ys))))
+            (export mkfrom)))
+  (call mkfrom (: 5 Int64)) (output (: 1 Int64))
+  (call mkfrom (: 0 Int64)) (trap "unreachable"))

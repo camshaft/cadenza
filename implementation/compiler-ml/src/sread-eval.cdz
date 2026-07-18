@@ -115,4 +115,28 @@ def se-typed-declines() =
   // an out-of-subset / unbound program declines under the typed query too (None, not a fabricated tuple).
   (match run-src-typed("y") with | Option.None(_) => unit | Option.Some(_) => trap("typed unbound declines"))
 
+// ---- width-annotated literals flow end-to-end (slice 2b-ii: NAnnLit → narrow TIntW → narrow CNum → eval) ----
+
+@test
+def se-ann-in-range-runs-to-value() =
+  // `(: 200 UInt8)` threads through sread(NAnnLit)→infer(TIntW(false,8))→lower(CNum(200,false,8))→eval → 200.
+  // (eval reads the value; the narrow type flowed but the value is unchanged in range.)
+  (match run-src("(: 200 UInt8)") with | Option.Some(v) => (if v == 200 then unit else trap("(: 200 UInt8) → 200")) | Option.None(_) => trap("in-range annotation runs"))
+
+@test
+def se-ann-negative-runs-to-value() =
+  // `(: -5 Int8)` → -5 (signed narrow, in range).
+  (match run-src("(: -5 Int8)") with | Option.Some(v) => (if v == (0 - 5) then unit else trap("(: -5 Int8) → -5")) | Option.None(_) => trap("in-range signed annotation runs"))
+
+@test
+def se-ann-out-of-range-declines() =
+  // `(: 300 UInt8)` → out of range → sread emits unsupported → resolve poison → eval None (declines).
+  (match run-src("(: 300 UInt8)") with | Option.None(_) => unit | Option.Some(_) => trap("(: 300 UInt8) must decline"))
+
+@test
+def se-ann-used-in-arith-runs() =
+  // an annotated literal is an ordinary operand: `(+ (: 100 Int8) 20)` → 120 (the annotation types the
+  // operand; arithmetic over it evaluates normally — narrow-arith wrapping is a later slice).
+  (match run-src("(+ (: 100 Int8) 20)") with | Option.Some(v) => (if v == 120 then unit else trap("(+ (: 100 Int8) 20) → 120")) | Option.None(_) => trap("annotated operand in arith runs"))
+
 export { run-src, run-src-typed }

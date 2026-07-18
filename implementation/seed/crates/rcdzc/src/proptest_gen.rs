@@ -539,10 +539,21 @@ fn type_invariant_pred(ast: &Arenas, item: StructId) -> Option<StructId> {
     None
 }
 
+/// The generation WINDOW width used to close a ONE-SIDED integer `@invariant` bound. A lower-bound-only
+/// invariant `(>= it LO)` admits every value in `[LO, i64::MAX]` — too wide to sample uniformly, but the
+/// generator only needs to draw values that SATISFY the bound. So we map into `[LO, LO+WINDOW]` (or, for an
+/// upper-only bound, `[HI-WINDOW, HI]`): every drawn value is in-domain (the whole point — §Refinements
+/// Constrain Generation), and the window is wide enough to exercise the property meaningfully. Chosen as a
+/// round power-of-ten so a rendered counterexample reads legibly.
+const ONE_SIDED_INVARIANT_WINDOW: i64 = 1_000_000;
+
 /// Recognize an inclusive integer RANGE `[lo, hi]` from a type-level `@invariant` predicate over the value
-/// binder `it` — `(and (>= it LO) (<= it HI))`, `(<= LO it)`/mirrors, a lone bound, or `(= it K)`. Returns
-/// `(lo, hi)` when BOTH ends are pinned (a fully-bounded range the generator can map into); `None` for an
-/// unrecognized shape (a one-sided bound, a non-linear/opaque predicate) → generation stays unconstrained
+/// binder `it` — `(and (>= it LO) (<= it HI))`, `(<= LO it)`/mirrors, a lone bound, or `(= it K)`. A
+/// TWO-SIDED range maps in directly; a ONE-SIDED bound is CLOSED with a generation window
+/// ([`ONE_SIDED_INVARIANT_WINDOW`]) so a lower-bound-only `(>= it 0)` still generates in-domain (was: fell
+/// through to unconstrained → drew out-of-domain values the construct-site `@invariant` trap then rejected
+/// as a spurious counterexample). `None` only for an unrecognized shape (no bound on `it`, a non-linear /
+/// opaque predicate) or a contradictory two-sided range (`lo > hi`) → generation stays unconstrained
 /// (reject-free fallback). Mirrors the scalar `@requires` bound recognizer, but over `it` and guest-side.
 fn invariant_int_range(ast: &Arenas, pred: StructId) -> Option<(i64, i64)> {
     let (mut lo, mut hi): (Option<i64>, Option<i64>) = (None, None);
@@ -600,8 +611,16 @@ fn invariant_int_range(ast: &Arenas, pred: StructId) -> Option<(i64, i64)> {
         }
     }
     match (lo, hi) {
-        (Some(l), Some(h)) if l <= h => Some((l, h)),
-        _ => None, // not fully bounded, or contradictory (l>h) → don't constrain
+        // A fully-bounded range maps in directly (a contradictory `l > h` is rejected → unconstrained).
+        (Some(l), Some(h)) => (l <= h).then_some((l, h)),
+        // Lower-bound only `(>= it LO)`: generate `[LO, LO+WINDOW]` — every value satisfies `>= LO`. Clamp
+        // the top with a saturating add so a LO near i64::MAX doesn't overflow (it degenerates to `[LO, MAX]`).
+        (Some(l), None) => Some((l, l.saturating_add(ONE_SIDED_INVARIANT_WINDOW))),
+        // Upper-bound only `(<= it HI)`: generate `[HI-WINDOW, HI]` — every value satisfies `<= HI`. Clamp
+        // the bottom with a saturating sub so a HI near i64::MIN doesn't underflow.
+        (None, Some(h)) => Some((h.saturating_sub(ONE_SIDED_INVARIANT_WINDOW), h)),
+        // No bound on `it` recognized → don't constrain.
+        (None, None) => None,
     }
 }
 
@@ -1399,8 +1418,9 @@ mod tests {
 
     /// A recognized RANGE `@invariant` over a newtype-int constrains generation: the payload becomes a
     /// `GenTy::IntRange{lo,hi}` (generate in-domain), not a plain `Int`. `(and (>= it 0) (<= it 100))` on
-    /// `Percent = Pct(Int64)` → the Pct payload is `IntRange{0,100}`. A one-sided / unrecognized invariant
-    /// stays plain `Int` (reject-free unconstrained fallback). Checks the `GenTy` classification directly.
+    /// `Percent = Pct(Int64)` → the Pct payload is `IntRange{0,100}`. A ONE-SIDED bound is CLOSED with a
+    /// generation window (`(>= it 0)` → `IntRange{0, 1_000_000}`) so it too generates in-domain. Checks the
+    /// `GenTy` classification directly.
 
     #[test]
     fn a_range_invariant_constrains_a_newtype_int_to_an_intrange() {
@@ -1418,16 +1438,22 @@ mod tests {
             },
             other => panic!("expected a Sum GenTy, got {other:?}"),
         }
-        // A ONE-SIDED invariant (not fully bounded) → the payload stays a plain Int (unconstrained fallback).
+        // A ONE-SIDED lower-bound invariant `(>= it 0)` is closed with the generation window → the payload
+        // is `IntRange{0, ONE_SIDED_INVARIANT_WINDOW}`, so generation stays in-domain (never draws a value
+        // below the bound that the construct-site @invariant trap would reject as a spurious counterexample).
         let ast2 = crate::testkit::parse(
             "(do (@ (invariant (>= it 0)) (type NonNeg (Mk Int64))) (def (o) 1))",
         );
         let items2: Vec<_> = ast2.as_form(ast2.root, "do").unwrap().to_vec();
         let gt2 = super::classify_sum(&ast2, "NonNeg", &items2, 0);
-        assert!(
-            matches!(gt2, Some(super::GenTy::Sum { ref variants, .. }) if matches!(variants.as_slice(), [(_, Some(super::GenTy::Int))])),
-            "a one-sided invariant leaves the newtype payload a plain Int (unconstrained): {gt2:?}"
-        );
+        match gt2 {
+            Some(super::GenTy::Sum { variants, .. }) => match variants.as_slice() {
+                [(v, Some(super::GenTy::IntRange { lo: 0, hi }))]
+                    if v == "Mk" && *hi == super::ONE_SIDED_INVARIANT_WINDOW => {}
+                other => panic!("expected Mk→IntRange{{0, WINDOW}}, got {other:?}"),
+            },
+            other => panic!("expected a Sum GenTy, got {other:?}"),
+        }
     }
 
     /// A recognized MIN-LENGTH `@invariant` over a newtype-List constrains its payload list to be non-empty:

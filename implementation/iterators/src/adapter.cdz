@@ -117,12 +117,16 @@ def sum(it) = fold(it, 0, fn(a, x) => a + x)
 /// `product(it)` — product of the elements (fold with *, seeded 1; empty → 1).
 def product(it) = fold(it, 1, fn(a, x) => a * x)
 
-/// `nth(it, n)` — the `n`-th element (0-based), or `None` if the iterator is shorter. Drives `n` steps.
+/// `nth(it, n)` — the `n`-th element (0-based), or `None` if the iterator is shorter OR `n` is negative.
+/// Matches the prelude's `List.at` fallible-indexing contract (both `n < 0` and `n >= len` → `None`); the
+/// `n < 0 => None` guard is at the entry, so `nth-drive` only ever sees a non-negative index (its `n <= 0`
+/// base then correctly returns the current head at index 0). Without the guard a negative index would
+/// silently return the FIRST element (`nth(-1) == nth(0)`), diverging from `List.at(-1) == None`.
 def nth-drive(step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), n: Int64) =
   match step(s) with
   | Option.None(_) => Option.None(unit)
   | Option.Some(p) => (match p with | (x, s2) => if n <= 0 then Option.Some(x) else nth-drive(step, s2, n - 1))
-def nth(it, n) = match it with | Iter.Mk(s, step) => nth-drive(step, s, n)
+def nth(it, n) = if n < 0 then Option.None(unit) else (match it with | Iter.Mk(s, step) => nth-drive(step, s, n))
 
 /// `contains(it, target)` — does the iterator yield `target`? Short-circuits at the first match (so it
 /// terminates on an infinite source that contains the target).
@@ -260,6 +264,13 @@ def nth-after-filter() =
   match nth(filter(from-list([1, 2, 3, 4, 5, 6]), fn(x) => x > 2), 0) with
   | Option.None(_) => trap("nth 0 of filtered must be Some")
   | Option.Some(v) => if v == 3 then unit else trap("first >2 is 3")
+
+/// nth of a NEGATIVE index is None — matches List.at's fallible-index contract (not the first element).
+@test
+def nth-negative-index-is-none() =
+  match nth(from-list([10, 20, 30]), 0 - 1) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("nth(-1) must be None (List.at parity), not the first element")
 
 @test
 def contains-finds-element() =

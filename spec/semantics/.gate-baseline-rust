@@ -2,6 +2,8 @@
 pass	@ensures on a def with a parameter named it is REJECTED (would silently not enforce — rename the param)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
 pass	@invariant ESTABLISH Part 1: a bare-scalar invariant on a newtype auto-unwraps + type-checks; a satisfying value constructs and is usable
+pass	@invariant ESTABLISH Part 2 (divert): a plain `(Percent.Pct v)` construction auto-establishes — a satisfying value constructs, a violating value traps at the call site (design §10.2, (D))
+pass	@invariant ESTABLISH Part 2: the synthesized checked constructor enforces the invariant at run time — a satisfying value constructs, a violating value traps (design §10.2, (D))
 pass	@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)
 pass	@invariant PRESERVE: an operation returning T discharges the result invariant USING the input invariant as a free gift (design §10.2)
 pass	@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `it` + prelude are in scope)
@@ -596,6 +598,7 @@ pass	a closure returning a Map — canonical key order
 pass	a closure returning a NESTED List
 pass	a closure returning a NESTED record crosses as the typed value form
 pass	a closure returning a NESTED tuple
+pass	a closure returning a SUM of a tuple (direct-call)
 pass	a closure returning a Set — canonical member order
 pass	a closure returning a boolean is called by the host
 pass	a closure returning a constant String crosses as its UTF-8 bytes
@@ -620,6 +623,7 @@ pass	a closure taking an Option Int32 ARG (narrow-int payload) crosses the direc
 pass	a closure taking an Option Int64 ARG — None crosses the direct-call boundary
 pass	a closure taking an Option Int64 ARG — Some crosses the direct-call boundary
 pass	a closure whose CALL returns a tuple CONTAINING a list
+pass	a closure whose CALL returns an Option crosses as the value form
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
 pass	a closure whose body calls a top-level helper function
 pass	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
@@ -823,6 +827,7 @@ pass	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a RECORD RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a STRING RESULT crosses the direct-call boundary
+pass	a fixed-shape Tuple ARG with a SUM (Option) RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a Tuple RESULT crosses the direct-call boundary
 pass	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
 pass	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)
@@ -3645,10 +3650,8 @@ todo	a camelCase round-trip resolves through kebab boundary-name normalization
 todo	a closure captures the result of a build-time host op called with an argument
 todo	a closure capturing a build-time host effect preserves the order of two host calls
 todo	a closure capturing values of DIFFERENT types (Float64 + Int64)
-todo	a closure returning a SUM of a tuple (direct-call)
 todo	a closure that performs a delegated effect cannot cross the host boundary
 todo	a closure whose CALL returns a user sum crosses as the value form
-todo	a closure whose CALL returns an Option crosses as the value form
 todo	a conditional performs only the taken branch's effect — else
 todo	a conditional performs only the taken branch's effect — then
 todo	a consumer applies TWO handed-back closures
@@ -3666,7 +3669,6 @@ todo	a distinct-signature round-trip alongside a plain export — the plain expo
 todo	a distinct-signature round-trip applies the Int64->Bool closure
 todo	a distinct-signature round-trip applies the Int64->Int64 closure
 todo	a distinct-signature round-trip's Bool closure on a nonzero input
-todo	a fixed-shape Tuple ARG with a SUM (Option) RESULT crosses the direct-call boundary
 todo	a host call's response is an ordinary value that feeds a LATER host call
 todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name

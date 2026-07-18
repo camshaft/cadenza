@@ -11,7 +11,7 @@
 /// `read-form` + a test here. Reuses `strlex`'s char helpers (`char-at`, `is-digit`, `scan-number`) and
 /// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
 
-import { Node, Tree, empty-tree, add-node, node-at, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let } from "parse-db"
+import { Node, Tree, empty-tree, add-node, node-at, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit } from "parse-db"
 import { recognize, is-int-type, ty-signed, ty-width } from "int-type"
 import { fits-width } from "int-width"
 
@@ -159,9 +159,13 @@ def ann-with-value(s: String, k: Int64, v: Int64, tree: Tree) =
    (match scan-atom(s, t0, "") with | (tyname, a2) =>
      (let a3 = close-paren(s, a2) in
       (if (is-int-type(tyname)) then
-         (if (fits-width(v, ty-signed(tyname), ty-width(tyname)))
-          then (match add-node(tree, Node.NLit(v)) with | (id, t1) => (id, a3, t1))   // in range → runs
-          else unsupported-at(tree, a3))                                              // out of range → decline
+         (let signed = ty-signed(tyname) in
+          (let width = ty-width(tyname) in
+           (if (fits-width(v, signed, width))
+            // in range → a WIDTH-ANNOTATED literal node: infer types it TIntW(signed,width), lower builds a
+            // narrow CNum, emit picks i32-vs-i64 by width. The signed flag rides as 1|0 (Node payload is Int64).
+            then (match add-node(tree, Node.NAnnLit(v, (if signed then 1 else 0), width)) with | (id, t1) => (id, a3, t1))
+            else unsupported-at(tree, a3))))                                          // out of range → decline
        else unsupported-at(tree, a3)))))                                              // non-int type → decline
 
 def read-ann-form(s: String, i: Int64, tree: Tree) =
@@ -433,16 +437,16 @@ def sr-do-form-in-cycle-reads() =
 
 @test
 def sr-ann-in-range-runs() =
-  // `(: 200 UInt8)` → 200 fits UInt8 → NLit(200) (runs as an ordinary literal; the annotation is a static
-  // fit-check that passed). is-lit at the root confirms the annotated literal reads as its value.
+  // `(: 200 UInt8)` → 200 fits UInt8 → NAnnLit(200, unsigned=0, width=8): the width-annotated literal
+  // carries its (signed, width) so the narrow type flows through infer→lower→emit.
   (match read-source("(: 200 UInt8)") with | (root, tree) =>
-    (if is-lit(tree, root, 200) then unit else trap("(: 200 UInt8) → NLit 200 (in range)")))
+    (if is-annlit(tree, root, 200, 0, 8) then unit else trap("(: 200 UInt8) → NAnnLit(200, unsigned, 8)")))
 
 @test
 def sr-ann-int8-in-range() =
-  // `(: 127 Int8)` → 127 = Int8.max fits → NLit(127).
+  // `(: 127 Int8)` → 127 = Int8.max fits → NAnnLit(127, signed=1, width=8).
   (match read-source("(: 127 Int8)") with | (root, tree) =>
-    (if is-lit(tree, root, 127) then unit else trap("(: 127 Int8) → NLit 127")))
+    (if is-annlit(tree, root, 127, 1, 8) then unit else trap("(: 127 Int8) → NAnnLit(127, signed, 8)")))
 
 @test
 def sr-ann-out-of-range-declines() =
@@ -470,19 +474,19 @@ def sr-ann-non-int-type-declines() =
 def sr-ann-negative-fits-int8() =
   // `(: 100 Int8)` fits (Int8 holds -128..127); confirms a mid-range signed value runs.
   (match read-source("(: 100 Int8)") with | (root, tree) =>
-    (if is-lit(tree, root, 100) then unit else trap("(: 100 Int8) → NLit 100 (in range)")))
+    (if is-annlit(tree, root, 100, 1, 8) then unit else trap("(: 100 Int8) → NAnnLit(100, signed, 8)")))
 
 @test
 def sr-ann-neg-literal-fits-int8() =
-  // `(: -5 Int8)` → -5 fits Int8's -128..127 → NLit(-5) runs. (The negative-operand path.)
+  // `(: -5 Int8)` → -5 fits Int8's -128..127 → NAnnLit(-5, signed, 8). (The negative-operand path.)
   (match read-source("(: -5 Int8)") with | (root, tree) =>
-    (if is-lit(tree, root, 0 - 5) then unit else trap("(: -5 Int8) → NLit -5 (fits signed)")))
+    (if is-annlit(tree, root, 0 - 5, 1, 8) then unit else trap("(: -5 Int8) → NAnnLit(-5, signed, 8)")))
 
 @test
 def sr-ann-neg-min-fits-int8() =
-  // `(: -128 Int8)` → Int8.min fits → runs.
+  // `(: -128 Int8)` → Int8.min fits → NAnnLit(-128, signed, 8).
   (match read-source("(: -128 Int8)") with | (root, tree) =>
-    (if is-lit(tree, root, 0 - 128) then unit else trap("(: -128 Int8) → NLit -128 (Int8.min)")))
+    (if is-annlit(tree, root, 0 - 128, 1, 8) then unit else trap("(: -128 Int8) → NAnnLit(-128, signed, 8)")))
 
 @test
 def sr-ann-neg-under-int8-declines() =

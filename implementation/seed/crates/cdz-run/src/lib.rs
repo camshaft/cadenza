@@ -1207,7 +1207,10 @@ fn run_export(
     let export_name = match &opts.export {
         Some(name) => name.clone(),
         None => sole_func_export(engine, component).ok_or_else(|| {
-            anyhow!("no --call given and the component has no single function export to default to")
+            anyhow!(
+                "no --call given and the component has no single function export to default to{}",
+                callable_exports_hint(engine, component)
+            )
         })?,
     };
     // The component's extern name is KEBAB-CASE, but a caller names the export by its SOURCE identifier
@@ -1223,7 +1226,12 @@ fn run_export(
                 .then(|| instance.get_func(&mut *store, &kebab))
                 .flatten()
         })
-        .ok_or_else(|| anyhow!("component exports no function `{export_name}`"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "component exports no function `{export_name}`{}",
+                callable_exports_hint(engine, component)
+            )
+        })?;
 
     // Coerce the raw argument strings to the export's declared parameter types.
     let param_types: Vec<Type> = func
@@ -1707,6 +1715,37 @@ fn sole_func_export(engine: &Engine, component: &Component) -> Option<String> {
         }
     }
     only
+}
+
+/// Every top-level FUNCTION export name of `component`, in declaration order — the set a `--call` can
+/// name. Used to enrich an export-selection diagnostic ("no function `addd`" / "no single default")
+/// with the actual choices, so a caller who typoed or forgot the name is told what IS callable rather
+/// than left to guess (the rustc/cargo bar: name the alternatives). Empty when the component is not a
+/// plain-function component (e.g. a resource-escape/closure program exports through an instance).
+fn func_export_names(engine: &Engine, component: &Component) -> Vec<String> {
+    component
+        .component_type()
+        .exports(engine)
+        .filter_map(|(name, item)| match item {
+            ComponentItem::ComponentFunc(_) => Some(name.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Render the callable-export list as a `--help`-style suffix for an export-selection error: `; the
+/// component's function exports are: add, sub` — or a clear note when there are none to name.
+fn callable_exports_hint(engine: &Engine, component: &Component) -> String {
+    let names = func_export_names(engine, component);
+    if names.is_empty() {
+        "; the component has no plain function exports to call (it may export through an instance)"
+            .to_string()
+    } else {
+        format!(
+            "; the component's function exports are: {}",
+            names.join(", ")
+        )
+    }
 }
 
 /// The well-known instance a resource-escape program exports its result through (`make`/`encode` live
