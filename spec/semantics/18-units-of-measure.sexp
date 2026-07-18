@@ -1889,6 +1889,25 @@
             (export main)))
   (output (: 100 Int8)))
 
+(case "a Float32 quantity stored as a map value round-trips through Map.lookup"
+  (doc    "The Float32 analogue of the narrow-Int map-value case. A `(Qty Float32 meter)` stored as a MAP
+           VALUE, read back via `Map.lookup`, and unwrapped. A quantity over a Float32 erases to its inner
+           f32 machine slot (distinct from the f64 default), boxed/read through `box-float32`/`get-float32`.
+           The `ConstFloat`/`ConstFloatNan` emit reads the node's solved type to pick `f32.const` vs
+           `f64.const` and MUST peel `Ty::Qty` — WITHOUT the peel a `(Qty Float32)` magnitude emitted an
+           `f64.const` while the box op is `box-float32` (f32) → an INVALID module (`expected f32, found
+           f64`) that `cdz check` did NOT catch; the rust backend emitted `f64::from_bits` into an `f32` map
+           slot (E0308). The float twin of the narrow-Int `int_ty_of` peel, fixed on BOTH backends. The
+           stored `2.5 meter` reads back and unwraps to 2.5.")
+  (input  (do
+            (def (main)
+              (Qty.value
+                (match (Map.lookup (Map.insert (Map.empty) 1 (Qty.of (Float32.of 2.5) (Unit.base #"meter"))) 1)
+                  ((Some q) q)
+                  ((None) (Qty.of (Float32.of 0.0) (Unit.base #"meter"))))))
+            (export main)))
+  (output (: 2.5 Float32)))
+
 ; --- Quantity joins: the same-unit flow and the explicit-conversion repair --------------------------
 ; 806e45ba9 fixed the mixed-unit join DIAGNOSTIC (a scale clash, not a shadowed declaration). These
 ; pin the join semantics around it, promoted from passing breaker probes: a same-unit join is ONE

@@ -626,6 +626,54 @@ mod tests {
     }
 
     #[test]
+    fn list_and_tuple_literals_use_a_string_head_and_round_trip_both_directions() {
+        // A `[…]`/`(a,b)` literal desugars to a STRING-primitive head — `("list" …)` / `("tuple" …)` —
+        // NOT a bare `(list …)` name, ON PURPOSE: the string is the UNSHADOWABLE compound constructor, so
+        // a literal still builds the compound even where the alias name `list`/`tuple` is rebound (see
+        // parser.rs `ctor_head`, [[compound-ctors-are-reserved-symbols-not-names]]). This pins that the
+        // string head is the CANONICAL s-expr form AND that the ML↔s-expr round-trip is SOUND both ways —
+        // it is NOT a miscompile (a v-notebook/concierge report read the quoted head as a bug; it is the
+        // intended canonical form and round-trips idempotently). A regression that emitted a bare-name head
+        // (re-introducing the shadowing hole) OR that failed to re-read the string head back to `[…]`/`(a,b)`
+        // would break this.
+        let ml_to_sx = |src: &[u8]| {
+            String::from_utf8(convert(src, Format::Ml, Format::Sexpr).unwrap()).unwrap()
+        };
+        let sx_to_ml = |src: &[u8]| {
+            String::from_utf8(convert(src, Format::Sexpr, Format::Ml).unwrap()).unwrap()
+        };
+        // ML literal → the STRING-head s-expr canonical form.
+        assert_eq!(ml_to_sx(b"[1, 2]"), "(\"list\" 1 2)");
+        assert_eq!(ml_to_sx(b"(1, 2)"), "(\"tuple\" 1 2)");
+        // The nested list-of-tuple case (v-notebook's chart/table cell) — still string heads throughout.
+        assert_eq!(
+            ml_to_sx(b"[(1, 2), (3, 4)]"),
+            "(\"list\" (\"tuple\" 1 2) (\"tuple\" 3 4))"
+        );
+        // The string-head s-expr re-reads + prints BACK to the ML literal sugar — round-trip is sound.
+        assert_eq!(sx_to_ml(b"(\"list\" 1 2)"), "[1, 2]");
+        assert_eq!(sx_to_ml(b"(\"tuple\" 1 2)"), "(1, 2)");
+        assert_eq!(
+            sx_to_ml(b"(\"list\" (\"tuple\" 1 2) (\"tuple\" 3 4))"),
+            "[(1, 2), (3, 4)]"
+        );
+        // ARENA-IDEMPOTENT through the binary codec: ML → binary → sexpr is stable across a second pass.
+        let bin = convert(b"[(1, 2), (3, 4)]", Format::Ml, Format::Binary).unwrap();
+        let sx = convert(&bin, Format::Binary, Format::Sexpr).unwrap();
+        let bin2 = convert(
+            &convert(&bin, Format::Binary, Format::Ml).unwrap(),
+            Format::Ml,
+            Format::Binary,
+        )
+        .unwrap();
+        assert_eq!(
+            sx,
+            convert(&bin2, Format::Binary, Format::Sexpr).unwrap(),
+            "list-of-tuple is arena-idempotent through the codec (no round-trip corruption)"
+        );
+    }
+
+    #[test]
     fn an_embedded_syntax_region_survives_the_whole_code_surface_matrix() {
         // The operator's tool-transparency promise for first-class embedded syntaxes: because a
         // `json{ … }` region lands as ORDINARY arena nodes — `(embedded #json <json-subtree>)` — every

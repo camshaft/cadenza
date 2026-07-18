@@ -38642,6 +38642,28 @@ mod match_engine {
     }
 
     #[test]
+    fn a_float32_qty_stored_as_a_map_value_emits_valid_wasm_through_lookup() {
+        // MISCOMPILE REGRESSION (the Float32 twin of the narrow-Int map-value case): a `(Qty Float32 meter)`
+        // stored as a MAP VALUE, read back via `Map.lookup` + unwrapped, emitted an INVALID module —
+        // `expected f32, found f64`. A quantity over a Float32 erases to its inner f32 slot (boxed via
+        // `box-float32`), but the `ConstFloat`/`ConstFloatNan` emit read the solved type to pick f32-vs-f64
+        // WITHOUT peeling `Ty::Qty`, so a `(Qty Float32)` magnitude fell to the f64 default → an `f64.const`
+        // where `box-float32` wanted an f32. Fixed by peeling `Ty::Qty` in the ConstFloat width readers
+        // (both backends — the rust twin emitted `f64::from_bits` into an `f32` map slot → E0308). `cdz check`
+        // passed the mis-lowered program, so the precise guard is that the emitted component VALIDATES.
+        let src = "(module m (def (main) ((. Qty value) \
+                     (match ((. Map lookup) \
+                              ((. Map insert) ((. Map empty)) 1 \
+                               ((. Qty of) ((. Float32 of) 2.5) ((. Unit base) #\"meter\"))) 1) \
+                       ((Some q) q) \
+                       ((None) ((. Qty of) ((. Float32 of) 0.0) ((. Unit base) #\"meter\")))))) \
+                     (export main))";
+        let bytes = component(src);
+        wasmparser::validate(&bytes)
+            .expect("a Float32 Qty read back via Map.lookup must emit valid wasm (f32, not f64)");
+    }
+
+    #[test]
     fn a_narrow_width_qty_stored_as_a_map_value_emits_valid_wasm_through_lookup() {
         // MISCOMPILE REGRESSION: a `(Qty Int8 u)` stored as a MAP VALUE, read back via `Map.lookup` (→
         // `Option`), and let ESCAPE the Option match AS A QTY (bound + `Qty.value`-unwrapped OUTSIDE the

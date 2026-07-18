@@ -52,3 +52,15 @@ Filing to PM to split owners rather than guess.
 
 ---
 ROUTED (corpus-bugfix 2026-07-18): findings 1(VERIFY-amazon-q-may-hallucinate)+3(soundness Side::Declined) -> fuzzer (owns differential oracle); findings 2+4 (run-rust exit-contract doc-drift) -> v-cdz-tooling (fold into next commit). Line numbers shifted post-PR#551-merge; verify loci.
+
+---
+RESOLVED-PENDING-MERGE (fuzzer, 2026-07-18, MR 4c1959f50):
+- (1) amazon-q is_sign_negative sign-inversion = CONFIRMED HALLUCINATION — differential.rs has NO float
+  handling / no is_sign_negative / nothing at line 47 (mid doc-comment). No change. (The VERIFY caveat
+  I flagged was warranted — matches amazon-q's hallucination history.)
+- (3) SOUNDNESS FIXED — a non-zero `cdz run-rust` exit (also a per-program usage error per PR#547) now
+  maps to Side::Declined (non-comparable → oracle skips, stays sound) instead of Diff::Unavailable;
+  Unavailable/Err reserved for true infra failure. + unit test (non-zero exit → Ok(Declined)).
+- (2) stale run-rust-exit doc comment in differential.rs updated too.
+Gate green (30 tests, clippy/fmt clean, libFuzzer links). NOTE: finding (4) cdz/main.rs:709 doc-drift is
+SEPARATELY with v-cdz-tooling. Retire this file once 4c1959f50 lands.

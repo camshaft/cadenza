@@ -1061,7 +1061,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // `f32::from_bits` of the canonical bit pattern so the EXACT value (incl. `-0.0`, a subnormal)
         // round-trips — a decimal spelling could lose a bit. The width is the node's solved type.
         Core::ConstFloat(d) => {
-            let width = match type_of(db, id) {
+            // PEEL `Ty::Qty`: a quantity over a Float32 — `(Qty Float32 u)` — erases to its inner f32 (the
+            // unit is a compile-time value), so the literal must render at width 32. Without the peel a
+            // `(Qty Float32)` node fell to the DEFAULT (f64) → `f64::from_bits(…)` stored into an `f32`-typed
+            // slot (e.g. a `BTreeMap<_, f32>` map value) → Rust E0308. The float twin of the rust `int_ty_of`
+            // Qty peel; mirrors the wasm backend's ConstFloat Qty-peel.
+            let width = match peel_qty(type_of(db, id)) {
                 Ty::Float(ft) => ft.ground_width(),
                 _ => crate::ty::DEFAULT_FLOAT_WIDTH,
             };
@@ -1080,7 +1085,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // ConstFloatNan value byte-identical to the canonical NaN across backends regardless of the
         // platform payload — no reliance on `f64::NAN`'s payload. (Width from the node's solved type.)
         Core::ConstFloatNan => {
-            let width = match type_of(db, id) {
+            // PEEL `Ty::Qty` — a `(Qty Float32)` NaN emits at width 32 (see the `ConstFloat` arm's peel).
+            let width = match peel_qty(type_of(db, id)) {
                 Ty::Float(ft) => ft.ground_width(),
                 _ => crate::ty::DEFAULT_FLOAT_WIDTH,
             };
@@ -3287,6 +3293,16 @@ fn op_name(op: Prim) -> &'static str {
 /// The integer type of the node at `id`, defaulting to `Int64` for a non-integer type — the same
 /// read-off `select.rs` does (`int_ty_of`). A non-integer node never reaches an integer-typed emit
 /// path, so the default is defensive.
+/// Peel a `Ty::Qty` to its inner type — a quantity erases to its inner numeric's machine slot, so a
+/// value-form width reader (the `ConstFloat`/`ConstFloatNan` f32-vs-f64 emit) must see through the wrapper.
+/// A non-quantity type passes through unchanged. (The float twin of `int_ty_of`'s Qty peel.)
+fn peel_qty(ty: Ty) -> Ty {
+    match ty {
+        Ty::Qty { inner, .. } => *inner,
+        other => other,
+    }
+}
+
 fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
     // STRIP_NOMINAL then PEEL `Ty::Qty` then STRIP_NOMINAL again — mirroring the wasm backend's `int_ty_of`
     // EXACTLY (the cross-backend narrow-width lockstep). Two erasures compose:
