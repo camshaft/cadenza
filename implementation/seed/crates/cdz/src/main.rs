@@ -3451,6 +3451,16 @@ fn run_test_file(
     };
     let component = component.to_vec();
 
+    // DEBUG (CDZ_DUMP_TEST_WASM): write the emitted test component to that path, for a WAT-diff of the
+    // instantiation-set-dependent emit (bug#4). Throwaway.
+    if let Ok(path) = std::env::var("CDZ_DUMP_TEST_WASM") {
+        let _ = std::fs::write(&path, &component);
+        eprintln!(
+            "[dump] wrote test component ({} bytes) to {path}",
+            component.len()
+        );
+    }
+
     // Resolve the value-heap runtime ONCE for this file's test component (reused across every test + trial):
     // the component records the exact runtime hash it was emitted against, and we read `<store>/<hash>.wasm`
     // BY CONTENT ADDRESS — the same resolution `cdz run` uses. A scalar/const test component imports no

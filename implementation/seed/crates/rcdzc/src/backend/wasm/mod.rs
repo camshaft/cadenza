@@ -841,7 +841,8 @@ pub fn emit(
         // to `Ty::Unit` via the SAME `body_diverges`), and the host observes the trap. Checked BEFORE the
         // escape/valtype declines so a diverging `Any`/`Var` result is not misdiagnosed as an
         // undetermined-type fault.
-        if serialize::export_result_valtype(&e.result).is_err() && select::body_diverges(db, e.body)
+        if serialize::export_result_valtype(&e.result).is_err()
+            && crate::backend::common::diverge::body_diverges(db, e.body)
         {
             boundary.push(BoundaryExport {
                 name: e.name.clone(),

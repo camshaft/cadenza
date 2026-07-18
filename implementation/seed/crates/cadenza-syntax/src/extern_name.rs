@@ -92,7 +92,15 @@ pub fn is_kebab_extern_name(name: &str) -> bool {
 /// ending in `-`. This mirrors `wasmparser`'s `KebabStr` grammar EXACTLY (the state machine that
 /// decides whether the component validator accepts a segment), so a name this function accepts loads
 /// under wasmtime and one it rejects does not — the whole point of validating BEFORE emit.
-fn is_kebab_word(word: &str) -> bool {
+///
+/// NOTE for the emit-side export-name check (a backend calls this on a NORMALIZED name to decide the
+/// component-validity reject): this is NOT interchangeable with [`is_kebab_extern_name`]. The latter is
+/// `kebab_extern_name(x) == x` — a NORMALIZER FIXPOINT — which is true for a non-ASCII name that
+/// `kebab_extern_name` keeps verbatim, whereas `is_kebab_word` correctly REJECTS non-ASCII (it is not a
+/// valid component word). So an emit guard must check `is_kebab_word(&kebab_extern_name(n))`, NOT the
+/// fixpoint, or it silently admits an invalid non-ASCII export name (see the reject-family test
+/// `a_normalizer_fixpoint_is_not_the_same_as_a_valid_kebab_word`).
+pub fn is_kebab_word(word: &str) -> bool {
     let mut lower = false;
     let mut upper = false;
     for c in word.chars() {
@@ -381,6 +389,21 @@ mod tests {
             assert!(
                 is_kebab_word(&kebab_extern_name(n)),
                 "normalize-then-validate must accept the well-formed name {n}"
+            );
+        }
+        // The NON-ASCII face of the same fixpoint-vs-valid gap (the exact case a shared backend export
+        // guard depends on, per v-wasm-opt's hoist): `kebab_extern_name` keeps a non-ASCII name VERBATIM,
+        // so `is_kebab_extern_name` reports it a fixpoint (TRUE) — but `is_kebab_word` correctly REJECTS it
+        // (a component word is ASCII kebab only). An emit guard using the fixpoint check would silently
+        // admit an invalid non-ASCII export; `is_kebab_word(&kebab_extern_name(n))` rejects it.
+        for n in ["café", "naïve", "π", "日本語", "a-é"] {
+            assert!(
+                is_kebab_extern_name(n),
+                "{n} is a normalizer fixpoint (kebab_extern_name keeps non-ASCII verbatim)"
+            );
+            assert!(
+                !is_kebab_word(n) && !is_kebab_word(&kebab_extern_name(n)),
+                "{n} is NOT a valid component kebab word — the normalize-then-validate guard rejects it"
             );
         }
     }

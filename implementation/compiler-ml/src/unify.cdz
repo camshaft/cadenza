@@ -10,6 +10,9 @@ type Ty =
   | Var(Int64)
   | Con(String)
   | Arrow(Ty, Ty)
+  | IntW(Int64, Int64)             // IntW(signed 1|0, width) — a fixed-width integer; width 0 = DEFERRED
+                                   // (a bare literal's width, polymorphic until unification grounds it).
+                                   // Mirrors rcdzc's `IntTy { sign, width }` with `Fixed|Deferred` (ty.rs).
 
 /// Follow variable bindings to a representative type (path to the end of the chain).
 def resolve(s: Map(Int64, Ty), t: Ty) -> Ty = match t with
@@ -22,6 +25,7 @@ def resolve(s: Map(Int64, Ty), t: Ty) -> Ty = match t with
 def occurs(v: Int64, t: Ty, s: Map(Int64, Ty)) -> Bool = match resolve(s, t) with
   | Ty.Var(w) => v == w
   | Ty.Con(_) => false
+  | Ty.IntW(_, _) => false          // a fixed-width int is a leaf — no nested type var to capture
   | Ty.Arrow(a, b) => occurs(v, a, s) or occurs(v, b, s)
 
 /// Bind variable `v` to type `t` in the substitution, guarding against a trivial or cyclic binding.
@@ -33,12 +37,26 @@ def bind-var(s: Map(Int64, Ty), v: Int64, t: Ty) -> Result(Map(Int64, Ty), Strin
 def unify-struct(s: Map(Int64, Ty), a: Ty, b: Ty) -> Result(Map(Int64, Ty), String) = match a with
   | Ty.Con(n) => (match b with
     | Ty.Con(m) => (if n == m then Result.Ok(s) else Result.Err("cannot unify distinct constructors"))
-    | _ => Result.Err("cannot unify a constructor with an arrow"))
+    | _ => Result.Err("cannot unify a constructor with a non-constructor"))
+  | Ty.IntW(sa, wa) => (match b with
+    // INTEGER-WIDTH unification (the corrected-2b lattice, mirroring rcdzc's IntTy Fixed|Deferred):
+    //  - a DEFERRED width (0) grounds to the OTHER side (a bare literal takes its context's width);
+    //  - two CONCRETE ints must agree in BOTH sign and width, else a mismatch (the CDZ0301 analog);
+    //  - deferred meets deferred stays deferred (unconstrained; grounds to the default at the root).
+    // This is a value-level combine (widths are Int64s, not type-vars), so no substitution changes —
+    // grounding a deferred literal is the CALLER's job (it holds the node→type map); unify only DECIDES
+    // whether the two int types are COMPATIBLE and, if so, leaves the substitution unchanged.
+    | Ty.IntW(sb, wb) =>
+        (if (wa == 0) then Result.Ok(s)                             // deferred ~ anything int → ok
+         else (if (wb == 0) then Result.Ok(s)                        // anything int ~ deferred → ok
+         else (if ((sa == sb) and (wa == wb)) then Result.Ok(s)      // concrete ~ concrete, same → ok
+         else Result.Err("cannot unify integers of different width or sign"))))
+    | _ => Result.Err("cannot unify an integer with a non-integer"))
   | Ty.Arrow(a1, a2) => (match b with
     | Ty.Arrow(b1, b2) => (match unify(s, a1, b1) with
       | Result.Ok(s1) => unify(s1, a2, b2)
       | Result.Err(e) => Result.Err(e))
-    | _ => Result.Err("cannot unify an arrow with a constructor"))
+    | _ => Result.Err("cannot unify an arrow with a non-arrow"))
   | Ty.Var(_) => Result.Err("unreachable: unify-struct on a variable")
 
 /// Unify two types, extending the substitution. Returns the new substitution or an error.
@@ -116,5 +134,51 @@ def unify-transitive() =
   else
     trap("?0 resolves through ?1 to Int"))
   | Result.Err(_) => trap("?0 ~ ?1 ok")
+
+// ---- integer-WIDTH unification (the corrected-2b lattice: Deferred grounds to Fixed) ----
+
+@test
+def unify-intw-same-concrete() =
+  // Int8 ~ Int8 (signed, width 8) unifies; UInt8 ~ UInt8 too.
+  if is-ok(unify(empty(), Ty.IntW(1, 8), Ty.IntW(1, 8))) then
+    (if is-ok(unify(empty(), Ty.IntW(0, 8), Ty.IntW(0, 8))) then unit else trap("UInt8 ~ UInt8")) else trap("Int8 ~ Int8")
+
+@test
+def unify-intw-width-mismatch() =
+  // Int8 ~ Int16 must FAIL (different width — the CDZ0301 analog, no implicit conversion).
+  if is-ok(unify(empty(), Ty.IntW(1, 8), Ty.IntW(1, 16))) then trap("Int8 ~ Int16 must fail") else unit
+
+@test
+def unify-intw-sign-mismatch() =
+  // Int8 ~ UInt8 must FAIL (same width, different sign — distinct types).
+  if is-ok(unify(empty(), Ty.IntW(1, 8), Ty.IntW(0, 8))) then trap("Int8 ~ UInt8 must fail") else unit
+
+@test
+def unify-intw-deferred-grounds-left() =
+  // a DEFERRED literal (width 0) ~ Int8 unifies (the bare literal takes its context's width).
+  if is-ok(unify(empty(), Ty.IntW(0, 0), Ty.IntW(1, 8))) then unit else trap("deferred ~ Int8 ok")
+
+@test
+def unify-intw-deferred-grounds-right() =
+  // Int8 ~ deferred also unifies (symmetry).
+  if is-ok(unify(empty(), Ty.IntW(1, 8), Ty.IntW(0, 0))) then unit else trap("Int8 ~ deferred ok")
+
+@test
+def unify-intw-deferred-meets-deferred() =
+  // two unconstrained deferreds unify (stay deferred; ground to the default at the root).
+  if is-ok(unify(empty(), Ty.IntW(0, 0), Ty.IntW(0, 0))) then unit else trap("deferred ~ deferred ok")
+
+@test
+def unify-intw-not-a-con() =
+  // an integer does NOT unify with a nullary constructor (Int8 ~ Bool fails) nor an arrow.
+  if is-ok(unify(empty(), Ty.IntW(1, 8), Ty.Con("Bool"))) then trap("Int8 ~ Bool must fail")
+  else (if is-ok(unify(empty(), Ty.IntW(1, 8), Ty.Arrow(Ty.Con("Int"), Ty.Con("Int")))) then trap("Int8 ~ arrow must fail") else unit)
+
+@test
+def unify-intw-var-binds() =
+  // a type var unifies with Int8 and resolves to it (deferred-width literals thread through vars).
+  (match unify(empty(), Ty.Var(0), Ty.IntW(1, 8)) with
+    | Result.Ok(s) => (match resolve(s, Ty.Var(0)) with | Ty.IntW(sg, w) => (if (sg == 1) and (w == 8) then unit else trap("?0 → Int8")) | _ => trap("?0 resolves to IntW"))
+    | Result.Err(_) => trap("?0 ~ Int8 ok"))
 
 export { unify }

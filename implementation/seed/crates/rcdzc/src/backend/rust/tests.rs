@@ -4485,20 +4485,31 @@ fn rustc_roundtrip_sum_constructor_list_element_payload_binder() {
         );
     }
 
-    // SOUNDNESS PIN: an AMBIGUOUS sum — two variants share the exact payload type `(I Int64) (J Int64)`
-    // — cannot be disambiguated from the binder's type alone, so this DECLINES (a `todo`) rather than
-    // guessing a variant and miscompiling. Threading the guard discriminant (a lower.rs change) is the
-    // deferred real fix; declining keeps the Rust backend sound in the meantime.
-    let ambiguous = compile_rust_result(
+    // A HOMOGENEOUS sum — two variants share the exact payload type `(I Int64) (J Int64)` — matched by
+    // `(I x)` in a list element. The binder's type alone can't pick I vs J, but the arm's disc-test GUARD
+    // already proved the element is `I` at run time, and both variants share the Int64 payload, so the
+    // payload binds via an OR-PATTERN `A::I(__pv) | A::J(__pv) => __pv` — type-correct (one shared binder)
+    // and value-correct (only the guarded variant reaches the body; the other arm is dead). No disc-threading
+    // needed: the guard supplies it, the shared payload type makes the or-pattern sound.
+    let ambiguous = compile_rust(
         "(module m (type A (I Int64) (J Int64)) \
            (def (build (: k Int64)) (if (< k 1) (list (J 9)) (list (I k)))) \
            (def (f (: xs (List A))) (match xs ((list (I x) .. r) x) (_ 0))) \
            (def (run (: k Int64)) (f (build k))) (export run))",
     );
     assert!(
-        ambiguous.is_err(),
-        "an ambiguous-payload-type sum-element binder declines, not miscompiles:\n{ambiguous:?}"
+        ambiguous.contains("A::I(__pv) | A::J(__pv) => __pv"),
+        "a homogeneous-payload sum-element binder emits an or-pattern (guard-proven variant):\n{ambiguous}"
     );
+    // run(5) → build (list (I 5)); the `(I x)` arm matches → x = 5.
+    if let Some(out) = rustc_run(&ambiguous, "run(5)") {
+        assert_eq!(out, "5", "(I 5) head matches (I x) → x = 5");
+    }
+    // run(0) → build (list (J 9)); the `(I x)` arm's disc-guard FAILS (element is J) → wildcard → 0. Pins the
+    // or-pattern does NOT wrongly bind a J element as if it were I (the guard filters before the body runs).
+    if let Some(out) = rustc_run(&ambiguous, "run(0)") {
+        assert_eq!(out, "0", "(J 9) head ≠ (I x) → guard fails → wildcard → 0");
+    }
 
     // DEEP-BIND: a list element that is a sum whose payload is a TUPLE, binding the tuple fields —
     // `(match xs ((list (Pt (tuple a b))) (+ a b)) …)`, path `[Elem(0), Payload, Elem(j)]`. The `Payload`
