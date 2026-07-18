@@ -55182,6 +55182,46 @@ mod stage1 {
     }
 
     #[test]
+    fn two_const_closure_specializations_of_one_driver_do_not_collide() {
+        // Regression for the spec-memo COLLISION (module-scale miscompile): two exports each call the SAME
+        // driver (`sum`→`drive`, a `const`-closure recursive fold) but with DIFFERENT wrapped step closures
+        // (a `map` chain vs a `filter` chain). `subtree_fingerprint` fingerprints the const arg's AST — a
+        // bare `step` reference is just the name `nstep;`, IDENTICAL for both — so the two specializations
+        // collapsed to ONE memo key: the SECOND export reused the FIRST's spec → a WRONG VALUE (`ef`
+        // returned `em`'s result). Fixed by augmenting a FUNCTION-TYPED const arg's fingerprint with its
+        // resolved `Core::Closure { code, captures }` identity, so the two drivers get distinct memo keys.
+        // Assert BOTH exports compute their OWN result: `em` = sum(map([1,2,3], +10)) = 11+12+13 = 36; `ef`
+        // = sum(filter([1..5], >2)) = 3+4+5 = 12. A collision returns one export's value for the other.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (type Iter (Mk (List Int64) (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) \
+               (def (from-list (: xs (List Int64))) (Iter.Mk xs (fn ((: s (List Int64))) (match s ((list) (Option.None)) ((list h .. t) (Option.Some (tuple h t))))))) \
+               (def (map (: it Iter) (: f (-> Int64 Int64))) (match it ((Iter.Mk s0 step) (Iter.Mk s0 (fn ((: s (List Int64))) (match (step s) ((Option.None) (Option.None)) ((Option.Some p) (match p ((tuple x s2) (Option.Some (tuple (f x) s2))))))))))) \
+               (def (filter-step (: step (-> (List Int64) (Option (Tuple Int64 (List Int64))))) (: s (List Int64)) (const (: p (-> Int64 Bool)))) \
+                 (match (step s) ((Option.None) (Option.None)) ((Option.Some pr) (match pr ((tuple x s2) (if (p x) (Option.Some (tuple x s2)) (filter-step step s2 p))))))) \
+               (def (filter (: it Iter) (: p (-> Int64 Bool))) (match it ((Iter.Mk s0 step) (Iter.Mk s0 (fn ((: s (List Int64))) (filter-step step s p)))))) \
+               (def (drive (const (: step (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) (: s (List Int64)) (: acc Int64) (const (: g (-> Int64 Int64 Int64)))) \
+                 (match (step s) ((Option.None) acc) ((Option.Some p) (match p ((tuple x s2) (drive step s2 (g acc x) g)))))) \
+               (def (sum (: it Iter)) (match it ((Iter.Mk s step) (drive step s 0 (fn ((: a Int64) (: x Int64)) (+ a x)))))) \
+               (def (em) (sum (map (from-list (list 1 2 3)) (fn ((: x Int64)) (+ x 10))))) \
+               (def (ef) (sum (filter (from-list (list 1 2 3 4 5)) (fn ((: x Int64)) (> x 2))))) \
+               (export em) (export ef))",
+        )))
+        .expect("two const-closure specializations of one driver compile");
+        // Each export links the value-heap runtime (skip if absent — the heap-test pattern). A memo
+        // collision would make one export return the other's value; assert each computes its OWN.
+        if let Some(v) = run_linked(&bytes, "em") {
+            assert_eq!(v, "36", "em = sum(map([1,2,3], +10)) = 36");
+        }
+        if let Some(v) = run_linked(&bytes, "ef") {
+            assert_eq!(
+                v, "12",
+                "ef = sum(filter([1..5], >2)) = 12, NOT em's value (no memo collision)"
+            );
+        }
+    }
+
+    #[test]
     fn a_const_parameter_rejects_a_runtime_dependent_argument() {
         // 09-functions "a const parameter rejects an argument that depends on runtime data": a `const`
         // parameter DECLARES its argument compile-time-known (Addendum 3). Here `main` passes a dictionary

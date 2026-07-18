@@ -267,6 +267,40 @@
             (export main)))
   (output (: 12 Int64)))
 
+; TWO specializations of ONE driver on DIFFERENT closures must not collide in the spec memo. Both `em`
+; and `ef` call the same `sum`→`drive` (a `const`-closure recursive fold), but with different wrapped step
+; closures — `em` a `map` chain, `ef` a `filter` chain. The const-arg memo fingerprint used the AST of the
+; arg expression, which for the bare `step` reference is just the NAME (identical for both), collapsing the
+; two specializations to one key: the SECOND export reused the FIRST's spec → a WRONG VALUE (`ef` returned
+; `em`'s result). Fixed by keying a function-typed const arg's fingerprint on its resolved closure identity
+; (lifted `code` + captures). Each export must compute its OWN result: `em` = map(+10)|>sum = 11+12+13 = 36;
+; `ef` = filter(>2)|>sum = 3+4+5 = 12. A collision returns one export's value for the other.
+
+(case "two specializations of one driver on different closures do not collide in the spec memo"
+  (doc    "`em` and `ef` both drive the same `sum`/`drive` const-closure fold but over a `map` chain vs a
+           `filter` chain — two specializations of `drive` on DIFFERENT step closures. A spec-memo collision
+           (the const arg fingerprinted by its AST name `step`, identical for both) made the second export
+           reuse the first's specialization → wrong value. Keyed on the resolved closure identity, each
+           computes its own: `em` = sum(map([1,2,3], +10)) = 36; `ef` = sum(filter([1..5], >2)) = 12.")
+  (input  (do
+            (type It (Mk (List Int64) (-> (List Int64) (Option (Tuple Int64 (List Int64))))))
+            (def (from-list (: xs (List Int64)))
+              (It.Mk xs (fn ((: s (List Int64))) (match s ((list) (Option.None)) ((list h .. t) (Option.Some (tuple h t)))))))
+            (def (map (: it It) (: f (-> Int64 Int64)))
+              (match it ((It.Mk s0 step) (It.Mk s0 (fn ((: s (List Int64))) (match (step s) ((Option.None) (Option.None)) ((Option.Some p) (match p ((tuple x s2) (Option.Some (tuple (f x) s2)))))))))))
+            (def (filter-step (: step (-> (List Int64) (Option (Tuple Int64 (List Int64))))) (: s (List Int64)) (const (: p (-> Int64 Bool))))
+              (match (step s) ((Option.None) (Option.None)) ((Option.Some pr) (match pr ((tuple x s2) (if (p x) (Option.Some (tuple x s2)) (filter-step step s2 p)))))))
+            (def (filter (: it It) (: p (-> Int64 Bool)))
+              (match it ((It.Mk s0 step) (It.Mk s0 (fn ((: s (List Int64))) (filter-step step s p))))))
+            (def (drive (const (: step (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) (: s (List Int64)) (: acc Int64) (const (: g (-> Int64 Int64 Int64))))
+              (match (step s) ((Option.None) acc) ((Option.Some p) (match p ((tuple x s2) (drive step s2 (g acc x) g))))))
+            (def (sum (: it It)) (match it ((It.Mk s step) (drive step s 0 (fn ((: a Int64) (: x Int64)) (+ a x))))))
+            (def (em) (sum (map (from-list (list 1 2 3)) (fn ((: x Int64)) (+ x 10)))))
+            (def (ef) (sum (filter (from-list (list 1 2 3 4 5)) (fn ((: x Int64)) (> x 2)))))
+            (export em) (export ef)))
+  (call   em) (output (: 36 Int64))
+  (call   ef) (output (: 12 Int64)))
+
 (case "a let-bound returned closure applied twice folds each application independently"
   (doc    "The multi-use companion: `(let ((f (mk n))) (+ (f 3) (f 4)))` binds the returned capturing closure
            once and applies it twice; each application folds independently, so with `n` = 10 the result is

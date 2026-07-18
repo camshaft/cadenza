@@ -3719,6 +3719,7 @@ pass	two same-variant ctor list elements refining the payload by literal fall th
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
 pass	two sibling modules may each define a private helper of the same name
+pass	two specializations of one driver on different closures do not collide in the spec memo
 pass	two stacked erased newtypes wrapping a sum peel both no-op layers before the inner discriminant
 pass	two structural values of the same shape are equal
 pass	two sum arms with textually identical bodies still bind their own variant's payload

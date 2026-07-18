@@ -10908,6 +10908,34 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
             }
             let mut fp = String::new();
             subtree_fingerprint(db, a, &mut fp);
+            // A const CLOSURE argument's `subtree_fingerprint` is the AST of the ARG EXPRESSION — which for
+            // a bare reference (`step`, a variant-payload binder threaded to a driver) is just the NAME
+            // `nstep;`, IDENTICAL across two call sites that pass DIFFERENT closures (e.g. `sum` inlined
+            // from a `map` chain vs a `filter` chain both call `drive(step, …)` where `step` names the same
+            // parameter). That collapses two distinct specializations to one memo key → the second call
+            // REUSES the first's spec → a WRONG-VALUE miscompile (module-scale: the 2nd export/@test runs
+            // the 1st's closure). Disambiguate by the arg's RESOLVED closure identity: when `core_of(a)` is
+            // a lifted `Core::Closure { code, captures }`, append the lifted-function `code` (distinct per
+            // distinct lambda) + a fingerprint of each captured value (two closures of the same `code` but
+            // different captures — e.g. `(fn (x) (+ x k))` at k=1 vs k=2 — must also differ). This keys the
+            // memo on WHICH closure is passed, not the syntactic name, so `map`'s and `filter`'s driver
+            // specializations are distinct.
+            // ONLY probe `core_of` when the arg is FUNCTION-TYPED — calling `core_of` on a compound that
+            // CONTAINS a lambda (a `const` dictionary `(record (op (fn …)))`) would SPECULATIVELY LIFT that
+            // lambda (`lower_lambda_value`) and pollute `db.captured_ref`, corrupting the dictionary's own
+            // lowering (the same hazard `should_keep_binding` guards against). A dictionary's fields are
+            // already distinguished by `subtree_fingerprint`'s AST walk, so it needs no closure-identity
+            // augmentation; only a directly-function-typed arg (the driver-`step` collision case) does.
+            if matches!(crate::infer::type_of(db, a), crate::ty::Ty::Fn(_, _))
+                && let Core::Closure { code, captures } = core_of(db, a)
+            {
+                fp.push_str("|clos");
+                fp.push_str(&code.to_string());
+                for cap in captures {
+                    fp.push(':');
+                    subtree_fingerprint(db, cap, &mut fp);
+                }
+            }
             kinds.push(ArgKind::ConstArg(a, fp));
         } else {
             let mut t = crate::infer::type_of(db, a);

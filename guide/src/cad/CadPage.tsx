@@ -85,6 +85,15 @@ export default function CadPage() {
   const example = EXAMPLES.find((e) => e.slug === exampleSlug) ?? DEFAULT_EXAMPLE;
   const [source, setSource] = useState(() => DEFAULT_EXAMPLE.source[surface] ?? DEFAULT_EXAMPLE.source.ml);
   const [status, setStatus] = useState<Status>({ phase: "idle" });
+  // The most recent SUCCESSFUL mesh — kept SEPARATELY from `status` so the 3D viewer stays MOUNTED across a
+  // recompute (a param drag / re-Run cycles status meshed→running→meshed). Unmounting MeshView on every
+  // recompute destroys its <Canvas> + camera, resetting the reader's vantage each drag (the operator's top
+  // irritant). Instead we keep MeshView mounted showing `lastMesh` + overlay a "meshing…" hint while a new
+  // run is in flight, and swap `lastMesh` when the new mesh arrives — so the camera persists.
+  const [lastMesh, setLastMesh] = useState<Extract<MeshResult, { ok: true }> | null>(null);
+  // Auto-spin the 3D view — DEFAULT OFF (operator: the constant spin is "annoying" + fights manual orbit);
+  // a small toggle in the viewer turns it on. Fixed-by-default, spin on demand.
+  const [spin, setSpin] = useState(false);
   const runningRef = useRef(false);
 
   // MODE: "edit" = the reader edits a model buffer (the example-picker + editor above); "parametric" = a
@@ -157,6 +166,7 @@ export default function CadPage() {
           setStatus({ phase: "error", message: mesh.error });
           return;
         }
+        setLastMesh(mesh);
         setStatus({ phase: "meshed", mesh });
       } catch (e) {
         setStatus({ phase: "error", message: e instanceof Error ? e.message : String(e) });
@@ -210,6 +220,7 @@ export default function CadPage() {
           setStatus({ phase: "error", message: mesh.error });
           return;
         }
+        setLastMesh(mesh);
         setStatus({ phase: "meshed", mesh });
       } catch (e) {
         setStatus({ phase: "error", message: e instanceof Error ? e.message : String(e) });
@@ -381,16 +392,42 @@ export default function CadPage() {
           )}
         </div>
 
-        {/* 3D preview. On MOBILE (stacked, flex-col) the preview is the star: give it a tall
-            viewport-relative floor (`min-h-[60vh]`) so it fills most of the section instead of the
-            small `flex-1`-split box it collapsed to before. At `md`+ (side-by-side) it drops back to
-            the flex-driven `16rem` floor and fills its column. */}
-        <div className="min-h-[60vh] flex-1 overflow-hidden rounded-lg border border-slate-800 bg-slate-950 md:min-h-[16rem]">
-          {status.phase === "meshed" ? (
-            <MeshView positions={status.mesh.positions} indices={status.mesh.indices} normals={status.mesh.normals} />
+        {/* 3D preview. On MOBILE (stacked, flex-col) the preview is the star: give it a CONCRETE height
+            (`h-[65vh]`, not just a min) so the react-three-fiber <Canvas> — which sizes to its parent's
+            measured box — gets a definite ~500px box instead of collapsing to ~150px in the flex-col
+            (the operator's "stuck ~300px with empty space" bug: min-h + flex-1 left the Canvas parent at
+            near-zero base height so the Canvas measured tiny). At `md`+ (side-by-side) drop the fixed
+            height and fill the flex column (`md:h-auto` + `md:flex-1`, `min-h-[16rem]` floor). */}
+        <div className="relative h-[65vh] shrink-0 overflow-hidden rounded-lg border border-slate-800 bg-slate-950 md:h-auto md:min-h-[16rem] md:flex-1 md:shrink">
+          {lastMesh ? (
+            // Keep MeshView MOUNTED once we have any mesh — a recompute (running) swaps its geometry to the
+            // latest `lastMesh` WITHOUT unmounting, so the camera vantage persists (operator's top irritant).
+            <>
+              <MeshView positions={lastMesh.positions} indices={lastMesh.indices} normals={lastMesh.normals} spin={spin} />
+              {/* Spin vs FIXED toggle (default fixed) — top-left so it doesn't collide with the meshing chip. */}
+              <button
+                data-testid="cad-spin-toggle"
+                onClick={() => setSpin((s) => !s)}
+                aria-pressed={spin}
+                className="absolute left-2 top-2 flex min-h-11 items-center rounded bg-slate-800/80 px-2 text-xs text-slate-300 transition hover:bg-slate-700 sm:min-h-0 sm:py-1"
+              >
+                {spin ? "◼ Stop spin" : "↻ Spin"}
+              </button>
+              {status.phase === "running" && (
+                // A subtle non-blocking "meshing…" chip while a new run is in flight (viewer stays interactive).
+                <div className="pointer-events-none absolute right-2 top-2 rounded bg-slate-800/80 px-2 py-1 text-xs text-slate-300">
+                  meshing…
+                </div>
+              )}
+              {status.phase === "error" && (
+                <div className="pointer-events-none absolute inset-x-2 top-2 rounded bg-rose-900/80 px-2 py-1 text-xs text-rose-100">
+                  {status.message}
+                </div>
+              )}
+            </>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-slate-600">
-              {status.phase === "error" ? "—" : status.phase === "running" ? "meshing…" : "Run to preview"}
+              {status.phase === "error" ? status.message : status.phase === "running" ? "meshing…" : "Run to preview"}
             </div>
           )}
         </div>

@@ -82,7 +82,15 @@ fn new_store(engine: &Engine) -> Store<()> {
     let secs = run_timeout_secs();
     if secs > 0 {
         arm_epoch_ticker(engine);
-        let ticks = (secs * 1000).div_ceil(EPOCH_TICK.as_millis() as u64).max(1);
+        // `secs.saturating_mul(1000)`, NOT `secs * 1000`: an absurdly large `CDZ_RUN_TIMEOUT_SECS` (the
+        // user reaching for "effectively unbounded") would otherwise overflow the `u64` millis product —
+        // a PANIC in a debug build, and in release it WRAPS to a tiny value, so a huge timeout inverts into
+        // a near-instant trap (the same class of inversion as the `secs == 0` bug). Saturating means a
+        // giant timeout clamps to a giant tick count (≈ never reached), which is the intended "unbounded".
+        let ticks = secs
+            .saturating_mul(1000)
+            .div_ceil(EPOCH_TICK.as_millis() as u64)
+            .max(1);
         store.set_epoch_deadline(ticks);
     } else {
         // `CDZ_RUN_TIMEOUT_SECS=0` = the documented UNBOUNDED escape hatch (for a debugger / a legitimately

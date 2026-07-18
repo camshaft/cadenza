@@ -14,6 +14,12 @@ interface Props {
   normals?: Float32Array;
 }
 
+interface ViewProps extends Props {
+  /// Auto-rotate the model. DEFAULT OFF (the operator called the constant spin "annoying" + it fought
+  /// manual orbit); a fixed view is the default, toggled on demand by the caller.
+  spin?: boolean;
+}
+
 /// Build a three.js BufferGeometry from the mesh buffers. Computes vertex normals when the driver didn't
 /// supply them (flat/faceted shading otherwise looks unlit). Memoized on the buffers so a re-render
 /// (e.g. a resize) doesn't rebuild the geometry — and DISPOSED when it changes or the view unmounts: a
@@ -34,12 +40,13 @@ function useGeometry({ positions, indices, normals }: Props): THREE.BufferGeomet
   return geometry;
 }
 
-function Solid(props: Props) {
+function Solid({ spin, ...props }: ViewProps) {
   const geometry = useGeometry(props);
   const ref = useRef<THREE.Mesh>(null);
-  // A gentle idle spin so the shape reads as 3D without the reader having to drag.
+  // Optional gentle idle spin (OFF by default — operator found the constant spin annoying). When on, rotate
+  // the mesh; when off, leave the vantage entirely to the reader's OrbitControls drag.
   useFrame((_, delta) => {
-    if (ref.current) ref.current.rotation.y += delta * 0.3;
+    if (spin && ref.current) ref.current.rotation.y += delta * 0.3;
   });
   return (
     <mesh ref={ref} geometry={geometry}>
@@ -48,13 +55,13 @@ function Solid(props: Props) {
   );
 }
 
-export function MeshView(props: Props) {
+export function MeshView({ spin = false, ...props }: ViewProps) {
   return (
     <Canvas camera={{ position: [4, 3, 5], fov: 45 }} style={{ width: "100%", height: "100%" }}>
       <ambientLight intensity={0.6} />
       <directionalLight position={[5, 8, 5]} intensity={1.1} />
       <directionalLight position={[-5, -3, -5]} intensity={0.3} />
-      <Solid {...props} />
+      <Solid spin={spin} {...props} />
       <OrbitControls enablePan={false} />
     </Canvas>
   );

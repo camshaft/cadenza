@@ -536,6 +536,41 @@ fn cdz_run_with_timeout_secs_zero_is_unbounded_not_an_instant_trap() {
 }
 
 #[test]
+fn cdz_run_with_an_absurdly_large_timeout_does_not_overflow_into_an_instant_trap() {
+    // A giant `CDZ_RUN_TIMEOUT_SECS` (a user reaching for "effectively unbounded") must behave as a huge
+    // timeout, not overflow. Regression: `new_store` computed `secs * 1000` — for a large `secs` that
+    // overflows the u64 millis product (a PANIC in debug; in release it WRAPS to a tiny value → a huge
+    // timeout inverts into a near-instant trap, the same class of bug as SECS=0). `saturating_mul` clamps
+    // it to a giant tick count instead. Pick a `secs` whose `*1000` would wrap to a SMALL number
+    // (`u64::MAX/1000 + 1`), which pre-fix produced a tiny deadline: a trivial program must still RUN.
+    let (dir, wasm) = compile_component(
+        "bigtimeout",
+        "seven",
+        "(module m (def (seven) 7) (export seven))",
+    );
+    let secs = (u64::MAX / 1000 + 1).to_string();
+    let (ok, out, err) = run_with_env(
+        "CDZ_RUN_TIMEOUT_SECS",
+        &secs,
+        &["run", wasm.to_str().unwrap(), "--call", "seven"],
+    );
+    assert!(
+        ok,
+        "a huge timeout must not overflow into a trap/panic: {err}"
+    );
+    assert_eq!(
+        out.trim(),
+        "7",
+        "the program runs under a huge timeout: {out}"
+    );
+    assert!(
+        !err.contains("interrupt") && !err.contains("overflow"),
+        "no epoch interrupt or overflow panic under a giant timeout: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn cdz_run_on_a_source_file_gives_an_actionable_diagnostic_not_a_wasm_parse_error() {
     // `cdz run foo.sexp` (a SOURCE file passed by mistake) must NOT surface the cryptic
     // "invalid component: failed to parse WebAssembly module" — it should point at the real paths

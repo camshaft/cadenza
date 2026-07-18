@@ -3804,3 +3804,4 @@ todo	two same-signature Bytes-returning closures share one call — second
 todo	two same-signature String-returning closures share one call
 todo	two same-signature closures alongside a plain export all coexist
 todo	two same-signature closures alongside a plain export — the plain export runs
+todo	two specializations of one driver on different closures do not collide in the spec memo
