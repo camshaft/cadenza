@@ -81,3 +81,10 @@
 ; (likely: when threading an if/match whose COND/SCRUTINEE is a connective-desugar that advances state, the
 ; if's out-state must be the taken-branch's, or hoist the connective's rhs advance out to a let before the if).
 ; NOTE: `not` is unaffected (threads its operand directly, no if-desugar) — matches the control.
+
+; ---
+; RESOLVED-PENDING-MERGE (corpus-bugfix 2026-07-17, per v-effects): FIXED in MR 42ed25544. Fix = hoist
+; Site 5: bind a performing condition/scrutinee to a let so it becomes a let-init that Site 4 distributes
+; (brings the inline form to parity with the already-working let-bound twin). run(true) -> 2 (was 1);
+; all faces (and/or in cond, nested, short-circuit) verified; corpus + unit test + 3 baselines shipped.
+; Promote/close on land.

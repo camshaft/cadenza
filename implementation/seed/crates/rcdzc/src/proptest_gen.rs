@@ -122,8 +122,8 @@ pub fn synthesize(ast: &mut Arenas) {
             // A stacked `@exhaustive @test` leaves a MIDDLE `(@ test (def…))` node in the arena; rewrite it
             // to the def too, so `strip_annotations`'s full-arena scan does not re-record the compound def
             // as a test (which would revive the boundary decline).
-            if let Some(mid) = plan.nested_ann {
-                ast.structure[mid.0 as usize] = crate::ast::Struct::List(inner_children);
+            for &mid in &plan.nested_anns {
+                ast.structure[mid.0 as usize] = crate::ast::Struct::List(inner_children.clone());
             }
         }
     }
@@ -166,12 +166,13 @@ struct TestPlan {
     /// `@exhaustive` marker and the `cdz test` runner declines it cleanly — rather than the whole file
     /// aborting at the compound param's export boundary (the pre-fix behavior).
     exhaustive: bool,
-    /// A NESTED annotation node to ALSO neutralize, when the source stacked `@exhaustive @test`
-    /// (`(@ exhaustive (@ test (def…)))`) — the middle `(@ test …)` node. `strip_annotations` scans EVERY
-    /// arena node (not just root-reachable ones), so if this middle node is left intact it would still
-    /// record the original compound-param def as a test → the boundary decline this pass avoids. `None`
-    /// for a single (unstacked) annotation.
-    nested_ann: Option<StructId>,
+    /// NESTED annotation nodes to ALSO neutralize, when the source STACKED annotations above the def —
+    /// `@exhaustive @test` (`(@ exhaustive (@ test (def…)))`) or a verification wrapper `@test @requires`/
+    /// `@test @ensures` (`(@ test (@ (requires Q) (def…)))`). Each middle `(@ … (def…))` node must be
+    /// rewritten to the def too: `strip_annotations` scans EVERY arena node (not just root-reachable ones),
+    /// so a left-intact middle node would re-record the original compound-param def as a test → the boundary
+    /// decline this pass avoids. Empty for a single (unstacked) annotation. In peel order (outermost-first).
+    nested_anns: Vec<StructId>,
 }
 
 /// A type this pass can GENERATE, and the recursive shape of its `<gen:T>` expression (each built from
@@ -180,7 +181,7 @@ struct TestPlan {
 /// type outside this set (`Char`, a bare/unresolved type) is not (yet) generatable — `classify_ty` returns
 /// `None`, so the `@test` declines at the boundary as before.
 #[derive(Clone)]
-enum GenTy {
+pub enum GenTy {
     /// An integer type (`Int8`…`UInt64`): `<gen>` = `((. Test gen))` (the int at the element width).
     Int,
     /// `Bool`: `<gen>` = `(= (% ((. Test gen)) 2) 0)` (the gen int's parity → a ~50/50 boolean).
@@ -200,6 +201,7 @@ enum GenTy {
     /// `Test.gen % k` and constructs `((. NAME V) <gen:PAYLOAD>)` (a nullary variant is just `(. NAME V)`).
     /// Carries the sum's NAME and each variant's `(ctor-name, optional payload GenTy)`.
     Sum {
+        #[allow(dead_code)] // read by the cdz-test counterexample renderer, not within this crate
         type_name: String,
         variants: Vec<(String, Option<GenTy>)>,
     },
@@ -231,16 +233,33 @@ fn plan_for_item(
         return None;
     }
     let exhaustive = ann_name == "exhaustive";
-    // The inner may itself be a `(@ test …)` when `@exhaustive` STACKS on `@test` (`@exhaustive @test def`
-    // → `(@ exhaustive (@ test (def…)))`); peel one such nested annotation to reach the `(def …)`, and
-    // remember the MIDDLE node so `synthesize` also neutralizes it (else `strip_annotations` re-records the
-    // compound def as a test). A single annotation is the common case (`inner` is already the def).
-    let (inner, nested_ann) = match ast.as_form(inner, "@") {
-        Some(nested) if nested.first().and_then(|&n| ast.as_name(n)) == Some("test") => {
-            (*nested.get(1)?, Some(inner))
+    // The inner may itself be one or more STACKED annotations before the `(def …)`:
+    //   • `@exhaustive @test def` → `(@ exhaustive (@ test (def…)))` — a nested `@test`;
+    //   • `@test @requires(Q) def` / `@test @ensures(Q) def` → `(@ test (@ (requires Q) (def…)))` — a
+    //     verification wrapper whose inner-`@` head is a call-style `(requires Q)`/`(ensures Q)` LIST, not a
+    //     bare name. verify_enforce runs BEFORE this pass and rewrites such a def's BODY in place but LEAVES
+    //     the `(@ (requires|ensures …) …)` wrapper (so strip_annotations still records the predicate), so a
+    //     COMPOUND-param def under a @requires/@ensures wrapper must be peeled here too or its `-gen` wrapper
+    //     is never synthesized (→ the compound param declines at the boundary).
+    // Peel every such layer to reach the `(def …)`, remembering each MIDDLE node so `synthesize` neutralizes
+    // it (else strip_annotations re-records the compound def as a test). A single annotation is the common
+    // case (`inner` is already the def, no peel).
+    let mut inner = inner;
+    let mut nested_anns: Vec<StructId> = Vec::new();
+    while let Some(nested) = ast.as_form(inner, "@") {
+        let &head = nested.first()?;
+        // A peelable layer's head is `test`/`exhaustive` (bare name) OR a call-style `(requires …)`/
+        // `(ensures …)` application. Anything else (already a `(def …)`, or an unknown annotation) stops.
+        let peelable = ast.as_name(head) == Some("test")
+            || ast.as_name(head) == Some("exhaustive")
+            || ast.as_form(head, "requires").is_some()
+            || ast.as_form(head, "ensures").is_some();
+        if !peelable {
+            break;
         }
-        _ => (inner, None),
-    };
+        nested_anns.push(inner);
+        inner = *nested.get(1)?;
+    }
     // INNER must be `(def SIG BODY…)`.
     let def_tail = ast.as_form(inner, "def")?;
     let &sig = def_tail.first()?;
@@ -286,7 +305,7 @@ fn plan_for_item(
         def_name,
         gen_tys,
         exhaustive,
-        nested_ann,
+        nested_anns,
     })
 }
 
@@ -297,6 +316,33 @@ fn plan_for_item(
 /// the synthesis. `items` is the top-level form list, so a bare type name can find its declaration.
 fn classify_ty(ast: &Arenas, ty: StructId, items: &[StructId]) -> Option<GenTy> {
     classify_ty_at(ast, ty, items, 0)
+}
+
+/// The `GenTy` for the parameter of a synthesized `-gen` wrapper — the EXACT generator shape the wrapper
+/// draws, so a caller can decode a shrunk `Test.gen` int pool back into the concrete value (the `cdz test`
+/// counterexample renderer). `proptest_gen` leaves the ORIGINAL def in place beside the wrapper (name =
+/// `<wrapper-without-"-gen">`, its `@test` stripped so it is a plain callee) with its single compound
+/// parameter's TYPE-EXPRESSION intact, so we classify that node the same way the wrapper's generator was
+/// built from it. `None` if the name is not a `-gen` wrapper, no such sibling def exists, it has no
+/// parameter, or the parameter's type is not generatable. Shares `classify_ty`, so a `Sum`/nested shape is
+/// covered identically to the wrapper (no separate decode vocabulary to drift out of sync).
+pub fn gen_ty_of_wrapper_param(db: &crate::db::Db, wrapper_name: &str) -> Option<GenTy> {
+    let orig = wrapper_name.strip_suffix("-gen")?;
+    let def = db.defs.iter().position(|d| d.name == orig)?;
+    let &param = db.defs[def].params.first()?;
+    // The param is a bare name (inference-typed — not generatable here) or an annotated `(: name TYPE)`;
+    // the generatable shape lives in the TYPE node (the annotation's second child).
+    let ty_node = *db.ast.as_form(param, ":")?.get(1)?;
+    // Top-level items — the same list `synthesize`/`classify_sum` scan for a user `(type NAME …)` decl (so a
+    // sum payload resolves). A `(do …)` root's children, or a lone bare-annotated root as a one-item list.
+    let root = db.ast.root;
+    let items: Vec<StructId> = if let Some(do_items) = db.ast.as_form(root, "do").map(<[_]>::to_vec)
+    {
+        do_items
+    } else {
+        vec![root]
+    };
+    classify_ty(&db.ast, ty_node, &items)
 }
 
 /// The type-nesting depth beyond which classification declines. Bounds the recursion so a RECURSIVE sum
@@ -900,6 +946,30 @@ mod tests {
             !has_trap,
             "a bare @ensures (no @test) is not rewritten into a trapping test"
         );
+    }
+
+    /// A COMPOUND-param `@test` under a verification wrapper — `@test @requires(Q)` /`@test @ensures(Q)`,
+    /// i.e. `(@ test (@ (requires|ensures Q) (def (f (: xs (List Int64))) …)))` — must still gain its `-gen`
+    /// wrapper. `plan_for_item` peels the `(requires|ensures …)` layer (verify_enforce leaves that wrapper in
+    /// place, rewriting only the body) to reach the compound def; without the peel the compound param would
+    /// decline at the export boundary. Both stack shapes synthesize `f-gen` and unmark the original `f`.
+    #[test]
+    fn synthesizes_a_wrapper_for_a_compound_param_under_a_requires_or_ensures_wrapper() {
+        for src in [
+            "(do (@ test (@ (requires (< 0 (List.len xs))) (def (f (: xs (List Int64))) unit))) (def (o) 1))",
+            "(do (@ test (@ (ensures (<= 0 (List.len it))) (def (f (: xs (List Int64))) xs))) (def (o) 1))",
+        ] {
+            let db = Db::load(crate::testkit::parse(src));
+            let names: Vec<String> = db
+                .test_defs()
+                .into_iter()
+                .map(|i| db.defs[i].name.clone())
+                .collect();
+            assert!(
+                names.iter().any(|n| n == "f-gen") && !names.iter().any(|n| n == "f"),
+                "a compound param under a @requires/@ensures wrapper gains f-gen: got {names:?}"
+            );
+        }
     }
 
     /// A `@test` with a SCALAR parameter is untouched (the boundary-arg route handles it — no wrapper).

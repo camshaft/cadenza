@@ -1034,6 +1034,45 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
     );
 }
 
+/// The counterexample-VALUE render covers a user SUM parameter: a failing property over a `(type Res (Ok
+/// Int64) (Err Int64))` reports the concrete failing VALUE (`never_ok(Ok(0))` — the variant name + its
+/// decoded payload) rather than the raw driver ints. The runner classifies the wrapper's param via
+/// `proptest_gen::gen_ty_of_wrapper_param` (the SAME `GenTy` the generator was built from), so the sum's
+/// variant selection + payload decode mirror the wrapper exactly. Complements the structural List/Tuple/
+/// Record renders (pinned in the list-param test). Written in sexpr (a user sum type).
+#[test]
+fn a_failing_sum_property_reports_the_decoded_variant_value() {
+    // The counterexample's SUM payload is decoded by running the `@test` body under the runtime, which
+    // needs the content-addressed store; skip when it's absent (the storeless `test` job) — the
+    // store-having `gate` + `@test suites` jobs exercise this fully. See `store_present`.
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — @test bodies execute under the runtime"
+        );
+        return;
+    }
+    let d = dir("sum-counterexample");
+    // `never_ok` traps whenever the generated `Res` is an `Ok` — so a counterexample IS an `Ok(_)`. The
+    // render must show `never_ok(Ok(<int>))`, NOT `generated ints [..]`.
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do (type Res (Ok Int64) (Err Int64)) \
+           (@ test (def (never-ok (: r Res)) \
+             (match r (((. Res Ok) v) (trap \"ok\")) (((. Res Err) v) unit)))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, _) = run(&["test", &f, "--seed", "0"]);
+    assert!(!ok, "a false sum property fails: {stdout}");
+    // The counterexample renders the decoded SUM VALUE via the original test name — a variant ctor with its
+    // payload — NOT the opaque raw driver ints.
+    assert!(
+        stdout.contains("counterexample: never-ok(Ok(")
+            && !stdout.contains("counterexample: generated ints"),
+        "a failing sum property shows the decoded variant value (Ok(<payload>)), not raw ints: {stdout}"
+    );
+}
+
 // NOTE: the two TESTED-tier `@test @ensures` integration tests (a true postcondition passes over trials; a
 // false one fails with a counterexample) MOVED OUT of this file in the `@ensures`-ownership lockstep. `@ensures`
 // enforcement — bare AND `@test`-stacked — is now v-verification's `verify_enforce::enforce` pass (it rewrites a

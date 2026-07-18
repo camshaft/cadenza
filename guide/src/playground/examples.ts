@@ -524,6 +524,38 @@ export const EXAMPLES: Example[] = [
     expected: "61",
   },
   {
+    // Shows off: backtracking search — count the solutions to the N-queens puzzle. A partial placement
+    // is a list of column positions (one per row placed so far); `safe` rejects a column that shares a
+    // column or diagonal with an earlier queen; solve/try-cols recurse row by row, summing the counts.
+    // The classic 8x8 board has 92 solutions.
+    name: "N-queens (count solutions)",
+    surface: "sexpr",
+    source: `(do
+  (def (at xs i) (match (List.at xs i) ((Some v) v) ((None) (- 0 1))))
+  (def (adiff a b) (if (> a b) (- a b) (- b a)))
+  ; Is this column safe in the current row, given the columns already placed above?
+  (def (safe placed col row i)
+    (if (= i row)
+        true
+        (let ((pc (at placed i)))
+          (if (= pc col) false
+          (if (= (adiff pc col) (adiff i row)) false
+          (safe placed col row (+ i 1)))))))
+  ; Try every column in the current row; sum the solution counts.
+  (def (try-cols n placed row col acc)
+    (if (= col n)
+        acc
+        (try-cols n placed row (+ col 1)
+          (if (safe placed col row 0)
+              (+ acc (solve n (List.push placed col) (+ row 1)))
+              acc))))
+  (def (solve n placed row)
+    (if (= row n) 1 (try-cols n placed row 0 0)))
+  (def (main) (solve 8 (: (list) (List Int64)) 0))
+  (export main))`,
+    expected: "92",
+  },
+  {
     // Shows off: rebuilding a list in reverse by pushing elements from the end onto a fresh list.
     // The prelude List has no reverse, so we walk indices downward. [1 2 3 4 5] -> [5 4 3 2 1].
     name: "Reverse a list",

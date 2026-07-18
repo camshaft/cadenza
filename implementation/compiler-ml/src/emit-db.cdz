@@ -89,45 +89,75 @@ def wasm-op(op: Int64) =
 /// until W3 adds i64-relational + the i32→i64 result convention).
 def is-arith-op(op: Int64) = (op == 43) or (op == 45) or (op == 42) or (op == 47) or (op == 37)
 
-/// Is `c` in the current emit SUBSET (so `emit-module` should emit rather than decline)? W2: `CNum` and
-/// `CBin` over arithmetic ops, recursively. `CVar`/`CLet` (wasm locals) = W2b; `CIf`/comparison = W3.
-/// A SEPARATE predicate (not an `Option` return threaded through the byte-build) so `emit-instrs` can be a
-/// TOTAL `Bytes` producer — matching an `Option(Bytes)` payload and re-concatenating it through the module
-/// build tripped a self-hosted-compiler invalid-wasm emit (see the `zz`-probe finding in the log), so the
-/// backend keeps the decline decision (a scalar `Bool`) OFF the heap-`Bytes` path.
+/// Is `c` in the current emit SUBSET (so `emit-module` should emit rather than decline)? W2: `CNum` +
+/// `CBin` over arithmetic; W2b: + `CVar`/`CLet` (wasm locals). `CIf`/comparison = W3. A SEPARATE predicate
+/// (not an `Option` return threaded through the byte-build) so `emit-instrs` stays a TOTAL `Bytes` producer
+/// — matching an `Option(Bytes)` payload and re-concatenating it through the module build tripped a
+/// self-hosted-compiler invalid-wasm emit (log), so the decline decision (a scalar `Bool`) stays OFF the
+/// heap-`Bytes` path.
 def can-emit(c: Core) = match c with
   | Core.CNum(_) => true
+  | Core.CVar(_) => true
   | Core.CBin(op, l, r) => is-arith-op(op) and can-emit(l) and can-emit(r)
+  | Core.CLet(_, v, body) => can-emit(v) and can-emit(body)
   | _ => false
 
-/// Emit the INSTRUCTION bytes for a Core term onto the i64 operand stack — TOTAL (returns `Bytes`, never an
-/// `Option`). W2 subset: `CNum` (i64.const), `CBin` over arithmetic (emit left, emit right, then the i64 op
-/// — postfix, so operands are on the stack when the op runs). An out-of-subset node emits empty `Bytes`
-/// (never reached in practice: `emit-module` gates on `can-emit` first). Keeping this total + Option-free is
-/// the fix for the invalid-wasm-when-a-matched-Bytes-payload-threads-through-the-module-build trigger.
-def emit-instrs(c: Core) = match c with
+/// The position of `x` in `xs` (0-based), or -1 if absent. Used to map a CLet binder node-id to its wasm
+/// LOCAL INDEX (index = order of the binder in the pre-order binder list). Scalar-only (List Int64), so no
+/// heap value crosses the recursion.
+def index-of(xs: List(Int64), x: Int64) = index-of-go(xs, x, 0)
+def index-of-go(xs: List(Int64), x: Int64, i: Int64) = match xs with
+  | [] => 0 - 1
+  | [h, .. t] => (if h == x then i else index-of-go(t, x, i + 1))
+
+/// Collect every `CLet` binder node-id in `c`, in PRE-ORDER — this list's positions ARE the wasm local
+/// indices (the i-th CLet binder gets local `i`). Scalar `List(Int64)`. Non-CLet nodes contribute nothing;
+/// CBin/CLet recurse into children (a CLet contributes its own binder THEN its value's + body's binders).
+def collect-binders(c: Core) = match c with
+  | Core.CLet(b, v, body) => List.push(List.concat(collect-binders(v), collect-binders(body)), b)
+  | Core.CBin(_, l, r) => List.concat(collect-binders(l), collect-binders(r))
+  | _ => []
+
+/// Emit the INSTRUCTION bytes for a Core term onto the i64 operand stack — TOTAL (`Bytes`, never `Option`).
+/// `binders` is the pre-order CLet-binder list (index = local slot). `CNum` → i64.const; `CBin` → postfix
+/// left/right/op; `CVar(b)` → `local.get <index-of b>` (0x20); `CLet(b, v, body)` → emit `v`, `local.set
+/// <index-of b>` (0x21), emit `body` (so the binding is a wasm local, mirroring eval-db's env{b→v}). The
+/// `binders` list is READ-ONLY + scalar (like eval-db's env threading), so no heap payload crosses the
+/// recursion. Out-of-subset (unreached — `emit-module` gates on `can-emit`) → empty.
+def emit-instrs(c: Core, binders: List(Int64)) = match c with
   | Core.CNum(v) => Bytes.concat(b1(66), sleb(v))                       // 0x42 i64.const <sleb v>
-  | Core.CBin(op, l, r) => Bytes.concat(emit-instrs(l), Bytes.concat(emit-instrs(r), b1(wasm-op(op))))
+  | Core.CVar(b) => Bytes.concat(b1(32), uleb(index-of(binders, b)))    // 0x20 local.get <idx>
+  | Core.CBin(op, l, r) =>
+      Bytes.concat(emit-instrs(l, binders), Bytes.concat(emit-instrs(r, binders), b1(wasm-op(op))))
+  | Core.CLet(b, v, body) =>
+      // eval `v`, store into the binder's local, then eval `body` (which reads the local via CVar).
+      Bytes.concat(emit-instrs(v, binders),
+        Bytes.concat(b1(33), Bytes.concat(uleb(index-of(binders, b)), emit-instrs(body, binders))))  // 0x21 local.set
   | _ => Bytes.of([])
 
-/// Wrap emitted instructions into a function body: `00`=zero local groups (W2 uses no locals — CLet is W2b),
-/// then the instructions, then `0b`=end.
-def body-of(instrs: Bytes) = Bytes.concat(b1(0), Bytes.concat(instrs, b1(11)))
+/// Wrap emitted instructions into a function body: the LOCALS vector then the instructions then `0b` end.
+/// `nlocals` i64 locals declare as ONE group `<uleb nlocals> 7e` (all locals are i64); `nlocals == 0` is the
+/// empty-vector `00` (W2 constant/arith case). Each CLet binder occupies one local (see `collect-binders`).
+def body-of(instrs: Bytes, nlocals: Int64) =
+  (let locals = (if nlocals == 0 then b1(0)                              // 00: zero local groups
+                 else Bytes.concat(b1(1), Bytes.concat(uleb(nlocals), b1(126)))) in  // 1 group: <n> i64(0x7e)
+   Bytes.concat(locals, Bytes.concat(instrs, b1(11))))
 
 /// Code section wrapping a single function body: `01`=one body, `<uleb bodylen>`, `<body>`.
 def code-section(body: Bytes) =
   section(10, Bytes.concat(b1(1), Bytes.concat(uleb(Bytes.len(body)), body)))
 
-/// Emit a whole module for a `main` Core term whose body is in the current emit subset (W1: CNum; W2: +
-/// CBin over arithmetic). Returns `None` for an out-of-subset shape (CVar/CLet = W2b, CIf/comparison = W3)
-/// so an unsupported program declines rather than emitting a wrong module. The value of a nullary `main`
-/// module IS its body's value. `can-emit` gates the decision (scalar); `emit-instrs` builds the bytes total.
+/// Emit a whole module for a `main` Core term in the emit subset (W1 CNum; W2 CBin arith; W2b CVar/CLet).
+/// Returns `None` for an out-of-subset shape (CIf/comparison = W3) so an unsupported program declines rather
+/// than emitting a wrong module. The value of a nullary `main` module IS its body's value. `can-emit` gates
+/// (scalar); `emit-instrs` builds the bytes total, threading the pre-order binder list for local indices.
 def emit-module(c: Core) =
   (if can-emit(c)
-   then Option.Some(Bytes.concat(preamble(),
-          Bytes.concat(type-section(),
-            Bytes.concat(func-section(),
-              Bytes.concat(export-section(), code-section(body-of(emit-instrs(c))))))))
+   then (let binders = collect-binders(c) in
+         Option.Some(Bytes.concat(preamble(),
+           Bytes.concat(type-section(),
+             Bytes.concat(func-section(),
+               Bytes.concat(export-section(), code-section(body-of(emit-instrs(c, binders), List.len(binders)))))))))
    else Option.None(unit))
 
 /// TESTS ----------------------------------------------------------------------------------------------
@@ -136,11 +166,18 @@ def emit-module(c: Core) =
 /// Byte `i` of `b`, or -1 if out of range (so a test can assert a fixed offset totally).
 def byte-of(b: Bytes, i: Int64) = match Bytes.at(b, i) with | Option.Some(x) => x | Option.None(_) => 0 - 1
 
+/// Does `b` contain the byte `x` anywhere? (a test helper for opcode-presence checks). Fuel = the buffer
+/// length, walked by index.
+def contains-byte(b: Bytes, x: Int64) = contains-byte-go(b, x, 0)
+def contains-byte-go(b: Bytes, x: Int64, i: Int64) =
+  (if i == Bytes.len(b) then false
+   else (if byte-of(b, i) == x then true else contains-byte-go(b, x, i + 1)))
+
 @test
 def em-cnum-emits-a-module() =
-  // a CNum emits Some(bytes); a non-CNum (W1 out-of-subset) emits None.
+  // a CNum emits Some(bytes); a fully out-of-subset shape (CIf, W3) emits None.
   (match emit-module(Core.CNum(42)) with
-    | Option.Some(_) => (match emit-module(Core.CVar(0)) with | Option.None(_) => unit | _ => trap("CVar out of W1 subset"))
+    | Option.Some(_) => (match emit-module(Core.CIf(Core.CNum(1), Core.CNum(2), Core.CNum(3))) with | Option.None(_) => unit | _ => trap("CIf out of subset"))
     | Option.None(_) => trap("CNum emits a module"))
 
 @test
@@ -246,12 +283,51 @@ def em-nested-cbin-emits() =
     | Option.Some(_) => unit
     | Option.None(_) => trap("nested arith emits a module"))
 
-@test
-def em-cvar-clet-out-of-subset-decline() =
-  // CVar / CLet need wasm locals (W2b) — not yet emitted, so emit-module declines (no wrong module).
-  (match emit-module(Core.CVar(0)) with
-    | Option.None(_) => (match emit-module(Core.CLet(0, Core.CNum(1), Core.CVar(0))) with
-                          | Option.None(_) => unit | _ => trap("CLet out of subset"))
-    | _ => trap("CVar out of subset"))
+/// W2b -------------------------------------------------------------------------------------------------
 
-export { emit-module, emit-instrs, can-emit, wasm-op, uleb, sleb }
+@test
+def em-clet-emits-a-module() =
+  // `let x = 2 in x * 3` = CLet(7, CNum 2, CBin(*, CVar 7, CNum 3)) is in the W2b subset → emits Some.
+  (match emit-module(Core.CLet(7, Core.CNum(2), Core.CBin(42, Core.CVar(7), Core.CNum(3)))) with
+    | Option.Some(_) => unit
+    | Option.None(_) => trap("CLet emits a module"))
+
+@test
+def em-clet-declares-one-local() =
+  // one CLet → the code-section body starts (after the bodylen) with a locals vector `01 01 7e` (1 group,
+  // 1 i64). Verify the module contains the local.set (0x21) and local.get (0x20) opcodes for the binding.
+  (match emit-module(Core.CLet(7, Core.CNum(2), Core.CVar(7))) with
+    | Option.Some(m) =>
+      (if contains-byte(m, 33) then                       // 0x21 local.set present
+        (if contains-byte(m, 32) then unit else trap("local.get 0x20 present")) else trap("local.set 0x21 present"))
+    | Option.None(_) => trap("CLet emits"))
+
+@test
+def em-cvar-is-local-get-index() =
+  // in `let x = 5 in x`, binder x gets local index 0, so the body's tail is: 42 05 21 00 20 00 0b
+  // (i64.const 5, local.set 0, local.get 0, end). Check the last 5 bytes: 21 00 20 00 0b.
+  (match emit-module(Core.CLet(9, Core.CNum(5), Core.CVar(9))) with
+    | Option.Some(m) =>
+      (let n = Bytes.len(m) in
+       (if (byte-of(m, n - 5) == 33) then                 // 0x21 local.set
+         (if (byte-of(m, n - 4) == 0) then                 // set index 0
+           (if (byte-of(m, n - 3) == 32) then               // 0x20 local.get
+             (if (byte-of(m, n - 2) == 0) then               // get index 0
+               (if (byte-of(m, n - 1) == 11) then unit else trap("ends with end")) else trap("get index 0")) else trap("local.get 0x20")) else trap("set index 0")) else trap("local.set 0x21")))
+    | Option.None(_) => trap("CLet emits"))
+
+@test
+def em-nested-clet-two-locals() =
+  // `let x = 1 in let y = 2 in x + y` → two CLet binders → two locals; module emits. collect-binders puts
+  // both binder ids in the pre-order list (indices 0 and 1), so x→local i, y→local j.
+  (match emit-module(Core.CLet(1, Core.CNum(1), Core.CLet(2, Core.CNum(2), Core.CBin(43, Core.CVar(1), Core.CVar(2))))) with
+    | Option.Some(_) => unit
+    | Option.None(_) => trap("nested CLet emits a module"))
+
+@test
+def em-cif-still-out-of-subset() =
+  // CIf is W3 — still declines (no wrong module), so the subset boundary stays honest.
+  (match emit-module(Core.CIf(Core.CNum(1), Core.CNum(2), Core.CNum(3))) with
+    | Option.None(_) => unit | _ => trap("CIf is out of subset (W3)"))
+
+export { emit-module, emit-instrs, can-emit, collect-binders, wasm-op, uleb, sleb }

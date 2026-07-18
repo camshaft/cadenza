@@ -4099,6 +4099,29 @@ mod tests {
     }
 
     #[test]
+    fn document_highlight_handler_returns_none_on_an_unopened_document() {
+        // The unopened-document branch (`self.docs.get(uri)?`): a highlight request over a URI the server
+        // never saw a `didOpen` for must be None — NOT the empty-list that a resolved-but-unreferenced
+        // cursor yields, and never a panic. This is the None/empty distinction the sibling test documents;
+        // pins it directly (document_highlight was the one read handler missing an explicit unopened test,
+        // unlike the 8 in read_handlers_return_none_on_a_document_that_is_not_open and the folding/selection/
+        // signatureHelp handlers, which each have one).
+        let (server, _client) = memory_server();
+        let params = DocumentHighlightParams {
+            text_document_position_params: lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: test_uri() },
+                position: Position::new(0, 0),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        assert!(
+            server.document_highlight(&params).is_none(),
+            "documentHighlight on an unopened document must be None"
+        );
+    }
+
+    #[test]
     fn document_highlight_capability_is_advertised() {
         // The server must advertise documentHighlight so a client requests it (the caret same-symbol
         // highlight is off by default unless the server offers the provider).

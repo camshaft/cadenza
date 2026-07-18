@@ -256,6 +256,21 @@ export function setCellSource(cells: Cell[], index: number, newSource: string): 
   return next;
 }
 
+/// Rewrite the markdown of the PROSE cell at `index` (the prose counterpart of `setCellSource` — operator
+/// UX: editing a notebook's prose, not just its code cells). Preserves the cell's stable `id` (React key)
+/// so an in-place prose editor keeps focus/cursor across the edit. Throws if `index` is a code cell (the
+/// caller edits code via `setCellSource`) — the two kinds carry different fields (`markdown` vs `source`),
+/// so a caller must pick the right setter. Round-trips through `serializeDocument` (which emits a prose
+/// cell's `markdown` verbatim), so re-parsing the serialized doc yields the edited prose.
+export function setProseSource(cells: Cell[], index: number, newMarkdown: string): Cell[] {
+  const cell = cells[index];
+  if (!cell) throw new RangeError(`setProseSource: no cell at index ${index}`);
+  if (cell.kind !== "prose") throw new TypeError(`setProseSource: cell ${index} is code, not prose`);
+  const next = cells.slice();
+  next[index] = { ...cell, kind: "prose", markdown: newMarkdown };
+  return next;
+}
+
 /// Stamp each cell with a stable monotonic `id` (document order: 0, 1, 2, …), returning a NEW cell array.
 /// A stacked per-cell UI keys its editor list by `id` so a cell keeps identity across edits (an edit via
 /// `setCellSource` preserves the id) — index keys would remount/lose focus on insert/reorder/delete (P0

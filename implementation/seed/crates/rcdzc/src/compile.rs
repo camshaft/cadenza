@@ -2404,6 +2404,32 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             }
         }
     }
+    // `@ensures`-CAPTURE-GUARD REJECT (breaker 2026-07-17). `@ensures(Q)` enforcement binds the def's RESULT
+    // to `it` (`(let ((it BODY)) (if Q it (trap)))`, `verify_enforce`). If a PARAMETER is literally named
+    // `it`, that binder would SHADOW the param — so `verify_enforce` SKIPS the `@ensures` enforcement for such
+    // a def. Skipping SILENTLY is a footgun: the author wrote a postcondition that is quietly NOT enforced (a
+    // violating result returns with no trap, no diagnostic). REJECT it instead — a stated contract is enforced
+    // OR the author is told precisely why not, never silently dropped (the (D) philosophy). The fix is trivial
+    // (rename the param), so name it. Anchored at the first `@ensures` predicate occ (good locality).
+    for di in 0..db.defs.len() {
+        let ensures = db.ensures_of(di);
+        let Some(&first_ensures) = ensures.first() else {
+            continue; // no @ensures on this def — the guard only applies to @ensures
+        };
+        if def_param_names(db, di).iter().any(|n| n == "it") {
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    "a `def` with a parameter named `it` cannot carry `@ensures`: the `@ensures` result \
+                     binder `it` would shadow the parameter, so the postcondition would be silently \
+                     unenforced — rename the parameter (e.g. `it` → `x`) so the postcondition can bind the \
+                     result"
+                        .to_string(),
+                )
+                .at(first_ensures),
+            );
+        }
+    }
     // SEMANTIC validation of a CONSTRUCTOR-EXPORT `(export (. T A))` / `(export (. T *))` — the opaque-types
     // surface. `malformed_exports` (above) accepts its SHAPE, and the linker's `as_ctor_export` records the
     // (type, ctor) names WITHOUT checking they exist — so `(export (. T Nonesuch))` (a ctor `T` lacks),

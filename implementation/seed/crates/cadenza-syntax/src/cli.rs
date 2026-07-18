@@ -954,10 +954,12 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
                         } else {
                             String::new()
                         };
+                        // Name the metavar with its real sigil — `,@e` for a splice, `,e` for a single.
+                        let sigil = if risk.is_splice { ",@" } else { "," };
                         eprintln!(
                             "cdz: {}: warning{where_rule}: template binder `{}` may capture the free \
-                             `{}` inside the matched `,{}` — the spliced code's `{}` will resolve to \
-                             the template's binder, not the outer one (rename the binder or match a \
+                             `{}` inside the matched `{sigil}{}` — the spliced code's `{}` will resolve \
+                             to the template's binder, not the outer one (rename the binder or match a \
                              fresh name; --warn-capture is advisory, the rewrite is unchanged)",
                             label(&spec.path),
                             risk.binder,

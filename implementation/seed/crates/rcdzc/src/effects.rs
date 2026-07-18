@@ -2664,6 +2664,56 @@ fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
             }
         }
     }
+    // Site 5: an `if`/`match` whose CONDITION/SCRUTINEE is ITSELF a branch-performing conditional — the shape
+    // a connective in the condition leaves after Site 3 desugars it: `(if (and b (> (St.tick) 0)) t e)` →
+    // Site 3 → `(if (if b (> (St.tick) 0) false) t e)`, an outer `if` whose CONDITION is a branch-performing
+    // `if`. The `If`/`Match` thread arms take the post-CONDITION state as the whole conditional's out-state
+    // (they do not observe a per-branch advance in the CONDITION), so the condition's `tick` advance is
+    // DROPPED — the outer branches thread against the pre-condition seed and a branch `(St.tick)` reads the
+    // stale state (the connective-in-scrutinee silent miscompile: `→ 1` where `→ 2` is correct). Bind the
+    // performing condition/scrutinee to a fresh `let` so the outer conditional reads a plain scalar and the
+    // performing conditional becomes a `let`-INIT — exactly the shape Site 4 distributes (which threads each
+    // branch's advance through the continuation). One binding away is the WORKING let-bound form (verified:
+    // a hand let-bound connective threads correctly). The bound name is `#cv{…}` (unspellable). Only fires
+    // when the condition/scrutinee itself performs in a branch (a pure condition needs no lift).
+    {
+        let cond_scrut = match resolved_of(db, node) {
+            Resolved::If { cond, .. } => Some(cond),
+            Resolved::Match { scrutinee, .. } => Some(scrutinee),
+            _ => None,
+        };
+        if let Some(cs) = cond_scrut
+            && conditional_branch_performs(db, cs, ctx)
+        {
+            // `(if CS t e)` ≡ `(let ((#cv CS)) (if #cv t e))`; `(match CS arms)` ≡ `(let ((#cv CS)) (match
+            // #cv arms))`. Rebuild the conditional with the condition/scrutinee replaced by a fresh `#cv`
+            // reference, wrapped in a `let` binding `#cv` to the original (performing) condition/scrutinee.
+            // The next fixpoint pass sees the `let`-init branch-performing conditional and Site 4 distributes
+            // it. The bound name is a fresh unspellable `#cv{node}` so it cannot collide with a user binder.
+            let cv_name = format!("#cv{}", node.0);
+            let cv_binder = db.push_atom(Leaf::Name(cv_name.clone()));
+            let cv_ref = db.push_atom(Leaf::Name(cv_name));
+            let rebuilt = match resolved_of(db, node) {
+                Resolved::If { then_, else_, .. } => {
+                    let if_head = db.push_atom(Leaf::Name("if".to_string()));
+                    db.push_list(vec![if_head, cv_ref, then_, else_])
+                }
+                Resolved::Match { arms, .. } => {
+                    let match_head = db.push_atom(Leaf::Name("match".to_string()));
+                    let mut children = vec![match_head, cv_ref];
+                    for (pat, body) in arms {
+                        children.push(db.push_list(vec![pat, body]));
+                    }
+                    db.push_list(children)
+                }
+                _ => unreachable!("cond_scrut is Some only for If/Match"),
+            };
+            let pair = db.push_list(vec![cv_binder, cs]);
+            let bindings = db.push_list(vec![pair]);
+            let let_head = db.push_atom(Leaf::Name("let".to_string()));
+            return Some(db.push_list(vec![let_head, bindings, rebuilt]));
+        }
+    }
     // Not a site here — recurse into children, rebuilding with the FIRST rewritten child (so a
     // conditional nested inside a `let` init / branch / arm is lifted within that sub-position, then the
     // enclosing pass lifts it further if needed).

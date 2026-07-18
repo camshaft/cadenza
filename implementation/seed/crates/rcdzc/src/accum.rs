@@ -37,6 +37,18 @@
 //!    and each original binder — annotations and all — carries over so a function-typed parameter still
 //!    types.
 //!
+//! ## Known limitation: SELF-recursion only, not MUTUAL recursion (a defined trap, by design)
+//! This transform matches a SELF-recursive def — the combine's single recursive call names the def's OWN
+//! name. A MUTUALLY-recursive linear fold — `suma n = (+ n (sumb (- n 1)))` and `sumb n = (+ n (suma (- n
+//! 1)))` — is NOT rewritten, so it compiles to plain recursive calls and STACK-EXHAUSTS at depth (~100k),
+//! whereas the self-recursion twin loops in O(1) stack. This is a MISSED OPTIMIZATION, not a correctness
+//! bug: stack exhaustion is a DEFINED trap and the value is exact until then. It is left un-rewritten
+//! DELIBERATELY (ruled 2026-07-17): the mutual pattern is niche, and a group-wide accumulator transform
+//! (detect the mutual-recursion SCC, match each member's combine against its SIBLING, synthesize the whole
+//! accumulator group, re-seed every entry — all-or-nothing) is delicate to add to this pass. If real code
+//! ever needs it, add a NARROW two-member-cycle version (the backend already handles the target shape:
+//! separate per-member loops with mutual tail-calls run in O(1) stack).
+//!
 //! ## Soundness (the operator's call: checked `+` too, accept a trap-point change)
 //! Reassociating a CHECKED `+`/`*` can move WHERE an overflow traps (a partial sum overflows at a
 //! different step under a left vs right fold). The transform preserves the FINAL value exactly; only the

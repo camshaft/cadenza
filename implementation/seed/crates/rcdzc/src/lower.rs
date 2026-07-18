@@ -1331,6 +1331,30 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: mixed-unit combine (convert to reference)");
                     lower_quantity_combine(db, id, prim, args[0], args[1])
                 }
+                // SAME-UNIT quantity COMPARISON: two quantities of the SAME unit (same dimension AND scale)
+                // compared with `< > <= >= =`. The units are identical, so no conversion is needed — the
+                // comparison is exactly the erased inner magnitudes' comparison. A CONSTANT pair already
+                // folds below (both reach as `Core::ConstInt`/etc.), and same-unit ARITHMETIC `+`/`-` already
+                // runs via the inner-type arith path — but a RUNTIME comparison (a `q` bound from a
+                // `Map.lookup`/`List.at` Option arm, or a parameter) fell to the generic `is_scalar` gate,
+                // which does NOT peel `Ty::Qty`, so `(< q …)` declined "comparison of a compound value needs
+                // a heap walk". Rewrite it as `(op (Qty.value a) (Qty.value b))` — the explicit unwrap that
+                // erases both units to their bare inner numerics — and re-lower, so it takes the ordinary
+                // scalar/float/bigint/rational comparison path over the inners. GUARDED on `same-unit`: a
+                // DIFFERENT-scale pair is handled by the `quantity_scales_differ` arm ABOVE (which CONVERTS
+                // first), so this never compares raw across scales (verified: a `km` vs `m` param routes to
+                // conversion, not here — the scale now survives the type round-trip after the encode_ty fix).
+                // Same-DIMENSION is required — a cross-dimension pair is CDZ0501 in `check_application`.
+                Some(prim @ (Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge | Prim::Eq))
+                    if args.len() == 2 && quantity_same_unit_pair(db, &args) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: same-unit quantity comparison → compare erased magnitudes");
+                    let lv = qty_magnitude_occ(db, args[0]);
+                    let rv = qty_magnitude_occ(db, args[1]);
+                    let head = db.push_name(intrinsic_name(prim));
+                    let app = db.push_list(vec![head, lv, rv]);
+                    core_of(db, app)
+                }
                 // A quantity over a FLOAT magnitude combined with `+`/`-`/`*`/`/` runs the INNER numeric
                 // type's operation — the plain `T` op (units-of-measure.md §A Unit Conversion Is The
                 // Arithmetic The Source Denotes: the running arithmetic is the plain `T` operation on erased
@@ -3294,6 +3318,33 @@ fn lower_let(
             {
                 return core_of(db, value);
             }
+        }
+    }
+    // DIVERGING-INIT SHORT-CIRCUIT: a binding whose INIT is an unconditional `(trap …)` DIVERGES before the
+    // binding is ever bound, so the body (and every later binding) is UNREACHABLE — the whole `let` IS the
+    // trap. Lower it to the trap init directly. Without this the body is lowered against a binding whose type
+    // is the trap's `Never`/`Any` (not a machine type): a `(let ((it (trap …))) (if (> it 0) …))` reaches the
+    // comparison lowering, where `is_scalar(it)` reads FALSE (a bottom type is not Int/Bool) and mis-declines
+    // "comparison of a compound value needs a heap walk" — a construct that appears nowhere in the program
+    // (the check/compile divergence v-verification's reversed `@ensures`/`@requires` desugar surfaced: it
+    // emits `(let ((it (trap "@requires…"))) (if (> it 0) it (trap "@ensures…")))` in the precondition-fail
+    // branch). Pre-filtered to a `Prim::Trap`-headed init (like the `Resolved::Try` filter above) so a normal
+    // binding's lowering decision is never perturbed. Every EARLIER binding must be host-call-free — its value
+    // is discarded when the trap diverges, so an ordered host call would be wrongly elided (a trap in an
+    // earlier init is itself the diverging point, handled by that earlier iteration; a pure/trapping earlier
+    // init is fine — same soundness gate as the Try short-circuit, minus the trap-freedom the operator's §283
+    // ruling already exempts). Only the FIRST diverging init short-circuits (the rest is dead).
+    for (i, &(_name_occ, init)) in bindings.iter().enumerate() {
+        if let Resolved::Apply { head, .. } = resolved_of(db, init)
+            && matches!(
+                crate::eval::meta_apply_of(db, head).or_else(|| crate::eval::prim_of(db, head)),
+                Some(Prim::Trap)
+            )
+            && bindings[..i]
+                .iter()
+                .all(|&(_, prev)| !subtree_reaches_host_call(db, prev))
+        {
+            return core_of(db, init);
         }
     }
     let uses = enclosing_or_collected_region_uses(db, node, bindings, body);
@@ -13049,6 +13100,24 @@ fn quantity_scales_differ(db: &mut Db, args: &[StructId]) -> bool {
     }
 }
 
+/// Whether the two operands are quantities of the SAME unit — same dimension AND same scale (`meter` vs
+/// `meter`, NOT `km` vs `m`). Routes a same-unit quantity COMPARISON through the erased-magnitude compare
+/// (the units are identical, so no conversion). The both-quantity complement of `quantity_scales_differ`
+/// (which routes the DIFFERENT-scale case through conversion); a cross-DIMENSION pair is neither (CDZ0501
+/// in `infer`). Reads the operands' solved units.
+fn quantity_same_unit_pair(db: &mut Db, args: &[StructId]) -> bool {
+    let (a, b) = (
+        crate::infer::type_of(db, args[0]),
+        crate::infer::type_of(db, args[1]),
+    );
+    match (&a, &b) {
+        (crate::ty::Ty::Qty { unit: ua, .. }, crate::ty::Ty::Qty { unit: ub, .. }) => {
+            ua.same_dimension(ub) && ua.scale() == ub.scale()
+        }
+        _ => false,
+    }
+}
+
 /// Lower a MIXED-UNIT combine `(op a b)` where `a` and `b` are quantities of one dimension at different
 /// scales: convert EACH operand to the dimension's REFERENCE unit by its exact scale (`value * num /
 /// den` in the inner type T), then apply `op` at the reference. Folds the CONSTANT case — the operands
@@ -21551,6 +21620,31 @@ mod tests {
         assert!(
             matches!(core_of(&mut db2, body2), Core::If { .. }),
             "a const-if with an ill-formed (unbound-name) untaken branch is NOT folded away"
+        );
+    }
+
+    #[test]
+    fn a_let_binding_a_diverging_trap_init_folds_to_the_trap_not_a_compound_compare() {
+        // A `let` whose INIT is an unconditional `(trap …)` diverges before the binding is bound, so the
+        // body is unreachable — the whole `let` IS the trap. Without the diverging-init short-circuit the
+        // body lowered against a binding typed `Never`/`Any` (the trap's bottom type), and a comparison of
+        // that binding — `(if (> it 0) it (trap))` — reached `is_scalar(it) == false` and mis-declined
+        // "comparison of a compound value needs a heap walk" (a construct absent from the program). This is
+        // the root of the reversed `@ensures`/`@requires`-over-an-effectful-body decline (the desugar emits
+        // `(let ((it (trap "@requires…"))) (if (> it 0) it (trap "@ensures…")))` in the precondition-fail
+        // branch). The let must fold to the trap. Guarded behind an `if` so the trap is in an untaken branch
+        // (a bare diverging main would just be the trap) — the point is the LET's body is not lowered.
+        let ast = crate::testkit::parse(
+            "(module m (def (main (: b Bool)) (if b 1 (let ((it (trap \"x\"))) (if (> it 0) it (trap \"y\"))))) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let body = db.defs[db.def_by_name("main").unwrap()].body.unwrap();
+        // The else-branch `(let ((it (trap …))) …)` must lower to `Core::Trap`, NOT a compound-compare
+        // Poison. Assert the whole body lowers WITHOUT a poison (the `if` keeps a live then-branch `1` and a
+        // trapping else — both machine-representable), which it could not if the let declined.
+        assert!(
+            !matches!(core_of(&mut db, body), Core::Poison(_)),
+            "a let binding a diverging trap init must fold to the trap, not decline compound-compare"
         );
     }
 

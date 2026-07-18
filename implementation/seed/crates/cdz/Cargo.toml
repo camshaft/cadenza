@@ -22,6 +22,10 @@ path = "src/main.rs"
 [dependencies]
 cadenza-syntax = { path = "../cadenza-syntax" }
 rcdzc = { path = "../rcdzc" }
+# The Rust-backend boundary-value render (shared with the corpus gate) — `cdz run-rust` compiles a
+# program `--target rust`, runs it, and renders the result to the SAME canonical s-expr the wasm oracle
+# prints, so the fuzzer's rust-vs-wasm differential compares like-for-like. Pure/dep-free.
+cdz-rust-render = { path = "../cdz-rust-render" }
 # The wasm-component runner, mounted as `cdz run` — one binary on the PATH instead of a separate
 # `cdz-run`. Pulls in wasmtime + the runtime store; that weight is the price of the one-binary story.
 cdz-run = { path = "../cdz-run" }
