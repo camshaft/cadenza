@@ -123,6 +123,76 @@ where
     Ok(cursor)
 }
 
+/// Run ONE round of the live daemon over the shared `log`: drain every event since `from` and PERFORM each
+/// via [`tick_hosted`] (real host primitive + recorded-effect trail), returning `(new_cursor, processed)` —
+/// the count of events ticked. This is the live daemon's testable loop BODY (no sleep/thread); [`run`] is the
+/// thin blocking wrapper that calls it in a poll loop. `kind_of` maps each landed event to the scalar event
+/// kind the interpret program sees (the daemon understands NO events — the caller decides the mapping).
+///
+/// `runtime` is the value-heap runtime wasm, resolved ONCE by the caller. It is content-addressed and the same
+/// across interpret programs, so a genesis supersession ([`crate::boot`]) that keeps the same runtime is picked
+/// up automatically (each [`tick_hosted`] re-reads the LATEST program). A supersession to a program needing a
+/// DIFFERENT runtime hash requires a restart (a minimal-kernel limitation at this rung — the driver resolves
+/// runtime up front, not per tick). Reads the tail under a brief lock (clone + release) so per-event
+/// [`tick_hosted`] can re-lock without nesting.
+///
+/// `kind_of` maps each landed event to `Some(kind)` (a TRIGGER — perform the interpret plan for that scalar
+/// kind) or `None` (SKIP — not a trigger). This skip is load-bearing: the daemon RECORDS its own effects back
+/// into the same log (`prim-*` events) and the genesis is a `program` event, so without a skip the daemon
+/// would re-process its own bookkeeping as triggers and never converge. The cursor still advances PAST skipped
+/// events (they're seen-and-dismissed, not re-read), so a round always drains to the log tail.
+pub fn run_once<L, K>(
+    log: &std::sync::Arc<std::sync::Mutex<L>>,
+    from: crate::Seq,
+    runtime: Vec<u8>,
+    kind_of: K,
+) -> Result<(crate::Seq, usize)>
+where
+    L: Log + Send + 'static,
+    K: Fn(&crate::Event) -> Option<i64>,
+{
+    let events = {
+        let l = log.lock().map_err(|_| anyhow!("log mutex poisoned"))?;
+        l.tail(from)?
+    };
+    let mut cursor = from;
+    let mut processed = 0usize;
+    for event in &events {
+        if let Some(kind) = kind_of(event) {
+            tick_hosted(std::sync::Arc::clone(log), kind, runtime.clone())?;
+            processed += 1;
+        }
+        cursor = event.seq + 1;
+    }
+    Ok((cursor, processed))
+}
+
+/// The LIVE daemon: poll `log` for new events and PERFORM each via [`run_once`], sleeping `poll` between
+/// rounds — the "start the daemon" half realized as a blocking loop. Runs until `should_stop()` returns true
+/// (checked each round, before sleeping) or a tick errors. Starts at `from` and advances the cursor across
+/// rounds. A thin wrapper over [`run_once`] (the tested body) + `std::thread::sleep`; the loop itself carries
+/// no logic. `should_stop` lets a caller (a stop-file poll, a signal flag) end the loop cleanly between rounds.
+pub fn run<L, K, S>(
+    log: std::sync::Arc<std::sync::Mutex<L>>,
+    mut from: crate::Seq,
+    runtime: Vec<u8>,
+    poll: std::time::Duration,
+    kind_of: K,
+    mut should_stop: S,
+) -> Result<()>
+where
+    L: Log + Send + 'static,
+    K: Fn(&crate::Event) -> Option<i64>,
+    S: FnMut() -> bool,
+{
+    while !should_stop() {
+        let (next, _processed) = run_once(&log, from, runtime.clone(), &kind_of)?;
+        from = next;
+        std::thread::sleep(poll);
+    }
+    Ok(())
+}
+
 /// The latest genesis `program` source in `log`, or a loud error if none (the CLI must inject one first).
 fn latest_or_err(log: &impl Log) -> Result<String> {
     let events = log.tail(0)?;
@@ -384,6 +454,71 @@ mod tests {
         assert!(
             r.is_err(),
             "a step error propagates out of drain_new_events"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn run_once_performs_trigger_events_skips_own_events_and_advances_the_cursor() {
+        // The live daemon's testable loop BODY: run_once drains every event since the cursor, PERFORMS each
+        // TRIGGER via tick_hosted (real host primitive + recorded trail), and SKIPS non-triggers. The skip is
+        // load-bearing: the daemon records its own `prim-*` effects + the genesis is a `program` event, so
+        // kind_of returns Some only for `trigger` events. Inject genesis, append 2 triggers (kind 1 → [Append,
+        // Exec] → 2 prim records each). run_once from 0 → 2 processed (genesis skipped), cursor past all, 4
+        // prim events. A SECOND round drains the 4 recorded prim events but SKIPS them (not triggers) →
+        // processed 0, converges. No sleep/thread — `run` wraps this in a poll loop.
+        use std::sync::{Arc, Mutex};
+        let (path, mut log0) = temp_log();
+        crate::boot::inject_genesis(&mut log0, GENESIS).unwrap(); // seq 0 (a `program` event — skipped)
+        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let provider = match crate::kernel::compile_interpret_provider(GENESIS) {
+            Ok(p) => p,
+            Err(e) => panic!("genesis compiles: {e}"),
+        };
+        let Some(runtime) = crate::kernel::find_runtime_for(&provider, store_root) else {
+            eprintln!("[cdz-kernel::daemon] runtime absent/stale; skipping run_once");
+            let _ = std::fs::remove_file(&path);
+            return;
+        };
+        log0.append("trigger", b"one").unwrap(); // seq 1
+        log0.append("trigger", b"two").unwrap(); // seq 2
+        let log = Arc::new(Mutex::new(log0));
+
+        // Only `trigger` events fire the interpret plan (kind 1); the genesis `program` + recorded `prim-*`
+        // events are skipped — the daemon must not re-process its own bookkeeping.
+        let kind_of = |e: &crate::Event| (e.kind == "trigger").then_some(1i64);
+
+        let (cursor, processed) = run_once(&log, 0, runtime.clone(), kind_of)
+            .expect("run_once performs the two trigger events");
+        assert_eq!(
+            processed, 2,
+            "2 triggers performed; the genesis `program` event skipped"
+        );
+        assert!(
+            cursor >= 3,
+            "cursor advanced past the two triggers (and any prim events appended)"
+        );
+        let prim_count = log
+            .lock()
+            .unwrap()
+            .tail(0)
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind.starts_with(PRIM_RECORD_PREFIX))
+            .count();
+        assert_eq!(
+            prim_count, 4,
+            "2 trigger events × [Append, Exec] = 4 prim events recorded"
+        );
+
+        // A second round from the cursor: it drains the recorded prim events but SKIPS them (not triggers) →
+        // nothing performed. This is why kind_of must return None for non-triggers: else the daemon loops on
+        // its own effects forever.
+        let (_cursor2, processed2) =
+            run_once(&log, cursor, runtime, kind_of).expect("run_once with only own events");
+        assert_eq!(
+            processed2, 0,
+            "the daemon's own prim events are skipped, not re-performed → converges"
         );
         let _ = std::fs::remove_file(&path);
     }

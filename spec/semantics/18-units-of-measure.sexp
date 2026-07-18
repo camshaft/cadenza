@@ -371,6 +371,26 @@
   (output (: (Qty.of 3.0 (Unit./ (Unit.base #"meter") (Unit.base #"second")))
              (Qty Float64 (Unit./ (Unit.base #"meter") (Unit.base #"second"))))))
 
+(case "a velocity multiplied by a time recovers the distance dimension"
+  (doc    "The multiply-direction inverse of the velocity quotient: `(* (Qty.of 6.0 (meter/second))
+           (Qty.of 2.0 second))` composes `(meter·second⁻¹)·second` = meter — the `second` cancels in the
+           group product — with value 12.0. Pins that multiplying a DERIVED (quotient) dimension by another
+           quantity cancels exponents correctly back to a base dimension (the companion of `m·s / s = m`,
+           which cancels through a DIVIDE; this cancels through a MULTIPLY). `Qty.value` recovers 12.0.")
+  (input  (Qty.value (* (Qty.of 6.0 (Unit.* (Unit.base #"meter") (Unit.^ (Unit.base #"second") -1)))
+                        (Qty.of 2.0 (Unit.base #"second")))))
+  (output (: 12.0 Float64)))
+
+(case "dividing two same-dimension quantities cancels to a dimensionless number"
+  (doc    "`(/ (Qty.of 6.0 meter) (Qty.of 2.0 meter))` divides a length by a length — the meter exponents
+           cancel (1 − 1 = 0) to the DIMENSIONLESS unit, value 3.0. The quotient of two quantities of the
+           SAME dimension is a pure ratio (units-of-measure.md: a dimension divided by itself is the group
+           identity). The companion of `unit · unit⁻¹ = dimensionless` (a cancellation through MULTIPLY);
+           this cancels through a DIVIDE of same-dimension operands. `Qty.value` of the dimensionless
+           result recovers the bare ratio 3.0.")
+  (input  (Qty.value (/ (Qty.of 6.0 (Unit.base #"meter")) (Qty.of 2.0 (Unit.base #"meter")))))
+  (output (: 3.0 Float64)))
+
 ; The product/quotient above fold (constant magnitudes). A RUNTIME magnitude cannot fold: the erased
 ; multiply/divide is emitted, while the DIMENSION composes at compile time (meter·second, meter/second).
 ; These pin runtime `*`/`/` on a quantity — the magnitude arithmetic runs, and the derived dimension is

@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseDocument, parseDirective, cellRanges, serializeDocument, setCellSource, setProseSource, assignIds, type Cell } from "./parseDocument.ts";
+import { parseDocument, parseDirective, cellRanges, serializeDocument, setCellSource, setProseSource, renderDocToSurface, assignIds, type Cell } from "./parseDocument.ts";
 
 test("a plain prose-only document is one prose cell", () => {
   const cells = parseDocument("# Title\n\nsome **markdown** prose.");
@@ -319,4 +319,48 @@ test("a prose edit round-trips through serializeDocument (re-parse yields the ed
   assert.equal((reparsed[0] as Extract<Cell, { kind: "prose" }>).markdown, "new prose text");
   // The code cell survives the round-trip unchanged.
   assert.equal((reparsed[1] as Extract<Cell, { kind: "code" }>).source, "(def (main) 1)");
+});
+
+// ── renderDocToSurface: re-render CADENZA code cells to the selected surface (operator UX #2, my half) ──
+// A fake `render` tags the source with its target; it receives the GATHERED cell (a `(do …)` wrap for
+// s-expr multi-form) and the helper ungathers the result. These stay pure/node-only (no wasm).
+const fakeRender = async (text: string, _from: string, to: string) => `[${to}] ${text}`;
+
+test("renderDocToSurface renders CODE cells through the target surface, leaving prose + widgets untouched", async () => {
+  const md = "intro\n\n```cadenza widget\nrate : Float64 = slider(0, 1)\n```\n\n```cadenza\n(def (main) rate)\n```";
+  const out = await renderDocToSurface(md, "sexpr", "ml", fakeRender);
+  const cells = parseDocument(out);
+  assert.equal((cells[0] as Extract<Cell, { kind: "prose" }>).markdown, "intro"); // prose untouched
+  assert.equal((cells[1] as Extract<Cell, { kind: "code" }>).source, "rate : Float64 = slider(0, 1)"); // WIDGET untouched (not Cadenza)
+  // The code cell was GATHERED to `(do (def (main) rate))`, fake-rendered (tagged), then ungathered (ML
+  // trim). The `[ml]` tag confirms it went through the render path.
+  assert.match((cells[2] as Extract<Cell, { kind: "code" }>).source, /^\[ml\] /);
+  assert.ok((cells[2] as Extract<Cell, { kind: "code" }>).source.includes("(def (main) rate)"));
+});
+
+test("renderDocToSurface gathers a MULTI-form cell so the single-form renderer accepts it", async () => {
+  // A cell with a helper `def` + `main` (the quadratic-value-cell shape) must be gathered into one `(do …)`
+  // form for the render, else `renderSyntax` throws "trailing input". The fake render echoes what it got;
+  // we assert it received the gathered single form (starts with `(do `), not the raw two-form source.
+  let seen = "";
+  const capture = async (text: string) => { seen = text; return text; };
+  const md = "```cadenza\n(def (helper) 1)\n(def (main) helper)\n```";
+  await renderDocToSurface(md, "sexpr", "ml", capture);
+  assert.ok(seen.startsWith("(do "), `multi-form cell should be gathered, render saw: ${seen}`);
+  assert.ok(seen.includes("(def (helper) 1)") && seen.includes("(def (main) helper)"));
+});
+
+test("renderDocToSurface is a normalizing no-op when from === to (does not call render)", async () => {
+  let called = false;
+  const md = "```cadenza\n(def (main) 1)\n```";
+  const out = await renderDocToSurface(md, "sexpr", "sexpr", async (t) => { called = true; return t; });
+  assert.equal(called, false, "render is not called when from === to");
+  assert.equal((parseDocument(out)[0] as Extract<Cell, { kind: "code" }>).source, "(def (main) 1)");
+});
+
+test("renderDocToSurface keeps a cell's original source when render REJECTS (never drops content)", async () => {
+  const rejectRender = async () => { throw new Error("transient parse error"); };
+  const md = "```cadenza\n(def (main) 1)\n```";
+  const out = await renderDocToSurface(md, "sexpr", "ml", rejectRender);
+  assert.equal((parseDocument(out)[0] as Extract<Cell, { kind: "code" }>).source, "(def (main) 1)"); // original preserved
 });

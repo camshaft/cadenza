@@ -1900,3 +1900,69 @@
   (output (: 6 Int64))
   (call   main (: -5 Int64))
   (trap   "unreachable"))
+
+; ── @invariant ESTABLISH obligation (design §10.2, paper — reuses the b4c conjunction machinery) ────────
+; A data-type invariant `I` on type `T` is, per §10.2, an implicit `@ensures(I)` on every CONSTRUCTOR of
+; `T` (the ESTABLISH half: each constructor must prove its result satisfies `I`). So the ESTABLISH
+; obligation for `@invariant(and (>= it 0) (<= it 100)) (type Percent Int64)` with a constructor
+; `mk(v)` carrying `@requires(and (>= v 0) (<= v 100))` is: from the constructor's precondition hyps,
+; discharge `I[it := v]` = the conjunction `(ge v 0) AND (le v 100)`. This pins that @invariant adds NO new
+; kernel machinery — the establish obligation denotes + discharges through the SAME `bounds` kernel the
+; @requires/@ensures cases use (here the conjunction is established directly from the matching precondition,
+; the trivial-but-load-bearing case: a constructor whose @requires IS the invariant establishes it). A
+; `conj` term-former mirrors `and`; the proof carries both precondition hyps and its conclusion IS the
+; invariant conjunction, so `licenses` accepts it under the constructor's 2-element precondition.
+
+(case "@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)"
+  (doc    "The DATA-level verification-family member (design §10). An `@invariant(and (>= it 0) (<= it 100))`
+           on `type Percent Int64` is an implicit `@ensures(invariant)` on each constructor — the ESTABLISH
+           obligation. For a constructor `mk(v)` whose `@requires(and (>= v 0) (<= v 100))` matches the
+           invariant with `it := v`, the establish obligation `(conj (ge v 0) (le v 100))` is discharged
+           DIRECTLY from the two precondition hypotheses (assume-both) — the constructor's precondition IS the
+           invariant, the base establish case. The proof carries {ge v 0, le v 100} and concludes the invariant
+           conjunction, so `licenses` accepts it under the 2-element constructor precondition. Runs to `true`.
+           Pins that @invariant reuses the b4c/b2 machinery WHOLESALE — establish is `@ensures`-on-a-constructor,
+           no new kernel — so the data-level family member is expressible with the existing `bounds` kernel
+           (design §10.2: 'establish/preserve reuse b4c's denotation + b3's discharge, unchanged').")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+      (def (ge  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 2) a) b))
+      ; `conj` mirrors the surface `and` — the invariant `(and P Q)` denotes to `(conj P Q)`.
+      (def (conj (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 3) a) b))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      ; establish: from the two precondition facts, mint the invariant CONJUNCTION carrying both as hyps.
+      (def (establish (: p Term) (: q Term)) (Thm.Seq (list p q) (conj p q)))
+      (def (mem (: q Term) (: ps (List Term)))
+        (match ps ((list) false) ((list h .. t) (if (term-eq q h) true (mem q t)))))
+      (def (hyps-subset (: hs (List Term)) (: pre (List Term)))
+        (match hs ((list) true) ((list h .. t) (if (mem h pre) (hyps-subset t pre) false))))
+      (def (licenses (: thm Thm) (: obligation Term) (: pre (List Term)))
+        (and (term-eq (concl thm) obligation) (hyps-subset (hyps thm) pre)))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq le ge conj concl hyps establish licenses)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq le ge conj concl hyps establish licenses))
+            (def (main)
+              (let ((v    (Term.Var 0))
+                    (zero (Term.Num 0))
+                    (c100 (Term.Num 100)))
+                ; the invariant obligation I[it := v] = (conj (ge v 0) (le v 100))
+                (let ((obligation   (conj (ge v zero) (le v c100)))
+                      ; the constructor precondition {ge v 0, le v 100} (its @requires = the invariant)
+                      (precondition (list (ge v zero) (le v c100))))
+                  ; ESTABLISH: mint the invariant conjunction from the two precondition facts
+                  (let ((proof (establish (ge v zero) (le v c100))))
+                    (licenses proof obligation precondition)))))
+            (export main)))
+  (output (: true Bool)))

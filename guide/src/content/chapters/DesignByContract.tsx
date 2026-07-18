@@ -89,9 +89,10 @@ export default function DesignByContract() {
       </P>
       <Note>
         Two things to know: a contract may reference only the function's parameters (and prelude/global
-        names) — naming something out of scope is a compile error at the annotation. And avoid naming a
-        parameter <C>it</C> when you use <C>@ensures</C>: the result binder would shadow it, and the
-        postcondition is skipped.
+        names) — naming something out of scope is a compile error at the annotation. And a function whose
+        parameter is named <C>it</C> can't carry an <C>@ensures</C>: the result binder <C>it</C> would
+        shadow the parameter, so rather than silently ignore the postcondition, the compiler rejects it and
+        asks you to rename the parameter.
       </Note>
 
       <Why tenet="Make the assumption an enforced check, not a comment">
