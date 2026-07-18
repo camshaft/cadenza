@@ -36,6 +36,12 @@ aws = ["dep:aws-config", "dep:aws-sdk-dynamodb", "dep:tokio"]
 # compiler-wasm (a wasm32-wasip1 core module exporting alloc/compile/dealloc). wasmtime is the SAME engine v37
 # cdz-run already pulls; wasmtime-wasi adds the thin preview1 ctx a wasm32-wasip1 module needs.
 wasm-compiler = ["dep:wasmtime", "dep:wasmtime-wasi"]
+# OFF by default: LIVE `exec` — the daemon's `Prim.exec` op spawns a REAL subprocess (std::process::Command,
+# no new dep) and returns its exit code, instead of the record-only tag. Defense-in-depth (concierge ruling):
+# a build WITHOUT this feature CANNOT spawn a process regardless of the Cedar policy — the safe default for a
+# kernel running self-modifiable Cadenza brains. With the feature, `exec` is still Cedar-gated + audit-logged;
+# the flag is a SECOND, build-time boundary on top of the policy. `http` stays record-only (no HTTP-client dep).
+live-exec = []
 
 [dependencies]
 anyhow = "1"

@@ -32,3 +32,9 @@ sha2 = "0.10"
 # Canonical value rendering (string escape, decimal form) — reused so a runner-printed value is
 # byte-identical to what the front-end prints and reads back.
 cadenza-syntax = { path = "../cadenza-syntax" }
+
+[dev-dependencies]
+# TEST-ONLY: assemble a tiny hand-written `.wat` module (e.g. an infinite `(loop br 0)`) to bytes, to
+# verify the epoch deadline traps a runaway run. Not a runtime dep — wasmtime runs finished bytes; only
+# the test needs to author them. `wat` is the reference text→wasm assembler (same family as wasmtime).
+wat = "1"

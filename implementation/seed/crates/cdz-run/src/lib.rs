@@ -24,9 +24,72 @@ pub mod cli;
 fn engine() -> Engine {
     let mut cfg = Config::new();
     cfg.cranelift_opt_level(OptLevel::None);
+    // EPOCH INTERRUPTION: cap an in-process run's wall-clock so a MISCOMPILED runtime-looping program
+    // (e.g. an emitted body that loops forever) TRAPS at a deadline instead of spinning a CPU core
+    // indefinitely. This is the durable fleet-health safety net: a runaway corpus case that ran in-process
+    // with no cap previously starved pr-sync + flooded the host (64 orphaned CPU-spinning `cdz run` procs
+    // wedged the integrator ~2h in one session). Each `Store` gets an epoch deadline (see `new_store`),
+    // and a single background thread advances the engine's epoch on a fixed tick, so the deadline is
+    // wall-clock-bounded. `epoch_interruption(true)` is what makes `set_epoch_deadline` effective.
+    cfg.epoch_interruption(true);
     // A fresh `Config` can only fail to build an `Engine` on an unsupported target/feature combination,
     // which this host supports; fall back to the default engine if that ever changes rather than panic.
     Engine::new(&cfg).unwrap_or_default()
+}
+
+/// The wall-clock a single in-process run may take before the epoch deadline TRAPS it. Generous — a
+/// legitimate heap program is milliseconds; this only fires on a genuine runaway loop. `CDZ_RUN_TIMEOUT_SECS`
+/// overrides (0 disables — for a debugger). The epoch ticker below advances one epoch per `EPOCH_TICK`, so
+/// the deadline is `RUN_TIMEOUT / EPOCH_TICK` ticks.
+fn run_timeout_secs() -> u64 {
+    std::env::var("CDZ_RUN_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30)
+}
+
+/// The epoch-tick interval — the background thread bumps the engine's epoch this often, so a run's epoch
+/// deadline resolves to a wall-clock bound with this granularity.
+const EPOCH_TICK: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Create a `Store` with the run's epoch deadline armed (trap on deadline), and ensure the background
+/// epoch-ticker for `engine` is running. Every in-process run goes through here so a runaway loop can't
+/// escape the wall-clock cap. A `run_timeout_secs()` of 0 disables the deadline (unbounded — for a
+/// debugger); otherwise the deadline is `ceil(timeout / EPOCH_TICK)` ticks and the store traps past it.
+fn new_store(engine: &Engine) -> Store<()> {
+    let mut store = Store::new(engine, ());
+    let secs = run_timeout_secs();
+    if secs > 0 {
+        arm_epoch_ticker(engine);
+        let ticks = (secs * 1000).div_ceil(EPOCH_TICK.as_millis() as u64).max(1);
+        store.set_epoch_deadline(ticks);
+        // Past the deadline: TRAP (surfaces as Outcome::Trap — "a runaway loop"), not yield/callback.
+        store.epoch_deadline_trap();
+    }
+    store
+}
+
+/// Start (once per engine, idempotent) a detached background thread that advances `engine`'s epoch every
+/// `EPOCH_TICK`. It holds a `Weak<Engine>`-style clone: `Engine` is refcounted + cheap to clone, and the
+/// thread simply keeps ticking for the process lifetime (a one-shot tool exits soon after). Keyed on the
+/// engine's identity so repeated `new_store` calls in one process don't spawn a thread each.
+fn arm_epoch_ticker(engine: &Engine) {
+    use std::sync::Once;
+    // `cdz-run` builds ONE engine per process in practice (the callers each call `engine()` once per run,
+    // and a batch process reuses the same run path) — a single ticker suffices. A `Once` guards the spawn.
+    static TICKER: Once = Once::new();
+    let engine = engine.clone();
+    TICKER.call_once(move || {
+        std::thread::Builder::new()
+            .name("cdz-run-epoch".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(EPOCH_TICK);
+                    engine.increment_epoch();
+                }
+            })
+            .ok();
+    });
 }
 
 /// Load the value-heap runtime as a `Component`, reusing a CACHED compiled artifact when possible.
@@ -218,7 +281,7 @@ pub fn run_core_module(module_bytes: &[u8], export: &str) -> Result<Outcome> {
     let engine = engine();
     let module = wasmtime::Module::new(&engine, module_bytes)
         .map_err(|e| anyhow!("invalid core module: {e}"))?;
-    let mut store: Store<()> = Store::new(&engine, ());
+    let mut store: Store<()> = new_store(&engine);
     // No imports: an integer module is self-contained. An unexpected import → a clear error.
     let instance = wasmtime::Instance::new(&mut store, &module, &[])
         .map_err(|e| anyhow!("instantiating core module: {e}"))?;
@@ -250,7 +313,7 @@ pub fn run_capturing(component_bytes: &[u8], opts: &RunOpts) -> Result<(Outcome,
     // the runtime's heap interface exports. The linker binds under the component's EXACT import name
     // (the hashed one), while the function set is DISCOVERED from the runtime component's own type —
     // never a hard-coded list — so it can never drift from the runtime the caller supplied.
-    let mut store = Store::new(&engine, ());
+    let mut store = new_store(&engine);
     if let Some(req) = find_runtime_req(&engine, &component) {
         compose_runtime(&engine, &mut store, &mut linker, &req, opts)?;
     }
@@ -323,7 +386,7 @@ pub fn run_with_peers_hosted(
     let engine = engine();
     let consumer = Component::new(&engine, consumer_bytes)
         .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
-    let mut store = Store::new(&engine, ());
+    let mut store = new_store(&engine);
     let mut linker: Linker<()> = Linker::new(&engine);
 
     // Shape-check the host bindings up-front (clear error, not an opaque trap in the closure).
@@ -538,7 +601,7 @@ where
     let engine = engine();
     let consumer = Component::new(&engine, consumer_bytes)
         .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
-    let mut store = Store::new(&engine, ());
+    let mut store = new_store(&engine);
     let mut linker: Linker<()> = Linker::new(&engine);
 
     // Verify the consumer's imported model op is the `(u32) -> u32` shape the binding assumes (a String
@@ -657,7 +720,7 @@ where
     let engine = engine();
     let consumer = Component::new(&engine, consumer_bytes)
         .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
-    let mut store = Store::new(&engine, ());
+    let mut store = new_store(&engine);
     let mut linker: Linker<()> = Linker::new(&engine);
 
     // Shape-check both ops up front (clear message on a mis-shaped op, not an opaque trap in the closure).
@@ -854,7 +917,7 @@ pub fn run_agent_hosted(
     let engine = engine();
     let consumer = Component::new(&engine, consumer_bytes)
         .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
-    let mut store = Store::new(&engine, ());
+    let mut store = new_store(&engine);
     let mut linker: Linker<()> = Linker::new(&engine);
 
     check_host_op_binding_shapes(&engine, &consumer, &bindings)?;
@@ -2335,6 +2398,41 @@ mod tests {
     #[test]
     fn empty_bytes_is_invalid() {
         assert!(validate(&[]).is_err());
+    }
+
+    #[test]
+    fn run_core_module_traps_a_runaway_loop_at_the_epoch_deadline() {
+        // The durable fleet-health safety net: a miscompiled runtime-looping program must TRAP at the
+        // wall-clock deadline, not spin a core forever (which starved pr-sync + flooded the host earlier
+        // this session). Assemble a module whose `main` is an infinite `(loop br 0)`, run it with a SHORT
+        // timeout, and assert it comes back as a Trap in well under the untimed-forever case (seconds, not
+        // never). Uses the epoch interruption armed in `engine()` + `new_store`.
+        // SAFETY of the timing: CDZ_RUN_TIMEOUT_SECS=1 → the epoch ticker (100ms) fires the deadline within
+        // ~1s; we bound the whole call at 20s so a REGRESSION (no deadline → hang) fails the test by our
+        // own wall-clock rather than hanging CI forever.
+        // SAFETY: env is process-global; this test sets it for the short run. Other cdz-run tests don't run
+        // a core module, so there's no cross-test interference on this var.
+        unsafe {
+            std::env::set_var("CDZ_RUN_TIMEOUT_SECS", "1");
+        }
+        let wasm = wat::parse_str(
+            "(module (func (export \"main\") (result i64) (loop br 0) (i64.const 0)))",
+        )
+        .expect("assemble the loop module");
+        let start = std::time::Instant::now();
+        let outcome = run_core_module(&wasm, "main").expect("run returns (trap outcome), not Err");
+        let elapsed = start.elapsed();
+        assert!(
+            matches!(outcome, Outcome::Trap(_)),
+            "a runaway loop must TRAP at the deadline, got {outcome:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(15),
+            "the deadline must fire promptly (was {elapsed:?}) — a regression would hang here"
+        );
+        unsafe {
+            std::env::remove_var("CDZ_RUN_TIMEOUT_SECS");
+        }
     }
 
     #[test]
