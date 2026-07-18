@@ -71,3 +71,21 @@ Rust E0308 twin near-certain. Not spawning (their family). Promote when fixed.
 
 ---
 FIX LANDED 2026-07-18 (v-rust-backend 2987e26a9 "float width readers strip_nominal->peel->strip"): the exact strip->peel->strip fix. VERIFY+close when load eases (currently load 120, deferring the rebuild-heavy content-check). Was: cdz run -> invalid component function[11] (f64.const into f32 box).
+
+---
+REVIEWER VERIFY 2026-07-18 (trunk 57d6d2e3c, store rebuilt): the rust fix (2987e26a9) is LANDED, but the
+WASM face is STILL OPEN — probed the exact reproducer (compile_component + wasmparser::validate, reverted):
+  PROBE nominal-over-Qty-f32 wasm: INVALID → type mismatch: expected f32, found f64 (at offset 0x350)
+select.rs peel_qty_ty (line 14359) on trunk STILL peels raw Qty with no strip_nominal — v-quantity's wasm
+fix b4ce14cb has NOT landed yet (co-landing, held on the rust dep which just landed). So this item is
+RUST-CLOSED, WASM-OPEN. DO NOT mark fully resolved until b4ce14cb lands (or peel_qty_ty gains strip_nominal)
+and the wasm reproducer validates. The "FIX LANDED 2987e26a9" note above is the RUST face only.
+
+---
+CORRECTION (reviewer, 2026-07-18): 2987e26a9 was the RUST face ONLY. WASM face STILL OPEN on trunk
+57d6d2e3c (reviewer verified via compile_component + wasmparser::validate: "type mismatch: expected f32,
+found f64 at 0x350"; select.rs peel_qty_ty:14359 still peels raw Ty::Qty with NO strip_nominal). v-quantity's
+WASM fix b4ce14cb (peel_qty_ty strip->peel->strip + wasm-validates pin) is co-landing, HELD on the rust dep
+2987e26a9 which just landed -> should land imminently but NOT on trunk yet. STATUS: RUST-CLOSED / WASM-OPEN.
+DO NOT mark fully resolved until b4ce14cb lands + the wasm reproducer validates. (Good thing this was left
+landed-PENDING-VERIFICATION, not closed on the rust landing.)
