@@ -1,0 +1,119 @@
+/// adapter.cdz — the operator-directed MONOMORPHIC/GENERIC/FUSING iterator, adapter-record form.
+///
+/// This is the operator's re-charter (2026-07-18): iterators as AD-HOC POLYMORPHISM — a record carrying a
+/// set of functions + a closure that implements the protocol — NOT an enum-dispatched step interpreter and
+/// NOT a trait system. "Make the combinator functions CONST and it should be ZERO COST" — a chain fuses to
+/// one loop as if hand-written. See `implementation/design/DESIGN-monomorphic-fusing-iterators-rcdzc.md`.
+///
+/// THE SHAPE. An iterator is a pair `(state, step)` where `step : state -> Option (elem, state)` pulls one
+/// element and returns the NEXT state (or `None` at exhaustion). A combinator (`map`/`filter`/…) is a plain
+/// function that WRAPS the upstream iterator's `step` into a NEW `step` calling the upstream one DIRECTLY —
+/// a static, monomorphized closure call, NOT a runtime tag match. A consumer (`fold`/`count`/…) drives the
+/// step to exhaustion. Because every `step` is a concrete monomorphized closure and rcdzc always-inlines
+/// non-recursive defs by default, a `map`/`filter` chain collapses into the consumer's ONE driving loop —
+/// no per-element dispatch, no intermediate iterator value materialized between stages (the fusion the
+/// operator wants). Adding a combinator = ONE new `def` returning a wrapped `step`; no central-enum edit.
+///
+/// ⚠ MONOMORPHIC (Int64 element, List(Int64) state) FOR NOW — this is the forcing proof that the adapter
+/// fused model RUNS on today's compiler (I1 milestone: cd9be4379 unblocked the generic-variant stored-closure
+/// callback; the chain runs end-to-end). The GENERIC (∀-element) form is gated on the recursive-generic
+/// monomorphization tie (v-inference's mono ceiling) — a recursive consumer/driver whose param types come
+/// from a generic Iter can't yet be monomorphized. So this mono form proves fusion NOW; the generic form
+/// generalizes it once the tie lands. This is the same staging that built iter.cdz.
+///
+/// 🔑 The recursive DRIVER (`drive`) needs its params ANNOTATED — a recursive function whose params infer as
+/// free vars has no machine representation (CDZ0201) until the driver's `step`/`state`/`acc`/combiner types
+/// are pinned. Non-recursive combinators (`map`/`filter`) need only their closure param annotated.
+
+/// The adapter iterator: a state (the remaining input) + a `step` that pulls one element and the next state.
+type Iter =
+  | Mk(List(Int64), List(Int64) -> Option((Int64, List(Int64))))
+
+/// PRODUCERS ------------------------------------------------------------------------------------------
+
+/// `from-list(xs)` — iterate the elements of `xs` in order. The base producer: state = the list, step pops
+/// the head. Every other iterator is built by wrapping this one's step.
+def from-list(xs) = Iter.Mk(xs, fn(s) => match s with
+  | [] => Option.None(unit)
+  | [h, .. t] => Option.Some((h, t)))
+
+/// COMBINATORS (wrap the upstream step into a new step — the fusing core) ------------------------------
+
+/// `map(it, f)` — apply `f` to every element. The new step calls the upstream step, then `f` on the element;
+/// state is unchanged (the upstream's). A static call to the upstream closure — fuses, no dispatch.
+def map(it, f: Int64 -> Int64) = match it with
+  | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => match step(s) with
+    | Option.None(_) => Option.None(unit)
+    | Option.Some(p) => (match p with | (x, s2) => Option.Some((f(x), s2))))
+
+/// `filter(it, p)` — keep only elements satisfying `p`. The new step drives the upstream step forward,
+/// skipping non-matching elements, via the recursive `filter-step` worker (annotated, since it recurses).
+def filter-step(step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), p: Int64 -> Bool) =
+  match step(s) with
+  | Option.None(_) => Option.None(unit)
+  | Option.Some(pair) => (match pair with | (x, s2) =>
+    if p(x) then Option.Some((x, s2)) else filter-step(step, s2, p))
+def filter(it, p: Int64 -> Bool) = match it with
+  | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => filter-step(step, s, p))
+
+/// CONSUMERS (drive the step to exhaustion — the ONE loop the chain fuses into) ------------------------
+
+/// `drive(step, s, acc, g)` — the recursive fold worker: pull each element and thread it through `g`. Its
+/// params are ANNOTATED (a recursive generic-shaped def otherwise has no machine representation). This is
+/// the single loop a `map(filter(...))` chain inlines into.
+def drive(step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), acc: Int64, g: Int64 -> Int64 -> Int64) =
+  match step(s) with
+  | Option.None(_) => acc
+  | Option.Some(p) => (match p with | (x, s2) => drive(step, s2, g(acc, x), g))
+
+/// `fold(it, acc, g)` — left-fold the iterator through `g`, seeded by `acc`. The fusing consumer.
+def fold(it, acc, g: Int64 -> Int64 -> Int64) = match it with
+  | Iter.Mk(s, step) => drive(step, s, acc, g)
+
+/// `count-drive`/`count` — number of elements (a closure-free consumer atop the same driving pattern).
+def count-drive(step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), n: Int64) =
+  match step(s) with
+  | Option.None(_) => n
+  | Option.Some(p) => (match p with | (_x, s2) => count-drive(step, s2, n + 1))
+def count(it) = match it with | Iter.Mk(s, step) => count-drive(step, s, 0)
+
+/// `sum(it)` — total of the elements (fold with +, seeded 0). The canonical fused-pipeline consumer.
+def sum(it) = fold(it, 0, fn(a, x) => a + x)
+
+/// TESTS ----------------------------------------------------------------------------------------------
+
+@test
+def from-list-then-fold-sums() =
+  if fold(from-list([1, 2, 3, 4]), 0, fn(a, x) => a + x) == 10
+  then unit else trap("fold sum 1+2+3+4=10")
+
+@test
+def count-counts-elements() =
+  if count(from-list([5, 6, 7])) == 3 then unit else trap("count 3")
+
+@test
+def sum-of-empty-is-zero() =
+  if sum(from-list([])) == 0 then unit else trap("sum [] = 0")
+
+@test
+def map-transforms-each-element() =
+  if sum(map(from-list([1, 2, 3]), fn(x) => x + 10)) == 36
+  then unit else trap("map +10 then sum = 11+12+13 = 36")
+
+@test
+def filter-keeps-matching() =
+  if sum(filter(from-list([1, 2, 3, 4, 5]), fn(x) => x > 2)) == 12
+  then unit else trap("filter >2 then sum = 3+4+5 = 12")
+
+/// THE fusion showcase: a map().filter().fold() pipeline — the operator's "as if hand-written one loop".
+@test
+def map-filter-fold-fuses() =
+  if fold(filter(map(from-list([1, 2, 3, 4, 5]), fn(x) => x * 2), fn(x) => x > 4), 0, fn(a, x) => a + x) == 24
+  then unit else trap("map*2 |> filter>4 |> sum = 6+8+10 = 24")
+
+@test
+def count-after-filter() =
+  if count(filter(from-list([1, 2, 3, 4, 5, 6]), fn(x) => x > 3)) == 3
+  then unit else trap("count of >3 in 1..6 = 3")
+
+export { Iter.* }

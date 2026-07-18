@@ -228,9 +228,26 @@ async function runScalarProps(componentBytes, sigs) {
     const fn = byNorm.get(normName(name));
     if (typeof fn !== "function") { results.push({ name, pass: false, error: "property export not found" }); continue; }
     const runArgs = (args) => { try { fn(...args); return false; } catch { return true; } };
-    let failed = false;
-    for (let t = 0; t < 100; t++) { if (runArgs(genArgsFor(paramTypes, BigInt(t) + 1n))) { failed = true; break; } }
-    results.push(failed ? { name, pass: false, error: "property failed" } : { name, pass: true });
+    let failing = null;
+    for (let t = 0; t < 100; t++) { const a = genArgsFor(paramTypes, BigInt(t) + 1n); if (runArgs(a)) { failing = a; break; } }
+    if (!failing) { results.push({ name, pass: true }); continue; }
+    // SHRINK the failing args toward the minimal counterexample (mirrors runWorker's runScalarProperty +
+    // the native shrink_pool), then RECORD the counterexample — so the gate stays in lockstep with the
+    // in-browser driver AND pins the counterexample-render feature (a failing property surfaces its value).
+    const best = failing.slice();
+    for (let i = 0; i < best.length; i++) {
+      let v = best[i];
+      while (typeof v === "bigint" && v !== 0n) {
+        const cand = best.slice(); cand[i] = v / 2n;
+        if (runArgs(cand)) { best[i] = cand[i]; v = cand[i]; } else break;
+      }
+      while (typeof v === "number" && v !== 0) {
+        const cand = best.slice(); cand[i] = Math.trunc(v / 2);
+        if (runArgs(cand)) { best[i] = cand[i]; v = cand[i]; } else break;
+      }
+    }
+    const rendered = `${name}(${best.map((a) => (typeof a === "bigint" ? a.toString() : String(a))).join(", ")})`;
+    results.push({ name, pass: false, error: "property failed", counterexample: { args: rendered, seed: 0 } });
   }
   return results;
 }
@@ -273,7 +290,9 @@ async function runTestInSurface(ex, snippet, surface, where) {
   }
   // Default: every nullary @test must pass.
   if (failed.length === 0) return null;
-  const detail = failed.map((t) => `${t.name}: ${t.error ?? "failed"}`).join("; ");
+  const detail = failed
+    .map((t) => `${t.name}: ${t.error ?? "failed"}${t.counterexample ? ` [counterexample: ${t.counterexample.args}]` : ""}`)
+    .join("; ");
   return `${ex.file} [test] (${where}): @test(s) FAILED — ${detail}\n    ${brief}`;
 }
 

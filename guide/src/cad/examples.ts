@@ -1,10 +1,12 @@
 /// Canonical example CAD models — the starter programs the /cad route offers in its example-switcher
 /// (operator UX ask: "there's nothing to switch between examples on the notebook or cad program"). Each is
 /// a self-contained model built against the PRELOADED CAD library (`Solid`/`v3r`/`lower` from `exact.cdz`,
-/// operator P5 ruling A): the reader's buffer holds ONLY the model — the `import … from "exact"` is
-/// auto-injected by CadPage (not shown), and each carries the module-local `@!default-fraction Rational`
-/// pragma so a bare `n/d` is an exact Rational (without it `v3r(4/1,…)` rejects CDZ0203; the pragma does
-/// NOT leak into the imported library). Every model returns `lower(<Solid model>)` — `exact.cdz`'s `Solid`
+/// operator P5 ruling A): the reader's buffer holds ONLY the model — BOTH the `import … from "exact"` clause
+/// AND the `@!default-fraction Rational` pragma are auto-injected by CadPage's `injectImport` (not shown), so
+/// the example buffers are clean (no import, no pragma boilerplate — the operator-directed implicit-default-
+/// fraction UX). The injected pragma makes a bare `n/d` an exact Rational (without it `v3r(4/1,…)` rejects
+/// CDZ0203); it's module-scoped and does NOT leak into the imported library. Every model returns
+/// `lower(<Solid model>)` — `exact.cdz`'s `Solid`
 /// is GENERIC and a generic value can't be host-rendered yet, so `lower` maps it to the monomorphic
 /// `SolidR` the compiler emits + the mesh driver parses. Both surfaces of each example render to the SAME
 /// canonical s-expr → the driver meshes them identically.
@@ -36,14 +38,12 @@ const CUBE_WITH_DENT: ExampleModel = {
   title: "Cube with a spherical dent",
   description: "A 4mm cube with a radius-2.5 sphere subtracted (the classic CSG difference).",
   source: {
-    ml: `@!default-fraction Rational
-def main() =
+    ml: `def main() =
   lower(
     Solid.Difference(
       Solid.Cube(v3r(4/1, 4/1, 4/1)),
       Solid.Sphere(5/2)))`,
-    sexpr: `(pragma default-fraction Rational)
-(def (main)
+    sexpr: `(def (main)
   (lower ((. Solid Difference)
            ((. Solid Cube) (v3r (/ 4 1) (/ 4 1) (/ 4 1)))
            ((. Solid Sphere) (/ 5 2)))))`,
@@ -57,14 +57,12 @@ const HOLLOW_TUBE: ExampleModel = {
   title: "Hollow tube",
   description: "An outer cylinder minus a concentric bore — a pipe, via Difference of two cylinders.",
   source: {
-    ml: `@!default-fraction Rational
-def main() =
+    ml: `def main() =
   lower(
     Solid.Difference(
       Solid.Cylinder(6/1, 2/1),
       Solid.Cylinder(6/1, 1/1)))`,
-    sexpr: `(pragma default-fraction Rational)
-(def (main)
+    sexpr: `(def (main)
   (lower ((. Solid Difference)
            ((. Solid Cylinder) (/ 6 1) (/ 2 1))
            ((. Solid Cylinder) (/ 6 1) (/ 1 1)))))`,
@@ -78,14 +76,12 @@ const ROUNDED_CUBE: ExampleModel = {
   title: "Rounded cube",
   description: "A cube intersected with a sphere — the sphere rounds off every corner (CSG intersection).",
   source: {
-    ml: `@!default-fraction Rational
-def main() =
+    ml: `def main() =
   lower(
     Solid.Intersection(
       Solid.Cube(v3r(3/1, 3/1, 3/1)),
       Solid.Sphere(2/1)))`,
-    sexpr: `(pragma default-fraction Rational)
-(def (main)
+    sexpr: `(def (main)
   (lower ((. Solid Intersection)
            ((. Solid Cube) (v3r (/ 3 1) (/ 3 1) (/ 3 1)))
            ((. Solid Sphere) (/ 2 1)))))`,
@@ -99,16 +95,14 @@ const STEPPED_PEDESTAL: ExampleModel = {
   title: "Stepped pedestal",
   description: "A wide base with a narrower block stacked on top — Union + Translate compose two slabs.",
   source: {
-    ml: `@!default-fraction Rational
-def main() =
+    ml: `def main() =
   lower(
     Solid.Union(
       Solid.Cube(v3r(4/1, 4/1, 1/1)),
       Solid.Translate(
         v3r(0/1, 0/1, 1/1),
         Solid.Cube(v3r(2/1, 2/1, 1/1)))))`,
-    sexpr: `(pragma default-fraction Rational)
-(def (main)
+    sexpr: `(def (main)
   (lower ((. Solid Union)
            ((. Solid Cube) (v3r (/ 4 1) (/ 4 1) (/ 1 1)))
            ((. Solid Translate)

@@ -4327,11 +4327,17 @@ fn emit_sum_payload(
                         // defensive `_` (the guard proved this variant, so `_` is dead). AMBIGUOUS (two
                         // variants share the exact payload type) or NO match → decline (can't pick soundly
                         // without the guard's disc — a genuine lower.rs-threading case, still deferred).
-                        crate::core::PathStep::Payload if rest.len() == 1 => {
+                        crate::core::PathStep::Payload => {
+                            // A `Payload` step over a SUM element. The sub-value's variant is not on this path
+                            // (the desugar's disc guard is elsewhere); RECOVER it from the UNIQUE variant whose
+                            // single payload type agrees with the sub-value's SOLVED type at this point in the
+                            // walk. Terminal (`rest == [Payload]`) binds the payload directly; a DEEPER walk
+                            // (`[Payload, Elem(j), …]` — a list element that is a sum whose payload is a
+                            // TUPLE/record, `(list (Pt (tuple a b)))`) extracts the payload then projects into
+                            // it. Compute the payload sub-type this Payload lands at so the loop continues.
                             let sum_ty = cur_ty.strip_nominal().clone();
-                            let target = type_of(db, id);
-                            // Enumerate the sum's variants; find the disc whose single payload type matches
-                            // the binder's type. Require a UNIQUE match for soundness.
+                            // The solved type AT THE PAYLOAD: terminal → the binder's own `type_of(id)`; deeper
+                            // → recover from the sum's variant payload (the trailing steps project into it).
                             let n = match &sum_ty {
                                 Ty::Sum { decl, .. } => db
                                     .type_decl_by_occ(*decl)
@@ -4339,13 +4345,29 @@ fn emit_sum_payload(
                                     .unwrap_or(0),
                                 _ => 0,
                             };
+                            // Find the UNIQUE variant. When TERMINAL, match against the binder's type; when
+                            // DEEPER, we can't use `type_of(id)` (that's the final leaf, past the tuple), so a
+                            // sum with a SINGLE non-nullary variant is unambiguous, else decline (needs the
+                            // guard disc threaded — the same deferred lower.rs case as the ambiguous terminal).
+                            let terminal = rest.len() == 1;
+                            let target = if terminal {
+                                Some(type_of(db, id))
+                            } else {
+                                None
+                            };
                             let mut hit: Option<u32> = None;
                             for d in 0..n as u32 {
-                                if let Some(pt) = variant_payload_ty(db, &sum_ty, d)
-                                    && pt.agrees_with(&target)
-                                {
+                                let Some(pt) = variant_payload_ty(db, &sum_ty, d) else {
+                                    continue;
+                                };
+                                let matches = match &target {
+                                    Some(t) => pt.agrees_with(t),
+                                    // Deeper walk: the variant is the one WITH a payload; unique iff exactly one.
+                                    None => true,
+                                };
+                                if matches {
                                     if hit.is_some() {
-                                        hit = None; // ambiguous — two variants share the payload type
+                                        hit = None; // ambiguous
                                         break;
                                     }
                                     hit = Some(d);
@@ -4353,25 +4375,23 @@ fn emit_sum_payload(
                             }
                             let disc = hit.ok_or_else(|| {
                                 Reject::decline(
-                                    "a sum-constructor list-element payload whose variant is not uniquely determined by its payload type needs the guard discriminant threaded (deferred)",
+                                    "a sum-constructor list-element payload whose variant is not uniquely determined needs the guard discriminant threaded (deferred)",
                                 )
                             })?;
                             let vpath = sum_variant_path_of_ty(db, &sum_ty, disc)?;
-                            // A RECURSIVE variant's field is boxed — the bind derefs (`*__pv`), moving the
-                            // value out of the owned `Box`.
                             let boxed = super::enums::variant_is_recursive(db, &sum_ty, disc);
                             let bind = if boxed { "(*__pv)" } else { "__pv" };
-                            // The whole expression is the payload extracted from the matched variant. The
-                            // scrutinee `(xs)[i]` is a BORROWED list element, so `.clone()` it into the match
-                            // to own the sum value; `__pv` then MOVES the payload out of that owned clone —
-                            // no second clone is needed even for a non-Copy payload (the element clone already
-                            // produced an independent owned value; `id`'s clone-on-read is satisfied by it).
-                            return Ok(format!(
+                            // Extract the payload from the matched variant. `.clone()` the borrowed list element
+                            // into the match so the payload can move out. This becomes the new `expr`; the loop
+                            // then projects any trailing `Elem(j)` steps into it (a TUPLE/record payload).
+                            expr = format!(
                                 "match ({expr}).clone() {{ {vpath}(__pv) => {bind}, _ => panic!(\"unreachable\") }}"
-                            ));
+                            );
+                            // Advance `cur_ty` to the extracted payload's type so a following `Elem(j)` resolves
+                            // (a tuple field `.j`, etc.). Terminal walks stop here (no more steps).
+                            cur_ty = variant_payload_ty(db, &sum_ty, disc).unwrap_or(Ty::Any);
                         }
-                        // A `Payload` at a non-terminal position (a payload with further nested steps) or a
-                        // `RestFrom` beyond the leading list index is a shape this slice does not render.
+                        // A `RestFrom` beyond the leading list index is a shape this slice does not render.
                         _ => {
                             return Err(Reject::decline(
                                 "a nested list-element binder beyond a tuple projection is not rendered by the Rust backend",

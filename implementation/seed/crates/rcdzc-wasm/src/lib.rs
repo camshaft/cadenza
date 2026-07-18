@@ -61,15 +61,53 @@ pub unsafe extern "C" fn compile(ptr: u32, len: u32) -> u64 {
         Ok(bytes) => (0u8, bytes),
         Err(msg) => (1u8, msg.into_bytes()),
     };
-    // Build the result region: 1 status byte + payload, leaked so the kernel can read it before freeing.
-    // Use try_reserve_exact so an oversized payload returns the documented 0 sentinel instead of aborting the
-    // whole instance (Vec::with_capacity calls handle_alloc_error -> the wasm `unreachable` trap on OOM).
+    pack_result(status, &payload)
+}
+
+/// Compile AST bytes into a NAMED PROVIDER component (published under the interface string), returning the
+/// same packed `(rptr << 32) | rlen` result region as [`compile`] — the named counterpart wrapping
+/// [`compile_ast_named`]. The kernel writes the AST at `ast_ptr` (len `ast_len`) AND the interface string
+/// (UTF-8, e.g. `cadenza:agent/kernel`) at `iface_ptr` (len `iface_len`), then calls this. So the kernel can
+/// wasm-swap its PROVIDER compile (a peer-bindable named export), not just a plain component. Result region +
+/// OOM-sentinel (packed 0) semantics are identical to [`compile`]. A non-UTF-8 interface string is a status-1
+/// error (a bad name is a loud diagnostic, not a trap).
+///
+/// # Safety
+/// `ast_ptr`/`ast_len` and `iface_ptr`/`iface_len` must each describe a valid, initialized region in this
+/// module's linear memory (the kernel wrote them).
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn compile_named(
+    ast_ptr: u32,
+    ast_len: u32,
+    iface_ptr: u32,
+    iface_len: u32,
+) -> u64 {
+    let ast = std::slice::from_raw_parts(ast_ptr as *const u8, ast_len as usize);
+    let iface_bytes = std::slice::from_raw_parts(iface_ptr as *const u8, iface_len as usize);
+    let (status, payload) = match std::str::from_utf8(iface_bytes) {
+        Ok(iface) => match compile_ast_named(ast, iface) {
+            Ok(bytes) => (0u8, bytes),
+            Err(msg) => (1u8, msg.into_bytes()),
+        },
+        Err(_) => (1u8, b"interface name is not valid UTF-8".to_vec()),
+    };
+    pack_result(status, &payload)
+}
+
+/// Build the packed result region `(rptr << 32) | rlen` for a `[status: 1 byte][payload...]` region, leaked
+/// so the host can read it before freeing (via [`dealloc`]). Returns the packed-0 OOM sentinel if the region
+/// can't be allocated. Shared by [`compile`] and [`compile_named`] so the two exports pack results identically.
+/// `try_reserve_exact` (not `with_capacity`) keeps an oversized payload from aborting the whole instance (
+/// `with_capacity` calls `handle_alloc_error` -> the wasm `unreachable` trap on OOM).
+#[cfg(target_arch = "wasm32")]
+fn pack_result(status: u8, payload: &[u8]) -> u64 {
     let mut out = Vec::<u8>::new();
     if out.try_reserve_exact(1 + payload.len()).is_err() {
         return 0; // "could not even allocate" — honor the packed-0 OOM sentinel, don't trap the instance.
     }
     out.push(status);
-    out.extend_from_slice(&payload);
+    out.extend_from_slice(payload);
     let boxed = out.into_boxed_slice();
     let rlen = boxed.len() as u64;
     let rptr = Box::into_raw(boxed) as *mut u8 as u64;

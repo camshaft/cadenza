@@ -1,3 +1,15 @@
+;; UPDATE 2026-07-18 (v-inference, _w57): NOW USER-FACING via the landed forall-binder sugar (breaker).
+;;   `def id(x: forall a. a) = x; id(Bool, 41)` checks rc=0 + runs 42 — the explicit Bool type arg is DEAD
+;;   (same root as below; forall desugars to (: a Type), so the type arg is a first-class user surface).
+;;   Scheme (cdz type): `id` = (-> Type (-> a a)); `len` = (-> Type (-> (Lst a) Int64)). The FIRST slot is
+;;   the KIND `Type`; the passed type VALUE unifies with the kind then is DISCARDED; the sibling var `a`
+;;   pins FRESH from the VALUE arg. Fix locus (re-pinned): compute_def_scheme (infer.rs ~3989 — the
+;;   (: t Type) param types Ty::Type, a SEPARATE slot from the Ty::Var(a) the sibling `(Lst t)`/`(: x t)`
+;;   produces; they must share a var) + apply_scheme_to_args (infer.rs ~4875) + the fault path — so the
+;;   passed type VALUE binds that shared var before sibling args unify. Still LOW severity (over-accept,
+;;   never a miscompile). NEXT DEDICATED v-inference unit (sequenced after forall, which it interacts with).
+;;   Interacts w/ type-system.md §228 (bidirectional-checking boundary) — may want an operator design ack.
+;;
 ;; OVER-ACCEPTANCE (low severity — a MISSED early rejection, NOT a miscompile), v-inference, 2026-07-17.
 ;;
 ;; When a `(: t Type)` type-valued parameter is MENTIONED in a SIBLING parameter's annotation as a type

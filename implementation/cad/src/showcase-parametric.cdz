@@ -1,0 +1,50 @@
+/// showcase-parametric.cdz — GENUINELY-PARAMETRIC CAD showcase models (operator: "showcase the parametric
+/// models — that's where things get super cool"). Each is a `@param`-driven model built with the ergonomic
+/// `helpers.cdz` surface + returning `lower(...)` so it renders to the mesh driver. The host supplies each
+/// `@param` at run time (a slider in /cad → a host-response), so "change a number, the model updates" — the
+/// exact-Rational payoff: a fractional slider dimension (e.g. 7/2) is carried EXACTLY, no float drift.
+///
+/// Each Rational `@param` desugars (v-metaprogramming) to two scalar host accessors `<name>-num`/`<name>-den`;
+/// the guest recombines `Rational.of(num, den)`. Drive from the CLI with e.g.
+///   cdz run <wasm> --host-response Param.width-num=50 --host-response Param.width-den=1 …
+/// (In /cad, v-guide-infra wires a slider → that host-response → recompute+re-mesh, reusing the notebook
+/// widget infra.) 🪤 A `@param` is READ ONCE via a `let` before reuse — a param passed straight into a
+/// helper that reuses it re-performs the host call per use (general effectful-fn-arg eval; let-bind first).
+@!default-fraction Rational
+
+import { Solid, Vec3, lower, v3r, v3r-eq, bounding-box, aabbr-size, solidr-is-empty } from "exact"
+import { box, cyl, hole-through, fuse, move-z } from "helpers"
+
+@param(widget: slider) width : Rational
+@param(widget: slider) depth : Rational
+@param(widget: slider) thickness : Rational
+@param(widget: slider) bore : Rational
+
+/// A parametric mounting PLATE: a `width × depth × thickness` plate with a central bolt hole of radius
+/// `bore` drilled through it. Every dimension is a runtime `@param` — drag the sliders, the plate resizes
+/// and the hole re-bores, all exact. Built entirely with the ergonomic helpers (box + hole-through).
+def plate(w: Rational, d: Rational, t: Rational, r: Rational) =
+  hole-through(box(w, d, t), r, t)
+
+/// The showcase entry: read each @param ONCE (let-bind — reuse re-performs), build the parametric plate,
+/// and lower it to the render form the mesh driver consumes.
+def main() = host Param in
+  (let w = Param.width() in
+   let d = Param.depth() in
+   let t = Param.thickness() in
+   let r = Param.bore() in
+     lower(plate(w, d, t, r)))
+
+/// ---- @test: pin the NON-parametric core (the helper-built plate at fixed dims) so the shape is gate-
+/// protected. (The PARAMETRIC path — @param + host-response — is proven via `cdz run --host-response`, not a
+/// @test, which supplies no host values; see the module doc for the CLI invocation.) ----
+
+@test
+def plate-at-fixed-dims-is-a-drilled-block() =
+  // plate(50, 30, 5, 3) — a 50×30×5 plate with a Ø6 bore. The hole (a Difference) never grows the box, so
+  // the envelope is exactly the outer block 50×30×5; and it's not empty (a real drilled plate).
+  let p = plate(50 / 1, 30 / 1, 5 / 1, 3 / 1) in
+  if v3r-eq(aabbr-size(bounding-box(p)), v3r(50 / 1, 30 / 1, 5 / 1)) and (solidr-is-empty(p) == false)
+  then unit else trap("plate(50,30,5,3) envelope is the 50×30×5 block, non-empty")
+
+export { main }
