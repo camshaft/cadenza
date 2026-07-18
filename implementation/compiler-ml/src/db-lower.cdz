@@ -1,0 +1,78 @@
+/// db-lower.cdz — P1f of the rcdzc port: the LOWER producer over the Db, reading the MEMOIZED resolved +
+/// types columns. Completes the memoized producer CHAIN (rcdzc lower.rs core_of reads infer.rs type_of reads
+/// resolve.rs resolved_of): resolve runs once into the Db (P1d), infer once reading resolve (P1e), and LOWER
+/// reads BOTH memoized columns — never recomputing either. The whim pipeline's `lower-tree` re-ran BOTH
+/// resolve-tree AND infer-tree on every call; this reads them from the Db.
+///
+/// Lower produces a `Core` POINTER TREE (not a per-node column — the Core IR is small + directly walkable),
+/// so `lower-of-db` returns `(db', Option(Core))`: the Db (with resolve+types memoized) + the Core, or `None`
+/// if the program is ill-typed (a TErr node → no core form, absence≠value). Reuses infer-db's `lower-node`
+/// walk (Db-column INTEGRATION, not a re-impl) over the Db's columns.
+
+import { Tree } from "parse-db"
+import { Core, lower-node } from "lower-db"
+import { Db } from "db"
+import { infer-into-db, db-resolved-col, db-typed-col } from "db-infer"
+
+/// LOWER over the Db (rcdzc core_of): demand resolve+types into the Db ONCE (via P1e infer-into-db, which
+/// chains P1d resolve — both fill-once), then run `lower-node` over the Db's MEMOIZED resolved + types
+/// columns → `Option(Core)` (`None` if ill-typed: a TErr node has no core form). Returns `(db', core-opt)` —
+/// the Db carrying resolve+types memoized + the lowered Core. No re-resolve, no re-infer.
+def lower-of-db(db: Db, root: Int64) =
+  (let db1 = infer-into-db(db, root) in
+   (db1, lower-node(db-tree-of(db1), root, db-resolved-col(db1), db-typed-col(db1))))
+
+/// The Db's source tree (re-exported destructure; db-infer imports db-tree but doesn't re-export it).
+def db-tree-of(db: Db) = match db with | Db.Db(t, _, _, _) => t
+
+// ---- TESTS: lower reads the memoized resolve+types columns; no re-resolve/re-infer ------------------
+
+import { Tok, parse-tokens } from "parse-db"
+import { db-of, resolved-filled, typed-filled } from "db"
+import { is-cnum, is-cvar } from "lower-db"
+
+/// `let x = 2 in x` as (root, db).
+def let-db() = match parse-tokens([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1)]) with
+  | (root, tree) => (root, db-of(tree))
+
+@test
+def dl-lowers-to-clet() =
+  // `let x = 2 in x` lowers to a CLet (via the Db's memoized columns) — Some(Core).
+  (match let-db() with | (root, d0) =>
+    (match lower-of-db(d0, root) with
+      | (_, Option.Some(Core.CLet(_, cv, cb))) => (if is-cnum(cv, 2) then (if is-cvar(cb, root) then unit else trap("body CVar(root)")) else trap("value CNum 2"))
+      | (_, _) => trap("let lowers to CLet via Db")))
+
+@test
+def dl-fills-resolve-and-types-columns() =
+  // lowering demands resolve+types into the Db: after lower-of-db, BOTH columns are filled (the memoized
+  // chain resolve→infer→lower ran, each fill-once).
+  (match let-db() with | (root, d0) =>
+    (match lower-of-db(d0, root) with
+      | (db1, _) => (if (resolved-filled(db1) > 0) then (if (typed-filled(db1) > 0) then unit else trap("types filled")) else trap("resolved filled"))))
+
+@test
+def dl-ill-typed-has-no-core() =
+  // an unbound `y` is TErr → NO core form → None (absence≠value, carried through the Db chain).
+  (match parse-tokens([Tok.TName(9)]) with | (root, tree) =>
+    (match lower-of-db(db-of(tree), root) with
+      | (_, Option.None(_)) => unit
+      | (_, Option.Some(_)) => trap("ill-typed has no core form")))
+
+@test
+def dl-literal-lowers-to-cnum() =
+  // a bare literal `5` lowers to CNum 5 via the Db.
+  (match parse-tokens([Tok.TNum(5)]) with | (root, tree) =>
+    (match lower-of-db(db-of(tree), root) with
+      | (_, Option.Some(c)) => (if is-cnum(c, 5) then unit else trap("CNum 5"))
+      | (_, Option.None(_)) => trap("a literal lowers")))
+
+@test
+def dl-add-lowers-to-cbin() =
+  // `1 + 2` lowers to a CBin (op 43) via the Db's memoized columns.
+  (match parse-tokens([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2)]) with | (root, tree) =>
+    (match lower-of-db(db-of(tree), root) with
+      | (_, Option.Some(Core.CBin(op, _, _, l, r))) => (if op == 43 then (if is-cnum(l, 1) then (if is-cnum(r, 2) then unit else trap("r CNum 2")) else trap("l CNum 1")) else trap("+ op"))
+      | (_, _) => trap("1 + 2 lowers to CBin")))
+
+export { lower-of-db, db-tree-of }

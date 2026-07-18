@@ -4976,8 +4976,26 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
             if let Some(cond) = guard_cond {
                 referenced.extend(used_match_binder_names(db, cond));
             }
+            // A `(bin …)` pattern's DEPENDENT-SIZE operand is a USE of an earlier segment binder, not a
+            // binder itself: `(bin (u8 n) (bytes body n))` reads `n` as the size of the `body` segment. That
+            // use lives IN THE PATTERN (not the arm body), so `used_match_binder_names(body)` misses it —
+            // leaving `n` falsely flagged CDZ0306 "never used" (v-lsp: red squiggles in the guide's
+            // length-prefixed-frame examples). Collect the size-operand OCCURRENCES so their NAMES count as
+            // uses AND the occurrences are excluded from the binder candidates below (a size operand also
+            // arrives via the syntactic `arm_pattern_binders` walk as a bogus second "binder").
+            let size_occs = bin_pattern_size_occs(db, binder_pat);
+            for &so in &size_occs {
+                if let Some(nm) = db.ast.as_name(so) {
+                    referenced.insert(nm.to_string());
+                }
+            }
             for (name, name_occ) in pat_binders {
                 if name.starts_with('_') || referenced.contains(&name) {
+                    continue;
+                }
+                // A bin-segment SIZE operand (`n` in `(bytes body n)`) is a use of an earlier binder, not a
+                // binder — skip it as a candidate (its name is already counted used above).
+                if size_occs.contains(&name_occ) {
                     continue;
                 }
                 // `arm_pattern_binders` is deliberately SYNTACTIC — it does NOT resolve ctor-vs-binder, so a
@@ -5284,6 +5302,51 @@ fn used_param_names(db: &mut Db, body: StructId) -> std::collections::HashSet<St
 /// on inner shadowing: a binder shadowed by an inner same-named binder that is then used counts the outer
 /// as "used" (under-reports the rare shadow case — never a false "unused"), the right side to err on for a
 /// warning.
+/// The DEPENDENT-SIZE operand occurrences of every `(bin …)` segment reachable in a match arm's PATTERN —
+/// `n` in `(bytes body n)` / `(utf8 s n)`. Such an operand is a USE of an earlier segment binder (the size
+/// to read), NOT a binder itself; the unused-binding scan must count it as a use and must not treat it as a
+/// candidate binder (the syntactic `arm_pattern_binders` walk collects it as a bogus second binder). Walks
+/// the pattern subtree so a `(bin …)` nested in a tuple/ctor pattern is reached too.
+fn bin_pattern_size_occs(db: &mut Db, pat: StructId) -> std::collections::HashSet<StructId> {
+    let mut out = std::collections::HashSet::new();
+    let node_ids: Vec<StructId> = collect_subtree(db, pat);
+    for id in node_ids {
+        if db.ast.head_name(id) != Some("bin") {
+            continue;
+        }
+        if let crate::resolved::Resolved::Bin { segs } = crate::resolve::resolved_of(db, id) {
+            for s in &segs {
+                match s.kind {
+                    crate::resolved::SegKind::Bytes { size: Some(occ) } => {
+                        out.insert(occ);
+                    }
+                    crate::resolved::SegKind::Utf8 { size } => {
+                        out.insert(size);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Every occurrence in the subtree rooted at `id` (inclusive), in arena order. A cheap syntactic walk used
+/// where a helper must inspect every node of a pattern/expression form.
+fn collect_subtree(db: &Db, id: StructId) -> Vec<StructId> {
+    let mut out = Vec::new();
+    fn walk(db: &Db, id: StructId, out: &mut Vec<StructId>) {
+        out.push(id);
+        if let crate::ast::Struct::List(kids) = db.ast.get(id) {
+            for c in kids.clone() {
+                walk(db, c, out);
+            }
+        }
+    }
+    walk(db, id, &mut out);
+    out
+}
+
 fn used_match_binder_names(db: &mut Db, body: StructId) -> std::collections::HashSet<String> {
     fn walk(db: &mut Db, id: StructId, out: &mut std::collections::HashSet<String>) {
         if let Some(name) = db.ast.as_name(id).map(str::to_string)

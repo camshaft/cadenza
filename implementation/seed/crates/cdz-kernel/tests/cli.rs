@@ -108,6 +108,84 @@ fn emit_policy_appends_a_cedar_capability_doc_to_the_log() {
 }
 
 #[test]
+fn authz_grant_and_revoke_surface_the_operator_lifecycle() {
+    // The operator's can't-brick lifecycle (deny → auto authz-request → operator GRANT → later REVOKE):
+    // `authz-grant <log> <permit.cedar> [--expiry-ms <ms>]` appends a narrow Cedar permit (optionally
+    // time-boxed) as an `authz-grant` event; `authz-revoke <log> <grant-seq>` pulls it by seq. The daemon's
+    // effective_policy fold unions live grants with the base policy and drops revoked/expired ones. This
+    // asserts the CLI surface end-to-end (store-independent — no compile). The seq accounting: bootstrap adds
+    // no event, so the first grant lands at seq 0, and the revoke names it.
+    let log = unique("authz-log").with_extension("log");
+    let permit = unique("authz-permit").with_extension("cedar");
+    let _ = std::fs::remove_file(&log);
+    std::fs::write(
+        &permit,
+        r#"permit(principal, action == Action::"prim:exec", resource);"#,
+    )
+    .unwrap();
+    Command::new(bin())
+        .args(["bootstrap", log.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+
+    // GRANT with an absolute expiry — reports the seq and the expiry.
+    let out = Command::new(bin())
+        .args([
+            "authz-grant",
+            log.to_str().unwrap(),
+            permit.to_str().unwrap(),
+            "--expiry-ms",
+            "9999999999999",
+        ])
+        .output()
+        .expect("run cdz-agent authz-grant");
+    assert!(
+        out.status.success(),
+        "authz-grant appends a permit: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let grant_stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        grant_stdout.contains("granted capability at seq 0"),
+        "authz-grant reports the grant seq: {grant_stdout}"
+    );
+    assert!(
+        grant_stdout.contains("expires at"),
+        "authz-grant with --expiry-ms reports the expiry: {grant_stdout}"
+    );
+
+    // REVOKE the grant by its seq.
+    let out = Command::new(bin())
+        .args(["authz-revoke", log.to_str().unwrap(), "0"])
+        .output()
+        .expect("run cdz-agent authz-revoke");
+    assert!(
+        out.status.success(),
+        "authz-revoke pulls the grant: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("revoked grant at seq 0"),
+        "authz-revoke reports the revoked grant seq"
+    );
+
+    // The reserved-kind guard now also covers the authz kinds — `emit` must refuse them.
+    for reserved in ["authz-grant", "authz-revoke", "authz-request"] {
+        let out = Command::new(bin())
+            .args(["emit", log.to_str().unwrap(), reserved, "x"])
+            .output()
+            .expect("run cdz-agent emit reserved authz");
+        assert!(
+            !out.status.success(),
+            "emit of reserved authz kind `{reserved}` must fail"
+        );
+    }
+
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&permit);
+}
+
+#[test]
 fn bootstrap_then_inject_then_run_drives_the_genesis() {
     let log = unique("log").with_extension("log");
     let prog = unique("genesis").with_extension("cdz");

@@ -77,6 +77,30 @@ def ground-default(t: Ty) = match t with
         Ty.TyInt(IntTy.IntTy(s2, w2)))))
   | _ => t
 
+/// SIGN equality — two signs are equal iff the SAME state (Signed=Signed, Unsigned=Unsigned,
+/// SignDef=SignDef). A one-level match (flat, avoids the deep-nested-pattern limitation).
+def sign-eq(a: Sign, b: Sign) = match a with
+  | Sign.Signed => (match b with | Sign.Signed => true | _ => false)
+  | Sign.Unsigned => (match b with | Sign.Unsigned => true | _ => false)
+  | Sign.SignDef => (match b with | Sign.SignDef => true | _ => false)
+
+/// WIDTH equality — WFixed(n)=WFixed(n) iff same n; WidthDef=WidthDef; else unequal.
+def width-eq(a: Width, b: Width) = match a with
+  | Width.WFixed(n) => (match b with | Width.WFixed(m) => n == m | Width.WidthDef => false)
+  | Width.WidthDef => (match b with | Width.WidthDef => true | Width.WFixed(_) => false)
+
+/// STRUCTURAL type EQUALITY over `Ty` (rcdzc ty.rs PartialEq, int/bool subset): two `TyInt` are equal iff
+/// SAME sign AND width (both axes — an int type's identity is its (sign, width)); TyBool=TyBool; TyErr is
+/// NEVER equal to anything (an erroneous branch never makes an `if` well-typed — the correctness rule
+/// if-join relies on). This is the convergence primitive infer's if-type-join + unify use over the shared
+/// `Ty` (replacing infer-db's monomorphic `type-eq`). Bind-per-level (deep-nested-match limitation).
+def ty-eq(a: Ty, b: Ty) = match a with
+  | Ty.TyInt(ita) => (match b with
+      | Ty.TyInt(itb) => (match ita with | IntTy.IntTy(sa, wa) => (match itb with | IntTy.IntTy(sb, wb) => (if sign-eq(sa, sb) then width-eq(wa, wb) else false)))
+      | _ => false)
+  | Ty.TyBool => (match b with | Ty.TyBool => true | _ => false)
+  | Ty.TyErr => false
+
 // ---- TESTS -----------------------------------------------------------------------------------------
 
 @test
@@ -123,4 +147,42 @@ def ty-ground-default-partial-deferred-sign() =
   // a deferred SIGN with a fixed width grounds the sign to Signed, keeps the width (orthogonal axes).
   (match int-parts(ground-default(Ty.TyInt(IntTy.IntTy(Sign.SignDef, Width.WFixed(16))))) with | (sg, w) => (if (sg == 1) and (w == 16) then unit else trap("deferred-sign→Signed, width 16 kept")))
 
-export { Sign.*, Width.*, IntTy.*, Ty.*, ty-deferred-int, ty-int64, ty-fixed-int, is-int-ty, is-ground-int, ground-default }
+// ---- ty-eq tests (structural type equality — the convergence primitive) ----
+
+@test
+def ty-eq-same-int() =
+  // Int64 == Int64; UInt8 == UInt8.
+  (if ty-eq(ty-int64(), ty-int64()) then (if ty-eq(ty-fixed-int(false, 8), ty-fixed-int(false, 8)) then unit else trap("UInt8==UInt8")) else trap("Int64==Int64"))
+
+@test
+def ty-eq-width-differs() =
+  // Int8 != Int16 (different width).
+  (if ty-eq(ty-fixed-int(true, 8), ty-fixed-int(true, 16)) then trap("Int8 != Int16") else unit)
+
+@test
+def ty-eq-sign-differs() =
+  // Int8 != UInt8 (same width, different sign — the orthogonal-axis identity).
+  (if ty-eq(ty-fixed-int(true, 8), ty-fixed-int(false, 8)) then trap("Int8 != UInt8") else unit)
+
+@test
+def ty-eq-int-not-bool() =
+  // an integer type is never equal to Bool (cross-kind).
+  (if ty-eq(ty-int64(), Ty.TyBool) then trap("Int64 != Bool") else unit)
+
+@test
+def ty-eq-bool-bool() =
+  // TyBool == TyBool.
+  (if ty-eq(Ty.TyBool, Ty.TyBool) then unit else trap("Bool==Bool"))
+
+@test
+def ty-eq-err-never-equal() =
+  // TyErr is never equal to anything, including itself (poison never makes an if well-typed).
+  (if ty-eq(Ty.TyErr, Ty.TyErr) then trap("TyErr != TyErr (poison never equal)") else (if ty-eq(Ty.TyErr, ty-int64()) then trap("TyErr != Int64") else unit))
+
+@test
+def ty-eq-deferred-matches-deferred() =
+  // two fully-deferred int literals are equal AS TYPES (same SignDef+WidthDef state) — distinct from ground
+  // equality; unify handles grounding, ty-eq is structural state-equality.
+  (if ty-eq(ty-deferred-int(), ty-deferred-int()) then unit else trap("deferred == deferred (same state)"))
+
+export { Sign.*, Width.*, IntTy.*, Ty.*, ty-deferred-int, ty-int64, ty-fixed-int, is-int-ty, is-ground-int, ground-default, sign-eq, width-eq, ty-eq }

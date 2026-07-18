@@ -33,8 +33,19 @@ fn run(args: &[&str]) -> (bool, String, String) {
 /// still exercise it fully. This mirrors the `let Some(store) else return` guard the heap-value CLI
 /// tests already use.
 fn store_present() -> bool {
-    // `CARGO_BIN_EXE_cdz` = `<target>/<profile>/cdz`; the store sits at `<target>/cadenza-store` (two
-    // parents up, then `cadenza-store`) — the same path `cdz test`'s `default_store` computes.
+    // Resolve the store dir the SAME way the runtime resolver does (`CADENZA_STORE` first, else the
+    // physical `<target>/cadenza-store`), so this guard AGREES with a storeless rerun's mechanism: xtask's
+    // storeless-CI rerun sets `CADENZA_STORE=<empty temp dir>`, and this guard must then report ABSENT so
+    // the runtime-driving test SKIPS — exactly as it does in the real storeless CI job. Checking only the
+    // physical dir would ignore that env and wrongly report PRESENT (the physical store still exists),
+    // running the test → the resolver finds no runtime → a false-positive red. `CARGO_BIN_EXE_cdz` =
+    // `<target>/<profile>/cdz`; the physical store sits at `<target>/cadenza-store` (two parents up).
+    if let Ok(dir) = std::env::var("CADENZA_STORE") {
+        return std::path::Path::new(&dir).is_dir()
+            && std::fs::read_dir(&dir)
+                .map(|mut e| e.next().is_some())
+                .unwrap_or(false);
+    }
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_cdz"))
         .parent()
         .and_then(|d| d.parent())
@@ -449,12 +460,26 @@ fn a_tag_selects_a_subset_and_composes_with_filter() {
         "--tag AND --filter intersect: {stdout}"
     );
 
-    // An unknown tag selects nothing — a vacuously green run (0 tests, still exit 0).
+    // An unknown tag selects nothing — a vacuously green run (0 tests, still exit 0) — but the hint must
+    // point at the TAG (not a missing `@test`): the file is full of tests the filter excluded, so blaming
+    // `@test` would send a user who typo'd `--tag` to the wrong fix.
     let (ok, stdout, _) = run(&["test", &f, "--tag", "nope"]);
     assert!(ok, "no matching tag → vacuously green: {stdout}");
     assert!(
         !stdout.contains("PASS "),
         "no test runs under an unknown tag: {stdout}"
+    );
+    assert!(
+        stdout.contains("--tag nope") && !stdout.contains("needs the `@test` annotation"),
+        "an unmatched --tag names the tag as the cause, NOT a missing @test: {stdout}"
+    );
+
+    // Symmetrically, an unmatched `--filter` blames the FILTER, not a missing `@test`.
+    let (ok, stdout, _) = run(&["test", &f, "--filter", "zzznomatch"]);
+    assert!(ok, "no matching filter → vacuously green: {stdout}");
+    assert!(
+        stdout.contains("--filter zzznomatch") && !stdout.contains("needs the `@test` annotation"),
+        "an unmatched --filter names the filter as the cause, NOT a missing @test: {stdout}"
     );
 }
 
@@ -780,6 +805,32 @@ fn an_exhaustive_property_is_driven_over_its_whole_domain() {
         stdout.contains("PASS bp (exhaustive, 512 cases)"),
         "a multi-scalar @exhaustive enumerates the full Bool×UInt8 product (512 cases): {stdout}"
     );
+
+    // A multi-scalar `@exhaustive` whose parameters are EACH individually bounded but whose PRODUCT exceeds
+    // MAX_EXHAUSTIVE_CASES declines — a DIFFERENT path from the single-unbounded-param decline above (there
+    // `scalar_domain` returns None; here every `scalar_domain` returns Some, and the running `product >
+    // MAX_EXHAUSTIVE_CASES` bail fires). `UInt16 × UInt16` = 65536² ≈ 4.29e9 ≫ 100k. Pins that the product
+    // accumulator declines a combinatorial blowup rather than trying to build billions of cases (a DoS).
+    let product_blowup = write(
+        &d,
+        "blowup.cdz",
+        "@exhaustive def wide2(x: UInt16, y: UInt16) = if x == x then unit else trap(\"x\")\n\
+         @test def anchor7() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, _) = run(&["test", &product_blowup]);
+    assert!(
+        !ok,
+        "a product-exceeds-MAX @exhaustive domain → non-zero exit (declines): {stdout}"
+    );
+    assert!(
+        stdout.contains("FAIL wide2") && stdout.contains("BOUNDED input domain"),
+        "a UInt16×UInt16 @exhaustive (product ≫ MAX) declines with the narrow-the-type message: {stdout}"
+    );
+    // NB: the product-exceeds path declines INSTANTLY (it bails before building any cases), so this pin is
+    // cheap. A wide-but-under-cap proof (e.g. `UInt16` alone = 65536 cases) would exercise the "accumulator
+    // does not prematurely bail" side, but ENUMERATING 65536 real trials costs ~35s wall-clock — too heavy
+    // for the gated suite (v-compiler-perf's wall-clock gate). The existing Bool×UInt8=512 proof already
+    // covers that the accumulator threads the running product correctly under the cap.
 
     // `@exhaustive` composes with `@tag`: a `@tag("fast") @exhaustive` test is selected by `--tag fast`
     // and runs exhaustively. Pins that the two annotations stack (independent metadata + run mode).

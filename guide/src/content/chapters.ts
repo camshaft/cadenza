@@ -291,6 +291,13 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Playground.tsx")),
   },
   {
+    slug: "cdz-toolchain",
+    title: "The cdz toolchain",
+    blurb: "The same compiler as one binary on your PATH: compile, run, a cargo-style project workflow, and code queries for humans and agents.",
+    section: "Wrapping up",
+    Component: lazy(() => import("./chapters/CdzToolchain.tsx")),
+  },
+  {
     slug: "whats-next",
     title: "Where to go next",
     blurb: "A recap, one last program, and how to keep exploring.",

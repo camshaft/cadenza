@@ -37,3 +37,4 @@
 ;; branches: `(if (if b X false) t e)` ≡ `(if b (if X t e) (if false t e))`. Bounded + sound
 ;; (t/e duplicated statically, each path runs one copy). PARKED: no forcing consumer; won't build
 ;; a speculative hoist site. Bare abort-in-if-condition (no connective) already folds.
+; RESOLVED (v-effects, 2026-07-18, MR a38bdd243): outer-if-through-condition hoist + tail-condition-abort capturable guard. b=true→7, b=false→200, adversarial sweep clean.

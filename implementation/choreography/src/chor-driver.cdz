@@ -15,6 +15,9 @@ import { Ast } from "ast"
 import { projectable } from "chor-project"
 import { unprojectable-role } from "chor-project"
 import { gen-role } from "chor-codegen"
+import { deadlock-free } from "chor-safety"
+import { Local } from "chor-local"
+import { project } from "chor-local"
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Render an Ast (a generated actor program) to s-expr text.
@@ -58,6 +61,76 @@ def drive(roles: List(String), g: Chor) -> String =
   else "not-well-formed"
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// Report: a sidecar-style header line — the whole-protocol verdict (well-formed / projectable / deadlock-
+// free) above the shredded per-actor programs. This is what a user running the sidecar sees: is my protocol
+// sound, and here is each actor's code.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The one-line verdict for a protocol: `ok` if wf + projectable + deadlock-free, else the first failing
+/// check (with the offending role for un-projectable). This is the sidecar's headline status.
+def verdict(roles: List(String), g: Chor) -> String =
+  if wf(roles, g) then
+    (if projectable(roles, g) then
+      (if deadlock-free(roles, g) then "ok: well-formed, projectable, deadlock-free"
+       else "not-deadlock-free")
+     else (match unprojectable-role(roles, g) with
+       | Option.Some(q) => String.concat("not-projectable: ", q)
+       | Option.None(_) => "not-projectable"))
+  else "not-well-formed"
+
+/// The full sidecar report: the verdict line, then (only when ok) the shredded per-actor programs beneath.
+def report(roles: List(String), g: Chor) -> String =
+  let v = verdict(roles, g) in
+  if is-ok(v) then String.concat(v, String.concat("\n", shred(roles, g)))
+  else v
+
+/// A verdict is "ok" iff it starts with "ok" — reuse the prefix check.
+def is-ok(v: String) -> Bool = starts-with(v, "ok")
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// render-compilable: emit a COMPLETE, COMPILABLE Cadenza module for one actor (Layer-2b). Unlike `render`
+// (a DISPLAY s-expr), this produces real Cadenza the RUST `cdz compile` accepts: an `effect Comm`, a
+// self-handled `def main` performing the role's projected sends/recvs, and an `export`. rcdzc requires the
+// effect to be HANDLED (an unhandled perform is CDZ0401), so a MOCK handler is emitted (a real transport is
+// a later host-bound story). This is the bridge to per-actor `cdz compile out/<Role>.cdz -o <Role>.wasm`.
+//
+// FIRST CUT: linear (send/recv/end) + external-choice recv-of-selection. RECURSION (LRecT/LVarT) can't sit
+// in a single `def main` back-jump, so it emits a clear "-- rec: unsupported" marker; a rec-emitting slice
+// (a named recursive helper per LRecT) follows. Purchase (linear) is the first compilable-artifact demo.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The fixed module preamble: the Comm effect + a mock self-handler opening. `<body>` + the `in` close it.
+def compile-preamble() -> String =
+  String.concat("effect Comm =\n  | send : String -> Int64\n  | recv : String -> String\n\n",
+    String.concat("def main() =\n  handle Comm(0) with\n    | send(l, s) => resume(0, 0)\n",
+      "    | recv(f, s) => resume(\"\", 0)\n  in\n  "))
+
+/// Fold a role's local type into the `def main` BODY (compilable Cadenza). Sends/recvs thread via `let`;
+/// LEnd is `0`; a choice takes its first arm (mock-deterministic, matching chor-run's ichoice/ematch).
+def compile-body(l: Local) -> String = match l with
+  | Local.LEnd => "0"
+  | Local.LSend(_to, label, k) =>
+    String.concat("let _ = Comm.send(\"", String.concat(label, String.concat("\") in\n  ", compile-body(k))))
+  | Local.LRecv(from, _label, k) =>
+    String.concat("let _ = Comm.recv(\"", String.concat(from, String.concat("\") in\n  ", compile-body(k))))
+  | Local.LIntC(brs) => compile-first-branch(brs)
+  | Local.LExtC(from, brs) =>
+    String.concat("let _ = Comm.recv(\"", String.concat(from, String.concat("\") in\n  ", compile-first-branch(brs))))
+  | Local.LBranch(_label, k) => compile-body(k)
+  | Local.LRecT(_v, _body) => "0  -- rec: unsupported in first-cut render-compilable"
+  | Local.LVarT(_v) => "0  -- var: unsupported in first-cut render-compilable"
+
+/// A choice's first branch body (mock-deterministic selection).
+def compile-first-branch(brs: List(Local)) -> String = match brs with
+  | [] => "0"
+  | [b, .. _rest] => compile-body(b)
+
+/// The complete compilable module for role `r` of protocol `g`.
+def render-compilable(g: Chor, r: String) -> String =
+  String.concat(compile-preamble(),
+    String.concat(compile-body(project(g, r)), "\n\nexport { main }\n"))
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -84,6 +157,15 @@ def render-bystander-is-done() =
   let g = Chor.Comm("Buyer", "Seller", "Title") in
   if render(gen-role(g, "Shipper")) == "(done)" then unit
   else trap("an uninvolved role renders to (done)")
+
+@test
+def render-rec-loop() =
+  // PIN: render handles a RECURSIVE protocol's (rec v …)/(var v) codegen output (e.g. FleetIntegrate's
+  // guarded loops). Behavior is correct (render is generic over List/Name), but pin it so a future change
+  // can't silently break rec-rendering. Buyer's rec projection of rec Loop . (Buyer->Seller:Ping ; Loop).
+  let g = Chor.Rec("Loop", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ping"), Chor.Var("Loop"))) in
+  if render(gen-role(g, "Buyer")) == "(rec Loop (seq (perform (send Seller Ping)) (var Loop)))" then unit
+  else trap("a recursive protocol renders its rec/var loop program")
 
 @test
 def shred-renders-every-role() =
@@ -119,6 +201,44 @@ def drive-rejects-ill-formed() =
   if drive(["Buyer"], g) == "not-well-formed" then unit
   else trap("the driver rejects an ill-formed protocol")
 
+@test
+def verdict-ok-on-sound-protocol() =
+  // The linear two-role exchange is well-formed, projectable, and deadlock-free.
+  let g = Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"), Chor.Comm("Seller", "Buyer", "Quote")) in
+  if verdict(["Buyer", "Seller"], g) == "ok: well-formed, projectable, deadlock-free" then unit
+  else trap("a sound protocol gets the ok verdict")
+
+@test
+def verdict-names-unprojectable-role() =
+  let g = Chor.Choice("Buyer", [
+    Chor.Branch("A", Chor.Seq(Chor.Comm("Buyer", "Seller", "Sa"), Chor.Comm("Buyer", "Shipper", "Go"))),
+    Chor.Branch("B", Chor.Comm("Buyer", "Seller", "Sb"))]) in
+  if verdict(["Buyer", "Seller", "Shipper"], g) == "not-projectable: Shipper" then unit
+  else trap("the verdict names the un-projectable role")
+
+@test
+def verdict-flags-ill-formed() =
+  if verdict(["Buyer"], Chor.Comm("Buyer", "Buyer", "X")) == "not-well-formed" then unit
+  else trap("a self-comm is not well-formed")
+
+@test
+def report-ok-carries-the-shred() =
+  // A sound protocol's report = the ok verdict line THEN the shredded per-actor programs.
+  let g = Chor.Comm("Buyer", "Seller", "Title") in
+  let out = report(["Buyer", "Seller"], g) in
+  // First line is the ok verdict; the shred (Buyer:/Seller: blocks) follows.
+  if starts-with(out, "ok: well-formed, projectable, deadlock-free\nBuyer: ") then unit
+  else trap("an ok report leads with the verdict then the shred")
+
+@test
+def report-unsound-is-just-the-verdict() =
+  // An un-projectable protocol's report is the verdict alone (no shred — it can't be shredded).
+  let g = Chor.Choice("Buyer", [
+    Chor.Branch("A", Chor.Seq(Chor.Comm("Buyer", "Seller", "Sa"), Chor.Comm("Buyer", "Shipper", "Go"))),
+    Chor.Branch("B", Chor.Comm("Buyer", "Seller", "Sb"))]) in
+  if report(["Buyer", "Seller", "Shipper"], g) == "not-projectable: Shipper" then unit
+  else trap("an unsound report is just the verdict, no shred")
+
 // Minimal prefix check (String == on a sliced prefix would need substring; compare the built prefix).
 def starts-with(s: String, prefix: String) -> Bool =
   // Compare `prefix` against `s` truncated to prefix's length via a char-walk.
@@ -133,4 +253,57 @@ def prefix-eq(s: String, prefix: String, i: Int64) -> Bool =
         | Option.None(_) => true)
       | Option.None(_) => false))
 
-export { render, shred, drive }
+@test
+def compilable-emits-effect-and-main() =
+  // The compilable module for a sender starts with the Comm effect + main, ends with the export.
+  let g = Chor.Comm("Buyer", "Seller", "Title") in
+  let m = render-compilable(g, "Buyer") in
+  if starts-with(m, "effect Comm =\n  | send : String -> Int64") then
+    (if contains-main(m) then unit else trap("emits a def main"))
+  else trap("the compilable module opens with the Comm effect declaration")
+
+@test
+def compilable-sender-performs-send() =
+  // Buyer's compilable body performs Comm.send with its label.
+  let g = Chor.Comm("Buyer", "Seller", "Title") in
+  let m = render-compilable(g, "Buyer") in
+  if contains-sub-str(m, "Comm.send(\"Title\")") then unit
+  else trap("the sender's compilable body performs Comm.send(\"Title\")")
+
+@test
+def compilable-receiver-performs-recv() =
+  let g = Chor.Comm("Buyer", "Seller", "Title") in
+  let m = render-compilable(g, "Seller") in
+  if contains-sub-str(m, "Comm.recv(\"Buyer\")") then unit
+  else trap("the receiver's compilable body performs Comm.recv(\"Buyer\")")
+
+@test
+def compilable-sender-is-exact-golden() =
+  // GOLDEN: pin the EXACT emitted module for a single send. Verified (hand-mirrored) to `cdz compile` to a
+  // 92-byte wasm that runs → 0, so this exact string is compilable Cadenza. A future emit change that breaks
+  // compilability flips this golden.
+  let g = Chor.Comm("Buyer", "Seller", "Title") in
+  let expect = String.concat("effect Comm =\n  | send : String -> Int64\n  | recv : String -> String\n\n",
+    String.concat("def main() =\n  handle Comm(0) with\n    | send(l, s) => resume(0, 0)\n    | recv(f, s) => resume(\"\", 0)\n  in\n  ",
+      String.concat("let _ = Comm.send(\"Title\") in\n  0", "\n\nexport { main }\n"))) in
+  if render-compilable(g, "Buyer") == expect then unit
+  else trap("the emitted compilable module matches the compile-verified golden")
+
+// Cheap `contains` helpers for the compilable-module shape tests (walk the char stream).
+def contains-main(s: String) -> Bool = contains-sub-str(s, "def main()")
+
+def contains-sub-str(hay: String, needle: String) -> Bool = contains-at(hay, needle, 0)
+
+def contains-at(hay: String, needle: String, i: Int64) -> Bool =
+  if i + String.byte-len(needle) > String.byte-len(hay) then false
+  else (if prefix-eq-at(hay, needle, i, 0) then true else contains-at(hay, needle, i + 1))
+
+def prefix-eq-at(hay: String, needle: String, start: Int64, j: Int64) -> Bool =
+  if j >= String.byte-len(needle) then true
+  else (match String.at(hay, start + j) with
+    | Option.Some(ch) => (match String.at(needle, j) with
+      | Option.Some(cn) => (if ch == cn then prefix-eq-at(hay, needle, start, j + 1) else false)
+      | Option.None(_) => true)
+    | Option.None(_) => false)
+
+export { render, shred, drive, verdict, report, render-compilable }

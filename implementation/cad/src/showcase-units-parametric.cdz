@@ -1,0 +1,61 @@
+/// showcase-units-parametric.cdz — a UNITS-PARAMETRIC CAD showcase (P4): sliders whose values are read in a
+/// real-world unit (INCHES) and converted, exactly over Rational, into the model's millimetres. This is the
+/// "@param Length layer" the operator asked for, built on machinery that already exists: a Rational @param
+/// (v-metaprogramming's num/den desugar) plus the units.cdz edge constructors. A slider reading a quarter
+/// means a quarter INCH, carried exact with zero float drift.
+///
+/// WHY THIS SHAPE, not a Length-TYPED @param: a genuine Length-typed @param would need new desugar machinery
+/// in v-metaprogramming (a Qty carries a unit, not a scalar num/den), which the CAD vertical does not invent.
+/// The buildable-today layer keeps the @param a Rational magnitude and pins its UNIT at the authoring site by
+/// feeding it through inch. The slider drives the magnitude; inch fixes the interpretation; the model stores
+/// exact mm. Same UX (drag to resize, unit-aware), zero new frontend.
+///
+/// THE SHOWCASE: an imperial mounting bracket authored in inches. A quarter-inch bore is 127/20 mm exactly; a
+/// 3 inch plate is 381/5 mm exactly. Mixed-unit authoring in one model with no rounding is the thing floats
+/// cannot do and the reason Rational plus Qty exist.
+@!default-fraction Rational
+
+import { Solid, Vec3, lower, v3, v3-eq, bounding-box, aabbr-size, solidr-is-empty } from "exact"
+import { box, hole-through } from "helpers"
+import { inch } from "units"
+
+@param(widget: slider, range: [1, 8], default: 3) bwidth : Rational
+@param(widget: slider, range: [1, 6], default: 2) bdepth : Rational
+@param(widget: slider, range: [1, 4], default: 1) bthickness : Rational
+@param(widget: slider, range: [1, 2], default: 1) bbore : Rational
+
+/// A parametric imperial bracket: a w-by-d-by-t plate (dimensions in inches, converted to exact model mm via
+/// inch) with a central bolt hole of radius r inches drilled through the thickness. Every argument is an inch
+/// magnitude; inch converts it, exactly over Rational, to the model's millimetres.
+def bracket(w: Rational, d: Rational, t: Rational, r: Rational) =
+  hole-through(box(inch(w), inch(d), inch(t)), inch(r), inch(t))
+
+/// The showcase entry: read each inch-valued param once (let-bind, since reuse re-performs the host call),
+/// build the bracket, and lower it to the render form the mesh driver consumes. Stored coordinates are exact
+/// millimetres, never a float.
+def main() = host Param in
+  (let w = Param.bwidth() in
+   let d = Param.bdepth() in
+   let t = Param.bthickness() in
+   let r = Param.bbore() in
+     lower(bracket(w, d, t, r)))
+
+/// @test: pin the non-parametric core (the bracket at fixed inch dims to its exact mm envelope) so the shape
+/// plus the unit conversion are gate-protected. The parametric path (param plus host-response) is proven via
+/// cdz run --host-response, not a @test, which supplies no host values.
+
+@test
+def bracket-at-fixed-inches-has-the-exact-mm-envelope() =
+  // bracket(3, 2, 1, 1/4) is a 3 in by 2 in by 1 in plate with a quarter-inch bore. In model mm the envelope
+  // is exactly (381/5, 254/5, 127/5) mm, the exact inch-to-mm conversion, no float. The hole never grows the
+  // box, so the envelope is the outer block; the bracket is non-empty.
+  let b = bracket(3 / 1, 2 / 1, 1 / 1, 1 / 4) in
+  if v3-eq(aabbr-size(bounding-box(b)), v3(381 / 5, 254 / 5, 127 / 5)) and (solidr-is-empty(b) == false)
+  then unit else trap("bracket 3 by 2 by 1 inch is a 381/5 by 254/5 by 127/5 mm block, non-empty")
+
+@test
+def a-quarter-inch-bore-converts-to-exact-mm() =
+  // The exact-Rational unit payoff pinned directly: a quarter-inch bore radius is 127/20 mm, exact.
+  if inch(1 / 4) == 127 / 20 then unit else trap("quarter inch is 127/20 mm exactly")
+
+export { main }

@@ -203,6 +203,60 @@
   (host-calls (call ask.ask))
   (output (: 15 Int64)))
 
+(case "an abortive perform in a connective that is an if-condition abandons the computation when the connective reaches it"
+  (doc    "The abortive analogue of the connective-in-condition threading, for a NON-resuming handler. `(and
+           b (> (Bail.bail 7) 0))` is the CONDITION of `(if _ 100 200)`; when `b` is true the connective
+           evaluates its right operand, performing the abortive `Bail.bail 7`, which abandons the whole
+           computation — the handle's value is the arm value 7. Witnesses capabilities-and-effects.md
+           short-circuit evaluation + abortive-handler semantics: the abort in a taken connective operand
+           abandons regardless of its nesting under the enclosing if. A regression against the
+           connective-in-condition abort over-declining. (The b=false short-circuit companion — the abort
+           never performed — is the sibling case just below.)")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (run (: b Bool)) (handle Bail 0 ((bail (n) s n)) (if (and b (> (Bail.bail 7) 0)) 100 200)))
+            (def (main) (run true)) (export main)))
+  (output (: 7 Int64)))
+
+(case "an abortive perform short-circuited out of a connective condition is never performed"
+  (doc    "The short-circuit companion: with `b` false, `(and b …)` never evaluates its right operand, so the
+           abortive `Bail.bail 7` is NOT performed — no abandonment — and the outer `if` takes its else
+           branch, 200. Pins that the connective-condition abort fold preserves short-circuit semantics (the
+           abort does not fire on the untaken operand).")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (run (: b Bool)) (handle Bail 0 ((bail (n) s n)) (if (and b (> (Bail.bail 7) 0)) 100 200)))
+            (def (main) (run false)) (export main)))
+  (output (: 200 Int64)))
+
+(case "a ctl-style arm that applies its continuation lexically folds through the delimited context"
+  (doc    "The E5 within-activation continuation surface: a 5-part handler arm `(flip () s k body)` binds the
+           delimited continuation `k` as a value and APPLIES it as `(k v)`. When `k` is applied lexically
+           (never stored or passed on), `(k v)` returns into the delimited context — semantically identical
+           to `(resume v)`. Over the whole-body perform `(Amb.flip)`, the continuation is `C = (+ □ 1)`, so
+           `(k 10)` = `C[10]` = `(+ 10 1)` = 11. Witnesses capabilities-and-effects.md continuation semantics
+           (a handler receives the continuation and resumes it) for the lexical `ctl` surface, distinct from
+           the implicit-continuation `resume`. A `k` that ESCAPES (stored/resumed later) is a separate,
+           later increment; this pins the within-activation case.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main) (handle Amb 0 ((flip () s k (+ (k 10) 1))) (Amb.flip))) (export main)))
+  (output (: 11 Int64)))
+
+(case "an abortive handler arm performed with a RUNTIME argument abandons the computation and returns it"
+  (doc    "The runtime-argument companion of the constant-abort case. An abortive arm `(bail (n) s n)` never
+           resumes, so performing `(Bail.bail k)` — with `k` a RUNTIME parameter, not a constant — abandons
+           the enclosing `(+ 1 …)` and makes the arm value (the op argument `k`) the handle's value. Reading
+           `run(7)` → 7 (the `+ 1` is discarded; the abort returns the runtime k). Witnesses that the abort
+           value's type is grounded from the runtime perform argument (a reference to the enclosing param),
+           so the handle result has a machine representation on both backends — a regression against the
+           abort-value orphan reading its free reference unbound (a wasm-declines / rust-computes split).")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (run (: k Int64)) (handle Bail 0 ((bail (n) s n)) (+ 1 (Bail.bail k))))
+            (def (main) (run 7)) (export main)))
+  (output (: 7 Int64)))
+
 (case "a nested effectful let inlined into a re-performing body keeps its inner binder"
   (doc    "A cross-function effectful-let inline: `inner` binds an effect result in a local `let` and reads
            it in a match arm; `outer` binds `inner()` then PERFORMS AGAIN in its body. The fold inlines

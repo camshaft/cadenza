@@ -60,7 +60,7 @@ export const MOUNTING_PLATE: ParametricModel = {
   title: "Parametric mounting plate",
   description: "A width×depth×thickness plate with a central bolt hole — every dimension a live slider, exact.",
   source: {
-    ml: `import { Solid, v3r, lower } from "exact"
+    ml: `import { Solid, v3, lower } from "exact"
 import { box, hole-through } from "helpers"
 @param(widget: slider, range: [20, 200], default: 50) width : Rational
 @param(widget: slider, range: [20, 150], default: 30) depth : Rational
@@ -73,7 +73,7 @@ def main() = host Param in
    let t = Param.thickness() in
    let r = Param.bore() in
      lower(plate(w, d, t, r)))`,
-    sexpr: `(import "exact" (Solid v3r lower))
+    sexpr: `(import "exact" (Solid v3 lower))
 (import "helpers" (box hole-through))
 (: (@ (param (: widget slider) (: range (list 20 200)) (: default 50)) width) Rational)
 (: (@ (param (: widget slider) (: range (list 20 150)) (: default 30)) depth) Rational)

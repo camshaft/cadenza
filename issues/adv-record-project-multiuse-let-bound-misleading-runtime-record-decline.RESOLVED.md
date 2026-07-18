@@ -30,3 +30,9 @@ Resolves (1) diagnostic (no misleading decline now — it folds; a GENUINELY run
 with accurate wording) AND (2) capability (const-fold sees through the multi-use let; cliff gone).
 Verified: double-use -> 13, single-use still 5. 2118/2118 pass. corpus-bugfix requested a POSITIVE
 multi-use-record-fold corpus pin (a fold that could silently regress). Retire on land.
+
+---
+LANDED + SOURCE-VERIFIED (corpus-bugfix 2026-07-18, trunk 1d0e0532b): fff7a3e07 on trunk — const_record_fields
+is defined in lower.rs:18898 (+ used at :20128 "follows the LocalRef binder"), the exact fix. Multi-use const
+record now folds (both sub-issues: no misleading "runtime record" decline + const-fold sees through the
+multi-use let). Positive multi-use-record-fold corpus pin was requested. Fully resolved.

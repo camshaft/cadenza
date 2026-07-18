@@ -9,6 +9,9 @@
 //!   `cdz-agent bootstrap <log>`               — create/open the event log at <log> (idempotent).
 //!   `cdz-agent inject-genesis <log> <prog>`   — append the Cadenza program source file <prog> as the genesis
 //!                                               `program` event (a later inject supersedes it — self-mod).
+//!   `cdz-agent authz-grant <log> <permit> [--expiry-ms <ms>]` — operator GRANT: append a narrow (optionally
+//!                                               time-boxed) Cedar permit that ADDS to the base policy.
+//!   `cdz-agent authz-revoke <log> <grant-seq>` — operator REVOKE: pull a prior grant by its seq.
 //!   `cdz-agent run <log> <event-kind>`        — one daemon step: read the log → latest genesis → drive an
 //!                                               interpret turn on the scalar <event-kind>. (The full event-
 //!                                               source loop is a later rung; this runs ONE tick.)
@@ -74,6 +77,54 @@ fn run() -> Result<()> {
             println!("appended capability policy at seq {seq} (from {pol_path})");
             Ok(())
         }
+        Some("authz-grant") => {
+            // The operator's answer to an `authz-request` (the can't-brick escape hatch): append a NARROW
+            // Cedar `permit` doc as an `authz-grant` event, optionally time-boxed with `--expiry-ms <ms>` (an
+            // ABSOLUTE ms-since-epoch deadline; the effective-policy fold drops the grant once now >= expiry).
+            // Grants ADD to the base `policy` (they widen only within what the operator explicitly writes; a
+            // program can't self-issue one). The grant's own seq is its identity — `authz-revoke <seq>` pulls it.
+            let log_path = args.get(2).ok_or_else(|| {
+                anyhow!("usage: cdz-agent authz-grant <log> <permit.cedar> [--expiry-ms <ms>]")
+            })?;
+            let permit_path = args.get(3).ok_or_else(|| {
+                anyhow!("usage: cdz-agent authz-grant <log> <permit.cedar> [--expiry-ms <ms>]")
+            })?;
+            let permit = std::fs::read_to_string(permit_path)
+                .with_context(|| format!("read Cedar permit {permit_path}"))?;
+            let expiry_ms: Option<u64> = match flag_value(&args, "--expiry-ms") {
+                Some(ms) => Some(ms.parse().context("--expiry-ms must be a non-negative integer (ms since epoch)")?),
+                None => None,
+            };
+            let mut log =
+                FileLog::open(log_path).with_context(|| format!("open log {log_path}"))?;
+            let seq = policy::append_grant(&mut log, &permit, expiry_ms)?;
+            println!(
+                "granted capability at seq {seq} (from {permit_path}){}",
+                expiry_ms
+                    .map(|e| format!(" — expires at {e}ms since epoch"))
+                    .unwrap_or_else(|| " — no expiry".to_string())
+            );
+            Ok(())
+        }
+        Some("authz-revoke") => {
+            // The operator PULLS a prior grant: append an `authz-revoke` event naming the grant's seq. The
+            // effective-policy fold thereafter excludes that grant (operators can revoke authorization later,
+            // per the operator model). Idempotent in effect — revoking a non-grant/absent seq simply removes
+            // nothing (the fold only drops grants whose seq is named).
+            let log_path = args
+                .get(2)
+                .ok_or_else(|| anyhow!("usage: cdz-agent authz-revoke <log> <grant-seq>"))?;
+            let grant_seq: cdz_kernel::Seq = args
+                .get(3)
+                .ok_or_else(|| anyhow!("usage: cdz-agent authz-revoke <log> <grant-seq>"))?
+                .parse()
+                .context("grant-seq must be a non-negative integer (the granted event's seq)")?;
+            let mut log =
+                FileLog::open(log_path).with_context(|| format!("open log {log_path}"))?;
+            let seq = policy::append_revoke(&mut log, grant_seq)?;
+            println!("revoked grant at seq {grant_seq} (revoke event at seq {seq})");
+            Ok(())
+        }
         Some("emit") => {
             // Append an external TRIGGER event to the log — a minimal event SOURCE so the live daemon
             // (`start`) has something to perform. `<kind>` is a free event-kind tag + `<payload>` its body.
@@ -91,11 +142,15 @@ fn run() -> Result<()> {
                 .ok_or_else(|| anyhow!("usage: cdz-agent emit <log> <kind> <payload>"))?;
             if kind == boot::PROGRAM
                 || kind == policy::POLICY
+                || kind == policy::AUTHZ_GRANT
+                || kind == policy::AUTHZ_REVOKE
+                || kind == policy::AUTHZ_REQUEST
                 || kind.starts_with(daemon::PRIM_RECORD_PREFIX)
             {
                 return Err(anyhow!(
                     "refusing to emit a reserved event kind `{kind}` (genesis→inject-genesis; policy→emit-policy; \
-                     `{}`* events are written only by the daemon) — pick a trigger kind",
+                     grant→authz-grant; revoke→authz-revoke; `{}`* events + authz-request are written only by the \
+                     daemon) — pick a trigger kind",
                     daemon::PRIM_RECORD_PREFIX
                 ));
             }
@@ -250,10 +305,12 @@ fn run() -> Result<()> {
             Ok(())
         }
         _ => Err(anyhow!(
-            "usage: cdz-agent <bootstrap|inject-genesis|emit-policy|emit|run|perform|hosted|start> ...\n\
+            "usage: cdz-agent <bootstrap|inject-genesis|emit-policy|authz-grant|authz-revoke|emit|run|perform|hosted|start> ...\n\
              \x20 bootstrap <log>                    — create/open the event log\n\
              \x20 inject-genesis <log> <program.cdz> — append the genesis program\n\
              \x20 emit-policy <log> <policy.cedar>    — append a Cedar capability policy (attenuates each invocation; latest supersedes)\n\
+             \x20 authz-grant <log> <permit.cedar> [--expiry-ms <ms>] — operator GRANT: append a narrow Cedar permit (optionally time-boxed); adds to the base policy\n\
+             \x20 authz-revoke <log> <grant-seq>      — operator REVOKE: pull a prior grant by its seq (the effective policy thereafter excludes it)\n\
              \x20 emit <log> <kind> <payload>        — append an external trigger event (a minimal event source; refuses reserved kinds)\n\
              \x20 run <log> <event-kind>             — one daemon tick (COUNT the scheduled host-ops)\n\
              \x20 perform <log> <event-kind>         — one daemon tick that EXECUTES the ops (K1c, in-program mock), summing per-op results\n\

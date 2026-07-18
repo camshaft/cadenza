@@ -92,6 +92,18 @@ fn run_emitted_agrees_with_run_ml_the_interpret_oracle() {
 /// out-of-subset program traps "no runtime in store" + exits non-zero storeless. Skip when absent; the
 /// store-having `gate` + `@test suites` jobs exercise it fully. Mirrors `test_manifest_cli`'s guard.
 fn store_present() -> bool {
+    // Resolve the store dir the SAME way the runtime resolver does (`CADENZA_STORE` first, else the
+    // physical `<target>/cadenza-store`), so this guard AGREES with a storeless rerun's mechanism: xtask's
+    // storeless-CI rerun sets `CADENZA_STORE=<empty temp dir>`, and this guard must then report ABSENT so
+    // the runtime-driving test SKIPS — exactly as it does in the real storeless CI job. Checking only the
+    // physical dir would ignore that env and wrongly report PRESENT (the physical store still exists),
+    // running the test → the resolver finds no runtime → a false-positive red.
+    if let Ok(dir) = std::env::var("CADENZA_STORE") {
+        return std::path::Path::new(&dir).is_dir()
+            && std::fs::read_dir(&dir)
+                .map(|mut e| e.next().is_some())
+                .unwrap_or(false);
+    }
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_cdz"))
         .parent()
         .and_then(|d| d.parent())

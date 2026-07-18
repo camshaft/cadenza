@@ -1591,6 +1591,21 @@ impl<'a> Printer<'a> {
                 }
                 self.doc.word(")");
             }
+            // A 1-element list `(A)` is a nullary variant in its EMPTY-PARENS spelling — render it as `A()`
+            // (the `()` preserved), NOT bare `A`. This is a DISTINCT arena from the bare-atom nullary `A`
+            // (`(A)` the 1-elem list vs `A` the atom), and `A()` re-reads to `(A)` while bare `A` re-reads
+            // to the atom — so rendering `A` here would CANONICALIZE `(A)` → `A`, which breaks a corpus
+            // round-trip whose reference uses the `(A)` spelling (e.g. `(type Nat (Z) (S Nat))`:
+            // corpus_roundtrip requires read(ml(read(x))) == read(x) EXACTLY, no canonicalization). Emit
+            // `A()` so the exact 1-elem-list shape survives. (The earlier fallback `_` arm below ALSO
+            // printed `A()` — via `expr` on the list — but did not count as a type-shape variant, so the
+            // whole type fell to the backtick-application render; the point of this arm is that
+            // `is_type_shape` now accepts `(A)`, so the type renders as a `type …` decl AND its `(A)`
+            // variant prints `A()`, round-trip-preserving.)
+            Struct::List(items) if items.len() == 1 && self.head_name(items[0]).is_some() => {
+                self.expr(items[0], 0); // constructor name
+                self.doc.word("()");
+            }
             // a nullary variant (bare name atom), or a defensive fallback for an odd shape
             _ => self.expr(id, 0),
         }
@@ -1797,10 +1812,15 @@ impl<'a> Printer<'a> {
         let variants = &args[docs_end..];
         !variants.is_empty()
             && variants.iter().all(|&v| match self.a.get(v) {
-                // nullary: a bare constructor name
+                // nullary: a bare constructor name `A`
                 Struct::Atom(_) => self.head_name(v).is_some(),
-                // payload: (Ctor T …) with a name head and at least one payload type
-                Struct::List(items) => items.len() >= 2 && self.head_name(items[0]).is_some(),
+                // a name-headed list variant: `(A)` (nullary, the empty-parens spelling `A()`, len 1) or
+                // `(Ctor T …)` (payload, len >= 2). BOTH are valid — a nullary variant has two arena
+                // spellings (bare atom `A` from `A`, and 1-elem list `(A)` from `A()`), so requiring
+                // len >= 2 here wrongly rejected `(A)` and forced the whole type into the backtick-fallback
+                // application render (`` `type`(T, A(), …) ``), which does not round-trip under an
+                // `@invariant`/annotation wrapper (v-verification). Accept the 1-elem nullary too.
+                Struct::List(items) => !items.is_empty() && self.head_name(items[0]).is_some(),
             })
     }
 
@@ -4078,6 +4098,51 @@ mod tests {
         assert_eq!(
             print(&sexpr::read("(type Opaque .. r)").unwrap(), 80),
             "type Opaque =\n  .. r"
+        );
+    }
+
+    #[test]
+    fn nullary_variant_as_a_one_element_list_renders_as_a_type_decl_not_a_backtick_application() {
+        // A nullary variant has TWO arena spellings: a bare atom `A` (from ML `A`) AND a 1-element list
+        // `(A)` (from ML `A()`). `is_type_shape` used to require a LIST variant have len >= 2, so a type
+        // with an `(A)` variant failed the shape check and rendered as the backtick-fallback application
+        // `` `type`(T, A(), B(Int64)) `` — which does NOT round-trip under an `@invariant`/annotation
+        // wrapper (the annotation re-binds to `type` as a value head). v-verification hit this on an
+        // @invariant establish corpus case. Fix: accept a 1-elem list nullary + render `(A)` as the
+        // canonical bare `A`.
+        //
+        // The 1-elem-list `(A)` variant renders as a proper `type T = | A() | B(Int64)` — the `()`
+        // PRESERVED (NOT bare `A`), because `(A)` (1-elem list) and `A` (atom) are DISTINCT arenas and
+        // corpus_roundtrip requires read(ml(read(x))) == read(x) EXACTLY (no canonicalization). `A()`
+        // re-reads to the 1-elem list `(A)`, so the exact shape survives.
+        assert_eq!(
+            print(&sexpr::read("(type T (A) (B Int64))").unwrap(), 80),
+            "type T =\n  | A()\n  | B(Int64)"
+        );
+        // ...and re-reads BACK to the exact 1-elem-list `(A)` form (round-trip-preserving, NOT canonicalized).
+        assert_eq!(
+            sexpr::print(&parser::read_ml("type T =\n  | A()\n  | B(Int64)").arenas),
+            "(type T (A) (B Int64))"
+        );
+        // The bare-atom nullary `A` (from ML `A`) is a SEPARATE shape and still renders/round-trips as `A`.
+        assert_eq!(
+            print(&sexpr::read("(type T A (B Int64))").unwrap(), 80),
+            "type T =\n  | A\n  | B(Int64)"
+        );
+        // The full v-verification repro: an @invariant on a multi-variant type with a nullary variant
+        // round-trips (the @invariant stays bound to the `(type …)`, not mis-bound to `type` as a value).
+        let src = "(do (@ (invariant (match it (((. T A)) false) (((. T B) x) (> x 0)))) (type T (A) (B Int64))))";
+        let ml = print(&sexpr::read(src).unwrap(), 80);
+        assert!(
+            ml.contains("type T =") && !ml.contains("`type`"),
+            "the annotated type must render as a `type` decl, not a backtick application; got:\n{ml}"
+        );
+        // ml -> sexpr keeps the @invariant bound to the type declaration (arena-idempotent).
+        let back = sexpr::print(&parser::read_ml(&ml).arenas);
+        assert!(
+            back.contains("(@ (invariant") && back.contains("(type T (A) (B Int64))"),
+            "the @invariant must stay bound to the (type …) with the exact (A) shape preserved, not \
+             (@ … type) as an application head; got:\n{back}"
         );
     }
 

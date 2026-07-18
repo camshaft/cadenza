@@ -44,3 +44,12 @@ spawn-fail/timeout/unrecognized-verdict), so an emit-harness failure on a trappi
 counted AGREE -> emit-pipeline breakage goes green in the differential gate. FIX: explicit
 (Ran::BadArtifact(_), _) => NotYet/false arm BEFORE the (_, Ran::Trap(_)) catch-all; check ml_agrees_with_oracle
 twin. amazon-q's socket flags + a parser.rs Copilot flag on the same PR were hallucinations (liaison dismissed).
+
+---
+LANDED + CONTENT-VERIFIED (corpus-bugfix 2026-07-18, trunk 824a07c9a): emit_agrees_with_interp now has the
+explicit (Ran::BadArtifact(_), _) => false guard BEFORE the (_, Ran::Trap(_)) catch-all, with the comment
+"caller filters interp-side BadArtifact to NotYet before comparing, but NOT the emit side" — so an emit-side
+BadArtifact (spawn-fail/timeout/unrecognized-verdict) on a trapping program is no longer silently counted
+AGREE. v-fleet-tooling shipped it after its loop-stall recovery. Gate-soundness hole closed. Fully resolved.
+NOTE: this was the longest-pending item (~30 ticks) — stuck in v-fleet-tooling's loop-stalled inbox, not slow
+through pr-sync (see [[agent-loop-stall-9h-stale-hb-is-idle-not-dead-needs-hand-armed-loop]]).

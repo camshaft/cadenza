@@ -1946,7 +1946,18 @@ fn resolve_project_manifest(
         return Err(ExitCode::FAILURE);
     };
     match load_manifest(&dir) {
-        Ok(Some((mpath, m))) => Ok((dir, mpath, m)),
+        Ok(Some((mpath, m))) => {
+            // A non-string `opt-level` was silently dropped to None; unlike a required field, it has a safe
+            // default, so WARN (the declared setting is being ignored) and continue rather than fail.
+            if m.opt_level_malformed {
+                eprintln!(
+                    "{PROG}: warning: {}: `opt-level` is not a string (expected `def opt-level = \"O2\"`, \
+                     one of O0/O1/O2/O3) — ignoring it and using the default tier",
+                    mpath.display()
+                );
+            }
+            Ok((dir, mpath, m))
+        }
         Ok(None) => {
             eprintln!("{PROG}: no `{MANIFEST_NAME}` in {}", dir.display());
             Err(ExitCode::FAILURE)
@@ -1971,11 +1982,21 @@ fn resolve_project_specs(target_arg: Option<&str>, cmd: &str) -> Result<ProjectS
     let (dir, mpath, m) = resolve_project_manifest(target_arg, cmd)?;
     // `entry` names the component boundary file — required to build (no entry, no component).
     let Some(entry_spec) = m.entry.clone() else {
-        eprintln!(
-            "{PROG}: {}: the manifest declares no `entry` (add `def entry = \"<file>\"` naming the \
-             component's boundary file)",
-            mpath.display()
-        );
+        if m.entry_malformed {
+            // `def entry` IS present but its value isn't a string — name the real problem (wrong type),
+            // not "no entry" (which would tell the user to add an entry they already wrote).
+            eprintln!(
+                "{PROG}: {}: `entry` must be a string naming the boundary file (e.g. \
+                 `def entry = \"main.cdz\"`), not a number/other value",
+                mpath.display()
+            );
+        } else {
+            eprintln!(
+                "{PROG}: {}: the manifest declares no `entry` (add `def entry = \"<file>\"` naming the \
+                 component's boundary file)",
+                mpath.display()
+            );
+        }
         return Err(ExitCode::FAILURE);
     };
     // Resolve the entry to its FILE, glob-expanded (path-sorted, exclude-filtered) relative to the dir —
@@ -3291,10 +3312,24 @@ fn run_test(args: &TestArgs) -> ExitCode {
         && !any_error
         && let Some(file) = files.first()
     {
-        println!(
-            "0 tests found in {file} — a test needs the `@test` annotation (a parameterized `@test` is a \
-             property test); an unrecognized annotation is silently ignored."
-        );
+        // Distinguish "no @test at all" from "a --tag/--filter EXCLUDED every test". Blaming a missing
+        // `@test` when the real cause is an over-narrow selector (e.g. a typo'd `--tag`) points the user at
+        // the wrong fix — the file may be full of tests the filter skipped. Only the unfiltered case is a
+        // genuine "add a `@test`" situation.
+        match (args.tag.as_deref(), args.filter.as_deref()) {
+            (Some(t), _) => println!(
+                "0 tests matched `--tag {t}` in {file} — no `@test` carries that `@tag(\"{t}\")` (check for a \
+                 typo, or drop `--tag` to run every test)."
+            ),
+            (None, Some(f)) => println!(
+                "0 tests matched `--filter {f}` in {file} — no `@test` name contains that substring (check \
+                 for a typo, or drop `--filter` to run every test)."
+            ),
+            (None, None) => println!(
+                "0 tests found in {file} — a test needs the `@test` annotation (a parameterized `@test` is a \
+                 property test); an unrecognized annotation is silently ignored."
+            ),
+        }
     }
     if total_fail == 0 && !any_error {
         ExitCode::SUCCESS
@@ -7058,6 +7093,12 @@ fn is_ml_source(file: &str) -> bool {
 struct Manifest {
     name: Option<String>,
     entry: Option<String>,
+    /// Set when the manifest HAS a `def entry` but its value is NOT a string (e.g. `def entry = 42` or
+    /// `def entry = true`) — so `entry` resolves to `None` (no string extracted) yet the field is PRESENT.
+    /// Lets a consumer emit "entry must be a string" instead of the misleading "declares no `entry`" (which
+    /// would tell the user to add an entry they already wrote). `false` when `entry` is absent OR a valid
+    /// string.
+    entry_malformed: bool,
     modules: Vec<String>,
     tests: Vec<String>,
     exclude: Vec<String>,
@@ -7065,6 +7106,11 @@ struct Manifest {
     /// string — parsed via `rcdzc::OptLevel::FromStr` at use. A `--opt-level`/`--release` flag overrides
     /// it. `None` = no manifest default (the build falls back to `--release`'s `O2` or the default `O1`).
     opt_level: Option<String>,
+    /// Set when the manifest HAS a `def opt-level` but its value is NOT a string (e.g. `def opt-level =
+    /// 42`) — so `opt_level` resolves to `None` (no string extracted) yet the field is PRESENT. Unlike
+    /// `entry` (required → hard error), `opt-level` has a safe default, so a consumer WARNS (the setting
+    /// was silently dropped) and continues rather than failing. `false` when absent OR a valid string.
+    opt_level_malformed: bool,
     /// DEPENDENCIES (`def deps = ["../mathlib", …]`) — the projects this project links across the component
     /// boundary. Each is a [`DepSource`]; today the only source is a PATH (a sibling project dir), but the
     /// type is an enum so a REGISTRY source (npm first — operator direction) can slot in LATER without a
@@ -7292,11 +7338,22 @@ fn parse_manifest(arenas: &cadenza_syntax::Arenas) -> Manifest {
         };
         match name {
             "name" => m.name = manifest_strings(arenas, value_id).into_iter().next(),
-            "entry" => m.entry = manifest_strings(arenas, value_id).into_iter().next(),
+            "entry" => {
+                m.entry = manifest_strings(arenas, value_id).into_iter().next();
+                // `def entry` is present; if no string came out of it, the value is the wrong TYPE (a
+                // number/bool/other), not a `"file.cdz"` — record that so the "no entry" path can instead
+                // say "entry must be a string" rather than sending the user to add an entry they wrote.
+                m.entry_malformed = m.entry.is_none();
+            }
             "modules" => m.modules = manifest_strings(arenas, value_id),
             "tests" => m.tests = manifest_strings(arenas, value_id),
             "exclude" => m.exclude = manifest_strings(arenas, value_id),
-            "opt-level" => m.opt_level = manifest_strings(arenas, value_id).into_iter().next(),
+            "opt-level" => {
+                m.opt_level = manifest_strings(arenas, value_id).into_iter().next();
+                // `def opt-level` present but no string extracted → wrong TYPE (not `"O2"`). Record it so a
+                // consumer can WARN the setting was ignored rather than silently building at the default.
+                m.opt_level_malformed = m.opt_level.is_none();
+            }
             "deps" => {
                 m.deps = manifest_strings(arenas, value_id)
                     .into_iter()
