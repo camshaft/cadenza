@@ -200,9 +200,12 @@ where
             .map(|d| d.is_allow())
             .unwrap_or(false);
             if !allowed {
-                // Denied (or unauthorizable) → record the denial, do NOT perform, contribute 0 to the sum.
+                // Denied (or unauthorizable) → record the denial AND AUTO-EMIT an authz-request (the can't-
+                // brick guarantee, operator ruling): a denial files the narrow ask (this op + payload) in the
+                // log so the operator always sees it and can grant it. Do NOT perform; contribute 0 to the sum.
                 if let Ok(mut l) = log.lock() {
                     let _ = l.append(&format!("{PRIM_DENIED_PREFIX}{op}"), payload.as_bytes());
+                    let _ = crate::policy::append_request(&mut *l, op, &payload);
                 }
                 return 0;
             }
@@ -709,8 +712,10 @@ mod tests {
 
     #[test]
     fn tick_hosted_authorized_denies_all_under_an_empty_policy() {
-        // Deny-by-default end to end: an empty policy set permits nothing → every op denied → sum 0, and only
-        // prim-denied-* events recorded (no effect performed). Proves the gate fails CLOSED.
+        // Deny-by-default end to end: an empty policy set permits nothing → every op denied → sum 0, no effect
+        // performed, AND each denied op AUTO-EMITS an authz-request (the can't-brick guarantee). kind=1 →
+        // [Append, Exec] → 2 denied → 2 prim-denied + 2 authz-request events. Proves the gate fails CLOSED and
+        // leaves the operator standing requests to grant.
         use std::sync::{Arc, Mutex};
         let (path, mut log0) = temp_log();
         crate::boot::inject_genesis(&mut log0, GENESIS).unwrap();
@@ -731,17 +736,23 @@ mod tests {
             sum, 0,
             "empty policy → every op denied → sum 0 (deny-by-default)"
         );
-        let performed = log
-            .lock()
-            .unwrap()
-            .tail(0)
-            .unwrap()
+        let events = log.lock().unwrap().tail(0).unwrap();
+        let performed = events
             .iter()
             .filter(|e| {
                 e.kind.starts_with(PRIM_RECORD_PREFIX) && !e.kind.starts_with(PRIM_DENIED_PREFIX)
             })
             .count();
         assert_eq!(performed, 0, "no op performed under an empty policy");
+        // Each denied op auto-emitted an authz-request (the can't-brick escape hatch).
+        let requests = events
+            .iter()
+            .filter(|e| e.kind == crate::policy::AUTHZ_REQUEST)
+            .count();
+        assert_eq!(
+            requests, 2,
+            "each of the 2 denied ops auto-emits an authz-request → 2 standing asks for the operator"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

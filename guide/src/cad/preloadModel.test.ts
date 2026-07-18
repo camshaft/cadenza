@@ -17,9 +17,9 @@ import {
 } from "./preloadModel.ts";
 
 // Clean model buffers — NO import, NO pragma (both are auto-injected; this is what the reader edits).
-const ML_MODEL = `def main() = lower(Solid.Difference(Solid.Cube(v3r(4/1, 4/1, 4/1)), Solid.Sphere(5/2)))`;
+const ML_MODEL = `def main() = lower(Solid.Difference(Solid.Cube(v3(4/1, 4/1, 4/1)), Solid.Sphere(5/2)))`;
 
-const SEXPR_MODEL = `(def (main) (lower ((. Solid Difference) ((. Solid Cube) (v3r (/ 4 1) (/ 4 1) (/ 4 1))) ((. Solid Sphere) (/ 5 2)))))`;
+const SEXPR_MODEL = `(def (main) (lower ((. Solid Difference) ((. Solid Cube) (v3 (/ 4 1) (/ 4 1) (/ 4 1))) ((. Solid Sphere) (/ 5 2)))))`;
 
 test("ML: injects the exact + helpers import lines + the default-fraction pragma + a trailing export", () => {
   const out = injectImport(ML_MODEL, "ml");
@@ -61,6 +61,6 @@ test("the preloaded-library constants match what CadPage passes the compiler", (
   assert.equal(CAD_LIB_NAME, "exact");
   assert.equal(CAD_HELPERS_NAME, "helpers");
   assert.equal(CAD_LIB_FORMAT, "ml"); // exact.cdz + helpers.cdz are authored in ML (.cdz)
-  assert.deepEqual([...CAD_IMPORTED_NAMES], ["Solid", "v3r", "lower", "Profile", "path-start", "line-to", "cubic-to", "v2"]);
+  assert.deepEqual([...CAD_IMPORTED_NAMES], ["Solid", "v3", "lower", "Profile", "path-start", "line-to", "cubic-to", "v2"]);
   assert.ok(CAD_HELPER_NAMES.includes("box") && CAD_HELPER_NAMES.includes("hole-through"), "helper superset includes the ergonomic wrappers");
 });

@@ -1,12 +1,12 @@
 /// Canonical example CAD models — the starter programs the /cad route offers in its example-switcher
 /// (operator UX ask: "there's nothing to switch between examples on the notebook or cad program"). Each is
-/// a self-contained model built against the PRELOADED CAD library (`Solid`/`v3r`/`lower` from `exact.cdz`,
+/// a self-contained model built against the PRELOADED CAD library (`Solid`/`v3`/`lower` from `exact.cdz`,
 /// operator P5 ruling A): the reader's buffer holds ONLY the model — BOTH the `import … from "exact"` clause
 /// AND the `@!default-fraction Rational` pragma are auto-injected by CadPage's `injectImport` (not shown), so
 /// the example buffers are clean (no import, no pragma boilerplate — the operator-directed implicit-default-
 /// fraction UX). The injected pragma makes a bare integer literal an exact Rational (so a whole dimension is
 /// just `4`, not `4/1` — no divide-by-one noise; a true fraction like `5/2` is written as-is), and a bare
-/// `n/d` an exact Rational; without the pragma `v3r(4, …)` would reject CDZ0203. The pragma is module-scoped
+/// `n/d` an exact Rational; without the pragma `v3(4, …)` would reject CDZ0203. The pragma is module-scoped
 /// and does NOT leak into the imported library. Every model returns
 /// `lower(<Solid model>)` — `exact.cdz`'s `Solid`
 /// is GENERIC and a generic value can't be host-rendered yet, so `lower` maps it to the monomorphic
@@ -43,11 +43,11 @@ const CUBE_WITH_DENT: ExampleModel = {
     ml: `def main() =
   lower(
     Solid.Difference(
-      Solid.Cube(v3r(4, 4, 4)),
+      Solid.Cube(v3(4, 4, 4)),
       Solid.Sphere(5/2)))`,
     sexpr: `(def (main)
   (lower ((. Solid Difference)
-           ((. Solid Cube) (v3r 4 4 4))
+           ((. Solid Cube) (v3 4 4 4))
            ((. Solid Sphere) (/ 5 2)))))`,
   },
 };
@@ -81,11 +81,11 @@ const ROUNDED_CUBE: ExampleModel = {
     ml: `def main() =
   lower(
     Solid.Intersection(
-      Solid.Cube(v3r(3, 3, 3)),
+      Solid.Cube(v3(3, 3, 3)),
       Solid.Sphere(2)))`,
     sexpr: `(def (main)
   (lower ((. Solid Intersection)
-           ((. Solid Cube) (v3r 3 3 3))
+           ((. Solid Cube) (v3 3 3 3))
            ((. Solid Sphere) 2))))`,
   },
 };
@@ -100,16 +100,16 @@ const STEPPED_PEDESTAL: ExampleModel = {
     ml: `def main() =
   lower(
     Solid.Union(
-      Solid.Cube(v3r(4, 4, 1)),
+      Solid.Cube(v3(4, 4, 1)),
       Solid.Translate(
-        v3r(0, 0, 1),
-        Solid.Cube(v3r(2, 2, 1)))))`,
+        v3(0, 0, 1),
+        Solid.Cube(v3(2, 2, 1)))))`,
     sexpr: `(def (main)
   (lower ((. Solid Union)
-           ((. Solid Cube) (v3r 4 4 1))
+           ((. Solid Cube) (v3 4 4 1))
            ((. Solid Translate)
-             (v3r 0 0 1)
-             ((. Solid Cube) (v3r 2 2 1))))))`,
+             (v3 0 0 1)
+             ((. Solid Cube) (v3 2 2 1))))))`,
   },
 };
 

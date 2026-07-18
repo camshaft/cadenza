@@ -4,7 +4,7 @@
 ///
 /// WHY a separate check: /cad compiles the reader's BARE model buffer against the CAD library (exact.cdz)
 /// PRELOADED via `compile_with_preloaded` (operator P5, ruling A) — the buffer holds only the model; the
-/// vocab (Solid/v3r/lower) is link-merged. check-examples can't cover this (its examples are self-contained,
+/// vocab (Solid/v3/lower) is link-merged. check-examples can't cover this (its examples are self-contained,
 /// not preloaded), and check-visual (which renders /cad in a browser) is NOT in CI. So the whole preload
 /// path — the compiler's link-merge, the auto-injected import, `lower(...)` → renderable SolidR, and the
 /// preload-aware LINTER (diagnostics_with_preloaded resolving the preloaded vocab) — was un-gated in CI.
@@ -14,7 +14,7 @@
 /// HOW: load the staged wasm + the staged CAD lib (guide/src/wasm/cad/exact.cdz), then for each surface:
 ///   (1) compile_with_preloaded(injectImport(model), …) → assert a component is emitted, 0 error diags;
 ///   (2) diagnostics_with_preloaded(injectImport(model), …) → assert NO errors (the preloaded vocab
-///       resolves — the exact bug the preload-aware linter fixes: Solid/v3r/lower were unbound before).
+///       resolves — the exact bug the preload-aware linter fixes: Solid/v3/lower were unbound before).
 /// It reuses the REAL `injectImport` from src/cad/preloadModel.ts so the gate exercises exactly what /cad
 /// ships (a private copy would drift — the assert-prelude kebab bug taught that lesson).
 ///
@@ -52,10 +52,10 @@ const { injectImport, CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_LIB_FORMAT } = await i
 // The starter models per surface — a CLEAN bare model returning `lower(<Solid>)`: NO pragma, NO import
 // (both are auto-injected by `injectImport`). This mirrors what a /cad reader actually edits now, and
 // specifically exercises that the INJECTED `@!default-fraction Rational` makes a pragma-less model compile
-// (a bare `n/d` grounds to Rational — without the injected pragma, `v3r(4/1,…)` would reject CDZ0203).
+// (a bare `n/d` grounds to Rational — without the injected pragma, `v3(4/1,…)` would reject CDZ0203).
 const MODELS = {
-  ml: `def main() = lower(Solid.Difference(Solid.Cube(v3r(4/1, 4/1, 4/1)), Solid.Sphere(5/2)))`,
-  sexpr: `(def (main) (lower ((. Solid Difference) ((. Solid Cube) (v3r (/ 4 1) (/ 4 1) (/ 4 1))) ((. Solid Sphere) (/ 5 2)))))`,
+  ml: `def main() = lower(Solid.Difference(Solid.Cube(v3(4/1, 4/1, 4/1)), Solid.Sphere(5/2)))`,
+  sexpr: `(def (main) (lower ((. Solid Difference) ((. Solid Cube) (v3 (/ 4 1) (/ 4 1) (/ 4 1))) ((. Solid Sphere) (/ 5 2)))))`,
 };
 
 // SINGLE-MODE preloads BOTH modules (exact base vocab + helpers ergonomic wrappers) for every model, and
@@ -94,7 +94,7 @@ for (const surface of ["ml", "sexpr"]) {
   }
 
   // (2) diagnostics_with_preloaded → the preload-aware LINTER must report NO errors (the preloaded vocab
-  // Solid/v3r/lower resolves; before the fix these were CDZ0101 unbound + import-not-modeled = 6 squiggles).
+  // Solid/v3/lower resolves; before the fix these were CDZ0101 unbound + import-not-modeled = 6 squiggles).
   let diags;
   try {
     diags = wasm.diagnostics_with_preloaded(program, surface, names, sources, formats);
@@ -109,7 +109,7 @@ for (const surface of ["ml", "sexpr"]) {
         lintErrs.map((d) => `${d.code ?? ""} ${d.message ?? ""}`.trim()).join("; "),
     );
   } else {
-    console.log(`  ✓ [${surface}] diagnostics_with_preloaded: preloaded vocab (Solid/v3r/lower) resolves — 0 lint errors`);
+    console.log(`  ✓ [${surface}] diagnostics_with_preloaded: preloaded vocab (Solid/v3/lower) resolves — 0 lint errors`);
   }
 }
 

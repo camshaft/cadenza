@@ -71,7 +71,19 @@ export function MeshView({ spin = false, ...props }: ViewProps) {
       <directionalLight position={[5, 8, 5]} intensity={1.1} />
       <directionalLight position={[-5, -3, -5]} intensity={0.3} />
       <Solid spin={spin} {...props} />
-      <OrbitControls enablePan={false} />
+      {/* OrbitControls with OpenSCAD-style mouse mapping (operator ask): LEFT drag = rotate, RIGHT drag = PAN,
+          MIDDLE/wheel = dolly (zoom). `enablePan` on + `mouseButtons` remaps the right button from its default
+          (pan is normally the RIGHT button in three.js already, but the default was disabled via
+          `enablePan={false}`); we enable pan and pin the mapping explicitly so it matches OpenSCAD regardless
+          of three.js defaults. Touch: one-finger rotate, two-finger dolly+pan (drei defaults, left as-is). */}
+      <OrbitControls
+        enablePan
+        mouseButtons={{
+          LEFT: THREE.MOUSE.ROTATE,
+          MIDDLE: THREE.MOUSE.DOLLY,
+          RIGHT: THREE.MOUSE.PAN,
+        }}
+      />
     </Canvas>
   );
 }

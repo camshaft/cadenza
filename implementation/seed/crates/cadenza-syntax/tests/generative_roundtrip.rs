@@ -121,6 +121,63 @@ fn gen_expr(rng: &mut Rng, depth: usize) -> String {
     }
 }
 
+/// Generate a random s-expr TYPE-EXPRESSION string — a type name optionally APPLIED to arguments, used
+/// as a variant payload. `depth` bounds recursion (at 0, only a bare name). The forms mirror the corpus:
+/// a bare type name (`Int64`, `a`, `T`), or an application `(List T)` / `(Tuple A B)` that prints as
+/// `List(T)` / `Tuple(A, B)`.
+fn gen_type_expr(rng: &mut Rng, depth: usize) -> String {
+    let atoms = ["Int64", "Bool", "a", "b", "T", "L"];
+    if depth == 0 {
+        return rng.pick(&atoms).to_string();
+    }
+    match rng.below(4) {
+        0 | 1 => rng.pick(&atoms).to_string(),
+        _ => {
+            let head = rng.pick(&["List", "Tuple", "Option"]);
+            let n = 1 + rng.below(2);
+            let args: Vec<String> = (0..n).map(|_| gen_type_expr(rng, depth - 1)).collect();
+            format!("({} {})", head, args.join(" "))
+        }
+    }
+}
+
+/// Generate a random well-formed sum-`type` DECLARATION string — `(type Name variant…)` with 1–4
+/// variants. Each variant is one of the three surface shapes the printer must round-trip: a BARE-ATOM
+/// nullary `A` (prints `A`), a 1-ELEMENT-LIST nullary `(A)` (prints `A()` — a DISTINCT arena from the
+/// bare atom, the shape the `69694e100` printer fix pins), or a payload `(Ctor T …)` (prints
+/// `Ctor(T, …)`). Constructor names are unique per declaration so the s-expr reader accepts them.
+fn gen_type_decl(rng: &mut Rng) -> String {
+    let type_names = ["Color", "Shape", "Tree", "Expr", "Val"];
+    let ctors = [
+        "Mk", "Node", "Leaf", "Red", "Green", "Blue", "S", "Z", "Cons", "Nil",
+    ];
+    let name = rng.pick(&type_names);
+    let n = 1 + rng.below(4);
+    let variants: Vec<String> = (0..n)
+        .map(|i| {
+            let ctor = ctors[i];
+            match rng.below(3) {
+                // bare-atom nullary — prints `Ctor`
+                0 => ctor.to_string(),
+                // 1-element-list nullary — prints `Ctor()`, a DISTINCT arena the printer must preserve
+                1 => format!("({})", ctor),
+                // payload variant — prints `Ctor(T, …)`
+                _ => {
+                    let np = 1 + rng.below(2);
+                    let payloads: Vec<String> = (0..np)
+                        .map(|_| {
+                            let d = 1 + rng.below(2);
+                            gen_type_expr(rng, d)
+                        })
+                        .collect();
+                    format!("({} {})", ctor, payloads.join(" "))
+                }
+            }
+        })
+        .collect();
+    format!("(type {} {})", name, variants.join(" "))
+}
+
 #[test]
 fn ml_surface_round_trips_generated_programs() {
     // Sweep many independently-seeded programs across a range of depths. For each: read the generated
@@ -241,6 +298,71 @@ fn binary_and_all_surface_round_trip_generated_programs() {
             assert!(
                 via_bin.structurally_eq(&oracle),
                 "ml→binary→ml changed the tree\n  s-expr: {program}\n  ml: {ml}",
+            );
+            total += 1;
+        }
+    }
+    assert!(total >= 6000, "swept a meaningful space, got {total}");
+}
+
+#[test]
+fn ml_surface_round_trips_generated_type_declarations() {
+    // Sweep random sum-`type` declarations wrapped in a `(do <type> (def (main) …))` module. `gen_expr`
+    // never emits a `type`, so the type-declaration printer path — `print_type`/`print_variant`/
+    // `is_type_shape` — went unexercised by the expression sweep above and was pinned only by a handful
+    // of hand-written cases. In particular the two DISTINCT nullary-variant arenas (bare atom `A` -> `A`
+    // vs 1-element list `(A)` -> `A()`) are the shapes the `69694e100` fix disambiguates: rendering `(A)`
+    // as bare `A` would CANONICALIZE the arena and silently break a corpus round-trip whose reference
+    // uses the `(A)` spelling. Assert the ML reparse (a) succeeds, (b) is structurally equal to the
+    // oracle (no canonicalization of either nullary spelling, no payload/type-application drift), and
+    // (c) is idempotent. Also route each generated type through the BINARY codec so the encode/decode
+    // bijection covers the type-declaration node set, not just expressions. Fixed seeds -> reproducible;
+    // the failing s-expr + ML print for triage.
+    let seeds: [u64; 4] = [
+        0x739a_11c4_0f2e_dd01,
+        0x2c6e_88ab_5510_37f9,
+        0xa0f1_3d72_9e4b_6c85,
+        0x4b8d_f206_71ca_9e3d,
+    ];
+    let mut total = 0usize;
+    for &seed in &seeds {
+        let mut rng = Rng(seed);
+        for _ in 0..1500 {
+            let ty = gen_type_decl(&mut rng);
+            let body_depth = 1 + rng.below(3);
+            let body = gen_expr(&mut rng, body_depth);
+            let program = format!("(do {ty} (def (main) {body}))");
+            let oracle = match sexpr::read(&program) {
+                Ok(a) => a,
+                Err(e) => panic!(
+                    "generator produced an unreadable s-expr: {program}\n  {}",
+                    e.0
+                ),
+            };
+            let ml = printer::print(&oracle, WIDTH);
+            let reparsed = parser::read_ml(&ml);
+            assert!(
+                reparsed.ok(),
+                "ML reparse FAILED\n  s-expr: {program}\n  ml:\n{ml}\n  errs:   {:?}",
+                reparsed.errors
+            );
+            assert!(
+                reparsed.arenas.structurally_eq(&oracle),
+                "ML round-trip changed the tree\n  s-expr: {program}\n  ml:\n{ml}\n  reparsed: {}",
+                sexpr::print(&reparsed.arenas)
+            );
+            assert_eq!(
+                printer::print(&reparsed.arenas, WIDTH),
+                ml,
+                "ML print is not idempotent\n  s-expr: {program}\n  ml:\n{ml}"
+            );
+            // Binary codec: decode(encode) is structurally equal to the oracle (bijection over the
+            // type-declaration node set).
+            let back =
+                codec::decode(&codec::encode(&oracle)).expect("type decl's encoding decodes");
+            assert!(
+                back.structurally_eq(&oracle),
+                "binary round-trip changed the tree\n  s-expr: {program}",
             );
             total += 1;
         }

@@ -1,7 +1,7 @@
 /// helpers.cdz — ergonomic CONSTRUCTOR helpers for the exact CAD model (operator: "a bunch of helper
 /// functions that make it easy to use"). These wrap the raw `Solid`/`Vec3` constructors from `exact.cdz`
-/// so common modeling reads cleanly — `box(w,d,h)` instead of `Solid.Cube(v3r(w,d,h))`, `move-x(dx, s)`
-/// instead of `Solid.Translate(v3r(dx,0,0), s)`, `hole-through(s, r, len)` for a bolt hole, etc. Pure
+/// so common modeling reads cleanly — `box(w,d,h)` instead of `Solid.Cube(v3(w,d,h))`, `move-x(dx, s)`
+/// instead of `Solid.Translate(v3(dx,0,0), s)`, `hole-through(s, r, len)` for a bolt hole, etc. Pure
 /// exact-Rational model (no float, no units — a coordinate is a bare `Rational`; a units-authored model
 /// uses `units.cdz`/`units-model.cdz` and lowers to bare meters). Every helper is a thin, total wrapper —
 /// no new geometry semantics, just a friendlier surface over the CSG primitives + transforms.
@@ -10,15 +10,15 @@
 /// division). Imported `exact` is unaffected (module-local pragma).
 @!default-fraction Rational
 
-import { Solid, Vec3, Aabb, v3r, bounding-box, aabbr-size, v3r-eq } from "exact"
+import { Solid, Vec3, Aabb, v3, bounding-box, aabbr-size, v3-eq } from "exact"
 
 /// ---- primitives (friendly names for the centred CSG primitives) ------------------------------------
 
 /// An axis-aligned box of FULL size w×d×h, centred at the origin. `box(50, 30, 5)` — a 50×30×5 plate.
-def box(w: Rational, d: Rational, h: Rational) = Solid.Cube(v3r(w, d, h))
+def box(w: Rational, d: Rational, h: Rational) = Solid.Cube(v3(w, d, h))
 
 /// A cube of uniform side `s` (a friendly `box(s,s,s)`).
-def cube(s: Rational) = Solid.Cube(v3r(s, s, s))
+def cube(s: Rational) = Solid.Cube(v3(s, s, s))
 
 /// A sphere of the given radius, centred at the origin.
 def ball(r: Rational) = Solid.Sphere(r)
@@ -29,21 +29,21 @@ def cyl(h: Rational, r: Rational) = Solid.Cylinder(h, r)
 /// ---- transforms (friendly per-axis moves + scales) -------------------------------------------------
 
 /// Translate a solid by (dx, dy, dz).
-def move(dx: Rational, dy: Rational, dz: Rational, s: Solid(Rational)) = Solid.Translate(v3r(dx, dy, dz), s)
+def move(dx: Rational, dy: Rational, dz: Rational, s: Solid(Rational)) = Solid.Translate(v3(dx, dy, dz), s)
 
 /// Single-axis translates — the common case (a stack, a shift).
-def move-x(dx: Rational, s: Solid(Rational)) = Solid.Translate(v3r(dx, rzero-h(), rzero-h()), s)
-def move-y(dy: Rational, s: Solid(Rational)) = Solid.Translate(v3r(rzero-h(), dy, rzero-h()), s)
-def move-z(dz: Rational, s: Solid(Rational)) = Solid.Translate(v3r(rzero-h(), rzero-h(), dz), s)
+def move-x(dx: Rational, s: Solid(Rational)) = Solid.Translate(v3(dx, rzero-h(), rzero-h()), s)
+def move-y(dy: Rational, s: Solid(Rational)) = Solid.Translate(v3(rzero-h(), dy, rzero-h()), s)
+def move-z(dz: Rational, s: Solid(Rational)) = Solid.Translate(v3(rzero-h(), rzero-h(), dz), s)
 
 /// A local zero (the pragma grounds `0` to Rational; a named helper keeps the single-axis moves readable).
 def rzero-h() = 0 / 1
 
 /// Uniform scale by a single factor (all three axes) — `scale(2, s)` doubles a solid.
-def scale(f: Rational, s: Solid(Rational)) = Solid.Scale(v3r(f, f, f), s)
+def scale(f: Rational, s: Solid(Rational)) = Solid.Scale(v3(f, f, f), s)
 
 /// Per-axis scale.
-def scale-xyz(fx: Rational, fy: Rational, fz: Rational, s: Solid(Rational)) = Solid.Scale(v3r(fx, fy, fz), s)
+def scale-xyz(fx: Rational, fy: Rational, fz: Rational, s: Solid(Rational)) = Solid.Scale(v3(fx, fy, fz), s)
 
 /// ---- combinators (friendly booleans, incl. the common "hole" idiom) --------------------------------
 
@@ -64,16 +64,16 @@ def hole-through(base: Solid(Rational), r: Rational, len: Rational) = Solid.Diff
 
 @test
 def box-and-cube-match-the-raw-cube() =
-  // box(w,d,h) ≡ Solid.Cube(v3r …); cube(s) ≡ box(s,s,s). Compare by bounding-box size (a full wrapper check).
-  if v3r-eq(aabbr-size(bounding-box(box(4 / 1, 2 / 1, 6 / 1))), v3r(4 / 1, 2 / 1, 6 / 1)) then
-    (if v3r-eq(aabbr-size(bounding-box(cube(3 / 1))), v3r(3 / 1, 3 / 1, 3 / 1)) then unit
+  // box(w,d,h) ≡ Solid.Cube(v3 …); cube(s) ≡ box(s,s,s). Compare by bounding-box size (a full wrapper check).
+  if v3-eq(aabbr-size(bounding-box(box(4 / 1, 2 / 1, 6 / 1))), v3(4 / 1, 2 / 1, 6 / 1)) then
+    (if v3-eq(aabbr-size(bounding-box(cube(3 / 1))), v3(3 / 1, 3 / 1, 3 / 1)) then unit
      else trap("cube(3) is a 3×3×3 box")) else trap("box(4,2,6) is a 4×2×6 box")
 
 @test
 def cyl-and-ball-have-the-right-envelope() =
   // cyl(h, r) → box (2r, 2r, h); ball(r) → box (2r, 2r, 2r).
-  if v3r-eq(aabbr-size(bounding-box(cyl(6 / 1, 2 / 1))), v3r(4 / 1, 4 / 1, 6 / 1)) then
-    (if v3r-eq(aabbr-size(bounding-box(ball(5 / 2))), v3r(5 / 1, 5 / 1, 5 / 1)) then unit
+  if v3-eq(aabbr-size(bounding-box(cyl(6 / 1, 2 / 1))), v3(4 / 1, 4 / 1, 6 / 1)) then
+    (if v3-eq(aabbr-size(bounding-box(ball(5 / 2))), v3(5 / 1, 5 / 1, 5 / 1)) then unit
      else trap("ball(5/2) envelope is Ø5 cube")) else trap("cyl(6,2) envelope is Ø4 × 6")
 
 @test
@@ -88,14 +88,14 @@ def single-axis-moves-shift-the-box-centre() =
 @test
 def scale-uniform-multiplies-the-box() =
   // scale(2, box(1,1,1)) → a 2×2×2 box.
-  if v3r-eq(aabbr-size(bounding-box(scale(2 / 1, box(1 / 1, 1 / 1, 1 / 1)))), v3r(2 / 1, 2 / 1, 2 / 1)) then unit
+  if v3-eq(aabbr-size(bounding-box(scale(2 / 1, box(1 / 1, 1 / 1, 1 / 1)))), v3(2 / 1, 2 / 1, 2 / 1)) then unit
   else trap("scale(2, unit box) is a 2×2×2 box")
 
 @test
 def hole-through-does-not-grow-the-box() =
   // drilling a hole (a Difference) never grows the base's extent — the plate's box is unchanged.
   let plate = box(50 / 1, 30 / 1, 5 / 1) in
-  if v3r-eq(aabbr-size(bounding-box(hole-through(plate, 3 / 1, 5 / 1))), aabbr-size(bounding-box(plate)))
+  if v3-eq(aabbr-size(bounding-box(hole-through(plate, 3 / 1, 5 / 1))), aabbr-size(bounding-box(plate)))
   then unit else trap("a hole-through never grows the plate's box")
 
 @test
@@ -107,7 +107,7 @@ def cut-fuse-common-are-the-boolean-wrappers() =
   match bounding-box(fuse(a, b)) with | Aabb.Box(lo, hi) =>
     (match lo with | Vec3.V3(lx, _, _) => (match hi with | Vec3.V3(hx, _, _) =>
       if hx - lx == 12 / 1 then
-        (if v3r-eq(aabbr-size(bounding-box(cut(a, b))), aabbr-size(bounding-box(a))) then unit
+        (if v3-eq(aabbr-size(bounding-box(cut(a, b))), aabbr-size(bounding-box(a))) then unit
          else trap("cut never grows the base")) else trap("fuse encloses both (width 12)")))
 
 export { box, cube, ball, cyl, move, move-x, move-y, move-z, scale, scale-xyz, fuse, cut, common, hole-through }

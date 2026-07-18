@@ -260,6 +260,36 @@
   (call   main)
   (output (: true Bool)))
 
+; --- Runtime compound ORDERING: `<`/`<=`/`>`/`>=` over a runtime compound DECLINES (no blessed order) -----
+; The cases above pin runtime structural EQUALITY over a compound (the `value-eq`/`champ_eq` heap walk).
+; ORDERING is a SEPARATE obligation: `<` on two runtime compounds needs a three-way lexicographic heap walk,
+; and — unlike equality, which is defined structurally for EVERY value — the spec blesses a total ORDER only
+; for the types that name one: Int (total), Float (IEEE partial, #Float-Ordering), and Symbol/String (content-
+; lexicographic UTF-8, 17-symbols.sexp §order). A plain LIST/tuple/sum has NO blessed order in the spec, so
+; `(< listA listB)` is UNIFORMLY DECLINED — the reference interpreter (`run-ml`), the Rust backend, AND the
+; wasm backend all refuse it ("comparison of a compound value needs a heap walk (not yet built)", lower.rs
+; ~17244, a TARGET-INDEPENDENT Core-IR decline shared by every backend — NOT a wasm-only divergence). This
+; grades that as a sound reject-don't-miscompile boundary: emitting an INVENTED element-wise order (which the
+; spec never blessed) would be worse than declining. Contrast runtime Symbol/String ordering, which the spec
+; DOES bless and both backends compute. A future ruling that blessed a list/tuple lexicographic order — plus
+; the heap walk to emit it — would flip this `(declines)` to an executing witness; until then, refusing is
+; correct. (Const-list ordering also declines here identically — it does not fold to a bool the way const
+; SCALAR ordering does, because there is no order to fold.)
+(case "runtime list ordering declines uniformly — the spec blesses no list order"
+  (doc    "`(< (mk 2) (mk 3))` where `mk` builds a runtime `(list 1 n)` asks for a THREE-WAY order on two
+           runtime lists. The spec blesses a total order only for Int/Float/Symbol/String — a plain list has
+           none — so all three legs (reference `run-ml`, Rust backend, wasm backend) DECLINE rather than
+           invent an element-wise order the language never defined. Contrast runtime compound EQUALITY (cases
+           above), which IS defined for every value and computes, and runtime Symbol/String ordering, which
+           the spec blesses. Grades the compound-ordering decline as an intentional, tracked reject-don't-
+           miscompile boundary: it is UNIFORM across backends (not a wasm-vs-rust divergence), and would flip
+           to a witness only if a list/tuple order were blessed and its lexicographic heap walk built.")
+  (input  (do
+            (def (mk (: n Int64)) (list 1 n))
+            (def (main) (if (< (mk 2) (mk 3)) 1 0))
+            (export main)))
+  (declines))
+
 (case "a runtime float is found as a Set element by canonical byte form"
   (doc    "Set membership over a `Set Float64` with a runtime query: `1.5` IS a member of `(Set.of (list
            1.5 2.5))` → true, `9.9` is NOT → false. The float element/query is compared by its canonical

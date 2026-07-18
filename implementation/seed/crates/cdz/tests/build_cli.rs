@@ -181,6 +181,70 @@ fn build_a_manifest_without_an_entry_errors() {
 }
 
 #[test]
+fn build_a_manifest_with_a_non_string_entry_says_entry_must_be_a_string() {
+    // A manifest that HAS a `def entry` whose value is NOT a string (`def entry = 42`) must NOT report
+    // "declares no `entry`" — that misleadingly tells the author to add an entry they already wrote. The
+    // real fault is the wrong TYPE, so the error must say `entry` must be a string. Regression: the parser
+    // drops a non-string value silently, making `entry` None (indistinguishable from absent) — the
+    // `entry_malformed` flag restores the distinction.
+    let dir = std::env::temp_dir().join(format!("cdz-build-badentry-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Project.cdz"),
+        "def name = \"x\"\ndef entry = 42\n",
+    )
+    .unwrap();
+    let (ok, _o, err) = run(&["build", dir.to_str().unwrap()]);
+    assert!(!ok, "a non-string entry should fail");
+    assert!(
+        err.contains("`entry` must be a string"),
+        "names the wrong-type fault, not a missing entry: {err}"
+    );
+    assert!(
+        !err.contains("declares no `entry`"),
+        "must NOT misreport a present-but-mistyped entry as absent: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_with_a_non_string_opt_level_warns_and_uses_the_default() {
+    // A `def opt-level` with a non-string value (`def opt-level = 42`) is silently dropped by the parser
+    // (manifest_strings yields nothing → opt_level None). Unlike `entry` (required → hard error), opt-level
+    // has a safe default, so the build must WARN the setting was ignored (not silently build at the
+    // default with no feedback) yet still SUCCEED. Regression: pre-fix it dropped the setting with zero
+    // signal — the `opt_level_malformed` flag drives the warning.
+    let dir = std::env::temp_dir().join(format!("cdz-build-badopt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Project.cdz"),
+        "def name = \"p\"\ndef entry = \"main.cdz\"\ndef opt-level = 42\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.cdz"),
+        "def main() -> Int64 = 1\nexport { main }\n",
+    )
+    .unwrap();
+    let (ok, _o, err) = run(&["build", dir.to_str().unwrap(), "-o", dir.to_str().unwrap()]);
+    assert!(
+        ok,
+        "a non-string opt-level must still BUILD (default tier): {err}"
+    );
+    assert!(
+        err.contains("warning") && err.contains("opt-level") && err.contains("not a string"),
+        "the build WARNS that opt-level was ignored: {err}"
+    );
+    assert!(
+        dir.join("main.wasm").is_file(),
+        "the component is still produced at the default tier: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn build_a_glob_entry_matching_one_file_uses_the_resolved_files_name() {
     // REGRESSION (Copilot PR #413): a GLOB `entry` (`app*.cdz`) must derive the compiler entry NAME from
     // the RESOLVED file (`app_main.cdz` → `app_main`), NOT the glob pattern (which would pass an invalid

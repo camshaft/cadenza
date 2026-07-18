@@ -649,6 +649,37 @@
             (export main)))
   (output (: 0 Int64)))
 
+; A scalar Int64-literal `match` nested as an OPERAND of an op whose SIBLING operand computed an i32 heap
+; handle. The classic idiom is an emitter: `emit(CBin op l r)` concatenates the recursive `emit(l)`/`emit(r)`
+; byte buffers (each yields an i32 handle spilled to a scratch slot) with `b1(wop op)` — where `wop` dispatches
+; the op-code via `(match op (43 124) …)`. The recursive-arg payload handles (i32) and the scalar match
+; scrutinee (i64) have DISJOINT liveness — the handles are dead by the time the match runs — but the scalar
+; match spilled its scrutinee into the SAME scratch slot the sibling arg's i32 handle had already recorded, so
+; the one wasm local carried two widths → `type mismatch: expected i32, found i64`, an INVALID module. The fix
+; spills the scalar scrutinee to a guaranteed-fresh high-water slot when its `base` already carries a
+; conflicting width (mirroring the `MatchSum` scrutinee-spill discipline). Regression pin for the emit-db
+; `wasm-op` idiomatic-`match` bug (invalid wasm at compiler-ml module scale; valid standalone). `emit` over
+; `(CBin 43 (CNum 1) (CBin 45 (CNum 2) (CNum 3)))` yields 5 bytes (3 nums + 2 op-codes), so `Bytes.len` = 5.
+
+(case "a scalar Int64 match nested as an op operand beside an i32-handle sibling emits valid wasm"
+  (doc    "A scalar `(match op (43 124) …)` (an i64 scrutinee) nested as an operand of `Bytes.concat`
+           whose sibling operand computed an i32 heap handle (a recursive `emit` result). The scrutinee
+           spill must NOT reuse the scratch slot the sibling's i32 handle typed — a wasm local carries one
+           width, so reusing it re-typed the local (`expected i32, found i64`) and the module failed to
+           validate. Regression pin for the emit-db `wasm-op` idiomatic-`match` invalid-wasm bug (valid
+           standalone, invalid at module scale). `emit` produces 5 bytes → `Bytes.len` = 5.")
+  (input  (do
+            (type Core (CNum Int64) (CBin Int64 Core Core))
+            (def (b1 (: x Int64)) (Bytes.of (list (UInt8.wrap x))))
+            (def (wop (: op Int64)) (match op (43 124) (45 125) (_ 0)))
+            (def (emit (: c Core))
+              (match c
+                ((Core.CNum v) (b1 v))
+                ((Core.CBin op l r) (Bytes.concat (Bytes.concat (emit l) (emit r)) (b1 (wop op))))))
+            (def (main) (Bytes.len (emit (Core.CBin 43 (Core.CNum 1) (Core.CBin 45 (Core.CNum 2) (Core.CNum 3))))))
+            (export main)))
+  (output (: 5 Int64)))
+
 (case "a HOF callback matching a tuple argument computes through the nested reduction"
   (doc    "The same shape with a TUPLE-destructuring callback — `(fn (p) (match p ((tuple a b) (+ a b))))`
            — passed to a HOF. The tuple-pattern binders `a`/`b` read the substituted scrutinee just as a
@@ -1514,6 +1545,37 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 2 Int64))
   (call   main (: 100 Int64)) (output (: 102 Int64)))
+
+; The cases above each instantiate a closure-taking recursive HOF at a SINGLE closure type. This one
+; instantiates the SAME generic recursive HOF `fold-list` at TWO distinct closure types in one program:
+; an Int64-element sum `(fn (x a) (+ a x))` (`f : (-> Int64 (-> Int64 Int64))`) AND a String-element
+; byte-length fold `(fn (s a) (+ a (String.byte-len s)))` (`f : (-> String (-> Int64 Int64))`). The
+; closure PARAMETER's type differs per instantiation, so `fold-list` monomorphizes into two functions
+; with distinct machine signatures — the closure-carrying twin of the plain-value `loopn`-at-two-types
+; case below. This is the shape adjacent to the still-open recursive-generic DRIVER tie (a closure param
+; + accumulator threaded through recursion): the transformer/HOF form monomorphizes cleanly TODAY, so
+; pin it so a future inference change to the driver-tie family cannot silently regress the working HOF
+; case. Int64 fold: `5 + 7 + 30 = 42`; String fold: `2 + 4 + 1 = 7`; total `49`.
+
+(case "a generic recursive HOF taking a closure is monomorphized at two distinct closure types"
+  (doc    "The same generic recursive `fold-list` is instantiated at TWO closure types in one program:
+           an Int64-element sum closure (`f : (-> Int64 (-> Int64 Int64))`) and a String-element
+           byte-length closure (`f : (-> String (-> Int64 Int64))`). The closure PARAMETER's type
+           differs per call, so `fold-list` monomorphizes into two functions with distinct machine
+           signatures — the closure-carrying twin of `loopn`-at-two-types. `5+7+30 = 42` and
+           `2+4+1 = 7`, total `49`. Pins that a closure-taking recursive-generic HOF composes at two
+           element types (guards the working HOF case against a regression from the open driver-tie
+           family — a closure param + accumulator threaded through recursion).")
+  (input  (do
+            (def (fold-list f acc xs)
+              (match xs
+                ((list) acc)
+                ((list h .. t) (fold-list f (f h acc) t))))
+            (def (main)
+              (+ (fold-list (fn (x a) (+ a x)) 0 (list 5 7 30))
+                 (fold-list (fn (s a) (+ a (String.byte-len s))) 0 (list "ab" "abcd" "x"))))
+            (export main)))
+  (output (: 49 Int64)))
 
 ; A MULTI-PARAMETER runtime closure, applied at FULL arity. `core-semantics.md` §Functions Are
 ; Single-Arity says a multi-param `(fn (a b) …)` is curried sugar; when the whole function is applied to
@@ -4763,6 +4825,50 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 7 Int64)))
+
+; The curried case above captures a SCALAR-derived heap string built at the closure's construction. Two
+; sharper Perceus lifetime faces (breaker, both backends): (1) a FACTORY that RETURNS a closure over its
+; own list PARAMETER — the captured list must outlive the factory's frame, then be read on each of two
+; applications (a drop at factory-return, or a consume on the first application, corrupts the second);
+; (2) a captured list that is ALSO structurally consumed by a rotate loop (`List.concat t (list h)`)
+; between the closure's construction and its application — the shared source must survive the rebuild
+; intact, so the closure still sees the original bytes.
+
+(case "a factory-returned closure over its list parameter keeps the capture live across two applications"
+  (doc    "`mkf xs = (fn (k) (+ k (sum xs)))` RETURNS a closure capturing its list parameter `xs`; the
+           factory frame is gone by the time the closure runs. Applied twice — `(+ (f 1) (f 1))` with
+           `xs = [n, n]` — each application re-reads the captured list (sum = 2n), so run(4) = (1+8) +
+           (1+8) = 18. Pins that a capture escaping its constructing frame stays live and is not consumed
+           by the first application (the Perceus refcount must keep the list alive for the closure's whole
+           lifetime, across every call).")
+  (input  (do
+            (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list h .. t) (+ h (sum t)))))
+            (def (mkf (: xs (List Int64))) (fn ((: k Int64)) (+ k (sum xs))))
+            (def (main (: n Int64)) (let ((f (mkf (list n n)))) (+ (f 1) (f 1))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 18 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+(case "a captured list survives a structural rebuild of the same source between capture and application"
+  (doc    "`f = (fn (k) (+ k (isum xs)))` captures `xs = [1,2,3]`; BEFORE `f` runs, `xs` is also fed to a
+           `rebuild` rotate loop (`List.concat t (list h)`, n times) producing `rot`. The capture and the
+           rebuild share the original `xs`, so the rebuild must not consume or mutate what the closure
+           holds. `(+ (* 100 (f 0)) (+ (* 10 (isum rot)) (isum xs)))` at n=2 = 100·6 + 10·6 + 6 = 666 —
+           the closure still sums the original 1+2+3, `rot` sums the rotated (same 6), and the third read
+           of the still-live `xs` also sums 6. Pins that a shared heap source drives an escaping capture
+           AND a structural transform without either corrupting the other.")
+  (input  (do
+            (def (isum (: xs (List Int64))) (match xs ((list) 0) ((list h .. t) (+ h (isum t)))))
+            (def (rebuild (: xs (List Int64)) (: n Int64))
+              (if (< n 1) xs (rebuild (match xs ((list h .. t) (List.concat t (list h))) (_ xs)) (- n 1))))
+            (def (main (: n Int64))
+              (let ((xs (list 1 2 3)))
+                (let ((f (fn ((: k Int64)) (+ k (isum xs)))))
+                  (let ((rot (rebuild xs n)))
+                    (+ (* 100 (f 0)) (+ (* 10 (isum rot)) (isum xs)))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 666 Int64))
+  (call   main (: 0 Int64)) (output (: 666 Int64)))
 
 ; --- The recursive-generic element tie: value-flow and composition faces ----------------------------
 ; 7793d4841 (Part C) ties a recursive-generic producer's result element to its argument's (the

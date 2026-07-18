@@ -9685,15 +9685,32 @@ fn emit_match_arms_tailable(
         // full scratch region from `base`.
         Some(src) => (src, base),
         None => {
-            // Evaluate the scrutinee ONCE into scratch slot `base`; the arm bodies and later probes run
-            // ABOVE that live slot (it must survive every probe). The scrutinee's own emit uses `base+1`
-            // as its floor, and may itself claim MORE scratch — a runtime `value-eq`/`MatchSum` scrutinee
+            // Evaluate the scrutinee ONCE into a scratch slot; the arm bodies and later probes run ABOVE
+            // that live slot (it must survive every probe). The scrutinee's own emit uses `slot+1` as its
+            // floor, and may itself claim MORE scratch — a runtime `value-eq`/`MatchSum` scrutinee
             // (`(match (= (mk n) (mk 3)) …)`) stashes i32 heap handles in slots the high-water records.
             // So the probe chain starts at the high-water the scrutinee emit REACHED (`*high`), NOT a bare
-            // `base+1`: reusing a scrutinee-scratch slot the value-eq typed i32 for a branch's i64
-            // iteration arithmetic would force one wasm local to two types (invalid module). A scalar
-            // scrutinee leaves `*high == base+1`, so `chain_base == base+1` and the bytes are unchanged.
-            let slot = base;
+            // `slot+1`: reusing a scrutinee-scratch slot the value-eq typed i32 for a branch's i64
+            // iteration arithmetic would force one wasm local to two types (invalid module).
+            //
+            // The spill slot is `base` UNLESS `base` was already RECORDED (in a sibling operand's emit) at
+            // a DIFFERENT width than this scrutinee: when the match is an OPERAND nested in an op/arg list
+            // (`Bytes.concat(…, b1(match op with …))`), an earlier sibling arg (a `sum-payload`/`arr-get`
+            // i32 handle) may have typed `base` as i32, while a scalar match scrutinee is i64 — those temps
+            // have DISJOINT liveness (the payload handle is dead by the match) but a wasm local carries ONE
+            // declared type, so writing the i64 scrutinee into the i32-typed `base` yields `type mismatch:
+            // expected i32, found i64` (an invalid module — the emit-db `wasm-op` idiomatic-`match` bug).
+            // Mirror the `MatchSum` scrutinee-spill: a slot at `*high` is guaranteed never pre-typed, so
+            // spill THERE when `base` already carries a conflicting width. A scalar scrutinee whose `base`
+            // is untyped or already matches keeps `slot == base` (byte-identical to before).
+            let slot = match scratch_ty.get(&base) {
+                Some(&existing) if existing != scrut_vt => {
+                    let s = *high;
+                    *high = s + 1;
+                    s
+                }
+                _ => base,
+            };
             if slot + 1 > *high {
                 *high = slot + 1;
             }
@@ -9702,7 +9719,7 @@ fn emit_match_arms_tailable(
                 db,
                 scrutinee,
                 slots,
-                base + 1,
+                slot + 1,
                 high,
                 scratch_ty,
                 layout,

@@ -71,3 +71,13 @@
 ; v-effects' parked host-arg-reperform / operand-memo / @param fn-arg-reperform — minimal no-host no-@param
 ; face, likely SAME ROOT (capture memoization: a captured perform-result must be memoized to its
 ; construction-time value). MISCOMPILE (not a reject-gap) -> higher priority than the parked faces. Not spawning.
+
+; ── ASSESSED step-3-adjacent-BLOCKED (v-effects, 2026-07-18) ──
+; The INNER handle alone folds correctly: (handle Ctr 50 … (let ((base (Ctr.tick))) (fn (x)(+ x base)))) →
+; (let ((base 50)) (fn (x)(+ x base))) — base=50 captured as a constant. BUT under the OUTER handler,
+; (f 3) β-reduces via apply_lambda BEFORE the inner handle folds base, inlining f's body (+ x base) with
+; base bound to the UNFOLDED (Ctr.tick), pulling the perform out of the inner scope into (+ 3 (Ctr.tick))
+; where the OUTER handler re-performs → 8 not 53. ORDERING entanglement (closure application inlines before
+; the inner effect fold). NOT bounded: needs (a) a fold-before-inline barrier in the universal inline path
+; (broad/risky) or (b) the step-3 escaping-k reified-value machinery (paused with DES). Clean fix rides with
+; step 3. STEP-3-GATED, not parked-by-choice. Tier-1 silent-value, unblock when step 3 revives.

@@ -1463,6 +1463,106 @@ fn host_effect_decl(db: &mut Db, e: StructId) -> Option<u32> {
     }
 }
 
+/// E5 STEP 2 — WITHIN-ACTIVATION lexical `k`. A `ctl`-style arm binds the continuation `k` (`arm.cont =
+/// Some(k)`) and applies it as `(k v)`. When `k` is used ONLY as the HEAD of applications — never bare,
+/// never passed as an argument, never stored — the continuation does NOT escape: each `(k v)` returns into
+/// the delimited context lexically, exactly as `(resume v)` does. So such an arm is semantically an
+/// ORDINARY (non-tail) resumptive arm, and the existing pure-one-hole / two-hole `resume` folds serve it
+/// with NO new machinery (no `Ty::Cont` heap rep, no defunctionalized frames — those are step 3, for an
+/// ESCAPING `k`). This returns a rewritten arm body with every `(k v)` replaced by `(resume v <state>)`
+/// (the state binder threads unchanged), or `None` if `k` ESCAPES (any non-application-head occurrence) —
+/// in which case the caller declines cleanly, deferring to step 3.
+///
+/// Soundness: `(k v)` = the delimited continuation applied to `v`, which is precisely the meaning of
+/// `(resume v)` in a handler arm; the state binder is threaded identically. `k` used strictly as an
+/// application head cannot be captured/stored, so the continuation is single-use-in-extent (the folds
+/// already handle one-shot AND the pure multi-shot case). A `k` that appears anywhere else (bare, an arg,
+/// a let-init) MIGHT escape the handle's dynamic extent, which the lexical folds cannot represent → decline.
+fn ctl_arm_lexical_k_to_resume(db: &mut Db, arm: &HandleArm) -> Option<StructId> {
+    let k_binder = arm.cont?;
+    // Confirm every `k` reference in the body is the HEAD of an `(k arg…)` application, and collect those
+    // application nodes to rewrite. A reference resolves to `Ref { value }` whose chain reaches `k_binder`
+    // (or a `Param { binder: k_binder }`). Walk the body; at each `Apply`, its HEAD may be a `k` ref (good
+    // — record it); any OTHER position resolving to `k` is an escape.
+    fn refs_to_k(db: &mut Db, node: StructId, k_binder: StructId) -> bool {
+        match resolved_of(db, node) {
+            Resolved::Param { binder } => binder == k_binder,
+            Resolved::Ref { value } => {
+                let mut t = value;
+                loop {
+                    if t == k_binder {
+                        break true;
+                    }
+                    match resolved_of(db, t) {
+                        Resolved::Ref { value: n } => t = n,
+                        _ => break false,
+                    }
+                }
+            }
+            _ => false,
+        }
+    }
+    // Gather the `(k arg)` application nodes (head resolves to k). Any k-ref NOT in such a head → escape.
+    fn collect(db: &mut Db, node: StructId, k_binder: StructId, apps: &mut Vec<StructId>) -> bool {
+        // A `k`-headed application: record it, and check its ARGS do not themselves escape `k` (a nested
+        // `(k (k v))` — the inner is an arg, an escape; conservatively that fails the arg walk below).
+        if let Resolved::Apply { head, args } = resolved_of(db, node)
+            && refs_to_k(db, head, k_binder)
+        {
+            apps.push(node);
+            // The args must be k-free (a `k` passed as an argument escapes). Walk each arg for any k-ref.
+            return args.iter().all(|&a| !contains_k_ref(db, a, k_binder));
+        }
+        // Not a k-headed app: this node itself must not BE a k-ref (bare `k` — an escape), and recurse.
+        if refs_to_k(db, node, k_binder) {
+            return false; // bare `k` in a non-head position — escapes
+        }
+        match db.ast.get(node).clone() {
+            crate::ast::Struct::List(children) => {
+                children.iter().all(|&c| collect(db, c, k_binder, apps))
+            }
+            crate::ast::Struct::Atom(_) => true,
+        }
+    }
+    fn contains_k_ref(db: &mut Db, node: StructId, k_binder: StructId) -> bool {
+        if refs_to_k(db, node, k_binder) {
+            return true;
+        }
+        match db.ast.get(node).clone() {
+            crate::ast::Struct::List(children) => {
+                children.iter().any(|&c| contains_k_ref(db, c, k_binder))
+            }
+            crate::ast::Struct::Atom(_) => false,
+        }
+    }
+    let mut apps: Vec<StructId> = Vec::new();
+    if !collect(db, arm.body, k_binder, &mut apps) {
+        return None; // `k` escapes — defer to step 3
+    }
+    if apps.is_empty() {
+        return None; // no `(k v)` application at all — not the lexical-apply shape (a stored/unused k)
+    }
+    // Rewrite: each `(k arg)` → `(resume arg <state>)`. `k` is single-arg (Cont takes one resume value);
+    // a different arity is not the lexical-resume shape. Build fresh `resume` nodes; the state binder is
+    // referenced by a fresh name occurrence of the arm's state name (copied structurally, resolves to the
+    // arm's state binder via `handle_arm_binds`).
+    let mut sub: HashMap<StructId, StructId> = HashMap::default();
+    for &app in &apps {
+        let Resolved::Apply { args, .. } = resolved_of(db, app) else {
+            continue;
+        };
+        if args.len() != 1 {
+            return None; // `(k)` or `(k a b)` — not a single-value resume
+        }
+        let resume_head = db.push_atom(Leaf::Name("resume".to_string()));
+        let state_ref = copy_pure(db, arm.state);
+        let resume = db.push_list(vec![resume_head, args[0], state_ref]);
+        sub.insert(app, resume);
+    }
+    // Splice the rewritten resume nodes in place of the `(k v)` applications (a node→node substitution).
+    Some(substitute_nodes(db, arm.body, &sub))
+}
+
 /// are the resolved handle's children.
 pub fn reduce_handle(
     db: &mut Db,
@@ -1496,20 +1596,30 @@ pub fn reduce_handle(
         if !resume_result_type_ok(db, arm) {
             return None;
         }
-        // E5 GENERAL / `ctl`-style arm: an arm that binds the continuation `k` explicitly (`cont:
-        // Some(_)`) reifies the delimited continuation as a first-class value — it may STORE `k` and resume
-        // it later (`resume` = `apply(k, v)`), the stored/escaping-continuation case a DES scheduler needs
-        // (`DESIGN-general-continuations-e5.md`). The tail-resumptive fold cannot serve it (there is no
-        // single delimited context to splice a resume value into — `k` escapes as a value). Until the E5
-        // frame-capture increment lands (defunctionalized frames + an `apply` `br_table` dispatcher), a
-        // general arm DECLINES cleanly here — a Todo, never a valid-but-wrong fold. This is the classifier +
-        // surface step: the 5-part arm PARSES and binds `k` (scope wired in `handle_arm_binds`), and is
-        // recognized as its own class, distinct from tail-resumptive (has `resume`, no `k`) and abortive
-        // (no `resume`, no `k`).
-        if arm.cont.is_some() {
-            return None;
-        }
-        map.insert((decl.0, idx), arm.clone());
+        // E5 GENERAL / `ctl`-style arm: an arm that binds the continuation `k` explicitly (`cont: Some`).
+        // STEP 2 (within-activation, lexical `k`): if `k` is used ONLY as an application head `(k v)` — never
+        // bare, stored, or passed as an arg — the continuation does not escape, so `(k v)` is semantically
+        // `(resume v)`; `ctl_arm_lexical_k_to_resume` rewrites the arm body accordingly, turning it into an
+        // ordinary non-tail resumptive arm the existing pure-one-hole / two-hole folds serve (no new heap
+        // rep). STEP 3 (deferred): a `k` that ESCAPES (bare / stored in a list-map / passed onward — the DES
+        // scheduler's sleep/store/resume-later) needs the defunctionalized-frame `Ty::Cont` machinery; such
+        // an arm still DECLINES cleanly here (a Todo, never a valid-but-wrong fold). Classified distinctly
+        // from tail-resumptive (has `resume`, no `k`) and abortive (no `resume`, no `k`).
+        let arm = if arm.cont.is_some() {
+            match ctl_arm_lexical_k_to_resume(db, arm) {
+                Some(rewritten_body) => HandleArm {
+                    op: arm.op,
+                    params: arm.params.clone(),
+                    state: arm.state,
+                    cont: None,
+                    body: rewritten_body,
+                },
+                None => return None, // `k` escapes — defer to step 3
+            }
+        } else {
+            arm.clone()
+        };
+        map.insert((decl.0, idx), arm);
     }
     // This handle discharges ONE effect (all its arms share a decl — a handle's arms are for one effect),
     // so the context has ONE state slot. `state_ty_of_arms` derives the slot's state type from the init
@@ -1823,9 +1933,21 @@ pub fn reduce_handle(
     // rewritten body; the final threaded state is discarded (the body never reads it directly).
     let (rewritten, _final_states) = thread(db, body, vec![init], &ctx)?;
     // ABORTIVE (E4): if an abortive perform fired during threading, the handle's value is that arm's
-    // value — the surrounding computation was abandoned, so the threaded body is dead. Return the abort
-    // value directly. (Unconditional strict abort only; a conditional abort was declined above.)
+    // value — the surrounding computation was abandoned, so the threaded body is dead. (Unconditional
+    // strict abort only; a conditional abort was declined above.)
     if let Some(abort) = ctx.abort_value.get() {
+        // Re-anchor the abort value under the handle site BEFORE returning — the SAME reparent the normal
+        // path does below (line ~1848). The abort value is the arm body `copy_pure`d off the (now-dead)
+        // resume/perform node, a synthesized orphan with parent `None`. When it is (or contains) a BARE
+        // NAME referencing an ENCLOSING binder — the arm `(bail (n) s n)` returns `n`, bound to the perform
+        // arg, which for a RUNTIME arg `(Bail.bail k)` is a reference to the caller's param `k` — the
+        // orphan copy has no lexical chain, so `k` reads UNBOUND → Poison → the handle types `Any` and
+        // lowering declines "return type has no machine representation" (wasm) while rust computes (a
+        // backend split: corpus-bugfix 2026-07-18). A CONST arg `(Bail.bail 7)` folds to a literal (no free
+        // name) so it never exhibited this — only a runtime arg leaves a free reference. Re-parenting under
+        // the handle restores the chain abort → handle → def so `k` re-resolves to the param and types
+        // Int64. (Mirrors the identity-arm pass-through reparent for the resumptive path.)
+        reparent_under_handle_site(db, abort, body);
         return Some(abort);
     }
     // MULTI-VALUE (repro-1): if the handle BODY was itself a self-call to a multi-value spec — `(handle …
@@ -2468,6 +2590,40 @@ fn hoist_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId>
             }
         }
     }
+    // An `(if COND t e)` whose CONDITION is itself an `(if c2 t2 e2)` carrying an abort — the shape the
+    // connective desugar above LEAVES when an `and`/`or` with an abortive rhs is an ENCLOSING if's condition:
+    // `(if (and b (Bail 7)) 100 200)` → (connective desugar) → `(if (if b (Bail 7) false) 100 200)`. The
+    // abort is now buried in the condition's branch, where neither the operand-distribution nor the
+    // branch-tail capture reaches it. Distribute the OUTER if THROUGH its condition: `(if (if c2 t2 e2) t e)`
+    // ≡ `(if c2 (if t2 t e) (if e2 t e))`. Sound: `c2` is evaluated once either way (no duplication); the
+    // outer branches `t`/`e` are duplicated into each inner branch, so they must be PURE (an effectful `t`/`e`
+    // would run on a path it shouldn't, or twice). After the lift, an aborting `t2`/`e2` sits as an inner
+    // `if`'s CONDITION `(if (Bail 7) t e)` — an abort in a strict-first (condition) position the next pass /
+    // the `if`-condition thread handles (an abort in a condition abandons before branching, already folded).
+    // Only fires when the condition-if carries an abort (a pure nested condition-if is left alone).
+    if let Resolved::If { cond, then_, else_ } = resolved_of(db, node)
+        && let Resolved::If {
+            cond: c2,
+            then_: t2,
+            else_: e2,
+        } = resolved_of(db, cond)
+        && subtree_has_abortive_perform(db, cond, ctx)
+        && !subtree_performs(db, then_, ctx)
+        && !subtree_performs(db, else_, ctx)
+    {
+        let mk_if = |db: &mut Db, c: StructId, t: StructId, e: StructId| -> StructId {
+            let if_head = db.push_atom(Leaf::Name("if".to_string()));
+            db.push_list(vec![if_head, c, t, e])
+        };
+        // Copy the duplicated outer branches per inner arm (single-parent arena — each use needs its own node).
+        let t_a = copy_pure(db, then_);
+        let e_a = copy_pure(db, else_);
+        let t_b = copy_pure(db, then_);
+        let e_b = copy_pure(db, else_);
+        let inner_then = mk_if(db, t2, t_a, e_a);
+        let inner_else = mk_if(db, e2, t_b, e_b);
+        return Some(mk_if(db, c2, inner_then, inner_else));
+    }
     // Not a site here — recurse into children, rebuilding with the FIRST rewritten child. A special form
     // (`if`/`let`/`match`) is descended structurally too: a non-tail abort nested in a `let` init or an
     // `if` branch's operand is lifted within that sub-position, then the enclosing thread arm folds it.
@@ -2816,12 +2972,18 @@ fn body_has_unsound_abortive_perform(
     {
         return true;
     }
-    // An `if`: the CONDITION is a NON-tail, NON-branch strict operand (an abort in a condition can't be
-    // captured per-branch — treat it as `tail=false`). Each BRANCH is a conditional position:
-    // `under_cond=true`, and `tail` carries the `if`'s own tail-ness (a tail `if` → tail branches, whose
-    // aborts the per-branch capture intercepts; a non-tail `if` → non-tail branches, flagged).
+    // An `if`: the CONDITION evaluates BEFORE branching, so an abort there abandons the whole computation
+    // regardless of which branch would run. When the `if` is on a TAIL path (`tail=true` — it is the handle
+    // body, or the tail of a branch the per-branch capture intercepts), that condition-abort IS capturable:
+    // `thread`'s `if` arm threads the condition first, the abort sets the cell, and `reduce_handle` (body) /
+    // `thread_branch_local_abort` (branch) takes the abort value — the enclosing computation is dead, so
+    // nothing is dropped. This is what lets a connective-in-condition abort fold after the hoist distributes
+    // the outer `if` through it (`(if (and b (Bail 7)) 100 200)` → `(if b (if (Bail 7) 100 200) …)`, the
+    // condition-abort in the tail branch). A NON-tail `if` (`tail=false` — an operand `(+ 1 (if (Bail 7) …))`
+    // the hoist could not lift) keeps the condition non-capturable → flagged. So the condition inherits the
+    // `if`'s own `tail`. Each BRANCH is a conditional position (`under_cond=true`, `tail` carried).
     if let Resolved::If { cond, then_, else_ } = resolved_of(db, node) {
-        return body_has_unsound_abortive_perform(db, cond, ctx, false, under_cond)
+        return body_has_unsound_abortive_perform(db, cond, ctx, tail, under_cond)
             || body_has_unsound_abortive_perform(db, then_, ctx, tail, true)
             || body_has_unsound_abortive_perform(db, else_, ctx, tail, true);
     }
@@ -5321,6 +5483,27 @@ fn rewrite_resume_to_refolded_context(
 /// UNIQUE occurrence in the arena (`pure_hole` verified exactly one discharged perform reaches on a pure
 /// spine), so a by-identity match locates it. Everything else is copied structurally so the result is
 /// self-contained and re-parents its free names against the splice site.
+/// Rebuild `node`, replacing any subtree whose identity is a key of `sub` with the mapped replacement
+/// (verbatim — the replacement is spliced as-is, NOT recursed into). A node not in `sub` is copied
+/// structurally (children rebuilt), so the result is a fresh tree with the mapped nodes swapped in. The
+/// multi-node analogue of [`splice_context`]. Used by the E5 step-2 ctl→resume rewrite to swap each
+/// `(k v)` application for its `(resume v state)` node in one pass.
+fn substitute_nodes(db: &mut Db, node: StructId, sub: &HashMap<StructId, StructId>) -> StructId {
+    if let Some(&repl) = sub.get(&node) {
+        return repl;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let rebuilt: Vec<StructId> = children
+                .iter()
+                .map(|&c| substitute_nodes(db, c, sub))
+                .collect();
+            db.push_list(rebuilt)
+        }
+        Struct::Atom(_) => copy_pure(db, node),
+    }
+}
+
 fn splice_context(db: &mut Db, node: StructId, perform: StructId, filler: StructId) -> StructId {
     if node == perform {
         return copy_pure(db, filler);

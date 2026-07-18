@@ -107,6 +107,14 @@ pub mod policy;
 /// (one-shot + periodic). Time is threaded as a `now_ms` argument so the folds stay pure + deterministic.
 pub mod clock;
 
+/// Scheduled events in the log (scheduling substrate — operator ruling: one-shot + periodic events on the wall
+/// clock): [`schedule::append_create`]/[`schedule::append_cancel`] register/cancel a schedule as data in the
+/// log; [`schedule::due`] is the pure fold the daemon consults each tick (time as `now_ms`) to decide which
+/// schedules must fire — one-shots fire once, periodics every `period_ms`, occurrence count derived from the
+/// [`schedule::SCHEDULE_FIRE`] records (log-as-state, no mutable scheduler). The log-store half; daemon wiring
+/// (fire due schedules per tick) is a later increment, as [`policy`] landed before [`daemon`] evaluated it.
+pub mod schedule;
+
 /// The daemon loop (rung KC-daemon — the "start the daemon" half of fork-5): [`daemon::tick`] runs one step —
 /// read the log, find the latest genesis `program` ([`boot::latest_program`]), and drive an interpret turn
 /// ([`kernel::run_interpret`]). Ties the boot half (genesis lookup) + the kernel half (compile+run) into the

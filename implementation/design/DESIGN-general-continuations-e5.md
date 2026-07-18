@@ -53,9 +53,13 @@ handle Sim (scheduler-state)
 - `resume` in a general arm is `apply(k, v)` — an ordinary application of the `Cont` value. `(resume v s)`
   stays sugar for the tail case (`k` used once, in tail position). Invoking a STORED `k` later is the same
   `apply(k, v)` from wherever the scheduler holds it.
-- `Cont` is a first-class type (`Ty::Cont`, reserved). `k : Cont A B` = a suspended computation awaiting an
-  `A` (the resume value) that, when applied, runs to a `B` (the handler's answer type). Storable in any
-  collection; DES stores `List (Cont Unit Unit)` / `Map Time (Cont …)`.
+- `Cont` is a first-class type (`Ty::Cont`). `k : Cont A B` = a suspended computation awaiting an `A` (the
+  resume value) that, when applied, runs to a `B` (the handler's answer type). Storable in any collection;
+  DES stores `List (Cont Unit Unit)` / `Map Time (Cont …)`. NOTE (correction, 2026-07-18): `Ty::Cont` is
+  **not yet in the type enum** — it is added at STEP 3 (the stored/escaping-k case, which needs a heap rep
+  for the frame-chain handle). STEP 2 (within-activation, `k` applied lexically once) does **not** need it:
+  a lexically-applied `k` in a pure one-hole context is exactly the existing pure-continuation fold
+  (`(k v)` = `C[v]`, the same term `resume` produces), so step 2 reuses that machinery with no new type.
 
 ## 3. Representation (from §4.4, made concrete)
 

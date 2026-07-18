@@ -49,18 +49,22 @@ def eval-core(c: Core, env: Map(Int64, Int64)) = match c with
 ///   a > b  ≡ b < a ;  a <= b ≡ not (b < a) ;  a >= b ≡ not (a < b) ;  a != b ≡ not (a == b).
 /// Division by zero → `None` (a total, trap-free evaluator).
 def eval-bin(op: Int64, a: Int64, b: Int64) =
-  (if op == 43 then Option.Some(a + b)
-   else (if op == 45 then Option.Some(a - b)
-   else (if op == 42 then Option.Some(a * b)
-   else (if op == 47 then (if b == 0 then Option.None(unit) else Option.Some(a / b))
-   else (if op == 37 then (if b == 0 then Option.None(unit) else Option.Some(a % b))   // modulo; %0 → None
-   else (if op == 60 then Option.Some(if a < b then 1 else 0)
-   else (if op == 61 then Option.Some(if a == b then 1 else 0)
-   else (if op == 62 then Option.Some(if b < a then 1 else 0)                  // a > b  ≡ b < a
-   else (if op == 63 then Option.Some(if b < a then 0 else 1)                  // a <= b ≡ not (b < a)
-   else (if op == 64 then Option.Some(if a < b then 0 else 1)                  // a >= b ≡ not (a < b)
-   else (if op == 65 then Option.Some(if a == b then 0 else 1)                 // a != b ≡ not (a == b)
-   else Option.None(unit))))))))))))
+  // MATCH on the op-code (idiomatic dispatch on the literal, not an `if op == N` ladder — the operator's
+  // match-everywhere bar). Same semantics: 43 + / 45 - / 42 * ; 47 / and 37 % guard divide/mod-by-zero to
+  // None (trap-free); 60..65 relationals encode a Bool as 0/1, each defined via `<`/`==`.
+  match op with
+    | 43 => Option.Some(a + b)
+    | 45 => Option.Some(a - b)
+    | 42 => Option.Some(a * b)
+    | 47 => (if b == 0 then Option.None(unit) else Option.Some(a / b))
+    | 37 => (if b == 0 then Option.None(unit) else Option.Some(a % b))   // modulo; %0 → None
+    | 60 => Option.Some(if a < b then 1 else 0)
+    | 61 => Option.Some(if a == b then 1 else 0)
+    | 62 => Option.Some(if b < a then 1 else 0)                  // a > b  ≡ b < a
+    | 63 => Option.Some(if b < a then 0 else 1)                  // a <= b ≡ not (b < a)
+    | 64 => Option.Some(if a < b then 0 else 1)                  // a >= b ≡ not (a < b)
+    | 65 => Option.Some(if a == b then 0 else 1)                 // a != b ≡ not (a == b)
+    | _ => Option.None(unit)
 
 /// Evaluate a lowered tree from `root` with an empty env — `Some value` for a well-typed program, `None` if
 /// it had no core form (ill-typed) or hit a malformed Core.

@@ -237,6 +237,10 @@ pass	`?` on the failure variant short-circuits the boundary (Option, None path)
 pass	`?` on the success variant unwraps the payload (Option, happy path)
 pass	`?` unwraps a COMPOUND (tuple) payload
 pass	`?` unwraps an Ok payload under a Result boundary (happy path)
+pass	`at` advances an Instant by a Duration (wake-time computation)
+pass	`before?` is a STRICT order — an Instant is not before an equal Instant (same-time is a tie-break)
+pass	`before?` orders two Instants (the event-queue comparison)
+pass	`since` is the span between two Instants (later minus earlier)
 pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
@@ -292,6 +296,7 @@ pass	a CONSTANT recursive sum compares equal to a differently-built RUNTIME one
 pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
 pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
+pass	a Duration constructor `secs` scales a UInt64 count to nanoseconds
 pass	a FLAT runtime string nested in a tuple is unaffected (control)
 pass	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
 pass	a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator
@@ -543,6 +548,7 @@ pass	a call-returned UInt8 newtype literal-payload arm spills at the narrow widt
 pass	a camelCase round-trip resolves through kebab boundary-name normalization
 pass	a camelCase same-signature multi-export normalizes each make-<name>
 pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly
+pass	a captured list survives a structural rebuild of the same source between capture and application
 pass	a captured pre-shadow value survives the re-binding
 pass	a capturing 32-bit-integer closure crosses and is called
 pass	a capturing closure crosses as a repeatable (borrow<t>) callback handle
@@ -737,6 +743,7 @@ pass	a correctly-annotated function parameter is accepted
 pass	a cross-function recursive fold's out-state threads to a later perform in the caller's continuation
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a crossing text-literal arm is rejected even beside a same-kind sibling arm
+pass	a ctl-style arm that applies its continuation lexically folds through the delimited context
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a curried function can be partially applied
 pass	a curried function-type annotation checks its inner result type against the argument
@@ -760,6 +767,7 @@ pass	a deep chain of runtime-list let-bindings compiles and returns the final le
 pass	a deep compound nesting all six leaf kinds round-trips through encode and decode
 pass	a deep consume leaves the intermediate compound and a sibling element readable
 pass	a deep four-leaf tree round-trips through encode and decode
+pass	a deep nested-constructor pattern matching a nullary variant two layers deep solves its switch path
 pass	a deep push chain beside two other live bindings retains each correctly
 pass	a deeper nested call chain still folds in linear time near the inliner limit
 pass	a deeply nested constant expression compiles or declines without crashing
@@ -829,6 +837,7 @@ pass	a duplicate module declaration in one scope is rejected
 pass	a factorial that overflows the integer type traps through the recursion
 pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
+pass	a factory-returned closure over its list parameter keeps the capture live across two applications
 pass	a failing guard falls through to a later arm
 pass	a failing payload-binder guard falls to a later arm re-binding the payload
 pass	a failing tuple guard falls to a later arm re-binding the elements
@@ -917,6 +926,7 @@ pass	a generated value with a BIGINT leaf is reproducible (compound = walks the 
 pass	a generated value with a FLOAT leaf is reproducible (compound = over the canonical float byte form)
 pass	a generated value with a SYMBOL leaf is reproducible (compound = walks the interned-name byte leaf)
 pass	a generic definition takes the type as a type-valued parameter
+pass	a generic recursive HOF taking a closure is monomorphized at two distinct closure types
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
 pass	a generic sum type constructor applied to a value is rejected
@@ -1988,6 +1998,7 @@ pass	a same-kind symbol-literal tuple sub-pattern still dispatches (tuple contro
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a same-unit quantity join flows and its magnitude reads back
 pass	a scalar BETWEEN two Tuple args with a LIST result
+pass	a scalar Int64 match nested as an op operand beside an i32-handle sibling emits valid wasm
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a fn-return tuple with runtime content
 pass	a scalar element is projected directly from a function's runtime tuple result
@@ -2331,6 +2342,7 @@ pass	a well-formed annotation still checks and accepts a matching type (the cont
 pass	a whole rational carries a denominator of one
 pass	a wide fixed-size integer width is reserved, not yet a valid type
 pass	a wide multi-column literal match returns the matched arm's value over a runtime scrutinee (S2 emit-reshape value guard)
+pass	a wide multi-column match over a bound tuple PARAMETER returns the matched arm's value (S2 emit-reshape value guard, param shape)
 pass	a wider runtime value in a fixed-width segment is a compile-time type error
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
@@ -2379,6 +2391,7 @@ pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
 pass	an IEC-prefixed quantity displays scaled to its reference over Int64
 pass	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
+pass	an Instant and a Duration are DISTINCT nominal types — a point cannot be used where a span is expected
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an Int16 sum-payload literal-match hits the literal arm, result widens to Int64
@@ -2404,13 +2417,16 @@ pass	an abort abandons a pending borrowed map lookup and the map survives
 pass	an abort abandons a pending consuming op and the shared binding survives
 pass	an abortive handler abandons a host call in the path it discards
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
+pass	an abortive handler arm performed with a RUNTIME argument abandons the computation and returns it
 pass	an abortive perform deep in a call chain unwinds every intervening frame to the top handler
 pass	an abortive perform in a conditional let binding abandons the computation
+pass	an abortive perform in a connective that is an if-condition abandons the computation when the connective reaches it
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation
 pass	an abortive perform in an if condition abandons the computation before branching
 pass	an abortive perform in the NON-taken if branch is never evaluated (no speculation)
 pass	an abortive perform in the tail of an if branch abandons only that branch
 pass	an abortive perform in the tail of an if branch inside a let body abandons only that branch
+pass	an abortive perform short-circuited out of a connective condition is never performed
 pass	an abortive perform under THREE nested handlers abandons the two resumptive frames above it
 pass	an abortive perform under a non-tail conditional abandons the enclosing computation
 pass	an absolute-value branch traps on the minimum integer it cannot represent
@@ -2945,6 +2961,7 @@ pass	division by zero traps
 pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
 pass	double negation of a runtime boolean is the identity
+pass	draining the event queue yields entries in time-order with FIFO same-time ties
 pass	dropping an absent field from a record is rejected
 pass	dropping fields from a record leaves the remaining fields
 pass	each definition in a module registers a reachable export field
@@ -3365,9 +3382,11 @@ pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	runtime float ordering is a strict/non-strict partial order over finite values
 pass	runtime float ordering treats negative and positive zero as equal, unlike equality
+pass	runtime list ordering declines uniformly — the spec blesses no list order
 pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
 pass	runtime structural equality over a payload-carrying sum agrees on both backends
 pass	runtime tuple concatenation preserves element order across the seam
+pass	same-Instant queue entries resume in FIFO insertion order (§3.4 tie-break)
 pass	same-arity tuple match arms share an equal element and sink the differing one
 pass	same-key-set record match arms share an equal field and sink the differing one
 pass	same-length list match arms share an equal element and sink the differing one
@@ -3458,6 +3477,7 @@ pass	textually-identical performs are DISTINCT state-advancing reads, not a comm
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
 pass	the CHECKED ground axiom le-ax cannot forge a FALSE order fact (5 <= 3) — the axiom base is consistent
+pass	the DES Duration constructors ms / us / ns each scale to the right nanosecond magnitude
 pass	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the Float codec round-trips a negative value
 pass	the INFINITY axiom is minted via new_axiom (an infinite type exists)
@@ -3506,6 +3526,7 @@ pass	the entrypoint multiplies its runtime argument
 pass	the entrypoint returns its runtime argument unchanged
 pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
+pass	the event queue pops the earliest-Instant entry first (pop-min)
 pass	the expander rewrites a directly-written node even when chunks != holes+1 (no re-check)
 pass	the expander threads the hole list to the tag even with zero chunks and zero holes
 pass	the exponent marker is case-insensitive
@@ -3581,6 +3602,7 @@ pass	the prelude binds Constructor values not pre-applied Sums
 pass	the prelude module keeps working beside a same-named colliding variant
 pass	the program manifest is the union of its entrypoints' delegations
 pass	the reader literal reads to Symbol.of
+pass	the ready-queue is a plain FIFO — spawned-ready tasks run in enqueue order
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the rest binder carries the unmatched runtime-keyed remainder

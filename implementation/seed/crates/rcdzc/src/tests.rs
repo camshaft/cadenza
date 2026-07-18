@@ -12750,6 +12750,61 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_inline_tuple_multi_column_match_compiles_in_linear_time() {
+        // REGRESSION (perf): the sibling `a_multi_column_literal_match_compiles_in_linear_time` matches a
+        // bound tuple PARAM (`(: t (Tuple …))`), which shares the fall-through correctly. But an INLINE-
+        // constructed scrutinee — `(match (tuple a b c) ((tuple 0 0 c) 0) …)` where `a`/`b`/`c` are runtime
+        // params — defeated the sharing and stayed O(2^cols): `const_at_path` walked INTO the inline
+        // `Core::Tuple` and returned `Some(Core::Param)` for the runtime element, wrongly entering the
+        // constant-FOLD branch (whose per-arm `matched_rows` does NOT thread the shared `Rc<SumCont>` tail)
+        // instead of the runtime `build_lit_test` path that shares it. `build_tree` recursed 2^cols times
+        // building all-distinct nodes (emit saw 1020 distinct `SumCont` ptrs at 8 arms, 0 shared — no DAG
+        // for the emit-side dedup to key on). FIX: `const_at_path` returns `Some` ONLY for an actual
+        // foldable CONSTANT (`is_foldable_const`); a runtime `Core::Param`/`LocalRef` sub-value returns
+        // `None`, routing the inline-tuple element to the shared runtime lit-test path. Now the decision
+        // tree is a linear-node DAG (build_tree recursions 33@8-arm, 65@16-arm), the shape the S2 emit-side
+        // shared-continuation dedup needs. The NOISE-FREE signal is `BUILD_TREE_CALLS` (recursion count).
+        fn inline_tuple_match_src(n: usize) -> String {
+            let mut arms = String::new();
+            for i in 0..n {
+                arms.push_str(&format!("((tuple {i} {i} c) {i}) "));
+            }
+            format!(
+                "(module m (def (f (: a Int64) (: b Int64) (: c Int64)) (match (tuple a b c) {arms}(_ -1))) \
+                 (def (main) (f 1 1 5)) (export main))"
+            )
+        }
+        // A small instance compiles clean.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&inline_tuple_match_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "an inline-tuple multi-column match compiles with no error diagnostics: {diags:?}"
+        );
+        fn build_tree_calls(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::BUILD_TREE_CALLS.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::BUILD_TREE_CALLS.with(|c| c.get())
+            })
+        }
+        // Arms 8→16 is a 2× arm count. LINEAR (shared fall-through) ⇒ the recursion count roughly DOUBLES;
+        // the O(2^arms) blow-up MULTIPLIED by 2^8 = 256× over +8 arms. Require the ratio stay well under 4×
+        // (linear is ~2×; the exponential was astronomical — 1021 already at 8 arms). Measured 33@8, 65@16.
+        let n8 = build_tree_calls(&inline_tuple_match_src(8));
+        let n16 = build_tree_calls(&inline_tuple_match_src(16));
+        let ratio = n16 as f64 / (n8.max(1)) as f64;
+        assert!(
+            n8 > 0 && ratio < 4.0,
+            "an INLINE-tuple multi-column match must compile in O(arms) `build_tree` recursions, not \
+             O(2^arms) (`const_at_path` must decline a runtime `Core::Param` sub-value so the inline-tuple \
+             element takes the shared-fall-through runtime lit-test path): arms 8→16 grew {ratio:.1}× \
+             (n8={n8}, n16={n16}); linear is ~2×, the exponential was ~256×"
+        );
+    }
+
+    #[test]
     fn a_refined_list_payload_match_compiles_in_linear_time() {
         // REGRESSION (perf, S3): a match whose arms each refine a LIST PAYLOAD by literal elements
         // (`(Some (list 0 0)) … (Some (list N N)) (_ -1)`) compiled `lower::build_tree` in O(2^arms). The
@@ -15717,6 +15772,56 @@ mod match_engine {
             .unwrap(),
             "2000",
             "sel=1,n=5 → Inner.W 5 → the W-literal arm (2000), not the W-binder fall-through (5)"
+        );
+    }
+
+    #[test]
+    fn a_deep_nested_constructor_pattern_matching_a_nullary_variant_solves_its_switch_path() {
+        // REGRESSION (v-compiler-ml surfaced, concierge-assigned): a constructor pattern nesting a NULLARY
+        // variant TWO+ constructor layers deep errored `compound match switch path has no solved type`.
+        // `(match t ((Ty.TyInt (IntTy.IntTy (Sign.Signed) w)) 1) (_ 0))` where IntTy is a SINGLE-variant
+        // sum (erased to Ty::Nominal): the switch on `Sign` is at `[Payload, Payload, Elem(0)]` (TyInt's
+        // boxed-sum Payload seeds `[Payload]` = IntTy in path_types, but the INNER Payload — the erased
+        // IntTy newtype unwrap — is NOT seeded). `type_from_seeded_prefix` walked the suffix from the seeded
+        // `[Payload]` but its `Payload` arm UNCONDITIONALLY declined → no solved type. FIX: peel a
+        // `Ty::Nominal` (erased newtype) `Payload` in the suffix walk (mirror `type_at_path`), so the switch
+        // resolves through the erased inner layer. Runtime-chosen inner defeats the const-fold.
+        let Some(hit) = run_heap_value(
+            "(module m \
+               (type Sign (Signed) (Unsigned) (SignDef)) \
+               (type Width (WFixed Int64) (WidthDef)) \
+               (type IntTy (IntTy Sign Width)) \
+               (type Ty (TyInt IntTy) (TyBool) (TyErr)) \
+               (def (probe (: t Ty)) (match t ((Ty.TyInt (IntTy.IntTy (Sign.Signed) w)) 1) (_ 0))) \
+               (def (mk (: k Int64)) (if (< k 0) (Sign.Signed) (Sign.Unsigned))) \
+               (def (main (: k Int64)) (probe (Ty.TyInt (IntTy.IntTy (mk k) (Width.WidthDef))))) \
+               (export main))",
+            vec!["-1".into()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping deep-nested-nullary-match run");
+            return;
+        };
+        assert_eq!(
+            hit, "1",
+            "k<0 → Sign.Signed two constructor layers deep (through the erased IntTy newtype) → the arm fires (1)"
+        );
+        // The non-matching inner nullary falls through to the wildcard.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (type Sign (Signed) (Unsigned) (SignDef)) \
+                   (type Width (WFixed Int64) (WidthDef)) \
+                   (type IntTy (IntTy Sign Width)) \
+                   (type Ty (TyInt IntTy) (TyBool) (TyErr)) \
+                   (def (probe (: t Ty)) (match t ((Ty.TyInt (IntTy.IntTy (Sign.Signed) w)) 1) (_ 0))) \
+                   (def (mk (: k Int64)) (if (< k 0) (Sign.Signed) (Sign.Unsigned))) \
+                   (def (main (: k Int64)) (probe (Ty.TyInt (IntTy.IntTy (mk k) (Width.WidthDef))))) \
+                   (export main))",
+                vec!["1".into()],
+            )
+            .unwrap(),
+            "0",
+            "k>=0 → Sign.Unsigned → the inner nullary switch falls to the wildcard (0)"
         );
     }
 
@@ -40241,6 +40346,60 @@ mod match_engine {
     }
 
     #[test]
+    fn a_const_adapter_iterator_chain_fuses_to_zero_call_indirect() {
+        // FUSION REGRESSION GATE (v-iterators request, operator's zero-cost criterion). The operator's
+        // headline acceptance for the fused iterator is that a CONST-annotated adapter chain
+        // (from-list |> map |> filter |> sum) devirtualizes + fuses so the emitted wasm has NO
+        // `call_indirect` — the closures are known at their call sites (const params on `filter-step`'s
+        // `step`/`p` and `drive`'s `step`/`g`), so each apply becomes a direct call, not a table dispatch.
+        // The iterators package `@tests` check the VALUE (24); nothing pinned the emit SHAPE, so a future
+        // compiler change (closure-devirt / spec-memo degrading) could silently UN-fuse to N `call_indirect`
+        // and every value test would stay green. opt-sweep does NOT cover it either (it asserts value-
+        // equivalence across O0..O3 — an un-fused chain is value-equal, just slower). This gate compiles the
+        // exact fusing witness and asserts BOTH the value (24, correctness) AND 0 `call_indirect` (the
+        // zero-cost property). Witness source: v-iterators' fleet queue witness-fusion-gate-const-adapter.
+        let program = "type Iter = | Mk(List(Int64), List(Int64) -> Option((Int64, List(Int64))))\n\
+            def from-list(xs) = Iter.Mk(xs, fn(s) => match s with\n\
+              | [] => Option.None(unit)\n\
+              | [h, .. t] => Option.Some((h, t)))\n\
+            def map(it, f: Int64 -> Int64) = match it with\n\
+              | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => match step(s) with\n\
+                | Option.None(_) => Option.None(unit)\n\
+                | Option.Some(p) => (match p with | (x, s2) => Option.Some((f(x), s2))))\n\
+            def filter-step(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), const p: Int64 -> Bool) =\n\
+              match step(s) with\n\
+              | Option.None(_) => Option.None(unit)\n\
+              | Option.Some(pr) => (match pr with | (x, s2) => if p(x) then Option.Some((x, s2)) else filter-step(step, s2, p))\n\
+            def filter(it, p: Int64 -> Bool) = match it with\n\
+              | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => filter-step(step, s, p))\n\
+            def drive(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), acc: Int64, const g: Int64 -> Int64 -> Int64) =\n\
+              match step(s) with\n\
+              | Option.None(_) => acc\n\
+              | Option.Some(p) => (match p with | (x, s2) => drive(step, s2, g(acc, x), g))\n\
+            def sum(it) = match it with | Iter.Mk(s, step) => drive(step, s, 0, fn(a, x) => a + x)\n\
+            def main() = sum(filter(map(from-list([1, 2, 3, 4, 5]), fn(x) => x * 2), fn(x) => x > 4))\n\
+            export { main }";
+        let parsed = cadenza_syntax::parser::read_ml(program);
+        assert!(parsed.ok(), "fusion witness parses: {:?}", parsed.errors);
+        let bytes = cadenza_syntax::codec::encode(&parsed.arenas);
+        let arenas = crate::codec::decode(&bytes).expect("rcdzc decode");
+        let component = compile_component(&crate::codec::encode(&arenas)).expect("compile");
+        // This gate pins the emit SHAPE (0 call_indirect); the VALUE (24) is already covered by the
+        // iterators package `@tests` and by running the corpus — and running a heap-using (List) program
+        // here would need the value-heap runtime linked into the test harness, which this shape-only gate
+        // does not require. So compile + count opcodes; do not run.
+        // The zero-cost property: the const-adapter closures devirtualize, so NO table dispatch remains.
+        let indirect = super::count_opcode(&component, |op| {
+            matches!(op, wasmparser::Operator::CallIndirect { .. })
+        });
+        assert_eq!(
+            indirect, 0,
+            "the const-annotated adapter chain must FUSE to 0 call_indirect (the operator's zero-cost \
+             criterion); a non-zero count means it silently UN-fused to runtime closure dispatch"
+        );
+    }
+
+    #[test]
     fn an_unknown_type_in_a_variant_payload_is_rejected() {
         // A garbage type in a variant PAYLOAD — `(type C (A Nonesuch))` — was silently accepted (the
         // unknown name resolved to nothing and `A` was mis-typed as NULLARY, its payload dropped). Now the
@@ -43360,6 +43519,53 @@ mod diagnostics {
         assert!(dead_guard[0].contains("`x`"), "{dead_guard:?}");
     }
 
+    #[test]
+    fn a_bin_segment_size_operand_name_is_counted_used_not_flagged_cdz0306() {
+        // REGRESSION (v-lsp: red squiggles in the guide binary-matching chapter): a name bound by an int
+        // segment `(u8 n)` and used as the dependent SIZE of a later segment `(bytes body n)` was NOT
+        // counted as used — CDZ0306 false-flagged `n` "never used". The size use lives IN THE PATTERN (not
+        // the arm body), so `used_match_binder_names(body)` missed it; and the syntactic binder walk even
+        // collected the size `n` as a bogus SECOND binder. Fix: `bin_pattern_size_occs` marks each segment
+        // size operand a use + excludes it from the binder candidates. `n` used as `(bytes body n)`'s size
+        // → NO CDZ0306 on `n`.
+        let u = unused_of(
+            "(module m (def (main) (match (Bytes.of (list 2 10 20)) \
+               ((bin (u8 n) (bytes body n)) (Bytes.len body)) (_ 0))) (export main))",
+        );
+        assert!(
+            !u.iter().any(|m| m.contains("`n`")),
+            "a bin-segment SIZE operand `n` is a use of the earlier binder, not an unused binding: {u:?}"
+        );
+        // NO false positive AT ALL here: `body` is read (Bytes.len body) and `n` is the size use.
+        assert!(
+            u.is_empty(),
+            "both bin binders are used (body read, n as size) — no CDZ0306: {u:?}"
+        );
+        // The utf8 dependent-size operand is likewise a use (not flagged); `k` sizes the utf8 segment.
+        let uk = unused_of(
+            "(module m (def (main) (match (Bytes.of (list 2 104 105)) \
+               ((bin (u8 k) (utf8 s k)) (Bytes.len (Bytes.of (list 1)))) (_ 0))) (export main))",
+        );
+        assert!(
+            !uk.iter().any(|m| m.contains("`k`")),
+            "a utf8 dependent-size operand `k` is a use, not unused: {uk:?}"
+        );
+        assert!(
+            uk.iter().any(|m| m.contains("`s`")),
+            "a genuinely-unused segment binder `s` STILL warns (no over-suppression): {uk:?}"
+        );
+        // CONTROL — over-suppression guard: two genuinely-unused int-segment binders (neither used as a
+        // body ref nor a size operand) BOTH still warn.
+        let unused = unused_of(
+            "(module m (def (main) (match (Bytes.of (list 10 20)) \
+               ((bin (u8 x) (u8 y)) 5) (_ 0))) (export main))",
+        );
+        assert!(
+            unused.iter().any(|m| m.contains("`x`")) && unused.iter().any(|m| m.contains("`y`")),
+            "genuinely-unused segment binders still warn: {unused:?}"
+        );
+    }
+
     /// A `.`-MEMBER pattern `C.R` (a NULLARY variant used as a whole arm pattern, printed `(. C R)`) binds
     /// NOTHING — its segments are the TYPE and VARIANT names, not binders. The unused-binding pass must not
     /// treat the first segment (`C`) as a spuriously-unused binder. (Regression: `collect_arm_binder_leaves`
@@ -44657,6 +44863,90 @@ mod stage1 {
             }
             other => panic!("expected the body to fold to a ConstInt, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_multi_column_match_decision_tree_shares_its_fallthrough_tail_as_a_dag() {
+        // S2 (emit-size, wasm) FOUNDATION-GUARD: a multi-column literal match (`(tuple i i a) → i`) compiles
+        // its decision tree to a `MatchSum` whose fall-through tails are SHARED — reached from several parent
+        // continuations as the SAME `Rc<SumCont>` (`core.rs`: "may be reached from multiple arms as the SAME
+        // `Rc<SumCont>` — and the emit-side dedup keys on that pointer"). The sharing makes the DAG's DISTINCT
+        // node count grow LINEARLY with arm count even though a naive edge-walk is EXPONENTIAL (each shared tail
+        // is re-reached ~2× per level): for `(tuple i i a)` arms the distinct-`Rc::as_ptr` count is ~3·N (the
+        // two column tests + the leaf per arm), while total edge traversals are O(2^N).
+        //
+        // This is the INVARIANT the planned emit-side ptr_eq dedup depends on: it emits each DISTINCT
+        // continuation ONCE and branches to it, collapsing the exponential edge-walk (today's exponential
+        // emitted code — 1020 eq/if ops / ~9 KB at N=8) to linear. If a future lowering change regressed the
+        // param-tuple sharing to all-DISTINCT (the shape the INLINE `(tuple a b c)` scrutinee still exhibits —
+        // v-compiler-perf's separate lower.rs seam gap), the dedup would silently stop firing and the emit would
+        // blow up again. This guard pins DISTINCT-node LINEARITY so that regression is caught at the DAG, before
+        // it reaches emit. Correctness of the dispatch is pinned by the match_engine value tests; this pins only
+        // the SHARING SHAPE. Value/opt-level parity of the eventual reshape lives in the corpus value-pin case.
+        use crate::core::{Core, SumCont};
+        use crate::db::Db;
+        use crate::lower::core_of;
+        use std::collections::HashSet;
+        // Count DISTINCT `Rc<SumCont>` nodes reachable from a def `f`'s MatchSum root (by `Rc::as_ptr`).
+        fn distinct_cont_nodes(src: &str) -> usize {
+            crate::host::run_with_compiler_stack(|| {
+                let mut db = Db::load(parse(src));
+                let d = db.def_by_name("f").expect("def f present");
+                let body = db.defs[d].body.expect("f has a body");
+                let root = match core_of(&mut db, body) {
+                    Core::MatchSum { root, .. } => root,
+                    other => panic!("expected `f`'s body to be a MatchSum, got {other:?}"),
+                };
+                let mut seen: HashSet<usize> = HashSet::new();
+                fn walk(c: &SumCont, seen: &mut HashSet<usize>) {
+                    // Key on the NODE address — a shared `Rc` is reached at the same `*const` from each parent,
+                    // so a re-reached tail is counted once (the property the emit memo exploits).
+                    if !seen.insert(c as *const SumCont as usize) {
+                        return;
+                    }
+                    match c {
+                        SumCont::Leaf(_) => {}
+                        SumCont::Guarded { els, .. } => walk(els, seen),
+                        SumCont::LitTest { then_, els, .. } => {
+                            walk(then_, seen);
+                            walk(els, seen);
+                        }
+                        SumCont::Switch { arms, .. } => {
+                            for a in arms {
+                                walk(&a.cont, seen);
+                            }
+                        }
+                    }
+                }
+                walk(&root, &mut seen);
+                seen.len()
+            })
+        }
+        // `(def (f (: t (Tuple Int64 Int64 Int64))) (match t ((tuple 0 0 a) 0) … (_ -1)))` — N arms each
+        // testing TWO literal columns of a bound-PARAM tuple (the shape whose fall-through tail is shared).
+        fn param_tuple_match_src(n: usize) -> String {
+            let mut arms = String::new();
+            for i in 0..n {
+                arms.push_str(&format!("((tuple {i} {i} a) {i}) "));
+            }
+            format!(
+                "(module m (def (f (: t (Tuple Int64 Int64 Int64))) (match t {arms}(_ -1))) \
+                 (def (main (: a Int64)(: b Int64)(: c Int64)) (f (tuple a b c))) (export main))"
+            )
+        }
+        // Doubling the arm count must AT MOST double the distinct-node count (LINEAR sharing), never square it
+        // (the exponential all-distinct shape). At 8→16 arms an all-distinct tree grows ~256×; a shared DAG
+        // grows ~2×. Require the ratio stay well under 4× (linear headroom for the fixed per-arm constant).
+        let d8 = distinct_cont_nodes(&param_tuple_match_src(8));
+        let d16 = distinct_cont_nodes(&param_tuple_match_src(16));
+        let ratio = d16 as f64 / (d8.max(1)) as f64;
+        assert!(
+            d8 > 0 && ratio < 4.0,
+            "a multi-column literal match's decision tree must SHARE its fall-through tail as a DAG — the \
+             distinct `Rc<SumCont>` node count must grow LINEARLY with arm count (the invariant the emit-side \
+             ptr_eq dedup keys on), not exponentially: arms 8→16 grew {ratio:.1}× (d8={d8}, d16={d16}); \
+             linear is ~2×, an all-distinct (unshared) tree is ~256×"
+        );
     }
 
     #[test]
@@ -54488,6 +54778,27 @@ mod stage1 {
     }
 
     #[test]
+    fn an_abortive_arm_with_a_runtime_perform_arg_grounds_the_handle_result_type() {
+        // REGRESSION (abort + runtime-arg wasm/rust divergence, corpus-bugfix 2026-07-18). An ABORTIVE arm
+        // `(bail (n) s n)` returns the op arg `n`; performed with a RUNTIME (non-const) arg `(Bail.bail k)`
+        // (k a def param), the abort collapses the handle to `n` = a reference to `k`. Before the fix the
+        // abort value was returned WITHOUT `reparent_under_handle_site`, so the orphan copy's `k` read
+        // unbound → the handle typed `Any` → wasm declined "return type has no machine representation" while
+        // rust computed (a backend split). A CONST arg `(Bail.bail 7)` folded to a literal so it never hit
+        // this. FIX = reparent the abort value under the handle site before returning (the same reparent the
+        // resumptive path does), so `k` re-resolves to the param and grounds the result type. Compiles now;
+        // `main(7)` = 7 (abort returns k=7, discards the `+ 1`).
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main (: k Int64)) (handle Bail 0 ((bail (n) s n)) (+ 1 (Bail.bail k)))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "an abortive arm with a runtime perform arg must ground the handle result type (reparent the \
+             abort value), not decline 'no machine representation' on wasm while rust computes"
+        );
+    }
+
+    #[test]
     fn a_nested_effectful_let_inlined_into_a_reperforming_body_keeps_its_binder() {
         // REGRESSION (nested-effectful-let CDZ0101, compiler-ml Db-port blocker). A helper whose body is a
         // `let` binding an effect result — `inner = (let a = St.get() in (match St.put(a) with _ => a))` —
@@ -54537,6 +54848,63 @@ mod stage1 {
              CDZ0101 unbound-name error: {:?} / {}",
             err.code,
             err.message
+        );
+    }
+
+    #[test]
+    fn an_abortive_perform_in_a_connective_condition_folds() {
+        // E4×connective (was a clean over-decline). An abortive perform inside a short-circuit connective
+        // that is an `if` CONDITION — `(if (and b (> (Bail.bail 7) 0)) 100 200)` — used to decline: the
+        // connective desugar produces `(if (if b (Bail.bail 7 …) false) 100 200)`, an outer `if` whose
+        // CONDITION is an `if`-with-abort, which no hoist site reached. FIX (two parts): (1) a new
+        // `hoist_once` site distributes the outer `if` through its condition-`if` — `(if (if c2 t2 e2) t e)`
+        // ≡ `(if c2 (if t2 t e) (if e2 t e))` (pure outer branches) — landing the abort in a branch's
+        // condition; (2) `body_has_unsound_abortive_perform` treats an abort in an `if` CONDITION on a TAIL
+        // path as capturable (an abort in a condition abandons everything; `thread_branch_local_abort` /
+        // the abort cell take it). So the whole thing folds. Compile-only here; the corpus case value-grades
+        // b=true → 7 (abort fires) and b=false → 200 (short-circuit, rhs never performed).
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (run (: b Bool)) (handle Bail 0 ((bail (n) s n)) \
+                     (if (and b (> (Bail.bail 7) 0)) 100 200))) \
+                   (def (main) (run true)) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "an abortive perform in a connective-condition must fold (outer-if distribution + tail-condition \
+             capture), not decline"
+        );
+    }
+
+    #[test]
+    fn a_ctl_arm_applying_k_lexically_folds_through_the_continuation() {
+        // E5 STEP 2 (within-activation, lexical `k`): a ctl-style arm that APPLIES `k` as `(k v)` — never
+        // bare, stored, or passed as an arg — is semantically an ordinary non-tail resumptive arm: `(k v)`
+        // returns into the delimited context, exactly like `(resume v)`. `ctl_arm_lexical_k_to_resume`
+        // rewrites `(k v)` → `(resume v state)`, and the existing pure-one-hole fold serves it — NO new heap
+        // rep, NO frames (those are step 3, for an ESCAPING `k`). Over the identity body `(Amb.flip)`, the
+        // continuation `C = (+ □ 1)`, so `(k 10)` = `C[10]` = `(+ 10 1)` = 11. Compile-only (in-process
+        // linker lacks the value heap for some paths); the corpus case value-grades the 11.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip () s k (+ (k 10) 1))) (Amb.flip))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a ctl arm applying k lexically must fold through the continuation (k v = resume v), not decline"
+        );
+    }
+
+    #[test]
+    fn a_ctl_arm_whose_k_escapes_still_declines_cleanly() {
+        // E5 STEP 2 boundary: a ctl-style arm whose `k` ESCAPES — passed as an ARGUMENT to another function
+        // (`(use-k k)`), stored, or left bare — is NOT the lexical-apply shape. The continuation may outlive
+        // the handle's dynamic extent (the DES scheduler's store-and-resume-later), which the frame-free
+        // folds cannot represent. So it DECLINES CLEANLY (a Todo), deferred to step 3 (the defunctionalized-
+        // frame `Ty::Cont` machinery) — never a valid-but-wrong fold. Pins the escape boundary: the fix must
+        // not accidentally admit an escaping `k` as if it were lexical.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (use-k f) (f 10)) \
+                   (def (main) (handle Amb 0 ((flip () s k (use-k k))) (Amb.flip))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a ctl arm whose k escapes (passed as an arg) must decline cleanly, deferred to step 3"
         );
     }
 

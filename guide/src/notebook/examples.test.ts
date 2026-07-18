@@ -58,6 +58,32 @@ for (const ex of EXAMPLES) {
   });
 }
 
+// Operator directive (ratified): the notebook uses NO Float64 anywhere — it's rational-by-default (bare
+// integer literals ground to exact Rational via the `default-fraction Rational` pragma the run/lint paths
+// prepend), so exact arithmetic holds (the formula example's `num / den` = 3/4, not integer division's 0).
+// This pins the END STATE the operator asked for: no example may reintroduce a Float via a `Float64`/`Float32`
+// type annotation or a float LITERAL (`1.0`, `0.5`) in a code or widget cell — a future edit that sneaks one
+// back in (regressing to inexact float math) fails here, fast, with no wasm needed. Scans the raw cell source
+// (the check-examples result-type gate only pinned `Rational.of` cells, which the no-floats rework removed —
+// this is the missing static guard on the operator's actual goal). Prose is exempt (it may DISCUSS floats).
+const FLOAT_TYPE_RE = /\bFloat(?:64|32)?\b/; // a Float type annotation (Float / Float64 / Float32)
+const FLOAT_LITERAL_RE = /(?:^|[^.\w])\d+\.\d+/; // a decimal literal like 1.0 or 0.5 (not a member access `a.0`)
+for (const ex of EXAMPLES) {
+  test(`example "${ex.slug}" is Float-free — no Float64 annotation or float literal (operator: rational-by-default)`, () => {
+    const cells = parseDocument(ex.markdown);
+    for (const c of codeCells(cells)) {
+      assert.ok(
+        !FLOAT_TYPE_RE.test(c.source),
+        `${ex.slug}: a cell uses a Float type — the notebook is rational-by-default (no floats). Cell: ${c.source.slice(0, 80)}`,
+      );
+      assert.ok(
+        !FLOAT_LITERAL_RE.test(c.source),
+        `${ex.slug}: a cell has a float literal — bare integers ground to Rational; drop the decimal. Cell: ${c.source.slice(0, 80)}`,
+      );
+    }
+  });
+}
+
 test("the compound-interest example is the default and declares a `rate` widget", () => {
   assert.equal(DEFAULT_EXAMPLE.slug, "compound-interest");
   const cells = parseDocument(DEFAULT_EXAMPLE.markdown);

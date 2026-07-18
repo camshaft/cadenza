@@ -8281,6 +8281,35 @@
   (call   main (: -1 Int64) (: 5 Int64))
   (output (: 105 Int64)))
 
+(case "a deep nested-constructor pattern matching a nullary variant two layers deep solves its switch path"
+  (doc    "A constructor pattern nesting a NULLARY variant two-or-more constructor layers deep —
+           `(match t ((Ty.TyInt (IntTy.IntTy (Sign.Signed) w)) …) (_ …))` where `IntTy` is a single-variant
+           sum (erased to a nominal newtype). The switch on `Sign` sits at `[Payload, Payload, Elem(0)]`:
+           the outer `Ty.TyInt` boxed-sum Payload seeds the path type map at `[Payload]` = `IntTy`, but the
+           INNER Payload (the erased `IntTy` newtype unwrap) is not seeded — so the switch-path type is
+           resolved by walking the suffix from the seeded prefix, PEELING the erased-newtype Payload as a
+           no-op (a nominal unwrap) to reach the inner `(Tuple Sign Width)`, then `Elem(0)` = `Sign`. Pins
+           that deep nested-constructor matching through an erased newtype layer solves (was: `compound
+           match switch path has no solved type`) — the idiomatic shape a deeply-nested-sum compiler AST
+           (Ty/IntTy/Sign) matches on. A runtime-chosen inner variant defeats the const-fold. `mk -1` →
+           `Sign.Signed` → the arm fires → 1.")
+  (input  (do
+            (type Sign (Signed) (Unsigned) (SignDef))
+            (type Width (WFixed Int64) (WidthDef))
+            (type IntTy (IntTy Sign Width))
+            (type Ty (TyInt IntTy) (TyBool) (TyErr))
+            (def (probe (: t Ty))
+              (match t
+                ((Ty.TyInt (IntTy.IntTy (Sign.Signed) w)) 1)
+                (_ 0)))
+            (def (mk (: k Int64)) (if (< k 0) (Sign.Signed) (Sign.Unsigned)))
+            (def (main (: k Int64)) (probe (Ty.TyInt (IntTy.IntTy (mk k) (Width.WidthDef)))))
+            (export main)))
+  (call   main (: -1 Int64))
+  (output (: 1 Int64))
+  (call   main (: 1 Int64))
+  (output (: 0 Int64)))
+
 (case "a top-level tuple pattern matches a tuple produced by a runtime conditional"
   (doc    "A `(tuple a b)` pattern over a scrutinee that is a RUNTIME tuple — one built by an `if`, so the
            scrutinee is neither a compile-time-constant `(tuple …)` nor a bound name. `(g k)` returns
@@ -11044,3 +11073,35 @@
               (export main)))
   (call   main (: 7 Int64) (: 7 Int64) (: 0 Int64))
   (output (: 7 Int64)))
+
+; The TUPLE-PARAM twin of the inline-tuple value guard above: matching a bound tuple PARAMETER `t`
+; (`(: t (Tuple Int64 Int64 Int64))`) rather than an inline `(tuple a b c)`. Both shapes now lower to a
+; SHARED-fall-through DAG (the inline shape via the `const_at_path`-declines-a-runtime-Param fix; the param
+; shape natively), so the S2 emit-side shared-continuation dedup must keep BOTH value-correct. This param
+; shape is the one whose DAG shares to emit REGARDLESS of the inline fix — v-wasm-opt builds+verifies the
+; emit ptr_eq dedup against it. Pinned at a matched arm (`(5 5 _)` -> 5); a wrong br-depth in the reshape
+; flips it. Called with a runtime tuple built at the call site so the match is emitted, not folded.
+(case "a wide multi-column match over a bound tuple PARAMETER returns the matched arm's value (S2 emit-reshape value guard, param shape)"
+  (doc    "The tuple-param twin: `(def (f (: t (Tuple Int64 Int64 Int64))) (match t ((tuple 0 0 a) 0) …))`,
+           `main` calls `f` with a runtime-built `(tuple 5 5 9)` -> the `(tuple 5 5 a)` arm -> 5. Pins the
+           emitted decision tree's VALUE for the tuple-param shape (the DAG that shares to emit today), so the
+           S2 shared-continuation emit dedup cannot silently mis-nest a branch and return the wrong arm.")
+  (input  (do (def (f (: t (Tuple Int64 Int64 Int64)))
+                (match t
+                                     ((tuple 0 0 a) 0)
+                                     ((tuple 1 1 a) 1)
+                                     ((tuple 2 2 a) 2)
+                                     ((tuple 3 3 a) 3)
+                                     ((tuple 4 4 a) 4)
+                                     ((tuple 5 5 a) 5)
+                                     ((tuple 6 6 a) 6)
+                                     ((tuple 7 7 a) 7)
+                                     ((tuple 8 8 a) 8)
+                                     ((tuple 9 9 a) 9)
+                                     ((tuple 10 10 a) 10)
+                                     ((tuple 11 11 a) 11)
+                                     (_ -1)))
+              (def (main) (f (tuple 5 5 9)))
+              (export main)))
+  (call   main)
+  (output (: 5 Int64)))

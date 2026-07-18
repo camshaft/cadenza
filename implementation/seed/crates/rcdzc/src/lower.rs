@@ -9426,9 +9426,18 @@ fn type_from_seeded_prefix(
                         crate::ty::Ty::List(_) => cur.clone(),
                         _ => return None,
                     },
-                    // A `Payload` in the suffix crosses a nested boxed sum — a plain type-walk can't
-                    // supply its instantiation, so decline (the same limit `type_at_path` has).
-                    crate::core::PathStep::Payload => return None,
+                    // A `Payload` step over a NOMINAL NEWTYPE UNWRAPS the tag to its underlying type (a
+                    // runtime no-op) — a newtype imposes no discriminant, so its `Payload` is NOT seeded in
+                    // `path_types`; peel it here so a switch NESTED inside an erased newtype's payload
+                    // resolves. `(Ty.TyInt (IntTy.IntTy (Sign.Signed) w))` switches on `Sign` at
+                    // `[Payload, Payload, Elem(0)]` off the seeded `[Payload]` = `IntTy` (a `Ty::Nominal`
+                    // single-variant newtype): peel the nominal to `(Tuple Sign Width)`, then `Elem(0)` =
+                    // `Sign`. Mirrors `type_at_path`'s `Payload` arm. A `Payload` over a REAL boxed sum still
+                    // declines (its instantiation isn't recoverable from a plain type-walk).
+                    crate::core::PathStep::Payload => match &cur {
+                        crate::ty::Ty::Nominal { inner, .. } => (**inner).clone(),
+                        _ => return None,
+                    },
                 };
             }
             return Some(cur);
@@ -9591,7 +9600,39 @@ fn const_at_path(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep
             _ => return None,
         };
     }
-    Some(core_of(db, cur))
+    // Return the sub-value's core ONLY when it is an actual compile-time CONSTANT — the kinds the
+    // lit-test fold consumes (`const_at_path`'s caller matches `ConstInt`/`ConstBool`/`ConstStr`/
+    // `ConstChar`/`ListNew`/`MapNew`). A RUNTIME core here — a `Core::Param`/`LocalRef` reached by walking
+    // an INLINE-constructed scrutinee like `(match (tuple a b c) …)` where `a`/`b`/`c` are runtime params,
+    // or any other non-constant — must return `None` so the caller takes the RUNTIME lit-test path
+    // (`build_lit_test`, which SHARES the fall-through as one `Rc<SumCont>`). Returning `Some(Param)` here
+    // wrongly entered the constant-FOLD branch, whose per-arm `matched_rows` construction does NOT thread
+    // the shared fall-through — re-folding per column → the O(2^cols) emit blow-up on an inline-tuple
+    // multi-column match (the exponent v-wasm-opt's S2 emit-dedup could not touch, because the tree was
+    // materialized fully distinct). A bound tuple PARAM scrutinee never hit this: it has no inline
+    // `Core::Tuple` to walk into, so `const_at_path` already returned `None` and shared correctly.
+    let c = core_of(db, cur);
+    if is_foldable_const(&c) { Some(c) } else { None }
+}
+
+/// Is this lowered `Core` a compile-time CONSTANT the lit-test fold can decide against (the kinds
+/// `const_at_path`'s caller matches)? A runtime `Core::Param`/`LocalRef`/computed value is NOT — it must
+/// route to the runtime shared-fall-through lit-test path, not the fold path. (Guards the inline-tuple
+/// multi-column exponential: an inline `(tuple <param> …)` scrutinee walks to a `Param` sub-value, which
+/// must decline the fold so the runtime path shares the tail.)
+fn is_foldable_const(c: &Core) -> bool {
+    matches!(
+        c,
+        Core::ConstInt(_)
+            | Core::ConstBool(_)
+            | Core::ConstStr(_)
+            | Core::ConstChar(_)
+            | Core::ListNew { .. }
+            | Core::MapNew { .. }
+            | Core::Tuple { .. }
+            | Core::SumNew { .. }
+            | Core::BytesOf { .. }
+    )
 }
 
 /// Classify a match PATTERN occurrence into a [`Probe`], or `None` if it is not a Stage-3 scalar

@@ -12,7 +12,7 @@
 /// helper that reuses it re-performs the host call per use (general effectful-fn-arg eval; let-bind first).
 @!default-fraction Rational
 
-import { Solid, Vec3, lower, v3r, v3r-eq, bounding-box, aabbr-size, solidr-is-empty } from "exact"
+import { Solid, Vec3, lower, v3, v3-eq, bounding-box, aabbr-size, solidr-is-empty } from "exact"
 import { box, cyl, hole-through, fuse, move-z } from "helpers"
 
 @param(widget: slider, range: [20, 200], default: 50) width : Rational
@@ -44,7 +44,7 @@ def plate-at-fixed-dims-is-a-drilled-block() =
   // plate(50, 30, 5, 3) — a 50×30×5 plate with a Ø6 bore. The hole (a Difference) never grows the box, so
   // the envelope is exactly the outer block 50×30×5; and it's not empty (a real drilled plate).
   let p = plate(50 / 1, 30 / 1, 5 / 1, 3 / 1) in
-  if v3r-eq(aabbr-size(bounding-box(p)), v3r(50 / 1, 30 / 1, 5 / 1)) and (solidr-is-empty(p) == false)
+  if v3-eq(aabbr-size(bounding-box(p)), v3(50 / 1, 30 / 1, 5 / 1)) and (solidr-is-empty(p) == false)
   then unit else trap("plate(50,30,5,3) envelope is the 50×30×5 block, non-empty")
 
 export { main }
