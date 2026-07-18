@@ -3872,3 +3872,4 @@ pass	the scheduler terminates on zero primaries and detects deadlock when live p
 pass	three events at the same Instant drain in FIFO insertion order (tie-break at N=3)
 pass	`sleep-until` sleeps to an absolute Instant — the span is target minus now (since t now)
 pass	a run-sim scheduler fast-forwards the clock through two sequential sleeps in one task
+pass	advancing the clock past the UInt64 nanosecond range traps rather than silently wrapping

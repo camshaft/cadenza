@@ -57,7 +57,7 @@ fn gen_expr(rng: &mut Rng, depth: usize) -> String {
     }
     // A recursive sub-expression at one less depth.
     let sub = |rng: &mut Rng| gen_expr(rng, depth - 1);
-    match rng.below(15) {
+    match rng.below(17) {
         // leaf (bias toward leaves so trees stay finite-ish)
         0..=2 => leaf(rng),
         // infix arithmetic / comparison — a bare glyph head the ML surface prints infix
@@ -133,17 +133,20 @@ fn gen_expr(rng: &mut Rng, depth: usize) -> String {
             format!("(: {} {})", sub(rng), ty)
         }
         // map literal: (map (key value)…) — prints `#{ k = v, … }` (distinct from a `record`).
-        // NOTE: an annotation arm `(@ name form)` was trialed here but exposed a PRE-EXISTING printer
-        // LAYOUT non-idempotence (an `@name`-on-its-own-line inside a deeply-nested breaking box re-measures
-        // to a different indentation on the second print pass — structurally faithful, byte-non-idempotent).
-        // Deferred to its own slice so this sweep stays green; see the syntax-vertical-log.
-        _ => {
+        14 => {
             let n = 1 + rng.below(3);
             let entries: Vec<String> = (0..n)
                 .map(|i| format!("({} {})", ["m", "n", "o"][i], sub(rng)))
                 .collect();
             format!("(map {})", entries.join(" "))
         }
+        // annotation `(@ name form)` -> `@name form` (bare) / `(@ (tag "s") form)` -> `@tag("s") form`
+        // (parameterized). The annotation prints on its own line above the wrapped form; in a STATEMENT
+        // position it stays bare, but in an OPERAND position (infix/ascription operand, match scrutinee)
+        // the printer PARENTHESIZES the whole `(@ …)` so a trailing operator binds to the annotated whole,
+        // and the wrapped compound form is itself parenthesized — exercising both annotation round-trip fixes.
+        15 => format!("(@ {} {})", rng.pick(&["inline", "pure", "test"]), sub(rng)),
+        _ => format!("(@ (tag \"s\") {})", sub(rng)),
     }
 }
 

@@ -617,3 +617,31 @@
             (def (main) (run-sim task))
             (export main)))
   (output (: 7000000000 Int64)))
+
+; ────────────────────────────────────────────────────────────────────────────────────────────────
+; Increment 1 — clock-boundary safety: `at` traps on nanosecond-clock overflow rather than wrapping.
+; ────────────────────────────────────────────────────────────────────────────────────────────────
+
+(case "advancing the clock past the UInt64 nanosecond range traps rather than silently wrapping"
+  (doc    "The clock-boundary safety property: `at` (wake-time computation) is `clock + duration` over
+           `UInt64` ns, so a span that carries the clock past `UInt64.max` (~584 years of ns) TRAPS
+           'integer overflow' — it does NOT silently wrap to a small `Instant`. This is load-bearing for
+           a DES: a silent wrap would place a far-future event at a tiny timestamp, catastrophically
+           misordering the event queue (the wrapped event would pop before earlier real events). Trapping
+           makes an over-long simulation a clean failure, not a silent miscompute. Graded via runtime
+           `(call …)` args so the add is a real instruction: `at(18446744073709551610, 10)` overflows
+           (2^64-6 + 10 > 2^64-1) and traps; the control `at(1s, 2s)` = 3s returns normally. Pins that the
+           unsigned clock arithmetic keeps its overflow guard (matching the numeric-model UInt64 semantics).")
+  (input  (do
+            (type Duration (Duration UInt64))
+            (type Instant  (Instant  UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (def (dur-ns  (: d Duration)) (match d ((Duration.Duration n) n)))
+            (def (at (: t Instant) (: d Duration)) (Instant.Instant (+ (inst-ns t) (dur-ns d))))
+            (def (main (: t UInt64) (: d UInt64))
+              (inst-ns (at (Instant.Instant t) (Duration.Duration d))))
+            (export main)))
+  (call   main (: 18446744073709551610 UInt64) (: 10 UInt64))
+  (trap   "integer overflow")
+  (call   main (: 1000000000 UInt64) (: 2000000000 UInt64))
+  (output (: 3000000000 UInt64)))

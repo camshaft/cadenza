@@ -16,19 +16,23 @@
 
 import { Tok, Tree, parse-tokens } from "parse-db"
 import { Core, lower-tree } from "lower-db"
+import { overflows } from "int-width"
 
 /// Evaluate a Core term under `env` (binderId → value). Total: an unbound var or divide-by-zero → `None`.
 def eval-core(c: Core, env: Map(Int64, Int64)) = match c with
   | Core.CNum(v, _, _) => Option.Some(v)   // the interpreter oracle reads the VALUE; width is an emit concern
   | Core.CVar(b) => Map.lookup(env, b)
-  | Core.CBin(op, _, _, l, r) =>
-      // (signed, width) ignored HERE — narrow arith is declined by infer today (2b-ii-c), so every CBin
-      // that reaches eval is Int64 (no wrap). The wrap slice reads the width to int-width.wrap-to a narrow
-      // result once infer types same-width narrow arith.
+  | Core.CBin(op, signed, width, l, r) =>
+      // corrected-2b: a NARROW (width<64) ARITH result TRAPS on overflow (→ None) — matching spec §Overflow
+      // + the reference's CDZ0304 (the unqualified +/-/* traps; wrapping is the opt-in .wrapping-* form, not
+      // here). Int64 (width 64) + comparisons (0/1, width 64) never overflow-check. So `(: 100 Int8) +
+      // (: 100 Int8)` = 200, overflows Int8 → None (declines); `(: 100 Int8) + (: 20 Int8)` = 120 fits → Some.
       (match eval-core(l, env) with
         | Option.Some(a) =>
           (match eval-core(r, env) with
-            | Option.Some(b) => eval-bin(op, a, b)
+            | Option.Some(b) => (match eval-bin(op, a, b) with
+                | Option.Some(v) => (if (width < 64) then (if overflows(v, signed, width) then Option.None(unit) else Option.Some(v)) else Option.Some(v))
+                | Option.None(_) => Option.None(unit))
             | Option.None(_) => Option.None(unit))
         | Option.None(_) => Option.None(unit))
   | Core.CLet(binder, valExpr, body) =>

@@ -245,6 +245,7 @@ pass	`at` advances an Instant by a Duration (wake-time computation)
 pass	`before?` is a STRICT order — an Instant is not before an equal Instant (same-time is a tie-break)
 pass	`before?` orders two Instants (the event-queue comparison)
 pass	`since` is the span between two Instants (later minus earlier)
+pass	`sleep-until` sleeps to an absolute Instant — the span is target minus now (since t now)
 pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
@@ -1717,6 +1718,7 @@ pass	a rope in an Option payload equals its flat-twin payload
 pass	a rope two levels deep (tuple in a tuple) equals its flat twin
 pass	a row op over a constant record folds through a multi-use let binding
 pass	a row op over a constant record folds through a single-use let binding
+pass	a run-sim scheduler fast-forwards the clock through two sequential sleeps in one task
 pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
 pass	a runtime -0.0 float leaf two levels deep stays distinct from positive zero
@@ -2340,6 +2342,7 @@ pass	addition of two records is rejected — a record is not a number
 pass	addition of two sets is rejected — a set is not a number
 pass	addition of two strings is rejected — text is not a number
 pass	addition of two symbols is rejected — a symbol is not a number
+pass	advancing the clock past the UInt64 nanosecond range traps rather than silently wrapping
 pass	all four leaf kinds in one quoted form dispatch their own tags
 pass	all-nullary enum equality compares discriminants
 pass	an 8-bit-integer closure crosses the host boundary
@@ -3865,10 +3868,3 @@ todo	tuple elements are evaluated left to right
 todo	two @param sites generate two accessors under one Param effect
 todo	two host calls consume their responses in order
 todo	two host responses combine in call order through a non-commutative operator
-pass	a deep out-of-order queue drains fully time-sorted with FIFO across every tie-group
-pass	a zero-Duration sleep files at the current instant — pop-min then reinsert keeps order
-pass	interleaved same/different Instants keep FIFO within a time and ascending across times
-pass	the scheduler terminates on zero primaries and detects deadlock when live primaries have no work
-pass	three events at the same Instant drain in FIFO insertion order (tie-break at N=3)
-pass	`sleep-until` sleeps to an absolute Instant — the span is target minus now (since t now)
-pass	a run-sim scheduler fast-forwards the clock through two sequential sleeps in one task

@@ -87,6 +87,17 @@ def ut-orthogonal-sign-checked-under-deferred-width() =
   (if conflicts(unify-ty(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WidthDef)), ty-fixed-int(false, 8))) then unit else trap("signed-deferred-width ~ UInt8 conflicts on sign"))
 
 @test
+def ut-cross-axis-grounding() =
+  // THE orthogonality proof (each axis grounds from a DIFFERENT operand, then merges): a (Signed, WidthDef)
+  // meets a (SignDef, WFixed 8) → the width grounds from the RIGHT, the sign grounds from the LEFT, and the
+  // two INDEPENDENT groundings COMBINE into a fully-fixed Int8. Not a mere pass-through of one operand — each
+  // operand contributes exactly one axis. This is the invariant corrected-2b's arith-result-type leans on and
+  // the future deferred-bare-literal-width-unifies slice will exercise; symmetric.
+  (if unifies-to(unify-ty(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WidthDef)), Ty.TyInt(IntType.IntType(Sign.SignDef, Width.WFixed(8)))), ty-fixed-int(true, 8)) then
+     (if unifies-to(unify-ty(Ty.TyInt(IntType.IntType(Sign.SignDef, Width.WFixed(8))), Ty.TyInt(IntType.IntType(Sign.Signed, Width.WidthDef))), ty-fixed-int(true, 8)) then unit else trap("cross-axis grounding is symmetric"))
+   else trap("(Signed, WidthDef) ~ (SignDef, WFixed 8) → Int8 (each axis grounds from a different operand)"))
+
+@test
 def ut-bool-unifies() =
   // Bool ~ Bool → Bool; Bool ~ Int64 → conflict; Int64 ~ TyErr → conflict.
   (if unifies-to(unify-ty(Ty.TyBool, Ty.TyBool), Ty.TyBool) then

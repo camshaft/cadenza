@@ -6,6 +6,7 @@ import { Suspense, useEffect, useState } from "react";
 import { CHAPTERS, chapterAt } from "../content/chapters.ts";
 import { SyntaxToggle } from "../syntax/SyntaxToggle.tsx";
 import { useProgress } from "../progress/ProgressContext.tsx";
+import { ExamplesNav } from "./ExamplesNav.tsx";
 
 export function Layout() {
   const { slug } = useParams();
@@ -118,6 +119,9 @@ function SidebarNav() {
           </ul>
         </div>
       ))}
+      {/* Every runnable example, deep-linked + grouped (operator: call each out individually). Collapsible,
+          collapsed by default so the ~50 entries don't dominate the chapter nav. */}
+      <ExamplesNav />
     </nav>
   );
 }

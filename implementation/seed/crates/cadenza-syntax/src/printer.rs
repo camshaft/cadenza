@@ -524,12 +524,29 @@ impl<'a> Printer<'a> {
             // prints `@name` via `emit_name`; the application case renders the application itself
             // (`tag("slow")`) after the `@`, so `(@ (tag "slow") form)` round-trips to `@tag("slow")`.
             if head == "@" && args.len() == 2 {
+                // An annotation `@name` prints on its OWN line above the form. That is only safe at a
+                // STATEMENT / body position (`parent_prec == PREC_SEQ`), where the following surface token
+                // is a fresh statement. In any OPERAND position (`parent_prec > PREC_SEQ` — an infix/
+                // ascription operand, a `match` scrutinee, …) the trailing operator would bind to the
+                // annotated form's LAST line rather than the whole `(@ …)`: `(: (@ test (if a b c)) T)`
+                // printed `@test\n if … c : T`, which re-reads as `(@ test (if a b (: c T)))` (the `: T`
+                // swallowed by the `if`'s else-branch) — a round-trip BREAK. Parenthesize the whole
+                // annotation in operand position so `(@test\n form)` is one self-delimiting unit and the
+                // enclosing operator binds to it. (A call ARG already wraps in `(`/`)`, so it round-trips
+                // at prec 0 there; only the bare-operand positions need this.)
+                let paren = parent_prec > crate::token::PREC_SEQ;
                 if let Some(name) = self.a.as_name(args[0]) {
                     self.doc.cbox(0);
+                    if paren {
+                        self.doc.word("(");
+                    }
                     self.doc.word("@");
                     self.doc.word(emit_name(name));
                     self.doc.hardbreak();
                     self.annotated_form(args[1]);
+                    if paren {
+                        self.doc.word(")");
+                    }
                     self.doc.end();
                     return;
                 }
@@ -539,10 +556,16 @@ impl<'a> Printer<'a> {
                 // bare call/member, never wrapped) so the `@`-glued form round-trips.
                 if matches!(self.a.get(args[0]), Struct::List(_)) {
                     self.doc.cbox(0);
+                    if paren {
+                        self.doc.word("(");
+                    }
                     self.doc.word("@");
                     self.expr(args[0], PREC_MEMBER);
                     self.doc.hardbreak();
                     self.annotated_form(args[1]);
+                    if paren {
+                        self.doc.word(")");
+                    }
                     self.doc.end();
                     return;
                 }
@@ -3972,6 +3995,41 @@ mod tests {
             parser::read_ml(&ml).arenas.structurally_eq(&a),
             "parameterized annotation on a compound form round-trips:\n  ml: {ml}\n  back: {}",
             sexpr::print(&parser::read_ml(&ml).arenas)
+        );
+    }
+
+    #[test]
+    fn annotation_in_an_operand_position_parenthesizes_the_whole_annotation() {
+        // An `@name` annotation prints on its OWN line above the form — safe only at a STATEMENT/body
+        // position, where the next surface token is a fresh statement. In an OPERAND position (an infix/
+        // ascription operand, a `match` scrutinee), a trailing operator would bind to the annotated form's
+        // LAST line, not the whole `(@ …)`: `(: (@ test (if a b c)) T)` printed `@test\n if … c : T`,
+        // which re-read as `(@ test (if a b (: c T)))` — the `: T` swallowed by the `if`'s else-branch, a
+        // round-trip BREAK. In operand position the whole annotation is now parenthesized.
+        use crate::sexpr;
+        // Ascription of an annotation, as a match scrutinee (the reported break) — round-trips now.
+        for sx in [
+            r#"(def (main) (match (: (@ test (if a b c)) (-> Int64 Bool)) (3 x)))"#,
+            r#"(def (main) (match (: (@ test (if a b c)) Int64) (3 x)))"#,
+            // annotation as an infix operand.
+            r#"(def (main) (+ (@ test (if a b c)) 1))"#,
+            r#"(def (main) (+ (@ test x) 1))"#,
+        ] {
+            let a = sexpr::read(sx).unwrap();
+            let ml = print(&a, 80);
+            let back = parser::read_ml(&ml);
+            assert!(
+                back.ok() && back.arenas.structurally_eq(&a),
+                "annotation in operand position round-trips:\n  sx: {sx}\n  ml: {ml}\n  back: {}",
+                sexpr::print(&back.arenas)
+            );
+        }
+        // A STATEMENT-position annotation must still print WITHOUT a wrapping paren (`@name` on its own
+        // line above the form) — the parenthesization is operand-position ONLY.
+        let stmt = print(&sexpr::read("(def (main) (@ inline (+ a 1)))").unwrap(), 80);
+        assert!(
+            stmt.contains("@inline\n") && !stmt.contains("(@inline"),
+            "a statement-position annotation must not be parenthesized:\n{stmt}"
         );
     }
 

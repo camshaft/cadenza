@@ -52,6 +52,37 @@ const ROUTES = [
     waitFor: ".cm-editor",
     label: "chapter (ordering)",
     tapTargets: true,
+    // The sidebar's EXAMPLES section (operator: per-example deep-linked nav): a collapsible section that,
+    // expanded, shows grouped example entries (playground themes + CAD + notebook), each a ?example= deep-
+    // link. Guards the section renders + expands + produces deep-link entries (the render-from-data + the
+    // deep-link mechanism can't silently vanish).
+    async assert(page, check, label) {
+      const toggle = page.locator('[data-testid="nav-examples-toggle"]').first();
+      if ((await toggle.count()) === 0) {
+        check(false, `${label}: Examples nav section present`);
+        return;
+      }
+      check(true, `${label}: Examples nav section present`);
+      check((await page.locator('[data-testid="nav-examples-groups"]').count()) === 0, `${label}: Examples section collapsed by default`);
+      // The desktop sidebar is always visible; the MOBILE sidebar lives in a closed drawer (the toggle is
+      // in the DOM but not visible/clickable). Only exercise expand+deep-links where the toggle is visible
+      // (desktop) — the presence/collapsed checks above already cover the DOM on both viewports.
+      if (!(await toggle.isVisible())) return;
+      await toggle.click();
+      const shown = await page
+        .waitForSelector('[data-testid="nav-examples-groups"]', { timeout: 5000 })
+        .then(() => true)
+        .catch(() => false);
+      check(shown, `${label}: Examples section expands to show groups`);
+      if (shown) {
+        const links = await page.evaluate(() => ({
+          pg: !!document.querySelector('[data-testid="nav-examples-groups"] a[href*="/playground?example="]'),
+          cad: !!document.querySelector('[data-testid="nav-examples-groups"] a[href*="/cad?example="]'),
+          nb: !!document.querySelector('[data-testid="nav-examples-groups"] a[href*="/notebook?example="]'),
+        }));
+        check(links.pg && links.cad && links.nb, `${label}: deep-link entries for playground + CAD + notebook (${JSON.stringify(links)})`);
+      }
+    },
   },
   {
     path: "/calculator",
