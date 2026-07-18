@@ -87,9 +87,14 @@
 //!
 //! Each `__inv_v : Shape` is the properly-typed BOXED sum, fed to the whole-value `__invariant_check_Shape`
 //! (Part 1, no auto-unwrap — the predicate reads `it` directly via the author's match/accessor). Each inner raw
-//! `((. T V) …)` is EXEMPT, so it builds a plain `Core::SumNew` when re-reached (no recursion). A NULLARY
-//! variant (empty payload) gets no construct-def — its establish (via the nullary-unit construction path) is a
-//! later injection point, as is a single-variant MULTI-payload newtype (the `Ty::Tuple`-erased arm).
+//! `((. T V) …)` is EXEMPT, so it builds a plain `Core::SumNew` when re-reached (no recursion).
+//!
+//! The per-variant path fires for ANY type that is not a sole-PAYLOAD newtype — so it also covers a
+//! SINGLE-VARIANT MULTI-payload newtype `(type Range (Mk A B))`, whose sole variant (disc 0) gets
+//! `__invariant_construct_Range__d0`. Such a type erases to a `Ty::Tuple` (not a single-payload value), so the
+//! divert for it is in `lower_sum_new`'s tuple-erase arm (keyed `__d<disc>`), not the `args.len()==1` path.
+//! A NULLARY variant (empty payload) gets no construct-def — its establish (via the nullary-unit construction
+//! path) is the one remaining injection point.
 
 use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::prelude::{push_atom, push_list};
@@ -426,13 +431,16 @@ pub(crate) fn synthesize(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId>
         //   (let ((__inv_v ((. Shape Square) __inv_p0 __inv_p1))) (if (__invariant_check_Shape __inv_v) __inv_v (trap))))
         // ```
         //
-        // Each `__inv_v : Shape` is the properly-typed BOXED sum, fed to the whole-value `__invariant_check_Shape`
-        // (Part 1, no auto-unwrap — the predicate reads `it` directly via the author's match/accessor). Each
-        // inner raw `((. T V) …)` is EXEMPT (recorded), so it builds a plain `Core::SumNew` when re-reached (no
-        // recursion). Only synthesized when the type is NOT a sole-payload newtype (which has its own path) and
-        // has ≥1 variant. A NULLARY variant (empty payload list) gets NO construct-def here: it constructs via
-        // the nullary-unit path, a distinct injection point deferred to a later increment.
-        if sole_variant.is_none() && variants.len() >= 2 {
+        // Each `__inv_v : Shape` is the properly-typed BOXED sum (or, for a single-variant multi-payload
+        // newtype, a `Ty::Tuple`-erased value), fed to the whole-value `__invariant_check_Shape` (Part 1, no
+        // auto-unwrap — the predicate reads `it` directly via the author's match/accessor). Each inner raw
+        // `((. T V) …)` is EXEMPT (recorded), so it builds the plain value when re-reached (no recursion). Runs
+        // for any type that did NOT get the sole-payload-newtype path (`sole_variant.is_none()`): a MULTI-variant
+        // sum (per-variant, keyed by disc) AND a SINGLE-variant MULTI-payload newtype `(Mk A B)` (its one
+        // variant, disc 0 — which erases to a `Ty::Tuple` and would otherwise construct with NO establish
+        // check). A NULLARY variant (empty payload list) gets NO construct-def here: it constructs via the
+        // nullary-unit path, a distinct injection point deferred to a later increment.
+        if sole_variant.is_none() {
             for (disc, (variant, payload_tys)) in variants.iter().enumerate() {
                 if payload_tys.is_empty() {
                     continue; // nullary variant — no payload param; establish for it is a later increment

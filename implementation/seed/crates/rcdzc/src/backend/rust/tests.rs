@@ -4646,6 +4646,27 @@ fn rustc_roundtrip_host_closure_factory_compound_arg_s2() {
         user_sum_result.contains("-> Dir>"),
         "a USER-sum-RESULT factory now emits (S4a user-sum extension):\n{user_sum_result}"
     );
+    // HARDENING: a user-sum result whose variant carries a FUNCTION payload (`(H (-> Int64 Int64))`) DECLINES
+    // — `cdz_render_at` has no value-form render for a fn payload, so admitting it (on type-args alone, which
+    // a monomorphic sum trivially passes) would MIS-RENDER. `sum_payloads_renderable` reads the decl's variant
+    // payloads and declines a non-renderable one (the reviewer-flagged fn-payload hole). A sibling user sum
+    // with a Float/Tuple payload still EMITS (those payloads render), so this is a NARROW guard, not a
+    // blanket user-sum-result decline.
+    let fn_payload_sum = compile_rust_result(
+        "(module m (type Holder (H (-> Int64 Int64)) (Z)) \
+           (def (mk) (fn ((: n Int64)) (if (> n 0) (H (fn ((: y Int64)) y)) (Z)))) (export mk))",
+    );
+    assert!(
+        fn_payload_sum.is_err(),
+        "a user-sum-RESULT factory with a FUNCTION-payload variant declines (non-renderable payload):\n{fn_payload_sum:?}"
+    );
+    let float_payload_sum = compile_rust(
+        "(module m (type Num (F Float64) (Z)) (def (mk) (fn ((: n Int64)) (if (> n 0) (F 1.5) (Z)))) (export mk))",
+    );
+    assert!(
+        float_payload_sum.contains("-> Num>"),
+        "a user-sum-RESULT factory with a Float-payload variant still emits (renderable payload):\n{float_payload_sum}"
+    );
 }
 
 #[test]

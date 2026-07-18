@@ -18255,6 +18255,36 @@ mod match_engine {
         );
     }
 
+    /// Verification Inc-b @invariant ESTABLISH over a SINGLE-VARIANT MULTI-PAYLOAD newtype (`(type T (Mk A B))`).
+    /// Such a type erases to a `Ty::Tuple` (not a single-payload value), so it takes neither the bare
+    /// `__invariant_construct_T` (that is only the single-PAYLOAD newtype) nor is it a ≥2-variant sum — it is the
+    /// third shape. `invariant_establish` synthesizes its sole variant's checked constructor as `__d0` (the
+    /// per-variant path now fires for any non-sole-payload-newtype, including a single-variant multi-payload
+    /// one), and the tuple-erase arm of `lower_sum_new` diverts through it. This pins the SYNTHESIS; the run
+    /// behavior (a satisfying pair constructs, a violating one traps) is a corpus case.
+    #[test]
+    fn an_invariant_on_a_single_variant_multi_payload_newtype_synthesizes_a_checked_constructor() {
+        use crate::testkit::parse;
+        let src = "(module m \
+            (@ (invariant (match it (((. Range Mk) lo hi) (<= lo hi)))) (type Range (Mk Int64 Int64))) \
+            (def (main) 0) (export main))";
+        let db = crate::db::Db::load(parse(src));
+        // The sole variant (disc 0) gets a per-variant checked constructor — the tuple-erase divert's callee.
+        assert!(
+            db.def_by_name("__invariant_construct_Range__d0").is_some(),
+            "the single (2-payload) variant gets a checked constructor keyed by disc 0"
+        );
+        assert!(
+            db.def_by_name("__invariant_check_Range").is_some(),
+            "the whole-value checker is synthesized"
+        );
+        // It is NOT a single-PAYLOAD newtype, so no bare `__invariant_construct_Range`.
+        assert!(
+            db.def_by_name("__invariant_construct_Range").is_none(),
+            "a multi-payload newtype uses the per-variant `__d0`, not the bare single-payload construct-def"
+        );
+    }
+
     /// Verification Inc-b @invariant NAME-RESOLUTION: an `@invariant(pred)` predicate references only the value
     /// binder `it` (the value of the type) and prelude/global names — no def params (a type has none). A stray
     /// name is UNBOUND → CDZ0101 at the annotation (the b4c pattern, reused for the data-level member). A valid

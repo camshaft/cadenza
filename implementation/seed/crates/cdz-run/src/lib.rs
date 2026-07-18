@@ -73,13 +73,24 @@ const EPOCH_TICK: std::time::Duration = std::time::Duration::from_millis(100);
 /// debugger); otherwise the deadline is `ceil(timeout / EPOCH_TICK)` ticks and the store traps past it.
 fn new_store(engine: &Engine) -> Store<()> {
     let mut store = Store::new(engine, ());
+    // Past the deadline: TRAP (surfaces as Outcome::Trap — "a runaway loop"), not yield/callback. Set on
+    // EVERY store because the shared engine has `epoch_interruption(true)`, under which a store's DEFAULT
+    // epoch deadline is 0 — and since the ticker starts the engine epoch at 0, `epoch(0) >= deadline(0)`
+    // trips at the FIRST function entry. So a store with no explicit deadline traps INSTANTLY, which is
+    // why the `secs == 0` "unbounded" path must set an effectively-infinite deadline rather than skip it.
+    store.epoch_deadline_trap();
     let secs = run_timeout_secs();
     if secs > 0 {
         arm_epoch_ticker(engine);
         let ticks = (secs * 1000).div_ceil(EPOCH_TICK.as_millis() as u64).max(1);
         store.set_epoch_deadline(ticks);
-        // Past the deadline: TRAP (surfaces as Outcome::Trap — "a runaway loop"), not yield/callback.
-        store.epoch_deadline_trap();
+    } else {
+        // `CDZ_RUN_TIMEOUT_SECS=0` = the documented UNBOUNDED escape hatch (for a debugger / a legitimately
+        // long run). Set an effectively-infinite deadline (`u64::MAX` ticks) rather than SKIP the call: with
+        // `epoch_interruption(true)` a store's default deadline is 0, so skipping would trap immediately
+        // (the exact inversion breaker found — every program, even `(def (main) 7)`, hit `trap: interrupt`).
+        // No ticker is armed, so the epoch never advances and `u64::MAX` is never reached: truly unbounded.
+        store.set_epoch_deadline(u64::MAX);
     }
     store
 }
@@ -2488,8 +2499,8 @@ mod tests {
         // timeout, and assert it comes back as a Trap in well under the untimed-forever case (seconds, not
         // never). Uses the epoch interruption armed in `engine()` + `new_store`.
         // SAFETY of the timing: CDZ_RUN_TIMEOUT_SECS=1 → the epoch ticker (100ms) fires the deadline within
-        // ~1s; we bound the whole call at 20s so a REGRESSION (no deadline → hang) fails the test by our
-        // own wall-clock rather than hanging CI forever.
+        // ~1s; the worker-join below bounds the whole thing at 15s so a REGRESSION (no deadline → hang)
+        // fails the test by our own wall-clock rather than hanging CI forever.
         // SAFETY: env is process-global; this test sets it for the short run. Other cdz-run tests don't run
         // a core module, so there's no cross-test interference on this var.
         unsafe {
@@ -2503,6 +2514,17 @@ mod tests {
         // the call" could never fire because the call never returned. This join-with-timeout is the guard.
         let (tx, rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
+            // FIRST do a harmless run — this arms the epoch-ticker (a `Once`) against whatever engine
+            // `engine()` returns. THEN run the infinite loop. This ordering RELIABLY reproduces the
+            // regression: when `engine()` minted a fresh engine per call, the ticker bound to THIS first
+            // run's engine and the loop run below got a DIFFERENT, un-ticked engine whose deadline never
+            // fired → hang. With the shared-engine fix both runs share one ticked engine, so the loop traps.
+            // (Without this priming run, a per-call-engine regression could still pass by luck if the loop
+            // happened to hit the first/armed engine — so the priming run is what makes this a true pin.)
+            let ok_mod =
+                wat::parse_str("(module (func (export \"main\") (result i64) (i64.const 1)))")
+                    .expect("assemble the priming module");
+            let _ = run_core_module(&ok_mod, "main");
             let wasm = wat::parse_str(
                 "(module (func (export \"main\") (result i64) (loop br 0) (i64.const 0)))",
             )

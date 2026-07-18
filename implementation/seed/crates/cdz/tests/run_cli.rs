@@ -29,6 +29,23 @@ fn run_code(args: &[&str]) -> Option<i32> {
         .code()
 }
 
+/// Run `cdz <args…>` with one extra environment variable set, returning (exit_ok, stdout, stderr). The
+/// env var rides on the SUBPROCESS only — so a test exercising `CDZ_RUN_TIMEOUT_SECS` can't race the
+/// shared process env of the in-process cdz-run lib tests.
+fn run_with_env(key: &str, val: &str, args: &[&str]) -> (bool, String, String) {
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let out = Command::new(exe)
+        .args(args)
+        .env(key, val)
+        .output()
+        .expect("spawn cdz");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
 /// A unique temp dir for one test.
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("cdz-run-cli-{tag}-{}", std::process::id()));
@@ -484,6 +501,36 @@ fn cdz_run_arg_type_error_names_the_cadenza_type_not_the_component_model_spellin
     assert!(
         !err.contains("S64"),
         "must NOT leak the component-model spelling `S64`: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cdz_run_with_timeout_secs_zero_is_unbounded_not_an_instant_trap() {
+    // `CDZ_RUN_TIMEOUT_SECS=0` is the documented UNBOUNDED escape hatch (debugger / a legitimately long
+    // run). Regression (breaker): with the shared engine's `epoch_interruption(true)`, a store's DEFAULT
+    // epoch deadline is 0, so the old `secs==0 → skip set_epoch_deadline` path left the deadline at 0 and
+    // EVERY program trapped instantly with `interrupt` — even a trivial `main`. A trivial component must
+    // RUN (print its value, exit 0) under `SECS=0`, not trap. Subprocess env → no race with other tests.
+    let (dir, wasm) = compile_component(
+        "unbounded",
+        "seven",
+        "(module m (def (seven) 7) (export seven))",
+    );
+    let (ok, out, err) = run_with_env(
+        "CDZ_RUN_TIMEOUT_SECS",
+        "0",
+        &["run", wasm.to_str().unwrap(), "--call", "seven"],
+    );
+    assert!(ok, "SECS=0 must be UNBOUNDED, not an instant trap: {err}");
+    assert_eq!(
+        out.trim(),
+        "7",
+        "the program runs and prints its value: {out}"
+    );
+    assert!(
+        !err.contains("interrupt"),
+        "must NOT trap with an epoch `interrupt` under the unbounded setting: {err}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

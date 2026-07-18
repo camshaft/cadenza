@@ -111,6 +111,25 @@ const STEPPED_PEDESTAL: ExampleModel = {
   },
 };
 
+/// A genuinely-CURVED part (v-cad-authored, P-D): an "arch" profile — a straight base + a cubic-Bézier
+/// curved top — EXTRUDED to a fin. A 2-D `PathProfile` (path-start → line-to → cubic-to) extruded via
+/// `Solid.ExtrudeLinear`; the browser mesh driver (index.ts) samples the Bézier to a polygon + extrudes it.
+/// Shows /cad handles free-form curves, not just boxes/cylinders. Uses the injected import superset's 2-D
+/// path builders (Profile/path-start/line-to/cubic-to/v2).
+const ARCH_FIN: ExampleModel = {
+  slug: "arch-fin",
+  title: "Arch (cubic-Bézier spline)",
+  description: "A straight base + a cubic-Bézier curved top, extruded — a genuinely-curved part via a 2-D path.",
+  source: {
+    ml: `def main() =
+  let arch = cubic-to(line-to(path-start(), v2(8/1, 0/1)), v2(0/1, 0/1), v2(8/1, 10/1), v2(0/1, 10/1)) in
+  lower(Solid.ExtrudeLinear(Profile.PathProfile(arch), 2/1))`,
+    sexpr: `(def (main)
+  (let ((arch (cubic-to (line-to (path-start) (v2 (/ 8 1) (/ 0 1))) (v2 (/ 0 1) (/ 0 1)) (v2 (/ 8 1) (/ 10 1)) (v2 (/ 0 1) (/ 10 1)))))
+    (lower ((. Solid ExtrudeLinear) ((. Profile PathProfile) arch) (/ 2 1)))))`,
+  },
+};
+
 /// The example models the /cad example-switcher offers, in display order. Every one is verified to compile
 /// + mesh against the preloaded library. Keep the FIRST entry the canonical simple starter (the /cad route
 /// opens with `DEFAULT_EXAMPLE`).
@@ -119,6 +138,7 @@ export const EXAMPLES: ExampleModel[] = [
   HOLLOW_TUBE,
   ROUNDED_CUBE,
   STEPPED_PEDESTAL,
+  ARCH_FIN,
 ];
 
 /// The model the /cad route opens with (the canonical cube-with-dent starter).

@@ -3466,7 +3466,7 @@ fn sum_disc0_payload_ty(db: &mut Db, sum: &Ty) -> Option<Ty> {
 /// variant 0 unconditionally made a nested constructor match on a non-first variant resolve to the wrong
 /// sub-value type and decline (`sum construction node is not a sum type`). Substitutes the sum's actual
 /// type args (`Option a`'s `V` payload at `W Int64` → `Option Int64`).
-fn variant_payload_ty(db: &mut Db, sum: &Ty, disc: u32) -> Option<Ty> {
+pub(super) fn variant_payload_ty(db: &mut Db, sum: &Ty, disc: u32) -> Option<Ty> {
     let stripped = sum.strip_nominal().clone();
     let Ty::Sum { decl, .. } = &stripped else {
         return None;

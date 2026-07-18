@@ -119,6 +119,25 @@ const ROUTES = [
           .then(() => true)
           .catch(() => false);
         check(changed, `${label}: switching the example picker loads a different model`);
+        // The arch-fin CURVED part (cubic-Bézier spline extruded via a PathProfile) must MESH — picking it
+        // compiles the model (needs the injected import superset's 2-D path builders) → runs → the browser
+        // mesh driver samples the Bézier + extrudes → a <canvas>. Guards the whole spline path (superset
+        // injectImport + v-cad's index.ts PathProfile/extrude driver) so a curved showcase can't silently break.
+        const hasArch = (await picker.locator('option[value="arch-fin"]').count()) > 0;
+        if (hasArch) {
+          await picker.selectOption("arch-fin");
+          const meshed = await page
+            .waitForFunction(
+              () => {
+                const err = document.querySelector(".text-rose-300");
+                return !!document.querySelector("canvas") && !err;
+              },
+              { timeout: 30000 },
+            )
+            .then(() => true)
+            .catch(() => false);
+          check(meshed, `${label}: the arch-fin cubic-Bézier spline part meshes to a <canvas> (curved geometry)`);
+        }
       } else {
         check(false, `${label}: example picker present`);
       }

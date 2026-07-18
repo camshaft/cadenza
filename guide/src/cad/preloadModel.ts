@@ -13,9 +13,13 @@ import type { Surface } from "../compiler/client.ts";
 /// it. `exact.cdz` is authored in ML (`.cdz`), so the preload format string passed to the compiler is `ml`.
 export const CAD_LIB_NAME = "exact";
 export const CAD_LIB_FORMAT: Surface = "ml";
-/// The names /cad's model buffer imports from the CAD library: the `Solid` type + the `v3r` vector
-/// constructor + `lower` (maps the generic `Solid(Rational)` to the monomorphic `SolidR` the host renders).
-export const CAD_IMPORTED_NAMES = ["Solid", "v3r", "lower"] as const;
+/// The names /cad's model buffer imports from the CAD library (the auto-injected superset — a model only
+/// uses the ones it needs; an UNUSED import is benign, verified, so all models share one import clause):
+///   - `Solid` (the CSG type), `v3r` (3-D vector ctor), `lower` (generic `Solid(Rational)` → the
+///     monomorphic `SolidR` the host renders) — the base every model uses;
+///   - `Profile`, `path-start`, `line-to`, `cubic-to`, `v2` — the 2-D PATH builders a curved part uses
+///     (a `PathProfile` extruded/revolved — the arch-fin spline showcase). exact-only, no `helpers`.
+export const CAD_IMPORTED_NAMES = ["Solid", "v3r", "lower", "Profile", "path-start", "line-to", "cubic-to", "v2"] as const;
 
 /// Auto-inject the `import … from "exact"` clause + the `@!default-fraction Rational` pragma + the
 /// `export main` around the reader's model buffer before compiling — so the buffer shows ONLY the model

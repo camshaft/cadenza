@@ -2243,3 +2243,30 @@
   (call sq (: 3 Int64) (: 4 Int64)) (output (: 7 Int64))
   (call sq (: 3 Int64) (: 0 Int64)) (trap "unreachable")
   (call sq (: 0 Int64) (: 4 Int64)) (trap "unreachable"))
+
+; ── @invariant ESTABLISH over a SINGLE-VARIANT MULTI-PAYLOAD newtype: the tuple-erase construct path ─────────
+; The third establish shape. `(type Range (Mk Int64 Int64))` is a single-variant, MULTI-payload newtype — it
+; erases to a `Ty::Tuple`, NOT a single-payload value, so it takes neither the single-PAYLOAD newtype divert
+; (`args.len()==1`) nor the boxed multi-VARIANT one. Without a divert here it would construct with NO establish
+; check (a real (D) soundness gap — an invalid Range could be built). `invariant_establish` synthesizes its
+; sole variant's checked constructor `__invariant_construct_Range__d0` (the per-variant path now fires for any
+; non-sole-payload-newtype), and the tuple-erase arm of `lower_sum_new` diverts the 2-payload construction
+; through it. A relational invariant `(<= lo hi)` over the two payloads: an ordered pair constructs, a
+; misordered one TRAPS. `mk` builds a Range then re-matches to `(- hi lo)` so the export crosses the boundary.
+
+(case "@invariant ESTABLISH over a single-variant multi-payload newtype: an ordered Range constructs, a misordered one traps (design §10.2, (D))"
+  (doc    "The third establish shape — a single-variant MULTI-payload newtype `(type Range (Mk Int64 Int64))`,
+           which erases to a tuple. Its relational `@invariant(<= lo hi)` is checked at construction via the
+           synthesized `__invariant_construct_Range__d0` (the tuple-erase divert's callee). `mk(lo,hi)` builds a
+           Range and returns `hi - lo`. An ordered pair satisfies and constructs (mk(3,7)=4, mk(5,5)=0); a
+           misordered pair violates `<= lo hi` and TRAPS at construction (mk(7,3)). Pins the establish path
+           over the multi-payload-newtype shape (a relational invariant across the two payloads), closing the
+           gap where a 2-payload newtype used to construct with no check.")
+  (input  (do
+            (@ (invariant (match it (((. Range Mk) lo hi) (<= lo hi)))) (type Range (Mk Int64 Int64)))
+            (def (mk (: lo Int64) (: hi Int64))
+              (match (Range.Mk lo hi) (((. Range Mk) a b) (- b a))))
+            (export mk)))
+  (call mk (: 3 Int64) (: 7 Int64)) (output (: 4 Int64))
+  (call mk (: 5 Int64) (: 5 Int64)) (output (: 0 Int64))
+  (call mk (: 7 Int64) (: 3 Int64)) (trap "unreachable"))
