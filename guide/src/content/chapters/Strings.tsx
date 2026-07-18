@@ -7,11 +7,11 @@ export default function Strings() {
   return (
     <article>
       <H1>Strings &amp; text</H1>
-      <Lede>Text as a sequence of Unicode characters — with two honest ways to measure it.</Lede>
+      <Lede>Text as a sequence of Unicode characters, with two honest ways to measure it.</Lede>
 
       <P>
-        A string literal is written in double quotes. Strings are values like any other — bind them,
-        pass them, return them.
+        A string literal is written in double quotes. Strings are values like any other, so you can bind
+        them, pass them, and return them.
       </P>
       <Runnable source={`"hello, world"`} />
 
@@ -26,7 +26,7 @@ export default function Strings() {
 (def (main) (greet "Cadenza"))`}
       />
       <P>
-        <C>(greet "Cadenza")</C> joins the two pieces into <C>"Hello, Cadenza"</C> — a brand-new string, with
+        <C>(greet "Cadenza")</C> joins the two pieces into <C>"Hello, Cadenza"</C>, a brand-new string, with
         the two inputs left untouched.
       </P>
 
@@ -41,7 +41,7 @@ export default function Strings() {
 
       <Why tenet="A string is Unicode characters, not bytes">
         A Cadenza string is a sequence of Unicode <em>scalar values</em> (characters), not a bag of
-        bytes — so what it contains doesn't depend on how it's encoded. But real programs sometimes
+        bytes, so what it contains doesn't depend on how it's encoded. But real programs sometimes
         need the byte size (for a buffer, a protocol). Rather than pick one meaning of "length" and
         make the other a footgun, the language offers <em>both</em>, under names that say which you're
         getting: <C>scalar-len</C> counts characters, <C>byte-len</C> counts UTF-8 bytes. No silent
@@ -50,9 +50,9 @@ export default function Strings() {
 
       <H2>Reaching in safely</H2>
       <P>
-        Like <C>List.at</C>, <C>String.at</C> returns an <C>Option</C> — the one-character string at a
-        given position, or <C>None</C> if the index is past the end. You never read off the end by
-        accident. And it indexes by <em>character</em>, not byte — so in <C>"café"</C> the character at
+        Like <C>List.at</C>, <C>String.at</C> returns an <C>Option</C>, either the one-character string at
+        a given position or <C>None</C> if the index is past the end. You never read off the end by
+        accident. And it indexes by <em>character</em>, not byte, so in <C>"café"</C> the character at
         index <C>3</C> is the <C>é</C>, even though that <C>é</C> starts at byte 3 and spans two bytes:
       </P>
       <Runnable
@@ -62,14 +62,15 @@ export default function Strings() {
     ((None _) "?")))`}
       />
       <Note>
-        The compiler itself builds its diagnostics and export names out of strings this way — string
-        handling isn't a library bolted on, it's part of how Cadenza describes itself.
+        The compiler itself builds its diagnostics and export names out of strings this way, so string
+        handling isn't a library bolted on but part of how Cadenza describes itself.
       </Note>
 
       <H2>Compared by value</H2>
       <P>
-        Two strings are equal when they hold the same characters — structural equality, not identity. So a
-        string you <em>built</em> equals a literal with the same content: <C>(String.concat "ab" "c")</C>{" "}
+        Two strings are equal when they hold the same characters, which is structural equality, not
+        identity. So a string you <em>built</em> equals a literal with the same content:{" "}
+        <C>(String.concat "ab" "c")</C>{" "}
         equals <C>"abc"</C>, however each was made.
       </P>
       <Runnable source={`(if (= (String.concat "ab" "c") "abc") 1 0)`} />
@@ -77,9 +78,9 @@ export default function Strings() {
       <H2>Crossing to bytes and back</H2>
       <P>
         Text and raw bytes are different types (that's the <strong>Bytes</strong> chapter), and the crossing
-        is explicit. <C>String.to-bytes</C> gives a string's UTF-8 encoding — <C>"café"</C> is five bytes,
+        is explicit. <C>String.to-bytes</C> gives a string's UTF-8 encoding, so <C>"café"</C> is five bytes,
         the two-byte <C>é</C> included. Going back is <C>String.from-bytes</C>, which returns an{" "}
-        <C>Option</C>, because not every byte sequence is valid UTF-8 — a round-trip of well-formed text
+        <C>Option</C>, because not every byte sequence is valid UTF-8, and a round-trip of well-formed text
         succeeds:
       </P>
       <Runnable
@@ -89,7 +90,7 @@ export default function Strings() {
     ((None _) -1)))`}
       />
       <P>
-        The bytes decode back to <C>"café"</C>, four characters — the same value we started with. The{" "}
+        The bytes decode back to <C>"café"</C>, four characters, the same value we started with. The{" "}
         <C>Option</C> is the honest part: decoding <em>arbitrary</em> bytes can fail, so <C>from-bytes</C>{" "}
         hands you an <C>Option</C> to handle rather than assuming the bytes are text.
       </P>
@@ -97,7 +98,7 @@ export default function Strings() {
       <H2>Slicing out a substring</H2>
       <P>
         To take a run of characters rather than a single one, <C>String.slice</C> selects a half-open
-        range <C>[start, end)</C> — from <C>start</C> up to <em>but not including</em> <C>end</C>. Like{" "}
+        range <C>[start, end)</C>, from <C>start</C> up to <em>but not including</em> <C>end</C>. Like{" "}
         <C>at</C>, the range might fall outside the string, so it returns an <C>Option</C>. The first five
         characters of <C>"hello world"</C> are <C>"hello"</C>, which is 5 characters long:
       </P>
@@ -107,29 +108,29 @@ export default function Strings() {
     (Option.expect (String.slice "hello world" 0 5) "in range")))`}
       />
       <P>
-        The bounds count <em>characters</em>, the same as <C>at</C> — so slicing <C>"café"</C> from{" "}
+        The bounds count <em>characters</em>, the same as <C>at</C>, so slicing <C>"café"</C> from{" "}
         <C>0</C> to <C>3</C> gives the three characters <C>"caf"</C>, never splitting the two-byte{" "}
         <C>é</C> down the middle. A range where <C>start</C> equals <C>end</C> is a valid, empty slice
         (<C>Some ""</C>); one that runs off the end is <C>None</C>, not a trap.
       </P>
 
       <P>
-        Characters are one view of text. Underneath sits the raw encoding — the octets a file or a
+        Characters are one view of text. Underneath sits the raw encoding, the octets a file or a
         protocol actually carries. That's <em>bytes</em>, next.
       </P>
 
       <H2>Your turn</H2>
       <P>
         First a length question, then a slice. The word <C>"naïve"</C> has an accented <C>ï</C> that
-        takes two bytes in UTF-8 — so its character count and its byte count disagree, and the point is to
+        takes two bytes in UTF-8, so its character count and its byte count disagree, and the point is to
         pick the operation that answers the question you actually mean.
       </P>
       <Exercise
         id="strings:1"
         prompt={
           <>
-            How many <em>characters</em> are in <C>"naïve"</C>? Pick the length that counts characters —
-            the answer is <C>5</C>.
+            How many <em>characters</em> are in <C>"naïve"</C>? Pick the length that counts characters,
+            so the answer is <C>5</C>.
           </>
         }
         starter={`(def (main) (String.?-len "naïve"))`}
@@ -147,8 +148,8 @@ export default function Strings() {
         id="strings:2"
         prompt={
           <>
-            Now a slice, and the half-open range is the whole trick. Pull the first three characters —{" "}
-            <C>"cad"</C> — out of <C>"cadenza"</C> by filling in the <em>end</em> index. The check compares
+            Now a slice, and the half-open range is the whole trick. Pull the first three characters,{" "}
+            <C>"cad"</C>, out of <C>"cadenza"</C> by filling in the <em>end</em> index. The check compares
             the slice against <C>"cad"</C>, so getting the boundary right gives <C>1</C>.
           </>
         }
@@ -159,7 +160,7 @@ export default function Strings() {
         expected="1"
         hint={
           <>
-            The range is <C>[start, end)</C> — <C>end</C> is <em>excluded</em>. To keep characters at
+            The range is <C>[start, end)</C>, so <C>end</C> is <em>excluded</em>. To keep characters at
             indices <C>0</C>, <C>1</C>, <C>2</C> (the <C>"cad"</C>) and stop before index <C>3</C>, the
             end is <C>3</C>, not <C>2</C>. Write <C>2</C> and you'd get only <C>"ca"</C>.
           </>

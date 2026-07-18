@@ -75,4 +75,19 @@ def tb-deferred-ty-grounds-back() =
     | Typed.TIntW(s, w) => (if s then (if w == 64 then unit else trap("grounds to width 64")) else trap("grounds to signed"))
     | _ => trap("deferred grounds to TIntW"))
 
+@test
+def tb-partial-deferred-ty-grounds-per-axis() =
+  // a PARTLY-deferred Ty int — the shape unify-ty leaves when only ONE axis grounds (e.g. a fixed-sign
+  // deferred-width, or a fixed-width deferred-sign) — grounds PER-AXIS through the bridge: the fixed axis is
+  // kept, the deferred one takes its default (sign→Signed, width→64). This is the exact `Ty` corrected-2b's
+  // arith round-trip can hand `ty-to-typed`; the FULLY-deferred and FULLY-concrete cases were pinned, this
+  // mixed case (the realistic post-unify residue) was not.
+  (match ty-to-typed(Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WidthDef))) with   // UInt with deferred width
+    | Typed.TIntW(s, w) => (if (if s then false else true) and (w == 64) then     // sign KEPT unsigned, width→64
+        (match ty-to-typed(Ty.TyInt(IntType.IntType(Sign.SignDef, Width.WFixed(8)))) with  // deferred sign, width 8
+          | Typed.TIntW(s2, w2) => (if s2 and (w2 == 8) then unit else trap("deferred-sign→Signed, width 8 kept"))
+          | _ => trap("deferred-sign fixed-width is TIntW"))
+      else trap("fixed-sign→Unsigned kept, deferred-width→64"))
+    | _ => trap("partly-deferred grounds to TIntW"))
+
 export { typed-to-ty, ty-to-typed }

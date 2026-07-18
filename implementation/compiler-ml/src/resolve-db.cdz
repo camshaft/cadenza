@@ -80,6 +80,9 @@ def times() = Tok.TOp(42)
 def letkw() = Tok.TLet
 def inkw() = Tok.TIn
 def eq() = Tok.TEq
+def ifkw() = Tok.TIf
+def thenkw() = Tok.TThen
+def elsekw() = Tok.TElse
 
 /// Parse then resolve a token list, returning `(root, tree)` for probing.
 def parse-of(ts: List(Tok)) = parse-tokens(ts)
@@ -168,6 +171,26 @@ def rd-milestone-body-var-bound() =
                 (if resolved-to(tree, root, xId, root) then (if resolved-count(tree, root) == 1 then unit else trap("exactly one resolved fact — the single var")) else trap("body x binds to the let"))
               | _ => trap("mul's left is the var x"))
           | _ => trap("body is + "))
+      | _ => trap("root is a let")))
+
+@test
+def rd-if-branches-share-enclosing-scope() =
+  // an `if` introduces NO binder (resolve-node's NIf arm resolves cond/then/else in the SAME env). In
+  // "let x = 1 in if x then x else x" ALL THREE occurrences of x resolve to the ONE enclosing let — the
+  // scope clause the header documents but nothing pinned. Exactly three resolved facts (the three vars).
+  (match parse-of([letkw(), var(1), eq(), n(1), inkw(), ifkw(), var(1), thenkw(), var(1), elsekw(), var(1)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(_, _, ifId)) =>
+        (match node-at(tree, ifId) with
+          | Option.Some(Node.NIf(condId, thenId, elseId)) =>
+            (if resolved-to(tree, root, condId, root) then
+               (if resolved-to(tree, root, thenId, root) then
+                  (if resolved-to(tree, root, elseId, root) then
+                     (if resolved-count(tree, root) == 3 then unit else trap("exactly three resolved facts (cond/then/else vars)"))
+                   else trap("else-branch x binds to the enclosing let"))
+                else trap("then-branch x binds to the enclosing let"))
+             else trap("cond x binds to the enclosing let"))
+          | _ => trap("body is an if"))
       | _ => trap("root is a let")))
 
 export { Resolved.*, resolve-tree, resolved-at, resolved-count, resolved-to, resolved-poison }

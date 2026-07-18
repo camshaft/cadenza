@@ -1,4 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+pass	@ensures on a def returning an @invariant type: establish (on construction) AND the postcondition (on ret) both fire (design §10, (D))
 pass	@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
 pass	@invariant ESTABLISH (divert) over a heap payload: a NonEmptyList newtype traps on the empty list, constructs a non-empty one (design §10.1/§10.2, (D))
@@ -145,6 +146,7 @@ pass	`at` advances an Instant by a Duration (wake-time computation)
 pass	`before?` is a STRICT order — an Instant is not before an equal Instant (same-time is a tie-break)
 pass	`before?` orders two Instants (the event-queue comparison)
 pass	`since` is the span between two Instants (later minus earlier)
+pass	`sleep-until` sleeps to an absolute Instant — the span is target minus now (since t now)
 pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
@@ -501,6 +503,7 @@ pass	a cross-type variant pattern whose payload width differs is rejected, not m
 pass	a crossing text-literal arm is rejected even beside a same-kind sibling arm
 pass	a ctl-style arm applying its continuation inside a match scrutinee resolves and folds
 pass	a ctl-style arm that applies its continuation lexically folds through the delimited context
+pass	a ctl-style arm whose continuation ESCAPES to another function reifies it as a closure and applies it there
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a curried function can be partially applied
 pass	a curried function-type annotation checks its inner result type against the argument
@@ -660,7 +663,6 @@ pass	a generated value with a BIGINT leaf is reproducible (compound = walks the 
 pass	a generated value with a FLOAT leaf is reproducible (compound = over the canonical float byte form)
 pass	a generated value with a SYMBOL leaf is reproducible (compound = walks the interned-name byte leaf)
 pass	a generic definition takes the type as a type-valued parameter
-todo	a generic recursive HOF taking a closure is monomorphized at three distinct closure types
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
 pass	a generic sum type constructor applied to a value is rejected
@@ -1436,6 +1438,7 @@ pass	a rope in an Option payload equals its flat-twin payload
 pass	a rope two levels deep (tuple in a tuple) equals its flat twin
 pass	a row op over a constant record folds through a multi-use let binding
 pass	a row op over a constant record folds through a single-use let binding
+pass	a run-sim scheduler fast-forwards the clock through two sequential sleeps in one task
 pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
 pass	a runtime -0.0 float leaf two levels deep stays distinct from positive zero
@@ -2118,6 +2121,7 @@ pass	an active unquote of a string literal lifts to an Ast.Str node
 pass	an active unquote of an Ast-valued expression splices the subtree as identity
 pass	an active-unquoted boolean literal equals the quoted form
 pass	an agreeing Result error type short-circuits through the boundary
+pass	an agreeing arrow annotation on a lambda is accepted and the function applies normally
 pass	an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator
 pass	an all-constant Set.of still folds membership with a constant query (control)
 pass	an all-escapes Ast.Str round-trips through print and read
@@ -3614,6 +3618,7 @@ todo	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
 todo	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)
 todo	a function argument is applied through a recursive higher-order function
 todo	a function stored in a record field of a sum payload is called after a match
+todo	a generic recursive HOF taking a closure is monomorphized at three distinct closure types
 todo	a generic recursive HOF taking a closure is monomorphized at two distinct closure types
 todo	a higher-order left fold applies its combiner, not a fixed operator
 todo	a higher-order left fold over a built-in list with an annotated callback

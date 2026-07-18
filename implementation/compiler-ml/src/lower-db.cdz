@@ -14,7 +14,7 @@
 /// NO core form (a filled `None`), not a bogus tree. Lowering reads the infer column to make this decision,
 /// and reads the resolve column to canonicalize vars — producer-reads-two-producers.
 
-import { Tok, Node, Tree, node-at, parse-tokens } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node } from "parse-db"
 import { Resolved, resolve-tree } from "resolve-db"
 import { Typed, infer-tree } from "infer-db"
 
@@ -113,6 +113,12 @@ def is-cnum(c: Core, v: Int64) = match c with | Core.CNum(x, _, _) => x == v | _
 /// Probe: is this Core a `CVar` with binder id `b`?
 def is-cvar(c: Core, b: Int64) = match c with | Core.CVar(x) => x == b | _ => false
 
+/// Probe: is this Core a `CNum` carrying value `v`, signedness `signed`, and width `w` — the NARROW-width
+/// shape a `NAnnLit` lowers to (checks the width/sign flow, not just the value `is-cnum` checks).
+def is-cnum-w(c: Core, v: Int64, signed: Bool, w: Int64) = match c with
+  | Core.CNum(x, s, cw) => (x == v) and (((if s then true else false) == signed) and (cw == w))
+  | _ => false
+
 /// Test-token builders (parse-db doesn't export its private builders).
 def n(v: Int64) = Tok.TNum(v)
 def var(nm: Int64) = Tok.TName(nm)
@@ -203,4 +209,24 @@ def lw-milestone-lowers() =
          else trap("CLet keyed by root"))
       | _ => trap("milestone lowers to CLet")))
 
-export { Core.*, lower-tree, lower-node, cnum64, is-cnum, is-cvar }
+@test
+def lw-annlit-lowers-to-narrow-cnum() =
+  // THE WIDTH-FLOW path (lower-ok's NAnnLit arm): a width-annotated literal lowers to a NARROW CNum carrying
+  // its (signed, width) — every other Core node is pinned, this one was not. `NAnnLit` has no producing Tok
+  // (it comes from the sread annotation path), so build the arena DIRECTLY: a single-node tree holding
+  // `NAnnLit(200, 0, 8)` = UInt8 200 must lower to `CNum(200, unsigned, 8)` — NOT the canonical (true,64).
+  (match add-node(empty-tree(), Node.NAnnLit(200, 0, 8)) with | (root, tree) =>
+    (match lower-tree(tree, root) with
+      | Option.Some(c) => (if is-cnum-w(c, 200, false, 8) then unit else trap("UInt8 200 lowers to CNum(200, unsigned, 8)"))
+      | Option.None(_) => trap("an annotated literal lowers")))
+
+@test
+def lw-annlit-signed-narrow() =
+  // the signed twin: `NAnnLit(-5, 1, 8)` = Int8 -5 lowers to `CNum(-5, signed, 8)` (signed flag rides across,
+  // width 8 preserved — the flow emit reads to pick i32-vs-i64 codegen).
+  (match add-node(empty-tree(), Node.NAnnLit(0 - 5, 1, 8)) with | (root, tree) =>
+    (match lower-tree(tree, root) with
+      | Option.Some(c) => (if is-cnum-w(c, 0 - 5, true, 8) then unit else trap("Int8 -5 lowers to CNum(-5, signed, 8)"))
+      | Option.None(_) => trap("a signed annotated literal lowers")))
+
+export { Core.*, lower-tree, lower-node, cnum64, is-cnum, is-cnum-w, is-cvar }

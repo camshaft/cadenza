@@ -30,6 +30,30 @@
   (input  (do (def (h x) (+ x 1)) (def (main) (: h (-> Bool Int64))) (export main)))
   (error  CDZ0203))
 
+; The contradictory-arrow cases reject; the AGREEING complement must be ACCEPTED and transparent — the
+; positive half of #Annotations Constrain, Never Contradict for a function value. A direct arrow
+; annotation on a lambda whose body-solved type MATCHES the annotation changes nothing: the annotated
+; lambda is the same function and applies normally. Pins that the annotation-check's body-solve (which
+; catches the contradictions above) does not spuriously reject an agreeing arrow — a check that compared
+; the annotation against the bottom-up `(-> Any _)` instead of the body-solved domain could over-reject
+; an agreeing `(-> Int64 _)` as "Any ≠ Int64". Runtime application, both backends.
+
+(case "an agreeing arrow annotation on a lambda is accepted and the function applies normally"
+  (doc    "The positive complement of the contradictory-arrow rejects: `(: (fn (x) (+ x 1)) (-> Int64
+           Int64))` annotates a lambda whose body solves its domain to `Int64` — the annotation AGREES, so
+           it is transparent and the function applies: `f(n) = n + 1`, run(5) = 6. And the 2-arg twin
+           `(: (fn (x y) (* x y)) (-> Int64 Int64 Int64))` agrees and applies: `g(3,4) = 12`. Pins that an
+           arrow annotation matching the body-solved type is accepted (never over-rejected), the accept
+           side of the constrain-never-contradict rule for function values.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (let ((f (: (fn ((: x Int64)) (+ x 1)) (-> Int64 Int64)))
+                    (g (: (fn ((: x Int64) (: y Int64)) (* x y)) (-> Int64 Int64 Int64))))
+                (+ (f a) (g a b))))
+            (export main)))
+  (call main (: 5 Int64) (: 4 Int64)) (output (: 26 Int64))
+  (call main (: 3 Int64) (: 4 Int64)) (output (: 16 Int64)))
+
 (case "a contradictory arrow annotation on a function INSIDE a compound is rejected"
   (doc    "The bare-function domain check above, extended to a function stored INSIDE the annotated
            compound: `(: (tuple h 0) (Tuple (-> Bool Int64) Int64))` where `h : Int64 -> Int64` is a

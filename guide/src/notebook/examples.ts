@@ -53,6 +53,32 @@ A **chart:line** cell plots a List of (x, y) points.
 (def (main) (list (tuple 1 10) (tuple 2 20) (tuple 3 15) (tuple 4 25)))
 ~~~`;
 
+/// A chart-TYPES showcase: the newer `area` (filled line) + `stacked` (bars accumulated per x) renderers,
+/// driven by a slider so a reader sees them recompute. Stacked uses multi-y tuples `(tuple x y0 y1)` — two
+/// series sharing an x that stack into a per-x total. Rational-by-default (no floats): the `boost` slider is
+/// a whole Int64 the cells add in. Completes the chart-family showcase beyond the line/scatter/bar basics.
+const CHART_TYPES_DEMO = `# Chart types
+
+Beyond a plain line, a chart cell can render an **area** (filled line) or **stacked** bars. Drag **boost** and
+watch both recompute.
+
+~~~cadenza widget
+boost : Int64 = slider(0, 20, default: 5)
+~~~
+
+An **area** chart fills the region under the curve:
+
+~~~cadenza chart:area
+(def (main) (list (tuple 1 (+ 10 boost)) (tuple 2 (+ 20 boost)) (tuple 3 (+ 15 boost)) (tuple 4 (+ 25 boost))))
+~~~
+
+A **stacked** chart accumulates each series per x — the column total is the sum. Each row is \`(x y0 y1)\`, so
+two series stack:
+
+~~~cadenza chart:stacked
+(def (main) (list (tuple 1 (+ 5 boost) 3) (tuple 2 (+ 8 boost) 6) (tuple 3 (+ 6 boost) 4)))
+~~~`;
+
 /// A plain-value example: any cell with no directive renders its value.
 const VALUE_DEMO = `# Values
 
@@ -182,6 +208,7 @@ export const EXAMPLES: ExampleNotebook[] = [
   { slug: "quadratic", title: "Quadratic explorer", markdown: QUADRATIC },
   { slug: "tables", title: "Tables", markdown: TABLE_DEMO },
   { slug: "charts", title: "Charts", markdown: CHART_DEMO },
+  { slug: "chart-types", title: "Chart types", markdown: CHART_TYPES_DEMO },
   { slug: "formulas", title: "Formulas", markdown: FORMULA_DEMO },
   { slug: "values", title: "Values", markdown: VALUE_DEMO },
 ];
