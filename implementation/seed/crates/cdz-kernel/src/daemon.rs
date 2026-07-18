@@ -216,6 +216,35 @@ where
     crate::kernel::run_interpret_hosted(&program, event_kind, runtime, prim)
 }
 
+/// The daemon's real-primitive step with the Cedar policy RETRIEVED FROM THE LOG (the operator's capability
+/// model, retrieve-at-invocation half): read the LATEST `policy` event ([`crate::policy::latest_policy`]) and,
+/// if one is in force, gate every op against it via [`tick_hosted_authorized`]; if the log holds NO policy
+/// event, fall back to the ungated record-only [`tick_hosted`]. So a `policy` Cedar doc APPENDED to the log
+/// governs the NEXT invocation — no external `--policies` file, no kernel redeploy: the policy is data in the
+/// log, exactly like the genesis program. A later `policy` event supersedes (attenuation is re-evaluated fresh
+/// each invocation against whatever doc is latest — a program can't escalate past it).
+///
+/// (No-policy → ungated is the current default while the log has no policy; a deployment that wants
+/// deny-by-default with no policy would seed a restrictive `policy` event at bootstrap. The de-escalate-to-
+/// minimal default + publish→callable flow build on this retrieval seam.)
+pub fn tick_hosted_log_policy<L>(
+    log: std::sync::Arc<std::sync::Mutex<L>>,
+    event_kind: i64,
+    runtime: Vec<u8>,
+) -> Result<i64>
+where
+    L: Log + Send + 'static,
+{
+    let policy = {
+        let l = log.lock().map_err(|_| anyhow!("log mutex poisoned"))?;
+        crate::policy::latest_policy(&l.tail(0)?)
+    };
+    match policy {
+        Some(doc) => tick_hosted_authorized(log, event_kind, runtime, doc),
+        None => tick_hosted(log, event_kind, runtime),
+    }
+}
+
 /// Drive `step` over every log event NOT YET processed (seq >= `from`), in order, and return the NEW cursor
 /// (the seq AFTER the last event seen, i.e. the `from` to pass next time) — the event-source LOOP's pure,
 /// single-pass core (the "start the daemon" half's load-bearing step). A real daemon calls this repeatedly
@@ -703,6 +732,65 @@ mod tests {
             .count();
         assert_eq!(performed, 0, "no op performed under an empty policy");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn tick_hosted_log_policy_reads_the_policy_from_the_log() {
+        // The operator's retrieve-at-invocation model: tick_hosted_log_policy reads the LATEST `policy` Cedar
+        // doc FROM THE LOG and gates on it — no external --policies file. A policy permitting ONLY prim:append
+        // → kind=1 [Append, Exec] → append performed(1) + exec DENIED(0) → sum 1. With NO policy event in the
+        // log, it falls back to ungated record-only → sum 3. So an APPENDED policy governs the invocation.
+        use std::sync::{Arc, Mutex};
+        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let provider = match crate::kernel::compile_interpret_provider(GENESIS) {
+            Ok(p) => p,
+            Err(e) => panic!("genesis compiles: {e}"),
+        };
+        let Some(runtime) = crate::kernel::find_runtime_for(&provider, store_root) else {
+            eprintln!("[cdz-kernel::daemon] runtime absent/stale; skipping tick_hosted_log_policy");
+            return;
+        };
+
+        // (a) NO policy event → ungated fallback → sum 3.
+        let (path_a, mut log_a) = temp_log();
+        crate::boot::inject_genesis(&mut log_a, GENESIS).unwrap();
+        let log_a = Arc::new(Mutex::new(log_a));
+        let sum_ungated = tick_hosted_log_policy(Arc::clone(&log_a), 1, runtime.clone())
+            .expect("no-policy fallback runs");
+        assert_eq!(
+            sum_ungated, 3,
+            "no policy in the log → ungated record-only → sum 3"
+        );
+        let _ = std::fs::remove_file(&path_a);
+
+        // (b) a policy event permitting ONLY prim:append is APPENDED → gated → sum 1 (append 1 + exec denied 0).
+        let (path_b, mut log_b) = temp_log();
+        crate::boot::inject_genesis(&mut log_b, GENESIS).unwrap();
+        crate::policy::append_policy(
+            &mut log_b,
+            r#"permit(principal, action == Action::"prim:append", resource);"#,
+        )
+        .unwrap();
+        let log_b = Arc::new(Mutex::new(log_b));
+        let sum_gated = tick_hosted_log_policy(Arc::clone(&log_b), 1, runtime)
+            .expect("log-policy gated tick runs");
+        assert_eq!(
+            sum_gated, 1,
+            "policy from the log permits only append → append(1) + exec denied(0) → sum 1"
+        );
+        let denied = log_b
+            .lock()
+            .unwrap()
+            .tail(0)
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind.starts_with(PRIM_DENIED_PREFIX))
+            .count();
+        assert_eq!(
+            denied, 1,
+            "exec was denied by the log policy → one prim-denied event"
+        );
+        let _ = std::fs::remove_file(&path_b);
     }
 
     #[test]

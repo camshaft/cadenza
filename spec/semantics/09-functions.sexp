@@ -206,6 +206,32 @@
             (export main)))
   (output (: 40 Int64)))
 
+; A recursive driver with a `const` CLOSURE parameter that re-passes the closure to ITSELF unchanged — the
+; iterator-fold shape. A const-param function is specialize-at-each-call: at the concrete call the const
+; closure binds to `step`, and the self-recursive identity re-pass threads that SAME closure through the
+; recursion, so it specializes + devirtualizes (S1) + fuses. The standalone generic body cannot bind the
+; unbound const param, but that is not an ill-formedness — a false-positive decline that the identity-re-pass
+; exemption turns into a plain decline (not a fault), so the program compiles + runs. Value parity is the
+; behavior witness (a wrong specialization would miscompute); the 0-`call_indirect` fusion is pinned by a
+; rcdzc emit-shape unit test. `count` sums a list via `step` = pop-head: 1+2+3+4 = 10.
+
+(case "a const closure re-passed through a recursive driver specializes and computes correctly"
+  (doc    "`count` is a recursive fold whose `step` is a `const` closure it re-passes to itself unchanged;
+           `main` calls it with a pop-head closure over `(list 1 2 3 4)`, summing to 10. The const-closure
+           self-recursive identity re-pass used to DECLINE (CDZ0201) because the standalone generic body
+           can't bind the unbound `step` — a false positive, since every concrete call specializes it. The
+           identity-re-pass exemption makes that a plain decline (callers specialize), so this compiles and
+           runs; the concrete call threads the closure through the recursion and fuses. 1+2+3+4 = 10.")
+  (input  (do
+            (def (count (const (: step (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) (: s (List Int64)) (: acc Int64))
+              (match (step s)
+                ((Option.None) acc)
+                ((Option.Some p) (match p ((tuple x s2) (count step s2 (+ acc x)))))))
+            (def (main)
+              (count (fn ((: s (List Int64))) (match s ((list) (Option.None)) ((list h .. t) (Option.Some (tuple h t))))) (list 1 2 3 4) 0))
+            (export main)))
+  (output (: 10 Int64)))
+
 (case "a let-bound returned closure applied twice folds each application independently"
   (doc    "The multi-use companion: `(let ((f (mk n))) (+ (f 3) (f 4)))` binds the returned capturing closure
            once and applies it twice; each application folds independently, so with `n` = 10 the result is

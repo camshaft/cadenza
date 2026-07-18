@@ -9509,8 +9509,8 @@ fn check_application(
                 // so `x`'s `41` (Int64) now conflicts with the bound `Bool` and rejects. Reflection via
                 // `typeval_of`; a non-concrete type-value (a var / `Any`) binds nothing (stays generic,
                 // solved by the value arg as before — no false reject on an undetermined type arg).
-                //= spec/capabilities/type-system.md#generics-are-type-valued-parameters-not-a-separate-polymorphism-mechanism
-                //# A position that binds a type-valued parameter MUST be a bidirectional-checking boundary, at which a type is either synthesized by monomorphization from the concrete type-value supplied or checked against an explicit annotation, rather than solved by unification.
+                //= spec/capabilities/type-system.md#inference-and-first-class-types-meet-at-a-bidirectional-boundary
+                //# A position that binds a type-valued parameter MUST be a bidirectional-checking boundary, at which a type is either synthesized by monomorphization from the concrete type-value supplied or checked against an explicit annotation, rather than solved by unification, so that first-class computable types are reconciled with principal-type inference instead of contradicting it.
                 if matches!(pt, Ty::Type)
                     && let Some(tv) = crate::eval::typeval_of(db, arg)
                     && !matches!(tv, Ty::Any)

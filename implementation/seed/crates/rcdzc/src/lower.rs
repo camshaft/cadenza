@@ -10562,6 +10562,36 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
                     db.const_params
                         .contains(&crate::eval::param_name_occ(db, p))
                 });
+                // IDENTITY RE-PASS of the callee's OWN const param — a self-recursive call `f(step, …)` that
+                // threads `f`'s const param UNCHANGED. In the STANDALONE lowering of `f`'s generic body the
+                // const param is an unbound reference, so `type_specialize` can't bind it and returns `None`
+                // — but this is NOT an ill-formedness: a const-param fn is specialize-at-each-call, and at
+                // every CONCRETE call the param is bound to a value that this identity re-pass threads
+                // through the recursion (the concrete `type_specialize` succeeds + fuses, e.g. a
+                // devirtualized iterator driver). So this specific decline must be a plain DECLINE (not the
+                // coded CDZ0201 well-formedness fault): the generic body simply isn't lowered standalone, its
+                // callers specialize it. NARROW: only a BARE reference to THIS callee's own const-param
+                // binder qualifies — a DERIVED const arg (`(compose step g)`, a shorter collection tail) is
+                // not an identity re-pass, keeps the coded fault, and the collection-fold guard stays
+                // independent (v-inference ACK 2026-07-18; witness + unsound-twin gate it).
+                let callee_params = db.defs[callee].params.clone();
+                let is_const_identity_repass = callee_has_const
+                    && callee_params.iter().zip(args.iter()).any(|(&p, &a)| {
+                        let occ = crate::eval::param_name_occ(db, p);
+                        db.const_params.contains(&occ)
+                            && matches!(
+                                resolved_of(db, a),
+                                Resolved::Ref { value } | Resolved::Param { binder: value }
+                                    if value == occ
+                            )
+                    });
+                if is_const_identity_repass {
+                    trace!(target: "rcdzc::lower", head = head.0, callee, "const identity re-pass in standalone generic body — plain decline, not a fault (callers specialize)");
+                    return Core::Poison(Reject::decline(
+                        "a `const` parameter's self-recursive identity re-pass is specialized at each call, \
+                         not in the standalone generic body",
+                    ));
+                }
                 trace!(target: "rcdzc::lower", head = head.0, callee, callee_has_const, "specialization declined (const contract / undetermined generic type arg)");
                 let message = if callee_has_const {
                     "an argument to a `const` parameter must be compile-time-known — it depends on runtime data"

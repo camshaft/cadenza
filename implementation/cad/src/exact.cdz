@@ -133,29 +133,50 @@ def line-by(p: Path(Rational), d: Vec2(Rational)) = path-append(p, PathSeg.LineT
 def cubic-to(p: Path(Rational), end: Vec2(Rational), c0: Vec2(Rational), c1: Vec2(Rational)) =
   path-append(p, PathSeg.CubicToAbs(end, c0, c1))
 
-/// A segment's farthest point from the origin, component-wise ABS (for a path's bounding extent). A line/move
-/// contributes its endpoint; a cubic contributes the max abs over its end + both control points (the control
-/// hull bounds the curve, so this over-approximates safely — an exact enclosing box, like revolve's).
-def path-seg-extent(s: PathSeg(Rational)) =
-  let ax = (fn (v: Vec2(Rational)) => match v with | Vec2.V2(x, y) => Vec2.V2(rmax(x, rzero() - x), rmax(y, rzero() - y))) in
-  match s with
-    | PathSeg.MoveToAbs(p) => ax(p) | PathSeg.MoveToRel(p) => ax(p)
-    | PathSeg.LineToAbs(p) => ax(p) | PathSeg.LineToRel(p) => ax(p)
-    | PathSeg.CubicToAbs(e, c0, c1) => v2max(ax(e), v2max(ax(c0), ax(c1)))
-    | PathSeg.CubicToRel(e, c0, c1) => v2max(ax(e), v2max(ax(c0), ax(c1)))
+/// Component-wise ABS of a 2-D vector (each coord's distance from 0).
+def v2abs(v: Vec2(Rational)) =
+  match v with | Vec2.V2(x, y) => Vec2.V2(rmax(x, rzero() - x), rmax(y, rzero() - y))
 
 /// Component-wise max of two 2-D vectors.
 def v2max(a: Vec2(Rational), b: Vec2(Rational)) =
   match a with | Vec2.V2(ax, ay) => (match b with | Vec2.V2(bx, by) => Vec2.V2(rmax(ax, bx), rmax(ay, by)))
 
-/// A path's ±x/±y half-extent — the max abs over all its segments' points (recursive fold; `List` has no map).
+/// Component-wise sum (for resolving a RELATIVE segment's absolute point = cursor + delta).
+def v2add(a: Vec2(Rational), b: Vec2(Rational)) =
+  match a with | Vec2.V2(ax, ay) => (match b with | Vec2.V2(bx, by) => Vec2.V2(ax + bx, ay + by))
+
+/// A path's ±x/±y half-extent — the max abs over every point the path REACHES. 🔑 A RELATIVE segment's Vec2
+/// is a DELTA from the current cursor, NOT an absolute point, so the walk THREADS the cursor: an Abs segment's
+/// point IS the cursor's new value; a Rel segment's absolute point is `cursor + delta`. Folding the resolved
+/// ABSOLUTE points (a cubic also folds its two control points, resolved from the cursor — the control hull
+/// bounds the curve, over-approximating safely) gives a sound enclosing box. (Bug fix: the prior version
+/// abs'd a Rel delta directly, UNDER-approximating a relative path — two `LineToRel(10,0)` reach x=20, not 10.)
 def path-half-extent(p: Path(Rational)) =
-  match p with | Path.Segs(xs) => path-extent-go(xs, (0 : Int64), Vec2.V2(rzero(), rzero()))
-def path-extent-go(xs: List(PathSeg(Rational)), i: Int64, acc: Vec2(Rational)) =
+  match p with | Path.Segs(xs) => path-extent-go(xs, (0 : Int64), Vec2.V2(rzero(), rzero()), Vec2.V2(rzero(), rzero()))
+/// Fold: `cur` = the running cursor (absolute), `acc` = the max-abs extent so far. Each segment advances the
+/// cursor (`path-seg-cursor`) and folds its resolved reach (`path-seg-reach`) into the extent.
+def path-extent-go(xs: List(PathSeg(Rational)), i: Int64, cur: Vec2(Rational), acc: Vec2(Rational)) =
   if i == List.len(xs) then acc
   else (match List.at(xs, i) with
-    | Option.Some(s) => path-extent-go(xs, i + (1 : Int64), v2max(acc, path-seg-extent(s)))
+    | Option.Some(s) => path-extent-go(xs, i + (1 : Int64), path-seg-cursor(s, cur), v2max(acc, path-seg-reach(s, cur)))
     | Option.None => acc)
+
+/// The cursor AFTER a segment (absolute): an Abs segment sets it to the point; a Rel segment adds the delta.
+/// (A cubic's cursor advances to its END point, Abs or cursor+delta.)
+def path-seg-cursor(s: PathSeg(Rational), cur: Vec2(Rational)) = match s with
+  | PathSeg.MoveToAbs(p) => p | PathSeg.LineToAbs(p) => p
+  | PathSeg.MoveToRel(d) => v2add(cur, d) | PathSeg.LineToRel(d) => v2add(cur, d)
+  | PathSeg.CubicToAbs(e, _, _) => e | PathSeg.CubicToRel(e, _, _) => v2add(cur, e)
+
+/// A segment's max-abs REACH — the farthest-from-origin absolute point it touches, resolved from `cur`. A
+/// line/move reaches its (absolute) endpoint; a cubic reaches the max abs over its end + both control points
+/// (all resolved from the cursor for a Rel cubic — the control hull bounds the curve).
+def path-seg-reach(s: PathSeg(Rational), cur: Vec2(Rational)) = match s with
+  | PathSeg.MoveToAbs(p) => v2abs(p) | PathSeg.LineToAbs(p) => v2abs(p)
+  | PathSeg.MoveToRel(d) => v2abs(v2add(cur, d)) | PathSeg.LineToRel(d) => v2abs(v2add(cur, d))
+  | PathSeg.CubicToAbs(e, c0, c1) => v2max(v2abs(e), v2max(v2abs(c0), v2abs(c1)))
+  | PathSeg.CubicToRel(e, c0, c1) =>
+    v2max(v2abs(v2add(cur, e)), v2max(v2abs(v2add(cur, c0)), v2abs(v2add(cur, c1))))
 
 /// The profile's ±x/±y HALF-EXTENT in its own XY plane, as a `Vec2(Rational)` (halfWidth, halfHeight). A
 /// `Rect(V2(w, h))` is FULL size centred at the origin → half-extent (w/2, h/2); a `Circle(r)` fills
@@ -372,8 +393,8 @@ def solid-rational-leaves-compare-under-destructure() =
           // the sphere radii 5/2 and 10/4 are the SAME normalized Rational; a differing radius (3/1) is not.
           (if a == b then (if a == 3 / 1 then trap("5/2 must differ from 3/1") else unit)
            else trap("5/2 == 10/4 normalized (Rational leaf walk)"))
-         | _ => trap("s2 tool is a Sphere"))
-       | _ => trap("s1 tool is a Sphere"))
+         | _ => trap("s2 tool is a Sphere too"))
+       | _ => trap("s1 tool is a Sphere too"))
      | _ => trap("s2 is a Difference"))
     | _ => trap("s1 is a Difference")
 
@@ -567,6 +588,16 @@ def path-half-extent-bounds-the-outline() =
         match path-half-extent(curved) with | Vec2.V2(cx, cy) =>
           if cx == 6 / 1 and cy == 5 / 1 then unit else trap("cubic extent bounds the control hull (6,5)"))
      else trap("square path extent is (4,2)")))
+
+@test
+def relative-path-segments-accumulate-the-cursor-in-the-extent() =
+  // REGRESSION (Copilot PR#573): a RELATIVE segment's Vec2 is a DELTA from the cursor, not an absolute point.
+  // path-half-extent must THREAD the cursor — two `line-by(10, 0)` steps REACH x=20, not 10. The old code
+  // abs'd each delta directly → it saw max-x = 10 (UNDER-approximating, an unsound too-small box). Pin the fix:
+  // start (0,0), line-by (10,0) → cursor (10,0), line-by (10,0) → cursor (20,0). Max-abs extent x MUST be 20.
+  let p = line-by(line-by(path-start(), v2(10 / 1, rzero())), v2(10 / 1, rzero())) in
+  (match path-half-extent(p) with | Vec2.V2(hx, _) =>
+    (if hx == 20 / 1 then unit else trap("relative segments accumulate: two line-by(10,0) reach x=20, not 10")))
 
 @test
 def a-path-profile-extrudes-with-the-path-bound() =
