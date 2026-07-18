@@ -413,6 +413,7 @@ pass	a closure captures another closure and applies it
 pass	a closure captures another closure and applies it at RUNTIME
 pass	a closure captures its environment by value at creation, unaffected by a later same-named binding
 pass	a closure captures the binding in scope where it was created
+pass	a closure capturing a value computed under a handler may escape the handle applied directly
 pass	a closure capturing an inner-handled perform result is applied under an OUTER handler of the same effect
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
 pass	a closure factory's returned capturing closure is applied at the call site
@@ -433,7 +434,7 @@ pass	a compound map key containing a rope is found by its flat-twin key
 pass	a compound map key whose Bytes element is a rope is found by its flat twin
 pass	a compound map key whose LIST element is a rope is found by its flat-twin key
 pass	a computed float map key is found by its literal twin
-pass	a concat-built and a push-built list with the same elements are the same map key
+pass	a concat-built and a push-built SMALL list (single-leaf, n<=32) with the same elements are the same map key
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
 pass	a conditional on a negated runtime condition selects the correct branch and shields the other
@@ -563,6 +564,7 @@ pass	a dependent-size segment that overruns the remaining bytes falls through
 pass	a depth-3 erased-and-boxed nested-sum match reads every level's discriminant at the right offset
 pass	a derived dimension composes across a def boundary through annotated Qty parameters
 pass	a destructuring let over a runtime value binds its parts
+pass	a destructuring record let over a runtime value binds its fields
 pass	a dictionary consumer called at two dictionaries is monomorphized per dictionary
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
 pass	a dimensionless quantity carries the group identity Unit.one
@@ -787,6 +789,7 @@ pass	a large whole-valued float renders its full value, not an integer saturatio
 pass	a later declaration in a do block sees an earlier one
 pass	a later let binding sees an earlier one in the same let
 pass	a later let binding sees an earlier pattern's binders
+pass	a later let binding sees an earlier record pattern's field binders
 pass	a le pattern segment reads a fixed-width integer little-endian
 pass	a leading nested-list element dispatches on the inner list's length
 pass	a leading-rest arm matches an exactly-minimum list with an empty rest
@@ -1337,6 +1340,7 @@ pass	a recognized string escape denotes its one scalar value
 pass	a record TYPE with a duplicate field name is a type error
 pass	a record annotated with the wrong field type is rejected
 pass	a record binding pattern binds fields by name, out of order and partial
+pass	a record binding pattern may leave a field's value a wildcard
 pass	a record binding pattern naming an absent field is rejected
 pass	a record carrying a field the annotation does not name is rejected
 pass	a record field VALUE still reads the parameter it names after the call
@@ -2067,6 +2071,7 @@ pass	addition of two symbols is rejected — a symbol is not a number
 pass	advancing the clock past the UInt64 nanosecond range traps rather than silently wrapping
 pass	all four leaf kinds in one quoted form dispatch their own tags
 pass	all-nullary enum equality compares discriminants
+pass	an ABORTIVE arm whose value is a COMPOUND matches the handle body type and folds
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an EFFECTFUL @requires predicate performs under the caller's handler and advances its state before the body

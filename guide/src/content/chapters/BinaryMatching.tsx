@@ -9,28 +9,28 @@ export default function BinaryMatching() {
       <H1>Binary matching</H1>
       <Lede>
         A <C>Bytes</C> chapter showed raw octets; this one gives them structure. The <C>(bin …)</C> form
-        describes a byte layout as a sequence of typed segments — and it works both ways: in expression
+        describes a byte layout as a sequence of typed segments, and it works both ways: in expression
         position it <em>builds</em> a <C>Bytes</C>, in a <C>match</C> pattern it <em>takes one apart</em>.
       </Lede>
 
       <H2>Building bytes from segments</H2>
       <P>
         A <C>(bin …)</C> expression lays out fixed-width fields. <C>(u16 258)</C> is a 16-bit unsigned
-        integer — two bytes, most-significant first (big-endian, the network default) — and <C>(u8 …)</C>{" "}
-        one byte. Return it and you see the exact octets it lays down:
+        integer, two bytes, most-significant first (big-endian, the network default), while <C>(u8 …)</C>{" "}
+        is one byte. Return it and you see the exact octets it lays down:
       </P>
       <Runnable source={`(bin (u16 258) (u8 (UInt8.wrap 5)))`} />
       <P>
-        <C>{`b"\\x01\\x02\\x05"`}</C> — three bytes: <C>258</C> is <C>0x0102</C>, written big-endian as{" "}
+        <C>{`b"\\x01\\x02\\x05"`}</C> is three bytes: <C>258</C> is <C>0x0102</C>, written big-endian as{" "}
         <C>\x01</C> then <C>\x02</C>, followed by the <C>u8</C> byte <C>\x05</C>. Each fixed-width segment
-        contributes exactly its width — a <C>u16</C> is always two bytes, a <C>u32</C> always four —
-        whatever value it carries, so you can read the layout straight off the result.
+        contributes exactly its width, so a <C>u16</C> is always two bytes and a <C>u32</C> always four,
+        whatever value it carries, and you can read the layout straight off the result.
       </P>
 
       <H2>Taking bytes apart</H2>
       <P>
         The same grammar, on the left of a <C>match</C> arm, <em>reads</em> a <C>Bytes</C> back. Matching a
-        two-byte value against <C>(bin (u16 n))</C> binds <C>n</C> to the integer those bytes encode —
+        two-byte value against <C>(bin (u16 n))</C> binds <C>n</C> to the integer those bytes encode, since
         construction and matching are exact inverses:
       </P>
       <Runnable
@@ -40,7 +40,7 @@ export default function BinaryMatching() {
       />
       <P>
         The arm reads <C>258</C> back. Byte order is explicit and honored both ways: add the <C>le</C>{" "}
-        modifier and the same integer is written — and read — least-significant byte first.
+        modifier and the same integer is written, and read, least-significant byte first.
       </P>
       <Runnable
         source={`(match (bin (u16 258 le))
@@ -50,7 +50,7 @@ export default function BinaryMatching() {
 
       <H2>A literal segment dispatches</H2>
       <P>
-        A literal in a segment matches by equality — the binary analogue of a literal value pattern. That's
+        A literal in a segment matches by equality, the binary analogue of a literal value pattern. That's
         how you dispatch on a tag byte, then read the fields behind it. Here a leading <C>1</C> guards the
         arm, and the following <C>u16</C> is read as <C>n</C>:
       </P>
@@ -60,7 +60,7 @@ export default function BinaryMatching() {
   (_                    0))`}
       />
       <P>
-        Written as a hex literal, the same idea reads a magic-number header legibly — a <C>u32</C> equal to{" "}
+        Written as a hex literal, the same idea reads a magic-number header legibly, so a <C>u32</C> equal to{" "}
         <C>0x89504E47</C> is the PNG signature, and a trailing <C>(bytes rest)</C> absorbs the payload after
         it:
       </P>
@@ -72,7 +72,7 @@ export default function BinaryMatching() {
 
       <H2>A pattern accounts for the whole value</H2>
       <P>
-        A <C>bin</C> pattern must describe the <em>entire</em> byte sequence — leftover bytes are a
+        A <C>bin</C> pattern must describe the <em>entire</em> byte sequence, so leftover bytes are a
         non-match. Three bytes against a pattern that names only two doesn't fire, so this falls to the
         catch-all and gives <C>0</C>:
       </P>
@@ -82,8 +82,8 @@ export default function BinaryMatching() {
   (_             0))`}
       />
       <P>
-        The fix is a trailing unsized <C>(bytes rest)</C>, which absorbs the variable-length remainder — now
-        the <C>u16</C> reads the first two bytes and <C>rest</C> takes the third, so the arm matches:
+        The fix is a trailing unsized <C>(bytes rest)</C>, which absorbs the variable-length remainder, so now
+        the <C>u16</C> reads the first two bytes and <C>rest</C> takes the third, and the arm matches:
       </P>
       <Runnable
         source={`(match (Bytes.of (list 1 2 3))
@@ -92,13 +92,13 @@ export default function BinaryMatching() {
       />
       <Note>
         Because a <C>bin</C> pattern never covers every possible byte sequence, a <C>match</C> over a{" "}
-        <C>Bytes</C> needs a catch-all <C>_</C> arm — the same exhaustiveness rule as a sum match. Without
+        <C>Bytes</C> needs a catch-all <C>_</C> arm, the same exhaustiveness rule as a sum match. Without
         one it's a compile error (CDZ0210).
       </Note>
 
       <H2>A segment's size can be a value</H2>
       <P>
-        The payoff: a segment's <em>length</em> can be a name bound earlier in the same pattern — the
+        The payoff: a segment's <em>length</em> can be a name bound earlier in the same pattern, the
         length-prefixed frame that every wire format is built on. Read a count <C>n</C>, then bind exactly{" "}
         <C>n</C> bytes to <C>body</C>, and let a final <C>rest</C> take what's left:
       </P>
@@ -109,7 +109,7 @@ export default function BinaryMatching() {
       />
       <P>
         The first byte is <C>2</C>, so <C>body</C> is the next two bytes (length <C>2</C>) and <C>rest</C> is
-        the trailing <C>99</C>. Building the same frame is the mirror image — write the length as a prefix,
+        the trailing <C>99</C>. Building the same frame is the mirror image, so write the length as a prefix,
         then splice the payload:
       </P>
       <Runnable
@@ -119,22 +119,22 @@ export default function BinaryMatching() {
       />
       <P>
         A two-byte length prefix plus a three-byte payload is five bytes. The length is computed and
-        narrowed to the segment's width with <C>UInt16.of</C> — a checked narrow, so a payload too long to
+        narrowed to the segment's width with <C>UInt16.of</C>, a checked narrow, so a payload too long to
         frame in 16 bits is a real error, not a silent wrap.
       </P>
 
       <Why tenet="A binary layout is width-typed, and checked at compile time">
-        A fixed-width segment takes a value of <em>exactly</em> its width — <C>(u8 v)</C> wants a{" "}
-        <C>UInt8</C>, <C>(bits v k)</C> a <C>(UInt k)</C>. Hand it something wider or negative and it's a
-        compile-time type error, not a runtime "does not fit" trap — construction is total, and narrowing is
+        A fixed-width segment takes a value of <em>exactly</em> its width, so <C>(u8 v)</C> wants a{" "}
+        <C>UInt8</C> and <C>(bits v k)</C> a <C>(UInt k)</C>. Hand it something wider or negative and it's a
+        compile-time type error, not a runtime "does not fit" trap, since construction is total, and narrowing is
         the caller's explicit choice (<C>UInt8.wrap</C> truncates, <C>UInt8.of</C> narrows checked). And the
         byte alignment is static too: a layout whose bits don't close a byte is rejected before it runs. The
-        result is that a binary format's shape is checked the same way the rest of your types are — the
+        result is that a binary format's shape is checked the same way the rest of your types are, so the
         layout can't silently corrupt a value, because a value that wouldn't fit never compiles.
       </Why>
 
       <P>
-        Bytes and binary layouts are about raw data. The last of the core value types is the opposite — a
+        Bytes and binary layouts are about raw data. The last of the core value types is the opposite, a
         value that's purely a <em>name</em>, compared by identity: <em>symbols</em>, next.
       </P>
 
@@ -144,7 +144,7 @@ export default function BinaryMatching() {
         prompt={
           <>
             Construction and matching are inverses over the same segment grammar. A <C>u16</C> holding{" "}
-            <C>513</C> is matched back — fill the segment kind so <C>n</C> reads <C>513</C>.
+            <C>513</C> is matched back, so fill the segment kind to make <C>n</C> read <C>513</C>.
           </>
         }
         starter={`(match (bin (u16 513))
@@ -167,7 +167,7 @@ export default function BinaryMatching() {
         prompt={
           <>
             A dependent-size frame: the first byte says how many bytes of body follow. Fill the size of the{" "}
-            <C>body</C> segment so it binds exactly the count the leading <C>u8</C> named — the answer is the
+            <C>body</C> segment so it binds exactly the count the leading <C>u8</C> named, and the answer is the
             body's length, <C>3</C>.
           </>
         }
@@ -180,7 +180,7 @@ export default function BinaryMatching() {
         expected="3"
         hint={
           <>
-            The size is the name bound by the earlier segment — <C>n</C>, read from the first byte (<C>3</C>).
+            The size is the name bound by the earlier segment, <C>n</C>, read from the first byte (<C>3</C>).
             So <C>(bytes body n)</C> binds the next three bytes, and <C>rest</C> takes the trailing <C>99</C>.
           </>
         }

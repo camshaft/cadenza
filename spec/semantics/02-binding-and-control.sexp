@@ -2853,6 +2853,37 @@
   (input  (let (((record (nope a)) (record (x 3) (y 4)))) a))
   (error  CDZ0203))
 
+(case "a destructuring record let over a runtime value binds its fields"
+  (doc    "`(def (f p) (let (((record (x a) (y b)) p)) (+ a b)))` destructures the RUNTIME parameter `p` (a
+           record built by `(mk 10)`, not a literal) at the binder, then `(f (mk 10))` reads its fields at
+           run time — `a`+`b` = 10+11 = 21 (core-semantics.md #A Binding Position Accepts An Irrefutable
+           Pattern). Pins that a record destructure reads the bound value's fields at RUN TIME, not only
+           when the record folds to a constant — the record companion of the runtime tuple/list destructures.")
+  (input  (do
+            (def (mk n) (record (x n) (y (+ n 1))))
+            (def (f p) (let (((record (x a) (y b)) p)) (+ a b)))
+            (def (main) (f (mk 10)))
+            (export main)))
+  (output (: 21 Int64)))
+
+(case "a record binding pattern may leave a field's value a wildcard"
+  (doc    "A record field's value sub-pattern MAY be a wildcard `_`, which binds nothing — `(let (((record
+           (x a) (y _)) (record (x 7) (y 4)))) a)` binds only `a` = 7 and ignores `y` (core-semantics.md #A
+           Binding Position Accepts An Irrefutable Pattern: `_` is a trivial irrefutable sub-pattern). This
+           is the field-level companion of the partial pattern (which OMITS a field) — here the field is
+           named but its value discarded. Pins that a wildcard field value is irrefutable and binds nothing.")
+  (input  (let (((record (x a) (y _)) (record (x 7) (y 4)))) a))
+  (output (: 7 Int64)))
+
+(case "a later let binding sees an earlier record pattern's field binders"
+  (doc    "`(let (((record (x a) (y b)) (record (x 3) (y 4))) (c (* a b))) c)` — the second binding's
+           initializer `(* a b)` references `a`/`b`, the field binders the first (record-destructuring)
+           binding introduced (core-semantics.md #The Bindings Of One `let` Take Effect In Order). `a`*`b` =
+           3*4 = 12. The record twin of the tuple case above — pins that record field binders are in scope
+           for the bindings that follow.")
+  (input  (let (((record (x a) (y b)) (record (x 3) (y 4))) (c (* a b))) c))
+  (output (: 12 Int64)))
+
 (case "a let binder may be a single-variant-sum pattern that destructures the payload"
   (doc    "A SINGLE-VARIANT sum's sole constructor ALWAYS matches, so it is an IRREFUTABLE pattern — valid
            in a `let` binder position (core-semantics.md #A Binding Position Accepts An Irrefutable

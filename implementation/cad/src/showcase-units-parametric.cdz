@@ -19,10 +19,10 @@ import { Solid, Vec3, lower, v3, v3-eq, bounding-box, aabbr-size, solidr-is-empt
 import { box, hole-through } from "helpers"
 import { inch } from "units"
 
-@param(widget: slider, range: [1, 8], default: 3) bwidth : Rational
-@param(widget: slider, range: [1, 6], default: 2) bdepth : Rational
-@param(widget: slider, range: [1, 4], default: 1) bthickness : Rational
-@param(widget: slider, range: [1, 2], default: 1) bbore : Rational
+@!param(widget: slider, range: [1, 8], default: 3) bwidth : Rational
+@!param(widget: slider, range: [1, 6], default: 2) bdepth : Rational
+@!param(widget: slider, range: [1, 4], default: 1) bthickness : Rational
+@!param(widget: slider, range: [1, 2], default: 1) bbore : Rational
 
 /// A parametric imperial bracket: a w-by-d-by-t plate (dimensions in inches, converted to exact model mm via
 /// inch) with a central bolt hole of radius r inches drilled through the thickness. Every argument is an inch
