@@ -3124,6 +3124,61 @@ impl ComposedRuntime {
         out[0].clone()
     }
 
+    /// Like [`closure_make_call`], but RESOURCE-DROPS the still-owned handle after the call, then reads the
+    /// result. The production single-export ABI is `borrow<t>` for `call` (serialize.rs, `call_borrow=true`
+    /// — the REPEATABLE list-call): `call` does NOT release the cell, so the host keeps the handle live and
+    /// the `t-dtor` reclaims it on DROP. This mirrors [`run_escape_and_drop`] (the value-heap escape's
+    /// host-drop reclamation) for the closure seam: after make+call+drop, `live_objects()` reads 0. Without
+    /// the drop, live=1 is CORRECT for borrow (see `a_runtime_closure_leaks_exactly_one_cell_known_gap`).
+    fn closure_make_call_drop(
+        &mut self,
+        make_args: &[wasmtime::component::Val],
+        call_args: &[wasmtime::component::Val],
+    ) -> wasmtime::component::Val {
+        use wasmtime::component::{ResourceAny, Val};
+        let iface = self
+            .program
+            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
+            .expect("closure interface exported");
+        let make_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "make")
+            .expect("closure `make` exported");
+        let call_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "call")
+            .expect("closure `call` exported");
+        let make = self
+            .program
+            .get_func(&mut self.store, make_idx)
+            .expect("make func");
+        let call = self
+            .program
+            .get_func(&mut self.store, call_idx)
+            .expect("call func");
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut self.store, make_args, &mut handle)
+            .expect("make call");
+        make.post_return(&mut self.store).expect("make post_return");
+        // `call` BORROWS the handle (call_borrow=true) — clone it in, keep the original owned for the drop.
+        let mut full_call_args = vec![handle[0].clone()];
+        full_call_args.extend_from_slice(call_args);
+        let mut out = [Val::Bool(false)];
+        call.call(&mut self.store, &full_call_args, &mut out)
+            .expect("call");
+        call.post_return(&mut self.store).expect("call post_return");
+        // DROP the still-owned handle → the `t-dtor` runs `heap.drop(rep)`, reclaiming the closure cell and
+        // balancing make's `arr-alloc`. This is the release point under the borrow ABI (call keeps nothing).
+        if let Val::Resource(r) = handle[0] {
+            let r: ResourceAny = r;
+            r.resource_drop(&mut self.store)
+                .expect("resource drop fires the closure t-dtor");
+        } else {
+            panic!("make did not return a resource handle");
+        }
+        out[0].clone()
+    }
+
     /// Mint ONE closure handle with `make` and `call` it TWICE, returning both results. Proves the
     /// `borrow<t>` `call` is REPEATABLE — the host keeps the handle across calls (versus `own<t>`, which
     /// consumes it, so a second call on the same handle traps "unknown handle index"). The handle is
@@ -54947,6 +55002,83 @@ mod stage1 {
         );
     }
 
+    // Whether the emitted component's core code carries a `call_indirect` opcode — the runtime-dispatch
+    // witness the closure-devirtualization/specialization tests assert is ABSENT once a known closure fuses.
+    fn component_has_call_indirect(bytes: &[u8]) -> bool {
+        use wasmparser::{Parser, Payload};
+        for payload in Parser::new(0).parse_all(bytes) {
+            if let Ok(Payload::CodeSectionEntry(body)) = payload {
+                let mut ops = body.get_operators_reader().expect("ops");
+                while let Ok(op) = ops.read() {
+                    if matches!(op, wasmparser::Operator::CallIndirect { .. }) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn a_const_closure_re_passed_through_recursion_specializes_and_fuses() {
+        // S2 closure fusion: a recursive driver with a `const` CLOSURE param that re-passes the closure to
+        // itself UNCHANGED (`(loop step s2 acc)`) used to DECLINE (CDZ0201) — the standalone generic body
+        // can't bind the unbound const `step`, a FALSE POSITIVE (a const-param fn is specialize-at-each-call).
+        // The identity-re-pass exemption makes that standalone decline a plain decline (not a fault), so the
+        // program compiles and every CONCRETE call specializes `step` to its closure + threads it through the
+        // recursion → the call_indirect DEVIRTUALIZES to a direct call (S1) and the closure fuses. Assert
+        // BOTH: it computes the right value (a run test — a wrong specialization would miscompute) AND the
+        // emitted core carries NO call_indirect (the fusion witness). `loop` over [1,2,3] summing = 6.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (def (loop (const (: step (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) (: s (List Int64)) (: acc Int64)) \
+                 (match (step s) ((Option.None) acc) ((Option.Some p) (match p ((tuple x s2) (loop step s2 (+ acc x))))))) \
+               (def (main) (loop (fn ((: s (List Int64))) (match s ((list) (Option.None)) ((list h .. t) (Option.Some (tuple h t))))) (list 1 2 3) 0)) \
+               (export main))",
+        )))
+        .expect("a recursive const-closure driver compiles (identity re-pass is not a fault)");
+        if let Some(v) = run_linked(&bytes, "main") {
+            assert_eq!(
+                v, "6",
+                "the specialized recursive closure driver sums [1,2,3] to 6"
+            );
+        }
+        assert!(
+            !component_has_call_indirect(&bytes),
+            "the const closure re-passed through recursion must specialize + devirtualize (no call_indirect)"
+        );
+    }
+
+    #[test]
+    fn a_derived_const_closure_re_pass_still_rejects_not_an_identity_repass() {
+        // The UNSOUND-TWIN guard (v-inference ACK): the identity-re-pass exemption must be NARROW — it
+        // rescues ONLY a bare re-pass of the callee's own const param, NOT a DERIVED const arg. Here the
+        // recursion passes a NEW closure `(fn (x) (+ (step x) 1))` (composed from `step`) to the const param
+        // each depth — that is not an identity re-pass (a fresh, unbounded-per-depth closure), so it MUST
+        // still be the coded CDZ0201 reject, exactly as before. Proves the exemption did not open a hole.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m \
+                       (def (bad (const (: step (-> Int64 Int64))) (: s Int64) (: acc Int64)) \
+                         (if (= s 0) acc (bad (fn ((: x Int64)) (+ (step x) 1)) (- s 1) (+ acc (step s))))) \
+                       (def (main) (bad (fn ((: x Int64)) (* x 2)) 3 0)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let has_coded = out.diagnostics.iter().any(|d| {
+            d.severity == crate::abi::Severity::Error && d.code.as_deref() == Some("CDZ0201")
+        });
+        assert!(
+            has_coded,
+            "a DERIVED const-closure re-pass (not an identity re-pass) must still be a coded CDZ0201 reject, got: {:?}",
+            out.diagnostics
+        );
+    }
+
     #[test]
     fn a_const_parameter_rejects_a_runtime_dependent_argument() {
         // 09-functions "a const parameter rejects an argument that depends on runtime data": a `const`
@@ -71748,15 +71880,17 @@ mod closure_host_resource {
         );
     }
 
-    /// C-HOST-5 (the leak fix): a closure `make`+`call` round-trip leaves NO live heap cell. `make` builds
-    /// the closure cell (`arr-alloc`), `call` takes `own<t>` (the canonical ABI transfers ownership INTO
-    /// `call`), dispatches the closure, then RELEASES the cell — `heap.drop(rep)` after the `call_indirect`
-    /// returns (the lifted body has finished reading its captures from the env). This mirrors the value-heap
-    /// escape's own-owns-and-drops fix ([[rcdzc-r1-resource-encode-linking-findings]]): `resource.rep` on a
-    /// BORROWED self traps in wasmtime 37, so `call` keeps `own<t>` and drops the rep itself rather than
-    /// relying on a `borrow<t>` + host-drop dtor. A CAPTURING closure (`adder(10)`) is the real test — its
-    /// cell holds the captured `k`, so the drop must reclaim a genuinely live node. `#[ignore]` — needs the
-    /// debug-counters runtime in the store (`cargo xtask build`).
+    /// C-HOST-5 (the leak fix): a closure `make`+`call`+host-DROP leaves NO live heap cell. `make` builds the
+    /// closure cell (`arr-alloc`); `call` BORROWS the handle (the production single-export ABI is
+    /// `call_borrow=true` in serialize.rs — the REPEATABLE list-call, so `call` keeps NOTHING and the host
+    /// retains the live handle); the host then RESOURCE-DROPS it, firing the `t-dtor` → `heap.drop(rep)` to
+    /// reclaim the cell (mirrors the value-heap escape's host-drop reclamation, [`run_escape_and_drop`] /
+    /// [[rcdzc-r1-resource-encode-linking-findings]]). A CAPTURING closure (`adder(10)`) is the real test —
+    /// its cell holds the captured `k`, so the drop must reclaim a genuinely live node. NOTE: without the
+    /// drop, `live=1` after a single call is CORRECT under the borrow ABI (the cell is reclaimed by the dtor
+    /// on drop, not by `call`) — see `a_runtime_closure_leaks_exactly_one_cell_known_gap` for the recursion
+    /// gap and `a_round_trip_leaves_no_live_objects` for the consumer-owns-and-drops end-state. `#[ignore]` —
+    /// needs the debug-counters runtime in the store (`cargo xtask build`).
     #[test]
     #[ignore]
     fn a_closure_call_leaves_no_live_objects() {
@@ -71768,22 +71902,24 @@ mod closure_host_resource {
             );
             return;
         };
-        // A capturing closure: make(10) allocates a cell holding k=10; call(5) dispatches (+ x k) = 15 and
-        // must release the cell. After the round-trip, live-objects must be 0.
+        // A capturing closure: make(10) allocates a cell holding k=10; call(5) dispatches (+ x k) = 15
+        // (borrowing the handle); the host then drops the handle, whose t-dtor reclaims the cell. After the
+        // make+call+drop round-trip, live-objects must be 0.
         let src = "(module m (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder))";
         let program =
             crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
         let mut rt = super::ComposedRuntime::new(&program, &runtime);
         assert_eq!(
-            rt.closure_make_call(&[Val::S64(10)], &[Val::S64(5)]),
+            rt.closure_make_call_drop(&[Val::S64(10)], &[Val::S64(5)]),
             Val::S64(15),
             "adder(10) then call(5) = 15"
         );
         assert_eq!(
             rt.live_objects(),
             0,
-            "closure leak: the closure cell is still live after make+call (expected 0 — `call` owns the \
-             own<t> handle and must drop the cell after dispatch)"
+            "closure leak: the closure cell is still live after make+call+drop (expected 0 — `call` BORROWS \
+             the handle under call_borrow=true, so the host's resource-drop fires the t-dtor that reclaims \
+             the cell)"
         );
     }
 

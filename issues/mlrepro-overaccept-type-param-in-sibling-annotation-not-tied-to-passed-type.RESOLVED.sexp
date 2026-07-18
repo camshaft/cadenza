@@ -84,3 +84,5 @@
 ; reflected type-value BEFORE sibling args unify (spec-mandated type-system.md L60). Both repro defs (len
 ; over (Lst Bool) at t=Int64) now REJECT; correct-type calls + monomorphization unaffected. The '_'-render
 ; cosmetic twin was already fixed (subst.apply). 2104/2104 pass. Retire on land.
+
+; LANDED + CONTENT-VERIFIED (corpus-bugfix 2026-07-18, trunk 57ac76c53): 119db7522 on trunk. (f Int64 (list true false)) with (: l (List t)) now correctly REJECTS CDZ0203 ("argument for l is a (List Bool), but (List Int64) is expected — elements should be Int64, but these are Bool"). The (: t Type) param now ties the sibling (List t) annotation to the passed type value. Fully resolved.
