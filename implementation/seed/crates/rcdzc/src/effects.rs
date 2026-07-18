@@ -3956,7 +3956,11 @@ fn thread_bounded(
             // value, not the perform. Gated on the closure shape SYNTACTICALLY so a non-closure let body (a
             // recursive multi-value fold, an arithmetic tail, …) is byte-identical — the collect below (and
             // its `strongly_pure` probes, which touch shared caches) only runs for the closure case.
-            let body_is_closure = matches!(resolved_of(db, body_occ), Resolved::Lambda { .. });
+            // A body reached through NESTED `let`s ending in a lambda — `(let ((a (Ctr.tick))) (let ((b
+            // …)) (fn …)))`, an outer capture referenced by a closure buried in an inner let — counts too,
+            // so peel let-chains (`body_returns_lambda`). Without this the outer `let`'s body (an inner
+            // `let`, not a lambda) failed the gate, and the outer capture `a` orphaned → CDZ0101.
+            let body_is_closure = body_returns_lambda(db, body_occ);
             let mut cur = states;
             let mut rpairs = Vec::with_capacity(pairs.len());
             let mut capture_subst: HashMap<StructId, StructId> = HashMap::default();
@@ -4079,6 +4083,25 @@ fn thread_bounded(
         // Some other form that DOES contain a perform but is not one of the shapes we thread (e.g. an
         // `if`/`match`/`let` with a perform inside — E1c-2/E3 territory). Decline.
         _ => None,
+    }
+}
+
+/// Whether `node`'s value is a RETURNED LAMBDA, seen through `let`-CHAINS — a `(fn …)` directly, or the
+/// body of a `(let (binds) <returns-lambda>)` (recursively). This is the shape that suffers CAPTURE
+/// ORPHANING in the `let` thread arm: a closure buried at the end of one-or-more nested `let`s, capturing
+/// a binding from an OUTER let, whose body is `copy_pure`d whole (detaching the capture). Gates the
+/// captured-value inline (see the `let` arm). SYNTACTIC (no reduction) so it never perturbs a shared cache;
+/// bounded by the arena's acyclic structure (a `let`-chain terminates). A NON-lambda tail (arithmetic, a
+/// recursive multi-value fold) returns false, keeping every non-closure let-fold byte-identical.
+fn body_returns_lambda(db: &mut Db, node: StructId) -> bool {
+    match resolved_of(db, node) {
+        Resolved::Lambda { .. } => true,
+        _ => db
+            .ast
+            .as_form(node, "let")
+            .map(<[_]>::to_vec)
+            .filter(|tail| tail.len() == 2)
+            .is_some_and(|tail| body_returns_lambda(db, tail[1])),
     }
 }
 

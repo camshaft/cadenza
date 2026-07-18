@@ -290,6 +290,23 @@
             (export main)))
   (declines))
 
+(case "runtime Bytes ordering declines uniformly — the spec blesses no Bytes order"
+  (doc    "`(< (mk 2) (mk 3))` where `mk` builds a runtime `(Bytes.of (list 1 n))` asks for a three-way order
+           on two runtime byte sequences. Bytes is byte-canonical for EQUALITY (`byte sequences are equal by
+           their bytes in order`, 10-bytes.sexp) but the spec blesses a total ORDER only for
+           Int/Float/Symbol/String — Bytes, like a plain list/tuple/sum, has NONE — so all backends DECLINE
+           rather than invent a byte-lexicographic order the language never defined. (This is more surprising
+           than the list case because a byte sequence LOOKS orderable, but the ordering was never blessed;
+           contrast Symbol/String, whose content-lexicographic order IS blessed and computes.) The Bytes
+           companion of the list-ordering decline above: an intentional, tracked reject-don't-miscompile
+           boundary, UNIFORM across backends (not a wasm-vs-rust divergence), that would flip to a witness only
+           if a Bytes order were blessed and its lexicographic walk built.")
+  (input  (do
+            (def (mk (: n Int64)) (Bytes.of (list (UInt8.wrap n) 2)))
+            (def (main) (if (< (mk 2) (mk 3)) 1 0))
+            (export main)))
+  (declines))
+
 (case "a runtime float is found as a Set element by canonical byte form"
   (doc    "Set membership over a `Set Float64` with a runtime query: `1.5` IS a member of `(Set.of (list
            1.5 2.5))` → true, `9.9` is NOT → false. The float element/query is compared by its canonical

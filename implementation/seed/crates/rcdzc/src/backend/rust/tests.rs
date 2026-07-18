@@ -2924,6 +2924,37 @@ fn rustc_roundtrip_recursive_sum_folds() {
 }
 
 #[test]
+fn rustc_roundtrip_recursive_match_scrutinee_materializes_once_not_exponentially() {
+    // A match over a RECURSIVE-CALL scrutinee whose payload binder is used MULTIPLE times. Each payload
+    // read via `emit_sum_payload` used to RE-EMIT the scrutinee expression, so a binder used K times
+    // re-emitted the recursive call K times → `2^depth` calls (an exponential blow-up: `run(-40)` HUNG).
+    // The fix materializes a non-trivial scrutinee into ONE `let __ms` and reads payloads from it. Pins
+    // (a) the emitted `f` binds its recursive-call scrutinee ONCE (a single `let __ms…` per match, and the
+    // recursive call `f(` appears once per level, not doubling), and (b) it RUNS to a value at a depth that
+    // would hang if still exponential. `f` builds a 2-field `Mk` from the recursively-summed tail.
+    let rs = compile_rust(
+        "(module m (type P (Mk Int64 Int64) Nil) \
+           (def (f (: n Int64)) (if (= n 0) Nil \
+             (match (f (+ n 1)) (((. P Mk) (tuple a _)) (P.Mk a a)) (((. P Nil) _) (P.Mk 1 1))))) \
+           (def (run) (match (f -40) (((. P Mk) (tuple x _)) x) (((. P Nil) _) 0))) (export run))",
+    );
+    // The scrutinee is materialized: a `let __ms` binds each recursive-call match subject once, and the
+    // match dispatches on that local (`match __ms`), not on a re-emitted `f(…)`.
+    assert!(
+        rs.contains("let __ms") && rs.contains("match __ms"),
+        "a recursive-call match scrutinee binds to a `let __ms` once and matches the local:\n{rs}"
+    );
+    // Runs at n=-40 — 2^40 calls if exponential (would hang); linear with the fix. `f(-40)` recurses to
+    // `f(0)=Nil`, each level's `Mk a a` carries the tail's summed head; `run` reads `Mk`'s first field.
+    if let Some(out) = rustc_run(&rs, "run()") {
+        assert_eq!(
+            out, "1",
+            "the materialized recursive match runs (linear, not 2^40)"
+        );
+    }
+}
+
+#[test]
 fn rustc_roundtrip_boxed_payload_projected_more_than_once_clones() {
     // A recursive sum whose `Cons` payload the Rust backend BOXES (`Cons(Box<(i64,L)>)`), where the bound
     // payload field is PROJECTED MORE THAN ONCE: `(let ((d (f t))) (if (= d 0) h d))` uses the recursive

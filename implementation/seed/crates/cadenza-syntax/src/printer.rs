@@ -2555,19 +2555,22 @@ impl<'a> Printer<'a> {
         }
     }
 
-    /// If `items` is a quantity literal `(Qty.of <numlit> (Unit.of #"name"))`, return its numeric
-    /// operand and the unit name — so it prints as the concise `<num> name` surface (the inverse of the
-    /// parser's `maybe_quantity_literal`). All of these must hold, else the general call form renders it
-    /// (a faithful round-trip either way):
+    /// If `items` is a quantity `(Qty.of <operand> (Unit.of #"name"))`, return its operand and the unit
+    /// name — so it prints as the concise `<operand> name` surface (the inverse of the parser's general
+    /// `maybe_unit_suffix` postfix). All of these must hold, else the general call form renders it (a
+    /// faithful round-trip either way):
     ///   * head is the member access `(. Qty of)` and there are exactly two arguments;
-    ///   * arg 0 is a NON-NEGATIVE numeric literal (the surface starts `<digit>… name`, so a negative
-    ///     or non-numeric operand would not re-lex as a number-then-name adjacency);
+    ///   * arg 0 is a TIGHT unit operand (see [`Self::is_tight_unit_operand`]) — a non-negative numeric
+    ///     literal OR a name / call / member-chain — i.e. an expression that binds at least as tight as
+    ///     the unit-suffix postfix, so `<operand> name` re-lexes back to the SAME `(Qty.of operand unit)`.
+    ///     An infix / keyword-form / already-quantity operand is NOT tight (`a + b meter` binds the unit
+    ///     to `b`; `if … meter` to the else-branch), so it falls back to the explicit `Qty.of(…)` call;
     ///   * arg 1 is `(Unit.of #"name")` where `name` is a bare-safe identifier (re-lexes to one `Ident`).
     fn quantity_literal(&self, items: &[StructId]) -> Option<(StructId, String)> {
         if items.len() != 3 || !self.is_member_call(items[0], "Qty", "of") {
             return None;
         }
-        if !self.is_nonneg_number(items[1]) {
+        if !self.is_tight_unit_operand(items[1]) {
             return None;
         }
         let Struct::List(unit) = self.a.get(items[2]) else {
@@ -2584,6 +2587,40 @@ impl<'a> Printer<'a> {
             _ => return None,
         };
         Some((items[1], name))
+    }
+
+    /// Whether `id` is a TIGHT operand for the concise `<operand> unit` quantity surface — one that binds
+    /// at least as tight as the unit-suffix postfix, so printing `<operand> name` re-parses to the SAME
+    /// `(Qty.of operand (Unit.of #name))` node. Accepts: a non-negative numeric literal (`5 meter`), a
+    /// bare name (`x meter`), a member-access chain (`x.y meter`, via `unquote_atomic`'s plain-key walk),
+    /// or a NAME-headed application / call (`f(x) meter`, `f(g(x)) meter`). REJECTS an infix application
+    /// (`a + b meter` would bind the unit to `b`), a keyword form (`if`/`let`/`match`/`fn` — the unit
+    /// would bind to the tail), a computed-callee application, and an already-`Qty.of` operand (which
+    /// would double-suffix). Those fall back to the explicit `Qty.of(…)` render (a faithful round-trip).
+    fn is_tight_unit_operand(&self, id: StructId) -> bool {
+        if self.is_nonneg_number(id) {
+            return true;
+        }
+        match self.a.get(id) {
+            // a bare name atom (`x`)
+            Struct::Atom(_) => self.head_name(id).is_some(),
+            Struct::List(items) if !items.is_empty() => {
+                // a member-access chain `(. a b …)` with plain keys (prints `a.b`, re-lexes tight)
+                if self.head_name(items[0]).as_deref() == Some(".") {
+                    return self.unquote_atomic(id);
+                }
+                // a NAME-headed application `(f arg…)` -> `f(arg…)` — tight (a call binds at postfix). A
+                // head that is a special form / infix operator / string-ctor is NOT a plain call, and a
+                // computed callee (`(expr) arg`) is excluded (its callee could itself be non-tight).
+                match self.head_name(items[0]) {
+                    Some(h) => {
+                        infix_prec(&h).is_none() && !self.is_self_delimiting_form(id) && h != "."
+                    }
+                    None => false,
+                }
+            }
+            _ => false,
+        }
     }
 
     /// DISPLAY-only. If `items` is a quantity VALUE `(Qty.of <value> <unit>)`, return its magnitude and
@@ -3687,6 +3724,59 @@ mod tests {
         assert_eq!(print(&odd, 80), "Qty.of(5, Unit.of(#\"foo bar\"))");
         let bare = sexpr::read(r#"(Unit.of #"meter")"#).unwrap();
         assert_eq!(print(&bare, 80), "Unit.of(#meter)");
+    }
+
+    #[test]
+    fn quantity_over_a_tight_non_literal_operand_prints_concise() {
+        // The parser accepts unit application as a general POSTFIX on any tight expression
+        // (`x meter`, `f(x) meter`, `x.y meter` — not just a literal `5 meter`). The printer now mirrors
+        // that: a `(Qty.of <tight> (Unit.of #name))` renders concise `<tight> name` for a name / call /
+        // member-chain operand, re-reading to the same node. Before, only a numeric-literal operand
+        // rendered concise and every other operand fell back to the verbose `Qty.of(x, Unit.of(#meter))`.
+        assert_eq!(assert_roundtrip("x meter", 80), "x meter");
+        assert_eq!(assert_roundtrip("f(x) meter", 80), "f(x) meter");
+        assert_eq!(assert_roundtrip("f(g(x)) meter", 80), "f(g(x)) meter");
+        assert_eq!(assert_roundtrip("x.y meter", 80), "x.y meter");
+        // The independent s-expr oracle: a var/call operand prints concise.
+        assert_eq!(
+            print(
+                &sexpr::read(r#"(Qty.of x (Unit.of #"meter"))"#).unwrap(),
+                80
+            ),
+            "x meter"
+        );
+        assert_eq!(
+            print(
+                &sexpr::read(r#"(Qty.of (f x) (Unit.of #"meter"))"#).unwrap(),
+                80
+            ),
+            "f(x) meter"
+        );
+        // NON-tight operands stay in the explicit `Qty.of(…)` call form — the concise `<op> name` surface
+        // would MISBIND (`a + b meter` binds the unit to `b`; `if … meter` to the else-branch; a nested
+        // `Qty.of` would double-suffix). Each still round-trips via the call form.
+        assert_eq!(
+            print(
+                &sexpr::read(r#"(Qty.of (+ a b) (Unit.of #"meter"))"#).unwrap(),
+                80
+            ),
+            "Qty.of(a + b, Unit.of(#meter))"
+        );
+        assert_eq!(
+            print(
+                &sexpr::read(r#"(Qty.of (if a b c) (Unit.of #"meter"))"#).unwrap(),
+                80
+            ),
+            "Qty.of(if a then b else c, Unit.of(#meter))"
+        );
+        // A negative literal is not the `<digit>… name` surface either — stays explicit.
+        assert_eq!(
+            print(
+                &sexpr::read(r#"(Qty.of -3 (Unit.of #"meter"))"#).unwrap(),
+                80
+            ),
+            "Qty.of(-3, Unit.of(#meter))"
+        );
     }
 
     /// The DISPLAY surface renders a VALUE for a human — dropping the round-trip ceremony the canonical

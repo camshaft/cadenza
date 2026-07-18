@@ -35,3 +35,18 @@ CONTAINING a list (the walk recurses into the list element + hits the missing ar
 list =. Verified wasm: (= (Option.Some (list a b)) …) DECLINES; (= (tuple (list a b) 9) …) DECLINES; rust
 computes both; control (tuple, no list) computes. So = on a record-with-a-list-field / Option-of-list /
 tuple-with-a-list is unusable on wasm. The SAME one-arm dispatch fix clears the whole family at once.
+
+---
+⚠ SOUNDNESS CORRECTION (v-runtime, 2026-07-18) — the champ_eq one-arm flip is a MISCOMPILE, DO NOT apply:
+champ_eq is a PHYSICAL byte/structural walk, correct ONLY for a byte-canonical rep. A CHAMP map/set IS
+byte-canonical; an RRB VECTOR (List) is ELEMENT-canonical NOT shape-canonical (concat-built vs push-built
+lists with identical elements have DIFFERENT internal shapes — relaxed interior nodes + packed-bool leaf;
+runtime lib.rs:20834-42 + 3650 document this, its own fuzz refuses to assert champ_eq for vecs). Routing = through
+champ_eq -> [1,2,3](concat) == [1,2,3](push) returns FALSE = silent equality miscompile. That's WHY
+ty_heap_walkable returns false for Ty::List BY DESIGN + why a List is never a map/set key. The "capability
+exists via Set/Map dedup" was for map/set STORAGE (canonical CHAMP), NOT a List value/element compare.
+SOUND FIX: an ELEMENT-WISE walk (compare vec-len, then op_vec_get each index in order — shape-independent),
+a sibling of the value_cmp_shaped v-runtime built for slice-2 (compound ordering). So sound List = is a real
+INCREMENT (~value-cmp shape, not a one-liner), QUEUED AFTER slice-2. Blast radius (Option-of-list,
+tuple-with-list-field) all need the same element-wise list leaf; the increment clears them. NOT the earlier
+one-arm flip — that passes same-shape tests but miscompiles concat-vs-push twins.
