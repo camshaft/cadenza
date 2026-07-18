@@ -27,10 +27,11 @@ export const CAD_LIB_FORMAT: Surface = "ml";
 ///     (a `PathProfile` extruded/revolved — the arch-fin spline showcase).
 export const CAD_IMPORTED_NAMES = ["Solid", "v3", "lower", "Profile", "path-start", "line-to", "cubic-to", "v2"] as const;
 /// The names /cad's model buffer imports from `helpers` — the ergonomic wrappers (`helpers.cdz` exports):
-/// primitives (`box`/`cube`/`ball`/`cyl`), moves (`move`/`move-x`/`move-y`/`move-z`), scales, and the
-/// boolean wrappers (`fuse`/`cut`/`common`/`hole-through`). A parametric model (e.g. the mounting plate)
-/// builds from these; a plain model leaves them unused (benign).
-export const CAD_HELPER_NAMES = ["box", "cube", "ball", "cyl", "move", "move-x", "move-y", "move-z", "scale", "scale-xyz", "fuse", "cut", "common", "hole-through"] as const;
+/// primitives (`box`/`cube`/`ball`/`cyl`), moves (`move`/`move-x`/`move-y`/`move-z`), scales, ROTATIONS
+/// (`rotate`/`rotate-x`/`rotate-y`/`rotate-z`) + MIRRORS (`mirror-x`/`mirror-y`/`mirror-z`) — the transforms
+/// an assembly-as-code model mates parts with — and the boolean wrappers (`fuse`/`cut`/`common`/
+/// `hole-through`). A parametric or assembly model builds from these; a plain model leaves them unused (benign).
+export const CAD_HELPER_NAMES = ["box", "cube", "ball", "cyl", "move", "move-x", "move-y", "move-z", "scale", "scale-xyz", "rotate", "rotate-x", "rotate-y", "rotate-z", "mirror-x", "mirror-y", "mirror-z", "fuse", "cut", "common", "hole-through"] as const;
 /// The names /cad's model buffer imports from `units` — the real-world UNIT edge constructors
 /// (`units.cdz`): `inch` (and future mm/cm/…), each converting a Rational magnitude to the model's exact-mm
 /// scale. The units-parametric showcase (an imperial bracket authored in inches) uses `inch`; a plain model

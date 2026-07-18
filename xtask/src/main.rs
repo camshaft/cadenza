@@ -104,9 +104,11 @@ enum Cmd {
         /// assert the OBSERVABLE RUN OUTCOME (value / trap-kind / decline-code) is equivalent across all
         /// four (the tiered-opt invariant — every level is observably identical). NOT a byte diff: the
         /// wasm emit is not byte-deterministic run-to-run, so the observable outcome is the real invariant.
-        /// A level that changes the outcome is a candidate miscompile (hard fail). Wasm-target only for now
-        /// (rejects `--target rust`/`rust-async`); ignores `--save`/`--check` (no baseline — a same-run
-        /// cross-level diff).
+        /// A level that changes the outcome is a candidate miscompile (hard fail). Honors `--target`:
+        /// `wasm` (default) sweeps the wasm pipeline, `rust`/`rust-async` the rustc pipeline (each level
+        /// threaded through as `--opt-level`); `--target cadenza-ml` is rejected (the self-hosted compiler
+        /// has no opt-level tier surface). Ignores `--save`/`--check` (no baseline — a same-run cross-level
+        /// diff).
         #[arg(long, conflicts_with_all = ["save", "check"])]
         opt_sweep: bool,
     },

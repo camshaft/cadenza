@@ -7848,6 +7848,43 @@ fn check_application(
     // faults, then return (skip the generic scheme-unify — `Unit.in` has no HM scheme).
     //= spec/capabilities/units-of-measure.md#an-explicit-conversion-unwraps-to-a-bare-number
     //# The chosen unit MUST share the quantity's dimension, so that a conversion across dimensions — a length into a duration — remains an error rather than silently producing a number.
+    // `Qty.value q` recovers a quantity's underlying number — its operand MUST be a quantity. A NON-quantity
+    // argument (commonly a bare number that is the result of a PRIOR `Unit.in`/`as`, which UNWRAPS to a bare
+    // number — so `(Qty.value (Unit.in inch (Qty.of 5 foot)))` applies `Qty.value` to the bare `60`, NOT a
+    // quantity) makes `apply_type`'s `QtyValue` arm return `Ty::Any` ("faulted elsewhere") — but nothing
+    // faulted it, so the `Any`-typed result slipped past `cdz check` and declined only at the backend
+    // ("function return type has no machine representation"), a check-vs-compile gap. Reject it here with a
+    // coded CDZ0501 that names the operand's type + the repair: a conversion result is ALREADY the bare
+    // number, so drop the `Qty.value`. Guarded to skip a genuine quantity + unsolved types (`Any`/`Var`),
+    // which fault (or resolve) elsewhere. Mirrors the `Unit.in`-non-quantity reject just below.
+    if args.len() == 1
+        && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::QtyValue)
+    {
+        // Collect the OPERAND's own faults FIRST (into a temp), so an inner error is the primary
+        // diagnostic — e.g. `(Qty.value (% (Qty …) (Qty …)))`: the `%` on a quantity is the real cause and
+        // its type leaks to a bare `Int64`, which would otherwise trip THIS check with a misleading
+        // "Qty.value … not a quantity" ahead of the honest "% not defined on quantities". Only emit the
+        // non-quantity reject when the operand is itself well-typed (no inner fault) AND resolves to a
+        // genuine non-quantity — the `(Qty.value 60)` / `(Qty.value (Unit.in …))` shape this targets.
+        let mut operand_faults = Vec::new();
+        collect(db, args[0], &mut operand_faults);
+        let operand_clean = operand_faults.is_empty();
+        out.append(&mut operand_faults);
+        let operand_ty = type_of(db, args[0]);
+        if operand_clean && !matches!(operand_ty, Ty::Qty { .. } | Ty::Any | Ty::Var(_)) {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: Qty.value operand is not a quantity (CDZ0501)");
+            out.push(Reject::coded(
+                Code::DimensionMismatch,
+                format!(
+                    "`Qty.value` recovers a quantity's number, but this operand is {} — a plain number, \
+                     not a quantity (an `as`/`in` conversion already UNWRAPS to a bare number, so its \
+                     result needs no `Qty.value`; drop it)",
+                    operand_ty.render_with_article(),
+                ),
+            ));
+        }
+        return;
+    }
     if args.len() == 2
         && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::UnitIn)
     {

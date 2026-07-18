@@ -4071,6 +4071,59 @@ fn runtime_value_eq_leaves_no_live_objects() {
     );
 }
 
+/// RUNTIME STRING ORDERING leak balance: a `<`/`<=`/`>`/`>=` on two RUNTIME Strings (`Core::StrCmp`)
+/// leaves NO live heap cells — the ordering twin of `runtime_value_eq_leaves_no_live_objects`. `StrCmp`
+/// walks both String leaves with borrowing `bytes-len`/`bytes-get` reads and drops only an OWNED
+/// temporary operand after the borrow (the exact `ValueEq` ownership contract). The classification bug
+/// this pins (fixed in `9b7950746`): `StrCmp` was grouped with the SCALAR compares (Arith/Compare/…,
+/// classified CONSUMING) in both Perceus sites (`binding_escapes`, `mark_binder_dups_inner`), but a
+/// LET-BOUND String reaching a `StrCmp` operand as a direct `LocalRef` is BORROWED — so it was wrongly
+/// marked escaping/consumed and the enclosing `let` SKIPPED its drop while the borrowing `StrCmp` left
+/// the value to its owner → a missing-drop LEAK. A value-only test cannot see it (the answer is correct
+/// either way); only the live-object count does. Verified DISCRIMINATING: with the pre-`9b7950746`
+/// classification this shape emits ONE `drop` (the kept `let` skips `r`'s reclaim) and leaks; the fixed
+/// classification emits TWO and nets to 0.
+///
+/// Shape: `r` is a LET-BOUND owned runtime rope ("hixxx", un-foldable so it genuinely allocates), KEPT
+/// (used in BOTH `<` and `String.byte-len`, so it survives as a `Core::Let` binding whose closing drop
+/// is gated on `binding_escapes`). `main` returns a scalar (the byte-len), so the ONLY heap traffic is
+/// `r`'s rope; after the run `live-objects` must be 0. `#[ignore]` — needs the debug-counters store
+/// (`cargo xtask build`; run with `-- --ignored`).
+#[test]
+#[ignore]
+fn runtime_string_ordering_over_a_let_bound_operand_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[str-cmp] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // `rep` appends "x" three times via `String.concat` → an OWNED rope "hixxx". `r` is LET-BOUND and
+    // KEPT (used as a direct `<` operand AND read again by `byte-len`), the exact let-bound-direct-
+    // operand shape the StrCmp mis-classification leaked. `main` returns the scalar byte-len.
+    let src = "(module m \
+                 (def (rep (: s String) (: n Int64)) \
+                    (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+                 (def (main) (let ((r (rep \"hi\" 3))) \
+                    (if (< r \"zzzzzzzz\") ((. String byte-len) r) (- 0 1)))) \
+                 (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(5),
+        "the let-bound rope 'hixxx' is < 'zzzzzzzz', so the arm returns its byte-len 5"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "str-cmp leak: the let-bound rope operand's heap cells are still live after the ordering \
+         compare (expected 0 — the borrowing StrCmp leaves `r` to its owner, so the kept `let` must \
+         drop it; the pre-9b7950746 consume-classification skipped that drop → leak)"
+    );
+}
+
 /// A RUNTIME STRING ROPE compared with `=` is canonicalized (`bytes-compact`) before `value-eq`, so a
 /// rope and its flat twin compare EQUAL — the miscompile fix — AND the compact-then-drop leaves NO live
 /// heap cells. `value-eq` is `champ_eq`, a PHYSICAL-byte compare; a `String.concat` produces a ROPE whose
@@ -40190,6 +40243,46 @@ mod match_engine {
         assert!(
             rendered.contains("127/50"),
             "the Qty.of-rewrap repair converts 1 inch → cm = 127/50 exactly: {rendered}"
+        );
+    }
+
+    #[test]
+    fn qty_value_of_a_conversion_result_is_a_clean_cdz0501_not_a_no_machine_representation_decline()
+    {
+        // Breaker/corpus-bugfix report: `Qty.value` of a `Unit.in` conversion RESULT — `(Qty.value (Unit.in
+        // inch (Qty.of 5 foot)))` — declined "function return type has no machine representation" at the
+        // backend while `cdz check` passed (a check-vs-compile gap). ROOT: `Unit.in`/`as` UNWRAPS to a bare
+        // number (Q3), so `Qty.value` is applied to a plain Int, and its type arm returned `Ty::Any`
+        // ("faulted elsewhere") — but nothing faulted it, so the un-representable `Any` slipped to the
+        // backend. Now a `Qty.value`-of-a-non-quantity check in check_application rejects it CDZ0501 at
+        // compile, naming the operand type + the "drop the Qty.value" repair. The bare-number sibling of the
+        // chained-Unit.in reject.
+        let src = "(do (def (main) ((. Qty value) ((. Unit in) ((. Unit of) #\"inch\") \
+                     ((. Qty of) 5 ((. Unit of) #\"foot\"))))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("Qty.value of a conversion result (a bare number) must reject");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0501"),
+            "Qty.value of a bare number (a Unit.in result) is a coded CDZ0501, not an uncoded no-machine-rep decline"
+        );
+        assert!(
+            err.message.contains("recovers a quantity") && err.message.contains("plain number"),
+            "the message explains Qty.value needs a quantity + that the operand is a plain number: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("no machine representation"),
+            "the terse backend 'no machine representation' decline must no longer surface: {}",
+            err.message
+        );
+        // The two components each compile ALONE: convert-alone (Unit.in → 60) and extract-alone
+        // (Qty.value of a genuine Qty → 5) — only the redundant composition was the gap. Guard the
+        // extract-alone still type-checks (compiles) so the reject is scoped to the non-quantity operand.
+        let extract_alone = "(do (def (main) ((. Qty value) ((. Qty of) 5 ((. Unit of) #\"foot\")))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(extract_alone))).is_ok(),
+            "Qty.value of a genuine quantity still compiles (the reject is scoped to a non-quantity operand)"
         );
     }
 

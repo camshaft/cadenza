@@ -225,6 +225,33 @@ fn gen_type_decl(rng: &mut Rng) -> String {
     format!("(type {} {})", name, variants.join(" "))
 }
 
+/// Generate a random `@!param` module directive as its s-expr arena
+/// `(pragma param (param <kv>…) (: name Type))` — the operator's module-level `@param`. The config kvs
+/// group under a `(param <kv>…)` sub-node (0–3 `key: value` pairs, each a `(: key value)` ascription with
+/// a NON-keyword value), and the REQUIRED `(: name Type)` binder gives the param name + declared type. It
+/// prints as `@!param(k: v, …) name : Type` (empty config -> `@!param name : Type`, no parens). Exercises
+/// the `param_pragma_payload` parse + `print_param_pragma` render round-trip over a broad space.
+fn gen_param_pragma(rng: &mut Rng) -> String {
+    let keys = ["widget", "range", "default", "step"];
+    let values = ["slider", "number", "stepper", "toggle", "1", "42", "true"];
+    let names = ["width", "base", "ratio", "w", "h", "thickness"];
+    let nkv = rng.below(4); // 0..=3 config kvs (distinct keys, in order)
+    let mut kvs: Vec<String> = Vec::new();
+    for &key in keys.iter().take(nkv) {
+        let value = rng.pick(&values);
+        kvs.push(format!("(: {} {})", key, value));
+    }
+    let config = if kvs.is_empty() {
+        "(param)".to_string()
+    } else {
+        format!("(param {})", kvs.join(" "))
+    };
+    let name = *rng.pick(&names);
+    let ty_depth = rng.below(2);
+    let ty = gen_type_expr(rng, ty_depth);
+    format!("(pragma param {} (: {} {}))", config, name, ty)
+}
+
 #[test]
 fn ml_surface_round_trips_generated_programs() {
     // Sweep many independently-seeded programs across a range of depths. For each: read the generated
@@ -407,6 +434,69 @@ fn ml_surface_round_trips_generated_type_declarations() {
             // type-declaration node set).
             let back =
                 codec::decode(&codec::encode(&oracle)).expect("type decl's encoding decodes");
+            assert!(
+                back.structurally_eq(&oracle),
+                "binary round-trip changed the tree\n  s-expr: {program}",
+            );
+            total += 1;
+        }
+    }
+    assert!(total >= 6000, "swept a meaningful space, got {total}");
+}
+
+#[test]
+fn ml_surface_round_trips_generated_param_pragmas() {
+    // Sweep random `@!param` module directives — `(pragma param (param <kv>…) (: name Type))` — wrapped in
+    // a `(do <pragma> (def (main) …))` module. The `@!param` grammar (parser `param_pragma_payload` +
+    // printer `print_param_pragma`) is the operator's module-level `@param`; its parse special-cases the
+    // `param` pragma key to carry a grouped config sub-node + a `name : Type` binder (so the trailing name
+    // is not mis-eaten as a unit-suffix), and its printer renders back the `@!param(k: v, …) name : Type`
+    // surface (empty config -> no parens, which the parser re-accepts). Sweep the parse+print round-trip
+    // over a broad space of config-kv counts, values, names, and payload types: assert the ML reparse
+    // succeeds, is structurally equal to the s-expr oracle, is idempotent, and survives the binary codec.
+    // (Round-trip-ONLY — never compiles the pragma, so independent of the rcdzc pragma-registry `param`
+    // arm v-metaprogramming owns; the compile-corpus fixture stays deferred until that lands.) Fixed
+    // seeds -> reproducible; the failing s-expr + ML print for triage.
+    let seeds: [u64; 4] = [
+        0x9e21_74cc_0b3f_1a05,
+        0x51fd_6a30_c8e2_9b47,
+        0x0c7a_e519_44d1_6f8b,
+        0xb3d2_8f61_2ea0_57c9,
+    ];
+    let mut total = 0usize;
+    for &seed in &seeds {
+        let mut rng = Rng(seed);
+        for _ in 0..1500 {
+            let pragma = gen_param_pragma(&mut rng);
+            let body_depth = 1 + rng.below(3);
+            let body = gen_expr(&mut rng, body_depth);
+            let program = format!("(do {pragma} (def (main) {body}))");
+            let oracle = match sexpr::read(&program) {
+                Ok(a) => a,
+                Err(e) => panic!(
+                    "generator produced an unreadable s-expr: {program}\n  {}",
+                    e.0
+                ),
+            };
+            let ml = printer::print(&oracle, WIDTH);
+            let reparsed = parser::read_ml(&ml);
+            assert!(
+                reparsed.ok(),
+                "ML reparse FAILED\n  s-expr: {program}\n  ml:\n{ml}\n  errs:   {:?}",
+                reparsed.errors
+            );
+            assert!(
+                reparsed.arenas.structurally_eq(&oracle),
+                "ML round-trip changed the tree\n  s-expr: {program}\n  ml:\n{ml}\n  reparsed: {}",
+                sexpr::print(&reparsed.arenas)
+            );
+            assert_eq!(
+                printer::print(&reparsed.arenas, WIDTH),
+                ml,
+                "ML print is not idempotent\n  s-expr: {program}\n  ml:\n{ml}"
+            );
+            let back =
+                codec::decode(&codec::encode(&oracle)).expect("param pragma's encoding decodes");
             assert!(
                 back.structurally_eq(&oracle),
                 "binary round-trip changed the tree\n  s-expr: {program}",

@@ -13,7 +13,7 @@
 /// there is one ground type — so this column is the DB-shaped monomorphic specialization. It widens to call
 /// the HM engine when the language grows function types.)
 
-import { Tok, Node, Tree, node-at, parse-tokens } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node } from "parse-db"
 import { Resolved, resolve-tree } from "resolve-db"
 import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ground-default } from "ty"
 import { unify-ty } from "unify-ty"
@@ -95,8 +95,15 @@ def var-type(tree: Tree, binder: Int64, tcol: Map(Int64, Typed)) =
 /// operand / unknown op → `TErr`.
 def bin-type(op: Int64, tcol: Map(Int64, Typed), a: Int64, b: Int64) =
   (if (op >= 60) then
-     // relational: any two integer operands (any width) compare → Bool.
-     (if both-int(tcol, a, b) then (if (op <= 65) then Typed.TBool else Typed.TErr) else Typed.TErr)
+     // relational (60..65): rcdzc types EVERY integer binop — arith AND comparison alike — as relating two
+     // operands of ONE type (`∀a. Int a → Int a → Bool`); a MIXED width OR sign is CDZ0301 (no implicit
+     // conversion), NOT a silent compare. So gate on the SAME unification the arith arm uses
+     // (`arith-result-type` = Some iff the two operand types unify), then yield TBool. Was `both-int`, which
+     // accepted ANY two integer widths → let `(< (: 5 Int8) (: 10 Int16))` wrongly RUN to `true` (a
+     // ran-when-should-decline miscompile vs rcdzc, both mixed-width and mixed-sign).
+     (if (op <= 65) then
+        (match arith-result-type(tcol, a, b) with | Option.Some(_) => Typed.TBool | Option.None(_) => Typed.TErr)
+      else Typed.TErr)
    else
      // arithmetic (corrected-2b): the operands must be the SAME integer type (via unify-ty over the shared
      // Ty — same width AND sign); the result is THAT type (Int64+Int64→Int64, same-width UInt8+UInt8→UInt8;
@@ -141,13 +148,6 @@ def let-type(tcol: Map(Int64, Typed), valId: Int64, bodyId: Int64) =
     | _ => (match Map.lookup(tcol, bodyId) with
              | Option.Some(bt) => bt
              | Option.None(_) => Typed.TErr))
-
-/// Bool iff both operands are `TInt` (the operand rule for every current binary op) — used by `bin-type`.
-def both-int(tcol: Map(Int64, Typed), a: Int64, b: Int64) =
-  (match Map.lookup(tcol, a) with
-    | Option.Some(Typed.TIntW(_, _)) =>
-        (match Map.lookup(tcol, b) with | Option.Some(Typed.TIntW(_, _)) => true | _ => false)
-    | _ => false)
 
 /// Structural equality of two ground types; `TErr` is never equal to anything (an erroneous branch never
 /// makes an `if` well-typed). Two integer types are equal iff SAME signedness AND width — so an `if` whose
@@ -383,5 +383,38 @@ def id-type-eq-int-not-bool() =
   // an integer type is never equal to Bool (cross-kind), and TErr is never equal to anything.
   (if type-eq(Typed.TIntW(true, 64), Typed.TBool) then trap("Int64 != Bool")
    else (if type-eq(Typed.TErr, Typed.TErr) then trap("TErr != TErr (poison never equal)") else unit))
+
+// ---- mixed-width/sign COMPARISON declines (bug fix: bin-type relational arm unifies operands like arith) ----
+// rcdzc types every integer binop — arith AND comparison — as relating two operands of ONE type; a mixed
+// width/sign is CDZ0301, NOT a silent compare. bin-type's relational arm used to accept any two widths
+// (`both-int`) → `(< (: 5 Int8) (: 10 Int16))` wrongly ran to `true`. These pin the fix at the infer level.
+// NAnnLit has no producing Tok, so build the arena directly (children before the NBin that references them).
+
+@test
+def id-mixed-width-comparison-is-err() =
+  // "Int8 < Int16" → the operands don't unify (width conflict) → the comparison NBin is TErr (declines),
+  // matching rcdzc's CDZ0301. Was TBool (a ran-when-should-decline miscompile).
+  (match add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) with | (lId, t1) =>
+    (match add-node(t1, Node.NAnnLit(10, 1, 16)) with | (rId, t2) =>
+      (match add-node(t2, Node.NBin(60, lId, rId)) with | (root, tree) =>
+        (if type-err-at(tree, root, root) then unit else trap("Int8 < Int16 → TErr (mixed width declines, CDZ0301)")))))
+
+@test
+def id-mixed-sign-comparison-is-err() =
+  // "Int8 < UInt8" (same width, different sign) → operands don't unify (sign conflict) → TErr. Pins the
+  // orthogonal sign axis of the same fix.
+  (match add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) with | (lId, t1) =>
+    (match add-node(t1, Node.NAnnLit(10, 0, 8)) with | (rId, t2) =>
+      (match add-node(t2, Node.NBin(60, lId, rId)) with | (root, tree) =>
+        (if type-err-at(tree, root, root) then unit else trap("Int8 < UInt8 → TErr (mixed sign declines)")))))
+
+@test
+def id-same-narrow-comparison-still-bool() =
+  // control: same-width same-sign narrow comparison "Int8 < Int8" still UNIFIES → TBool (the fix declines
+  // ONLY genuine mismatches; a valid narrow comparison is unaffected).
+  (match add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) with | (lId, t1) =>
+    (match add-node(t1, Node.NAnnLit(10, 1, 8)) with | (rId, t2) =>
+      (match add-node(t2, Node.NBin(60, lId, rId)) with | (root, tree) =>
+        (if is-bool-at(tree, root, root) then unit else trap("Int8 < Int8 → TBool (same-type comparison unaffected)")))))
 
 export { Typed.*, infer-node, infer-tree, type-at, well-typed, type-err-at, typed-count, is-bool-at, is-int-at }

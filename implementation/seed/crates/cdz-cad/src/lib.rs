@@ -124,9 +124,10 @@ impl Solid {
             Solid::Union(a, b) | Solid::Difference(a, b) | Solid::Intersection(a, b) => {
                 a.leaf_count() + b.leaf_count()
             }
-            Solid::Translate(_, s) | Solid::Rotate(_, s) | Solid::Mirror(_, s) | Solid::Scale(_, s) => {
-                s.leaf_count()
-            }
+            Solid::Translate(_, s)
+            | Solid::Rotate(_, s)
+            | Solid::Mirror(_, s)
+            | Solid::Scale(_, s) => s.leaf_count(),
         }
     }
 
@@ -142,9 +143,10 @@ impl Solid {
             Solid::Union(a, b) | Solid::Difference(a, b) | Solid::Intersection(a, b) => {
                 1 + a.node_count() + b.node_count()
             }
-            Solid::Translate(_, s) | Solid::Rotate(_, s) | Solid::Mirror(_, s) | Solid::Scale(_, s) => {
-                1 + s.node_count()
-            }
+            Solid::Translate(_, s)
+            | Solid::Rotate(_, s)
+            | Solid::Mirror(_, s)
+            | Solid::Scale(_, s) => 1 + s.node_count(),
         }
     }
 }
