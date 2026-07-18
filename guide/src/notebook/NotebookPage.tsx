@@ -18,6 +18,7 @@ import { useSyntax } from "../syntax/SyntaxContext.tsx";
 import { SyntaxToggle } from "../syntax/SyntaxToggle.tsx";
 import { parseDocument, assignIds, setCellSource, setProseSource, serializeDocument, renderDocToSurface, insertCell, removeCell, moveCell, type Cell } from "./parseDocument.ts";
 import { encodeNbShareUrl, decodeNbShare } from "./nbShare.ts";
+import { resolveExampleParam, writeExampleParam } from "../components/exampleParam.ts";
 import { parseWidgets, type Widget } from "./parseWidgets.ts";
 import { assembleForRun, type WidgetValues } from "./assembleForRun.ts";
 import { recomputePlan, initialRunOrder } from "./recomputePlan.ts";
@@ -28,10 +29,6 @@ import { OutputView } from "./OutputView.tsx";
 import { WidgetControls } from "./WidgetControls.tsx";
 import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
 import { LazyCodeEditor } from "../editor/LazyCodeEditor.tsx";
-
-/// The starter notebook the route opens with — the flagship compound-interest example (from the shared
-/// `examples` module, so the route, the docs, and check:visual all draw from one source of truth).
-const STARTER = DEFAULT_EXAMPLE.markdown;
 
 /// The notebook honors the guide's GLOBAL surface toggle (like /calculator, /playground, /cad): the reader
 /// edits cells in whichever surface is selected, and the pick STICKS (SyntaxContext persists it to
@@ -68,16 +65,22 @@ export default function NotebookPage() {
   // common case) → the normal STARTER. Cell ids aren't shared; assignIds re-stamps on parse like any load.
   const nbSharedRef = useRef(typeof window !== "undefined" ? decodeNbShare(window.location.hash) : null);
   const nbShared = nbSharedRef.current;
+  // A `?example=<slug>` deep-link (operator: per-example nav) opens /notebook with THAT notebook selected.
+  // Share hash WINS (a shared doc shouldn't be clobbered by a stale example id); else the deep-link slug
+  // (when known) selects it, else the default. The examples are authored in s-expr; the surface effect
+  // re-renders to the active surface on mount (same as a normal load), so seeding the raw markdown is right.
+  const initialSlug = nbShared ? DEFAULT_EXAMPLE.slug : resolveExampleParam(EXAMPLES.map((e) => e.slug), DEFAULT_EXAMPLE.slug);
+  const initialMarkdown = (EXAMPLES.find((e) => e.slug === initialSlug) ?? DEFAULT_EXAMPLE).markdown;
   // The notebook document. `doc` is the markdown source of truth (edited PER CELL — a cell editor commits
   // its change up via `onCellEdit` → `setCellSource` → `serializeDocument`); `committedDoc` is a DEBOUNCED
   // copy that drives parsing + re-running, so typing in a cell doesn't re-parse + thrash the run worker
   // (or flicker every output to "not run") on each keystroke. They coincide except during an active edit.
-  const [doc, setDoc] = useState(nbShared?.doc ?? STARTER);
-  const [committedDoc, setCommittedDoc] = useState(nbShared?.doc ?? STARTER);
+  const [doc, setDoc] = useState(nbShared?.doc ?? initialMarkdown);
+  const [committedDoc, setCommittedDoc] = useState(nbShared?.doc ?? initialMarkdown);
   // The loaded example's slug (drives the example-picker's selection). Switching examples REPLACES the
   // whole document (both the live + committed copy so the re-parse/re-run fires immediately, not after the
   // edit-debounce) and clears widget values so a stale value from the previous notebook can't linger.
-  const [exampleSlug, setExampleSlug] = useState(DEFAULT_EXAMPLE.slug);
+  const [exampleSlug, setExampleSlug] = useState(initialSlug);
   const docDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (docDebounce.current) clearTimeout(docDebounce.current);
@@ -205,6 +208,7 @@ export default function NotebookPage() {
       const example = EXAMPLES.find((e) => e.slug === slug);
       if (!example) return;
       setExampleSlug(slug);
+      writeExampleParam(slug); // reflect the selection in the URL (?example=…) — a copy-shareable deep-link
       setValues({});
       // Bump the doc-render token up-front so ANY in-flight async render (from a prior toggle or example
       // switch) is invalidated — even the synchronous s-expr branch below must not be stomped by a stale

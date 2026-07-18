@@ -20,7 +20,7 @@ import { meters, cube-m, sphere-m, cylinder-m, difference-m, translate-m, lower 
 /// This is how a model authored with imperial fasteners stays EXACT: the language converts inch→meter over
 /// Rational, so the model carries the exact meter magnitude, no float.
 def inches(n: Rational) =
-  Qty.of(Qty.value(Unit.in(Unit.of(#"meter"), Qty.of(n, Unit.of(#"inch")))), Unit.of(#"meter"))
+  Qty.of(Unit.in(Unit.of(#"meter"), Qty.of(n, Unit.of(#"inch"))), Unit.of(#"meter"))
 
 /// ---- worked models: authored in units (Solid(Qty[meter])), lowered for bbox/mesh --------------------
 

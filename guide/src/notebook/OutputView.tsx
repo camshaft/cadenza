@@ -70,13 +70,14 @@ function TableView({ table }: { table: Table }) {
   );
 }
 
-/// A dependency-free SVG chart. Line/scatter plot points at their (x,y); bar draws a column per point,
-/// with MULTIPLE series grouped side-by-side per x (each series its own hue) — no series is dropped.
-/// Axes are auto-scaled to the data extent.
+/// A dependency-free SVG chart. Line/scatter plot points at their (x,y); `area` fills under the line;
+/// bar draws a column per point, with MULTIPLE series grouped side-by-side per x (each series its own
+/// hue); `stacked` accumulates each series' bar on top of the previous so the column total is the sum.
+/// No series is dropped. Axes are auto-scaled to the data extent (stacked scales to the per-x TOTAL).
 const HUES = ["#38bdf8", "#f472b6", "#a3e635", "#fbbf24", "#c084fc"];
 const W = 520, H = 240, PAD = 32;
 
-function ChartView({ chart, series }: { chart: "line" | "bar" | "scatter"; series: Series[] }) {
+function ChartView({ chart, series }: { chart: "line" | "bar" | "scatter" | "area" | "stacked"; series: Series[] }) {
   const pts = series.flatMap((s) => s.points);
   if (pts.length === 0) return <p className="text-sm text-slate-500">no data</p>;
   const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
@@ -84,7 +85,16 @@ function ChartView({ chart, series }: { chart: "line" | "bar" | "scatter"; serie
   // argument-count limit when spread into Math.min/max (PR #524). minY seeds 0 so the y-axis includes it.
   const minX = minOf(xs), maxX = maxOf(xs);
   const minY = minOf(ys, 0), maxY = maxOf(ys);
-  const spanX = maxX - minX || 1, spanY = maxY - minY || 1;
+  // A STACKED chart's y-axis must reach the tallest per-x COLUMN TOTAL (sum of series at that x), not the
+  // tallest single point — else the top of the stack clips off the plot. Compute per-x totals by summing
+  // each series' y at each shared x-slot (loop-based max, no spread — PR #524).
+  const stackedMaxY = (() => {
+    const totalByX = new Map<number, number>();
+    for (const s of series) for (const p of s.points) totalByX.set(p.x, (totalByX.get(p.x) ?? 0) + p.y);
+    return maxOf(totalByX.values(), 0);
+  })();
+  const effMaxY = chart === "stacked" ? stackedMaxY : maxY;
+  const spanX = maxX - minX || 1, spanY = effMaxY - minY || 1;
   const sx = (x: number) => PAD + ((x - minX) / spanX) * (W - 2 * PAD);
   const sy = (y: number) => H - PAD - ((y - minY) / spanY) * (H - 2 * PAD);
 
@@ -109,6 +119,11 @@ function ChartView({ chart, series }: { chart: "line" | "bar" | "scatter"; serie
           .map((label, x) => ({ label, x }))
           .filter((_, i, arr) => arr.length <= MAX_CAT_TICKS || i % Math.ceil(arr.length / MAX_CAT_TICKS) === 0);
 
+  // STACKED: a per-x running baseline (the sum of ALREADY-drawn series at that x), so each series' bar
+  // sits ON TOP of the ones below it. Accumulated as we map series in order; a full-width column per x
+  // (unlike grouped `bar`, which splits the slot across series side-by-side).
+  const stackBase = new Map<number, number>();
+
   const svg = (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-2xl" role="img" aria-label="chart">
       {/* axes */}
@@ -129,7 +144,7 @@ function ChartView({ chart, series }: { chart: "line" | "bar" | "scatter"; serie
           </>
         )}
         <text x={PAD - 4} y={H - PAD} textAnchor="end">{tick(minY)}</text>
-        <text x={PAD - 4} y={PAD + 4} textAnchor="end">{tick(maxY)}</text>
+        <text x={PAD - 4} y={PAD + 4} textAnchor="end">{tick(effMaxY)}</text>
       </g>
       {series.map((s, si) => {
         const hue = HUES[si % HUES.length];
@@ -150,10 +165,40 @@ function ChartView({ chart, series }: { chart: "line" | "bar" | "scatter"; serie
             </g>
           );
         }
+        if (chart === "stacked") {
+          // A full-slot column per x, stacked on the running per-x baseline. `y` top is base+value, the
+          // rect spans from sy(base+value) down to sy(base); update the baseline after drawing.
+          const bw = Math.max(1, barSlot);
+          return (
+            <g key={si}>
+              {s.points.map((p, i) => {
+                const base = stackBase.get(p.x) ?? 0;
+                const top = base + p.y;
+                stackBase.set(p.x, top);
+                const yTop = sy(top);
+                const h = Math.max(0, sy(base) - yTop);
+                return <rect key={`${si}-${i}`} x={sx(p.x) - bw / 2} y={yTop} width={bw} height={h} fill={hue} opacity={0.85} />;
+              })}
+            </g>
+          );
+        }
         const dots = s.points.map((p, i) => <circle key={`c${i}`} cx={sx(p.x)} cy={sy(p.y)} r={2.5} fill={hue} />);
         if (chart === "scatter") return <g key={si}>{dots}</g>;
-        // line
+        // line / area — a polyline through the points; `area` additionally fills the region down to the
+        // y-baseline (a closed path from the first x along the curve to the last x, then back at y=min).
         const d = s.points.map((p, i) => `${i === 0 ? "M" : "L"}${sx(p.x)},${sy(p.y)}`).join(" ");
+        if (chart === "area") {
+          const first = s.points[0], last = s.points[s.points.length - 1];
+          const fill = `${d} L${sx(last.x)},${sy(minY)} L${sx(first.x)},${sy(minY)} Z`;
+          return (
+            <g key={si}>
+              <path d={fill} fill={hue} fillOpacity={0.25} stroke="none" />
+              <path d={d} fill="none" stroke={hue} strokeWidth={1.5} />
+              {dots}
+            </g>
+          );
+        }
+        // line
         return (
           <g key={si}>
             <path d={d} fill="none" stroke={hue} strokeWidth={1.5} />

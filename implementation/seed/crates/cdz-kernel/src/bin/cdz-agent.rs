@@ -12,6 +12,7 @@
 //!   `cdz-agent authz-grant <log> <permit> [--expiry-ms <ms>]` — operator GRANT: append a narrow (optionally
 //!                                               time-boxed) Cedar permit that ADDS to the base policy.
 //!   `cdz-agent authz-revoke <log> <grant-seq>` — operator REVOKE: pull a prior grant by its seq.
+//!   `cdz-agent authz-requests <log>`           — list the standing authorization requests (read-only).
 //!   `cdz-agent schedule-create <log> <id> <trigger-kind> --first-ms <ms> [--period-ms <ms>] [--payload <t>]`
 //!                                               — register a one-shot/periodic timer that fires <trigger-kind>.
 //!   `cdz-agent schedule-cancel <log> <id>`     — cancel a schedule by id.
@@ -127,6 +128,27 @@ fn run() -> Result<()> {
                 FileLog::open(log_path).with_context(|| format!("open log {log_path}"))?;
             let seq = policy::append_revoke(&mut log, grant_seq)?;
             println!("revoked grant at seq {grant_seq} (revoke event at seq {seq})");
+            Ok(())
+        }
+        Some("authz-requests") => {
+            // List the standing authorization REQUESTS (operator read verb): each denied op auto-emits an
+            // authz-request; this shows them so the operator can see what's waiting on a grant and answer with a
+            // narrow authz-grant. Read-only. One line per request: `seq <n>  prim:<op>  <payload>`. Lists ALL
+            // requests (matching a grant to a request needs full Cedar eval; the operator decides).
+            let log_path = args
+                .get(2)
+                .ok_or_else(|| anyhow!("usage: cdz-agent authz-requests <log>"))?;
+            let log =
+                FileLog::open(log_path).with_context(|| format!("open log {log_path}"))?;
+            let reqs = policy::requests(&log.tail(0)?);
+            if reqs.is_empty() {
+                println!("no authorization requests");
+            } else {
+                println!("{} authorization request(s):", reqs.len());
+                for r in &reqs {
+                    println!("  seq {}  prim:{}  {}", r.seq, r.op, r.payload);
+                }
+            }
             Ok(())
         }
         Some("schedule-create") => {
@@ -402,12 +424,13 @@ fn run() -> Result<()> {
             Ok(())
         }
         _ => Err(anyhow!(
-            "usage: cdz-agent <bootstrap|inject-genesis|emit-policy|authz-grant|authz-revoke|schedule-create|schedule-cancel|schedule-list|emit|run|perform|hosted|start> ...\n\
+            "usage: cdz-agent <bootstrap|inject-genesis|emit-policy|authz-grant|authz-revoke|authz-requests|schedule-create|schedule-cancel|schedule-list|emit|run|perform|hosted|start> ...\n\
              \x20 bootstrap <log>                    — create/open the event log\n\
              \x20 inject-genesis <log> <program.cdz> — append the genesis program\n\
              \x20 emit-policy <log> <policy.cedar>    — append a Cedar capability policy (attenuates each invocation; latest supersedes)\n\
              \x20 authz-grant <log> <permit.cedar> [--expiry-ms <ms>] — operator GRANT: append a narrow Cedar permit (optionally time-boxed); adds to the base policy\n\
              \x20 authz-revoke <log> <grant-seq>      — operator REVOKE: pull a prior grant by its seq (the effective policy thereafter excludes it)\n\
+             \x20 authz-requests <log>                — list the standing authorization requests (read-only)\n\
              \x20 schedule-create <log> <id> <trigger-kind> --first-ms <ms> [--period-ms <ms>] [--payload <t>] — register a one-shot/periodic timer\n\
              \x20 schedule-cancel <log> <id>          — cancel a schedule by id (a later create re-registers)\n\
              \x20 schedule-list <log>                 — list the active schedules (read-only)\n\

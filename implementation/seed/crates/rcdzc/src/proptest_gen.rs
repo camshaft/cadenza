@@ -171,8 +171,15 @@ struct TestPlan {
     def_name: String,
     /// The synthesized wrapper's name (`"<def_name>-gen"`).
     wrapper_name: String,
-    /// The generatable type of EACH parameter, in signature order — one `<gen:T>` per param.
+    /// The generatable type of EACH parameter, in signature order — one `<gen:T>` per param. EMPTY when
+    /// `declining` (a non-generatable-leaf compound has no `<gen:T>` to build).
     gen_tys: Vec<GenTy>,
+    /// A DECLINING wrapper: a COMPOUND param carries a leaf the generator can't produce yet (e.g. `Char` in
+    /// `(List Char)`). Rather than let the compound param hit the export boundary and ABORT THE WHOLE FILE
+    /// (killing sibling tests), synthesize a nullary wrapper that TRAPS with an actionable message — so the
+    /// runner reports a clean per-test `FAIL <name>-gen: …` and the file's other tests still run. Mirrors the
+    /// `@exhaustive`-compound clean-decline, extended to the non-generatable-LEAF case. `gen_tys` is empty.
+    declining: bool,
     /// Whether the source annotation was `@exhaustive` (vs `@test`). A compound-param `@exhaustive` cannot
     /// be exhaustively enumerated (a collection domain is unbounded), so the synthesized wrapper keeps the
     /// `@exhaustive` marker and the `cdz test` runner declines it cleanly — rather than the whole file
@@ -306,14 +313,39 @@ fn plan_for_item(
     for &p in params {
         let ann_param = ast.as_form(p, ":")?; // `(: name TYPE)`
         let &ty = ann_param.get(1)?;
-        let gt = classify_ty(ast, ty, items)?;
-        // A SCALAR param (`Int`/`Bool`/`Float`) has a component-boundary representation, so the runner
-        // generates it directly (the boundary-arg route) — no wrapper needed. Only a COMPOUND param
-        // (a collection/tuple/record/sum, which has no boundary form) forces the synthesized wrapper.
-        if !matches!(gt, GenTy::Int | GenTy::Bool | GenTy::Float(_)) {
-            any_compound = true;
+        // A COMPOUND param is a type FORM (`(List …)`, `(Tuple …)`, `(Record …)`) or a bare user-sum NAME —
+        // it has no component-boundary representation, so a `@test` over it needs the synthesized wrapper
+        // (or, if a leaf isn't generatable, a DECLINING wrapper). A bare SCALAR name (`Int64`/`Bool`/…) or an
+        // unresolvable bare name is NOT our concern here: a generatable scalar goes the boundary-arg route,
+        // and an ungeneratable bare name (`Char` scalar) is a LAYOUT/boundary matter, not proptest_gen's.
+        let is_compound_form = ast.as_name(ty).is_none();
+        match classify_ty(ast, ty, items) {
+            Some(gt) => {
+                // A SCALAR param (`Int`/`Bool`/`Float`) has a boundary representation → boundary-arg route,
+                // no wrapper. Only a COMPOUND param (no boundary form) forces the synthesized wrapper.
+                if !matches!(gt, GenTy::Int | GenTy::Bool | GenTy::Float(_)) {
+                    any_compound = true;
+                }
+                gen_tys.push(gt);
+            }
+            // A COMPOUND FORM whose leaf the generator can't produce yet (e.g. `Char` in `(List Char)`):
+            // DECLINE CLEANLY per-test rather than let the compound param abort the whole file. A
+            // non-generatable BARE NAME (a `Char` scalar param) is NOT ours — leave it to the boundary
+            // (layout reports "parameter type is ambiguous"); returning None here keeps that path unchanged.
+            None if is_compound_form => {
+                return Some(TestPlan {
+                    item_idx,
+                    inner_def: inner,
+                    wrapper_name: format!("{def_name}-gen"),
+                    def_name,
+                    gen_tys: Vec::new(),
+                    declining: true,
+                    exhaustive,
+                    nested_anns,
+                });
+            }
+            None => return None, // a non-generatable bare-name (scalar) param — layout's concern, not ours
         }
-        gen_tys.push(gt);
     }
     if !any_compound {
         return None; // all-scalar signature — the boundary-arg route handles it; no wrapper
@@ -328,6 +360,7 @@ fn plan_for_item(
         wrapper_name: format!("{def_name}-gen"),
         def_name,
         gen_tys,
+        declining: false,
         exhaustive,
         nested_anns,
     })
@@ -860,6 +893,45 @@ fn build_test_effect(ast: &mut Arenas) -> StructId {
 /// recursively-built generator expression for the parameter's type. Every `Test.gen` performance is a
 /// fresh `((. Test gen))`, so the runner's seeded int pool drives (and shrinks) the whole generated value.
 fn build_wrapper(ast: &mut Arenas, plan: &TestPlan) -> StructId {
+    // A DECLINING wrapper: the compound param has a non-generatable leaf (e.g. `Char`), so there is no
+    // `<gen:T>` to build. Emit a nullary `(def (NAME-gen) (trap "…"))` that TRAPS with an actionable
+    // message — the runner reports a clean per-test `FAIL NAME-gen: <message>` (a trap is the existing
+    // per-test failure channel) and the file's SIBLING tests still run, instead of the compound param
+    // aborting the whole file at the export boundary. No `host`/`Test.gen` — a bare trap is a plain nullary
+    // test the runner invokes directly.
+    if plan.declining {
+        let body = {
+            let trap = name(ast, "trap");
+            let msg = push_atom(
+                ast,
+                Leaf::Str(format!(
+                    "{}: a compound parameter has a leaf the generator cannot produce yet (e.g. Char) — not \
+                     property-testable; narrow the element type or drop the @test",
+                    plan.def_name
+                )),
+            );
+            push_list(ast, vec![trap, msg])
+        };
+        let def = {
+            let head = name(ast, "def");
+            let sig = {
+                let nm = name(ast, &plan.wrapper_name);
+                push_list(ast, vec![nm])
+            };
+            push_list(ast, vec![head, sig, body])
+        };
+        // Mark it a test (declining `@exhaustive` stays `@exhaustive` for symmetry, though both decline).
+        let at = name(ast, "@");
+        let ann = name(
+            ast,
+            if plan.exhaustive {
+                "exhaustive"
+            } else {
+                "test"
+            },
+        );
+        return push_list(ast, vec![at, ann, def]);
+    }
     // Build `<gen:ParamType>`, HOISTING every `Test.gen` performance into its own `let` binding: a
     // `Test.gen` inlined directly inside a compound constructor argument (`(tuple (Test.gen) …)`) is not
     // seen as within the enclosing `(host (Test) …)` scope and is rejected ("no enclosing handler"),
@@ -1777,14 +1849,19 @@ mod tests {
         );
     }
 
-    /// A `@test` over a genuinely NON-generatable element (`(List Char)` — `Char` is not yet generated) is
-    /// left alone: no wrapper, so it declines at the boundary as before. (Nested `List`/`Tuple` over
-    /// int/Bool/float leaves ARE generatable now — the non-generatable leaf is what stops it.)
+    /// A `@test` over a compound with a NON-generatable leaf (`(List Char)` — `Char` not yet generated) gets
+    /// a DECLINING wrapper: `r-gen` IS synthesized (a trapping nullary def) and the original `r` is
+    /// neutralized. This is the clean per-test decline — the compound param no longer reaches the export
+    /// boundary (which would ABORT THE WHOLE FILE, killing sibling tests); instead the runner reports a
+    /// per-test `FAIL r-gen` and siblings still run. (Nested `List`/`Tuple` over int/Bool/float leaves ARE
+    /// generatable and get a REAL generator wrapper; only the non-generatable LEAF triggers the declining one.)
     #[test]
-    fn leaves_a_nongeneratable_element_alone() {
-        let ast = crate::testkit::parse(
+    fn a_nongeneratable_leaf_compound_gets_a_declining_wrapper() {
+        let mut ast = crate::testkit::parse(
             "(do (@ test (def (r (: xs (List Char))) (List.len xs))) (def (other) 1))",
         );
+        // Synthesize directly so we can inspect the wrapper body (a trapping nullary def), before Db load.
+        super::synthesize(&mut ast);
         let db = Db::load(ast);
         let test_names: Vec<String> = db
             .test_defs()
@@ -1792,8 +1869,19 @@ mod tests {
             .map(|i| db.defs[i].name.clone())
             .collect();
         assert!(
-            !test_names.iter().any(|n| n == "r-gen"),
-            "a non-generatable (Char) element gets no wrapper: {test_names:?}"
+            test_names.iter().any(|n| n == "r-gen") && !test_names.iter().any(|n| n == "r"),
+            "a non-generatable-leaf compound gets a DECLINING wrapper (r-gen), original r neutralized: \
+             {test_names:?}"
+        );
+        // The declining wrapper's body TRAPS (a bare trap → the runner reports a per-test FAIL, siblings run).
+        let r_gen = db
+            .defs
+            .iter()
+            .find(|d| d.name == "r-gen")
+            .expect("r-gen def exists");
+        assert!(
+            r_gen.params.is_empty(),
+            "the declining wrapper is nullary (neutralizes the compound param → never hits the boundary)"
         );
     }
 

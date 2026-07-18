@@ -1,0 +1,114 @@
+/// snowflake.cdz — a SEED-DRIVEN procedural snowflake (operator: "a seed input that you feed it and it does
+/// a prng internally and builds out a unique snowflake"). One Int64 seed → a unique, deterministic, 6-fold
+/// symmetric snowflake — the "code + CAD produce really cool results" showcase. A port-in-spirit of the
+/// operator's `printing/snowflake` (recursive branching + bilateral mirror + 6-fold rotation), NOT matching
+/// his exact RNG (his call) — it uses our MINSTD LCG (`prng.cdz`).
+///
+/// STATE THREADING (not the effect — yet): the PRNG state is threaded explicitly through the recursion (each
+/// builder returns `(solid, state')`). The operator asked for a Prng EFFECT so this threading disappears; that
+/// swap is blocked on v-effects non-tail resume (two sequential performs in one handler — their E5 step-3, in
+/// progress). The deterministic unique-per-seed RESULT is identical either way, so the showcase ships now on
+/// threaded state and swaps to the effect surface when E5 step-3 lands. See DESIGN-cad-parametric-and-assembly.md.
+///
+/// SHAPE: a `branch` is a slender BAR (a thin box along +x) with a small BALL at the tip; it spawns a random
+/// number of child branches at random offsets/lengths/angles, each added AND mirrored across x for bilateral
+/// symmetry, recursing to a depth limit. The finished branch is then unioned with 6 copies rotated at
+/// 0°/60°/…/300° about z — the six-fold symmetry that reads as a snowflake.
+@!default-fraction Rational
+
+import { Solid, Vec3, Aabb, lower, v3, v3-eq, bounding-box, aabbr-size, solidr-is-empty } from "exact"
+import { box, ball, fuse, move-x, rotate-z, mirror-x } from "helpers"
+import { seed, next, roll, between } from "prng"
+
+/// A single branch SEGMENT: a slender bar of length `len` (a thin box centred then shifted so it grows along
+/// +x from the origin) with a small ball at its far tip. Width/tip scale with `len` so deeper twigs are finer.
+def segment(len: Rational) =
+  let w = len / (8 / 1) in                 // bar width = 1/8 its length (a slender twig)
+  let bar = move-x(len / (2 / 1), box(len, w, w)) in   // box is origin-centred → shift +x by len/2 to grow from 0
+  let tip = move-x(len, ball(w)) in
+  fuse(bar, tip)
+
+/// Build a branch recursively, THREADING the LCG state. Returns `(solid, state')`. At `depth == 0` (or a tiny
+/// length) it's just a bare segment. Otherwise it's the segment plus `n` children: each child is a shorter
+/// sub-branch, rotated by a random angle and pushed out to a random offset along the parent bar, added on both
+/// sides (mirror-x) for the bilateral look. `roll`/`between`/`next` each consume + advance the state.
+def branch-go(state: Int64, len: Rational, depth: Int64) =
+  if depth == (0 : Int64) then (segment(len), next(state))
+  else
+    let seg = segment(len) in
+    // how many children this node spawns: 1..3 (kept small + bounded for a clean, fast, deterministic mesh).
+    let n = between(state, (1 : Int64), (3 : Int64)) in
+    let s1 = next(state) in
+    branch-children(s1, len, depth, n, (0 : Int64), seg)
+
+/// Add `n` children to `acc`, threading state. Each child: a random angle (25°..75° off the parent), a random
+/// offset (a fraction of the parent length) to place it along the bar, a child length shorter than the parent.
+def branch-children(state: Int64, len: Rational, depth: Int64, n: Int64, i: Int64, acc: Solid(Rational)) =
+  if i == n then (acc, state)
+  else
+    let ang = between(state, (25 : Int64), (75 : Int64)) in
+    let s1 = next(state) in
+    let off-pct = between(s1, (30 : Int64), (70 : Int64)) in    // 30%..70% along the parent bar
+    let s2 = next(s1) in
+    let offset = (len * int-to-rat(off-pct)) / (100 / 1) in
+    let child-len = (len * (3 / 5)) in                          // each generation is 3/5 the parent length
+    // build the sub-branch (threads state through the recursion)
+    match branch-go(s2, child-len, depth - (1 : Int64)) with
+      | (child, s3) =>
+        // place the child: rotate it by `ang` about z, then push it out to `offset` along +x. Add it AND its
+        // x-mirror (bilateral). mirror-x reflects across the y-z plane, giving the symmetric pair.
+        let placed = move-x(offset, rotate-z(int-to-rat(ang), child)) in
+        let both = fuse(placed, mirror-branch(offset, int-to-rat(ang), child)) in
+        branch-children(s3, len, depth, n, i + (1 : Int64), fuse(acc, both))
+
+/// The bilateral twin of a placed child: same offset, but mirrored across x (so it flares the other way). We
+/// mirror the ALREADY-rotated+placed child so the pair is symmetric about the parent bar.
+def mirror-branch(offset: Rational, ang: Rational, child: Solid(Rational)) =
+  mirror-x(move-x(offset, rotate-z(ang, child)))
+
+/// Int64 → Rational (angles/percentages come out of the PRNG as Int64; the geometry is Rational).
+def int-to-rat(n: Int64) = Rational.of(n, (1 : Int64))
+
+/// One arm of the snowflake: a branch grown from `seed0` to `depth`, starting at length `len`.
+def arm(seed0: Int64, len: Rational, depth: Int64) =
+  match branch-go(seed(seed0), len, depth) with | (b, _) => b
+
+/// The full snowflake: six copies of one arm, rotated 0°/60°/120°/180°/240°/300° about z and unioned — the
+/// six-fold symmetry. `seed0` selects the unique arm; `len`/`depth` are the config knobs.
+def snowflake(seed0: Int64, len: Rational, depth: Int64) =
+  let a = arm(seed0, len, depth) in
+  six-fold(a, (0 : Int64), Solid.Empty)
+
+/// Union the 6 rotated copies (i = 0..5, each at i*60° about z).
+def six-fold(a: Solid(Rational), i: Int64, acc: Solid(Rational)) =
+  if i == (6 : Int64) then acc
+  else
+    let deg = int-to-rat(i * (60 : Int64)) in
+    six-fold(a, i + (1 : Int64), fuse(acc, rotate-z(deg, a)))
+
+/// ============================ @test suite (deterministic, non-empty, seed-sensitive) ============================
+
+@test
+def a-snowflake-is-non-empty-geometry() =
+  // A seed builds a real solid (not Empty) — the arm has segments + the 6-fold union has volume.
+  let s = snowflake((42 : Int64), (20 / 1), (2 : Int64)) in
+  if solidr-is-empty(s) == false then unit else trap("a snowflake has geometry")
+
+@test
+def the-same-seed-builds-the-same-snowflake() =
+  // Determinism: the same seed + config yields the SAME solid (same bounding box). This is the reproducible
+  // "unique per seed" contract — the operator can share a seed and get the identical snowflake back.
+  let a = snowflake((42 : Int64), (20 / 1), (2 : Int64)) in
+  let b = snowflake((42 : Int64), (20 / 1), (2 : Int64)) in
+  if v3-eq(aabbr-size(bounding-box(a)), aabbr-size(bounding-box(b))) then unit
+  else trap("same seed → same snowflake")
+
+@test
+def the-snowflake-has-six-fold-extent() =
+  // The 6-fold union is symmetric in x and y (rotating an arm through 6×60° fills both axes equally), so the
+  // bounding box is square in x/y. A single arm (grown along +x) would be lopsided; the 6-fold makes it round.
+  match bounding-box(snowflake((7 : Int64), (20 / 1), (2 : Int64))) with | Aabb.Box(lo, hi) =>
+    (match lo with | Vec3.V3(lx, ly, _) => (match hi with | Vec3.V3(hx, hy, _) =>
+      if (hx - lx) == (hy - ly) then unit else trap("6-fold symmetry → square x/y extent")))
+
+export { segment, branch-go, arm, snowflake, six-fold }

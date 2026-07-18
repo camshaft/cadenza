@@ -28,6 +28,19 @@ test("a `chart:line` directive over (x,y) tuples → a chart render carrying the
   }
 });
 
+test("chart:area and chart:stacked carry their kind through to the chart render (operator: more chart types)", () => {
+  const area = renderOutput({ kind: "chart", chart: "area" }, value("(: (list (tuple 1 10) (tuple 2 20)) T)"));
+  assert.equal(area.render, "chart");
+  if (area.render === "chart") assert.equal(area.chart, "area");
+  // stacked over a multi-y tuple list (two series sharing x) — the kind rides through; ChartView stacks them.
+  const stacked = renderOutput({ kind: "chart", chart: "stacked" }, value("(: (list (tuple 1 10 5) (tuple 2 20 8)) T)"));
+  assert.equal(stacked.render, "chart");
+  if (stacked.render === "chart") {
+    assert.equal(stacked.chart, "stacked");
+    assert.equal(stacked.series.length, 2); // two y-series to stack
+  }
+});
+
 test("a `formula` directive classifies the value shape (scalar → plain, rational → fraction)", () => {
   const scalar = renderOutput({ kind: "formula" }, value("(: 42 Int64)"));
   assert.deepEqual(scalar, { render: "formula", formula: { kind: "plain", text: "42" } });

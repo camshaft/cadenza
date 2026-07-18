@@ -29,7 +29,7 @@ export type RunOutcome =
 export type CellOutput =
   | { render: "value"; text: string; note?: string }
   | { render: "table"; table: Table }
-  | { render: "chart"; chart: "line" | "bar" | "scatter"; series: Series[]; note?: string }
+  | { render: "chart"; chart: "line" | "bar" | "scatter" | "area" | "stacked"; series: Series[]; note?: string }
   | { render: "formula"; formula: Formula }
   | { render: "trap"; message: string }
   | { render: "timeout" }

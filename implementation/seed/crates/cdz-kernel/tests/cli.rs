@@ -181,6 +181,18 @@ fn authz_grant_and_revoke_surface_the_operator_lifecycle() {
         );
     }
 
+    // authz-requests on a fresh log → none (requests are daemon-auto-emitted on a denied op; a bare log has
+    // none). The populated fold is covered by policy.rs's unit test (needs denied ops the daemon emits).
+    let out = Command::new(bin())
+        .args(["authz-requests", log.to_str().unwrap()])
+        .output()
+        .expect("run cdz-agent authz-requests");
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("no authorization requests"),
+        "a fresh log has no standing authz-requests"
+    );
+
     let _ = std::fs::remove_file(&log);
     let _ = std::fs::remove_file(&permit);
 }

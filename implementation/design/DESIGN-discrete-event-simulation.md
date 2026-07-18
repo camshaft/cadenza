@@ -160,7 +160,7 @@ effect Sim {
 (def (spawn t)   (Sim.spawn t))         ; bach: (async t).spawn()  — returns a (Task A)
 (def (join h)    (Sim.join h))          ; bach: handle.await
 (def (now)       (Sim.now ()))          ; bach: Instant::now()
-(def (sleep-until t) (sleep (since (now) t)))   ; bach: sleep_until — derived (span from now to t)
+(def (sleep-until t) (sleep (since t (now))))   ; bach: sleep_until — derived; span from now TO t = (- t now) since `since later earlier` = later−earlier, so the target `t` is `later`
 
 ; Kick off a simulation. bach's `sim(f)` runs until all PRIMARY tasks complete (background tasks —
 ; e.g. a server loop — may run forever; the sim ends when the primaries are done, NOT when the queue
@@ -290,7 +290,7 @@ straight-line effectful code; each `Sim` op that suspends is a `.await` in bach 
 | bach (Rust) | Cadenza `Sim` | Notes |
 |-------------|---------------|-------|
 | `d.sleep().await` / `time::sleep(d)` (`time.rs:15`) | `(sleep d)` → `perform Sim.sleep` | suspend until `now+d`; one-shot resume |
-| `time::sleep_until(instant)` (`time.rs:25`) | `(sleep-until t)` = `(sleep (since (now) t))` | derived, not primitive |
+| `time::sleep_until(instant)` (`time.rs:25`) | `(sleep-until t)` = `(sleep (since t (now)))` | derived, not primitive; `since t (now)` = `t − now` (a future target `t` is `later`) |
 | `fut.spawn()` → `JoinHandle<T>` (`ext.rs:62`, `task.rs:16`) | `(spawn t)` → `(Task A)` | **returns a joinable handle**, NOT fire-and-forget |
 | `handle.await` → `Result<T, JoinError>` (`join.rs:37`) | `(join h)` | suspend until the task finishes, yield its result |
 | `handle.abort()` (`join.rs:26`) | `(abort h)` (increment 5) | cancel a spawned task |

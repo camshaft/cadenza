@@ -551,3 +551,69 @@
   (call   main (: false Bool) (: false Bool) (: 0 UInt64)) (output (: 1 UInt64))
   (call   main (: true Bool)  (: true Bool)  (: 0 UInt64)) (output (: 1 UInt64))
   (call   main (: false Bool) (: false Bool) (: 3 UInt64)) (output (: 2 UInt64)))
+
+; ────────────────────────────────────────────────────────────────────────────────────────────────
+; Increment 4 (single-task) — the `run-sim` scheduler + `sleep-until`. The single-task sleep/fast-
+; forward path RUNS today (E5 step-2 folds a tail-resumptive sleep arm); the multi-task escaping-k
+; interleave awaits E5 step 3. These cases pin the working single-task scheduler + the derived API.
+; ────────────────────────────────────────────────────────────────────────────────────────────────
+
+(case "a run-sim scheduler fast-forwards the clock through two sequential sleeps in one task"
+  (doc    "The `run-sim` surface (design §4): a `handle Sim` whose state is the clock, the `sleep` arm
+           advancing it (`(at s d)`) and resuming, `now` reading it tail-resumptively. A task that sleeps
+           2 s then 3 s in sequence threads the clock through BOTH suspensions — the second sleep starts
+           from the fast-forwarded 2 s and lands at 5 s — so `(now)` reads 5_000_000_000 ns. Pins the
+           single-task fast-forward scheduler end-to-end (a task written as straight-line effectful code,
+           the clock jumping event-to-event), which runs TODAY on the E5 step-2 tail-resumptive fold — the
+           multi-task interleave (several stored continuations popped from a pqueue) is what still awaits
+           E5 step 3. This is the concrete `sleep`-does-not-block-a-wall-clock guarantee (§5): a 5-second
+           simulation costs two queue steps, not five seconds.")
+  (input  (do
+            (type Duration (Duration UInt64))
+            (type Instant  (Instant  UInt64))
+            (def (secs (: n UInt64)) (Duration.Duration (* n 1000000000)))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (def (dur-ns  (: d Duration)) (match d ((Duration.Duration n) n)))
+            (def (at (: t Instant) (: d Duration)) (Instant.Instant (+ (inst-ns t) (dur-ns d))))
+            (effect Sim (op sleep (-> Duration Unit)) (op now (-> Unit Instant)))
+            (def (run-sim thunk)
+              (handle Sim (Instant.Instant 0)
+                ( (now   (u) s (resume s s))
+                  (sleep (d) s k (resume unit (at s d))) )
+                (thunk)))
+            (def (task) (do (Sim.sleep (secs 2)) (Sim.sleep (secs 3)) (inst-ns (Sim.now))))
+            (def (main) (run-sim task))
+            (export main)))
+  (output (: 5000000000 Int64)))
+
+(case "`sleep-until` sleeps to an absolute Instant — the span is target minus now (since t now)"
+  (doc    "The derived `sleep-until` (design §4): sleep until an ABSOLUTE `Instant`, not for a relative
+           span. `(sleep-until t)` = `(sleep (since t (now)))` — the span from now TO t, which is `t − now`
+           because `since later earlier = later − earlier` (§3.2), so the future target `t` is the `later`
+           operand. ARG ORDER IS LOAD-BEARING: `(since (now) t)` would compute `now − t`, a UInt64
+           UNDERFLOW for any future target (`t > now`) — a compile-provable overflow the compiler rejects
+           (CDZ0304), NOT a wrong value. This case pins the correct order: a task at t=0 sleeps-until 4 s
+           (clock jumps to 4 s) then sleeps-until 7 s (jumps to 7 s), so `(now)` reads 7_000_000_000 ns.
+           A regression flipping the operands would trap at compile time, caught here as a todo/fail.")
+  (input  (do
+            (type Duration (Duration UInt64))
+            (type Instant  (Instant  UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (def (dur-ns  (: d Duration)) (match d ((Duration.Duration n) n)))
+            (def (at (: t Instant) (: d Duration)) (Instant.Instant (+ (inst-ns t) (dur-ns d))))
+            (def (since (: later Instant) (: earlier Instant))
+              (Duration.Duration (- (inst-ns later) (inst-ns earlier))))
+            (effect Sim (op sleep (-> Duration Unit)) (op now (-> Unit Instant)))
+            (def (now) (Sim.now))
+            (def (sleep-until (: t Instant)) (Sim.sleep (since t (now))))
+            (def (run-sim thunk)
+              (handle Sim (Instant.Instant 0)
+                ( (now   (u) s (resume s s))
+                  (sleep (d) s k (resume unit (at s d))) )
+                (thunk)))
+            (def (task) (do (sleep-until (Instant.Instant 4000000000))
+                            (sleep-until (Instant.Instant 7000000000))
+                            (inst-ns (now))))
+            (def (main) (run-sim task))
+            (export main)))
+  (output (: 7000000000 Int64)))

@@ -2304,6 +2304,33 @@
   (call mkb (: 5 Int64))    (output (: 5 Int64))
   (call mkb (: 0 Int64))    (trap "unreachable"))
 
+; ── @ensures on a def RETURNING an @invariant type: BOTH checks fire independently (composition edge) ────────
+; The two (D) run-time members COMPOSE on one def: a def with an `@ensures(Q on ret)` whose RESULT type carries
+; its own `@invariant(I on self)`. The result binder `ret` IS an `@invariant`-typed value, so TWO independent
+; checks apply — (a) the ESTABLISH trap fires at the `(Pct.P v)` construction INSIDE the body (the invariant on
+; the constructed value), and (b) the `@ensures` postcondition trap fires at body-exit on `ret`. They are
+; distinct obligations at distinct sites: an in-range value that fails the postcondition traps at EXIT, while
+; an out-of-range value traps EARLIER at construction (establish), before the postcondition is even reached.
+; Pins that neither check subsumes or masks the other — a future change that folded them would drop one guard.
+
+(case "@ensures on a def returning an @invariant type: establish (on construction) AND the postcondition (on ret) both fire (design §10, (D))"
+  (doc    "The composition of two (D) members on one def. `Pct = P Int64` has `@invariant(0 <= self <= 100)`;
+           `mk` has `@ensures(ret's payload >= 50)` and returns a `Pct`. `run(v)` calls `mk` then unwraps.
+           run(70): the Pct establish (0..100) holds AND the ensures (>=50) holds → 70 flows. run(30): the Pct
+           establish holds (30 in 0..100) but the ensures postcondition (30 >= 50) FAILS → trap at body-EXIT.
+           run(150): the Pct ESTABLISH (<=100) fails at the `(Pct.P 150)` construction INSIDE mk's body → trap
+           there, before the postcondition is reached. Pins that the establish trap and the @ensures trap are
+           INDEPENDENT obligations at distinct sites — neither subsumes the other. (`ret`/`self` are the
+           operator's binder names; here `ret` is itself an @invariant-typed value.)")
+  (input  (do
+            (@ (invariant (and (>= self 0) (<= self 100))) (type Pct (P Int64)))
+            (@ (ensures (match ret (((. Pct P) n) (>= n 50)))) (def (mk (: v Int64)) (Pct.P v)))
+            (def (run (: v Int64)) (match (mk v) (((. Pct P) n) n)))
+            (export run)))
+  (call run (: 70 Int64))  (output (: 70 Int64))
+  (call run (: 30 Int64))  (trap "unreachable")
+  (call run (: 150 Int64)) (trap "unreachable"))
+
 ; ── @invariant ESTABLISH divert: NO escape through indirect construction sites ──────────────────────────────
 ; The divert is a construction-SITE rewrite (`lower_sum_new` routes `(Percent.Pct v)` through the checked
 ; constructor), so its soundness rests on the rewrite reaching EVERY site the lowering walks — a site the

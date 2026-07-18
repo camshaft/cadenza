@@ -7,7 +7,15 @@
 import type { Surface } from "../compiler/client.ts";
 
 export interface Example {
+  /// Stable kebab-case identifier — the deep-link target (`/playground?example=<id>`) and the nav key.
+  /// Distinct from `name` (the human label) so a rename of the label never breaks a deep-link.
+  id: string;
   name: string;
+  /// Which themed nav bucket this example sits under in the sidebar's "Examples" section. Drives the
+  /// grouping v-guide-infra renders from data (no hardcoded nav list). Kept coarse (4 buckets) so 36
+  /// examples stay scannable: basics (language fundamentals), algorithms (classic computations),
+  /// data-and-collections (lists/maps/sets/records at work), numbers (numeric-model showcases).
+  theme: "basics" | "algorithms" | "data-and-collections" | "numbers";
   surface: Surface;
   source: string;
   /// Optional pinned SCALAR result (bare number or bool, as the runner renders it). When set, the
@@ -19,7 +27,9 @@ export interface Example {
 
 export const EXAMPLES: Example[] = [
   {
+    id: "hello-arithmetic",
     name: "Hello, arithmetic",
+    theme: "basics",
     surface: "sexpr",
     source: `(do
   (def (main) (+ 2 3))
@@ -27,7 +37,9 @@ export const EXAMPLES: Example[] = [
     expected: "5",
   },
   {
+    id: "recursive-sum",
     name: "A recursive sum",
+    theme: "basics",
     surface: "sexpr",
     source: `(do
   (def (sm n)
@@ -37,7 +49,9 @@ export const EXAMPLES: Example[] = [
     expected: "15",
   },
   {
+    id: "pattern-matching",
     name: "Pattern matching",
+    theme: "basics",
     surface: "sexpr",
     source: `(do
   (def (main)
@@ -49,7 +63,9 @@ export const EXAMPLES: Example[] = [
     expected: "20",
   },
   {
+    id: "option-sum-types",
     name: "Option & sum types",
+    theme: "basics",
     surface: "sexpr",
     source: `(do
   (type Opt (Some Int64) (None unit))
@@ -61,7 +77,9 @@ export const EXAMPLES: Example[] = [
     expected: "7",
   },
   {
+    id: "records",
     name: "Records",
+    theme: "basics",
     surface: "sexpr",
     source: `(do
   (def (area r) (* (. r w) (. r h)))
@@ -70,7 +88,9 @@ export const EXAMPLES: Example[] = [
     expected: "20",
   },
   {
+    id: "tuple",
     name: "A tuple",
+    theme: "basics",
     surface: "sexpr",
     source: `(do
   (def (main) (tuple 1 2 3))
@@ -78,7 +98,9 @@ export const EXAMPLES: Example[] = [
     expected: "(: (tuple 1 2 3) (Tuple Int64 Int64 Int64))",
   },
   {
+    id: "lists",
     name: "Lists",
+    theme: "basics",
     surface: "sexpr",
     source: `(do
   ; Concatenate two lists and return the RESULT — you see the whole list, not just its length.
@@ -91,7 +113,9 @@ export const EXAMPLES: Example[] = [
     // Shows off: a recursive sum type + structural pattern matching = a real (if tiny) interpreter.
     // Each `match` arm destructures one Expr shape; `eval` recurses into the subtrees. This is the
     // "look what you can build" hook — an AST evaluator in a dozen lines. Computes (2 + 3) * -(4) = -20.
+    id: "expression-interpreter",
     name: "Expression interpreter",
+    theme: "algorithms",
     surface: "sexpr",
     source: `(do
   ; A tiny arithmetic language, evaluated by structural recursion over its AST.
@@ -116,7 +140,9 @@ export const EXAMPLES: Example[] = [
   {
     // Shows off: tail-style recursion + integer arithmetic driving a classic number-theory routine.
     // The Collatz orbit of 27 famously climbs to 9232 before falling — this counts its 111 steps.
+    id: "collatz-orbit",
     name: "Collatz orbit length",
+    theme: "algorithms",
     surface: "sexpr",
     source: `(do
   ; Count the steps for n to reach 1 under the Collatz map
@@ -134,7 +160,9 @@ export const EXAMPLES: Example[] = [
   {
     // Shows off: first-class functions — a function that RETURNS a function (a closure over f and g).
     // `compose` builds a new function; applying it to 20 runs inc then double ==> 42.
+    id: "function-composition",
     name: "Function composition",
+    theme: "basics",
     surface: "sexpr",
     source: `(do
   ; compose builds a NEW function that runs g then f — a closure over both.
@@ -149,7 +177,9 @@ export const EXAMPLES: Example[] = [
     // Shows off: a Map used as a MEMO CACHE, threaded functionally through the recursion. Each call
     // returns (value, updated-map); the cache turns exponential fib into linear. fib(30) = 832040 —
     // it returns instantly, where naive fib(30) would make >2.7M calls.
+    id: "memoized-fibonacci",
     name: "Memoized Fibonacci (Map cache)",
+    theme: "data-and-collections",
     surface: "sexpr",
     source: `(do
   ; A persistent Map threaded as a cache: fib returns (value, updated-map).
@@ -172,7 +202,9 @@ export const EXAMPLES: Example[] = [
     // Shows off: building a frequency table by folding a list into a Map (add-or-bump each key).
     // Uses the List.at/List.len index-recursion idiom (the prelude List has no fold). The result is a
     // (List (Tuple Int64 Int64)) of (value, count) pairs — the shape a notebook `table` cell renders.
+    id: "frequency-count",
     name: "Frequency count (fold into a Map)",
+    theme: "data-and-collections",
     surface: "sexpr",
     source: `(do
   ; Count occurrences of each element, accumulating into a Map.
@@ -197,7 +229,9 @@ export const EXAMPLES: Example[] = [
     // Shows off: EXACT rational arithmetic — 1/2 + 1/3 + 1/6 is EXACTLY 1, with no floating-point
     // drift. The `(pragma default-fraction Rational)` directive makes every bare literal in scope an
     // exact fraction; compare with Float64, where 0.1 + 0.2 famously isn't 0.3.
+    id: "exact-rational-arithmetic",
     name: "Exact rational arithmetic",
+    theme: "numbers",
     surface: "sexpr",
     source: `(do
   (pragma default-fraction Rational)
@@ -212,7 +246,9 @@ export const EXAMPLES: Example[] = [
     // times should give 1.0, but IEEE 754 can't represent 0.1 exactly, so the errors accumulate to
     // 0.9999999999999999. Also shows explicit parameter type annotations (n: Int64, acc: Float64) —
     // Cadenza never silently promotes between numeric types.
+    id: "float-rounding-drift",
     name: "Float rounding drift",
+    theme: "numbers",
     surface: "sexpr",
     source: `(do
   ; Add 0.1 to itself ten times. Exact math says 1.0, but Float64 rounding accumulates.
@@ -225,7 +261,9 @@ export const EXAMPLES: Example[] = [
   {
     // Shows off: the classic Euclidean algorithm — recursion + modulo — and deriving LCM from it.
     // gcd(a,b) = gcd(b, a mod b); lcm(a,b) = a*b/gcd. lcm(12,18) = 36.
+    id: "gcd-lcm-euclid",
     name: "GCD and LCM (Euclid)",
+    theme: "algorithms",
     surface: "sexpr",
     source: `(do
   ; Euclid's algorithm: gcd(a, b) = gcd(b, a mod b), until b is 0.
@@ -239,7 +277,9 @@ export const EXAMPLES: Example[] = [
   {
     // Shows off: Set operations as first-class values. Symmetric difference (elements in exactly one
     // of two sets) is built from union + difference: (A\\B) ∪ (B\\A). Result: {1, 2, 5, 6}.
+    id: "set-algebra",
     name: "Set algebra (symmetric difference)",
+    theme: "data-and-collections",
     surface: "sexpr",
     source: `(do
   ; The symmetric difference of two sets: elements in exactly one of them.
@@ -257,7 +297,9 @@ export const EXAMPLES: Example[] = [
     // Shows off: a sum type as a functional STACK (cons list) with real push/pop via match, driving a
     // stack machine. Evaluates RPN (postfix): numbers push; an operator pops two and pushes the result.
     // "3 4 + 5 *" = (3+4)*5 = 35.
+    id: "rpn-calculator",
     name: "RPN calculator (stack machine)",
+    theme: "algorithms",
     surface: "sexpr",
     source: `(do
   ; A stack is a cons list — push and pop are just constructors and match.
@@ -295,7 +337,9 @@ export const EXAMPLES: Example[] = [
   {
     // Shows off: nested recursion for a real algorithm — count primes ≤ N by trial division.
     // isprime tests divisibility up to √n; count folds over the range. Primes ≤ 100 = 25.
+    id: "count-primes",
     name: "Count primes (trial division)",
+    theme: "algorithms",
     surface: "sexpr",
     source: `(do
   ; Trial division: n is prime if no d with d*d <= n divides it.
@@ -317,7 +361,9 @@ export const EXAMPLES: Example[] = [
     // Shows off: a cellular automaton — Rule 110, one of the simplest Turing-complete systems — as a
     // list transformation. Each generation maps a row of 0/1 cells to the next via a neighbourhood
     // rule. Returns the row after 4 generations of a single seed cell.
+    id: "rule-110",
     name: "Rule 110 cellular automaton",
+    theme: "algorithms",
     surface: "sexpr",
     source: `(do
   ; Elementary cellular automaton Rule 110 — a row of 0/1 cells, each new cell a
@@ -342,7 +388,9 @@ export const EXAMPLES: Example[] = [
     // Shows off: records + a list of them = a little data pipeline, returning BOTH the data and the
     // result. Project the age field of each (name, age) record into a list, and compute their average,
     // returning the pair so you SEE both the extracted data [36,41,40] AND the aggregate 39.
+    id: "data-pipeline",
     name: "Data pipeline over records",
+    theme: "data-and-collections",
     surface: "sexpr",
     source: `(do
   ; A list of records — access a field with (. r age).
@@ -375,7 +423,9 @@ export const EXAMPLES: Example[] = [
     // Shows off: 2D data — a matrix as a list of rows (list of lists), and building a NEW nested
     // collection at runtime. Transpose turns rows into columns: [[1 2 3] [4 5 6]] becomes
     // [[1 4] [2 5] [3 6]]. The result is a runtime-built (List (List Int64)) that renders in full.
+    id: "matrix-transpose",
     name: "Matrix transpose",
+    theme: "data-and-collections",
     surface: "sexpr",
     source: `(do
   ; m is a list of rows; each row is a list of Int64. elem reads m[i][j], 0 if out of range.
@@ -401,7 +451,9 @@ export const EXAMPLES: Example[] = [
   {
     // Shows off: exponential recursion made concrete — the minimum moves to solve Tower of Hanoi with
     // n disks is 2^n - 1 (move n-1, move the big disk, move n-1 back). hanoi(10) = 1023.
+    id: "tower-of-hanoi",
     name: "Tower of Hanoi (move count)",
+    theme: "algorithms",
     surface: "sexpr",
     source: `(do
   ; Moves to solve Tower of Hanoi: solve n-1, move the largest disk, solve n-1 again.
@@ -417,7 +469,9 @@ export const EXAMPLES: Example[] = [
   {
     // Shows off: bit-twiddling with plain integer arithmetic — count the 1-bits (population count) of a
     // number by repeatedly taking n mod 2 and dividing by 2. 2730 = 0b101010101010 has 6 one-bits.
+    id: "population-count",
     name: "Population count (bits)",
+    theme: "numbers",
     surface: "sexpr",
     source: `(do
   ; Count the 1-bits of n: the low bit is n mod 2; shift right by dividing by 2.
@@ -433,7 +487,9 @@ export const EXAMPLES: Example[] = [
     // Shows off: a classic list transform — run-length encoding. Walk the list tracking the current
     // run; emit a (value, count) tuple when it ends. [1 1 1 2 3 3] => [(1,3) (2,1) (3,2)]. The empty
     // accumulator is annotated so its element type is fixed before any element is pushed.
+    id: "run-length-encoding",
     name: "Run-length encoding",
+    theme: "algorithms",
     surface: "sexpr",
     source: `(do
   (def (at xs i) (match (List.at xs i) ((Some v) v) ((None) 0)))
@@ -455,7 +511,9 @@ export const EXAMPLES: Example[] = [
   {
     // Shows off: string work via bytes — check a word reads the same forwards and backwards by comparing
     // the i-th and (n-1-i)-th UTF-8 bytes moving inward. "racecar" -> 1 (true).
+    id: "palindrome-check",
     name: "Palindrome check",
+    theme: "algorithms",
     surface: "sexpr",
     source: `(do
   ; Compare bytes from both ends moving inward; a mismatch means not a palindrome.
@@ -473,7 +531,9 @@ export const EXAMPLES: Example[] = [
   {
     // Shows off: scanning a string's UTF-8 bytes in a loop — walk each byte and count the ASCII vowels.
     // `Bytes.at` returns an Option (past-the-end is None), so we match it. "education" -> 5.
+    id: "count-vowels",
     name: "Count vowels",
+    theme: "algorithms",
     surface: "sexpr",
     source: `(do
   ; Is this byte one of a e i o u (lowercase ASCII)?
@@ -500,7 +560,9 @@ export const EXAMPLES: Example[] = [
   {
     // Shows off: computing a result without a built-in — integer square root by searching upward for the
     // largest g with g*g <= n. isqrt(144) = 12.
+    id: "integer-square-root",
     name: "Integer square root",
+    theme: "algorithms",
     surface: "sexpr",
     source: `(do
   ; The largest g such that g*g <= n: search up until g*g overshoots, then back off one.
@@ -515,7 +577,9 @@ export const EXAMPLES: Example[] = [
     // Shows off: MUTUAL recursion — two top-level defs each call the other, and Cadenza resolves the
     // forward reference across definitions (a whole recursion group, not just self-recursion). Classic
     // even/odd parity, then count how many of 0..<10 are even -> 5.
+    id: "mutual-recursion",
     name: "Mutual recursion (even & odd)",
+    theme: "algorithms",
     surface: "sexpr",
     source: `(do
   ; Each predicate is defined in terms of the OTHER — a mutually recursive group.
@@ -535,7 +599,9 @@ export const EXAMPLES: Example[] = [
     // Shows off: NON-primitive recursion — the Ackermann–Péter function, whose recursion nests inside
     // its own argument (ack(m-1, ack(m, n-1))). It's total but not primitive-recursive, and grows
     // explosively, so keep the inputs tiny: ack(3, 3) = 61.
+    id: "ackermann",
     name: "Ackermann function",
+    theme: "algorithms",
     surface: "sexpr",
     source: `(do
   ; ack(m,n): the classic total-but-not-primitive-recursive function. The inner call
@@ -555,7 +621,9 @@ export const EXAMPLES: Example[] = [
     // is a list of column positions (one per row placed so far); `safe` rejects a column that shares a
     // column or diagonal with an earlier queen; solve/try-cols recurse row by row, summing the counts.
     // The classic 8x8 board has 92 solutions.
+    id: "n-queens",
     name: "N-queens (count solutions)",
+    theme: "algorithms",
     surface: "sexpr",
     source: `(do
   (def (at xs i) (match (List.at xs i) ((Some v) v) ((None) (- 0 1))))
@@ -585,7 +653,9 @@ export const EXAMPLES: Example[] = [
   {
     // Shows off: rebuilding a list in reverse by pushing elements from the end onto a fresh list.
     // The prelude List has no reverse, so we walk indices downward. [1 2 3 4 5] -> [5 4 3 2 1].
+    id: "reverse-a-list",
     name: "Reverse a list",
+    theme: "basics",
     surface: "sexpr",
     source: `(do
   (def (at xs i) (match (List.at xs i) ((Some v) v) ((None) 0)))
@@ -602,7 +672,9 @@ export const EXAMPLES: Example[] = [
     // Shows off: metaprogramming — code is DATA. `quasiquote` builds an AST value without running it,
     // `unquote` splices a computed value into that AST, and `eval` runs the constructed code. Here we
     // generate the expression (base*base + offset) for base=6, offset=5 and evaluate it -> 41.
+    id: "metaprogramming-quote-eval",
     name: "Metaprogramming (quote & eval)",
+    theme: "basics",
     surface: "sexpr",
     source: `(do
   ; quasiquote builds code as data; unquote splices a value in; eval runs it.
@@ -617,7 +689,9 @@ export const EXAMPLES: Example[] = [
     // Shows off: algebraic effects & handlers — a signature Cadenza feature — discharged entirely
     // in-program. `Tick.tick n` performs an operation; the handler threads a running total as its
     // STATE, hands back the new total, and resumes. tick 10 -> 10, tick 5 -> 15, so 10 + 15 = 25.
+    id: "effects-handlers-stateful",
     name: "Effects & handlers (stateful)",
+    theme: "basics",
     surface: "sexpr",
     source: `(do
   ; Declare an effect, then discharge it with a handler that threads STATE.
@@ -635,7 +709,9 @@ export const EXAMPLES: Example[] = [
     // (Iter) with filter/map/fold; each stage recurses down the sequence and rebuilds it. The pipeline
     // keeps the evens of 1..6 -> [2,4,6], triples them -> [6,12,18], and sums -> 36.
     // (Authored with v-iterators, who own the iterator family.)
+    id: "iterator-pipeline",
     name: "Iterator pipeline (filter → map → fold)",
+    theme: "data-and-collections",
     surface: "sexpr",
     source: `(do
   ; A linked sequence of Int64: empty (Nil) or a head paired with the rest.
@@ -674,7 +750,9 @@ export const EXAMPLES: Example[] = [
     // Shows off: consuming TWO sequences in lockstep — a zip. Walk both Iters together, multiply the
     // paired heads, and sum, giving the dot product of two vectors. [1,2,3]·[4,5,6] = 4+10+18 = 32.
     // (Authored with v-iterators; monomorphic Int64 Iter, clean on both surfaces.)
+    id: "iterator-zip-dot-product",
     name: "Iterator zip: dot product",
+    theme: "data-and-collections",
     surface: "sexpr",
     source: `(do
   ; A linked sequence of Int64: empty (Nil) or a head paired with the rest.
@@ -702,7 +780,9 @@ export const EXAMPLES: Example[] = [
     expected: "32",
   },
   {
+    id: "a-type-error",
     name: "A type error (see the squiggle)",
+    theme: "basics",
     surface: "sexpr",
     source: `(do
   (def (main) (+ 1 true))

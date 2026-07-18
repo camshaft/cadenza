@@ -21,7 +21,7 @@ import { Vec3m, v3-len, len-m, meters, to-vec3 } from "units-typed"
 /// Int64 count; the `1` denominator is annotated `(1 : Int64)` so `Rational.of` stays Int64-typed under the
 /// module's `default-fraction Rational`.
 def inches(n: Int64) =
-  Qty.of(Qty.value(Unit.in(Unit.of(#"meter"), Qty.of(Rational.of(n, (1 : Int64)), Unit.of(#"inch")))), Unit.of(#"meter"))
+  Qty.of(Unit.in(Unit.of(#"meter"), Qty.of(Rational.of(n, (1 : Int64)), Unit.of(#"inch"))), Unit.of(#"meter"))
 
 /// A meter-model axis-aligned box: width/depth/height given as LENGTHS (type-checked), stored as exact
 /// meters, built into the exact `Solid(Rational)` CSG the drivers consume. Mixing a length with a bare number here

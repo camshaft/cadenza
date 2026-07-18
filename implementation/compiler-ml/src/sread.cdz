@@ -28,9 +28,9 @@ def is-digit(c: String) =
 def is-space(c: String) = c == " "
 
 def digit-val(c: String) =
-  if c == "0" then 0 else (if c == "1" then 1 else (if c == "2" then 2 else (if c == "3" then 3
-  else (if c == "4" then 4 else (if c == "5" then 5 else (if c == "6" then 6 else (if c == "7" then 7
-  else (if c == "8" then 8 else 9))))))))
+  match c with
+    | "0" => 0 | "1" => 1 | "2" => 2 | "3" => 3 | "4" => 4
+    | "5" => 5 | "6" => 6 | "7" => 7 | "8" => 8 | _ => 9
 
 /// Scan a run of digits from `i`, accumulating the decimal value into `acc`. Returns `(value, next-index)`.
 def scan-number(s: String, i: Int64, acc: Int64) =
@@ -64,12 +64,10 @@ def scan-atom(s: String, i: Int64, acc: String) =
 
 /// The op-code for a binary operator SYMBOL, matching parse-db's codes (43 + / 45 - / 42 * / 47 / / 37 % /
 /// 60 < / 61 == / 62 > / 63 <= / 64 >= / 65 !=). Returns -1 for an unrecognized symbol.
-def op-code-of(sym: String) =
-  (if sym == "+" then 43 else (if sym == "-" then 45 else (if sym == "*" then 42
-   else (if sym == "/" then 47 else (if sym == "%" then 37
-   else (if sym == "<" then 60 else (if sym == "==" then 61 else (if sym == ">" then 62
-   else (if sym == "<=" then 63 else (if sym == ">=" then 64 else (if sym == "!=" then 65
-   else 0 - 1)))))))))))
+def op-code-of(sym: String) = match sym with
+  | "+" => 43 | "-" => 45 | "*" => 42 | "/" => 47 | "%" => 37
+  | "<" => 60 | "==" => 61 | ">" => 62 | "<=" => 63 | ">=" => 64 | "!=" => 65
+  | _ => 0 - 1
 
 /// A DETERMINISTIC name-id for an identifier string: a polynomial hash over its BYTES (`String.to-bytes`,
 /// the proven boundary-safe op). Same string → same id every time, so a `let`-binder and its `NVar` uses

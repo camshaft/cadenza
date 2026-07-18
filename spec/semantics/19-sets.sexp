@@ -61,6 +61,42 @@
   (input  (Set.contains (Set.of (list 1 2 3)) 2))
   (output (: true Bool)))
 
+; The dedup/membership cases above use SCALAR (Int64) elements. A Set element may be a COMPOUND value —
+; a tuple or a list — in which case dedup and membership compare the WHOLE compound by value: two tuples
+; are the same element only if ALL components are equal, and tuple element order matters (⟨5,1⟩ ≠ ⟨1,5⟩).
+; These pin the compound-element path (runtime operands, so nothing folds): a Set keyed by a tuple/list
+; hashes and compares the full structure, exactly as a Map does for a compound key.
+
+(case "a set of tuples deduplicates by the whole tuple and its membership is component-order-sensitive"
+  (doc    "`(Set.of (list (tuple a 1) (tuple b 2) (tuple a 1)))` over runtime a/b: the repeated `(tuple a 1)`
+           collapses (dedup by the WHOLE tuple value), so with a=5,b=5 the set is {⟨5,1⟩, ⟨5,2⟩} — len 2,
+           the two tuples distinct because their SECOND components differ. Membership is total and compares
+           the whole tuple: `(Set.contains s (tuple a 1))` is true, but `(Set.contains s (tuple 1 a))` is
+           FALSE — ⟨1,5⟩ is not ⟨5,1⟩, tuple component ORDER matters. Encodes 100·len + 10·has⟨a,1⟩ + has⟨1,a⟩
+           = 210. Pins compound-element dedup + order-sensitive compound membership.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (let ((s (Set.of (list (tuple a 1) (tuple b 2) (tuple a 1)))))
+                (+ (* 100 (Set.len s))
+                   (+ (* 10 (if (Set.contains s (tuple a 1)) 1 0))
+                      (if (Set.contains s (tuple 1 a)) 1 0)))))
+            (export main)))
+  (call main (: 5 Int64) (: 5 Int64)) (output (: 210 Int64))
+  (call main (: 5 Int64) (: 7 Int64)) (output (: 210 Int64)))
+
+(case "a set of lists deduplicates by the whole list, distinguishing element order"
+  (doc    "The list-element companion: `(Set.of (list (list a b) (list b a) (list a b)))`. With a=3,b=8 the
+           lists `[3,8]` and `[8,3]` are DISTINCT elements (list order matters), and the repeated `[3,8]`
+           collapses → len 2. With a=5,b=5 all three are `[5,5]`, one element → len 1. Pins that a Set over
+           a list element dedups by the whole list value including element order, the list twin of the
+           tuple case.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (Set.len (Set.of (list (list a b) (list b a) (list a b)))))
+            (export main)))
+  (call main (: 3 Int64) (: 8 Int64)) (output (: 2 Int64))
+  (call main (: 5 Int64) (: 5 Int64)) (output (: 1 Int64)))
+
 (case "membership of an absent element is false, not a trap"
   (doc    "The absent companion: `(Set.contains (Set.of (list 1 2 3)) 5)` tests an element not in the
            set, so the total predicate yields false — NOT a trap and NOT an error (collections-and-text.md
