@@ -31,7 +31,7 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: fmt
@@ -41,7 +41,7 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: clippy
@@ -55,7 +55,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: test-${{ matrix.os }}
@@ -70,7 +70,7 @@ jobs:
     name: slack-bridge crate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: slack-bridge
@@ -120,7 +120,7 @@ jobs:
     # it flakes. See the memory note runtime-cross-arch-determinism.
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           wasm-tools: "true"
@@ -133,7 +133,7 @@ jobs:
     name: wasm runtime build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           wasm-tools: "true"
@@ -157,7 +157,7 @@ jobs:
     # with "no runtime of content address … in the store". See runtime-cross-arch-determinism.
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           wasm-tools: "true"
@@ -181,7 +181,7 @@ jobs:
     name: cadenza @test suites
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           wasm-tools: "true"
@@ -208,7 +208,7 @@ jobs:
     name: cdz-cad native driver
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: cdz-cad
@@ -233,7 +233,7 @@ jobs:
     name: cdz-agent embedder
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           wasm-tools: "true"
@@ -286,7 +286,7 @@ jobs:
     name: cdz-kernel microkernel
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           wasm-tools: "true"
@@ -319,7 +319,7 @@ jobs:
     name: rcdzc compiler-wasm
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: rcdzc-wasm
@@ -341,7 +341,7 @@ jobs:
     name: syntax roundtrip
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: roundtrip
@@ -353,7 +353,7 @@ jobs:
     name: allocation bench
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: bench
@@ -371,14 +371,14 @@ jobs:
     name: guide examples
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           wasm-tools: "true"
           cache-key: guide-examples
       - name: Install wasm-pack
         run: cargo binstall -y --force wasm-pack
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
