@@ -149,6 +149,9 @@ def c-cx-paren-overrides-precedence() = Case.Case([Tok.TLParen, Tok.TNum(1), Tok
 /// `2 * (3 + 4)` → 14 (parens on the RIGHT operand of a higher-precedence op).
 def c-cx-paren-right-operand() = Case.Case([Tok.TNum(2), Tok.TOp(42), Tok.TLParen, Tok.TNum(3), Tok.TOp(43), Tok.TNum(4), Tok.TRParen], Expect.Runs(14))
 /// `((5))` → 5 (redundant NESTED parens collapse to the inner literal — the paren-nests-full-grammar recursion).
+/// QUARANTINED-from-corpus repro (see the comment block below): kept as the root-cause reproducer for the
+/// open nested-paren hang (bug #4, v-inference). NOT dead — intentionally retained. Leading `_` marks it
+/// as deliberately-not-in-`corpus()`.
 def _c-cx-nested-redundant-parens() = Case.Case([Tok.TLParen, Tok.TLParen, Tok.TNum(5), Tok.TRParen, Tok.TRParen], Expect.Runs(5))
 
 /// THE CORPUS: every conformance case. Widening the language = appending here (start-low-and-climb).

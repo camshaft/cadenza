@@ -1838,6 +1838,13 @@ impl Db {
         // every node it appends is ordinary AST (`proptest_gen`, no name special-casing). A no-op for a
         // program with no compound-param `@test`.
         crate::proptest_gen::synthesize(&mut ast);
+        // DATA-TYPE INVARIANT ESTABLISH (Part 1): for each type carrying `@invariant(PRED)`, synthesize a
+        // typed checker `(def (__invariant_check_<T> (: it <T>)) <check-body>)` appended to the top-level
+        // items — auto-unwrapping a single-payload newtype so a bare scalar predicate type-checks — so PRED
+        // is RESOLVED + TYPE-CHECKED with `it : T` in scope (a malformed invariant is caught) and it is the
+        // callee the construct-site establish check (Part 2) invokes. BEFORE `strip_annotations` (wrapper
+        // present) + `scan_top_level`; all appended nodes are ordinary AST. No-op with no `@invariant`.
+        crate::invariant_establish::synthesize(&mut ast);
         // Normalize away a `(const BINDER)` PARAMETER wrapper on every `def`/`fn` signature BEFORE anything
         // reads a parameter: `const` marks a COMPILE-TIME parameter (`DESIGN-…-monomorphization` Addendum
         // 3), a declaration the specializer consumes — not part of the binder shape the resolver/typer

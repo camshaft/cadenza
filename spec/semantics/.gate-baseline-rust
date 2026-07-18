@@ -1,6 +1,7 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	@ensures on a def with a parameter named it is REJECTED (would silently not enforce — rename the param)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
+pass	@invariant ESTABLISH Part 1: a bare-scalar invariant on a newtype auto-unwraps + type-checks; a satisfying value constructs and is usable
 pass	@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)
 pass	@invariant PRESERVE: an operation returning T discharges the result invariant USING the input invariant as a free gift (design §10.2)
 pass	@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `it` + prelude are in scope)
@@ -233,6 +234,7 @@ pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
 pass	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
+pass	a 32-bit-float closure crosses the host boundary
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
@@ -3213,6 +3215,7 @@ pass	scan threads its accumulator left-to-right (an order-sensitive folder)
 pass	scan's kth emitted accumulator is the running fold of the first k elements
 pass	self-operand division is NOT folded to one — it still traps at zero
 pass	self-operand subtraction and xor are zero, and-or are the operand, on a runtime value
+pass	sequenced memoize helpers with a local let thread the Map-state out-state (the memo-spine shape)
 pass	set equality is independent of the order elements are written
 pass	set union is associative on generated inputs (the order merges are grouped does not matter)
 pass	set union is commutative on generated inputs (a grow-only-set CRDT merge converges)
@@ -3625,12 +3628,9 @@ pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
 todo	Type is a first-class value
-todo	a 32-bit-float closure crosses the host boundary
 todo	a @param accessor splices into a quasiquote and the eval computes with the host value
+todo	a @param of type (Qty Rational unit) desugars to num/den scalars + a guest Qty.of with the unit (#13 B2)
 todo	a @param of type Rational desugars to two scalar num/den accessors the guest recombines (#13)
-todo	a Bytes-returning closure alongside a plain export — the closure runs
-todo	a Bytes-returning closure alongside a plain export — the plain runs
-todo	a Bytes-returning closure on a different argument
 todo	a Float64 closure captures a Float64 build-time host effect result
 todo	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
 todo	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)

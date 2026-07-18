@@ -18,6 +18,31 @@ pub fn compile_ast(ast_bytes: &[u8]) -> Result<Vec<u8>, String> {
     rcdzc::compile_component(ast_bytes).map_err(|d| format!("{} [{:?}]", d.message, d.code))
 }
 
+/// Compile a Cadenza program's AST bytes into a PROVIDER component published under `iface` (e.g.
+/// `cadenza:agent/kernel`) — the named counterpart of [`compile_ast`], the foundation for wasm-swapping the
+/// agent-kernel's PROVIDER compile (its `interpret` is a named provider peer, not a plain component). Mirrors
+/// the kernel's native `compile_interpret_provider` recipe: compile with a `component-name` artifact under the
+/// compiler stack, extract the wasm artifact. Pure + host-testable (like `compile_ast`); a future wasm export
+/// wraps it once the linear-memory ABI carries the interface string. Returns `Ok(component_bytes)` or the
+/// diagnostic string. (Plain `compile_ast` = `compile_component` = NO component name — this adds the name so a
+/// peer executor can bind the export, which the plain path can't produce.)
+pub fn compile_ast_named(ast_bytes: &[u8], iface: &str) -> Result<Vec<u8>, String> {
+    use rcdzc::abi::Artifact;
+    use rcdzc::backend::Target;
+    let out = rcdzc::host::run_with_compiler_stack(|| {
+        rcdzc::compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "interpret", ast_bytes.to_vec()),
+                rcdzc::cli::component_name_artifact(iface),
+            ],
+            &[Target::Wasm],
+        )
+    });
+    out.artifact(Target::Wasm.artifact_kind())
+        .map(|b| b.to_vec())
+        .ok_or_else(|| format!("provider did not compile: {:?}", out.diagnostics))
+}
+
 /// The minimal linear-memory ABI the kernel's wasmtime invokes (wasm target only). The kernel writes the AST
 /// bytes into this module's memory at `ptr` (len `len`), calls `compile`, and reads the RESULT the same way:
 /// the return value packs the result `(ptr << 32) | len` into a u64, where the result region is
@@ -108,6 +133,27 @@ mod tests {
         assert!(!out.is_empty(), "the compiled component has bytes");
         // A wasm component starts with the wasm magic `\0asm`.
         assert_eq!(&out[..4], b"\0asm", "the output is a wasm module/component");
+    }
+
+    #[test]
+    fn compile_ast_named_compiles_an_interpret_provider() {
+        // The named counterpart: compile an `interpret` program AS A PROVIDER published under an interface —
+        // what the agent-kernel needs (its interpret is a named provider peer). Produces a wasm component; the
+        // component-name artifact makes the export bindable by a peer executor (the plain compile_ast can't).
+        let ast =
+            ast_of("(do (def (interpret (: kind Int64) (: turn Int64)) kind) (export interpret))");
+        let out = compile_ast_named(&ast, "cadenza:agent/kernel")
+            .expect("a valid interpret provider compiles");
+        assert!(!out.is_empty(), "the compiled provider has bytes");
+        assert_eq!(&out[..4], b"\0asm", "the output is a wasm module/component");
+    }
+
+    #[test]
+    fn compile_ast_named_reports_a_bad_program_as_a_loud_error() {
+        let ast = ast_of("(do (def (interpret) undefined-name) (export interpret))");
+        let err = compile_ast_named(&ast, "cadenza:agent/kernel")
+            .expect_err("a provider with an unbound name must not compile");
+        assert!(!err.is_empty(), "the error carries the diagnostic: {err}");
     }
 
     #[test]

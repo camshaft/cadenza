@@ -17105,6 +17105,28 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                     lhs: args[0],
                     rhs: args[1],
                 }
+            } else if is_scalar(db, args[0]) || is_scalar(db, args[1]) {
+                // ONE-SIDED SCALAR: exactly one operand's type resolves to a scalar Int/Bool while the
+                // OTHER reads as an unresolved var (`_`). The type checker UNIFIED the two operands before
+                // lowering, so a scalar on one side proves the comparison is scalar — but the unresolved
+                // side's `type_of` still renders the raw var (the final substitution is not applied at this
+                // query), so `is_scalar && is_scalar` above was false and `=` wrongly fell through to the
+                // `value-eq` heap walk below. That mis-lowering surfaced downstream as an ownership decline
+                // ("borrowing op operand …") when the scalar side is a bare `ConstInt` (not a heap operand).
+                // This is the shape of a comparison over a value projected from a GENERIC-variant payload —
+                // `match it (Iter.Mk(s,f) …)` then `(= h 1)` where `h`'s element type is the erased type
+                // param `a`: at a concrete instantiation `a := Int64`, `h` IS an Int64 at runtime (the
+                // `== 1` unified it), but `type_of(h)` reads the ungrounded var. Route to a scalar
+                // `Core::Compare`; the emit's `operand_int_ty` grounds the machine width from the scalar
+                // side. Sound because unification guarantees both sides share the type — a scalar side
+                // means the other is that same scalar. (v-iterators fused-iterator step; NOT a Perceus/
+                // borrow bug — the ownership decline was a symptom of this lowering mis-route.)
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "one-sided scalar comparison (other operand's var is unified to the scalar) → scalar compare");
+                Core::Compare {
+                    op,
+                    lhs: args[0],
+                    rhs: args[1],
+                }
             } else if matches!(op, Prim::Eq) && node_ty_is_enum_disc(db, args[0]) {
                 // ENUM-DISCRIMINANT equality: both operands are bare discriminant i32s (an all-nullary
                 // enum is represented as its discriminant, no heap box), so `=` is a plain `i32.eq` — NOT

@@ -85,54 +85,73 @@ intermediate `Iter` record materialized between stages (they're consumed by the 
 
 ## 3. Compiler support needed (the real dependency list)
 
-1. **Monomorphization through the closure/record chain (P0).** A `map(it, f)` whose `it` is itself
-   `filter(map(...))` must fully specialize — the nested record/closure type resolved to a ground
-   type per chain. This is the SAME recursive-generic / closure-tie machinery v-inference has been
-   landing (565f6d184 element tie, e7d78a566 element-through-generic-callee). The nested-generic
-   closure-RESULT over-nest (queue `mlrepro-gmap-closure-returning-generic-call-over-nests-result`)
-   is directly on this path — a `map` whose closure returns another generic call is exactly a
-   fused stage. **This design is GATED on that residual + the mono ceiling** (giter.cdz already hits
-   a per-module instantiation ceiling at ~92 tests — a fused chain multiplies instantiations).
-2. **A fusion guarantee, not a hope (P1).** Marking `step` closures `inline_always` + `beta`/`inline`
-   must actually collapse the chain. Need: (a) an `@inline`/`inline_always` SURFACE annotation for
-   the step closures (today `inline_always` is compiler-internal, `db.rs:4710`); (b) verify the
-   inliner sees through a closure stored in a record field (not just a named top-level def call).
-   This is the highest-risk unknown — may need an inliner extension for record-field closure calls.
-3. **Records (or stay on tuples) (P2).** The sketch uses record sugar; a 2-tuple `(state, step)`
-   works today. Records improve readability but aren't load-bearing.
-4. **Forall-binders (nice-to-have, P3).** With forall + a trait/row-shape we could write a cleaner
-   `Iterator`-like bound. NOT required for the record-closure encoding; it would make the types
-   spell nicer. This is the in-flight v-inference work — design does NOT block on it.
+**UPDATE 2026-07-18 — dependency picture VALIDATED by spikes (I0 ruled, I1 run).** The abstract deps
+below were sharpened into concrete, filed compiler gaps by hand-running the adapter shape. Current
+reality, in the order the shape hits them:
 
-## 4. Increments (each gated, each a landable slice)
+0. **[FIXED] Comma-tuple variant-payload construction.** The adapter shape `Mk(s, s -> Option((a,s)))`
+   at first could not even be CONSTRUCTED — the comma-tuple `(a,s)` payload was misread as nullary
+   (CDZ0201). v-inference fixed it in `bca5da9e0` (a missing `Resolved::Tuple` arm in `type_in_env` +
+   `typeval_of`). Construction + typecheck of the `{state, step}` adapter now work (`cdz check` passes).
+1. **[BLOCKER, filed → v-memory-safety] Generic-variant stored-closure CALLBACK ownership.** Calling the
+   stored `step` closure back (`f(s)`) on a GENERIC variant declines: "borrowing op operand has an
+   ownership this backend cannot yet prove" — at a SINGLE instantiation, before any multi-type concern.
+   DISCRIMINATOR: a MONOMORPHIC same-shape variant callback RUNS fine; only the generic-variant callback
+   declines. This is a Perceus/borrow provability gap over a closure projected from a type-param-arrow
+   variant field. Queue repro `mlrepro-generic-variant-stored-closure-callback-borrowing-op-ownership-
+   decline.cdz`. **This is now the #1 critical-path gate** — `step(s)` is the adapter's fundamental op;
+   the encoding type-checks but cannot RUN until this lowers.
+2. **[BLOCKER, known → v-inference] Recursive-generic monomorphization tie (mono ceiling).** A multi-
+   element-type `fold`/`map` chain hits the recursive-generic tie the whole giter family shares
+   (565f6d184 / e7d78a566 landed pieces; the residual mono ceiling remains). Single-element-type is
+   gated by #1 first anyway.
+3. **[VALIDATED — LOWER RISK than first thought] Fusion guarantee.** Confirmed by source: the
+   `@inline-always`/`@inline-never` SURFACE annotations ALREADY EXIST (`db.rs` `KNOWN_ANNOTATIONS`,
+   mapped by `strip_inline_policy`; `@inline-always` on a recursive def is a coded reject). AND rcdzc's
+   DEFAULT is to always-inline non-recursive defs (`inline_always` is currently a NO-OP because the
+   default already folds — `db.rs:1701`). So the non-recursive combinators (`map`/`filter` return a new
+   record) ALREADY inline by default → fusion should be ~free; the recursive DRIVER (`fold-loop`) is the
+   one loop we keep. The residual I2 risk narrows to a SINGLE question: does the inliner see THROUGH a
+   closure stored in a RECORD/VARIANT FIELD (the `step` field)? Verify via emitted WAT once #1 lands.
+4. **Records vs tuples (P2, unchanged).** The `{state,step}` record sugar is equivalent to the 2-field
+   variant `Mk(state, step)`; same construction/ownership behavior (the spikes used the variant form).
+5. **Forall-binders (P3, unchanged).** NOT required; the trait-less encoding is what the operator ruled
+   for. (Forall-binder CORE has since landed in v-syntax, but the design does not depend on it.)
 
-- **I0 (design, THIS doc).** Operator ruling on the record-closure-adapter approach vs waiting for a
-  real trait system. Decision needed: ship the trait-less adapter encoding now, or hold for traits?
-- **I1 (spike, blocked on §3.1).** Hand-write `from-list`/`map`/`filter`/`fold` in the adapter
-  encoding; confirm a 3-stage chain MONOMORPHIZES at 2 element types (the current giter blocker).
-  If it declines CDZ0201 → route to v-inference (it's their tie/ceiling work); do NOT work around.
-- **I2 (fusion proof, blocked on §3.2).** Add the `@inline` surface marker + confirm via emitted
-  wasm/WAT that a `map().filter().fold()` chain emits ONE loop with no intermediate record alloc and
-  no tag match. This is the operator's actual acceptance criterion — pin it with an emit-shape gate
-  (coordinate with v-wasm-opt on the size/shape metric).
-- **I3 (port the surface).** Re-express the iter.cdz combinator family in the adapter encoding;
-  keep the enum version until I2 proves fusion, then swap. Corpus + @test coverage carried over.
-- **I4 (extensibility demo).** Add a brand-new combinator (e.g. `windows(k)`) touching ONE new
-  `def`, no central edit — the operator's "trivial to extend" acceptance criterion.
+## 4. Increments (each gated, each a landable slice) — STATUS 2026-07-18
 
-## 5. Recommendation / open question for the operator
+- **I0 (design) — ✅ DONE / RULED.** Operator ruled: SHIP the trait-less adapter-record encoding (no
+  trait system; ad-hoc polymorphism everywhere; a record with a set of functions + a closure that
+  implements the protocol; make the combinators CONST → zero-cost). Recorded as a standing language
+  principle (iterators = flagship client). This doc landed as `0d5ac7e25`.
+- **I1 (mono spike) — ⏳ PARTIAL / BLOCKED.** Hand-wrote `from-list`/`map`/`fold` in the adapter
+  encoding. RESULT: construction + typecheck PASS (dep #0 fixed); RUNNING declines on dep #1 (generic-
+  variant closure-callback ownership, filed → v-memory-safety) before the mono-tie (#2) is even reached.
+  Re-run after #1 lands.
+- **I2 (fusion proof) — BLOCKED on I1.** `@inline-always` already exists + always-inline is the default
+  (dep #3), so the marker/inlining is in place; the proof = emitted-WAT check that `map().filter().fold()`
+  is ONE loop, no intermediate record, no tag — and specifically that the inliner sees through the
+  record/variant-field `step` closure. Coordinate the emit-shape metric with v-wasm-opt. Can't run until
+  I1 executes.
+- **I3 (port the surface).** Re-express the iter.cdz combinator family in the adapter encoding; keep the
+  enum version until I2 proves fusion, then swap. Corpus + @test coverage carried over. (Now lives in the
+  extracted `implementation/iterators/` package.)
+- **I4 (extensibility demo).** Add a brand-new combinator (e.g. `windows(k)`) touching ONE new `def`, no
+  central edit — the operator's "trivial to extend" acceptance criterion.
 
-The record-closure-adapter encoding delivers all four asks (generic-over-upstream, monomorphic,
-fusing via inliner, one-def extensibility) **without needing a trait system** — buildable on
-today's monomorphization + inliner. The two real risks are (a) it's GATED on the same
-recursive-generic/closure-tie + mono-ceiling work v-inference is already driving (a fused chain is
-a stress-test of exactly that), and (b) the FUSION guarantee needs an inliner that sees through a
-closure in a record field (§3.2) — the one genuinely new compiler capability. 
+## 5. Status — operator ruling received; gated on two filed backend/inference gaps
 
-**OPEN QUESTION for the operator:** ship the trait-less adapter encoding now (pragmatic, buildable,
-gated on inference maturing) — OR treat this as motivation to prioritize a real trait/type-class +
-forall system first, then build the iterator as its flagship client (cleaner, but a much larger
-prerequisite)? My recommendation: **I0→I1 spike now** to de-risk the monomorphization on the
-adapter shape (it either works on current inference or gives v-inference a concrete target), and let
-the I2 fusion result decide whether the inliner extension is small or argues for the bigger trait
-investment.
+The record-closure-adapter encoding delivers all four asks (generic-over-upstream, monomorphic, fusing
+via the always-inline default, one-def extensibility) **without a trait system** — and the operator has
+RULED to ship exactly that (§ I0), making it a standing language principle. Spikes have converted the
+"abstract deps" into two concrete, filed, owned compiler gaps on the critical path:
+- **#1 (v-memory-safety):** generic-variant stored-closure callback ownership — the #1 gate; `step(s)`
+  can't run until it lowers.
+- **#2 (v-inference):** recursive-generic monomorphization tie (mono ceiling) — the multi-element-type
+  gate, shared with the whole giter family.
+Fusion (dep #3) is LOWER risk than first feared (always-inline is the default; `@inline-always` exists),
+narrowing to "does the inliner fold a record/variant-field closure" — verified via WAT once #1 lands.
+
+**No open operator question remains** (the ship-vs-trait fork was ruled: ship). Next action is purely to
+re-run I1 → I2 as v-memory-safety (#1) then v-inference (#2) land their fixes; the design itself is
+settled and validated.

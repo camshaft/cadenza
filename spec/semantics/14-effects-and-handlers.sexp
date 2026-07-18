@@ -1836,6 +1836,27 @@
                 (do (Store.put 1) (Store.put 2) (Store.put 1) (Store.count)))) (export main)))
   (output (: 2 Int64)))
 
+(case "sequenced memoize helpers with a local let thread the Map-state out-state (the memo-spine shape)"
+  (doc    "The real memoized-query-DB spine (the shape compiler-ml's #4 hardening needs): a cross-function
+           helper `store(k)` that BINDS A LOCAL `let vv = k*10` and performs `Db.put((k, vv))` returning `vv`
+           — the memoize combinator's on-miss arm — called TWICE in a `do` SEQUENCE before a final read. The
+           first `(store 3)` is a NON-FINAL do item: `put`'s next-state (`Map.insert m k vv`) threads FORWARD
+           to `(store 5)` and the trailing `(Db.tot)`, and it references `vv`, which the helper's `let` binds
+           LOCAL to the first item. Without the `do`-arm LET-LIFT this leaked `CDZ0101 unbound vv` (the
+           out-state spliced past the `let` scope); the fix lifts `(let ((vv …)) lbody)` to wrap the whole
+           continuation so `vv` stays in scope. Both stores insert their key → `Db.tot` reads `Map.len` = 2.
+           Pins that a memoize helper (local let + get/put) composes in a sequence — the substrate for an
+           effect-based salsa-style Db (a FINAL-position such call always worked; the sequenced case is the fix).")
+  (input  (do
+            (effect Db (op put (-> (Tuple Int64 Int64) Unit)) (op tot (-> Unit Int64)))
+            (def (store (: k Int64)) (let ((vv (* k 10))) (do (Db.put (tuple k vv)) vv)))
+            (def (main)
+              (handle Db (Map.empty)
+                ((tot (u) s (resume (Map.len s) s))
+                 (put (kv) s (match kv ((tuple k v) (resume unit (Map.insert s k v))))))
+                (do (store 3) (store 5) (Db.tot)))) (export main)))
+  (output (: 2 Int64)))
+
 (case "a RECURSIVE effectful walk accumulates into a list-state handler"
   (doc    "Witnesses capabilities-and-effects.md #A Handler Threads State Across The Operations It
            Discharges with the state on the VALUE HEAP and the performer RECURSIVE — the compiler's real

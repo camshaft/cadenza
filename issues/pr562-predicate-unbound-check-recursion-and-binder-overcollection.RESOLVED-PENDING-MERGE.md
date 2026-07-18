@@ -48,3 +48,17 @@ are the same append-only arena nodes; confirm. (2) :929 pattern_binder_names OVE
 as_name, skips only (. head), NOT _ or .. -> masks genuine unbound-name errors (false negative, real unbound
 name slips the predicate gate). FIX (Copilot-named): use resolve::arm_pattern_binders (resolve.rs:1235, skips
 _/../member) which compile.rs already calls at :4964. (1) = likely dismiss-if-acyclic; (2) = real reject-gap to fix.
+
+---
+RESOLVED-PENDING-MERGE (v-inference, 2026-07-18, MR 6bef46f34):
+(1) unbound_in recursion "overflow" -> DISMISSED: same arena-acyclic invariant as PR#556 — recursion
+    descends only into strictly-smaller child arena ids (append-only Arenas::push, quote uses same builder),
+    so a predicate AST is a finite acyclic subtree; walk bottoms out. Predicate ASTs confirmed same arena
+    nodes. Rationale comment added; depth cap would be cosmetic.
+(2) pattern_binder_names over-collection -> FIXED: swapped the local walk (pushed every bare as_name, skipped
+    only (. ) head) for resolve::arm_pattern_binders (canonical, skips _/../.-member, binds real leaves only).
+    HONEST CAVEAT (v-inference verified): NO live false-negative witness — the over-collected tokens
+    (_/../list-tuple heads/ctor names) are all unreferenceable or resolve as builtins/ctors, so the masking
+    is NOT reachable in today's grammar. Lands as CORRECTNESS/CONSISTENCY hardening (removes a latent
+    divergence a future pattern form could make reachable), not a demonstrable-bug fix. Test extended
+    (list-rest arm: binds leaf+rest, stray name still CDZ0101). 2096/2096 pass. Retire on land.

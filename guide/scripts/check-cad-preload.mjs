@@ -48,14 +48,13 @@ const { injectImport, CAD_LIB_NAME, CAD_LIB_FORMAT } = await import(
   pathToFileURL(join(guideRoot, "src/cad/preloadModel.ts")).href
 );
 
-// The starter models per surface — a bare model returning `lower(<Solid>)`, carrying the pragma (else a
-// bare n/d is Int64 and the model rejects). Mirrors CadPage's STARTER shape; kept here so a starter change
-// that breaks the preload path is caught even if CadPage's own copy is edited.
+// The starter models per surface — a CLEAN bare model returning `lower(<Solid>)`: NO pragma, NO import
+// (both are auto-injected by `injectImport`). This mirrors what a /cad reader actually edits now, and
+// specifically exercises that the INJECTED `@!default-fraction Rational` makes a pragma-less model compile
+// (a bare `n/d` grounds to Rational — without the injected pragma, `v3r(4/1,…)` would reject CDZ0203).
 const MODELS = {
-  ml: `@!default-fraction Rational
-def main() = lower(Solid.Difference(Solid.Cube(v3r(4/1, 4/1, 4/1)), Solid.Sphere(5/2)))`,
-  sexpr: `(pragma default-fraction Rational)
-(def (main) (lower ((. Solid Difference) ((. Solid Cube) (v3r (/ 4 1) (/ 4 1) (/ 4 1))) ((. Solid Sphere) (/ 5 2)))))`,
+  ml: `def main() = lower(Solid.Difference(Solid.Cube(v3r(4/1, 4/1, 4/1)), Solid.Sphere(5/2)))`,
+  sexpr: `(def (main) (lower ((. Solid Difference) ((. Solid Cube) (v3r (/ 4 1) (/ 4 1) (/ 4 1))) ((. Solid Sphere) (/ 5 2)))))`,
 };
 
 const names = [CAD_LIB_NAME];

@@ -1409,6 +1409,25 @@ mod tests {
         }
     }
 
+    /// A CONTRADICTORY range invariant `(and (>= it 10) (<= it 5))` — an empty range no value satisfies —
+    /// must NOT produce a broken `IntRange` (a negative SPAN = HI-LO+1 = -4 would generate garbage). The
+    /// `lo <= hi` guard in `invariant_int_range` returns `None`, so the payload stays a PLAIN `Int`
+    /// (unconstrained): generation falls back safely and the unsatisfiable invariant surfaces as an honest
+    /// property failure (every value violates it), rather than the generator silently claiming in-domain.
+    /// Pins that the `lo <= hi` guard is load-bearing (breaker probe, 2026-07-18).
+    #[test]
+    fn a_contradictory_range_invariant_falls_back_to_unconstrained() {
+        let ast = crate::testkit::parse(
+            "(do (@ (invariant (and (>= it 10) (<= it 5))) (type Bad (Mk Int64))) (def (o) 1))",
+        );
+        let items: Vec<_> = ast.as_form(ast.root, "do").unwrap().to_vec();
+        let gt = super::classify_sum(&ast, "Bad", &items, 0);
+        assert!(
+            matches!(gt, Some(super::GenTy::Sum { ref variants, .. }) if matches!(variants.as_slice(), [(_, Some(super::GenTy::Int))])),
+            "a contradictory range invariant leaves the payload a plain Int (no broken negative-SPAN IntRange): {gt:?}"
+        );
+    }
+
     /// G5: a `@test` over a USER SUM `(type NAME (V PAYLOAD?)…)` gains a wrapper — the generator picks a
     /// variant by `Test.gen % k` and builds its payload. Covers a mix of payload'd + nullary variants,
     /// and a sum nested inside a `List`.

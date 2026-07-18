@@ -59,12 +59,13 @@ import EXACT_CDZ from "../wasm/cad/exact.cdz?raw";
 
 /// The starter models now live in `./examples.ts` (v-cad-authored `EXAMPLES`, each a `source: Record<Surface,
 /// string>`): a bare model built against the PRELOADED CAD library (`Solid`/`v3r`/`lower` from `exact.cdz`) —
-/// no inline `type` defs. Each carries `@!default-fraction Rational` (module-local, so a bare `n/d` is an exact
-/// Rational not Int64 — without it `v3r(4/1,…)` rejects CDZ0203) and returns `lower(<Solid model>)` (the
+/// no inline `type` defs. Both the `import` AND the `@!default-fraction Rational` pragma are AUTO-INJECTED
+/// (`injectImport`) — the reader's buffer is just the model (no import, no pragma line; the pragma grounds a
+/// bare `n/d` to an exact Rational so `v3r(4/1,…)` type-checks). The model returns `lower(<Solid model>)` (the
 /// generic `Solid` isn't host-renderable, so `lower` maps to the monomorphic `SolidR` the driver meshes). The
-/// `import` is auto-injected (`injectImport`, ruling A). The example-picker swaps `source[surface]`; `/cad`
-/// opens with `DEFAULT_EXAMPLE` (the cube-with-dent — the historical starter). Both surfaces render to the
-/// same canonical s-expr `SolidR` value (v-cad-verified: 584 triangles for the default).
+/// example-picker swaps `source[surface]`; `/cad` opens with `DEFAULT_EXAMPLE` (the cube-with-dent — the
+/// historical starter). Both surfaces render to the same canonical s-expr `SolidR` value (v-cad-verified:
+/// 584 triangles for the default).
 
 type Status =
   | { phase: "idle" }

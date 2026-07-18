@@ -4523,8 +4523,22 @@ fn rustc_roundtrip_host_closure_factory_export_scalar_capture_s1() {
         assert_eq!(out, "16", "make(k=4) then call(3) = (3+1)*4 = 16");
     }
 
+    // A FLOAT closure arg + result also crosses (`(fn (x: Float32) (+ x 1.5))`) — `float_width_of`/the
+    // float-literal grounding already render a Float correctly, so `s2_arg_ok`/`s3_result_ok` admit it.
+    let flt = compile_rust("(module m (def (mk) (fn ((: x Float32)) (+ x 1.5))) (export mk))");
+    assert!(
+        flt.contains("-> std::rc::Rc<dyn Fn(f32) -> f32>"),
+        "a Float32 closure factory emits `Rc<dyn Fn(f32) -> f32>`:\n{flt}"
+    );
+    if let Some(out) = rustc_run(&flt, "mk()(2.5)") {
+        assert_eq!(
+            out, "4",
+            "make() then call(2.5) = 2.5 + 1.5 = 4.0 (Rust prints the f32 as 4)"
+        );
+    }
+
     // A closure PARAMETER export still declines (no way to synthesize an Rc<dyn Fn> arg at the boundary) —
-    // the one function-typed shape that stays deferred (compound args/results now cross via S2/S3).
+    // the one function-typed shape that stays deferred (compound args/results now cross via S2/S3/S4a/S5).
     let param = compile_rust_result(
         "(module m (def (apply (: f (-> Int64 Int64)) (: x Int64)) (f x)) (export apply))",
     );
