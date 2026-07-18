@@ -13,9 +13,9 @@
 import { lower } from "exact"
 import { snowflake } from "snowflake"
 
-@param(widget: slider, range: [1, 200], default: 42) seed : Int64
-@param(widget: slider, range: [10, 40], default: 20) arm-length : Rational
-@param(widget: slider, range: [1, 3], default: 2) depth : Int64
+@!param(widget: slider, range: [1, 200], default: 42) seed : Int64
+@!param(widget: slider, range: [10, 40], default: 20) arm-length : Rational
+@!param(widget: slider, range: [1, 3], default: 2) depth : Int64
 
 def main() = host Param in
   (let s = Param.seed() in

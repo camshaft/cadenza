@@ -35,3 +35,11 @@ in 16-binary (--arg driven, runtime). Real protocol-frame parsing (read a size, 
 on wasm now. The priority-context relay (dependent-size first) was validated by v-patterns.
 FACE B (BIT-FIELD, sub-byte (bits x k)) STILL OPEN — separate follow-up increment (BinIntRead the byte-run +
 shift/mask); v-patterns building it next. Item stays open until Face B lands too.
+
+---
+FACE A LANDED + CONTENT-VERIFIED (corpus-bugfix 2026-07-18, trunk c74ec4d0e): Core::BinSizedRead in core.rs.
+(bin (u8 2) (u8 k) (u8 99)) matched (bin (u8 n) (bytes payload n)) -> wasm computes Bytes.len 2 (n=2 first
+byte, payload next 2 bytes). The crown-jewel dependent-size length-prefixed-frame parse works on wasm now.
+The Face B decline message REFINED to "bit-field or NON-FINAL variable-length segment" — confirms FINAL
+variable-length (Face A) landed; only BIT-FIELD + NON-FINAL-varlen (Face B) remain. Face B = v-patterns'
+next increment (BinIntRead the byte-run + shift/mask). Item stays open until Face B lands.

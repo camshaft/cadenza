@@ -2383,21 +2383,27 @@
              (List.concat (list 1 2) (List.concat (list 3 4) (list 5 6)))))
   (output (: true Bool)))
 
-; The associativity law above says concat depends only on elements-in-order, not grouping. The map-KEY
-; companion pins that this holds through the CHAMP key path too: a list used as a map key is compared and
-; hashed by its ELEMENTS, not its internal (RRB) shape — so a concat-built list and a push-built list with
-; the SAME elements are the SAME key. This matters because the list rep is element-canonical but NOT
-; shape-canonical (a concat and a push of [1,2,3] have different relaxed-node layouts); a key path that
-; hashed the physical shape would treat them as different keys and MISS the lookup. (Contrast standalone
-; `(= list list)`, a later increment; the key path's element-wise compare is what makes list keys work.)
+; The associativity law above says concat depends only on elements-in-order, not grouping. This SMALL-LIST
+; map-KEY companion pins that a concat-built and a push-built list with the same elements are the SAME key
+; AT A SMALL SIZE (n <= 32, a SINGLE RRB leaf): at that size concat and push produce byte-identical strict
+; leaves, so the CHAMP key path (a physical/byte compare) treats them as one key. ⚠ SCOPE: this is NOT the
+; general shape-independence invariant — at n >= 33 concat leaves a RELAXED interior node (with a size
+; table) while push builds a strict trie, so their byte shapes DIFFER and a concat-built key FALSE-MISSES
+; an equal push-built key. That n>=33 latent Map/Set-list-key bug is v-runtime's (filed as
+; adv-map-set-list-keys-unsound-at-n33...); the sound fix is the element-wise walk (Core::ValueCmp /
+; value-canonicalize, slice-2), the same machinery the standalone `(= list list)` gap needs. This case
+; deliberately uses n=3 (single-leaf) so it PASSES today and pins the small-n property WITHOUT asserting the
+; broken general one.
 
-(case "a concat-built and a push-built list with the same elements are the same map key"
+(case "a concat-built and a push-built SMALL list (single-leaf, n<=32) with the same elements are the same map key"
   (doc    "`concat-key = (List.concat (list a) (List.concat (list b) (list c)))` and `push-key =
-           (List.push (List.push (List.push (list) a) b) c)` build [a,b,c] two ways with DIFFERENT internal
-           RRB shapes but identical elements. Inserting under `concat-key` and looking up under `push-key`
-           finds the entry → 100, NOT the -1 a shape-sensitive key hash would give. Pins that a list map key
-           is compared/hashed by its elements-in-order (shape-independent), the map-key companion of the
-           concat-associativity law — a builder that regroups its concatenations still hits the same key.")
+           (List.push (List.push (List.push (list) a) b) c)` build a 3-element [a,b,c] two ways. At this
+           SMALL size (n=3, a single RRB leaf) concat and push produce byte-identical leaves, so the CHAMP
+           key path (a physical byte compare) treats them as the SAME key: insert under concat-key, look up
+           under push-key → 100. ⚠ This pins ONLY the small-n (single-leaf) case — NOT general list-key
+           shape-independence, which is FALSE at n>=33 (concat's relaxed interior node vs push's strict trie
+           differ in byte shape → a false-miss; v-runtime's latent bug adv-map-set-list-keys-unsound-at-n33,
+           fixed by the element-wise value-canonicalize walk). Kept at n=3 so it passes without overclaiming.")
   (input  (do
             (def (main (: a Int64) (: b Int64) (: c Int64))
               (let ((concat-key (List.concat (list a) (List.concat (list b) (list c))))

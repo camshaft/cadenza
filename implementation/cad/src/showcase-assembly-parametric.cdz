@@ -7,11 +7,11 @@
 import { Solid, Vec3, Aabb, lower, v3, v3-eq, bounding-box, aabbr-size, solidr-is-empty } from "exact"
 import { box, cyl, fuse, cut, move-x, move-y, move-z, rotate-x } from "helpers"
 
-@param(widget: slider, range: [20, 80], default: 40) pa-len : Rational
-@param(widget: slider, range: [15, 50], default: 30) pa-wid : Rational
-@param(widget: slider, range: [2, 10], default: 4) pa-thick : Rational
-@param(widget: slider, range: [10, 50], default: 25) pa-rise : Rational
-@param(widget: slider, range: [1, 8], default: 3) pa-bolt : Rational
+@!param(widget: slider, range: [20, 80], default: 40) pa-len : Rational
+@!param(widget: slider, range: [15, 50], default: 30) pa-wid : Rational
+@!param(widget: slider, range: [2, 10], default: 4) pa-thick : Rational
+@!param(widget: slider, range: [10, 50], default: 25) pa-rise : Rational
+@!param(widget: slider, range: [1, 8], default: 3) pa-bolt : Rational
 
 def rzero() = 0 / 1
 
