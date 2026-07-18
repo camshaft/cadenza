@@ -43825,6 +43825,26 @@ mod stage1 {
         run_main_as::<i64>(body)
     }
 
+    /// Compile + run a WHOLE ML-surface program (its `main` export). Unlike `run_main`, which wraps an
+    /// s-expr body, this takes ML source verbatim and runs it through `cadenza_syntax::parser::read_ml`
+    /// (the same front-end the CLI uses) → codec bytes → rcdzc decode → compile → run. This is the ONLY
+    /// seam that exercises an ML-surface feature (like the `forall` binder) END-TO-END: v-syntax's parser
+    /// tests pin the desugar SHAPE (parse → s-expr), and the semantic corpus pins the desugared arena's
+    /// compile+run — but neither runs an ML `forall` program as one artifact. Panics on a parse error.
+    fn run_ml_main_as<T: FromVal>(program: &str) -> T {
+        let parsed = cadenza_syntax::parser::read_ml(program);
+        assert!(
+            parsed.ok(),
+            "ML program failed to parse: {:?}\n  src: {program}",
+            parsed.errors
+        );
+        let bytes = cadenza_syntax::codec::encode(&parsed.arenas);
+        let arenas = crate::codec::decode(&bytes)
+            .unwrap_or_else(|| panic!("cadenza-syntax bytes failed rcdzc decode: {program}"));
+        let component = compile_component(&crate::codec::encode(&arenas)).expect("compile");
+        run_returns::<T>(&component, "main")
+    }
+
     /// A boolean-returning body — a comparison entrypoint.
     fn run_main_bool(body: &str) -> bool {
         run_main_as::<bool>(body)
@@ -43872,6 +43892,53 @@ mod stage1 {
     fn let_binding_in_scope_in_body() {
         // 02-binding-and-control: (let ((x 10)) x) = 10.
         assert_eq!(run_main("(let ((x 10)) x)"), 10);
+    }
+
+    #[test]
+    fn ml_forall_binder_compiles_runs_and_monomorphizes_end_to_end() {
+        // FORALL-BINDER e2e (v-inference × v-syntax). `forall a. T` in a parameter annotation is PURE
+        // SUGAR: v-syntax's parser desugars it at parse time to a leading `(: a Type)` type-valued param +
+        // the bare inner type, BYTE-IDENTICAL to a hand-written generic — so infer/monomorphization is
+        // unchanged (no ∀ engine). v-syntax pins the desugar SHAPE (parse → s-expr); the semantic corpus
+        // pins the desugared `(: a Type)` arena's compile+run. This test closes the ONE gap neither covers:
+        // an ML `forall` program parsed → compiled → RUN as a single artifact, proving the sugar is live
+        // end-to-end and monomorphizes correctly. Skips (like the other run tests) if the runtime is absent.
+        if find_runtime_wasm().is_none() {
+            eprintln!("runtime wasm not found; skipping ML forall e2e run");
+            return;
+        }
+        // (1) IDENTITY at a concrete type. `id`'s solved type is `(-> Type (-> a a))`; the call passes the
+        // type witness then the value: `id(Int64, 42)` = 42.
+        assert_eq!(
+            run_ml_main_as::<i64>(
+                "def id(x: forall a. a) = x\ndef main() = id(Int64, 42)\nexport { main }"
+            ),
+            42,
+            "forall identity applied at Int64 runs"
+        );
+        // (2) USED AT TWO DISTINCT TYPES → two monomorphizations from one source def. `id` at Bool gates
+        // `id` at Int64; both instances must exist and run.
+        assert_eq!(
+            run_ml_main_as::<i64>(
+                "def id(x: forall a. a) = x\n\
+                 def main() = if id(Bool, true) then id(Int64, 100) else 0\n\
+                 export { main }"
+            ),
+            100,
+            "one forall def monomorphizes to both a Bool and an Int64 instance"
+        );
+        // (3) MULTI-BINDER `forall a b.` over a function-typed param — `apply(f: a -> b, x: a) = f(x)`, the
+        // two type witnesses prepended in source order: `apply(Int64, Int64, inc, 41)` = inc(41) = 42.
+        assert_eq!(
+            run_ml_main_as::<i64>(
+                "def apply(f: forall a b. a -> b, x: a) = f(x)\n\
+                 def inc(n: Int64) = n + 1\n\
+                 def main() = apply(Int64, Int64, inc, 41)\n\
+                 export { main }"
+            ),
+            42,
+            "a two-binder forall over an arrow-typed param runs"
+        );
     }
 
     /// UNARY NEGATION `(- e)` — the arity-1 subtraction (the ML prefix `-<expr>`). It is `0 - e` at the

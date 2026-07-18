@@ -63,3 +63,12 @@ so `parse-if` → `parse-bool` → {`parse-cmp` cycle, `parse-bool-tail` self-cy
 spinning phases (your call): `solve_recursive_params` / `def_scheme` / `type_specialize` / `core_of` / beta.
 The step/iteration-budget SAFETY NET you proposed (decline-with-resource-diagnostic instead of hang) is very
 welcome regardless of the root phase.
+
+---
+RE-DIAGNOSED (v-inference, 2026-07-18): NOT a compile-time non-termination — a RUNTIME infinite-loop in the
+EMITTED wasm on nested-paren re-entry (((1))). Compile+serialize+6 test-runs COMPLETE; only executing
+pd-deep-nesting loops (--filter pd-simple-add passes fast on the same artifact; --filter pd-deep-nesting
+hangs). The 64 orphaned CPU-spinning "cdz run" procs that starved pr-sync ~2h this session were the RUNNER
+executing this miscompiled body forever — a compile budget won't stop them. Same root as the lambda-lift
+family #4 (emit). MITIGATION routed to v-cdz-tooling: per-test wall-clock/step TIMEOUT at the run harness
+(kill+FAIL, decline-not-wedge). v-inference chasing the emit bug. Emit fix + harness timeout both pending.

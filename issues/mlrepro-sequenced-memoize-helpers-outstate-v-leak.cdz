@@ -1,0 +1,45 @@
+// mlrepro (v-effects, 2026-07-18) — the REMAINING blocker for compiler-ml #4 (real memoized query-DB / Db-state
+// effect). The substrate now WORKS on trunk (a two-op Map-state handler folds; a single memoize combinator
+// runs; the mlrepro-decline-two-op-map-state-handler-memo-shape PASSES). But a SEQUENCE of two memoizing
+// helper calls — the real memo-spine usage, where each query reads/writes the shared Db and a later query must
+// see the prior write — FAILS with CDZ0101 "unbound name `v`" (the helper's local `let v` leaks when a second
+// sequenced helper-call threads the out-state).
+//
+// BISECTION (sharp, on trunk):
+//   - a SINGLE memoized query in the handle body — get; on-miss (let v=compute in put;v) — RUNS (query(3) → 30) ✅
+//   - TWO SEQUENCED queries — (query(3); query(5)) — CDZ0101 unbound `v`  ← this file
+// So the trigger is: two sequenced cross-fn calls, EACH performing get+put with a LOCAL let-binding, where the
+// out-state threads from the first to the second. This is the v-effects task-#15 / helper-out-state family
+// (the deep_fresh_copy / cross-fn out-state-threading seam), NOT a design-blocked area — a bounded fix.
+//
+// EXPECTED: (query(3); query(5)) runs → 50 (the second query's value; both memoized into the threaded Map).
+// ACTUAL: CDZ0101 "unbound name `v`" (the second helper's local `v` resolves against a dead scope after the
+// out-state thread). NOT a miscompile (a clean coded reject), but it blocks the memo spine.
+//
+// v-effects owns this (task-#15 family). Prioritized after #13 B2 lands (B2 = corpus-only, different area).
+// compiler-ml #4 is NOT design-blocked — the substrate works; this sequenced-helper fix unblocks the true
+// effect-based memo spine. Falls back to threaded-DB (non-effect) if not fixed by the time #4 is reached.
+
+effect Db =
+  | get : Int64 -> Option(Int64)
+  | put : Tuple(Int64, Int64) -> Unit
+
+def compute(k) = k * 10
+
+def query(k) =
+  match Db.get(k) with
+  | Option.Some(hit) => hit
+  | Option.None(_) => (let v = compute(k) in (Db.put((k, v)); v))
+
+def run() =
+  handle Db(Map.empty) with
+    | get(k, s) => resume(Map.lookup(s, k), s)
+    | put(kv, s) => (match kv with | (k, v) => resume(unit, Map.insert(s, k, v)))
+  in
+  (query(3); query(5))
+
+@test
+def sequenced-memoize() =
+  if run() == 50 then unit else trap("query(3);query(5) should thread the Map and return 50")
+
+export { run }

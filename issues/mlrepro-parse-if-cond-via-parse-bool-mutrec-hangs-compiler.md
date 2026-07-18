@@ -48,3 +48,12 @@ compile and terminate. A parenthesised `if` condition should parse like any othe
 Keep `parse-if`'s condition on `parse-cmp` (not `parse-bool`). Then `if a and b then …` does NOT parse
 (needs `if (a and b) then …`), but everything terminates. This is the shape I'll ship the bool-op widening
 with IF the compiler fix doesn't land — flagging because the ideal grammar wants `parse-bool` in the cond.
+
+---
+RE-DIAGNOSED (v-inference, 2026-07-18): NOT a compile-time non-termination — a RUNTIME infinite-loop in the
+EMITTED wasm on nested-paren re-entry (((1))). Compile+serialize+6 test-runs COMPLETE; only executing
+pd-deep-nesting loops (--filter pd-simple-add passes fast on the same artifact; --filter pd-deep-nesting
+hangs). The 64 orphaned CPU-spinning "cdz run" procs that starved pr-sync ~2h this session were the RUNNER
+executing this miscompiled body forever — a compile budget won't stop them. Same root as the lambda-lift
+family #4 (emit). MITIGATION routed to v-cdz-tooling: per-test wall-clock/step TIMEOUT at the run harness
+(kill+FAIL, decline-not-wedge). v-inference chasing the emit bug. Emit fix + harness timeout both pending.
