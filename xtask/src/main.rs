@@ -1457,12 +1457,13 @@ fn run_program_rust(
     // that final type so `cdz_render_expr` renders it structurally (a Tuple/List result → `(tuple …)`, not a
     // bare `{}` Display that E0277s on a Rust tuple). Only for a factory (its signature returns `Rc<dyn Fn`);
     // an ordinary export keeps its `ret_ty` unchanged.
-    let ret_ty =
-        if call.is_some() && rust_factory_param_count(&module, &export, async_mode).is_some() {
-            ret_ty.map(|t| peel_arrow_result(&t))
-        } else {
-            ret_ty
-        };
+    let is_factory =
+        call.is_some() && rust_factory_param_count(&module, &export, async_mode).is_some();
+    let ret_ty = if is_factory {
+        ret_ty.map(|t| peel_arrow_result(&t))
+    } else {
+        ret_ty
+    };
     // The driver's `fn main` calls the export and prints the result the way cdz-run renders it. In ASYNC
     // mode the export is an `async fn` taking `&mut impl CdzEnv` first, so the driver supplies a no-limit
     // gas `Env` + a minimal `block_on` executor and drives `prog::export(&mut env, args)` — the answer
@@ -1521,14 +1522,24 @@ fn run_program_rust(
         format!("fn main() {{ {call_or_await}; }}\n")
     } else {
         match ret_ty.as_deref().map(|ty| {
-            cdz_render_expr(
-                ty,
-                &sums,
-                &newtypes,
-                &sum_params,
-                unit_form.as_deref(),
-                unit_scale,
-            )
+            // HOST-CLOSURE FACTORY String/Bytes RESULT: a String/Bytes crossing the host boundary AS A
+            // CLOSURE RESULT is serialized as `list<u8>` — the corpus renders it as the bare byte-int list
+            // `(104 105)` (`()` when empty), NOT the quoted `"hi"` / `b"…"` form a PLAIN String/Bytes export
+            // uses. (The wasm `call` method copies the String/Bytes handle into linear memory + returns it as
+            // list<u8>; the rust target mirrors the observable form.) So for a FACTORY result of String/Bytes,
+            // render the byte list directly; every other type (and a plain export) keeps `cdz_render_expr`.
+            if is_factory && (ty == "String" || ty == "Bytes") {
+                cdz_render_bytes_list(ty)
+            } else {
+                cdz_render_expr(
+                    ty,
+                    &sums,
+                    &newtypes,
+                    &sum_params,
+                    unit_form.as_deref(),
+                    unit_scale,
+                )
+            }
         }) {
             Some(render) => {
                 format!(
@@ -1710,6 +1721,25 @@ fn peel_arrow_result(ty: &str) -> String {
             None => return cur.to_string(),
         }
     }
+}
+
+/// The render EXPRESSION for a host-closure factory's String/Bytes RESULT — the `list<u8>` byte form the
+/// corpus expects (`(104 105)` for "hi", `()` empty), NOT the quoted `"hi"`/`b"…"` a plain export uses. The
+/// String path iterates its UTF-8 bytes (`.bytes()`); the Bytes path iterates the `Vec<u8>` (`.iter()`).
+/// Emits `(b0 b1 …)` — space-separated byte ints in one paren group, no trailing space (a leading space per
+/// byte, so the empty value yields `()`).
+fn cdz_render_bytes_list(ty: &str) -> String {
+    // `__r` is the closure's applied result: a `String` (String result) or `Vec<u8>` (Bytes result).
+    let iter = if ty == "String" {
+        "(__r).bytes()"
+    } else {
+        "(__r).iter().copied()"
+    };
+    format!(
+        "{{ let mut __s = String::from(\"(\"); let mut __first = true; for __b in {iter} {{ \
+         if !__first {{ __s.push(' '); }} __first = false; __s.push_str(&__b.to_string()); }} \
+         __s.push(')'); __s }}"
+    )
 }
 
 fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> Option<usize> {
@@ -3067,6 +3097,7 @@ fn check(paths: &Paths, profile: &str) {
         "implementation/cad",
         "implementation/compiler-ml",
         "implementation/agent-harness",
+        "implementation/iterators",
     ] {
         let name = format!("cdz-test {suite}");
         let cmd = format!("{cdz} test {suite}");
@@ -4843,6 +4874,24 @@ mod trap_grading_tests {
         let nested =
             "pub fn f(m: BTreeMap<i64, i64>, k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { … }";
         assert_eq!(rust_factory_param_count(nested, "f", false), Some(2));
+    }
+
+    #[test]
+    fn cdz_render_bytes_list_emits_a_byte_int_list_render() {
+        // A factory String result iterates its UTF-8 bytes; a Bytes result iterates the Vec<u8>. Both build
+        // the `(b0 b1 …)` list<u8> form (a leading space per byte after the first → `()` when empty).
+        let s = cdz_render_bytes_list("String");
+        assert!(
+            s.contains("(__r).bytes()")
+                && s.contains("String::from(\"(\"")
+                && s.contains("push(')')"),
+            "String render iterates .bytes() into a paren byte list: {s}"
+        );
+        let b = cdz_render_bytes_list("Bytes");
+        assert!(
+            b.contains("(__r).iter().copied()") && b.contains("push_str(&__b.to_string())"),
+            "Bytes render iterates the Vec<u8> into a paren byte list: {b}"
+        );
     }
 
     #[test]

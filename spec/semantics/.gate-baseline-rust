@@ -97,6 +97,7 @@ pass	MK_COMB unions the hypotheses of BOTH operands when each carries a distinct
 pass	MP should match its antecedent up to α-equivalence: aconv-MP accepts an α-variant a structural equality rejects
 pass	MULTI-EXPORT: THREE tuple args with a LIST result, shared `call`
 pass	MULTI-EXPORT: a nested-Tuple-arg closure with a LIST result
+pass	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
 pass	MULTI-EXPORT: among-scalars tuple arg with a LIST result (shared interleaving list-`call`)
 pass	MULTI-EXPORT: among-scalars tuple arg with a fixed-shape COMPOUND result
 pass	MULTI-EXPORT: driving the FIRST two-Tuple-arg closure (add)
@@ -118,6 +119,7 @@ pass	MULTI-EXPORT: two same-sig Result-arg closures share one `call`
 pass	MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`
 pass	MULTI-EXPORT: two same-sig closures each taking THREE Tuple args
 pass	MULTI-EXPORT: two same-sig closures each taking TWO Tuple args share one `call`
+pass	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
 pass	Map.to-list enumerates the entries as a List of (key value) tuples in canonical KEY order
@@ -175,6 +177,7 @@ pass	TRANS unions its operands' hypotheses — an assumption threaded through TR
 pass	TRANS unions the hypotheses of BOTH operands when each carries a distinct assumption
 pass	TWO Record args cross the direct-call boundary
 pass	TWO Tuple args cross the direct-call boundary
+pass	TWO Tuple args with a BYTE-ROPE result
 pass	TWO Tuple args with a LIST result cross the direct-call boundary
 pass	TWO Tuple args with a fixed-shape COMPOUND result
 pass	TWO Tuple args with a scalar BETWEEN them (tuple, scalar, tuple)
@@ -254,6 +257,9 @@ pass	a Bool generator derived from the seed is reproducible (same seed, same Boo
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
 pass	a Bytes entry argument is marshalled as a Vec<u8>
+pass	a Bytes-returning closure alongside a plain export — the closure runs
+pass	a Bytes-returning closure alongside a plain export — the plain runs
+pass	a Bytes-returning closure on a different argument
 pass	a CALL-returned single-variant newtype with a literal-payload arm spills at the right width
 pass	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
 pass	a CAPTURING closure returning a List
@@ -316,6 +322,7 @@ pass	a NESTED Tuple ARG (a tuple containing a tuple) crosses the direct-call bou
 pass	a NESTED Tuple ARG among scalar args crosses the direct-call boundary
 pass	a NESTED Tuple ARG among scalars with a LIST result
 pass	a NESTED Tuple ARG between two scalar args (prefix + suffix)
+pass	a NESTED Tuple ARG with a BYTE-ROPE result crosses the direct-call boundary
 pass	a NESTED Tuple ARG with a LIST result crosses the direct-call boundary
 pass	a NESTED Tuple ARG with a fixed-shape COMPOUND result crosses the direct-call boundary
 pass	a NESTED Tuple ARG with a narrow Bool leaf crosses the direct-call boundary
@@ -381,6 +388,8 @@ pass	a String compound export under a non-main name crosses to the host
 pass	a String match with a BOUND default arm equals its (= s literal) if-chain with a bound else
 pass	a String match with disjoint literal arms is order-independent (reordering the arms preserves the result)
 pass	a String param threaded through a self-recursive loop and concatenated each step is retained
+pass	a String-returning closure alongside a parameterized plain export
+pass	a String-returning closure alongside a parameterized plain export — the plain runs
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
 pass	a THREE-parameter op arm binds all three parameters and the state
 pass	a TRIPLY-nested Record ARG crosses the direct-call boundary
@@ -391,6 +400,7 @@ pass	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, th
 pass	a Tuple ARG BEFORE a scalar arg crosses the direct-call boundary (tuple, then scalar)
 pass	a Tuple ARG BEFORE a scalar with a LIST result crosses the direct-call boundary
 pass	a Tuple ARG BETWEEN two scalar args crosses the direct-call boundary (scalar, tuple, scalar)
+pass	a Tuple ARG among scalars with a BYTE-ROPE result crosses the direct-call boundary
 pass	a Tuple ARG among scalars with a LIST result crosses the direct-call boundary
 pass	a Tuple ARG among scalars with a fixed-shape COMPOUND result crosses the direct-call boundary
 pass	a Tuple ARG composes with a NESTED-tuple RESULT
@@ -523,7 +533,9 @@ pass	a capturing 32-bit-integer closure crosses and is called
 pass	a capturing closure crosses as a repeatable (borrow<t>) callback handle
 pass	a capturing closure export tracks both the captured value and the call argument
 pass	a capturing closure is applied through a recursive higher-order function
+pass	a capturing closure returning Bytes
 pass	a capturing closure returning a COMPOUND is a repeatable (borrow<t>) callback handle
+pass	a capturing closure returning a String
 pass	a capturing closure returning a nominal-over-scalar
 pass	a capturing closure stored as a runtime list element is extracted by List.at and applied
 pass	a capturing closure stored in a let-bound record is projected and applied
@@ -572,6 +584,7 @@ pass	a closure export alongside a plain scalar export — the plain export runs
 pass	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
+pass	a closure returning Bytes crosses to the host as list<u8>
 pass	a closure returning Unit is declined — Unit has no machine representation
 pass	a closure returning a LIST of tuples (direct-call)
 pass	a closure returning a List crosses as the value form
@@ -581,14 +594,18 @@ pass	a closure returning a NESTED record crosses as the typed value form
 pass	a closure returning a NESTED tuple
 pass	a closure returning a Set — canonical member order
 pass	a closure returning a boolean is called by the host
+pass	a closure returning a constant String crosses as its UTF-8 bytes
 pass	a closure returning a nominal-over-Bool erases to bool at the boundary
 pass	a closure returning a nominal-over-scalar crosses as the underlying scalar
 pass	a closure returning a record crosses as the typed value form
+pass	a closure returning a runtime String (concat) crosses as its bytes
 pass	a closure returning a tuple crosses as the typed value form
 pass	a closure returning a tuple whose element is a LIST (compound-with-collection)
 pass	a closure returning a tuple with a Bool leaf
 pass	a closure returning a tuple with a negative int leaf
 pass	a closure returning an EMPTY List
+pass	a closure returning an empty Bytes crosses as the empty list
+pass	a closure returning an empty String crosses as the empty list
 pass	a closure taking a Result Bool Bool ARG crosses the direct-call boundary
 pass	a closure taking a Result Int64 Int64 ARG — Err crosses the direct-call boundary
 pass	a closure taking a Result Int64 Int64 ARG — Ok crosses the direct-call boundary
@@ -797,9 +814,11 @@ pass	a file-top default-integer pragma fixes a bare literal's type
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a final unquote-splice binds the remaining elements as a list
 pass	a fixed-arity list binding pattern is refutable and rejected
+pass	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a RECORD RESULT crosses the direct-call boundary
+pass	a fixed-shape Tuple ARG with a STRING RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a Tuple RESULT crosses the direct-call boundary
 pass	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
 pass	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)
@@ -2774,10 +2793,24 @@ pass	distinct large floats are not equal
 pass	distinct names bound to the same string key the same map entry
 pass	distinct seeds produce distinct generated values (the stream covers, it is not constant)
 pass	distinct signatures sharing a core valtype shape dispatch distinct bodies
+pass	distinct-sig byte-rope closure alongside a plain export — the closure
+pass	distinct-sig byte-rope closure alongside a plain export — the plain
+pass	distinct-sig byte-rope closures — the Bool→Bytes one
+pass	distinct-sig byte-rope closures — the Int64→Bytes one
 pass	distinct-sig collection result — the Bool→List closure
 pass	distinct-sig collection result — the Int64→List closure
 pass	distinct-sig compound result — the Bool→(Tuple Bool Int64) closure
 pass	distinct-sig compound result — the Int64→(Tuple Int64 Int64) closure
+pass	distinct-sig: a String closure + a Bytes closure of different signatures — the String one
+pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one
+pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one
+pass	distinct-sig: a collection + a compound + a byte-rope + a scalar group all coexist — the collection
+pass	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the byte-rope
+pass	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the compound
+pass	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the scalar
+pass	distinct-sig: a compound group + a byte-rope group + a scalar group — the byte-rope
+pass	distinct-sig: a compound group + a byte-rope group + a scalar group — the compound
+pass	distinct-sig: a compound group + a byte-rope group + a scalar group — the scalar
 pass	distinct-signature capturing closures alongside a parameterized plain export
 pass	distinct-signature capturing closures alongside a parameterized plain export — the plain runs
 pass	distinct-signature capturing producers
@@ -3506,6 +3539,9 @@ pass	two runtime strings compare equal by their contents
 pass	two runtime sum values compare equal by a heap walk
 pass	two runtime sums with the same payload but different variants compare unequal by a heap walk
 pass	two runtime tuples compare equal by a heap walk
+pass	two same-signature Bytes-returning closures share one call — first
+pass	two same-signature Bytes-returning closures share one call — second
+pass	two same-signature String-returning closures share one call
 pass	two same-signature closures alongside a plain export all coexist
 pass	two same-signature closures alongside a plain export — the plain export runs
 pass	two same-variant ctor list elements refining the payload by literal fall through, not trap
@@ -3588,9 +3624,6 @@ pass	wrapping-sub on a runtime UInt8 wraps modulo 256
 pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
-todo	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
-todo	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
-todo	TWO Tuple args with a BYTE-ROPE result
 todo	Type is a first-class value
 todo	a 32-bit-float closure crosses the host boundary
 todo	a @param accessor splices into a quasiquote and the eval computes with the host value
@@ -3599,27 +3632,16 @@ todo	a Bytes-returning closure alongside a plain export — the closure runs
 todo	a Bytes-returning closure alongside a plain export — the plain runs
 todo	a Bytes-returning closure on a different argument
 todo	a Float64 closure captures a Float64 build-time host effect result
-todo	a NESTED Tuple ARG with a BYTE-ROPE result crosses the direct-call boundary
 todo	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
 todo	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)
-todo	a String-returning closure alongside a parameterized plain export
-todo	a String-returning closure alongside a parameterized plain export — the plain runs
 todo	a THREE-argument closure round-trips — flat arrow spelling
-todo	a Tuple ARG among scalars with a BYTE-ROPE result crosses the direct-call boundary
 todo	a UInt64 closure round-trips through a consumer export
 todo	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a camelCase round-trip resolves through kebab boundary-name normalization
-todo	a capturing closure returning Bytes
-todo	a capturing closure returning a String
 todo	a closure captures the result of a build-time host op called with an argument
 todo	a closure capturing a build-time host effect preserves the order of two host calls
 todo	a closure capturing values of DIFFERENT types (Float64 + Int64)
-todo	a closure returning Bytes crosses to the host as list<u8>
 todo	a closure returning a SUM of a tuple (direct-call)
-todo	a closure returning a constant String crosses as its UTF-8 bytes
-todo	a closure returning a runtime String (concat) crosses as its bytes
-todo	a closure returning an empty Bytes crosses as the empty list
-todo	a closure returning an empty String crosses as the empty list
 todo	a closure that performs a delegated effect cannot cross the host boundary
 todo	a closure whose CALL returns a user sum crosses as the value form
 todo	a closure whose CALL returns an Option crosses as the value form
@@ -3640,8 +3662,6 @@ todo	a distinct-signature round-trip alongside a plain export — the plain expo
 todo	a distinct-signature round-trip applies the Int64->Bool closure
 todo	a distinct-signature round-trip applies the Int64->Int64 closure
 todo	a distinct-signature round-trip's Bool closure on a nonzero input
-todo	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
-todo	a fixed-shape Tuple ARG with a STRING RESULT crosses the direct-call boundary
 todo	a fixed-shape Tuple ARG with a SUM (Option) RESULT crosses the direct-call boundary
 todo	a host call's response is an ordinary value that feeds a LATER host call
 todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
@@ -3685,10 +3705,6 @@ todo	an intra-program handler interposes on a delegated effect, counts it, and f
 todo	and performs the right operand's effect when the left is true
 todo	and short-circuit does not perform the right operand's effect
 todo	binary operator operands are evaluated left to right
-todo	distinct-sig byte-rope closure alongside a plain export — the closure
-todo	distinct-sig byte-rope closure alongside a plain export — the plain
-todo	distinct-sig byte-rope closures — the Bool→Bytes one
-todo	distinct-sig byte-rope closures — the Int64→Bytes one
 todo	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one
 todo	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Int64 one
 todo	distinct-sig round-trip: TWO collection consumers of different sigs — the List
@@ -3712,16 +3728,6 @@ todo	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of a
 todo	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the scalar-arg one
 todo	distinct-sig round-trip: a higher-order closure + a scalar closure of another sig — the higher-order one
 todo	distinct-sig round-trip: a higher-order closure-typed arg on one group + a scalar closure on another
-todo	distinct-sig: a String closure + a Bytes closure of different signatures — the String one
-todo	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one
-todo	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one
-todo	distinct-sig: a collection + a compound + a byte-rope + a scalar group all coexist — the collection
-todo	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the byte-rope
-todo	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the compound
-todo	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the scalar
-todo	distinct-sig: a compound group + a byte-rope group + a scalar group — the byte-rope
-todo	distinct-sig: a compound group + a byte-rope group + a scalar group — the compound
-todo	distinct-sig: a compound group + a byte-rope group + a scalar group — the scalar
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	function arguments are evaluated left to right
@@ -3783,6 +3789,3 @@ todo	tuple elements are evaluated left to right
 todo	two @param sites generate two accessors under one Param effect
 todo	two host calls consume their responses in order
 todo	two host responses combine in call order through a non-commutative operator
-todo	two same-signature Bytes-returning closures share one call — first
-todo	two same-signature Bytes-returning closures share one call — second
-todo	two same-signature String-returning closures share one call

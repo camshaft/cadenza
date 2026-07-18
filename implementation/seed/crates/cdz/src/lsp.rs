@@ -3321,6 +3321,32 @@ mod tests {
     }
 
     #[test]
+    fn lsp_handles_a_forall_binder_annotation_now_that_it_is_semantically_live() {
+        // The `forall a. T` type-annotation surface became semantically live (compile+run+monomorphize,
+        // rcdzc 363e57f53) — it was syntax-only before and the checker rejected it (CDZ0101). Now that it
+        // is a STABLE surface, pin that the LSP handles a forall-annotated def cleanly on the ML surface:
+        // (1) diagnostics are EMPTY (it typechecks, no false "unbound name `a`"); (2) semantic tokens are
+        // total (a token stream, no panic); (3) hover on the forall-quantified parameter yields a type,
+        // not an error. Guards against a future change silently regressing the editor's forall support.
+        let text = "def id(x: forall a. a) -> a = x\ndef main = 0";
+        let diags = diagnostics_for(text, true);
+        assert!(
+            diags.is_empty(),
+            "a valid forall-annotated def must typecheck clean in-editor (no false CDZ0101): {diags:?}"
+        );
+        let toks = semantic_tokens_for(text, true);
+        assert!(
+            !toks.is_empty(),
+            "semantic tokens over a forall def must be a total, non-empty stream"
+        );
+        // Hover on the `x` parameter (line 0, char 7 — `def id(` is 7 chars).
+        assert!(
+            hover_at(text, true, Position::new(0, 7)).is_some(),
+            "hover on a forall-quantified parameter must yield a type, not None/error"
+        );
+    }
+
+    #[test]
     fn diagnostics_for_malformed_source_is_total_not_a_panic() {
         // A buffer that does not fully parse still returns a defined partial result — never a panic (the
         // spec's "a tooling query MUST NOT crash the editor session on malformed source"). We only assert

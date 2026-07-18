@@ -210,8 +210,13 @@ pub enum GenTy {
     /// in both backends). A LONE float parameter already crosses the boundary (the runner generates it), so
     /// this variant only matters NESTED under a `List`/`Tuple`/… where no boundary representation exists.
     Float(u32),
-    /// `(List ELEM)`: `<gen>` = a fixed-length `(list <gen:ELEM> …)` of `G1_LIST_LEN` elements.
-    List(Box<GenTy>),
+    /// `(List ELEM)`: `<gen>` = a VARIABLE-length list, length in `[min_len, G1_LIST_LEN]`, drawn from the
+    /// gen pool. `min_len` (0 by default = unconstrained) is a floor from a recognized MIN-LENGTH refinement
+    /// — a param-level `@requires`/type-level `@invariant` `(< 0 (List.len it))` / `(<= K (List.len it))` —
+    /// so a "non-empty"/"at least K" precondition GENERATES in-domain rather than drawing a shorter list that
+    /// trips the enforced precondition (the reject-free constrained-gen path). `min_len` is clamped to
+    /// `G1_LIST_LEN` (a floor above the max candidate count would be unsatisfiable — capped, not an error).
+    List(Box<GenTy>, usize),
     /// `(Tuple T…)`: `<gen>` = `(tuple <gen:T> …)`, one generated value per slot.
     Tuple(Vec<GenTy>),
     /// `(Record (f T)…)`: `<gen>` = `(record (f <gen:T>) …)`, one generated value per named field.
@@ -389,15 +394,14 @@ fn classify_ty_at(ast: &Arenas, ty: StructId, items: &[StructId], depth: usize) 
             other => classify_sum(ast, other, items, depth),
         };
     }
-    // `(List ELEM)` — recurse into the element type.
+    // `(List ELEM)` — recurse into the element type. `min_len` 0 (unconstrained) here; a min-length
+    // refinement is applied later by the predicate consumer (plan_for_item for a param-level `@requires`).
     if let Some(list_tail) = ast.as_form(ty, "List") {
         let &elem = list_tail.first()?;
-        return Some(GenTy::List(Box::new(classify_ty_at(
-            ast,
-            elem,
-            items,
-            depth + 1,
-        )?)));
+        return Some(GenTy::List(
+            Box::new(classify_ty_at(ast, elem, items, depth + 1)?),
+            0,
+        ));
     }
     // `(Tuple T…)` — recurse into each slot; every slot must be generatable.
     if let Some(tup_tail) = ast.as_form(ty, "Tuple") {
@@ -561,6 +565,62 @@ fn invariant_int_range(ast: &Arenas, pred: StructId) -> Option<(i64, i64)> {
     }
 }
 
+/// The minimum LIST LENGTH a refinement predicate `pred` requires of the parameter named `param`, if it is
+/// a recognized lower-bound on `(List.len param)` — so a "non-empty"/"at least K" precondition GENERATES a
+/// long-enough list rather than drawing a shorter one that trips the enforced precondition. Recognizes
+/// `(< K (List.len p))` → K+1, `(<= K (List.len p))` → K, `(> (List.len p) K)` → K+1, `(>= (List.len p) K)`
+/// → K (and the mirrors). `List.len` is the member access `((. List len) p)`. `None` for any other shape →
+/// the list stays unconstrained (reject-free fallback). Only a POSITIVE lower bound yields a floor (a
+/// `min_len` of 0 is the default, no constraint).
+fn min_len_for_param(ast: &Arenas, pred: StructId, param: &str) -> Option<usize> {
+    // Is `n` the term `(List.len param)` = `((. List len) param)`? (a call of the member access to `param`).
+    let is_len_of_param = |n: StructId| -> bool {
+        let call = match ast.get(n) {
+            crate::ast::Struct::List(v) => v.as_slice(),
+            _ => return false,
+        };
+        // `[ (. List len), param ]`
+        if call.len() != 2 || ast.as_name(call[1]) != Some(param) {
+            return false;
+        }
+        ast.as_form(call[0], ".").is_some_and(|m| {
+            m.len() == 2 && ast.as_name(m[0]) == Some("List") && ast.as_name(m[1]) == Some("len")
+        })
+    };
+    let lit = |n: StructId| ast.as_int(n).and_then(|v| v.to_i64());
+    for op in [">=", ">", "<=", "<"] {
+        let Some(t) = ast.as_form(pred, op) else {
+            continue;
+        };
+        if t.len() != 2 {
+            return None;
+        }
+        // Normalize to `len OP' K`: `(op len K)` direct, or `(op K len)` mirrored (flip the operator).
+        let (k, op) = if is_len_of_param(t[0]) {
+            (lit(t[1])?, op)
+        } else if is_len_of_param(t[1]) {
+            let flipped = match op {
+                "<" => ">",
+                ">" => "<",
+                "<=" => ">=",
+                ">=" => "<=",
+                o => o,
+            };
+            (lit(t[0])?, flipped)
+        } else {
+            return None;
+        };
+        // A LOWER bound on the length → a min floor. `len > K` ⇒ ≥ K+1; `len >= K` ⇒ ≥ K. Upper bounds
+        // (`<`/`<=`) don't floor the length (the generator already caps at G1_LIST_LEN) → no constraint.
+        return match op {
+            ">" => usize::try_from(k + 1).ok().filter(|&m| m > 0),
+            ">=" => usize::try_from(k).ok().filter(|&m| m > 0),
+            _ => None,
+        };
+    }
+    None
+}
+
 fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize) -> Option<GenTy> {
     // Find `(type NAME variant…)` with a matching NAME — SEEING THROUGH any annotation wrapper. A type
     // declaration may be bare `(type NAME …)` OR annotated `(@ (invariant …) (type NAME …))` (a type-level
@@ -574,8 +634,11 @@ fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize)
         })
     })?;
     let decl_tail = type_decl_form(ast, decl_item)?;
-    // A recognized type-level `@invariant` RANGE constrains the newtype payload's generation (below).
-    let inv_range = type_invariant_pred(ast, decl_item).and_then(|p| invariant_int_range(ast, p));
+    // A recognized type-level `@invariant` constrains the newtype payload's generation (below): an integer
+    // RANGE → an `IntRange` int; a min-length `(< 0 (List.len it))` → a min-length `List`.
+    let inv_pred = type_invariant_pred(ast, decl_item);
+    let inv_range = inv_pred.and_then(|p| invariant_int_range(ast, p));
+    let inv_min_len = inv_pred.and_then(|p| min_len_for_param(ast, p, "it"));
     let variant_forms = decl_tail.get(1..).filter(|v| !v.is_empty())?;
     let mut variants = Vec::with_capacity(variant_forms.len());
     for &vf in variant_forms {
@@ -608,6 +671,14 @@ fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize)
         && let [(_, Some(GenTy::Int))] = variants.as_slice()
     {
         variants[0].1 = Some(GenTy::IntRange { lo, hi });
+    }
+    // A recognized MIN-LENGTH invariant on a newtype-List (`NonEmpty = Mk (List T)` with `@invariant(< 0
+    // (List.len it))`): floor that payload list's length so it generates non-empty (in-domain). Same
+    // newtype shape (one variant, one List payload); multi-variant/other keeps its raw generator.
+    if let Some(min) = inv_min_len
+        && let [(_, Some(GenTy::List(_, ml)))] = variants.as_mut_slice()
+    {
+        *ml = (*ml).max(min);
     }
     Some(GenTy::Sum {
         type_name: type_name.to_string(),
@@ -823,7 +894,7 @@ fn build_gen(ast: &mut Arenas, ty: &GenTy, binds: &mut Vec<(StructId, StructId)>
         // (`(list)` / `(list e0)` / `(list e0 e1)` / …). This exercises the EMPTY list + short lists (the
         // classic off-by-one / empty-case property-test coverage) that a fixed-length never reached — with
         // no recursive-helper synthesis (all inline, still let-hoisted so each `Test.gen` lives in `host`).
-        GenTy::List(elem) => build_var_list_gen(ast, elem, binds),
+        GenTy::List(elem, min_len) => build_var_list_gen(ast, elem, *min_len, binds),
         // `(tuple <gen:T> …)` — one generated value per slot.
         GenTy::Tuple(slots) => {
             let head = name(ast, "tuple");
@@ -970,30 +1041,45 @@ fn build_sum_gen(
     chain
 }
 
-/// Build a VARIABLE-length `(List ELEM)` in `0..=G1_LIST_LEN`: hoist a length selector
-/// `c = (% ((. Test gen)) (LEN+1))` (so `c ∈ 0..=LEN`) + the `LEN` candidate element values (each let-
-/// hoisted through `build_gen`), then a nested `if`-chain returning the length-`c` prefix:
-/// `(if (<= c 0) (list) (if (<= c 1) (list e0) … (list e0 … e_{LEN-1})))`. All inline (no recursive
-/// helper); every `Test.gen` is a `let` in the caller's chain, so it lives within the wrapper's `host`.
+/// Build a VARIABLE-length `(List ELEM)` in `min_len..=G1_LIST_LEN`: hoist a length selector + the `LEN`
+/// candidate element values (each let-hoisted through `build_gen`), then a nested `if`-chain returning the
+/// length-`c` prefix: `(if (<= c 0) (list) (if (<= c 1) (list e0) … (list e0 … e_{LEN-1})))`. `min_len` (a
+/// floor from a recognized min-length refinement, clamped to `G1_LIST_LEN`) shifts the count into
+/// `[min_len, LEN]` so a "non-empty"/"at least K" list generates in-domain: `c = MIN + (% gen (LEN+1-MIN))`
+/// (MIN=0 → the original `% (LEN+1)`). All inline (no recursive helper); every `Test.gen` is a `let` in the
+/// caller's chain, so it lives within the wrapper's `host`.
 fn build_var_list_gen(
     ast: &mut Arenas,
     elem: &GenTy,
+    min_len: usize,
     binds: &mut Vec<(StructId, StructId)>,
 ) -> StructId {
-    // Hoist the count `c = (% gen (LEN+1))`, capturing its name for the `(<= c i)` guards.
-    let modn = (G1_LIST_LEN + 1) as i64;
+    // A floor above the max candidate count is unsatisfiable — cap it at G1_LIST_LEN (generate the longest
+    // available list rather than error). The span the gen int is reduced over is `LEN+1-MIN` (≥1).
+    let min = min_len.min(G1_LIST_LEN);
+    let span = (G1_LIST_LEN + 1 - min) as i64;
+    // Hoist the count `c = MIN + (% (& gen i64::MAX) SPAN)` (∈ [MIN, LEN]). The gen int is masked to
+    // NON-NEGATIVE first (`& i64::MAX` clears the sign bit) — `%` in Cadenza takes the sign of the dividend,
+    // so a raw negative gen would make `c` negative and the `(<= c 0)` guard wrongly pick the empty list
+    // (violating a min_len floor). Capture the name for the `(<= c i)` guards.
     let count_name = format!("g{}", binds.len());
     {
         let g = gen_call(ast);
-        let m = push_atom(
-            ast,
-            Leaf::Int {
-                value: crate::ast::IntValue::from_i64(modn),
-                radix: crate::ast::Radix::Dec,
-            },
-        );
+        let nonneg = {
+            let andop = name(ast, "&");
+            let mask = int_lit(ast, i64::MAX);
+            push_list(ast, vec![andop, g, mask])
+        };
+        let span_lit = int_lit(ast, span);
         let rem = name(ast, "%");
-        let expr = push_list(ast, vec![rem, g, m]);
+        let modded = push_list(ast, vec![rem, nonneg, span_lit]);
+        let expr = if min == 0 {
+            modded
+        } else {
+            let plus = name(ast, "+");
+            let min_lit = int_lit(ast, min as i64);
+            push_list(ast, vec![plus, min_lit, modded])
+        };
         let var = name(ast, &count_name);
         binds.push((var, expr));
     }
@@ -1275,6 +1361,7 @@ mod tests {
     /// `GenTy::IntRange{lo,hi}` (generate in-domain), not a plain `Int`. `(and (>= it 0) (<= it 100))` on
     /// `Percent = Pct(Int64)` → the Pct payload is `IntRange{0,100}`. A one-sided / unrecognized invariant
     /// stays plain `Int` (reject-free unconstrained fallback). Checks the `GenTy` classification directly.
+
     #[test]
     fn a_range_invariant_constrains_a_newtype_int_to_an_intrange() {
         // `classify_sum(name)` resolves the `(type NAME …)` from `items` itself, so we pass the top-level
@@ -1301,6 +1388,25 @@ mod tests {
             matches!(gt2, Some(super::GenTy::Sum { ref variants, .. }) if matches!(variants.as_slice(), [(_, Some(super::GenTy::Int))])),
             "a one-sided invariant leaves the newtype payload a plain Int (unconstrained): {gt2:?}"
         );
+    }
+
+    /// A recognized MIN-LENGTH `@invariant` over a newtype-List constrains its payload list to be non-empty:
+    /// `@invariant(< 0 (List.len it))` on `NEList = Mk (List Int64)` → the Mk payload is `List(_, min_len=1)`,
+    /// so generation floors the length at 1 (never draws the empty list that would violate the invariant).
+    #[test]
+    fn a_min_length_invariant_constrains_a_newtype_list_to_non_empty() {
+        let ast = crate::testkit::parse(
+            "(do (@ (invariant (< 0 (List.len it))) (type NEList (Mk (List Int64)))) (def (o) 1))",
+        );
+        let items: Vec<_> = ast.as_form(ast.root, "do").unwrap().to_vec();
+        let gt = super::classify_sum(&ast, "NEList", &items, 0);
+        match gt {
+            Some(super::GenTy::Sum { variants, .. }) => match variants.as_slice() {
+                [(v, Some(super::GenTy::List(_, 1)))] if v == "Mk" => {}
+                other => panic!("expected Mk→List(_, min_len=1), got {other:?}"),
+            },
+            other => panic!("expected a Sum GenTy, got {other:?}"),
+        }
     }
 
     /// G5: a `@test` over a USER SUM `(type NAME (V PAYLOAD?)…)` gains a wrapper — the generator picks a
