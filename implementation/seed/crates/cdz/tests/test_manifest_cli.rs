@@ -1195,10 +1195,15 @@ fn a_nongeneratable_leaf_compound_test_declines_cleanly_and_siblings_run() {
         stdout.contains("PASS sibling_runs"),
         "a sibling test still runs despite the un-generatable compound test: {stdout}"
     );
-    // The un-generatable test is reported as a clean per-test FAIL (not a silent drop, not a file abort).
+    // The un-generatable test is reported as a clean per-test FAIL (not a silent drop, not a file abort),
+    // and NAMES its cause — the declining wrapper performs `Test.fail("… a leaf the generator cannot
+    // produce yet (e.g. Char) …")`, so the author gets an actionable reason, not a bare `body trapped`.
     assert!(
-        stdout.contains("FAIL charlist-gen"),
-        "the non-generatable-leaf compound test declines as a per-test FAIL: {stdout}"
+        stdout.contains("FAIL charlist-gen")
+            && stdout.contains("cannot produce yet")
+            && stdout.contains("Char"),
+        "the non-generatable-leaf compound test declines with an ACTIONABLE per-test FAIL (names the \
+         Char-leaf cause): {stdout}"
     );
 }
 

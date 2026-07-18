@@ -872,20 +872,38 @@ fn test_declared_without_gen(ast: &Arenas, items: &[StructId]) -> bool {
 
 /// Build `(effect Test (op gen (-> Unit Int64)))`.
 fn build_test_effect(ast: &mut Arenas) -> StructId {
-    let arrow = {
-        let head = name(ast, "->");
-        let unit = name(ast, "Unit");
-        let i64 = name(ast, "Int64");
-        push_list(ast, vec![head, unit, i64])
-    };
-    let op = {
+    // `gen : Unit -> Int64` — the driver op every generator pulls from.
+    let gen_op = {
+        let arrow = {
+            let head = name(ast, "->");
+            let unit = name(ast, "Unit");
+            let i64 = name(ast, "Int64");
+            push_list(ast, vec![head, unit, i64])
+        };
         let head = name(ast, "op");
         let gen_nm = name(ast, "gen");
         push_list(ast, vec![head, gen_nm, arrow])
     };
+    // `fail : String -> Unit` — the report op a test performs to name WHY it failed. The runner recovers a
+    // FAIL message from a `.fail`-suffixed observed op (`observed_failure_message`), so a wrapper that
+    // performs `Test.fail("reason")` before trapping surfaces an actionable reason instead of a bare trap.
+    // The DECLINING wrapper uses this to name a non-generatable-leaf cause (e.g. Char); it mirrors the
+    // `assert`-prelude's own `Test.fail` op, so a user program that already declares `Test` with `gen`+`fail`
+    // reuses it (declares_test_gen only requires `gen`).
+    let fail_op = {
+        let arrow = {
+            let head = name(ast, "->");
+            let string = name(ast, "String");
+            let unit = name(ast, "Unit");
+            push_list(ast, vec![head, string, unit])
+        };
+        let head = name(ast, "op");
+        let fail_nm = name(ast, "fail");
+        push_list(ast, vec![head, fail_nm, arrow])
+    };
     let head = name(ast, "effect");
     let test = name(ast, "Test");
-    push_list(ast, vec![head, test, op])
+    push_list(ast, vec![head, test, gen_op, fail_op])
 }
 
 /// Build the `@test`-marked nullary wrapper for a plan:
@@ -900,8 +918,20 @@ fn build_wrapper(ast: &mut Arenas, plan: &TestPlan) -> StructId {
     // aborting the whole file at the export boundary. No `host`/`Test.gen` — a bare trap is a plain nullary
     // test the runner invokes directly.
     if plan.declining {
-        let body = {
-            let trap = name(ast, "trap");
+        // Perform `Test.fail("reason")` THEN `trap`, inside `(host (Test) …)`. The runner recovers a FAIL
+        // message from the `.fail`-suffixed observed op (`observed_failure_message`), so the per-test decline
+        // NAMES its cause (a non-generatable leaf like Char) instead of a bare `body trapped: wasm
+        // unreachable`. The trailing `trap` forces the FAIL outcome (a returning test would PASS). Mirrors
+        // the assert-prelude's `(Test.fail msg); trap(…)` shape; `Test.fail` is declared on the synthesized
+        // effect (`build_test_effect`).
+        let fail_call = {
+            // `((. Test fail) "reason")` — the dotted member-access call, same shape as `gen_call`.
+            let member = {
+                let dot = name(ast, ".");
+                let test = name(ast, "Test");
+                let fail_nm = name(ast, "fail");
+                push_list(ast, vec![dot, test, fail_nm])
+            };
             let msg = push_atom(
                 ast,
                 Leaf::Str(format!(
@@ -910,7 +940,25 @@ fn build_wrapper(ast: &mut Arenas, plan: &TestPlan) -> StructId {
                     plan.def_name
                 )),
             );
-            push_list(ast, vec![trap, msg])
+            push_list(ast, vec![member, msg])
+        };
+        let trap = {
+            let t = name(ast, "trap");
+            let m = push_atom(ast, Leaf::Str("not property-testable".to_string()));
+            push_list(ast, vec![t, m])
+        };
+        // `(do (Test.fail "…") (trap "…"))` — sequence: perform the report, then trap. (`do` is the
+        // AST-level sequencing form; the ML `;` is surface-only and unbound in the arena.)
+        let seq = {
+            let do_head = name(ast, "do");
+            push_list(ast, vec![do_head, fail_call, trap])
+        };
+        // `(host (Test) <seq>)` — delegate the Test effect to the boundary (the runner answers `Test.fail`).
+        let host = {
+            let head = name(ast, "host");
+            let test = name(ast, "Test");
+            let effs = push_list(ast, vec![test]);
+            push_list(ast, vec![head, effs, seq])
         };
         let def = {
             let head = name(ast, "def");
@@ -918,7 +966,7 @@ fn build_wrapper(ast: &mut Arenas, plan: &TestPlan) -> StructId {
                 let nm = name(ast, &plan.wrapper_name);
                 push_list(ast, vec![nm])
             };
-            push_list(ast, vec![head, sig, body])
+            push_list(ast, vec![head, sig, host])
         };
         // Mark it a test (declining `@exhaustive` stays `@exhaustive` for symmetry, though both decline).
         let at = name(ast, "@");

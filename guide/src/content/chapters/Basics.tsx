@@ -7,7 +7,7 @@ export default function Basics() {
   return (
     <article>
       <H1>Values &amp; functions</H1>
-      <Lede>Literals, bindings, and first-class functions — the vocabulary everything is built from.</Lede>
+      <Lede>Literals, bindings, and first-class functions, the vocabulary everything is built from.</Lede>
 
       <H2>Bindings</H2>
       <P>
@@ -20,21 +20,21 @@ export default function Basics() {
       </P>
       <P>
         Shadowing is just a second binding of the same name. The inner <C>x</C> is computed{" "}
-        <em>from</em> the outer one — the right-hand side still sees the old value — and only then takes
-        over for the rest of the body:
+        <em>from</em> the outer one, since the right-hand side still sees the old value, and only then
+        takes over for the rest of the body:
       </P>
       <Runnable source={`(let ((x 10))
   (let ((x (* x 2)))
     (+ x 1)))`} />
       <P>
         The inner binding's <C>(* x 2)</C> reads the outer <C>x = 10</C> to get <C>20</C>; the body then
-        sees that inner <C>x</C>, so <C>(+ x 1)</C> is <C>21</C>. Nothing was mutated — the outer <C>x</C>{" "}
-        is untouched, just out of view.
+        sees that inner <C>x</C>, so <C>(+ x 1)</C> is <C>21</C>. Nothing was mutated, since the outer{" "}
+        <C>x</C> is untouched, just out of view.
       </P>
 
       <H2>Functions are values</H2>
       <P>
-        A function is written with <C>fn</C> and is an ordinary value — you can bind it, pass it, and
+        A function is written with <C>fn</C> and is an ordinary value, so you can bind it, pass it, and
         return it. Here we bind a function <C>inc</C> and call it.
       </P>
       <Runnable source={`(let ((inc (fn (x) (+ x 1)))) (inc 4))`} />
@@ -52,10 +52,10 @@ export default function Basics() {
       </P>
 
       <Why tenet="Uniformity over special cases">
-        Underneath, every function takes exactly <em>one</em> argument and returns one value — a
+        Underneath, every function takes exactly <em>one</em> argument and returns one value, so a
         two-argument function is sugar for a function returning a function (that's why{" "}
-        <C>adder</C> above works so naturally). Cadenza leans on this kind of uniformity everywhere:
-        fewer special cases means fewer places for the compiler — and your mental model — to disagree
+        <C>adder</C> above works so naturally). Cadenza leans on this kind of uniformity everywhere,
+        because fewer special cases means fewer places for the compiler, and your mental model, to disagree
         with itself.
       </Why>
 
@@ -67,34 +67,34 @@ export default function Basics() {
       <Runnable source={`(let ((apply-twice (fn (f v) (f (f v)))))
   (apply-twice (fn (x) (+ x 1)) 5))`} />
       <P>
-        The passed-in function adds 1, applied twice to <C>5</C> — so <C>5 → 6 → 7</C>.
+        The passed-in function adds 1, applied twice to <C>5</C>, so <C>5 → 6 → 7</C>.
       </P>
 
-      <H2>Types are inferred — and can be written</H2>
+      <H2>Types are inferred, and can be written</H2>
       <P>
-        Every value has a type, and so far the compiler has worked them out for you — you never wrote{" "}
-        <C>Int64</C> anywhere, yet the results came back typed. When you <em>want</em> to state a type —
-        as documentation, or to pin down something inference would otherwise leave open — you annotate a
-        binding with its type. Toggle to the ML surface and this <C>dbl</C> reads <C>def dbl(x: Int64)</C>:
+        Every value has a type, and so far the compiler has worked them out for you, since you never wrote{" "}
+        <C>Int64</C> anywhere, yet the results came back typed. When you <em>want</em> to state a type,
+        whether as documentation or to pin down something inference would otherwise leave open, you annotate
+        a binding with its type. Toggle to the ML surface and this <C>dbl</C> reads <C>def dbl(x: Int64)</C>:
       </P>
       <Runnable
         source={`(def (dbl (: x Int64)) (* x 2))
 (def (main) (dbl 21))`}
       />
       <P>
-        An annotation isn't just a comment — the compiler <em>checks</em> it against the type it inferred,
-        and refuses if they disagree. Claiming a plain number is a <C>Bool</C> is a contradiction it won't
-        accept:
+        An annotation isn't just a comment, because the compiler <em>checks</em> it against the type it
+        inferred and refuses if they disagree. Claiming a plain number is a <C>Bool</C> is a contradiction
+        it won't accept:
       </P>
       <Note>
-        This one is <strong>meant to be refused</strong>. Run it and read the diagnostic — <C>CDZ0203</C>,
+        This one is <strong>meant to be refused</strong>. Run it and read the diagnostic, <C>CDZ0203</C>,
         "annotation type Bool does not match value type Int64": the annotation is held to the truth, not
         the other way around.
       </Note>
       <Runnable source={`(: 5 Bool)`} expect="error" />
       <P>
-        Because inference already knows the types, annotations are optional almost everywhere — write them
-        where they clarify, and leave them off where they'd just be noise.
+        Because inference already knows the types, annotations are optional almost everywhere, so write
+        them where they clarify, and leave them off where they'd just be noise.
       </P>
 
       <H2>Your turn</H2>
@@ -114,7 +114,7 @@ export default function Basics() {
         prompt={
           <>
             <C>make-scaler</C> returns a function that multiplies by whatever <C>factor</C> it captured.
-            Fill the hole so <C>triple</C> is a scaler that captures <C>3</C> — then <C>(triple 5)</C> is{" "}
+            Fill the hole so <C>triple</C> is a scaler that captures <C>3</C>, then <C>(triple 5)</C> is{" "}
             <C>15</C>.
           </>
         }

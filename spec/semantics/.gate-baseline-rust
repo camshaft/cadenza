@@ -1,4 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+pass	@ensures on a def returning an @invariant type: establish (on construction) AND the postcondition (on ret) both fire (design §10, (D))
 pass	@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
 pass	@invariant ESTABLISH (divert) over a heap payload: a NonEmptyList newtype traps on the empty list, constructs a non-empty one (design §10.1/§10.2, (D))
@@ -735,6 +736,7 @@ pass	a cross-type variant pattern whose payload width differs is rejected, not m
 pass	a crossing text-literal arm is rejected even beside a same-kind sibling arm
 pass	a ctl-style arm applying its continuation inside a match scrutinee resolves and folds
 pass	a ctl-style arm that applies its continuation lexically folds through the delimited context
+pass	a ctl-style arm whose continuation ESCAPES to another function reifies it as a closure and applies it there
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a curried function can be partially applied
 pass	a curried function-type annotation checks its inner result type against the argument
@@ -2418,6 +2420,7 @@ pass	an active unquote of a string literal lifts to an Ast.Str node
 pass	an active unquote of an Ast-valued expression splices the subtree as identity
 pass	an active-unquoted boolean literal equals the quoted form
 pass	an agreeing Result error type short-circuits through the boundary
+pass	an agreeing arrow annotation on a lambda is accepted and the function applies normally
 pass	an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator
 pass	an all-constant Set.of still folds membership with a constant query (control)
 pass	an all-escapes Ast.Str round-trips through print and read
