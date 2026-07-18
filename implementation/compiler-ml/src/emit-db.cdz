@@ -177,11 +177,31 @@ def body-of(instrs: Bytes, nlocals: Int64) =
 def code-section(body: Bytes) =
   section(10, Bytes.concat(b1(1), Bytes.concat(uleb(Bytes.len(body)), body)))
 
-/// Emit a whole module for a `main` Core term in the emit subset (W1 CNum; W2 CBin arith; W2b CVar/CLet).
+/// THE BACKEND SEAM (ported from rcdzc `backend/mod.rs`): the ONE point where the target-neutral front
+/// (read → resolve → infer → lower → Core) meets a target-specific back. Everything above this seam is
+/// computed the same way whatever the output; a backend is a function of the Core, SELECTED here by a
+/// branch on the requested `Target`. rcdzc ships wasm + rust arms behind this same seam; compiler-ml ships
+/// the Wasm arm today, with the seam IN PLACE so a Rust arm (or any backend) is a drop-in `Target` arm —
+/// NOT a painful refactor of the pipeline (the operator's essential: multi-backend architecture from the
+/// start). The seam takes the shared structured `Core` (never a flat/linear IR — that stays private to a
+/// linearizing backend, as in rcdzc where `Lir` lives inside the wasm backend only).
+type Target =
+  | Wasm       // a WebAssembly core module (the Stage-0 backend; what compiler-ml emits today)
+  // Rust — a Rust-source arm — is the next backend to add behind this seam (mirrors rcdzc backend/rust).
+
+/// Emit a `main` Core term for a chosen `Target` — the seam dispatch (rcdzc's `backend::emit(db, target)`
+/// match). `Some(bytes)` = the artifact for that target; `None` = out-of-subset (declines). Selecting a
+/// backend is a branch on `Target`; the caller names it. Adding a backend = adding an arm here + its
+/// emitter, with the whole pipeline above unchanged.
+def target-emit(target: Target, c: Core) = match target with
+  | Target.Wasm => emit-wasm-module(c)
+
+/// Emit a whole WASM module for a `main` Core term in the emit subset (W1 CNum; W2 CBin arith; W2b CVar/CLet).
 /// Returns `None` for an out-of-subset shape (CIf/comparison = W3) so an unsupported program declines rather
 /// than emitting a wrong module. The value of a nullary `main` module IS its body's value. `can-emit` gates
 /// (scalar); `emit-instrs` builds the bytes total, threading the pre-order binder list for local indices.
-def emit-module(c: Core) =
+/// This is the WASM ARM behind the `target-emit` seam (rcdzc's `wasm::emit`).
+def emit-wasm-module(c: Core) =
   (if can-emit(c)
    then (let binders = collect-binders(c) in
          Option.Some(Bytes.concat(preamble(),
@@ -197,10 +217,20 @@ def emit-module(c: Core) =
 /// () -> i64`; `None` = declined (ill-typed OR not yet in the emit subset). `cdz run-emitted` embeds `s` as
 /// a literal, calls this, captures the returned `Bytes` raw host-side, and runs them via `wasmtime::Module`
 /// — the emit≡interpret gate compares that run-value against `run-src`'s interpreted value per corpus case.
-def emit-src(s: String) = match read-source(s) with
+def emit-src(s: String) = emit-src-for(Target.Wasm, s)
+
+/// `emit-src-for(target, s)` — SOURCE → artifact for a chosen backend, through the SEAM: read → lower to the
+/// target-neutral Core, then dispatch to the target's emitter (`target-emit`). `emit-src` is the Wasm
+/// specialization (the W4 host harness's call point). A Rust backend would be `emit-src-for(Target.Rust, s)`
+/// with the pipeline above unchanged — the whole point of the seam.
+def emit-src-for(target: Target, s: String) = match read-source(s) with
   | (root, tree) => (match lower-tree(tree, root) with
-      | Option.Some(core) => emit-module(core)
+      | Option.Some(core) => target-emit(target, core)
       | Option.None(_) => Option.None(unit))
+
+/// Back-compat alias: `emit-module` = the Wasm arm via the seam. Existing callers/tests keep working while
+/// routing through `target-emit` (so the seam is exercised, not bypassed).
+def emit-module(c: Core) = target-emit(Target.Wasm, c)
 
 /// `bytes-to-list(b)` — the byte values of `b` as a `List(UInt8)`, in order (a fuel-bounded `Bytes.at`
 /// walk; the inverse of `Bytes.of`). The HOST-BOUNDARY shape: a `Bytes`-returning `main` pre-renders to
@@ -438,6 +468,27 @@ def em-comparison-op-mapping() =
           (if (cmp-byte(64) == 89) then
             (if (cmp-byte(65) == 82) then unit else trap("!= ne 0x52")) else trap(">= ge_s 0x59")) else trap("<= le_s 0x57")) else trap("> gt_s 0x55")) else trap("== eq 0x51")) else trap("< lt_s 0x53"))
 
+/// backend SEAM (Target dispatch) --------------------------------------------------------------------
+
+@test
+def em-seam-target-wasm-emits() =
+  // the seam `target-emit(Target.Wasm, core)` emits the same wasm module the direct Wasm arm does — the
+  // dispatch is transparent for the one shipped backend, and `emit-module` (back-compat) routes through it.
+  (match target-emit(Target.Wasm, cnum64(7)) with
+    | Option.Some(m) => (match emit-wasm-module(cnum64(7)) with
+        | Option.Some(m2) => (if (Bytes.len(m) == Bytes.len(m2)) then (if (byte-of(m, 0) == 0) then unit else trap("wasm magic via seam")) else trap("seam == direct wasm arm"))
+        | Option.None(_) => trap("wasm arm emits"))
+    | Option.None(_) => trap("seam Target.Wasm emits"))
+
+@test
+def em-seam-src-for-wasm-matches-emit-src() =
+  // `emit-src-for(Target.Wasm, s)` == `emit-src(s)` (emit-src is the Wasm specialization of the seam entry).
+  (match emit-src-for(Target.Wasm, "(+ 1 2)") with
+    | Option.Some(m) => (match emit-src("(+ 1 2)") with
+        | Option.Some(m2) => (if Bytes.len(m) == Bytes.len(m2) then unit else trap("emit-src-for Wasm == emit-src"))
+        | Option.None(_) => trap("emit-src emits"))
+    | Option.None(_) => trap("emit-src-for Wasm emits"))
+
 /// emit-src (SOURCE → wasm) --------------------------------------------------------------------------
 
 @test
@@ -514,4 +565,4 @@ def em-src-bytes-ill-typed-declines() =
   // an ill-typed program declines through emit-src-bytes too (None), matching emit-src.
   (match emit-src-bytes("x") with | Option.None(_) => unit | Option.Some(_) => trap("unbound x declines"))
 
-export { emit-module, emit-src, emit-src-bytes, bytes-to-list, emit-instrs, can-emit, collect-binders, wasm-op, cmp-op, uleb, sleb }
+export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-src-bytes, bytes-to-list, emit-instrs, can-emit, collect-binders, wasm-op, cmp-op, uleb, sleb }

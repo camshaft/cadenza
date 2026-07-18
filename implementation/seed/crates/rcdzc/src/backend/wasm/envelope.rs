@@ -241,7 +241,7 @@ pub fn assemble_provider(core: &[u8], exports: &[BoundaryExport], iface: &str) -
         let mut item = vec![0x01]; // export-items form
         let mut members = Vec::new();
         for (i, e) in exports.iter().enumerate() {
-            let name = super::kebab_extern_name(&e.name);
+            let name = crate::backend::common::export_name::kebab_extern_name(&e.name);
             // Each member name is a component EXTERN NAME (`0x00 <len> <name>`), not a bare string.
             members.extend_from_slice(&extern_name(&name));
             members.push(0x01); // ComponentExportKind::Func
@@ -253,7 +253,7 @@ pub fn assemble_provider(core: &[u8], exports: &[BoundaryExport], iface: &str) -
 
     // sec 11: export the single instance (0) under the interface name (kebab-normalized).
     let export_sec = {
-        let iface_name = super::kebab_extern_name(iface);
+        let iface_name = crate::backend::common::export_name::kebab_extern_name(iface);
         section(
             sec::COMPONENT_EXPORT,
             &wasm_vec(1, &export_instance_item(&iface_name, 0)),
@@ -605,7 +605,7 @@ pub fn assemble_provider_runtime(
         let mut item = vec![0x01];
         let mut members = Vec::new();
         for (j, e) in exports.iter().enumerate() {
-            let name = super::kebab_extern_name(&e.name);
+            let name = crate::backend::common::export_name::kebab_extern_name(&e.name);
             members.extend_from_slice(&extern_name(&name));
             members.push(0x01); // ComponentExportKind::Func
             uleb128((k + j) as u64, &mut members);
@@ -616,7 +616,7 @@ pub fn assemble_provider_runtime(
     // sec 11: export the bundled instance under the interface name. The imported RUNTIME instance is
     // component-instance 0; the bundle (`instance_sec`) is component-instance 1 — so export index 1.
     let export_sec = {
-        let iface_name = super::kebab_extern_name(iface);
+        let iface_name = crate::backend::common::export_name::kebab_extern_name(iface);
         section(
             sec::COMPONENT_EXPORT,
             &wasm_vec(1, &export_instance_item(&iface_name, 1)),
@@ -685,7 +685,9 @@ pub fn assemble_host(
             decls.push(0x01); // ty decl
             decls.extend_from_slice(&f.comp_functype);
             decls.push(0x04); // export decl — the op's COMPONENT extern name (kebab-normalized).
-            decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
+            decls.extend_from_slice(&extern_name(
+                &crate::backend::common::export_name::kebab_extern_name(&f.op),
+            ));
             decls.push(0x01); // sort: component func
             uleb128(i as u64, &mut decls);
         }
@@ -698,7 +700,9 @@ pub fn assemble_host(
     // sec 10: import the effect interface as an instance of component type 0, under the effect's name —
     // KEBAB-normalized (a non-kebab effect name like `Log` is not a valid component import extern name).
     let import_sec = {
-        let mut item = extern_name(&super::kebab_extern_name(iface));
+        let mut item = extern_name(&crate::backend::common::export_name::kebab_extern_name(
+            iface,
+        ));
         item.push(0x05); // ComponentTypeRef::Instance sort
         uleb128(0, &mut item); // type index 0
         section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
@@ -710,7 +714,10 @@ pub fn assemble_host(
     let op_alias_sec = {
         let mut items = Vec::new();
         for f in host_fns {
-            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
+            items.extend_from_slice(&comp_alias_item(
+                0,
+                &crate::backend::common::export_name::kebab_extern_name(&f.op),
+            ));
         }
         section(sec::ALIAS, &wasm_vec(h, &items))
     };
@@ -903,7 +910,9 @@ pub fn assemble_extern(
                 decls.push(0x01); // ty decl
                 decls.extend_from_slice(&f.comp_functype);
                 decls.push(0x04); // export decl — the op's COMPONENT extern name (kebab-normalized).
-                decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
+                decls.extend_from_slice(&extern_name(
+                    &crate::backend::common::export_name::kebab_extern_name(&f.op),
+                ));
                 decls.push(0x01); // sort: component func
                 uleb128(local as u64, &mut decls);
             }
@@ -919,7 +928,9 @@ pub fn assemble_extern(
     let import_sec = {
         let mut items = Vec::new();
         for (g_idx, iface) in ifaces.iter().enumerate() {
-            let mut item = extern_name(&super::kebab_extern_name(iface));
+            let mut item = extern_name(&crate::backend::common::export_name::kebab_extern_name(
+                iface,
+            ));
             item.push(0x05); // ComponentTypeRef::Instance sort
             uleb128(g_idx as u64, &mut item); // type index g_idx
             items.extend_from_slice(&item);
@@ -936,7 +947,7 @@ pub fn assemble_extern(
             let inst = iface_index(&ifaces, oi);
             items.extend_from_slice(&comp_alias_item(
                 inst as u32,
-                &super::kebab_extern_name(&f.op),
+                &crate::backend::common::export_name::kebab_extern_name(&f.op),
             ));
         }
         section(sec::ALIAS, &wasm_vec(p, &items))
@@ -1024,14 +1035,14 @@ pub fn assemble_extern(
             let mut item = vec![0x01]; // export-items form
             let mut members = Vec::new();
             for (j, e) in exports.iter().enumerate() {
-                let name = super::kebab_extern_name(&e.name);
+                let name = crate::backend::common::export_name::kebab_extern_name(&e.name);
                 members.extend_from_slice(&extern_name(&name));
                 members.push(0x01); // ComponentExportKind::Func
                 uleb128((p + j) as u64, &mut members);
             }
             item.extend_from_slice(&wasm_vec(m, &members));
             let instance_sec = section(sec::COMPONENT_INSTANCE, &wasm_vec(1, &item));
-            let iface_name = super::kebab_extern_name(iface);
+            let iface_name = crate::backend::common::export_name::kebab_extern_name(iface);
             let export_sec = section(
                 sec::COMPONENT_EXPORT,
                 &wasm_vec(1, &export_instance_item(&iface_name, g as u32)),
@@ -1124,7 +1135,9 @@ pub fn assemble_extern_runtime(
                 decls.push(0x01);
                 decls.extend_from_slice(&f.comp_functype);
                 decls.push(0x04);
-                decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
+                decls.extend_from_slice(&extern_name(
+                    &crate::backend::common::export_name::kebab_extern_name(&f.op),
+                ));
                 decls.push(0x01);
                 uleb128(local as u64, &mut decls);
             }
@@ -1155,7 +1168,9 @@ pub fn assemble_extern_runtime(
     let import_sec = {
         let mut items = Vec::new();
         for (g_idx, iface) in ifaces.iter().enumerate() {
-            let mut pe = extern_name(&super::kebab_extern_name(iface));
+            let mut pe = extern_name(&crate::backend::common::export_name::kebab_extern_name(
+                iface,
+            ));
             pe.push(0x05);
             uleb128(g_idx as u64, &mut pe);
             items.extend_from_slice(&pe);
@@ -1175,7 +1190,7 @@ pub fn assemble_extern_runtime(
             let inst = iface_index(&ifaces, oi);
             items.extend_from_slice(&comp_alias_item(
                 inst as u32,
-                &super::kebab_extern_name(&f.op),
+                &crate::backend::common::export_name::kebab_extern_name(&f.op),
             ));
         }
         for op in imports {
@@ -1279,14 +1294,14 @@ pub fn assemble_extern_runtime(
             let mut item = vec![0x01]; // export-items form
             let mut members = Vec::new();
             for (j, e) in exports.iter().enumerate() {
-                let name = super::kebab_extern_name(&e.name);
+                let name = crate::backend::common::export_name::kebab_extern_name(&e.name);
                 members.extend_from_slice(&extern_name(&name));
                 members.push(0x01); // ComponentExportKind::Func
                 uleb128((p + k + j) as u64, &mut members);
             }
             item.extend_from_slice(&wasm_vec(m, &members));
             let instance_sec = section(sec::COMPONENT_INSTANCE, &wasm_vec(1, &item));
-            let iface_name = super::kebab_extern_name(iface);
+            let iface_name = crate::backend::common::export_name::kebab_extern_name(iface);
             let export_sec = section(
                 sec::COMPONENT_EXPORT,
                 &wasm_vec(1, &export_instance_item(&iface_name, (g + 1) as u32)),
@@ -1365,7 +1380,9 @@ pub fn assemble_host_runtime(
                 decls.push(0x01);
                 decls.extend_from_slice(&f.comp_functype);
                 decls.push(0x04);
-                decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
+                decls.extend_from_slice(&extern_name(
+                    &crate::backend::common::export_name::kebab_extern_name(&f.op),
+                ));
                 decls.push(0x01);
                 uleb128(i as u64, &mut decls);
             }
@@ -1396,7 +1413,9 @@ pub fn assemble_host_runtime(
     // runtime interface (instance of comp type 1, under `import_name`) → component instances 0 and 1.
     let import_sec = {
         let mut items = Vec::new();
-        let mut eff = extern_name(&super::kebab_extern_name(iface));
+        let mut eff = extern_name(&crate::backend::common::export_name::kebab_extern_name(
+            iface,
+        ));
         eff.push(0x05); // ComponentTypeRef::Instance
         uleb128(0, &mut eff);
         items.extend_from_slice(&eff);
@@ -1412,7 +1431,10 @@ pub fn assemble_host_runtime(
     let op_alias_sec = {
         let mut items = Vec::new();
         for f in host_fns {
-            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
+            items.extend_from_slice(&comp_alias_item(
+                0,
+                &crate::backend::common::export_name::kebab_extern_name(&f.op),
+            ));
         }
         for op in imports {
             items.extend_from_slice(&comp_alias_item(1, op.name));
@@ -1571,7 +1593,9 @@ pub fn assemble_host_runtime_mem(
                 decls.push(0x01);
                 decls.extend_from_slice(&f.comp_functype);
                 decls.push(0x04);
-                decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
+                decls.extend_from_slice(&extern_name(
+                    &crate::backend::common::export_name::kebab_extern_name(&f.op),
+                ));
                 decls.push(0x01);
                 uleb128(i as u64, &mut decls);
             }
@@ -1602,7 +1626,9 @@ pub fn assemble_host_runtime_mem(
     // interface (comp type 1, under `import_name`) → component instances 0 and 1.
     let import_sec = {
         let mut items = Vec::new();
-        let mut eff = extern_name(&super::kebab_extern_name(iface));
+        let mut eff = extern_name(&crate::backend::common::export_name::kebab_extern_name(
+            iface,
+        ));
         eff.push(0x05); // ComponentTypeRef::Instance
         uleb128(0, &mut eff);
         items.extend_from_slice(&eff);
@@ -1618,7 +1644,10 @@ pub fn assemble_host_runtime_mem(
     let op_alias_sec = {
         let mut items = Vec::new();
         for f in host_fns {
-            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
+            items.extend_from_slice(&comp_alias_item(
+                0,
+                &crate::backend::common::export_name::kebab_extern_name(&f.op),
+            ));
         }
         for op in imports {
             items.extend_from_slice(&comp_alias_item(1, op.name));
@@ -1814,7 +1843,9 @@ pub fn assemble_host_mem(
             decls.push(0x01);
             decls.extend_from_slice(&f.comp_functype);
             decls.push(0x04);
-            decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
+            decls.extend_from_slice(&extern_name(
+                &crate::backend::common::export_name::kebab_extern_name(&f.op),
+            ));
             decls.push(0x01);
             uleb128(i as u64, &mut decls);
         }
@@ -1826,7 +1857,9 @@ pub fn assemble_host_mem(
 
     // sec 10: import the effect interface as an instance of component type 0 (kebab-normalized name).
     let import_sec = {
-        let mut item = extern_name(&super::kebab_extern_name(iface));
+        let mut item = extern_name(&crate::backend::common::export_name::kebab_extern_name(
+            iface,
+        ));
         item.push(0x05);
         uleb128(0, &mut item);
         section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
@@ -1837,7 +1870,10 @@ pub fn assemble_host_mem(
     let op_alias_sec = {
         let mut items = Vec::new();
         for f in host_fns {
-            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
+            items.extend_from_slice(&comp_alias_item(
+                0,
+                &crate::backend::common::export_name::kebab_extern_name(&f.op),
+            ));
         }
         section(sec::ALIAS, &wasm_vec(h, &items))
     };
@@ -2334,7 +2370,9 @@ pub fn assemble_extern_runtime_resource(
                 decls.push(0x01);
                 decls.extend_from_slice(&f.comp_functype);
                 decls.push(0x04);
-                decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
+                decls.extend_from_slice(&extern_name(
+                    &crate::backend::common::export_name::kebab_extern_name(&f.op),
+                ));
                 decls.push(0x01);
                 uleb128(local as u64, &mut decls);
             }
@@ -2366,7 +2404,9 @@ pub fn assemble_extern_runtime_resource(
     let import_sec = {
         let mut items = Vec::new();
         for (g_idx, iface) in ifaces.iter().enumerate() {
-            let mut pe = extern_name(&super::kebab_extern_name(iface));
+            let mut pe = extern_name(&crate::backend::common::export_name::kebab_extern_name(
+                iface,
+            ));
             pe.push(0x05); // ComponentTypeRef::Instance
             uleb128(g_idx as u64, &mut pe);
             items.extend_from_slice(&pe);
@@ -2387,7 +2427,7 @@ pub fn assemble_extern_runtime_resource(
             let inst = iface_index(&ifaces, oi);
             items.extend_from_slice(&comp_alias_item(
                 inst as u32,
-                &super::kebab_extern_name(&f.op),
+                &crate::backend::common::export_name::kebab_extern_name(&f.op),
             ));
         }
         for op in imports {
@@ -2606,7 +2646,9 @@ pub fn assemble_host_runtime_resource(
                 decls.push(0x01);
                 decls.extend_from_slice(&f.comp_functype);
                 decls.push(0x04);
-                decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
+                decls.extend_from_slice(&extern_name(
+                    &crate::backend::common::export_name::kebab_extern_name(&f.op),
+                ));
                 decls.push(0x01);
                 uleb128(i as u64, &mut decls);
             }
@@ -2639,7 +2681,9 @@ pub fn assemble_host_runtime_resource(
     // interface name is taken from the first host op's declared iface (all host ops here share one effect).
     let import_sec = {
         let mut items = Vec::new();
-        let mut he = extern_name(&super::kebab_extern_name(iface));
+        let mut he = extern_name(&crate::backend::common::export_name::kebab_extern_name(
+            iface,
+        ));
         he.push(0x05); // ComponentTypeRef::Instance
         uleb128(0, &mut he);
         items.extend_from_slice(&he);
@@ -2656,7 +2700,10 @@ pub fn assemble_host_runtime_resource(
     let op_alias_sec = {
         let mut items = Vec::new();
         for f in host_fns {
-            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
+            items.extend_from_slice(&comp_alias_item(
+                0,
+                &crate::backend::common::export_name::kebab_extern_name(&f.op),
+            ));
         }
         for op in imports {
             items.extend_from_slice(&comp_alias_item(1, op.name));
@@ -3119,7 +3166,9 @@ pub fn assemble_extern_runtime_resource_with_scalar_methods(
                 decls.push(0x01);
                 decls.extend_from_slice(&f.comp_functype);
                 decls.push(0x04);
-                decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
+                decls.extend_from_slice(&extern_name(
+                    &crate::backend::common::export_name::kebab_extern_name(&f.op),
+                ));
                 decls.push(0x01);
                 uleb128(local as u64, &mut decls);
             }
@@ -3151,7 +3200,9 @@ pub fn assemble_extern_runtime_resource_with_scalar_methods(
     let import_sec = {
         let mut items = Vec::new();
         for (g_idx, iface) in ifaces.iter().enumerate() {
-            let mut pe = extern_name(&super::kebab_extern_name(iface));
+            let mut pe = extern_name(&crate::backend::common::export_name::kebab_extern_name(
+                iface,
+            ));
             pe.push(0x05);
             uleb128(g_idx as u64, &mut pe);
             items.extend_from_slice(&pe);
@@ -3172,7 +3223,7 @@ pub fn assemble_extern_runtime_resource_with_scalar_methods(
             let inst = iface_index(&ifaces, oi);
             items.extend_from_slice(&comp_alias_item(
                 inst as u32,
-                &super::kebab_extern_name(&f.op),
+                &crate::backend::common::export_name::kebab_extern_name(&f.op),
             ));
         }
         for op in imports {
@@ -3709,7 +3760,9 @@ pub fn assemble_closure_host_runtime_resource(
                 decls.push(0x01);
                 decls.extend_from_slice(&f.comp_functype);
                 decls.push(0x04);
-                decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
+                decls.extend_from_slice(&extern_name(
+                    &crate::backend::common::export_name::kebab_extern_name(&f.op),
+                ));
                 decls.push(0x01);
                 uleb128(i as u64, &mut decls);
             }
@@ -3740,7 +3793,9 @@ pub fn assemble_closure_host_runtime_resource(
     // type 1 → comp instance 1).
     out.extend_from_slice(&{
         let mut items = Vec::new();
-        let mut eff = extern_name(&super::kebab_extern_name(iface));
+        let mut eff = extern_name(&crate::backend::common::export_name::kebab_extern_name(
+            iface,
+        ));
         eff.push(0x05);
         uleb128(0, &mut eff);
         items.extend_from_slice(&eff);
@@ -3756,7 +3811,10 @@ pub fn assemble_closure_host_runtime_resource(
     out.extend_from_slice(&{
         let mut items = Vec::new();
         for f in host_fns {
-            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
+            items.extend_from_slice(&comp_alias_item(
+                0,
+                &crate::backend::common::export_name::kebab_extern_name(&f.op),
+            ));
         }
         for op in imports {
             items.extend_from_slice(&comp_alias_item(1, op.name));
@@ -8425,7 +8483,7 @@ fn export_func_ascribed_item(name: &str, func_idx: u32, type_idx: u32) -> Vec<u8
     // does for a bare scalar export. Already-kebab names (`make`, `call`, `call-g0`, `make-adder`) are
     // the identity, so the byte layout of every existing corpus case is unchanged. The runner resolves
     // a source-derived name through the SAME `kebab_extern_name` rule, so both sides agree.
-    let name = crate::backend::wasm::kebab_extern_name(name);
+    let name = crate::backend::common::export_name::kebab_extern_name(name);
     let mut item = vec![0x00];
     item.extend_from_slice(&uleb_bytes(name.len() as u64));
     item.extend_from_slice(name.as_bytes());
@@ -9223,7 +9281,7 @@ fn closure_call_list_tuple_arg_functype_interleaved(
 /// emit, so this site never silently merges two exports. The CORE module export + its alias keep the
 /// verbatim source name (a valid core wasm name); only this component-boundary extern is kebab.
 fn comp_export_item(name: &str, func_idx: u32) -> Vec<u8> {
-    let extern_name = crate::backend::wasm::kebab_extern_name(name);
+    let extern_name = crate::backend::common::export_name::kebab_extern_name(name);
     let mut item = vec![0x00];
     item.extend_from_slice(&uleb_bytes(extern_name.len() as u64));
     item.extend_from_slice(extern_name.as_bytes());

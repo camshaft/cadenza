@@ -141,7 +141,7 @@ pub fn compile_with_opt(
     // `(bind …)` interface-name miscompile). Validate the compile-request value here — no AST node to
     // anchor, so a coded decline naming the offending string.
     if let Some(name) = &db.component_name
-        && !crate::backend::wasm::is_valid_interface_name(name)
+        && !crate::backend::common::export_name::is_valid_interface_name(name)
     {
         return fail(vec![Reject::coded(
             crate::diag::Code::Malformed,
@@ -170,7 +170,7 @@ pub fn compile_with_opt(
                     // source `(bind …)`; validate it so a bad `--bind` value is a clear reject, not a
                     // silent invalid-component miscompile.
                     let iface = iface.trim();
-                    if !crate::backend::wasm::is_valid_interface_name(iface) {
+                    if !crate::backend::common::export_name::is_valid_interface_name(iface) {
                         return fail(vec![Reject::coded(
                             crate::diag::Code::Malformed,
                             format!(
@@ -2661,7 +2661,7 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         // interface name is a clear compile-time reject naming the offending string, not a silent failure.
         let iface_occ = btail[1];
         let iface = db.ast.as_str(iface_occ).unwrap().to_string();
-        if !crate::backend::wasm::is_valid_interface_name(&iface) {
+        if !crate::backend::common::export_name::is_valid_interface_name(&iface) {
             faults.push(
                 Reject::coded(
                     Code::Malformed,
