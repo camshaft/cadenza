@@ -1,0 +1,30 @@
+;; LEAK (not a miscompile — value is CORRECT): `Option.expect` (Core::SumExpect) over an OWNED-TEMPORARY
+;; `Some` sum-shell does NOT drop the shell — it leaks ONE heap cell PER CALL. Surfaced by the direct
+;; live-objects gate (owned_temporary_list_producers_leave_no_live_objects's read-op companion), NOT by
+;; value-equality or drop-import-presence.
+;;
+;; ROOT (candidate): the `Core::SumExpect` emit (backend/wasm/select.rs ~7937) reads its scrutinee handle
+;; TWICE (sum-disc probe + sum-payload read), BOTH BORROWING, and NEVER drops the scrutinee. When the
+;; scrutinee is an OWNED-TEMPORARY `Some` (e.g. the result of `List.at`/`Map.lookup`, which build a fresh
+;; `sum-new` shell around the extracted+dup'd payload), that shell is never reclaimed. `heap_operand_ownership`
+;; would classify a `SumNew`/`Call` scrutinee as Owned — so `SumExpect` should stash the scrutinee and, after
+;; the payload is extracted (and the compound payload dup'd for the borrow), DROP the owned shell.
+;; ⚠ DELICATE: the drop must free ONLY the Some SHELL, not cascade into the extracted payload the caller now
+;; owns — the payload is already dup'd in the present arm (~select.rs 8018), so dropping the shell after that
+;; dup is refcount-correct. A borrowed scrutinee (a param/kept-local `Some`) must NOT be dropped. Mirror the
+;; List.at/Map.lookup owned-collection reclaim (heap_operand_ownership==Owned gate).
+;;
+;; WITNESS (needs the debug-counters runtime + live-objects; a loop so it SCALES past the benign
+;; entrypoint-return temp): List.at over a runtime list, Option.expect'd, in a 500-iter loop → live-objects
+;; 500 (leaks 1/call). Map.lookup identical. Set.contains (bool result, no Some shell) → 0 (clean).
+;; Value is CORRECT throughout (List.at→1, Map.lookup→10). SHARED SEAM: the SumExpect/MatchSum emit is
+;; v-patterns territory — coordinate before fixing.
+(module m
+  (def (build (: i Int64) (: n Int64) (: acc (List Int64)))
+    (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+  (def (loop (: j Int64) (: n Int64) (: tot Int64))
+    (if (< j n)
+        (loop (+ j 1) n (+ tot ((. Option expect) ((. List at) (build 0 3 (list)) 1) "v")))
+        tot))
+  (def (f (: n Int64)) (loop 0 n 0))
+  (export f))

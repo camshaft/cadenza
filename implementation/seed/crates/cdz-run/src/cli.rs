@@ -16,6 +16,10 @@ use crate::{
 /// The arguments to `cdz run` / `cdz-run` — run a finished Cadenza wasm component and print its result.
 /// `Clone` so a caller (e.g. `cdz run <project>`, which builds first) can re-target `component` at a
 /// freshly-built component while passing every other flag through unchanged.
+///
+/// TIMEOUT: a run is capped at a wall-clock deadline (default 30s) so a runaway/infinite loop TRAPS
+/// instead of spinning forever; set `CDZ_RUN_TIMEOUT_SECS=<n>` to change it, or `=0` to disable the cap
+/// (e.g. under a debugger). A normal program finishes in milliseconds and never hits this.
 #[derive(clap::Args, Clone)]
 pub struct RunArgs {
     /// The component `.wasm` to run, or `-` to read it from stdin (so it composes in a pipe:

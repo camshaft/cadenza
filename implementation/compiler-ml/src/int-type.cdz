@@ -1,0 +1,103 @@
+/// int-type.cdz — recognize an integer TYPE NAME as a `(signed, width)` pair, the parse-side companion to
+/// `int-width.cdz`'s value semantics. Hardening step (2), parametric integer widths.
+///
+/// Before a narrow integer can flow through the pipeline, the front-end must recognize the NAME of its
+/// type: `Int8`, `UInt32`, `Int64`, … A type annotation `(: v Int8)` names its target; this module is the
+/// pure lookup that annotation parsing will call to turn the type-name atom into the `(signed, width)`
+/// pair `int-width`'s `fits-width`/`wrap-to` take. It is the SEMANTICS of the naming, disjoint from the
+/// grammar: it touches no parser recursion (so it can't perturb the parse-db mutual-recursion SCC), and
+/// nothing references it yet — it drops into the `src/*.cdz` glob as a standalone tested unit, the same
+/// "tested foundation, wired later" shape as `int-width` and the HM spikes. The monomorphic spine is
+/// unchanged; the suite stays green.
+///
+/// The naming mirrors rcdzc (`resolved.rs`: an integer type is `Int { width, signed }`, spelled `Int<N>`
+/// signed / `UInt<N>` unsigned): the standard widths are `Int8 Int16 Int32 Int64` and their `UInt` twins.
+/// A name that is not one of these is NOT an integer type — `recognize` returns `IntTy.NotInt`, the
+/// caller's cue that the annotation named something else (a Bool, an unknown type) and must be handled /
+/// declined elsewhere. Only the widths `int-width` can actually reason about with exact Int64 arithmetic
+/// (8/16/32 fit its 1..=62 scope; 64 is the native identity width) are named here — the standard set, no
+/// arbitrary `(Int N)`. Arbitrary-width `(Int N)` is a later slice (it needs the applied type-ctor form
+/// in the grammar); this covers the fixed-width surface the corpus needs first.
+
+/// An integer type recognized from a name: signed/unsigned + bit width, or `NotInt` when the name is not
+/// an integer type. `IntKind(signed, width)` — the pair `int-width`'s fit/wrap functions consume.
+type IntTy =
+  | IntKind(Bool, Int64)
+  | NotInt
+
+/// Recognize an integer type NAME as its `(signed, width)`. Signed `Int8/16/32/64`, unsigned
+/// `UInt8/16/32/64`; anything else is `NotInt`. This is the total name→type lookup an annotation parser
+/// calls on the type-name atom.
+def recognize(name: String) =
+  if name == "Int8" then IntTy.IntKind(true, 8)
+  else (if name == "Int16" then IntTy.IntKind(true, 16)
+  else (if name == "Int32" then IntTy.IntKind(true, 32)
+  else (if name == "Int64" then IntTy.IntKind(true, 64)
+  else (if name == "UInt8" then IntTy.IntKind(false, 8)
+  else (if name == "UInt16" then IntTy.IntKind(false, 16)
+  else (if name == "UInt32" then IntTy.IntKind(false, 32)
+  else (if name == "UInt64" then IntTy.IntKind(false, 64)
+  else IntTy.NotInt)))))))
+
+/// Whether `name` is any integer type name (the boolean face of `recognize`, for a parser's quick guard).
+def is-int-type(name: String) = match recognize(name) with | IntTy.IntKind(_, _) => true | IntTy.NotInt => false
+
+/// The signedness of a recognized integer type name (defaults to `true`/signed for a non-int name — callers
+/// gate on `is-int-type` first; the default just keeps the accessor total).
+def ty-signed(name: String) = match recognize(name) with | IntTy.IntKind(s, _) => s | IntTy.NotInt => true
+
+/// The bit width of a recognized integer type name (`0` for a non-int name — a sentinel the caller guards,
+/// mirroring `int-width`'s out-of-scope `0`).
+def ty-width(name: String) = match recognize(name) with | IntTy.IntKind(_, w) => w | IntTy.NotInt => 0
+
+// ---- signed names ----
+
+@test
+def it-int8() = match recognize("Int8") with | IntTy.IntKind(s, w) => (if s and (w == 8) then unit else trap("Int8 = (signed, 8)")) | IntTy.NotInt => trap("Int8 is an int type")
+
+@test
+def it-int16() = match recognize("Int16") with | IntTy.IntKind(s, w) => (if s and (w == 16) then unit else trap("Int16 = (signed, 16)")) | IntTy.NotInt => trap("Int16 is an int type")
+
+@test
+def it-int32() = match recognize("Int32") with | IntTy.IntKind(s, w) => (if s and (w == 32) then unit else trap("Int32 = (signed, 32)")) | IntTy.NotInt => trap("Int32 is an int type")
+
+@test
+def it-int64() = match recognize("Int64") with | IntTy.IntKind(s, w) => (if s and (w == 64) then unit else trap("Int64 = (signed, 64)")) | IntTy.NotInt => trap("Int64 is an int type")
+
+// ---- unsigned names ----
+
+@test
+def it-uint8() = match recognize("UInt8") with | IntTy.IntKind(s, w) => (if (if s then false else true) and (w == 8) then unit else trap("UInt8 = (unsigned, 8)")) | IntTy.NotInt => trap("UInt8 is an int type")
+
+@test
+def it-uint32() = match recognize("UInt32") with | IntTy.IntKind(s, w) => (if (if s then false else true) and (w == 32) then unit else trap("UInt32 = (unsigned, 32)")) | IntTy.NotInt => trap("UInt32 is an int type")
+
+@test
+def it-uint64() = match recognize("UInt64") with | IntTy.IntKind(s, w) => (if (if s then false else true) and (w == 64) then unit else trap("UInt64 = (unsigned, 64)")) | IntTy.NotInt => trap("UInt64 is an int type")
+
+// ---- non-int names → NotInt ----
+
+@test
+def it-bool-not-int() = match recognize("Bool") with | IntTy.NotInt => unit | IntTy.IntKind(_, _) => trap("Bool is NOT an integer type")
+
+@test
+def it-empty-not-int() = match recognize("") with | IntTy.NotInt => unit | IntTy.IntKind(_, _) => trap("empty name is NOT an integer type")
+
+@test
+def it-bare-int-not-int() = match recognize("Int") with | IntTy.NotInt => unit | IntTy.IntKind(_, _) => trap("bare `Int` (no width) is NOT a fixed-width int type here")
+
+@test
+def it-unknown-width-not-int() = match recognize("Int7") with | IntTy.NotInt => unit | IntTy.IntKind(_, _) => trap("Int7 is not a standard width")
+
+// ---- accessor / guard faces ----
+
+@test
+def it-is-int-type-yes-no() = if is-int-type("UInt16") and (if is-int-type("Bool") then false else true) then unit else trap("is-int-type: yes for UInt16, no for Bool")
+
+@test
+def it-ty-signed() = if ty-signed("Int32") and (if ty-signed("UInt32") then false else true) then unit else trap("ty-signed: Int32 signed, UInt32 unsigned")
+
+@test
+def it-ty-width() = if (ty-width("Int16") == 16) and (ty-width("UInt64") == 64) and (ty-width("Bool") == 0) then unit else trap("ty-width: 16, 64, 0(non-int)")
+
+export { IntTy.*, recognize, is-int-type, ty-signed, ty-width }

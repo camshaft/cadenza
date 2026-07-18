@@ -3370,6 +3370,43 @@ fn thread_bounded(
             if items.is_empty() {
                 return None;
             }
+            // LET-LIFT over the continuation. A NON-FINAL do item that inlines a cross-fn effectful helper
+            // whose body is a `(let ((x e)) lbody)` — the memoize combinator `store(k) = (let v = … in
+            // (put; v))` — binds `x` LOCAL to that item. But `x` is referenced by the perform's OUT-STATE
+            // (`put`'s next-state `Map.insert(s, k, x)`) + its substituted arg, which the `do` threads FORWARD
+            // to the LATER items. Spliced there, `x` is OUTSIDE its `let` → a spurious CDZ0101 "unbound x"
+            // (the sequenced-memoize leak; a FINAL-position such item is fine — nothing threads its state on).
+            // Lift the `let` to wrap the whole continuation: `(do (let ((x e)) lbody) rest…)` ≡ `(let ((x e))
+            // (do lbody rest…))`, so `x` scopes over `lbody` AND `rest` (whose out-state references it).
+            // Sound: the init runs once, before the body + rest, in the same order — only `x`'s visibility
+            // widens. Detect via an inline-PREVIEW (β-reduce the item's callee body with its args) so we see
+            // the `let` the inline WILL produce; rewrite + re-thread the whole node (fixpoint lifts a second).
+            for (i, &it) in items.iter().enumerate() {
+                if i + 1 >= items.len() {
+                    break; // the FINAL item's state is not threaded on — no escape, no lift needed
+                }
+                if let Some((binds, lbody)) = inlined_let_of_do_item(db, it, ctx) {
+                    let do_head = db.push_name("do");
+                    // `(do lbody rest…)` — the let body followed by the remaining items.
+                    let mut cont = vec![do_head, lbody];
+                    cont.extend_from_slice(&items[i + 1..]);
+                    let cont_do = db.push_list(cont);
+                    let let_head = db.push_name("let");
+                    let lifted = db.push_list(vec![let_head, binds, cont_do]);
+                    // Keep the items BEFORE `i` as the outer do prefix (they run first, in order); if `i==0`
+                    // the lifted `let` IS the whole node.
+                    let rewritten = if i == 0 {
+                        lifted
+                    } else {
+                        let do_head2 = db.push_name("do");
+                        let mut ch = vec![do_head2];
+                        ch.extend_from_slice(&items[..i]);
+                        ch.push(lifted);
+                        db.push_list(ch)
+                    };
+                    return thread_bounded(db, rewritten, states, ctx, inline_depth);
+                }
+            }
             let mut cur = states;
             let mut last = None;
             for it in items {
@@ -3777,6 +3814,45 @@ fn thread_bounded(
         // `if`/`match`/`let` with a perform inside — E1c-2/E3 territory). Decline.
         _ => None,
     }
+}
+
+/// A do-item's `(let (binds) lbody)` shape — either the item IS a `let`, or it is a cross-fn effectful
+/// helper CALL that INLINES to a `let`-headed body. Returns `(binds-list-occ, lbody-occ)` (both from a
+/// FRESH deep copy of the reduced body, so the lift re-parents them cleanly). `None` if the item neither is
+/// nor inlines to a `let`. Used by the `do` thread arm's LET-LIFT (a non-final item's local `let` binding
+/// escapes when the perform's out-state threads forward — see the lift's comment). Bounded: the inline
+/// preview only β-reduces a single non-recursive discharged-effect callee (the same shape the inline arm
+/// serves), never recurses.
+fn inlined_let_of_do_item(
+    db: &mut Db,
+    item: StructId,
+    ctx: &HandlerCtx,
+) -> Option<(StructId, StructId)> {
+    // The reduced body: the item itself if it is a bare `(let …)`, else the β-reduction of a cross-fn
+    // effectful-helper call (a `let`-bearing helper like the memoize combinator). Only a helper the inline
+    // arm would serve (`call_reaches_discharged_effect`) is previewed — a recursive callee (specialized, not
+    // inlined) is excluded, matching the arm.
+    let reduced = if db.ast.as_form(item, "let").is_some() {
+        item
+    } else if let Resolved::Apply { head, args } = resolved_of(db, item) {
+        if !call_reaches_discharged_effect(db, head, ctx) {
+            return None;
+        }
+        let r = match crate::eval::apply_lambda(db, head, &args).ok().flatten() {
+            Some(r) => r,
+            None => crate::eval::lambda_body_of_nullary(db, head)?,
+        };
+        deep_fresh_copy(db, r)
+    } else {
+        return None;
+    };
+    // The reduced body must be a two-child `(let bindings body)`. (A `let*` with multiple bindings is one
+    // bindings-list child either way, so the shape check is uniform.)
+    let tail = db.ast.as_form(reduced, "let").map(<[_]>::to_vec)?;
+    if tail.len() != 2 {
+        return None;
+    }
+    Some((tail[0], tail[1]))
 }
 
 /// Whether applying `head` (an application's head) REACHES an operation this handler discharges — the

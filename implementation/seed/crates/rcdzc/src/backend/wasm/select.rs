@@ -2660,6 +2660,17 @@ fn collect_used_ops_into(
             if let Ok(Some(op)) = get_op(db, id) {
                 out.insert(op);
             }
+            // Shell reclaim (see the emit): an OWNED-temporary sum scrutinee's shell is dropped after the
+            // payload read. This collect pass has no `slots` to test `reusable_handle_slot`, so import `drop`
+            // whenever the operand's ownership is Owned — a superset of the emit's condition (a declared-but-
+            // unused import is harmless; the emit only actually emits the drop for a freshly-stashed owned
+            // shell with a scalar/dup'd-compound payload).
+            if matches!(
+                heap_operand_ownership(db, scrutinee),
+                Ok(HandleOwnership::Owned)
+            ) {
+                out.insert(OP_DROP);
+            }
             collect_used_ops_into(db, scrutinee, out);
         }
         // A closure VALUE is a heap CELL — `arr-alloc(1 + captures)` then `arr-set` of `box-int(code)`
@@ -8112,7 +8123,8 @@ fn emit(
             // re-types a slot the sibling `local.set`s at i64, an invalid module. A slot at `*high` is
             // guaranteed never pre-typed. Either way, reading the slot twice evaluates the scrutinee EXACTLY
             // ONCE.
-            let handle_slot = match reusable_handle_slot(db, scrutinee, slots) {
+            let reuse = reusable_handle_slot(db, scrutinee, slots);
+            let handle_slot = match reuse {
                 Some(owner) => owner,
                 None => {
                     let handle_slot = *high;
@@ -8132,6 +8144,25 @@ fn emit(
                     handle_slot
                 }
             };
+            // RECLAMATION: the sum SHELL (`sum-new` node) is a FRESH OWNED TEMPORARY when the scrutinee is an
+            // owned producer (a `List.at`/`Map.lookup` `Some`, a constructor, a call) rather than a borrowed
+            // param/kept-local — `sum-disc`/`sum-payload` only BORROW it, so nothing else drops it and the
+            // shell LEAKS one heap cell per call (a `(Option.expect (List.at (build …) i))` in a loop leaks N
+            // shells — value-correct, so the value + drop-import tests miss it; the live-objects gate caught
+            // it). Drop the shell in the present arm AFTER the payload is read, but ONLY when freeing the shell
+            // cannot free the extracted payload the caller keeps: (a) a SCALAR payload (`unboxed.is_some()`)
+            // was copied off the boxed cell, so dropping the shell (which cascades into that boxed cell) is
+            // safe; (b) a COMPOUND payload at a DUP site was `dup`'d (rc++) before the drop, so the cascade
+            // decrements it back to a live rc. A COMPOUND payload that is NOT a dup site is returned AS-IS
+            // (borrowed from the shell) — dropping the shell would free it → UAF, so leave it (that shape is
+            // the rarer non-live-after compound expect; a residual leak there, never a double-free). Only a
+            // FRESHLY-STASHED owned scrutinee is dropped: a reused param/kept-local slot (`reuse.is_some()`)
+            // is borrowed and left to its owner (mirrors the `List.len`/`List.at` owned-operand reclaim gate).
+            let reclaim_shell = reuse.is_none()
+                && matches!(
+                    heap_operand_ownership(db, scrutinee),
+                    Ok(HandleOwnership::Owned)
+                );
             // The result block type is this node's solved type (the payload type).
             let block_ty = match type_of(db, id) {
                 Ty::Unit => BlockType::Empty,
@@ -8174,7 +8205,8 @@ fn emit(
             // child, dup the copy, leave the original for the consumer. A fresh scratch slot at `*high`
             // (never `base`, which a width-different sibling may claim).
             let unit_leaf = matches!(type_of(db, id).strip_nominal(), Ty::Unit);
-            if unboxed.is_none() && !unit_leaf && out.dup_sites.contains(&id) {
+            let compound_dupd = unboxed.is_none() && !unit_leaf && out.dup_sites.contains(&id);
+            if compound_dupd {
                 let child_slot = *high;
                 *high = child_slot + 1;
                 scratch_ty.insert(child_slot, ValType::I32);
@@ -8183,6 +8215,15 @@ fn emit(
                 out.push(Lir::CallImport(OP_DUP)); // pops the 2nd copy, rc++ → [child]
             } else {
                 emit_heap_read_tail(db, id, unboxed, out); // [scalar | handle | nothing]
+            }
+            // Drop the owned SHELL now that the payload is off it — SAFE only for a scalar payload (copied
+            // off) or a dup'd compound (rc++'d above); a non-dup'd compound is returned borrowed from the
+            // shell, so dropping it would UAF (left un-dropped — a residual leak, never a double-free). The
+            // shell handle is still in `handle_slot`; `drop` pops it and returns nothing, leaving the payload
+            // value on the stack as the block's result.
+            if reclaim_shell && (unboxed.is_some() || compound_dupd) {
+                out.push(Lir::LocalGet(handle_slot)); // [payload, shell]
+                out.push(Lir::CallImport(OP_DROP)); // → [payload] (reclaim the owned Some shell)
             }
             out.push(Lir::Else);
             // ELSE — absent variant: trap. `unreachable` leaves the stack polymorphic, so the block's
@@ -10029,6 +10070,16 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         | Core::ListPush { .. }
         | Core::ListConcat { .. }
         | Core::ListUpdate { .. }
+        // A fallible READ that returns an `(Option T)` builds a FRESH owned `sum-new` Some shell (or a
+        // nullary None) around the extracted/copied payload: `List.at`/`Bytes.at` (`vec-get`/`bytes-get`
+        // into `Some`), `Map.lookup` (the looked-up value dup'd into `Some`). So the Option RESULT is an
+        // owned temporary — when it is a `Option.expect`/match SCRUTINEE, the `SumExpect`/`MatchSum` emit
+        // reclaims the shell after the payload read (else the shell LEAKS one cell per call — the
+        // live-objects-gate find). These BORROW their collection (that reclaim is handled at the op's own
+        // emit); here we classify the fallible RESULT they hand out, which is a fresh owned sum.
+        | Core::ListAt { .. }
+        | Core::BytesAt { .. }
+        | Core::MapLookup { .. }
         | Core::MapNew { .. }
         | Core::MapInsert { .. }
         | Core::MapRemove { .. }

@@ -924,29 +924,34 @@ fn first_unbound_predicate_name(
 }
 
 /// Collect the NAMES a match/let PATTERN binds (a bare `name`, or a constructor pattern's payload names
-/// `(T.V a b)` / `(a .. rest)`). A constructor HEAD (`T.V`, a `(. …)`) is not a binder; its payload
-/// sub-patterns are. Conservative: pushes any bare lowercase-ish name occurrence in binder position.
+/// `(T.V a b)` / `(a .. rest)`). Delegates to [`crate::resolve::arm_pattern_binders`] — the well-scoped
+/// binder-leaf collector `lower`/`resolve` already use — so the predicate name-scope check binds EXACTLY
+/// the names the language binds. That collector skips a compound pattern's HEAD (a ctor / `list`/`tuple`/
+/// `map` alias / `guard`), a `.`-member whole-pattern (`C.R`, a nullary-ctor reference — binds nothing),
+/// AND the separators `_` (wildcard) / `..` (rest marker). The previous local walk here pushed EVERY bare
+/// `as_name` (skipping only a leading `(. …)` head), so it over-collected `_`/`..`/a bare-name pattern
+/// head into `bound` — which MASKED a genuine unbound-name error in a predicate body whose reference
+/// happened to equal one of those tokens (a false negative slipping the `@requires`/`@ensures`/
+/// `@invariant` gate). Reusing the canonical collector closes that gap and keeps this in lockstep with
+/// how the arms actually bind. (PR#562 Copilot finding; the collector names the fix.)
 fn pattern_binder_names(db: &Db, pat: StructId, out: &mut Vec<String>) {
-    if let Some(n) = db.ast.as_name(pat) {
-        out.push(n.to_string());
-        return;
-    }
-    // A `(. T V)` ctor head is not a binder. A `(T.V sub…)` / `(a .. rest)` / nested pattern: recurse into
-    // children, skipping a leading member-access ctor head.
-    if let crate::ast::Struct::List(children) = db.ast.get(pat) {
-        for (i, &c) in children.iter().enumerate() {
-            // The head of a constructor pattern (`(. T V)` or a bare ctor name at position 0 that is a ctor)
-            // is not a binder — but a bare-name head in a list pattern IS unusual; be conservative and treat
-            // a `(. …)` head as non-binding, everything else as a potential sub-pattern.
-            if i == 0 && db.ast.as_form(c, ".").is_some() {
-                continue;
-            }
-            pattern_binder_names(db, c, out);
-        }
-    }
+    out.extend(
+        crate::resolve::arm_pattern_binders(db, pat)
+            .into_iter()
+            .map(|(name, _occ)| name),
+    );
 }
 
 /// Recursive predicate walk respecting binder scopes. Returns the first unbound-name reject, or `None`.
+//
+// TERMINATION (no depth guard needed — PR#562 Copilot flagged the recursion as a re-introduced overflow
+// risk; dismissed on the same invariant as the PR#556 lower.rs walks): the recursion descends only into
+// CHILD occurrences of `cur` (a `.`-member operand, a match scrutinee/arm body, a let binding value/body,
+// or a form's children), which are strictly-smaller arena StructIds — the arena is append-only
+// (`Arenas::push` assigns `len()` then never reassigns a slot; quote/metaprogramming uses the same
+// append-only builder), so a child id is always < its parent and the predicate AST is acyclic by
+// construction. A predicate is a finite arena subtree, so the walk bottoms out; a depth cap would be
+// cosmetic, not required.
 fn unbound_in(db: &mut Db, cur: StructId, bound: &mut Vec<String>) -> Option<Reject> {
     // A `(. operand key)` member access: check the operand, NOT the key (a label).
     if let Some(operand) = db.ast.as_form(cur, ".").and_then(|t| t.first().copied()) {

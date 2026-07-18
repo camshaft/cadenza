@@ -356,7 +356,18 @@ function TestResultsPane({ busy, outcome }: { busy: boolean; outcome: TestRunOut
         {ran.map((r) => (
           <li key={r.name} className={r.pass ? "text-emerald-300" : "text-rose-300"}>
             {r.pass ? "✓" : "✗"} {r.name}
+            {r.pass && r.trials ? <span className="text-emerald-400/70"> ({r.trials} trials)</span> : null}
             {!r.pass && r.error ? <span className="text-rose-400/80"> — {r.error}</span> : null}
+            {/* A FAILED property test carries the shrunk COUNTEREXAMPLE (the concrete minimal failing input +
+                the replay seed) — the whole point of shrinking, and the operator's explicitly-requested
+                feature. The browser runner computes it (runWorker.ts) and it flows here intact; surface it,
+                or the guide shows only "property failed" with no value. */}
+            {!r.pass && r.counterexample ? (
+              <div className="pl-4 text-rose-400/80">
+                counterexample: {r.counterexample.args}{" "}
+                <span className="text-slate-500">(seed {r.counterexample.seed})</span>
+              </div>
+            ) : null}
           </li>
         ))}
         {deferred.map((r) => (

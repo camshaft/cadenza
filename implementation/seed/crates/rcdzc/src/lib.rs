@@ -51,6 +51,10 @@ pub mod modules;
 // property-test over a list. Runs at load before `strip_annotations`; all synthesized nodes are ordinary
 // AST (`DESIGN-property-test-collection-generators-rcdzc.md`).
 pub mod proptest_gen;
+// DATA-TYPE INVARIANT ESTABLISH (Part 1): synthesize a typed `__invariant_check_<T>` def per `@invariant`
+// type (auto-unwrapping a single-payload newtype so a bare scalar predicate type-checks), so the invariant
+// predicate is resolved + type-checked + is the callee for the construct-site establish check (design §10).
+pub mod invariant_establish;
 // `(quote …)` reification — a quote rewritten to the `Ast` constructor application that BUILDS its value
 // (`(quote 42)` -> `(Ast.Int 42)`), so a quote result and a hand-built `Ast.*` value are one thing.
 pub mod quote;

@@ -64,3 +64,9 @@ RESOLVED-PENDING-MERGE (fuzzer, 2026-07-18, MR 4c1959f50):
 - (2) stale run-rust-exit doc comment in differential.rs updated too.
 Gate green (30 tests, clippy/fmt clean, libFuzzer links). NOTE: finding (4) cdz/main.rs:709 doc-drift is
 SEPARATELY with v-cdz-tooling. Retire this file once 4c1959f50 lands.
+
+---
+LANDED + VERIFIED (corpus-bugfix 2026-07-18): differential.rs on trunk a26f90b59 has Side::Declined(_) on
+either side -> Diff::Agree (skip) (line 134) + the doc table pins Declined=skip — the soundness fix (3)
+(non-zero run-rust exit -> Side::Declined not Diff::Unavailable) is present. (1) was a confirmed amazon-q
+hallucination (no float code). Fully resolved.

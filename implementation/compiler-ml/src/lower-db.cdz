@@ -85,9 +85,6 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
 def lower-tree(tree: Tree, root: Int64) =
   lower-node(tree, root, resolve-tree(tree, root), infer-tree(tree, root))
 
-/// Probe: the op code of a `CBin` (-1 otherwise).
-def core-op(c: Core) = match c with | Core.CBin(op, _, _) => op | _ => 0 - 1
-
 /// Probe: is this Core a `CNum v`?
 def is-cnum(c: Core, v: Int64) = match c with | Core.CNum(x) => x == v | _ => false
 
@@ -184,4 +181,4 @@ def lw-milestone-lowers() =
          else trap("CLet keyed by root"))
       | _ => trap("milestone lowers to CLet")))
 
-export { Core.*, lower-tree, lower-node, core-op, is-cnum, is-cvar }
+export { Core.*, lower-tree, lower-node, is-cnum, is-cvar }

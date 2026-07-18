@@ -2095,3 +2095,29 @@
             (def (main) 0)
             (export main)))
   (error  CDZ0101))
+
+; ── @invariant ESTABLISH Part 1: a BARE scalar invariant on a newtype AUTO-UNWRAPS + type-checks ──────────
+; The establish checker `invariant_establish::synthesize` emits `(def (__invariant_check_T (: it T)) …)` per
+; @invariant type so the predicate is TYPE-CHECKED. For a single-payload newtype it AUTO-UNWRAPS: a bare
+; `(>= it 0)` — which alone would hit the nominal boundary (Percent not comparable to Int64, CDZ0202) — is
+; rewritten to run over the unwrapped payload, so it type-checks. Pins that the natural bare form COMPILES
+; (the author need not destructure) and the type remains usable end-to-end. (The run-time establish TRAP at
+; each construction is Part 2; this pins Part 1 — the typed checker — is behavior-neutral for a value that
+; SATISFIES the invariant, i.e. construction + use still works.)
+
+(case "@invariant ESTABLISH Part 1: a bare-scalar invariant on a newtype auto-unwraps + type-checks; a satisfying value constructs and is usable"
+  (doc    "The establish checker synthesized by `invariant_establish` type-checks the @invariant predicate.
+           For the single-payload newtype `(type Percent (Pct Int64))` with the BARE `@invariant(and (>= it 0)
+           (<= it 100))`, the checker AUTO-UNWRAPS — `(match it (((. Percent Pct) __u) (and (>= __u 0)
+           (<= __u 100))))` — so the bare scalar predicate type-checks (it would otherwise fail CDZ0202 on the
+           nominal boundary). Pins that the natural bare form compiles and the type is usable: `(mk 42)` builds
+           a `Percent` and `unwrap` reads its payload back → 42. (The run-time establish check that TRAPS on a
+           VIOLATING construction is Part 2; Part 1 is the typed checker, behavior-neutral for a satisfying
+           value — construction + use unchanged.)")
+  (input  (do
+            (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64)))
+            (def (mk (: v Int64)) (Percent.Pct v))
+            (def (unwrap (: p Percent)) (match p (((. Percent Pct) n) n)))
+            (def (main) (unwrap (mk 42)))
+            (export main)))
+  (output (: 42 Int64)))

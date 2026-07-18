@@ -3739,6 +3739,69 @@ fn owned_temporary_list_producers_leave_no_live_objects() {
     }
 }
 
+/// DIRECT leak witness for the `Option.expect` (Core::SumExpect) OWNED-`Some`-SHELL reclaim: a fallible read
+/// (`List.at`/`Map.lookup`) builds a fresh `sum-new` Some around the payload; consuming it with
+/// `Option.expect` used to LEAK that shell (SumExpect borrows the scrutinee twice but never dropped an owned
+/// one) — one heap cell PER CALL, value-correct so the value/drop-import tests missed it. The fix classifies
+/// `ListAt`/`MapLookup`/`BytesAt` results Owned + drops the shell after the payload read (scalar payload, or a
+/// dup'd compound — never a non-dup'd compound, which is returned borrowed from the shell). Driven through a
+/// LOOP so a per-call leak SCALES past the benign one-cell entrypoint-return temporary (a single top-level
+/// expect leaves 1 return-adjacent cell that never accumulates; the loop is the discriminator). `#[ignore]` —
+/// needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
+#[test]
+#[ignore]
+fn option_expect_over_an_owned_some_shell_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "debug-counters runtime not in the store (run `cargo xtask build`); skipping SumExpect shell leak probe"
+        );
+        return;
+    };
+    // Each `f` loops N times, building a fresh runtime collection, reading one element via a fallible op,
+    // Option.expect'ing the Some, and accumulating — so N owned Some shells are created + consumed. A leaked
+    // shell would show as live-objects ~ N; the reclaim must net it to 0.
+    let cases: &[(&str, &str, i64)] = &[
+        (
+            "List.at",
+            "(module m \
+               (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
+                   (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (loop (: j Int64) (: n Int64) (: tot Int64)) \
+                   (if (< j n) (loop (+ j 1) n (+ tot ((. Option expect) ((. List at) (build 0 3 (list)) 1) \"v\"))) tot)) \
+               (def (f (: n Int64)) (loop 0 n 0)) (export f))",
+            500, // 500 iters × element 1 = 500
+        ),
+        (
+            "Map.lookup",
+            "(module m \
+               (def (build (: i Int64) (: n Int64) (: mp (Map Int64 Int64))) \
+                   (if (< i n) (build (+ i 1) n ((. Map insert) mp i (* i 10))) mp)) \
+               (def (loop (: j Int64) (: n Int64) (: tot Int64)) \
+                   (if (< j n) (loop (+ j 1) n (+ tot ((. Option expect) ((. Map lookup) (build 0 3 (map)) 1) \"v\"))) tot)) \
+               (def (f (: n Int64)) (loop 0 n 0)) (export f))",
+            5000, // 500 iters × value 10 = 5000
+        ),
+    ];
+    for (label, src, want) in cases {
+        let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+        assert_eq!(
+            rt.call("f", &[Val::S64(500)]),
+            Val::S64(*want),
+            "Option.expect over an owned {label} Some computes the right accumulated value"
+        );
+        assert_eq!(
+            rt.live_objects(),
+            0,
+            "owned Some-shell leak ({label}): the fresh sum-new shell is still live after Option.expect \
+             (expected 0 — SumExpect must drop the owned shell after the payload read; was ~N before the fix)"
+        );
+    }
+}
+
 /// COMPOUND EQUALITY over a runtime FLOAT LEAF follows the canonical byte form — the compound analogue of
 /// the scalar `Core::FloatCompare` fix, with NO extra machinery: `box-float` canonicalizes every NaN to
 /// the one quiet-NaN on construct (and keeps ±0.0 distinct), so a float in a compound already has the
@@ -17888,6 +17951,35 @@ mod match_engine {
         );
     }
 
+    /// Verification Inc-b @invariant ESTABLISH Part 1: `invariant_establish::synthesize` emits a typed checker
+    /// def per @invariant type, so the predicate is TYPE-CHECKED with `it : T`. For a SINGLE-PAYLOAD NEWTYPE it
+    /// AUTO-UNWRAPS — the bare `(>= it 0)` (which would hit the nominal boundary on `it : Percent`) type-checks
+    /// because the checker binds the payload and rewrites `it` to it. A predicate that ALREADY destructures
+    /// `it` is used as-is (NOT double-unwrapped). Both forms compile clean (no CDZ0202/CDZ0203).
+    #[test]
+    fn an_invariant_on_a_newtype_auto_unwraps_so_a_bare_scalar_predicate_type_checks() {
+        use crate::testkit::parse;
+        // BARE `(>= it 0)` on `it : Percent` (a single-payload newtype) — auto-unwrapped, type-checks clean.
+        let bare = "(module m (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+            (def (mk (: v Int64)) (Percent.Pct v)) (def (main) 0) (export main))";
+        let ds = crate::diagnostics(&mut crate::db::Db::load(parse(bare)));
+        assert!(
+            !ds.iter()
+                .any(|d| matches!(d.code.as_deref(), Some("CDZ0202") | Some("CDZ0203"))),
+            "a bare scalar @invariant on a newtype auto-unwraps — no nominal-boundary fault: {ds:?}"
+        );
+        // A SELF-DESTRUCTURE `(match it ((Percent.Pct v) …))` predicate is used as-is (not double-unwrapped —
+        // that would try to match the payload Int64 as a Percent and fail CDZ0203). Also clean.
+        let destr = "(module m (@ (invariant (match it (((. Percent Pct) v) (and (>= v 0) (<= v 100))))) \
+            (type Percent (Pct Int64))) (def (main) 0) (export main))";
+        let ds2 = crate::diagnostics(&mut crate::db::Db::load(parse(destr)));
+        assert!(
+            !ds2.iter()
+                .any(|d| matches!(d.code.as_deref(), Some("CDZ0202") | Some("CDZ0203"))),
+            "a self-destructuring @invariant is used as-is (not double-unwrapped) — clean: {ds2:?}"
+        );
+    }
+
     /// Verification Inc-b @invariant NAME-RESOLUTION: an `@invariant(pred)` predicate references only the value
     /// binder `it` (the value of the type) and prelude/global names — no def params (a type has none). A stray
     /// name is UNBOUND → CDZ0101 at the annotation (the b4c pattern, reused for the data-level member). A valid
@@ -17936,6 +18028,34 @@ mod match_engine {
                 .iter()
                 .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("nope")),
             "a stray name inside a destructure arm is still CDZ0101 (binder scope doesn't mask it)"
+        );
+        // PR#562: the predicate binder collector now delegates to `resolve::arm_pattern_binders` (the
+        // canonical, well-scoped one), replacing a local walk that pushed EVERY bare name — including a
+        // separator `..`/`_` or a compound pattern's HEAD. A REST pattern `(P.Ps (list a .. rest))` must
+        // bind BOTH the leaf `a` AND the rest name `rest` while NOT over-collecting the `list` head or the
+        // `..` marker into scope; the body may use `a`/`rest`, and a stray name is still caught. This pins
+        // that the well-scoped collector binds a nested rest pattern's names correctly in a predicate.
+        let rest_ok = "(module m \
+            (@ (requires (match xs ((P.Ps (list a .. rest)) (>= a 0)) (P.Empty true))) \
+              (def (f (: xs P)) 5)) \
+            (type P (Ps (List Int64)) (Empty)) (export f))";
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(rest_ok)))
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0101")),
+            "a predicate whose arm is a list-rest pattern binds its leaf + rest names (no false unbound)"
+        );
+        // ...and a stray name in that same rest-pattern arm is STILL caught — the collector binds `a`/`rest`
+        // but not a typo'd reference, so the `@requires` gate does not let a genuine unbound slip.
+        let rest_bad = "(module m \
+            (@ (requires (match xs ((P.Ps (list a .. rest)) (>= a stray)) (P.Empty true))) \
+              (def (f (: xs P)) 5)) \
+            (type P (Ps (List Int64)) (Empty)) (export f))";
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(rest_bad)))
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("stray")),
+            "a stray name in a list-rest predicate arm is still CDZ0101 (binders don't mask it)"
         );
     }
 
@@ -36305,6 +36425,50 @@ mod match_engine {
     }
 
     #[test]
+    fn a_qty_rational_magnitude_param_desugars_to_num_den_plus_a_guest_qty_of() {
+        // @param sidecar Qty-Rational (Length) brick (v-effects #13 B2): a `(Qty Rational <unit>)` — a
+        // Rational-MAGNITUDE quantity, the `@param … : Length` shape — has no host boundary form either. The
+        // magnitude crosses as the SAME two scalar `Int64` num/den accessors; the guest recombines with
+        // `Rational.of` and RE-ATTACHES the unit guest-side via `Qty.of(…, <unit>)` (the unit is a
+        // compile-time value erased at the boundary). So a program using such a @param RESOLVES.
+        assert!(
+            reject_code(
+                "(module m \
+                   (: (@ (param (: widget slider)) len) (Qty Rational (Unit.base #\"meter\"))) \
+                   (def (main) (host (Param) (Qty.value (Param.len)))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a (Qty Rational unit) @param desugars to num/den scalars + a guest Qty.of, so it resolves"
+        );
+        // Same as bare Rational, the num/den scalar accessors exist — referencing `Param.len-num` directly
+        // resolves, confirming the num/den pair (not a single `len` op) is what's generated for the Qty case.
+        assert!(
+            reject_code(
+                "(module m \
+                   (: (@ (param (: widget slider)) len) (Qty Rational (Unit.base #\"meter\"))) \
+                   (def (main) (host (Param) (+ (Param.len-num) (Param.len-den)))) \
+                 (export main))"
+            )
+            .is_none(),
+            "the generated len-num/len-den scalars resolve — a Qty-Rational param emits the num/den pair"
+        );
+        // A `(Qty Int64 …)` (scalar-INNER magnitude) is NOT a num/den case — an Int64 magnitude rides the
+        // ordinary scalar host path (a Qty of a scalar crosses as its inner scalar), so it keeps ONE op and
+        // its `(Param.size)` use is NOT rewritten. Only a Rational MAGNITUDE triggers the num/den desugar.
+        assert!(
+            reject_code(
+                "(module m \
+                   (: (@ (param (: widget slider)) size) (Qty Int64 (Unit.base #\"meter\"))) \
+                   (def (main) (host (Param) (Qty.value (Param.size)))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a (Qty Int64 unit) @param stays scalar-inner (one op, no num/den rewrite) — only Rational splits"
+        );
+    }
+
+    #[test]
     fn a_non_canonical_float_cannot_be_reified_into_an_ast_float_uniform_decline() {
         // 12-metaprogramming / adv-ast-float-nan differential: a NaN Float64 has no canonical value form,
         // so `(Ast.Float Float64.nan)` used to DIVERGE across backends (wasm TRAPped at the host encode
@@ -37074,6 +37238,54 @@ mod match_engine {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "classify {arg}"),
                 cdz_run::Outcome::Trap(t) => panic!("tuple-payload destructure trapped: {t}"),
             }
+        }
+    }
+
+    #[test]
+    fn a_scalar_compared_to_a_value_of_erased_type_param_lowers_to_a_scalar_compare() {
+        // REGRESSION (v-iterators fused-iterator step): comparing a scalar literal against a value whose
+        // static type is an UNRESOLVED type-param var mis-lowered. A value projected from a GENERIC-variant
+        // payload — `match it (Iter.Mk(s, f) …)` reaching a tuple element `h` whose type is the erased param
+        // `a` in `Mk(s, s -> Option((a, s)))` — compared as `(= h 1)` had `type_of(h)` read the ungrounded
+        // var `_` (the final substitution isn't applied at that query) even though the checker UNIFIED it
+        // with the `Int64` literal. So `is_scalar(h) && is_scalar(1)` was false and `=` fell through to a
+        // `value-eq` HEAP walk — which then DECLINED downstream with "borrowing op operand has an ownership
+        // this backend cannot yet prove" because the scalar `1` is a bare `ConstInt`, not a heap operand.
+        // Fixed: if EITHER operand is a proven scalar, the comparison is scalar (unification guarantees the
+        // other side is that same scalar), so route to `Core::Compare` — the emit grounds the width from the
+        // scalar side. This was an inference/lowering mis-route, NOT a Perceus/borrow bug (that decline was
+        // the symptom). The construction of the same generic variant was fixed separately (bca5da9e0);
+        // this is the runtime STEP (calling the stored closure then comparing its projected result).
+        let program = "type Iter = | Mk(s, s -> Option((a, s)))\n\
+                       def step_once(it) = match it with | Iter.Mk(s, f) => f(s)\n\
+                       def main() = match step_once(Iter.Mk([1, 2], fn(s) => match s with\n\
+                       | [] => Option.None(unit)\n\
+                       | [h, .. t] => Option.Some((h, t)))) with\n\
+                       | Option.None(_) => 0\n\
+                       | Option.Some(p) => (match p with | (h, _rest) => if h == 1 then 42 else 7)\n\
+                       export { main }";
+        let parsed = cadenza_syntax::parser::read_ml(program);
+        assert!(parsed.ok(), "the ML program parses: {:?}", parsed.errors);
+        let bytes = cadenza_syntax::codec::encode(&parsed.arenas);
+        let arenas = crate::codec::decode(&bytes).expect("rcdzc decode");
+        let component = compile_component(&crate::codec::encode(&arenas)).expect(
+            "comparing a scalar against a value of erased-type-param type must lower (scalar compare), \
+             not decline via a value-eq heap walk on a scalar operand",
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping erased-type-param scalar-compare run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&component, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "42", "step's head is 1 → the (= h 1) arm"),
+            cdz_run::Outcome::Trap(t) => panic!("erased-type-param scalar-compare trapped: {t}"),
         }
     }
 
@@ -53650,6 +53862,30 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "recursive effectful list-state walk must compile"
+        );
+    }
+
+    #[test]
+    fn a_sequenced_memoize_helper_with_a_local_let_threads_its_out_state() {
+        // The SEQUENCED-MEMOIZE fix (compiler-ml #4 critical path). A cross-fn helper with a LOCAL `let`
+        // — `store(k) = (let vv = k*10 in (Db.put((k,vv)); vv))`, the memoize combinator's on-miss arm —
+        // called in a NON-FINAL `do` position leaked `CDZ0101 unbound vv`: the put's out-state (threaded
+        // FORWARD to the later item) + its substituted arg reference `vv`, which the helper's `let` binds
+        // LOCAL to the performing item — spliced past that item, `vv` escaped its scope. FIX = the `do`
+        // thread arm's LET-LIFT: a non-final item that inlines to `(let ((x e)) lbody)` is lifted to
+        // `(let ((x e)) (do lbody rest…))` so `x` scopes over the continuation whose out-state references it.
+        // Two sequenced `store` calls then a `Map.len` read → 2 keys stored. (A FINAL-position such call
+        // always worked — nothing threads its state on.) State lives on the heap (Map), so compile-only here;
+        // the corpus gate verifies the value.
+        let src = "(do (effect Db (op put (-> (Tuple Int64 Int64) Unit)) (op tot (-> Unit Int64))) \
+                   (def (store (: k Int64)) (let ((vv (* k 10))) (do (Db.put (tuple k vv)) vv))) \
+                   (def (main) (handle Db (Map.empty) \
+                     ((tot (u) s (resume (Map.len s) s)) \
+                      (put (kv) s (match kv ((tuple k v) (resume unit (Map.insert s k v)))))) \
+                     (do (store 3) (store 5) (Db.tot)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a sequenced memoize helper with a local let must compile (the out-state let-lift), not leak CDZ0101"
         );
     }
 

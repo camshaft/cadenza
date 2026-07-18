@@ -226,3 +226,23 @@
   (call   main)
   (host-responses (respond Param.rate-num (: 7 Int64)) (respond Param.rate-den (: 2 Int64)))
   (output (: 7/2 Rational)))
+
+(case "a @param of type (Qty Rational unit) desugars to num/den scalars + a guest Qty.of with the unit (#13 B2)"
+  (doc    "The Length layer: a `@param(...) len : (Qty Rational (Unit.base #\"meter\"))` is a Rational-
+           MAGNITUDE quantity — the actual `@param : Length` shape (v-effects #13 B2). A heap Rational has
+           no host boundary form, so the magnitude crosses as the SAME two scalar `Int64` num/den accessors
+           as a bare Rational (`len-num`/`len-den`); the guest recombines them with `Rational.of` and the
+           sidecar RE-ATTACHES the unit guest-side via `Qty.of(…, (Unit.base #\"meter\"))` — the unit is a
+           compile-time value erased at the boundary, taken verbatim from the annotation. So `(Param.len)`
+           rewrites to `(Qty.of (Rational.of (Param.len-num) (Param.len-den)) (Unit.base #\"meter\"))`, a
+           `(Qty Rational meter)`. `Qty.value` reads back the exact rational magnitude; with host num=7,
+           den=2 that is 7/2. Pins the Rational-magnitude Quantity @param over the scalar host path — the
+           layer a parametric-CAD `@param Length` (v-cad) desugars to, closing the heap-typed @param frontier
+           for quantities as well as bare rationals.")
+  (input  (do
+            (: (@ (param (: widget slider)) len) (Qty Rational (Unit.base #"meter")))
+            (def (main) (host (Param) (Qty.value (Param.len))))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.len-num (: 7 Int64)) (respond Param.len-den (: 2 Int64)))
+  (output (: 7/2 Rational)))

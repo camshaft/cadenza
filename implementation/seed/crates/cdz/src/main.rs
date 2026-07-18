@@ -100,7 +100,9 @@ enum Cmd {
     /// Run a finished wasm component: link it (resolving its value-heap runtime by content address from
     /// the store), call an export (the sole function export by default), and print the rendered result.
     /// A trap or error goes to stderr with a non-zero exit. Folded in from the `cdz-run` bin so a single
-    /// `cdz` on the PATH both compiles and runs (`cdz compile foo.cdz -o - | cdz run -`).
+    /// `cdz` on the PATH both compiles and runs (`cdz compile foo.cdz -o - | cdz run -`). A run is capped
+    /// at a wall-clock deadline (default 30s) so a runaway loop TRAPS rather than hanging — set
+    /// `CDZ_RUN_TIMEOUT_SECS=<n>` to change it, `=0` to disable (e.g. under a debugger).
     Run(cdz_run::cli::RunArgs),
 
     // ── corpus (cdz-corpus) ─────────────────────────────────────────────────────────────────────

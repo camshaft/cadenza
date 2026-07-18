@@ -1,0 +1,167 @@
+/// int-width.cdz — the WIDTH-SEMANTICS foundation for hardening step (2), parametric integer widths.
+///
+/// The integer spine is currently MONOMORPHIC-i64: every literal is `Core.CNum(Int64)` and emit hardcodes
+/// the `i64.const`/i64-arith opcodes. Before widths can flow through parse→infer→lower→emit, the pipeline
+/// needs a single, well-tested model of what a NARROW integer type MEANS — the range-fit check an
+/// annotation performs (`(: 200 UInt8)`) and the two's-complement TRUNCATION a wrapping op performs
+/// (`UInt8.wrapping-add`). This module is that model, and NOTHING references it yet: it drops into the
+/// `src/*.cdz` glob as a standalone tested unit (the same "tested foundation, wired later" shape the HM
+/// spikes use), so the monomorphic spine is byte-for-byte unchanged and the pipeline stays green.
+///
+/// The representation of an integer type here is rcdzc's: a `(signed: Bool, width: Int64)` PAIR — signed
+/// picks the range/sign-extension, width picks the bit count. Literals stay arbitrary-precision `Int64`;
+/// the width is a downstream TYPE decision (matching `rcdzc::ast::IntValue::{fits_width, wrap_to}`), so
+/// these semantics are invariant under whatever concrete `Ty`-variant representation slice (2b) later
+/// picks. This is deliberately the SEMANTICS, not the syntax.
+///
+/// SCOPE / SAFETY: widths 1..=62 are supported with exact Int64 arithmetic (`2^62` fits Int64; `2^63`
+/// overflows, so 63/64 are out of this slice). That comfortably covers the standard narrow widths
+/// (Int8/Int16/Int32 and their unsigned twins) — the widths that need real fit/wrap logic. Width 64 is
+/// the native `Int64`/`UInt64` identity case the caller handles separately (no truncation needed); an
+/// out-of-scope width DECLINES (`fits-width` → false; `wrap-to` returns `v` unchanged) rather than
+/// fabricating an answer.
+
+/// Floored modulus into `0..m-1`. Int64 `%` is SIGN-FOLLOWING (a negative dividend gives a negative
+/// remainder), so a negative result is lifted by one modulus — the same normalization `emit-db`'s SLEB
+/// encoder uses. Assumes `m > 0`.
+def mod-floor(n: Int64, m: Int64) = let r = n % m in (if r < 0 then r + m else r)
+
+/// `2^k` for `0 <= k <= 62` (a fuel-free bounded doubling — `k` itself bounds the recursion). `2^63`
+/// overflows Int64, so `k` outside `0..=62` returns `0`, a sentinel the callers guard against BEFORE
+/// using it as a bound/modulus (they range-check the width first).
+def pow2(k: Int64) = if k < 0 then 0 else (if k > 62 then 0 else pow2-go(k, 1))
+def pow2-go(k: Int64, acc: Int64) = if k <= 0 then acc else pow2-go(k - 1, acc * 2)
+
+/// Whether `width` is one this slice can reason about with exact Int64 arithmetic (1..=62). Out of that
+/// range, `fits-width`/`wrap-to` decline rather than overflow.
+def width-ok(width: Int64) = (width >= 1) and (width <= 62)
+
+/// Does `v` fit a `(signed, width)` integer? Mirrors `rcdzc::ast::IntValue::fits_width`:
+///   signed   : -2^(width-1) <= v <= 2^(width-1) - 1   (two's-complement range)
+///   unsigned : 0 <= v <= 2^width - 1                  (no negatives)
+/// An out-of-scope width (see `width-ok`) is not a fit — returns false.
+def fits-width(v: Int64, signed: Bool, width: Int64) =
+  if width-ok(width) then
+    (if signed then
+       let half = pow2(width - 1) in                 // 2^(width-1)
+       ((0 - half) <= v) and (v <= (half - 1))
+     else
+       let cap = pow2(width) in                       // 2^width
+       (0 <= v) and (v <= (cap - 1)))
+  else false
+
+/// TRUNCATE `v` to a `(signed, width)` integer, keeping the low `width` bits of its two's-complement
+/// representation. Mirrors `rcdzc::ast::IntValue::wrap_to`:
+///   unsigned : the low bits AS A MAGNITUDE, in `0..2^width-1` (so `-1` wraps to `2^width-1`).
+///   signed   : bit `width-1` is the SIGN bit, so a low value at/above `2^(width-1)` maps to the negative
+///              with the same low bits (`200` at width 8 → `-56`; `-1` at width 8 → `-1`).
+/// An out-of-scope width returns `v` unchanged (the identity — no truncation the slice can perform).
+def wrap-to(v: Int64, signed: Bool, width: Int64) =
+  if width-ok(width) then
+    let m = pow2(width) in                            // 2^width, the modulus
+    let low = mod-floor(v, m) in                      // v mod 2^width in 0..2^width-1
+    (if signed then
+       let half = pow2(width - 1) in                  // 2^(width-1)
+       (if low >= half then low - m else low)         // high bit set → the negative twin
+     else low)
+  else v
+
+// ---- pow2 / mod-floor ----
+
+@test
+def iw-pow2-small() = if (pow2(0) == 1) and (pow2(1) == 2) and (pow2(8) == 256) then unit else trap("2^0=1, 2^1=2, 2^8=256")
+
+@test
+def iw-pow2-w32() = if pow2(32) == 4294967296 then unit else trap("2^32 = 4294967296")
+
+@test
+def iw-pow2-out-of-range-is-zero() = if (pow2(63) == 0) and (pow2(0 - 1) == 0) then unit else trap("2^63 / 2^-1 → 0 sentinel")
+
+@test
+def iw-mod-floor-lifts-negatives() =
+  // -1 mod 256 = 255 (floored), 200 mod 256 = 200, 256 mod 256 = 0.
+  if (mod-floor(0 - 1, 256) == 255) and (mod-floor(200, 256) == 200) and (mod-floor(256, 256) == 0) then unit
+  else trap("floored mod normalizes into 0..m-1")
+
+// ---- fits-width: unsigned ----
+
+@test
+def iw-fits-u8-in-range() = if fits-width(200, false, 8) then unit else trap("200 fits UInt8")
+
+@test
+def iw-fits-u8-max() = if fits-width(255, false, 8) then unit else trap("255 = UInt8.max fits")
+
+@test
+def iw-fits-u8-over() = if fits-width(256, false, 8) then trap("256 does NOT fit UInt8") else unit
+
+@test
+def iw-fits-u8-rejects-negative() = if fits-width(0 - 1, false, 8) then trap("-1 does NOT fit UInt8 (no negatives)") else unit
+
+// ---- fits-width: signed ----
+
+@test
+def iw-fits-i8-max() = if fits-width(127, true, 8) then unit else trap("127 = Int8.max fits")
+
+@test
+def iw-fits-i8-over() = if fits-width(128, true, 8) then trap("128 does NOT fit Int8") else unit
+
+@test
+def iw-fits-i8-min() = if fits-width(0 - 128, true, 8) then unit else trap("-128 = Int8.min fits")
+
+@test
+def iw-fits-i8-under() = if fits-width(0 - 129, true, 8) then trap("-129 does NOT fit Int8") else unit
+
+@test
+def iw-fits-i16-i32-boundaries() =
+  // Int16.max=32767, Int32.max=2147483647 fit at their widths; one past does not.
+  if fits-width(32767, true, 16) and (if fits-width(32768, true, 16) then false else true)
+     and fits-width(2147483647, true, 32) and (if fits-width(2147483648, true, 32) then false else true)
+  then unit else trap("Int16/Int32 signed boundaries")
+
+// ---- fits-width: out-of-scope width declines ----
+
+@test
+def iw-fits-width-zero-declines() = if fits-width(0, false, 0) then trap("width 0 is not a fit") else unit
+
+@test
+def iw-fits-width-w64-declines() = if fits-width(5, true, 64) then trap("width 64 is out of this slice → declines") else unit
+
+// ---- wrap-to: unsigned ----
+
+@test
+def iw-wrap-u8-unchanged-in-range() = if wrap-to(200, false, 8) == 200 then unit else trap("200 in-range unchanged")
+
+@test
+def iw-wrap-u8-overflow() = if (wrap-to(256, false, 8) == 0) and (wrap-to(257, false, 8) == 1) then unit else trap("256→0, 257→1 (mod 256)")
+
+@test
+def iw-wrap-u8-negative-to-max() = if wrap-to(0 - 1, false, 8) == 255 then unit else trap("-1 → UInt8.max 255")
+
+// ---- wrap-to: signed (two's-complement) ----
+
+@test
+def iw-wrap-i8-high-bit-negative() = if wrap-to(200, true, 8) == (0 - 56) then unit else trap("200 → -56 at Int8 (bit 7 set)")
+
+@test
+def iw-wrap-i8-all-ones() = if wrap-to(255, true, 8) == (0 - 1) then unit else trap("255 → -1 at Int8")
+
+@test
+def iw-wrap-i8-min-boundary() = if wrap-to(128, true, 8) == (0 - 128) then unit else trap("128 → Int8.min -128")
+
+@test
+def iw-wrap-i8-in-range-unchanged() = if (wrap-to(127, true, 8) == 127) and (wrap-to(0 - 128, true, 8) == (0 - 128)) then unit else trap("Int8 in-range values unchanged")
+
+// ---- wrap-to: out-of-scope width is identity ----
+
+@test
+def iw-wrap-out-of-scope-identity() = if (wrap-to(12345, true, 64) == 12345) and (wrap-to(7, false, 0) == 7) then unit else trap("out-of-scope width → v unchanged")
+
+// ---- fit ⟹ wrap is a no-op (the cross-property tying the two together) ----
+
+@test
+def iw-fit-implies-wrap-noop() =
+  // If a value FITS, wrapping must leave it unchanged — the invariant an in-range annotation relies on.
+  if (wrap-to(100, false, 8) == 100) and (wrap-to(0 - 50, true, 8) == (0 - 50)) and (wrap-to(1000, false, 16) == 1000)
+  then unit else trap("a value that fits wraps to itself")
+
+export { fits-width, wrap-to, pow2, mod-floor, width-ok }

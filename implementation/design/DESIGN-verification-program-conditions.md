@@ -601,23 +601,23 @@ a type maintains — all discharged by the same HOL kernel, all feeding both ver
 
 ### 10.1 Surface (fork I1, route to operator)
 `@invariant(<predicate over the value>)` on a type/record/sum declaration, in the `@`-family:
-`@invariant(> (len it) 0) (type NonEmptyList …)` / `@invariant(match it ((Percent.Pct v) (and (>= v 0)
-(<= v 100)))) (type Percent (Pct Int64))`. The value is bound to `it` (same result-binder convention as
-`@ensures` — one implicit-subject name across the family, v-syntax's ruling).
+`@invariant(and (>= it 0) (<= it 100)) (type Percent (Pct Int64))` /
+`@invariant(> (List.len it) 0) (type NonEmptyList (Nel (List Int64)))`. The value is bound to `it` (same
+result-binder convention as `@ensures` — one implicit-subject name across the family, v-syntax's ruling).
 
-**`it` BINDS THE WHOLE VALUE, AND THE PREDICATE PREDICATES OVER IT VIA DESTRUCTURE/ACCESSOR — no bare-scalar
-case (ruling + refinement, 2026-07-18).** `it` is the whole value of type `T`, and the predicate must
-typecheck against `T`. Two compiler realities sharpen this into ONE consistent rule (verified against the
-implementation — an earlier `@invariant(and (>= it 0) (<= it 100)) (type Percent Int64)` shorthand was
-MISLEADING): (i) there is NO scalar type-alias grammar — a "newtype" is a SINGLE-VARIANT SUM
-(`(type Percent (Pct Int64))`, an erasable nominal newtype); (ii) the nominal boundary FORBIDS a bare
-`(>= it 0)` when `it : Percent` (CDZ0202 "not comparable across the nominal boundary — unwrap the nominal to
-compare the underlying value"). So an `@invariant` ALWAYS predicates over `it` by DESTRUCTURING (match the
-variant to bind the payload) or an ACCESSOR (`len it`, field access) — never a bare scalar comparison on a
-nominal `it`. This is uniform across newtype/sum/record (one rule), and is exactly why `it = whole value`
-composes: the predicate reaches the underlying data the same way ordinary code does. A `NonEmptyList`
-invariant is `(> (len it) 0)` (accessor); a `Percent` invariant is `(match it ((Percent.Pct v) (and (>= v 0)
-(<= v 100))))` (destructure) — the value is `it` in both, reached through the type's own surface.
+**`it` BINDS THE WHOLE VALUE; a SINGLE-PAYLOAD NEWTYPE AUTO-UNWRAPS so a BARE scalar predicate works (ruling
+2026-07-18).** `it` is the whole value of type `T`. A "newtype" here is a SINGLE-VARIANT, SINGLE-PAYLOAD sum
+(`(type Percent (Pct Int64))`, an erasable nominal newtype — there is no scalar type-alias grammar). A bare
+`(>= it 0)` over such an `it : Percent` would, on its own, hit the nominal boundary (`Percent` is not
+comparable to an `Int64` literal — CDZ0202). So the establish checker (`invariant_establish`) AUTO-UNWRAPS a
+single-payload newtype: it synthesizes `(match it (((. Percent Pct) __u) PRED[it := __u]))`, transparently
+binding the payload and rewriting `it` to it — so the author writes the natural bare `(>= it 0)` (or an
+accessor `(> (List.len it) 0)`, which likewise needs the underlying `(List …)`) and the checker unwraps for
+them; the nominal boundary never bites. This faithfully realizes the "Percent-as-newtype-over-Int64: `it` IS
+the scalar" reading within the nominal-newtype grammar. An author who prefers to destructure `it` explicitly
+(`(match it (((. Percent Pct) v) …))`) may — a self-destructuring predicate is used as-is (NOT auto-unwrapped,
+which would double-destructure). So both forms are valid: bare/accessor (auto-unwrapped) and self-destructure.
+A non-newtype (multi-variant sum, record) uses `it` directly via accessors / its own match (no auto-unwrap).
 
 Fork I1 (naming/placement): `@invariant` on the type decl (my lean — names the concept, fits the family) vs
 a refinement-type surface (`Int64 where (…)`, the 2C option) — the two share the `it` binder so they stay
@@ -636,6 +636,21 @@ machinery:
 This is exactly `@ensures`-on-every-constructor + `@requires`-you-get-free-on-every-consumer, so b4c's
 denotation + b3's discharge machinery apply unchanged; `@invariant` adds the surface + the establish/preserve
 obligation generation, not new kernel machinery.
+
+**UNSATISFIABLE INVARIANT — sound-trap now, prove-and-reject under (A) (breaker/v-property-testing, 2026-07-18).**
+A contradictory `@invariant` — an empty range like `(and (>= it 10) (<= it 5))` that NO value satisfies —
+makes the type UNINHABITABLE. Under the (D) run-time establish enforcement this is already SOUND, not a hole:
+EVERY construction of such a type traps (the checker returns false for every value), so no invalid value is
+ever built — the type is simply uninhabitable, discovered at the construction boundary. We deliberately do NOT
+add an ad-hoc compile-time unsatisfiability check: detecting unsatisfiability is undecidable in general, and a
+partial numeric-interval check catches only OBVIOUS constant contradictions (missing `(and (> it x) (< it x))`
+and any cross-field/non-constant case) while adding an interval-analysis dependency the run-time trap does not
+need. A REAL "no value satisfies this invariant" diagnostic is a *proven-empty* check — `⊢ ∀v. ¬I(v)` — which
+is exactly the province of the future (A) bounded compile-time kernel interpreter (the same tier that turns an
+unprovable `@ensures` into a CDZ-VERIFY error); it will reject a proven-unsatisfiable `@invariant` at compile
+time when it lands. Until then: the establish trap keeps it sound, and a property test over such a type fails
+honestly (v-property-testing's range recognizer falls to unconstrained gen → every value violates → the
+impossible invariant surfaces). Sound-trap + defer-to-(A) beats a partial ad-hoc compile check.
 
 ### 10.3 Optimization payoff — data-level proof-guided elision
 A held invariant is a proven fact the optimizer consumes, exactly like a proven no-overflow (§3): a

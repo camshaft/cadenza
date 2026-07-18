@@ -1,6 +1,7 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	@ensures on a def with a parameter named it is REJECTED (would silently not enforce — rename the param)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
+pass	@invariant ESTABLISH Part 1: a bare-scalar invariant on a newtype auto-unwraps + type-checks; a satisfying value constructs and is usable
 pass	@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)
 pass	@invariant PRESERVE: an operation returning T discharges the result invariant USING the input invariant as a free gift (design §10.2)
 pass	@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `it` + prelude are in scope)
@@ -2865,6 +2866,7 @@ pass	scaling a quantity by a dimensionless quantity keeps its dimension
 pass	scaling an integer quantity by a bare integer of its own type keeps its dimension
 pass	self-operand division is NOT folded to one — it still traps at zero
 pass	self-operand subtraction and xor are zero, and-or are the operand, on a runtime value
+pass	sequenced memoize helpers with a local let thread the Map-state out-state (the memo-spine shape)
 pass	set equality is independent of the order elements are written
 pass	set union is associative on generated inputs (the order merges are grouped does not matter)
 pass	set union is commutative on generated inputs (a grow-only-set CRDT merge converges)
@@ -3367,6 +3369,7 @@ todo	a 32-bit-float closure crosses the host boundary
 todo	a 32-bit-integer closure crosses the host boundary
 todo	a 64-bit-unsigned closure crosses the host boundary
 todo	a @param accessor splices into a quasiquote and the eval computes with the host value
+todo	a @param of type (Qty Rational unit) desugars to num/den scalars + a guest Qty.of with the unit (#13 B2)
 todo	a @param of type Rational desugars to two scalar num/den accessors the guest recombines (#13)
 todo	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 todo	a BOOL-field Tuple closure ARG, false discriminant

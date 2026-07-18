@@ -37,17 +37,52 @@ struct ParamSite {
     name: StructId,
     /// The declared type occurrence (the outer colon's second child), reused as the op result type.
     ty: StructId,
-    /// The declared type NAME, e.g. `"Int64"` / `"Rational"` — used to pick the boundary shape. A heap
-    /// `Rational` has no host boundary form, so it desugars to two scalar `Int64` num/den accessors that the
-    /// guest recombines with `Rational.of` (v-effects #13); a scalar type generates one op of that type.
-    ty_name: Option<String>,
+    /// How this param's declared type crosses the host boundary — a plain scalar, or a heap Rational-family
+    /// value that has no host boundary form and desugars to a num/den scalar pair (v-effects #13).
+    kind: ParamKind,
+}
+
+/// The host-boundary shape a `@param`'s declared type demands.
+enum ParamKind {
+    /// A scalar (or unit) type — crosses the boundary directly as one `(op <name> (-> Unit <Type>))`.
+    Scalar,
+    /// A heap `Rational` — no host boundary form, so it desugars to two scalar `Int64` num/den accessors the
+    /// guest recombines with `Rational.of` (#13 B1). The use `(Param.<name>)` becomes `(Rational.of
+    /// (Param.<name>-num) (Param.<name>-den))`.
+    Rational,
+    /// A `(Qty Rational <unit>)` — a Rational-MAGNITUDE quantity (a `@param … : Length`). The magnitude
+    /// crosses as the same num/den pair; the guest recombines with `Rational.of` and re-attaches the unit
+    /// GUEST-SIDE via `Qty.of(…, <unit>)` — the unit is a compile-time value erased at the boundary (#13 B2).
+    /// Carries the `<unit>` node from the annotation (the third element of `(Qty Rational <unit>)`).
+    QtyRational { unit: StructId },
 }
 
 impl ParamSite {
-    /// Whether this param's declared type is the heap `Rational` — the num/den desugar target (#13).
-    fn is_rational(&self) -> bool {
-        self.ty_name.as_deref() == Some("Rational")
+    /// Whether this param desugars to a num/den scalar pair (both the bare `Rational` and the `(Qty Rational
+    /// <unit>)` cases share the num/den accessor generation; they differ only in the use-site recombination).
+    fn is_rational_family(&self) -> bool {
+        matches!(
+            self.kind,
+            ParamKind::Rational | ParamKind::QtyRational { .. }
+        )
     }
+}
+
+/// Classify a `@param`'s declared type node into its host-boundary [`ParamKind`]: a bare `Rational`, a `(Qty
+/// Rational <unit>)` (Rational-magnitude quantity — the `Length` shape), or an ordinary scalar. Only an
+/// EXACT `(Qty Rational <unit>)` form is a QtyRational; a `Qty` of a non-Rational magnitude (e.g. `(Qty Int64
+/// …)`) is scalar-inner and rides the ordinary scalar path, so it is left `Scalar` here.
+fn classify_kind(ast: &Arenas, ty: StructId) -> ParamKind {
+    if ast.as_name(ty) == Some("Rational") {
+        return ParamKind::Rational;
+    }
+    // `(Qty <magnitude> <unit>)` — a Rational magnitude is the only heap case that needs the num/den desugar.
+    if let Some([magnitude, unit]) = ast.as_form(ty, "Qty")
+        && ast.as_name(*magnitude) == Some("Rational")
+    {
+        return ParamKind::QtyRational { unit: *unit };
+    }
+    ParamKind::Scalar
 }
 
 /// Scan every well-typed `@param` site and GENERATE the `Param` effect, appending it as a module member.
@@ -67,8 +102,8 @@ pub fn generate(ast: &mut Arenas) {
         if let Some(&[inner, ty]) = ast.as_form(id, ":")
             && let Some(name) = param_annotation_name(ast, inner)
         {
-            let ty_name = ast.as_name(ty).map(str::to_string);
-            sites.push(ParamSite { name, ty, ty_name });
+            let kind = classify_kind(ast, ty);
+            sites.push(ParamSite { name, ty, kind });
         }
     }
 
@@ -203,13 +238,14 @@ fn build_param_effect(ast: &mut Arenas, sites: &[ParamSite]) -> StructId {
     let param_name = push_atom(ast, Leaf::Name("Param".to_string()));
     let mut children = vec![effect_head, param_name];
     for site in sites {
-        if site.is_rational() {
-            // A heap `Rational` has no host boundary form (v-effects #13): declare TWO scalar `Int64`
-            // accessors `<name>-num`/`<name>-den`. The guest recombines them via `Rational.of` — see
+        if site.is_rational_family() {
+            // A heap `Rational` (bare, or the magnitude of a `(Qty Rational <unit>)`) has no host boundary
+            // form (v-effects #13): declare TWO scalar `Int64` accessors `<name>-num`/`<name>-den`. The guest
+            // recombines them via `Rational.of` (and, for a Qty, re-attaches the unit) — see
             // `rewrite_rational_uses`, which rewrote each `(Param.<name>)` use to call this pair.
             let name = ast
                 .as_name(site.name)
-                .expect("a rational param site has a name atom")
+                .expect("a rational-family param site has a name atom")
                 .to_string();
             for suffix in ["-num", "-den"] {
                 let op_name = push_atom(ast, Leaf::Name(format!("{name}{suffix}")));
@@ -246,20 +282,29 @@ fn build_arrow(ast: &mut Arenas, ty: StructId) -> StructId {
     push_list(ast, vec![arrow_head, unit_ty, ty])
 }
 
-/// Rewrite every `(Param.<name>)` USE of a heap `Rational` param into `(Rational.of (Param.<name>-num)
-/// (Param.<name>-den))` — the guest-side recombination of the two scalar host accessors the effect declares
-/// (v-effects #13). A `(Param.<name>)` use parses to a nullary call of a member access: `((. Param <name>))`
-/// — an outer `List` whose sole child is the member-access form `(. Param <name>)`. We overwrite that outer
-/// list in place with the `Rational.of` application so the ordinary compile sees the recombined value. Only
-/// ORIGINAL nodes are scanned (the rewrite runs before the effect is appended), and only the exact rational
-/// param names match, so a scalar `(Param.width)` or any unrelated member access is untouched.
+/// Rewrite every `(Param.<name>)` USE of a rational-family param into its guest-side recombination of the two
+/// scalar num/den host accessors the effect declares (v-effects #13). A bare `Rational` param becomes
+/// `(Rational.of (Param.<name>-num) (Param.<name>-den))`; a `(Qty Rational <unit>)` param wraps that in
+/// `(Qty.of … <unit>)`, re-attaching the unit guest-side (#13 B2). A `(Param.<name>)` use parses to a nullary
+/// call of a member access — `((. Param <name>))`, an outer `List` whose sole child is `(. Param <name>)`. We
+/// overwrite that outer list in place with the recombination so the ordinary compile sees the reconstructed
+/// value. Only ORIGINAL nodes are scanned (the rewrite runs before the effect is appended), and only the
+/// exact rational-family param names match, so a scalar `(Param.width)` or any unrelated access is untouched.
 fn rewrite_rational_uses(ast: &mut Arenas, sites: &[ParamSite]) {
-    let rational_names: Vec<String> = sites
+    // Map each rational-family param NAME to its unit node (`Some` for a `(Qty Rational <unit>)`, `None` for a
+    // bare `Rational`) — the use-site recombination needs the unit to re-attach it via `Qty.of`.
+    let targets: Vec<(String, Option<StructId>)> = sites
         .iter()
-        .filter(|s| s.is_rational())
-        .filter_map(|s| ast.as_name(s.name).map(str::to_string))
+        .filter_map(|s| {
+            let name = ast.as_name(s.name)?.to_string();
+            match s.kind {
+                ParamKind::Rational => Some((name, None)),
+                ParamKind::QtyRational { unit } => Some((name, Some(unit))),
+                ParamKind::Scalar => None,
+            }
+        })
         .collect();
-    if rational_names.is_empty() {
+    if targets.is_empty() {
         return;
     }
 
@@ -267,17 +312,28 @@ fn rewrite_rational_uses(ast: &mut Arenas, sites: &[ParamSite]) {
     for i in 0..original_len {
         let id = StructId(i);
         // Match `(Param.<name>)` = `((. Param <name>))`: an outer list with exactly one child that is the
-        // member-access `(. Param <name>)`. Read the accessed param name; skip unless it is a rational one.
+        // member-access `(. Param <name>)`. Read the accessed param name; skip unless it is rational-family.
         let Some(name) = param_member_use_name(ast, id) else {
             continue;
         };
-        if !rational_names.iter().any(|n| n == &name) {
+        let Some(&(_, unit)) = targets.iter().find(|(n, _)| n == &name) else {
             continue;
-        }
-        // Build `(Rational.of (Param.<name>-num) (Param.<name>-den))` and overwrite the use node in place.
+        };
+        // `(Rational.of (Param.<name>-num) (Param.<name>-den))`, wrapped in `(Qty.of … <unit>)` for a Qty.
         let recombined = build_rational_recombine(ast, &name);
-        ast.structure[id.0 as usize] = ast.get(recombined).clone();
+        let value = match unit {
+            Some(unit) => build_qty_of(ast, recombined, unit),
+            None => recombined,
+        };
+        ast.structure[id.0 as usize] = ast.get(value).clone();
     }
+}
+
+/// Build `(Qty.of <magnitude> <unit>)` = `((. Qty of) <magnitude> <unit>)` — re-attach the unit to a
+/// recombined Rational magnitude guest-side (#13 B2). `unit` is the annotation's unit node, reused in place.
+fn build_qty_of(ast: &mut Arenas, magnitude: StructId, unit: StructId) -> StructId {
+    let of = build_member_access(ast, "Qty", "of");
+    push_list(ast, vec![of, magnitude, unit])
 }
 
 /// If `id` is a `(Param.<name>)` use — the nullary-call `((. Param <name>))` shape — the accessed param NAME.

@@ -67,16 +67,16 @@ fn is_s1_scalar(t: &crate::ty::Ty) -> bool {
     )
 }
 
-/// Whether a closure ARG type is OK for the host-closure FACTORY slice (S1 scalar OR S2 compound). S2
-/// widens the accepted ARGS to the COMPOUND shapes the gate harness's `rust_call_arg` rebuilds structurally
-/// over S2-OK elements: a TUPLE (`both(caps)((3, 4))` — the closure reads the native `(i64, i64)`) or a
-/// LIST (`…(vec![…])`). A Float/String/Bytes leaf, an Option/Result/user-sum arg (harness enum-rebuild +
-/// the closure's match over it are a later sub-slice), or any deeper shape stays DEFERRED — the factory
-/// still emits a valid `Rc<dyn Fn>`, so those cases stay a clean `todo`, not a wrong-value/non-build fail.
+/// Whether a closure ARG type is OK for the host-closure FACTORY slice: a scalar (Int/Bool/Float — the
+/// harness passes each as a literal), or a COMPOUND the harness's `rust_call_arg` rebuilds structurally over
+/// OK elements: a TUPLE (`both(caps)((3, 4))` — the closure reads the native `(i64, i64)`), a LIST
+/// (`…(vec![…])`), or Option/Result (the well-known 2-variant sums, `(Some v)`→`Some(v)` etc.). A
+/// String/Bytes ARG (the harness rebuilds a String literal but the closure-side ABI differs) or a USER sum
+/// arg stays DEFERRED — the factory still emits a valid `Rc<dyn Fn>`, so those cases stay a clean `todo`.
 fn s2_arg_ok(t: &crate::ty::Ty) -> bool {
     use crate::ty::Ty;
     match t.strip_nominal() {
-        Ty::Int(_) | Ty::Bool => true,
+        Ty::Int(_) | Ty::Bool | Ty::Float(_) => true,
         Ty::Tuple(elems) => elems.iter().all(s2_arg_ok),
         Ty::List(elem) => s2_arg_ok(elem),
         // Option/Result (the WELL-KNOWN 2-variant sums the harness rebuilds — `(Some v)`→`Some(v)`,
@@ -99,7 +99,7 @@ fn s2_arg_ok(t: &crate::ty::Ty) -> bool {
 fn s3_result_ok(t: &crate::ty::Ty) -> bool {
     use crate::ty::Ty;
     match t.strip_nominal() {
-        Ty::Int(_) | Ty::Bool => true,
+        Ty::Int(_) | Ty::Bool | Ty::Float(_) => true,
         // A String/Bytes RESULT crosses the host boundary AS `list<u8>` — the gate harness renders a factory
         // String/Bytes result as the byte-int list `(104 105)` (`cdz_render_bytes_list`), the observable form
         // the wasm `call` method produces (it copies the handle into linear memory + returns list<u8>). NOT
