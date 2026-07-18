@@ -661,6 +661,41 @@ fn a_false_property_fails_with_a_shrunk_counterexample_and_a_seed() {
     );
 }
 
+/// When a property's BODY TRAPS (rather than returning false), the FAIL message names WHY — it surfaces the
+/// trap reason ("body trapped: …") so an author can tell a trapped body apart from a genuinely false
+/// property. The load-bearing case (breaker 2026-07-18): a mathematically-TRUE property over full-domain
+/// `Int64` whose unguarded `+` OVERFLOWS on two large samples reports an integer-overflow trap, NOT a
+/// commutativity failure. Before this, a trapping body reported a bare `FAIL name` with no reason (the
+/// runner recovered a message only from a `Test.fail` host op; a raw trap's reason was discarded). No store
+/// needed — the trap fires in scalar arithmetic before any heap value.
+#[test]
+fn a_property_whose_body_traps_reports_the_trap_reason_not_a_bare_fail() {
+    let d = dir("proptest-body-trap");
+    // Commutativity is always true, but a full-domain Int64 generator samples large values whose SUM
+    // overflows Int64 — the checked `+` traps before `==`. The FAIL must name the overflow, not imply the
+    // property is false. (No @requires bound here on purpose — that is exactly the overflow-prone shape.)
+    let src = "@test def add_commutes(a: Int64, b: Int64) = if a + b == b + a then unit else trap(\"noncomm\")\n\
+               @test def anchor() = if 1 == 1 then unit else trap(\"a\")\n";
+    let f = write(&d, "m.cdz", src);
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        !ok,
+        "the overflow-trapping property fails the run: {stdout}{stderr}"
+    );
+    // The FAIL names the trap reason (an integer overflow), distinguishing a trapped body from a false property.
+    assert!(
+        stdout.contains("FAIL add_commutes")
+            && stdout.contains("body trapped")
+            && stdout.contains("overflow"),
+        "a trapping property body reports the trap reason (overflow), not a bare FAIL: {stdout}"
+    );
+    // The sibling still runs (a trapping property is per-test, not a file abort).
+    assert!(
+        stdout.contains("PASS anchor"),
+        "a sibling test runs despite the trapping property: {stdout}"
+    );
+}
+
 #[test]
 fn a_non_fail_string_op_before_the_failure_is_not_reported_as_the_assertion_message() {
     // REGRESSION (Copilot PR #481): the runner reads the failure message from the OBSERVED host-op list,

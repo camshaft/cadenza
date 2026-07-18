@@ -86,6 +86,13 @@ a branch rather than by a trap.
 Encoding a string to its UTF-8 byte sequence MUST be the inverse of decoding a well-formed byte sequence,
 so that a string decoded from bytes and re-encoded yields those same bytes.
 
+Decoding a byte sequence to a string preserves the exact scalar sequence the bytes encode and does not
+re-normalize it; a string literal is normalized where the source is read, but a byte-sequence decode is a
+faithful decode, so a caller that needs the decoded string in the canonical normal form is responsible for
+normalizing it. (This is a deliberate current limitation: the decode does not carry the Unicode composition
+tables that normalization requires. As a consequence, decoding bytes that are not already in the canonical
+normal form yields a string that need not compare equal to a normalized literal of the same text.)
+
 ## Collections
 
 ### A Collection's Homogeneity Violation Is A Malformed Collection

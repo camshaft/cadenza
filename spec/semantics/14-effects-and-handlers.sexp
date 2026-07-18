@@ -255,6 +255,21 @@
                 (worker "done" (secs 3)))) (export main)))
   (output (: "done" String)))
 
+(case "a ctl-style arm whose continuation ESCAPES to another function reifies it as a closure and applies it there"
+  (doc    "E5 step-3: a general `ctl`-style arm may let its continuation `k` ESCAPE — pass it to another
+           function that applies it — not just apply it lexically in place. `(f () s k (use-k k))` hands `k`
+           to `use-k`, which applies `(stored-k 10)`. Over the pure delimited continuation `C = (+ 1 □)`, the
+           reified `k` is the closure `(fn (kv) (+ 1 kv))`; `use-k` applies it to 10 → (+ 1 10) = 11.
+           Witnesses that a reified continuation over a pure continuation is a first-class value (an ordinary
+           closure) that can cross a function boundary and be resumed there — the escaping-continuation
+           capability a scheduler builds on. (A continuation that itself re-performs the handled effect is a
+           further increment — it must re-enter its handler at apply.)")
+  (input  (do
+            (effect A (op f (-> Unit Int64)))
+            (def (use-k (: stored-k (-> Int64 Int64))) (stored-k 10))
+            (def (main) (handle A 0 ((f () s k (use-k k))) (+ 1 (A.f)))) (export main)))
+  (output (: 11 Int64)))
+
 (case "a ctl-style arm applying its continuation inside a match scrutinee resolves and folds"
   (doc    "The continuation binder `k` of a `ctl`-style arm must be in scope everywhere in the arm body,
            including inside a MATCH scrutinee. `(flip () s k (match (k 10) (z (* z 2))))` applies `k`

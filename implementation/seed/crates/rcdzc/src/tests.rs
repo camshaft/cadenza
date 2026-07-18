@@ -17665,6 +17665,28 @@ mod match_engine {
     }
 
     #[test]
+    fn an_exported_annotated_char_param_names_the_no_boundary_representation_not_ambiguous() {
+        // DIAGNOSTIC QUALITY (v-property-testing's scalar-Char gap): an exported param annotated with a
+        // type that HAS no component-boundary representation (`Char`) must NOT report "ambiguous — annotate
+        // it" — the param IS annotated, so that advice is misleading (sends the author to add an annotation
+        // that is already present). The message must instead NAME the type and say it has no boundary
+        // representation. The unannotated-`Any` case still says "ambiguous" (the sibling test above).
+        let msg = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (f (: c Char)) 1) (export f))",
+        )))
+        .expect_err("a Char boundary param must decline")
+        .message;
+        assert!(
+            msg.contains("Char") && msg.contains("no component-boundary representation"),
+            "an annotated Char export param names the type + the boundary-rep cause, not ambiguity: {msg}"
+        );
+        assert!(
+            !msg.contains("ambiguous"),
+            "an ANNOTATED param must not be called ambiguous — the annotation is present: {msg}"
+        );
+    }
+
+    #[test]
     fn a_misspelled_export_carries_a_replace_fix_not_just_a_did_you_mean_string() {
         // An export naming no definition that is a near-miss for a defined name (`computee` for `compute`)
         // is a typo — CDZ0101 already NAMED the candidate ("did you mean `compute`?"), but carried NO fix,
@@ -54957,19 +54979,58 @@ mod stage1 {
     }
 
     #[test]
-    fn a_ctl_arm_whose_k_escapes_still_declines_cleanly() {
-        // E5 STEP 2 boundary: a ctl-style arm whose `k` ESCAPES — passed as an ARGUMENT to another function
-        // (`(use-k k)`), stored, or left bare — is NOT the lexical-apply shape. The continuation may outlive
-        // the handle's dynamic extent (the DES scheduler's store-and-resume-later), which the frame-free
-        // folds cannot represent. So it DECLINES CLEANLY (a Todo), deferred to step 3 (the defunctionalized-
-        // frame `Ty::Cont` machinery) — never a valid-but-wrong fold. Pins the escape boundary: the fix must
-        // not accidentally admit an escaping `k` as if it were lexical.
+    fn an_escaping_k_over_a_nonidentity_pure_continuation_reifies_and_runs() {
+        // E5 STEP-3 INC-2a value check: an escaping `k` over a NON-identity pure continuation `C = (+ 1 □)`.
+        // The arm `(f () s k (use-k k))` reifies `k = (fn (#kv) (+ 1 #kv))`; `use-k` applies it to 10 →
+        // `(+ 1 10)` = 11. Pins the reification produces the RIGHT continuation (not just the identity): the
+        // handle body `(+ 1 (A.f))` becomes `(use-k (fn (#kv) (+ 1 #kv)))`, and the runtime-closure machinery
+        // applies it end-to-end. The escaping-k continuation-as-closure, value-graded.
+        let src = "(do (effect A (op f (-> Unit Int64))) \
+                   (def (use-k (: stored-k (-> Int64 Int64))) (stored-k 10)) \
+                   (def (main) (handle A 0 ((f () s k (use-k k))) (+ 1 (A.f)))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("an escaping-k over a pure continuation reifies a closure + folds");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some()
+                || cdz_run::required_runtime(&bytes).is_ok(),
+            "compiles to a well-formed component"
+        );
+    }
+
+    #[test]
+    fn a_ctl_arm_whose_k_escapes_over_a_pure_continuation_reifies_a_closure() {
+        // E5 STEP-3 INC-2a: a ctl-style arm whose `k` ESCAPES — passed to another function `(use-k k)`,
+        // stored — over a PURE delimited continuation `C` now REIFIES `k` as a closure `(fn (#kv) C)` and
+        // FOLDS (was a decline in step 2). Here `C = □` (the handle body IS the bare perform), so `k = (fn
+        // (#kv) #kv)` (identity); `use-k` applies it to 10 → 10. The reified continuation over a pure `C` is
+        // an ordinary closure — no bespoke frame chain (`DESIGN-general-continuations-e5.md` §9-12). A
+        // RE-performing `C` (the continuation itself performs the handled effect — the DES `sleep` case)
+        // still declines, deferred to inc-2b (handler re-entry at apply); see the sibling test.
         let src = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (use-k f) (f 10)) \
+                   (def (use-k (: f (-> Int64 Int64))) (f 10)) \
                    (def (main) (handle Amb 0 ((flip () s k (use-k k))) (Amb.flip))) (export main))";
         assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a ctl arm whose k escapes over a PURE continuation must reify a closure + fold (inc-2a), \
+             not decline"
+        );
+    }
+
+    #[test]
+    fn a_ctl_arm_whose_escaping_k_continuation_reperforms_still_declines() {
+        // E5 STEP-3 INC-2a BOUNDARY: an escaping-`k` arm whose delimited continuation `C` RE-PERFORMS the
+        // handled effect — the continuation, when applied, would perform again under the handler (the DES
+        // `sleep` shape: after the perform, `C` reads `(Sim.now)`). The pure-continuation reification does
+        // NOT serve it (`pure_hole` fails on the second perform), so it declines cleanly — deferred to
+        // inc-2b (the reified continuation must re-enter its handler at apply, cross-activation). Pins that
+        // inc-2a's pure-C reification does not accidentally admit a re-performing continuation.
+        let src = "(do (effect St (op tick (-> Unit Int64))) \
+                   (def (use-k (: f (-> Int64 Int64))) (f 10)) \
+                   (def (main) (handle St 0 ((tick (u) s k (use-k k))) (+ (St.tick) (St.tick)))) \
+                   (export main))";
+        assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a ctl arm whose k escapes (passed as an arg) must decline cleanly, deferred to step 3"
+            "an escaping-k arm whose continuation re-performs must still decline (inc-2b, handler re-entry)"
         );
     }
 

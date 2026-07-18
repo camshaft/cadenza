@@ -41,3 +41,11 @@ declined on trunk) rather than a wasm-vs-rust divergence — minor characterizat
 saw rust compile a source), doesn't change the outcome: fixed + computes on both now. (Compound
 list/tuple/sum ordering = slice 2, still declines; list has no blessed order → STAYS declined per @329271b89.)
 Retire on land.
+
+---
+LANDED + CONTENT-VERIFIED (corpus-bugfix 2026-07-18, trunk c566d2827): Core::StrCmp landed (b975f1090,
+across core.rs/compile.rs/both backends/layout/lower). GENUINELY-RUNTIME verify (--arg operands, non-foldable):
+(def (run (: a Int64) (: b Int64)) (if (< (mk a) (mk b)) 1 0)) with mk=Symbol.of -> wasm run(-1,1)=1
+(alpha<beta), run(1,-1)=0 — computes both directions on wasm now. Slice 1 (Symbol/String leaf ordering,
+hash-neutral bytes-lex-compare) done. Slice 2 (compound list/tuple/sum ordering) stays declined for list
+(no blessed order) / pending for tuple/sum. Fully resolved for the Symbol/String face.

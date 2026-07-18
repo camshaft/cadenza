@@ -1313,14 +1313,33 @@ fn export_params(db: &mut Db, def: usize, name: &str) -> Result<Vec<(StructId, T
             None => p,
         };
         let ty = type_of(db, binder);
-        // A parameter must have a machine representation to cross the boundary. `Any` (an unannotated
-        // param whose type nothing fixed) has none — decline, pointing at the annotation it needs.
+        // A parameter must have a machine representation to cross the boundary. Two DISTINCT causes need
+        // DIFFERENT advice (the message must be actionable — `diagnostics.md` rustc-gold):
+        //   - AMBIGUOUS: the type is `Any` (or still carries a free var) because nothing fixed it — an
+        //     UNANNOTATED param. The fix is to ANNOTATE it (the backend must not invent a width the program
+        //     did not write; `numeric-model.md` no implicit width).
+        //   - NO BOUNDARY REPRESENTATION: the type is DETERMINED (annotated, ground) but is a type that
+        //     simply cannot cross the component boundary — a `Char`, a bare arrow, an internal-only width.
+        //     Annotating does NOT help (it is already annotated); the message must NAME the type and say it
+        //     has no boundary representation, not "ambiguous — annotate it" (which sends the author to add
+        //     an annotation that is already present). The scalar-`Char` export gap (v-property-testing).
         if crate::backend::wasm::lir::valtype_of(&ty).is_none() {
-            trace!(target: "rcdzc::layout", %name, binder = binder.0, ty = %ty.render_name(), "decline: exported parameter type is ambiguous (needs annotation)");
-            return Err(Reject::decline(format!(
-                "export `{name}`: parameter type is ambiguous — annotate it, e.g. `(: p Int64)`"
-            ))
-            .at(binder));
+            let ambiguous = matches!(ty, Ty::Any) || crate::infer::ty_has_free_var(db, &ty);
+            trace!(target: "rcdzc::layout", %name, binder = binder.0, ty = %ty.render_name(), ambiguous, "decline: exported parameter has no boundary machine type");
+            let msg = if ambiguous {
+                format!(
+                    "export `{name}`: parameter type is ambiguous — annotate it, e.g. `(: p Int64)`"
+                )
+            } else {
+                format!(
+                    "export `{name}`: parameter type `{}` has no component-boundary representation — \
+                     only the aliased integer widths, `Bool`, and `Float` cross the boundary; it is \
+                     already annotated, so an annotation cannot fix this (use a boundary-representable \
+                     parameter type)",
+                    ty.render_name()
+                )
+            };
+            return Err(Reject::decline(msg).at(binder));
         }
         out.push((binder, ty));
     }
