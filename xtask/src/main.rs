@@ -3173,6 +3173,7 @@ fn check(paths: &Paths, profile: &str) {
         "implementation/compiler-ml",
         "implementation/agent-harness",
         "implementation/iterators",
+        "implementation/choreography",
     ] {
         let name = format!("cdz-test {suite}");
         let cmd = format!("{cdz} test {suite}");

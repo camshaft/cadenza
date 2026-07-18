@@ -1468,6 +1468,32 @@ fn a_range_requires_constrains_generation_to_the_window() {
     );
 }
 
+/// The scalar `@requires` recognizer distills the MIRRORED comparison spelling (`lit OP param`, e.g.
+/// `0 <= x` / `50 >= x`) as well as the direct `param OP lit` form — `apply_cmp` flips the operator for the
+/// mirrored case. `@requires(0 <= x and 50 >= x)` must constrain generation to `[0, 50]` so a body trapping
+/// outside that window never fires. Pins the mirrored branch end-to-end (the other tests use the direct
+/// spelling only); no store needed (scalar Int param, no heap value).
+#[test]
+fn a_mirrored_spelling_requires_constrains_generation_to_the_window() {
+    let d = dir("requires-mirrored");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(0 <= x and 50 >= x)\n\
+         @test def inwindow(x: Int64) = if x >= 0 and x <= 50 then unit else trap(\"out of the required window\")\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok,
+        "a mirrored-spelling @requires constrains generation to [0,50] so the window property passes: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS inwindow (100 trials)"),
+        "the mirrored-@requires property passes all trials — generation stayed within [0,50]: {stdout}"
+    );
+}
+
 #[test]
 fn cdz_test_on_a_compiled_wasm_gives_an_actionable_diagnostic_not_zero_tests_found() {
     // `cdz test foo.wasm` (a COMPILED component passed by mistake) must NOT surface the misleading

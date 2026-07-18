@@ -572,10 +572,43 @@ try {
     });
     return ok;
   };
+  // RESULT-TYPE guard: compiling a cell catches "won't compile", but NOT "compiles to the wrong VALUE" — the
+  // exact class the operator hit (a formula cell doing Int64/Int64 integer division, 3/4 → 0, instead of an
+  // exact Rational; both compile). So for a cell that signals an exact-fraction intent (`Rational.of`), assert
+  // its solved result type is `Rational` via export_types — so `Rational.of` silently ceasing to be Rational
+  // (a prelude/inference change) fails here. Targeted (only cells using Rational.of), no false positives on
+  // scalar/quantity cells. ⚠ SCOPE: this pins the Rational.of MECHANISM stays Rational; it does NOT catch a
+  // full re-edit back to bare `(/ num den)` (that removes the marker) — the author owns the choice of op, and
+  // examples.test's per-example assertions + this type-pin together guard the shipped exact-fraction intent.
+  const assertCellType = (md, label) => {
+    const cells = parseDocument(md);
+    const widgets = cells
+      .filter((c) => c.kind === "code" && c.directive.kind === "widget")
+      .flatMap((c) => parseWidgets(c.source).widgets);
+    cells.forEach((c, i) => {
+      if (c.kind !== "code" || c.directive.kind === "widget") return;
+      if (!/\bRational\.of\b/.test(c.source)) return; // only cells asserting an exact-fraction intent
+      const { buffer } = assembleForRun(cells, i, widgets, {}, "sexpr");
+      let types;
+      try {
+        types = export_types(`${buffer}\n(export main)`, "sexpr");
+      } catch {
+        return; // a compile decline is already reported by compileCells; don't double-count
+      }
+      const mainType = (types.split("\n").find((l) => l.startsWith("main\t")) ?? "").split("\t")[1] ?? "";
+      if (mainType !== "Rational") {
+        failures.push(
+          `src/notebook/examples.ts [notebook] (${label} cell ${i}): a Rational.of cell must yield Rational (exact fraction), got \`${mainType}\` — integer division (Int64/Int64) regressed?`,
+        );
+      }
+    });
+  };
   const render = async (t, f, to) => render_syntax(t, f, to);
   for (const ex of NOTEBOOK) {
     // 1) Authored (s-expr) cells must compile.
     notebookPass += compileCells(ex.markdown, ex.slug);
+    // 1b) RESULT-TYPE: a Rational.of cell must actually be Rational-typed (guards the operator's int-division bug).
+    assertCellType(ex.markdown, ex.slug);
     // 2) SURFACE ROUND-TRIP: the reader can toggle ML↔s-expr, which re-renders the doc through
     // `renderDocToSurface`. A regression in that helper or `render_syntax` (e.g. dropping a `main`, mangling a
     // multi-form `(do …)`, mis-handling list/tuple heads — all bugs this arc hit) would break the toggled doc

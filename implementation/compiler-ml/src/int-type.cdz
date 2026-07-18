@@ -25,19 +25,49 @@ type IntTy =
   | IntKind(Bool, Int64)
   | NotInt
 
-/// Recognize an integer type NAME as its `(signed, width)`. Signed `Int8/16/32/64`, unsigned
-/// `UInt8/16/32/64`; anything else is `NotInt`. This is the total name→type lookup an annotation parser
-/// calls on the type-name atom.
-def recognize(name: String) =
-  if name == "Int8" then IntTy.IntKind(true, 8)
-  else (if name == "Int16" then IntTy.IntKind(true, 16)
-  else (if name == "Int32" then IntTy.IntKind(true, 32)
-  else (if name == "Int64" then IntTy.IntKind(true, 64)
-  else (if name == "UInt8" then IntTy.IntKind(false, 8)
-  else (if name == "UInt16" then IntTy.IntKind(false, 16)
-  else (if name == "UInt32" then IntTy.IntKind(false, 32)
-  else (if name == "UInt64" then IntTy.IntKind(false, 64)
-  else IntTy.NotInt)))))))
+/// Recognize an integer type NAME as its `(signed, width)`. STRUCTURAL, not a name-lookup: split the name
+/// into a SIGN PREFIX (`UInt` → unsigned, `Int` → signed) and a WIDTH SUFFIX (the digits after the prefix),
+/// then `match` the suffix to a standard width. This dispatches on the name's STRUCTURE (`UInt<N>`/`Int<N>`
+/// à la rcdzc) — never an `if name == "Int8"` full-name compare — so it SCALES to the width set uniformly
+/// (one arm per width, not per name×sign) and generalizes cleanly to arbitrary `Int<N>` later. A name whose
+/// prefix isn't `Int`/`UInt`, or whose suffix isn't a standard width, is `NotInt`.
+def recognize(name: String) = match split-sign(name) with
+  | Option.Some((signed, suffix)) => width-of(signed, suffix)
+  | Option.None(_) => IntTy.NotInt
+
+/// Split an integer type name into `(signed, width-suffix)` by its SIGN PREFIX: `UInt…` → unsigned + the
+/// text after `UInt`; else `Int…` → signed + the text after `Int`; a name with neither prefix → `None`.
+/// (Checks `UInt` first: `UInt8` also starts with the shorter... no — `UInt` doesn't start with `Int`, but
+/// testing the longer/unsigned prefix first keeps the two disjoint and explicit.)
+def split-sign(name: String) = match after-prefix(name, "UInt") with
+  | Option.Some(suffix) => Option.Some((false, suffix))
+  | Option.None(_) => (match after-prefix(name, "Int") with
+      | Option.Some(suffix) => Option.Some((true, suffix))
+      | Option.None(_) => Option.None(unit))
+
+/// The text of `name` AFTER a literal `prefix`, or `None` if `name` doesn't start with `prefix`. Structural
+/// (slice + compare the prefix region), so callers dispatch on the SHAPE of the name, not the whole string.
+def after-prefix(name: String, prefix: String) =
+  // byte-len (NOT scalar-len): `name` is a RUNTIME string (the type-name atom the reader scanned), and
+  // scalar-len needs a UTF-8 decode walk not built for runtime strings — sread walks runtime strings by
+  // byte-len for the same reason. Type names are ASCII, so byte-len == scalar-len here.
+  (let p = String.byte-len(prefix) in
+   (match String.slice(name, 0, p) with
+     | Option.Some(head) => (if head == prefix
+         then (match String.slice(name, p, String.byte-len(name)) with
+                | Option.Some(rest) => Option.Some(rest)
+                | Option.None(_) => Option.Some(""))            // prefix IS the whole name → empty suffix
+         else Option.None(unit))
+     | Option.None(_) => Option.None(unit)))
+
+/// A `(signed, width-suffix-string)` → the `IntTy` for a STANDARD width, matching the suffix STRUCTURALLY
+/// (one arm per width). A non-standard suffix (`""`, `7`, `128`, junk) is `NotInt`.
+def width-of(signed: Bool, suffix: String) = match suffix with
+  | "8" => IntTy.IntKind(signed, 8)
+  | "16" => IntTy.IntKind(signed, 16)
+  | "32" => IntTy.IntKind(signed, 32)
+  | "64" => IntTy.IntKind(signed, 64)
+  | _ => IntTy.NotInt
 
 /// Whether `name` is any integer type name (the boolean face of `recognize`, for a parser's quick guard).
 def is-int-type(name: String) = match recognize(name) with | IntTy.IntKind(_, _) => true | IntTy.NotInt => false
@@ -88,6 +118,28 @@ def it-bare-int-not-int() = match recognize("Int") with | IntTy.NotInt => unit |
 
 @test
 def it-unknown-width-not-int() = match recognize("Int7") with | IntTy.NotInt => unit | IntTy.IntKind(_, _) => trap("Int7 is not a standard width")
+
+// ---- structural-decompose edge cases (the `if name==` → prefix+suffix rewrite) ----
+
+@test
+def it-bare-uint-not-int() = match recognize("UInt") with | IntTy.NotInt => unit | IntTy.IntKind(_, _) => trap("bare `UInt` (no width) is NOT a fixed-width int type")
+
+@test
+def it-nonstandard-wide-not-int() = match recognize("Int128") with | IntTy.NotInt => unit | IntTy.IntKind(_, _) => trap("Int128 is not a standard width here (only 8/16/32/64)")
+
+@test
+def it-prefix-only-lookalike-not-int() =
+  // a name that merely CONTAINS a digit run but isn't Int/UInt-prefixed → NotInt (structural prefix check).
+  match recognize("Float32") with | IntTy.NotInt => unit | IntTy.IntKind(_, _) => trap("Float32 is not an integer type")
+
+@test
+def it-uint-not-misread-as-int() =
+  // `UInt8` must be UNSIGNED — the UInt prefix is tried first, so it isn't misread as `Int`-prefix + `8`
+  // via the shorter `Int` (which `UInt8` does NOT start with anyway). Pins the sign-prefix disjointness.
+  match recognize("UInt8") with | IntTy.IntKind(s, w) => (if (if s then false else true) and (w == 8) then unit else trap("UInt8 unsigned 8")) | IntTy.NotInt => trap("UInt8 is an int type")
+
+@test
+def it-uint16-structural() = match recognize("UInt16") with | IntTy.IntKind(s, w) => (if (if s then false else true) and (w == 16) then unit else trap("UInt16 = (unsigned, 16)")) | IntTy.NotInt => trap("UInt16 is an int type")
 
 // ---- accessor / guard faces ----
 

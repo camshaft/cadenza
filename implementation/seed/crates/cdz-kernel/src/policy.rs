@@ -49,6 +49,78 @@ pub fn latest_policy(events: &[crate::Event]) -> Option<String> {
         .and_then(|e| String::from_utf8(e.payload.clone()).ok())
 }
 
+/// The event `kind` for an operator's capability GRANT (the can't-brick escape hatch: an agent's denied op
+/// files an `authz-request`; the operator answers with a grant). Payload: the FIRST line is the absolute
+/// EXPIRY in ms since the Unix epoch (empty = no expiry), the REST is a narrow Cedar `permit` doc. The grant's
+/// own `seq` is its identity — an [`AUTHZ_REVOKE`] references it. Grants ADD to the base [`POLICY`] (they widen
+/// only within what the operator explicitly grants; they can't be self-issued — an operator writes them).
+pub const AUTHZ_GRANT: &str = "authz-grant";
+
+/// The event `kind` for an operator's REVOKE of a prior grant — payload is the granted event's `seq` (decimal
+/// text). [`effective_policy`] drops a grant whose seq has been revoked (operators can pull authorization
+/// later, per the operator model).
+pub const AUTHZ_REVOKE: &str = "authz-revoke";
+
+/// Append an operator capability GRANT: a narrow Cedar `permit` doc with an optional absolute `expiry_ms`
+/// (ms since epoch; `None` = never expires). Encoded as `expiry_line\n<permit>` — the first line is the expiry
+/// (empty for none). Returns the grant's `seq` (its identity for a later [`revoke`]). This is the operator's
+/// answer to an `authz-request`; grants ADD to the base policy but only what the operator writes.
+pub fn append_grant(log: &mut impl Log, permit: &str, expiry_ms: Option<u64>) -> Result<Seq> {
+    let expiry_line = expiry_ms.map(|e| e.to_string()).unwrap_or_default();
+    let payload = format!("{expiry_line}\n{permit}");
+    log.append(AUTHZ_GRANT, payload.as_bytes())
+}
+
+/// Append a REVOKE of the grant at `grant_seq` — the operator pulls a prior authorization. [`effective_policy`]
+/// thereafter excludes that grant.
+pub fn append_revoke(log: &mut impl Log, grant_seq: Seq) -> Result<Seq> {
+    log.append(AUTHZ_REVOKE, grant_seq.to_string().as_bytes())
+}
+
+/// Parse an [`AUTHZ_GRANT`] payload into `(expiry_ms, permit)`: the first line is the expiry (empty → `None`),
+/// the rest is the Cedar permit. A malformed expiry line → `None` (fail-safe: treat as no expiry rather than
+/// erroring, since the operator wrote it; the permit still gates).
+fn parse_grant(payload: &[u8]) -> Option<(Option<u64>, String)> {
+    let text = String::from_utf8(payload.to_vec()).ok()?;
+    let (first, rest) = text.split_once('\n')?;
+    let expiry = first.trim().parse::<u64>().ok();
+    Some((expiry, rest.to_string()))
+}
+
+/// The EFFECTIVE capability policy at invocation time `now_ms`: the base [`latest_policy`] doc PLUS every
+/// active [`AUTHZ_GRANT`]'s permit — where "active" = NOT revoked (no later [`AUTHZ_REVOKE`] names its seq) AND
+/// NOT expired ([`crate::clock::is_expired`]`(expiry, now_ms)` is false). Grants are concatenated after the base
+/// (Cedar unions permits: any matching permit allows, deny-by-default otherwise). This is what
+/// [`crate::daemon::tick_hosted_log_policy`] evaluates — the operator's request→grant→revoke lifecycle applied
+/// per invocation, with wall-clock expiry honored (time is passed in as `now_ms`, so the fold stays pure).
+/// Empty string if no base policy and no active grants → Cedar deny-by-default (zero capabilities).
+pub fn effective_policy(events: &[crate::Event], now_ms: u64) -> String {
+    // Which grant seqs have been revoked.
+    let revoked: std::collections::HashSet<crate::Seq> = events
+        .iter()
+        .filter(|e| e.kind == AUTHZ_REVOKE)
+        .filter_map(|e| String::from_utf8(e.payload.clone()).ok())
+        .filter_map(|s| s.trim().parse::<crate::Seq>().ok())
+        .collect();
+
+    let mut doc = latest_policy(events).unwrap_or_default();
+    for e in events.iter().filter(|e| e.kind == AUTHZ_GRANT) {
+        if revoked.contains(&e.seq) {
+            continue; // operator pulled this grant
+        }
+        if let Some((expiry, permit)) = parse_grant(&e.payload) {
+            if crate::clock::is_expired(expiry, now_ms) {
+                continue; // time-boxed grant has lapsed
+            }
+            if !doc.is_empty() {
+                doc.push('\n');
+            }
+            doc.push_str(&permit);
+        }
+    }
+    doc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +180,79 @@ mod tests {
             "the LATEST policy event is the effective one (newer supersedes)"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn effective_policy_unions_base_with_active_grants() {
+        // The authz lifecycle applied per invocation: effective_policy = base policy ∪ active grants. A base
+        // policy permitting prim:append + a grant permitting prim:exec → both permits present. now_ms=0.
+        let (path, mut log) = temp_log();
+        append_policy(
+            &mut log,
+            r#"permit(principal, action == Action::"prim:append", resource);"#,
+        )
+        .unwrap();
+        append_grant(
+            &mut log,
+            r#"permit(principal, action == Action::"prim:exec", resource);"#,
+            None,
+        )
+        .unwrap();
+        let eff = effective_policy(&log.tail(0).unwrap(), 0);
+        assert!(
+            eff.contains("prim:append"),
+            "base policy permit present: {eff}"
+        );
+        assert!(
+            eff.contains("prim:exec"),
+            "active grant permit unioned in: {eff}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn effective_policy_drops_revoked_and_expired_grants() {
+        // A revoked grant + an expired grant are both excluded; a live grant stays.
+        let (path, mut log) = temp_log();
+        append_policy(&mut log, "// base\n").unwrap();
+        // grant A (seq 1) — will be REVOKED.
+        let a = append_grant(
+            &mut log,
+            r#"permit(principal, action == Action::"prim:a", resource);"#,
+            None,
+        )
+        .unwrap();
+        // grant B (seq 2) — EXPIRES at ms 50.
+        append_grant(
+            &mut log,
+            r#"permit(principal, action == Action::"prim:b", resource);"#,
+            Some(50),
+        )
+        .unwrap();
+        // grant C (seq 3) — live (expires at ms 1000).
+        append_grant(
+            &mut log,
+            r#"permit(principal, action == Action::"prim:c", resource);"#,
+            Some(1000),
+        )
+        .unwrap();
+        append_revoke(&mut log, a).unwrap(); // revoke A
+
+        // now_ms = 100: A revoked, B expired (50 <= 100), C live (1000 > 100).
+        let eff = effective_policy(&log.tail(0).unwrap(), 100);
+        assert!(!eff.contains("prim:a"), "revoked grant excluded: {eff}");
+        assert!(!eff.contains("prim:b"), "expired grant excluded: {eff}");
+        assert!(eff.contains("prim:c"), "live grant retained: {eff}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn effective_policy_is_empty_with_no_base_and_no_grants() {
+        // Deny-by-default substrate: nothing granted → empty doc (Cedar denies all).
+        assert_eq!(
+            effective_policy(&[], 0),
+            "",
+            "no base + no grants → empty (deny-by-default)"
+        );
     }
 }

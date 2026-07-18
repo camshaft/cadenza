@@ -1,0 +1,297 @@
+/// chor-run.cdz — Inc 3b of the CHOREOGRAPHIC-PROTOCOLS vertical: EXECUTE the generated per-actor programs
+/// over a MOCK in-memory `Comm` medium, proving the projected value flow end-to-end (design §6 Inc 3, the
+/// "composed, execute the choreography end-to-end … a value provably flows Buyer→Seller … reaches Shipper"
+/// clause).
+///
+/// Inc 3a (`chor-codegen`) turns each role's projected local type into a program `Ast` in terms of `Comm`
+/// ops (`(seq (perform (send to l)) k)`, `(let l (perform (recv from)) k)`, `(ichoice …)`, `(ematch …)`).
+/// This increment gives that program an OPERATIONAL MEANING against a mock transport. `run` interprets an
+/// actor's program with an INBOX (the labels it will receive, in order) and produces a `Trace` = the
+/// DESTINATION-TAGGED messages it SENT (`Msg(to, label)`, in order) plus the inbox it did not consume.
+/// The mock is DESTINATION-AWARE: composing actors is `deliver` — a role's inbox is exactly the labels of
+/// the messages addressed to it (`Msg(role, _)`), so a message meant for Buyer never reaches Shipper. That
+/// makes the three-party Purchase (Buyer→Seller→Buyer + Seller→Shipper) a faithful end-to-end proof, not a
+/// label soup.
+///
+/// SCOPE: the mock is single-pass and choice-resolving but NOT a full concurrent scheduler — `rec`/`var`
+/// loops are out of scope for this pure interp (they need bounded scheduling; a later inc / the
+/// effect-backed `Comm` runtime handles unbounded loops). `ichoice` is deterministic (take the first arm) so
+/// the trace is a pure function of the program; an `ematch` is driven by the actual selection label in the
+/// inbox, so a told role follows the branch the chooser really picked. This keeps Inc 3b a pure fold that
+/// gates as `@test` goldens, matching how `chor-codegen` / `chor-local` gate.
+
+import { Ast } from "ast"
+import { gen-role } from "chor-codegen"
+import { Chor } from "chor"
+
+/// A destination-tagged message on the wire: to-role, label.
+type Msg = M(String, String)
+def msg-to(m: Msg) -> String = match m with | Msg.M(t, _l) => t
+def msg-label(m: Msg) -> String = match m with | Msg.M(_t, l) => l
+
+/// The result of running one actor: the messages it SENT (in order) and the inbox it left unconsumed.
+type Trace = Run(List(Msg), List(String))    // sends, inbox-remaining
+
+def sends-of(t: Trace) -> List(Msg) = match t with | Trace.Run(s, _r) => s
+def inbox-of(t: Trace) -> List(String) = match t with | Trace.Run(_s, r) => r
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// The mock-Comm interpreter over a generated program Ast.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// `(perform (send to l))` → Some(M(to, l)); anything else → None.
+def sent-msg(stmt: Ast) -> Option(Msg) = match stmt with
+  | Ast.List(es) => (match es with
+    | [h, inner] => (match h with
+      | Ast.Name(op) => (if op == "perform" then send-msg(inner) else Option.None(unit))
+      | _ => Option.None(unit))
+    | _ => Option.None(unit))
+  | _ => Option.None(unit)
+
+def send-msg(inner: Ast) -> Option(Msg) = match inner with
+  | Ast.List(es) => (match es with
+    | [h, to, l] => (match h with
+      | Ast.Name(op) => (if op == "send" then
+          (match name-of(to) with
+            | Option.Some(ts) => (match name-of(l) with
+              | Option.Some(ls) => Option.Some(Msg.M(ts, ls))
+              | Option.None(_) => Option.None(unit))
+            | Option.None(_) => Option.None(unit))
+        else Option.None(unit))
+      | _ => Option.None(unit))
+    | _ => Option.None(unit))
+  | _ => Option.None(unit)
+
+def name-of(a: Ast) -> Option(String) = match a with
+  | Ast.Name(n) => Option.Some(n)
+  | _ => Option.None(unit)
+
+/// Interpret an actor program against an `inbox`, accumulating `sends` (kept reversed, flipped at the end).
+def run-acc(p: Ast, inbox: List(String), sends: List(Msg)) -> Trace = match p with
+  | Ast.List(es) => run-form(es, inbox, sends)
+  | _ => done-trace(sends, inbox)
+
+def done-trace(sends: List(Msg), inbox: List(String)) -> Trace = Trace.Run(reverse-msgs(sends, []), inbox)
+
+def run-form(es: List(Ast), inbox: List(String), sends: List(Msg)) -> Trace = match es with
+  | [] => done-trace(sends, inbox)
+  | [h, .. rest] => (match h with
+    | Ast.Name(op) => run-op(op, rest, inbox, sends)
+    | _ => done-trace(sends, inbox))
+
+def run-op(op: String, rest: List(Ast), inbox: List(String), sends: List(Msg)) -> Trace =
+  if op == "done" then done-trace(sends, inbox)
+  else (if op == "seq" then run-seq(rest, inbox, sends)
+  else (if op == "let" then run-let(rest, inbox, sends)
+  else (if op == "ichoice" then run-ichoice(rest, inbox, sends)
+  else (if op == "ematch" then run-ematch(rest, inbox, sends)
+  // rec/var (loops) out of scope for the mock — terminate cleanly with what we have.
+  else done-trace(sends, inbox)))))
+
+/// `(seq stmt k)` — `stmt` is a `(perform (send …))`; record the sent message, continue `k`.
+def run-seq(rest: List(Ast), inbox: List(String), sends: List(Msg)) -> Trace = match rest with
+  | [stmt, k] => (match sent-msg(stmt) with
+    | Option.Some(m) => run-acc(k, inbox, List.concat([m], sends))
+    | Option.None(_) => run-acc(k, inbox, sends))
+  | _ => done-trace(sends, inbox)
+
+/// `(let lbl (perform (recv from)) k)` — consume one label off the inbox (the received value), continue `k`.
+def run-let(rest: List(Ast), inbox: List(String), sends: List(Msg)) -> Trace = match rest with
+  | [_lbl, _rhs, k] => (match inbox with
+    | [_x, .. more] => run-acc(k, more, sends)     // consumed the delivered label
+    | [] => run-acc(k, inbox, sends))              // inbox underflow: nothing to consume, keep going
+  | _ => done-trace(sends, inbox)
+
+/// `(ichoice branch…)` — the chooser: deterministically take the FIRST arm's continuation.
+def run-ichoice(brs: List(Ast), inbox: List(String), sends: List(Msg)) -> Trace = match brs with
+  | [first, .. _rest] => (match branch-cont(first) with
+    | Option.Some(k) => run-acc(k, inbox, sends)
+    | Option.None(_) => done-trace(sends, inbox))
+  | [] => done-trace(sends, inbox)
+
+/// `(ematch from branch…)` — the told role: the head of the inbox is the selection; take the arm whose
+/// label matches it (consuming that selection label), then run its continuation.
+def run-ematch(rest: List(Ast), inbox: List(String), sends: List(Msg)) -> Trace = match rest with
+  | [_from, .. brs] => (match inbox with
+    | [sel, .. more] => (match pick-branch(brs, sel) with
+      | Option.Some(k) => run-acc(k, more, sends)
+      | Option.None(_) => done-trace(sends, more))
+    | [] => done-trace(sends, inbox))
+  | _ => done-trace(sends, inbox)
+
+/// `(branch label cont)` → Some(cont).
+def branch-cont(b: Ast) -> Option(Ast) = match b with
+  | Ast.List(es) => (match es with
+    | [h, _l, k] => (match h with
+      | Ast.Name(op) => (if op == "branch" then Option.Some(k) else Option.None(unit))
+      | _ => Option.None(unit))
+    | _ => Option.None(unit))
+  | _ => Option.None(unit)
+
+/// `(branch label cont)` → Some(label).
+def branch-label(b: Ast) -> Option(String) = match b with
+  | Ast.List(es) => (match es with
+    | [h, l, _k] => (match h with
+      | Ast.Name(op) => (if op == "branch" then name-of(l) else Option.None(unit))
+      | _ => Option.None(unit))
+    | _ => Option.None(unit))
+  | _ => Option.None(unit)
+
+/// Find the branch whose label == `sel`, return its continuation.
+def pick-branch(brs: List(Ast), sel: String) -> Option(Ast) = match brs with
+  | [] => Option.None(unit)
+  | [b, .. rest] => (match branch-label(b) with
+    | Option.Some(l) => (if l == sel then branch-cont(b) else pick-branch(rest, sel))
+    | Option.None(_) => pick-branch(rest, sel))
+
+def reverse-msgs(xs: List(Msg), acc: List(Msg)) -> List(Msg) = match xs with
+  | [] => acc
+  | [h, .. rest] => reverse-msgs(rest, List.concat([h], acc))
+
+/// Run an actor's generated program from an empty send-accumulator.
+def run(p: Ast, inbox: List(String)) -> Trace = run-acc(p, inbox, [])
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// The medium: `deliver(msgs, role)` = the labels of messages addressed to `role`, in order — that role's
+// inbox. This is the whole transport; a real Comm handler routes the same way.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def deliver(msgs: List(Msg), role: String) -> List(String) = match msgs with
+  | [] => []
+  | [m, .. rest] => (if msg-to(m) == role
+    then List.concat([msg-label(m)], deliver(rest, role))
+    else deliver(rest, role))
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// Equalities (goldens).
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def strs-eq(xs: List(String), ys: List(String)) -> Bool = match xs with
+  | [] => (match ys with | [] => true | _ => false)
+  | [x, .. xr] => (match ys with
+    | [] => false
+    | [y, .. yr] => (if x == y then strs-eq(xr, yr) else false))
+
+def msgs-eq(xs: List(Msg), ys: List(Msg)) -> Bool = match xs with
+  | [] => (match ys with | [] => true | _ => false)
+  | [x, .. xr] => (match ys with
+    | [] => false
+    | [y, .. yr] => (if msg-to(x) == msg-to(y)
+      then (if msg-label(x) == msg-label(y) then msgs-eq(xr, yr) else false)
+      else false))
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// Fixtures + tests — the Inc-3b gate: execution over the mock medium.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def yes-no() =
+  Chor.Choice("Buyer", [
+    Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Yes")),
+    Chor.Branch("No", Chor.Comm("Buyer", "Seller", "No"))])
+
+@test
+def run-sender-emits-the-message() =
+  // Buyer's generated program for (Buyer -> Seller : Title) sends exactly [M(Seller,Title)].
+  let g = Chor.Comm("Buyer", "Seller", "Title") in
+  let t = run(gen-role(g, "Buyer"), []) in
+  if msgs-eq(sends-of(t), [Msg.M("Seller", "Title")]) then unit
+  else trap("the sender's generated program puts M(Seller,Title) on the wire")
+
+@test
+def run-receiver-consumes-the-label() =
+  // Seller's generated program, given inbox ["Title"], consumes it (empty inbox, sends nothing).
+  let g = Chor.Comm("Buyer", "Seller", "Title") in
+  let t = run(gen-role(g, "Seller"), ["Title"]) in
+  if strs-eq(inbox-of(t), []) then
+    (if msgs-eq(sends-of(t), []) then unit else trap("a pure receiver sends nothing"))
+  else trap("the receiver's generated program consumes the delivered label")
+
+@test
+def run-value-flows-buyer-to-seller() =
+  // THE END-TO-END PROOF: compose the two generated actors over the mock medium — Buyer's SENDS routed to
+  // Seller (deliver) become Seller's INBOX — and the value emitted by Buyer's code arrives at Seller's code.
+  let g = Chor.Comm("Buyer", "Seller", "Title") in
+  let buyer = run(gen-role(g, "Buyer"), []) in
+  let seller-inbox = deliver(sends-of(buyer), "Seller") in    // route Buyer's wire to Seller
+  let seller = run(gen-role(g, "Seller"), seller-inbox) in
+  if strs-eq(seller-inbox, ["Title"]) then
+    (if strs-eq(inbox-of(seller), []) then unit                // Seller consumed exactly the delivered value
+     else trap("Seller must consume the value Buyer sent"))
+  else trap("Buyer must emit Title addressed to Seller")
+
+@test
+def run-roundtrip-title-then-quote() =
+  // Buyer -> Seller : Title ; Seller -> Buyer : Quote. Route both directions.
+  let g = Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"), Chor.Comm("Seller", "Buyer", "Quote")) in
+  let buyer1 = run(gen-role(g, "Buyer"), []) in
+  let seller = run(gen-role(g, "Seller"), deliver(sends-of(buyer1), "Seller")) in
+  // Seller received Title (inbox drained) and emitted a Quote addressed to Buyer.
+  if strs-eq(inbox-of(seller), []) then
+    (if msgs-eq(sends-of(seller), [Msg.M("Buyer", "Quote")]) then unit
+     else trap("Seller relays a Quote addressed to Buyer"))
+  else trap("Seller consumes Title first")
+
+@test
+def run-choice-selection-drives-receiver() =
+  // Buyer chooses (first arm = Yes) and tells Seller; Seller's ematch follows the Yes branch.
+  let buyer = run(gen-role(yes-no(), "Buyer"), []) in
+  if msgs-eq(sends-of(buyer), [Msg.M("Seller", "Yes")]) then
+    (let seller = run(gen-role(yes-no(), "Seller"), deliver(sends-of(buyer), "Seller")) in
+     if strs-eq(inbox-of(seller), []) then unit                // Seller matched Yes and consumed the selection
+     else trap("Seller's ematch consumes the selection it was told"))
+  else trap("the chooser selects and sends its first branch label to Seller")
+
+@test
+def run-bystander-does-nothing() =
+  let g = Chor.Comm("Buyer", "Seller", "Title") in
+  let t = run(gen-role(g, "Shipper"), []) in
+  if msgs-eq(sends-of(t), []) then unit
+  else trap("an uninvolved role's generated program sends nothing")
+
+@test
+def run-ematch-picks-the-told-branch() =
+  // Directly: Seller told "No" follows the No arm (not the first). Proves ematch is selection-driven.
+  let seller = run(gen-role(yes-no(), "Seller"), ["No"]) in
+  if strs-eq(inbox-of(seller), []) then unit
+  else trap("ematch consumes the No selection via the matching branch")
+
+/// The flagship three-party Purchase core (design §6): Buyer sends Title to Seller, Seller sends Quote back
+/// to Buyer, then Seller instructs the Shipper (Ship). A linear (choice-free) trace so the pure mock
+/// composes all three; DESTINATION-AWARE delivery keeps Seller's Quote (for Buyer) out of Shipper's inbox.
+def purchase-linear() =
+  Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"),
+    Chor.Seq(Chor.Comm("Seller", "Buyer", "Quote"),
+      Chor.Comm("Seller", "Shipper", "Ship")))
+
+@test
+def run-seller-routes-quote-and-ship() =
+  // Seller's generated program, given Title, emits Quote→Buyer THEN Ship→Shipper (order-preserving).
+  let g = purchase-linear() in
+  let seller = run(gen-role(g, "Seller"), deliver(run-buyer-sends(g), "Seller")) in
+  if msgs-eq(sends-of(seller), [Msg.M("Buyer", "Quote"), Msg.M("Shipper", "Ship")]) then unit
+  else trap("Seller relays Quote to Buyer then Ship to Shipper, in order")
+
+def run-buyer-sends(g: Chor) -> List(Msg) = sends-of(run(gen-role(g, "Buyer"), []))
+
+@test
+def run-purchase-reaches-shipper() =
+  // THE THREE-PARTY PROOF: route Seller's wire through `deliver` — Shipper receives ONLY Ship (Quote,
+  // addressed to Buyer, is not delivered to Shipper), and Shipper's generated code consumes it.
+  let g = purchase-linear() in
+  let seller = run(gen-role(g, "Seller"), deliver(run-buyer-sends(g), "Seller")) in
+  let shipper-inbox = deliver(sends-of(seller), "Shipper") in
+  if strs-eq(shipper-inbox, ["Ship"]) then                     // routing kept Quote out of Shipper's inbox
+    (let shipper = run(gen-role(g, "Shipper"), shipper-inbox) in
+     if strs-eq(inbox-of(shipper), []) then unit                // Shipper consumed the Ship instruction
+     else trap("Shipper's generated program consumes the delivered Ship"))
+  else trap("routing delivers exactly [Ship] to Shipper, not Buyer's Quote")
+
+@test
+def run-buyer-receives-only-quote() =
+  // Buyer's inbox (routed from Seller) is exactly [Quote] — the Ship (for Shipper) is not delivered to Buyer.
+  let g = purchase-linear() in
+  let seller = run(gen-role(g, "Seller"), deliver(run-buyer-sends(g), "Seller")) in
+  if strs-eq(deliver(sends-of(seller), "Buyer"), ["Quote"]) then unit
+  else trap("routing delivers exactly [Quote] to Buyer")
+
+export { Trace.*, Msg.*, run, deliver, sends-of, inbox-of, strs-eq, msgs-eq }

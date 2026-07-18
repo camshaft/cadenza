@@ -10,6 +10,7 @@ import { formatScalarByType, resultTypeOf } from "../runner/scalarFormat.ts";
 import { useSyntax, type Surface } from "../syntax/SyntaxContext.tsx";
 import type { Diag } from "../compiler/client.ts";
 import { applyFix as applyFixToText } from "../playground/applyFix.ts";
+import { patchOnce } from "./tryChangePatch.ts";
 import { wrapModule, stripModule, wrapPrefixOf, gatherTestForms, ungatherTestForms } from "./wrapModule.ts";
 
 // Re-exported so existing importers (`Runnable`, others) keep their `./useCadenzaEditor.ts` path; the
@@ -71,10 +72,23 @@ export interface CadenzaEditor {
   surface: Surface;
   /** Reset the buffer to `source` (re-rendered to the active surface) and clear any result. */
   reset: () => void;
-  /** Compile + run the current buffer, returning a normalized outcome. */
-  run: () => Promise<EditorOutcome>;
+  /** Compile + run the buffer, returning a normalized outcome. Pass `override` to run a SPECIFIC text
+   *  (in a given surface) rather than the current `text` state — needed because `run()` closes over the
+   *  `text` snapshot, so `setText(x)` then `run()` in the same tick would run the STALE buffer. */
+  run: (override?: { text: string; surface: Surface }) => Promise<EditorOutcome>;
   /** Apply a diagnostic's structural fix to the snippet (`wrapPrefixBytes` from the decline). */
   applyFix: (d: Diag, wrapPrefixBytes: number) => void;
+  /** Swap the buffer to an authored snippet (rendered from `srcSurface` into the buffer's CURRENT
+   *  surface, so the display stays in the reader's chosen syntax) and run it, atomically — the "apply
+   *  this variant + show the result" primitive behind the guide's clickable "change X to Y" prose.
+   *  Runs against the freshly-rendered text (not stale state) via `run`'s override. */
+  applyAuthored: (authoredSrc: string, srcSurface: Surface) => Promise<EditorOutcome>;
+  /** Replace the single occurrence of `find` with `replace` in the CURRENT buffer, then run —
+   *  the one-token clickable-prose patch (e.g. "change the index 1 to 9"). Returns null WITHOUT running
+   *  if `find` does not occur EXACTLY ONCE (0 or >1 matches) so the caller can surface a failure; the
+   *  authoring gate rejects such patches at build time, this is the runtime backstop. Patches the text
+   *  in its displayed surface, so `find`/`replace` must be surface-stable tokens (digits/operators). */
+  applyPatch: (find: string, replace: string) => Promise<EditorOutcome | null>;
 }
 
 /// `source` is authored once in `authoredIn`; the hook keeps the live text in the active surface.
@@ -135,27 +149,31 @@ export function useCadenzaEditor(
     };
   }, [surface, text]);
 
-  const run = useCallback(async (): Promise<EditorOutcome> => {
-    const program = wrap ? wrapModule(text, shownSurface.current) : text;
-    const wrapPrefixBytes = wrap ? wrapPrefixOf(text, program) : 0;
-    const out = await compile(program, shownSurface.current);
+  const run = useCallback(async (override?: { text: string; surface: Surface }): Promise<EditorOutcome> => {
+    // Run the OVERRIDE text/surface when given (so an apply-then-run in one tick runs the fresh buffer,
+    // not the stale `text` snapshot this callback closes over); otherwise the current editor state.
+    const src = override ? override.text : text;
+    const srcSurface = override ? override.surface : shownSurface.current;
+    const program = wrap ? wrapModule(src, srcSurface) : src;
+    const wrapPrefixBytes = wrap ? wrapPrefixOf(src, program) : 0;
+    const out = await compile(program, srcSurface);
     if (!out.component) return { kind: "declined", diags: out.diagnostics, wrapPrefixBytes };
-    const result: RunOutcome = await runComponent(out.component, shownSurface.current);
+    const result: RunOutcome = await runComponent(out.component, srcSurface);
     switch (result.kind) {
       case "value": {
         // A scalar Float that jco lowered to a whole JS number lost its `.0` (String(5) === "5"); the
         // static export type restores it. Only an INTEGER-LOOKING render could need the `.0`, so gate
         // the export-type lookup on that — a compound/fractional/non-numeric result skips the extra
         // query entirely (the common case). Best-effort — if the lookup fails, show the value as-is.
-        let text = result.text;
+        let valueText = result.text;
         if (/^-?\d+$/.test(result.text.trim())) {
           try {
-            text = formatScalarByType(result.text, resultTypeOf(await exportTypes(program, shownSurface.current)));
+            valueText = formatScalarByType(result.text, resultTypeOf(await exportTypes(program, srcSurface)));
           } catch {
             /* keep result.text */
           }
         }
-        return { kind: "value", text };
+        return { kind: "value", text: valueText };
       }
       case "trap":
         return { kind: "trap", message: result.message };
@@ -191,5 +209,45 @@ export function useCadenzaEditor(
       .catch(() => setText(source));
   }, [authoredIn, source, wrap]);
 
-  return { text, setText, surface: shownSurface.current, reset, run, applyFix };
+  /// Swap the buffer to an authored variant + run it, atomically — the primitive behind the clickable
+  /// "change X to Y → result" prose. The variant is authored in `srcSurface` (a chapter constant, like
+  /// `source`); we render it into the buffer's CURRENT surface so the display stays in the reader's
+  /// chosen syntax, `setText` it, then `run` the RENDERED text via the override (dodging the stale-`text`
+  /// closure — a plain `run()` here would execute the pre-swap buffer). If the variant doesn't round-trip
+  /// cleanly (rare — an authored variant should be valid), fall back to running its raw authored form.
+  const applyAuthored = useCallback(
+    async (authoredSrc: string, srcSurface: Surface): Promise<EditorOutcome> => {
+      const target = shownSurface.current;
+      let rendered: string;
+      try {
+        rendered = await renderSnippet(authoredSrc, srcSurface, target, wrap);
+      } catch {
+        // Couldn't re-render into the display surface — show + run the raw authored text in its own surface.
+        setText(authoredSrc);
+        shownSurface.current = srcSurface;
+        return run({ text: authoredSrc, surface: srcSurface });
+      }
+      setText(rendered);
+      shownSurface.current = target;
+      return run({ text: rendered, surface: target });
+    },
+    [wrap, run],
+  );
+
+  /// One-token patch of the CURRENT buffer (in its displayed surface): replace the single occurrence of
+  /// `find` with `replace`, then run. Declines (returns null, no run) unless `find` occurs EXACTLY ONCE —
+  /// the same rule the authoring gate enforces at build time (shared via `patchOnce`). Runs the patched
+  /// text via the override so the fresh buffer runs, not the stale `text` snapshot.
+  const applyPatch = useCallback(
+    async (find: string, replace: string): Promise<EditorOutcome | null> => {
+      const result = patchOnce(text, find, replace);
+      if (!result.ok) return null;
+      const target = shownSurface.current;
+      setText(result.text);
+      return run({ text: result.text, surface: target });
+    },
+    [text, run],
+  );
+
+  return { text, setText, surface: shownSurface.current, reset, run, applyFix, applyAuthored, applyPatch };
 }

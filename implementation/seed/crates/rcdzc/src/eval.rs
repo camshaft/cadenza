@@ -774,6 +774,84 @@ fn is_param_list(db: &Db, list: StructId, child: StructId) -> bool {
     false
 }
 
+/// Whether the argument subtree at `node` reaches a PERFORM — an effect operation (a discharged handler
+/// op, an outer handler's op, or a HOST-delegated op), or a bare `resume` — following NON-RECURSIVE callee
+/// bodies (bounded depth). The evaluate-ONCE trigger's "does this argument carry an observable effect that
+/// must not be duplicated by a multi-use param substitution" test. CTX-FREE (an `effect_op_of` head is a
+/// perform regardless of which handler owns it), so it lives here in eval rather than needing a
+/// `HandlerCtx` — the sibling `effects::arg_reaches_any_perform` gates the FOLD's arm-side dup; this gates
+/// the GENERAL β-reduce inline (a pure multi-use helper whose param is bound to an effectful arg, which the
+/// fold never sees because the helper does not itself perform). CONSERVATIVE: a recursive/too-deep callee
+/// over-reports `true` (a spurious let-wrap of a pure arg is still semantics-preserving — it only binds a
+/// value once — so over-reporting costs at most a redundant let, never a miscompile).
+fn arg_reaches_perform_evalonce(db: &mut Db, node: StructId) -> bool {
+    fn walk(db: &mut Db, node: StructId, depth: u32) -> bool {
+        if depth > 32 {
+            return true; // too deep — assume it may perform (safe over-report)
+        }
+        if let Resolved::Apply { head, args } = resolved_of(db, node) {
+            if effect_op_of(db, head).is_some() {
+                return true;
+            }
+            // Follow a NON-RECURSIVE callee body (a helper that itself performs); a recursive one
+            // over-reports. A non-function head (a constructor, a record field-pair label) hides no
+            // perform in the head — only its args, covered by the descent below.
+            if let Some(callee) = lambda_body(db, head).or_else(|| lambda_body_of_nullary(db, head))
+            {
+                if is_recursive(db, callee) {
+                    return true;
+                }
+                if walk(db, callee, depth + 1) {
+                    return true;
+                }
+            }
+            return args.iter().any(|&a| walk(db, a, depth + 1));
+        }
+        if matches!(resolved_of(db, node), Resolved::Resume { .. }) {
+            return true;
+        }
+        match db.ast.get(node).clone() {
+            crate::ast::Struct::List(children) => children.iter().any(|&c| walk(db, c, depth + 1)),
+            crate::ast::Struct::Atom(_) => false,
+        }
+    }
+    walk(db, node, 0)
+}
+
+/// How many times a body reference resolves to the parameter NAME occurrence `binder` — the way
+/// `beta_reduce` substitutes (a `Param { binder }`, or a `Ref` whose chain reaches `binder`). Mirrors
+/// `effects::count_param_refs` on the eval side; used by the evaluate-once trigger to tell a param used
+/// MULTIPLY (whose effectful arg would be duplicated by by-name substitution) from a single-use one (whose
+/// arg substitutes exactly once — no duplication, no let-wrap needed).
+fn count_refs_to(db: &mut Db, node: StructId, binder: StructId) -> u32 {
+    let here = match resolved_of(db, node) {
+        Resolved::Param { binder: b } => u32::from(b == binder),
+        Resolved::Ref { value } => {
+            let mut target = value;
+            let mut hit = false;
+            loop {
+                if target == binder {
+                    hit = true;
+                    break;
+                }
+                match resolved_of(db, target) {
+                    Resolved::Ref { value: next } => target = next,
+                    _ => break,
+                }
+            }
+            u32::from(hit)
+        }
+        _ => 0,
+    };
+    let below = match db.ast.get(node).clone() {
+        crate::ast::Struct::List(children) => {
+            children.iter().map(|&c| count_refs_to(db, c, binder)).sum()
+        }
+        crate::ast::Struct::Atom(_) => 0,
+    };
+    here + below
+}
+
 /// If `head` reduces to a lambda, apply it to `args` by β-reduction, returning the reduced body's
 /// occurrence. Follows a `Ref` to the lambda (so a `let`-bound function applies too). Parameters match
 /// positionally: exact arity β-reduces the whole body; MORE args than params reduces then applies the
@@ -867,6 +945,23 @@ fn apply_lambda_uncached(
         let residual = db.push_list(vec![fn_head, params_list, reduced_body]);
         return Ok(Some(residual));
     }
+    // EVALUATE-ONCE for an EFFECTFUL multi-use argument (strict-eval, not call-by-name). β-reduction
+    // splices the SHARED argument occurrence at EVERY body reference of a parameter (`beta_reduce` returns
+    // the same arg node per site). For a PURE arg that is harmless — a value duplicated is the same value.
+    // But an arg that PERFORMS (a host op, an outer/discharged effect) spliced at N references RE-PERFORMS N
+    // times: `(sum3 (mk (E.get)))` with `mk s = (T s s s)` emits THREE host `get` calls, want ONE. That
+    // violates strict by-value binding (core-semantics.md §Applying A Function binds the parameter to a
+    // single evaluated value; §283) and the deterministic host-call sequence (capabilities §75). So for a
+    // parameter used MULTIPLY whose argument REACHES a perform, LET-BIND the argument ONCE at the call site:
+    // substitute a fresh let-local name at each reference and wrap the reduced body in `(let ((#a arg)) …)`,
+    // so the effect runs once and every use reads the bound value. A single-use param, or a pure arg (even
+    // multi-use), is UNTOUCHED — its substitution is byte-identical to before (no let, the common inline is
+    // unchanged). The in-program-HANDLER analogue already evaluates once via the fold's arm-substitution;
+    // this closes the HOST/general β-reduce gap the fold never sees (a pure helper whose param carries the
+    // effect). NOTE: keyed on THIS application's own params — `mk`'s application funnels through here (its
+    // param `s` is used 3×), where the earlier by-the-OUTER-call attempts missed it (`sum3`'s `t` is
+    // single-use). A LAMBDA arg is never let-bound (it is not an effect value — it is applied later).
+    let mut evalonce_wraps: Vec<(StructId, StructId)> = Vec::new();
     let mut arg_of: HashMap<StructId, StructId> = HashMap::default();
     for (p, a) in params.iter().zip(args.iter()) {
         // PIN each argument's meaning at the CALL SITE before reducing. `beta_reduce` splices the
@@ -902,7 +997,26 @@ fn apply_lambda_uncached(
         // `(: value T)` is (`substituted_arg`); otherwise an out-of-range constant `(f 200)` to a
         // `(: a Int8)` param was spliced raw and run to a value the declared type cannot hold.
         let sub = substituted_arg(db, *p, *a);
-        arg_of.insert(param_name_occ(db, *p), sub);
+        let name_occ = param_name_occ(db, *p);
+        // EVALUATE-ONCE trigger: a param used ≥2× whose (non-lambda) arg reaches a perform. Do NOT
+        // substitute the arg (which `beta_reduce` would SHARE at every site → N performs). Instead LEAVE
+        // this param out of `arg_of`, so each body reference is `copy_structural`-copied as a FRESH name
+        // occurrence of the parameter's own spelling; then wrap the reduced body in `(let ((name arg)) …)`
+        // binding that name to the arg ONCE. Each fresh copy re-resolves (lazily, post-copy) against the
+        // copied scope to the wrapping `let` — exactly the hand-written workaround `(let ((s (E.get))) (T s
+        // s s))`. (A shared single node can't do this: a name atom has ONE parent, so only one site's scope
+        // walk would reach the `let`.) `sub` (the arg, carrying the param's `(: arg T)` annotation) becomes
+        // the let-init, keeping the width fit-check. A body-internal binding of the same name still shadows
+        // correctly (ordinary lexical scope — the inner binder is a binder-occurrence, copied not renamed).
+        if syntactic_lambda(db, *a).is_none()
+            && count_refs_to(db, body, name_occ) >= 2
+            && arg_reaches_perform_evalonce(db, *a)
+        {
+            let binder = copy_structural(db, name_occ, &HashMap::default());
+            evalonce_wraps.push((binder, sub));
+        } else {
+            arg_of.insert(name_occ, sub);
+        }
     }
     // PIN the body's FREE VARIABLES — a reference in the body that binds OUTSIDE the lambda (an enclosing
     // `let`/param the lambda CAPTURES, e.g. `(let ((k 10)) ((fn (x) (+ x k)) 5))` — `k` binds to the
@@ -920,8 +1034,20 @@ fn apply_lambda_uncached(
     // Record the COPY ROOT so the capture-share exception copies (not shares) a pinned pattern binder
     // whose scrutinee lies WITHIN this body (see `Db::reduction_root`).
     let saved = db.reduction_root.replace(body);
-    let reduced = beta_reduce(db, body, &arg_of);
+    let mut reduced = beta_reduce(db, body, &arg_of);
     db.reduction_root = saved;
+    // EVALUATE-ONCE: wrap the reduced body in one `(let ((#a arg)) …)` per effectful multi-use param, so
+    // the argument's perform runs ONCE (at the let-init) and every use reads the bound local. Innermost =
+    // LAST recorded (a later param's arg may reference an earlier binding), matching left-to-right eval
+    // order. Each `#a` name is spliced (shared) at every reference in `reduced`; it lowers to a pure
+    // local read, so sharing it is sound (unlike the shared HostCall it replaces). The wrap is re-resolved
+    // when the reduced body is (a synthesized `let` like the fold's own let-lifts + the `#cv` bindings).
+    for (binder, init) in evalonce_wraps.into_iter().rev() {
+        let let_head = db.push_name("let");
+        let pair = db.push_list(vec![binder, init]);
+        let bindings = db.push_list(vec![pair]);
+        reduced = db.push_list(vec![let_head, bindings, reduced]);
+    }
     // A do-local RECURSIVE function inside `body` was COPIED by the reduction (fresh occurrences); its
     // recursive self-call now resolves to the COPY's lambda, whose body is not yet in `def_by_body`. So a
     // helper `(def (helper x) (do (def (fac n) …) (fac x)))` inlined at its call site would decline "needs

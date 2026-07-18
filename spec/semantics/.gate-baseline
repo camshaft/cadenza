@@ -2495,6 +2495,7 @@ pass	an effectful helper called twice (nested) in a self-call arg folds each inl
 pass	an effectful helper reading TWO driver parameters folds in a self-call arg
 pass	an effectful helper that also reads an outer/driver parameter folds in a self-call arg
 pass	an effectful helper whose own parameter name shadows a driver parameter folds in a self-call arg
+pass	an effectful host arg to a multi-use function parameter is evaluated ONCE, not re-performed per use
 pass	an effectful init before a failing `?` performs exactly once
 pass	an effectful match scrutinee is performed exactly once across a two-position sink
 pass	an effectful shared operand performs after the condition, exactly once

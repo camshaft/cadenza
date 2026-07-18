@@ -689,6 +689,20 @@ pub struct ParamManifestEntry {
     pub range_hi: Option<String>,
     /// The `(: default <val>)` config value rendered to its literal text, or `None` when there is no default.
     pub default: Option<String>,
+    /// EXACT num/den of a `Rational` range/default, for a fraction-native host (`/cad`'s slider carries a
+    /// `{num, den}` and drives `Param.<name>-num`/`-den`). Each is the base-10 text of the numerator /
+    /// denominator of the config value folded to a `Core::ConstRational` (normalized, gcd-reduced — the SAME
+    /// rational the type checker + the num/den host-response ABI use), so the host reads the pair directly
+    /// instead of parsing the literal-text `range_lo`/`default` source. `None` for a non-Rational (e.g.
+    /// `Int64`) bound or a non-constant config — the caller reads the literal-text field for those. The
+    /// literal-text fields above are ALWAYS kept (a tooltip/label), these are the additive exact-rational
+    /// companions the caller reads when `type_name` is a `Rational`.
+    pub range_lo_num: Option<String>,
+    pub range_lo_den: Option<String>,
+    pub range_hi_num: Option<String>,
+    pub range_hi_den: Option<String>,
+    pub default_num: Option<String>,
+    pub default_den: Option<String>,
 }
 
 /// Render a value/config node (a `range`/`default` literal, or a small nested form) to compact source-like
@@ -728,6 +742,22 @@ fn render_manifest_node(ast: &rcdzc::ast::Arenas, id: rcdzc::ast::StructId) -> S
     }
 }
 
+/// The EXACT `(num, den)` of a config value node that folds to a constant `Rational`, as base-10 text —
+/// the fraction-native form a `/cad` slider drives (`Param.<name>-num`/`-den`). Folds the node to its
+/// `Core` via `lower::core_of`; a `Core::ConstRational(n, d)` (normalized + gcd-reduced by the compiler,
+/// the SAME rational the num/den host-response ABI reconstructs) yields `Some((n, d))`. `None` for a node
+/// that does not fold to a constant rational (an `Int64`/`Float` bound, a non-constant expression) — the
+/// caller reads the literal-text field for those. Reads num/den from the compiler's own fold, NOT by
+/// parsing source, so it is robust to any surface/printer change.
+fn rational_num_den(db: &mut rcdzc::db::Db, id: rcdzc::ast::StructId) -> Option<(String, String)> {
+    match rcdzc::lower::core_of(db, id) {
+        rcdzc::core::Core::ConstRational(n, d) => {
+            Some((n.to_decimal_string(), d.to_decimal_string()))
+        }
+        _ => None,
+    }
+}
+
 /// The WIDGET MANIFEST of every `@param` site in `text` — the metadata a parametric host (the operator's
 /// single-mode `/cad`) reads from a compiled model to render a slider/control per param and drive it over
 /// the host-response path (`Param.<name>` / the num/den pair for a Rational). Rides `param_sidecar::
@@ -756,6 +786,7 @@ pub fn param_manifest(text: &str, from: &str) -> Result<Vec<ParamManifestEntry>,
             Some(t) => t.render_name(),
             None => rcdzc::infer::type_of(&mut db, rec.ty).render_name(),
         };
+        // Literal-text fields (always present when the config is) — an immutable borrow of the arena.
         let (range_lo, range_hi) = match rec.range {
             Some((lo, hi)) => (
                 Some(render_manifest_node(&db.ast, lo)),
@@ -764,6 +795,23 @@ pub fn param_manifest(text: &str, from: &str) -> Result<Vec<ParamManifestEntry>,
             None => (None, None),
         };
         let default = rec.default.map(|d| render_manifest_node(&db.ast, d));
+        // Exact num/den companions for a Rational bound (a mutable borrow of `db` for the fold) — `None` for
+        // an Int64/Float or non-constant config; the caller uses these when `type_name` is a `Rational`.
+        let (range_lo_num, range_lo_den) =
+            match rec.range.and_then(|(lo, _)| rational_num_den(&mut db, lo)) {
+                Some((n, d)) => (Some(n), Some(d)),
+                None => (None, None),
+            };
+        let (range_hi_num, range_hi_den) =
+            match rec.range.and_then(|(_, hi)| rational_num_den(&mut db, hi)) {
+                Some((n, d)) => (Some(n), Some(d)),
+                None => (None, None),
+            };
+        let (default_num, default_den) =
+            match rec.default.and_then(|d| rational_num_den(&mut db, d)) {
+                Some((n, d)) => (Some(n), Some(d)),
+                None => (None, None),
+            };
         out.push(ParamManifestEntry {
             name: rec.name,
             type_name,
@@ -771,6 +819,12 @@ pub fn param_manifest(text: &str, from: &str) -> Result<Vec<ParamManifestEntry>,
             range_lo,
             range_hi,
             default,
+            range_lo_num,
+            range_lo_den,
+            range_hi_num,
+            range_hi_den,
+            default_num,
+            default_den,
         });
     }
     Ok(out)
@@ -2351,6 +2405,15 @@ mod tests {
             Some("5"),
             "default is rendered to its literal text"
         );
+        // An Int64 bound is NOT a Rational → the exact num/den companions stay None (the caller reads the
+        // integer-string fields for an Int64 @param).
+        assert!(
+            width.range_lo_num.is_none()
+                && width.range_lo_den.is_none()
+                && width.default_num.is_none()
+                && width.default_den.is_none(),
+            "an Int64 @param's num/den companions are None — the caller reads the integer strings"
+        );
 
         let rate = entries
             .iter()
@@ -2372,6 +2435,52 @@ mod tests {
                 .expect("runs")
                 .is_empty(),
             "no @param sites → empty manifest"
+        );
+    }
+
+    #[test]
+    fn param_manifest_reports_exact_num_den_for_a_rational_default() {
+        // The num/den fast-follow (v-guide-infra's fraction-native `/cad` slider): a `Rational` @param whose
+        // `default` (or range bound) is a constant fraction crosses as EXACT num/den — the `{num, den}` the
+        // slider drives over `Param.<name>-num`/`-den` — NOT a lossy number or a source-text string the host
+        // would have to parse. `(Rational.of 1 4)` folds to `Core::ConstRational(1, 4)`, so `default_num`/
+        // `default_den` are `"1"`/`"4"`; the literal-text `default` is kept for a tooltip.
+        let src = "(do \
+                     (: (@ (param (: widget slider) (: default (Rational.of 1 4))) frac) Rational) \
+                     (def (main) (host (Param) (Param.frac))) \
+                     (export main))";
+        let entries = param_manifest(src, "sexpr").expect("param_manifest runs");
+        let frac = entries
+            .iter()
+            .find(|e| e.name == "frac")
+            .expect("the `frac` @param is in the manifest");
+        assert_eq!(frac.type_name, "Rational", "declared type is Rational");
+        assert_eq!(
+            frac.default_num.as_deref(),
+            Some("1"),
+            "the exact numerator of the 1/4 default"
+        );
+        assert_eq!(
+            frac.default_den.as_deref(),
+            Some("4"),
+            "the exact denominator of the 1/4 default"
+        );
+        // The literal-text field is still present (a tooltip/label) — kept alongside the exact pair.
+        assert!(
+            frac.default.is_some(),
+            "the literal-text default is kept alongside the exact num/den"
+        );
+        // A reducible fraction is normalized by the compiler's fold (gcd-reduce): `(Rational.of 2 8)` = 1/4.
+        let src2 = "(do \
+                      (: (@ (param (: widget slider) (: default (Rational.of 2 8))) frac) Rational) \
+                      (def (main) (host (Param) (Param.frac))) \
+                      (export main))";
+        let e2 = param_manifest(src2, "sexpr").expect("runs");
+        let frac2 = e2.iter().find(|e| e.name == "frac").expect("frac present");
+        assert_eq!(
+            (frac2.default_num.as_deref(), frac2.default_den.as_deref()),
+            (Some("1"), Some("4")),
+            "2/8 is gcd-reduced to 1/4 — the manifest reports the compiler's normalized rational"
         );
     }
 }

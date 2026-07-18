@@ -1,0 +1,36 @@
+// The project manifest for the Cadenza choreographic-protocols library, written in Cadenza itself.
+// `cdz` reads these well-known top-level defs to know how to build / run / test the project.
+//
+//   cdz test          — search up for this Project.cdz and run its suite (like cargo)
+//   cdz test .        — same, naming this directory
+//
+// This is a SIDECAR package (operator ruling 2026-07-18): choreographic programming lives in its OWN
+// package OUTSIDE compiler-ml so it does not distract the compiler-ml integer-spine initiative, and it
+// targets the RUST compiler (rcdzc / `cdz`) so it works TODAY without waiting on the self-hosted compiler.
+// Like the iterators / cad / agent-harness siblings, it is a self-contained package the rust `cdz` builds.
+//
+// It is prelude-only + self-contained: it vendors a minimal homoiconic `Ast` (src/ast.cdz, src/ast-eq.cdz)
+// rather than depending on the compiler pipeline, so it has NO dependency on compiler-ml. The choreography
+// AST, projectability analysis, projection to local types, code generation, mock-Comm execution, and the
+// deadlock-freedom checker are all here.
+
+def name = "choreography"
+
+// Every source module under src/ (a wildcard, so a new module just drops into src/ and is picked up).
+//   ast/ast-eq          — a vendored minimal homoiconic Ast (Int|Str|Bool|Name|List) + structural equality
+//   chor                — the global-protocol AST + canonical round-trip + well-formedness
+//   chor-project        — projectability / knowledge-of-choice analysis (the reject path)
+//   chor-local          — projection to per-role local (session) types (project : Chor -> Role -> Local)
+//   chor-codegen        — code generation from a local type to an actor program Ast (codegen : Local -> Ast)
+//   chor-run            — execute generated actors over a destination-aware mock Comm medium
+//   chor-safety         — deadlock-freedom by construction (matched-I/O checker)
+//   chor-fleet          — the flagship: the fleet's own coordination as a choreography (FleetIntegrate)
+//   chor-consistency    — cross-pass coverage (project <-> codegen <-> run agree)
+//   chor-diag           — actionable projectability diagnostics
+def modules = ["src/*.cdz"]
+
+// The modules whose `@test` definitions form the suite. Same-file with their code.
+def tests = ["src/*.cdz"]
+
+// Files removed from the globs above. Empty — every src/*.cdz is a real module.
+def exclude = []

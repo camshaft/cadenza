@@ -1,0 +1,100 @@
+/// chor-diag.cdz — ACTIONABLE DIAGNOSTICS for the CHOREOGRAPHIC-PROTOCOLS vertical. The projectability
+/// analysis (chor-project Inc 1) decides IF a global protocol can be shredded per-actor and names the role
+/// that lacks knowledge of a choice; this module turns that verdict into a message a user/agent can act on
+/// immediately (rustc-actionable is the bar): not just "role X is un-projectable" but WHY (it cannot tell
+/// which branch of a choice was taken) and the FIX (have the chooser send X a distinct selection message at
+/// the start of every branch X participates in). A good REJECT is only useful if its message tells you how
+/// to make the protocol projectable — and (per reviewer 000000004878) the soundness of the reject path is
+/// what protects this whole vertical, so its diagnostic deserves the same care.
+
+import { Chor } from "chor"
+import { projectable } from "chor-project"
+import { unprojectable-role } from "chor-project"
+
+/// A projectability diagnostic: Ok (projectable) or a message naming the un-projectable role + the fix.
+type Diag = Ok | Err(String)
+
+def diag-is-ok(d: Diag) -> Bool = match d with | Diag.Ok => true | Diag.Err(_m) => false
+def diag-msg(d: Diag) -> String = match d with | Diag.Ok => "" | Diag.Err(m) => m
+
+/// Build the actionable message for an un-projectable role.
+def unprojectable-message(role: String) -> String =
+  String.concat(
+    String.concat("choreography is not projectable: role '", role),
+    String.concat("' lacks knowledge of a choice — it behaves differently across the branches of a `choice`",
+      String.concat(" but is not told which branch was taken. Fix: have the deciding role send '",
+        String.concat(role, "' a distinct selection message as its FIRST action in every branch, or make its behaviour identical in all branches."))))
+
+/// Diagnose a protocol: Ok if projectable, else an actionable Err naming the role + the fix.
+def diagnose(roles: List(String), g: Chor) -> Diag = match unprojectable-role(roles, g) with
+  | Option.Some(q) => Diag.Err(unprojectable-message(q))
+  | Option.None(_) => Diag.Ok
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// Tests.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def roles3() = ["Buyer", "Seller", "Shipper"]
+
+/// Un-projectable: Shipper told Go in A, silent in B (the reviewer's soundness witness, now rejected).
+def shipper-silent-in-one() =
+  Chor.Choice("Buyer", [
+    Chor.Branch("A", Chor.Seq(Chor.Comm("Buyer", "Seller", "Sa"), Chor.Comm("Buyer", "Shipper", "Go"))),
+    Chor.Branch("B", Chor.Comm("Buyer", "Seller", "Sb"))])
+
+/// Projectable: a choice where the only other role is told in each branch.
+def informed() =
+  Chor.Choice("Buyer", [
+    Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Yes")),
+    Chor.Branch("No", Chor.Comm("Buyer", "Seller", "No"))])
+
+@test
+def diagnose-ok-on-projectable() =
+  if diag-is-ok(diagnose(["Buyer", "Seller"], informed())) then unit
+  else trap("a projectable protocol diagnoses Ok")
+
+@test
+def diagnose-err-on-unprojectable() =
+  if diag-is-ok(diagnose(roles3(), shipper-silent-in-one())) then
+    trap("an un-projectable protocol must diagnose Err")
+  else unit
+
+@test
+def diagnose-err-names-the-role() =
+  // The message must EQUAL the actionable message built for Shipper — names the role + carries the fix.
+  let d = diagnose(roles3(), shipper-silent-in-one()) in
+  (match d with
+    | Diag.Err(m) => (if m == unprojectable-message("Shipper") then unit
+      else trap("the Err message is the actionable message naming Shipper"))
+    | Diag.Ok => trap("expected Err"))
+
+@test
+def unprojectable-message-differs-per-role() =
+  // The message is role-specific (names the offending role) — two roles get distinct messages, and neither
+  // is empty. This pins that the diagnostic carries the actionable role name without hardcoding wording.
+  let a = unprojectable-message("Shipper") in
+  let b = unprojectable-message("Concierge") in
+  if a == b then trap("the message must be specialized to the named role")
+  else (if a == "" then trap("the message is non-empty") else unit)
+
+@test
+def diagnose-ok-message-empty() =
+  if diag-msg(diagnose(["Buyer", "Seller"], informed())) == "" then unit
+  else trap("an Ok diagnosis has no message")
+
+@test
+def diagnose-agrees-with-projectable() =
+  // The diagnostic verdict must match `projectable` exactly (no drift between the two entry points).
+  (if diag-is-ok(diagnose(roles3(), informed())) then
+     (if projectable(roles3(), informed()) then unit else trap("diag Ok but projectable false"))
+   else trap("informed should diagnose Ok"))
+
+@test
+def diagnose-err-agrees-with-projectable() =
+  // On the un-projectable witness, the diagnostic and `projectable` must AGREE (both say not-projectable).
+  (if diag-is-ok(diagnose(roles3(), shipper-silent-in-one())) then
+     trap("diag says Ok but this protocol is un-projectable")
+   else (if projectable(roles3(), shipper-silent-in-one()) then
+     trap("projectable disagrees with diag") else unit))
+
+export { Diag.*, diagnose, unprojectable-message, diag-is-ok, diag-msg }

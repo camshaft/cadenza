@@ -1,0 +1,189 @@
+/// chor-safety.cdz — Inc 4 of the CHOREOGRAPHIC-PROTOCOLS vertical: DEADLOCK-FREEDOM by construction
+/// (design §6 Inc 4, Q3 tier ii). For a projectable choreography (Inc 1 is the guard), we prove the
+/// projections COMPOSE without a role ever blocking forever on a message no one sends — the "matched I/O"
+/// property that is the structural content of deadlock-freedom for our sequential (no parallel-composition)
+/// AST.
+///
+/// THE ARGUMENT. Our `Chor` has no parallel operator, so every communication is totally ordered by the
+/// choreography; the only way a projection could deadlock is if it were UN-matched — a role that performs
+/// `LRecv(from=A, l)` while `A`'s projection never performs the corresponding `LSend(to=r, l)` (or the
+/// mirror). Projection derives both endpoints of each `Comm(A,B,l)` simultaneously (`chor-local`: the SAME
+/// node emits `LSend` at A and `LRecv` at B), so on a well-formed protocol the I/O is matched by
+/// construction. This module makes that invariant CHECKABLE — `deadlock-free(roles, g)` collects each
+/// role's send/recv obligations from its projected local type and confirms every send has its mirror recv
+/// and every recv its mirror send. It would catch a projection or codegen bug that dropped or mismatched a
+/// half of a communication (an actual deadlock source).
+///
+/// The check is over the UNION of obligations across choice branches (a send that occurs under some branch
+/// must have its receiver able to receive it under that selection). For the strict-selection projectable
+/// subset (Inc 1), branch-aligned matching reduces to this multiset match.
+
+import { Chor } from "chor"
+import { Local } from "chor-local"
+import { project } from "chor-local"
+
+/// A directed I/O obligation: the OTHER role and the label. For a send, `peer` is the recipient; for a
+/// recv, `peer` is the sender.
+type IO = Ob(String, String)     // peer, label
+def io-peer(x: IO) -> String = match x with | IO.Ob(p, _l) => p
+def io-label(x: IO) -> String = match x with | IO.Ob(_p, l) => l
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// Extract a role's send / recv obligations from its projected local type (union across choice branches).
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def local-sends(l: Local) -> List(IO) = match l with
+  | Local.LEnd => []
+  | Local.LSend(to, lbl, k) => List.concat([IO.Ob(to, lbl)], local-sends(k))
+  | Local.LRecv(_f, _l, k) => local-sends(k)
+  | Local.LIntC(brs) => sends-branches(brs)
+  | Local.LExtC(_from, brs) => sends-branches(brs)
+  | Local.LBranch(_lbl, k) => local-sends(k)
+  | Local.LRecT(_v, body) => local-sends(body)
+  | Local.LVarT(_v) => []
+
+def sends-branches(brs: List(Local)) -> List(IO) = match brs with
+  | [] => []
+  | [b, .. rest] => List.concat(local-sends(b), sends-branches(rest))
+
+def local-recvs(l: Local) -> List(IO) = match l with
+  | Local.LEnd => []
+  | Local.LSend(_to, _lbl, k) => local-recvs(k)
+  | Local.LRecv(from, lbl, k) => List.concat([IO.Ob(from, lbl)], local-recvs(k))
+  | Local.LIntC(brs) => recvs-branches(brs)
+  | Local.LExtC(_from, brs) => recvs-branches(brs)
+  | Local.LBranch(_lbl, k) => local-recvs(k)
+  | Local.LRecT(_v, body) => local-recvs(body)
+  | Local.LVarT(_v) => []
+
+def recvs-branches(brs: List(Local)) -> List(IO) = match brs with
+  | [] => []
+  | [b, .. rest] => List.concat(local-recvs(b), recvs-branches(rest))
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// Matched I/O: every send of role `r` (to `peer`, label `l`) is mirrored by a recv (from `r`, label `l`)
+// in `peer`'s projection, and every recv of `r` (from `peer`) is mirrored by a send (to `r`) in `peer`'s.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Does `obs` contain an obligation with this peer + label?
+def has-io(obs: List(IO), peer: String, lbl: String) -> Bool = match obs with
+  | [] => false
+  | [o, .. rest] => (if io-peer(o) == peer then (if io-label(o) == lbl then true else has-io(rest, peer, lbl))
+    else has-io(rest, peer, lbl))
+
+/// Every send of `r` is mirrored by a recv in its recipient's projection.
+def sends-matched(g: Chor, r: String, mine: List(IO)) -> Bool = match mine with
+  | [] => true
+  | [s, .. rest] =>
+    (let recipient = io-peer(s) in
+     let their-recvs = local-recvs(project(g, recipient)) in
+     if has-io(their-recvs, r, io-label(s))   // recipient receives (from r, label) ?
+       then sends-matched(g, r, rest)
+       else false)
+
+/// Every recv of `r` is mirrored by a send in its sender's projection.
+def recvs-matched(g: Chor, r: String, mine: List(IO)) -> Bool = match mine with
+  | [] => true
+  | [rc, .. rest] =>
+    (let sender = io-peer(rc) in
+     let their-sends = local-sends(project(g, sender)) in
+     if has-io(their-sends, r, io-label(rc))   // sender sends (to r, label) ?
+       then recvs-matched(g, r, rest)
+       else false)
+
+/// A single role's I/O is fully matched against its peers.
+def role-matched(g: Chor, r: String) -> Bool =
+  let l = project(g, r) in
+  (if sends-matched(g, r, local-sends(l)) then recvs-matched(g, r, local-recvs(l)) else false)
+
+/// Every declared role's I/O is matched — the deadlock-freedom witness.
+def all-roles-matched(roles: List(String), g: Chor) -> Bool = match roles with
+  | [] => true
+  | [r, .. rest] => (if role-matched(g, r) then all-roles-matched(rest, g) else false)
+
+/// Deadlock-free (by construction) = matched I/O across all roles. PRECONDITION: `g` is projectable
+/// (`chor-project.projectable`) and well-formed (`chor.wf`); those guards run before this in the pipeline.
+def deadlock-free(roles: List(String), g: Chor) -> Bool = all-roles-matched(roles, g)
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// Fixtures + tests — the Inc-4 gate.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def parties() = ["Buyer", "Seller", "Shipper"]
+
+/// Linear three-party Purchase: matched by construction.
+def purchase-linear() =
+  Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"),
+    Chor.Seq(Chor.Comm("Seller", "Buyer", "Quote"),
+      Chor.Comm("Seller", "Shipper", "Ship")))
+
+/// A choice both told roles are informed of — matched in every branch.
+def yes-no() =
+  Chor.Choice("Buyer", [
+    Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Yes")),
+    Chor.Branch("No", Chor.Comm("Buyer", "Seller", "No"))])
+
+@test
+def deadlock-free-linear-purchase() =
+  if deadlock-free(parties(), purchase-linear()) then unit
+  else trap("the linear three-party Purchase is deadlock-free (matched I/O)")
+
+@test
+def deadlock-free-single-comm() =
+  if deadlock-free(["Buyer", "Seller"], Chor.Comm("Buyer", "Seller", "Title")) then unit
+  else trap("a single matched comm is deadlock-free")
+
+@test
+def deadlock-free-choice() =
+  if deadlock-free(["Buyer", "Seller"], yes-no()) then unit
+  else trap("an informed choice is deadlock-free in every branch")
+
+@test
+def deadlock-free-done() =
+  if deadlock-free(parties(), Chor.Done) then unit
+  else trap("the empty protocol is trivially deadlock-free")
+
+@test
+def sends-are-collected() =
+  // Seller's projection of Purchase sends Quote→Buyer and Ship→Shipper.
+  let s = local-sends(project(purchase-linear(), "Seller")) in
+  if has-io(s, "Buyer", "Quote") then
+    (if has-io(s, "Shipper", "Ship") then unit else trap("Seller sends Ship to Shipper"))
+  else trap("Seller sends Quote to Buyer")
+
+@test
+def recvs-are-collected() =
+  // Buyer's projection of Purchase receives Quote from Seller.
+  let r = local-recvs(project(purchase-linear(), "Buyer")) in
+  if has-io(r, "Seller", "Quote") then unit
+  else trap("Buyer receives Quote from Seller")
+
+@test
+def has-io-detects-a-missing-mirror() =
+  // The DETECTION primitive: `has-io` must return false for an obligation not present. This is what would
+  // fire if a projection/codegen bug dropped the recv half of a communication — the send would find no
+  // mirror in the recipient's recvs and `sends-matched` would return false (an un-matched I/O = a deadlock).
+  let seller-recvs = local-recvs(project(purchase-linear(), "Seller")) in
+  // Seller genuinely receives Title from Buyer...
+  if has-io(seller-recvs, "Buyer", "Title") then
+    // ...but NOT a fictional "Ghost" label — a dropped/renamed half is detectable.
+    (if has-io(seller-recvs, "Buyer", "Ghost") then trap("Ghost was never sent — must not match")
+     else unit)
+  else trap("Seller really does receive Title from Buyer")
+
+@test
+def matched-io-fails-on-a-mismatched-label() =
+  // Directly exercise the matching logic on a hand-built mismatch: a send obligation (to Seller, "Title")
+  // has no mirror in a recv set that only contains (from Buyer, "Other") → sends-matched-style check fails.
+  let sends = [IO.Ob("Seller", "Title")] in
+  let bad-recvs = [IO.Ob("Buyer", "Other")] in
+  if has-io(bad-recvs, "Seller", "Title") then trap("a mismatched label must not be reported matched")
+  else (if has-io(sends, "Seller", "Title") then unit else trap("the send obligation is present"))
+
+@test
+def deadlock-free-is-symmetric-witness() =
+  // Both directions matched: run the checker on the reversed role order → same verdict.
+  if deadlock-free(["Shipper", "Seller", "Buyer"], purchase-linear()) then unit
+  else trap("matched I/O is independent of role-check order")
+
+export { IO.*, local-sends, local-recvs, deadlock-free, has-io }
