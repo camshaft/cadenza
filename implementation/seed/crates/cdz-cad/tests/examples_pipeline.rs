@@ -202,3 +202,58 @@ fn a_solidr_rendered_model_parses_and_meshes_like_its_solid_twin() {
         "SolidR model box is its 4×4×4 cube, got {d:?}"
     );
 }
+
+// ── P-D: profile/extrude/revolve/spline pipeline pins (parse → mesh → bounds on the real render forms) ──
+// These pin the WHOLE native chain for the P-D geometry (examples-profiles.cdz's worked models), on the
+// EXACT s-expr the exact-model renders (captured from `cdz run`), with geometrically-derived bounds as an
+// oracle — a regression in the library's render OR the driver's parse/mesh/bounds is caught.
+
+/// `plinth()` — a 40×20 Rect profile extruded 10 tall → box 40×20×10 (a prism).
+const PLINTH: &str = "(: (ExtrudeLinear (Rect (: (tuple 40/1 20/1) Vec2R)) 10/1) SolidR)";
+/// `bead()` — a 4×2 Rect revolved 360° about the y-axis → the conservative envelope box (4, 2, 4).
+const BEAD: &str = "(: (Revolve (Rect (: (tuple 4/1 2/1) Vec2R)) 360/1) SolidR)";
+/// A cubic-Bézier SPLINE outline (arch: base (0,0)→(8,0), cubic top back to (0,0)) extruded 2 thick.
+const ARCH: &str = "(: (ExtrudeLinear (PathProfile (: (list (MoveToAbs (: (tuple 0/1 0/1) Vec2R)) (LineToAbs (: (tuple 8/1 0/1) Vec2R)) (CubicToAbs (: (tuple 0/1 0/1) Vec2R) (: (tuple 8/1 10/1) Vec2R) (: (tuple 0/1 10/1) Vec2R))) PathR)) 2/1) SolidR)";
+
+#[test]
+fn plinth_extrude_meshes_and_bounds_are_the_prism() {
+    let s = parse_solid(PLINTH).expect("plinth parses");
+    let m = mesh(&s);
+    assert!(!m.is_empty(), "the extruded plinth has geometry");
+    assert_eq!(
+        m.triangle_count(),
+        12,
+        "an extruded rectangle is a 12-triangle prism"
+    );
+    let d = bounds(&s).expect("plinth has bounds").dimensions();
+    assert!(
+        approx(d[0], 40.0) && approx(d[1], 20.0) && approx(d[2], 10.0),
+        "plinth box is its 40×20×10 prism, got {d:?}"
+    );
+}
+
+#[test]
+fn bead_revolve_meshes_a_finite_ring() {
+    let s = parse_solid(BEAD).expect("bead parses");
+    assert!(!mesh(&s).is_empty(), "the revolved bead has geometry");
+    // a full 360° revolve of an origin-centred rect sweeps a finite solid; its bounds are finite + well-formed.
+    let d = bounds(&s).expect("bead has bounds").dimensions();
+    assert!(
+        d[0].is_finite() && d[1].is_finite() && d[2].is_finite() && d[0] > 0.0 && d[2] > 0.0,
+        "revolved bead has a finite, positive-volume box, got {d:?}"
+    );
+}
+
+#[test]
+fn spline_arch_path_profile_meshes_a_curved_wall() {
+    // the cubic-Bézier arch samples to a polygon → an extruded curved fin. Real geometry, and (since the
+    // curved wall samples to many segments) well over a bare box's 12 triangles.
+    let s = parse_solid(ARCH).expect("spline arch parses");
+    let m = mesh(&s);
+    assert!(!m.is_empty(), "the extruded spline arch has geometry");
+    assert!(
+        m.triangle_count() > 12,
+        "a sampled cubic-Bézier wall has many triangles, got {}",
+        m.triangle_count()
+    );
+}

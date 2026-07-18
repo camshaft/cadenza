@@ -124,12 +124,16 @@ fn s3_result_ok(t: &crate::ty::Ty) -> bool {
 
 /// Whether a closure-RESULT `Ty::Fn` is safe for host-closure FACTORY export. Each PARAMETER (the closure's
 /// args) may be an S1 scalar OR an S2 compound (`s2_arg_ok` — Tuple/List/Option/Result the harness rebuilds),
-/// and the final RESULT (S3) may be an S1 scalar OR a Tuple/List (`s3_result_ok` — NARROWER: no Option/
-/// Result result, whose type-annotated value-form render is a later slice). The gate peels the factory's
-/// arrow to the final result type and renders a Tuple/List via `cdz_render_expr`. A Float, String/Bytes, or
-/// user-sum anywhere stays DEFERRED — the factory emits a valid `Rc<dyn Fn>` but the harness pass/render
-/// isn't wired, so those stay a clean `todo`, not a wrong-value/non-build fail.
-fn fn_result_renderable(ty: &crate::ty::Ty) -> bool {
+/// and the final RESULT (S3) may be a scalar/Float, String/Bytes, Tuple/List, or a SUM (Option/Result/user)
+/// the harness renders as the value form (`s3_result_ok`). The gate peels the factory's arrow to the final
+/// result type and renders it via `cdz_render_expr`.
+///
+/// For a SUM result we ALSO verify the sum's VARIANT PAYLOADS are renderable (`sum_payloads_renderable`):
+/// `s3_result_ok` alone only recurses over a sum's TYPE-ARGS, so a MONOMORPHIC user sum (no args) would be
+/// admitted without checking its payloads — and a variant carrying a FUNCTION payload (`(type Holder (H
+/// (-> Int64 Int64)) (Z))`) has no `Display`/value-form render, so it would MIS-RENDER (a gate-differential
+/// FAIL). Reading the decl's variant payloads needs `db`, so this takes it.
+fn fn_result_renderable(db: &mut Db, ty: &crate::ty::Ty) -> bool {
     let mut cur = ty.strip_nominal();
     while let crate::ty::Ty::Fn(p, r) = cur {
         if !s2_arg_ok(p) {
@@ -137,10 +141,37 @@ fn fn_result_renderable(ty: &crate::ty::Ty) -> bool {
         }
         cur = r.strip_nominal();
     }
-    // `cur` is the final (non-arrow) result — renderable iff scalar / Tuple / List (NOT an Option/Result
-    // result, whose value-form render is deferred; `s3_result_ok` excludes it while `s2_arg_ok` admits it
-    // as an arg).
-    s3_result_ok(cur)
+    // `cur` is the final (non-arrow) result — renderable iff scalar/Float/String/Bytes/Tuple/List/sum
+    // (`s3_result_ok`) AND, for a sum, its variant payloads are renderable too (the fn-payload guard).
+    s3_result_ok(cur) && sum_payloads_renderable(db, cur)
+}
+
+/// For a SUM result type, whether every variant's PAYLOAD is renderable by the gate harness (`s3_result_ok`)
+/// — the payload-level check `s3_result_ok`'s type-args recursion cannot do (a monomorphic sum has no args).
+/// A FUNCTION payload (`(-> …)`) has no value-form render → NOT renderable → decline (the reviewer-flagged
+/// fn-payload user-sum hole). A non-sum type is trivially renderable here (the arms above already gated it).
+/// Reads each variant's payload type from the decl via `variant_payload_ty` (substituting this
+/// instantiation's args), so a generic sum's concrete payloads are checked too.
+fn sum_payloads_renderable(db: &mut Db, ty: &crate::ty::Ty) -> bool {
+    use crate::ty::Ty;
+    let stripped = ty.strip_nominal().clone();
+    let Ty::Sum { decl, .. } = &stripped else {
+        return true;
+    };
+    let n = match db.type_decl_by_occ(*decl) {
+        Some(td) => td.variants.len(),
+        None => return true,
+    };
+    for disc in 0..n as u32 {
+        // A nullary variant has no payload (`None`) — always fine. A payload variant's type must be
+        // renderable; recurse so a nested sum payload is checked to any depth.
+        if let Some(pty) = expr::variant_payload_ty(db, &stripped, disc)
+            && !(s3_result_ok(&pty) && sum_payloads_renderable(db, &pty))
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// If exported definition `e` is a top-level IMMEDIATE, CAPTURE-FREE lambda — `(def (name) (fn (p…)
@@ -537,7 +568,7 @@ fn emit_signature(
     // make-split. Defer compound captures + compound results + Float/String/Bytes/sum args to later slices.
     if public
         && is_fn_ty(result)
-        && (!fn_result_renderable(result) || !params.iter().all(|(_, t)| is_capture_scalar(t)))
+        && (!fn_result_renderable(db, result) || !params.iter().all(|(_, t)| is_capture_scalar(t)))
     {
         return Err(Reject::decline(format!(
             "`{name}`: a closure-returning export with a non-scalar capture/arg/result is not yet rendered by the Rust backend (host-closure S2/S3)"

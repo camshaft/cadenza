@@ -11009,3 +11009,38 @@
               (def (main) (tuple (build 3) 30))
               (export main)))
   (output (: (tuple (list 1 2 3) 30) (Tuple (List Int64) Int64))))
+
+; A WIDE MULTI-COLUMN MATCH's value must survive the emit-side shared-continuation reshape (S2). A match
+; whose arms each test >=2 LITERAL COLUMNS (`(tuple state token payload)` — a transition-table dispatch)
+; lowers its decision tree so a non-refining column's fall-through is a SHARED `Rc<SumCont>`. At EMIT the
+; wasm backend memoizes that shared continuation — on a 2nd reference it BRANCHES to the already-emitted
+; block instead of re-linearizing it, dropping the emitted core from O(2^arms) toward linear. The
+; correctness risk is a WRONG br-DEPTH in the reshaped branch nesting — a SILENT MISCOMPILE that passes the
+; match engine and the size metric while returning the wrong arm's value. This case is the value-parity
+; guardrail: a 12-arm two-column match over a RUNTIME scrutinee (so the br-tree is actually emitted, not
+; folded), pinned at three inputs — a matched arm (`(7 7 _)` -> 7), another matched arm (`(3 3 _)` -> 3),
+; and the wildcard (`(99 99 _)` -> -1). If the emit reshape mis-nests a branch, one of these flips.
+(case "a wide multi-column literal match returns the matched arm's value over a runtime scrutinee (S2 emit-reshape value guard)"
+  (doc    "12 arms each testing two literal columns of `(tuple a b c)`; the scrutinee is built from RUNTIME
+           parameters so the decision tree is EMITTED (a constant scrutinee would fold it away). `main 7 7 0`
+           takes the `(tuple 7 7 c)` arm -> 7. Pins the emitted br-tree's VALUE so the S2 shared-continuation
+           emit reshape (memoize + branch to the shared fall-through block) cannot silently return the wrong
+           arm via a wrong br-depth.")
+  (input  (do (def (main (: a Int64) (: b Int64) (: c Int64))
+                (match (tuple a b c)
+                                     ((tuple 0 0 c) 0)
+                                     ((tuple 1 1 c) 1)
+                                     ((tuple 2 2 c) 2)
+                                     ((tuple 3 3 c) 3)
+                                     ((tuple 4 4 c) 4)
+                                     ((tuple 5 5 c) 5)
+                                     ((tuple 6 6 c) 6)
+                                     ((tuple 7 7 c) 7)
+                                     ((tuple 8 8 c) 8)
+                                     ((tuple 9 9 c) 9)
+                                     ((tuple 10 10 c) 10)
+                                     ((tuple 11 11 c) 11)
+                                     (_ -1)))
+              (export main)))
+  (call   main (: 7 Int64) (: 7 Int64) (: 0 Int64))
+  (output (: 7 Int64)))

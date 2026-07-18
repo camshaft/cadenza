@@ -21,14 +21,14 @@ const SEXPR_MODEL = `(def (main) (lower ((. Solid Difference) ((. Solid Cube) (v
 
 test("ML: injects the import PREFIX line + the default-fraction pragma + a trailing export", () => {
   const out = injectImport(ML_MODEL, "ml");
-  assert.ok(out.startsWith(`import { Solid, v3r, lower } from "exact"\n`), "import is the first line");
+  assert.ok(/^import \{ [^}]*\bSolid\b[^}]*\blower\b[^}]* \} from "exact"\n/.test(out), "import (of the CAD superset) is the first line");
   assert.ok(out.includes("@!default-fraction Rational"), "the default-fraction pragma is injected");
   assert.ok(out.trimEnd().endsWith("export { main }"), "export is appended");
 });
 
 test("s-expr: wraps the inner forms in (do (import …) (pragma …) … (export main))", () => {
   const out = injectImport(SEXPR_MODEL, "sexpr");
-  assert.ok(out.startsWith(`(do\n(import "exact" (Solid v3r lower))\n`), "opens with (do (import …)");
+  assert.ok(/^\(do\n\(import "exact" \([^)]*\bSolid\b[^)]*\blower\b[^)]*\)\)\n/.test(out), "opens with (do (import …) of the CAD superset)");
   assert.ok(out.includes("(pragma default-fraction Rational)"), "the default-fraction pragma is injected");
   assert.ok(out.trimEnd().endsWith("(export main))"), "closes with (export main))");
   // The s-expr import spec is a bare name LIST — no commas (commas are an ML-surface artifact).
@@ -56,5 +56,5 @@ test("trims surrounding whitespace before embedding (stable prefix length)", () 
 test("the preloaded-library constants match what CadPage passes the compiler", () => {
   assert.equal(CAD_LIB_NAME, "exact");
   assert.equal(CAD_LIB_FORMAT, "ml"); // exact.cdz is authored in ML (.cdz)
-  assert.deepEqual([...CAD_IMPORTED_NAMES], ["Solid", "v3r", "lower"]);
+  assert.deepEqual([...CAD_IMPORTED_NAMES], ["Solid", "v3r", "lower", "Profile", "path-start", "line-to", "cubic-to", "v2"]);
 });

@@ -3456,6 +3456,66 @@ fn report_emit_conformance(paths: &Paths, profile: &str) {
             eprintln!("    • {d}");
         }
     }
+    report_must_compute_floor(&tools);
+}
+
+/// The MUST-COMPUTE FLOOR (breaker-suggested): a fixed list of programs KNOWN to be in the emit/interpret
+/// subset, each with its expected value. Unlike the corpus differential (which grades a both-legs decline as
+/// coverage-not-yet and stays green while the subset SHRINKS), the floor grades a program FLOOR-REGRESSED if
+/// EITHER leg (run-ml / run-emitted) fails to compute the pinned value — so a silent subset shrink (e.g. the
+/// depth-3-arith regression: `(+ (* (- 7 10) 3) (/ 100 7))` computed 5, then both legs began declining
+/// together, invisible to the agree/disagree/not-yet report) prints a loud FLOOR-REGRESSED line instead of
+/// green silence. Report-only (like the rest of the emit conformance report); the list grows as W-slices land
+/// (each adds its canonical program). Each entry is `(source, expected-value)`.
+fn report_must_compute_floor(tools: &Tools) {
+    // Programs that MUST compute their pinned value on BOTH legs — a GREEN baseline so a future silent
+    // subset-shrink flips this loud. One each of arith / let / if+comparison / negative — the canonical
+    // in-subset shapes. (The breaker's byte-verified depth-3 tree `(+ (* (- 7 10) 3) (/ 100 7))` → 5 is
+    // NOT seeded yet: it currently REGRESSES via the scale-emergent depth-3-nesting decline filed to
+    // v-inference — seeding a known-open regression would make the floor perpetually red + train readers
+    // to ignore it. ADD IT HERE once v-inference's depth-3 fix lands, so the floor re-locks that shape.)
+    const FLOOR: &[(&str, &str)] = &[
+        ("(+ (* 2 3) (/ 100 7))", "20"), // depth-2 mixed arith (all four ops in one tree)
+        ("(let ((x 21)) (+ x x))", "42"), // let-binding, bound var used twice
+        ("(if (< 3 5) 7 9)", "7"),       // if + comparison
+        ("(- 0 9)", "-9"),               // a negative result (unary-minus desugar)
+    ];
+    let mut regressed: Vec<String> = Vec::new();
+    for (src, want) in FLOOR {
+        let ml = run_program_ml(tools, src, None);
+        let emit = run_program_emitted(tools, src);
+        let ml_val = match &ml {
+            Ran::Value(v, _) => Some(v.trim().to_string()),
+            _ => None,
+        };
+        let emit_val = match &emit {
+            Ran::Value(v, _) => Some(v.trim().to_string()),
+            _ => None,
+        };
+        // FLOOR-REGRESSED if either leg didn't produce the expected value.
+        let ml_ok = ml_val.as_deref() == Some(*want);
+        let emit_ok = emit_val.as_deref() == Some(*want);
+        if !ml_ok || !emit_ok {
+            regressed.push(format!(
+                "{src:?} must compute {want} — run-ml={} run-emitted={}",
+                ran_summary(&ml),
+                ran_summary(&emit)
+            ));
+        }
+    }
+    let n = FLOOR.len();
+    let ok = n - regressed.len();
+    println!("emit-floor: {ok}/{n} must-compute programs hold");
+    if !regressed.is_empty() {
+        eprintln!(
+            "  ⚠ emit-floor FLOOR-REGRESSED — a program KNOWN in-subset no longer computes its pinned value \
+             on both legs (a subset SHRINK the agree/disagree report hides when both legs decline together; \
+             report-only, not yet blocking):"
+        );
+        for r in &regressed {
+            eprintln!("    • {r}");
+        }
+    }
 }
 
 /// Whether the EMITTED-wasm outcome AGREES with the INTERPRETER's on the same program (the W4 contract).

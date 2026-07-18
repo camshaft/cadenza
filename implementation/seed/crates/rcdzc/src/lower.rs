@@ -18569,6 +18569,27 @@ fn lower_sum_new(db: &mut Db, id: StructId, head: StructId, args: &[StructId]) -
                 args: args.to_vec(),
             };
         }
+        // @invariant ESTABLISH DIVERT for a SINGLE-VARIANT MULTI-payload newtype (`(type T (Mk A B))`). Such a
+        // type erases to a `Ty::Tuple` (the `_ =>` arm below), NOT a single-payload value — so the `args.len()
+        // == 1` divert above misses it, and without this it would construct with NO establish check. Its sole
+        // variant is disc 0, so it routes through the per-variant `__invariant_construct_<T>__d0`
+        // (`invariant_establish` synthesizes per-variant construct-defs for every non-sole-payload-newtype).
+        // Same exempt-set guard (the construct-def's own inner ctor keeps the plain tuple erasure) + monomorphic
+        // standalone `Core::Call`.
+        if args.len() >= 2
+            && !db.invariant_exempt_ctors.contains(&id)
+            && db.invariant_of(decl).is_some()
+            && let Some(type_name) = db.type_decl_by_occ(decl).map(|d| d.name.clone())
+            && let Some(callee) =
+                db.def_by_name(&format!("__invariant_construct_{type_name}__d{disc}"))
+        {
+            trace!(target: "rcdzc::lower", node = id.0, callee, disc, "sum-new: @invariant multi-payload newtype → per-variant checked-constructor establish divert");
+            db.called.insert(callee);
+            return Core::Call {
+                callee,
+                args: args.to_vec(),
+            };
+        }
         return match args.len() {
             0 => Core::Unit,
             1 => core_of(db, args[0]),
