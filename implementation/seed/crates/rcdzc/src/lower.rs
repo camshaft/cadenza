@@ -1577,6 +1577,21 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                             trace!(target: "rcdzc::fold", node = id.0, len = elems.len(), "List.len folds to a constant (visible list literal)");
                             Core::ConstInt(IntValue::from_i64(elems.len() as i64))
                         }
+                        // A `let`-BOUND constant list: `(let ((xs (list 1 2 3))) (List.len xs))`. The
+                        // operand's core is a `LocalRef` to a kept multi-use binding, so it is not DIRECTLY
+                        // a `ListNew`; follow the binder to the value it names and fold if THAT is a visible
+                        // list literal. `List.len` = the spine ARITY, which is fixed at construction, so the
+                        // len is the literal's element count regardless of how the value is bound (sound —
+                        // only `Set.len`/`Map.size` are unsafe to fold, since dedup can shrink them). This
+                        // only folds the LEN read to a constant; it does NOT erase the binding, so if `xs`
+                        // is used elsewhere the list is still built (the len just stops re-reading it).
+                        Core::LocalRef { binder } => match core_of(db, binder) {
+                            Core::ListNew { elems } => {
+                                trace!(target: "rcdzc::fold", node = id.0, len = elems.len(), "List.len folds to a constant (let-bound list literal)");
+                                Core::ConstInt(IntValue::from_i64(elems.len() as i64))
+                            }
+                            _ => Core::ListLen { operand },
+                        },
                         Core::Poison(r) => Core::Poison(r),
                         _ => Core::ListLen { operand },
                     }
@@ -21793,6 +21808,61 @@ mod tests {
             Core::ConstInt(IntValue::from_i64(6)),
             "a constant binding folds; nothing is named"
         );
+    }
+
+    #[test]
+    fn list_len_over_a_let_bound_constant_list_folds_through_the_binder() {
+        // `(let ((xs (list 1 2 3))) (+ (List.len xs) (List.len xs)))` — `xs` is a KEPT multi-use binding
+        // (used twice), so `List.len xs`'s operand core is a `LocalRef`, not a direct `ListNew`. The fold
+        // must FOLLOW the binder to the bound list literal and fold the len to its arity (3), so the `let`
+        // BODY folds to `ConstInt(6)` (3 + 3). The binding itself is KEPT (the multi-use keep decision was
+        // taken before folding, so the list is still built — a dead-binding DCE is a separate pass), but
+        // the len reads no longer touch it. Pins the both-backend Core fold gap v-wasm-opt routed.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (g) (let ((xs (list 1 2 3))) (+ (List.len xs) (List.len xs)))) (export g))",
+        ));
+        let body = body_of(&mut db, "g");
+        match core_of(&mut db, body) {
+            Core::Let { body: let_body, .. } => {
+                assert_eq!(
+                    core_of(&mut db, let_body),
+                    Core::ConstInt(IntValue::from_i64(6)),
+                    "the let body folds to 6 (both List.len reads fold through the binder to arity 3)"
+                );
+            }
+            // If a future DCE erases the now-dead binding, a bare ConstInt(6) is also correct.
+            Core::ConstInt(v) => assert_eq!(v, IntValue::from_i64(6)),
+            other => panic!("expected a Let whose body folds to 6 (or a bare 6), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_len_over_a_let_bound_list_folds_the_len_but_keeps_the_binding_when_used_elsewhere() {
+        // When the bound list is ALSO used elsewhere, the len read still folds to the arity (a constant),
+        // but the binding is NOT erased — the list is still built for the other use. Here `xs` feeds both a
+        // `List.len` (folds to 3) and a `List.concat` (a runtime op that keeps the list live). The `let`
+        // body is an `Add` whose lhs is the folded `ConstInt(3)` — pinning that following the binder folds
+        // ONLY the direct len, not the runtime concat's len, and keeps the binding.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (g) (let ((xs (list 10 20 30))) (+ (List.len xs) (List.len (List.concat xs xs))))) (export g))",
+        ));
+        let body = body_of(&mut db, "g");
+        let add = match core_of(&mut db, body) {
+            Core::Let { body: let_body, .. } => core_of(&mut db, let_body),
+            other => other,
+        };
+        match add {
+            Core::Arith {
+                op: Prim::Add, lhs, ..
+            } => {
+                assert_eq!(
+                    core_of(&mut db, lhs),
+                    Core::ConstInt(IntValue::from_i64(3)),
+                    "the direct List.len xs folds to the arity 3"
+                );
+            }
+            other => panic!("expected an Add over a folded len, got {other:?}"),
+        }
     }
 
     #[test]

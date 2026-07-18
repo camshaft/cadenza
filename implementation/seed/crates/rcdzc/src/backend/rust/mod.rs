@@ -67,19 +67,36 @@ fn is_s1_scalar(t: &crate::ty::Ty) -> bool {
     )
 }
 
-/// Whether a closure-RESULT `Ty::Fn` is safe for host-closure FACTORY S1: EVERY arrow element (each
-/// parameter AND the final result) is an S1 scalar. A compound/Float arg or result is deferred (S2/S3) —
-/// the factory still emits a valid `Rc<dyn Fn>`, but the harness arg-rebuild / result-render for those is
-/// not yet wired, so those cases stay a clean `todo` rather than a wrong-value / non-build fail.
+/// Whether a closure ARG type is OK for the host-closure FACTORY slice (S1 scalar OR S2 compound). S2
+/// widens the accepted ARGS to the COMPOUND shapes the gate harness's `rust_call_arg` rebuilds structurally
+/// over S2-OK elements: a TUPLE (`both(caps)((3, 4))` — the closure reads the native `(i64, i64)`) or a
+/// LIST (`…(vec![…])`). A Float/String/Bytes leaf, an Option/Result/user-sum arg (harness enum-rebuild +
+/// the closure's match over it are a later sub-slice), or any deeper shape stays DEFERRED — the factory
+/// still emits a valid `Rc<dyn Fn>`, so those cases stay a clean `todo`, not a wrong-value/non-build fail.
+fn s2_arg_ok(t: &crate::ty::Ty) -> bool {
+    use crate::ty::Ty;
+    match t.strip_nominal() {
+        Ty::Int(_) | Ty::Bool => true,
+        Ty::Tuple(elems) => elems.iter().all(s2_arg_ok),
+        Ty::List(elem) => s2_arg_ok(elem),
+        _ => false,
+    }
+}
+
+/// Whether a closure-RESULT `Ty::Fn` is safe for host-closure FACTORY export. Each PARAMETER (the closure's
+/// args) may be an S1 scalar OR an S2 compound (`s2_arg_ok` — Tuple/List the harness rebuilds); the final
+/// RESULT must still be an S1 SCALAR (a compound result needs the S3 render, deferred). A Float arg/result,
+/// a String/Bytes, an Option/Result/sum arg, or a compound result is deferred — the factory emits a valid
+/// `Rc<dyn Fn>` but the harness pass/render isn't wired, so it stays a clean `todo`, not a fail.
 fn fn_result_is_scalar_only(ty: &crate::ty::Ty) -> bool {
     let mut cur = ty.strip_nominal();
     while let crate::ty::Ty::Fn(p, r) = cur {
-        if !is_s1_scalar(p) {
+        if !s2_arg_ok(p) {
             return false;
         }
         cur = r.strip_nominal();
     }
-    // `cur` is now the final (non-arrow) result.
+    // `cur` is now the final (non-arrow) result — RESULT stays S1-scalar (S3 wires compound results).
     is_s1_scalar(cur)
 }
 
@@ -467,14 +484,14 @@ fn emit_signature(
     // __lifted_k(captures, args))`), which `types::rust_type(Ty::Fn)` maps to the `-> Rc<dyn Fn(…)->…>`
     // return type. So the host calls `both(10, 20)` → an `Rc<dyn Fn>` handle, then applies it `(5)` — the
     // native equivalent of the wasm make/call handle ABI (the gate harness splits the flat call args at the
-    // factory param count). S1 SCOPE: allow it only when the returned closure is SCALAR-ONLY (every arg +
-    // the result a scalar) — the shape the harness passes + renders today. A compound arg (S2) or compound
-    // result (S3) still declines cleanly (a `todo`, not a wrong-value/non-build fail): the factory emits a
-    // valid `Rc<dyn Fn>`, but the harness arg-rebuild / result-render for those is a later slice.
-    // S1 also requires the factory's OWN params (the CAPTURES — the leading `both(a, b)` args the host
-    // supplies at `make`) to be S1 scalars: the harness passes them as literals in the make-call split, and
-    // a compound capture (a host-supplied Tuple/record — e.g. the "producer capturing a host-supplied
-    // COMPOUND parameter is declined" corpus case) is not yet rebuilt there. Defer those to a later slice.
+    // factory param count). SCOPE (S1+S2): allow it when the returned closure's ARGS are each an S1 scalar
+    // OR an S2 compound (`fn_result_is_scalar_only` → `s2_arg_ok`: Tuple/List the harness rebuilds) AND the
+    // RESULT is an S1 scalar. A compound RESULT (S3) still declines cleanly (a `todo`, not a wrong-value/
+    // non-build fail): the factory emits a valid `Rc<dyn Fn>`, but the harness result-render for a compound
+    // is a later slice. Also require the factory's OWN params (the CAPTURES — the leading `both(a, b)` args
+    // the host supplies at `make`) to be S1 SCALARS: a compound capture (a host-supplied Tuple/record — the
+    // "producer capturing a host-supplied COMPOUND parameter is declined" case) is not yet rebuilt at the
+    // make-split. Defer compound captures + compound results + Float/String/Bytes/sum args to later slices.
     if public
         && is_fn_ty(result)
         && (!fn_result_is_scalar_only(result) || !params.iter().all(|(_, t)| is_s1_scalar(t)))

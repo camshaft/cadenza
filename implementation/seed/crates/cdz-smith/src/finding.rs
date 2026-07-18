@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use crate::oracle::{CrashInfo, Verdict, compile_catching};
 
-/// What kind of finding this is. (Differential is reserved for the planned run-and-compare oracle.)
+/// What kind of finding this is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Category {
     /// A panic escaped the compile path.
@@ -28,6 +28,10 @@ pub enum Category {
     /// The compiler reported success but the emitted component failed wasm validation (a backend
     /// miscompile — structurally-invalid wasm).
     InvalidWasm,
+    /// The two emit backends produced VALID artifacts that DISAGREE on the program's value (or one
+    /// ran to a value where the other trapped) — a wrong-value miscompile the crash/validity oracles
+    /// are blind to. `detail` carries the `wasm=… rust=…` disagreement (dedup key + note body).
+    Differential,
 }
 
 impl Category {
@@ -36,6 +40,7 @@ impl Category {
             Category::Crash => "crash",
             Category::Timeout => "timeout",
             Category::InvalidWasm => "invalid-wasm",
+            Category::Differential => "differential",
         }
     }
 }
@@ -75,6 +80,14 @@ impl Finding {
                 let d = self.detail.as_deref().unwrap_or("invalid-wasm");
                 format!("invalid-wasm::{}", mask_message(d))
             }
+            // Bucket differential findings by the (masked) disagreement, so distinct miscompiles get
+            // distinct buckets. The detail is `wasm=<a> rust=<b>`; masking digits/hex keeps programs
+            // that differ only in literal magnitudes (`wasm=6 rust=7` vs `wasm=42 rust=43`) in ONE
+            // bucket per shape rather than one per magnitude.
+            (None, Category::Differential) => {
+                let d = self.detail.as_deref().unwrap_or("differential");
+                format!("differential::{}", mask_message(d))
+            }
             (None, Category::Timeout) => "timeout".to_string(),
             (None, _) => "unknown".to_string(),
         };
@@ -95,6 +108,10 @@ impl Finding {
             (None, Category::InvalidWasm) => format!(
                 "backend emitted INVALID wasm: {}",
                 first_line(self.detail.as_deref().unwrap_or("validation failed"))
+            ),
+            (None, Category::Differential) => format!(
+                "backends DISAGREE on value: {}",
+                first_line(self.detail.as_deref().unwrap_or("wasm ≠ rust"))
             ),
             (None, Category::Timeout) => {
                 "compiler timeout (no result inside the budget)".to_string()
@@ -226,6 +243,26 @@ impl FindingStore {
             if let Some(d) = &finding.detail {
                 s.push_str(&format!("- **Validator error:** {}\n", first_line(d)));
             }
+        } else if finding.category == Category::Differential {
+            s.push_str("## Backend value disagreement (miscompile)\n\n");
+            s.push_str(
+                "Both emit backends produced a VALID artifact, but they DISAGREE on the program's\n",
+            );
+            s.push_str(
+                "result — the wasm component (run via `cdz-run`) and the Rust backend (run via\n",
+            );
+            s.push_str(
+                "`cdz run-rust`) computed different values, or one ran to a value where the other\n",
+            );
+            s.push_str(
+                "trapped. The backends share the front-end and diverge below the emit seam, so this\n",
+            );
+            s.push_str(
+                "is a lowering bug on one side. The crash/invalid-wasm oracles are blind to it.\n\n",
+            );
+            if let Some(d) = &finding.detail {
+                s.push_str(&format!("- **Disagreement:** {}\n", first_line(d)));
+            }
         } else if finding.category == Category::Timeout {
             s.push_str("## Timeout\n\n");
             s.push_str(
@@ -297,7 +334,7 @@ fn shrink_while(source: &str, keep: impl Fn(&Verdict) -> bool) -> String {
 // ── helpers ─────────────────────────────────────────────────────────────────────────────────
 
 /// The byte spans of every balanced `(...)` sub-form in `s` (outermost and nested).
-fn balanced_spans(s: &str) -> Vec<(usize, usize)> {
+pub(crate) fn balanced_spans(s: &str) -> Vec<(usize, usize)> {
     let bytes = s.as_bytes();
     let mut stack = Vec::new();
     let mut spans = Vec::new();

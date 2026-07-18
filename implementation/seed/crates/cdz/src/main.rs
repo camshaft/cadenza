@@ -151,6 +151,14 @@ enum Cmd {
     /// no `--manifest`).
     Add(AddArgs),
 
+    /// Remove a PATH DEPENDENCY from the project's `Project.cdz` (the `cargo remove` analogue): drop PATH
+    /// from the manifest's `def deps` list, so you don't hand-edit the manifest. Idempotent — a path that
+    /// isn't a declared dependency is a no-op with a notice. Edits the manifest TEXT in place (preserving
+    /// its formatting + comments), then re-parses to confirm it's still valid + no longer declares PATH,
+    /// rolling back on any failure. Resolves the same `Project.cdz` as `cdz build`/`cdz add` (searching
+    /// upward with no `--manifest`). The inverse of `cdz add`.
+    Remove(RemoveArgs),
+
     // ── project clean ─────────────────────────────────────────────────────────────────────────────
     /// Remove the build artifacts a `cdz build`/`cdz run` produces (the `cargo clean` analogue): the
     /// project's `<entry>.wasm`/`.rs`/`.dwarf`, `link-map.txt`, and any leftover `cdz run` temp component,
@@ -342,6 +350,7 @@ fn main() -> ExitCode {
         Cmd::Metadata(a) => run_metadata(&a),
         Cmd::Tree(a) => run_tree(&a),
         Cmd::Add(a) => run_add(&a),
+        Cmd::Remove(a) => run_remove(&a),
         Cmd::Clean(a) => run_clean(&a),
         Cmd::New(a) => run_new(&a),
         Cmd::Init(a) => run_init(&a),
@@ -2266,6 +2275,107 @@ fn run_add(args: &AddArgs) -> ExitCode {
             eprintln!(
                 "{PROG}: the edit did not produce a valid `{MANIFEST_NAME}` declaring `{}` — reverted \
                  (please add it by hand)",
+                args.path
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[derive(clap::Args)]
+struct RemoveArgs {
+    /// The PATH dependency to remove — the same path text it was added with (relative to the manifest),
+    /// e.g. `../lib`. Matched against the manifest's parsed `def deps` verbatim.
+    path: String,
+    /// The project to remove the dependency FROM: a `Project.cdz` or a directory holding one. OMITTED →
+    /// search up from the current directory for the nearest `Project.cdz` (like `cdz build`/`cdz add`).
+    #[arg(long)]
+    manifest: Option<String>,
+}
+
+/// `cdz remove PATH [--manifest DIR]` — remove a PATH dependency from the project's `Project.cdz` (the
+/// `cargo remove` analogue, the inverse of `cdz add`). Resolves the manifest (same as `cdz add`), checks
+/// PATH is actually a declared dep (a path that isn't → an idempotent no-op notice), then rebuilds the
+/// `def deps = [...]` list from the parsed deps MINUS `PATH` and rewrites just that clause's `[...]` —
+/// rebuilding (rather than string-splicing out one entry + its comma) cleanly handles every position
+/// (first/middle/last/only). Text-editing preserves the user's formatting + comments elsewhere. After
+/// writing it RE-PARSES to confirm a valid manifest that NO LONGER declares PATH, rolling back on failure.
+fn run_remove(args: &RemoveArgs) -> ExitCode {
+    let (dir, mpath, m) = match resolve_project_manifest(args.manifest.as_deref(), "cdz remove") {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    // Idempotent: removing a path that isn't a declared dependency is a no-op (not an error).
+    if !m.deps.iter().any(|d| d.as_manifest_text() == args.path) {
+        eprintln!(
+            "{PROG}: `{}` does not declare `{}` as a dependency — nothing to remove",
+            mpath.display(),
+            args.path
+        );
+        return ExitCode::SUCCESS;
+    }
+    // Read the manifest TEXT (not the arena) so the edit preserves formatting + comments elsewhere.
+    let text = match std::fs::read_to_string(&mpath) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{PROG}: reading {}: {e}", mpath.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    // Rebuild the deps list as the remaining paths (parsed order), each re-quoted via the canonical
+    // escaper so it re-parses exactly — then replace ONLY this `def deps` clause's `[...]` content. This
+    // drops PATH regardless of its position and never leaves a dangling/leading comma.
+    let remaining: Vec<String> = m
+        .deps
+        .iter()
+        .map(|d| d.as_manifest_text())
+        .filter(|p| p != &args.path)
+        .map(|p| format!("\"{}\"", cadenza_syntax::literal::escape_string(p)))
+        .collect();
+    let Some(open) = text.find("def deps") else {
+        // `deps` parsed non-empty but no `def deps` in text — shouldn't happen; don't guess, refuse.
+        eprintln!(
+            "{PROG}: {}: `def deps` not found in the manifest text — not editing",
+            mpath.display()
+        );
+        return ExitCode::FAILURE;
+    };
+    let Some(lb) = text[open..].find('[').map(|i| open + i) else {
+        eprintln!(
+            "{PROG}: {}: malformed `def deps` (no `[`) — not editing",
+            mpath.display()
+        );
+        return ExitCode::FAILURE;
+    };
+    let Some(rb) = text[lb..].find(']').map(|i| lb + i) else {
+        eprintln!(
+            "{PROG}: {}: malformed `def deps` (no `]`) — not editing",
+            mpath.display()
+        );
+        return ExitCode::FAILURE;
+    };
+    let new_text = format!(
+        "{}[{}]{}",
+        &text[..lb],
+        remaining.join(", "),
+        &text[rb + 1..]
+    );
+    // Write, then RE-PARSE to confirm the edit is valid AND no longer declares PATH. Roll back on failure.
+    if let Err(e) = std::fs::write(&mpath, &new_text) {
+        eprintln!("{PROG}: writing {}: {e}", mpath.display());
+        return ExitCode::FAILURE;
+    }
+    match load_manifest(&dir) {
+        Ok(Some((_p, m2))) if !m2.deps.iter().any(|d| d.as_manifest_text() == args.path) => {
+            eprintln!("{PROG}: removed `{}` from {}", args.path, mpath.display());
+            ExitCode::SUCCESS
+        }
+        _ => {
+            // The edit produced an invalid / unexpected manifest (or PATH still present) — restore original.
+            let _ = std::fs::write(&mpath, &text);
+            eprintln!(
+                "{PROG}: the edit did not produce a valid `{MANIFEST_NAME}` without `{}` — reverted \
+                 (please remove it by hand)",
                 args.path
             );
             ExitCode::FAILURE

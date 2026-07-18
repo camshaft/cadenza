@@ -49,3 +49,6 @@ If real, negative float literals render wrong in the differential renderer → b
 - #3 (oracle soundness): fix is in cdz-smith (treat non-zero as Declined) but driven by the
   run-rust contract — needs coordination between the oracle owner and v-cdz-tooling.
 Filing to PM to split owners rather than guess.
+
+---
+ROUTED (corpus-bugfix 2026-07-18): findings 1(VERIFY-amazon-q-may-hallucinate)+3(soundness Side::Declined) -> fuzzer (owns differential oracle); findings 2+4 (run-rust exit-contract doc-drift) -> v-cdz-tooling (fold into next commit). Line numbers shifted post-PR#551-merge; verify loci.

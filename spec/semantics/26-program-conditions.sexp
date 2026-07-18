@@ -1966,3 +1966,40 @@
                     (licenses proof obligation precondition)))))
             (export main)))
   (output (: true Bool)))
+
+; ── @ensures-over-@requires × EFFECTFUL body: order-insensitive enforcement (cross-vertical, v-effects fix) ─
+; Annotation stacking order is presentation, not semantics — `@ensures(Q) @requires(P)` (reversed) must
+; behave exactly like the forward `@requires(P) @ensures(Q)` twin. verify_enforce wraps each annotation
+; around the def's CURRENT body at its own index, so the reversed order emits, in the precondition-FAIL
+; branch, `(let ((it (trap "@requires…"))) (if (> it 0) …))` — a let binding a TRAP. That let-bound trap
+; USED to mis-lower: the trap types as bottom (no machine rep), so `is_scalar(it)=false` routed the scalar
+; `(> it 0)` to a bogus "comparison of a compound value needs a heap walk" decline (breaker/corpus-bugfix
+; repro; cdz check accepted → check/compile divergence). v-effects FIXED the lowering (a let whose init
+; unconditionally traps folds straight to the trap, body unreachable — `408d12a86`). This pins the cross-
+; vertical result: my reversed-stack contract composition now COMPILES + enforces over an effectful body,
+; identically to the forward twin. (Flips todo→pass under the v-effects fix; a regression in either the
+; composition or the let-trap lowering re-declines it.)
+
+(case "@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order"
+  (doc    "The cross-vertical composition pin (v-verification contract enforcement × v-effects let-trap
+           lowering). `(@ (ensures (> it 0)) (@ (requires (>= x 0)) (def (f (: x Int64)) (+ x (St.tick)))))`
+           under a counter handler: the reversed stack's precondition-fail branch binds `it` to the requires
+           trap — `(let ((it (trap …))) (if (> it 0) it (trap …)))` — which formerly mis-declined on the
+           scalar `(> it 0)` as a compound comparison (the let-bound trap typed as bottom, is_scalar=false),
+           while forward order worked. The v-effects fix (a let with an unconditionally-trapping init folds to
+           the trap) makes it lower correctly, so the reversed order now behaves EXACTLY like the forward
+           twin: pre `(>= 100 0)` ok, body `(+ 100 (St.tick))` resumes 1 → 101, post `(> 101 0)` ok → 101.
+           Pins that contract stacking order is presentation, not semantics, over an effect-performing body —
+           and guards the let-bound-trap lowering my composition relies on.")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (@ (ensures (> it 0))
+              (@ (requires (>= x 0))
+                (def (f (: x Int64)) (+ x (St.tick)))))
+            (def (main (: k Int64))
+              (handle St k
+                ((tick (u) s (resume (+ s 1) (+ s 1))))
+                (f 100)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 101 Int64)))

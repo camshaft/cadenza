@@ -1,5 +1,6 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	@ensures on a def with a parameter named it is REJECTED (would silently not enforce — rename the param)
+pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
 pass	@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	Ast.decode converts bytes to an AST sum type value
@@ -24,6 +25,7 @@ pass	Int8.wrap at the sign-bit boundary is the most-negative Int8
 pass	Int8.wrap of all-ones-byte is negative one
 pass	List.len of a concat of call-site lists with runtime elements folds to the summed arity
 pass	List.len of a list built at the call site from runtime elements folds to the arity
+pass	List.len over a let-bound constant list folds to the arity on both backends
 pass	MK_COMB unions its operands' hypotheses — an assumption threaded through MK_COMB survives (soundness)
 pass	MK_COMB unions the hypotheses of BOTH operands when each carries a distinct assumption
 pass	MP should match its antecedent up to α-equivalence: aconv-MP accepts an α-variant a structural equality rejects
@@ -522,6 +524,7 @@ pass	a dependent size one past the remaining bytes overruns and falls through
 pass	a dependent-size segment binding exactly the remaining bytes leaves an empty rest
 pass	a dependent-size segment binds exactly the number of bytes an earlier segment named
 pass	a dependent-size segment that overruns the remaining bytes falls through
+pass	a depth-3 erased-and-boxed nested-sum match reads every level's discriminant at the right offset
 pass	a destructuring let over a runtime value binds its parts
 pass	a dictionary consumer called at two dictionaries is monomorphized per dictionary
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
@@ -2141,6 +2144,7 @@ pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an erased newtype over a sum reads the inner payload, not the whole wrapper
 pass	an erased single-variant newtype wrapping a sum matches through the inner variants
+pass	an erased-newtype nested-sum match with binder-only arms dispatches on the inner discriminant
 pass	an erased-newtype's list payload split across empty and rest arms dispatches with vec-get
 pass	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
 pass	an escaping tuple evaluates its trapping element

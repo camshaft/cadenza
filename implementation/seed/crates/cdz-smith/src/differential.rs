@@ -187,11 +187,68 @@ pub fn run_wasm(source: &str, store: &std::path::Path) -> Side {
         ..Default::default()
     };
     match cdz_run::run(&component, &opts) {
-        Ok(cdz_run::Outcome::Value(v)) => Side::Value(v.trim().to_string()),
+        // NORMALIZE to the bare value. `cdz-run` renders a COMPOUND (and, depending on the ABI, a
+        // scalar) result as the full `(: <value> <Type>)` value-form, while `cdz run-rust` renders the
+        // bare `<value>`. Comparing the two raw would flag every string/tuple as a false "mismatch"
+        // (the values agree; only the type annotation differs). Strip the `(: … <Type>)` wrapper so both
+        // sides are the same canonical bare form — exactly the accept-either-form rule the corpus gate
+        // uses (`expected_value`).
+        Ok(cdz_run::Outcome::Value(v)) => Side::Value(strip_value_annotation(v.trim())),
         Ok(cdz_run::Outcome::Trap(t)) => Side::Trap(t),
         // A run harness error (invalid component, unresolvable import) — not a value disagreement;
         // don't file it as a mismatch. (An INVALID component is already the invalid-wasm oracle's job.)
         Err(e) => Side::Declined(format!("wasm run failed: {e}")),
+    }
+}
+
+/// Strip the `(: <value> <Type>)` value-form wrapper down to the bare `<value>`, matching what
+/// `cdz run-rust` (and a scalar `cdz-run` result) prints. A payload that is NOT a value-form is
+/// returned unchanged. Mirrors the corpus gate's `expected_value`: take the FIRST balanced token after
+/// `(:` — a `(…)` group, a `"…"` string (which may contain spaces), or a bare atom up to the next space.
+fn strip_value_annotation(payload: &str) -> String {
+    let Some(rest) = payload.strip_prefix("(:") else {
+        return payload.to_string();
+    };
+    let rest = rest.trim();
+    let bytes = rest.as_bytes();
+    match bytes.first() {
+        // A parenthesized value — take the balanced `(…)` group.
+        Some(b'(') => {
+            let mut depth = 0i32;
+            for (i, &b) in bytes.iter().enumerate() {
+                match b {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return rest[..=i].to_string();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            rest.to_string()
+        }
+        // A quoted string value (may contain internal spaces) — take up to the matching close quote,
+        // honoring a `\"` escape so an embedded quote does not end the token early.
+        Some(b'"') => {
+            let mut escaped = false;
+            for (i, &b) in bytes.iter().enumerate().skip(1) {
+                if escaped {
+                    escaped = false;
+                } else if b == b'\\' {
+                    escaped = true;
+                } else if b == b'"' {
+                    return rest[..=i].to_string();
+                }
+            }
+            rest.to_string()
+        }
+        // A bare atom — up to the next space (dropping the trailing `)` when there is no space).
+        _ => match rest.find(char::is_whitespace) {
+            Some(idx) => rest[..idx].to_string(),
+            None => rest.trim_end_matches(')').to_string(),
+        },
     }
 }
 
@@ -280,6 +337,49 @@ pub fn differential(source: &str, store: &std::path::Path, cdz: &std::path::Path
         Err(e) => return Diff::Unavailable(e),
     };
     compare(&wasm, &rust)
+}
+
+/// Greedily minimize a program that triggers a differential MISMATCH, preserving that the shrunk
+/// program STILL mismatches (of the SAME [`MismatchKind`]). Mirrors `finding::shrink*` but its
+/// predicate re-runs the full two-backend `differential` (each accepted step re-derives spans on the
+/// smaller program). Bounded passes so a pathological input can't loop; each accepted deletion
+/// strictly shrinks the source. A `Diff::Unavailable` mid-shrink stops accepting (we keep the best so
+/// far) — we never trade a confirmed mismatch for an un-rerunnable candidate.
+pub fn shrink_differential(
+    source: &str,
+    kind: MismatchKind,
+    store: &std::path::Path,
+    cdz: &std::path::Path,
+) -> String {
+    let mut best = source.to_string();
+    for _ in 0..12 {
+        let mut improved = false;
+        let spans = crate::finding::balanced_spans(&best);
+        for (lo, hi) in spans.into_iter().rev() {
+            if lo == 0 && hi == best.len() {
+                continue; // never delete the whole program
+            }
+            let mut candidate = String::with_capacity(best.len() - (hi - lo));
+            candidate.push_str(&best[..lo]);
+            candidate.push_str(&best[hi..]);
+            let candidate = candidate.trim().to_string();
+            if candidate.len() >= best.len() {
+                continue;
+            }
+            // Keep the deletion only if it still mismatches the SAME way.
+            if let Diff::Mismatch { kind: k, .. } = differential(&candidate, store, cdz)
+                && k == kind
+            {
+                best = candidate;
+                improved = true;
+                break; // re-derive spans on the smaller program
+            }
+        }
+        if !improved {
+            break;
+        }
+    }
+    best
 }
 
 /// Best-effort discovery of the `cdz` binary for the rust side: honor `CDZ_SMITH_CDZ`, else look for
@@ -414,6 +514,58 @@ mod tests {
         }
         // An unrecognized line is conservatively a decline (never a spurious mismatch).
         assert!(matches!(parse_rust_verdict("weird"), Side::Declined(_)));
+    }
+
+    // ── value-annotation stripping (the false-positive fix) ──────────────────────────────────
+
+    #[test]
+    fn strip_value_annotation_matches_the_bare_rust_render() {
+        // A bare scalar has no wrapper — unchanged.
+        assert_eq!(strip_value_annotation("3"), "3");
+        // A string value-form → the bare quoted string (the exact false positive that motivated this).
+        assert_eq!(strip_value_annotation("(: \"ayg\" String)"), "\"ayg\"");
+        // A string with INTERNAL SPACES must not be cut at the first space.
+        assert_eq!(
+            strip_value_annotation("(: \"hello world\" String)"),
+            "\"hello world\""
+        );
+        // A compound (tuple) value-form → the bare `(tuple …)` group, not cut at its inner space.
+        assert_eq!(
+            strip_value_annotation("(: (tuple 1 \"x\") (Tuple Int64 String))"),
+            "(tuple 1 \"x\")"
+        );
+        // A bare-atom value-form (`(: 42 Int64)`) → `42`.
+        assert_eq!(strip_value_annotation("(: 42 Int64)"), "42");
+        // A non-value-form payload is returned unchanged.
+        assert_eq!(strip_value_annotation("(tuple 1 2)"), "(tuple 1 2)");
+    }
+
+    /// The end-to-end case that a scalar-only test missed: a STRING result. Both backends must AGREE
+    /// after normalization (`cdz-run` prints `(: "ayg" String)`, `cdz run-rust` prints `"ayg"`).
+    #[test]
+    fn a_string_program_agrees_across_backends_after_normalization() {
+        let Some(cdz) = discover_cdz() else {
+            eprintln!("skipping: no `cdz` binary discovered (set CDZ_SMITH_CDZ)");
+            return;
+        };
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo = manifest.ancestors().nth(4).unwrap();
+        let store = repo.join("target/cadenza-store");
+
+        let program = r#"(do (def (main) "ayg") (export main))"#;
+        let wasm = run_wasm(program, &store);
+        assert_eq!(
+            wasm,
+            Side::Value("\"ayg\"".into()),
+            "wasm side (normalized)"
+        );
+        match run_rust(&cdz, program) {
+            Ok(rust) => {
+                assert_eq!(rust, Side::Value("\"ayg\"".into()), "rust side");
+                assert_eq!(compare(&wasm, &rust), Diff::Agree);
+            }
+            Err(e) => eprintln!("skipping rust side: {e}"),
+        }
     }
 
     // ── end-to-end: the two backends agree on a trivial arithmetic program ───────────────────

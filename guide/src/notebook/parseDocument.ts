@@ -14,11 +14,29 @@
 // TYPE-ONLY import (erased at compile time — keeps this module worker/runtime-free per the purity note
 // above): `Surface` is a bare string-union, so importing its type pulls in no worker code.
 import type { Surface } from "../compiler/worker.ts";
-// `gatherTestForms`/`ungatherTestForms` are PURE string transforms (no worker) — they wrap a MULTI-form
-// cell into one top-level form the single-form pretty-printer can render, then peel it back. Needed
-// because a notebook code cell may hold several top-level `def`s (e.g. a helper + `main`), which
-// `renderSyntax` (single-form) rejects with "trailing input" unless gathered first.
-import { gatherTestForms, ungatherTestForms } from "../components/wrapModule.ts";
+
+/// Wrap a cell's source into ONE top-level form the single-form `renderSyntax` accepts. A notebook code
+/// cell may hold several top-level `def`s (a helper + `main`); s-expr has no bare multi-form top level, so
+/// several forms are gathered under a `(do …)`. ML's top level IS natively multi-form, so it passes through.
+///
+/// ⚠ We do NOT reuse `wrapModule.gatherTestForms`/`ungatherTestForms`: their un-gather is `stripModule`,
+/// which also strips a `(def (main) …)` (it assumes any top-level `main` is a wrapper-SYNTHESIZED entry to
+/// peel). Notebook cells legitimately DEFINE `main`, so that would DELETE the cell's `main` def on the
+/// ML→s-expr leg (→ CDZ0101 "unbound name main" — co-verified by v-guide-infra). These helpers peel ONLY
+/// the `(do …)` we added, never a real `def`.
+function gatherForRender(src: string, surface: Surface): string {
+  return surface === "sexpr" ? `(do ${src.trim()})` : src.trim();
+}
+/// Inverse of `gatherForRender` over a RENDERED cell: peel exactly the ONE `(do …)` wrapper back off an
+/// s-expr render (leaving every `def` intact); an ML render is already native multi-form. The head is
+/// `(do` + ANY whitespace — the s-expr pretty-printer emits `(do\n  …)` for a multi-LINE body, so matching
+/// only `(do ` (a space) would leave a large multi-form cell wrapped (its defs then aren't top-level →
+/// downstream cells + `main` go unbound — the loan/projectile toggle break).
+function ungatherAfterRender(rendered: string, to: Surface): string {
+  const t = rendered.trim();
+  if (to === "sexpr" && /^\(do\s/.test(t) && t.endsWith(")")) return t.slice(3, -1).trim();
+  return t;
+}
 
 /// A render directive on a ```cadenza fence info string (the token after `cadenza`). `none` = auto-detect
 /// the output renderer from the value's shape (Increment 3). `hidden` runs the cell but shows no source.
@@ -276,8 +294,8 @@ export async function renderDocToSurface(
       try {
         // GATHER multi-form cells into one top-level form (a cell may hold a helper `def` + `main`), render
         // that single form, then UNGATHER — else `renderSyntax` rejects a multi-form cell ("trailing input").
-        const rendered = await render(gatherTestForms(cell.source, from), from, to);
-        return { ...cell, source: ungatherTestForms(rendered, to) };
+        const rendered = await render(gatherForRender(cell.source, from), from, to);
+        return { ...cell, source: ungatherAfterRender(rendered, to) };
       } catch {
         return cell; // a transient/invalid render keeps the original source (never drop content)
       }

@@ -1073,6 +1073,49 @@ fn a_failing_sum_property_reports_the_decoded_variant_value() {
     );
 }
 
+/// The counterexample-VALUE render for a TUPLE and a RECORD parameter — the two positional/named product
+/// shapes. A failing property over a `(Tuple Int64 Int64)` renders `p((<a>, <b>))`; over a `(Record (x
+/// Int64) (y Bool))` renders `p({x: <a>, y: <b>})` — NOT the raw driver ints. The List + Sum renders are
+/// pinned elsewhere (the list-param test / the sum test); this pins Tuple + Record so a regression in either
+/// GenTy decode arm is caught. Store-guarded — a compound `-gen` builds a runtime heap value.
+#[test]
+fn a_failing_tuple_or_record_property_reports_the_decoded_value() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — a compound generator builds a heap value"
+        );
+        return;
+    }
+    let d = dir("tuple-record-counterexample");
+    // A Tuple(Int64, Int64) property that traps when the first element is large — the counterexample must
+    // render the concrete pair `p((<a>, <b>))`.
+    let tup = write(
+        &d,
+        "tup.sexp",
+        "(do (@ test (def (p (: t (Tuple Int64 Int64))) (if (< (. t 0) 50) unit (trap \"big\")))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, _) = run(&["test", &tup, "--seed", "0"]);
+    assert!(!ok, "a false tuple property fails: {stdout}");
+    assert!(
+        stdout.contains("counterexample: p((") && !stdout.contains("generated ints"),
+        "a failing tuple property shows the decoded pair p((a, b)), not raw ints: {stdout}"
+    );
+    // A Record(x: Int64, y: Bool) property — the counterexample must render `p({x: <a>, y: <b>})`.
+    let rec = write(
+        &d,
+        "rec.sexp",
+        "(do (@ test (def (q (: r (Record (x Int64) (y Bool)))) (if (< (. r x) 50) unit (trap \"big\")))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, _) = run(&["test", &rec, "--seed", "0"]);
+    assert!(!ok, "a false record property fails: {stdout}");
+    assert!(
+        stdout.contains("counterexample: q({x: ") && !stdout.contains("generated ints"),
+        "a failing record property shows the decoded record q({{x: …}}), not raw ints: {stdout}"
+    );
+}
+
 /// END-TO-END: a COMPOUND-param `@test` that is ALSO `@requires`/`@ensures`-annotated must SYNTHESIZE its
 /// `-gen` wrapper and RUN (before the peel fix, the compound param under the verification wrapper declined at
 /// the export boundary — a hard compile error). A PERMISSIVE precondition/postcondition over a `List` param

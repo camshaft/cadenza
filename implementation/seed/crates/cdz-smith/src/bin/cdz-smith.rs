@@ -28,6 +28,7 @@ fn main() -> ExitCode {
     let cmd = args.first().map(String::as_str).unwrap_or("fuzz");
     match cmd {
         "fuzz" => cmd_fuzz(&args[1..]),
+        "differential" => cmd_differential(&args[1..]),
         "once" => cmd_once(&args[1..]),
         "gen" => cmd_gen(&args[1..]),
         "verify" => cmd_verify(&args[1..]),
@@ -50,11 +51,124 @@ fn usage() {
          \n\
          USAGE:\n\
          \x20 cdz-smith fuzz             [--iterations N] [--seed S] [--timeout SECS] [--findings DIR]\n\
+         \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH]\n\
          \x20 cdz-smith once             <SEED>\n\
          \x20 cdz-smith gen              <SEED>\n\
          \x20 cdz-smith verify           <FILE.sexp | SEED>\n\
          \x20 cdz-smith triage-artifacts <CRASHES_DIR> [--findings DIR] [--commit SHA]\n"
     );
+}
+
+/// The DIFFERENTIAL sweep: run `count` seeds through BOTH backends and file any value disagreement.
+/// A separate, lower-cadence pass (it `rustc`-compiles each program via `cdz run-rust`, far slower
+/// than the in-process oracles), so it is NOT part of `fuzz`. `--store` overrides the runtime store
+/// (default: the workspace `target/cadenza-store`); `--cdz` overrides the `cdz` binary (default:
+/// `CDZ_SMITH_CDZ` or a discovered `target/{release,debug}/cdz`). If no `cdz` is found the sweep
+/// cannot run and exits FAILURE without filing anything.
+fn cmd_differential(args: &[String]) -> ExitCode {
+    let mut count: u64 = 1000;
+    let mut seed: Option<u64> = None;
+    let mut findings: Option<PathBuf> = None;
+    let mut store: Option<PathBuf> = None;
+    let mut cdz: Option<PathBuf> = None;
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--count" | "-n" => count = it.next().and_then(|s| s.parse().ok()).unwrap_or(count),
+            "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
+            "--findings" => findings = it.next().map(PathBuf::from),
+            "--store" => store = it.next().map(PathBuf::from),
+            "--cdz" => cdz = it.next().map(PathBuf::from),
+            other => {
+                eprintln!("cdz-smith differential: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    // Resolve the `cdz` binary for the rust side (flag > env/discovery). Without it the oracle can't run.
+    let cdz = match cdz
+        .filter(|p| p.is_file())
+        .or_else(cdz_smith::differential::discover_cdz)
+    {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "cdz-smith differential: no `cdz` binary found (build it — `cargo build --release --bin cdz` — \
+                 or set CDZ_SMITH_CDZ / pass --cdz PATH). Its dir must also hold libcdz_rt/libcdz_num rlibs."
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    // Resolve the runtime store (flag > default beside the workspace target).
+    let store = store.unwrap_or_else(|| {
+        cdz.parent()
+            .and_then(|p| p.parent()) // target/<profile>/cdz → target/
+            .map(|t| t.join("cadenza-store"))
+            .unwrap_or_else(|| PathBuf::from("target/cadenza-store"))
+    });
+
+    let findings_dir = match findings {
+        Some(d) => d,
+        None => match cdz_smith::finding::FindingStore::discover(
+            &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        ) {
+            Ok(s) => s.dir().to_path_buf(),
+            Err(e) => {
+                eprintln!("cdz-smith: could not locate spec/semantics/failures: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+
+    let cfg = Config {
+        iterations: Some(count),
+        run_seed: seed.unwrap_or_else(default_run_seed),
+        timeout: Duration::from_secs(10),
+        findings_dir: findings_dir.clone(),
+        commit: driver::detect_commit(),
+        progress_every: 100,
+    };
+
+    eprintln!(
+        "[cdz-smith] differential @{} | seed {} | count {} | store {} | cdz {} | findings → {}",
+        cfg.commit,
+        cfg.run_seed,
+        count,
+        store.display(),
+        cdz.display(),
+        findings_dir.display()
+    );
+    match driver::differential_sweep(&cfg, &store, &cdz, count) {
+        Ok(stats) => {
+            eprintln!(
+                "[cdz-smith] differential done: {} agreed, {} mismatched ({} new buckets, {} dup hits), {} unavailable",
+                stats.agreed,
+                stats.mismatched,
+                stats.new_buckets,
+                stats.duplicate_hits,
+                stats.unavailable
+            );
+            // Every program unavailable = the oracle never actually compared anything (misconfigured).
+            if stats.agreed + stats.mismatched == 0 && stats.unavailable == count {
+                eprintln!(
+                    "cdz-smith differential: oracle never ran (all {count} unavailable) — check `cdz run-rust` + rlibs"
+                );
+                return ExitCode::FAILURE;
+            }
+            // A new bucket exits non-zero so a cron wrapper can notice a fresh miscompile.
+            if stats.new_buckets > 0 {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(e) => {
+            eprintln!("cdz-smith: differential sweep failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Convert a libFuzzer crashes/artifacts dir into deduped findings in the failures queue.

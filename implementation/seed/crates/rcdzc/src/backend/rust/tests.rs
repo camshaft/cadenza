@@ -4496,6 +4496,51 @@ fn rustc_roundtrip_host_closure_factory_export_scalar_capture_s1() {
 }
 
 #[test]
+fn rustc_roundtrip_host_closure_factory_compound_arg_s2() {
+    // HOST-CLOSURE S2: a closure-factory whose returned closure takes a COMPOUND ARG (Tuple/List) with a
+    // SCALAR result now crosses — the arg maps natively (`Rc<dyn Fn((i64, i64)) -> i64>`) and the gate
+    // harness rebuilds the `(tuple 3 4)` call arg as `(3, 4)`, applied through S1's make/call split:
+    // `mk(10)((3, 4))`. The captured `k` + the tuple fields combine — 3 + 4 + 10 = 17.
+    let tup = compile_rust(
+        "(module m (def (mk (: k Int64)) (fn ((: p (Tuple Int64 Int64))) (+ (+ (. p 0) (. p 1)) k))) (export mk))",
+    );
+    assert!(
+        tup.contains("pub fn mk(k: i64) -> std::rc::Rc<dyn Fn((i64, i64)) -> i64>"),
+        "the S2 Tuple-arg factory emits `Rc<dyn Fn((i64,i64))->…>`:\n{tup}"
+    );
+    if let Some(out) = rustc_run(&tup, "mk(10)((3, 4))") {
+        assert_eq!(out, "17", "make(k=10) then call((3,4)) = 3+4+10 = 17");
+    }
+    // A LIST arg also crosses (element type maps): the closure sums the head + capture.
+    let lst = compile_rust(
+        "(module m (def (mk (: k Int64)) (fn ((: xs (List Int64))) \
+           (match xs ((list a .. r) (+ a k)) (_ k)))) (export mk))",
+    );
+    if let Some(out) = rustc_run(&lst, "mk(100)(vec![5, 6])") {
+        assert_eq!(out, "105", "make(k=100) then call([5,6]) = 5+100 = 105");
+    }
+
+    // SCOPE GUARD: a compound RESULT still declines (S3) even with a scalar arg — the harness result-render
+    // for a compound is not yet wired.
+    let compound_result = compile_rust_result(
+        "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (tuple x k))) (export mk))",
+    );
+    assert!(
+        compound_result.is_err(),
+        "a compound-RESULT factory still declines (S3, deferred):\n{compound_result:?}"
+    );
+    // An Option ARG is still deferred (harness enum-arg rebuild is a later sub-slice) — declines cleanly.
+    let option_arg = compile_rust_result(
+        "(module m (def (mk (: k Int64)) (fn ((: o (Option Int64))) \
+           (match o ((Some v) (+ v k)) (_ k)))) (export mk))",
+    );
+    assert!(
+        option_arg.is_err(),
+        "an Option-ARG factory still declines (deferred past S2 Tuple/List):\n{option_arg:?}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_closure_stored_in_a_heap_compound_element() {
     // A closure stored in a LIST/TUPLE element, extracted + applied, declined ("a closure whose function
     // type is not fully solved here has no native Rust representation") while wasm ran it (breaker). The
