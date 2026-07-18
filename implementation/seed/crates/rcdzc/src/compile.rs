@@ -2378,10 +2378,11 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         faults.push(
             Reject::coded(
                 Code::Malformed,
-                "a `@requires`/`@ensures` annotation takes exactly one PREDICATE argument — a boolean \
-                 expression over the def's parameters (and, for `@ensures`, the result binder `it`), e.g. \
-                 `@requires(> x 0)` (`(@ (requires (> x 0)) (def …))`); a missing or multiple argument is \
-                 not a well-formed condition and would be silently ignored"
+                "a `@requires`/`@ensures`/`@invariant` annotation takes exactly one PREDICATE argument — a \
+                 boolean expression over the def's parameters (and, for `@ensures`/`@invariant`, the result/\
+                 value binder `it`), e.g. `@requires(> x 0)` (`(@ (requires (> x 0)) (def …))`) or \
+                 `@invariant(> (len it) 0)` (`(@ (invariant …) (type …))`); a missing or multiple argument \
+                 is not a well-formed condition and would be silently ignored"
                     .to_string(),
             )
             .at(occ),
@@ -2402,6 +2403,16 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             if let Some(reject) = first_unbound_predicate_name(db, pred, &param_names, is_ens) {
                 faults.push(reject);
             }
+        }
+    }
+    // The SAME name-resolution for an `@invariant(pred)` on a TYPE: the predicate references only the value
+    // binder `it` (the value of the type) and prelude/global names — no def params (a type has none). A stray
+    // name is UNBOUND → CDZ0101 at the annotation. Reuse `first_unbound_predicate_name` with an EMPTY param
+    // set and `is_ensures = true` (so the `it` value binder is in scope, exactly like an `@ensures` result).
+    let invariant_preds: Vec<StructId> = db.invariant_preds();
+    for pred in invariant_preds {
+        if let Some(reject) = first_unbound_predicate_name(db, pred, &[], true) {
+            faults.push(reject);
         }
     }
     // `@ensures`-CAPTURE-GUARD REJECT (breaker 2026-07-17). `@ensures(Q)` enforcement binds the def's RESULT

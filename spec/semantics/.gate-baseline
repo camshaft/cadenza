@@ -2,6 +2,8 @@
 pass	@ensures on a def with a parameter named it is REJECTED (would silently not enforce — rename the param)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
 pass	@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)
+pass	@invariant PRESERVE: an operation returning T discharges the result invariant USING the input invariant as a free gift (design §10.2)
+pass	@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `it` + prelude are in scope)
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
@@ -67,6 +69,7 @@ pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
 pass	Int8.wrap at the sign-bit boundary is the most-negative Int8
 pass	Int8.wrap of all-ones-byte is negative one
+pass	List.at over a let-bound constant list folds through the binder on both backends
 pass	List.len of a concat of call-site lists with runtime elements folds to the summed arity
 pass	List.len of a list built at the call site from runtime elements folds to the arity
 pass	List.len over a let-bound constant list folds to the arity on both backends
@@ -362,6 +365,7 @@ pass	a RUNTIME-built Rational set deduplicates by exact value
 pass	a Rational accumulator threaded through recursion sums exactly
 pass	a Rational is usable as a map key, matched by its exact value
 pass	a Rational set deduplicates by exact value regardless of how each was written
+pass	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)
 pass	a Rational-annotated literal composes with exact rational arithmetic
 pass	a Rational-inner quantity addition stays exact through the quantity wrapper
 pass	a Rational-payload sum value escapes across the boundary in its canonical form
@@ -1217,6 +1221,7 @@ pass	a match whose only arm is guarded by a literally-true condition is still no
 pass	a match whose only arm is guarded is non-exhaustive
 pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
+pass	a match-join of two capturing lambdas let-bound and called applies the selected closure
 pass	a match-of-closures on a runtime-selected variant is applied per arm
 pass	a member access with no field operand is rejected, not a crash
 pass	a middle module re-exports a base function and also uses it in its own exported function
@@ -1401,6 +1406,7 @@ pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a neutral and-true keeps both the trap and the value of its left operand
 pass	a no-overflow obligation is DISCHARGED: for x <= 100, (x + 1) <= MAXINT via monotonicity + a CHECKED numeral fact
+pass	a nominal newtype over a Float32 quantity stored as a map value round-trips
 pass	a nominal record compared to a plain record of the same shape is a type error
 pass	a non-admitted float width NESTED in a compound annotation is rejected
 pass	a non-admitted float width in a parameter annotation is rejected
@@ -2507,6 +2513,7 @@ pass	an escaping closure whose body binds a multi-variable let
 pass	an escaping closure whose body is a match hits the literal arm
 pass	an escaping closure whose body is a match hits the wildcard arm
 pass	an escaping tuple evaluates its trapping element
+pass	an exact RATIONAL host value crosses as two scalar num/den ops the guest recombines (#13)
 pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit Bytes annotation on a runtime bin result compares the same
 pass	an explicit annotation overrides the default-fraction pragma
@@ -2550,6 +2557,7 @@ pass	an if with a narrow branch and a bare-literal branch computes at the narrow
 pass	an if with identical branches folds even when the condition is a NaN-false float compare
 pass	an if with identical branches folds to the branch when the condition is trap-free
 pass	an if with identical branches still evaluates a TRAPPING condition
+pass	an if-join of two capturing lambdas let-bound and called applies the selected closure
 pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct
 pass	an if-tuple returned from a call, let-bound and projected twice
 pass	an if-wrapped self-application is rejected in bounded time, not an inference hang
@@ -3692,6 +3700,7 @@ pass	two same-variant ctor list elements refining the payload by literal fall th
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
 pass	two sibling modules may each define a private helper of the same name
+pass	two stacked erased newtypes wrapping a sum peel both no-op layers before the inner discriminant
 pass	two structural values of the same shape are equal
 pass	two sum arms with textually identical bodies still bind their own variant's payload
 pass	two sum types whose names differ only by punctuation stay DISTINCT types

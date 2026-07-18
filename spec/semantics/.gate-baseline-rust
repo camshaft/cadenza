@@ -2,6 +2,8 @@
 pass	@ensures on a def with a parameter named it is REJECTED (would silently not enforce — rename the param)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
 pass	@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)
+pass	@invariant PRESERVE: an operation returning T discharges the result invariant USING the input invariant as a free gift (design §10.2)
+pass	@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `it` + prelude are in scope)
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
@@ -60,12 +62,14 @@ pass	DISTINCT-SIG: two DIFFERENT-signature nested-Tuple-arg closures each cross 
 pass	DISTINCT-SIG: two DIFFERENT-signature two-Tuple-arg closures each cross the boundary
 pass	DISTINCT-SIG: two Option-arg closures of DIFFERENT payload widths
 pass	DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the direct-call boundary
+pass	DISTINCT-SIG: two capturing sum-arg closures of different signatures
 pass	DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a plain export
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
 pass	Int8.wrap at the sign-bit boundary is the most-negative Int8
 pass	Int8.wrap of all-ones-byte is negative one
+pass	List.at over a let-bound constant list folds through the binder on both backends
 pass	List.len of a concat of call-site lists with runtime elements folds to the summed arity
 pass	List.len of a list built at the call site from runtime elements folds to the arity
 pass	List.len over a let-bound constant list folds to the arity on both backends
@@ -252,8 +256,15 @@ pass	a Bool match with only the true arm is non-exhaustive
 pass	a Bytes entry argument is marshalled as a Vec<u8>
 pass	a CALL-returned single-variant newtype with a literal-payload arm spills at the right width
 pass	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
+pass	a CAPTURING closure returning a List
+pass	a CAPTURING closure returning a tuple
 pass	a CAPTURING closure taking TWO Tuple args
+pass	a CAPTURING closure taking TWO Tuple args with a LIST result
+pass	a CAPTURING closure taking a Result Int64 Int64 ARG crosses the direct-call boundary
+pass	a CAPTURING closure taking a Result Int64 Int64 ARG — Err arm uses the captured value
 pass	a CAPTURING closure taking a Tuple ARG crosses the DIRECT-CALL boundary
+pass	a CAPTURING closure taking an Option Int64 ARG crosses the direct-call boundary
+pass	a CAPTURING closure taking an Option Int64 ARG — None takes the captured value
 pass	a CBOR atom decodes each scalar major type to its value
 pass	a CBOR head decodes its major type and big-endian argument from the input bytes
 pass	a CBOR reader walks a variable-length array using its decoded length as the element count
@@ -512,6 +523,7 @@ pass	a capturing 32-bit-integer closure crosses and is called
 pass	a capturing closure crosses as a repeatable (borrow<t>) callback handle
 pass	a capturing closure export tracks both the captured value and the call argument
 pass	a capturing closure is applied through a recursive higher-order function
+pass	a capturing closure returning a COMPOUND is a repeatable (borrow<t>) callback handle
 pass	a capturing closure returning a nominal-over-scalar
 pass	a capturing closure stored as a runtime list element is extracted by List.at and applied
 pass	a capturing closure stored in a let-bound record is projected and applied
@@ -1153,6 +1165,7 @@ pass	a match whose only arm is guarded by a literally-true condition is still no
 pass	a match whose only arm is guarded is non-exhaustive
 pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
+pass	a match-join of two capturing lambdas let-bound and called applies the selected closure
 pass	a match-of-closures on a runtime-selected variant is applied per arm
 pass	a member access with no field operand is rejected, not a crash
 pass	a middle module re-exports a base function and also uses it in its own exported function
@@ -1331,6 +1344,7 @@ pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a neutral and-true keeps both the trap and the value of its left operand
 pass	a no-overflow obligation is DISCHARGED: for x <= 100, (x + 1) <= MAXINT via monotonicity + a CHECKED numeral fact
+pass	a nominal newtype over a Float32 quantity stored as a map value round-trips
 pass	a nominal record compared to a plain record of the same shape is a type error
 pass	a non-admitted float width NESTED in a compound annotation is rejected
 pass	a non-admitted float width in a parameter annotation is rejected
@@ -2458,6 +2472,7 @@ pass	an if with a narrow branch and a bare-literal branch computes at the narrow
 pass	an if with identical branches folds even when the condition is a NaN-false float compare
 pass	an if with identical branches folds to the branch when the condition is trap-free
 pass	an if with identical branches still evaluates a TRAPPING condition
+pass	an if-join of two capturing lambdas let-bound and called applies the selected closure
 pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct
 pass	an if-tuple returned from a call, let-bound and projected twice
 pass	an if-wrapped self-application is rejected in bounded time, not an inference hang
@@ -2982,6 +2997,7 @@ pass	multi-export collection result — the first list closure
 pass	multi-export collection result — the second list closure
 pass	multi-export compound result — the first closure's tuple
 pass	multi-export compound result — the second closure's tuple
+pass	multi-export compound result — three capturing closures share one call
 pass	multi-export record result — canonical field order
 pass	multi-export record result — the second closure, with a negative leaf
 pass	multiplication
@@ -3496,6 +3512,7 @@ pass	two same-variant ctor list elements refining the payload by literal fall th
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
 pass	two sibling modules may each define a private helper of the same name
+pass	two stacked erased newtypes wrapping a sum peel both no-op layers before the inner discriminant
 pass	two structural values of the same shape are equal
 pass	two sum arms with textually identical bodies still bind their own variant's payload
 pass	two sum types whose names differ only by punctuation stay DISTINCT types
@@ -3571,7 +3588,6 @@ pass	wrapping-sub on a runtime UInt8 wraps modulo 256
 pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
-todo	DISTINCT-SIG: two capturing sum-arg closures of different signatures
 todo	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 todo	TWO Tuple args with a BYTE-ROPE result
@@ -3581,16 +3597,10 @@ todo	a @param accessor splices into a quasiquote and the eval computes with the 
 todo	a Bytes-returning closure alongside a plain export — the closure runs
 todo	a Bytes-returning closure alongside a plain export — the plain runs
 todo	a Bytes-returning closure on a different argument
-todo	a CAPTURING closure returning a List
-todo	a CAPTURING closure returning a tuple
-todo	a CAPTURING closure taking TWO Tuple args with a LIST result
-todo	a CAPTURING closure taking a Result Int64 Int64 ARG crosses the direct-call boundary
-todo	a CAPTURING closure taking a Result Int64 Int64 ARG — Err arm uses the captured value
-todo	a CAPTURING closure taking an Option Int64 ARG crosses the direct-call boundary
-todo	a CAPTURING closure taking an Option Int64 ARG — None takes the captured value
 todo	a Float64 closure captures a Float64 build-time host effect result
 todo	a NESTED Tuple ARG with a BYTE-ROPE result crosses the direct-call boundary
 todo	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
+todo	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)
 todo	a String-returning closure alongside a parameterized plain export
 todo	a String-returning closure alongside a parameterized plain export — the plain runs
 todo	a THREE-argument closure round-trips — flat arrow spelling
@@ -3599,7 +3609,6 @@ todo	a UInt64 closure round-trips through a consumer export
 todo	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a camelCase round-trip resolves through kebab boundary-name normalization
 todo	a capturing closure returning Bytes
-todo	a capturing closure returning a COMPOUND is a repeatable (borrow<t>) callback handle
 todo	a capturing closure returning a String
 todo	a closure captures the result of a build-time host op called with an argument
 todo	a closure capturing a build-time host effect preserves the order of two host calls
@@ -3670,6 +3679,7 @@ todo	an @param with no widget config still generates its typed accessor
 todo	an abortive handler abandons a host call in the path it discards
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
+todo	an exact RATIONAL host value crosses as two scalar num/den ops the guest recombines (#13)
 todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
 todo	and performs the right operand's effect when the left is true
 todo	and short-circuit does not perform the right operand's effect
@@ -3717,7 +3727,6 @@ todo	function arguments are evaluated left to right
 todo	host calls are observed in the order they were made
 todo	let bindings' initializers are evaluated in binding order
 todo	mixed-type @param sites share one Param effect and drive control flow
-todo	multi-export compound result — three capturing closures share one call
 todo	or performs the right operand's effect when the left is false
 todo	or short-circuit does not perform the right operand's effect
 todo	round-trip byte-rope consumer alongside a plain export — the consumer

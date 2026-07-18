@@ -1526,6 +1526,23 @@
             (export main)))
   (output (: 6 Int64)))
 
+(case "List.at over a let-bound constant list folds through the binder on both backends"
+  (doc    "The `List.at` companion of the let-bound `List.len` fold: `(let ((xs (list 10 20 30))) (+
+           (List.at xs 0) (List.at xs 2)))` indexes a CONSTANT list bound to a multi-use `xs` by constant
+           indices. `List.at` over an inline list literal already folds to `Some(elem)`; the let-bound form
+           now folds identically by following the `LocalRef` binder to the bound `ListNew` (the shared
+           `const_list_elems` helper). In-bounds indices 0 and 2 fold to `Some 10` / `Some 30`, so the sum
+           (with `Option.expect`) is 10 + 30 = 40 with NO runtime bounds-checked element read. An
+           OUT-OF-BOUNDS constant index over the constant list would fold to `None` at compile time the same
+           way. Value parity (40) is the observable proof the fold keeps the exact result; folding does not
+           erase the binding (a list used elsewhere is still built).")
+  (input  (do
+            (def (main)
+              (let ((xs (list 10 20 30)))
+                (+ (Option.expect (List.at xs 0) "e") (Option.expect (List.at xs 2) "e"))))
+            (export main)))
+  (output (: 40 Int64)))
+
 (case "a list consumed by List.update in one operand keeps its element view for a later read"
   (doc    "The ELEMENT-view companion: `xs = [7,8]`; `(List.update xs 0 99)` reads element 0 → 99, the
            sibling `(List.at xs 0)` reads the ORIGINAL element 0 → 7, so 99 + 7 = 106. It returned 198
@@ -8237,6 +8254,32 @@
   (output (: 2005 Int64))
   (call   main (: 0 Int64) (: 1 Int64) (: 5 Int64))
   (output (: 3005 Int64)))
+
+(case "two stacked erased newtypes wrapping a sum peel both no-op layers before the inner discriminant"
+  (doc    "TWO erased single-variant newtypes stacked over a sum — `Outer (Wrap Mid)`, `Mid (Box Inner)`,
+           `Inner (P|W)` — both erase to `Ty::Nominal`, so `(Outer.Wrap (Mid.Box (Inner.P x)))` builds NO
+           box for either wrapper (the value IS the inner `Inner` sum). Matching it must peel BOTH nominal
+           `Payload` steps as runtime no-ops before reading the inner discriminant: the disc-dispatch walk
+           peels one nominal layer per erased `Payload` step, so two stacked erased layers both no-op and
+           the `Inner` disc is read at depth 0, not two boxes too deep. A runtime-chosen inner variant
+           (`build k n`) defeats the const-fold. k>=0 → Inner.W → the W arm → 205. Guards the stacked-peel
+           face the single-level erased-newtype case does not: one erased layer could pass while two
+           mis-count.")
+  (input  (do
+            (type Inner (P Int64) (W Int64))
+            (type Mid (Box Inner))
+            (type Outer (Wrap Mid))
+            (def (build (: k Int64) (: n Int64))
+              (if (< k 0) (Outer.Wrap (Mid.Box (Inner.P n))) (Outer.Wrap (Mid.Box (Inner.W n)))))
+            (def (main (: k Int64) (: n Int64))
+              (match (build k n)
+                ((Outer.Wrap (Mid.Box (Inner.P x))) (+ x 100))
+                ((Outer.Wrap (Mid.Box (Inner.W y))) (+ y 200))))
+            (export main)))
+  (call   main (: 1 Int64) (: 5 Int64))
+  (output (: 205 Int64))
+  (call   main (: -1 Int64) (: 5 Int64))
+  (output (: 105 Int64)))
 
 (case "a top-level tuple pattern matches a tuple produced by a runtime conditional"
   (doc    "A `(tuple a b)` pattern over a scrutinee that is a RUNTIME tuple — one built by an `if`, so the

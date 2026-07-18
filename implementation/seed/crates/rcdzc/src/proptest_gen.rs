@@ -54,6 +54,18 @@ fn name(ast: &mut Arenas, n: &str) -> StructId {
     push_atom(ast, Leaf::Name(n.to_string()))
 }
 
+/// Append a decimal integer literal atom — the node-builder shorthand for a `Leaf::Int` (used by the
+/// range-constrained generator to emit the bound/span constants).
+fn int_lit(ast: &mut Arenas, v: i64) -> StructId {
+    push_atom(
+        ast,
+        Leaf::Int {
+            value: crate::ast::IntValue::from_i64(v),
+            radix: crate::ast::Radix::Dec,
+        },
+    )
+}
+
 /// The fixed list length the G1 wrapper generates. Small — enough to exercise a non-trivial list while
 /// keeping the synthesized `let`-chain short. Variable length (a `Test.gen`-derived, bounded count) is a
 /// later increment.
@@ -180,10 +192,17 @@ struct TestPlan {
 /// structure: a scalar consumes one gen int; a `List`/`Tuple` recurses into its element/slot types. A
 /// type outside this set (`Char`, a bare/unresolved type) is not (yet) generatable — `classify_ty` returns
 /// `None`, so the `@test` declines at the boundary as before.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum GenTy {
     /// An integer type (`Int8`…`UInt64`): `<gen>` = `((. Test gen))` (the int at the element width).
     Int,
+    /// An integer CONSTRAINED to an inclusive range `[lo, hi]` — from a type-level `@invariant` whose
+    /// predicate is a recognized range over `it` (`(and (>= it LO) (<= it HI))` and mirrors). `<gen>` maps a
+    /// fresh `Test.gen` int into the range so the generated value ALWAYS satisfies the invariant (no wasted
+    /// reject cycle): `(+ LO (Int64.rem-euclid ((. Test gen)) SPAN))` where `SPAN = HI-LO+1`. This is the
+    /// constrained-generation path (operator directive: "invariants inform how random values are generated,
+    /// so we never waste a cycle just to get rejected"). An unrecognized invariant shape stays plain `Int`.
+    IntRange { lo: i64, hi: i64 },
     /// `Bool`: `<gen>` = `(= (% ((. Test gen)) 2) 0)` (the gen int's parity → a ~50/50 boolean).
     Bool,
     /// A float type (`Float32`/`Float64`), carrying its width: `<gen>` = `((. FloatWIDTH of-int) <gen-int>)`
@@ -438,12 +457,125 @@ fn classify_ty_at(ast: &Arenas, ty: StructId, items: &[StructId], depth: usize) 
 /// any variant's payload is not generatable. A variant is `(VNAME PAYLOAD)` (one payload type) or
 /// `(VNAME)` (nullary); a multi-field payload is written as a single `(Tuple …)`/`(Record …)`, so exactly
 /// zero or one payload occurrence per variant.
+/// The `(type NAME variant…)` tail of `item`, seeing through any annotation wrapper — `item` may be a bare
+/// `(type …)` or an annotated `(@ ANN (type …))` (e.g. a type-level `@invariant`, whose `(@ (invariant Q)
+/// (type …))` wrapper is left in place by strip_annotations). Peels annotation layers until it reaches a
+/// `(type …)` form, returning its tail (`[NAME, variant…]`); `None` if `item` is not a (possibly annotated)
+/// type declaration. Mirrors the `plan_for_item` def-annotation peel.
+fn type_decl_form(ast: &Arenas, item: StructId) -> Option<&[StructId]> {
+    let mut node = item;
+    // Peel annotation wrappers `(@ ANN INNER)` — bounded by arena size (each step descends to a child).
+    for _ in 0..=MAX_GEN_DEPTH {
+        if let Some(tail) = ast.as_form(node, "type") {
+            return Some(tail);
+        }
+        let ann = ast.as_form(node, "@")?;
+        node = *ann.get(1)?;
+    }
+    None
+}
+
+/// The type-level `@invariant` PREDICATE occ on `item`, if it carries one — the `Q` in `(@ (invariant Q)
+/// (type …))`. Scans the annotation wrappers `type_decl_form` peels for the one whose head is a call-style
+/// `(invariant Q)` application. `None` for a bare (un-refined) type or any other annotation. Used to
+/// CONSTRAIN generation of the type (a recognized range → an `IntRange` leaf).
+fn type_invariant_pred(ast: &Arenas, item: StructId) -> Option<StructId> {
+    let mut node = item;
+    for _ in 0..=MAX_GEN_DEPTH {
+        if ast.as_form(node, "type").is_some() {
+            return None; // reached the type decl with no `@invariant` seen
+        }
+        let ann = ast.as_form(node, "@")?;
+        let &head = ann.first()?;
+        if let Some(inv) = ast.as_form(head, "invariant") {
+            return inv.first().copied(); // the predicate Q
+        }
+        node = *ann.get(1)?;
+    }
+    None
+}
+
+/// Recognize an inclusive integer RANGE `[lo, hi]` from a type-level `@invariant` predicate over the value
+/// binder `it` — `(and (>= it LO) (<= it HI))`, `(<= LO it)`/mirrors, a lone bound, or `(= it K)`. Returns
+/// `(lo, hi)` when BOTH ends are pinned (a fully-bounded range the generator can map into); `None` for an
+/// unrecognized shape (a one-sided bound, a non-linear/opaque predicate) → generation stays unconstrained
+/// (reject-free fallback). Mirrors the scalar `@requires` bound recognizer, but over `it` and guest-side.
+fn invariant_int_range(ast: &Arenas, pred: StructId) -> Option<(i64, i64)> {
+    let (mut lo, mut hi): (Option<i64>, Option<i64>) = (None, None);
+    // Collect comparison conjuncts: descend a top-level `(and …)`/`(& …)`, else treat `pred` as one cmp.
+    let mut stack = vec![pred];
+    let mut conjuncts = Vec::new();
+    while let Some(p) = stack.pop() {
+        if let Some(t) = ast.as_form(p, "and").or_else(|| ast.as_form(p, "&")) {
+            stack.extend(t.iter().copied());
+        } else {
+            conjuncts.push(p);
+        }
+    }
+    for c in conjuncts {
+        for op in [">=", ">", "<=", "<", "="] {
+            let Some(t) = ast.as_form(c, op) else {
+                continue;
+            };
+            if t.len() != 2 {
+                return None;
+            }
+            let it_is = |n: StructId| ast.as_name(n) == Some("it");
+            let lit = |n: StructId| ast.as_int(n).and_then(|v| v.to_i64());
+            // `(op it LIT)` or the mirror `(op LIT it)` — normalize to `it OP' LIT`.
+            let (val, mirrored) = if it_is(t[0]) {
+                (lit(t[1])?, false)
+            } else if it_is(t[1]) {
+                (lit(t[0])?, true)
+            } else {
+                return None; // a comparison not against `it` + a literal — unrecognized
+            };
+            let op = if mirrored {
+                match op {
+                    "<" => ">",
+                    ">" => "<",
+                    "<=" => ">=",
+                    ">=" => "<=",
+                    other => other,
+                }
+            } else {
+                op
+            };
+            match op {
+                ">=" => lo = Some(lo.map_or(val, |l| l.max(val))),
+                ">" => lo = Some(lo.map_or(val + 1, |l| l.max(val + 1))),
+                "<=" => hi = Some(hi.map_or(val, |h| h.min(val))),
+                "<" => hi = Some(hi.map_or(val - 1, |h| h.min(val - 1))),
+                "=" => {
+                    lo = Some(val);
+                    hi = Some(val);
+                }
+                _ => {}
+            }
+            break;
+        }
+    }
+    match (lo, hi) {
+        (Some(l), Some(h)) if l <= h => Some((l, h)),
+        _ => None, // not fully bounded, or contradictory (l>h) → don't constrain
+    }
+}
+
 fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize) -> Option<GenTy> {
-    // Find `(type NAME variant…)` with a matching NAME.
-    let decl_tail = items.iter().find_map(|&it| {
-        let tail = ast.as_form(it, "type")?;
-        (ast.as_name(*tail.first()?) == Some(type_name)).then_some(tail)
+    // Find `(type NAME variant…)` with a matching NAME — SEEING THROUGH any annotation wrapper. A type
+    // declaration may be bare `(type NAME …)` OR annotated `(@ (invariant …) (type NAME …))` (a type-level
+    // `@invariant` records a refinement over the value binder `it`; verify_enforce/strip_annotations leave
+    // the `(@ …)` wrapper in place). `type_decl_form` peels the wrapper so an `@invariant`-refined type is
+    // still recognized as generatable (its underlying variants), not declined as an unknown type.
+    let decl_item = items.iter().copied().find(|&it| {
+        type_decl_form(ast, it).is_some_and(|tail| {
+            tail.first()
+                .is_some_and(|&n| ast.as_name(n) == Some(type_name))
+        })
     })?;
+    let decl_tail = type_decl_form(ast, decl_item)?;
+    // A recognized type-level `@invariant` RANGE constrains the newtype payload's generation (below).
+    let inv_range = type_invariant_pred(ast, decl_item).and_then(|p| invariant_int_range(ast, p));
     let variant_forms = decl_tail.get(1..).filter(|v| !v.is_empty())?;
     let mut variants = Vec::with_capacity(variant_forms.len());
     for &vf in variant_forms {
@@ -465,6 +597,17 @@ fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize)
             return None;
         }
         variants.push((vname, payload));
+    }
+    // Apply a recognized type-level `@invariant` RANGE to a NEWTYPE-int: `it` (the whole nominal value)
+    // maps to the underlying int of a single-variant, single-Int-payload type (`Percent = Pct(Int64)` — a
+    // range `(and (>= it 0) (<= it 100))` on the Percent value IS a bound on the Pct payload int). Replace
+    // that payload's `Int` with an `IntRange` so it generates in-domain. Only the newtype shape (one variant,
+    // one Int payload) is constrained here — a multi-variant or non-Int-payload type keeps its raw generator
+    // (a range invariant over such a value doesn't map to a single int; unconstrained + reject-free fallback).
+    if let Some((lo, hi)) = inv_range
+        && let [(_, Some(GenTy::Int))] = variants.as_slice()
+    {
+        variants[0].1 = Some(GenTy::IntRange { lo, hi });
     }
     Some(GenTy::Sum {
         type_name: type_name.to_string(),
@@ -604,6 +747,36 @@ fn build_gen(ast: &mut Arenas, ty: &GenTy, binds: &mut Vec<(StructId, StructId)>
     match ty {
         // A scalar: hoist `gk = ((. Test gen))` (or the Bool form) and return the bound `gk`.
         GenTy::Int => hoist_scalar(ast, binds, gen_call),
+        // A RANGE-CONSTRAINED int (from a recognized type-level `@invariant`): map a fresh gen int INTO
+        // `[lo, hi]` so the value ALWAYS satisfies the invariant — no reject cycle. `<gen>` =
+        // `(+ LO (% (& ((. Test gen)) i64::MAX) SPAN))`: mask the gen int to NON-NEGATIVE (clear the sign
+        // bit — `%` in Cadenza takes the sign of the dividend, so a raw negative gen would push below LO),
+        // then `% SPAN` to `[0, SPAN)`, then `+ LO` to `[LO, HI]`. `SPAN = HI-LO+1` (checked non-zero: a
+        // valid range has lo<=hi so SPAN>=1). A degenerate lo>hi (contradictory invariant) is not built as a
+        // range (classify rejects it → plain Int), so SPAN is always >= 1 here.
+        GenTy::IntRange { lo, hi } => {
+            let (lo, hi) = (*lo, *hi);
+            hoist_scalar(ast, binds, move |ast| {
+                let g = gen_call(ast);
+                // `(& gen 0x7FFF_FFFF_FFFF_FFFF)` — clear the sign bit → a non-negative i64.
+                let nonneg = {
+                    let andop = name(ast, "&");
+                    let mask = int_lit(ast, i64::MAX);
+                    push_list(ast, vec![andop, g, mask])
+                };
+                // `(% <nonneg> SPAN)` → `[0, SPAN)`.
+                let span = hi.wrapping_sub(lo).wrapping_add(1);
+                let modded = {
+                    let rem = name(ast, "%");
+                    let span_lit = int_lit(ast, span);
+                    push_list(ast, vec![rem, nonneg, span_lit])
+                };
+                // `(+ LO <modded>)` → `[LO, HI]`.
+                let plus = name(ast, "+");
+                let lo_lit = int_lit(ast, lo);
+                push_list(ast, vec![plus, lo_lit, modded])
+            })
+        }
         // `(= (% ((. Test gen)) 2) 0)` — the gen int's PARITY as a boolean (true iff even). Uses the low
         // bit, so it splits ~50/50 across the generated int stream — the earlier `(= gen 0)` was true only
         // for the exact int 0 (overwhelmingly false → near-zero coverage of the `true` case, PR #408).
@@ -1075,6 +1248,59 @@ mod tests {
                 "{def}: expected wrapper {wrapper}, got {names:?}"
             );
         }
+    }
+
+    /// A `@test` over a type carrying a TYPE-LEVEL `@invariant` — `(@ (invariant Q) (type NAME …))` — must
+    /// still recognize the type as generatable: the `@invariant` wrapper leaves the `(type …)` nested under
+    /// `(@ …)`, so `classify_sum`'s decl scan sees through it (`type_decl_form`). Without the peel the type
+    /// would be unrecognized and its `@test` decline as "not a scalar". (The invariant itself does not yet
+    /// CONSTRAIN generation — that's the next increment; this pins that the annotated type at least generates.)
+    #[test]
+    fn generates_a_type_that_carries_a_type_level_invariant() {
+        let src = "(do (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+                     (@ test (def (p (: x Percent)) unit)) (def (o) 1))";
+        let db = Db::load(crate::testkit::parse(src));
+        let names: Vec<String> = db
+            .test_defs()
+            .into_iter()
+            .map(|i| db.defs[i].name.clone())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "p-gen") && !names.iter().any(|n| n == "p"),
+            "an @invariant-annotated type is still generatable (its `@test` gains p-gen): got {names:?}"
+        );
+    }
+
+    /// A recognized RANGE `@invariant` over a newtype-int constrains generation: the payload becomes a
+    /// `GenTy::IntRange{lo,hi}` (generate in-domain), not a plain `Int`. `(and (>= it 0) (<= it 100))` on
+    /// `Percent = Pct(Int64)` → the Pct payload is `IntRange{0,100}`. A one-sided / unrecognized invariant
+    /// stays plain `Int` (reject-free unconstrained fallback). Checks the `GenTy` classification directly.
+    #[test]
+    fn a_range_invariant_constrains_a_newtype_int_to_an_intrange() {
+        // `classify_sum(name)` resolves the `(type NAME …)` from `items` itself, so we pass the top-level
+        // items + the type NAME string — no need to synthesize a name-atom node.
+        let ast = crate::testkit::parse(
+            "(do (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) (def (o) 1))",
+        );
+        let items: Vec<_> = ast.as_form(ast.root, "do").unwrap().to_vec();
+        let gt = super::classify_sum(&ast, "Percent", &items, 0);
+        match gt {
+            Some(super::GenTy::Sum { variants, .. }) => match variants.as_slice() {
+                [(v, Some(super::GenTy::IntRange { lo: 0, hi: 100 }))] if v == "Pct" => {}
+                other => panic!("expected Pct→IntRange{{0,100}}, got {other:?}"),
+            },
+            other => panic!("expected a Sum GenTy, got {other:?}"),
+        }
+        // A ONE-SIDED invariant (not fully bounded) → the payload stays a plain Int (unconstrained fallback).
+        let ast2 = crate::testkit::parse(
+            "(do (@ (invariant (>= it 0)) (type NonNeg (Mk Int64))) (def (o) 1))",
+        );
+        let items2: Vec<_> = ast2.as_form(ast2.root, "do").unwrap().to_vec();
+        let gt2 = super::classify_sum(&ast2, "NonNeg", &items2, 0);
+        assert!(
+            matches!(gt2, Some(super::GenTy::Sum { ref variants, .. }) if matches!(variants.as_slice(), [(_, Some(super::GenTy::Int))])),
+            "a one-sided invariant leaves the newtype payload a plain Int (unconstrained): {gt2:?}"
+        );
     }
 
     /// G5: a `@test` over a USER SUM `(type NAME (V PAYLOAD?)…)` gains a wrapper — the generator picks a

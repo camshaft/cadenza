@@ -139,6 +139,34 @@ fn a_failing_test_fails_the_run() {
     assert!(stdout.contains("1 passed, 1 failed"), "{stdout}");
 }
 
+/// A single explicit `cdz test <file>` that contributes ZERO tests must PRINT a "0 tests found" hint, not
+/// exit silently — otherwise a file whose only marker is an UNRECOGNIZED test-ish annotation (`@property`,
+/// which is silently stripped, so its def is NOT a `@test`) is dead + "green" by omission (breaker's
+/// silent-no-op finding). The hint points at `@test` (the property spelling; `@property` is not a supported
+/// annotation — operator ruling). Still exit 0 (an empty file is not a failure). No store needed — the file
+/// has no test to run.
+#[test]
+fn a_single_file_with_zero_tests_prints_a_hint_not_silence() {
+    let d = dir("zero-tests");
+    // `@property` is silently stripped (not in KNOWN_ANNOTATIONS), so this file has NO `@test` → 0 tests.
+    let f = write(
+        &d,
+        "m.cdz",
+        "@property def add_comm(a: Int64, b: Int64) = if a + b == b + a then unit else trap(\"nc\")\n",
+    );
+    let (ok, stdout, _) = run(&["test", &f]);
+    assert!(ok, "a zero-test file is not a failure (exit 0): {stdout}");
+    assert!(
+        stdout.contains("0 tests found"),
+        "a single file with no tests prints a hint, not silence: {stdout:?}"
+    );
+    // The hint names `@test` as the fix (a parameterized @test is the property spelling).
+    assert!(
+        stdout.contains("@test"),
+        "the 0-tests hint points at the @test annotation: {stdout}"
+    );
+}
+
 #[test]
 fn a_test_compile_decline_reports_the_source_location() {
     // A `cdz test` compile DECLINE (here: an invalid-kebab `@test` name — `small-5`'s `-5` segment is a
@@ -1113,6 +1141,37 @@ fn a_failing_tuple_or_record_property_reports_the_decoded_value() {
     assert!(
         stdout.contains("counterexample: q({x: ") && !stdout.contains("generated ints"),
         "a failing record property shows the decoded record q({{x: …}}), not raw ints: {stdout}"
+    );
+}
+
+/// END-TO-END: `@invariant`-CONSTRAINED generation. A type-level `@invariant` with a recognized integer
+/// RANGE over `it` makes the generator draw ONLY invariant-satisfying values — no wasted reject cycle
+/// (operator directive: "invariants inform how random values are generated"). `Percent = Pct(Int64)` with
+/// `@invariant(0 <= it <= 100)`: every generated `Percent` has its `Pct` payload in `[0, 100]`, so a property
+/// asserting that range PASSES all trials. Before constrained-gen it drew any Int64 (e.g. Pct(195)) and the
+/// body trapped. Store-guarded — building the nominal heap value needs the runtime store.
+#[test]
+fn a_range_invariant_constrains_generation_in_domain() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — building a nominal value needs the store"
+        );
+        return;
+    }
+    let d = dir("invariant-gen");
+    // The body asserts the invariant `0 <= v <= 100`; it can only PASS if generation is constrained to it.
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+           (@ test (def (p (: x Percent)) \
+             (match x (((. Percent Pct) v) (if (and (>= v 0) (<= v 100)) unit (trap \"out of invariant range\")))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--trials", "100"]);
+    assert!(
+        ok && stdout.contains("PASS p-gen (100 trials)"),
+        "a range @invariant constrains generation in-domain so 100 trials pass: {stdout}{stderr}"
     );
 }
 

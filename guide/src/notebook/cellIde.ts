@@ -44,17 +44,40 @@ function utf8Len(s: string): number {
 /// rule `wrapModule` uses. Empty when the cell declares nothing to export (a bare expression / prose-only
 /// edit) so we don't emit a dangling `(export)`. The suffix sits AFTER the cell text, so it never shifts
 /// `wrapPrefixBytes`, and `cadenzaLint` clamps any diagnostic landing in it to the cell-content end.
-function exportSuffix(cellText: string, surface: Surface): string {
+function exportSuffix(cellText: string, surface: Surface, downstreamUsed: readonly string[] = []): string {
   const trimmed = cellText.trim();
-  // Only export names the cell ACTUALLY defines. `exportNames` synthesizes `main` for a bare expression
+  // Export names the cell ACTUALLY defines. `exportNames` synthesizes `main` for a bare expression
   // (because `wrapModule` would rewrite it to `(def (main) <expr>)`), but `prepareCell` does NOT rewrite —
   // it lints the cell text verbatim — so exporting a synthesized `main` that has no `def` would be a
-  // dangling export ("export `main` names no definition"). Intersect with the cell's real top-level defs;
-  // a cell that defines nothing (a bare expression / prose-only edit) gets NO suffix.
+  // dangling export ("export `main` names no definition"). Intersect with the cell's real top-level defs.
   const defined = new Set(topLevelDefNames(trimmed, surface));
-  const names = exportNames(trimmed, surface).filter((n) => defined.has(n));
-  if (names.length === 0) return "";
-  return surface === "sexpr" ? `\n(export ${names.join(" ")})` : `\nexport { ${names.join(", ")} }`;
+  const names = new Set(exportNames(trimmed, surface).filter((n) => defined.has(n)));
+  // ALSO export any of THIS cell's defs that a LATER cell consumes — in the notebook's sequential scope
+  // those defs ARE used (just not within this cell), so linting the cell in isolation would false-flag them
+  // "unused definition" (CDZ0306). Exporting them marks them public → the linter counts them used. (E.g. the
+  // loan example's `year3`, defined in the schedule cell but plotted by a later chart cell.)
+  for (const n of downstreamUsed) if (defined.has(n)) names.add(n);
+  if (names.size === 0) return "";
+  const list = [...names];
+  return surface === "sexpr" ? `\n(export ${list.join(" ")})` : `\nexport { ${list.join(", ")} }`;
+}
+
+/// The set of THIS cell's top-level def names that a LATER code cell references (whole-word, kebab-aware —
+/// matching `assembleCell.cellDependencies`). In the sequential-scope model a def used downstream is
+/// genuinely "used", so `exportSuffix` marks it public to suppress a false CDZ0306 on the per-cell lint.
+function downstreamUsedDefs(cells: Cell[], index: number, cellText: string, surface: Surface): string[] {
+  const defs = topLevelDefNames(cellText.trim(), surface).filter((n) => n !== "main");
+  if (defs.length === 0) return [];
+  // Concatenate every LATER code cell's source (widget cells are the DSL, not Cadenza — skip them).
+  let downstream = "";
+  for (let i = index + 1; i < cells.length; i++) {
+    const c = cells[i];
+    if (c.kind === "code" && c.directive.kind !== "widget") downstream += "\n" + c.source;
+  }
+  return defs.filter((name) => {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+    return new RegExp(`(^|[^A-Za-z0-9_.\\-])${escaped}([^A-Za-z0-9_.\\-]|$)`).test(downstream);
+  });
 }
 
 /// Build the `prepare` output for linting the code cell at `index`: its live `cellText` compiled with the
@@ -83,8 +106,9 @@ export function prepareCell(
   const prefix = prefixParts.length > 0 ? prefixParts.join("\n\n") + "\n\n" : "";
   // Append an `export` SUFFIX so the linted module has a public entry — otherwise `compile` declines with
   // "nothing is public" and the cell's `main` is flagged unused (operator UX #1). Suffix, not prefix, so
-  // `wrapPrefixBytes` (and thus the cell's diagnostic offsets) stay exact.
-  const suffix = exportSuffix(cellText, surface);
+  // `wrapPrefixBytes` (and thus the cell's diagnostic offsets) stay exact. Also export this cell's defs that a
+  // LATER cell consumes, so a def used downstream isn't false-flagged "unused" (CDZ0306) by the isolated lint.
+  const suffix = exportSuffix(cellText, surface, downstreamUsedDefs(cells, index, cellText, surface));
   return { compiled: prefix + cellText + suffix, wrapPrefixBytes: utf8Len(prefix) };
 }
 

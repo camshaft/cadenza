@@ -522,14 +522,18 @@ for (const ex of examples) {
 let notebookPass = 0;
 try {
   const { EXAMPLES: NOTEBOOK } = await import(join(guideRoot, "src/notebook/examples.ts"));
-  const { parseDocument } = await import(join(guideRoot, "src/notebook/parseDocument.ts"));
+  const { parseDocument, renderDocToSurface } = await import(join(guideRoot, "src/notebook/parseDocument.ts"));
   const { parseWidgets } = await import(join(guideRoot, "src/notebook/parseWidgets.ts"));
   const { assembleForRun } = await import(join(guideRoot, "src/notebook/assembleForRun.ts"));
-  for (const ex of NOTEBOOK) {
-    const cells = parseDocument(ex.markdown);
+  // Compile every non-widget code cell of `md` (its authored surface = s-expr) the way the live route does —
+  // returns the count of cells that compiled, pushing a failure per decline. Reused for the authored doc AND
+  // the surface-round-tripped doc (so a toggle regression is caught, not just the authored form).
+  const compileCells = (md, label) => {
+    const cells = parseDocument(md);
     const widgets = cells
       .filter((c) => c.kind === "code" && c.directive.kind === "widget")
       .flatMap((c) => parseWidgets(c.source).widgets);
+    let ok = 0;
     cells.forEach((c, i) => {
       if (c.kind !== "code" || c.directive.kind === "widget") return;
       const { buffer, entry } = assembleForRun(cells, i, widgets, {}, "sexpr");
@@ -537,16 +541,33 @@ try {
       try {
         r = repl_eval(buffer, entry, "sexpr", true); // exact=true — the notebook's NOTEBOOK_EXACT mode
       } catch (e) {
-        failures.push(`src/notebook/examples.ts [notebook] (${ex.slug} cell ${i}): parse error — ${String(e && e.message ? e.message : e).slice(0, 80)}`);
+        failures.push(`src/notebook/examples.ts [notebook] (${label} cell ${i}): parse error — ${String(e && e.message ? e.message : e).slice(0, 80)}`);
         return;
       }
       if (!r.component) {
         const d = r.diagnostics.find((x) => x.error) ?? r.diagnostics[0];
-        failures.push(`src/notebook/examples.ts [notebook] (${ex.slug} cell ${i}): compile DECLINED — ${d ? `${d.code ?? ""} ${d.message ?? ""}`.trim() : "no component"}`);
+        failures.push(`src/notebook/examples.ts [notebook] (${label} cell ${i}): compile DECLINED — ${d ? `${d.code ?? ""} ${d.message ?? ""}`.trim() : "no component"}`);
         return;
       }
-      notebookPass++;
+      ok++;
     });
+    return ok;
+  };
+  const render = async (t, f, to) => render_syntax(t, f, to);
+  for (const ex of NOTEBOOK) {
+    // 1) Authored (s-expr) cells must compile.
+    notebookPass += compileCells(ex.markdown, ex.slug);
+    // 2) SURFACE ROUND-TRIP: the reader can toggle ML↔s-expr, which re-renders the doc through
+    // `renderDocToSurface`. A regression in that helper or `render_syntax` (e.g. dropping a `main`, mangling a
+    // multi-form `(do …)`, mis-handling list/tuple heads — all bugs this arc hit) would break the toggled doc
+    // even though the authored doc compiles. Render s-expr→ML→s-expr and require every cell STILL compiles.
+    try {
+      const ml = await renderDocToSurface(ex.markdown, "sexpr", "ml", render);
+      const back = await renderDocToSurface(ml, "ml", "sexpr", render);
+      compileCells(back, `${ex.slug} [s-expr→ML→s-expr round-trip]`);
+    } catch (e) {
+      failures.push(`src/notebook/examples.ts [notebook] (${ex.slug} surface round-trip): ${String(e && e.message ? e.message : e).slice(0, 80)}`);
+    }
   }
 } catch (e) {
   console.error(`check-examples: could not load notebook examples — ${String(e && e.message ? e.message : e)}`);

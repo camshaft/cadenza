@@ -178,8 +178,8 @@ fn hosted_performs_via_real_primitives_and_records_prim_events() {
             "kind=1 → hosted performs [Append(1), Exec(2)] via real primitives, sums to 3; got: {stdout}"
         );
         assert!(
-            stdout.contains("recorded 2 prim event(s)"),
-            "kind=1 → each performed op recorded a prim-<op> event → 2 recorded; got: {stdout}"
+            stdout.contains("2 performed + 0 denied"),
+            "kind=1 ungated → both ops performed, none denied → 2 performed + 0 denied; got: {stdout}"
         );
     } else {
         assert!(
@@ -193,6 +193,73 @@ fn hosted_performs_via_real_primitives_and_records_prim_events() {
 
     let _ = std::fs::remove_file(&log);
     let _ = std::fs::remove_file(&prog);
+}
+
+#[test]
+fn hosted_with_policies_gates_each_op_on_the_external_cedar_policy() {
+    // The capability boundary from the CLI: `hosted --policies <file>` authorizes each op against an EXTERNAL
+    // Cedar policy before performing. The policy permits ONLY prim:append → kind=1 [Append, Exec] → append
+    // performed (1) + exec DENIED (0) → sum 1, 1 performed + 1 denied. Proves the operator can gate the agent's
+    // real primitives from the command line. Store-gated skip like the other verbs.
+    let log = unique("hostedpol-log").with_extension("log");
+    let prog = unique("hostedpol-genesis").with_extension("cdz");
+    let pol = unique("hostedpol-policy").with_extension("cedar");
+    let _ = std::fs::remove_file(&log);
+    std::fs::write(&prog, GENESIS).unwrap();
+    // External root policy: permit ONLY prim:append; prim:exec is deny-by-default.
+    std::fs::write(
+        &pol,
+        r#"permit(principal, action == Action::"prim:append", resource);"#,
+    )
+    .unwrap();
+
+    Command::new(bin())
+        .args(["bootstrap", log.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+    Command::new(bin())
+        .args([
+            "inject-genesis",
+            log.to_str().unwrap(),
+            prog.to_str().unwrap(),
+        ])
+        .output()
+        .expect("inject-genesis");
+
+    let out = Command::new(bin())
+        .args([
+            "hosted",
+            log.to_str().unwrap(),
+            "1",
+            "--policies",
+            pol.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run cdz-agent hosted --policies");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if out.status.success() {
+        assert!(
+            stdout.contains("summed per-op result = 1"),
+            "policy permits only append → append(1) + exec denied(0) → sum 1; got: {stdout}"
+        );
+        assert!(
+            stdout.contains("1 performed + 1 denied"),
+            "append performed, exec denied → 1 performed + 1 denied; got: {stdout}"
+        );
+    } else {
+        assert!(
+            stderr.contains("runtime not found"),
+            "the only acceptable failure is a missing runtime store (skip); got: {stderr}"
+        );
+        eprintln!(
+            "[cdz-agent it] value-heap runtime absent; skipped the `hosted --policies` assertion"
+        );
+    }
+
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&prog);
+    let _ = std::fs::remove_file(&pol);
 }
 
 #[test]

@@ -601,11 +601,27 @@ a type maintains — all discharged by the same HOL kernel, all feeding both ver
 
 ### 10.1 Surface (fork I1, route to operator)
 `@invariant(<predicate over the value>)` on a type/record/sum declaration, in the `@`-family:
-`@invariant(> (len it) 0) (type NonEmptyList …)` / `@invariant(and (>= it 0) (<= it 100)) (type Percent Int64)`.
-The value is bound to `it` (same result-binder convention as `@ensures` — one implicit-subject name across
-the family, v-syntax's ruling). Fork I1 (naming/placement): `@invariant` on the type decl (my lean — names
-the concept, fits the family) vs a refinement-type surface (`Int64 where (…)`, the 2C option) — the two share
-the `it` binder so they stay consistent; `@invariant` first, refinement-types later. Route to operator.
+`@invariant(> (len it) 0) (type NonEmptyList …)` / `@invariant(match it ((Percent.Pct v) (and (>= v 0)
+(<= v 100)))) (type Percent (Pct Int64))`. The value is bound to `it` (same result-binder convention as
+`@ensures` — one implicit-subject name across the family, v-syntax's ruling).
+
+**`it` BINDS THE WHOLE VALUE, AND THE PREDICATE PREDICATES OVER IT VIA DESTRUCTURE/ACCESSOR — no bare-scalar
+case (ruling + refinement, 2026-07-18).** `it` is the whole value of type `T`, and the predicate must
+typecheck against `T`. Two compiler realities sharpen this into ONE consistent rule (verified against the
+implementation — an earlier `@invariant(and (>= it 0) (<= it 100)) (type Percent Int64)` shorthand was
+MISLEADING): (i) there is NO scalar type-alias grammar — a "newtype" is a SINGLE-VARIANT SUM
+(`(type Percent (Pct Int64))`, an erasable nominal newtype); (ii) the nominal boundary FORBIDS a bare
+`(>= it 0)` when `it : Percent` (CDZ0202 "not comparable across the nominal boundary — unwrap the nominal to
+compare the underlying value"). So an `@invariant` ALWAYS predicates over `it` by DESTRUCTURING (match the
+variant to bind the payload) or an ACCESSOR (`len it`, field access) — never a bare scalar comparison on a
+nominal `it`. This is uniform across newtype/sum/record (one rule), and is exactly why `it = whole value`
+composes: the predicate reaches the underlying data the same way ordinary code does. A `NonEmptyList`
+invariant is `(> (len it) 0)` (accessor); a `Percent` invariant is `(match it ((Percent.Pct v) (and (>= v 0)
+(<= v 100))))` (destructure) — the value is `it` in both, reached through the type's own surface.
+
+Fork I1 (naming/placement): `@invariant` on the type decl (my lean — names the concept, fits the family) vs
+a refinement-type surface (`Int64 where (…)`, the 2C option) — the two share the `it` binder so they stay
+consistent; `@invariant` first, refinement-types later. Route to operator.
 
 ### 10.2 The obligation — ESTABLISH + PRESERVE (the classic invariant proof shape)
 An invariant `I` on type `T` is really a pair of obligations, both reusing the `@requires`/`@ensures`

@@ -602,6 +602,13 @@ impl<'a> Printer<'a> {
                 "tagged-template" if self.is_tagged_template_shape(args) => {
                     return self.print_tagged_template(args);
                 }
+                // `(forall (a b) TYPE)` -> `forall a b. TYPE` — the explicit generic binder in type
+                // position (the inverse of the parser's `forall_type`). The binder list is a nested list
+                // of `Name` atoms; TYPE is any type. Only sugar when the shape matches (a binder LIST +
+                // a body); otherwise a user's `forall(...)` application falls through to the call form.
+                "forall" if self.is_forall_shape(args) => {
+                    return self.print_forall(args, parent_prec);
+                }
                 _ => {}
             }
             // ---- generic call form: head(a, b, c) ----
@@ -1528,6 +1535,44 @@ impl<'a> Printer<'a> {
             self.expr(r, 0);
         }
         self.doc.end();
+    }
+
+    /// `(forall (a b) TYPE)` is well-formed for the surface sugar when it is exactly a binder LIST (of
+    /// one-or-more `Name` atoms) followed by a body — the shape `forall_type` builds. Anything else
+    /// (`forall` as a user application head, an empty binder list, a non-list first arg) falls through to
+    /// the generic call form, so a name `forall` is never mis-sugared.
+    fn is_forall_shape(&self, args: &[StructId]) -> bool {
+        args.len() == 2
+            && matches!(self.a.get(args[0]), Struct::List(bs)
+                if !bs.is_empty() && bs.iter().all(|&b| self.a.as_name(b).is_some()))
+    }
+
+    /// `(forall (a b) TYPE)` -> `forall a b. TYPE` (the inverse of the parser's `forall_type`). The body
+    /// prints at `PREC_ARROW` so a function-type body needs no parens (`forall a. a -> a`, matching the
+    /// parser's looser-than-arrow binding); a caller that needs the whole `forall` parenthesized (rare —
+    /// a `forall` under a tighter operator) is handled by the parent-prec guard.
+    fn print_forall(&mut self, args: &[StructId], parent_prec: u8) {
+        let binders = match self.a.get(args[0]) {
+            Struct::List(bs) => bs.clone(),
+            _ => return, // guarded by is_forall_shape
+        };
+        // A `forall` binds looser than the arrow; if it sits under something tighter, parenthesize.
+        let paren = parent_prec > PREC_ARROW;
+        if paren {
+            self.doc.word("(");
+        }
+        self.doc.word("forall ");
+        for (i, &b) in binders.iter().enumerate() {
+            if i > 0 {
+                self.doc.word(" ");
+            }
+            self.expr(b, 0);
+        }
+        self.doc.word(". ");
+        self.expr(args[1], PREC_ARROW);
+        if paren {
+            self.doc.word(")");
+        }
     }
 
     /// One sum-type variant: a nullary `Ctor` (a `Name` atom) prints as itself; a payload variant
@@ -4994,5 +5039,35 @@ mod tests {
         assert_eq!(assert_roundtrip("1.5", 80), "1.5");
         assert_eq!(assert_roundtrip("1000000", 80), "1000000");
         assert_eq!(assert_roundtrip("0b1010", 80), "0b1010");
+    }
+
+    #[test]
+    fn forall_param_binder_desugars_and_round_trips() {
+        // `forall a b. TYPE` in a PARAMETER annotation is INPUT-ONLY sugar (like the brace-record `{…}`):
+        // it DESUGARS at parse time to leading `(: a Type)` params, so it PRINTS BACK as `a: Type` (the
+        // canonical form), NOT `forall`. The ML→sexpr→ML round-trip is idempotent at that canonical form.
+        // (A standalone `(forall …)` node that is NOT hoisted still prints as `forall a. T` — the printer
+        // arm from increment 1 — but a def-param forall lowers here.)
+        assert_eq!(
+            assert_roundtrip("def id(x: forall a. a) = x", 80),
+            "def id(a: Type, x: a) = x"
+        );
+        assert_eq!(
+            assert_roundtrip("def apply(f: forall a b. a -> b, x: a) = f(x)", 80),
+            "def apply(a: Type, b: Type, f: a -> b, x: a) = f(x)"
+        );
+        // Idempotent: the desugared form re-prints identically (the sugar is gone after the first parse).
+        assert_eq!(
+            assert_roundtrip("def id(a: Type, x: a) = x", 80),
+            "def id(a: Type, x: a) = x"
+        );
+        // A forall in a RETURN-TYPE position (`-> forall a. …`) is NOT hoisted (it is not a parameter
+        // annotation) — it stays a `(forall …)` node in the return ascription and prints back verbatim
+        // via increment 1's printer arm. This round-trips (confirming the earlier "return-type follow-up"
+        // concern was a false alarm — it was a wrong `fn(x) -> x` test spelling; the lambda arrow is `=>`).
+        assert_eq!(
+            assert_roundtrip("def mk() -> forall a. a -> a = fn(x) => x", 80),
+            "def mk() -> forall a. a -> a = fn(x) => x"
+        );
     }
 }

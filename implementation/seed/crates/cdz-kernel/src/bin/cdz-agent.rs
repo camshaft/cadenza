@@ -78,19 +78,42 @@ fn run() -> Result<()> {
             // Prim to a real host closure — each performed op is RECORDED in the log as a `prim-<op>` event
             // (the recorded-effect trail) and its per-op result summed. Unlike `perform` (in-program mock),
             // this is the daemon actually executing through a real host primitive (record-only cut for now).
+            //
+            // With `--policies <file>` (an operator-controlled Cedar policy — the external trust anchor the
+            // agent can't widen), each op is AUTHORIZED against it before performing (tick_hosted_authorized):
+            // an allowed op performs + records `prim-<op>`, a denied op records `prim-denied-<op>` and is
+            // skipped. Without `--policies`, the ungated record-only path (tick_hosted) runs.
             let (log, kind, runtime) = open_and_resolve(&args, "hosted")?;
+            let policies = match flag_value(&args, "--policies") {
+                Some(path) => Some(
+                    std::fs::read_to_string(&path)
+                        .with_context(|| format!("read Cedar policy file {path}"))?,
+                ),
+                None => None,
+            };
             let log = std::sync::Arc::new(std::sync::Mutex::new(log));
-            let result = daemon::tick_hosted(std::sync::Arc::clone(&log), kind, runtime)?;
-            let recorded = log
-                .lock()
-                .map_err(|_| anyhow!("log mutex poisoned"))?
-                .tail(0)?
+            let result = match policies {
+                Some(root) => {
+                    daemon::tick_hosted_authorized(std::sync::Arc::clone(&log), kind, runtime, root)?
+                }
+                None => daemon::tick_hosted(std::sync::Arc::clone(&log), kind, runtime)?,
+            };
+            // Count performed (`prim-<op>`, excluding `prim-denied-<op>`) vs denied events for the report.
+            let events = log.lock().map_err(|_| anyhow!("log mutex poisoned"))?.tail(0)?;
+            let denied = events
                 .iter()
-                .filter(|e| e.kind.starts_with(daemon::PRIM_RECORD_PREFIX))
+                .filter(|e| e.kind.starts_with(daemon::PRIM_DENIED_PREFIX))
+                .count();
+            let performed = events
+                .iter()
+                .filter(|e| {
+                    e.kind.starts_with(daemon::PRIM_RECORD_PREFIX)
+                        && !e.kind.starts_with(daemon::PRIM_DENIED_PREFIX)
+                })
                 .count();
             println!(
                 "hosted: performed the interpret plan for event kind {kind} via real host primitives; \
-                 summed per-op result = {result}; recorded {recorded} prim event(s) in the log"
+                 summed per-op result = {result}; {performed} performed + {denied} denied prim event(s) in the log"
             );
             Ok(())
         }
@@ -103,12 +126,21 @@ fn run() -> Result<()> {
             let (log, _kind0, runtime) = open_and_resolve(&args, "start")?;
             let poll_ms: u64 = args
                 .get(3)
-                .ok_or_else(|| anyhow!("usage: cdz-agent start <log> <poll-ms> [--stop-file <path>] [--max-rounds N]"))?
+                .ok_or_else(|| anyhow!("usage: cdz-agent start <log> <poll-ms> [--stop-file <path>] [--max-rounds N] [--policies <file>]"))?
                 .parse()
                 .context("poll-ms must be a non-negative integer")?;
             let stop_file = flag_value(&args, "--stop-file");
             let max_rounds: Option<u64> = match flag_value(&args, "--max-rounds") {
                 Some(n) => Some(n.parse().context("--max-rounds must be an integer")?),
+                None => None,
+            };
+            // Optional external Cedar trust-anchor: with --policies, every op the live daemon performs is
+            // authorized against it first (the agent can't widen it); without it, the ungated record-only path.
+            let policies = match flag_value(&args, "--policies") {
+                Some(path) => Some(
+                    std::fs::read_to_string(&path)
+                        .with_context(|| format!("read Cedar policy file {path}"))?,
+                ),
                 None => None,
             };
             let log = std::sync::Arc::new(std::sync::Mutex::new(log));
@@ -138,7 +170,7 @@ fn run() -> Result<()> {
                 false
             };
             println!(
-                "start: daemon polling {} every {poll_ms}ms{}{}",
+                "start: daemon polling {} every {poll_ms}ms{}{}{}",
                 args.get(2).map(String::as_str).unwrap_or("<log>"),
                 stop_file
                     .as_ref()
@@ -147,12 +179,18 @@ fn run() -> Result<()> {
                 max_rounds
                     .map(|n| format!(" (max {n} round(s))"))
                     .unwrap_or_default(),
+                if policies.is_some() {
+                    " (Cedar-gated)"
+                } else {
+                    ""
+                },
             );
             daemon::run(
                 log,
                 0,
                 runtime,
                 std::time::Duration::from_millis(poll_ms),
+                policies,
                 kind_of,
                 should_stop,
             )?;
@@ -165,8 +203,8 @@ fn run() -> Result<()> {
              \x20 inject-genesis <log> <program.cdz> — append the genesis program\n\
              \x20 run <log> <event-kind>             — one daemon tick (COUNT the scheduled host-ops)\n\
              \x20 perform <log> <event-kind>         — one daemon tick that EXECUTES the ops (K1c, in-program mock), summing per-op results\n\
-             \x20 hosted <log> <event-kind>          — one daemon tick that PERFORMS via real host primitives (K1c→host), recording each op in the log\n\
-             \x20 start <log> <poll-ms> [--stop-file <path>] [--max-rounds N] — START the daemon: poll + perform each new trigger event via real primitives"
+             \x20 hosted <log> <event-kind> [--policies <file>] — one daemon tick that PERFORMS via real host primitives (K1c→host); with --policies, each op is Cedar-authorized against the external policy first\n\
+             \x20 start <log> <poll-ms> [--stop-file <path>] [--max-rounds N] [--policies <file>] — START the daemon: poll + perform each new trigger event; with --policies each op is Cedar-authorized"
         )),
     }
 }

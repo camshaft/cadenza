@@ -1908,6 +1908,26 @@
             (export main)))
   (output (: 2.5 Float32)))
 
+(case "a nominal newtype over a Float32 quantity stored as a map value round-trips"
+  (doc    "The nominal-newtype layer over the Float32-quantity map case. `(type Len (Q (Qty Float32 meter)))`
+           — an erased single-variant newtype over a `(Qty Float32 meter)` — stored as a MAP VALUE. The
+           newtype erases to the SAME f32 slot as the inner Float32 quantity, so the `ConstFloat` width
+           reader must STRIP the nominal wrapper AND peel `Ty::Qty` to reach the inner Float32. WITHOUT the
+           outer strip, `peel_qty_ty` saw `Nominal(Len, Qty{Float32})`, missed the `Ty::Qty` arm, and fell
+           to the f64 default → an `f64.const` where `box-float32` wanted f32 → INVALID wasm (`expected f32,
+           found f64`); the rust backend's `float_width_of` had the same gap (v-rust-backend's twin). The
+           reader now does strip_nominal → peel Ty::Qty → strip_nominal (the strip_nominal lockstep the
+           integer `int_ty_of` already maintains). Constructs a `Len` wrapping `2.5 m`, stores + looks it up,
+           returns 1 on the hit.")
+  (input  (do
+            (type Len (Q (Qty Float32 (Unit.base #"meter"))))
+            (def (main)
+              (match (Map.lookup (Map.insert (Map.empty) 1 (Len.Q (Qty.of (Float32.of 2.5) (Unit.base #"meter")))) 1)
+                ((Some _) 1)
+                ((None) 0)))
+            (export main)))
+  (output (: 1 Int64)))
+
 ; --- Quantity joins: the same-unit flow and the explicit-conversion repair --------------------------
 ; 806e45ba9 fixed the mixed-unit join DIAGNOSTIC (a scale clash, not a shadowed declaration). These
 ; pin the join semantics around it, promoted from passing breaker probes: a same-unit join is ONE

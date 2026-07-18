@@ -716,23 +716,22 @@ fn a_closure_param_export_declines_but_a_scalar_factory_result_now_emits() {
         "decline cites the export boundary: {param:?}"
     );
     // A closure RESULT (a scalar-capture FACTORY), by contrast, NOW EMITS (host-closure S1): it crosses as
-    // `pub fn mk(k) -> Rc<dyn Fn(x)->r>` and the host applies `mk(k)(x)`. (See the dedicated S1 roundtrip
-    // test for the make/call run.) A COMPOUND-result factory is still deferred (S3) — it declines cleanly.
+    // `pub fn mk(k) -> Rc<dyn Fn(x)->r>` and the host applies `mk(k)(x)`. (See the dedicated S1/S2/S3
+    // roundtrip tests for the make/call run.) A compound RESULT also emits now (S3).
     let scalar_factory =
         compile_rust("(module m (def (mk (: k Int64)) (fn ((: x Int64)) (+ x k))) (export mk))");
     assert!(
         scalar_factory.contains("pub fn mk(k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64>"),
         "a scalar-capture closure factory emits an `Rc<dyn Fn>` handle (S1):\n{scalar_factory}"
     );
-    let compound_result = try_compile_rust(
-        "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (tuple x k))) (export mk))",
-    )
-    .expect_err("a compound-RESULT closure factory still declines (host-closure S3, deferred)");
+    // A closure PARAMETER export (the OTHER function-typed shape) still declines — no way to synthesize an
+    // `Rc<dyn Fn>` argument at the boundary from a literal (this stays the guard's territory).
+    let param2 =
+        try_compile_rust("(module m (def (use-it (: f (-> Int64 Int64))) (f 3)) (export use-it))")
+            .expect_err("a closure-PARAMETER export still declines");
     assert!(
-        compound_result
-            .iter()
-            .any(|d| d.contains("non-scalar capture/arg/result")),
-        "the compound-result decline cites the S2/S3 boundary: {compound_result:?}"
+        param2.iter().any(|d| d.contains("closure PARAMETER")),
+        "the closure-param decline cites the parameter boundary: {param2:?}"
     );
 }
 
@@ -2178,6 +2177,33 @@ fn rustc_roundtrip_nominal_over_narrow_qty_map_value_grounds_to_inner_width() {
         assert_eq!(
             out, "100",
             "the stored 100-meter nominal-Qty reads back + unwraps to 100"
+        );
+    }
+
+    // The FLOAT twin: a nominal-over-`(Qty Float32 …)` map value. The `Core::ConstFloat` width reader's bare
+    // `peel_qty` (RAW Ty::Qty, no strip_nominal) missed a `Ty::Nominal { inner: Qty { Float32 } }` → f64
+    // default → `f64::from_bits` into an `f32` slot → E0308/invalid-wasm. `float_width_of` (strip → peel →
+    // strip, the float twin of `int_ty_of`) now grounds it to f32. Both arms Float32 so the match unifies.
+    let frs = compile_rust(
+        "(module m (type Len (Q (Qty Float32 (Unit.base #\"meter\")))) \
+           (def (run) \
+             (Qty.value \
+               (match (Map.lookup (Map.insert (Map.empty) 1 \
+                         (Len.Q (Qty.of (Float32.of 1.5) (Unit.base #\"meter\")))) 1) \
+                 ((Some (Len.Q q)) q) \
+                 ((None) (Qty.of (Float32.of 0.0) (Unit.base #\"meter\")))))) \
+           (export run))",
+    );
+    assert!(
+        frs.contains("BTreeMap<i64, f32>")
+            && frs.contains("f32::from_bits")
+            && !frs.contains("f64::from_bits"),
+        "the nominal-over-Qty-Float32 map value grounds to the inner f32 (no f64 default):\n{frs}"
+    );
+    if let Some(out) = rustc_run(&frs, "run()") {
+        assert_eq!(
+            out, "1.5",
+            "the stored 1.5-meter nominal-Qty-f32 reads back + unwraps to 1.5"
         );
     }
 }
@@ -3792,6 +3818,25 @@ fn rustc_roundtrip_float32_literal_grounds_to_operand_width() {
         f64c.contains("f64::from_bits("),
         "a Float64 operand's literal stays f64:\n{f64c}"
     );
+
+    // BRANCH-position float literal: a bare `0.0` in an `if`-arm opposite a Float32 (`(if b x 0.0)`)
+    // defaulted its ConstFloat to Float64 → `f64::from_bits` in an `-> f32` branch → E0308. `emit_branch`
+    // now grounds a float branch to the construct's width (float twin of its `Ty::Int` grounding, via
+    // `float_width_of_ty` + `emit_grounded_float`), so the `0.0` arm emits at f32.
+    let branch =
+        compile_rust("(module m (def (pick (: b Bool) (: x Float32)) (if b x 0.0)) (export pick))");
+    assert!(
+        branch.contains("pub fn pick(b: bool, x: f32) -> f32")
+            && branch.contains("f32::from_bits")
+            && !branch.contains("f64::from_bits"),
+        "the bare float branch literal grounds to the if's f32 width (no f64 in an f32 branch):\n{branch}"
+    );
+    if let Some(out) = rustc_run(&branch, "pick(false, 1.0)") {
+        assert_eq!(out, "0", "the false arm yields the f32 0.0");
+    }
+    if let Some(out) = rustc_run(&branch, "pick(true, 2.5)") {
+        assert_eq!(out, "2.5", "the true arm yields x");
+    }
 }
 
 #[test]
@@ -4475,17 +4520,8 @@ fn rustc_roundtrip_host_closure_factory_export_scalar_capture_s1() {
         assert_eq!(out, "16", "make(k=4) then call(3) = (3+1)*4 = 16");
     }
 
-    // SCOPE GUARD: a closure factory whose closure takes/returns a COMPOUND (here a Tuple RESULT) still
-    // DECLINES cleanly (S3, deferred) — the factory emits a valid Rc<dyn Fn> but the harness result-render
-    // is not yet wired, so it stays a `todo`, NOT a wrong-value/non-build fail.
-    let compound = compile_rust_result(
-        "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (tuple x k))) (export mk))",
-    );
-    assert!(
-        compound.is_err(),
-        "a closure factory returning a compound declines (host-closure S3, deferred):\n{compound:?}"
-    );
-    // And a closure PARAMETER export still declines (no way to synthesize an Rc<dyn Fn> arg at the boundary).
+    // A closure PARAMETER export still declines (no way to synthesize an Rc<dyn Fn> arg at the boundary) —
+    // the one function-typed shape that stays deferred (compound args/results now cross via S2/S3).
     let param = compile_rust_result(
         "(module m (def (apply (: f (-> Int64 Int64)) (: x Int64)) (f x)) (export apply))",
     );
@@ -4520,23 +4556,52 @@ fn rustc_roundtrip_host_closure_factory_compound_arg_s2() {
         assert_eq!(out, "105", "make(k=100) then call([5,6]) = 5+100 = 105");
     }
 
-    // SCOPE GUARD: a compound RESULT still declines (S3) even with a scalar arg — the harness result-render
-    // for a compound is not yet wired.
-    let compound_result = compile_rust_result(
-        "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (tuple x k))) (export mk))",
-    );
-    assert!(
-        compound_result.is_err(),
-        "a compound-RESULT factory still declines (S3, deferred):\n{compound_result:?}"
-    );
-    // An Option ARG is still deferred (harness enum-arg rebuild is a later sub-slice) — declines cleanly.
-    let option_arg = compile_rust_result(
+    // S4a: an Option/Result ARG now crosses too (the harness rebuilds `(Some 5)`→`Some(5)` etc.), so a
+    // factory taking an Option arg EMITS (`Rc<dyn Fn(Option<i64>) -> i64>`).
+    let option_arg = compile_rust(
         "(module m (def (mk (: k Int64)) (fn ((: o (Option Int64))) \
            (match o ((Some v) (+ v k)) (_ k)))) (export mk))",
     );
     assert!(
-        option_arg.is_err(),
-        "an Option-ARG factory still declines (deferred past S2 Tuple/List):\n{option_arg:?}"
+        option_arg.contains("Rc<dyn Fn(Option<i64>) -> i64>"),
+        "an Option-ARG factory now emits (S4a):\n{option_arg}"
+    );
+    // SCOPE GUARD: an Option/Result RESULT (a SUM result) is still deferred — the harness renders it as the
+    // bare `(Some 5)` while the corpus expects the type-annotated value form; that's a separate render slice.
+    let sum_result = compile_rust_result(
+        "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (Some (+ x k)))) (export mk))",
+    );
+    assert!(
+        sum_result.is_err(),
+        "an Option-RESULT factory still declines (sum-result render deferred):\n{sum_result:?}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_host_closure_factory_compound_result_s3() {
+    // HOST-CLOSURE S3: a closure-factory whose returned closure produces a COMPOUND RESULT (Tuple/List)
+    // now crosses. The factory emits `Rc<dyn Fn(x) -> (i64, i64)>`, and the gate harness peels the
+    // factory's arrow `cdz-return` note `(-> Int64 (Tuple Int64 Int64))` to the final result type and
+    // renders it structurally (`(tuple k n)`), not the bare `{}` Display that E0277s on a Rust tuple.
+    // NOTE: the end-to-end make/call + structured render (`(tuple k n)` / cdz-list form) is exercised by
+    // the gate (the `21-host-closures.sexp` compound-result cases, which flip todo→PASS with this slice) —
+    // the gate driver renders via `cdz_render_expr` after peeling the factory's arrow note. This unit test
+    // pins the EMIT shape only; `rustc_run` here uses a bare `{}` Display that can't format a Rust tuple/Vec
+    // (that's precisely what the gate's structured render handles), so we assert the signature + note, not run.
+    let tup = compile_rust(
+        "(module m (def (mk (: k Int64)) (fn ((: n Int64)) (tuple k n))) (export mk))",
+    );
+    assert!(
+        tup.contains("pub fn mk(k: i64) -> std::rc::Rc<dyn Fn(i64) -> (i64, i64)>")
+            && tup.contains("// cdz-return[mk]: (-> Int64 (Tuple Int64 Int64))"),
+        "the S3 tuple-result factory emits `Rc<dyn Fn(..)->(..)>` + the arrow return note:\n{tup}"
+    );
+    // A LIST result also crosses — the closure builds a Vec (rendered as a cdz list by the gate).
+    let lst =
+        compile_rust("(module m (def (mk (: k Int64)) (fn ((: n Int64)) (list k n))) (export mk))");
+    assert!(
+        lst.contains("-> std::rc::Rc<dyn Fn(i64) -> Vec<i64>>"),
+        "the S3 list-result factory emits `Rc<dyn Fn(..)->Vec<..>>`:\n{lst}"
     );
 }
 

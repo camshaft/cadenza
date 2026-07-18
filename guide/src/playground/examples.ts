@@ -372,6 +372,33 @@ export const EXAMPLES: Example[] = [
     expected: "(: (tuple (list 36 41 40) 39) (Tuple (List Int64) Int64))",
   },
   {
+    // Shows off: 2D data — a matrix as a list of rows (list of lists), and building a NEW nested
+    // collection at runtime. Transpose turns rows into columns: [[1 2 3] [4 5 6]] becomes
+    // [[1 4] [2 5] [3 6]]. The result is a runtime-built (List (List Int64)) that renders in full.
+    name: "Matrix transpose",
+    surface: "sexpr",
+    source: `(do
+  ; m is a list of rows; each row is a list of Int64. elem reads m[i][j], 0 if out of range.
+  (def (elem m i j)
+    (match (List.at m i)
+      ((Some r) (match (List.at r j) ((Some v) v) ((None) 0)))
+      ((None) 0)))
+  ; Build column j by reading m[0][j], m[1][j], ... down the rows.
+  (def (col m j i rows acc)
+    (if (= i rows) acc (col m j (+ i 1) rows (List.push acc (elem m i j)))))
+  ; For each column index, push the built column onto the result — that's the transpose.
+  (def (go m j cols rows acc)
+    (if (= j cols)
+        acc
+        (go m (+ j 1) cols rows
+          (List.push acc (col m j 0 rows (: (list) (List Int64)))))))
+  (def (main)
+    (let ((m (list (list 1 2 3) (list 4 5 6))))
+      (go m 0 3 2 (: (list) (List (List Int64))))))
+  (export main))`,
+    expected: "(: (list (list 1 4) (list 2 5) (list 3 6)) (List (List Int64)))",
+  },
+  {
     // Shows off: exponential recursion made concrete — the minimum moves to solve Tower of Hanoi with
     // n disks is 2^n - 1 (move n-1, move the big disk, move n-1 back). hanoi(10) = 1023.
     name: "Tower of Hanoi (move count)",
