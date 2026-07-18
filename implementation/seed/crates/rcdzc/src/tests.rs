@@ -834,21 +834,31 @@ fn call_trap_reason(
 
 /// Locate the built value-heap runtime component `.wasm` whose content hash matches the compiler's
 /// `REQUIRED_RUNTIME_HASH`, or `None` if it is not present (so the test SKIPS rather than fails when the
-/// runtime has not been built — `cargo xtask build`/`codegen` produces it). Searches the content-
-/// addressed store and the `cargo component` build output, relative to the repo root.
+/// runtime has not been built — `cargo xtask build`/`codegen` produces it). When `CADENZA_STORE` is set it
+/// is AUTHORITATIVE — resolve ONLY `<CADENZA_STORE>/<hash>.wasm`, with NO fallback to the hardcoded
+/// candidates (matching `cdz-calc`'s `store_dir()` and `cdz-test`'s store guard) — so an `xtask check`
+/// storeless rerun (`CADENZA_STORE`=empty temp dir) makes this return `None` and the tests SKIP, faithfully
+/// reproducing storeless CI; a prepend-then-fallback would instead fall through to the real store and
+/// defeat the rerun. When UNSET, searches the content-addressed store and the `cargo component` build
+/// output, relative to the repo root.
 fn find_runtime_wasm() -> Option<Vec<u8>> {
     use crate::backend::wasm::runtime_abi::REQUIRED_RUNTIME_HASH;
-    // `CARGO_MANIFEST_DIR` is `.../implementation/seed/crates/rcdzc`; the seed workspace root is three
-    // levels up, and the repo root one more.
-    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let seed = manifest.join("../..").canonicalize().ok()?; // .../implementation/seed
-    let repo = seed.join("../..").canonicalize().ok()?; // repo root
-    let candidates = [
-        // The content-addressed store (populated by `xtask build`).
-        repo.join(format!("target/cadenza-store/{REQUIRED_RUNTIME_HASH}.wasm")),
-        // The `cargo component build` output (populated by `xtask codegen`/`build`).
-        seed.join("crates/cdz-runtime/target/wasm32-unknown-unknown/release/cdz_runtime.wasm"),
-    ];
+    let candidates: Vec<std::path::PathBuf> = if let Ok(dir) = std::env::var("CADENZA_STORE") {
+        // AUTHORITATIVE: the caller pins the store; resolve only there, no fallback.
+        vec![std::path::PathBuf::from(dir).join(format!("{REQUIRED_RUNTIME_HASH}.wasm"))]
+    } else {
+        // `CARGO_MANIFEST_DIR` is `.../implementation/seed/crates/rcdzc`; the seed workspace root is
+        // three levels up, and the repo root one more.
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let seed = manifest.join("../..").canonicalize().ok()?; // .../implementation/seed
+        let repo = seed.join("../..").canonicalize().ok()?; // repo root
+        vec![
+            // The content-addressed store (populated by `xtask build`).
+            repo.join(format!("target/cadenza-store/{REQUIRED_RUNTIME_HASH}.wasm")),
+            // The `cargo component build` output (populated by `xtask codegen`/`build`).
+            seed.join("crates/cdz-runtime/target/wasm32-unknown-unknown/release/cdz_runtime.wasm"),
+        ]
+    };
     for path in candidates {
         if let Ok(bytes) = std::fs::read(&path) {
             // Only accept a runtime whose content hash matches what the compiler compiled against —
@@ -18101,8 +18111,8 @@ mod match_engine {
     fn requires_ensures_predicates_are_recorded_and_behavior_neutral_on_a_valid_input() {
         use crate::testkit::parse;
         // A def carrying a @requires and a @ensures. The predicates are ordinary forms over the param `x`
-        // (and, for @ensures, the implicit result binder `it`); b4a just records their StructIds.
-        let src = "(module m (@ (requires (> x 0)) (@ (ensures (> it 0)) (def (f (: x Int64)) (+ x 1)))) (export f))";
+        // (and, for @ensures, the implicit result binder `ret`); b4a just records their StructIds.
+        let src = "(module m (@ (requires (> x 0)) (@ (ensures (> ret 0)) (def (f (: x Int64)) (+ x 1)))) (export f))";
         let db = crate::db::Db::load(parse(src));
         // The annotations are RECORDED against f's def (unchanged by the (D) enforcement — the wrapper stays).
         let f = db.def_by_name("f").expect("def f");
@@ -18114,10 +18124,10 @@ mod match_engine {
         assert_eq!(
             db.ensures_of(f).len(),
             1,
-            "the @ensures(> it 0) predicate is recorded for f"
+            "the @ensures(> ret 0) predicate is recorded for f"
         );
         // ENFORCEMENT ON THE STACKED `@requires`-OVER-`@ensures` SHAPE. `src` spells the canonical contract
-        // `(@ (requires (> x 0)) (@ (ensures (> it 0)) (def (f x) (+ x 1))))` — the `@requires` does NOT
+        // `(@ (requires (> x 0)) (@ (ensures (> ret 0)) (def (f x) (+ x 1))))` — the `@requires` does NOT
         // directly wrap the def (the `@ensures` layer sits between). `verify_enforce::enforce` DESCENDS
         // through the intervening `(@ (ensures …) …)` wrapper to reach the def and injects
         // `(if (> x 0) (+ x 1) (trap))`, so the precondition is enforced at body-entry for this ordering too.
@@ -18157,7 +18167,7 @@ mod match_engine {
     }
 
     /// Verification Inc-b @invariant (design §10, DATA-level family member): `@invariant(pred)` on a `(type …)`
-    /// declaration is RECORDED (keyed by the type decl occ, over the value binder `it`) and read by
+    /// declaration is RECORDED (keyed by the type decl occ, over the value binder `self`) and read by
     /// `Db::invariant_of` — v-property-testing's `gen<T>` seam. Unlike `@requires`/`@ensures` it annotates a
     /// TYPE, not a def, so it must NOT trip the "annotation wraps no definition" reject; the type still takes
     /// effect (a value of it constructs + runs). Behavior-neutral recording (the establish/preserve enforcement
@@ -18167,7 +18177,7 @@ mod match_engine {
         use crate::testkit::parse;
         // `Percent` carries an `@invariant(and (>= it 0) (<= it 100))`; a value constructs + the program runs.
         let src = "(module m \
-            (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+            (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64))) \
             (def (mk (: v Int64)) (Percent.Pct v)) \
             (def (unwrap (: p Percent)) (match p ((Percent.Pct n) n))) \
             (def (main) (unwrap (mk 42))) (export main))";
@@ -18209,13 +18219,13 @@ mod match_engine {
     /// Verification Inc-b @invariant ESTABLISH Part 1: `invariant_establish::synthesize` emits a typed checker
     /// def per @invariant type, so the predicate is TYPE-CHECKED with `it : T`. For a SINGLE-PAYLOAD NEWTYPE it
     /// AUTO-UNWRAPS — the bare `(>= it 0)` (which would hit the nominal boundary on `it : Percent`) type-checks
-    /// because the checker binds the payload and rewrites `it` to it. A predicate that ALREADY destructures
-    /// `it` is used as-is (NOT double-unwrapped). Both forms compile clean (no CDZ0202/CDZ0203).
+    /// because the checker binds the payload and rewrites `self` to it. A predicate that ALREADY destructures
+    /// `self` is used as-is (NOT double-unwrapped). Both forms compile clean (no CDZ0202/CDZ0203).
     #[test]
     fn an_invariant_on_a_newtype_auto_unwraps_so_a_bare_scalar_predicate_type_checks() {
         use crate::testkit::parse;
         // BARE `(>= it 0)` on `it : Percent` (a single-payload newtype) — auto-unwrapped, type-checks clean.
-        let bare = "(module m (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+        let bare = "(module m (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64))) \
             (def (mk (: v Int64)) (Percent.Pct v)) (def (main) 0) (export main))";
         let ds = crate::diagnostics(&mut crate::db::Db::load(parse(bare)));
         assert!(
@@ -18223,9 +18233,9 @@ mod match_engine {
                 .any(|d| matches!(d.code.as_deref(), Some("CDZ0202") | Some("CDZ0203"))),
             "a bare scalar @invariant on a newtype auto-unwraps — no nominal-boundary fault: {ds:?}"
         );
-        // A SELF-DESTRUCTURE `(match it ((Percent.Pct v) …))` predicate is used as-is (not double-unwrapped —
+        // A SELF-DESTRUCTURE `(match self ((Percent.Pct v) …))` predicate is used as-is (not double-unwrapped —
         // that would try to match the payload Int64 as a Percent and fail CDZ0203). Also clean.
-        let destr = "(module m (@ (invariant (match it (((. Percent Pct) v) (and (>= v 0) (<= v 100))))) \
+        let destr = "(module m (@ (invariant (match self (((. Percent Pct) v) (and (>= v 0) (<= v 100))))) \
             (type Percent (Pct Int64))) (def (main) 0) (export main))";
         let ds2 = crate::diagnostics(&mut crate::db::Db::load(parse(destr)));
         assert!(
@@ -18252,7 +18262,7 @@ mod match_engine {
         // (unwrapped here so the export is a plain Int64) or traps. Type-checks clean (no CDZ fault) and is
         // present in the def table.
         let src = "(module m \
-            (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+            (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64))) \
             (def (mk (: v Int64)) (match (__invariant_construct_Percent v) ((Percent.Pct n) n))) \
             (export mk))";
         let mut db = crate::db::Db::load(parse(src));
@@ -18309,7 +18319,7 @@ mod match_engine {
         use wasmtime::component::Val;
         // `mk` builds a Percent with the PLAIN `(Percent.Pct v)` — no `__invariant_construct` by name.
         let src = "(module m \
-            (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+            (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64))) \
             (def (mk (: v Int64)) (match (Percent.Pct v) (((. Percent Pct) n) n))) \
             (export mk))";
         let bytes =
@@ -18350,7 +18360,7 @@ mod match_engine {
     fn an_invariant_on_a_multi_variant_sum_synthesizes_a_per_variant_checked_constructor() {
         use crate::testkit::parse;
         let src = "(module m \
-            (@ (invariant (match it (((. Shape Circle) r) (> r 0)) \
+            (@ (invariant (match self (((. Shape Circle) r) (> r 0)) \
                 (((. Shape Square) w h) (and (> w 0) (> h 0))))) \
              (type Shape (Circle Int64) (Square Int64 Int64))) \
             (def (main) 0) (export main))";
@@ -18387,7 +18397,7 @@ mod match_engine {
     fn an_invariant_on_a_single_variant_multi_payload_newtype_synthesizes_a_checked_constructor() {
         use crate::testkit::parse;
         let src = "(module m \
-            (@ (invariant (match it (((. Range Mk) lo hi) (<= lo hi)))) (type Range (Mk Int64 Int64))) \
+            (@ (invariant (match self (((. Range Mk) lo hi) (<= lo hi)))) (type Range (Mk Int64 Int64))) \
             (def (main) 0) (export main))";
         let db = crate::db::Db::load(parse(src));
         // The sole variant (disc 0) gets a per-variant checked constructor — the tuple-erase divert's callee.
@@ -18419,7 +18429,7 @@ mod match_engine {
     fn an_invariant_rejecting_a_nullary_variant_synthesizes_a_checked_constructor_for_it() {
         use crate::testkit::parse;
         let src = "(module m \
-            (@ (invariant (match it (((. T A)) false) (((. T B) x) (> x 0)))) (type T (A) (B Int64))) \
+            (@ (invariant (match self (((. T A)) false) (((. T B) x) (> x 0)))) (type T (A) (B Int64))) \
             (def (main) 0) (export main))";
         let db = crate::db::Db::load(parse(src));
         // The nullary variant A (disc 0) gets a no-arg checked constructor — no longer skipped.
@@ -18435,28 +18445,28 @@ mod match_engine {
     }
 
     /// Verification Inc-b @invariant NAME-RESOLUTION: an `@invariant(pred)` predicate references only the value
-    /// binder `it` (the value of the type) and prelude/global names — no def params (a type has none). A stray
+    /// binder `self` (the value of the type) and prelude/global names — no def params (a type has none). A stray
     /// name is UNBOUND → CDZ0101 at the annotation (the b4c pattern, reused for the data-level member). A valid
-    /// invariant over `it` + prelude ops is NOT flagged.
+    /// invariant over `self` + prelude ops is NOT flagged.
     #[test]
     fn an_invariant_predicate_with_an_unbound_name_is_rejected() {
         use crate::testkit::parse;
-        // `zzz` is neither the value binder `it` nor a prelude op → unbound.
-        let bad = "(module m (@ (invariant (and (>= it 0) (< it zzz))) (type Percent (Pct Int64))) \
+        // `zzz` is neither the value binder `self` nor a prelude op → unbound.
+        let bad = "(module m (@ (invariant (and (>= self 0) (< self zzz))) (type Percent (Pct Int64))) \
             (def (main) 0) (export main))";
         let d = crate::diagnostics(&mut crate::db::Db::load(parse(bad)))
             .into_iter()
             .find(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("zzz"))
             .expect("an unbound name in an @invariant predicate is rejected CDZ0101");
         assert!(d.message.contains("zzz"), "got: {}", d.message);
-        // NO false positive: an invariant over `it` + prelude ops only is accepted.
-        let ok = "(module m (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+        // NO false positive: an invariant over `self` + prelude ops only is accepted.
+        let ok = "(module m (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64))) \
             (def (main) 0) (export main))";
         assert!(
             !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
                 .iter()
                 .any(|d| d.code.as_deref() == Some("CDZ0101")),
-            "a valid @invariant over `it` + prelude ops is not flagged unbound"
+            "a valid @invariant over `self` + prelude ops is not flagged unbound"
         );
         // NO false positive on a DESTRUCTURE-form invariant — the canonical @invariant shape (it = whole
         // value, unwrap the payload via a match arm; the nominal boundary forbids a bare `(>= it 0)`). The
@@ -18464,7 +18474,7 @@ mod match_engine {
         // name-resolution walk threads binder scopes. (Regression pin: a flat walk wrongly reported `v`
         // unbound, making the mandatory destructure form unusable.)
         let destructure = "(module m \
-            (@ (invariant (match it ((Percent.Pct v) (and (>= v 0) (<= v 100))))) (type Percent (Pct Int64))) \
+            (@ (invariant (match self ((Percent.Pct v) (and (>= v 0) (<= v 100))))) (type Percent (Pct Int64))) \
             (def (main) (match (Percent.Pct 50) ((Percent.Pct n) n))) (export main))";
         assert!(
             !crate::diagnostics(&mut crate::db::Db::load(parse(destructure)))
@@ -18475,7 +18485,7 @@ mod match_engine {
         // ...but a genuinely-unbound name INSIDE a destructure arm is still caught (the binder scope does not
         // hide a stray name).
         let bad_arm = "(module m \
-            (@ (invariant (match it ((Percent.Pct v) (> v nope)))) (type Percent (Pct Int64))) \
+            (@ (invariant (match self ((Percent.Pct v) (> v nope)))) (type Percent (Pct Int64))) \
             (def (main) 0) (export main))";
         assert!(
             crate::diagnostics(&mut crate::db::Db::load(parse(bad_arm)))
@@ -18525,7 +18535,7 @@ mod match_engine {
         use wasmtime::component::Val;
         // `@ensures (>= it 0)` on `f(x) = x - 100`: the body becomes `(let ((it (- x 100))) (if (>= it 0) it
         // (trap)))`. f(5) = -95 violates it → TRAP; f(200) = 100 satisfies it → returns 100 (value-transparent).
-        let src = "(module m (@ (ensures (>= it 0)) (def (f (: x Int64)) (- x 100))) (export f))";
+        let src = "(module m (@ (ensures (>= ret 0)) (def (f (: x Int64)) (- x 100))) (export f))";
         let comp =
             compile_component(&crate::codec::encode(&parse(src))).expect("annotated compiles");
         // VIOLATING input x=5 (result -95 < 0) → the injected postcondition check takes the trap arm.
@@ -18539,17 +18549,18 @@ mod match_engine {
             100,
             "a satisfied bare @ensures is value-transparent — the def returns its computed value 100, not unit"
         );
-        // CAPTURE-GUARD REJECT: a def whose PARAM is literally named `it` cannot carry `@ensures` — the
-        // `@ensures` result binder `it` would shadow the param, so enforcement is impossible. Rather than
+        // CAPTURE-GUARD REJECT: a def whose PARAM is literally named `ret` cannot carry `@ensures` — the
+        // `@ensures` result binder `ret` would shadow the param, so enforcement is impossible. Rather than
         // silently skip (a footgun — a quietly-unenforced contract), `collect_faults` REJECTS it (CDZ0201)
-        // naming the fix (rename the param). Assert the diagnostic fires (breaker 2026-07-17).
+        // naming the fix (rename the param). Assert the diagnostic fires (breaker 2026-07-17; the result binder
+        // was renamed `it`→`ret` per the operator's collision-safety directive).
         let guarded =
-            "(module m (@ (ensures (>= it 0)) (def (f (: it Int64)) (- it 100))) (export f))";
+            "(module m (@ (ensures (>= ret 0)) (def (f (: ret Int64)) (- ret 100))) (export f))";
         let d = crate::diagnostics(&mut crate::db::Db::load(parse(guarded)))
             .into_iter()
             .find(|d| d.message.contains("cannot carry `@ensures`"))
             .expect(
-                "an @ensures on a def with a param named `it` is REJECTED, not silently skipped",
+                "an @ensures on a def with a param named `ret` is REJECTED, not silently skipped",
             );
         assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
     }
@@ -18559,7 +18570,7 @@ mod match_engine {
     /// discipline `@tag` gets — a silently-unrecorded predicate would mask the author's mistake and surface
     /// far away when the denotation consumes it. A valid `@requires(pred)`/`@ensures(pred)` is accepted.
     /// (Name-resolution/boolean-typedness of the predicate is checked later, at denotation, where the def
-    /// param scope + `it` binder are available — flagged by breaker; scoped here to arity only.)
+    /// param scope + `ret` binder are available — flagged by breaker; scoped here to arity only.)
     #[test]
     fn a_malformed_requires_ensures_arity_is_rejected_not_silently_dropped() {
         use crate::testkit::parse;
@@ -18567,7 +18578,7 @@ mod match_engine {
             "(module m (@ (requires) (def (c) 3)) (export c))", // zero args
             "(module m (@ (requires (> x 0) (< x 9)) (def (c (: x Int64)) 3)) (export c))", // two args
             "(module m (@ (ensures) (def (c) 3)) (export c))", // zero args
-            "(module m (@ (ensures (> it 0) 5) (def (c) 3)) (export c))", // two args
+            "(module m (@ (ensures (> ret 0) 5) (def (c) 3)) (export c))", // two args
         ] {
             let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
                 .into_iter()
@@ -18580,7 +18591,7 @@ mod match_engine {
         // NO false positive: a valid one-predicate `@requires`/`@ensures` is accepted silently.
         for ok in [
             "(module m (@ (requires (> x 0)) (def (c (: x Int64)) 3)) (export c))",
-            "(module m (@ (ensures (> it 0)) (def (c) 3)) (export c))",
+            "(module m (@ (ensures (> ret 0)) (def (c) 3)) (export c))",
         ] {
             assert!(
                 !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
@@ -18592,14 +18603,14 @@ mod match_engine {
     }
 
     /// Verification Inc-b b4c: a `@requires`/`@ensures` predicate references only names in scope — the
-    /// def's PARAMETERS, `it` (for `@ensures`), and prelude/global names. A name that is none of those is
+    /// def's PARAMETERS, `ret` (for `@ensures`), and prelude/global names. A name that is none of those is
     /// UNBOUND → CDZ0101 at the annotation (good locality). The b4a2-deferred name check, done where the
-    /// scope is known: each predicate name occurrence is checked against the param set + `it`, and any other
+    /// scope is known: each predicate name occurrence is checked against the param set + `ret`, and any other
     /// name must resolve standalone (a prelude op does; a stray name poisons CDZ0101).
     #[test]
     fn requires_ensures_predicate_unbound_name_is_cdz0101_valid_names_ok() {
         use crate::testkit::parse;
-        // UNBOUND: a name that is not a param, not `it`, not a prelude op.
+        // UNBOUND: a name that is not a param, not `ret`, not a prelude op.
         for (src, why) in [
             (
                 "(module m (@ (requires (> y 0)) (def (f (: x Int64)) (+ x 1))) (export f))",
@@ -18616,17 +18627,17 @@ mod match_engine {
                 .unwrap_or_else(|| panic!("an unbound predicate name must be CDZ0101: {why}"));
             assert_eq!(d.code.as_deref(), Some("CDZ0101"), "{why}: {}", d.message);
         }
-        // BOUND: params, `it` (in @ensures), and prelude operators (`>`,`+`,`<=`) all in scope — no CDZ0101.
+        // BOUND: params, `ret` (in @ensures), and prelude operators (`>`,`+`,`<=`) all in scope — no CDZ0101.
         for ok in [
             "(module m (@ (requires (> x 0)) (def (f (: x Int64)) (+ x 1))) (export f))", // param x
-            "(module m (@ (ensures (> it 0)) (def (f (: x Int64)) (+ x 1))) (export f))", // result it
-            "(module m (@ (requires (<= x 100)) (@ (ensures (> it x)) (def (f (: x Int64)) (+ x 1)))) (export f))",
+            "(module m (@ (ensures (> ret 0)) (def (f (: x Int64)) (+ x 1))) (export f))", // result ret
+            "(module m (@ (requires (<= x 100)) (@ (ensures (> ret x)) (def (f (: x Int64)) (+ x 1)))) (export f))",
         ] {
             assert!(
                 !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
                     .iter()
                     .any(|d| d.code.as_deref() == Some("CDZ0101")),
-                "a predicate over params/it/prelude-ops must NOT flag unbound: {ok}"
+                "a predicate over params/ret/prelude-ops must NOT flag unbound: {ok}"
             );
         }
     }
@@ -44950,6 +44961,60 @@ mod stage1 {
     }
 
     #[test]
+    fn a_multi_column_literal_match_emits_a_flat_br_if_chain_not_an_exponential_if_tree() {
+        // S2 (emit-size, wasm) REGRESSION GATE — the EMIT-side twin of the DAG-sharing linearity guard above
+        // (which pins the IR shape). A multi-column literal arm `(tuple i i a)` shares its fall-through tail as
+        // a linear DAG, but the OLD nested-`if`/`else` emit re-emitted that shared tail in BOTH branches at
+        // every column → the emitted code grew O(2^cols) (N=8 = 9352 bytes / 1020 `if` ops; N=16 ≈ 2.2 MB,
+        // unrunnable). The flat `br_if` guard chain (`flattenable_multicol_arm` + the `SumCont::LitTest` emit)
+        // collapses it: each column `br_if`s to one `$arm_fail` label and the shared tail is emitted ONCE, so
+        // the emit is LINEAR (2 blocks + 2 `br_if` per arm, ZERO `if`). This gate pins both facts so a future
+        // change that regressed to the nested tree — silently reintroducing the exponential blowup while still
+        // returning the right value (the opt-sweep + value-guards would stay green) — is caught here.
+        //
+        // A RUNTIME scrutinee (built from params) so the match is actually EMITTED, not const-folded. Shape-only
+        // (compile + count opcodes, no run — the value is pinned by the corpus value-guards + opt-sweep; a heap
+        // Tuple scrutinee cannot run in the lib harness anyway). Mirrors the fusion-gate + dict-erasure gates.
+        fn param_tuple_match_src(n: usize) -> String {
+            let mut arms = String::new();
+            for i in 0..n {
+                arms.push_str(&format!("((tuple {i} {i} a) {i}) "));
+            }
+            format!(
+                "(module m (def (f (: t (Tuple Int64 Int64 Int64))) (match t {arms}(_ -1))) \
+                 (def (main (: a Int64)(: b Int64)(: c Int64)) (f (tuple a b c))) (export main))"
+            )
+        }
+        let compile = |n: usize| -> Vec<u8> {
+            compile_component(&crate::codec::encode(&parse(&param_tuple_match_src(n))))
+                .expect("a multi-column literal match compiles")
+        };
+        // ZERO `if` ops: the flat chain replaces the nested-`if` tree entirely for this spine. A single `If`
+        // opcode anywhere in the emit means the reshape did NOT fire (regressed to the nested emit).
+        let bytes8 = compile(8);
+        let ifs8 = super::count_opcode(&bytes8, |op| matches!(op, wasmparser::Operator::If { .. }));
+        assert_eq!(
+            ifs8, 0,
+            "a multi-column literal match must emit a FLAT `br_if` guard chain (0 `if` ops), not the \
+             exponential nested-`if` tree — found {ifs8} `if` op(s) at 8 arms, so the flat reshape \
+             (`flattenable_multicol_arm`) did not fire"
+        );
+        // LINEAR emitted size: doubling the arm count 8→16 must AT MOST roughly double the emitted bytes (the
+        // flat chain is 2 blocks + 2 `br_if` per arm). The old exponential emit grew ~230× over the same step
+        // (9352 → ~2.2 M). Require the byte ratio stay well under 4× (linear is ~1.3×; exponential was ~230×).
+        let bytes16 = compile(16);
+        let ratio = bytes16.len() as f64 / bytes8.len().max(1) as f64;
+        assert!(
+            !bytes8.is_empty() && ratio < 4.0,
+            "a multi-column literal match's EMITTED SIZE must grow LINEARLY with arm count (the flat `br_if` \
+             chain), not exponentially: bytes 8→16 arms grew {ratio:.1}× (n8={}, n16={}); the flat chain is \
+             ~1.3×, the old nested-`if` tree was ~230×",
+            bytes8.len(),
+            bytes16.len()
+        );
+    }
+
+    #[test]
     fn let_binding_in_scope_in_body() {
         // 02-binding-and-control: (let ((x 10)) x) = 10.
         assert_eq!(run_main("(let ((x 10)) x)"), 10);
@@ -54905,6 +54970,62 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "a ctl arm whose k escapes (passed as an arg) must decline cleanly, deferred to step 3"
+        );
+    }
+
+    #[test]
+    fn a_ctl_arm_applying_k_inside_a_match_scrutinee_resolves_k() {
+        // REGRESSION (a bogus CDZ0101 my E5 step-2 surfaced): a ctl-style arm applying `k` INSIDE a MATCH
+        // SCRUTINEE — `(flip () s k (match (k 10) (z (* z 2))))` — reported `CDZ0101 unbound k`, even though
+        // `k` is bound by the arm and `(* (k 10) 2)` (no match) resolved fine. ROOT: `is_param_occurrence`
+        // recognized the arm's STATE binder (`parts[2]`) as a binder occurrence but had NO case for the
+        // 5-part arm's CONTINUATION binder `k` (`parts[3]`), so on the resolution path a match reference
+        // takes, `k`'s scope was never established. FIX = an `is_param_occurrence` case for a 5-part arm's
+        // `parts[3]`. Now folds through the continuation: `(k 10)` = `resume 10` = 10 into the context, and
+        // the match arm doubles it → 20.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip () s k (match (k 10) (z (* z 2))))) (Amb.flip))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a ctl arm applying k inside a match scrutinee must resolve k (not a bogus CDZ0101), then fold"
+        );
+    }
+
+    #[test]
+    fn a_let_wrapped_tail_resume_folds() {
+        // A `resume` in the TAIL of a `let` body — `(sleep (d) s (let ((wake (+ s d))) (resume unit wake)))`
+        // — is tail-resumptive: the let's value IS its body's value, so the resume is the tail. But
+        // `peel_resume_from_arm_body` used to handle only bare `(resume …)`, `(do … (resume …))`, and
+        // `(match … (resume …))` — NOT a `let`-wrapped resume — so it declined. FIX: a `let` peel case that
+        // keeps the `let` around BOTH the value and the next-state (the binder may be referenced by either —
+        // here the next-state `wake` IS the binding). This is the shape the DES scheduler's `sleep` arm
+        // uses. `(do (Sim.sleep 3) 42)` under a clock handler → 42 (sleep resumes, 42 is the continuation).
+        let src = "(do (effect Sim (op sleep (-> Int64 Unit)) (op now (-> Unit Int64))) \
+                   (def (main) (handle Sim 0 \
+                     ((now (u) s (resume s s)) (sleep (d) s (let ((wake (+ s d))) (resume unit wake)))) \
+                     (do (Sim.sleep 3) 42))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a let-wrapped tail resume must fold (the let peel), not decline"
+        );
+    }
+
+    #[test]
+    fn a_ctl_arm_with_an_unused_k_binder_is_an_ordinary_resumptive_arm() {
+        // A `ctl`-form arm that BINDS `k` but never references it — resuming via its own `resume` instead —
+        // is an ordinary tail-resumptive arm; the `k` binder is vacuous. This is the shape the DES `sleep`
+        // distillation writes: `(sleep (d) s k (let ((wake …)) (resume unit wake)))` (the `k` is declared per
+        // the scheduler ABI but this single-task shape resumes in place). The classifier now treats an
+        // unused-`k` ctl-arm as a normal arm (drops `cont`, the body's `resume` drives it) rather than
+        // declining. A `k` that is actually USED-but-escaping still declines (the sibling test above).
+        let src = "(do (effect Sim (op sleep (-> Int64 Unit)) (op now (-> Unit Int64))) \
+                   (def (main) (handle Sim 0 \
+                     ((now (u) s (resume s s)) (sleep (d) s k (let ((wake (+ s d))) (resume unit wake)))) \
+                     (do (Sim.sleep 3) 42))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a ctl arm with an unused k binder must be treated as an ordinary resumptive arm, not decline"
         );
     }
 

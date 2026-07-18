@@ -245,6 +245,43 @@ fn build_with_a_non_string_opt_level_warns_and_uses_the_default() {
 }
 
 #[test]
+fn build_with_a_duplicate_manifest_key_warns_last_wins() {
+    // A manifest that declares a known key TWICE (`def entry` twice) is last-wins in the parser — the
+    // earlier value is silently discarded, which can quietly change WHAT builds. The build must WARN
+    // (naming the duplicated key + that the last wins) yet still succeed, building the LAST value. Two
+    // entry files exist; the manifest names `first.cdz` then `main.cdz` → builds `main.wasm` + warns.
+    let dir = std::env::temp_dir().join(format!("cdz-build-dupkey-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("first.cdz"),
+        "def first() -> Int64 = 1\nexport { first }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.cdz"),
+        "def main() -> Int64 = 2\nexport { main }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Project.cdz"),
+        "def name = \"p\"\ndef entry = \"first.cdz\"\ndef entry = \"main.cdz\"\n",
+    )
+    .unwrap();
+    let (ok, _o, err) = run(&["build", dir.to_str().unwrap(), "-o", dir.to_str().unwrap()]);
+    assert!(ok, "a duplicate key warns but still builds: {err}");
+    assert!(
+        err.contains("warning") && err.contains("`entry`") && err.contains("more than once"),
+        "warns that `entry` is declared more than once (last-wins): {err}"
+    );
+    assert!(
+        dir.join("main.wasm").is_file() && !dir.join("first.wasm").is_file(),
+        "the LAST entry (main.cdz) wins — main.wasm is built, not first.wasm: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn build_a_glob_entry_matching_one_file_uses_the_resolved_files_name() {
     // REGRESSION (Copilot PR #413): a GLOB `entry` (`app*.cdz`) must derive the compiler entry NAME from
     // the RESOLVED file (`app_main.cdz` → `app_main`), NOT the glob pattern (which would pass an invalid

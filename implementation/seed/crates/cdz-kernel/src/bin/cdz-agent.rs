@@ -12,6 +12,9 @@
 //!   `cdz-agent authz-grant <log> <permit> [--expiry-ms <ms>]` — operator GRANT: append a narrow (optionally
 //!                                               time-boxed) Cedar permit that ADDS to the base policy.
 //!   `cdz-agent authz-revoke <log> <grant-seq>` — operator REVOKE: pull a prior grant by its seq.
+//!   `cdz-agent schedule-create <log> <id> <trigger-kind> --first-ms <ms> [--period-ms <ms>] [--payload <t>]`
+//!                                               — register a one-shot/periodic timer that fires <trigger-kind>.
+//!   `cdz-agent schedule-cancel <log> <id>`     — cancel a schedule by id.
 //!   `cdz-agent run <log> <event-kind>`        — one daemon step: read the log → latest genesis → drive an
 //!                                               interpret turn on the scalar <event-kind>. (The full event-
 //!                                               source loop is a later rung; this runs ONE tick.)
@@ -123,6 +126,75 @@ fn run() -> Result<()> {
                 FileLog::open(log_path).with_context(|| format!("open log {log_path}"))?;
             let seq = policy::append_revoke(&mut log, grant_seq)?;
             println!("revoked grant at seq {grant_seq} (revoke event at seq {seq})");
+            Ok(())
+        }
+        Some("schedule-create") => {
+            // Register a SCHEDULE (operator scheduling entry point, the counterpart of emit-policy for timers):
+            // fire the TRIGGER event `<trigger-kind>` (+ `--payload`) at `--first-ms` (absolute ms since epoch),
+            // then — if `--period-ms` is given — every period thereafter until cancelled (one-shot without it).
+            // A later create with the same `<id>` supersedes. The daemon's fire_due_schedules emits the trigger
+            // when due; the trigger-kind must NOT be a reserved kind (a timer can't forge kernel bookkeeping).
+            let log_path = args.get(2).ok_or_else(|| {
+                anyhow!("usage: cdz-agent schedule-create <log> <id> <trigger-kind> --first-ms <ms> [--period-ms <ms>] [--payload <text>]")
+            })?;
+            let id = args.get(3).ok_or_else(|| {
+                anyhow!("usage: cdz-agent schedule-create <log> <id> <trigger-kind> --first-ms <ms> [--period-ms <ms>] [--payload <text>]")
+            })?;
+            let trigger_kind = args.get(4).ok_or_else(|| {
+                anyhow!("usage: cdz-agent schedule-create <log> <id> <trigger-kind> --first-ms <ms> [--period-ms <ms>] [--payload <text>]")
+            })?;
+            if id.contains('\n') {
+                return Err(anyhow!("schedule id must not contain a newline (the codec is line-delimited)"));
+            }
+            if trigger_kind.contains('\n') {
+                return Err(anyhow!("trigger-kind must not contain a newline (the codec is line-delimited)"));
+            }
+            if daemon::is_reserved_kind(trigger_kind) {
+                return Err(anyhow!(
+                    "refusing a reserved trigger-kind `{trigger_kind}` — a schedule must fire a real trigger, \
+                     not forge kernel bookkeeping (genesis/policy/authz/prim-*/schedule-*)"
+                ));
+            }
+            let first_ms: u64 = flag_value(&args, "--first-ms")
+                .ok_or_else(|| anyhow!("schedule-create requires --first-ms <ms> (absolute ms since epoch)"))?
+                .parse()
+                .context("--first-ms must be a non-negative integer")?;
+            let period_ms: Option<u64> = match flag_value(&args, "--period-ms") {
+                Some(ms) => Some(ms.parse().context("--period-ms must be a non-negative integer")?),
+                None => None,
+            };
+            let payload = flag_value(&args, "--payload").unwrap_or_default();
+            let schedule = cdz_kernel::schedule::Schedule {
+                id: id.clone(),
+                first_ms,
+                period_ms,
+                trigger_kind: trigger_kind.clone(),
+                payload: payload.into_bytes(),
+            };
+            let mut log =
+                FileLog::open(log_path).with_context(|| format!("open log {log_path}"))?;
+            let seq = cdz_kernel::schedule::append_create(&mut log, &schedule)?;
+            println!(
+                "scheduled `{id}` at seq {seq}: fire `{trigger_kind}` at {first_ms}ms{}",
+                period_ms
+                    .map(|p| format!(", then every {p}ms (periodic)"))
+                    .unwrap_or_else(|| " (one-shot)".to_string())
+            );
+            Ok(())
+        }
+        Some("schedule-cancel") => {
+            // Cancel a schedule by id — the daemon's active-set fold thereafter excludes it (an operator stops
+            // a periodic timer, or a one-shot before it fires). A later schedule-create with that id re-registers.
+            let log_path = args
+                .get(2)
+                .ok_or_else(|| anyhow!("usage: cdz-agent schedule-cancel <log> <id>"))?;
+            let id = args
+                .get(3)
+                .ok_or_else(|| anyhow!("usage: cdz-agent schedule-cancel <log> <id>"))?;
+            let mut log =
+                FileLog::open(log_path).with_context(|| format!("open log {log_path}"))?;
+            let seq = cdz_kernel::schedule::append_cancel(&mut log, id)?;
+            println!("cancelled schedule `{id}` (cancel event at seq {seq})");
             Ok(())
         }
         Some("emit") => {
@@ -301,12 +373,14 @@ fn run() -> Result<()> {
             Ok(())
         }
         _ => Err(anyhow!(
-            "usage: cdz-agent <bootstrap|inject-genesis|emit-policy|authz-grant|authz-revoke|emit|run|perform|hosted|start> ...\n\
+            "usage: cdz-agent <bootstrap|inject-genesis|emit-policy|authz-grant|authz-revoke|schedule-create|schedule-cancel|emit|run|perform|hosted|start> ...\n\
              \x20 bootstrap <log>                    — create/open the event log\n\
              \x20 inject-genesis <log> <program.cdz> — append the genesis program\n\
              \x20 emit-policy <log> <policy.cedar>    — append a Cedar capability policy (attenuates each invocation; latest supersedes)\n\
              \x20 authz-grant <log> <permit.cedar> [--expiry-ms <ms>] — operator GRANT: append a narrow Cedar permit (optionally time-boxed); adds to the base policy\n\
              \x20 authz-revoke <log> <grant-seq>      — operator REVOKE: pull a prior grant by its seq (the effective policy thereafter excludes it)\n\
+             \x20 schedule-create <log> <id> <trigger-kind> --first-ms <ms> [--period-ms <ms>] [--payload <t>] — register a one-shot/periodic timer\n\
+             \x20 schedule-cancel <log> <id>          — cancel a schedule by id (a later create re-registers)\n\
              \x20 emit <log> <kind> <payload>        — append an external trigger event (a minimal event source; refuses reserved kinds)\n\
              \x20 run <log> <event-kind>             — one daemon tick (COUNT the scheduled host-ops)\n\
              \x20 perform <log> <event-kind>         — one daemon tick that EXECUTES the ops (K1c, in-program mock), summing per-op results\n\

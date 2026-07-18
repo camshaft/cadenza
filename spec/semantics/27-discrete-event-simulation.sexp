@@ -276,3 +276,95 @@
                 (r-drain r3)))
             (export main)))
   (output (: "A,B,C" String)))
+
+; ────────────────────────────────────────────────────────────────────────────────────────────────
+; Increment 2 — the `Sim` effect declaration + task API shape (§4). `now` is tail-resumptive and
+; works TODAY; `sleep` is E5-general and declines cleanly until v-effects' E5 step 3 (increment 4).
+; ────────────────────────────────────────────────────────────────────────────────────────────────
+
+(case "Sim.now reads the scheduler clock — a tail-resumptive handler arm that works today"
+  (doc    "The `Sim` effect's `now` op (design §4, §3.3) reads the current simulated time. Its handler arm
+           is TAIL-RESUMPTIVE — `(now (u) s (resume s s))` binds no continuation `k` and resumes the clock
+           `s` in place — so it needs no E5 general continuation and runs on the current compiler. The
+           scheduler state IS the clock (an `Instant`); seeding the handle at `(Instant.Instant 42)` and
+           reading `(now)` yields 42 ns. This pins that the read-the-clock op is available for tasks from
+           increment 2, independent of the `sleep`/`spawn` suspension machinery (which awaits step 3).")
+  (input  (do
+            (type Instant (Instant UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (effect Sim (op now (-> Unit Instant)))
+            (def (now) (Sim.now))
+            (def (main)
+              (handle Sim (Instant.Instant 42)
+                ((now (u) s (resume s s)))
+                (inst-ns (now))))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a task-facing `sleep` wrapper performs Sim.sleep — the surface a simulation is written against"
+  (doc    "The task-facing `(sleep d)` wrapper (design §4: `(def (sleep d) (Sim.sleep d))`) is the surface
+           an operator writes a simulation against — straight-line effectful code where each suspending op
+           is a `perform`. Here a one-task program sleeps for a Duration then returns a label; the scheduler
+           handler's `sleep` arm binds the continuation `k` (the reified rest of the task) and would file
+           it at the wake instant `(at s d)`, fast-forward the clock, and resume it. This is the E5 step-3
+           case (a STORED/escaping `k` resumed from a different activation), so TODAY it declines cleanly
+           ('not yet reducible by the tail-resumptive fold') and scores `todo`; when v-effects' E5 step 3
+           lands it flips to `pass` producing (: \"done\" String) — the increment-4 landing signal. A
+           `todo`→`fail` flip here is a real miscompile (k not resumed / clock not advanced / double-resume).")
+  (input  (do
+            (type Duration (Duration UInt64))
+            (type Instant  (Instant  UInt64))
+            (def (secs (: n UInt64)) (Duration.Duration (* n 1000000000)))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (def (dur-ns  (: d Duration)) (match d ((Duration.Duration n) n)))
+            (def (at (: t Instant) (: d Duration)) (Instant.Instant (+ (inst-ns t) (dur-ns d))))
+            (effect Sim
+              (op sleep (-> Duration Unit))
+              (op now   (-> Unit Instant)))
+            (def (sleep (: d Duration)) (Sim.sleep d))
+            (def (worker (: label String) (: d Duration)) (do (sleep d) label))
+            (def (main)
+              (handle Sim (Instant.Instant 0)
+                ( (now   (u) s (resume s s))
+                  (sleep (d) s k (resume unit (at s d))) )
+                (worker "done" (secs 3))))
+            (export main)))
+  (output (: "done" String)))
+
+; ────────────────────────────────────────────────────────────────────────────────────────────────
+; Increment 3 — THE E5 STEP-3 GATE REPRO (the shared contract with v-effects). §4.2 example distilled:
+; a task sleeps, the clock fast-forwards to its wake instant, the STORED continuation resumes and the
+; task observes the advanced clock. Scores `todo` until E5 step 3; a `todo`→`fail` flip is a miscompile.
+; (Full 2-task interleave with a pqueue + FIFO tie-break follows once this single-task case is green.)
+; ────────────────────────────────────────────────────────────────────────────────────────────────
+
+(case "a task that sleeps then reads `now` observes the fast-forwarded clock (E5 step-3 gate)"
+  (doc    "The end-to-end fast-forward proof (design §4.2, §5 'fast-forward = zero real time'): a task
+           `(do (sleep (secs 3)) (now))` suspends at the sleep, the scheduler files its continuation at
+           wake = `(at clock (secs 3))` = 3_000_000_000 ns, sets the clock to that wake instant (the
+           FAST-FORWARD), and resumes the stored continuation — which then reads `now` and observes the
+           ADVANCED clock (3 s), not the original 0. The recorded value is 3_000_000_000. This is the
+           single-task distillation of the §4.2 repro and the exact case v-effects gates their E5 step 3
+           against (a `Cont` captured at the perform site and applied from the scheduler-step activation,
+           with the handler state advanced across the resume). TODAY it declines cleanly and scores `todo`;
+           it flips to `pass` when step 3 lands (DES increment 4). The clock-advances-across-resume aspect
+           is the load-bearing bit — a step-3 implementation that resumed with the ORIGINAL state `s`
+           instead of the advanced `(at s d)` would return 0 here, so this case also pins that the arm's
+           threaded next-state (not the pre-perform state) reaches the resumed continuation.")
+  (input  (do
+            (type Duration (Duration UInt64))
+            (type Instant  (Instant  UInt64))
+            (def (secs (: n UInt64)) (Duration.Duration (* n 1000000000)))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (def (dur-ns  (: d Duration)) (match d ((Duration.Duration n) n)))
+            (def (at (: t Instant) (: d Duration)) (Instant.Instant (+ (inst-ns t) (dur-ns d))))
+            (effect Sim
+              (op sleep (-> Duration Unit))
+              (op now   (-> Unit Instant)))
+            (def (main)
+              (handle Sim (Instant.Instant 0)
+                ( (now   (u) s (resume s s))
+                  (sleep (d) s k (resume unit (at s d))) )
+                (do (Sim.sleep (secs 3)) (inst-ns (Sim.now)))))
+            (export main)))
+  (output (: 3000000000 Int64)))

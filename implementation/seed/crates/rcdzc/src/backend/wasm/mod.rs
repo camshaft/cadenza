@@ -1088,7 +1088,8 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
         | Core::Convert { operand, .. }
         | Core::Not { operand }
         | Core::ListLen { operand }
-        | Core::BytesLen { operand } => collect_host_arg_strings(db, operand, out),
+        | Core::BytesLen { operand }
+        | Core::StrScalarLen { operand } => collect_host_arg_strings(db, operand, out),
         Core::Match { scrutinee, arms } => {
             collect_host_arg_strings(db, scrutinee, out);
             for arm in arms {

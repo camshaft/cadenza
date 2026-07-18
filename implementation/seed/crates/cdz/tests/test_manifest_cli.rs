@@ -481,6 +481,22 @@ fn a_tag_selects_a_subset_and_composes_with_filter() {
         stdout.contains("--filter zzznomatch") && !stdout.contains("needs the `@test` annotation"),
         "an unmatched --filter names the filter as the cause, NOT a missing @test: {stdout}"
     );
+
+    // BOTH selectors present with an empty intersection: `--tag slow` MATCHES (slow-one/both-one carry it)
+    // but `--filter zzz` misses. The hint must NOT falsely claim no `@test` carries "slow" (one does) — it
+    // names BOTH selectors and their empty intersection, so a user isn't misdirected to the wrong cause.
+    let (ok, stdout, _) = run(&["test", &f, "--tag", "slow", "--filter", "zzznomatch"]);
+    assert!(
+        ok,
+        "empty tag∩filter intersection → vacuously green: {stdout}"
+    );
+    assert!(
+        stdout.contains("--tag slow")
+            && stdout.contains("--filter zzznomatch")
+            && !stdout.contains("no `@test` carries that `@tag(\"slow\")`"),
+        "a matching-tag + missing-filter run names BOTH selectors, not a false 'no @test carries slow': \
+         {stdout}"
+    );
 }
 
 /// The ML SURFACE of test tagging: `@tag("slow")` written in `.cdz` (ML) source — the call-style
@@ -1214,7 +1230,7 @@ fn a_range_invariant_constrains_generation_in_domain() {
     let f = write(
         &d,
         "m.sexp",
-        "(do (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+        "(do (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64))) \
            (@ test (def (p (: x Percent)) \
              (match x (((. Percent Pct) v) (if (and (>= v 0) (<= v 100)) unit (trap \"out of invariant range\")))))) \
            (def (anchor) 1))",
@@ -1244,7 +1260,7 @@ fn a_one_sided_lower_bound_invariant_constrains_generation_in_domain() {
     let f = write(
         &d,
         "m.sexp",
-        "(do (@ (invariant (>= it 0)) (type NonNeg (NN Int64))) \
+        "(do (@ (invariant (>= self 0)) (type NonNeg (NN Int64))) \
            (@ test (def (p (: x NonNeg)) \
              (match x (((. NonNeg NN) v) (if (>= v 0) unit (trap \"negative leaked past the one-sided invariant\")))))) \
            (def (anchor) 1))",
@@ -1275,7 +1291,7 @@ fn a_failing_range_invariant_property_renders_the_counterexample_in_domain() {
     let f = write(
         &d,
         "m.sexp",
-        "(do (@ (invariant (and (>= it 0) (<= it 100))) (type Percent (Pct Int64))) \
+        "(do (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64))) \
            (@ test (def (p (: x Percent)) (match x (((. Percent Pct) v) (if (< v 50) unit (trap \"big\")))))) \
            (def (anchor) 1))",
     );
@@ -1321,7 +1337,7 @@ fn a_failing_property_over_a_nested_refined_newtype_renders_the_counterexample_i
     let f = write(
         &d,
         "m.sexp",
-        "(do (@ (invariant (and (>= it 0) (<= it 100))) (type Pct (P Int64))) \
+        "(do (@ (invariant (and (>= self 0) (<= self 100))) (type Pct (P Int64))) \
            (@ test (def (p (: pair (Tuple Pct Bool))) \
              (match pair ((tuple a b) (match a (((. Pct P) x) (if (< x 50) unit (trap \"big\")))))))) \
            (def (anchor) 1))",
@@ -1365,7 +1381,7 @@ fn a_failing_property_over_a_newtype_wrapped_in_a_sum_renders_the_counterexample
     let f = write(
         &d,
         "m.sexp",
-        "(do (@ (invariant (and (>= it 0) (<= it 100))) (type Pct (P Int64))) \
+        "(do (@ (invariant (and (>= self 0) (<= self 100))) (type Pct (P Int64))) \
            (type Box (B Pct)) \
            (@ test (def (p (: bx Box)) \
              (match bx (((. Box B) pc) (match pc (((. Pct P) x) (if (< x 50) unit (trap \"big\")))))))) \
@@ -1407,7 +1423,7 @@ fn a_failing_property_over_a_doubly_nested_refined_newtype_renders_the_counterex
     let f = write(
         &d,
         "m.sexp",
-        "(do (@ (invariant (and (>= it 0) (<= it 100))) (type Pct (P Int64))) \
+        "(do (@ (invariant (and (>= self 0) (<= self 100))) (type Pct (P Int64))) \
            (@ test (def (p (: pair (Tuple (List Pct) Bool))) \
              (match pair ((tuple xs b) \
                (match xs ((list) unit) \
@@ -1449,7 +1465,7 @@ fn a_min_length_invariant_constrains_a_list_non_empty() {
     let f = write(
         &d,
         "m.sexp",
-        "(do (@ (invariant (< 0 (List.len it))) (type NEList (Mk (List Int64)))) \
+        "(do (@ (invariant (< 0 (List.len self))) (type NEList (Mk (List Int64)))) \
            (@ test (def (p (: x NEList)) \
              (match x (((. NEList Mk) xs) (if (< 0 (List.len xs)) unit (trap \"generated an empty list\")))))) \
            (def (anchor) 1))",
@@ -1479,7 +1495,7 @@ fn a_conjunction_min_length_invariant_constrains_a_list_non_empty() {
     let f = write(
         &d,
         "m.sexp",
-        "(do (@ (invariant (and (< 0 (List.len it)) (<= (List.len it) 10))) (type NEList (Mk (List Int64)))) \
+        "(do (@ (invariant (and (< 0 (List.len self)) (<= (List.len self) 10))) (type NEList (Mk (List Int64)))) \
            (@ test (def (p (: x NEList)) \
              (match x (((. NEList Mk) xs) (if (< 0 (List.len xs)) unit (trap \"generated an empty list past the conjunction\")))))) \
            (def (anchor) 1))",
@@ -1524,7 +1540,7 @@ fn a_compound_param_test_under_a_requires_or_ensures_wrapper_runs() {
     let ens = write(
         &d,
         "ens.sexp",
-        "(do (@ test (@ (ensures (<= 0 (List.len it))) (def (g (: xs (List Int64))) xs))) \
+        "(do (@ test (@ (ensures (<= 0 (List.len ret))) (def (g (: xs (List Int64))) xs))) \
            (def (anchor) 1))",
     );
     let (ok, stdout, stderr) = run(&["test", &ens, "--trials", "8"]);

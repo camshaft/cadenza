@@ -73,6 +73,7 @@ pass	Set.to-list length is the set's cardinality (deduped)
 pass	Set.to-list of a runtime-empty but element-typed set is the empty list
 pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
 pass	Set.to-list over a runtime set sums its distinct elements
+pass	Sim.now reads the scheduler clock — a tail-resumptive handler arm that works today
 pass	String.concat with an empty operand is the identity on a RUNTIME string (the emit path, not the fold)
 pass	String.from-bytes accepts a two-byte sequence split across a concat seam
 pass	String.from-bytes decodes a RUNTIME byte sequence built by a recursive appender
@@ -3116,7 +3117,9 @@ pass	the same list not escaped (the None branch) is still usable after the join
 pass	the same literal-payload refinement on a MULTI-variant sum works (the boxed control)
 pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)
 pass	the same nullary variant constrained to different concrete types reflects different types
+pass	the scalar length of a GENUINELY-runtime multi-byte string walks the UTF-8 leaf
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
+pass	the scalar length of a runtime string spanning every UTF-8 width
 pass	the scalar-len of an in-bounds String.slice equals its span (end - start), independent of byte width
 pass	the second element of a runtime-content fn-return tuple is projected directly
 pass	the selected operand decides a hoisted comparison
@@ -3229,6 +3232,7 @@ pass	two runtime sum values compare equal by a heap walk
 pass	two runtime sums with the same payload but different variants compare unequal by a heap walk
 pass	two runtime tuples compare equal by a heap walk
 pass	two same-variant ctor list elements refining the payload by literal fall through, not trap
+pass	two scalar matches of different widths beside i32 handles in one recursive emit frame stay valid
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
 pass	two sibling modules may each define a private helper of the same name
@@ -3654,6 +3658,8 @@ todo	a runtime-selected closure survives as a value threaded through a recursive
 todo	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 todo	a scalar BETWEEN two Tuple args with a LIST result
 todo	a second same-signature closure export shares the one call method
+todo	a task that sleeps then reads `now` observes the fast-forwarded clock (E5 step-3 gate)
+todo	a task-facing `sleep` wrapper performs Sim.sleep — the surface a simulation is written against
 todo	a three-argument closure exported to the host is called with all three
 todo	a three-parameter closure is applied at full arity through a recursive HOF
 todo	a three-payload constructor partially applied in a runtime tuple completes via eta-closure

@@ -1537,10 +1537,15 @@ fn ctl_arm_lexical_k_to_resume(db: &mut Db, arm: &HandleArm) -> Option<StructId>
     }
     let mut apps: Vec<StructId> = Vec::new();
     if !collect(db, arm.body, k_binder, &mut apps) {
-        return None; // `k` escapes — defer to step 3
+        return None; // `k` escapes (bare / passed as an arg / stored) — defer to step 3
     }
     if apps.is_empty() {
-        return None; // no `(k v)` application at all — not the lexical-apply shape (a stored/unused k)
+        // `k` is bound but NEVER referenced (collect found no escape AND no application). The binder is
+        // vacuous — the arm resumes via its own `resume` in the body (a `ctl`-form arm written with an
+        // unused `k`, as the DES `sleep` distillation does: `(sleep (d) s k (let ((wake …)) (resume unit
+        // wake)))`). Treat it as an ordinary arm: return the body UNCHANGED (the caller drops `cont`), so
+        // the tail-resume / thread path serves it exactly as the same arm without the `k` binder would be.
+        return Some(arm.body);
     }
     // Rewrite: each `(k arg)` → `(resume arg <state>)`. `k` is single-arg (Cont takes one resume value);
     // a different arity is not the lexical-resume shape. Build fresh `resume` nodes; the state binder is
@@ -5029,6 +5034,29 @@ fn peel_resume_from_arm_body(db: &mut Db, arm_body: StructId) -> Option<(StructI
         children.extend_from_slice(stmts);
         children.push(v);
         return Some((db.push_list(children), s));
+    }
+    // `(let ((x e)…) (resume v s))` — a resume in the TAIL of a `let` body. The resume IS the tail (the
+    // let's value is its body's value), so peel it and keep the `let` around BOTH the value and the
+    // next-state: the binders `x…` may be referenced by `v` OR `s` (the DES `sleep` arm
+    // `(let ((wake (at s d))) (resume unit wake))` — the next-state `wake` is a let-binding), so neither
+    // can be hoisted out of the `let` — each keeps its own copy of the `let` wrapper. The binder names are
+    // copied so the two copies bind independently (single-parent arena). Sound: the let-inits run once
+    // before the resume, and re-materializing them around the value + next-state is the same evaluation
+    // (they are pure bindings on the arm's tail spine — an effectful init would be an earlier hole the
+    // thread path handles, not reached here). This is the `let`-wrapped analogue of the `do` peel above.
+    if let Some(tail) = db.ast.as_form(arm_body, "let").map(<[_]>::to_vec)
+        && tail.len() == 2
+    {
+        let (bindings, body) = (tail[0], tail[1]);
+        let (v, s) = peel_resume_from_arm_body(db, body)?;
+        let wrap = |db: &mut Db, inner: StructId| -> StructId {
+            let let_head = db.push_name("let");
+            let binds_copy = copy_pure(db, bindings);
+            db.push_list(vec![let_head, binds_copy, inner])
+        };
+        let vw = wrap(db, v);
+        let sw = wrap(db, s);
+        return Some((vw, sw));
     }
     // `(match scrut (pat body)…)` — the arm DESTRUCTURES its op arg and resumes per branch. Peel each
     // branch's resume, then rebuild TWO matches over the SAME scrutinee: the VALUE match `(match scrut (pat

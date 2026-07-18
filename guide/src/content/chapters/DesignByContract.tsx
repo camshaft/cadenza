@@ -49,13 +49,13 @@ export default function DesignByContract() {
 
       <H2>@ensures — a postcondition</H2>
       <P>
-        A postcondition constrains the <em>result</em>. Inside <C>@ensures</C>, the name <C>it</C> refers
-        to the value the function returns. This <C>f</C> promises a non-negative result — with <C>200</C>{" "}
-        it returns <C>100</C>, honestly:
+        A postcondition constrains the <em>result</em>. Inside <C>@ensures</C>, the name <C>ret</C>{" "}
+        refers to the value the function returns. This <C>f</C> promises a non-negative result — with{" "}
+        <C>200</C> it returns <C>100</C>, honestly:
       </P>
       <Runnable
         source={`(def (main) (f 200))
-(@ (ensures (>= it 0))
+(@ (ensures (>= ret 0))
   (def (f (: x Int64)) (- x 100)))`}
       />
       <P>
@@ -65,7 +65,7 @@ export default function DesignByContract() {
       <Runnable
         expect="error"
         source={`(def (main) (f 5))
-(@ (ensures (>= it 0))
+(@ (ensures (>= ret 0))
   (def (f (: x Int64)) (- x 100)))`}
       />
 
@@ -78,7 +78,7 @@ export default function DesignByContract() {
       <Runnable
         source={`(def (main) (f 200))
 (@ (requires (>= x 0))
-  (@ (ensures (>= it 0))
+  (@ (ensures (>= ret 0))
     (def (f (: x Int64)) (- x 100))))`}
       />
       <P>
@@ -90,9 +90,9 @@ export default function DesignByContract() {
       <Note>
         Two things to know: a contract may reference only the function's parameters (and prelude/global
         names) — naming something out of scope is a compile error at the annotation. And a function whose
-        parameter is named <C>it</C> can't carry an <C>@ensures</C>: the result binder <C>it</C> would
-        shadow the parameter, so rather than silently ignore the postcondition, the compiler rejects it and
-        asks you to rename the parameter.
+        parameter is named <C>ret</C> can't carry an <C>@ensures</C>: the result binder <C>ret</C>{" "}
+        would shadow the parameter, so rather than silently ignore the postcondition, the compiler rejects it
+        and asks you to rename the parameter.
       </Note>
 
       <Why tenet="Make the assumption an enforced check, not a comment">

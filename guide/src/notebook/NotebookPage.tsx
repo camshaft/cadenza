@@ -16,7 +16,8 @@ import { run as runComponent } from "../runner/client.ts";
 import type { Surface } from "../compiler/worker.ts";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
 import { SyntaxToggle } from "../syntax/SyntaxToggle.tsx";
-import { parseDocument, assignIds, setCellSource, setProseSource, serializeDocument, renderDocToSurface, type Cell } from "./parseDocument.ts";
+import { parseDocument, assignIds, setCellSource, setProseSource, serializeDocument, renderDocToSurface, insertCell, removeCell, moveCell, type Cell } from "./parseDocument.ts";
+import { encodeNbShareUrl, decodeNbShare } from "./nbShare.ts";
 import { parseWidgets, type Widget } from "./parseWidgets.ts";
 import { assembleForRun, type WidgetValues } from "./assembleForRun.ts";
 import { recomputePlan, initialRunOrder } from "./recomputePlan.ts";
@@ -60,13 +61,19 @@ const NOTEBOOK_EXACT = true;
 type CellState = { phase: "idle" } | { phase: "running" } | { phase: "done"; output: CellOutput };
 
 export default function NotebookPage() {
-  const { surface } = useSyntax();
+  const { surface, setSurface } = useSyntax();
+  // A SHARED link (`#nb/…` in the URL hash, operator #7184) reconstructs a specific notebook: decode it
+  // ONCE at first render (synchronous, no effect race). If present, its `doc` seeds the document and its
+  // surface pins `docSurface` (the shared doc is already in that surface — don't re-render it). Null (the
+  // common case) → the normal STARTER. Cell ids aren't shared; assignIds re-stamps on parse like any load.
+  const nbSharedRef = useRef(typeof window !== "undefined" ? decodeNbShare(window.location.hash) : null);
+  const nbShared = nbSharedRef.current;
   // The notebook document. `doc` is the markdown source of truth (edited PER CELL — a cell editor commits
   // its change up via `onCellEdit` → `setCellSource` → `serializeDocument`); `committedDoc` is a DEBOUNCED
   // copy that drives parsing + re-running, so typing in a cell doesn't re-parse + thrash the run worker
   // (or flicker every output to "not run") on each keystroke. They coincide except during an active edit.
-  const [doc, setDoc] = useState(STARTER);
-  const [committedDoc, setCommittedDoc] = useState(STARTER);
+  const [doc, setDoc] = useState(nbShared?.doc ?? STARTER);
+  const [committedDoc, setCommittedDoc] = useState(nbShared?.doc ?? STARTER);
   // The loaded example's slug (drives the example-picker's selection). Switching examples REPLACES the
   // whole document (both the live + committed copy so the re-parse/re-run fires immediately, not after the
   // edit-debounce) and clears widget values so a stale value from the previous notebook can't linger.
@@ -93,7 +100,20 @@ export default function NotebookPage() {
   // lag the toggle; linting them against the raw (new) `surface` is a DISPLAY-vs-LINTER mismatch (the
   // "expected a name" squiggle v-guide-infra co-verified). Advancing `docSurface` only WHEN the rendered doc
   // is committed keeps the linter/runner in lockstep with what's actually displayed.
-  const [docSurface, setDocSurface] = useState<Surface>("sexpr");
+  // Seed `docSurface` to the shared link's surface when present (the shared doc is ALREADY in that surface,
+  // so the render effect below must NOT convert it); else s-expr (STARTER/examples are authored in s-expr).
+  const [docSurface, setDocSurface] = useState<Surface>(nbShared?.s ?? "sexpr");
+  // A shared `#nb/` link pins the surface to what it was authored in: on first mount, flip the global toggle
+  // to the shared surface so the toggle UI + docSurface agree (docSurface is already the shared surface, so
+  // the render effect sees docSurface===surface and won't re-convert the shared doc). Once only.
+  const nbSharedApplied = useRef(false);
+  useEffect(() => {
+    if (nbShared && !nbSharedApplied.current) {
+      nbSharedApplied.current = true;
+      if (nbShared.s !== surface) setSurface(nbShared.s);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // A monotonic token for ASYNC doc re-renders (surface toggle + example switch). `renderDocToSurface` is
   // async, so a render started earlier can resolve LATER and clobber newer doc state (last-write-wins races,
   // PR #556). Every async doc-render bumps this token + captures its value; on resolution it commits ONLY if
@@ -148,6 +168,27 @@ export default function NotebookPage() {
     });
   }, []);
 
+  // MARKDOWN-STRUCTURE editing (operator #2): add / delete / reorder cells via v-notebook's pure doc-model
+  // ops (insertCell/removeCell/moveCell — immutable + id-preserving). Unlike a cell EDIT (debounced), a
+  // structure change is a deliberate action, so commit BOTH `doc` and `committedDoc` immediately (re-parse +
+  // re-run now, no 400ms lag). Parse the LIVE `doc` so it composes with a concurrent in-flight edit. A new
+  // cell is a blank code cell (the common "add a cell to compute something" case); assignIds re-stamps on
+  // the next parse so the keyed editor list stays stable (surviving cells keep their ids — no remount).
+  const applyStructure = useCallback((f: (cells: Cell[]) => Cell[]) => {
+    const commit = (prev: string) => serializeDocument(f(parseDocument(prev)));
+    setDoc((prev) => {
+      const next = commit(prev);
+      setCommittedDoc(next); // structure edits are deliberate — apply immediately, don't wait for the debounce
+      return next;
+    });
+  }, []);
+  const BLANK_CELL: Cell = { kind: "code", source: "", directive: { kind: "none" } };
+  const onInsertBelow = useCallback((index: number) => applyStructure((cells) => insertCell(cells, index + 1, BLANK_CELL)), [applyStructure]);
+  // Delete, but never empty the notebook (a zero-cell doc has no editor to recover from) — a no-op on the
+  // last remaining cell.
+  const onRemoveCell = useCallback((index: number) => applyStructure((cells) => (cells.length <= 1 ? cells : removeCell(cells, index))), [applyStructure]);
+  const onMoveCell = useCallback((index: number, dir: -1 | 1) => applyStructure((cells) => moveCell(cells, index, index + dir)), [applyStructure]);
+
   // All widgets declared across every widget cell, and their live values.
   const widgets = useMemo<Widget[]>(
     () => cells.flatMap((c) => (c.kind === "code" && c.directive.kind === "widget" ? parseWidgets(c.source).widgets : [])),
@@ -188,6 +229,25 @@ export default function NotebookPage() {
     },
     [surface],
   );
+
+  // SHARE (operator #7184): copy an `#nb/…` URL that reconstructs the current notebook — its serialized
+  // document (v-notebook's canonical form) + the surface its cells are in — so a shared link opens the same
+  // notebook. Uses `doc` (the live source of truth) so an in-progress edit is included. A brief "Copied!"
+  // confirms; no-ops gracefully if the clipboard API is unavailable (non-secure context).
+  const [shareCopied, setShareCopied] = useState(false);
+  const onShare = useCallback(() => {
+    const url = encodeNbShareUrl({ s: docSurface, doc });
+    void navigator.clipboard?.writeText(url).then(
+      () => {
+        setShareCopied(true);
+        setTimeout(() => setShareCopied(false), 1500);
+      },
+      () => {
+        /* clipboard denied — keep the UI stable */
+      },
+    );
+  }, [docSurface, doc]);
+
   // A ref mirror of `values`, so the debounced widget-change handler can read the LATEST committed values
   // to build the recompute buffer WITHOUT running a side effect inside a setState updater (that updater
   // can be double-invoked under StrictMode/batching, which would enqueue duplicate runs).
@@ -334,6 +394,16 @@ export default function NotebookPage() {
               ))}
             </select>
           </label>
+          {/* SHARE — copy a URL that reconstructs this notebook for another reader (operator #7184, same
+              mechanism as the playground + /cad share). */}
+          <button
+            data-testid="notebook-share"
+            onClick={onShare}
+            title="Copy a shareable link to this notebook"
+            className="flex min-h-11 items-center rounded px-2 text-cadenza-400 transition hover:text-cadenza-300 sm:min-h-0 sm:py-1"
+          >
+            {shareCopied ? "✓ Copied!" : "🔗 Share"}
+          </button>
           <Link
             to="/playground"
             className="flex min-h-11 items-center px-2 text-cadenza-400 hover:text-cadenza-300 sm:min-h-0 sm:px-0"
@@ -344,26 +414,94 @@ export default function NotebookPage() {
       </div>
 
       <div className="space-y-2" data-testid="notebook">
-        {cells.map((cell, i) =>
-          cell.kind === "prose" ? (
-            <ProseCellView key={cell.id ?? i} markdown={cell.markdown} onEdit={(md) => onProseEdit(i, md)} />
-          ) : cell.directive.kind === "widget" ? (
-            (() => {
-              const parsed = parseWidgets(cell.source);
-              return <WidgetControls key={cell.id ?? i} widgets={parsed.widgets} errors={parsed.errors} values={values} onChange={onWidgetChange} />;
-            })()
-          ) : (
-            <CodeCellView
+        {cells.map((cell, i) => {
+          const inner =
+            cell.kind === "prose" ? (
+              <ProseCellView markdown={cell.markdown} onEdit={(md) => onProseEdit(i, md)} />
+            ) : cell.directive.kind === "widget" ? (
+              (() => {
+                const parsed = parseWidgets(cell.source);
+                return <WidgetControls widgets={parsed.widgets} errors={parsed.errors} values={values} onChange={onWidgetChange} />;
+              })()
+            ) : (
+              <CodeCellView
+                source={cell.source}
+                hidden={cell.directive.kind === "hidden"}
+                state={states[i]}
+                ide={cellIde(cells, i, widgets, values, docSurface)}
+                onEdit={(src) => onCellEdit(i, src)}
+              />
+            );
+          // Wrap every cell with its structure controls (operator #2 — add/delete/reorder). The toolbar is
+          // muted + reveals on hover/focus-within so it doesn't clutter the reading view, but stays keyboard-
+          // reachable. Disable ↑ on the first cell / ↓ on the last (no wrap).
+          return (
+            <CellShell
               key={cell.id ?? i}
-              source={cell.source}
-              hidden={cell.directive.kind === "hidden"}
-              state={states[i]}
-              ide={cellIde(cells, i, widgets, values, docSurface)}
-              onEdit={(src) => onCellEdit(i, src)}
-            />
-          ),
-        )}
+              index={i}
+              isFirst={i === 0}
+              isLast={i === cells.length - 1}
+              onMoveUp={() => onMoveCell(i, -1)}
+              onMoveDown={() => onMoveCell(i, 1)}
+              onInsertBelow={() => onInsertBelow(i)}
+              onRemove={() => onRemoveCell(i)}
+            >
+              {inner}
+            </CellShell>
+          );
+        })}
+        {/* Add a cell at the very END (the common "append a new cell" affordance) — insert below the last. */}
+        <button
+          data-testid="notebook-add-cell"
+          onClick={() => onInsertBelow(cells.length - 1)}
+          className="flex min-h-11 w-full items-center justify-center rounded border border-dashed border-slate-700 text-xs text-slate-500 transition hover:border-cadenza-600/50 hover:text-cadenza-300 sm:min-h-0 sm:py-2"
+        >
+          + Add cell
+        </button>
       </div>
+    </div>
+  );
+}
+
+/// Wraps a notebook cell with its markdown-structure controls (operator #2): reorder (↑/↓), insert-below
+/// (+), and delete (🗑). Owned by /notebook's UI (v-guide-infra); it calls the parent's handlers, which
+/// drive v-notebook's pure insertCell/removeCell/moveCell doc-model ops. The toolbar is muted and only
+/// prominent on hover / keyboard focus-within, so a reader's view stays clean but the controls are always
+/// reachable. Delete is guarded when it would empty the notebook (keep at least one cell).
+function CellShell({
+  index,
+  isFirst,
+  isLast,
+  onMoveUp,
+  onMoveDown,
+  onInsertBelow,
+  onRemove,
+  children,
+}: {
+  index: number;
+  isFirst: boolean;
+  isLast: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onInsertBelow: () => void;
+  onRemove: () => void;
+  children: React.ReactNode;
+}) {
+  const btn =
+    "flex h-6 w-6 items-center justify-center rounded text-slate-500 transition hover:bg-slate-700/60 hover:text-slate-200 disabled:opacity-30 disabled:hover:bg-transparent";
+  // Left GUTTER for the structure toolbar (NOT top-right): the cell's OWN controls — a prose cell's "Edit"
+  // toggle, a code cell's run affordance — live at the top-right, so a top-right toolbar overlapped + stole
+  // their clicks (the prose-Edit regression). A left gutter (negative margin into the page's left padding)
+  // is collision-free. Muted, reveals on hover/focus-within; a vertical stack of the 4 ops.
+  return (
+    <div className="group relative rounded pl-8" data-testid={`notebook-cell-${index}`}>
+      <div className="absolute left-0 top-1 z-10 flex flex-col items-center gap-0.5 rounded bg-slate-800/70 opacity-0 backdrop-blur transition group-hover:opacity-100 focus-within:opacity-100">
+        <button data-testid={`cell-move-up-${index}`} onClick={onMoveUp} disabled={isFirst} title="Move cell up" className={btn}>↑</button>
+        <button data-testid={`cell-move-down-${index}`} onClick={onMoveDown} disabled={isLast} title="Move cell down" className={btn}>↓</button>
+        <button data-testid={`cell-insert-below-${index}`} onClick={onInsertBelow} title="Insert a cell below" className={btn}>+</button>
+        <button data-testid={`cell-delete-${index}`} onClick={onRemove} title="Delete this cell" className={btn}>🗑</button>
+      </div>
+      {children}
     </div>
   );
 }

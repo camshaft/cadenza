@@ -680,6 +680,40 @@
             (export main)))
   (output (: 5 Int64)))
 
+; The multi-dispatch companion: the SAME recursive emitter, but the `CBin` arm dispatches through BOTH a
+; Bool-returning `(match op (43 true) …)` (an i32 result) and, in the `if`'s else branch, a multi-arm
+; Int64 `(match op (60 83) …)` (an i64 scrutinee, ≥3 arms so it spills a probe-chain slot rather than
+; folding to a branchless `select`). This is the actual `emit-db` op-cluster idiom (`is-arith-op` +
+; `cmp-op`/`wasm-op`): two scalar matches of DIFFERENT scrutinee/result widths, both nested beside the
+; recursive `emit(l)`/`emit(r)` i32 heap handles in one function — so the emitted function declares mixed
+; i32/i64 scratch locals and every scalar-match spill must land on a width-correct slot. Pins that the
+; fresh-slot-on-width-conflict spill holds when MULTIPLE scalar matches coexist with the i32 handles in a
+; single recursive frame, not just one. `emit (CBin 60 (CNum 1) (CBin 43 (CNum 2) (CNum 3)))` = 3 nums +
+; 2 op-codes = 5 bytes.
+
+(case "two scalar matches of different widths beside i32 handles in one recursive emit frame stay valid"
+  (doc    "The emit-db op-cluster idiom: a `CBin` arm dispatches through a Bool `(match op (43 true) …)`
+           (i32) AND a multi-arm Int64 `(match op (60 83) …)` (i64, ≥3 arms → a spilled probe chain),
+           both nested beside the recursive `emit(l)`/`emit(r)` i32 heap handles in one function. Each
+           scalar-match scrutinee spill must land on a width-correct slot even with mixed i32/i64 scratch
+           locals coexisting in one recursive frame. Pins the fresh-slot-on-width-conflict fix under
+           MULTIPLE coexisting scalar matches, the multi-dispatch companion of the single-match case
+           above. `emit` = 5 bytes → `Bytes.len` = 5.")
+  (input  (do
+            (type Core (CNum Int64) (CBin Int64 Core Core))
+            (def (b1 (: x Int64)) (Bytes.of (list (UInt8.wrap x))))
+            (def (cmpop (: op Int64)) (match op (60 83) (61 81) (62 85) (_ 0)))
+            (def (isarith (: op Int64)) (match op (43 true) (45 true) (_ false)))
+            (def (emit (: c Core))
+              (match c
+                ((Core.CNum v) (b1 v))
+                ((Core.CBin op l r)
+                 (Bytes.concat (Bytes.concat (emit l) (emit r))
+                               (if (isarith op) (b1 op) (b1 (cmpop op)))))))
+            (def (main) (Bytes.len (emit (Core.CBin 60 (Core.CNum 1) (Core.CBin 43 (Core.CNum 2) (Core.CNum 3))))))
+            (export main)))
+  (output (: 5 Int64)))
+
 (case "a HOF callback matching a tuple argument computes through the nested reduction"
   (doc    "The same shape with a TUPLE-destructuring callback — `(fn (p) (match p ((tuple a b) (+ a b))))`
            — passed to a HOF. The tuple-pattern binders `a`/`b` read the substituted scrutinee just as a

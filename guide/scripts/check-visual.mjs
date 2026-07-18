@@ -236,6 +236,15 @@ const ROUTES = [
       const stlBtn = await page.locator('[data-testid="cad-download-stl"]').count();
       const tmfBtn = await page.locator('[data-testid="cad-download-3mf"]').count();
       check(stlBtn > 0 && tmfBtn > 0, `${label}: STL + 3MF download buttons present on the meshed viewer`);
+      // SHARE (operator #7184): a Share control is present, and clicking it doesn't error. (The full
+      // round-trip — click → `#cad/…` URL → open it → model+params restore — is verified in a dedicated
+      // headless test with clipboard permission; this smoke runs WITHOUT clipboard grant, so the copy may
+      // silently no-op and the button won't flip to "Copied!" — we only guard presence + no page error, so
+      // the affordance can't silently vanish.) The `no console/page errors` check above covers the click.
+      const shareBtn = page.locator('[data-testid="cad-share"]');
+      const shareCount = await shareBtn.count();
+      check(shareCount > 0, `${label}: Share button present on the meshed viewer`);
+      if (shareCount > 0) await shareBtn.click().catch(() => {});
     },
   },
   {
@@ -341,6 +350,32 @@ const ROUTES = [
         .then(() => page.locator('[data-testid="notebook"] .cm-editor').count())
         .catch(() => 0);
       check(cmCount > 1, `${label}: per-cell CodeMirror editors (found ${cmCount}, want >1 — stacked cells)`);
+      // SHARE (operator #7184): a Share control is present, and clicking it doesn't error. (The full
+      // round-trip — click → `#nb/…` URL → open it → notebook restores — is verified in a dedicated headless
+      // test with clipboard permission; this smoke runs WITHOUT the grant, so we only guard presence + no
+      // page error — the `no console/page errors` flag above covers the click.)
+      const nbShareBtn = page.locator('[data-testid="notebook-share"]');
+      const nbShareCount = await nbShareBtn.count();
+      check(nbShareCount > 0, `${label}: Share button present on the notebook`);
+      if (nbShareCount > 0) await nbShareBtn.click().catch(() => {});
+      // STRUCTURE editing (operator #2): the "+ Add cell" affordance + per-cell reorder/insert/delete controls
+      // exist, and adding a cell actually grows the cell count (the doc-model op → re-parse → re-render round-
+      // trips). Guards the whole add/delete/reorder UI (v-notebook's ops + my wiring) can't silently vanish.
+      const addCell = page.locator('[data-testid="notebook-add-cell"]');
+      if ((await addCell.count()) > 0) {
+        const before = await page.locator('[data-testid^="notebook-cell-"]').count();
+        await addCell.click();
+        const grew = await page
+          .waitForFunction((n) => document.querySelectorAll('[data-testid^="notebook-cell-"]').length === n + 1, before, { timeout: 15000 })
+          .then(() => true)
+          .catch(() => false);
+        check(grew, `${label}: "+ Add cell" adds a cell (${before} → ${before + 1}, doc-model round-trip)`);
+        // The per-cell structure toolbar is present (reorder/insert/delete) on the first cell.
+        const hasToolbar = (await page.locator('[data-testid="cell-delete-0"]').count()) > 0 && (await page.locator('[data-testid="cell-move-down-0"]').count()) > 0;
+        check(hasToolbar, `${label}: per-cell reorder/insert/delete controls present`);
+      } else {
+        check(false, `${label}: "+ Add cell" affordance present`);
+      }
       // Example picker: present with >1 option, and SWITCHING to another example replaces the notebook
       // content (a different example renders different prose/first-cell text). The picker lets a reader
       // pick between the canonical notebooks (operator UX ask #2).

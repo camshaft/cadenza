@@ -393,8 +393,9 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // through the projection). Conservative — the aggregate's array + its other children leak rather
         // than risk the UAF (the analysis's stated bias: a false "escapes" only leaks). `get_op(id)` is
         // `Some` for a scalar element (borrow), `None` for a nested-compound (escape). `List.len`/`Bytes.len`
-        // (`vec-len`/`bytes-len`) read a scalar count — always a borrow.
-        Core::ListLen { operand } | Core::BytesLen { operand } => {
+        // (`vec-len`/`bytes-len`) read a scalar count — always a borrow. `String.scalar-len` likewise walks
+        // its string buffer via borrowing `bytes-len`/`bytes-get` reads and returns a scalar count.
+        Core::ListLen { operand } | Core::BytesLen { operand } | Core::StrScalarLen { operand } => {
             binding_escapes(db, operand, binder, true)
         }
         Core::Proj { operand, .. } => {
@@ -750,6 +751,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
     match core_of(db, id) {
         Core::ListLen { operand }
         | Core::BytesLen { operand }
+        | Core::StrScalarLen { operand }
         | Core::BytesCompact { operand }
         | Core::MapSize { map: operand }
         | Core::SetLen { set: operand }
@@ -1095,9 +1097,10 @@ fn mark_binder_dups_inner(
             false
         }
         // Borrowing reads: the operand is borrowed (a scalar element `Proj`, a length, a lookup's map, …).
-        Core::ListLen { operand } | Core::BytesLen { operand } | Core::BytesCompact { operand } => {
-            borrow(db, operand, live_after, sites)
-        }
+        Core::ListLen { operand }
+        | Core::BytesLen { operand }
+        | Core::StrScalarLen { operand }
+        | Core::BytesCompact { operand } => borrow(db, operand, live_after, sites),
         Core::Proj { operand, .. } => {
             let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
             // A NESTED-COMPOUND projection (`get_op` None — `arr-get` returns the child HANDLE, a BORROW of
@@ -2020,6 +2023,20 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_LEN);
             // RECLAMATION: a `bytes-len` over an OWNED-temporary bytes drops it after the borrow (mirror the
             // emit); a borrowed param/local is not dropped (its owner reclaims).
+            if matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            ) {
+                out.insert(OP_DROP);
+            }
+            collect_used_ops_into(db, operand, out);
+        }
+        // `String.scalar-len` walks the UTF-8 byte leaf counting lead bytes — `bytes-len` (the loop bound)
+        // + `bytes-get` (the per-byte read), the same borrowing reads `Core::StrAt`'s scalar-scan uses. Same
+        // OWNED-temporary reclamation as `BytesLen`.
+        Core::StrScalarLen { operand } => {
+            out.insert(OP_BYTES_LEN);
+            out.insert(OP_BYTES_GET);
             if matches!(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
@@ -3619,7 +3636,7 @@ fn licm_invariant(
         }
         // A collection COUNT / a projection / a sum-payload read is a pure borrowing read — invariant iff
         // the container is. (Its trap-freedom is decided separately by `is_trap_free`.)
-        Core::ListLen { operand } | Core::BytesLen { operand } => {
+        Core::ListLen { operand } | Core::BytesLen { operand } | Core::StrScalarLen { operand } => {
             licm_invariant(db, operand, inv_params)
         }
         Core::MapSize { map } => licm_invariant(db, map, inv_params),
@@ -3716,6 +3733,7 @@ fn licm_children(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::Proj { operand, .. }
         | Core::ListLen { operand }
         | Core::BytesLen { operand }
+        | Core::StrScalarLen { operand }
         | Core::BytesCompact { operand } => vec![operand],
         Core::MapSize { map } => vec![map],
         Core::SetLen { set } => vec![set],
@@ -4127,7 +4145,9 @@ fn is_cse_shareable(db: &mut Db, id: StructId) -> bool {
         // `is_heap_type` filter admits it (we CSE the count, not the collection handle). The operand must
         // itself be shareable (a param handle / another shareable read) so the read is well-formed at the
         // hoist point. Mirrors `is_trap_free`'s treatment of these counts.
-        Core::ListLen { operand } | Core::BytesLen { operand } => is_cse_shareable(db, operand),
+        Core::ListLen { operand } | Core::BytesLen { operand } | Core::StrScalarLen { operand } => {
+            is_cse_shareable(db, operand)
+        }
         Core::MapSize { map } => is_cse_shareable(db, map),
         Core::SetLen { set } => is_cse_shareable(db, set),
         Core::SumPayload { scrutinee, .. } => is_cse_shareable(db, scrutinee),
@@ -6349,6 +6369,78 @@ fn emit(
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [bytes]
             out.push(Lir::CallImport(OP_BYTES_LEN)); // → [len:i32]
             out.push(Lir::I64ExtendI32U); // → [len:i64] — Bytes.len : Int64
+            Ok(())
+        }
+        // `String.scalar-len` on a RUNTIME string — the number of Unicode SCALARS (codepoints). A String is
+        // a flat UTF-8 byte leaf, so WALK the buffer once counting LEAD bytes: a byte begins a new scalar iff
+        // `(byte & 0xC0) != 0x80` (not a `10xxxxxx` continuation). The scalar count is exactly the number of
+        // lead bytes. Uses only `bytes-len` (loop bound) + `bytes-get` (per-byte read) — the SAME borrowing
+        // reads `Core::StrAt`'s scan uses (HASH-NEUTRAL, no new runtime op). A simplification of `StrAt`: no
+        // index/skip/span, just one counting pass. Result is a plain `Int64` — no runtime Char involved.
+        Core::StrScalarLen { operand } => {
+            // RECLAMATION (same as `Core::BytesLen`): the walk BORROWS the string (`bytes-len`/`bytes-get`);
+            // an OWNED-temporary operand is dropped after the last borrow, a borrowed param/local is left to
+            // its owner.
+            let reclaim = matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            );
+            let str_slot = base;
+            let pos_slot = base + 1;
+            let bytelen_slot = base + 2;
+            let count_slot = base + 3;
+            if count_slot + 1 > *high {
+                *high = count_slot + 1;
+            }
+            scratch_ty.insert(str_slot, ValType::I32);
+            for s in [pos_slot, bytelen_slot, count_slot] {
+                scratch_ty.insert(s, ValType::I64);
+            }
+            emit(db, operand, slots, base + 4, high, scratch_ty, layout, out)?; // [str]
+            out.push(Lir::LocalSet(str_slot));
+            // bytelen = bytes-len(str) (borrow), extended to i64.
+            out.push(Lir::LocalGet(str_slot));
+            out.push(Lir::CallImport(OP_BYTES_LEN));
+            out.push(Lir::I64ExtendI32U);
+            out.push(Lir::LocalSet(bytelen_slot));
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::LocalSet(pos_slot)); // pos = 0
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::LocalSet(count_slot)); // count = 0
+            // block { loop { br_out if pos>=bytelen; count += ((bytes-get(str,pos) & 0xC0) != 0x80); pos++;
+            // br loop } } — one pass over the bytes, incrementing `count` on each lead byte.
+            out.push(Lir::Block(BlockType::Empty)); // $done
+            out.push(Lir::Loop(BlockType::Empty)); // $scan
+            out.push(Lir::LocalGet(pos_slot));
+            out.push(Lir::LocalGet(bytelen_slot));
+            out.push(Lir::I64GeS);
+            out.push(Lir::BrIf(1)); // pos >= bytelen → $done
+            // count += ((bytes-get(str, pos) & 0xC0) != 0x80) as i64 (a lead byte adds 1, a continuation 0).
+            out.push(Lir::LocalGet(count_slot));
+            out.push(Lir::LocalGet(str_slot));
+            out.push(Lir::LocalGet(pos_slot));
+            out.push(Lir::I32WrapI64);
+            out.push(Lir::CallImport(OP_BYTES_GET)); // [count, byte:i32]
+            out.push(Lir::ConstI32(0xC0));
+            out.push(Lir::I32And);
+            out.push(Lir::ConstI32(0x80));
+            out.push(Lir::I32Ne); // [count, is_lead:i32]
+            out.push(Lir::I64ExtendI32U); // [count, is_lead:i64]
+            out.push(Lir::I64Add); // [count']
+            out.push(Lir::LocalSet(count_slot));
+            // pos++
+            out.push(Lir::LocalGet(pos_slot));
+            out.push(Lir::ConstI64(1));
+            out.push(Lir::I64Add);
+            out.push(Lir::LocalSet(pos_slot));
+            out.push(Lir::Br(0)); // → $scan
+            out.push(Lir::End); // end $scan
+            out.push(Lir::End); // end $done
+            if reclaim {
+                out.push(Lir::LocalGet(str_slot));
+                out.push(Lir::CallImport(OP_DROP)); // reclaim the owned temporary
+            }
+            out.push(Lir::LocalGet(count_slot)); // [count:i64] — String.scalar-len : Int64
             Ok(())
         }
         // `List.push(l, x)` — emit the list handle, then the element boxed to a u32 handle by its type
@@ -11532,6 +11624,278 @@ fn emit_sum_match_arms(
     }
 }
 
+/// Emit a sum-match LITERAL-TEST probe: push the scrutinee handle, walk `path` to the leaf sub-value
+/// (`sum-payload`/`arr-get`/`vec-get`, tracking the sub-value TYPE so an erased newtype `Payload` is a
+/// no-op and a list `Elem` reads `vec-get` not `arr-get`), read the leaf scalar (`get-int`/`get-bool` when
+/// it is a boxed handle, raw when an erased scalar newtype), and compare against the literal `probe` —
+/// leaving `[bool]` on the stack (1 = matched). The caller decides the control flow: the nested `if` form
+/// (`SumCont::LitTest`'s `then_`/`els`) OR the flat multi-column `br_if` chain reuse the SAME probe emit per
+/// column, so the walk+compare lives here once rather than copied. Declines a runtime Char/Map-key probe
+/// (no runtime rep — a constant folds instead; never a miscompile). Extracted verbatim from the
+/// `SumCont::LitTest` arm; the width/erased-newtype/rope-canonicalization comments are preserved inline.
+#[allow(clippy::too_many_arguments)]
+fn emit_littest_probe(
+    db: &mut Db,
+    scrutinee: StructId,
+    path: &[crate::core::PathStep],
+    probe: &crate::core::Probe,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    // Push the scrutinee handle and walk to the leaf's boxed handle — tracking the sub-value TYPE as
+    // the walk descends (mirrors `Core::SumPayload`), so an ERASED newtype `Payload` is a no-op (the
+    // box is elided) and a `List` sub-value's `Elem` reads with `vec-get`, not `arr-get`. Without
+    // this, a `(Bx (list …))` newtype's `ListLen` test called `sum-payload` on the raw list (garbage
+    // length), and a boxed-list `Elem` used `arr-get` on a vec handle (garbage element).
+    emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
+    let mut cur = type_of(db, scrutinee);
+    // Whether the value now on the stack is a HEAP HANDLE (needs `get-int`/`get-bool` to read the
+    // scalar leaf out of the box) or a RAW SCALAR already (read directly). It starts a handle unless
+    // the scrutinee is itself an unboxed scalar — an ERASED single-variant newtype over a scalar,
+    // `(type W (Wrap Int64))`, whose value IS a bare i64 (no box). Each heap-child accessor below
+    // (`sum-payload`/`arr-get`/`vec-get`) produces a child HANDLE (→ true); an erased `Payload`
+    // no-op leaves the representation unchanged. WITHOUT this, a literal-payload test on an erased
+    // scalar newtype (`(match (W.Wrap n) ((W.Wrap 0) …) ((W.Wrap x) …))`) emitted `get-int` on the
+    // raw i64 — an i32-handle unbox over an i64 value → an INVALID component (`func failed to
+    // validate: expected i32, found i64`), a decline-don't-miscompile violation. The binding arm
+    // reads the same payload raw (bare `local.get`), so this aligns the literal arm with it.
+    let mut holds_handle = !matches!(cur.strip_nominal(), Ty::Int(_) | Ty::Bool | Ty::Float(_));
+    let mut lit_prefix: Vec<crate::core::PathStep> = Vec::with_capacity(path.len());
+    for step in path {
+        lit_prefix.push(*step);
+        match step {
+            crate::core::PathStep::Payload => {
+                match cur.strip_nominal() {
+                    // A boxed sum's payload is unwrapped with `sum-payload`; its type is the ENTERED
+                    // variant's payload (from `sum_path_types`, else variant 0) — a following `Elem`
+                    // needs it to pick vec-get vs arr-get, and a non-variant-0 list payload matched
+                    // by a nested element pattern reads the wrong accessor without it.
+                    Ty::Sum { .. } => {
+                        out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+                        holds_handle = true; // sum-payload yields the child HANDLE
+                        cur = payload_step_ty_of(
+                            db,
+                            Some(scrutinee),
+                            &cur,
+                            &lit_prefix,
+                            &out.sum_path_types,
+                        );
+                    }
+                    // An ERASED nominal newtype: the box is gone, so the `Payload` step is a static
+                    // unwrap — NO `sum-payload` op, `cur` becomes the inner type. The stack value is
+                    // UNCHANGED (still whatever the scrutinee was — a raw scalar for a scalar
+                    // newtype), so `holds_handle` is left as-is.
+                    inner => cur = inner.clone(),
+                }
+            }
+            crate::core::PathStep::Elem(i) => {
+                out.push(Lir::ConstI32(*i as i32));
+                holds_handle = true; // arr-get/vec-get yield the child HANDLE
+                if matches!(cur.strip_nominal(), Ty::List(_)) {
+                    out.push(Lir::CallImport(OP_VEC_GET));
+                    cur = match cur.strip_nominal() {
+                        Ty::List(e) => (**e).clone(),
+                        _ => Ty::Any,
+                    };
+                } else {
+                    out.push(Lir::CallImport(OP_ARR_GET));
+                    cur = match cur.strip_nominal() {
+                        Ty::Tuple(elems) => elems.get(*i).cloned().unwrap_or(Ty::Any),
+                        _ => Ty::Any,
+                    };
+                }
+            }
+            crate::core::PathStep::RestFrom(_) => {} // never on a sum-lit-test path
+        }
+    }
+    // Read the leaf scalar and compare against the literal. A `0` literal (a `(Some 0)`/`(Ok 0)`
+    // payload pattern) is `payload == 0` — `i64.eqz` (one instruction), not `const 0 ; eq` (two);
+    // the sum-payload twin of the scalar-probe eqz special case.
+    match probe {
+        crate::core::Probe::Int(v) => {
+            // Read the scalar out of the box (`get-int` → NORMALIZED i64) when the leaf is a heap
+            // handle, and compare at i64. An ERASED scalar newtype instead left the RAW payload on
+            // the stack at its NATIVE machine width — i64 for `Int64`, but i32 for a NARROW newtype
+            // (`(Wrap UInt8)`/`Int8`/`Int16`/`Int32`, whose raw rep is an i32 slot). So the compare
+            // op must match the payload's actual width: `i64.eqz`/`i64.eq` over a boxed-or-i64 leaf,
+            // `i32.eqz`/`i32.eq` over a narrow raw leaf. Reading the raw scalar but comparing it at
+            // the hard-coded i64 emitted `i64.eqz` over an i32 → an INVALID component (the narrow
+            // twin of the Int64 invalid-component this branch first fixed; `holds_handle`=false but
+            // the width was still assumed i64). Boxed path stays i64 (`get-int` normalizes).
+            let slot32 = if holds_handle {
+                out.push(Lir::CallImport(OP_GET_INT)); // [i64] — normalized
+                false
+            } else {
+                // The erased payload's native slot: i32 for a narrow width (`≤ 32`), else i64. `cur`
+                // is the payload type after the path walk (an `Int` for a scalar newtype).
+                match cur.strip_nominal() {
+                    Ty::Int(it) => Machine::of(*it).slot32,
+                    _ => false, // non-narrow / unknown → i64 (Int64 and the prior behavior)
+                }
+            };
+            if v.to_i64_bits() == 0 {
+                out.push(if slot32 { Lir::I32Eqz } else { Lir::I64Eqz }); // [bool]
+            } else if slot32 {
+                out.push(Lir::ConstI32(v.to_i64_bits() as i32));
+                out.push(Lir::I32Eq); // [bool]
+            } else {
+                out.push(Lir::ConstI64(v.to_i64_bits()));
+                out.push(Lir::I64Eq); // [bool]
+            }
+        }
+        crate::core::Probe::Bool(b) => {
+            // Same erased-newtype gate: a boxed Bool payload unboxes with `get-bool`, an erased
+            // Bool newtype is already a raw i32 0/1 on the stack.
+            if holds_handle {
+                out.push(Lir::CallImport(OP_GET_BOOL)); // [i32]
+            }
+            out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
+            out.push(Lir::I32Eq); // [bool]
+        }
+        crate::core::Probe::Str(s) => {
+            // A string-literal payload over a RUNTIME value (`(Ast.Name "+")` matched on a runtime
+            // Ast, a `(k "lit")` map-value pattern): compare the leaf String handle against the
+            // literal by CONTENT — the same `value-eq` (`champ_eq`) physical-byte compare
+            // `Core::ValueEq` uses on two strings. The path walk above left the leaf String HANDLE on
+            // the stack — a BORROWED payload (`sum-payload`/`arr-get`/`vec-get` all borrow).
+            // Canonicalize it with `bytes-compact` (rope→flat, refcount-NEUTRAL: flattens in place,
+            // returns the SAME handle, so the borrow is neither consumed nor a fresh mint) so a rope
+            // payload and its flat twin compare equal — exactly as the `Core::ValueEq` emit does for a
+            // borrowed String operand. Save the compacted leaf handle in a slot, build the literal as a
+            // fresh OWNED `ConstStr` byte-leaf (canonical UTF-8, NFC by the reader — the same build the
+            // `Core::ConstStr` emit lays down, so `value-eq` compares two canonical leaves), `value-eq`
+            // (borrows + pops both → bool), then DROP the owned literal (the borrowed leaf is left to
+            // its owner — no drop, matching the `Core::ValueEq` borrowed-operand rule).
+            out.push(Lir::CallImport(OP_BYTES_COMPACT)); // [leaf'] — canonical flat leaf, same handle
+            let leaf_slot = *high;
+            let lit_slot = *high + 1;
+            *high += 2;
+            scratch_ty.insert(leaf_slot, ValType::I32);
+            scratch_ty.insert(lit_slot, ValType::I32);
+            out.push(Lir::LocalSet(leaf_slot)); // stash the borrowed leaf handle
+            // Build the literal string as a fresh flat UTF-8 byte-leaf (mirrors `Core::ConstStr`).
+            let bytes = s.as_bytes();
+            out.push(Lir::ConstI32(bytes.len() as i32));
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // [buf]
+            for (i, &byte) in bytes.iter().enumerate() {
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::ConstI32(byte as i32));
+                out.push(Lir::CallImport(OP_BYTES_SET)); // [buf]
+            }
+            out.push(Lir::LocalTee(lit_slot)); // [lit] — keep the owned literal handle for the drop
+            out.push(Lir::LocalGet(leaf_slot)); // [lit, leaf]
+            out.push(Lir::CallImport(OP_VALUE_EQ)); // pops both (borrowed) → [bool]
+            // DROP the owned literal (a fresh leaf we minted); the leaf handle is a borrowed payload,
+            // left to its owner. The bool result stays on the stack for the `if` below.
+            out.push(Lir::LocalGet(lit_slot));
+            out.push(Lir::CallImport(OP_DROP));
+            // `value-eq` left [bool] then we pushed/dropped the literal — the drop consumed its own
+            // arg, so the stack is back to [bool]. Fall through to the shared `if`.
+        }
+        crate::core::Probe::ListLen { len, at_least } => {
+            // A list-pattern payload over a RUNTIME list: the path walked to the sub-value's LIST
+            // HANDLE (an i32); its `vec-len` is the length to test. A FIXED-arity `(list p0…p_{n-1})`
+            // matches length EXACTLY `n` (`vec-len == n`); a rest `(list p… .. rest)` matches AT
+            // LEAST `n` (`vec-len >= n`, the tail binds the surplus). The leading element binders +
+            // the rest binder read the list on their own via `SumPayload{Elem}/{RestFrom}` (resolve
+            // Case 6l/6r), so this arm only emits the LENGTH gate. On a mismatch, control falls
+            // through to `els` exactly as an Int/Bool literal test does.
+            out.push(Lir::CallImport(OP_VEC_LEN)); // [len:i32]
+            out.push(Lir::ConstI32(*len as i32));
+            out.push(if *at_least { Lir::I32GeU } else { Lir::I32Eq }); // [bool]
+        }
+        crate::core::Probe::Char(_) => {
+            // A char-literal payload over a RUNTIME value: a `Char` has NO runtime machine rep yet
+            // (its `=` folds only at compile time), so there is no leaf handle to compare — a
+            // CONSTANT char payload folds the `Char` test instead (`build_tree`), never reaching
+            // here. Decline (like the runtime map-payload probe), never a miscompile.
+            return Err(Reject::decline(
+                "a char-literal payload over a runtime char is not yet matched at run time (no runtime char rep)",
+            ));
+        }
+        crate::core::Probe::MapHasKeys { .. } => {
+            // A map-pattern payload over a RUNTIME map: the key-presence gate would need a runtime
+            // `map-lookup` per key (and the value binders a runtime keyed read), not yet wired — a
+            // CONSTANT map folds the `MapHasKeys` test instead (`build_tree`), never reaching here.
+            // Decline (like the runtime string-payload probe), never a miscompile.
+            return Err(Reject::decline(
+                "a map-pattern payload over a runtime map is not yet matched at run time",
+            ));
+        }
+        crate::core::Probe::Wild => {
+            return Err(Reject::decline("a wildcard literal test is a compiler bug"));
+        }
+    }
+    Ok(())
+}
+
+/// The decomposition of a flattenable multi-column literal-test arm ([`flattenable_multicol_arm`]): the
+/// ordered per-column `(path, probe)` tests, the arm `body`, and the shared next-arm fall-through tail `S`.
+type FlatMulticolArm<'a> = (
+    Vec<(&'a [crate::core::PathStep], &'a crate::core::Probe)>,
+    StructId,
+    &'a std::rc::Rc<crate::core::SumCont>,
+);
+
+/// Recognize a FLATTENABLE multi-column literal-test arm — a `LitTest` chain of ≥2 columns whose `then_`
+/// spine terminates in a `Leaf` body and whose every `els` is the SAME `Rc<SumCont>` (the shared next-arm
+/// fall-through, by `Rc::ptr_eq`). This is the shape a two-/multi-column tuple arm `(tuple i i a)` lowers to
+/// (`build_tree`'s shared fall-through, verified linear-DAG): an OUTER `LitTest(col0){then_=inner, els=S}`
+/// and an INNER `LitTest(col1){then_=Leaf(body), els=S}` with the SAME `S`. Returns the ordered per-column
+/// `(path, probe)` tests, the arm `body`, and the shared tail `S` — so `emit_sum_cont` can emit a FLAT
+/// `br_if` guard chain (each column `br_if`s to the arm-fail label, the shared tail emitted ONCE) instead of
+/// the nested `if`/`else` that re-emits `S` in BOTH branches at every column (the O(2^cols) emit blowup).
+///
+/// The `Rc::ptr_eq` requirement is what makes flattening SOUND: the flat chain sends EVERY column's failure
+/// to the ONE arm-fail label, so it is equivalent to the nested form ONLY when every column's `else` is the
+/// SAME continuation. A chain whose `els`es differ (a refining probe that does not share its tail, a nested
+/// pattern) fails the check → `None` → the caller keeps the byte-identical nested emit. Requires ≥2 columns
+/// (a single-column `LitTest` is already optimal as a plain `if`/`else`; flattening it only adds block
+/// overhead). A `Guarded`/`Switch` in the `then_` spine → `None` (not a flat multi-column arm).
+fn flattenable_multicol_arm(cont: &crate::core::SumCont) -> Option<FlatMulticolArm<'_>> {
+    use crate::core::SumCont;
+    let SumCont::LitTest {
+        path,
+        probe,
+        then_,
+        els,
+    } = cont
+    else {
+        return None;
+    };
+    let shared = els;
+    let mut cols: Vec<(&[crate::core::PathStep], &crate::core::Probe)> = vec![(path, probe)];
+    let mut cur = then_;
+    loop {
+        match cur.as_ref() {
+            // The spine ends at the arm body — flattenable iff we walked ≥2 columns (all sharing `S`).
+            SumCont::Leaf(body) => {
+                return (cols.len() >= 2).then_some((cols, *body, shared));
+            }
+            // A further column of the SAME arm: its `els` must be the SAME shared tail (else the two
+            // failures go to different continuations and the flat single-target chain would be wrong).
+            SumCont::LitTest {
+                path,
+                probe,
+                then_,
+                els,
+            } => {
+                if !std::rc::Rc::ptr_eq(els, shared) {
+                    return None;
+                }
+                cols.push((path, probe));
+                cur = then_;
+            }
+            // A guard or nested switch in the spine is not a flat multi-column arm — keep the nested emit.
+            _ => return None,
+        }
+    }
+}
+
 /// Emit a matched arm's CONTINUATION: a LEAF emits its body (a bare-`ConstInt` body grounded to the
 /// match's result width `result_it`, as the scalar-match arms are); a nested SWITCH emits a fresh switch
 /// chain on its deeper sub-value (`emit_sum_match_arms`), which is the decision tree recursing to share
@@ -11620,191 +11984,81 @@ fn emit_sum_cont(
             then_,
             els,
         } => {
-            // Push the scrutinee handle and walk to the leaf's boxed handle — tracking the sub-value TYPE as
-            // the walk descends (mirrors `Core::SumPayload`), so an ERASED newtype `Payload` is a no-op (the
-            // box is elided) and a `List` sub-value's `Elem` reads with `vec-get`, not `arr-get`. Without
-            // this, a `(Bx (list …))` newtype's `ListLen` test called `sum-payload` on the raw list (garbage
-            // length), and a boxed-list `Elem` used `arr-get` on a vec handle (garbage element).
-            emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
-            let mut cur = type_of(db, scrutinee);
-            // Whether the value now on the stack is a HEAP HANDLE (needs `get-int`/`get-bool` to read the
-            // scalar leaf out of the box) or a RAW SCALAR already (read directly). It starts a handle unless
-            // the scrutinee is itself an unboxed scalar — an ERASED single-variant newtype over a scalar,
-            // `(type W (Wrap Int64))`, whose value IS a bare i64 (no box). Each heap-child accessor below
-            // (`sum-payload`/`arr-get`/`vec-get`) produces a child HANDLE (→ true); an erased `Payload`
-            // no-op leaves the representation unchanged. WITHOUT this, a literal-payload test on an erased
-            // scalar newtype (`(match (W.Wrap n) ((W.Wrap 0) …) ((W.Wrap x) …))`) emitted `get-int` on the
-            // raw i64 — an i32-handle unbox over an i64 value → an INVALID component (`func failed to
-            // validate: expected i32, found i64`), a decline-don't-miscompile violation. The binding arm
-            // reads the same payload raw (bare `local.get`), so this aligns the literal arm with it.
-            let mut holds_handle =
-                !matches!(cur.strip_nominal(), Ty::Int(_) | Ty::Bool | Ty::Float(_));
-            let mut lit_prefix: Vec<crate::core::PathStep> = Vec::with_capacity(path.len());
-            for step in path {
-                lit_prefix.push(*step);
-                match step {
-                    crate::core::PathStep::Payload => {
-                        match cur.strip_nominal() {
-                            // A boxed sum's payload is unwrapped with `sum-payload`; its type is the ENTERED
-                            // variant's payload (from `sum_path_types`, else variant 0) — a following `Elem`
-                            // needs it to pick vec-get vs arr-get, and a non-variant-0 list payload matched
-                            // by a nested element pattern reads the wrong accessor without it.
-                            Ty::Sum { .. } => {
-                                out.push(Lir::CallImport(OP_SUM_PAYLOAD));
-                                holds_handle = true; // sum-payload yields the child HANDLE
-                                cur = payload_step_ty_of(
-                                    db,
-                                    Some(scrutinee),
-                                    &cur,
-                                    &lit_prefix,
-                                    &out.sum_path_types,
-                                );
-                            }
-                            // An ERASED nominal newtype: the box is gone, so the `Payload` step is a static
-                            // unwrap — NO `sum-payload` op, `cur` becomes the inner type. The stack value is
-                            // UNCHANGED (still whatever the scrutinee was — a raw scalar for a scalar
-                            // newtype), so `holds_handle` is left as-is.
-                            inner => cur = inner.clone(),
-                        }
-                    }
-                    crate::core::PathStep::Elem(i) => {
-                        out.push(Lir::ConstI32(*i as i32));
-                        holds_handle = true; // arr-get/vec-get yield the child HANDLE
-                        if matches!(cur.strip_nominal(), Ty::List(_)) {
-                            out.push(Lir::CallImport(OP_VEC_GET));
-                            cur = match cur.strip_nominal() {
-                                Ty::List(e) => (**e).clone(),
-                                _ => Ty::Any,
-                            };
-                        } else {
-                            out.push(Lir::CallImport(OP_ARR_GET));
-                            cur = match cur.strip_nominal() {
-                                Ty::Tuple(elems) => elems.get(*i).cloned().unwrap_or(Ty::Any),
-                                _ => Ty::Any,
-                            };
-                        }
-                    }
-                    crate::core::PathStep::RestFrom(_) => {} // never on a sum-lit-test path
+            // FLAT MULTI-COLUMN `br_if` GUARD CHAIN (S2 emit-size): a `(tuple i i a)`-style arm lowers to a
+            // `LitTest` chain of ≥2 columns whose every `els` is the SAME shared next-arm tail. The nested
+            // `if`/`else` below re-emits that shared tail in BOTH the inner `then_` AND the outer `else` at
+            // every column → the emit grows O(2^cols) even though the decision DAG is linear. Instead emit a
+            // FLAT chain: open `$join` then `$arm_fail`, run each column's probe and `i32.eqz; br_if
+            // $arm_fail` (any column mismatch jumps to the shared tail), then the body and `br $join`; close
+            // `$arm_fail` and emit the shared tail ONCE (it falls through to `$join`'s end). Each column's
+            // failure targets the ONE `$arm_fail` label, so this is equivalent to the nested form ONLY when
+            // every `els` is the same continuation — which `flattenable_multicol_arm` checks by `Rc::ptr_eq`.
+            //
+            // NON-TAIL ONLY (`!Tail(Some(_))`), mirroring `try_emit_disc_br_table`'s self-loop skip: the flat
+            // blocks are a different nesting than the `deeper_tail` +1-per-`if` accounting the nested chain
+            // threads, so a self-loop `br` inside the body would need flat-specific depth math. A `NonTail`
+            // (operand) or `Tail(None)` (non-self-recursive body) match keeps the shared-tail continuation
+            // emitted `NonTail` inside `$arm_fail` — no loop `br` occurs, so the depth is static (0 to the
+            // arm-fail body's own frame). The body sits inside `$arm_fail`→`$join` (2 blocks): its value
+            // `br $join` is depth 1.
+            if !matches!(tail, TailPos::Tail(Some(_)))
+                && let Some((cols, body, shared)) = flattenable_multicol_arm(cont)
+            {
+                out.push(Lir::Block(block_ty)); // $join (typed — carries the arm/tail result value)
+                out.push(Lir::Block(BlockType::Empty)); // $arm_fail
+                // Each column: probe → `[bool]`; a mismatch (`eqz`) `br_if`s out to $arm_fail (depth 0).
+                for (cpath, cprobe) in &cols {
+                    emit_littest_probe(
+                        db, scrutinee, cpath, cprobe, slots, base, high, scratch_ty, layout, out,
+                    )?;
+                    out.push(Lir::I32Eqz); // matched? -> 0 ; mismatched -> 1
+                    out.push(Lir::BrIf(0)); // mismatch: fall through to the shared tail ($arm_fail)
                 }
+                // All columns matched — emit the body and branch its value to $join (depth 1: out of
+                // $arm_fail then to $join). The body is a leaf in NON-tail position; it starts scratch
+                // ABOVE the high-water the column probes reached (`(*high).max(base)`, the same discipline as
+                // the `Leaf` arm), so a probe's transient i32 slot never clashes with the body's temps.
+                let body_base = (*high).max(base);
+                emit_arm_body(
+                    db,
+                    body,
+                    result_it,
+                    slots,
+                    body_base,
+                    high,
+                    scratch_ty,
+                    layout,
+                    out,
+                    TailPos::NonTail,
+                )?;
+                out.push(Lir::Br(1)); // br $join
+                out.push(Lir::End); // close $arm_fail
+                // The shared next-arm tail, emitted ONCE — a column mismatch `br_if`ed here. It falls
+                // through to $join's `end` (it produces the block's result), so no trailing `br` is needed.
+                let tail_base = *high;
+                emit_sum_cont(
+                    db,
+                    scrutinee,
+                    shared,
+                    result_it,
+                    block_ty,
+                    slots,
+                    tail_base,
+                    high,
+                    scratch_ty,
+                    layout,
+                    out,
+                    TailPos::NonTail,
+                )?;
+                out.push(Lir::End); // close $join
+                return Ok(());
             }
-            // Read the leaf scalar and compare against the literal. A `0` literal (a `(Some 0)`/`(Ok 0)`
-            // payload pattern) is `payload == 0` — `i64.eqz` (one instruction), not `const 0 ; eq` (two);
-            // the sum-payload twin of the scalar-probe eqz special case.
-            match probe {
-                crate::core::Probe::Int(v) => {
-                    // Read the scalar out of the box (`get-int` → NORMALIZED i64) when the leaf is a heap
-                    // handle, and compare at i64. An ERASED scalar newtype instead left the RAW payload on
-                    // the stack at its NATIVE machine width — i64 for `Int64`, but i32 for a NARROW newtype
-                    // (`(Wrap UInt8)`/`Int8`/`Int16`/`Int32`, whose raw rep is an i32 slot). So the compare
-                    // op must match the payload's actual width: `i64.eqz`/`i64.eq` over a boxed-or-i64 leaf,
-                    // `i32.eqz`/`i32.eq` over a narrow raw leaf. Reading the raw scalar but comparing it at
-                    // the hard-coded i64 emitted `i64.eqz` over an i32 → an INVALID component (the narrow
-                    // twin of the Int64 invalid-component this branch first fixed; `holds_handle`=false but
-                    // the width was still assumed i64). Boxed path stays i64 (`get-int` normalizes).
-                    let slot32 = if holds_handle {
-                        out.push(Lir::CallImport(OP_GET_INT)); // [i64] — normalized
-                        false
-                    } else {
-                        // The erased payload's native slot: i32 for a narrow width (`≤ 32`), else i64. `cur`
-                        // is the payload type after the path walk (an `Int` for a scalar newtype).
-                        match cur.strip_nominal() {
-                            Ty::Int(it) => Machine::of(*it).slot32,
-                            _ => false, // non-narrow / unknown → i64 (Int64 and the prior behavior)
-                        }
-                    };
-                    if v.to_i64_bits() == 0 {
-                        out.push(if slot32 { Lir::I32Eqz } else { Lir::I64Eqz }); // [bool]
-                    } else if slot32 {
-                        out.push(Lir::ConstI32(v.to_i64_bits() as i32));
-                        out.push(Lir::I32Eq); // [bool]
-                    } else {
-                        out.push(Lir::ConstI64(v.to_i64_bits()));
-                        out.push(Lir::I64Eq); // [bool]
-                    }
-                }
-                crate::core::Probe::Bool(b) => {
-                    // Same erased-newtype gate: a boxed Bool payload unboxes with `get-bool`, an erased
-                    // Bool newtype is already a raw i32 0/1 on the stack.
-                    if holds_handle {
-                        out.push(Lir::CallImport(OP_GET_BOOL)); // [i32]
-                    }
-                    out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
-                    out.push(Lir::I32Eq); // [bool]
-                }
-                crate::core::Probe::Str(s) => {
-                    // A string-literal payload over a RUNTIME value (`(Ast.Name "+")` matched on a runtime
-                    // Ast, a `(k "lit")` map-value pattern): compare the leaf String handle against the
-                    // literal by CONTENT — the same `value-eq` (`champ_eq`) physical-byte compare
-                    // `Core::ValueEq` uses on two strings. The path walk above left the leaf String HANDLE on
-                    // the stack — a BORROWED payload (`sum-payload`/`arr-get`/`vec-get` all borrow).
-                    // Canonicalize it with `bytes-compact` (rope→flat, refcount-NEUTRAL: flattens in place,
-                    // returns the SAME handle, so the borrow is neither consumed nor a fresh mint) so a rope
-                    // payload and its flat twin compare equal — exactly as the `Core::ValueEq` emit does for a
-                    // borrowed String operand. Save the compacted leaf handle in a slot, build the literal as a
-                    // fresh OWNED `ConstStr` byte-leaf (canonical UTF-8, NFC by the reader — the same build the
-                    // `Core::ConstStr` emit lays down, so `value-eq` compares two canonical leaves), `value-eq`
-                    // (borrows + pops both → bool), then DROP the owned literal (the borrowed leaf is left to
-                    // its owner — no drop, matching the `Core::ValueEq` borrowed-operand rule).
-                    out.push(Lir::CallImport(OP_BYTES_COMPACT)); // [leaf'] — canonical flat leaf, same handle
-                    let leaf_slot = *high;
-                    let lit_slot = *high + 1;
-                    *high += 2;
-                    scratch_ty.insert(leaf_slot, ValType::I32);
-                    scratch_ty.insert(lit_slot, ValType::I32);
-                    out.push(Lir::LocalSet(leaf_slot)); // stash the borrowed leaf handle
-                    // Build the literal string as a fresh flat UTF-8 byte-leaf (mirrors `Core::ConstStr`).
-                    let bytes = s.as_bytes();
-                    out.push(Lir::ConstI32(bytes.len() as i32));
-                    out.push(Lir::CallImport(OP_BYTES_ALLOC)); // [buf]
-                    for (i, &byte) in bytes.iter().enumerate() {
-                        out.push(Lir::ConstI32(i as i32));
-                        out.push(Lir::ConstI32(byte as i32));
-                        out.push(Lir::CallImport(OP_BYTES_SET)); // [buf]
-                    }
-                    out.push(Lir::LocalTee(lit_slot)); // [lit] — keep the owned literal handle for the drop
-                    out.push(Lir::LocalGet(leaf_slot)); // [lit, leaf]
-                    out.push(Lir::CallImport(OP_VALUE_EQ)); // pops both (borrowed) → [bool]
-                    // DROP the owned literal (a fresh leaf we minted); the leaf handle is a borrowed payload,
-                    // left to its owner. The bool result stays on the stack for the `if` below.
-                    out.push(Lir::LocalGet(lit_slot));
-                    out.push(Lir::CallImport(OP_DROP));
-                    // `value-eq` left [bool] then we pushed/dropped the literal — the drop consumed its own
-                    // arg, so the stack is back to [bool]. Fall through to the shared `if`.
-                }
-                crate::core::Probe::ListLen { len, at_least } => {
-                    // A list-pattern payload over a RUNTIME list: the path walked to the sub-value's LIST
-                    // HANDLE (an i32); its `vec-len` is the length to test. A FIXED-arity `(list p0…p_{n-1})`
-                    // matches length EXACTLY `n` (`vec-len == n`); a rest `(list p… .. rest)` matches AT
-                    // LEAST `n` (`vec-len >= n`, the tail binds the surplus). The leading element binders +
-                    // the rest binder read the list on their own via `SumPayload{Elem}/{RestFrom}` (resolve
-                    // Case 6l/6r), so this arm only emits the LENGTH gate. On a mismatch, control falls
-                    // through to `els` exactly as an Int/Bool literal test does.
-                    out.push(Lir::CallImport(OP_VEC_LEN)); // [len:i32]
-                    out.push(Lir::ConstI32(*len as i32));
-                    out.push(if *at_least { Lir::I32GeU } else { Lir::I32Eq }); // [bool]
-                }
-                crate::core::Probe::Char(_) => {
-                    // A char-literal payload over a RUNTIME value: a `Char` has NO runtime machine rep yet
-                    // (its `=` folds only at compile time), so there is no leaf handle to compare — a
-                    // CONSTANT char payload folds the `Char` test instead (`build_tree`), never reaching
-                    // here. Decline (like the runtime map-payload probe), never a miscompile.
-                    return Err(Reject::decline(
-                        "a char-literal payload over a runtime char is not yet matched at run time (no runtime char rep)",
-                    ));
-                }
-                crate::core::Probe::MapHasKeys { .. } => {
-                    // A map-pattern payload over a RUNTIME map: the key-presence gate would need a runtime
-                    // `map-lookup` per key (and the value binders a runtime keyed read), not yet wired — a
-                    // CONSTANT map folds the `MapHasKeys` test instead (`build_tree`), never reaching here.
-                    // Decline (like the runtime string-payload probe), never a miscompile.
-                    return Err(Reject::decline(
-                        "a map-pattern payload over a runtime map is not yet matched at run time",
-                    ));
-                }
-                crate::core::Probe::Wild => {
-                    return Err(Reject::decline("a wildcard literal test is a compiler bug"));
-                }
-            }
+            // Emit the scrutinee-walk + literal compare, leaving `[bool]` on the stack (extracted to
+            // `emit_littest_probe` — the flat multi-column `br_if` chain above reuses the SAME probe emit
+            // per column, so this is factored to one place rather than copied).
+            emit_littest_probe(
+                db, scrutinee, path, probe, slots, base, high, scratch_ty, layout, out,
+            )?;
             out.push(Lir::If(block_ty));
             // Both continuations sit one `if` deeper — bump the tail depth (mirrors the guard/switch sites).
             let deeper = deeper_tail(tail);
@@ -12792,7 +13046,10 @@ fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {
         // compute a repeated `(List.len xs)` — a `vec-len` runtime import — ONCE across `(+ (len xs) (* (len
         // xs) 3))`. Each takes ONE operand handle; equal iff those handles are `core_eq`.
         (Core::ListLen { operand: ox }, Core::ListLen { operand: oy })
-        | (Core::BytesLen { operand: ox }, Core::BytesLen { operand: oy }) => core_eq(db, ox, oy),
+        | (Core::BytesLen { operand: ox }, Core::BytesLen { operand: oy })
+        | (Core::StrScalarLen { operand: ox }, Core::StrScalarLen { operand: oy }) => {
+            core_eq(db, ox, oy)
+        }
         (Core::MapSize { map: mx }, Core::MapSize { map: my }) => core_eq(db, mx, my),
         (Core::SetLen { set: sx }, Core::SetLen { set: sy }) => core_eq(db, sx, sy),
         // A sum-variant payload read: equal iff the SAME path off an equal (runtime) scrutinee — the

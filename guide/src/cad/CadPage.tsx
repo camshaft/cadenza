@@ -40,6 +40,7 @@ import { injectImport, CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_LIB_FORMAT } from "./
 import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
 import { slidersFromManifest } from "./manifestSlider.ts";
 import { downloadMesh } from "./download.ts";
+import { encodeCadShareUrl, decodeCadShare } from "./cadShare.ts";
 import { ParametricControls, fracOf, type Frac } from "./ParametricControls.tsx";
 import type { ParamSlider } from "./parametric.ts";
 import type { Surface } from "../compiler/client.ts";
@@ -80,13 +81,19 @@ type Status =
   | { phase: "error"; message: string };
 
 export default function CadPage() {
-  const { surface } = useSyntax();
+  const { surface, setSurface } = useSyntax();
+  // A SHARED link (`#cad/…` in the URL hash, operator #7184) reconstructs a specific model: decode it ONCE
+  // at first render (synchronous, like the playground's share seed — no effect race). If present, it seeds
+  // the editor + surface + params below instead of DEFAULT_EXAMPLE; its params flow into the mount run so a
+  // shared PARAMETRIC model restores its exact dragged dims. Null (the common case) → the normal default.
+  const sharedRef = useRef(typeof window !== "undefined" ? decodeCadShare(window.location.hash) : null);
+  const shared = sharedRef.current;
   // The loaded example (drives the picker). Its `source[surface]` seeds the editor; switching examples or
   // toggling the surface re-seeds from `example.source[newSurface]` (v-cad ships every example in BOTH
   // surfaces, so a toggle is a clean re-seed — source can't be reinterpreted across surfaces, same as /calc).
   const [exampleSlug, setExampleSlug] = useState(DEFAULT_EXAMPLE.slug);
   const example = EXAMPLES.find((e) => e.slug === exampleSlug) ?? DEFAULT_EXAMPLE;
-  const [source, setSource] = useState(() => DEFAULT_EXAMPLE.source[surface] ?? DEFAULT_EXAMPLE.source.ml);
+  const [source, setSource] = useState(() => shared?.src ?? DEFAULT_EXAMPLE.source[surface] ?? DEFAULT_EXAMPLE.source.ml);
   const [status, setStatus] = useState<Status>({ phase: "idle" });
   // The most recent SUCCESSFUL mesh — kept SEPARATELY from `status` so the 3D viewer stays MOUNTED across a
   // recompute (a param drag / re-Run cycles status meshed→running→meshed). Unmounting MeshView on every
@@ -235,10 +242,24 @@ export default function CadPage() {
   const lastSurface = useRef<Surface | null>(null);
   useEffect(() => {
     const first = lastSurface.current === null;
+    // A shared `#cad/` link pins the surface to what it was authored in (the source can't be reinterpreted
+    // across surfaces). On first mount, if the shared surface differs from the reader's current toggle, flip
+    // the toggle to it — that re-fires this effect at the right surface, so we defer the run to that pass.
+    if (first && shared && shared.s !== surface) {
+      setSurface(shared.s);
+      return;
+    }
     if (!first && lastSurface.current === surface) return;
     lastSurface.current = surface;
+    // On first mount seed the editor `source` (the shared src if any, else the default set in useState);
+    // on a later surface flip, re-seed the current example in the new surface. A shared model isn't in the
+    // example list, so a surface flip after a shared load would lose it — but the shared surface is pinned
+    // above, so we only reach a non-first pass here for a reader's own toggle (no shared model in play then).
     const next = first ? source : (example.source[surface] ?? example.source.ml);
     if (!first) setSource(next);
+    // First mount of a shared PARAMETRIC model: seed its exact param values so the run restores the dragged
+    // dims (refreshManifest keeps an already-present value by name, so pre-seeding the ref wins over defaults).
+    if (first && shared?.params) paramValuesRef.current = { ...shared.params };
     void (async () => {
       const seeded = await refreshManifest(next, surface);
       void runModel(next, surface, seeded);
@@ -276,6 +297,25 @@ export default function CadPage() {
     })();
   }, [source, surface, refreshManifest, runModel]);
 
+  // SHARE (operator #7184): copy a `#cad/…` URL that reconstructs the current model — the editor source, its
+  // surface, and (for a parametric model) the current slider values as exact fractions — so a shared link
+  // restores the exact view, including dragged dims. A brief "Copied!" confirms. Falls back to no-op if the
+  // clipboard API is unavailable (non-secure context) — the URL is still built (a future prompt could show it).
+  const [shareCopied, setShareCopied] = useState(false);
+  const onShare = useCallback(() => {
+    const payload = sliders.length > 0 ? { s: surface, src: source, params: paramValues } : { s: surface, src: source };
+    const url = encodeCadShareUrl(payload);
+    void navigator.clipboard?.writeText(url).then(
+      () => {
+        setShareCopied(true);
+        setTimeout(() => setShareCopied(false), 1500);
+      },
+      () => {
+        /* clipboard denied (non-secure context / permissions) — no-op, keep the UI stable */
+      },
+    );
+  }, [sliders.length, surface, source, paramValues]);
+
   return (
     <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-4 py-4">
       {/* `flex-wrap` so the controls (surface toggle + example picker + Playground link) drop to a second
@@ -310,6 +350,16 @@ export default function CadPage() {
               ))}
             </select>
           </label>
+          {/* SHARE — copy a URL that reconstructs this exact model (+ params) for another reader (operator
+              #7184, same mechanism as the playground's share). */}
+          <button
+            data-testid="cad-share"
+            onClick={onShare}
+            title="Copy a shareable link to this model"
+            className="flex min-h-11 items-center rounded px-2 text-cadenza-400 transition hover:text-cadenza-300 sm:min-h-0 sm:py-1"
+          >
+            {shareCopied ? "✓ Copied!" : "🔗 Share"}
+          </button>
           <Link
             to="/playground"
             className="flex min-h-11 items-center px-2 text-cadenza-400 hover:text-cadenza-300 sm:min-h-0 sm:px-0"

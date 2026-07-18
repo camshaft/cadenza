@@ -820,15 +820,28 @@ impl<'a> Parser<'a> {
             let op_span = self.cur_span();
             self.bump(); // operator
             let head = self.name(op_name, op_span);
-            // Left-assoc: the right operand binds one tighter (`prec + 1`), so a same-precedence run
-            // groups left. The type arrow `->` is right-associative — it recurses at `prec`, so
-            // `A -> B -> C` groups as `A -> (B -> C)` (the curried reading).
-            let right_min = if is_right_assoc(op_name) {
-                prec
+            // A `:` ascription whose RHS OPENS with `forall` is a type-position `forall` (`e : forall a. T`):
+            // parse it via `forall_type`, the same path the structural `:` sites (param/return/field/effect-op)
+            // reach through `type_ref`. `forall` is a CONTEXTUAL keyword recognized only in type position, so
+            // the general `expr` RHS below would misread it as an ordinary name and let the unit-suffix postfix
+            // eat the following binder (`forall a` → `(Qty.of forall (Unit.of #"a"))`) — the printer emits
+            // `e : forall a. T` (the type surface), so without this the round-trip breaks. Only `forall` needs
+            // the intercept: every OTHER type form (`Int64`, `List(a)`, `a -> b`, `M.T`, `Tuple(a, b)`) already
+            // round-trips through the general `expr` RHS, so the ascription's value/expression RHS is otherwise
+            // unchanged (`x : a + b` stays `(: x (+ a b))`).
+            let right = if op_name == ":" && self.at_keyword(Keyword::Forall) {
+                self.forall_type(self.cur_span())
             } else {
-                prec + 1
+                // Left-assoc: the right operand binds one tighter (`prec + 1`), so a same-precedence run
+                // groups left. The type arrow `->` is right-associative — it recurses at `prec`, so
+                // `A -> B -> C` groups as `A -> (B -> C)` (the curried reading).
+                let right_min = if is_right_assoc(op_name) {
+                    prec
+                } else {
+                    prec + 1
+                };
+                self.expr(right_min)
             };
-            let right = self.expr(right_min);
             let span = start.merge(self.prev_span());
             left = self.list(vec![head, left, right], span);
             // DEPTH GUARD for the LEFT SPINE. A left-associative run (`a + b + c + …`) is parsed by
@@ -3613,6 +3626,45 @@ mod tests {
             !bare.ok() && bare.errors.iter().any(|e| e.message.contains("keyword")),
             "a bare value-position `forall` is a reserved-keyword error: {:?}",
             bare.errors
+        );
+    }
+
+    #[test]
+    fn infix_ascription_rhs_beginning_with_forall_is_a_type_not_an_expression() {
+        use crate::sexpr;
+        // A NESTED (expression-position, infix `:`) ascription `e : forall a. T` must parse its RHS as a
+        // TYPE — `forall` is a contextual keyword the structural `:` sites reach through `type_ref`, but the
+        // infix `:` parses its RHS via the general `expr`. Without the intercept the general path misread
+        // `forall` as an ordinary name and the unit-suffix postfix ate the binder
+        // (`forall a` → `(Qty.of forall (Unit.of #"a"))`), so the printed `e : forall a. T` failed to
+        // re-parse — a printer/parser round-trip gap (the printer already emits the type surface).
+        assert_eq!(
+            sexpr::print(&parse_ok("f(x : forall a. a)")),
+            r#"(f (: x (forall (a) a)))"#
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("f(x : forall a. a -> a)")),
+            r#"(f (: x (forall (a) (-> a a))))"#
+        );
+        // Nested under a `let` value and under an arithmetic operand — the RHS is still a type.
+        assert_eq!(
+            sexpr::print(&parse_ok("let h = k : forall a. a in h")),
+            r#"(let ((h (: k (forall (a) a)))) h)"#
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("(q : forall a. a) + 1")),
+            r#"(+ (: q (forall (a) a)) 1)"#
+        );
+        // The intercept is forall-ONLY: every other `:` RHS is unchanged — a value/expression RHS stays an
+        // expression (`x : a + b` is the arithmetic `(+ a b)`, NOT a type), and the other type forms already
+        // round-tripped through the general `expr` path.
+        assert_eq!(
+            sexpr::print(&parse_ok("f(x : a + b)")),
+            r#"(f (: x (+ a b)))"#
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("f(x : a -> b)")),
+            r#"(f (: x (-> a b)))"#
         );
     }
 

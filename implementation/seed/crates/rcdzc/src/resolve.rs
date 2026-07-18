@@ -4978,6 +4978,20 @@ fn is_param_occurrence(db: &Db, id: StructId) -> bool {
     {
         return true;
     }
+    // A HANDLE-ARM CONTINUATION binder `k` — the 4th element of a FIVE-part `ctl`-style arm
+    // `(op (params) state k body)` (a 4-part arm has no such slot; its 4th element is the body). Like the
+    // state binder it sits directly as an arm element, so `parent` is the arm. Without this, a `k`
+    // reference that reaches resolution through `is_param_occurrence` (e.g. a `k` inside a MATCH within the
+    // arm body) is not recognized as bound → a spurious CDZ0101 unbound `k` (`s`/params worked, `k` did
+    // not — the missing case). `handle_arm_binds` already resolves the reference; this recognizes the
+    // binder OCCURRENCE so its scope is established on every path.
+    if is_handle_arm(db, parent)
+        && let Struct::List(parts) = db.ast.get(parent)
+        && parts.len() == 5
+        && parts.get(3).copied() == Some(id)
+    {
+        return true;
+    }
     false
 }
 

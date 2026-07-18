@@ -394,6 +394,15 @@ pub enum Core {
     /// when the operand is a RUNTIME bytes value (a compile-time-visible `Bytes.of` folds its length to
     /// a `ConstInt` in `lower`, so it never reaches here). The bytes companion of `ListLen`.
     BytesLen { operand: StructId },
+    /// `String.scalar-len` of a RUNTIME string — the number of Unicode SCALAR VALUES (codepoints), an
+    /// `Int64`. A constant-string `scalar-len` folds to a `ConstInt` in `lower` (never reaching here); this
+    /// node is the RUNTIME face. A String is a flat UTF-8 byte leaf, so the backend WALKS the byte buffer
+    /// (`bytes-len` + `bytes-get`, both already-exported runtime ops — HASH-NEUTRAL) counting LEAD bytes: a
+    /// byte begins a new scalar iff `(byte & 0xC0) != 0x80` (not a `10xxxxxx` continuation). The count loop
+    /// reuses the same `push_is_lead` machinery `Core::StrAt`'s scalar-scan emits. Unlike `scalar-at`, the
+    /// result is a plain `Int64` — no runtime Char representation is involved. The scalar companion of
+    /// `BytesLen` (which counts bytes, not scalars — they differ exactly on a multi-byte string).
+    StrScalarLen { operand: StructId },
     /// `Bytes.at` — the FALLIBLE indexed byte read, present when the bytes operand is a RUNTIME value (a
     /// constant `Bytes.of` + constant index FOLDS to a `SumNew` in `lower`, so it never reaches here). The
     /// backend emits a bounds-checked runtime form: read `bytes-len`, and if `0 <= index < len` build

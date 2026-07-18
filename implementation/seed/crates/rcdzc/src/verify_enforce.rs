@@ -34,15 +34,17 @@
 //!
 //! BOTH `@requires` and `@ensures`, universally (plain AND stacked under `@test`/other annotations):
 //! - `@requires(PRE)` → body `(if PRE BODY (trap "@requires precondition failed"))` — precondition at entry;
-//! - `@ensures(Q)` → body `(let ((it BODY)) (if Q it (trap "@ensures postcondition failed")))` — postcondition
-//!   at exit, VALUE-TRANSPARENT (the pass arm returns `it`, the def's own value, not `unit`).
+//! - `@ensures(Q)` → body `(let ((ret BODY)) (if Q ret (trap "@ensures postcondition failed")))` —
+//!   postcondition at exit, VALUE-TRANSPARENT (the pass arm returns `ret`, the def's own value, not `unit`).
 //!
 //! Both wrap the def's CURRENT body and re-wrap at each annotation's own index, so stacked/mixed contracts
 //! COMPOSE regardless of order: `@requires(P) @ensures(Q)` over `(def SIG BODY)` becomes (after both fire)
-//! `(if P (let ((it BODY)) (if Q it trap)) trap)` or the symmetric nesting — every contract enforced.
+//! `(if P (let ((ret BODY)) (if Q ret trap)) trap)` or the symmetric nesting — every contract enforced.
 //!
-//! `@ensures` binds the result to `it`; if a PARAM is literally named `it`, the injected `(let ((it …)) …)`
-//! would SHADOW it — such a def is SKIPPED for `@ensures` (the capture guard, mirroring `proptest_gen`).
+//! The `@ensures` result binder is `ret` (operator directive 2026-07-18, renamed from the too-common `it`
+//! — see [`RESULT_BINDER`]); the predicate references it to mean the returned value. If a PARAM is literally
+//! named `ret`, the injected `(let ((ret …)) …)` would SHADOW it — such a def is SKIPPED for `@ensures`
+//! (the capture guard, mirroring `proptest_gen`).
 //!
 //! LOCKSTEP with v-property-testing (COMPLETED): this pass now owns `@ensures` UNIVERSALLY — bare AND
 //! `@test`/`@exhaustive`-stacked. An earlier interim skipped a `@test`-stacked `@ensures` because
@@ -57,27 +59,40 @@
 use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::prelude::{push_atom, push_list};
 
+/// The magic `@ensures` RESULT binder — the name the postcondition predicate references to mean "the value the
+/// def returns" (`@ensures(> ret 4)`). RENAMED from `it` (operator ruling 2026-07-18: *"ret for ensures and
+/// self for invariants makes sense"*): `it` was too collision-prone (a common word a user could write in their
+/// own predicate); the operator chose the readable `ret` (over the `__`-wrapped `__ret__`) for `@ensures`, and a
+/// SEPARATE `self` for `@invariant`'s value-binder (which means "the value being checked", not "the return") —
+/// see [`crate::invariant_establish::VALUE_BINDER`]. This constant governs ONLY the `@ensures` result binder.
+/// The it-capture-reject (a param named `ret`) still applies — `ret`/`self` are more collision-prone than the
+/// `__`-forms, but the operator chose readability, so the guard stays to handle a shadowing param.
+pub(crate) const RESULT_BINDER: &str = "ret";
+
 /// Append a bare-`Name` atom occurrence (the `Arenas`-level shorthand, twin of `proptest_gen::name`).
 fn name(ast: &mut Arenas, n: &str) -> StructId {
     push_atom(ast, Leaf::Name(n.to_string()))
 }
 
-/// True if `param` is (or is a typed `(: it Ty)` whose name is) literally `it` — the `@ensures` capture guard.
-/// Mirrors `proptest_gen::param_is_named_it` (kept local so this pass has no cross-module coupling).
-fn param_is_named_it(ast: &Arenas, param: StructId) -> bool {
-    if ast.as_name(param) == Some("it") {
+/// True if `param` is (or is a typed `(: ret Ty)` whose name is) literally the [`RESULT_BINDER`] — the
+/// `@ensures` capture guard. Mirrors `proptest_gen::param_is_named_it` (kept local, no cross-module coupling).
+fn param_is_result_binder(ast: &Arenas, param: StructId) -> bool {
+    if ast.as_name(param) == Some(RESULT_BINDER) {
         return true;
     }
     ast.as_form(param, ":")
         .and_then(|t| t.first())
         .and_then(|&nm| ast.as_name(nm))
-        == Some("it")
+        == Some(RESULT_BINDER)
 }
 
-/// True if the def SIG `[NAME, p0, p1, …]` has any parameter literally named `it` (bare or typed).
-fn sig_binds_it(ast: &Arenas, sig: StructId) -> bool {
+/// True if the def SIG `[NAME, p0, p1, …]` has any parameter literally named [`RESULT_BINDER`] (bare or typed).
+fn sig_binds_result(ast: &Arenas, sig: StructId) -> bool {
     match ast.get(sig) {
-        Struct::List(items) => items.iter().skip(1).any(|&p| param_is_named_it(ast, p)),
+        Struct::List(items) => items
+            .iter()
+            .skip(1)
+            .any(|&p| param_is_result_binder(ast, p)),
         _ => false,
     }
 }
@@ -141,11 +156,12 @@ pub(crate) fn enforce(ast: &mut Arenas) {
         let (Some(&sig), Some(&body)) = (def_tail.first(), def_tail.get(1)) else {
             continue;
         };
-        // `@ensures` binds the result to `it`; if a param is literally named `it`, the injected
-        // `(let ((it BODY)) …)` would SHADOW it and change the def's meaning — SKIP the `@ensures` rewrite for
-        // such a def (the capture guard, mirroring `proptest_gen`). `@requires` never binds `it`, so it is
-        // unaffected.
-        if is_ensures && sig_binds_it(ast, sig) {
+        // `@ensures` binds the result to `ret`; if a param is literally named `ret`, the injected
+        // `(let ((ret BODY)) …)` would SHADOW it and change the def's meaning — SKIP the `@ensures` rewrite
+        // for such a def (the capture guard, mirroring `proptest_gen`). `@requires` never binds the result, so
+        // it is unaffected. (`ret` is a readable name a user COULD write for a param — the operator chose it over
+        // the `__`-form for readability — so this guard is load-bearing: it turns a shadow into a clear reject.)
+        if is_ensures && sig_binds_result(ast, sig) {
             continue;
         }
         // Any def tail beyond [SIG, BODY] (a trailing form) is preserved after the rewritten body.
@@ -158,24 +174,24 @@ pub(crate) fn enforce(ast: &mut Arenas) {
         // - `@ensures`:  `(let ((it BODY)) (if Q it (trap "@ensures postcondition failed")))` — checked at
         //   body-EXIT, VALUE-TRANSPARENT (the pass arm returns `it`, the def's own value).
         let checked_body = if is_ensures {
-            let it_binder = {
-                let it_nm = name(ast, "it");
-                let bind = push_list(ast, vec![it_nm, body]);
+            let result_binder = {
+                let ret_nm = name(ast, RESULT_BINDER);
+                let bind = push_list(ast, vec![ret_nm, body]);
                 push_list(ast, vec![bind])
             };
             let check = {
                 let if_head = name(ast, "if");
-                let it_use = name(ast, "it");
+                let ret_use = name(ast, RESULT_BINDER);
                 let trap_call = {
                     let trap_head = name(ast, "trap");
                     let msg =
                         push_atom(ast, Leaf::Str("@ensures postcondition failed".to_string()));
                     push_list(ast, vec![trap_head, msg])
                 };
-                push_list(ast, vec![if_head, pred, it_use, trap_call])
+                push_list(ast, vec![if_head, pred, ret_use, trap_call])
             };
             let let_head = name(ast, "let");
-            push_list(ast, vec![let_head, it_binder, check])
+            push_list(ast, vec![let_head, result_binder, check])
         } else {
             let if_head = name(ast, "if");
             let trap_call = {

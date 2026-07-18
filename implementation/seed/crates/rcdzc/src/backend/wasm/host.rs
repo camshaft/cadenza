@@ -502,7 +502,8 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         | Core::Convert { operand, .. }
         | Core::Not { operand }
         | Core::ListLen { operand }
-        | Core::BytesLen { operand } => collect_host_imports(db, operand, out),
+        | Core::BytesLen { operand }
+        | Core::StrScalarLen { operand } => collect_host_imports(db, operand, out),
         Core::Match { scrutinee, arms } => {
             collect_host_imports(db, scrutinee, out);
             for arm in arms {
