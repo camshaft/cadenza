@@ -30,6 +30,7 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
   match node-at(tree, id) with
     | Option.Some(Node.NLit(_)) => col
     | Option.Some(Node.NBoolLit(_)) => col
+    | Option.Some(Node.NAnnLit(_, _, _)) => col   // an annotated literal binds nothing (like NLit)
     | Option.Some(Node.NVar(nm)) =>
         (match Map.lookup(env, nm) with
           | Option.Some(binder) => Map.insert(col, id, Resolved.RBound(binder))

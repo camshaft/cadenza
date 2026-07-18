@@ -41,6 +41,10 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
   match node-at(tree, id) with
     | Option.Some(Node.NLit(_)) => Map.insert(tcol, id, t-int64())
     | Option.Some(Node.NBoolLit(_)) => Map.insert(tcol, id, Typed.TBool)
+    | Option.Some(Node.NAnnLit(_, sflag, w)) =>
+        // a width-annotated literal `(: v IntN)` has the ANNOTATED type TIntW(signed, width) — the narrow
+        // type flows from here (sread already fits-width-checked the value). signed rides as 1|0.
+        Map.insert(tcol, id, Typed.TIntW((if sflag == 1 then true else false), w))
     | Option.Some(Node.NVar(_)) =>
         // a var's type is the type of the VALUE its binder binds (not hardcoded Int) — so a var bound to a
         // Bool is Bool. resolve gives the binder NLet's node-id; its value was typed before the body (the

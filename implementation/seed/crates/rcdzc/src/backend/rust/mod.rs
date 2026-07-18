@@ -91,11 +91,11 @@ fn s2_arg_ok(t: &crate::ty::Ty) -> bool {
     }
 }
 
-/// Whether a closure RESULT type is renderable by the gate harness (S1 scalar OR S3 Tuple/List). NARROWER
-/// than `s2_arg_ok`: an Option/Result RESULT is DEFERRED — the harness renders a sum result as the bare
-/// `(Some 5)` while the corpus expects the TYPE-ANNOTATED value form `(: (Some 5) (Option Int64))`, a
-/// separate sum-result render slice. (An Option/Result ARG is fine — the harness has a constructor rebuild
-/// for it, `s2_arg_ok` — but the RESULT render path differs.) So the arg set ⊋ the result set here.
+/// Whether a closure RESULT type is renderable by the gate harness (S1 scalar OR S3 Tuple/List/Option/
+/// Result). The factory result is rendered by `cdz_render_expr`, which walks the value's TYPE and emits the
+/// corpus s-expr form — including the Option/Result arms (`(Some <p>)`/`(None unit)`/`(Ok <p>)`/`(Err <e>)`,
+/// the SAME render a plain sum export uses). So an Option/Result RESULT over renderable payloads is admitted
+/// (S4a), matching `s2_arg_ok`'s Option/Result arm on the arg side.
 fn s3_result_ok(t: &crate::ty::Ty) -> bool {
     use crate::ty::Ty;
     match t.strip_nominal() {
@@ -107,6 +107,14 @@ fn s3_result_ok(t: &crate::ty::Ty) -> bool {
         Ty::String | Ty::Bytes => true,
         Ty::Tuple(elems) => elems.iter().all(s3_result_ok),
         Ty::List(elem) => s3_result_ok(elem),
+        // Option/Result RESULT (S4a) — the well-known 2-variant sums the harness renders via `cdz_render_at`'s
+        // Option/Result arms (`(Some <p>)`/`(None unit)`/`(Ok <p>)`/`(Err <e>)`), the corpus value form. Over
+        // renderable payloads (recurse), matching `s2_arg_ok`'s arg-side Option/Result arm. A USER sum result
+        // stays deferred (the harness renders a user sum via a generated helper, but the factory-result
+        // dispatch does not yet route to it — a later slice).
+        Ty::Sum { name, args, .. } if name == "Option" || name == "Result" => {
+            args.iter().all(s3_result_ok)
+        }
         _ => false,
     }
 }

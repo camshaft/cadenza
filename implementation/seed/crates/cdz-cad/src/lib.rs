@@ -72,6 +72,38 @@ pub enum Solid {
     Translate(Vec3, Box<Solid>),
     Rotate(Vec3, Box<Solid>),
     Scale(Vec3, Box<Solid>),
+    /// Lift a 2-D profile straight up +z by a full height (a prism) — the Cadenza `ExtrudeLinear`.
+    ExtrudeLinear(Profile, f64),
+    /// Sweep a 2-D profile about the y-axis by `degrees` — the Cadenza `Revolve`.
+    Revolve(Profile, f64),
+}
+
+/// A 2-D cross-section the driver lifts into a 3-D `Solid` via `ExtrudeLinear`/`Revolve` (the Cadenza
+/// `Profile`). `Rect`/`Circle` map directly onto manifold's `CrossSection::square`/`circle`; `PathProfile`
+/// samples its path segments to a polygon (`CrossSection::from_simple_polygon`).
+#[derive(Clone, PartialEq, Debug)]
+pub enum Profile {
+    /// A rectangle of FULL `(w, h)`, centred at the origin.
+    Rect(f64, f64),
+    /// A disc of the given radius.
+    Circle(f64),
+    /// A region bounded by a path — an ordered list of segments (sampled to a polygon at mesh time).
+    Path(Vec<PathSeg>),
+}
+
+/// A 2-D path segment (the Cadenza `PathSeg`) — absolute (`*Abs`) or relative (`*Rel`) to the current point.
+/// A `Move` starts a subpath (no edge); a `Line` draws a straight edge; a `Cubic` is a cubic Bézier (end +
+/// two control points) the driver samples. Coordinates are already `f64` (evaluated from the exact Rational
+/// at the render leaf, like every other driver coordinate).
+#[derive(Clone, PartialEq, Debug)]
+pub enum PathSeg {
+    MoveToAbs([f64; 2]),
+    MoveToRel([f64; 2]),
+    LineToAbs([f64; 2]),
+    LineToRel([f64; 2]),
+    /// `(end, start_control, end_control)`.
+    CubicToAbs([f64; 2], [f64; 2], [f64; 2]),
+    CubicToRel([f64; 2], [f64; 2], [f64; 2]),
 }
 
 impl Solid {
@@ -81,7 +113,11 @@ impl Solid {
     pub fn leaf_count(&self) -> usize {
         match self {
             Solid::Empty => 0,
-            Solid::Cube(_) | Solid::Sphere(_) | Solid::Cylinder(_, _) => 1,
+            Solid::Cube(_)
+            | Solid::Sphere(_)
+            | Solid::Cylinder(_, _)
+            | Solid::ExtrudeLinear(_, _)
+            | Solid::Revolve(_, _) => 1,
             Solid::Union(a, b) | Solid::Difference(a, b) | Solid::Intersection(a, b) => {
                 a.leaf_count() + b.leaf_count()
             }
@@ -92,7 +128,12 @@ impl Solid {
     /// The total node count (the node itself plus every descendant) — mirrors the library's `count-nodes`.
     pub fn node_count(&self) -> usize {
         match self {
-            Solid::Empty | Solid::Cube(_) | Solid::Sphere(_) | Solid::Cylinder(_, _) => 1,
+            Solid::Empty
+            | Solid::Cube(_)
+            | Solid::Sphere(_)
+            | Solid::Cylinder(_, _)
+            | Solid::ExtrudeLinear(_, _)
+            | Solid::Revolve(_, _) => 1,
             Solid::Union(a, b) | Solid::Difference(a, b) | Solid::Intersection(a, b) => {
                 1 + a.node_count() + b.node_count()
             }
@@ -219,6 +260,11 @@ impl Parser<'_> {
             && matches!(self.toks.get(self.pos + 1), Some(Tok::Atom(a)) if a == ":")
     }
 
+    /// Is the next token an open paren (a nested form is ahead)? Used to loop over a `(list …)`'s elements.
+    fn peek_is_open(&self) -> bool {
+        matches!(self.toks.get(self.pos), Some(Tok::Open))
+    }
+
     /// Parse a value at a `Solid` position, transparently unwrapping any `(: <value> Type>)` annotations
     /// (top-level `(: … Solid)`, and defensively any nested one), then the bare `(Ctor …)` node. Bounds the
     /// recursion depth (MAX_DEPTH) so an adversarial deeply-nested input Errs cleanly instead of overflowing.
@@ -289,6 +335,16 @@ impl Parser<'_> {
                 let s = self.parse_solid_value()?;
                 Solid::Scale(v, Box::new(s))
             }
+            "ExtrudeLinear" => {
+                let p = self.parse_profile()?;
+                let h = self.parse_rational()?;
+                Solid::ExtrudeLinear(p, h)
+            }
+            "Revolve" => {
+                let p = self.parse_profile()?;
+                let deg = self.parse_rational()?;
+                Solid::Revolve(p, deg)
+            }
             other => return Err(ParseError(format!("unknown Solid constructor `{other}`"))),
         };
         self.expect_close()?;
@@ -318,6 +374,109 @@ impl Parser<'_> {
         let z = self.parse_rational()?;
         self.expect_close()?;
         Ok(Vec3::new(x, y, z))
+    }
+
+    /// Parse a `Vec2` value: a `(: (tuple x y) Vec2R)` annotation OR a bare `(tuple x y)` (the type-name atom
+    /// is discarded, like `parse_vec3`). Components are Rational `n/d`.
+    fn parse_vec2(&mut self) -> Result<[f64; 2], ParseError> {
+        if self.is_annotation_ahead() {
+            self.expect_open()?; // (
+            let _colon = self.expect_atom()?; // :
+            let v = self.parse_vec2()?; // inner (tuple …)
+            let _ty = self.expect_atom()?; // Vec2R
+            self.expect_close()?; // )
+            return Ok(v);
+        }
+        self.expect_open()?;
+        let head = self.expect_atom()?;
+        if head != "tuple" {
+            return Err(ParseError(format!(
+                "expected a Vec2 `(tuple …)`, found `{head}`"
+            )));
+        }
+        let x = self.parse_rational()?;
+        let y = self.parse_rational()?;
+        self.expect_close()?;
+        Ok([x, y])
+    }
+
+    /// Parse a `Profile` — `(Rect <Vec2>)`, `(Circle <r>)`, or `(PathProfile <Path>)`. The type-name atom of
+    /// an outer annotation is discarded (like the Solid/Vec parsers).
+    fn parse_profile(&mut self) -> Result<Profile, ParseError> {
+        if self.is_annotation_ahead() {
+            self.expect_open()?;
+            let _colon = self.expect_atom()?;
+            let p = self.parse_profile()?;
+            let _ty = self.expect_atom()?;
+            self.expect_close()?;
+            return Ok(p);
+        }
+        self.expect_open()?;
+        let head = self.expect_atom()?;
+        let prof = match head.as_str() {
+            "Rect" => {
+                let v = self.parse_vec2()?;
+                Profile::Rect(v[0], v[1])
+            }
+            "Circle" => Profile::Circle(self.parse_rational()?),
+            "PathProfile" => Profile::Path(self.parse_path()?),
+            other => return Err(ParseError(format!("unknown Profile constructor `{other}`"))),
+        };
+        self.expect_close()?;
+        Ok(prof)
+    }
+
+    /// Parse a `Path` — `(: (list <seg…>) PathR)` (or a bare `(list <seg…>)`); the type-name atom is
+    /// discarded. Each element is a `PathSeg` constructor.
+    fn parse_path(&mut self) -> Result<Vec<PathSeg>, ParseError> {
+        if self.is_annotation_ahead() {
+            self.expect_open()?;
+            let _colon = self.expect_atom()?;
+            let segs = self.parse_path()?;
+            let _ty = self.expect_atom()?;
+            self.expect_close()?;
+            return Ok(segs);
+        }
+        self.expect_open()?;
+        let head = self.expect_atom()?;
+        if head != "list" {
+            return Err(ParseError(format!(
+                "expected a Path `(list …)`, found `{head}`"
+            )));
+        }
+        let mut segs = Vec::new();
+        while self.peek_is_open() {
+            segs.push(self.parse_path_seg()?);
+        }
+        self.expect_close()?;
+        Ok(segs)
+    }
+
+    /// Parse one `PathSeg` — `(MoveToAbs <Vec2>)` / `LineToRel` / `(CubicToAbs <Vec2> <Vec2> <Vec2>)` etc.
+    fn parse_path_seg(&mut self) -> Result<PathSeg, ParseError> {
+        self.expect_open()?;
+        let head = self.expect_atom()?;
+        let seg = match head.as_str() {
+            "MoveToAbs" => PathSeg::MoveToAbs(self.parse_vec2()?),
+            "MoveToRel" => PathSeg::MoveToRel(self.parse_vec2()?),
+            "LineToAbs" => PathSeg::LineToAbs(self.parse_vec2()?),
+            "LineToRel" => PathSeg::LineToRel(self.parse_vec2()?),
+            "CubicToAbs" => {
+                let e = self.parse_vec2()?;
+                let c0 = self.parse_vec2()?;
+                let c1 = self.parse_vec2()?;
+                PathSeg::CubicToAbs(e, c0, c1)
+            }
+            "CubicToRel" => {
+                let e = self.parse_vec2()?;
+                let c0 = self.parse_vec2()?;
+                let c1 = self.parse_vec2()?;
+                PathSeg::CubicToRel(e, c0, c1)
+            }
+            other => return Err(ParseError(format!("unknown PathSeg constructor `{other}`"))),
+        };
+        self.expect_close()?;
+        Ok(seg)
     }
 
     /// Parse a RATIONAL number leaf `n/d` (the exact model renders coordinates as normalized fractions,

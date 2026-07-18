@@ -4613,14 +4613,16 @@ fn rustc_roundtrip_host_closure_factory_compound_arg_s2() {
         option_arg.contains("Rc<dyn Fn(Option<i64>) -> i64>"),
         "an Option-ARG factory now emits (S4a):\n{option_arg}"
     );
-    // SCOPE GUARD: an Option/Result RESULT (a SUM result) is still deferred — the harness renders it as the
-    // bare `(Some 5)` while the corpus expects the type-annotated value form; that's a separate render slice.
-    let sum_result = compile_rust_result(
+    // S4a: an Option/Result RESULT now crosses too — the backend emits a valid `Rc<dyn Fn(i64) ->
+    // Option<i64>>`, and the gate renders the sum result as the type-annotated value form `(: (Some 5)
+    // (Option Int64))` (the value-encoded shape the wasm `call` produces; the driver's factory-sum-result
+    // branch wraps the bare `cdz_render_expr` value in `(: value type)`).
+    let sum_result = compile_rust(
         "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (Some (+ x k)))) (export mk))",
     );
     assert!(
-        sum_result.is_err(),
-        "an Option-RESULT factory still declines (sum-result render deferred):\n{sum_result:?}"
+        sum_result.contains("Rc<dyn Fn(i64) -> Option<i64>>"),
+        "an Option-RESULT factory now emits (S4a):\n{sum_result}"
     );
 }
 

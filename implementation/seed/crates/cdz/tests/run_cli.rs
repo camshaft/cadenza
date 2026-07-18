@@ -55,6 +55,48 @@ fn compile_component(tag: &str, name: &str, src: &str) -> (std::path::PathBuf, s
 }
 
 #[test]
+fn cdz_run_unknown_call_lists_the_available_function_exports() {
+    // A `--call` naming a nonexistent export (a typo / misremembered name) must LIST what IS callable,
+    // not just say "no function `addd`" and leave the user to guess — the rustc/cargo bar: name the
+    // alternatives. A two-export component (`add`, `sub`) with a typo'd `--call addd` names both.
+    let (dir, wasm) = compile_component(
+        "twoexports",
+        "add",
+        "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) \
+         (def (sub (: a Int64) (: b Int64)) (- a b)) (export add) (export sub))",
+    );
+    let (ok, _out, err) = run(&["run", wasm.to_str().unwrap(), "--call", "addd"]);
+    assert!(!ok, "an unknown --call must fail");
+    assert!(
+        err.contains("no function `addd`")
+            && err.contains("add")
+            && err.contains("sub")
+            && err.contains("function exports are"),
+        "the error lists the available function exports (add, sub): {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cdz_run_ambiguous_default_lists_the_function_exports_to_choose_from() {
+    // With MULTIPLE function exports and NO `--call`, there is no sole export to default to — the error
+    // must name the choices so the user knows which `--call` to pass, not just say "no single export".
+    let (dir, wasm) = compile_component(
+        "ambig",
+        "add",
+        "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) \
+         (def (sub (: a Int64) (: b Int64)) (- a b)) (export add) (export sub))",
+    );
+    let (ok, _out, err) = run(&["run", wasm.to_str().unwrap()]);
+    assert!(!ok, "an ambiguous default (no --call, >1 export) must fail");
+    assert!(
+        err.contains("no single function export") && err.contains("add") && err.contains("sub"),
+        "the error lists the exports to choose a --call from: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn cdz_run_invokes_an_export_and_prints_the_value() {
     // The headline of the one-binary fold: `cdz compile` then `cdz run` are the SAME binary.
     let (dir, wasm) = compile_component(

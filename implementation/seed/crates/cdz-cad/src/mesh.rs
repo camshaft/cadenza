@@ -9,7 +9,8 @@
 //! The mesh is returned as a plain [`Mesh`] (interleaved f32 vertex positions + u32 triangle indices) — the
 //! neutral form a 3MF/glTF/STL writer (a later sub-slice) serializes and a preview uploads to the GPU.
 
-use crate::{Solid, Vec3};
+use crate::{PathSeg, Profile, Solid, Vec3};
+use manifold_csg::cross_section::CrossSection;
 use manifold_csg::manifold::Manifold;
 
 /// The tessellation quality for curved primitives (sphere/cylinder) — the number of segments around the
@@ -78,6 +79,93 @@ pub fn to_manifold_with_segments(solid: &Solid, segments: i32) -> Manifold {
         Solid::Scale(Vec3 { x, y, z }, of) => {
             to_manifold_with_segments(of, segments).scale(*x, *y, *z)
         }
+        // Lift a 2-D profile straight up +z by `height` — manifold extrudes the CrossSection; center it in z
+        // so it matches the origin-centred primitives (extrude runs 0..height, then shift down by height/2).
+        Solid::ExtrudeLinear(p, height) => profile_to_cross_section(p, segments)
+            .extrude(*height)
+            .translate(0.0, 0.0, -*height / 2.0),
+        // Sweep a 2-D profile about the y-axis by `degrees` — manifold's revolve (circular_segments for the
+        // sweep tessellation). A full 360° sweep passes the profile's circular resolution.
+        Solid::Revolve(p, degrees) => {
+            Manifold::revolve(&profile_to_cross_section(p, segments), segments, *degrees)
+        }
+    }
+}
+
+/// Build a manifold 2-D `CrossSection` from a [`Profile`] — the input an extrude/revolve lifts. `Rect`/
+/// `Circle` map onto manifold's centred `square`/`circle`; a `Path` is SAMPLED to a polygon (line segments
+/// are exact vertices; a cubic Bézier is sampled at `segments` points) then built as a simple polygon.
+fn profile_to_cross_section(p: &Profile, segments: i32) -> CrossSection {
+    match p {
+        Profile::Rect(w, h) => CrossSection::square(*w, *h, true),
+        Profile::Circle(r) => CrossSection::circle(*r, segments),
+        Profile::Path(segs) => CrossSection::from_simple_polygon(&sample_path(segs, segments)),
+    }
+}
+
+/// Sample a path's segments into a flat polygon point list (`[x, y]` each), walking the cursor. A
+/// Line/Move contributes its endpoint; a cubic Bézier is sampled at `segments` interior points via the
+/// standard Bernstein form. Relative segments offset the current cursor. The starting `MoveTo` seeds the
+/// cursor (its point is included so the outline closes back to it).
+fn sample_path(segs: &[PathSeg], segments: i32) -> Vec<[f64; 2]> {
+    let mut pts: Vec<[f64; 2]> = Vec::new();
+    let mut cur = [0.0f64, 0.0];
+    let abs = |cur: [f64; 2], d: [f64; 2]| [cur[0] + d[0], cur[1] + d[1]];
+    for seg in segs {
+        match seg {
+            PathSeg::MoveToAbs(p) => {
+                cur = *p;
+                pts.push(cur);
+            }
+            PathSeg::MoveToRel(d) => {
+                cur = abs(cur, *d);
+                pts.push(cur);
+            }
+            PathSeg::LineToAbs(p) => {
+                cur = *p;
+                pts.push(cur);
+            }
+            PathSeg::LineToRel(d) => {
+                cur = abs(cur, *d);
+                pts.push(cur);
+            }
+            PathSeg::CubicToAbs(e, c0, c1) => {
+                sample_cubic(&mut pts, cur, *c0, *c1, *e, segments);
+                cur = *e;
+            }
+            PathSeg::CubicToRel(e, c0, c1) => {
+                let (e, c0, c1) = (abs(cur, *e), abs(cur, *c0), abs(cur, *c1));
+                sample_cubic(&mut pts, cur, c0, c1, e, segments);
+                cur = e;
+            }
+        }
+    }
+    pts
+}
+
+/// Push `n` sample points of the cubic Bézier `p0→p3` (controls `p1`, `p2`) for `t` in (0, 1] — the start
+/// point `p0` is assumed already emitted by the prior segment, so we sample the interior + endpoint.
+fn sample_cubic(
+    pts: &mut Vec<[f64; 2]>,
+    p0: [f64; 2],
+    p1: [f64; 2],
+    p2: [f64; 2],
+    p3: [f64; 2],
+    n: i32,
+) {
+    let n = n.max(1);
+    for i in 1..=n {
+        let t = i as f64 / n as f64;
+        let u = 1.0 - t;
+        // Bernstein: u³p0 + 3u²t·p1 + 3ut²·p2 + t³p3 (per component).
+        let b0 = u * u * u;
+        let b1 = 3.0 * u * u * t;
+        let b2 = 3.0 * u * t * t;
+        let b3 = t * t * t;
+        pts.push([
+            b0 * p0[0] + b1 * p1[0] + b2 * p2[0] + b3 * p3[0],
+            b0 * p0[1] + b1 * p1[1] + b2 * p2[1] + b3 * p3[1],
+        ]);
     }
 }
 
@@ -216,6 +304,63 @@ mod tests {
             inter.triangle_count(),
             0,
             "intersection of two disjoint cubes is empty geometry"
+        );
+    }
+
+    // ── P-D: extrude / revolve / path profiles (the exact.cdz Profile+Path render forms) ─────────────
+
+    #[test]
+    fn extrude_a_rect_profile_meshes() {
+        // (ExtrudeLinear (Rect (: (tuple 4/1 2/1) Vec2R)) 6/1) — a 4×2 rectangle lifted to height 6 → a
+        // 4×2×6 prism (a box = 12 triangles). Pins the extrude of a Rect profile meshes end-to-end.
+        let s =
+            parse_solid("(: (ExtrudeLinear (Rect (: (tuple 4/1 2/1) Vec2R)) 6/1) SolidR)").unwrap();
+        let m = mesh(&s);
+        assert!(!m.is_empty(), "an extruded rect has geometry");
+        assert_eq!(
+            m.triangle_count(),
+            12,
+            "an extruded rectangle is a 12-triangle box"
+        );
+    }
+
+    #[test]
+    fn extrude_a_circle_profile_meshes() {
+        // (ExtrudeLinear (Circle 3/1) 5/1) — a disc r=3 lifted to height 5 → a cylinder-like solid with real
+        // surface area (well over a box's 12 triangles).
+        let s = parse_solid("(: (ExtrudeLinear (Circle 3/1) 5/1) SolidR)").unwrap();
+        let m = mesh(&s);
+        assert!(!m.is_empty(), "an extruded circle has geometry");
+        assert!(
+            m.triangle_count() > 12,
+            "an extruded disc has curved-wall triangles"
+        );
+    }
+
+    #[test]
+    fn revolve_a_profile_sweeps_a_solid() {
+        // (Revolve (Rect …) 360/1), offset in x so the sweep encloses volume — pins the revolve API works
+        // end-to-end (a full sweep of a profile about the y-axis produces real geometry).
+        let s = parse_solid(
+            "(: (Translate (: (tuple 5/1 0/1 0/1) Vec3) (Revolve (Rect (: (tuple 2/1 4/1) Vec2R)) 360/1)) SolidR)",
+        )
+        .unwrap();
+        assert!(!mesh(&s).is_empty(), "a revolved profile has geometry");
+    }
+
+    #[test]
+    fn extrude_a_path_profile_polygon_meshes() {
+        // (ExtrudeLinear (PathProfile (: (list (MoveToAbs …) (LineToAbs …)…) PathR)) 3/1) — a triangular
+        // path outline (0,0)→(4,0)→(2,3) extruded to height 3. The path samples to a polygon (line segments
+        // are exact vertices); the extrude meshes to real geometry — pins the PathProfile → polygon → extrude
+        // chain end-to-end.
+        let s = parse_solid(
+            "(: (ExtrudeLinear (PathProfile (: (list (MoveToAbs (: (tuple 0/1 0/1) Vec2R)) (LineToAbs (: (tuple 4/1 0/1) Vec2R)) (LineToAbs (: (tuple 2/1 3/1) Vec2R))) PathR)) 3/1) SolidR)",
+        )
+        .unwrap();
+        assert!(
+            !mesh(&s).is_empty(),
+            "an extruded path-profile triangle has geometry"
         );
     }
 }
