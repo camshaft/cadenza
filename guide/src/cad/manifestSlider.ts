@@ -23,8 +23,8 @@ import type { ParamSlider } from "./parametric.ts";
 
 /// Parse a manifest bound/default STRING to an exact `[num, den]` Rational, or null when it isn't a plain
 /// integer / fraction we can read (a source-expr render, a Qty with a unit, etc.). Kept deliberately narrow
-/// — the common `@param` writes bare integer or `n/d` bounds; exact Rational bounds get the num/den fields
-/// in v-metaprog's fast-follow, at which point this parse is a fallback, not the path.
+/// — the common `@param` writes bare integer or `n/d` bounds. This is the FALLBACK for when the exact
+/// num/den fields aren't present (an Int64 param, whose bound is a clean integer string).
 export function parseRational(text: string | undefined): [number, number] | null {
   if (text === undefined) return null;
   const t = text.trim();
@@ -37,6 +37,19 @@ export function parseRational(text: string | undefined): [number, number] | null
     if (den !== 0) return [parseInt(frac[1], 10), den];
   }
   return null;
+}
+
+/// The EXACT `[num, den]` for a bound: PREFER the manifest's num/den fields (from the compiler's
+/// Core::ConstRational — exact + gcd-reduced, for a Rational `@param`), else fall back to parsing the
+/// literal-text string (an Int64 param's clean integer, or a plain `n/d`). This is what makes a shared/
+/// authored Rational bound like `1/4` reach the slider EXACTLY, rather than via a lossy float parse.
+export function exactRational(num: string | undefined, den: string | undefined, text: string | undefined): [number, number] | null {
+  if (num !== undefined && den !== undefined) {
+    const n = Number(num);
+    const d = Number(den);
+    if (Number.isFinite(n) && Number.isFinite(d) && d !== 0) return [n, d];
+  }
+  return parseRational(text);
 }
 
 /// True when the declared type is a fractional (Rational-family) one — so its slider offers sub-integer
@@ -58,9 +71,11 @@ function labelOf(name: string): string {
 /// slider rather than none. The default falls back to the range midpoint, then 0.
 export function sliderFromManifest(entry: ParamManifestEntry): ParamSlider {
   const fractional = isFractionalType(entry.typeName);
-  const def = parseRational(entry.default);
-  let min = parseRational(entry.rangeLo);
-  let max = parseRational(entry.rangeHi);
+  // Prefer the EXACT num/den fields (Rational params) over the literal-text strings (Int64 / fallback), so a
+  // Rational bound/default reaches the slider exactly (e.g. a `1/4` default, not a float-parsed 0.25).
+  const def = exactRational(entry.defaultNum, entry.defaultDen, entry.default);
+  let min = exactRational(entry.rangeLoNum, entry.rangeLoDen, entry.rangeLo);
+  let max = exactRational(entry.rangeHiNum, entry.rangeHiDen, entry.rangeHi);
 
   // Synthesize a range when the author omitted `range:`. Center it on the default if we have one (so the
   // starting handle sits mid-track), else a neutral 0..100. Keep dens at 1 (whole-number track endpoints).

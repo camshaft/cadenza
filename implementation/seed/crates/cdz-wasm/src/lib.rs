@@ -742,18 +742,25 @@ fn render_manifest_node(ast: &rcdzc::ast::Arenas, id: rcdzc::ast::StructId) -> S
     }
 }
 
-/// The EXACT `(num, den)` of a config value node that folds to a constant `Rational`, as base-10 text —
-/// the fraction-native form a `/cad` slider drives (`Param.<name>-num`/`-den`). Folds the node to its
-/// `Core` via `lower::core_of`; a `Core::ConstRational(n, d)` (normalized + gcd-reduced by the compiler,
-/// the SAME rational the num/den host-response ABI reconstructs) yields `Some((n, d))`. `None` for a node
-/// that does not fold to a constant rational (an `Int64`/`Float` bound, a non-constant expression) — the
-/// caller reads the literal-text field for those. Reads num/den from the compiler's own fold, NOT by
-/// parsing source, so it is robust to any surface/printer change.
+/// The EXACT `(num, den)` of a config value node for a `Rational` bound, as base-10 text — the fraction-
+/// native form a `/cad` slider drives (`Param.<name>-num`/`-den`). Folds the node to its `Core` via
+/// `lower::core_of` and reads its exact rational value. A `Core::ConstRational(n, d)` (a written fraction
+/// `(Rational.of 1 4)`, normalized + gcd-reduced by the compiler — the SAME rational the num/den
+/// host-response ABI reconstructs) yields `(n, d)`. A `Core::ConstInt(n)` yields `(n, 1)` — an INTEGER
+/// config value (`default: 5`, `range: [2, 20]`) on a Rational @param IS the exact rational n/1; this is the
+/// common case, since a Rational bound written as a bare integer folds to `ConstInt` (a lone int literal has
+/// no Rational-typed context at the config node), so without this arm the num/den companions never populate
+/// for an integer-bound Rational param. Returns `None` for a node that folds to neither (a `Float` bound, a
+/// non-constant expression) — the caller reads the literal-text field. Reads from the compiler's own fold,
+/// NOT by parsing source, so it is robust to any surface/printer change.
 fn rational_num_den(db: &mut rcdzc::db::Db, id: rcdzc::ast::StructId) -> Option<(String, String)> {
     match rcdzc::lower::core_of(db, id) {
         rcdzc::core::Core::ConstRational(n, d) => {
             Some((n.to_decimal_string(), d.to_decimal_string()))
         }
+        // An integer config value IS the exact rational n/1 — the common bare-integer bound on a Rational
+        // @param (`default: 5`, `range: [2, 20]`), which folds to `ConstInt` at the untyped config node.
+        rcdzc::core::Core::ConstInt(n) => Some((n.to_decimal_string(), "1".to_string())),
         _ => None,
     }
 }
@@ -795,23 +802,35 @@ pub fn param_manifest(text: &str, from: &str) -> Result<Vec<ParamManifestEntry>,
             None => (None, None),
         };
         let default = rec.default.map(|d| render_manifest_node(&db.ast, d));
-        // Exact num/den companions for a Rational bound (a mutable borrow of `db` for the fold) — `None` for
-        // an Int64/Float or non-constant config; the caller uses these when `type_name` is a `Rational`.
-        let (range_lo_num, range_lo_den) =
-            match rec.range.and_then(|(lo, _)| rational_num_den(&mut db, lo)) {
-                Some((n, d)) => (Some(n), Some(d)),
-                None => (None, None),
-            };
-        let (range_hi_num, range_hi_den) =
-            match rec.range.and_then(|(_, hi)| rational_num_den(&mut db, hi)) {
-                Some((n, d)) => (Some(n), Some(d)),
-                None => (None, None),
-            };
-        let (default_num, default_den) =
-            match rec.default.and_then(|d| rational_num_den(&mut db, d)) {
-                Some((n, d)) => (Some(n), Some(d)),
-                None => (None, None),
-            };
+        // Exact num/den companions — ONLY for a `Rational` param (the caller reads these when
+        // `type_name === "Rational"`; an Int64/Float param reads the integer/literal-text field instead).
+        // Gating on the declared type keeps num/den absent for a non-Rational param even though an integer
+        // config folds to `ConstInt` for every param — an Int64 slider's `5` is not a rational 5/1 to drive.
+        let is_rational = type_name == "Rational";
+        let (range_lo_num, range_lo_den) = match rec
+            .range
+            .filter(|_| is_rational)
+            .and_then(|(lo, _)| rational_num_den(&mut db, lo))
+        {
+            Some((n, d)) => (Some(n), Some(d)),
+            None => (None, None),
+        };
+        let (range_hi_num, range_hi_den) = match rec
+            .range
+            .filter(|_| is_rational)
+            .and_then(|(_, hi)| rational_num_den(&mut db, hi))
+        {
+            Some((n, d)) => (Some(n), Some(d)),
+            None => (None, None),
+        };
+        let (default_num, default_den) = match rec
+            .default
+            .filter(|_| is_rational)
+            .and_then(|d| rational_num_den(&mut db, d))
+        {
+            Some((n, d)) => (Some(n), Some(d)),
+            None => (None, None),
+        };
         out.push(ParamManifestEntry {
             name: rec.name,
             type_name,
@@ -2482,5 +2501,44 @@ mod tests {
             (Some("1"), Some("4")),
             "2/8 is gcd-reduced to 1/4 — the manifest reports the compiler's normalized rational"
         );
+    }
+
+    #[test]
+    fn param_manifest_reports_num_den_for_an_integer_bound_on_a_rational_param() {
+        // v-guide-infra bug: a Rational @param whose default/range is written as a BARE INTEGER (`default: 5`,
+        // `range: [2, 20]`) reported `default_num`/`range_lo_num` = undefined, because a lone int literal
+        // folds to `Core::ConstInt` (no Rational-typed context at the config node), and rational_num_den only
+        // matched `ConstRational`. But an integer IS the exact rational n/1 — the common case for a Rational
+        // slider's bounds. rational_num_den now maps `ConstInt(n)` → (n, 1), so the exact-slider path
+        // populates for integer bounds too, not only written fractions.
+        let src = "(do \
+                     (: (@ (param (: widget slider) (: range (list 2 20)) (: default 5)) thickness) Rational) \
+                     (def (main) (host (Param) (Param.thickness))) \
+                     (export main))";
+        let entries = param_manifest(src, "sexpr").expect("param_manifest runs");
+        let t = entries
+            .iter()
+            .find(|e| e.name == "thickness")
+            .expect("the `thickness` @param is in the manifest");
+        assert_eq!(t.type_name, "Rational", "declared type is Rational");
+        // default 5 → the exact rational 5/1 (was undefined before the ConstInt arm).
+        assert_eq!(
+            (t.default_num.as_deref(), t.default_den.as_deref()),
+            (Some("5"), Some("1")),
+            "an integer default `5` on a Rational param is the exact rational 5/1"
+        );
+        // range [2, 20] → 2/1 and 20/1.
+        assert_eq!(
+            (t.range_lo_num.as_deref(), t.range_lo_den.as_deref()),
+            (Some("2"), Some("1")),
+            "an integer range-low bound `2` is the exact rational 2/1"
+        );
+        assert_eq!(
+            (t.range_hi_num.as_deref(), t.range_hi_den.as_deref()),
+            (Some("20"), Some("1")),
+            "an integer range-high bound `20` is the exact rational 20/1"
+        );
+        // The literal-text fields are still present alongside.
+        assert_eq!(t.default.as_deref(), Some("5"), "literal-text default kept");
     }
 }
