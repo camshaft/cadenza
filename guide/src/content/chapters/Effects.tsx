@@ -293,6 +293,16 @@ export default function Effects() {
           as plain <C>s</C> and every call sees <C>0</C>, summing to <C>0</C>.)
         </>}
       />
+
+      <P>
+        An effect splits <em>what</em> a function needs from <em>how</em> that need is met — the caller
+        supplies the handler. The next chapter constrains the other end: not what a function needs, but
+        what it <em>promises</em>. With{" "}
+        <Link to="/contracts" className="text-cadenza-300 underline-offset-2 hover:underline">
+          design by contract
+        </Link>{" "}
+        you state a function's assumptions and guarantees as checks the compiler enforces at its boundary.
+      </P>
     </article>
   );
 }

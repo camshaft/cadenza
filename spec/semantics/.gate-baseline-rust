@@ -1,5 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
-pass	@ensures with a param literally named it is SKIPPED (capture guard) — the def returns its value, no shadow
+pass	@ensures on a def with a parameter named it is REJECTED (would silently not enforce — rename the param)
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
@@ -226,6 +226,7 @@ pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
 pass	a @requires precondition is enforced for a genuinely-runtime argument
 pass	a @requires predicate that itself traps keeps its own trap kind
+pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
 pass	a BOOL-result effect op threads state across two performs on a boolean connective's operands
@@ -496,13 +497,20 @@ pass	a bytes value chosen by a runtime if is length-measured with valid wasm
 pass	a call-returned Bool newtype literal-payload arm spills correctly
 pass	a call-returned Int32 newtype literal-payload arm spills at the narrow width
 pass	a call-returned UInt8 newtype literal-payload arm spills at the narrow width
+pass	a camelCase same-signature multi-export normalizes each make-<name>
 pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly
 pass	a captured pre-shadow value survives the re-binding
+pass	a capturing 32-bit-integer closure crosses and is called
+pass	a capturing closure crosses as a repeatable (borrow<t>) callback handle
+pass	a capturing closure export tracks both the captured value and the call argument
 pass	a capturing closure is applied through a recursive higher-order function
+pass	a capturing closure returning a nominal-over-scalar
 pass	a capturing closure stored as a runtime list element is extracted by List.at and applied
 pass	a capturing closure stored in a let-bound record is projected and applied
 pass	a capturing closure stored in a let-bound tuple is projected and applied
 pass	a capturing closure stored in a tuple is extracted and applied
+pass	a capturing closure whose body uses the capture after an inner computation
+pass	a capturing closure with a let binding in its body
 pass	a capturing unannotated closure in a payload is typed from the declared arrow
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
@@ -532,10 +540,13 @@ pass	a closure captures another closure and applies it
 pass	a closure captures another closure and applies it at RUNTIME
 pass	a closure captures its environment by value at creation, unaffected by a later same-named binding
 pass	a closure captures the binding in scope where it was created
+pass	a closure capturing THREE scalars is made and called
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
 pass	a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF
+pass	a closure capturing two values is made and called by the host
 pass	a closure carried in a USER-declared sum's payload is extracted and applied
 pass	a closure carried in a sum payload is extracted by a match and applied
+pass	a closure driving control flow off a captured boolean
 pass	a closure export alongside a plain scalar export — the closure runs
 pass	a closure export alongside a plain scalar export — the plain export runs
 pass	a closure exported to the host is called by the host
@@ -569,6 +580,7 @@ pass	a closure taking an Option Int64 ARG — None crosses the direct-call bound
 pass	a closure taking an Option Int64 ARG — Some crosses the direct-call boundary
 pass	a closure whose CALL returns a tuple CONTAINING a list
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
+pass	a closure whose body calls a top-level helper function
 pass	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 pass	a collection-carrying recursion whose base arm does a fallible indexed read compiles
 pass	a common constructor composes through a hoisted tuple field to build once
@@ -607,6 +619,7 @@ pass	a conditionally-selected nullary variant is returned as a runtime sum resul
 pass	a conditionally-selected variant is returned as a runtime sum result
 pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a conjunction of two float compares preserves NaN-false through the connective fold
+pass	a connective-wrapped perform in an if condition threads its state advance to the taken branch
 pass	a consistent annotation type-checks against the inferred type
 pass	a const collection recursively folded is rejected, not compiled to an infinite loop
 pass	a const parameter rejects an argument that depends on runtime data
@@ -998,6 +1011,7 @@ pass	a list consumed by List.concat in one operand keeps its element view for a 
 pass	a list consumed by List.push in one operand is unchanged for a later read of the same binding
 pass	a list consumed by List.update in one operand keeps its element view for a later read
 pass	a list element position composes with a nested tuple pattern
+pass	a list is exhaustive when the empty, singleton, and two-or-more arms jointly cover every length
 pass	a list match arm may carry a guard on its element binders
 pass	a list mixing integer and boolean elements is a type error
 pass	a list mixing integer and float elements is a type error
@@ -1154,6 +1168,7 @@ pass	a multi-argument call node is evaluated by iterating its payload arg list
 pass	a multi-argument closure among distinct-signature exports
 pass	a multi-byte runtime bit-field takes the matching wide unsigned type
 pass	a multi-export compound-result shared call is a repeatable (borrow<t>) callback
+pass	a multi-export set of parameterized capturing closures is driven per export
 pass	a multi-export shared call is a repeatable (borrow<t>) callback
 pass	a multi-field record with one param-named key survives the call
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
@@ -1359,6 +1374,8 @@ pass	a parameter named tuple is applied as the bound function
 pass	a parameterized compound-return export forwards distinct arguments to make
 pass	a parameterized export builds a list of tuples by a runtime-length loop and measures it
 pass	a parameterized export drives an Option-of-runtime-BigInt on both arms
+pass	a parameterized export returning a capturing closure is made and called by the host
+pass	a parameterized export returning a multi-argument capturing closure
 pass	a parameterized export returns a built-in Option computed from its argument
 pass	a parameterized export returns a list computed from its argument
 pass	a parameterized export returns a list of lists built from its argument
@@ -1371,6 +1388,8 @@ pass	a parameterized export returns a runtime-selected empty-or-nonempty map
 pass	a parameterized export returns a runtime-selected empty-or-nonempty set
 pass	a parameterized export returns a sum value computed from its argument
 pass	a parameterized export returns a tuple computed from its argument
+pass	a parameterized plain export alongside a closure export applies its argument
+pass	a parameterized plain export alongside a closure export — the closure captures and applies
 pass	a partial application persists its capture across two applications
 pass	a partial constructor bound in a let completes when applied
 pass	a partial constructor bound in a let-tuple completes when applied to a runtime arg
@@ -2376,6 +2395,8 @@ pass	an erased newtype over a sum reads the inner payload, not the whole wrapper
 pass	an erased single-variant newtype wrapping a sum matches through the inner variants
 pass	an erased-newtype's list payload split across empty and rest arms dispatches with vec-get
 pass	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
+pass	an escaping closure captures two values and takes three arguments
+pass	an escaping closure whose body binds a multi-variable let
 pass	an escaping closure whose body is a match hits the literal arm
 pass	an escaping closure whose body is a match hits the wildcard arm
 pass	an escaping tuple evaluates its trapping element
@@ -2636,6 +2657,7 @@ pass	comparing two function-typed parameters with = is a type error
 pass	comparing two quantities of the same dimension yields a Bool
 pass	comparing two same-shape nominal sum types is a type error, not false
 pass	comparing two same-unit Float-inner quantities at RUNTIME rides the scalar float compare
+pass	comparing two same-unit scalar-Int quantities at RUNTIME rides the scalar integer compare
 pass	comparing two units of one dimension converts before comparing
 pass	compound equality over a Rational leaf respects normalization (1/2 = 2/4)
 pass	compound equality over a runtime BigInt leaf compares by the canonical bytes
@@ -2727,6 +2749,9 @@ pass	distinct-sig collection result — the Bool→List closure
 pass	distinct-sig collection result — the Int64→List closure
 pass	distinct-sig compound result — the Bool→(Tuple Bool Int64) closure
 pass	distinct-sig compound result — the Int64→(Tuple Int64 Int64) closure
+pass	distinct-signature capturing closures alongside a parameterized plain export
+pass	distinct-signature capturing closures alongside a parameterized plain export — the plain runs
+pass	distinct-signature capturing producers
 pass	distinct-signature closures alongside a plain export — the Int64->Bool closure runs
 pass	distinct-signature closures alongside a plain export — the Int64->Int64 closure runs
 pass	distinct-signature closures alongside a plain export — the plain export runs
@@ -3562,22 +3587,12 @@ todo	a Tuple ARG among scalars with a BYTE-ROPE result crosses the direct-call b
 todo	a UInt64 closure round-trips through a consumer export
 todo	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a camelCase round-trip resolves through kebab boundary-name normalization
-todo	a camelCase same-signature multi-export normalizes each make-<name>
-todo	a capturing 32-bit-integer closure crosses and is called
-todo	a capturing closure crosses as a repeatable (borrow<t>) callback handle
-todo	a capturing closure export tracks both the captured value and the call argument
 todo	a capturing closure returning Bytes
 todo	a capturing closure returning a COMPOUND is a repeatable (borrow<t>) callback handle
 todo	a capturing closure returning a String
-todo	a capturing closure returning a nominal-over-scalar
-todo	a capturing closure whose body uses the capture after an inner computation
-todo	a capturing closure with a let binding in its body
 todo	a closure captures the result of a build-time host op called with an argument
-todo	a closure capturing THREE scalars is made and called
 todo	a closure capturing a build-time host effect preserves the order of two host calls
-todo	a closure capturing two values is made and called by the host
 todo	a closure capturing values of DIFFERENT types (Float64 + Int64)
-todo	a closure driving control flow off a captured boolean
 todo	a closure returning Bytes crosses to the host as list<u8>
 todo	a closure returning a SUM of a tuple (direct-call)
 todo	a closure returning a constant String crosses as its UTF-8 bytes
@@ -3587,7 +3602,6 @@ todo	a closure returning an empty String crosses as the empty list
 todo	a closure that performs a delegated effect cannot cross the host boundary
 todo	a closure whose CALL returns a user sum crosses as the value form
 todo	a closure whose CALL returns an Option crosses as the value form
-todo	a closure whose body calls a top-level helper function
 todo	a conditional performs only the taken branch's effect — else
 todo	a conditional performs only the taken branch's effect — then
 todo	a consumer applies TWO handed-back closures
@@ -3614,19 +3628,13 @@ todo	a host effect with a non-kebab OPERATION name crosses under a normalized fu
 todo	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
 todo	a host op with a String parameter composes with the value-heap runtime
 todo	a list element that is a sum with a tuple payload binds the tuple fields
-pass	a list is exhaustive when the empty, singleton, and two-or-more arms jointly cover every length
 todo	a literal narrow-width newtype list element in a constructed list grounds to its inner width
 todo	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
 todo	a multi-argument closure round-trips through a consumer
 todo	a multi-argument closure round-trips through a consumer — FLAT arrow spelling
 todo	a multi-argument closure with COMPOUND args round-trips — flat arrow spelling
-todo	a multi-export set of parameterized capturing closures is driven per export
 todo	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
-todo	a parameterized export returning a capturing closure is made and called by the host
-todo	a parameterized export returning a multi-argument capturing closure
-todo	a parameterized plain export alongside a closure export applies its argument
-todo	a parameterized plain export alongside a closure export — the closure captures and applies
 todo	a produced closure is handed back into a consumer export (the round trip)
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
@@ -3651,8 +3659,6 @@ todo	an @param with no widget config still generates its typed accessor
 todo	an abortive handler abandons a host call in the path it discards
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
-todo	an escaping closure captures two values and takes three arguments
-todo	an escaping closure whose body binds a multi-variable let
 todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
 todo	and performs the right operand's effect when the left is true
 todo	and short-circuit does not perform the right operand's effect
@@ -3694,9 +3700,6 @@ todo	distinct-sig: a collection + a compound + a byte-rope + a scalar group — 
 todo	distinct-sig: a compound group + a byte-rope group + a scalar group — the byte-rope
 todo	distinct-sig: a compound group + a byte-rope group + a scalar group — the compound
 todo	distinct-sig: a compound group + a byte-rope group + a scalar group — the scalar
-todo	distinct-signature capturing closures alongside a parameterized plain export
-todo	distinct-signature capturing closures alongside a parameterized plain export — the plain runs
-todo	distinct-signature capturing producers
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	function arguments are evaluated left to right

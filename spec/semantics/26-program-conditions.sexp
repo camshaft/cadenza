@@ -1782,21 +1782,21 @@
             (export main)))
   (output (: 100 Int64)))
 
-(case "@ensures with a param literally named it is SKIPPED (capture guard) — the def returns its value, no shadow"
-  (doc    "The `it`-capture guard. `@ensures` binds the result to `it`; if a PARAMETER is literally named
-           `it`, the injected `(let ((it BODY)) …)` binder would SHADOW that param and silently change the
-           def's meaning. So `verify_enforce::enforce` SKIPS the @ensures rewrite for a def whose sig binds
-           `it` (bare `it` or typed `(: it T)`) — the postcondition is not enforced for that def (a rare,
-           self-inflicted name clash), but the def keeps its correct meaning. Here `(def (f (: it Int64))
-           (- it 100))` has a param named `it`; the @ensures is skipped, so `(f 5)` returns `(- 5 100)` =
-           `-95` using the PARAMETER `it` (not a shadowed result binder) — no trap, no shadow. Pins that the
-           guard protects the def's semantics rather than miscompiling a captured name. (Mirrors
-           proptest_gen's identical guard on the @test @ensures rewrite.)")
+(case "@ensures on a def with a parameter named it is REJECTED (would silently not enforce — rename the param)"
+  (doc    "The `it`-capture guard, as a REJECT (breaker 2026-07-17). `@ensures(Q)` enforcement binds the def's
+           RESULT to `it` (`(let ((it BODY)) (if Q it (trap)))`). If a PARAMETER is literally named `it`, that
+           binder would SHADOW the param, so `verify_enforce` cannot enforce the postcondition for such a def.
+           Rather than SILENTLY skip it (a footgun — the author wrote a contract that is quietly unenforced; a
+           violating result would return with no trap or diagnostic), `collect_faults` REJECTS it: a stated
+           contract is enforced OR the author is told precisely why not (the (D) philosophy). Here
+           `(def (f (: it Int64)) (- it 100))` carries `@ensures(>= it 0)` and has a param named `it` → CDZ0201
+           at the annotation, naming the fix (rename the param). Pins that the guard is a diagnostic, not a
+           silent drop. (An `@requires` on the same def would be fine — only `@ensures` binds `it`.)")
   (input  (do
             (@ (ensures (>= it 0)) (def (f (: it Int64)) (- it 100)))
             (def (main) (f 5))
             (export main)))
-  (output (: -95 Int64)))
+  (error  CDZ0201))
 
 ; ── @requires enforcement EDGES (breaker) — beyond the const-arg violated/satisfied pair above ──────
 ; The two (D) pins above call `f` with a CONSTANT argument, so a fold could in principle have discharged
@@ -1874,3 +1874,29 @@
   (output (: 2 Int64))
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
+
+; ── @requires × @test: constrained GENERATION (breaker pin, keyed on the 71efd45a6 slice) ──────────
+; A `@requires` precondition on a `@test`-stacked def is a FILTER on the generated input domain, not a
+; property the test may fail on. The ruling (v-verification + v-property-testing, 2026-07-17): the
+; @requires trap stays a HARD production contract, so the ONLY sound test-runner behavior is to DRAW
+; IN-DOMAIN — a generated input violating the pre must never surface as a spurious counterexample
+; (`f(-1)` under `(requires (>= x 0))` was exactly that before the constrained-gen slice). The corpus
+; can't drive `cdz test` directly, so this pins the DEF-SIDE composition the runner relies on: the
+; stacked def, called in-domain, enforces the pre, the body, and the post exactly as unstacked.
+
+(case "a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call"
+  (doc    "The def-side composition the constrained-gen ruling relies on: `@test` stacked over
+           `(@ (ensures (> it 0)) (@ (requires (>= x 0)) (def f …)))` leaves the def's OWN contract
+           intact for ordinary calls — in-domain `(f 5)` runs pre → body → post and returns 6;
+           out-of-domain `(f -5)` still HARD-TRAPS on the pre (the production contract the test
+           runner must respect by drawing in-domain, never a soft reject). Pins that the @test wrapper
+           is transparent to direct-call enforcement — the test tier changes how INPUTS are drawn,
+           not what the contract means.")
+  (input  (do
+            (@ test (@ (ensures (> it 0)) (@ (requires (>= x 0)) (def (f (: x Int64)) (+ x 1)))))
+            (def (main (: n Int64)) (f n))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64))
+  (call   main (: -5 Int64))
+  (trap   "unreachable"))

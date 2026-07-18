@@ -413,6 +413,9 @@ pub struct CaptureRisk {
     pub binder: String,
     /// The metavariable whose bound subtree contains `binder` as a free name (e.g. `e` for `,e`).
     pub metavar: String,
+    /// Whether the template references `metavar` as a SPLICE (`,@metavar`) rather than a single `,metavar`
+    /// — so a caller can print the correct sigil (`,@e` vs `,e`) when naming the metavar to the user.
+    pub is_splice: bool,
 }
 
 /// The names a binder FORM introduces into the scope of its body — the recognized surface binders,
@@ -593,6 +596,18 @@ impl Template {
         if binders.is_empty() {
             return Vec::new();
         }
+        // The metavar names the template references as a SPLICE (`,@name`), so a risk can carry the right
+        // sigil. A name is only ever one or the other in a well-formed template (single vs splice).
+        let mut spliced: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        fn collect_splices(t: &Tree, out: &mut std::collections::BTreeSet<String>) {
+            if let Some(name) = as_splice(t) {
+                out.insert(name.to_string());
+            }
+            if let Tree::List(items, _) = t {
+                items.iter().for_each(|c| collect_splices(c, out));
+            }
+        }
+        collect_splices(&self.tree, &mut spliced);
         // For each metavariable, the free names of the tree(s) it bound; a binder ∩ those is a risk.
         let mut risks = Vec::new();
         for (metavar, trees) in bindings.iter() {
@@ -605,6 +620,7 @@ impl Template {
                     risks.push(CaptureRisk {
                         binder: binder.clone(),
                         metavar: metavar.to_string(),
+                        is_splice: spliced.contains(metavar),
                     });
                 }
             }
@@ -5892,9 +5908,35 @@ mod tests {
             risks,
             vec![CaptureRisk {
                 binder: "x".to_string(),
-                metavar: "e".to_string()
+                metavar: "e".to_string(),
+                is_splice: false,
             }],
             "the template's `x` binder captures the free `x` inside the matched `,e`"
+        );
+    }
+
+    #[test]
+    fn capture_risk_marks_a_splice_metavar_so_the_sigil_is_right() {
+        // When the template references the metavar as a SPLICE (`,@rest`), the risk must record it so a
+        // caller prints `,@rest` (not `,rest`). `,@rest` binds a run `[a x b]`; `x` is free in it, and the
+        // template binds `x` in a `let`.
+        let binds = first_bindings("(f ,@rest)", "(f a x b)");
+        let risks = tmpl("(let ((x 0)) (g ,@rest))").capture_risks(&binds);
+        assert_eq!(
+            risks,
+            vec![CaptureRisk {
+                binder: "x".to_string(),
+                metavar: "rest".to_string(),
+                is_splice: true,
+            }],
+            "a splice metavar's risk carries is_splice=true"
+        );
+        // A SINGLE metavar (`,e`) is is_splice=false (the breaker repro already asserts the value; this
+        // pins the contrast against the splice case above).
+        let binds = first_bindings("(+ ,e 1)", "(+ x 1)");
+        assert!(
+            !tmpl("(let ((x 0)) ,e)").capture_risks(&binds)[0].is_splice,
+            "a single metavar's risk is is_splice=false"
         );
     }
 
@@ -5932,7 +5974,8 @@ mod tests {
             tmpl("(fn (n) ,body)").capture_risks(&binds),
             vec![CaptureRisk {
                 binder: "n".to_string(),
-                metavar: "body".to_string()
+                metavar: "body".to_string(),
+                is_splice: false,
             }],
             "a fn parameter `n` captures the free `n` in the spliced body"
         );
@@ -5942,7 +5985,8 @@ mod tests {
             tmpl("(def (h a) ,body)").capture_risks(&binds),
             vec![CaptureRisk {
                 binder: "a".to_string(),
-                metavar: "body".to_string()
+                metavar: "body".to_string(),
+                is_splice: false,
             }]
         );
         // Shadowing: an INNER binder that re-binds the name means the free occurrence under it is NOT free
@@ -5966,7 +6010,8 @@ mod tests {
             tmpl("(match e (m ,body))").capture_risks(&binds),
             vec![CaptureRisk {
                 binder: "m".to_string(),
-                metavar: "body".to_string()
+                metavar: "body".to_string(),
+                is_splice: false,
             }],
             "a match-arm binder `m` captures the free `m` in the spliced arm body"
         );
@@ -5976,7 +6021,8 @@ mod tests {
             tmpl("(match e ((Some n) ,body))").capture_risks(&binds),
             vec![CaptureRisk {
                 binder: "n".to_string(),
-                metavar: "body".to_string()
+                metavar: "body".to_string(),
+                is_splice: false,
             }],
             "the constructor `Some` is not a binder; the payload `n` is"
         );
@@ -5995,10 +6041,12 @@ mod tests {
         assert!(
             risks.contains(&CaptureRisk {
                 binder: "h".to_string(),
-                metavar: "body".to_string()
+                metavar: "body".to_string(),
+                is_splice: false,
             }) && risks.contains(&CaptureRisk {
                 binder: "t".to_string(),
-                metavar: "body".to_string()
+                metavar: "body".to_string(),
+                is_splice: false,
             }),
             "both `h` and `t` are arm binders; got {risks:?}"
         );

@@ -73,12 +73,34 @@ fn run() -> Result<()> {
             );
             Ok(())
         }
+        Some("hosted") => {
+            // The daemon's real-PRIMITIVE step (K1c→host): `hosted` drives `daemon::tick_hosted`, which binds
+            // Prim to a real host closure — each performed op is RECORDED in the log as a `prim-<op>` event
+            // (the recorded-effect trail) and its per-op result summed. Unlike `perform` (in-program mock),
+            // this is the daemon actually executing through a real host primitive (record-only cut for now).
+            let (log, kind, runtime) = open_and_resolve(&args, "hosted")?;
+            let log = std::sync::Arc::new(std::sync::Mutex::new(log));
+            let result = daemon::tick_hosted(std::sync::Arc::clone(&log), kind, runtime)?;
+            let recorded = log
+                .lock()
+                .map_err(|_| anyhow!("log mutex poisoned"))?
+                .tail(0)?
+                .iter()
+                .filter(|e| e.kind.starts_with(daemon::PRIM_RECORD_PREFIX))
+                .count();
+            println!(
+                "hosted: performed the interpret plan for event kind {kind} via real host primitives; \
+                 summed per-op result = {result}; recorded {recorded} prim event(s) in the log"
+            );
+            Ok(())
+        }
         _ => Err(anyhow!(
-            "usage: cdz-agent <bootstrap|inject-genesis|run|perform> ...\n\
+            "usage: cdz-agent <bootstrap|inject-genesis|run|perform|hosted> ...\n\
              \x20 bootstrap <log>                    — create/open the event log\n\
              \x20 inject-genesis <log> <program.cdz> — append the genesis program\n\
              \x20 run <log> <event-kind>             — one daemon tick (COUNT the scheduled host-ops)\n\
-             \x20 perform <log> <event-kind>         — one daemon tick that EXECUTES the ops (K1c), summing per-op results"
+             \x20 perform <log> <event-kind>         — one daemon tick that EXECUTES the ops (K1c, in-program mock), summing per-op results\n\
+             \x20 hosted <log> <event-kind>          — one daemon tick that PERFORMS via real host primitives (K1c→host), recording each op in the log"
         )),
     }
 }

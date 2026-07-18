@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseDocument, parseDirective, cellRanges, serializeDocument, setCellSource, assignIds, type Cell } from "./parseDocument.ts";
+import { parseDocument, parseDirective, cellRanges, serializeDocument, setCellSource, setProseSource, assignIds, type Cell } from "./parseDocument.ts";
 
 test("a plain prose-only document is one prose cell", () => {
   const cells = parseDocument("# Title\n\nsome **markdown** prose.");
@@ -292,4 +292,31 @@ test("serializeDocument ignores id (id is a UI concern, not doc content) — rou
   const md = serializeDocument(cells);
   // Re-parsing yields id-less cells (parseDocument doesn't assign); assignIds re-stamps identically.
   assert.deepEqual(assignIds(parseDocument(md)), cells);
+});
+
+// ── setProseSource: the PROSE-cell edit (operator UX #3 — editing a notebook's prose, not just code) ──
+test("setProseSource replaces one prose cell's markdown immutably, preserving other cells + ids", () => {
+  const cells = assignIds(parseDocument("intro prose\n\n```cadenza\n(def (main) 1)\n```"));
+  assert.equal(cells[0].kind, "prose");
+  const next = setProseSource(cells, 0, "# New heading\n\nedited prose");
+  assert.equal((next[0] as Extract<Cell, { kind: "prose" }>).markdown, "# New heading\n\nedited prose");
+  assert.equal(next[0].id, cells[0].id); // stable id → the in-place prose editor keeps focus
+  assert.equal(next[1], cells[1]); // the code cell is untouched (same reference)
+  assert.notEqual(next, cells); // immutable — a new array
+});
+
+test("setProseSource throws on a bad index or a code cell (the code counterpart is setCellSource)", () => {
+  const cells = parseDocument("prose\n\n```cadenza\n(def (main) 1)\n```");
+  assert.throws(() => setProseSource(cells, 99, "x"), RangeError);
+  assert.throws(() => setProseSource(cells, 1, "x"), TypeError); // cell 1 is code, not prose
+});
+
+test("a prose edit round-trips through serializeDocument (re-parse yields the edited prose)", () => {
+  const cells = parseDocument("old prose\n\n```cadenza\n(def (main) 1)\n```");
+  const edited = setProseSource(cells, 0, "new prose text");
+  const reparsed = parseDocument(serializeDocument(edited));
+  assert.equal(reparsed[0].kind, "prose");
+  assert.equal((reparsed[0] as Extract<Cell, { kind: "prose" }>).markdown, "new prose text");
+  // The code cell survives the round-trip unchanged.
+  assert.equal((reparsed[1] as Extract<Cell, { kind: "code" }>).source, "(def (main) 1)");
 });

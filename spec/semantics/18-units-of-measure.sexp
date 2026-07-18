@@ -723,6 +723,23 @@
   (call   main (: 3.0 Float64)) (output (: 1 Int64))
   (call   main (: 7.0 Float64)) (output (: 0 Int64)))
 
+(case "comparing two same-unit scalar-Int quantities at RUNTIME rides the scalar integer compare"
+  (doc    "The Int-inner analogue of the Float case above. `(< (Qty.of x meter) (Qty.of 5 meter))` with `x`
+           a RUNTIME Int64: a same-unit scalar-Int quantity comparison erases to a plain integer compare
+           (the `(Qty Int64 meter)` erases to its i64). The heap-inner quantity comparisons (BigInt/Rational/
+           Float) route via their own `Ty::Qty`-peeling operand predicates, but a SCALAR-Int inner fell to
+           the generic `is_scalar` gate, which does NOT peel `Ty::Qty` — so a RUNTIME same-unit Int-quantity
+           comparison (a parameter, or a `q` bound from a `Map.lookup`/`List.at` Option arm) declined
+           'comparison of a compound value needs a heap walk', while a bare Int and a CONSTANT quantity
+           compare fine. A same-unit quantity-comparison arm now rewrites `(op a b)` → `(op (Qty.value a)
+           (Qty.value b))` (erasing both units to their inner numerics) and re-lowers. GUARDED on same-unit:
+           a DIFFERENT-scale pair still routes through the mixed-scale CONVERSION arm (never a raw
+           cross-scale compare). x=3 → true (1), x=7 → false (0).")
+  (input  (do (def (main (: x Int64))
+                (if (< (Qty.of x (Unit.base #"meter")) (Qty.of 5 (Unit.base #"meter"))) 1 0)) (export main)))
+  (call   main (: 3 Int64)) (output (: 1 Int64))
+  (call   main (: 7 Int64)) (output (: 0 Int64)))
+
 (case "a runtime Float quantity comparison against NaN is the IEEE partial order (false)"
   (doc    "`(< (Qty.of nan meter) (Qty.of 5.0 meter))` — a runtime NaN magnitude compares FALSE under the
            IEEE partial order (NaN is unordered), exactly as the bare `nan < 5.0` does: the quantity's Float

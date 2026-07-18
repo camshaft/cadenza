@@ -6088,6 +6088,40 @@ fn a_param_seeded_handle_in_a_helper_called_with_a_runtime_arg_resolves_the_seed
     );
 }
 
+/// FIXED (breaker miscompile, verified silent WRONG VALUE): a short-circuit connective `(and b (> (St.tick)
+/// 0))` DIRECTLY in an `if` CONDITION dropped the condition's state advance, so the taken branch read the
+/// pre-condition seed. Seeded 0, arm `(tick (u) s (resume (+ s 1) (+ s 1)))`: with b=true the condition's tick
+/// advances state 0→1, so the then-branch `(St.tick)` must resume 2 — but returned 1 (advance dropped). ROOT:
+/// hoist Site 3 desugars the connective `(and b rhs)` → `(if b rhs false)`, leaving an outer `if` whose CONDITION
+/// is a branch-performing `if`; the `If` thread arm returns the post-CONDITION state (not a per-branch advance),
+/// so the tick in the condition's branch is lost to the outer branches. FIX: hoist Site 5 binds a performing
+/// condition/scrutinee to a `let` (`(if C t e)` ≡ `(let ((#cv C)) (if #cv t e))`), turning C into a `let`-init
+/// that Site 4 distributes — each branch then threads under C's advanced state. b=true → 2, b=false → -99
+/// (short-circuit: the condition's tick never runs). The let-bound twin `(let ((c (and …))) (if c …))` already
+/// threaded correctly (it hit Site 4 directly) — this brings the INLINE connective to parity.
+#[test]
+fn a_connective_in_an_if_condition_threads_its_state_advance_to_the_branch() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(do \
+        (effect St (op tick (-> Unit Int64))) \
+        (def (main (: b Bool)) (handle St 0 ((tick (u) s (resume (+ s 1) (+ s 1)))) \
+          (if (and b (> (St.tick) 0)) (St.tick) -99))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("compiles (connective in if-condition — Site 5 hoist)");
+    let vt: i64 = run_returns_with(&bytes, "main", &[Val::Bool(true)]);
+    assert_eq!(
+        vt, 2,
+        "the condition's tick advance must reach the branch tick; b=true → 2"
+    );
+    let vf: i64 = run_returns_with(&bytes, "main", &[Val::Bool(false)]);
+    assert_eq!(
+        vf, -99,
+        "b=false short-circuits: the condition's tick never runs → else -99"
+    );
+}
+
 /// ADVERSARIAL companion (task #15, breaker witness): TWO successive self-recursive folds under ONE handler —
 /// the SECOND fold must thread against the state the FIRST advanced, not the seed. `dn(n) = if n==0 then 0
 /// else dn(n-1) + Counter.bump()` counts down performing `bump` (state s→s+1); `(+ (* 1000 (dn 2)) (dn 2))`.
@@ -17621,18 +17655,19 @@ mod match_engine {
             100,
             "a satisfied bare @ensures is value-transparent — the def returns its computed value 100, not unit"
         );
-        // CAPTURE GUARD: a def whose PARAM is literally named `it` is SKIPPED for @ensures (the injected
-        // `(let ((it …)) …)` would shadow the param). The def keeps its meaning: `f(5) = 5 - 100 = -95` using
-        // the PARAMETER `it`, no trap, no shadow — even though -95 would VIOLATE the postcondition if enforced.
+        // CAPTURE-GUARD REJECT: a def whose PARAM is literally named `it` cannot carry `@ensures` — the
+        // `@ensures` result binder `it` would shadow the param, so enforcement is impossible. Rather than
+        // silently skip (a footgun — a quietly-unenforced contract), `collect_faults` REJECTS it (CDZ0201)
+        // naming the fix (rename the param). Assert the diagnostic fires (breaker 2026-07-17).
         let guarded =
             "(module m (@ (ensures (>= it 0)) (def (f (: it Int64)) (- it 100))) (export f))";
-        let gcomp =
-            compile_component(&crate::codec::encode(&parse(guarded))).expect("guarded compiles");
-        assert_eq!(
-            run_returns_with::<i64>(&gcomp, "f", &[Val::S64(5)]),
-            -95,
-            "an @ensures on a def with a param named `it` is skipped (capture guard) — returns -95, no trap"
-        );
+        let d = crate::diagnostics(&mut crate::db::Db::load(parse(guarded)))
+            .into_iter()
+            .find(|d| d.message.contains("cannot carry `@ensures`"))
+            .expect(
+                "an @ensures on a def with a param named `it` is REJECTED, not silently skipped",
+            );
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
     }
 
     /// Verification Inc-b b4a2: a `@requires`/`@ensures` with NOT-exactly-one predicate argument
@@ -28300,6 +28335,123 @@ mod match_engine {
     }
 
     #[test]
+    fn list_len_over_an_if_reclaims_when_both_arms_own_but_not_when_an_arm_borrows() {
+        // The CONTROL-FLOW JOIN face of the owned-operand reclaim (`join_arm_ownership` in
+        // `heap_operand_ownership`): when a borrowing op's operand is an `if`, its ownership is the JOIN of
+        // the arms — Owned iff EVERY arm is provably a fresh owned temporary (so the single post-borrow drop
+        // is correct on all paths), else Borrowed (leak-safe: a false-borrowed only leaks, never double-frees
+        // a borrowed arm's value under its owner). Pins BOTH faces so a future classifier change can't
+        // silently regress the join into an unsound drop.
+        //
+        // (a) BOTH arms owned producers (List.push / List.concat): the join is Owned, so `List.len (if …)`
+        // reclaims — it must import `drop`.
+        let both_owned = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (g (: b Int64)) ((. List len) (if (= b 0) \
+                   ((. List push) (build 0 3 (list)) 9) \
+                   ((. List concat) (build 0 2 (list)) (build 0 2 (list)))))) \
+               (def (main) (+ (g 0) (g 1))) (export main))";
+        assert!(
+            component_imports_op(&component(both_owned), "drop"),
+            "List.len of an if whose BOTH arms are owned producers must reclaim (join = Owned → drop)"
+        );
+        if let Some(out) = run_on_heap(both_owned) {
+            assert_eq!(
+                out, "8",
+                "both owned arms yield a 4-elem list each → len 4 + 4 = 8"
+            );
+        }
+        // (b) MIXED arm: THEN an owned-temp `List.push xs`, ELSE the BORROWED param `xs`, with a SIBLING
+        // `List.len xs` read after the if. The join MUST be Borrowed — dropping the if-result would free the
+        // param `xs` on the else path while the sibling still reads it (a UAF/double-free). Value must be
+        // exact, no trap: g(_,0) = len(xs)+len(xs) = 3+3 = 6; g(_,1) = len(push xs)+len(xs) = 4+3 = 7.
+        let mixed = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (g (: xs (List Int64)) (: b Int64)) \
+                   (+ ((. List len) (if (= b 0) xs ((. List push) xs 99))) ((. List len) xs))) \
+               (def (main) (+ (g (build 0 3 (list)) 0) (g (build 0 3 (list)) 1))) (export main))";
+        if let Some(out) = run_on_heap(mixed) {
+            assert_eq!(
+                out, "13",
+                "a mixed owned/borrowed if-arm must NOT free the borrowed param under its sibling read \
+                 (join = Borrowed): g(_,0)=6 + g(_,1)=7 = 13, no double-free"
+            );
+        }
+        // Stress the mixed (borrowed-arm) path 5000× — a double-free of the param would trap, a leak drift.
+        let mixed_stress = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (g (: xs (List Int64)) (: b Int64)) \
+                   (+ ((. List len) (if (= b 0) xs ((. List push) xs 99))) ((. List len) xs))) \
+               (def (drive j m tot) (if (< j m) (drive (+ j 1) m (+ tot (g (build 0 3 (list)) 0))) tot)) \
+               (def (main) (drive 0 5000 0)) (export main))";
+        if let Some(out) = run_on_heap(mixed_stress) {
+            assert_eq!(
+                out, "30000",
+                "5000× the borrowed-arm path (3+3=6 each) must not double-free the param (no trap/drift)"
+            );
+        }
+    }
+
+    #[test]
+    fn list_len_over_a_sum_match_reclaims_when_all_arms_own_but_not_when_an_arm_borrows() {
+        // The MatchSum twin of the `if`-join test above: a sum `match` used as a borrowing op's operand is
+        // classified by `sum_cont_ownership` — a SEPARATE recursive join over the decision tree's leaves
+        // (Leaf/Guarded/LitTest/Switch continuations), distinct from `join_arm_ownership` (`if`/`match`
+        // scalar). Same contract: Owned iff EVERY reachable leaf is a proven owned temporary, else Borrowed
+        // (leak-safe). Pins both faces so a change to the sum-match ownership walk can't regress into an
+        // unsound drop of a borrowed payload.
+        //
+        // (a) BOTH match arms owned producers (List.push / List.concat) → join = Owned → `List.len (match …)`
+        // reclaims (imports drop; each arm yields a 4-elem list → 4 + 4 = 8).
+        let both_owned = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (g (: o (Option Int64))) ((. List len) (match o \
+                   ((Some v) ((. List push) (build 0 3 (list)) v)) \
+                   ((None _) ((. List concat) (build 0 2 (list)) (build 0 2 (list))))))) \
+               (def (main) (+ (g (Option.Some 9)) (g Option.None))) (export main))";
+        assert!(
+            component_imports_op(&component(both_owned), "drop"),
+            "List.len of a sum match whose BOTH arms are owned producers must reclaim (join = Owned → drop)"
+        );
+        if let Some(out) = run_on_heap(both_owned) {
+            assert_eq!(
+                out, "8",
+                "both owned match arms yield a 4-elem list each → len 4 + 4 = 8"
+            );
+        }
+        // (b) MIXED: the `Some xs` arm reads the BORROWED payload list `xs` (via List.len) AND re-reads it as
+        // a sibling — dropping the extracted payload would free it under its still-live scrutinee (a UAF).
+        // The sum-match/payload ownership must stay Borrowed. Value exact: Some path = len(xs)+len(xs) = 6.
+        let mixed = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (g (: o (Option (List Int64)))) (match o \
+                   ((Some xs) (+ ((. List len) xs) ((. List len) xs))) \
+                   ((None _) -1))) \
+               (def (main) (g (Option.Some (build 0 3 (list))))) (export main))";
+        if let Some(out) = run_on_heap(mixed) {
+            assert_eq!(
+                out, "6",
+                "a borrowed sum-payload read twice must not be freed under its live scrutinee (3 + 3 = 6)"
+            );
+        }
+        // Stress the borrowed-payload path 5000× — a double-free of the payload would trap, a leak drift.
+        let mixed_stress = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (g (: o (Option (List Int64)))) (match o \
+                   ((Some xs) (+ ((. List len) xs) ((. List len) xs))) \
+                   ((None _) -1))) \
+               (def (drive j m tot) (if (< j m) \
+                   (drive (+ j 1) m (+ tot (g (Option.Some (build 0 3 (list)))))) tot)) \
+               (def (main) (drive 0 5000 0)) (export main))";
+        if let Some(out) = run_on_heap(mixed_stress) {
+            assert_eq!(
+                out, "30000",
+                "5000× a borrowed sum-payload read twice (3+3=6 each) must not double-free (no trap/drift)"
+            );
+        }
+    }
+
+    #[test]
     fn set_contains_and_map_lookup_over_an_owned_temporary_reclaim_the_collection() {
         // The last READ-op faces: `Set.contains`/`Map.lookup` over an owned-temporary collection must
         // reclaim it. ⚠ Map.lookup is DELICATE — the looked-up value is borrowed from the map and dup'd in
@@ -38271,6 +38423,64 @@ mod match_engine {
             .as_deref(),
             None,
             "a non-overflowing narrow-width Int8 quantity add does not trap"
+        );
+    }
+
+    #[test]
+    fn a_same_unit_runtime_scalar_int_quantity_comparison_rides_the_scalar_compare() {
+        // A RUNTIME same-unit scalar-Int quantity comparison — `(< a b)` with `a,b : (Qty Int64 meter)`
+        // parameters — erases to a plain integer compare. The heap-inner quantity comparisons (BigInt/
+        // Rational/Float) route via their own `Ty::Qty`-peeling operand predicates, but a SCALAR-Int inner
+        // fell to the generic `is_scalar` gate (which does NOT peel `Ty::Qty`), so it declined "comparison
+        // of a compound value needs a heap walk". A same-unit quantity-comparison arm now rewrites it as
+        // `(< (Qty.value a) (Qty.value b))` and re-lowers. GUARDED same-unit: cross-scale routes to the
+        // conversion arm above (verified separately it does NOT compare raw). f(3,5)=true, f(7,5)=false.
+        let src = "(module m \
+                     (def (f (: a (Qty Int64 (Unit.base #\"meter\"))) (: b (Qty Int64 (Unit.base #\"meter\")))) \
+                       (< a b)) \
+                     (export f))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert!(
+            run_returns_with::<bool>(
+                &bytes,
+                "f",
+                &[
+                    wasmtime::component::Val::S64(3),
+                    wasmtime::component::Val::S64(5)
+                ]
+            ),
+            "3 meter < 5 meter is true"
+        );
+        assert!(
+            !run_returns_with::<bool>(
+                &bytes,
+                "f",
+                &[
+                    wasmtime::component::Val::S64(7),
+                    wasmtime::component::Val::S64(5)
+                ]
+            ),
+            "7 meter < 5 meter is false"
+        );
+        // SOUNDNESS: a DIFFERENT-scale pair must still CONVERT (not compare raw) — `1 km < 999 m` is false
+        // (1000 m > 999 m), NOT true (a raw `1 < 999`). Routed by the mixed-scale conversion arm ABOVE the
+        // same-unit arm; the same-unit arm's guard (`quantity_same_unit_pair`) never fires for it.
+        let cross = "(module m \
+                       (def (f (: a (Qty Int64 (Unit.prefix kilo (Unit.base #\"meter\")))) \
+                               (: b (Qty Int64 (Unit.base #\"meter\")))) \
+                         (< a b)) \
+                       (export f))";
+        let cbytes = compile_component(&crate::codec::encode(&parse(cross))).expect("compile");
+        assert!(
+            !run_returns_with::<bool>(
+                &cbytes,
+                "f",
+                &[
+                    wasmtime::component::Val::S64(1),
+                    wasmtime::component::Val::S64(999)
+                ]
+            ),
+            "1 km < 999 m must be false (converted 1000 m > 999 m), NOT a raw 1 < 999"
         );
     }
 

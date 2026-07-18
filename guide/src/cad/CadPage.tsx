@@ -36,6 +36,7 @@ import { meshFromSolid, type MeshResult } from "./index.ts";
 import { MeshView } from "./MeshView.tsx";
 import { wrapPrefixOf } from "../components/wrapModule.ts";
 import { injectImport, CAD_LIB_NAME, CAD_LIB_FORMAT } from "./preloadModel.ts";
+import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
 import type { Surface } from "../compiler/client.ts";
 import { LazyCodeEditor } from "../editor/LazyCodeEditor.tsx";
 // The CAD library source (`implementation/cad/src/exact.cdz`), staged into the guide tree by
@@ -55,29 +56,14 @@ import EXACT_CDZ from "../wasm/cad/exact.cdz?raw";
 // RUN path (`runComponent(component, "sexpr")` in `runModel`), NOT the linter — so it's kept separate: the
 // IDE surface tracks the edit surface; the mesh path forces s-expr on the compiled value.
 
-/// The starter Solid model per surface — a 4mm cube with a 2.5-radius spherical dent (the classic CSG
-/// difference), built against the PRELOADED CAD library (`Solid`/`v3r`/`lower` from `exact.cdz`), so the
-/// buffer is just the model — no inline `type` defs. Each carries `@!default-fraction Rational` (a
-/// module-local pragma so a bare `n/d` is an exact Rational, not Int64 division — without it `v3r(4/1,…)`
-/// rejects with CDZ0203; the pragma does NOT leak into the imported library). The model returns
-/// `lower(<Solid model>)` — `exact.cdz`'s `Solid` is generic and a generic value can't be host-rendered
-/// yet, so `lower` maps it to the monomorphic `SolidR` the compiler emits + the driver meshes. The
-/// `import` clause is auto-injected (see `injectImport`), not shown to the reader (ruling A). Both surfaces
-/// render to the same canonical s-expr `SolidR` value → the driver meshes them identically (v-cad-verified:
-/// 584 triangles end to end).
-const STARTER: Record<Surface, string> = {
-  ml: `@!default-fraction Rational
-def main() =
-  lower(
-    Solid.Difference(
-      Solid.Cube(v3r(4/1, 4/1, 4/1)),
-      Solid.Sphere(5/2)))`,
-  sexpr: `(pragma default-fraction Rational)
-(def (main)
-  (lower ((. Solid Difference)
-           ((. Solid Cube) (v3r (/ 4 1) (/ 4 1) (/ 4 1)))
-           ((. Solid Sphere) (/ 5 2)))))`,
-};
+/// The starter models now live in `./examples.ts` (v-cad-authored `EXAMPLES`, each a `source: Record<Surface,
+/// string>`): a bare model built against the PRELOADED CAD library (`Solid`/`v3r`/`lower` from `exact.cdz`) —
+/// no inline `type` defs. Each carries `@!default-fraction Rational` (module-local, so a bare `n/d` is an exact
+/// Rational not Int64 — without it `v3r(4/1,…)` rejects CDZ0203) and returns `lower(<Solid model>)` (the
+/// generic `Solid` isn't host-renderable, so `lower` maps to the monomorphic `SolidR` the driver meshes). The
+/// `import` is auto-injected (`injectImport`, ruling A). The example-picker swaps `source[surface]`; `/cad`
+/// opens with `DEFAULT_EXAMPLE` (the cube-with-dent — the historical starter). Both surfaces render to the
+/// same canonical s-expr `SolidR` value (v-cad-verified: 584 triangles for the default).
 
 type Status =
   | { phase: "idle" }
@@ -87,7 +73,12 @@ type Status =
 
 export default function CadPage() {
   const { surface } = useSyntax();
-  const [source, setSource] = useState(() => STARTER[surface] ?? STARTER.ml);
+  // The loaded example (drives the picker). Its `source[surface]` seeds the editor; switching examples or
+  // toggling the surface re-seeds from `example.source[newSurface]` (v-cad ships every example in BOTH
+  // surfaces, so a toggle is a clean re-seed — source can't be reinterpreted across surfaces, same as /calc).
+  const [exampleSlug, setExampleSlug] = useState(DEFAULT_EXAMPLE.slug);
+  const example = EXAMPLES.find((e) => e.slug === exampleSlug) ?? DEFAULT_EXAMPLE;
+  const [source, setSource] = useState(() => DEFAULT_EXAMPLE.source[surface] ?? DEFAULT_EXAMPLE.source.ml);
   const [status, setStatus] = useState<Status>({ phase: "idle" });
   const runningRef = useRef(false);
 
@@ -154,26 +145,55 @@ export default function CadPage() {
     [],
   );
 
-  // On a surface change, re-seed the starter in the new surface (a source typed in the old surface can't
-  // be blindly reinterpreted — same as /calculator) and re-run. Also covers the initial mount, so the
+  // On a surface change, re-seed the CURRENT example in the new surface (a source typed in the old surface
+  // can't be blindly reinterpreted — same as /calculator) and re-run. Also covers the initial mount, so the
   // reader sees a meshed shape immediately.
   const surfaceRef = useRef<Surface | null>(null);
   useEffect(() => {
     if (surfaceRef.current === surface) return;
     const first = surfaceRef.current === null;
     surfaceRef.current = surface;
-    const next = first ? source : (STARTER[surface] ?? STARTER.ml);
+    const next = first ? source : (example.source[surface] ?? example.source.ml);
     if (!first) setSource(next);
     void runModel(next, surface);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [surface]);
 
+  // Switch to another example model: seed the editor with its source in the CURRENT surface + re-run.
+  const onSelectExample = useCallback(
+    (slug: string) => {
+      const picked = EXAMPLES.find((e) => e.slug === slug);
+      if (!picked) return;
+      setExampleSlug(slug);
+      const next = picked.source[surface] ?? picked.source.ml;
+      setSource(next);
+      void runModel(next, surface);
+    },
+    [surface, runModel],
+  );
+
   return (
     <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-4 py-4">
       <div className="mb-3 flex items-baseline justify-between gap-3">
         <h1 className="text-lg font-bold text-slate-100 sm:text-xl">Cadenza CAD</h1>
-        {/* Mobile touch target: the header link gets a 44px min-height below `sm`, compact at sm+. */}
-        <div className="flex shrink-0 items-center gap-3 text-xs">
+        {/* Mobile touch target: the controls get a 44px min-height below `sm`, compact at sm+. */}
+        <div className="flex shrink-0 items-center gap-1 text-xs sm:gap-3">
+          {/* Example picker — swap between the CAD models (cad/examples.ts, v-cad-authored). */}
+          <label className="flex min-h-11 items-center gap-1 sm:min-h-0">
+            <span className="sr-only">Example model</span>
+            <select
+              data-testid="cad-example-picker"
+              value={exampleSlug}
+              onChange={(e) => onSelectExample(e.target.value)}
+              className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-200 focus:border-cadenza-500 focus:outline-none"
+            >
+              {EXAMPLES.map((e) => (
+                <option key={e.slug} value={e.slug}>
+                  {e.title}
+                </option>
+              ))}
+            </select>
+          </label>
           <Link
             to="/playground"
             className="flex min-h-11 items-center px-2 text-cadenza-400 hover:text-cadenza-300 sm:min-h-0 sm:px-0"

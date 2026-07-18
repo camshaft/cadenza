@@ -100,6 +100,29 @@ where
     crate::kernel::run_interpret_hosted(&program, event_kind, runtime, prim)
 }
 
+/// Drive `step` over every log event NOT YET processed (seq >= `from`), in order, and return the NEW cursor
+/// (the seq AFTER the last event seen, i.e. the `from` to pass next time) — the event-source LOOP's pure,
+/// single-pass core (the "start the daemon" half's load-bearing step). A real daemon calls this repeatedly
+/// (sleep + poll), advancing the returned cursor each round; this pure form is testable with a `FileLog` and
+/// no sleep/thread. `step` decides what to do per event (typically pick an event kind + call [`tick`] /
+/// [`tick_hosted`]) — the daemon itself understands NO events, exactly as the per-event core does. A `step`
+/// error aborts the drain at that event and propagates (the caller retries from the returned-so-far cursor is
+/// NOT attempted here — a failing step is a loud stop, not a silent skip); the cursor returned on success is
+/// `last_seq + 1`, or `from` unchanged when nothing new landed.
+pub fn drain_new_events<L, F>(log: &L, from: crate::Seq, mut step: F) -> Result<crate::Seq>
+where
+    L: Log,
+    F: FnMut(&crate::Event) -> Result<()>,
+{
+    let events = log.tail(from)?;
+    let mut cursor = from;
+    for event in &events {
+        step(event)?;
+        cursor = event.seq + 1;
+    }
+    Ok(cursor)
+}
+
 /// The latest genesis `program` source in `log`, or a loud error if none (the CLI must inject one first).
 fn latest_or_err(log: &impl Log) -> Result<String> {
     let events = log.tail(0)?;
@@ -300,6 +323,67 @@ mod tests {
         assert!(
             tick_hosted(Arc::new(Mutex::new(log)), 1, Vec::new()).is_err(),
             "no genesis → tick_hosted errors (like tick/tick_performing)"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn drain_new_events_steps_each_new_event_in_order_and_advances_the_cursor() {
+        // The event-source loop's pure core: drain_new_events drives `step` over every event since the cursor,
+        // in seq order, and returns the cursor to resume from. Two events → both stepped in order, cursor
+        // advances past both; a second drain from that cursor sees NOTHING new (cursor unchanged) until a new
+        // event lands, which the next drain picks up. No sleep/thread — the loop DRIVER (poll+sleep) rides this.
+        let (path, mut log) = temp_log();
+        log.append("evt", b"a").unwrap(); // seq 0
+        log.append("evt", b"b").unwrap(); // seq 1
+
+        let seen = std::cell::RefCell::new(Vec::<(u64, String)>::new());
+        let cursor = drain_new_events(&log, 0, |e| {
+            seen.borrow_mut()
+                .push((e.seq, String::from_utf8_lossy(&e.payload).into_owned()));
+            Ok(())
+        })
+        .expect("drain the two events");
+        assert_eq!(
+            *seen.borrow(),
+            vec![(0, "a".to_string()), (1, "b".to_string())],
+            "both events stepped, in seq order"
+        );
+        assert_eq!(cursor, 2, "cursor advances to last_seq + 1 = 2");
+
+        // A second drain from the cursor: nothing new → step is never called, cursor unchanged.
+        let cursor2 = drain_new_events(&log, cursor, |_| {
+            panic!("no new events → step must not be called");
+        })
+        .expect("drain with nothing new");
+        assert_eq!(cursor2, 2, "no new events → cursor stays at 2");
+
+        // A new event lands → the next drain picks up ONLY it.
+        log.append("evt", b"c").unwrap(); // seq 2
+        let seen2 = std::cell::RefCell::new(Vec::<u64>::new());
+        let cursor3 = drain_new_events(&log, cursor2, |e| {
+            seen2.borrow_mut().push(e.seq);
+            Ok(())
+        })
+        .expect("drain the new event");
+        assert_eq!(
+            *seen2.borrow(),
+            vec![2],
+            "only the new event (seq 2) is stepped"
+        );
+        assert_eq!(cursor3, 3, "cursor advances to 3");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn drain_new_events_propagates_a_step_error_as_a_loud_stop() {
+        // A failing step aborts the drain loudly (not a silent skip) — the caller decides recovery.
+        let (path, mut log) = temp_log();
+        log.append("evt", b"x").unwrap();
+        let r = drain_new_events(&log, 0, |_| Err(anyhow!("boom")));
+        assert!(
+            r.is_err(),
+            "a step error propagates out of drain_new_events"
         );
         let _ = std::fs::remove_file(&path);
     }

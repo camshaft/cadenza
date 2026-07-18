@@ -143,6 +143,59 @@ fn perform_executes_the_plan_and_sums_per_op_results() {
 }
 
 #[test]
+fn hosted_performs_via_real_primitives_and_records_prim_events() {
+    // The `hosted` verb is the daemon's real-PRIMITIVE step (K1c→host): drives `daemon::tick_hosted`, binding
+    // Prim to a real host closure — each performed op is RECORDED in the log as a `prim-<op>` event and its
+    // per-op result summed. kind=1 → [Append(1), Exec(2)] → sum 3 AND 2 prim events recorded. Same store-gated
+    // SKIP as the other verbs (missing runtime → skip).
+    let log = unique("hosted-log").with_extension("log");
+    let prog = unique("hosted-genesis").with_extension("cdz");
+    let _ = std::fs::remove_file(&log);
+    std::fs::write(&prog, GENESIS).unwrap();
+
+    Command::new(bin())
+        .args(["bootstrap", log.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+    Command::new(bin())
+        .args([
+            "inject-genesis",
+            log.to_str().unwrap(),
+            prog.to_str().unwrap(),
+        ])
+        .output()
+        .expect("inject-genesis");
+
+    let out = Command::new(bin())
+        .args(["hosted", log.to_str().unwrap(), "1"])
+        .output()
+        .expect("run cdz-agent hosted");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if out.status.success() {
+        assert!(
+            stdout.contains("summed per-op result = 3"),
+            "kind=1 → hosted performs [Append(1), Exec(2)] via real primitives, sums to 3; got: {stdout}"
+        );
+        assert!(
+            stdout.contains("recorded 2 prim event(s)"),
+            "kind=1 → each performed op recorded a prim-<op> event → 2 recorded; got: {stdout}"
+        );
+    } else {
+        assert!(
+            stderr.contains("runtime not found"),
+            "the only acceptable `hosted` failure is a missing runtime store (skip); got: {stderr}"
+        );
+        eprintln!(
+            "[cdz-agent it] value-heap runtime absent; skipped the `hosted` result assertion"
+        );
+    }
+
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&prog);
+}
+
+#[test]
 fn unknown_subcommand_prints_usage_and_fails() {
     let out = Command::new(bin())
         .arg("frobnicate")

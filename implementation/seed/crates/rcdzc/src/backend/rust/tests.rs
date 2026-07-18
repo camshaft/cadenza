@@ -702,10 +702,9 @@ fn rustc_roundtrip_closures_run_no_capture_and_capturing_and_in_a_list() {
 }
 
 #[test]
-fn a_closure_crossing_the_export_boundary_declines() {
-    // A closure cannot cross the EXPORT boundary (no closure-handle ABI on the Rust target): an exported
-    // fn with a function-typed PARAM or RESULT declines cleanly (todo), rather than emitting a signature
-    // the gate driver could not call with a value argument. (An INTERNAL closure is unaffected — see above.)
+fn a_closure_param_export_declines_but_a_scalar_factory_result_now_emits() {
+    // A closure PARAMETER still cannot cross the EXPORT boundary (no way to synthesize an `Rc<dyn Fn>`
+    // argument from a literal): an exported fn with a function-typed PARAM declines cleanly (todo).
     let param = try_compile_rust(
         "(module m (def (apply-it (: g (-> Int64 Int64)) (: x Int64)) (g x)) (export apply-it))",
     )
@@ -716,15 +715,24 @@ fn a_closure_crossing_the_export_boundary_declines() {
             .any(|d| d.contains("cannot cross the Rust export boundary")),
         "decline cites the export boundary: {param:?}"
     );
-    let result = try_compile_rust(
-        "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (+ x k))) (export mk))",
-    )
-    .expect_err("a closure-returning export must decline");
+    // A closure RESULT (a scalar-capture FACTORY), by contrast, NOW EMITS (host-closure S1): it crosses as
+    // `pub fn mk(k) -> Rc<dyn Fn(x)->r>` and the host applies `mk(k)(x)`. (See the dedicated S1 roundtrip
+    // test for the make/call run.) A COMPOUND-result factory is still deferred (S3) — it declines cleanly.
+    let scalar_factory =
+        compile_rust("(module m (def (mk (: k Int64)) (fn ((: x Int64)) (+ x k))) (export mk))");
     assert!(
-        result
+        scalar_factory.contains("pub fn mk(k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64>"),
+        "a scalar-capture closure factory emits an `Rc<dyn Fn>` handle (S1):\n{scalar_factory}"
+    );
+    let compound_result = try_compile_rust(
+        "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (tuple x k))) (export mk))",
+    )
+    .expect_err("a compound-RESULT closure factory still declines (host-closure S3, deferred)");
+    assert!(
+        compound_result
             .iter()
-            .any(|d| d.contains("cannot cross the Rust export boundary")),
-        "decline cites the export boundary: {result:?}"
+            .any(|d| d.contains("non-scalar capture/arg/result")),
+        "the compound-result decline cites the S2/S3 boundary: {compound_result:?}"
     );
 }
 
@@ -4397,6 +4405,53 @@ fn rustc_roundtrip_sum_constructor_list_element_payload_binder() {
     assert!(
         ambiguous.is_err(),
         "an ambiguous-payload-type sum-element binder declines, not miscompiles:\n{ambiguous:?}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_host_closure_factory_export_scalar_capture_s1() {
+    // HOST-CLOSURE S1: a closure-FACTORY export — a parameterized def whose result is a closure capturing
+    // its params — now crosses the Rust export boundary (was declined "no closure handle ABI"). The def's
+    // captured params stay ordinary leading params and the returned `(fn …)` emits as an `Rc<dyn Fn>` VALUE
+    // (the internal-closure lowering), so `both(a,b)` returns a handle the host applies `(x)`. The native
+    // equivalent of the wasm make/call resource ABI. S1 is scalar-capture/arg/result only (compound = S2/S3).
+    let both = compile_rust(
+        "(module m (def (both (: a Int64) (: b Int64)) (fn ((: x Int64)) (+ (+ a b) x))) (export both))",
+    );
+    assert!(
+        both.contains("pub fn both(a: i64, b: i64) -> std::rc::Rc<dyn Fn(i64) -> i64>")
+            && both.contains("std::rc::Rc::new(move |"),
+        "a scalar-capture closure factory emits `-> Rc<dyn Fn>` returning an `Rc::new(move |…|)` handle:\n{both}"
+    );
+    // The factory is APPLIED in two steps: `both(10, 20)` makes the handle, `(5)` applies it → 10+20+5 = 35.
+    if let Some(out) = rustc_run(&both, "both(10, 20)(5)") {
+        assert_eq!(out, "35", "make(10,20) then call(5) = a+b+x = 35");
+    }
+    // A capture used through a nested subexpression + a captured-boolean control-flow closure also cross.
+    let scale = compile_rust(
+        "(module m (def (scale (: k Int64)) (fn ((: x Int64)) (* (+ x 1) k))) (export scale))",
+    );
+    if let Some(out) = rustc_run(&scale, "scale(4)(3)") {
+        assert_eq!(out, "16", "make(k=4) then call(3) = (3+1)*4 = 16");
+    }
+
+    // SCOPE GUARD: a closure factory whose closure takes/returns a COMPOUND (here a Tuple RESULT) still
+    // DECLINES cleanly (S3, deferred) — the factory emits a valid Rc<dyn Fn> but the harness result-render
+    // is not yet wired, so it stays a `todo`, NOT a wrong-value/non-build fail.
+    let compound = compile_rust_result(
+        "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (tuple x k))) (export mk))",
+    );
+    assert!(
+        compound.is_err(),
+        "a closure factory returning a compound declines (host-closure S3, deferred):\n{compound:?}"
+    );
+    // And a closure PARAMETER export still declines (no way to synthesize an Rc<dyn Fn> arg at the boundary).
+    let param = compile_rust_result(
+        "(module m (def (apply (: f (-> Int64 Int64)) (: x Int64)) (f x)) (export apply))",
+    );
+    assert!(
+        param.is_err(),
+        "a closure-PARAMETER export declines (no Rc<dyn Fn> arg synthesis at the boundary):\n{param:?}"
     );
 }
 

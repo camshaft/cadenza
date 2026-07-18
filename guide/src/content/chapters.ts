@@ -195,6 +195,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Effects.tsx")),
   },
   {
+    slug: "contracts",
+    title: "Design by contract",
+    blurb: "@requires and @ensures turn an assumption into an enforced check at the function boundary.",
+    section: "What makes Cadenza different",
+    exercises: 0,
+    Component: lazy(() => import("./chapters/DesignByContract.tsx")),
+  },
+  {
     slug: "modules",
     title: "Modules",
     blurb: "Grouping definitions under a name; a module is a record of its exports.",
