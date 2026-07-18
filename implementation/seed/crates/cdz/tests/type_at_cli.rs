@@ -92,3 +92,23 @@ fn type_at_on_a_missing_file_errors_with_the_cdz_prog_name() {
     assert!(!ok, "a missing file should fail");
     assert!(err.contains("cdz:"), "error names the tool: {err}");
 }
+
+#[test]
+fn type_at_a_non_numeric_offset_names_what_a_byte_offset_is() {
+    // A non-numeric OFFSET (a stale/mis-typed editor arg) must get an ACTIONABLE message naming what the
+    // argument is — a 0-based byte offset — not clap's bare `invalid digit found in string`. These are
+    // editor/script-facing queries; a caller that passes garbage should be told the expected shape. The
+    // custom `value_parser` is shared by def/scope/type-at/doc-at (all take a byte offset).
+    let (dir, file, _src) = temp_src("badoffset", PROG);
+    let (ok, _out, err) = run(&["type-at", &file, "not-a-number"]);
+    assert!(!ok, "a non-numeric offset is a usage error");
+    assert!(
+        err.contains("not a byte offset") && err.contains("0-based"),
+        "the message names what a byte offset is, not a bare digit-parse error: {err}"
+    );
+    assert!(
+        !err.contains("invalid digit found in string"),
+        "must NOT leak clap's generic digit-parse blur: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -55117,6 +55117,41 @@ mod stage1 {
     }
 
     #[test]
+    fn two_nested_recursive_const_closure_drivers_emit_valid_wasm() {
+        // Regression for the nested-driver INVALID-WASM bug: a `filter` adapter whose recursive
+        // `filter-step` takes a `const` step closure, consumed by a recursive `drive` fold that ALSO takes
+        // its step `const` — two nested recursive const-closure specializations. This emitted INVALID WASM
+        // ("function index out of bounds": a nested spec's `Core::Call` referenced an un-laid-out function
+        // slot) because `finish_layout`'s reachability walk appended a nested spec to `order` WITHOUT
+        // closing over its own callees. The joint call/lifted-closure fixpoint fix reaches them. Assert the
+        // emitted component VALIDATES (the primary fix — `compile_component` runs `run_returns`/`run_linked`
+        // which instantiate, so an invalid module would panic) and computes correctly: [1..5] kept >2, summed
+        // = 3+4+5 = 12. (The single-driver fusion emit-shape is pinned separately; this pins the NESTED case
+        // does not regress to invalid wasm.)
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (type It (Mk (List Int64) (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) \
+               (def (from-list (: xs (List Int64))) (It.Mk xs (fn ((: s (List Int64))) (match s ((list) (Option.None)) ((list h .. t) (Option.Some (tuple h t))))))) \
+               (def (filter-step (const (: step (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) (: s (List Int64)) (const (: p (-> Int64 Bool)))) \
+                 (match (step s) ((Option.None) (Option.None)) ((Option.Some pr) (match pr ((tuple x s2) (if (p x) (Option.Some (tuple x s2)) (filter-step step s2 p))))))) \
+               (def (filter (: it It) (: p (-> Int64 Bool))) (match it ((It.Mk s0 step) (It.Mk s0 (fn ((: s (List Int64))) (filter-step step s p)))))) \
+               (def (drive (const (: step (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) (: s (List Int64)) (: acc Int64)) \
+                 (match (step s) ((Option.None) acc) ((Option.Some p) (match p ((tuple x s2) (drive step s2 (+ acc x))))))) \
+               (def (sum (: it It)) (match it ((It.Mk s step) (drive step s 0)))) \
+               (def (main) (sum (filter (from-list (list 1 2 3 4 5)) (fn ((: x Int64)) (> x 2))))) (export main))",
+        )))
+        .expect("two nested recursive const-closure drivers compile");
+        // Instantiating (run_linked) proves the emitted module is VALID wasm — an out-of-bounds function
+        // index would fail to instantiate. Value 12 = 3+4+5 (filter > 2, then sum).
+        if let Some(v) = run_linked(&bytes, "main") {
+            assert_eq!(
+                v, "12",
+                "nested const-closure drivers fuse + compute 3+4+5 = 12"
+            );
+        }
+    }
+
+    #[test]
     fn a_const_parameter_rejects_a_runtime_dependent_argument() {
         // 09-functions "a const parameter rejects an argument that depends on runtime data": a `const`
         // parameter DECLARES its argument compile-time-known (Addendum 3). Here `main` passes a dictionary
