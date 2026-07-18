@@ -8,11 +8,17 @@
 /// integer/bool subset, and they guard it as the reader/pipeline evolve.
 
 import { read-source } from "sread"
-import { eval-tree } from "eval-db"
 import { is-bool-at } from "infer-db"
+import { db-of } from "db"
+import { run-of-db } from "db-eval"
 
-/// Read + run a program from its s-expr SOURCE. `Some value` | `None` (declined).
-def run-src(s: String) = match read-source(s) with | (root, tree) => eval-tree(tree, root)
+/// Read + run a program from its s-expr SOURCE, through the MEMOIZED Db pipeline (P1g `run-of-db`): source →
+/// `read-source` arena → `db-of` → run-of-db (resolve→infer→lower each fill-once in the Db, then eval). `Some
+/// value` | `None` (declined). This is the run-of-db-PRIMARY finale (operator's "make the Db pipeline primary,
+/// nuke the whim eval-tree"): the differential run path is now the CACHING pipeline, not the recompute-per-
+/// demand `eval-tree`. Unblocked by the bug#4 fix (rcdzc 26e3471ac) — the let-program-at-scale divergence that
+/// forced eval-tree here is gone (se-milestone-from-source passes over the Db now).
+def run-src(s: String) = match read-source(s) with | (root, tree) => (match run-of-db(db-of(tree), root) with | (_, v) => v)
 
 /// Read + run, TAGGING the result with its ground type so the caller can render `true`/`false` for a
 /// Bool-typed program (Core encodes Bool as the Int 0/1, but rcdzc renders it as `true`/`false` — the
@@ -22,9 +28,9 @@ def run-src(s: String) = match read-source(s) with | (root, tree) => eval-tree(t
 def run-src-typed(s: String) =
   (match read-source(s) with
    | (root, tree) =>
-     (match eval-tree(tree, root) with
-      | Option.Some(v) => Option.Some((v, (if is-bool-at(tree, root, root) then 1 else 0)))
-      | Option.None(_) => (Option.None(unit) : Option(Tuple(Int64, Int64)))))
+     (match run-of-db(db-of(tree), root) with
+      | (_, Option.Some(v)) => Option.Some((v, (if is-bool-at(tree, root, root) then 1 else 0)))
+      | (_, Option.None(_)) => (Option.None(unit) : Option(Tuple(Int64, Int64)))))
 
 @test
 def se-int-literal() =

@@ -1206,6 +1206,29 @@
             (export main)))
   (output (: 57 Int64)))
 
+(case "a closure capturing a value computed under a handler may escape the handle applied directly"
+  (doc    "The discharge-then-capture idiom (the 'configure a callback from handled state' pattern): the
+           perform `(St.get)` runs INSIDE the handle body (a `let` init — the handler is live), and the
+           ESCAPING closure captures only the resulting Int64 VALUE `v`. The closure performs nothing, so the
+           escape is sound — `((handle St k (arm) (let ((v (St.get))) (fn (x) (+ x v)))) 10)` with k=7 folds
+           v=7, closes over it, and applying the escaped closure to 10 yields 17. This was over-rejected
+           CDZ0401 (the escape analysis conflated a lexically-inner perform with an escaping one); the
+           `lambda_of` handler-discharge fix (the closure-capture-reperform family) folds the in-extent
+           `St.get` to its value so the escaped closure is pure. The genuinely-unsound twin — the closure
+           BODY performing `(fn (x) (+ x (St.get)))` — correctly STAYS rejected (its perform runs
+           out-of-extent on outside-application); this case pins the sound half of that boundary.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main (: k Int64))
+              ((handle St k
+                 ((get (u) s (resume s s)))
+                 (let ((v (St.get)))
+                   (fn ((: x Int64)) (+ x v))))
+               10))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 17 Int64)))
+
 (case "TWO performs in an if condition both fold on the strict-first spine"
   (input  (do
             (effect Amb (op flip (-> Unit Int64)))

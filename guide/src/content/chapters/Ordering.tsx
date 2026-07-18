@@ -7,18 +7,18 @@ export default function Ordering() {
   return (
     <article>
       <H1>Comparison &amp; ordering</H1>
-      <Lede>Asking how two values relate — and the shape a total order takes.</Lede>
+      <Lede>Asking how two values relate, and the shape a total order takes.</Lede>
 
       <H2>The comparison operators</H2>
       <P>
-        The six comparisons — <C>=</C>, <C>&lt;</C>, <C>&lt;=</C>, <C>&gt;</C>, <C>&gt;=</C>, and{" "}
-        <C>not</C> for negation — each produce a <C>Bool</C>. They're most at home as the condition of
+        The six comparisons, <C>=</C>, <C>&lt;</C>, <C>&lt;=</C>, <C>&gt;</C>, <C>&gt;=</C>, and{" "}
+        <C>not</C> for negation, each produce a <C>Bool</C>. They're most at home as the condition of
         an <C>if</C>:
       </P>
       <Runnable source={`(if (<= 5 5) 1 0)`} />
 
       <P>
-        Combine them with <C>and</C> / <C>or</C> to express a range check — "is 5 between 1 and 10?":
+        Combine them with <C>and</C> / <C>or</C> to express a range check, as in "is 5 between 1 and 10?":
       </P>
       <Runnable source={`(if (and (>= 5 1) (<= 5 10)) 1 0)`} />
 
@@ -39,8 +39,8 @@ export default function Ordering() {
       />
       <P>
         <C>(min 8 3)</C> is <C>3</C>, the smaller of the two. And <C>(clamp 0 10 42)</C> is <C>10</C>: 42 is
-        past the upper bound, so <C>clamp</C> pulls it back to <C>10</C> — feed it a value already inside{" "}
-        <C>0</C>–<C>10</C> and you get that value back unchanged.
+        past the upper bound, so <C>clamp</C> pulls it back to <C>10</C>, and feeding it a value already
+        inside <C>0</C>–<C>10</C> gives that value back unchanged.
       </P>
 
       <H2>Three answers, not two</H2>
@@ -63,7 +63,7 @@ export default function Ordering() {
 
       <H2>The <C>Ordering</C> value</H2>
       <P>
-        <C>compare</C> takes two values and returns an <C>Ordering</C> — a sum with exactly three
+        <C>compare</C> takes two values and returns an <C>Ordering</C>, a sum with exactly three
         variants, <C>Less</C>, <C>Equal</C>, and <C>Greater</C>. You read it apart with <C>match</C>, the
         same way you would any sum. Here <C>3</C> is less than <C>9</C>, so the <C>Less</C> arm fires:
       </P>
@@ -76,7 +76,7 @@ export default function Ordering() {
 (def (main) (order-sign 3 9))`}
       />
       <P>
-        Now the three cases have names, not magic numbers — and because <C>Ordering</C> is a closed sum,
+        Now the three cases have names, not magic numbers, and because <C>Ordering</C> is a closed sum,
         the compiler holds you to all three. Delete the <C>Greater</C> arm and Run: instead of a value
         you get a compile-time error, <C>non-exhaustive match: pattern `Greater` not covered</C>:
       </P>
@@ -92,7 +92,7 @@ export default function Ordering() {
       />
 
       <P>
-        <C>compare</C> is <em>generic</em> — it works on any two values of the same type, not just
+        <C>compare</C> is <em>generic</em>, so it works on any two values of the same type, not just
         numbers. Text compares in dictionary order, so <C>"apple"</C> comes before <C>"banana"</C> and
         the <C>Less</C> arm fires again:
       </P>
@@ -107,11 +107,11 @@ export default function Ordering() {
 
       <Why tenet="A total order is a three-way answer">
         Returning <C>-1 / 0 / 1</C> works, but it leans on a convention and can't be enforced. Cadenza's{" "}
-        <C>compare</C> yields the <C>Ordering</C> sum — <em>less</em>, <em>equal</em>, <em>greater</em> —
+        <C>compare</C> yields the <C>Ordering</C> sum of <em>less</em>, <em>equal</em>, and <em>greater</em>,
         so the three cases have names and the compiler checks a caller handled <em>all</em> of them
         (you saw the missing-arm error above). There's no fourth nonsense value to guard against: what
-        would <C>2</C>, or <C>true,true</C>, even mean? And it's one order for every type — numbers, text,
-        and the rest — so sorting and lookup behave the same way everywhere, observed identically by every
+        would <C>2</C>, or <C>true,true</C>, even mean? And it's one order for every type, whether numbers,
+        text, or the rest, so sorting and lookup behave the same way everywhere, observed identically by every
         consumer.
       </Why>
 
@@ -133,7 +133,7 @@ export default function Ordering() {
         expected="1"
         hint={
           <>
-            The two ways to be outside are joined with <C>or</C>; the second is "above 10" —{" "}
+            The two ways to be outside are joined with <C>or</C>; the second is "above 10", namely{" "}
             <C>(&gt; x 10)</C>. <C>15</C> is above 10, so the result is <C>1</C>.
           </>
         }
@@ -143,7 +143,7 @@ export default function Ordering() {
         id="ordering:2"
         prompt={
           <>
-            Write <C>max</C> using <C>compare</C> and <C>match</C> — pick <C>a</C> when it's greater or
+            Write <C>max</C> using <C>compare</C> and <C>match</C>, picking <C>a</C> when it's greater or
             equal, and <C>b</C> when <C>a</C> is less. <C>(max 8 3)</C> should give <C>8</C>.
           </>
         }
@@ -162,7 +162,7 @@ export default function Ordering() {
         expected="8"
         hint={
           <>
-            The <C>Less</C> arm is the one case where <C>a</C> is <em>not</em> the maximum — so return{" "}
+            The <C>Less</C> arm is the one case where <C>a</C> is <em>not</em> the maximum, so return{" "}
             <C>b</C> there.
           </>
         }

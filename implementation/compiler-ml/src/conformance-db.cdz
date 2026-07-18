@@ -1,7 +1,7 @@
 /// conformance-db.cdz — Increment 6 (gate-integration) of the Cadenza-in-Cadenza compiler: the CONFORMANCE
 /// SCOREBOARD, in Cadenza. This is the Cadenza-side substrate the operator's gate addition needs: a CORPUS
 /// of integer programs paired with their EXPECTED outcomes, plus a RUNNER that drives each through the whole
-/// lazy-query-DB pipeline (`eval-db.run`) and reports conformance as a count — `X / N` passing.
+/// lazy-query-DB pipeline (`db-eval.run-tokens-db` — the MEMOIZED Db path) and reports conformance as a count — `X / N` passing.
 ///
 /// The point (rcdzc's bootstrap strategy): start LOW and CLIMB. Each case is `(tokens, Expect)`; widening the
 /// language = ADDING cases (and, when a case fails, fixing the column that made it fail). The scoreboard is
@@ -16,7 +16,7 @@
 /// that target calls; keeping it in Cadenza means the scoreboard itself is dogfooded and grows with the tests.
 
 import { Tok } from "parse-db"
-import { run } from "eval-db"
+import { run-tokens-db } from "db-eval"
 
 /// The expected outcome of a corpus case.
 type Expect =
@@ -30,7 +30,7 @@ type Case =
 /// Does the pipeline's actual result for `ts` match `exp`? `Some v` matches `Runs v`; `None` matches
 /// `Declines`. Any other pairing (ran-but-wrong-value, ran-when-should-decline, declined-when-should-run) is
 /// a FAIL — the miscompile/mismatch the real gate catches, scoped here to the integer subset.
-def case-passes(ts: List(Tok), exp: Expect) = match run(ts) with
+def case-passes(ts: List(Tok), exp: Expect) = match run-tokens-db(ts) with
   | Option.Some(v) => (match exp with | Expect.Runs(w) => v == w | Expect.Declines => false)
   | Option.None(_) => (match exp with | Expect.Declines => true | Expect.Runs(_) => false)
 
