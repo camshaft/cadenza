@@ -55,34 +55,50 @@ type Node =
                                   // by inlining the callee body; a param slice (later) lowers `(f a)` to
                                   // CLet(param, arg, body) — a call binds its param exactly like a let.
 
-/// The arena: nodes keyed by NodeId, the next fresh id, AND a DEF-TABLE (`Map(nameId, bodyNodeId)`) — the
-/// module's `(def (name) body)` forms, so a call `(name)` can resolve its head to the def's body node
-/// (user-functions slice-3). (Named `Tree`, NOT `Ast` — a type named `Ast` collides with the built-in
-/// metaprog `Ast`, drawing CDZ0201 "two types with the same name".) The def-table is EMPTY for a bare-token
-/// parse (`parse-tokens` — no defs) and populated only by the s-expr module reader (`sread.read-do-form`).
+/// The arena: nodes keyed by NodeId, the next fresh id, a DEF-TABLE (`Map(nameId, bodyNodeId)`), AND a
+/// PARAM-TABLE (`Map(nameId, paramNodeId)`) — the module's `(def (name) body)` / `(def (name p) body)` forms,
+/// so a call `(name)` resolves its head to the def's body node (user-functions slice-3) and a call `(name arg)`
+/// finds the def's single PARAMETER node to key the `CLet(param, arg, body)` a param-call lowers to (slice-3c).
+/// (Named `Tree`, NOT `Ast` — a type named `Ast` collides with the built-in metaprog `Ast`, drawing CDZ0201
+/// "two types with the same name".) BOTH tables are EMPTY for a bare-token parse (`parse-tokens` — no defs)
+/// and populated only by the s-expr module reader (`sread.read-do-form`). The param-table is ADDITIVE: a
+/// NULLARY def records only its body (no param entry), so `param-of` returns `None` — preserving slice-2/3b
+/// behavior exactly; only a parameterized def (slice-3c) adds a param entry.
 type Tree =
-  | Arena(Map(Int64, Node), Int64, Map(Int64, Int64))
+  | Arena(Map(Int64, Node), Int64, Map(Int64, Int64), Map(Int64, Int64))
 
-def empty-tree() = Tree.Arena(Map.empty, 0, Map.empty)
+def empty-tree() = Tree.Arena(Map.empty, 0, Map.empty, Map.empty)
 
-/// Intern a node into the arena, returning `(its fresh NodeId, tree')`. The def-table rides through unchanged.
+/// Intern a node into the arena, returning `(its fresh NodeId, tree')`. The def + param tables ride unchanged.
 def add-node(tree: Tree, n: Node) = match tree with
-  | Tree.Arena(m, next, dt) => (next, Tree.Arena(Map.insert(m, next, n), next + 1, dt))
+  | Tree.Arena(m, next, dt, pt) => (next, Tree.Arena(Map.insert(m, next, n), next + 1, dt, pt))
 
 /// The node at `id`, or `None` (absence — a caller that requires it declines).
 def node-at(tree: Tree, id: Int64) = match tree with
-  | Tree.Arena(m, _, _) => Map.lookup(m, id)
+  | Tree.Arena(m, _, _, _) => Map.lookup(m, id)
 
 /// How many nodes the arena holds (also the next fresh id).
-def node-count(tree: Tree) = match tree with | Tree.Arena(m, _, _) => Map.len(m)
+def node-count(tree: Tree) = match tree with | Tree.Arena(m, _, _, _) => Map.len(m)
 
 /// Record a `(def (name) body)` in the def-table: name-id → its body node-id. Returns the updated tree.
+/// (The param-table is untouched — a nullary def has no param; a parameterized def calls `record-param` too.)
 def record-def(tree: Tree, nameId: Int64, bodyId: Int64) = match tree with
-  | Tree.Arena(m, next, dt) => Tree.Arena(m, next, Map.insert(dt, nameId, bodyId))
+  | Tree.Arena(m, next, dt, pt) => Tree.Arena(m, next, Map.insert(dt, nameId, bodyId), pt)
 
 /// The body node-id a def-name binds, or `None` (name not a known def) — a call `(name)` looks its head up here.
 def def-body-of(tree: Tree, nameId: Int64) = match tree with
-  | Tree.Arena(_, _, dt) => Map.lookup(dt, nameId)
+  | Tree.Arena(_, _, dt, _) => Map.lookup(dt, nameId)
+
+/// Record a def's single PARAMETER node-id: name-id → its param node-id (slice-3c). A `(name arg)` call looks
+/// this up to build `CLet(paramId, argCore, bodyCore)`. Only a PARAMETERIZED def records a param; a nullary
+/// def never calls this, so `param-of` stays `None` for it (additive — nullary behavior unchanged).
+def record-param(tree: Tree, nameId: Int64, paramId: Int64) = match tree with
+  | Tree.Arena(m, next, dt, pt) => Tree.Arena(m, next, dt, Map.insert(pt, nameId, paramId))
+
+/// The single-parameter node-id a def-name declares, or `None` (a nullary def, or not a known def) — a
+/// `(name arg)` call reads this to key the `CLet` binder. Absence = no parameter (nullary), distinct from a value.
+def param-of(tree: Tree, nameId: Int64) = match tree with
+  | Tree.Arena(_, _, _, pt) => Map.lookup(pt, nameId)
 
 /// The token at index `i`, or `TEnd` past the end (a total indexed read).
 def tok-at(ts: List(Tok), i: Int64) = match List.at(ts, i) with
@@ -533,4 +549,24 @@ def pd-record-def-then-lookup() =
        | Option.Some(x) => (if x == b then (match def-body-of(t2, 2) with | Option.None(_) => unit | Option.Some(_) => trap("unrecorded name → None")) else trap("def-body-of returns the recorded body"))
        | Option.None(_) => trap("a recorded def is found"))))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
+@test
+def pd-record-param-then-lookup() =
+  // slice-3c foundation: the PARAM-TABLE. record-param(name 1 → param node p) then param-of(name 1) = p;
+  // an unrecorded name → None. AND the param-table is ORTHOGONAL to the def-table: recording a param does not
+  // create a def-body entry, and recording a def does not create a param entry — a nullary def (def-body only)
+  // has param-of = None, distinct from a value. Pins the additive param-table a `(name arg)` call reads.
+  (match add-node(empty-tree(), Node.NLit(7)) with | (bodyId, t1) =>
+    (match add-node(t1, Node.NVar(1)) with | (paramId, t2) =>
+      (let t3 = record-def(t2, 1, bodyId) in                    // name 1 = a NULLARY def (body only, no param)
+       (let t4 = record-param(t3, 2, paramId) in                // name 2 = a def with a param (param recorded)
+        (match param-of(t4, 2) with
+          | Option.Some(p) => (if p == paramId
+              then (match param-of(t4, 1) with                  // name 1 is nullary → NO param entry
+                | Option.None(_) => (match def-body-of(t4, 2) with  // name 2 recorded a param, NOT a def-body
+                    | Option.None(_) => unit
+                    | Option.Some(_) => trap("param-table is orthogonal to def-table (name 2 has no def-body)"))
+                | Option.Some(_) => trap("a nullary def has NO param entry (param-of → None)"))
+              else trap("param-of returns the recorded param node"))
+          | Option.None(_) => trap("a recorded param is found"))))))
+
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, record-param, param-of, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }

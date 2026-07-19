@@ -63,3 +63,8 @@ lexical ruling. Renamed .RESOLVED-PENDING-MERGE.
 • #1 DOC: sread.cdz:242 now says "bodyId = -1 sentinel" + line 244 clarifies "nameId is always name-id(nm); it
   is the BODYID that carries the -1 sentinel." ✓
 FULLY CLOSED.
+
+FOLLOW-UP (corpus-bugfix 2026-07-19): a corpus witness for the lexical-scope fix ALSO landed — `2f2bcad7a`
+"corpus: pin lexical callee-body scope — a called function's body is NOT captured by a caller's same-name
+binding". So the pr625 #2 fix is now guarded by BOTH the port lib test (rd-nullary-call-body-is-lexical-...)
+AND a corpus case. Fully protected against regression.
