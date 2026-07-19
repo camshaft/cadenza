@@ -383,6 +383,7 @@ pass	a RECORD closure ARG whose fields are NOT in sorted source order
 pass	a RECORD closure ARG with a LIST result
 pass	a RECORD closure ARG with a narrow Bool field, among scalars
 pass	a RECORD field built from a runtime param boxes its Map handle correctly (function[27] record-path twin)
+pass	a RECORD used as a map key hashes and matches by its field SET, independent of written order
 pass	a RECORD with a nested TUPLE field crosses the direct-call boundary
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
@@ -797,6 +798,8 @@ pass	a default-integer pragma fixes a type but adds no conversion — no-promoti
 pass	a default-integer pragma makes a bare literal take the declared integer type
 pass	a default-integer pragma naming a non-integer type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
+pass	a deferred resume-thunk stored in a MULTI-PAYLOAD pqueue entry and tuple-match-extracted folds
+pass	a deferred resume-thunk STORED IN A SUM and match-extracted through a helper before apply folds
 pass	a delegated capability is not itself an export field
 pass	a delegation naming an effect that is never reached is rejected as latent authority
 pass	a dense if-equality chain dispatches every value including the default

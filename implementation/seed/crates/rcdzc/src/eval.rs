@@ -2134,20 +2134,22 @@ pub fn fold_ctor_match(db: &mut Db, node: StructId) -> Option<StructId> {
     };
     // The scrutinee must be a VISIBLE ctor `(Ctor payload)` — else leave it a runtime match.
     let (disc, _head, args) = reduce_to_visible_ctor(db, scrutinee)?;
-    // SLICE 1: single-payload only. A nullary (`args.is_empty()`) or multi-payload ctor declines here (a
-    // later increment threads the multi-payload `[Payload, Elem(i)]` projection).
+    // A single-payload ctor. The payload may itself be a TUPLE destructured by a tuple sub-pattern (slice
+    // 2) — a variant declared `(Ctor (Tuple A B C))` still arrives as ONE payload arg (the tuple). A
+    // nullary (`args.is_empty()`) ctor binds nothing; a genuine multi-arg application declines here.
     if args.len() != 1 {
         return None;
     }
-    // Find the arm whose pattern is a plain single-binder `(Ctor v)` for the SAME discriminant.
+    let payload = args[0];
+    // Find the arm whose pattern matches the scrutinee's discriminant and is one this fold handles.
     for (pat, body) in &arms {
         // A guarded arm (`(guard <pat> <cond>)`) is refutable at runtime — never fold it away.
         if db.ast.as_form(*pat, "guard").is_some() {
             continue;
         }
-        // The pattern must be a 2-element list `(ctor_head binder)`: the head names the variant, the
-        // second child is the payload binder. (A bare nullary variant, a literal, a wildcard, a nested
-        // `(Ctor (tuple …))`, or a multi-binder `(Ctor a b)` is NOT this slice — skip / decline.)
+        // The pattern must be a 2-element list `(ctor_head sub_pattern)`: the head names the variant, the
+        // second child is the payload sub-pattern. (A bare nullary variant, a literal, or a wildcard is
+        // NOT one of the slices here — skip / decline.)
         let crate::ast::Struct::List(kids) = db.ast.get(*pat) else {
             continue;
         };
@@ -2155,52 +2157,85 @@ pub fn fold_ctor_match(db: &mut Db, node: StructId) -> Option<StructId> {
             continue;
         }
         let (pat_head, binder) = (kids[0], kids[1]);
-        // The binder must be a bare name (not a nested pattern) — the single-binder slice.
-        if db.ast.as_name(binder).is_none() {
-            continue;
-        }
         // The pattern's ctor must match the scrutinee's discriminant.
         if variant_disc_of(db, pat_head) != Some(disc) {
             continue;
         }
-        // MATCH. The arm's payload binder `v`'s USES resolve to `SumPayload{scrutinee: S, steps:[Payload]}`
-        // (NOT `Ref{binder}`), so `beta_reduce`'s binder-keyed substitution can't catch them, and a plain
-        // copy re-resolves `v` UNBOUND (the copy leaves the match-arm context). Instead do a TARGETED
-        // rewrite: replace each subtree node whose `resolved_of` is that `SumPayload` with the ctor's
-        // payload — the resolve-time analogue of the lowering `Resolved::SumPayload` fold over a visible
-        // ctor. SLICE 1: steps == [Payload] (single payload) → `args[0]`.
-        let folded = rewrite_sum_payload(db, *body, scrutinee, args[0]);
-        return Some(folded);
+        // SLICE 1: a bare-name binder `(Ctor v)` — the WHOLE payload substitutes. The binder's USES
+        // resolve to `SumPayload{scrutinee: S, steps:[Payload]}` (NOT `Ref{binder}`), so `beta_reduce`'s
+        // binder-keyed substitution can't catch them and a plain copy re-resolves `v` UNBOUND (the copy
+        // leaves the match-arm context). Instead a TARGETED rewrite: replace each subtree node whose
+        // `resolved_of` is that `SumPayload` with the payload — the resolve-time analogue of the lowering
+        // `Resolved::SumPayload` fold over a visible ctor.
+        if db.ast.as_name(binder).is_some() {
+            let folded = rewrite_sum_payload(db, *body, scrutinee, payload, None);
+            return Some(folded);
+        }
+        // SLICE 2: a TUPLE sub-pattern `(Ctor (tuple v0 v1 …))` destructuring a tuple payload — each
+        // binder `vi` resolves to `SumPayload{scrutinee: S, steps:[Payload, Elem(i)]}`. Reduce the payload
+        // to its compile-time-visible tuple elements and substitute element `i` for the `[Payload,
+        // Elem(i)]` step. Only fold when the payload IS such a visible tuple (`reduce_to_tuple_elems`) —
+        // else leave it a runtime match (a payload behind an opaque runtime binding declines to `None`).
+        // This is v-DES's real pqueue shape `(PQCons (tuple wake kb rest))`; once the tuple binders
+        // substitute, the caller's loop folds an inner single-payload `(KBox k)` match via slice 1.
+        if db.ast.head_name(binder) == Some("tuple") {
+            let elems = reduce_to_tuple_elems(db, payload)?;
+            let folded = rewrite_sum_payload(db, *body, scrutinee, payload, Some(&elems));
+            return Some(folded);
+        }
+        // Any other sub-pattern (nested variant, record, literal) — not a slice this fold serves.
+        continue;
     }
     None
 }
 
-/// Recursively COPY `body`, replacing every node whose `resolved_of` is `SumPayload{scrutinee == S,
-/// steps == [Payload]}` with `payload` — the single-payload payload-binder substitution `fold_ctor_match`
-/// performs after selecting a matching arm. A non-SumPayload node is rebuilt structurally (a list rebuilds
-/// its rewritten children; an atom is shared for a constant / copied for a name so a copied scope still
-/// resolves). Only the `[Payload]` single-step shape is substituted (slice 1); a deeper path (`[Payload,
-/// Elem(i)]`, a multi-payload/nested destructure) is left intact — the caller only folds when the arm is a
-/// plain single-binder `(Ctor v)`, so no deeper SumPayload over `S` appears in a matched body here.
+/// Recursively COPY `body`, replacing every node whose `resolved_of` is a `SumPayload` reading THIS
+/// match's scrutinee — the payload-binder substitution `fold_ctor_match` performs after selecting a
+/// matching arm. A non-SumPayload node is rebuilt structurally (a list rebuilds its rewritten children; an
+/// atom is shared for a constant / copied for a name so a copied scope still resolves).
+///
+/// - SLICE 1 (`payload_elems == None`): a single-payload binder `(Ctor v)` reads `[Payload]` → substitute
+///   the whole `payload` occurrence.
+/// - SLICE 2 (`payload_elems == Some(elems)`): a tuple-destructure `(Ctor (tuple v0 v1 …))` — binder `vi`
+///   reads `[Payload, Elem(i)]` → substitute `elems[i]` (the payload tuple's element occurrence). The bare
+///   `[Payload]` shape does not occur in a tuple-destructure arm's body (no binder reads the whole tuple),
+///   but is handled for safety by substituting the whole `payload`.
+///
+/// A deeper/other path (a nested `(Ctor (Ctor v))`, an out-of-range `Elem`) is left intact — the caller
+/// only folds the two slices above, so no such deeper `SumPayload` over `S` appears in a matched body.
 fn rewrite_sum_payload(
     db: &mut Db,
     body: StructId,
     scrutinee: StructId,
     payload: StructId,
+    payload_elems: Option<&[StructId]>,
 ) -> StructId {
     use crate::core::PathStep;
-    // A node that RESOLVES to the arm's payload binder — a `SumPayload` reading THIS match's scrutinee via
-    // a single `[Payload]` step — is the binder use; replace it with the payload occurrence.
+    // A node that RESOLVES to a payload binder of THIS match — a `SumPayload` reading `scrutinee`. Project
+    // its `steps` into the visible payload: `[Payload]` → the whole payload; `[Payload, Elem(i)]` → the
+    // payload tuple's element `i` (slice 2). Anything else is left as-is (rebuilt structurally below).
     if let Resolved::SumPayload {
         scrutinee: s,
         steps,
         ..
     } = resolved_of(db, body)
         && s == scrutinee
-        && steps.len() == 1
-        && matches!(steps[0], PathStep::Payload)
     {
-        return payload;
+        match (steps.len(), steps.first(), steps.get(1)) {
+            // `[Payload]` — the whole payload (slice 1, and a defensive whole-tuple read in slice 2).
+            (1, Some(PathStep::Payload), _) => return payload,
+            // `[Payload, Elem(i)]` — element `i` of the payload tuple (slice 2). Only when we were handed
+            // the tuple's elements and `i` is in range; else fall through to a structural rebuild (leaving
+            // the SumPayload as a runtime read rather than mis-projecting).
+            (2, Some(PathStep::Payload), Some(&PathStep::Elem(i))) => {
+                if let Some(elems) = payload_elems
+                    && let Some(&elem) = elems.get(i)
+                {
+                    return elem;
+                }
+            }
+            _ => {}
+        }
     }
     match db.ast.get(body).clone() {
         // A CONSTANT leaf is self-contained (shares); a NAME atom that is NOT the substituted binder is
@@ -2215,7 +2250,7 @@ fn rewrite_sum_payload(
         crate::ast::Struct::List(children) => {
             let rewritten: Vec<StructId> = children
                 .iter()
-                .map(|&c| rewrite_sum_payload(db, c, scrutinee, payload))
+                .map(|&c| rewrite_sum_payload(db, c, scrutinee, payload, payload_elems))
                 .collect();
             db.push_list(rewritten)
         }

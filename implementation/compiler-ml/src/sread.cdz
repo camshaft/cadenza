@@ -11,7 +11,7 @@
 /// `read-form` + a test here. Reuses `strlex`'s char helpers (`char-at`, `is-digit`, `scan-number`) and
 /// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
 
-import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit } from "parse-db"
+import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit } from "parse-db"
 import { recognize, is-int-type, ty-signed, ty-width } from "int-type"
 import { fits-width } from "int-width"
 
@@ -238,20 +238,29 @@ def read-ann-form(s: String, i: Int64, tree: Tree) =
 def unsupported-at(tree: Tree, i: Int64) =
   (match unsupported(tree) with | (id, t1) => (id, i, t1))
 
-/// Read ONE nullary `(def (name) body)` starting at `i` (just past the `def` atom). FLAT helper (slice-3b-ii):
-/// returns `(nameId, bodyId, nextIndex, tree')`. `bodyId = -1` sentinel = a PARAMETERIZED def `(name (: p T))`
-/// (a `(` where the signature-closing `)` is expected) — out of the nullary subset, caller declines. (nameId is
-/// always `name-id(nm)`; it is the BODYID that carries the -1 sentinel — see read-def-body's else arm.)
+/// Read ONE `(def (name) body)` (nullary) or `(def (name param) body)` (single untyped param, slice-3c)
+/// starting at `i` (just past the `def` atom). FLAT helper: returns `(nameId, bodyId, paramId, nextIndex,
+/// tree')`. `bodyId = -1` sentinel = an UNSUPPORTED signature (a typed `(: p T)` param, still out of subset).
+/// `paramId = -1` = a NULLARY def (no parameter). A single untyped param `(name n)` reads `n` as an NVar
+/// binder node (its node-id is `paramId`); the body's `n` uses resolve to it (a later slice wires resolve/
+/// lower). (nameId is always `name-id(nm)`; the -1 sentinels ride in bodyId/paramId — see read-def-body.)
 def read-def-form(s: String, i: Int64, tree: Tree) =
   (let m0 = open-paren(s, i) in
    (match scan-atom(s, skip-space(s, m0), "") with | (nm, m1) => read-def-body(s, nm, skip-space(s, m1), tree)))
 
-/// After a def's name at `k` (space already skipped): a nullary def closes its signature with `)` here →
-/// read the body; anything else (a `(` param) → the -1 sentinel. Split out to keep read-def-form flat.
+/// After a def's name at `k` (space already skipped): `)` here → a NULLARY def (paramId -1), read the body.
+/// A `(` → a TYPED param `(: p T)` — not yet supported, bodyId -1 sentinel → caller declines. Otherwise an
+/// ATOM → a single UNTYPED param `(name n)`: read `n` as an NVar binder node (paramId = its node-id), consume
+/// the signature-closing `)`, read the body. Split out to keep read-def-form flat.
 def read-def-body(s: String, nm: String, k: Int64, tree: Tree) =
   (if (char-at(s, k) == ")")
-   then (match read-form(s, k + 1, tree) with | (bodyId, j, t1) => (name-id(nm), bodyId, j, t1))
-   else (name-id(nm), 0 - 1, k, tree))
+   then (match read-form(s, k + 1, tree) with | (bodyId, j, t1) => (name-id(nm), bodyId, 0 - 1, j, t1))
+   else (if (char-at(s, k) == "(")
+         then (name-id(nm), 0 - 1, 0 - 1, k, tree)             // typed `(: p T)` param — not yet, decline
+         else (match scan-atom(s, k, "") with | (pnm, k1) =>   // a single UNTYPED param name `n`
+                (match add-node(tree, Node.NVar(name-id(pnm))) with | (paramId, t1) =>
+                  (let k2 = close-paren(s, skip-space(s, k1)) in   // consume the signature-closing `)`
+                   (match read-form(s, k2, t1) with | (bodyId, j, t2) => (name-id(nm), bodyId, paramId, j, t2))))))))
 
 /// After `(do` (index `i`): read a SEQUENCE of `(def (name) body)` — record each HELPER (nameId→bodyId) in the
 /// def-table (so a `(name)` call resolves), until `main` whose body is the module ROOT. A parameterized def or
@@ -261,13 +270,18 @@ def read-do-form(s: String, i: Int64, tree: Tree) =
    (match scan-atom(s, skip-space(s, d0), "") with | (kw, d1) =>
      (if (kw == "def") then read-do-def(s, d1, tree) else unsupported-at(tree, d1))))
 
-/// Handle one `(def …)` inside a `do`: read it; if it's `main`, its body is the root; if a helper, record it
-/// and recurse to the next def; if parameterized (-1), decline. Flat — each branch is one expression.
+/// Handle one `(def …)` inside a `do`: read it (nullary or single-param); if it's `main`, its body is the root;
+/// if a helper, record its body + (if present) its param, then recurse to the next def; if the signature is
+/// unsupported (bodyId -1 = typed param), decline. A helper with a single param records BOTH the def-body and
+/// the param node (via record-param) so a `(name arg)` call can key `CLet(param, arg, body)` (slice-3c). Flat.
 def read-do-def(s: String, d1: Int64, tree: Tree) =
-  (match read-def-form(s, d1, tree) with | (nameId, bodyId, j, t1) =>
-    (if (bodyId == (0 - 1)) then unsupported-at(t1, j)   // -1 bodyId = parameterized def → decline
-     else (if (nameId == name-id("main")) then (bodyId, j, t1)
-           else read-do-next(s, j, record-def(t1, nameId, bodyId)))))
+  (match read-def-form(s, d1, tree) with | (nameId, bodyId, paramId, j, t1) =>
+    (if (bodyId == (0 - 1)) then unsupported-at(t1, j)   // -1 bodyId = unsupported signature → decline
+     else (if (nameId == name-id("main")) then (bodyId, j, t1)   // main's body is the module root
+           else (let t2 = record-def(t1, nameId, bodyId) in
+                 (if (paramId == (0 - 1))
+                  then read-do-next(s, j, t2)                       // nullary helper — body only
+                  else read-do-next(s, j, record-param(t2, nameId, paramId)))))))  // single-param helper
 
 /// After a HELPER def ended at `j`: skip its closing `)` (if present) and read the next `(def …)` in the do.
 def read-do-next(s: String, j: Int64, tree: Tree) =
@@ -578,6 +592,27 @@ def sr-module-nullary-call-is-napp() =
   // is NApp(mkBodyId, -1). This is the source-level nullary-function call the whole slice-3 builds toward.
   (match read-source("(do (def (mk) 42) (def (main) (mk)) (export main))") with | (root, tree) =>
     (match node-at(tree, root) with | Option.Some(Node.NApp(_, _)) => unit | _ => trap("(mk) call → root is an NApp")))
+
+@test
+def sr-module-single-param-def-reads-and-records-param() =
+  // slice-3c (sread layer): a single UNTYPED-param helper `(def (f n) (+ n 1))` READS its param `n` as an NVar
+  // binder node + RECORDS it in the param-table (record-param), alongside its def-body. So param-of(name-id "f")
+  // is Some (the param node) AND def-body-of(name-id "f") is Some (the body). A nullary def (main here) records
+  // NO param → param-of(name-id "main") is None. (The param-CALL wiring — resolve/infer/lower `(f 41)` →
+  // CLet — is the next 3c slice; this pins the reader records the structure.) Alpha param names only for now
+  // (the body var-reader's is-alpha set lacks `_`, so a corpus `_1` param name is a separate reader gap).
+  (match read-source("(do (def (f n) (+ n 1)) (def (main) 5) (export main))") with | (root, tree) =>
+    (if (is-lit(tree, root, 5)) then                                   // main's body is the root = NLit 5
+       (match param-of(tree, name-id("f")) with
+         | Option.Some(_) =>                                           // f's param IS recorded
+           (match def-body-of(tree, name-id("f")) with
+             | Option.Some(_) =>                                       // f's body IS recorded
+               (match param-of(tree, name-id("main")) with
+                 | Option.None(_) => unit                              // nullary main has NO param
+                 | Option.Some(_) => trap("nullary main records no param"))
+             | Option.None(_) => trap("f's body is recorded"))
+         | Option.None(_) => trap("f's single param is recorded in the param-table"))
+     else trap("main's body (NLit 5) is the module root — the param def sequence read cleanly")))
 
 @test
 def sr-module-forward-call-declines-known-limitation() =
