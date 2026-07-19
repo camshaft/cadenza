@@ -62,6 +62,28 @@ fn run_rust_renders_a_tuple_the_same_bare_form_cdz_run_prints() {
 }
 
 #[test]
+fn run_rust_a_diverging_main_is_a_trap_not_an_error() {
+    // REGRESSION (breaker + corpus-bugfix): a program whose `main` DIVERGES — a run-time provable trap like
+    // `Option.expect(None, …)` — lowers to `pub fn main() -> ! { panic!(…) }`. The run-rust DRIVER used to
+    // emit post-call render code after `prog::main()`, which is unreachable under `-> !`; rustc's
+    // `-D warnings` elevated the unreachable-statement warning to a HARD ERROR, so run-rust reported the
+    // `error` (miscompile) verdict for what is actually a TRAP — spuriously flagging EVERY diverging program
+    // in the fuzzer's rust-vs-wasm differential. The driver now special-cases a `!`-return export (just CALL
+    // it, no render), so it compiles, panics at run time, and maps to `trap` — matching wasm's clean
+    // `trap unreachable`. Assert `trap …`, and specifically NOT the `error` verdict.
+    let (ok, out, err) = run_stdin("(do (def (main) (Option.expect (None) \"m\")) (export main))");
+    assert!(ok, "a run outcome exits 0: {err}{out}");
+    assert!(
+        out.starts_with("trap"),
+        "a diverging main is a TRAP verdict (matching wasm), not `error`/`value`: {out:?}"
+    );
+    assert!(
+        !out.starts_with("error"),
+        "must NOT be the `error` (miscompile) verdict — a diverging main is a trap: {out:?}"
+    );
+}
+
+#[test]
 fn run_rust_on_a_constant_trapping_program_declines_not_errors() {
     // `(/ 1 0)` is a COMPILE-TIME trap (CDZ0304 constant divide-by-zero) — the front-end rejects it, so
     // the rust emit fails → `declined` (coverage/reject), NOT `error` (which is reserved for an emitted

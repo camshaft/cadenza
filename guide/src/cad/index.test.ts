@@ -77,6 +77,23 @@ test("an empty solid meshes to zero triangles (matches the native Manifold::empt
   if (r.ok) assert.equal(r.indices.length, 0, "an empty solid has no triangles");
 });
 
+test("Union(Empty, cube) meshes the cube — an Empty base must NOT annihilate the boolean (snowflake blank regression)", async () => {
+  // REGRESSION: the empty case must be a PROPER manifold empty that composes, not a zero-size cube (which
+  // annihilates booleans: cube([0,0,0]).add(realCube) === 0 tris). The snowflake folds from an Empty base
+  // (Union(Empty, body)), so a bad empty zeroed the WHOLE model → blank canvas. This pins that an Empty
+  // accumulator in a union contributes nothing but LEAVES the real operand intact (identity element).
+  const withEmptyBase = await meshFromSolid(
+    "(: (Union (Empty unit) (Cube (: (tuple 4/1 4/1 4/1) Vec3))) Solid)",
+  );
+  const bareCube = await meshFromSolid("(: (Cube (: (tuple 4/1 4/1 4/1) Vec3)) Solid)");
+  assert.equal(withEmptyBase.ok, true);
+  assert.equal(bareCube.ok, true);
+  if (withEmptyBase.ok && bareCube.ok) {
+    assert.ok(withEmptyBase.indices.length > 0, "Union(Empty, cube) must have geometry (Empty is union's identity, not an annihilator)");
+    assert.equal(withEmptyBase.indices.length, bareCube.indices.length, "Union(Empty, cube) meshes exactly the cube");
+  }
+});
+
 test("a negative-dimension cube meshes to zero triangles (cross-surface: matches native + exact model)", async () => {
   // Cross-surface consistency guard: the exact model (exact.cdz) normalizes a negative-dimension box, the native
   // cdz-cad driver meshes it empty, and manifold documents that any negative dimension → an empty Manifold. This

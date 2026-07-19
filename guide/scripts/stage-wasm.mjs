@@ -91,7 +91,7 @@ if (!runtimePath) {
 // *.cdz` import is blocked by Vite's dev `server.fs.allow` with project root = guide/), so staging them here
 // (git-ignored, regenerated with the wasm — SAME pattern as runtime.wasm) is the single-source, dev-and-
 // build-safe way. CadPage `?raw`-imports the staged copies. Non-fatal if absent (only /cad needs them).
-const cadLibs = ["exact.cdz", "helpers.cdz", "units.cdz", "snowflake.cdz", "prng.cdz"];
+const cadLibs = ["exact.cdz", "helpers.cdz", "units.cdz"];
 await mkdir(join(dest, "cad"), { recursive: true });
 for (const lib of cadLibs) {
   const src = join(guide, "..", "implementation", "cad", "src", lib);

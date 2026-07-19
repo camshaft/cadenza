@@ -3103,6 +3103,21 @@ fn a_record_match_pattern_composes_with_wildcard_and_shadowing() {
         "guarded record arm declines with the feature message, got: {}",
         err.message
     );
+
+    // A LITERAL field value probes that field by equality, and the EMPTY record pattern always fires.
+    // Both COMPILE cleanly (their end-to-end run values — the literal-field probe hit/miss and the empty
+    // pattern always-match — are corpus-pinned in 05-compound-types.sexp, which links the value-heap
+    // runtime a record-value scrutinee imports; run_returns here would need that link). Pin that they
+    // lower without a decline.
+    for src in [
+        "(module m (def (main) \
+           (match (record (x 3) (y 4)) ((record (x 3) (y b)) b) (_ -1))) (export main))",
+        "(module m (def (main) \
+           (match (record (x 5)) ((record) 0) (_ 1))) (export main))",
+    ] {
+        compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a literal-field / empty record match pattern lowers cleanly");
+    }
 }
 
 /// A record match pattern's faults are actionable and LOCKSTEP with resolve: a field the scrutinee's
@@ -6660,6 +6675,48 @@ fn an_escaping_closure_whose_body_performs_still_declines() {
     assert!(
         compile_component(&crate::codec::encode(&parse(src))).is_err(),
         "an escaping closure whose BODY performs runs out-of-extent → must stay CDZ0401 (soundness)"
+    );
+}
+
+/// APPLY-SITE HOMING (root-caused from v-cad's passed-closure-under-handler codegen issue): a performing
+/// lambda passed as a fn-PARAM to a function that APPLIES it UNDER a handler — the `handler runs a passed-in
+/// closure` idiom (`with-seed(body) = handle Rand … (body unit)`, `main` calls `(with-seed (fn (u)
+/// (Rand.roll)))`) — must COMPILE. The perform is homed at runtime (the lambda is applied inside `with-seed`
+/// under the `Rand` handler), but `check_no_home_walk` used to walk the lambda ARGUMENT's body at its
+/// DEFINITION site (in `main`, no handler in scope) → false CDZ0401. The fix: `param_apply_extra_handled`
+/// computes, per callee param, the effects the callee applies it under (here Rand), and the arg-walk walks
+/// a lambda argument under `handled` PLUS those — so the perform is homed. Folds to 5 (the roll arm resumes
+/// with the seed 5). SOUNDNESS COMPLEMENT: the same lambda applied by a callee with NO handler (`apply-fn =
+/// (body unit)`) adds nothing → the ungranted effect STAYS rejected CDZ0401. This is the exact pair that a
+/// blanket lambda-arg skip got wrong (it dropped the soundness reject to an uncoded decline; `gate --check`
+/// caught it) — the apply-site-handled-set discipline distinguishes them.
+#[test]
+fn a_performing_lambda_applied_under_a_handler_via_a_fn_param_is_homed_at_the_apply_site() {
+    use crate::testkit::parse;
+    // HOMED: with-seed applies its body param under `handle Rand` → the passed lambda's Rand.roll is homed.
+    let homed = "(do (effect Rand (op roll (-> Unit Int64))) \
+                 (def (with-seed (: body (-> Unit Int64))) \
+                   (handle Rand 5 ((roll (u) s (resume s s))) (body unit))) \
+                 (def (main) (with-seed (fn (u) (Rand.roll)))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(homed))).expect(
+        "a performing lambda applied under a handler (via a fn-param) is homed at the apply site, \
+         not falsely CDZ0401'd at its definition site",
+    );
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(
+            v, "5",
+            "the roll arm resumes with the seed 5 → body unit reads 5"
+        );
+    }
+    // SOUNDNESS: the same lambda applied by a callee with NO handler must STILL be rejected CDZ0401 (the
+    // apply-site handled set is empty, so the ungranted effect is not homed). The blanket-skip bug dropped
+    // this to an uncoded decline; the apply-site discipline keeps the coded reject.
+    let unhomed = "(do (effect Rand (op roll (-> Unit Int64))) \
+                   (def (apply-it (: body (-> Unit Int64))) (body unit)) \
+                   (def (main) (apply-it (fn (u) (Rand.roll)))) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(unhomed))).is_err(),
+        "a performing lambda applied with NO enclosing handler must stay rejected (soundness)"
     );
 }
 
@@ -18104,6 +18161,42 @@ mod match_engine {
     }
 
     #[test]
+    fn a_multi_payload_pattern_with_too_few_binders_is_rejected() {
+        // The too-FEW twin of the over-arity check: `(Mk a)` against a 2-FIELD `Mk` under-binds — it must
+        // REJECT (CDZ0201), not silently bind `a` to the whole payload tuple (the one-sided-arity slip
+        // v-inference flagged, 8901; ruling 8922 = a multi-field variant is multi-arity). Keyed on the
+        // DECLARED field count (`variant_payload_arity`), so it is symmetric with the too-many check.
+        let too_few = reject_full(
+            "(module m (type Pair (Mk Int64 Int64)) \
+               (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a) a))) (export main))",
+        )
+        .expect("a one-binder pattern on a two-field variant is a malformed destructure");
+        assert_eq!(
+            too_few.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            too_few.message
+        );
+        assert!(
+            too_few
+                .message
+                .contains("this pattern binds 1 element for `Mk`, but `Mk` carries 2 fields"),
+            "names the ctor + counts fields (the too-few twin): {}",
+            too_few.message
+        );
+        // CRITICAL: a genuinely SINGLE-field variant whose one payload is a compound VALUE is UNAFFECTED —
+        // `(Pt (Tuple Int64 Int64))` has declared arity 1, so `(Pt a)` binds the whole tuple payload and
+        // runs (the corpus-blessed `(Pt r)` form). Keying on the payload TYPE shape (a `Ty::Tuple`) instead
+        // of the DECLARED field count would wrongly reject this.
+        let single_compound = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (type R (Pt (Tuple Int64 Int64))) \
+               (def (main) (match (R.Pt (tuple 3 4)) ((R.Pt a) (. a 0)))) (export main))",
+        )))
+        .expect("a one-binder pattern on a single-tuple-payload variant binds the whole payload");
+        assert_eq!(run_returns::<i64>(&single_compound, "main"), 3);
+    }
+
+    #[test]
     fn an_exported_closure_body_is_type_checked() {
         // TYPE-SOUNDNESS HOLE: an EXPORTED closure `(def (a) (fn …))` crosses the host boundary and is
         // never β-reduced, so its body escaped the type-checker (`collect_node`'s `Lambda` arm is a no-op)
@@ -29167,6 +29260,41 @@ mod match_engine {
               (match (Bytes.of (list 1)) ((bin (bits 1 1) (bits x 7)) x) (_ -1))) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(miss))).expect("compile");
         assert_eq!(run_returns::<i64>(&bytes, "main"), -1);
+
+        // An INT segment AFTER a byte-aligned bit-field run reads at a static byte offset (the run's byte
+        // width advances the offset). `(bin (bits a 3)(bits b 5)(u8 c))` over `[165, 42]` → a=5,b=5 (byte
+        // 0), c=42 (byte 1) → 547. Earlier a segment after ANY bit-field declined; now `bin_static_offset`
+        // folds the run's whole bytes.
+        let after = "(module m (def (main) \
+              (match (Bytes.of (list 165 42)) ((bin (bits a 3) (bits b 5) (u8 c)) (+ (+ (* 100 a) b) c)) \
+              (_ -1))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(after))).expect("compile");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 547);
+
+        // A BIT-FIELD may size a DEPENDENT `(bytes payload n)`: `(bin (bits n 8) (bytes payload n))` reads
+        // `n` from the bit-field run then binds `n` payload bytes. Over `[2,65,66]` → n=2, payload 2 bytes
+        // → 2; the truncated `[2,65]` (n=2, only 1 byte after the prefix) falls through → -1 (the bit-field
+        // size read rides the same length floor + n>=0 guard as a fixed-int size).
+        let bs_ok = "(module m (def (main) \
+              (match (Bytes.of (list 2 65 66)) ((bin (bits n 8) (bytes payload n)) (Bytes.len payload)) \
+              (_ -1))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(bs_ok))).expect("compile"),
+                "main"
+            ),
+            2
+        );
+        let bs_short = "(module m (def (main) \
+              (match (Bytes.of (list 2 65)) ((bin (bits n 8) (bytes payload n)) (Bytes.len payload)) \
+              (_ -1))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(bs_short))).expect("compile"),
+                "main"
+            ),
+            -1
+        );
     }
 
     #[test]
@@ -44553,6 +44681,38 @@ mod diagnostics {
         crate::diagnostics(&mut db)
     }
 
+    /// A RECORD sub-pattern NESTED inside a tuple/list/constructor match pattern — `(tuple (record (x a))
+    /// c)`, `(list (record (x a)))`, `(W.Wrap (record (x a)))` — is not yet wired (a record field projects
+    /// by NAME and there is no name-keyed `PathStep` to compose the projection under a tuple/list/variant
+    /// descent). It must NAME that unimplemented feature, NOT leak a misleading CDZ0101 "unbound name `a`"
+    /// for the nested field binder (the nested-in-compound twin of the top-level record-match Case 6rec /
+    /// the record-BINDING lockstep). `cdz check` on a PARAMETERIZED body (via match_pattern_fault, not only
+    /// the emit walk) must surface the feature decline and NO CDZ0101 cascade. Found by v-patterns probing
+    /// (Inc-76); wired Inc-83.
+    #[test]
+    fn a_nested_record_match_pattern_is_named_not_leaked_as_an_unbound_field_binder() {
+        // Body references the nested field binder `a`. `f` is parameterized (non-nullary), so this
+        // exercises the check≡compile path — the diagnostic must NAME the feature, no CDZ0101.
+        for src in [
+            "(module m (def (f (: t (Tuple (Record (x Int64)) Int64))) \
+               (match t ((tuple (record (x a)) c) (+ a c)))) (export f))",
+            "(module m (def (f (: xs (List (Record (x Int64))))) \
+               (match xs ((list (record (x a))) a) (_ 0))) (export f))",
+        ] {
+            let all = diags_of(src);
+            assert!(
+                all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+                "no misleading 'unbound name' for a nested-record field binder: {all:?}"
+            );
+            assert!(
+                all.iter().any(|d| d.message.contains(
+                    "record sub-pattern nested inside a tuple/list/constructor match pattern"
+                )),
+                "check names the unimplemented nested-record feature: {all:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_def_named_quote_binds_its_parameter_and_is_not_hijacked_by_reification() {
         // `quote`/`quasiquote` are grammar heads recognized STRUCTURALLY only when they head an
@@ -56211,6 +56371,36 @@ mod stage1 {
             assert_eq!(
                 v, "7",
                 "apply(k,7) re-installs A around (do 7 (A.a)); the inner (A.a) folds to (k 7)=7 → (do 7 7) = 7"
+            );
+        }
+    }
+
+    #[test]
+    fn a_do_wrapped_deferred_resume_thunk_over_a_reperforming_continuation_folds() {
+        // E5 STEP-3 (the DES scheduler's `sleep`/`now` step-3 gate, contract-A1 shape): the escaping
+        // continuation is a DEFERRED RESUME-THUNK — `(set (w) s (run-thunk (fn (_u) (resume w w))))` — whose
+        // `resume`'s new-state arg `w` is the state advance, EXPRESSED in the program (no op-arg magic). The
+        // handle BODY is a `(do (A.set w) (A.get))` SEQUENCE whose continuation `C = (do □ (A.get))` itself
+        // RE-PERFORMS a different op (`get`) that reads the advanced state. This is the two-hole general-one-
+        // shot refold, and it already folds WITHOUT the `do` (`(+ (A.set 42) (A.get))` → 84); the sole gap
+        // was the two-hole block's leading-hole finder not seeing through `do`. `do_aware_leading_hole` (a
+        // `do`-aware, continuation-fold-block-SCOPED copy of `leading_strict_hole` — scoped so the thread /
+        // match-peel path is untouched) closes it: the refold re-reduces `C[w]` under the handler re-seeded
+        // with `w`, so `(A.get)` reads the advanced state. `(do (A.set 42) (A.get))` seed 0: set resumes with
+        // new-state 42, the `do` discards the set's result, `get` reads 42 → 42 (the `do` yields its last).
+        // This is the shape v-discrete-event-sim's `sleep`/`now` gate folds to 5000000000.
+        let src = "(do (effect A (op set (-> Int64 Int64)) (op get (-> Unit Int64))) \
+                   (def (run-thunk thunk) (thunk unit)) \
+                   (def (main) \
+                     (handle A 0 ((get (u) s (resume s s)) (set (w) s (run-thunk (fn (_u) (resume w w))))) \
+                       (do (A.set 42) (A.get)))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "a do-wrapped deferred-resume-thunk over a re-performing continuation folds (do-aware two-hole)",
+        );
+        if let Some(v) = run_linked(&bytes, "main") {
+            assert_eq!(
+                v, "42",
+                "set resumes new-state 42; the `do` discards set's result; get reads the advanced state 42"
             );
         }
     }

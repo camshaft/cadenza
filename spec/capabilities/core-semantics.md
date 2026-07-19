@@ -212,6 +212,10 @@ The pattern matcher MUST handle all constructor patterns uniformly as single-ari
 
 A record MUST associate a fixed set of statically-known field names each with a value, where distinct fields may hold values of distinct types.
 
+A record MUST be deconstructible by pattern matching on its field names, binding each named field's sub-value.
+
+A record pattern MAY name a subset of the fields, ignoring the rest.
+
 A map MUST associate keys with values as a dynamic homogeneous collection whose set of keys is not fixed by the value's form, distinct from a record's fixed field set.
 
 ### Member Access Projects A Record Field

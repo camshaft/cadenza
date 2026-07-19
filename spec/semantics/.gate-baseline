@@ -154,6 +154,7 @@ pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	STACKED @requires: EVERY precondition is enforced — a violated OUTER @requires traps (not only the innermost)
 pass	STACKED @requires: value-transparent when ALL preconditions are satisfied
+todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 pass	Set.contains does not fold a set whose element is a runtime scalar
 pass	Set.contains finds a runtime STRING-rope element built via Set.of
 pass	Set.contains over nan finds nan
@@ -162,6 +163,8 @@ pass	Set.insert does not fold a duplicate against a runtime element
 pass	Set.remove does not fold a set whose element is a runtime scalar
 pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
 pass	Set.to-list canonical order is SIGNED at the integer extremes
+pass	Set.to-list canonical order is independent of insertion order
+pass	Set.to-list enumerates the FULL interior order, not just the smallest element
 pass	Set.to-list enumerates the elements as a List in canonical (sorted) order
 pass	Set.to-list length is the set's cardinality (deduped)
 pass	Set.to-list of a runtime-empty but element-typed set is the empty list
@@ -265,6 +268,7 @@ pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for 
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
 pass	a BOOL-result effect op threads state across two performs on a boolean connective's operands
+todo	a BigInt entry argument is marshalled through the value's own constructor
 pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
@@ -278,6 +282,7 @@ pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool generator derived from the seed is reproducible (same seed, same Bool)
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
+todo	a Bytes entry argument is marshalled as a Vec<u8>
 pass	a Bytes-returning closure alongside a plain export — the closure runs
 pass	a Bytes-returning closure alongside a plain export — the plain runs
 pass	a Bytes-returning closure on a different argument
@@ -319,6 +324,7 @@ pass	a HOF callback matching a tuple argument computes through the nested reduct
 pass	a HOF callback matching its sum argument reaches the nullary arm
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
+todo	a List entry argument is marshalled as a vec!
 pass	a List-returning closure alongside a plain export — the closure
 pass	a List-returning closure alongside a plain export — the plain
 pass	a MAP built from generated pairs is equal regardless of insertion order (the Map analogue of set convergence)
@@ -388,6 +394,7 @@ pass	a RUNTIME string scrutinee matches string literals by equality
 pass	a RUNTIME-built Rational is usable as a map key, matched by its exact value
 pass	a RUNTIME-built Rational set deduplicates by exact value
 pass	a Rational accumulator threaded through recursion sums exactly
+todo	a Rational entry argument is marshalled through Rational::new
 pass	a Rational fanned into a compound then re-read survives (Perceus retain over a BigInt/Rational leaf)
 pass	a Rational is usable as a map key, matched by its exact value
 pass	a Rational set deduplicates by exact value regardless of how each was written
@@ -678,6 +685,7 @@ pass	a compound map key whose Bytes element is a rope is found by its flat twin
 pass	a compound map key whose LIST element is a rope is found by its flat-twin key
 pass	a computed float map key is found by its literal twin
 pass	a concat-built and a push-built SMALL list (single-leaf, n<=32) with the same elements are the same map key
+pass	a concat-built list = a push-built list with the same elements (element-wise, shape-independent, n>=33)
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
 pass	a conditional on a negated runtime condition selects the correct branch and shields the other
@@ -1259,11 +1267,11 @@ pass	a match on an open sum omitting the open-tail arm is rejected
 pass	a match on an open sum with an open-tail arm is exhaustive
 pass	a match on an uninhabited scrutinee is exhaustive with zero arms
 pass	a match on the result of a match threads sum values through nested control flow
+pass	a match over a match-selected Option folds through the false arm (None)
+pass	a match over a match-selected Option folds through the true arm (Some)
 pass	a match over a statically-known constructor with a runtime payload elides the dispatch
 pass	a match over an if-selected Option folds through the else branch (None)
 pass	a match over an if-selected Option folds through the then branch (Some)
-pass	a match over a match-selected Option folds through the false arm (None)
-pass	a match over a match-selected Option folds through the true arm (Some)
 pass	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 pass	a match over multiple nullary constructors with uniform patterns
 pass	a match pattern naming a non-existent variant is a coded rejection
@@ -1313,6 +1321,7 @@ pass	a multi-parameter closure keeps its captured environment distinct from its 
 pass	a multi-payload destructure binds the head and recurses on the tail
 pass	a multi-payload nested same-sum match falls through when the nested variant differs
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
+pass	a multi-payload pattern with too FEW binders is a malformed destructure
 pass	a multi-payload variant destructures its payloads positionally
 pass	a multi-payload variant whose spread element is itself a compound escapes correctly
 pass	a multi-payload variant with MIXED-width, MIXED-type payloads deconstructs each field
@@ -1665,10 +1674,12 @@ pass	a record field key that coincides with a parameter name survives the call
 pass	a record field with no value expression is rejected, not a crash
 pass	a record is constructed and a field is read
 pass	a record match arm + a wildcard alternative selects by shape
+pass	a record match field may be a LITERAL that probes the field by equality
 pass	a record match pattern binds fields by name — partial and out of order
 pass	a record match pattern destructures a record scrutinee by field
 pass	a record missing a field the annotation names is rejected
 pass	a record scrutinee is bound whole by a match binder
+pass	a record sub-pattern nested inside a tuple match names the feature, not an unbound binder (CDZ0201)
 pass	a record whose field is a runtime tuple nests across the boundary
 pass	a record whose field is misnamed is both missing and extra
 pass	a record with a duplicate field name is a type error
@@ -1813,6 +1824,7 @@ pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime BigInt remainder takes the dividend's sign
 pass	a runtime BigInt three-way compare agrees with the boolean ordering
+pass	a runtime BigInt three-way compare reports Equal at a BEYOND-Int64 magnitude
 pass	a runtime BigInt three-way compare reports equality as Equal
 pass	a runtime Bytes rope in a SUM payload compares equal to its flat twin
 pass	a runtime Bytes rope in a record field compares equal to its flat twin
@@ -1845,6 +1857,7 @@ pass	a runtime Rational MAP KEY is found by a normalized-equal key
 pass	a runtime Rational built from a parameter compares by its exact value
 pass	a runtime Rational comparison of a parameter is false when it should be
 pass	a runtime Rational three-way compare agrees with the boolean ordering
+pass	a runtime Rational three-way compare reports canonically-equal fractions as Equal
 pass	a runtime Rational three-way compare reports the greater operand as Greater
 pass	a runtime Result carrying a String error is matched
 pass	a runtime Result constructed from a condition selects its Ok or Err arm
@@ -1860,6 +1873,7 @@ pass	a runtime bin match binds the tail after a fixed header via a final rest se
 pass	a runtime bin match decodes a byte-aligned bit-field run
 pass	a runtime bin match dispatches on a leading literal bit-field tag
 pass	a runtime bin match dispatches on a literal tag across arms
+pass	a runtime bin match reads an int segment after a byte-aligned bit-field run
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
 pass	a runtime bit-field literal tag that does not match falls through
 pass	a runtime bit-field packs a runtime value into a nibble
@@ -1872,7 +1886,7 @@ pass	a runtime bytes value is spliced into a length-prefixed frame
 pass	a runtime char reaches a later char-literal arm by scalar value
 pass	a runtime closure compares its argument to a captured value in a branch
 pass	a runtime closure whose body calls a recursive top-level function
-pass	a runtime compound compare declines pending the value-cmp three-way heap walk
+pass	a runtime compound compare COMPUTES the three-way Ordering via the value-cmp heap walk (§331)
 pass	a runtime compound containing a float leaf declines ordering — floats offer no total order (§319)
 pass	a runtime compound structural equality is expressible as a hand-written recursive comparator
 pass	a runtime compound with a String leaf orders by the blessed content-lexicographic String order
@@ -1883,6 +1897,7 @@ pass	a runtime conditional selects its then-branch when the runtime condition ho
 pass	a runtime conjunction still shields a comparison right operand whose subexpression traps
 pass	a runtime const-multiply at its exact fitting boundary does not trap
 pass	a runtime const-multiply one past its fitting boundary traps
+pass	a runtime dependent-size bytes segment sized by a bit-field field
 pass	a runtime dependent-size match falls through when the scrutinee is too short for the size prefix
 pass	a runtime dependent-size match with a signed negative size falls through
 pass	a runtime division by zero traps
@@ -2469,6 +2484,7 @@ pass	an N suffix lets a huge literal need no annotation
 pass	an N-suffixed integer literal is a BigInt
 pass	an Ok and an Err decode compose through one shared handler
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
+todo	an Option (sum) entry argument is marshalled as a native Option
 pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
@@ -2602,6 +2618,7 @@ pass	an empty byte-string literal is the empty byte sequence
 pass	an empty list escaping to the host is rejected as undetermined, like a bare None
 pass	an empty map is unequal to a non-empty map, not a type error
 pass	an empty quote is rejected, not a crash
+pass	an empty record pattern matches any record of its type
 pass	an empty scrutinee matches an empty bin pattern
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
@@ -2623,6 +2640,7 @@ pass	an escaping closure captures two values and takes three arguments
 pass	an escaping closure whose body binds a multi-variable let
 pass	an escaping closure whose body is a match hits the literal arm
 pass	an escaping closure whose body is a match hits the wildcard arm
+pass	an escaping continuation that itself RE-PERFORMS the handled effect re-enters its handler at apply
 pass	an escaping tuple evaluates its trapping element
 pass	an exact RATIONAL host value crosses as two scalar num/den ops the guest recombines (#13)
 pass	an expect of a list index result is an integer usable in arithmetic
@@ -2646,6 +2664,7 @@ pass	an export with a tuple parameter before a scalar returns a list from both
 pass	an export with two tuple parameters returns a list from both
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
+todo	an exported entry with a String parameter is called with a string argument
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an i16 segment round-trips at its two's-complement minimum
 pass	an identity closure composes at a single Int element type (not only String)
@@ -3094,6 +3113,8 @@ pass	exact rational division is total and exact for a nonzero divisor
 pass	expansion recurses to a fixpoint through a tag whose body is another tagged template
 pass	expect makes a checked-arithmetic result trap on overflow
 pass	expect on a RUNTIME-absent optional traps with the canonical unreachable kind
+todo	expect on an overflowing checked add traps
+todo	expect traps on the absent case of a runtime optional
 pass	expect traps on the err case of a RUNTIME result
 pass	expect unwraps the ok case of a runtime result
 pass	expect unwraps the present case of a runtime optional
@@ -3918,12 +3939,3 @@ pass	wrapping-sub on a runtime UInt8 wraps modulo 256
 pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
-todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
-todo	a BigInt entry argument is marshalled through the value's own constructor
-todo	a Bytes entry argument is marshalled as a Vec<u8>
-todo	a List entry argument is marshalled as a vec!
-todo	a Rational entry argument is marshalled through Rational::new
-todo	an Option (sum) entry argument is marshalled as a native Option
-todo	an exported entry with a String parameter is called with a string argument
-todo	expect on an overflowing checked add traps
-todo	expect traps on the absent case of a runtime optional

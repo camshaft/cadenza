@@ -268,19 +268,53 @@ def main() = host Param in
 };
 
 /// The PARAMETRIC SNOWFLAKE (v-cad's flagship showcase — the operator's "seed → unique snowflake"): feed a
-/// seed and an internal PRNG builds a unique, deterministic 6-fold snowflake; sliders drive the seed, arm
-/// length, and recursion depth. The heavy branch builder lives in the preloaded `snowflake` lib (11 recursive
-/// defs, imports prng) — so the buffer is just the `@!param` declarations + `main` calling `snowflake(...)`;
-/// snowflake.cdz + prng.cdz are PRELOADED (added to the CAD preload set for this). Single-mode auto-surfaces
-/// the 3 sliders (seed/arm-length/depth). Mesh = v-cad's driver. Uses `@!param` (the migrated param sigil).
+/// seed and a seeded PRNG grows a unique, deterministic 6-fold snowflake; sliders drive the seed, arm length,
+/// and recursion depth. SELF-CONTAINED (operator directive: "you can create a snowflake from simple
+/// primitives! don't hide the whole thing behind a library"): the WHOLE construction is IN the buffer — a
+/// MINSTD LCG (`lcg-next`/`roll`/`seed-state`, exact Int64, state threaded explicitly), a branch `segment`
+/// built from a `box` bar + a `ball` tip, recursive `branch`/`add-children` with bilateral `mirror-x` and a
+/// random child count, and `six-fold` unioning six z-rotated copies. NO opaque `snowflake` lib import — only
+/// the `exact`+`helpers` vocab `injectImport` adds (box/ball/fuse/move-x/rotate-z/mirror-x + Solid/lower).
+/// Single-mode auto-surfaces the 3 sliders (seed/arm-length/depth). Mesh = v-cad's driver. NOTE: the model
+/// folds from `Solid.Empty` (the union identity) — meshing that requires the empty-Solid mesh fix (index.ts
+/// `M.union([])`, NOT a zero-size cube that annihilates the boolean); both verified to mesh to ~25k verts.
 const PARAMETRIC_SNOWFLAKE: ExampleModel = {
   slug: "parametric-snowflake",
   title: "Parametric snowflake (seed → unique)",
-  description: "Feed a seed; an internal PRNG builds a unique deterministic 6-fold snowflake. Sliders: seed, arm-length, depth.",
+  description: "Feed a seed; a seeded PRNG grows a unique deterministic 6-fold snowflake, built from primitives. Sliders: seed, arm-length, depth.",
   source: {
     ml: `@!param(widget: slider, range: [1, 200], default: 42) seed : Int64
 @!param(widget: slider, range: [10, 40], default: 20) arm-length : Rational
 @!param(widget: slider, range: [1, 3], default: 2) depth : Int64
+def lcg-next(s: Int64) = ((16807 : Int64) * s) % (2147483647 : Int64)
+def roll(s: Int64, lo: Int64, hi: Int64) = lo + (lcg-next(s) % (((hi - lo) + (1 : Int64))))
+def seed-state(n: Int64) = (n % (2147483646 : Int64)) + (1 : Int64)
+def r(n: Int64) = Rational.of(n, (1 : Int64))
+def segment(len: Rational) =
+  let w = len / (8 / 1) in
+  fuse(move-x(len / (2 / 1), box(len, w, w)), move-x(len, ball(w)))
+def branch(state: Int64, len: Rational, depth: Int64) =
+  if depth == (0 : Int64) then (segment(len), lcg-next(state))
+  else
+    let n = roll(state, (1 : Int64), (3 : Int64)) in
+    add-children(lcg-next(state), len, depth, n, (0 : Int64), segment(len))
+def add-children(state: Int64, len: Rational, depth: Int64, n: Int64, i: Int64, acc: Solid(Rational)) =
+  if i == n then (acc, state)
+  else
+    let ang = r(roll(state, (25 : Int64), (75 : Int64))) in
+    let s1 = lcg-next(state) in
+    let offset = (len * r(roll(s1, (30 : Int64), (70 : Int64)))) / (100 / 1) in
+    let s2 = lcg-next(s1) in
+    match branch(s2, len * (3 / 5), depth - (1 : Int64)) with
+      | (child, s3) =>
+        let placed = move-x(offset, rotate-z(ang, child)) in
+        add-children(s3, len, depth, n, i + (1 : Int64), fuse(acc, fuse(placed, mirror-x(placed))))
+def six-fold(arm: Solid(Rational), i: Int64, acc: Solid(Rational)) =
+  if i == (6 : Int64) then acc
+  else six-fold(arm, i + (1 : Int64), fuse(acc, rotate-z(r(i * (60 : Int64)), arm)))
+def snowflake(seed0: Int64, len: Rational, depth: Int64) =
+  match branch(seed-state(seed0), len, depth) with
+    | (arm, _) => six-fold(arm, (0 : Int64), Solid.Empty)
 def main() = host Param in
   (let s = Param.seed() in
    let len = Param.arm-length() in
@@ -289,6 +323,35 @@ def main() = host Param in
     sexpr: `(pragma param (param (: widget slider) (: range (list 1 200)) (: default 42)) (: seed Int64))
 (pragma param (param (: widget slider) (: range (list 10 40)) (: default 20)) (: arm-length Rational))
 (pragma param (param (: widget slider) (: range (list 1 3)) (: default 2)) (: depth Int64))
+(def (lcg-next (: s Int64)) (% (* (: 16807 Int64) s) (: 2147483647 Int64)))
+(def (roll (: s Int64) (: lo Int64) (: hi Int64)) (+ lo (% (lcg-next s) (+ (- hi lo) (: 1 Int64)))))
+(def (seed-state (: n Int64)) (+ (% n (: 2147483646 Int64)) (: 1 Int64)))
+(def (r (: n Int64)) ((. Rational of) n (: 1 Int64)))
+(def (segment (: len Rational))
+  (let ((w (/ len (/ 8 1)))) (fuse (move-x (/ len (/ 2 1)) (box len w w)) (move-x len (ball w)))))
+(def (branch (: state Int64) (: len Rational) (: depth Int64))
+  (if (= depth (: 0 Int64))
+    (tuple (segment len) (lcg-next state))
+    (let ((n (roll state (: 1 Int64) (: 3 Int64))))
+      (add-children (lcg-next state) len depth n (: 0 Int64) (segment len)))))
+(def (add-children (: state Int64) (: len Rational) (: depth Int64) (: n Int64) (: i Int64) (: acc (Solid Rational)))
+  (if (= i n)
+    (tuple acc state)
+    (let ((ang (r (roll state (: 25 Int64) (: 75 Int64)))))
+      (let ((s1 (lcg-next state)))
+        (let ((offset (/ (* len (r (roll s1 (: 30 Int64) (: 70 Int64)))) (/ 100 1))))
+          (let ((s2 (lcg-next s1)))
+            (match (branch s2 (* len (/ 3 5)) (- depth (: 1 Int64)))
+              ((tuple child s3)
+                (let ((placed (move-x offset (rotate-z ang child))))
+                  (add-children s3 len depth n (+ i (: 1 Int64)) (fuse acc (fuse placed (mirror-x placed)))))))))))))
+(def (six-fold (: arm (Solid Rational)) (: i Int64) (: acc (Solid Rational)))
+  (if (= i (: 6 Int64))
+    acc
+    (six-fold arm (+ i (: 1 Int64)) (fuse acc (rotate-z (r (* i (: 60 Int64))) arm)))))
+(def (snowflake (: seed0 Int64) (: len Rational) (: depth Int64))
+  (match (branch (seed-state seed0) len depth)
+    ((tuple arm _) (six-fold arm (: 0 Int64) (. Solid Empty)))))
 (def (main)
   (host (Param)
     (let ((s ((. Param seed))) (len ((. Param arm-length))) (d ((. Param depth))))

@@ -1557,6 +1557,29 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             )),
         });
     }
+    // Case 6rec-nested: `form` is a match arm whose pattern is a TUPLE / LIST / VARIANT compound with a
+    // `(record …)` sub-pattern NESTED inside it binding `name` — `(tuple (record (x a)) c)`, `(list (record
+    // (x a)))`, `(W.Wrap (record (x a)))`. A record field projects by NAME (no name-keyed `PathStep`), so a
+    // nested-record binder cannot yet be WIRED under a tuple/list/variant descent (the walkers skip the
+    // `record` head), and the reference would otherwise fall through to a misleading CDZ0101. Resolve it to
+    // the SAME clean feature-decline the top-level (Case 6rec) case gives — the nested-in-compound twin. A
+    // linear pattern binds `name` once, so if it is in a nested record no earlier (wireable) case matched
+    // it, making this placement safe (a genuinely-wireable binder resolved above).
+    if match_arm_nested_record_binds(db, form, from, name) {
+        // CODED (`Malformed`) — NOT an uncoded `decline` — so `collect_reached_poisons` /
+        // `match_pattern_fault` surfaces it in `cdz check` on EVERY body (not only the emit-path walk over
+        // nullary-exported bodies): the PATTERN itself lowers fine (the tuple/record `Elem` descent builds
+        // valid constraints — a body that IGNORES the nested binder even compiles+runs), so the fault is
+        // reference-specific and only reachable via this body-reference resolution. An uncoded decline here
+        // would be SILENT in `check` while `compile` declines the body reference — the exact check≡compile
+        // gap the coded-head discipline (Inc 39/40, the list/map/record-match coded declines) closes.
+        return Some(Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            "a record sub-pattern nested inside a tuple/list/constructor match pattern is not yet \
+             supported (a record match binds its fields to bare names at the top level; destructure a \
+             nested record with a further `match` or `let`)",
+        )));
+    }
     // Case 7: `form` is a HANDLE ARM `(op (params…) state body)`, ascended from `body`, and `name` is one
     // of the operation PARAMETERS or the STATE binder → it binds for this arm's body. Like a lambda
     // parameter, the binder resolves to its own occurrence (a `Param` formal) — the compile-time evaluator
@@ -2499,6 +2522,75 @@ fn match_arm_record_binds(
         }
     }
     None
+}
+
+/// Whether `form` is a match ARM `(pattern body)` (ascended from its BODY or guard cond) whose pattern is
+/// a TUPLE / LIST / VARIANT compound (NOT a top-level record — that's [`match_arm_record_binds`]) that
+/// contains a `(record …)` sub-pattern NESTED inside it binding `name`. A record field projects by NAME
+/// and `PathStep` has no name-keyed step to compose a record projection under a tuple/list/variant descent,
+/// so such a nested-record binder cannot yet be WIRED — `find_binder_in_tuple`/`_list`/`_pattern` skip the
+/// `record` head and the body reference falls through to a misleading CDZ0101 "unbound name". This detector
+/// lets `binder_in` resolve it to the SAME clean feature-decline the top-level (Case 6rec) + let cases
+/// give, so a nested-record match names the unimplemented feature rather than blaming the user (the
+/// nested-in-compound twin of Case 6rec). `true` when `name` is bound inside such a nested record pattern.
+fn match_arm_nested_record_binds(db: &Db, form: StructId, from: StructId, name: &str) -> bool {
+    let Struct::List(pb) = db.ast.get(form) else {
+        return false;
+    };
+    if pb.len() != 2 {
+        return false;
+    }
+    let (pattern, body) = (pb[0], pb[1]);
+    // Peel a `(guard <pattern> <cond>)` wrapper — a guard-cond reference binds the same nested binders.
+    let (arm_pat, guard_cond) = match db.ast.as_form(pattern, "guard") {
+        Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+        _ => (pattern, None),
+    };
+    if from != body && Some(from) != guard_cond {
+        return false;
+    }
+    // `form` must be an arm of an enclosing `(match scrutinee arm…)`, not the scrutinee itself.
+    let Some(parent) = db.parent_of(form) else {
+        return false;
+    };
+    let Some(mtail) = db.ast.as_form(parent, "match") else {
+        return false;
+    };
+    match mtail.first() {
+        Some(&scrutinee) if scrutinee != form => {}
+        _ => return false,
+    }
+    // The arm pattern must be a TUPLE / LIST / VARIANT compound — a TOP-LEVEL record is Case 6rec's, not
+    // here (its own bare-binder fields wire; only a NESTED record under a compound is the unwired case).
+    let is_top_record = db.ast.as_form(arm_pat, "record").is_some()
+        || db.ast.as_ctor_form(arm_pat, "record").is_some();
+    if is_top_record {
+        return false;
+    }
+    // Walk the arm pattern for a `(record …)` sub-pattern that binds `name`.
+    pattern_has_nested_record_binding(db, arm_pat, name)
+}
+
+/// Whether the pattern subtree `pat` contains a `(record …)` sub-pattern binding `name` — a recursive walk
+/// over tuple/list/variant/record compounds. Used by [`match_arm_nested_record_binds`] to attribute an
+/// otherwise-unbound reference to an unwired nested-record match sub-pattern (the CDZ0101-suppression
+/// discipline). A `(record …)` node binding `name` (via [`record_pattern_binds_name`]) is the hit; any
+/// other compound is walked into its children.
+fn pattern_has_nested_record_binding(db: &Db, pat: StructId, name: &str) -> bool {
+    // A record node that binds `name` — the hit (this is the unwireable nested case).
+    if (db.ast.as_form(pat, "record").is_some() || db.ast.as_ctor_form(pat, "record").is_some())
+        && record_pattern_binds_name(db, pat, name)
+    {
+        return true;
+    }
+    // Otherwise recurse into a compound's children (tuple/list elements, variant payload args, record
+    // field values, guard inner). A bare atom / literal / non-binding leaf is not a record hit.
+    let Struct::List(children) = db.ast.get(pat) else {
+        return false;
+    };
+    children
+        .iter()
+        .any(|&c| pattern_has_nested_record_binding(db, c, name))
 }
 
 /// Descend a LIST PATTERN `(list p… [.. rest])` looking for a LEADING element binder `name` — the

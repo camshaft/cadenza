@@ -55,23 +55,34 @@ type Node =
                                   // by inlining the callee body; a param slice (later) lowers `(f a)` to
                                   // CLet(param, arg, body) — a call binds its param exactly like a let.
 
-/// The arena: nodes keyed by NodeId, plus the next fresh id. (Named `Tree`, NOT `Ast` — a type named `Ast`
-/// collides with the built-in metaprog `Ast`, drawing CDZ0201 "two types with the same name".)
+/// The arena: nodes keyed by NodeId, the next fresh id, AND a DEF-TABLE (`Map(nameId, bodyNodeId)`) — the
+/// module's `(def (name) body)` forms, so a call `(name)` can resolve its head to the def's body node
+/// (user-functions slice-3). (Named `Tree`, NOT `Ast` — a type named `Ast` collides with the built-in
+/// metaprog `Ast`, drawing CDZ0201 "two types with the same name".) The def-table is EMPTY for a bare-token
+/// parse (`parse-tokens` — no defs) and populated only by the s-expr module reader (`sread.read-do-form`).
 type Tree =
-  | Arena(Map(Int64, Node), Int64)
+  | Arena(Map(Int64, Node), Int64, Map(Int64, Int64))
 
-def empty-tree() = Tree.Arena(Map.empty, 0)
+def empty-tree() = Tree.Arena(Map.empty, 0, Map.empty)
 
-/// Intern a node into the arena, returning `(its fresh NodeId, tree')`.
+/// Intern a node into the arena, returning `(its fresh NodeId, tree')`. The def-table rides through unchanged.
 def add-node(tree: Tree, n: Node) = match tree with
-  | Tree.Arena(m, next) => (next, Tree.Arena(Map.insert(m, next, n), next + 1))
+  | Tree.Arena(m, next, dt) => (next, Tree.Arena(Map.insert(m, next, n), next + 1, dt))
 
 /// The node at `id`, or `None` (absence — a caller that requires it declines).
 def node-at(tree: Tree, id: Int64) = match tree with
-  | Tree.Arena(m, _) => Map.lookup(m, id)
+  | Tree.Arena(m, _, _) => Map.lookup(m, id)
 
 /// How many nodes the arena holds (also the next fresh id).
-def node-count(tree: Tree) = match tree with | Tree.Arena(m, _) => Map.len(m)
+def node-count(tree: Tree) = match tree with | Tree.Arena(m, _, _) => Map.len(m)
+
+/// Record a `(def (name) body)` in the def-table: name-id → its body node-id. Returns the updated tree.
+def record-def(tree: Tree, nameId: Int64, bodyId: Int64) = match tree with
+  | Tree.Arena(m, next, dt) => Tree.Arena(m, next, Map.insert(dt, nameId, bodyId))
+
+/// The body node-id a def-name binds, or `None` (name not a known def) — a call `(name)` looks its head up here.
+def def-body-of(tree: Tree, nameId: Int64) = match tree with
+  | Tree.Arena(_, _, dt) => Map.lookup(dt, nameId)
 
 /// The token at index `i`, or `TEnd` past the end (a total indexed read).
 def tok-at(ts: List(Tok), i: Int64) = match List.at(ts, i) with
@@ -503,4 +514,23 @@ def pd-app-with-arg-node() =
       (match add-node(t2, Node.NApp(bodyId, argId)) with | (appId, t3) =>
         (if is-app(t3, appId, bodyId, argId) then unit else trap("NApp(bodyId, argId) carries callee + arg")))))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
+// ---- def-table (slice-3 foundation for user-functions call resolution) ----
+
+@test
+def pd-def-table-empty-by-default() =
+  // a fresh tree / a bare-token parse has an EMPTY def-table: def-body-of any name → None (no defs recorded).
+  (if (match def-body-of(empty-tree(), 1) with | Option.None(_) => true | Option.Some(_) => false)
+   then (match parse-tokens([Tok.TNum(5)]) with | (_, tree) =>
+          (if (match def-body-of(tree, 1) with | Option.None(_) => true | Option.Some(_) => false) then unit else trap("token parse has no defs")))
+   else trap("empty-tree def-table is empty"))
+
+@test
+def pd-record-def-then-lookup() =
+  // record a def `name 1 → body node b`, then def-body-of(name 1) returns b; a DIFFERENT name → None.
+  (match add-node(empty-tree(), Node.NLit(42)) with | (b, t1) =>
+    (let t2 = record-def(t1, 1, b) in
+     (match def-body-of(t2, 1) with
+       | Option.Some(x) => (if x == b then (match def-body-of(t2, 2) with | Option.None(_) => unit | Option.Some(_) => trap("unrecorded name → None")) else trap("def-body-of returns the recorded body"))
+       | Option.None(_) => trap("a recorded def is found"))))
+
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }

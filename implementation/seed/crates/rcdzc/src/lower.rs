@@ -8478,8 +8478,10 @@ fn pattern_constraints(
     // so a record pattern imposes NO constraint of its own (like a tuple) — each named field's sub-pattern
     // descends at `path + [Elem(sorted_slot)]` with the field's type, recursing exactly as the tuple arm
     // does. A field the record type lacks is a CDZ0201 shape error; a non-record scrutinee is CDZ0201.
-    // (Record deconstruction is governed generically by §Patterns Compose — the spec has no record-specific
-    // "MUST be deconstructible" sentence the way tuples do; a dedicated one is backlogged, not cited here.)
+    //= spec/capabilities/core-semantics.md#a-record-has-a-fixed-set-of-named-fields
+    //# A record MUST be deconstructible by pattern matching on its field names, binding each named field's sub-value.
+    //= spec/capabilities/core-semantics.md#a-record-has-a-fixed-set-of-named-fields
+    //# A record pattern MAY name a subset of the fields, ignoring the rest.
     if let Some(fields) = db
         .ast
         .as_form(pat, "record")
@@ -8658,7 +8660,44 @@ fn pattern_constraints(
             // A bare `(Mk)` / member `(. T Mk)` with no payload arg — nothing to bind (a unit newtype).
             0 => Ok(Vec::new()),
             // `(Mk n)` — bind the single payload at `[Payload]` (erased later), typed as `inner`.
+            //
+            // ARITY: a MULTI-FIELD variant `(Mk Int64 Int64)` is MULTI-arity (two DECLARED fields, boxed as
+            // a payload tuple), so a ONE-binder pattern `(Mk a)` — a lone BARE NAME — under-binds: it would
+            // silently bind `a` to the whole field-tuple, the surprising slip a too-MANY `(Mk a b c)` is
+            // already rejected for. Reject it symmetrically (concierge/operator ruling 8922: a multi-field
+            // variant is multi-arity; "single-arity" in core-semantics §195/207 is the internal curried-
+            // application ABI, not the surface field arity).
+            //
+            // TWO shapes are NOT under-binding and pass through:
+            //  (1) the single arg is an explicit `(tuple …)` PATTERN — `(Mk (tuple a _))` — the CANONICAL
+            //      single-arity payload-tuple destructure (§207); it recurses below and `pattern_constraints`'
+            //      tuple arm arity-checks it against the payload tuple `inner`. This is the form the emit /
+            //      recursive-match tests use.
+            //  (2) a genuinely SINGLE-FIELD variant whose one payload is a compound VALUE — `(Pt (Tuple T
+            //      T))`, `(Pt (Record …))`, `(Mk (-> …))` — has DECLARED arity 1 (`variant_payload_arity`),
+            //      so `(Pt a)` correctly binds that whole payload (the corpus-blessed `(Pt r)` form).
+            // So reject ONLY a >1-DECLARED-FIELD variant matched with a single NON-tuple sub-pattern — the
+            // too-FEW twin of the `_ =>` too-MANY check.
             1 => {
+                let arg_is_tuple_pattern = is_tuple_pattern(db, args[0]);
+                if !arg_is_tuple_pattern
+                    && crate::eval::variant_payload_arity(db, head).is_some_and(|n| n > 1)
+                    && let crate::ty::Ty::Tuple(ts) = &inner
+                {
+                    let ctor = ctor_pattern_name(db, pat);
+                    let plural = |k: usize| if k == 1 { "" } else { "s" };
+                    return Err(Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "this pattern binds 1 element for `{ctor}`, but `{ctor}` carries {} \
+                             field{} — a constructor pattern must bind exactly as many as the \
+                             constructor has",
+                            ts.len(),
+                            plural(ts.len()),
+                        ),
+                    )
+                    .at(pat));
+                }
                 let mut deeper = path;
                 deeper.push(crate::core::PathStep::Payload);
                 pattern_constraints(db, args[0], &inner, deeper, lit_tests)
@@ -18062,6 +18101,34 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                     lhs: args[0],
                     rhs: args[1],
                 }
+            } else if matches!(op, Prim::Eq) && {
+                let opnd_ty = crate::infer::type_of(db, args[0]);
+                is_orderable_compound(db, &opnd_ty)
+            } {
+                // RUNTIME LIST(-CONTAINING) EQUALITY — a `=` on two compound values that contain a LIST and
+                // whose leaves are all ORDERABLE. This is reached ONLY after the `compound_eq_heap_walkable`
+                // arm above DECLINED it: a List is an RRB vector that is element-canonical but NOT
+                // shape-canonical (a concat-built and a push-built list with the same elements have different
+                // internal byte layouts), so `value-eq`'s tagless `champ_eq` byte-walk is UNSOUND for it —
+                // `ty_heap_walkable`/`compound_eq_heap_walkable` return false for `Ty::List` by design. Route
+                // instead to `Core::ValueCmp { op: Prim::Eq }` — the descriptor-guided element-wise value-cmp
+                // walk (which compares a list element-by-element via vec-get, shape-INDEPENDENT), with the
+                // emit mapping the three-way result to `res == 0`. So a concat-built `[1,2,3]` `=` a push-built
+                // `[1,2,3]` is TRUE (the §331 companion for equality: the same value-cmp walk the boolean `<`
+                // uses). A List-FREE orderable compound already took the `ValueEq` arm above (cheaper, and
+                // champ_eq IS sound there — no non-canonical RRB spine); only a List-containing (or bare-List)
+                // orderable type falls through to here. A float/Bytes/Set/Map leaf makes it non-orderable
+                // (`is_orderable_compound` false) → declines below (a `List<Float>` `=` awaits a later increment;
+                // that leaf is byte-canonical but the list spine is not, so it needs a value-eq-shaped walk).
+                //= spec/capabilities/collections-and-text.md#a-list-is-an-ordered-homogeneous-sequence
+                //# Two lists MUST be equal exactly when they have the same length and equal elements in the same order, independent of how each was constructed.
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "runtime list-containing equality → ValueCmp op=Eq (value-cmp == 0, element-wise)");
+                Core::ValueCmp {
+                    op,
+                    lhs: args[0],
+                    rhs: args[1],
+                    ty: crate::infer::type_of(db, args[0]),
+                }
             } else if matches!(op, Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge)
                 && operand_is_string_or_symbol(db, args[0])
             {
@@ -22143,14 +22210,37 @@ fn decode_bin_field(
 /// The runtime matcher (fixed-offset int segments) uses this to place a `BinIntRead`.
 fn bin_static_offset(segs: &[crate::resolved::Segment], seg_index: usize) -> Option<u32> {
     use crate::resolved::SegKind;
-    let mut off: u32 = 0;
+    let mut off: u32 = 0; // byte offset
+    let mut bits: u32 = 0; // open sub-byte bits accumulated across a bit-field run (0 at a byte boundary)
     for seg in segs.iter().take(seg_index) {
         match &seg.kind {
-            SegKind::Int { width, .. } => off += *width as u32,
-            // A bit-field / bytes / utf8 segment before the target makes the runtime read's offset
-            // non-trivial (sub-byte cursor, or dynamic length) — not built yet.
-            SegKind::Bits { .. } | SegKind::Bytes { .. } | SegKind::Utf8 { .. } => return None,
+            SegKind::Int { width, .. } => {
+                // An int segment is byte-aligned — a well-formed bin (CDZ0220) has closed any bit-field run
+                // to a whole byte before it, so `bits` is 0 here; be defensive and decline if not.
+                if bits != 0 {
+                    return None;
+                }
+                off += *width as u32;
+            }
+            // A BIT-FIELD contributes `k` sub-byte bits; a run closes to whole bytes (CDZ0220), so fold
+            // every completed byte into `off`. A following int/bytes segment therefore reads at a STATIC
+            // byte offset once the run is byte-aligned (the case that previously declined outright).
+            SegKind::Bits { k } => {
+                bits += *k;
+                off += bits / 8;
+                bits %= 8;
+            }
+            // A bytes / utf8 segment before the target makes the offset dynamic (variable length) — not
+            // built yet. (A bit-field run mid-byte at this point would also be ill-formed; `bits != 0`
+            // means the preceding structure did not byte-align, so decline.)
+            SegKind::Bytes { .. } | SegKind::Utf8 { .. } => return None,
         }
+    }
+    // The target segment starts at a byte boundary only if the preceding bit-field run closed a whole
+    // number of bytes; a mid-byte position (an odd bit-field run before a byte-aligned segment) is
+    // ill-formed for a byte-offset read — decline.
+    if bits != 0 {
+        return None;
     }
     Some(off)
 }
@@ -22217,6 +22307,71 @@ fn bin_bitfield_run(
         return None;
     }
     Some((byte_off, run_bits, field_bit_pos, k))
+}
+
+/// Synthesize the runtime read of ONE bit-field out of a byte-aligned run: read the run's `run_bits/8`
+/// bytes at `run_byte_off` as one big-endian unsigned integer, then shift the field down and mask to `k`
+/// bits — `(R >> (run_bits - field_bit_pos - k)) & ((1<<k)-1)`, MSB-first (mirroring `bin_match_decode`).
+/// `bytes_src` is the already-materialized scrutinee read (a `LocalRef` to the kept binding, or the
+/// predicate path's `scrut_ref`) — used directly, NOT re-wrapped. Shared by the bit-field BINDER decode
+/// (`decode_bin_field_runtime`'s `Bits` arm) and the dependent-SIZE read (`bin_size_len_read`, when the
+/// size field is a bit-field). Reads the run unsigned so the mask makes signedness moot.
+fn bin_bitfield_read(
+    db: &mut Db,
+    bytes_src: StructId,
+    run_byte_off: u32,
+    run_bits: u32,
+    field_bit_pos: u32,
+    k: u32,
+) -> StructId {
+    // R = the run's bytes as one unsigned big-endian integer (i64 rep; run_bits ≤ 64).
+    let run_read = synth_core(
+        db,
+        Core::BinIntRead {
+            bytes: bytes_src,
+            byte_offset: run_byte_off,
+            width: (run_bits / 8) as u8,
+            signed: false,
+            little_endian: false,
+        },
+        crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+    );
+    // Shift the field down to the low bits: shift = run_bits - field_bit_pos - k.
+    let shift = run_bits - field_bit_pos - k;
+    let field_low = if shift == 0 {
+        run_read
+    } else {
+        let shift_node = synth_core(
+            db,
+            Core::ConstInt(IntValue::from_i64(shift as i64)),
+            crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+        );
+        synth_core(
+            db,
+            Core::Arith {
+                op: Prim::Shr,
+                lhs: run_read,
+                rhs: shift_node,
+            },
+            crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+        )
+    };
+    // Mask to k bits: & ((1<<k)-1). (k ≤ run_bits ≤ 64; the mask fits an i64 for k ≤ 63.)
+    let mask_val: i64 = if k >= 63 { -1 } else { (1i64 << k) - 1 };
+    let mask_node = synth_core(
+        db,
+        Core::ConstInt(IntValue::from_i64(mask_val)),
+        crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+    );
+    synth_core(
+        db,
+        Core::Arith {
+            op: Prim::BitAnd,
+            lhs: field_low,
+            rhs: mask_node,
+        },
+        crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+    )
 }
 
 /// Decode a `bin`-pattern INTEGER segment binder out of a RUNTIME `Bytes` scrutinee (a `BinIntRead` at
@@ -22327,50 +22482,10 @@ fn decode_bin_field_runtime(
                     Core::LocalRef { binder: scrutinee },
                     crate::ty::Ty::Bytes,
                 );
-                // R = the run's bytes as one unsigned big-endian integer (i64 rep; run_bits ≤ 64).
-                let run_read = synth_core(
-                    db,
-                    Core::BinIntRead {
-                        bytes: scrut_ref,
-                        byte_offset: run_byte_off,
-                        width: (run_bits / 8) as u8,
-                        signed: false,
-                        little_endian: false,
-                    },
-                    crate::ty::Ty::Int(crate::ty::IntTy::i64()),
-                );
-                // Shift the field down to the low bits: shift = run_bits - field_bit_pos - k.
-                let shift = run_bits - field_bit_pos - k;
-                let field_low = if shift == 0 {
-                    run_read
-                } else {
-                    let shift_node = synth_core(
-                        db,
-                        Core::ConstInt(IntValue::from_i64(shift as i64)),
-                        crate::ty::Ty::Int(crate::ty::IntTy::i64()),
-                    );
-                    synth_core(
-                        db,
-                        Core::Arith {
-                            op: Prim::Shr,
-                            lhs: run_read,
-                            rhs: shift_node,
-                        },
-                        crate::ty::Ty::Int(crate::ty::IntTy::i64()),
-                    )
-                };
-                // Mask to k bits: & ((1<<k)-1). (k ≤ run_bits ≤ 64; the mask fits an i64 for k ≤ 63.)
-                let mask_val: i64 = if k >= 63 { -1 } else { (1i64 << k) - 1 };
-                let mask_node = synth_core(
-                    db,
-                    Core::ConstInt(IntValue::from_i64(mask_val)),
-                    crate::ty::Ty::Int(crate::ty::IntTy::i64()),
-                );
-                Core::Arith {
-                    op: Prim::BitAnd,
-                    lhs: field_low,
-                    rhs: mask_node,
-                }
+                // Read the field out of its byte-aligned run: run-read + shift + mask (shared helper).
+                let read =
+                    bin_bitfield_read(db, scrut_ref, run_byte_off, run_bits, field_bit_pos, k);
+                core_of(db, read)
             }
             None => Core::Poison(Reject::decline(
                 "a runtime bin bit-field binder needs a byte-aligned run of ≤64 bits after fixed-int \
@@ -22398,32 +22513,47 @@ fn bin_size_len_read(
 ) -> Option<StructId> {
     use crate::resolved::SegKind;
     let size_name = db.ast.as_name(n_occ)?;
-    // Find the EARLIER segment whose binder is `size_name` and that is a fixed-width int.
-    let (idx, width, signed, little_endian) =
-        segs.iter().take(seg_index).enumerate().find_map(|(i, s)| {
-            if db.ast.as_name(s.slot) != Some(size_name) {
-                return None;
-            }
-            match &s.kind {
-                SegKind::Int { width, signed } => Some((i, *width, *signed, s.little_endian)),
-                _ => None,
-            }
-        })?;
-    let byte_offset = bin_static_offset(segs, idx)?;
+    // Find the EARLIER segment whose binder is `size_name` — a fixed-width INT or a byte-aligned BIT-FIELD.
+    let idx = segs
+        .iter()
+        .take(seg_index)
+        .position(|s| db.ast.as_name(s.slot) == Some(size_name))?;
     // `bytes_src` is the already-materialized read of the scrutinee (a `LocalRef` to the kept binding, or
     // the predicate path's `scrut_ref`) — read the size field off it directly (do NOT re-wrap: wrapping a
     // ref in another `LocalRef` yields "no local slot").
-    Some(synth_core(
-        db,
-        Core::BinIntRead {
-            bytes: bytes_src,
-            byte_offset,
-            width,
-            signed,
-            little_endian,
-        },
-        crate::ty::Ty::int(),
-    ))
+    match &segs[idx].kind {
+        SegKind::Int { width, signed, .. } => {
+            let byte_offset = bin_static_offset(segs, idx)?;
+            Some(synth_core(
+                db,
+                Core::BinIntRead {
+                    bytes: bytes_src,
+                    byte_offset,
+                    width: *width,
+                    signed: *signed,
+                    little_endian: segs[idx].little_endian,
+                },
+                crate::ty::Ty::int(),
+            ))
+        }
+        // A BIT-FIELD size field `(bits n k)` feeding a dependent-size `(bytes payload n)` — read `n` out of
+        // its byte-aligned run (run-read + shift + mask, the SAME extraction the bit-field binder decode
+        // uses). The run must be byte-aligned + ≤64 bits (`bin_bitfield_run` — else the offset of the
+        // dependent segment is not static; declines). Unsigned + masked, so a size is a small non-negative
+        // int (the caller's `n >= 0` predicate guard still applies).
+        SegKind::Bits { .. } => {
+            let (run_byte_off, run_bits, field_bit_pos, k) = bin_bitfield_run(segs, idx)?;
+            Some(bin_bitfield_read(
+                db,
+                bytes_src,
+                run_byte_off,
+                run_bits,
+                field_bit_pos,
+                k,
+            ))
+        }
+        _ => None,
+    }
 }
 
 /// Synthesize a fresh node carrying `core` with solved type `ty` (its `core`/`ty` columns pre-filled, so

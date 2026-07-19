@@ -26,9 +26,53 @@ pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	BigInt.of a UInt64 widens to the exact value (round-trips back through Int64.of where it fits)
 pass	BigInt.of a UInt8 at its high bit widens to the exact value (smallest-width zero-extend)
 pass	BigInt.of a signed Int32 is a positive BigInt (the narrow path breaks regardless of sign)
+todo	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) (Tuple Int64 Int64)) — BOTH sides compound
+todo	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Err (scalar side)
+todo	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Ok (tuple side)
+todo	COMPOUND RESULT PAYLOAD: (Result Int64 (Tuple Int64 Int64)) — the ERR side is compound
+todo	COMPOUND RESULT PAYLOAD: a compound-Result closure beside a scalar closure (distinct-sig)
+todo	COMPOUND RESULT PAYLOAD: two same-sig closures share one call (multi-export)
+todo	COMPOUND SUM PAYLOAD: (Option (Record (x Int64) (y Int64))) — a RECORD payload
+todo	COMPOUND SUM PAYLOAD: (Option (Tuple Int64 (Tuple Int64 Int64))) — a NESTED tuple payload
+todo	COMPOUND SUM PAYLOAD: (Option (Tuple Int64 Int64)) arg, drive None
+todo	COMPOUND SUM PAYLOAD: (Option (Tuple Int64 Int64)) arg, drive Some
+todo	COMPOUND SUM PAYLOAD: an Option-tuple closure beside a scalar closure (distinct-sig)
+todo	COMPOUND SUM PAYLOAD: mixed-width tuple payload (Int32, Int64, Bool)
+todo	COMPOUND SUM PAYLOAD: two same-sig Option-tuple closures share one call (multi-export)
 pass	Char.from-int at U+E000 (first scalar after the surrogate block) is Some
 pass	Char.from-int at the last surrogate U+DFFF is None
 pass	Char.from-int at the maximum valid scalar U+10FFFF is Some
+todo	DIFF-WIDTH RESULT: (Result Int32 Int64) — the NARROW side is Ok, negative
+todo	DIFF-WIDTH RESULT: (Result Int64 Int32) arg, drive Err with a NEGATIVE narrow payload
+todo	DIFF-WIDTH RESULT: (Result Int64 Int32) arg, drive Ok with a big s64
+todo	DIFF-WIDTH RESULT: a (Result Int64 Int32) group + a (Result Int32 Int64) group, distinct-sig
+todo	DIFF-WIDTH RESULT: two same-sig (Result Int64 Int32) closures share one call
+todo	DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple LIST group (tuple then suffix scalar)
+todo	DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple group (Bool field in the rebuild)
+todo	DISTINCT-SIG among-scalars: two scalar-then-Tuple closures of DIFFERENT sigs each returning a LIST
+todo	DISTINCT-SIG among-scalars: two scalar-then-Tuple closures of DIFFERENT sigs — driving the Int64 group
+todo	DISTINCT-SIG: a nested-Tuple-arg closure with a LIST result
+todo	DISTINCT-SIG: a scalar-then-NESTED-tuple closure with a LIST result
+todo	DISTINCT-SIG: a two-Tuple-arg group with a LIST result
+todo	DISTINCT-SIG: an Option-arg closure + a Result-arg closure each cross the boundary
+todo	DISTINCT-SIG: an Option-arg group BESIDE a Tuple-arg group
+todo	DISTINCT-SIG: capturing two-Tuple-arg closures of different signatures
+todo	DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair
+todo	DISTINCT-SIG: driving the Bool-returning Tuple-arg closure of the distinct-sig pair
+todo	DISTINCT-SIG: driving the Int32 two-Tuple-arg group
+todo	DISTINCT-SIG: driving the Int64/Bool-inner nested-Tuple-arg closure (Bool leaf at depth)
+todo	DISTINCT-SIG: driving the Int64/Bool-inner scalar-then-NESTED closure (Bool leaf at depth)
+todo	DISTINCT-SIG: driving the Result-arg group (Err)
+todo	DISTINCT-SIG: one group takes TWO tuples, the other ONE tuple
+todo	DISTINCT-SIG: sum-arg closures ALONGSIDE a plain export
+todo	DISTINCT-SIG: two DIFFERENT-sig scalar-then-NESTED-tuple closures — driving the Int64-inner group
+todo	DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List
+todo	DISTINCT-SIG: two DIFFERENT-signature nested-Tuple-arg closures each cross the direct-call boundary
+todo	DISTINCT-SIG: two DIFFERENT-signature two-Tuple-arg closures each cross the boundary
+todo	DISTINCT-SIG: two Option-arg closures of DIFFERENT payload widths
+todo	DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the direct-call boundary
+todo	DISTINCT-SIG: two capturing sum-arg closures of different signatures
+todo	DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a plain export
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
 pass	Float64.of-int is exact at 2^53 and rounds a just-past-2^53 odd integer to nearest-even
 pass	Int64.min crosses the parameter boundary and back unchanged
@@ -39,9 +83,55 @@ pass	List.at over a let-bound constant list folds through the binder on both bac
 pass	List.len of a concat of call-site lists with runtime elements folds to the summed arity
 pass	List.len of a list built at the call site from runtime elements folds to the arity
 pass	List.len over a let-bound constant list folds to the arity on both backends
+todo	MIXED among-scalars: a scalar-then-Tuple closure ALONGSIDE a plain export — driving the closure
+todo	MIXED among-scalars: a scalar-then-Tuple closure with a COMPOUND result ALONGSIDE a plain export
+todo	MIXED among-scalars: a scalar-then-Tuple closure with a LIST result ALONGSIDE a plain export
+todo	MIXED among-scalars: driving the PLAIN export alongside a scalar-then-Tuple closure
+todo	MIXED: a List-returning Tuple-arg closure ALONGSIDE a plain export — driving the closure
+todo	MIXED: a NESTED tuple + flat tuple arg closure ALONGSIDE a plain export
+todo	MIXED: a TWO-Tuple-arg closure ALONGSIDE a plain (non-closure) export
+todo	MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export
+todo	MIXED: a nested-Tuple-arg closure (scalar result) ALONGSIDE a plain export — driving the closure
+todo	MIXED: a nested-Tuple-arg closure with a LIST result ALONGSIDE a plain export
+todo	MIXED: a scalar-then-NESTED-tuple closure with a LIST result ALONGSIDE a plain export
+todo	MIXED: a two-Tuple-arg closure with a LIST result ALONGSIDE a plain export
+todo	MIXED: an Option-arg closure ALONGSIDE a plain (non-closure) export
+todo	MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure
+todo	MIXED: driving the PLAIN export alongside a Tuple-arg closure
+todo	MIXED: driving the PLAIN export alongside a nested-Tuple-arg closure
+todo	MIXED: driving the PLAIN export alongside a two-Tuple-arg LIST closure
+todo	MIXED: driving the PLAIN export alongside a two-Tuple-arg closure
+todo	MIXED: driving the PLAIN export alongside an Option-arg closure
 pass	MK_COMB unions its operands' hypotheses — an assumption threaded through MK_COMB survives (soundness)
 pass	MK_COMB unions the hypotheses of BOTH operands when each carries a distinct assumption
 pass	MP should match its antecedent up to α-equivalence: aconv-MP accepts an α-variant a structural equality rejects
+todo	MULTI-EXPORT: THREE tuple args with a LIST result, shared `call`
+todo	MULTI-EXPORT: a nested-Tuple-arg closure with a LIST result
+todo	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
+todo	MULTI-EXPORT: among-scalars tuple arg with a LIST result (shared interleaving list-`call`)
+todo	MULTI-EXPORT: among-scalars tuple arg with a fixed-shape COMPOUND result
+todo	MULTI-EXPORT: driving the FIRST two-Tuple-arg closure (add)
+todo	MULTI-EXPORT: driving the SECOND Option-arg closure (Some and None)
+todo	MULTI-EXPORT: driving the SECOND two-Tuple-arg LIST closure
+todo	MULTI-EXPORT: driving the second among-scalars LIST closure (tuple then suffix scalar)
+todo	MULTI-EXPORT: driving the second among-scalars closure (subtract)
+todo	MULTI-EXPORT: driving the second nested-Tuple-arg closure (subtract)
+todo	MULTI-EXPORT: driving the second scalar-then-NESTED closure (subtract)
+todo	MULTI-EXPORT: two Tuple args with a scalar BETWEEN them, shared `call`
+todo	MULTI-EXPORT: two Tuple-arg closures sharing a List-returning `call`
+todo	MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`
+todo	MULTI-EXPORT: two capturing closures each taking TWO Tuple args
+todo	MULTI-EXPORT: two closures each taking a scalar arg THEN a NESTED tuple
+todo	MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg
+todo	MULTI-EXPORT: two nested-Tuple-arg closures share one call — driving the sum
+todo	MULTI-EXPORT: two same-sig Option-arg closures share one `call`
+todo	MULTI-EXPORT: two same-sig Result-arg closures share one `call`
+todo	MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`
+todo	MULTI-EXPORT: two same-sig closures each taking THREE Tuple args
+todo	MULTI-EXPORT: two same-sig closures each taking TWO Tuple args share one `call`
+todo	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
+todo	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
+todo	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
 pass	Map.to-list enumerates the entries as a List of (key value) tuples in canonical KEY order
 pass	Map.to-list length is the map's entry count
 pass	Map.to-list of a runtime-empty but key/value-typed map is the empty list
@@ -64,6 +154,7 @@ pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	STACKED @requires: EVERY precondition is enforced — a violated OUTER @requires traps (not only the innermost)
 pass	STACKED @requires: value-transparent when ALL preconditions are satisfied
+todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 pass	Set.contains does not fold a set whose element is a runtime scalar
 pass	Set.contains finds a runtime STRING-rope element built via Set.of
 pass	Set.contains over nan finds nan
@@ -72,6 +163,8 @@ pass	Set.insert does not fold a duplicate against a runtime element
 pass	Set.remove does not fold a set whose element is a runtime scalar
 pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
 pass	Set.to-list canonical order is SIGNED at the integer extremes
+pass	Set.to-list canonical order is independent of insertion order
+pass	Set.to-list enumerates the FULL interior order, not just the smallest element
 pass	Set.to-list enumerates the elements as a List in canonical (sorted) order
 pass	Set.to-list length is the set's cardinality (deduped)
 pass	Set.to-list of a runtime-empty but element-typed set is the empty list
@@ -91,12 +184,22 @@ pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
 pass	String.to-bytes of a genuinely-runtime string yields its UTF-8 byte length
 pass	String.to-bytes of a runtime string threaded through recursion round-trips its bytes
+todo	THREE Tuple args cross the direct-call boundary
+todo	THREE Tuple args with a LIST result
 pass	TRANS carries a hypothesis borne by the RIGHT operand only (mirror of the left-only pin)
 pass	TRANS chained three deep accumulates every operand's hypotheses
 pass	TRANS should match its middle term up to α-equivalence: aconv-TRANS chains an α-variant a structural equality rejects
 pass	TRANS unions its operands' hypotheses — an assumption threaded through TRANS survives (soundness)
 pass	TRANS unions the hypotheses of BOTH operands when each carries a distinct assumption
+todo	TWO Record args cross the direct-call boundary
+todo	TWO Tuple args cross the direct-call boundary
+todo	TWO Tuple args with a BYTE-ROPE result
+todo	TWO Tuple args with a LIST result cross the direct-call boundary
+todo	TWO Tuple args with a fixed-shape COMPOUND result
+todo	TWO Tuple args with a scalar BETWEEN them (tuple, scalar, tuple)
 pass	TWO performs in an if condition both fold on the strict-first spine
+todo	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
+todo	Type is a first-class value
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
 pass	Type.eq carries an integer type's full width and signedness
 pass	Type.eq compares a RECORD type-value structurally, by field types
@@ -151,10 +254,19 @@ pass	`sleep-until` sleeps to an absolute Instant — the span is target minus no
 pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
+todo	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
+todo	a 32-bit-float closure crosses the host boundary
+todo	a 32-bit-integer closure crosses the host boundary
+todo	a 64-bit-unsigned closure crosses the host boundary
+todo	a @param accessor splices into a quasiquote and the eval computes with the host value
+todo	a @param of type (Qty Rational unit) desugars to num/den scalars + a guest Qty.of with the unit (#13 B2)
+todo	a @param of type Rational desugars to two scalar num/den accessors the guest recombines (#13)
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
 pass	a @requires precondition is enforced for a genuinely-runtime argument
 pass	a @requires predicate that itself traps keeps its own trap kind
 pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call
+todo	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
+todo	a BOOL-field Tuple closure ARG, false discriminant
 pass	a BOOL-result effect op threads state across two performs on a boolean connective's operands
 pass	a BigInt entry argument is marshalled through the value's own constructor
 pass	a BigInt factorial accumulator computes 25! exactly
@@ -171,7 +283,20 @@ pass	a Bool generator derived from the seed is reproducible (same seed, same Boo
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
 pass	a Bytes entry argument is marshalled as a Vec<u8>
+todo	a Bytes-returning closure alongside a plain export — the closure runs
+todo	a Bytes-returning closure alongside a plain export — the plain runs
+todo	a Bytes-returning closure on a different argument
 pass	a CALL-returned single-variant newtype with a literal-payload arm spills at the right width
+todo	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
+todo	a CAPTURING closure returning a List
+todo	a CAPTURING closure returning a tuple
+todo	a CAPTURING closure taking TWO Tuple args
+todo	a CAPTURING closure taking TWO Tuple args with a LIST result
+todo	a CAPTURING closure taking a Result Int64 Int64 ARG crosses the direct-call boundary
+todo	a CAPTURING closure taking a Result Int64 Int64 ARG — Err arm uses the captured value
+todo	a CAPTURING closure taking a Tuple ARG crosses the DIRECT-CALL boundary
+todo	a CAPTURING closure taking an Option Int64 ARG crosses the direct-call boundary
+todo	a CAPTURING closure taking an Option Int64 ARG — None takes the captured value
 pass	a CBOR atom decodes each scalar major type to its value
 pass	a CBOR head decodes its major type and big-endian argument from the input bytes
 pass	a CBOR reader walks a variable-length array using its decoded length as the element count
@@ -182,14 +307,17 @@ pass	a COMPOUND generated value is reproducible from its seed (a tuple draws ide
 pass	a CONSTANT recursive sum compares equal to a differently-built RUNTIME one
 pass	a CURRIED closure capturing an inner-handled perform result closes over it through partial application
 pass	a Char-payload sum value escapes across the boundary in its canonical form
+todo	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
 pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
 pass	a Duration constructor `secs` scales a UInt64 count to nanoseconds
 pass	a FLAT runtime string nested in a tuple is unaffected (control)
+todo	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
 pass	a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator
 pass	a Float KEY inserted into an empty (runtime) map boxes with box-float, not box-int
 pass	a Float VALUE inserted into an empty (runtime) map boxes with box-float, not box-int
 pass	a Float element inserted into an empty (runtime) set boxes with box-float, not box-int
 pass	a Float32 quantity stored as a map value round-trips through Map.lookup
+todo	a Float64 closure captures a Float64 build-time host effect result
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
 pass	a HOF callback matching a tuple argument computes through the nested reduction
@@ -197,8 +325,11 @@ pass	a HOF callback matching its sum argument reaches the nullary arm
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
 pass	a List entry argument is marshalled as a vec!
+todo	a List-returning closure alongside a plain export — the closure
+todo	a List-returning closure alongside a plain export — the plain
 pass	a MAP built from generated pairs is equal regardless of insertion order (the Map analogue of set convergence)
 pass	a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds
+todo	a MIXED Int-and-Float Tuple closure ARG flattens + rebuilds (box-int + box-float)
 pass	a MULTI-LEVEL concat-built list map key (n>=33) is found by a push-built equal key
 pass	a MULTI-PAYLOAD variant with a nested same-sum variant reads the right payload depth (known outer disc)
 pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
@@ -212,7 +343,24 @@ pass	a MULTI-shot arm whose each resume CONSUMES a captured heap list dups it pe
 pass	a MULTI-shot handler arm folds a two-hole body by re-reducing per resume
 pass	a MUTUALLY-recursive effectful group is specialized under a state handler
 pass	a Map accumulator threaded through a non-tail double tree recursion accumulates both subtrees
+todo	a Map-returning closure alongside a parameterized plain export — the closure
+todo	a Map-returning closure alongside a parameterized plain export — the plain
 pass	a Map.lookup over a map literal with a runtime key finds it by value
+todo	a NARROW-int-field Tuple closure ARG flattens + rebuilds (exercises the i32->i64 extend)
+todo	a NESTED Record ARG (a record containing a record) crosses the direct-call boundary
+todo	a NESTED Record ARG with a LIST result crosses the direct-call boundary
+todo	a NESTED Tuple ARG (a tuple containing a tuple) crosses the direct-call boundary
+todo	a NESTED Tuple ARG among scalar args crosses the direct-call boundary
+todo	a NESTED Tuple ARG among scalars with a LIST result
+todo	a NESTED Tuple ARG between two scalar args (prefix + suffix)
+todo	a NESTED Tuple ARG with a BYTE-ROPE result crosses the direct-call boundary
+todo	a NESTED Tuple ARG with a LIST result crosses the direct-call boundary
+todo	a NESTED Tuple ARG with a fixed-shape COMPOUND result crosses the direct-call boundary
+todo	a NESTED Tuple ARG with a narrow Bool leaf crosses the direct-call boundary
+todo	a NESTED Tuple arg ALONGSIDE a flat Tuple arg
+todo	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
+todo	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
+todo	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 pass	a NON-tail-resumptive arm projects a tuple parameter twice in its pure one-hole context
 pass	a NaN map key is found by a differently-produced NaN
 pass	a NaN nested in a list compares equal under the canonical byte form
@@ -227,9 +375,16 @@ pass	a PLAIN @requires precondition is value-transparent when SATISFIED: the def
 pass	a Qty payload with a GENERIC inner type rejects a bare use with no type argument
 pass	a Qty payload's INNER type stays a real type parameter — the unit-arg skip does not over-skip
 pass	a Qty-typed variant payload keeps its type non-generic and matches back
+todo	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
 pass	a RADIX literal carries the N type suffix
 pass	a RATIONAL compound = has DISCRIMINATING power (1/2 ≠ 1/3, but 0/2 = 0/3)
 pass	a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)
+todo	a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)
+todo	a RECORD closure ARG on the MULTI-EXPORT path
+todo	a RECORD closure ARG whose fields are NOT in sorted source order
+todo	a RECORD closure ARG with a LIST result
+todo	a RECORD closure ARG with a narrow Bool field, among scalars
+todo	a RECORD with a nested TUPLE field crosses the direct-call boundary
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
 pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
@@ -243,6 +398,7 @@ pass	a Rational entry argument is marshalled through Rational::new
 pass	a Rational fanned into a compound then re-read survives (Perceus retain over a BigInt/Rational leaf)
 pass	a Rational is usable as a map key, matched by its exact value
 pass	a Rational set deduplicates by exact value regardless of how each was written
+todo	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)
 pass	a Rational-annotated literal composes with exact rational arithmetic
 pass	a Rational-inner quantity addition stays exact through the quantity wrapper
 pass	a Rational-payload sum value escapes across the boundary in its canonical form
@@ -252,6 +408,7 @@ pass	a Result pipeline short-circuits on the first Err
 pass	a Result-valued `?` under an Option boundary is a type error
 pass	a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 pass	a SINGLE-variant open sum still requires an open-tail arm
+todo	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a STRING-result effect op resumes with a string that folds through a concat
 pass	a SUM compound = has DISCRIMINATING power (a runtime-selected constructor separates two tagged values)
 pass	a SUM constructor payload that is a compound built from performs threads and destructures
@@ -265,13 +422,29 @@ pass	a String compound export under a non-main name crosses to the host
 pass	a String match with a BOUND default arm equals its (= s literal) if-chain with a bound else
 pass	a String match with disjoint literal arms is order-independent (reordering the arms preserves the result)
 pass	a String param threaded through a self-recursive loop and concatenated each step is retained
+todo	a String-returning closure alongside a parameterized plain export
+todo	a String-returning closure alongside a parameterized plain export — the plain runs
+todo	a THREE-argument closure round-trips — flat arrow spelling
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
 pass	a THREE-parameter op arm binds all three parameters and the state
+todo	a TRIPLY-nested Record ARG crosses the direct-call boundary
 pass	a TUPLE-result perform's projected field feeds a SECOND perform's argument, threading state across both
 pass	a TUPLE-returning operation resumes a pair built from the handler state, then projected
 pass	a Thm rides a collection through outside code without destructure rights
+todo	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)
+todo	a Tuple ARG BEFORE a scalar arg crosses the direct-call boundary (tuple, then scalar)
+todo	a Tuple ARG BEFORE a scalar with a LIST result crosses the direct-call boundary
+todo	a Tuple ARG BETWEEN two scalar args crosses the direct-call boundary (scalar, tuple, scalar)
+todo	a Tuple ARG among scalars with a BYTE-ROPE result crosses the direct-call boundary
+todo	a Tuple ARG among scalars with a LIST result crosses the direct-call boundary
+todo	a Tuple ARG among scalars with a fixed-shape COMPOUND result crosses the direct-call boundary
+todo	a Tuple ARG composes with a NESTED-tuple RESULT
+todo	a Tuple ARG of FLOAT fields crosses the direct-call boundary
+todo	a Tuple ARG of MIXED widths (Int32, Int64) crosses the direct-call boundary
+todo	a Tuple ARG with a Bool field between Int64 fields crosses the direct-call boundary
 pass	a UInt32 addition that overflows the 32-bit width is rejected at compile time
 pass	a UInt32 holds a wasm section size at the width boundary
+todo	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
 pass	a UInt8 sum-payload literal-match hits the literal arm, result widens to Int64
 pass	a UInt8 sum-payload literal-match misses, binds the payload widened to Int64
@@ -361,9 +534,13 @@ pass	a bottom-up fold matches a tuple of its recursive results with constructor 
 pass	a bound effect performed with neither a handler nor a host delegation has no home
 pass	a bound name in a map key is used by its value, not the literal name
 pass	a bounded generator produces only in-range values (0 <= roll < 64) for a runtime seed
+todo	a boxed nested-unary curried closure applies without trapping
 pass	a boxed runtime closure returning Unit applies without declining
+todo	a boxed runtime closure taking Unit (a lazy thunk) is forced without declining
 pass	a branch perform under two nested handlers threads the inner state to the continuation
 pass	a branch refinement does not leak into the else arm's overflow guard
+todo	a branching recursive tree fold infers its unannotated callback across both arms
+todo	a build-time delegated effect whose result a returned closure captures does not escape
 pass	a built map renders its entries in canonical key order
 pass	a built-in Ast constructor applied to a wrong-type payload is a type error
 pass	a built-in Ast.Bool constructor applied to a wrong-type payload is a type error
@@ -386,12 +563,27 @@ pass	a bytes value chosen by a runtime if is length-measured with valid wasm
 pass	a call-returned Bool newtype literal-payload arm spills correctly
 pass	a call-returned Int32 newtype literal-payload arm spills at the narrow width
 pass	a call-returned UInt8 newtype literal-payload arm spills at the narrow width
+todo	a camelCase round-trip resolves through kebab boundary-name normalization
+todo	a camelCase same-signature multi-export normalizes each make-<name>
 pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly
 pass	a captured list survives a structural rebuild of the same source between capture and application
 pass	a captured pre-shadow value survives the re-binding
+todo	a capturing 32-bit-integer closure crosses and is called
+todo	a capturing closure crosses as a repeatable (borrow<t>) callback handle
+todo	a capturing closure export tracks both the captured value and the call argument
+todo	a capturing closure is applied through a recursive higher-order function
+todo	a capturing closure returning Bytes
+todo	a capturing closure returning a COMPOUND is a repeatable (borrow<t>) callback handle
+todo	a capturing closure returning a String
+todo	a capturing closure returning a nominal-over-scalar
+todo	a capturing closure stored as a runtime list element is extracted by List.at and applied
 pass	a capturing closure stored in a let-bound record is projected and applied
 pass	a capturing closure stored in a let-bound tuple is projected and applied
 pass	a capturing closure stored in a tuple is extracted and applied
+todo	a capturing closure stored in a variant is applied via a devirtualized direct call
+todo	a capturing closure whose body uses the capture after an inner computation
+todo	a capturing closure with a let binding in its body
+todo	a capturing unannotated closure in a payload is typed from the declared arrow
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a chained float ordering is not foldable by transitivity — a NaN middle breaks the chain
@@ -409,17 +601,73 @@ pass	a checked integer conversion of an out-of-range CONSTANT is rejected at com
 pass	a checked integer conversion that fits succeeds
 pass	a checked result is consumed by matching its Option at run time
 pass	a checked-add over a RUNTIME operand declines pending the Core::CheckedArith runtime emit
+todo	a closure applied through an unbuilt sibling variant compiles and runs
 pass	a closure argument is another closure's result
 pass	a closure captures TWO inner-handled perform results across NESTED lets and escapes under an outer handler
+todo	a closure captures a boolean and reads it back inside its lifted body through a recursive HOF
+todo	a closure captures a capturing closure and calls it through a recursive HOF
+todo	a closure captures a function value and applies it through a recursive HOF
+todo	a closure captures a sum value and matches it inside its lifted body through a recursive HOF
+todo	a closure captures a tuple and projects it inside its lifted body through a recursive HOF
 pass	a closure captures another closure and applies it
 pass	a closure captures another closure and applies it at RUNTIME
 pass	a closure captures its environment by value at creation, unaffected by a later same-named binding
 pass	a closure captures the binding in scope where it was created
+todo	a closure captures the result of a build-time host op called with an argument
+todo	a closure capturing THREE scalars is made and called
+todo	a closure capturing a build-time host effect preserves the order of two host calls
 pass	a closure capturing a value computed under a handler may escape the handle applied directly
 pass	a closure capturing an inner-handled perform result is applied under an OUTER handler of the same effect
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
+todo	a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF
+todo	a closure capturing two values is made and called by the host
+todo	a closure capturing values of DIFFERENT types (Float64 + Int64)
+todo	a closure carried in a USER-declared sum's payload is extracted and applied
+todo	a closure carried in a sum payload is extracted by a match and applied
+todo	a closure driving control flow off a captured boolean
+todo	a closure export alongside a plain scalar export — the closure runs
+todo	a closure export alongside a plain scalar export — the plain export runs
+todo	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
+todo	a closure returned from a recursive function is applied through a recursive HOF
+todo	a closure returning Bytes crosses to the host as list<u8>
 pass	a closure returning Unit is declined — Unit has no machine representation
+todo	a closure returning a LIST of tuples (direct-call)
+todo	a closure returning a List crosses as the value form
+todo	a closure returning a Map — canonical key order
+todo	a closure returning a NESTED List
+todo	a closure returning a NESTED record crosses as the typed value form
+todo	a closure returning a NESTED tuple
+todo	a closure returning a SUM of a tuple (direct-call)
+todo	a closure returning a Set — canonical member order
+todo	a closure returning a boolean is called by the host
+todo	a closure returning a constant String crosses as its UTF-8 bytes
+todo	a closure returning a nominal-over-Bool erases to bool at the boundary
+todo	a closure returning a nominal-over-scalar crosses as the underlying scalar
+todo	a closure returning a record crosses as the typed value form
+todo	a closure returning a runtime String (concat) crosses as its bytes
+todo	a closure returning a tuple crosses as the typed value form
+todo	a closure returning a tuple whose element is a LIST (compound-with-collection)
+todo	a closure returning a tuple with a Bool leaf
+todo	a closure returning a tuple with a negative int leaf
+todo	a closure returning an EMPTY List
+todo	a closure returning an empty Bytes crosses as the empty list
+todo	a closure returning an empty String crosses as the empty list
+todo	a closure taking a Result Bool Bool ARG crosses the direct-call boundary
+todo	a closure taking a Result Int64 Int64 ARG — Err crosses the direct-call boundary
+todo	a closure taking a Result Int64 Int64 ARG — Ok crosses the direct-call boundary
+todo	a closure taking a nominal-over-scalar argument receives the underlying scalar
+todo	a closure taking an Option Bool ARG crosses the direct-call boundary
+todo	a closure taking an Option Float64 ARG crosses the direct-call boundary
+todo	a closure taking an Option Int32 ARG (narrow-int payload) crosses the direct-call boundary
+todo	a closure taking an Option Int64 ARG — None crosses the direct-call boundary
+todo	a closure taking an Option Int64 ARG — Some crosses the direct-call boundary
+todo	a closure that performs a delegated effect cannot cross the host boundary
+todo	a closure whose CALL returns a tuple CONTAINING a list
+todo	a closure whose CALL returns a user sum crosses as the value form
+todo	a closure whose CALL returns an Option crosses as the value form
+todo	a closure whose body applies a nested lambda in place runs through a recursive HOF
+todo	a closure whose body calls a top-level helper function
 pass	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 pass	a collection-carrying recursion whose base arm does a fallible indexed read compiles
 pass	a common constructor composes through a hoisted tuple field to build once
@@ -437,9 +685,12 @@ pass	a compound map key whose Bytes element is a rope is found by its flat twin
 pass	a compound map key whose LIST element is a rope is found by its flat-twin key
 pass	a computed float map key is found by its literal twin
 pass	a concat-built and a push-built SMALL list (single-leaf, n<=32) with the same elements are the same map key
+pass	a concat-built list = a push-built list with the same elements (element-wise, shape-independent, n>=33)
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
 pass	a conditional on a negated runtime condition selects the correct branch and shields the other
+todo	a conditional performs only the taken branch's effect — else
+todo	a conditional performs only the taken branch's effect — then
 pass	a conditional selects a branch by a runtime value that is not known at compile time
 pass	a conditional selects the false branch when the condition is false
 pass	a conditional shields a trap in a nested unselected branch
@@ -482,6 +733,7 @@ pass	a constant-failure `?` in a NESTED let elides a trapping OUTER-let init it 
 pass	a constant-failure `?` short-circuit ELIDES an earlier trapping let-init whose value it discards
 pass	a constant-index String.at result compares equal to a literal by content
 pass	a constant-index String.at result compares unequal to a different literal
+todo	a constant-returning closure threads through a recursive-generic HOF
 pass	a constructed Ast.Bool leaf drives an evaluated conditional
 pass	a constructor CHOSEN by matching one sum is applied to build another
 pass	a constructor STORED in a tuple is extracted and applied as a first-class closure
@@ -494,6 +746,11 @@ pass	a constructor with an all-irrefutable payload shadows a later refining arm 
 pass	a consumed and a borrowed read of one loop invariant coexist per iteration
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
 pass	a consumed empty list type-checks without annotation (ambiguity is escape-only)
+todo	a consumer applies TWO handed-back closures
+todo	a consumer applies the handed-back closure inside a larger expression
+todo	a consumer applies the handed-back closure to an internal constant
+todo	a consumer returns a different type than the closure it applies
+todo	a consumer takes the handed-back closure as its SECOND parameter
 pass	a consuming op inside a hoisted list element respects a still-live binding
 pass	a consuming op on a still-live binding inside one match arm's payload keeps its retain
 pass	a context-typed empty float map accepts a runtime float key insert
@@ -517,6 +774,7 @@ pass	a curried function can be partially applied
 pass	a curried function-type annotation checks its inner result type against the argument
 pass	a curried newtype constructor applies to completion
 pass	a curried-syntax application of a multi-payload constructor reaches full arity and constructs
+todo	a curried-syntax application of a runtime closure flattens to one full-arity indirect call
 pass	a cycle of module imports is rejected
 pass	a decimal integer literal
 pass	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
@@ -554,6 +812,10 @@ pass	a default-integer pragma makes a bare literal take the declared integer typ
 pass	a default-integer pragma naming a non-integer type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
 pass	a delegated capability is not itself an export field
+todo	a delegated effect performed in a closure passed to a HOF is reached and fires
+todo	a delegated effect performed inside an intra-program handler
+todo	a delegated effect reached only through an if-branch is granted and fires when the branch is taken
+todo	a delegated host effect composes with the value-heap runtime
 pass	a delegation naming an effect that is never reached is rejected as latent authority
 pass	a dense if-equality chain dispatches every value including the default
 pass	a dense if-equality chain dispatches on a let-bound value
@@ -570,9 +832,17 @@ pass	a derived dimension composes across a def boundary through annotated Qty pa
 pass	a destructuring let over a runtime value binds its parts
 pass	a destructuring record let over a runtime value binds its fields
 pass	a dictionary consumer called at two dictionaries is monomorphized per dictionary
+todo	a different function argument through the same recursive higher-order function
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
 pass	a dimensionless quantity carries the group identity Unit.one
 pass	a discarded do-statement whose value would overflow is elided, so its trap does not occur
+todo	a distinct-signature per-group call-g is a repeatable (borrow<t>) callback
+todo	a distinct-signature round-trip alongside a plain export — the Int64->Bool side runs
+todo	a distinct-signature round-trip alongside a plain export — the Int64->Int64 side runs
+todo	a distinct-signature round-trip alongside a plain export — the plain export runs
+todo	a distinct-signature round-trip applies the Int64->Bool closure
+todo	a distinct-signature round-trip applies the Int64->Int64 closure
+todo	a distinct-signature round-trip's Bool closure on a nonzero input
 pass	a diverging expression unifies with an integer position
 pass	a division whose divisor folds to zero still traps
 pass	a do-local function declaration is recursive
@@ -624,6 +894,15 @@ pass	a file-top default-integer pragma fixes a bare literal's type
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a final unquote-splice binds the remaining elements as a list
 pass	a fixed-arity list binding pattern is refutable and rejected
+todo	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
+todo	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
+todo	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
+todo	a fixed-shape Tuple ARG with a RECORD RESULT crosses the direct-call boundary
+todo	a fixed-shape Tuple ARG with a STRING RESULT crosses the direct-call boundary
+todo	a fixed-shape Tuple ARG with a SUM (Option) RESULT crosses the direct-call boundary
+todo	a fixed-shape Tuple ARG with a Tuple RESULT crosses the direct-call boundary
+todo	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
+todo	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)
 pass	a fixed-width integer segment of a non-byte-aligned width is rejected
 pass	a fixpoint loop that threads a growing list accumulator returns that list
 pass	a fixpoint that re-seeds a fresh list each round via a helper returns a list
@@ -642,6 +921,7 @@ pass	a full-range signed division keeps its MIN over -1 overflow guard and traps
 pass	a full-string String.slice byte-len equals the whole string's byte-len
 pass	a full-string String.slice recovers the whole string's length by both measures
 pass	a function applied to an argument
+todo	a function argument is applied through a recursive higher-order function
 pass	a function binding the same parameter name twice is rejected
 pass	a function bound to a name and then applied
 pass	a function chosen by a runtime condition is applied (false branch)
@@ -656,6 +936,7 @@ pass	a function returning None or a nested Some infers its compound result shape
 pass	a function returning a boolean predicate result
 pass	a function returns a heap sub-node selected by a match arm
 pass	a function stored in a record field is called after extraction
+todo	a function stored in a record field of a sum payload is called after a match
 pass	a function stored in a tuple element is called after extraction
 pass	a function takes a boolean parameter and branches on it
 pass	a function whose body always diverges has result type Never
@@ -674,6 +955,8 @@ pass	a generated value with a BIGINT leaf is reproducible (compound = walks the 
 pass	a generated value with a FLOAT leaf is reproducible (compound = over the canonical float byte form)
 pass	a generated value with a SYMBOL leaf is reproducible (compound = walks the interned-name byte leaf)
 pass	a generic definition takes the type as a type-valued parameter
+todo	a generic recursive HOF taking a closure is monomorphized at three distinct closure types
+todo	a generic recursive HOF taking a closure is monomorphized at two distinct closure types
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
 pass	a generic sum type constructor applied to a value is rejected
@@ -774,11 +1057,21 @@ pass	a high UInt64 literal operand takes UInt64 from context, not Int64
 pass	a high-bit scrutinee misses an offset jump table whose bias cancels its low bits
 pass	a high-power product cancels exactly to dimensionless (meter^100 * meter^-100)
 pass	a higher-order function applies a callback that matches its own sum argument
+todo	a higher-order left fold applies its combiner, not a fixed operator
+todo	a higher-order left fold over a built-in list with an annotated callback
+todo	a higher-order left fold over a built-in list with an annotated fn parameter
 pass	a hoisted division traps by the selected divisor only
 pass	a hoisted trapping invariant loop-bound still traps when it overflows, even at zero iterations
 pass	a homogeneous nested Option distinguishes its outer and inner None
+todo	a host call's response is an ordinary value that feeds a LATER host call
 pass	a host delegating a value definition rather than an effect is rejected
 pass	a host delegating the same effect twice is rejected
+todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
+todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
+todo	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
+todo	a host op with a String parameter composes with the value-heap runtime
+todo	a host-called closure applied to a different argument tracks the input
+todo	a host-called closure with a different body dispatches the right code
 pass	a kernel may deliberately export its rule as a first-class value
 pass	a kernel rule using α-equivalence accepts an α-variant premise a structural equality would reject
 pass	a key-directed pattern matches a RUNTIME map by looking up its keys
@@ -859,6 +1152,7 @@ pass	a list mixing integer and float elements is a type error
 pass	a list of a nullary sum written in the bare-member form is exhaustive across every variant
 pass	a list of a sum is exhaustive when the empty and every variant's first-element arm are covered
 pass	a list of bools is exhaustive when the empty and both first-element values are covered
+todo	a list of closures each keeps its own capture, selected by a runtime index
 pass	a list of maps with different keys is homogeneous, not a type error
 pass	a list of maps: a runtime index then looks a runtime key up in the found map
 pass	a list of records with different field sets is a type error
@@ -973,11 +1267,11 @@ pass	a match on an open sum omitting the open-tail arm is rejected
 pass	a match on an open sum with an open-tail arm is exhaustive
 pass	a match on an uninhabited scrutinee is exhaustive with zero arms
 pass	a match on the result of a match threads sum values through nested control flow
+pass	a match over a match-selected Option folds through the false arm (None)
+pass	a match over a match-selected Option folds through the true arm (Some)
 pass	a match over a statically-known constructor with a runtime payload elides the dispatch
 pass	a match over an if-selected Option folds through the else branch (None)
 pass	a match over an if-selected Option folds through the then branch (Some)
-pass	a match over a match-selected Option folds through the false arm (None)
-pass	a match over a match-selected Option folds through the true arm (Some)
 pass	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 pass	a match over multiple nullary constructors with uniform patterns
 pass	a match pattern naming a non-existent variant is a coded rejection
@@ -1013,12 +1307,21 @@ pass	a module's delegated capability is reachable as metadata, not as an export
 pass	a monomorphic user sum applied to a type argument in an annotation is rejected
 pass	a multi-arg constructor with mixed-kind payloads binds each by its own kind
 pass	a multi-argument call node is evaluated by iterating its payload arg list
+todo	a multi-argument closure among distinct-signature exports
+todo	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
+todo	a multi-argument closure round-trips through a consumer
+todo	a multi-argument closure round-trips through a consumer — FLAT arrow spelling
+todo	a multi-argument closure with COMPOUND args round-trips — flat arrow spelling
 pass	a multi-byte runtime bit-field takes the matching wide unsigned type
+todo	a multi-export compound-result shared call is a repeatable (borrow<t>) callback
+todo	a multi-export set of parameterized capturing closures is driven per export
+todo	a multi-export shared call is a repeatable (borrow<t>) callback
 pass	a multi-field record with one param-named key survives the call
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
 pass	a multi-payload destructure binds the head and recurses on the tail
 pass	a multi-payload nested same-sum match falls through when the nested variant differs
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
+pass	a multi-payload pattern with too FEW binders is a malformed destructure
 pass	a multi-payload variant destructures its payloads positionally
 pass	a multi-payload variant whose spread element is itself a compound escapes correctly
 pass	a multi-payload variant with MIXED-width, MIXED-type payloads deconstructs each field
@@ -1037,6 +1340,7 @@ pass	a mutual walk where BOTH partners perform threads one shared counter across
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 pass	a mutually-recursive check/check-if returning a Result compiles and runs (if-cond is a call)
+todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 pass	a mutually-recursive fresh-id walk assigns a fresh id at each node and sums them
 pass	a mutually-recursive generic group is instantiated per type
 pass	a mutually-recursive group performs in its entry def while its partner only dispatches
@@ -1222,6 +1526,8 @@ pass	a parameter named tuple is applied as the bound function
 pass	a parameterized compound-return export forwards distinct arguments to make
 pass	a parameterized export builds a list of tuples by a runtime-length loop and measures it
 pass	a parameterized export drives an Option-of-runtime-BigInt on both arms
+todo	a parameterized export returning a capturing closure is made and called by the host
+todo	a parameterized export returning a multi-argument capturing closure
 pass	a parameterized export returns a built-in Option computed from its argument
 pass	a parameterized export returns a list computed from its argument
 pass	a parameterized export returns a list of lists built from its argument
@@ -1234,12 +1540,17 @@ pass	a parameterized export returns a runtime-selected empty-or-nonempty map
 pass	a parameterized export returns a runtime-selected empty-or-nonempty set
 pass	a parameterized export returns a sum value computed from its argument
 pass	a parameterized export returns a tuple computed from its argument
+todo	a parameterized plain export alongside a closure export applies its argument
+todo	a parameterized plain export alongside a closure export — the closure captures and applies
 pass	a partial application persists its capture across two applications
 pass	a partial constructor bound in a let completes when applied
 pass	a partial constructor bound in a let-tuple completes when applied to a runtime arg
+todo	a partial constructor in a runtime tuple element completes via an eta-closure lift
 pass	a partial constructor passed to a higher-order function completes the variant
 pass	a partial constructor projected from a tuple literal completes when applied
 pass	a partial constructor stored in a record field completes when applied
+todo	a partially-applied function escapes as a value and runs through a recursive HOF
+todo	a pass-through closure that returns its arg via a trivial let composes at one element type
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
@@ -1271,6 +1582,7 @@ pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a possibly-out-of-range runtime integer conversion still declines (checked emit pending)
 pass	a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)
 pass	a post-order labeling walk returns a labeled tree (heap result, id drawn after children)
+todo	a predicate closure returning Bool drives an early-exit recursive HOF
 pass	a prefix literal does not shadow a longer string arm
 pass	a prefixed quantity displays scaled to its reference unit (Float)
 pass	a prefixed unit combines with its base by converting to the reference (Float)
@@ -1281,10 +1593,13 @@ pass	a private member of a nested module is not reachable through the projection
 pass	a private module member is still visible to a sibling
 pass	a private module member participates in mutual recursion with an exported sibling
 pass	a private sibling defined after its exported caller still resolves
+todo	a produced closure is handed back into a consumer export (the round trip)
 pass	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 pass	a product type of three Qty fields with concrete units constructs and projects
 pass	a program declares its own family unit and converts with it
 pass	a program that delegates no effect is pure and never suspends
+todo	a program that makes a host call has that call in its observable behavior
+todo	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
 pass	a projected trapping element of a hoisted same-constructor if traps
@@ -1359,10 +1674,12 @@ pass	a record field key that coincides with a parameter name survives the call
 pass	a record field with no value expression is rejected, not a crash
 pass	a record is constructed and a field is read
 pass	a record match arm + a wildcard alternative selects by shape
+pass	a record match field may be a LITERAL that probes the field by equality
 pass	a record match pattern binds fields by name — partial and out of order
 pass	a record match pattern destructures a record scrutinee by field
 pass	a record missing a field the annotation names is rejected
 pass	a record scrutinee is bound whole by a match binder
+pass	a record sub-pattern nested inside a tuple match names the feature, not an unbound binder (CDZ0201)
 pass	a record whose field is a runtime tuple nests across the boundary
 pass	a record whose field is misnamed is both missing and extra
 pass	a record with a duplicate field name is a type error
@@ -1370,8 +1687,13 @@ pass	a record with a non-adjacent duplicate field name is a type error
 pass	a record with a runtime field is returned as a program result
 pass	a record-field loop invariant consumed per iteration accumulates stably
 pass	a record-parameter export returns a tuple computed from its fields
+todo	a record-returning closure alongside a parameterized plain export — the closure
+todo	a record-returning closure alongside a parameterized plain export — the plain
 pass	a recursion carrying a Bytes parameter does a fallible read in its base arm
 pass	a recursion carrying a List parameter does a fallible read in its base arm
+todo	a recursive HOF infers a callback whose RESULT is a sum matched in the body
+todo	a recursive NEWTYPE traversal recurses on its projected recursive field
+todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
 pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
 pass	a recursive byte walk threading a Bytes parameter through a helper infers without annotation
@@ -1385,7 +1707,11 @@ pass	a recursive effectful walk BUILDS a list as its return value, one fresh ele
 pass	a recursive effectful walk accumulates into a STRING-state handler
 pass	a recursive effectful walk under a state-threading handler compiles without leaking an internal name
 pass	a recursive emitter dispatches on a sum's variants to build bytes per node
+todo	a recursive evaluator destructures a built Ast by quote patterns and recurses
+todo	a recursive fold infers a callback applied to the RECURSIVE-CALL RESULT
 pass	a recursive fold of a cons-list to bytes is the whole program result
+todo	a recursive fold over a sum list infers its unannotated callback parameter
+todo	a recursive fold with an unannotated two-argument callback parameter
 pass	a recursive function counts down through a stateful effect and bails at zero
 pass	a recursive function folds a linked list of runtime-determined length
 pass	a recursive function folds a runtime linked list to a scalar
@@ -1403,6 +1729,7 @@ pass	a recursive generic function threading another generic is itself generic at
 pass	a recursive generic with a type-valued parameter monomorphizes per type, erasing the type argument
 pass	a recursive list accumulator grown by push and returned in the base arm stays a list
 pass	a recursive lower from a sum to Bytes assembles its output in match arms
+todo	a recursive map rebuilding a sum list infers its unannotated callback
 pass	a recursive parameter used only as a call argument infers from the callee's parameter type
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
@@ -1424,12 +1751,20 @@ pass	a recursive user sum type is built at run time and renders its variant name
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
 pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
+todo	a recursive-generic filter threading a predicate closure composes at two element types
 pass	a recursive-generic flatten over a nested generic iterator composes at two element types
 pass	a recursive-generic flatten over a nested generic iterator monomorphizes and runs at one element type
 pass	a recursive-generic producer composes at two element types (the tied result var)
 pass	a recursive-generic producer over a list of its own generic-producer results monomorphizes and runs
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
 pass	a recursive-generic producer's element is usable at each instantiation
+todo	a recursive-generic producer's result is consumed by an element-typed consumer
+todo	a recursive-generic transformer composes with itself
+todo	a recursive-generic transformer threading a closure composes at two element types
+todo	a recursive-generic transformer threading an IDENTITY closure composes at TWO element types
+todo	a recursive-generic transformer threading an IDENTITY closure composes at a single element type
+todo	a recursive-generic transformer with a bare-Nil STOP branch composes at two element types
+todo	a recursive-generic transformer with an element-CHANGING closure ties domain to codomain
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
@@ -1461,8 +1796,19 @@ pass	a rope in a record field equals its flat-twin field
 pass	a rope in a sum payload inside a record field equals its flat twin
 pass	a rope in an Option payload equals its flat-twin payload
 pass	a rope two levels deep (tuple in a tuple) equals its flat twin
+todo	a round-trip alongside a parameterized plain export applies its argument
+todo	a round-trip alongside a plain export — the plain export runs
+todo	a round-trip alongside a plain export — the round-trip still works
+todo	a round-trip at a widened scalar width (UInt32)
+todo	a round-trip consumer applies a closure whose result is a nominal-over-scalar
+todo	a round-trip consumer applies the closure in a match wildcard arm
+todo	a round-trip consumer applies the closure only in the taken if-branch
+todo	a round-trip consumer binds the applied closure through a let
+todo	a round-trip consumer takes the non-applying match arm
+todo	a round-trip consumer that does NOT apply the closure on the taken branch
 pass	a row op over a constant record folds through a multi-use let binding
 pass	a row op over a constant record folds through a single-use let binding
+todo	a run's result is a deterministic function of a host call's recorded response
 pass	a run-sim scheduler fast-forwards the clock through two sequential sleeps in one task
 pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
@@ -1478,6 +1824,7 @@ pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime BigInt remainder takes the dividend's sign
 pass	a runtime BigInt three-way compare agrees with the boolean ordering
+pass	a runtime BigInt three-way compare reports Equal at a BEYOND-Int64 magnitude
 pass	a runtime BigInt three-way compare reports equality as Equal
 pass	a runtime Bytes rope in a SUM payload compares equal to its flat twin
 pass	a runtime Bytes rope in a record field compares equal to its flat twin
@@ -1510,6 +1857,7 @@ pass	a runtime Rational MAP KEY is found by a normalized-equal key
 pass	a runtime Rational built from a parameter compares by its exact value
 pass	a runtime Rational comparison of a parameter is false when it should be
 pass	a runtime Rational three-way compare agrees with the boolean ordering
+pass	a runtime Rational three-way compare reports canonically-equal fractions as Equal
 pass	a runtime Rational three-way compare reports the greater operand as Greater
 pass	a runtime Result carrying a String error is matched
 pass	a runtime Result constructed from a condition selects its Ok or Err arm
@@ -1525,6 +1873,7 @@ pass	a runtime bin match binds the tail after a fixed header via a final rest se
 pass	a runtime bin match decodes a byte-aligned bit-field run
 pass	a runtime bin match dispatches on a leading literal bit-field tag
 pass	a runtime bin match dispatches on a literal tag across arms
+pass	a runtime bin match reads an int segment after a byte-aligned bit-field run
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
 pass	a runtime bit-field literal tag that does not match falls through
 pass	a runtime bit-field packs a runtime value into a nibble
@@ -1535,7 +1884,9 @@ pass	a runtime bitwise XOR toggles bits
 pass	a runtime byte truncation of the sign extremes keeps exactly the low byte
 pass	a runtime bytes value is spliced into a length-prefixed frame
 pass	a runtime char reaches a later char-literal arm by scalar value
-pass	a runtime compound compare declines pending the value-cmp three-way heap walk
+todo	a runtime closure compares its argument to a captured value in a branch
+todo	a runtime closure whose body calls a recursive top-level function
+pass	a runtime compound compare COMPUTES the three-way Ordering via the value-cmp heap walk (§331)
 pass	a runtime compound containing a float leaf declines ordering — floats offer no total order (§319)
 pass	a runtime compound structural equality is expressible as a hand-written recursive comparator
 pass	a runtime compound with a String leaf orders by the blessed content-lexicographic String order
@@ -1546,6 +1897,7 @@ pass	a runtime conditional selects its then-branch when the runtime condition ho
 pass	a runtime conjunction still shields a comparison right operand whose subexpression traps
 pass	a runtime const-multiply at its exact fitting boundary does not trap
 pass	a runtime const-multiply one past its fitting boundary traps
+pass	a runtime dependent-size bytes segment sized by a bit-field field
 pass	a runtime dependent-size match falls through when the scrutinee is too short for the size prefix
 pass	a runtime dependent-size match with a signed negative size falls through
 pass	a runtime division by zero traps
@@ -1570,6 +1922,7 @@ pass	a runtime float multiplication emits the machine mul
 pass	a runtime float promotes to a wider width with the machine promote
 pass	a runtime float subtraction emits the machine sub
 pass	a runtime full-width UInt64 subtraction that underflows traps rather than wrapping
+todo	a runtime function value is manually eta-wrapped and applied through nested recursive HOFs
 pass	a runtime greater-than compares by signed order
 pass	a runtime greater-than-or-equal holds at the equal-operand boundary
 pass	a runtime increment traps exactly at the maximum integer
@@ -1707,6 +2060,8 @@ pass	a runtime-magnitude same-unit sum adds the erased magnitudes
 pass	a runtime-parameter start and length are bounds-checked at run time, yielding Some or None
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
 pass	a runtime-selected branch with a runtime-divisor div-by-zero traps only when taken
+todo	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
+todo	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 pass	a runtime-selected function chosen directly at the application head is applied
 pass	a runtime-selected trapping branch with a non-zero divisor computes normally
 pass	a same-dimension annotation is the identity under its own unit's conversion
@@ -1716,6 +2071,7 @@ pass	a same-kind symbol-literal payload sub-pattern still dispatches (nested con
 pass	a same-kind symbol-literal tuple sub-pattern still dispatches (tuple control)
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a same-unit quantity join flows and its magnitude reads back
+todo	a scalar BETWEEN two Tuple args with a LIST result
 pass	a scalar Int64 match nested as an op operand beside an i32-handle sibling emits valid wasm
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a fn-return tuple with runtime content
@@ -1728,6 +2084,7 @@ pass	a schema decode's Ok result is matched to recover the decoded payload
 pass	a scientific-notation float literal denotes the scaled value
 pass	a scientific-notation literal annotated Rational scales the numerator
 pass	a scrutinee of two to the sixty-fourth-adjacent magnitude misses a zero-based jump table
+todo	a second same-signature closure export shares the one call method
 pass	a self-applying term is declined at the reduction budget, not hung on
 pass	a self-comparison less-equal still traps on a zero divisor but folds true for a nonzero one
 pass	a self-comparison of a trapping operand still traps (less-than)
@@ -1905,6 +2262,7 @@ pass	a tautology comparison against the type minimum still traps on a div-by-zer
 pass	a tautology comparison still folds when its operand cannot trap
 pass	a threaded String param consumed as the right concat operand survives the loop
 pass	a threaded String param consumed twice per step survives the loop
+todo	a three-argument closure exported to the host is called with all three
 pass	a three-arm match consumed as an operand yields into the enclosing expression
 pass	a three-deep known-disc nested match reads the right payload at every level
 pass	a three-deep tuple projection chain retains the innermost consumed child
@@ -1912,7 +2270,9 @@ pass	a three-element runtime tuple is returned as a result
 pass	a three-hole tag reads its holes in exact left-to-right order
 pass	a three-level curried spine applies through both intermediate closures
 pass	a three-level nested multi-arg constructor destructures to every leaf payload
+todo	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a three-payload constructor fully curried builds the variant
+todo	a three-payload constructor partially applied in a runtime tuple completes via eta-closure
 pass	a too-short list refutes a leading-rest arm and falls through
 pass	a top-level module is named by a top-level def's body
 pass	a top-level sum value definition may reference a sum value defined later
@@ -1984,9 +2344,12 @@ pass	a tuple-pattern parameter binds the halves of its pair argument
 pass	a tuple-pattern parameter destructures a runtime-built tuple
 pass	a tuple-pattern parameter over a tuple threaded from a helper call
 pass	a tuple-projected loop invariant consumed per iteration accumulates stably
+todo	a tuple-returning closure alongside a plain export — the closure
+todo	a tuple-returning closure alongside a plain export — the plain
 pass	a tuple-wrapped self-application is rejected in bounded time, not a compiler stack overflow
 pass	a twenty-deep push chain retains the still-live source binding
 pass	a two-argument built-in applied to three arguments names its arity
+todo	a two-argument closure exported to the host is called with both arguments
 pass	a two-argument list operation applied to a non-list names the expected argument type
 pass	a two-arm Bool match selects its second (false) arm
 pass	a two-arm if selecting between two runtime FLOAT values computes the chosen one (float select-ification)
@@ -1998,6 +2361,7 @@ pass	a two-arm match does not evaluate the unselected arm's trapping body
 pass	a two-arm match whose wildcard binds the scrutinee and applies a trap-free op — selects, binder reads it
 pass	a two-arm match whose wildcard binds the scrutinee — the zero-probe arm
 pass	a two-constructor-element list arm falls through when the second tag differs
+todo	a two-parameter closure is applied at full arity through a recursive HOF
 pass	a two-parameter sum whose variants use the parameters in different orders instantiates correctly
 pass	a two-payload constructor applied in curried form builds the variant
 pass	a two-payload sum escapes its second variant with a bare name
@@ -2010,6 +2374,7 @@ pass	a type variable nested in a generic parameter annotation is an unbound name
 pass	a type-name-colliding variant construct coexists with the width type it collides with
 pass	a type-value in integer-width position is rejected
 pass	a type-valued parameter threaded through a second call reaches Type.eq with its type intact
+todo	a type-valued parameter under a function-arrow annotation dispatches an ad-hoc-polymorphic dict
 pass	a u16 segment encodes an integer big-endian by default
 pass	a u16 segment round-trips at its maximum value
 pass	a u32 segment encodes four big-endian bytes
@@ -2095,6 +2460,11 @@ pass	addition of two symbols is rejected — a symbol is not a number
 pass	advancing the clock past the UInt64 nanosecond range traps rather than silently wrapping
 pass	all four leaf kinds in one quoted form dispatch their own tags
 pass	all-nullary enum equality compares discriminants
+todo	an 8-bit-integer closure crosses the host boundary
+todo	an @param of a Bool type generates a Bool-typed accessor
+todo	an @param of a Float64 type generates a Float64-typed accessor
+todo	an @param site generates a Param accessor a host delegation reads at run time
+todo	an @param with no widget config still generates its typed accessor
 pass	an ABORTIVE arm whose value is a COMPOUND matches the handle body type and folds
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
@@ -2128,6 +2498,7 @@ pass	an SI decimal prefix scales a unit by a power of ten
 pass	an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the no-overflow obligation cannot be closed (the check must stay)
 pass	an abort abandons a pending borrowed map lookup and the map survives
 pass	an abort abandons a pending consuming op and the shared binding survives
+todo	an abortive handler abandons a host call in the path it discards
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
 pass	an abortive handler arm performed with a RUNTIME argument abandons the computation and returns it
 pass	an abortive handler arm with a runtime perform argument yields that runtime value as the handle's value
@@ -2232,6 +2603,8 @@ pass	an effectful helper called twice (nested) in a self-call arg folds each inl
 pass	an effectful helper reading TWO driver parameters folds in a self-call arg
 pass	an effectful helper that also reads an outer/driver parameter folds in a self-call arg
 pass	an effectful helper whose own parameter name shadows a driver parameter folds in a self-call arg
+todo	an effectful host arg flowing into a compound then a destructuring match is evaluated ONCE
+todo	an effectful host arg to a multi-use function parameter is evaluated ONCE, not re-performed per use
 pass	an effectful init before a failing `?` performs exactly once
 pass	an effectful match scrutinee is performed exactly once across a two-position sink
 pass	an effectful shared operand performs after the condition, exactly once
@@ -2245,6 +2618,7 @@ pass	an empty byte-string literal is the empty byte sequence
 pass	an empty list escaping to the host is rejected as undetermined, like a bare None
 pass	an empty map is unequal to a non-empty map, not a type error
 pass	an empty quote is rejected, not a crash
+pass	an empty record pattern matches any record of its type
 pass	an empty scrutinee matches an empty bin pattern
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
@@ -2252,6 +2626,8 @@ pass	an empty-span String.slice at a multi-byte position has scalar-len zero
 pass	an empty-string Ast.Str round-trips through encode and decode
 pass	an empty-string Ast.Str round-trips through print and read
 pass	an encode-decode round-trip preserves an ASCII string's byte length
+todo	an entrypoint delegation lets a program reach its host function
+todo	an entrypoint delegation reaches an effect performed in a recursive callee
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
@@ -2260,7 +2636,13 @@ pass	an erased single-variant newtype wrapping a sum matches through the inner v
 pass	an erased-newtype nested-sum match with binder-only arms dispatches on the inner discriminant
 pass	an erased-newtype's list payload split across empty and rest arms dispatches with vec-get
 pass	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
+todo	an escaping closure captures two values and takes three arguments
+todo	an escaping closure whose body binds a multi-variable let
+todo	an escaping closure whose body is a match hits the literal arm
+todo	an escaping closure whose body is a match hits the wildcard arm
+pass	an escaping continuation that itself RE-PERFORMS the handled effect re-enters its handler at apply
 pass	an escaping tuple evaluates its trapping element
+todo	an exact RATIONAL host value crosses as two scalar num/den ops the guest recombines (#13)
 pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit Bytes annotation on a runtime bin result compares the same
 pass	an explicit annotation overrides the default-fraction pragma
@@ -2285,6 +2667,11 @@ pass	an exported closure with an annotation-mismatched body is rejected, not emi
 pass	an exported entry with a String parameter is called with a string argument
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an i16 segment round-trips at its two's-complement minimum
+todo	an identity closure composes at a single Int element type (not only String)
+todo	an identity closure composes over a COMPOUND (tuple) element at one element type
+todo	an identity closure composes through TWO chained recursive-generic maps at one element type
+todo	an identity closure threads through a recursive-generic HOF at TWO element types
+todo	an identity closure threads through a recursive-generic HOF at one element type
 pass	an identity conversion unwraps the magnitude unchanged
 pass	an if choosing between two nullary enum variants selects branchlessly on the discriminant
 pass	an if on Type.eq selects a branch at compile time
@@ -2335,6 +2722,7 @@ pass	an integer literal with digit separators
 pass	an integer width above the 64-bit ceiling is rejected
 pass	an integer width from runtime data is rejected, keeping widths non-dependent
 pass	an internally ill-typed unselected match arm body is a type error
+todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
 pass	an octal-prefixed token is a malformed literal, not an unbound name
 pass	an offered ordering is total and deterministic
 pass	an open sum nested as another sum's payload matches with an inner wildcard
@@ -2357,12 +2745,20 @@ pass	an over-ceiling integer width in an unused parameter is rejected, like a us
 pass	an un-projected tuple element is not evaluated, so its trap does not occur
 pass	an un-read record field is not evaluated, so its trap does not occur
 pass	an unannotated add narrowed by a UInt8 consumer keeps its overflow guard and traps
+todo	an unannotated closure in a Some payload is typed from the Option's element arrow
+todo	an unannotated closure in a user variant payload is typed from the declared arrow
+todo	an unannotated closure is inferred through an unannotated recursive HOF parameter
+todo	an unannotated closure parameter is grounded from its body and applied at runtime
 pass	an unannotated closure typed Int8 from context computes an in-range constant
 pass	an unannotated closure typed Int8 from context overflows a constant like an explicit Int8 param
+todo	an unannotated closure with an unused parameter in a payload takes the declared parameter type
+todo	an unannotated closure with distinct-typed params is inferred through a generic recursive HOF
 pass	an unannotated generic branching sum fold infers its parameter's instantiation from the arms
 pass	an unannotated generic recursive tree consumer whose result is independent of the payload infers
 pass	an unannotated generic sum ACCUMULATOR infers its parameter from the values folded into it
+todo	an unannotated predicate closure is inferred through a recursive counting HOF
 pass	an unannotated program with a valid typing type-checks and runs
+todo	an unannotated two-argument closure is inferred through a generic recursive HOF
 pass	an unbound name as a parameter's annotation type is rejected
 pass	an unbound name in a map key is a scope error, not a coerced string
 pass	an unbound name in a resume's state position is rejected
@@ -2407,6 +2803,8 @@ pass	an unusual-width value that overflows its computed range is rejected at com
 pass	an unwrapped conversion result is a bare number under ordinary numeric rules
 pass	an unwrapped length adds to an unwrapped time with no dimension error
 pass	and evaluates the right operand when the left is true
+todo	and performs the right operand's effect when the left is true
+todo	and short-circuit does not perform the right operand's effect
 pass	and short-circuits at run time: a false left operand skips the trapping right operand
 pass	angle units radian and degree are first-class and exact within their own dimension
 pass	annotating a quantity at a dimension the expression does not derive is an error
@@ -2435,6 +2833,7 @@ pass	b4c(conjunctive) NEG-2 (reverse): precondition covers only {ge x 0} (missin
 pass	b4c(conjunctive): two stacked @requires give a 2-hyp proof; licenses requires BOTH hyps covered by the precondition
 pass	b4c(proven): @requires(<= x 100)/@ensures(<= ret MAXINT) on (f x)=x+1 discharges — P denoted as hyp, Q[ret:=body] as goal
 pass	b4c(unprovable): @ensures(<= ret MAXINT) on unbounded (f x)=x+1 is NOT dischargeable — the proof tier correctly MISSES (CDZ-VERIFY)
+todo	binary operator operands are evaluated left to right
 pass	binding the same effect to a peer twice is rejected
 pass	bit-field segments pack sub-byte values into one byte
 pass	bitwise AND masks bits
@@ -2453,6 +2852,7 @@ pass	bitwise XOR with negative one is the bitwise complement
 pass	bitwise XOR with zero is the operand (identity)
 pass	both elements of a runtime-content fn-return tuple are projected directly and combined
 pass	both sibling args consume the same binding independently
+todo	boxed closures of two fn types in one sum: the unbuilt variant's dispatch is dead
 pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
 pass	breaker capsubst: a non-capturing substitution takes the plain path
 pass	breaker capsubst: the fresh binder clears the body's ids, not only s's
@@ -2593,6 +2993,54 @@ pass	disjunction shields a trapping right operand when the left is true
 pass	distinct large floats are not equal
 pass	distinct names bound to the same string key the same map entry
 pass	distinct seeds produce distinct generated values (the stream covers, it is not constant)
+todo	distinct signatures sharing a core valtype shape dispatch distinct bodies
+todo	distinct-sig byte-rope closure alongside a plain export — the closure
+todo	distinct-sig byte-rope closure alongside a plain export — the plain
+todo	distinct-sig byte-rope closures — the Bool→Bytes one
+todo	distinct-sig byte-rope closures — the Int64→Bytes one
+todo	distinct-sig collection result — the Bool→List closure
+todo	distinct-sig collection result — the Int64→List closure
+todo	distinct-sig compound result — the Bool→(Tuple Bool Int64) closure
+todo	distinct-sig compound result — the Int64→(Tuple Int64 Int64) closure
+todo	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one
+todo	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Int64 one
+todo	distinct-sig round-trip: TWO collection consumers of different sigs — the List
+todo	distinct-sig round-trip: TWO collection consumers of different sigs — the Map
+todo	distinct-sig round-trip: TWO compound consumers of different sigs — the record one
+todo	distinct-sig round-trip: TWO compound consumers of different sigs — the tuple one
+todo	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Record-arg one
+todo	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Tuple-arg one
+todo	distinct-sig round-trip: a List consumer + a compound consumer of another sig — the compound
+todo	distinct-sig round-trip: a List consumer + a compound consumer of another sig — the list
+todo	distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the list
+todo	distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the scalar
+todo	distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the collection one
+todo	distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the sum one
+todo	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one
+todo	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the scalar one
+todo	distinct-sig round-trip: a compound consumer + a byte-rope consumer of different sigs — the byte-rope
+todo	distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the compound
+todo	distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the scalar
+todo	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the compound-arg one
+todo	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the scalar-arg one
+todo	distinct-sig round-trip: a higher-order closure + a scalar closure of another sig — the higher-order one
+todo	distinct-sig round-trip: a higher-order closure-typed arg on one group + a scalar closure on another
+todo	distinct-sig: a String closure + a Bytes closure of different signatures — the String one
+todo	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one
+todo	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one
+todo	distinct-sig: a collection + a compound + a byte-rope + a scalar group all coexist — the collection
+todo	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the byte-rope
+todo	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the compound
+todo	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the scalar
+todo	distinct-sig: a compound group + a byte-rope group + a scalar group — the byte-rope
+todo	distinct-sig: a compound group + a byte-rope group + a scalar group — the compound
+todo	distinct-sig: a compound group + a byte-rope group + a scalar group — the scalar
+todo	distinct-signature capturing closures alongside a parameterized plain export
+todo	distinct-signature capturing closures alongside a parameterized plain export — the plain runs
+todo	distinct-signature capturing producers
+todo	distinct-signature closures alongside a plain export — the Int64->Bool closure runs
+todo	distinct-signature closures alongside a plain export — the Int64->Int64 closure runs
+todo	distinct-signature closures alongside a plain export — the plain export runs
 pass	dividing a quantity by a bare number keeps its dimension
 pass	dividing a rational by a negative rational normalizes the quotient's sign
 pass	dividing quantities divides their dimensions
@@ -2665,6 +3113,8 @@ pass	exact rational division is total and exact for a nonzero divisor
 pass	expansion recurses to a fixpoint through a tag whose body is another tagged template
 pass	expect makes a checked-arithmetic result trap on overflow
 pass	expect on a RUNTIME-absent optional traps with the canonical unreachable kind
+todo	expect on an overflowing checked add traps
+todo	expect traps on the absent case of a runtime optional
 pass	expect traps on the err case of a RUNTIME result
 pass	expect unwraps the ok case of a runtime result
 pass	expect unwraps the present case of a runtime optional
@@ -2682,6 +3132,8 @@ pass	float double negation round-trips signed zero — -(-0.0) is +0.0, not -0.0
 pass	float multiplication uses the arithmetic operator
 pass	float subtraction uses the arithmetic operator
 pass	floating-point uses the fixed rounding mode
+todo	four same-signature closure exports share one resource
+todo	function arguments are evaluated left to right
 pass	functions are single-arity and curried
 pass	generated FLOAT values are totally ordered (a trichotomy property over two generated floats)
 pass	greater-than at the integer extremes is signed
@@ -2692,6 +3144,7 @@ pass	greater-than-or-equal of an integer and a float is rejected
 pass	heap string elements of a hoisted list if select by branch
 pass	heap-valued handler state above an inner abort keeps threading
 pass	hexadecimal, binary, and decimal spellings of one value are equal
+todo	host calls are observed in the order they were made
 pass	hygiene fix does not over-reach: a different-named template binder needs no rename
 pass	hygiene: a spliced unquote sits beside the template's own use of the renamed binder
 pass	hygiene: an unquote is uncaptured through two nested same-named template binders
@@ -2740,6 +3193,7 @@ pass	less-than at the integer extremes is signed, not unsigned
 pass	less-than compares negative operands by signed order
 pass	less-than-or-equal
 pass	less-than-or-equal of an integer and a float is rejected
+todo	let bindings' initializers are evaluated in binding order
 pass	list concatenation is associative by content
 pass	lists are equal by elements in order
 pass	literal payload refinement works in a non-head element position
@@ -2789,6 +3243,8 @@ pass	mixed bool and int splices evaluate in one template
 pass	mixed comparison operators across if arms keep their own arms
 pass	mixed operators across the if arms keep their own arms
 pass	mixed payload widths across the variant set dispatch and read correctly
+todo	mixed-type @param sites share one Param effect and drive control flow
+todo	mixed: two closure exports alongside a plain export — driving the plain export
 pass	mixing a prefixed unit across DIFFERENT dimensions is still a compile-time error
 pass	mixing nullary and unary constructors in one match
 pass	mixing signed and unsigned of the same width does not silently promote
@@ -2801,6 +3257,15 @@ pass	modulo by zero traps
 pass	modulo gives the remainder
 pass	modulo of an integer and a float does not silently promote
 pass	multi-argument application is curried application
+todo	multi-export Set-result closures — the singleton one
+todo	multi-export Set-result closures — three sharing one call
+todo	multi-export collection result — the first list closure
+todo	multi-export collection result — the second list closure
+todo	multi-export compound result — the first closure's tuple
+todo	multi-export compound result — the second closure's tuple
+todo	multi-export compound result — three capturing closures share one call
+todo	multi-export record result — canonical field order
+todo	multi-export record result — the second closure, with a negative leaf
 pass	multiplication
 pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
@@ -2834,8 +3299,12 @@ pass	one encode-decode cycle is byte-stable
 pass	one entrypoint's host authority is not reachable by another that does not delegate it
 pass	one generic sum instantiated at two different types in one program
 pass	one module's export clause does not affect a same-named member of another module
+todo	one of several same-signature closure exports is made and called by the host
+todo	one of two DIFFERENT-signature closure exports is made and called
 pass	one type parameter used at several depths in one multi-payload variant
 pass	or evaluates the right operand when the left is false
+todo	or performs the right operand's effect when the left is false
+todo	or short-circuit does not perform the right operand's effect
 pass	or short-circuits at run time: a true left operand skips the trapping right operand
 pass	ordering a string against an integer is a type error regardless of operand order
 pass	ordering an integer against a boolean is a type error
@@ -2951,6 +3420,48 @@ pass	resolving a head against a prelude symbol rejects a length-mismatched prefi
 pass	resolving a name in a shadowing environment returns the innermost binding's slot
 pass	resuming with a value of the wrong type for the operation's result is a type error
 pass	resuming with a wrong-type value for a compound result type is a type error
+todo	round-trip byte-rope consumer alongside a plain export — the consumer
+todo	round-trip byte-rope consumer alongside a plain export — the plain
+todo	round-trip: a HIGHER-ORDER closure arg composed with a SUM result
+todo	round-trip: a HIGHER-ORDER closure — its argument is itself a closure built in-guest
+todo	round-trip: a String-returning consumer of a closure
+todo	round-trip: a closure taking a NESTED compound (Tuple of Tuples) arg
+todo	round-trip: a closure taking a SUM (Option) arg built in-guest
+todo	round-trip: a closure taking a String arg built in-guest
+todo	round-trip: a compound consumer + a byte-rope consumer of the same closure — the byte-rope
+todo	round-trip: a compound consumer + a byte-rope consumer of the same closure — the compound
+todo	round-trip: a compound consumer alongside a plain export — the plain
+todo	round-trip: a compound-arg closure whose consumer returns a compound
+todo	round-trip: a consumer applies a closure taking a List arg built in-guest
+todo	round-trip: a consumer applies a closure taking a Record arg built in-guest
+todo	round-trip: a consumer applies a closure taking a Tuple arg built in-guest
+todo	round-trip: a consumer applies the handed-back closure and returns Bytes
+todo	round-trip: a consumer applies the handed-back closure and returns a List
+todo	round-trip: a consumer applies the handed-back closure and returns a tuple
+todo	round-trip: a consumer returns a Map from the closure result
+todo	round-trip: a consumer returns a Map whose VALUE is a list
+todo	round-trip: a consumer returns a Result (Err type pinned) from the closure result
+todo	round-trip: a consumer returns a Result reaching BOTH variants
+todo	round-trip: a consumer returns a Set built from REPEATED closure application
+todo	round-trip: a consumer returns a Set built from the closure result
+todo	round-trip: a consumer returns a byte-rope built from a single closure result
+todo	round-trip: a consumer returns a list of tuples from repeated closure application
+todo	round-trip: a consumer returns a record built from the closure result
+todo	round-trip: a consumer returns a tuple CONTAINING a list built from the closure result
+todo	round-trip: a consumer returns an Option built from the closure result
+todo	round-trip: a consumer returns an Option of a tuple
+todo	round-trip: a consumer returns an Option whose payload is a List
+todo	round-trip: a higher-order closure applied to TWO distinct inner closures
+todo	round-trip: a higher-order closure whose inner closure CAPTURES and is applied twice
+todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
+todo	round-trip: a producer's returned closure captured an inner closure built in-guest
+todo	round-trip: a scalar consumer + a List consumer of the same closure — the list
+todo	round-trip: a scalar consumer + a List consumer of the same closure — the scalar
+todo	round-trip: a scalar consumer + a compound consumer of the same closure — the compound
+todo	round-trip: a scalar consumer + a compound consumer of the same closure — the scalar
+todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
+todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
+todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 pass	runtime < on a self operand is false for finite AND NaN (irreflexive, stays false)
 pass	runtime <= on a self operand is true for finite but FALSE for NaN (no reflexivity fold)
 pass	runtime >= and > on a self operand mirror <= and < including the NaN self case
@@ -2981,6 +3492,10 @@ pass	scaling a Float64 quantity by a bare integer is a numeric-type mismatch
 pass	scaling a quantity by a bare number of its own numeric type keeps its dimension
 pass	scaling a quantity by a dimensionless quantity keeps its dimension
 pass	scaling an integer quantity by a bare integer of its own type keeps its dimension
+todo	scan emits the seed plus one accumulator per element (n+1 outputs)
+todo	scan over an empty iterator emits just the seed
+todo	scan threads its accumulator left-to-right (an order-sensitive folder)
+todo	scan's kth emitted accumulator is the running fold of the first k elements
 pass	self-operand division is NOT folded to one — it still traps at zero
 pass	self-operand subtraction and xor are zero, and-or are the operand, on a runtime value
 pass	sequenced memoize helpers with a local let thread the Map-state out-state (the memo-spine shape)
@@ -3050,6 +3565,10 @@ pass	t1(oob) NEGATIVE: with only the LOWER bound (>= i 0), the out-of-bounds obl
 pass	t1(oob): the out-of-bounds obligation (0<=i) AND (i<len) is DISCHARGED from the two bound preconditions
 pass	t1(trap) NEGATIVE: a trap guard NOT contradicted by the precondition is NOT unreachable — the trap STAYS
 pass	t1(trap): an explicit trap under guard (lt x 0) is UNREACHABLE when @requires(>= x 0) — the trap is dead
+todo	take-while composed after a map threads both transformers' closures
+todo	take-while excludes the failing element and everything after it (content, not just count)
+todo	take-while where every element satisfies the predicate keeps the whole run
+todo	take-while where the first element fails the predicate returns the empty run
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
@@ -3072,6 +3591,7 @@ pass	the boolean less-than operator agrees with compare over Bool
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
 pass	the boolean-literal coercion composes over a runtime Symbol equality
+todo	the built variant is the multi-arg one, the unbuilt arm still gets its call type
 pass	the built-in Ast is transformed as an ordinary value
 pass	the built-in list is folded by an element-with-rest pattern
 pass	the byte codec round-trips a digit-led Ast.Name that the text path would reclassify
@@ -3109,6 +3629,7 @@ pass	the exponent marker is case-insensitive
 pass	the false-literal coercion negates a float ordering compare, turning an unordered pair true
 pass	the first failing `?` short-circuits; a later `?` never runs
 pass	the float ordering-versus-equality split on the zero pair
+todo	the generated Param accessor carries the @param's declared type into arithmetic
 pass	the generated-set convergence property has discriminating power — two different generated sets are NOT equal
 pass	the generator is a deterministic function of its seed (same seed, same value) — folds
 pass	the generator reproduces its stream from a runtime seed (same seed, same value) — runs
@@ -3175,6 +3696,7 @@ pass	the power form cubes an integer-magnitude quantity exactly
 pass	the power form derives the same dimension as repeated multiplication
 pass	the prelude binds Constructor values not pre-applied Sums
 pass	the prelude module keeps working beside a same-named colliding variant
+todo	the program manifest is the union of its entrypoints' delegations
 pass	the reader literal reads to Symbol.of
 pass	the ready-queue is a plain FIFO — spawned-ready tasks run in enqueue order
 pass	the remainder takes the sign of the dividend for a negative dividend
@@ -3183,20 +3705,26 @@ pass	the rest binder carries the unmatched runtime-keyed remainder
 pass	the retired Tuple.cat name is rejected with the Tuple.concat rename fix-it (CDZ0603)
 pass	the retired Tuple.pop name is rejected with the Tuple.remove rename fix-it (CDZ0603)
 pass	the reversed extreme ordering is false
+todo	the round trip tracks the produced closure's captured value
 pass	the runtime UTF-8 encoding of a string equals its exact byte literal
 pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
+todo	the same conditional delegation makes no host call when the branch is not taken
+todo	the same declared effect is handled in-program by one entrypoint and delegated by another
 pass	the same function called under two handlers is discharged by each in turn
 pass	the same list is still live after the if when the consuming branch is not taken
 pass	the same list not escaped (the None branch) is still usable after the join
 pass	the same literal-payload refinement on a MULTI-variant sum works (the boxed control)
 pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)
 pass	the same nullary variant constrained to different concrete types reflects different types
+todo	the same program with a different response gives a different deterministic result
+todo	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a GENUINELY-runtime multi-byte string walks the UTF-8 leaf
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the scalar length of a runtime string spanning every UTF-8 width
 pass	the scalar-len of an in-bounds String.slice equals its span (end - start), independent of byte width
 pass	the scheduler terminates on zero primaries and detects deadlock when live primaries have no work
+todo	the second distinct-signature closure export returns its own type
 pass	the second element of a runtime-content fn-return tuple is projected directly
 pass	the selected operand decides a hoisted comparison
 pass	the selected operand decides a hoisted float equality
@@ -3244,6 +3772,8 @@ pass	the wrapping additive and multiplicative identities preserve a boundary ope
 pass	the wrapping identities preserve a runtime narrow UInt8 exactly (add 0, mul 1)
 pass	the λ-extended kernel Thm stays unforgeable — Thm.Seq with an Abs term outside is CDZ0214
 pass	the ∀-extended kernel Thm stays unforgeable — Thm.Seq of a bogus universal outside is CDZ0214
+todo	three closures with a SHARED signature cross as two resource types
+todo	three distinct closure signatures cross as three resource types
 pass	three events at the same Instant drain in FIFO insertion order (tie-break at N=3)
 pass	three leaf variants in one quoted form each dispatch their own tag
 pass	three same-variant literal arms fall through in order
@@ -3255,8 +3785,10 @@ pass	tuple access on a non-tuple is a type error
 pass	tuple access on a record is a type error
 pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuple elements are accessed by index
+todo	tuple elements are evaluated left to right
 pass	tuple elements consume and read a shared binding in both orders
 pass	tuples are deconstructed by pattern matching
+todo	two @param sites generate two accessors under one Param effect
 pass	two @param sites with the same name are rejected as a duplicate effect operation
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two LEXICALLY-NESTED handlers of the same effect partition the performs by region
@@ -3265,6 +3797,7 @@ pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two `?`s in one boundary both unwrap (nested happy path)
 pass	two adjacent modules declared inside a function body compose
 pass	two bare nullary variants reflect the same undetermined type
+todo	two capturing closures stored as runtime tuple elements keep distinct captures
 pass	two chars with different scalar values are unequal
 pass	two closures from one factory capture distinct values
 pass	two constant records with the same fields in different written order are equal
@@ -3292,6 +3825,8 @@ pass	two fallible reads of one collection parameter share its resident handle sl
 pass	two functions both body-solved to Int64->Bool reflect equal arrows
 pass	two functions defined by mutual recursion compute a result
 pass	two functions with the same body-solved arrow but different bodies reflect equal types
+todo	two host calls consume their responses in order
+todo	two host responses combine in call order through a non-commutative operator
 pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
 pass	two maps of different sizes are unequal, not a type error
@@ -3300,6 +3835,7 @@ pass	two module functions are mutually recursive
 pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
+todo	two nested recursive const-closure drivers (filter under fold) emit valid wasm and compute correctly
 pass	two pattern keys match with one satisfied by the runtime-keyed entry
 pass	two performs as the two ARGUMENTS of a pure USER function thread the state left-to-right
 pass	two performs bound by nested lets thread the handler state in order
@@ -3316,11 +3852,17 @@ pass	two runtime strings compare equal by their contents
 pass	two runtime sum values compare equal by a heap walk
 pass	two runtime sums with the same payload but different variants compare unequal by a heap walk
 pass	two runtime tuples compare equal by a heap walk
+todo	two same-signature Bytes-returning closures share one call — first
+todo	two same-signature Bytes-returning closures share one call — second
+todo	two same-signature String-returning closures share one call
+todo	two same-signature closures alongside a plain export all coexist
+todo	two same-signature closures alongside a plain export — the plain export runs
 pass	two same-variant ctor list elements refining the payload by literal fall through, not trap
 pass	two scalar matches of different widths beside i32 handles in one recursive emit frame stay valid
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
 pass	two sibling modules may each define a private helper of the same name
+todo	two specializations of one driver on different closures do not collide in the spec memo
 pass	two stacked erased newtypes wrapping a sum peel both no-op layers before the inner discriminant
 pass	two structural values of the same shape are equal
 pass	two sum arms with textually identical bodies still bind their own variant's payload
@@ -3397,533 +3939,3 @@ pass	wrapping-sub on a runtime UInt8 wraps modulo 256
 pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
-todo	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) (Tuple Int64 Int64)) — BOTH sides compound
-todo	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Err (scalar side)
-todo	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Ok (tuple side)
-todo	COMPOUND RESULT PAYLOAD: (Result Int64 (Tuple Int64 Int64)) — the ERR side is compound
-todo	COMPOUND RESULT PAYLOAD: a compound-Result closure beside a scalar closure (distinct-sig)
-todo	COMPOUND RESULT PAYLOAD: two same-sig closures share one call (multi-export)
-todo	COMPOUND SUM PAYLOAD: (Option (Record (x Int64) (y Int64))) — a RECORD payload
-todo	COMPOUND SUM PAYLOAD: (Option (Tuple Int64 (Tuple Int64 Int64))) — a NESTED tuple payload
-todo	COMPOUND SUM PAYLOAD: (Option (Tuple Int64 Int64)) arg, drive None
-todo	COMPOUND SUM PAYLOAD: (Option (Tuple Int64 Int64)) arg, drive Some
-todo	COMPOUND SUM PAYLOAD: an Option-tuple closure beside a scalar closure (distinct-sig)
-todo	COMPOUND SUM PAYLOAD: mixed-width tuple payload (Int32, Int64, Bool)
-todo	COMPOUND SUM PAYLOAD: two same-sig Option-tuple closures share one call (multi-export)
-todo	DIFF-WIDTH RESULT: (Result Int32 Int64) — the NARROW side is Ok, negative
-todo	DIFF-WIDTH RESULT: (Result Int64 Int32) arg, drive Err with a NEGATIVE narrow payload
-todo	DIFF-WIDTH RESULT: (Result Int64 Int32) arg, drive Ok with a big s64
-todo	DIFF-WIDTH RESULT: a (Result Int64 Int32) group + a (Result Int32 Int64) group, distinct-sig
-todo	DIFF-WIDTH RESULT: two same-sig (Result Int64 Int32) closures share one call
-todo	DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple LIST group (tuple then suffix scalar)
-todo	DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple group (Bool field in the rebuild)
-todo	DISTINCT-SIG among-scalars: two scalar-then-Tuple closures of DIFFERENT sigs each returning a LIST
-todo	DISTINCT-SIG among-scalars: two scalar-then-Tuple closures of DIFFERENT sigs — driving the Int64 group
-todo	DISTINCT-SIG: a nested-Tuple-arg closure with a LIST result
-todo	DISTINCT-SIG: a scalar-then-NESTED-tuple closure with a LIST result
-todo	DISTINCT-SIG: a two-Tuple-arg group with a LIST result
-todo	DISTINCT-SIG: an Option-arg closure + a Result-arg closure each cross the boundary
-todo	DISTINCT-SIG: an Option-arg group BESIDE a Tuple-arg group
-todo	DISTINCT-SIG: capturing two-Tuple-arg closures of different signatures
-todo	DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair
-todo	DISTINCT-SIG: driving the Bool-returning Tuple-arg closure of the distinct-sig pair
-todo	DISTINCT-SIG: driving the Int32 two-Tuple-arg group
-todo	DISTINCT-SIG: driving the Int64/Bool-inner nested-Tuple-arg closure (Bool leaf at depth)
-todo	DISTINCT-SIG: driving the Int64/Bool-inner scalar-then-NESTED closure (Bool leaf at depth)
-todo	DISTINCT-SIG: driving the Result-arg group (Err)
-todo	DISTINCT-SIG: one group takes TWO tuples, the other ONE tuple
-todo	DISTINCT-SIG: sum-arg closures ALONGSIDE a plain export
-todo	DISTINCT-SIG: two DIFFERENT-sig scalar-then-NESTED-tuple closures — driving the Int64-inner group
-todo	DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List
-todo	DISTINCT-SIG: two DIFFERENT-signature nested-Tuple-arg closures each cross the direct-call boundary
-todo	DISTINCT-SIG: two DIFFERENT-signature two-Tuple-arg closures each cross the boundary
-todo	DISTINCT-SIG: two Option-arg closures of DIFFERENT payload widths
-todo	DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the direct-call boundary
-todo	DISTINCT-SIG: two capturing sum-arg closures of different signatures
-todo	DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a plain export
-todo	MIXED among-scalars: a scalar-then-Tuple closure ALONGSIDE a plain export — driving the closure
-todo	MIXED among-scalars: a scalar-then-Tuple closure with a COMPOUND result ALONGSIDE a plain export
-todo	MIXED among-scalars: a scalar-then-Tuple closure with a LIST result ALONGSIDE a plain export
-todo	MIXED among-scalars: driving the PLAIN export alongside a scalar-then-Tuple closure
-todo	MIXED: a List-returning Tuple-arg closure ALONGSIDE a plain export — driving the closure
-todo	MIXED: a NESTED tuple + flat tuple arg closure ALONGSIDE a plain export
-todo	MIXED: a TWO-Tuple-arg closure ALONGSIDE a plain (non-closure) export
-todo	MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export
-todo	MIXED: a nested-Tuple-arg closure (scalar result) ALONGSIDE a plain export — driving the closure
-todo	MIXED: a nested-Tuple-arg closure with a LIST result ALONGSIDE a plain export
-todo	MIXED: a scalar-then-NESTED-tuple closure with a LIST result ALONGSIDE a plain export
-todo	MIXED: a two-Tuple-arg closure with a LIST result ALONGSIDE a plain export
-todo	MIXED: an Option-arg closure ALONGSIDE a plain (non-closure) export
-todo	MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure
-todo	MIXED: driving the PLAIN export alongside a Tuple-arg closure
-todo	MIXED: driving the PLAIN export alongside a nested-Tuple-arg closure
-todo	MIXED: driving the PLAIN export alongside a two-Tuple-arg LIST closure
-todo	MIXED: driving the PLAIN export alongside a two-Tuple-arg closure
-todo	MIXED: driving the PLAIN export alongside an Option-arg closure
-todo	MULTI-EXPORT: THREE tuple args with a LIST result, shared `call`
-todo	MULTI-EXPORT: a nested-Tuple-arg closure with a LIST result
-todo	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
-todo	MULTI-EXPORT: among-scalars tuple arg with a LIST result (shared interleaving list-`call`)
-todo	MULTI-EXPORT: among-scalars tuple arg with a fixed-shape COMPOUND result
-todo	MULTI-EXPORT: driving the FIRST two-Tuple-arg closure (add)
-todo	MULTI-EXPORT: driving the SECOND Option-arg closure (Some and None)
-todo	MULTI-EXPORT: driving the SECOND two-Tuple-arg LIST closure
-todo	MULTI-EXPORT: driving the second among-scalars LIST closure (tuple then suffix scalar)
-todo	MULTI-EXPORT: driving the second among-scalars closure (subtract)
-todo	MULTI-EXPORT: driving the second nested-Tuple-arg closure (subtract)
-todo	MULTI-EXPORT: driving the second scalar-then-NESTED closure (subtract)
-todo	MULTI-EXPORT: two Tuple args with a scalar BETWEEN them, shared `call`
-todo	MULTI-EXPORT: two Tuple-arg closures sharing a List-returning `call`
-todo	MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`
-todo	MULTI-EXPORT: two capturing closures each taking TWO Tuple args
-todo	MULTI-EXPORT: two closures each taking a scalar arg THEN a NESTED tuple
-todo	MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg
-todo	MULTI-EXPORT: two nested-Tuple-arg closures share one call — driving the sum
-todo	MULTI-EXPORT: two same-sig Option-arg closures share one `call`
-todo	MULTI-EXPORT: two same-sig Result-arg closures share one `call`
-todo	MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`
-todo	MULTI-EXPORT: two same-sig closures each taking THREE Tuple args
-todo	MULTI-EXPORT: two same-sig closures each taking TWO Tuple args share one `call`
-todo	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
-todo	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
-todo	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
-todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
-todo	THREE Tuple args cross the direct-call boundary
-todo	THREE Tuple args with a LIST result
-todo	TWO Record args cross the direct-call boundary
-todo	TWO Tuple args cross the direct-call boundary
-todo	TWO Tuple args with a BYTE-ROPE result
-todo	TWO Tuple args with a LIST result cross the direct-call boundary
-todo	TWO Tuple args with a fixed-shape COMPOUND result
-todo	TWO Tuple args with a scalar BETWEEN them (tuple, scalar, tuple)
-todo	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
-todo	Type is a first-class value
-todo	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
-todo	a 32-bit-float closure crosses the host boundary
-todo	a 32-bit-integer closure crosses the host boundary
-todo	a 64-bit-unsigned closure crosses the host boundary
-todo	a @param accessor splices into a quasiquote and the eval computes with the host value
-todo	a @param of type (Qty Rational unit) desugars to num/den scalars + a guest Qty.of with the unit (#13 B2)
-todo	a @param of type Rational desugars to two scalar num/den accessors the guest recombines (#13)
-todo	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
-todo	a BOOL-field Tuple closure ARG, false discriminant
-todo	a Bytes-returning closure alongside a plain export — the closure runs
-todo	a Bytes-returning closure alongside a plain export — the plain runs
-todo	a Bytes-returning closure on a different argument
-todo	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
-todo	a CAPTURING closure returning a List
-todo	a CAPTURING closure returning a tuple
-todo	a CAPTURING closure taking TWO Tuple args
-todo	a CAPTURING closure taking TWO Tuple args with a LIST result
-todo	a CAPTURING closure taking a Result Int64 Int64 ARG crosses the direct-call boundary
-todo	a CAPTURING closure taking a Result Int64 Int64 ARG — Err arm uses the captured value
-todo	a CAPTURING closure taking a Tuple ARG crosses the DIRECT-CALL boundary
-todo	a CAPTURING closure taking an Option Int64 ARG crosses the direct-call boundary
-todo	a CAPTURING closure taking an Option Int64 ARG — None takes the captured value
-todo	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
-todo	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
-todo	a Float64 closure captures a Float64 build-time host effect result
-todo	a List-returning closure alongside a plain export — the closure
-todo	a List-returning closure alongside a plain export — the plain
-todo	a MIXED Int-and-Float Tuple closure ARG flattens + rebuilds (box-int + box-float)
-todo	a Map-returning closure alongside a parameterized plain export — the closure
-todo	a Map-returning closure alongside a parameterized plain export — the plain
-todo	a NARROW-int-field Tuple closure ARG flattens + rebuilds (exercises the i32->i64 extend)
-todo	a NESTED Record ARG (a record containing a record) crosses the direct-call boundary
-todo	a NESTED Record ARG with a LIST result crosses the direct-call boundary
-todo	a NESTED Tuple ARG (a tuple containing a tuple) crosses the direct-call boundary
-todo	a NESTED Tuple ARG among scalar args crosses the direct-call boundary
-todo	a NESTED Tuple ARG among scalars with a LIST result
-todo	a NESTED Tuple ARG between two scalar args (prefix + suffix)
-todo	a NESTED Tuple ARG with a BYTE-ROPE result crosses the direct-call boundary
-todo	a NESTED Tuple ARG with a LIST result crosses the direct-call boundary
-todo	a NESTED Tuple ARG with a fixed-shape COMPOUND result crosses the direct-call boundary
-todo	a NESTED Tuple ARG with a narrow Bool leaf crosses the direct-call boundary
-todo	a NESTED Tuple arg ALONGSIDE a flat Tuple arg
-todo	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
-todo	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
-todo	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
-todo	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
-todo	a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)
-todo	a RECORD closure ARG on the MULTI-EXPORT path
-todo	a RECORD closure ARG whose fields are NOT in sorted source order
-todo	a RECORD closure ARG with a LIST result
-todo	a RECORD closure ARG with a narrow Bool field, among scalars
-todo	a RECORD with a nested TUPLE field crosses the direct-call boundary
-todo	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)
-todo	a SOLE RECORD closure ARG crosses the direct-call boundary
-todo	a String-returning closure alongside a parameterized plain export
-todo	a String-returning closure alongside a parameterized plain export — the plain runs
-todo	a THREE-argument closure round-trips — flat arrow spelling
-todo	a TRIPLY-nested Record ARG crosses the direct-call boundary
-todo	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)
-todo	a Tuple ARG BEFORE a scalar arg crosses the direct-call boundary (tuple, then scalar)
-todo	a Tuple ARG BEFORE a scalar with a LIST result crosses the direct-call boundary
-todo	a Tuple ARG BETWEEN two scalar args crosses the direct-call boundary (scalar, tuple, scalar)
-todo	a Tuple ARG among scalars with a BYTE-ROPE result crosses the direct-call boundary
-todo	a Tuple ARG among scalars with a LIST result crosses the direct-call boundary
-todo	a Tuple ARG among scalars with a fixed-shape COMPOUND result crosses the direct-call boundary
-todo	a Tuple ARG composes with a NESTED-tuple RESULT
-todo	a Tuple ARG of FLOAT fields crosses the direct-call boundary
-todo	a Tuple ARG of MIXED widths (Int32, Int64) crosses the direct-call boundary
-todo	a Tuple ARG with a Bool field between Int64 fields crosses the direct-call boundary
-todo	a UInt64 closure round-trips through a consumer export
-todo	a boxed nested-unary curried closure applies without trapping
-todo	a boxed runtime closure taking Unit (a lazy thunk) is forced without declining
-todo	a branching recursive tree fold infers its unannotated callback across both arms
-todo	a build-time delegated effect whose result a returned closure captures does not escape
-todo	a camelCase round-trip resolves through kebab boundary-name normalization
-todo	a camelCase same-signature multi-export normalizes each make-<name>
-todo	a capturing 32-bit-integer closure crosses and is called
-todo	a capturing closure crosses as a repeatable (borrow<t>) callback handle
-todo	a capturing closure export tracks both the captured value and the call argument
-todo	a capturing closure is applied through a recursive higher-order function
-todo	a capturing closure returning Bytes
-todo	a capturing closure returning a COMPOUND is a repeatable (borrow<t>) callback handle
-todo	a capturing closure returning a String
-todo	a capturing closure returning a nominal-over-scalar
-todo	a capturing closure stored as a runtime list element is extracted by List.at and applied
-todo	a capturing closure stored in a variant is applied via a devirtualized direct call
-todo	a capturing closure whose body uses the capture after an inner computation
-todo	a capturing closure with a let binding in its body
-todo	a capturing unannotated closure in a payload is typed from the declared arrow
-todo	a closure applied through an unbuilt sibling variant compiles and runs
-todo	a closure captures a boolean and reads it back inside its lifted body through a recursive HOF
-todo	a closure captures a capturing closure and calls it through a recursive HOF
-todo	a closure captures a function value and applies it through a recursive HOF
-todo	a closure captures a sum value and matches it inside its lifted body through a recursive HOF
-todo	a closure captures a tuple and projects it inside its lifted body through a recursive HOF
-todo	a closure captures the result of a build-time host op called with an argument
-todo	a closure capturing THREE scalars is made and called
-todo	a closure capturing a build-time host effect preserves the order of two host calls
-todo	a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF
-todo	a closure capturing two values is made and called by the host
-todo	a closure capturing values of DIFFERENT types (Float64 + Int64)
-todo	a closure carried in a USER-declared sum's payload is extracted and applied
-todo	a closure carried in a sum payload is extracted by a match and applied
-todo	a closure driving control flow off a captured boolean
-todo	a closure export alongside a plain scalar export — the closure runs
-todo	a closure export alongside a plain scalar export — the plain export runs
-todo	a closure exported to the host is called by the host
-todo	a closure returned from a recursive function is applied through a recursive HOF
-todo	a closure returning Bytes crosses to the host as list<u8>
-todo	a closure returning a LIST of tuples (direct-call)
-todo	a closure returning a List crosses as the value form
-todo	a closure returning a Map — canonical key order
-todo	a closure returning a NESTED List
-todo	a closure returning a NESTED record crosses as the typed value form
-todo	a closure returning a NESTED tuple
-todo	a closure returning a SUM of a tuple (direct-call)
-todo	a closure returning a Set — canonical member order
-todo	a closure returning a boolean is called by the host
-todo	a closure returning a constant String crosses as its UTF-8 bytes
-todo	a closure returning a nominal-over-Bool erases to bool at the boundary
-todo	a closure returning a nominal-over-scalar crosses as the underlying scalar
-todo	a closure returning a record crosses as the typed value form
-todo	a closure returning a runtime String (concat) crosses as its bytes
-todo	a closure returning a tuple crosses as the typed value form
-todo	a closure returning a tuple whose element is a LIST (compound-with-collection)
-todo	a closure returning a tuple with a Bool leaf
-todo	a closure returning a tuple with a negative int leaf
-todo	a closure returning an EMPTY List
-todo	a closure returning an empty Bytes crosses as the empty list
-todo	a closure returning an empty String crosses as the empty list
-todo	a closure taking a Result Bool Bool ARG crosses the direct-call boundary
-todo	a closure taking a Result Int64 Int64 ARG — Err crosses the direct-call boundary
-todo	a closure taking a Result Int64 Int64 ARG — Ok crosses the direct-call boundary
-todo	a closure taking a nominal-over-scalar argument receives the underlying scalar
-todo	a closure taking an Option Bool ARG crosses the direct-call boundary
-todo	a closure taking an Option Float64 ARG crosses the direct-call boundary
-todo	a closure taking an Option Int32 ARG (narrow-int payload) crosses the direct-call boundary
-todo	a closure taking an Option Int64 ARG — None crosses the direct-call boundary
-todo	a closure taking an Option Int64 ARG — Some crosses the direct-call boundary
-todo	a closure that performs a delegated effect cannot cross the host boundary
-todo	a closure whose CALL returns a tuple CONTAINING a list
-todo	a closure whose CALL returns a user sum crosses as the value form
-todo	a closure whose CALL returns an Option crosses as the value form
-todo	a closure whose body applies a nested lambda in place runs through a recursive HOF
-todo	a closure whose body calls a top-level helper function
-todo	a conditional performs only the taken branch's effect — else
-todo	a conditional performs only the taken branch's effect — then
-todo	a constant-returning closure threads through a recursive-generic HOF
-todo	a consumer applies TWO handed-back closures
-todo	a consumer applies the handed-back closure inside a larger expression
-todo	a consumer applies the handed-back closure to an internal constant
-todo	a consumer returns a different type than the closure it applies
-todo	a consumer takes the handed-back closure as its SECOND parameter
-todo	a curried-syntax application of a runtime closure flattens to one full-arity indirect call
-todo	a delegated effect performed in a closure passed to a HOF is reached and fires
-todo	a delegated effect performed inside an intra-program handler
-todo	a delegated effect reached only through an if-branch is granted and fires when the branch is taken
-todo	a delegated host effect composes with the value-heap runtime
-todo	a different function argument through the same recursive higher-order function
-todo	a distinct-signature per-group call-g is a repeatable (borrow<t>) callback
-todo	a distinct-signature round-trip alongside a plain export — the Int64->Bool side runs
-todo	a distinct-signature round-trip alongside a plain export — the Int64->Int64 side runs
-todo	a distinct-signature round-trip alongside a plain export — the plain export runs
-todo	a distinct-signature round-trip applies the Int64->Bool closure
-todo	a distinct-signature round-trip applies the Int64->Int64 closure
-todo	a distinct-signature round-trip's Bool closure on a nonzero input
-todo	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
-todo	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
-todo	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
-todo	a fixed-shape Tuple ARG with a RECORD RESULT crosses the direct-call boundary
-todo	a fixed-shape Tuple ARG with a STRING RESULT crosses the direct-call boundary
-todo	a fixed-shape Tuple ARG with a SUM (Option) RESULT crosses the direct-call boundary
-todo	a fixed-shape Tuple ARG with a Tuple RESULT crosses the direct-call boundary
-todo	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
-todo	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)
-todo	a function argument is applied through a recursive higher-order function
-todo	a function stored in a record field of a sum payload is called after a match
-todo	a generic recursive HOF taking a closure is monomorphized at three distinct closure types
-todo	a generic recursive HOF taking a closure is monomorphized at two distinct closure types
-todo	a higher-order left fold applies its combiner, not a fixed operator
-todo	a higher-order left fold over a built-in list with an annotated callback
-todo	a higher-order left fold over a built-in list with an annotated fn parameter
-todo	a host call's response is an ordinary value that feeds a LATER host call
-todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
-todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
-todo	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
-todo	a host op with a String parameter composes with the value-heap runtime
-todo	a host-called closure applied to a different argument tracks the input
-todo	a host-called closure with a different body dispatches the right code
-todo	a list of closures each keeps its own capture, selected by a runtime index
-todo	a multi-argument closure among distinct-signature exports
-todo	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
-todo	a multi-argument closure round-trips through a consumer
-todo	a multi-argument closure round-trips through a consumer — FLAT arrow spelling
-todo	a multi-argument closure with COMPOUND args round-trips — flat arrow spelling
-todo	a multi-export compound-result shared call is a repeatable (borrow<t>) callback
-todo	a multi-export set of parameterized capturing closures is driven per export
-todo	a multi-export shared call is a repeatable (borrow<t>) callback
-todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
-todo	a parameterized export returning a capturing closure is made and called by the host
-todo	a parameterized export returning a multi-argument capturing closure
-todo	a parameterized plain export alongside a closure export applies its argument
-todo	a parameterized plain export alongside a closure export — the closure captures and applies
-todo	a partial constructor in a runtime tuple element completes via an eta-closure lift
-todo	a partially-applied function escapes as a value and runs through a recursive HOF
-todo	a pass-through closure that returns its arg via a trivial let composes at one element type
-todo	a predicate closure returning Bool drives an early-exit recursive HOF
-todo	a produced closure is handed back into a consumer export (the round trip)
-todo	a program that makes a host call has that call in its observable behavior
-todo	a program uses a response-returning delegated host function's return value
-todo	a record-returning closure alongside a parameterized plain export — the closure
-todo	a record-returning closure alongside a parameterized plain export — the plain
-todo	a recursive HOF infers a callback whose RESULT is a sum matched in the body
-todo	a recursive NEWTYPE traversal recurses on its projected recursive field
-todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
-todo	a recursive evaluator destructures a built Ast by quote patterns and recurses
-todo	a recursive fold infers a callback applied to the RECURSIVE-CALL RESULT
-todo	a recursive fold over a sum list infers its unannotated callback parameter
-todo	a recursive fold with an unannotated two-argument callback parameter
-todo	a recursive map rebuilding a sum list infers its unannotated callback
-todo	a recursive-generic filter threading a predicate closure composes at two element types
-todo	a recursive-generic producer's result is consumed by an element-typed consumer
-todo	a recursive-generic transformer composes with itself
-todo	a recursive-generic transformer threading a closure composes at two element types
-todo	a recursive-generic transformer threading an IDENTITY closure composes at TWO element types
-todo	a recursive-generic transformer threading an IDENTITY closure composes at a single element type
-todo	a recursive-generic transformer with a bare-Nil STOP branch composes at two element types
-todo	a recursive-generic transformer with an element-CHANGING closure ties domain to codomain
-todo	a round-trip alongside a parameterized plain export applies its argument
-todo	a round-trip alongside a plain export — the plain export runs
-todo	a round-trip alongside a plain export — the round-trip still works
-todo	a round-trip at a widened scalar width (UInt32)
-todo	a round-trip consumer applies a closure whose result is a nominal-over-scalar
-todo	a round-trip consumer applies the closure in a match wildcard arm
-todo	a round-trip consumer applies the closure only in the taken if-branch
-todo	a round-trip consumer binds the applied closure through a let
-todo	a round-trip consumer takes the non-applying match arm
-todo	a round-trip consumer that does NOT apply the closure on the taken branch
-todo	a run's result is a deterministic function of a host call's recorded response
-todo	a runtime closure compares its argument to a captured value in a branch
-todo	a runtime closure whose body calls a recursive top-level function
-todo	a runtime function value is manually eta-wrapped and applied through nested recursive HOFs
-todo	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
-todo	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
-todo	a scalar BETWEEN two Tuple args with a LIST result
-todo	a second same-signature closure export shares the one call method
-todo	a three-argument closure exported to the host is called with all three
-todo	a three-parameter closure is applied at full arity through a recursive HOF
-todo	a three-payload constructor partially applied in a runtime tuple completes via eta-closure
-todo	a tuple-returning closure alongside a plain export — the closure
-todo	a tuple-returning closure alongside a plain export — the plain
-todo	a two-argument closure exported to the host is called with both arguments
-todo	a two-parameter closure is applied at full arity through a recursive HOF
-todo	a type-valued parameter under a function-arrow annotation dispatches an ad-hoc-polymorphic dict
-todo	an 8-bit-integer closure crosses the host boundary
-todo	an @param of a Bool type generates a Bool-typed accessor
-todo	an @param of a Float64 type generates a Float64-typed accessor
-todo	an @param site generates a Param accessor a host delegation reads at run time
-todo	an @param with no widget config still generates its typed accessor
-todo	an abortive handler abandons a host call in the path it discards
-todo	an effectful host arg flowing into a compound then a destructuring match is evaluated ONCE
-todo	an effectful host arg to a multi-use function parameter is evaluated ONCE, not re-performed per use
-todo	an entrypoint delegation lets a program reach its host function
-todo	an entrypoint delegation reaches an effect performed in a recursive callee
-todo	an escaping closure captures two values and takes three arguments
-todo	an escaping closure whose body binds a multi-variable let
-todo	an escaping closure whose body is a match hits the literal arm
-todo	an escaping closure whose body is a match hits the wildcard arm
-todo	an exact RATIONAL host value crosses as two scalar num/den ops the guest recombines (#13)
-todo	an identity closure composes at a single Int element type (not only String)
-todo	an identity closure composes over a COMPOUND (tuple) element at one element type
-todo	an identity closure composes through TWO chained recursive-generic maps at one element type
-todo	an identity closure threads through a recursive-generic HOF at TWO element types
-todo	an identity closure threads through a recursive-generic HOF at one element type
-todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
-todo	an unannotated closure in a Some payload is typed from the Option's element arrow
-todo	an unannotated closure in a user variant payload is typed from the declared arrow
-todo	an unannotated closure is inferred through an unannotated recursive HOF parameter
-todo	an unannotated closure parameter is grounded from its body and applied at runtime
-todo	an unannotated closure with an unused parameter in a payload takes the declared parameter type
-todo	an unannotated closure with distinct-typed params is inferred through a generic recursive HOF
-todo	an unannotated predicate closure is inferred through a recursive counting HOF
-todo	an unannotated two-argument closure is inferred through a generic recursive HOF
-todo	and performs the right operand's effect when the left is true
-todo	and short-circuit does not perform the right operand's effect
-todo	binary operator operands are evaluated left to right
-todo	boxed closures of two fn types in one sum: the unbuilt variant's dispatch is dead
-todo	distinct signatures sharing a core valtype shape dispatch distinct bodies
-todo	distinct-sig byte-rope closure alongside a plain export — the closure
-todo	distinct-sig byte-rope closure alongside a plain export — the plain
-todo	distinct-sig byte-rope closures — the Bool→Bytes one
-todo	distinct-sig byte-rope closures — the Int64→Bytes one
-todo	distinct-sig collection result — the Bool→List closure
-todo	distinct-sig collection result — the Int64→List closure
-todo	distinct-sig compound result — the Bool→(Tuple Bool Int64) closure
-todo	distinct-sig compound result — the Int64→(Tuple Int64 Int64) closure
-todo	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one
-todo	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Int64 one
-todo	distinct-sig round-trip: TWO collection consumers of different sigs — the List
-todo	distinct-sig round-trip: TWO collection consumers of different sigs — the Map
-todo	distinct-sig round-trip: TWO compound consumers of different sigs — the record one
-todo	distinct-sig round-trip: TWO compound consumers of different sigs — the tuple one
-todo	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Record-arg one
-todo	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Tuple-arg one
-todo	distinct-sig round-trip: a List consumer + a compound consumer of another sig — the compound
-todo	distinct-sig round-trip: a List consumer + a compound consumer of another sig — the list
-todo	distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the list
-todo	distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the scalar
-todo	distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the collection one
-todo	distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the sum one
-todo	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one
-todo	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the scalar one
-todo	distinct-sig round-trip: a compound consumer + a byte-rope consumer of different sigs — the byte-rope
-todo	distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the compound
-todo	distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the scalar
-todo	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the compound-arg one
-todo	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the scalar-arg one
-todo	distinct-sig round-trip: a higher-order closure + a scalar closure of another sig — the higher-order one
-todo	distinct-sig round-trip: a higher-order closure-typed arg on one group + a scalar closure on another
-todo	distinct-sig: a String closure + a Bytes closure of different signatures — the String one
-todo	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one
-todo	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one
-todo	distinct-sig: a collection + a compound + a byte-rope + a scalar group all coexist — the collection
-todo	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the byte-rope
-todo	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the compound
-todo	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the scalar
-todo	distinct-sig: a compound group + a byte-rope group + a scalar group — the byte-rope
-todo	distinct-sig: a compound group + a byte-rope group + a scalar group — the compound
-todo	distinct-sig: a compound group + a byte-rope group + a scalar group — the scalar
-todo	distinct-signature capturing closures alongside a parameterized plain export
-todo	distinct-signature capturing closures alongside a parameterized plain export — the plain runs
-todo	distinct-signature capturing producers
-todo	distinct-signature closures alongside a plain export — the Int64->Bool closure runs
-todo	distinct-signature closures alongside a plain export — the Int64->Int64 closure runs
-todo	distinct-signature closures alongside a plain export — the plain export runs
-todo	expect on an overflowing checked add traps
-todo	expect traps on the absent case of a runtime optional
-todo	four same-signature closure exports share one resource
-todo	function arguments are evaluated left to right
-todo	host calls are observed in the order they were made
-todo	let bindings' initializers are evaluated in binding order
-todo	mixed-type @param sites share one Param effect and drive control flow
-todo	mixed: two closure exports alongside a plain export — driving the plain export
-todo	multi-export Set-result closures — the singleton one
-todo	multi-export Set-result closures — three sharing one call
-todo	multi-export collection result — the first list closure
-todo	multi-export collection result — the second list closure
-todo	multi-export compound result — the first closure's tuple
-todo	multi-export compound result — the second closure's tuple
-todo	multi-export compound result — three capturing closures share one call
-todo	multi-export record result — canonical field order
-todo	multi-export record result — the second closure, with a negative leaf
-todo	one of several same-signature closure exports is made and called by the host
-todo	one of two DIFFERENT-signature closure exports is made and called
-todo	or performs the right operand's effect when the left is false
-todo	or short-circuit does not perform the right operand's effect
-todo	round-trip byte-rope consumer alongside a plain export — the consumer
-todo	round-trip byte-rope consumer alongside a plain export — the plain
-todo	round-trip: a HIGHER-ORDER closure arg composed with a SUM result
-todo	round-trip: a HIGHER-ORDER closure — its argument is itself a closure built in-guest
-todo	round-trip: a String-returning consumer of a closure
-todo	round-trip: a closure taking a NESTED compound (Tuple of Tuples) arg
-todo	round-trip: a closure taking a SUM (Option) arg built in-guest
-todo	round-trip: a closure taking a String arg built in-guest
-todo	round-trip: a compound consumer + a byte-rope consumer of the same closure — the byte-rope
-todo	round-trip: a compound consumer + a byte-rope consumer of the same closure — the compound
-todo	round-trip: a compound consumer alongside a plain export — the plain
-todo	round-trip: a compound-arg closure whose consumer returns a compound
-todo	round-trip: a consumer applies a closure taking a List arg built in-guest
-todo	round-trip: a consumer applies a closure taking a Record arg built in-guest
-todo	round-trip: a consumer applies a closure taking a Tuple arg built in-guest
-todo	round-trip: a consumer applies the handed-back closure and returns Bytes
-todo	round-trip: a consumer applies the handed-back closure and returns a List
-todo	round-trip: a consumer applies the handed-back closure and returns a tuple
-todo	round-trip: a consumer returns a Map from the closure result
-todo	round-trip: a consumer returns a Map whose VALUE is a list
-todo	round-trip: a consumer returns a Result (Err type pinned) from the closure result
-todo	round-trip: a consumer returns a Result reaching BOTH variants
-todo	round-trip: a consumer returns a Set built from REPEATED closure application
-todo	round-trip: a consumer returns a Set built from the closure result
-todo	round-trip: a consumer returns a byte-rope built from a single closure result
-todo	round-trip: a consumer returns a list of tuples from repeated closure application
-todo	round-trip: a consumer returns a record built from the closure result
-todo	round-trip: a consumer returns a tuple CONTAINING a list built from the closure result
-todo	round-trip: a consumer returns an Option built from the closure result
-todo	round-trip: a consumer returns an Option of a tuple
-todo	round-trip: a consumer returns an Option whose payload is a List
-todo	round-trip: a higher-order closure applied to TWO distinct inner closures
-todo	round-trip: a higher-order closure whose inner closure CAPTURES and is applied twice
-todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
-todo	round-trip: a producer's returned closure captured an inner closure built in-guest
-todo	round-trip: a scalar consumer + a List consumer of the same closure — the list
-todo	round-trip: a scalar consumer + a List consumer of the same closure — the scalar
-todo	round-trip: a scalar consumer + a compound consumer of the same closure — the compound
-todo	round-trip: a scalar consumer + a compound consumer of the same closure — the scalar
-todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
-todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
-todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
-todo	scan emits the seed plus one accumulator per element (n+1 outputs)
-todo	scan over an empty iterator emits just the seed
-todo	scan threads its accumulator left-to-right (an order-sensitive folder)
-todo	scan's kth emitted accumulator is the running fold of the first k elements
-todo	take-while composed after a map threads both transformers' closures
-todo	take-while excludes the failing element and everything after it (content, not just count)
-todo	take-while where every element satisfies the predicate keeps the whole run
-todo	take-while where the first element fails the predicate returns the empty run
-todo	the built variant is the multi-arg one, the unbuilt arm still gets its call type
-todo	the generated Param accessor carries the @param's declared type into arithmetic
-todo	the program manifest is the union of its entrypoints' delegations
-todo	the round trip tracks the produced closure's captured value
-todo	the same conditional delegation makes no host call when the branch is not taken
-todo	the same declared effect is handled in-program by one entrypoint and delegated by another
-todo	the same program with a different response gives a different deterministic result
-todo	the same-core-shape sibling dispatches ITS body, not the first
-todo	the second distinct-signature closure export returns its own type
-todo	three closures with a SHARED signature cross as two resource types
-todo	three distinct closure signatures cross as three resource types
-todo	tuple elements are evaluated left to right
-todo	two @param sites generate two accessors under one Param effect
-todo	two capturing closures stored as runtime tuple elements keep distinct captures
-todo	two host calls consume their responses in order
-todo	two host responses combine in call order through a non-commutative operator
-todo	two nested recursive const-closure drivers (filter under fold) emit valid wasm and compute correctly
-todo	two same-signature Bytes-returning closures share one call — first
-todo	two same-signature Bytes-returning closures share one call — second
-todo	two same-signature String-returning closures share one call
-todo	two same-signature closures alongside a plain export all coexist
-todo	two same-signature closures alongside a plain export — the plain export runs
-todo	two specializations of one driver on different closures do not collide in the spec memo

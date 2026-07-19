@@ -8380,10 +8380,21 @@ fn emit(
             // Unit is never a live-compound FBIP target, so it skips the child-dup/retain logic below.
             let unit_elem =
                 scalar_elem.is_none() && matches!(type_of(db, id).strip_nominal(), Ty::Unit);
-            let reclaim = matches!(
-                heap_operand_ownership(db, operand),
-                Ok(HandleOwnership::Owned)
-            );
+            // ⚠ A MATERIALIZED-SLOT operand is BORROWED, not owned-by-this-Proj. When `operand` is a node
+            // stashed in `slots` (a `local.get` here — a sum-match scrutinee materialized ONCE into a slot,
+            // re-read by every arm), the ENCLOSING construct owns that slot and reclaims it; this Proj only
+            // reads it. Reclaiming (drop) here frees-early: the guarded-record UAF
+            // (`(match r ((guard (record (x a)(y b)) (> a 0)) (+ a b)) …)` — the guard-cond's field Proj over
+            // the materialized record scrutinee dropped it before the body's field Proj re-read it →
+            // freed-then-read). `heap_operand_ownership` verdicts the operand's NODE (a `Call`/ctor → Owned)
+            // and can't see it was materialized into a shared slot, so gate on slot-membership: a slotted
+            // operand is Borrowed (its owner drops it), never reclaimed by a borrowing Proj. A NON-slotted
+            // fresh producer (`(. (mk) 0)` inline, no enclosing materialization) still reclaims (a dead temp).
+            let reclaim = !slots.contains_key(&operand)
+                && matches!(
+                    heap_operand_ownership(db, operand),
+                    Ok(HandleOwnership::Owned)
+                );
             if reclaim {
                 let agg_slot = base;
                 if agg_slot + 1 > *high {
@@ -9585,14 +9596,44 @@ fn emit(
                 out.push(Lir::LocalGet(slot_r));
                 out.push(Lir::CallImport(OP_DROP));
             }
-            // Map the three-way result (still on top) to the boolean `op` wants: Lt res<0, Le res<=0,
-            // Gt res>0, Ge res>=0 (signed compare against 0).
-            out.push(Lir::ConstI32(0));
+            // Map the three-way result `res ∈ {-1,0,1}` (still on top) to what `op` wants:
+            //   - Lt/Le/Gt/Ge: the BOOLEAN it names — Lt res<0, Le res<=0, Gt res>0, Ge res>=0 (signed
+            //     compare against 0).
+            //   - Compare: the three-way `Ordering` SUM directly (§331 — the boolean ops and the three-way
+            //     `compare` surface the SAME total order). `Ordering` is an ALL-NULLARY enum (Less=disc 0,
+            //     Equal=disc 1, Greater=disc 2) with a bare i32 discriminant rep (no payload → no `sum-new`
+            //     box, no `ordering_discs` lookup — the discs are prelude-fixed), so the Ordering value is
+            //     exactly `res + 1` (res=-1→0=Less, 0→1=Equal, 1→2=Greater). Paired with the `lower_compare`
+            //     routing that emits `Core::ValueCmp{op: Prim::Compare}` for a runtime orderable compound.
             match op {
-                Prim::Lt => out.push(Lir::I32LtS),
-                Prim::Le => out.push(Lir::I32LeS),
-                Prim::Gt => out.push(Lir::I32GtS),
-                Prim::Ge => out.push(Lir::I32GeS),
+                Prim::Compare => {
+                    out.push(Lir::ConstI32(1));
+                    out.push(Lir::I32Add); // res + 1 = the Ordering discriminant (Less/Equal/Greater)
+                }
+                Prim::Lt => {
+                    out.push(Lir::ConstI32(0));
+                    out.push(Lir::I32LtS);
+                }
+                Prim::Le => {
+                    out.push(Lir::ConstI32(0));
+                    out.push(Lir::I32LeS);
+                }
+                Prim::Gt => {
+                    out.push(Lir::ConstI32(0));
+                    out.push(Lir::I32GtS);
+                }
+                Prim::Ge => {
+                    out.push(Lir::ConstI32(0));
+                    out.push(Lir::I32GeS);
+                }
+                Prim::Eq => {
+                    // EQUALITY via the value-cmp walk: equal iff the three-way result is 0. `res == 0` =
+                    // `i32.eqz`. Used for a runtime LIST(-containing) `=`, where `value-eq`'s champ_eq byte
+                    // walk is unsound (an RRB list is element- but NOT shape-canonical) — the descriptor-guided
+                    // value-cmp walk compares element-wise, so `res==0` is exact structural equality
+                    // (collections §"Two lists ... equal ... independent of how each was constructed").
+                    out.push(Lir::I32Eqz);
+                }
                 _ => {
                     return Err(Reject::decline("ValueCmp carries a non-ordering prim"));
                 }

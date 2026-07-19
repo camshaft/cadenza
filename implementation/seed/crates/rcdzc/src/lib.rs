@@ -47,7 +47,7 @@ pub mod effects;
 // defs), the module analogue of `sums`/`effects`. So `(. m field)` is member access, nothing privileged.
 pub mod modules;
 // Compiler-directed generators for property tests over collection types (F1): synthesize a nullary
-// `Test.gen`-driven wrapper for a `@test` whose parameter is a `(List <Int>)`, so `cdz test` can
+// `Test.gen-int`-driven wrapper for a `@test` whose parameter is a `(List <Int>)`, so `cdz test` can
 // property-test over a list. Runs at load before `strip_annotations`; all synthesized nodes are ordinary
 // AST (`DESIGN-property-test-collection-generators-rcdzc.md`).
 pub mod proptest_gen;

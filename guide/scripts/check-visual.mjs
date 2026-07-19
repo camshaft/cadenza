@@ -129,6 +129,24 @@ const ROUTES = [
       // The editor must be the shared CodeMirror IDE component (highlighting), not a plain textarea.
       const cm = await page.locator(".cm-editor").count();
       check(cm > 0, `${label}: source editor is the CodeMirror IDE component (Cadenza highlighting)`);
+      // VISIBLE-RENDER gate (operator's blank-viewport report): a mounted <canvas> is NOT sufficient — a
+      // 0-triangle empty mesh still mounts a canvas and shows BLANK (the empty-Solid-annihilation bug class:
+      // Union(Empty,x) meshing to nothing). Assert the preview reports NON-ZERO geometry (`data-mesh-tris`),
+      // so a starter that compiles+runs+"meshes" but produces no visible triangles is caught here, not by the
+      // operator. Poll until it settles (auto-run mesh is async behind the lazy 3D chunk).
+      const tris = await page
+        .waitForFunction(
+          () => {
+            const el = document.querySelector('[data-testid="cad-preview"]');
+            if (!el) return false;
+            const n = Number(el.getAttribute("data-mesh-tris") || "0");
+            return n > 0 ? n : false;
+          },
+          { timeout: 30000 },
+        )
+        .then((h) => h.jsonValue())
+        .catch(() => null);
+      check(tris !== null && tris > 0, `${label}: the /cad starter renders NON-ZERO geometry (${tris ? `${tris} triangles` : "0 tris — BLANK viewport, geometry annihilated"})`);
       // DESKTOP LAYOUT (operator: the viewer was squished to a ~400px sliver off to the side): the 3D preview
       // is the PRIMARY pane, so at desktop width its <canvas> must claim a generous share (≥500px, ≥50% of the
       // editor+preview row) — not get eaten by the editor column. Regression-locks the md:flex-[3] + md:min-w-0
@@ -216,6 +234,80 @@ const ROUTES = [
             .then(() => true)
             .catch(() => false);
           check(meshed, `${label}: the arch-fin cubic-Bézier spline part meshes to a <canvas> (curved geometry)`);
+        }
+        // PARAMETRIC SNOWFLAKE — the operator's flagship, and the one that shipped BLANK once (a fold from
+        // Solid.Empty that the mesh driver annihilated to 0 tris while a <canvas> still mounted, so a
+        // canvas-presence check false-greened). This is the EYES-ON visible-render gate the concierge asked
+        // for: select it, assert NON-ZERO data-mesh-tris (real geometry, not blank), then drag the SEED
+        // slider and confirm it RE-MESHES to a visibly-different snowflake (a different tri count = a
+        // different seeded shape). Guards the self-contained showcase + the empty-Solid mesh fix together.
+        const hasSnow = (await picker.locator('option[value="parametric-snowflake"]').count()) > 0;
+        if (hasSnow) {
+          // Selecting a new example doesn't reset data-mesh-tris to 0, so a bare `n > 0` (or even `n !== prior`)
+          // poll false-greens on a PREVIOUS model's stale count (a trap I hit: it read the 584-tri cube, then a
+          // 256-tri stale value — never the snowflake). The snowflake meshes to TENS OF THOUSANDS of tris
+          // (verified ~49930 headless at the default seed), which NO other showcase (all ≤ 584) or stale value
+          // reaches — so poll for a SUBSTANTIAL count (> 1000). That uniquely identifies the snowflake's own
+          // geometry AND proves it's not blank: a fold from Solid.Empty renders this large ONLY if the
+          // empty-Solid mesh fix holds (a zero-size-cube regression → 0 tris → this never crosses 1000).
+          const SNOW_MIN_TRIS = 1000;
+          // Wait for the CURRENT run to settle before selecting — CadPage's runModel has a `runningRef` guard
+          // that DROPS a new run if one is still in flight, so selecting snowflake while arch-fin is still
+          // meshing would silently no-op (leaving arch-fin's low tri count). Wait until the status chip is no
+          // longer "meshing…"/"running" (idle), then select.
+          await page
+            .waitForFunction(
+              () => {
+                const st = document.querySelector('[data-testid="cad-status"]');
+                return st ? !/meshing|running/i.test(st.innerText) : true;
+              },
+              { timeout: 45000, polling: 500 },
+            )
+            .catch(() => {});
+          await picker.selectOption("parametric-snowflake");
+          const tris = await page
+            .waitForFunction(
+              (min) => {
+                const el = document.querySelector('[data-testid="cad-preview"]');
+                if (!el) return false;
+                const n = Number(el.getAttribute("data-mesh-tris") || "0");
+                return n > min ? n : false;
+              },
+              SNOW_MIN_TRIS,
+              { timeout: 45000, polling: 500 },
+            )
+            .then((h) => h.jsonValue())
+            .catch(() => null);
+          check(tris !== null && tris > SNOW_MIN_TRIS, `${label}: the parametric-snowflake renders SUBSTANTIAL geometry — VISIBLE, not blank (${tris ? `${tris} triangles` : `≤${SNOW_MIN_TRIS} tris — BLANK or annihilated (empty-Solid mesh fix regressed?)`})`);
+          // Drag the SEED slider (first @param) → a different seed grows a structurally-different snowflake, so
+          // the tri count changes. Confirms the seed→unique loop + re-mesh (the operator's whole point).
+          const seedSlider = page.locator('[data-testid="cad-params"] input[type="range"]').first();
+          if (tris && (await seedSlider.count()) > 0) {
+            await seedSlider.evaluate((el) => {
+              const max = Number(el.max || "200"), min = Number(el.min || "1");
+              const nv = String(Math.round(min + (max - min) * 0.73)); // a distinct seed, on-grid
+              const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+              set.call(el, nv);
+              el.dispatchEvent(new Event("input", { bubbles: true }));
+              el.dispatchEvent(new Event("change", { bubbles: true }));
+            });
+            const remeshed = await page
+              .waitForFunction(
+                (prev) => {
+                  const el = document.querySelector('[data-testid="cad-preview"]');
+                  if (!el) return false;
+                  const n = Number(el.getAttribute("data-mesh-tris") || "0");
+                  // A genuinely-different snowflake: still SUBSTANTIAL (> 1000, so not a stale/transient value
+                  // from another model) AND a different tri count than the first seed's shape.
+                  return n > 1000 && n !== prev ? n : false;
+                },
+                tris,
+                { timeout: 45000, polling: 500 },
+              )
+              .then((h) => h.jsonValue())
+              .catch(() => null);
+            check(remeshed !== null, `${label}: dragging the seed slider re-meshes a DIFFERENT snowflake (${tris} → ${remeshed ?? "no change / still meshing"} tris)`);
+          }
         }
       } else {
         check(false, `${label}: example picker present`);
