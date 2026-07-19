@@ -20,3 +20,9 @@ use `test.gen-int`).
 `Test.gen`/`@property` generator op = v-property-testing (OWNS `@property`/`@exhaustive`/`Test.gen`). The
 file is in the `cdz` crate but the naming is property-testing's domain. Sweep all stale `Test.gen`
 doc-comment refs in cdz/main.rs to `Test.gen-int`.
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk cac57fd66): the stale doc-comments were SWEPT. On trunk
+`cdz/src/main.rs` has ZERO occurrences of `Test.gen` (without `-int`) and 16 of `Test.gen-int` — all the
+flagged sibling lines (3546/4027/4030/4616/4645/4652/4770/4773) now read `Test.gen-int`, matching
+`GEN_OP_LABEL = "test.gen-int"`. Doc-comment-only nit, fully resolved by a peer's rename sweep — no corpus-bugfix action.

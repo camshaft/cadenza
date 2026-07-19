@@ -238,21 +238,40 @@ def read-ann-form(s: String, i: Int64, tree: Tree) =
 def unsupported-at(tree: Tree, i: Int64) =
   (match unsupported(tree) with | (id, t1) => (id, i, t1))
 
+/// Read ONE nullary `(def (name) body)` starting at `i` (just past the `def` atom). FLAT helper (slice-3b-ii):
+/// returns `(nameId, bodyId, nextIndex, tree')`. `nameId = -1` sentinel = a PARAMETERIZED def `(name (: p T))`
+/// (a `(` where the signature-closing `)` is expected) — out of the nullary subset, caller declines.
+def read-def-form(s: String, i: Int64, tree: Tree) =
+  (let m0 = open-paren(s, i) in
+   (match scan-atom(s, skip-space(s, m0), "") with | (nm, m1) => read-def-body(s, nm, skip-space(s, m1), tree)))
+
+/// After a def's name at `k` (space already skipped): a nullary def closes its signature with `)` here →
+/// read the body; anything else (a `(` param) → the -1 sentinel. Split out to keep read-def-form flat.
+def read-def-body(s: String, nm: String, k: Int64, tree: Tree) =
+  (if (char-at(s, k) == ")")
+   then (match read-form(s, k + 1, tree) with | (bodyId, j, t1) => (name-id(nm), bodyId, j, t1))
+   else (name-id(nm), 0 - 1, k, tree))
+
+/// After `(do` (index `i`): read a SEQUENCE of `(def (name) body)` — record each HELPER (nameId→bodyId) in the
+/// def-table (so a `(name)` call resolves), until `main` whose body is the module ROOT. A parameterized def or
+/// non-`def` head declines. slice-3b-ii: activates read-app-or-bin's NApp arm → `(mk)` source runs e2e.
 def read-do-form(s: String, i: Int64, tree: Tree) =
-  (let d0 = open-paren(s, i) in                          // `(` before the first def
+  (let d0 = open-paren(s, i) in
    (match scan-atom(s, skip-space(s, d0), "") with | (kw, d1) =>
-     (if (kw == "def") then                              // first form must be a `def` (else decline)
-        (let m0 = open-paren(s, d1) in                   // `(` before the main signature
-         (match scan-atom(s, skip-space(s, m0), "") with | (nm, m1) =>
-           (if (nm == "main") then                       // first def must be `main` (else decline)
-              (let k = skip-space(s, m1) in
-               // nullary main: the signature closes immediately with `)`. A `(` here is a param
-               // `(: n Int64)` → parameterized main → out of subset → decline.
-               (if (char-at(s, k) == ")")
-                then read-form(s, k + 1, tree)            // read the main BODY as the module's value
-                else unsupported-at(tree, k)))
-            else unsupported-at(tree, m1))))
-      else unsupported-at(tree, d1))))
+     (if (kw == "def") then read-do-def(s, d1, tree) else unsupported-at(tree, d1))))
+
+/// Handle one `(def …)` inside a `do`: read it; if it's `main`, its body is the root; if a helper, record it
+/// and recurse to the next def; if parameterized (-1), decline. Flat — each branch is one expression.
+def read-do-def(s: String, d1: Int64, tree: Tree) =
+  (match read-def-form(s, d1, tree) with | (nameId, bodyId, j, t1) =>
+    (if (bodyId == (0 - 1)) then unsupported-at(t1, j)   // -1 bodyId = parameterized def → decline
+     else (if (nameId == name-id("main")) then (bodyId, j, t1)
+           else read-do-next(s, j, record-def(t1, nameId, bodyId)))))
+
+/// After a HELPER def ended at `j`: skip its closing `)` (if present) and read the next `(def …)` in the do.
+def read-do-next(s: String, j: Int64, tree: Tree) =
+  (let e0 = skip-space(s, j) in
+   (if (char-at(s, e0) == ")") then read-do-form(s, e0 + 1, tree) else read-do-form(s, e0, tree)))
 
 /// After `(if` (index `i` past the `if` atom): read cond, then, else forms + consume `)` → `NIf`.
 def read-if-form(s: String, i: Int64, tree: Tree) =
@@ -544,10 +563,20 @@ def sr-module-parameterized-main-declines() =
     (if is-var(tree, root, 0) then unit else trap("parameterized main declines to unbound NVar(0)")))
 
 @test
-def sr-module-non-main-first-def-declines() =
-  // a helper def before `main` is out of subset (the reader peels only a leading nullary `main`) → decline.
+def sr-module-helper-def-before-main-supported() =
+  // slice-3b-ii: a HELPER def before `main` is now SUPPORTED (recorded in the def-table); the module ROOT is
+  // main's body. Here main's body is `2` (the helper is recorded but unused) → root is NLit 2. (Was a decline
+  // pre-3b-ii — the reader now reads a def-SEQUENCE, not just a leading nullary `main`.)
   (match read-source("(do (def (helper) 1) (def (main) 2) (export main))") with | (root, tree) =>
-    (if is-var(tree, root, 0) then unit else trap("non-main first def declines to unbound NVar(0)")))
+    (if is-lit(tree, root, 2) then unit else trap("helper-then-main: root is main's body NLit 2")))
+
+@test
+def sr-module-nullary-call-is-napp() =
+  // slice-3b-ii ★ THE PAYOFF ★: a nullary CALL `(mk)` in main's body → the module root is an NApp (the
+  // call-resolution arm fired because `mk` is a recorded def). `(do (def (mk) 42) (def (main) (mk)) …)` → root
+  // is NApp(mkBodyId, -1). This is the source-level nullary-function call the whole slice-3 builds toward.
+  (match read-source("(do (def (mk) 42) (def (main) (mk)) (export main))") with | (root, tree) =>
+    (match node-at(tree, root) with | Option.Some(Node.NApp(_, _)) => unit | _ => trap("(mk) call → root is an NApp")))
 
 @test
 def sr-unknown-name-call-declines() =

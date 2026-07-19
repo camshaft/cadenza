@@ -2598,6 +2598,27 @@ fn a_bigint_arith_then_of_arith_collection_element_pair_runs() {
         "2",
         "Map.insert keys {n+1, n+2} at n=5 → size 2",
     );
+    // RATIONAL twin — the slot-clash is generic over cdz-num BOXED-NUMERIC elements, not BigInt-specific
+    // (the fix advanced the scratch floor for the whole family). Same recipe with Rational: element 1 is a
+    // Rational SUM (`(+ (Rational.of n 1) (Rational.of 1 1))` = (n+1)/1 — its `rational-add` operands stash
+    // i32 handles in scratch), element 2 is a `Rational.of` over checked Int64 arith (`(Rational.of (+ n 2)
+    // 1)` = (n+2)/1 — the `(+ n 2)` carries an i64 overflow-guard temp). At n=5 the values 6/1 and 7/1 are
+    // distinct → Set.len 2. Was manually verified at fix time but never PINNED; this guards the Rational
+    // box-arg path against a future regression of the disjoint-slot discipline.
+    check(
+        "(module m (def (main (: n Int64)) \
+           (Set.len (Set.of (list (+ (Rational.of n 1) (Rational.of 1 1)) (Rational.of (+ n 2) 1))))) (export main))",
+        "2",
+        "Set.of {(n+1)/1, (n+2)/1} at n=5 is {6/1,7/1} → len 2",
+    );
+    // Rational Map twin.
+    check(
+        "(module m (def (main (: n Int64)) \
+           (Map.len (Map.insert (Map.insert (Map.empty) (+ (Rational.of n 1) (Rational.of 1 1)) 1) \
+                                (Rational.of (+ n 2) 1) 2))) (export main))",
+        "2",
+        "Map.insert Rational keys {(n+1)/1, (n+2)/1} at n=5 → size 2",
+    );
 }
 
 /// A synthesized (β-reduced) scope form's parameters still resolve — the regression guard for the

@@ -395,7 +395,9 @@ pass	a RUNTIME-built Rational set deduplicates by exact value
 pass	a Rational accumulator threaded through recursion sums exactly
 pass	a Rational fanned into a compound then re-read survives (Perceus retain over a BigInt/Rational leaf)
 pass	a Rational is usable as a map key, matched by its exact value
+pass	a Rational map from a Rational sum key and a Rational.of-over-arithmetic key has both entries
 pass	a Rational set deduplicates by exact value regardless of how each was written
+pass	a Rational set from a Rational sum and a Rational.of over integer arithmetic has both elements
 pass	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)
 pass	a Rational-annotated literal composes with exact rational arithmetic
 pass	a Rational-inner quantity addition stays exact through the quantity wrapper
@@ -2800,6 +2802,8 @@ pass	an unused let binding whose init would divide by zero is elided, so its tra
 pass	an unused let binding whose init would overflow is elided, so its trap does not occur
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge
 pass	an unusual in-range width is a first-class type
+pass	an unusual signed width overflows its own maximum and is rejected CDZ0304
+pass	an unusual signed width underflows its own minimum and is rejected CDZ0304
 pass	an unusual-width value that overflows its computed range is rejected at compile time
 pass	an unwrapped conversion result is a bare number under ordinary numeric rules
 pass	an unwrapped length adds to an unwrapped time with no dimension error
@@ -2820,6 +2824,7 @@ pass	arithmetic between a char and a Rational is rejected with a working two-ste
 pass	arithmetic between a char and an Int64 is rejected with the plain Char.to-int fix
 pass	arithmetic on a bound Rational payload computes and escapes exactly
 pass	arithmetic on a let binding whose initializer diverges traps
+pass	arithmetic on an unusual signed width enforces the type's OWN range at compile time
 pass	arithmetic reached via an inlined diverging call argument traps
 pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
