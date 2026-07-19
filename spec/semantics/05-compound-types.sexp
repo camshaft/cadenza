@@ -2414,6 +2414,29 @@
             (export main)))
   (call main (: 1 Int64) (: 2 Int64) (: 3 Int64)) (output (: 100 Int64)))
 
+(case "a MULTI-LEVEL concat-built list map key (n>=33) is found by a push-built equal key"
+  (doc    "The n>=33 companion of the case above, where shape-independence is LOAD-BEARING (not a leaf-merge
+           coincidence). A List is an RRB vector: at <=32 elements a concat and a push both fit ONE strict
+           leaf (byte-identical), so the small case passes even under a shape-sensitive key hash. At >=33 a
+           concat leaves RELAXED interior nodes with a size table while a push builds a strict trie — the two
+           are genuinely DIFFERENT byte layouts. `concat-key = concat(build 0..half, build half..n)` and
+           `push-key = build 0..n` build [0..n) two ways; inserting under concat-key and looking up under
+           push-key MUST find the entry (-> 42), which requires the key path to canonicalize/compare a list
+           key by its elements-in-order, not its physical shape. Pins the value-canonicalize key-site fix:
+           without it the two land in different CHAMP slots and the lookup MISSES (-> -1). n=40 (>32).")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (main (: n Int64))
+              (let ((half (/ n 2))
+                    (concat-key (List.concat (build 0 half (list)) (build half n (list))))
+                    (push-key (build 0 n (list))))
+                (match (Map.lookup (Map.insert Map.empty concat-key 42) push-key)
+                  ((Some v) v)
+                  ((None) (- 0 1)))))
+            (export main)))
+  (call main (: 40 Int64)) (output (: 42 Int64)))
+
 (case "a list-concatenating helper threads lists through a call"
   (doc    "`(def (cat a b) (List.concat a b))` applied to two literals — concatenation works on list
            PARAMETERS, not only inline literals, so both operands are inferred `Heap` and the helper

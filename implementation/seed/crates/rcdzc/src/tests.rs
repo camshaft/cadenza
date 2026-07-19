@@ -977,6 +977,33 @@ fn a_member_read_of_an_if_selected_record_pushes_into_the_branches() {
     assert_eq!(f, 20, "p false → .x = b (the else branch's x field)");
 }
 
+/// The MATCH analogue of the tuple/record `*-INTO-IF` folds: a `match` over a SUM built through an `if`
+/// pushes the match INTO each branch — `(match (if c (Some x) (None)) ((Some v) v) ((None) 0))` →
+/// `(if c (match (Some x) …) (match (None) …))` → `(if c x 0)`. The `if`-selected sum was a THROWAWAY heap
+/// value (per-branch `arr-alloc` + payload box + the deconstruct's `arr-get`/unbox, purely to read the
+/// payload back), so the un-fused form imports the value-heap runtime; the fused form folds each branch's
+/// constant constructor to the arm body directly — no heap, no runtime import. Fires only when BOTH branches
+/// build a visible constructor AND both inner matches FULLY fold (else it backs out to the runtime match).
+#[test]
+fn a_match_over_an_if_selected_sum_pushes_into_the_branches() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // `(match (if (> x 0) (Some x) (None)) ((Some v) v) ((None) 0))` → `(if (> x 0) x 0)`.
+    let src = "(module m (type Option (Some Int64) None) \
+                 (def (f (: x Int64)) \
+                   (match (if (> x 0) (Option.Some x) Option.None) \
+                     ((Option.Some v) v) (Option.None 0))) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        "a match over an if-of-constructors must fold (no throwaway sum build, no runtime import)"
+    );
+    let t: i64 = run_returns_with(&bytes, "f", &[Val::S64(5)]);
+    assert_eq!(t, 5, "x > 0 → Some x → v = 5");
+    let e: i64 = run_returns_with(&bytes, "f", &[Val::S64(-3)]);
+    assert_eq!(e, 0, "x <= 0 → None → 0");
+}
+
 /// A `let`-BOUND tuple/record produced by an `if`, read at TWO positions, compiles to VALID wasm. Reading
 /// TWICE keeps the compound as a genuine runtime handle (the single-projection fold above DECLINES for a
 /// multi-use binding), so the `if` value-join lands the handle in the binding's persistent i32 slot. The
@@ -4209,6 +4236,56 @@ fn match_over_an_owned_compound_payload_borrow_only_shell_leaves_no_live_objects
     );
 }
 
+/// A compound-shell match arm that BORROWS its payload child via `Core::ValueCmp` (the runtime compound-
+/// ORDERING op `<`/`<=`/`>`/`>=` — the blessed heap-order walk) leaves NO live objects. This pins that the
+/// wrapper-shell reclaim's consumed-child detector (`collect_consuming_payload_sites_expr`) classifies
+/// `ValueCmp` as BORROW — mirroring `binding_escapes` arm-for-arm. `ValueCmp` landed AFTER the reclaim
+/// (v-runtime's blessed-ordering work), and the detector's borrow arm listed only `ValueEq`/`StrCmp`/
+/// `BigIntCmp`/`RationalCmp` — so a shell child reached through `<` fell to the CONSUMING fallback and was
+/// wrongly marked a consumed-child dup site (the deep shell drop happened to absorb the over-dup in the
+/// cases tested, but the divergence from `binding_escapes` was a latent over-retain). With `ValueCmp` in
+/// the borrow arm the child is correctly NOT dup'd (verified: the `dup` import disappears) and the shell
+/// reclaim nets to 0. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn match_arm_ordering_compares_a_shell_child_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[value-cmp-arm] debug-counters runtime not in the store; skipping balance probe"
+        );
+        return;
+    };
+    // A REAL 2-variant sum `Box=(Mk(List))(Nil)` (so the owned-shell reclaim fires); `probe` matches a fresh
+    // owned `Mk(list)` and, in the arm, ORDERS the child list via `<` (a borrowing `Core::ValueCmp`) against
+    // a literal list. `main` loops so a per-iteration over-retain would accumulate. The child is borrowed
+    // (not moved out), so the shell + list reclaim to net 0.
+    let src = "(module m (type Box (Mk (List Int64)) (Nil)) \
+                 (def (bl (: i Int64) (: n Int64) (: a (List Int64))) \
+                     (if (< i n) (bl (+ i 1) n ((. List push) a i)) a)) \
+                 (def (probe (: z Int64)) \
+                     (match (Mk (bl 0 3 (list))) ((Mk xs) (if (< xs (list 9)) 1 0)) ((Nil) 0))) \
+                 (def (loop (: j Int64) (: n Int64) (: acc Int64)) \
+                     (if (< j n) (loop (+ j 1) n (+ acc (probe 0))) acc)) \
+                 (def (main (: z Int64)) (loop 0 4 0)) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[Val::S64(0)]),
+        Val::S64(4),
+        "[0,1,2] < [9] is true at every iteration → 4"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "value-cmp-arm leak: a shell child ordered via `<` (ValueCmp, a BORROW) must not be marked a \
+         consumed-child dup site — the owned shell reclaims to 0 (a ValueCmp missing from the detector's \
+         borrow arm over-dups the borrowed child)"
+    );
+}
+
 /// COMPOUND EQUALITY over a runtime FLOAT LEAF follows the canonical byte form — the compound analogue of
 /// the scalar `Core::FloatCompare` fix, with NO extra machinery: `box-float` canonicalizes every NaN to
 /// the one quiet-NaN on construct (and keeps ±0.0 distinct), so a float in a compound already has the
@@ -4563,6 +4640,76 @@ fn a_borrowed_runtime_string_rope_compares_equal_and_leaves_no_live_objects() {
         "borrowed-rope-eq leak: the rope-value program leaves {rope_live} live cells vs the flat-value \
          baseline's {flat_live} — compacting a BORROWED operand is refcount-neutral (in-place flatten, \
          same handle, no drop follows the borrow), so any difference is a compaction leak"
+    );
+}
+
+/// A `List` MAP KEY built by `List.concat` (a RELAXED RRB, non-shape-canonical at n≥33) must be found by a
+/// FROM-SCRATCH-built equal list key — the list-key false-miss fix (`value-canonicalize` at the key site).
+/// A List is element-canonical but NOT shape-canonical: at n≥33 a concat-built list has relaxed interior
+/// nodes with size tables, a build-by-push list a strict trie — DIFFERENT bytes → the tagless
+/// `champ_hash`/`champ_eq` placed them in DIFFERENT CHAMP slots → `Map.lookup` MISSED (spec
+/// collections-and-text §162: a key's identity is construction-INDEPENDENT). BRICK 2 emits
+/// `value-canonicalize` on the key at each map/set key site, rebuilding the RRB to its unique strict shape
+/// so the byte-walk is exact. Here `mk n` builds `[1..n]` by push-recursion; the KEY is `List.concat` of two
+/// halves (relaxed at n=40), the QUERY is a single from-scratch `mk 40` (strict) — pre-fix they missed.
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`/`codegen`).
+#[test]
+#[ignore]
+fn a_concat_built_list_map_key_is_found_by_a_push_built_equal_key() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[list-key] debug-counters runtime not in the store; skipping");
+        return;
+    };
+    // `mk lo hi acc` pushes hi, hi-1, …, lo+1 onto acc → the list [lo+1 .. hi] (ascending after the reversal
+    // of a left fold is irrelevant to the key identity — both key and query use the SAME mk, so equal
+    // elements). KEY = concat(mk 0..20, mk 20..40) (RELAXED, n=40); QUERY = mk 0..40 (STRICT). Value 999.
+    let src = "(module m \
+                 (def (mk (: lo Int64) (: hi Int64) (: acc (List Int64))) \
+                    (if (< hi lo) acc (mk lo (- hi 1) (List.concat (list hi) acc)))) \
+                 (def (key) (List.concat (mk 1 20 (list)) (mk 21 40 (list)))) \
+                 (def (query) (mk 1 40 (list))) \
+                 (def (main) \
+                    (match (Map.lookup (Map.insert (Map.empty) (key) 999) (query)) \
+                      ((Some v) v) ((None) (- 0 1)))) \
+                 (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(999),
+        "a concat-built (relaxed RRB) list map key must be found by a push-built equal key at n=40 (was \
+         None → -1: champ_hash/champ_eq placed the two equal lists in different slots before value-canonicalize)"
+    );
+    let concat_live = rt.live_objects();
+    // BASELINE: the SAME program but the KEY is also built from-scratch (a canonical strict list, like the
+    // query) — the lookup still hits, and the map/key/value temporaries `main` leaves unreclaimed are the
+    // SAME shape (a `Map.lookup` over an owned-temporary map is a pre-existing not-reclaimed baseline,
+    // orthogonal to this fix — cf the rope-key test). Comparing concat-key vs push-key cancels that shared
+    // baseline, so it fails IFF the concat key's canonicalization LEAKS a cell the push key's does not.
+    let base_src = "(module m \
+                 (def (mk (: lo Int64) (: hi Int64) (: acc (List Int64))) \
+                    (if (< hi lo) acc (mk lo (- hi 1) (List.concat (list hi) acc)))) \
+                 (def (query) (mk 1 40 (list))) \
+                 (def (main) \
+                    (match (Map.lookup (Map.insert (Map.empty) (query) 999) (query)) \
+                      ((Some v) v) ((None) (- 0 1)))) \
+                 (export main))";
+    let base = compile_component(&crate::codec::encode(&parse(base_src))).expect("compile");
+    let mut rt_base = ComposedRuntime::new(&base, &runtime_bytes);
+    assert_eq!(
+        rt_base.call("main", &[]),
+        Val::S64(999),
+        "the push-built-key baseline also hits"
+    );
+    let base_live = rt_base.live_objects();
+    assert_eq!(
+        concat_live, base_live,
+        "list-key leak: the concat-key program leaves {concat_live} live cells vs the push-key baseline's \
+         {base_live} — value-canonicalize is borrow-and-return-fresh (insert consumes the fresh canonical \
+         key; lookup drops its fresh canonical query temp), so any difference is a canonicalize leak"
     );
 }
 
@@ -7322,6 +7469,48 @@ fn an_escaping_captured_continuation_is_refused_not_miscompiled() {
                    (k 5))) (export main))";
     compile_component(&crate::codec::encode(&parse(src)))
         .expect_err("an escaping captured continuation must be refused, not miscompiled");
+}
+
+/// The RE-PERFORMING escaping-`k` frontier (FACE-1 / step-3 increment B2): a `ctl`-style arm that lets `k`
+/// ESCAPE via an ORDINARY application — `(a () s k (use-k k))`, where `use-k` applies `(stored-k …)` in a
+/// SEPARATE activation — over a continuation `C` that ITSELF RE-PERFORMS the handled effect
+/// (`(+ (A.a) (A.a))`: after the leading `(A.a)` is the hole, `C = (+ □ (A.a))` re-performs `A.a`). This is
+/// DISTINCT from the pure-`C` escaping-k (corpus 14-effects "a ctl-style arm whose continuation ESCAPES …"
+/// → 11, which reifies `k` as a plain closure `(fn (#kv) C)` because `pure_hole` succeeds) and from the
+/// resume-based escaping capture in `an_escaping_captured_continuation_is_refused_not_miscompiled` (that one
+/// yields the resume as a lambda; this one applies `k` by name with a re-performing `C`). `pure_hole` fails
+/// on the SECOND perform, so the pure-one-hole reify never fires; and the two-hole refold is keyed on a
+/// `resume` node, which this arm has none of — so it falls through every fold block to a clean DECLINE.
+/// It CANNOT be a compile-time fold: `apply(k, v)` runs `C[v]` in a SEPARATE activation, so the re-performed
+/// `A.a` in `C` must RE-ENTER the handler at apply time (the runtime `Ty::Cont` heap rep, increment B2) —
+/// there is no static continuation to refold. Until B2 lands this MUST decline cleanly (never a wrong value,
+/// never a leaked internal `#eff`/`$s` state-param name); when B2 folds it, the value MUST be correct
+/// (`use-k` applies the reified `k` to 10: the first `(A.a)` returns 10 into `C = (+ □ (A.a))`, whose own
+/// `(A.a)` re-enters and returns 10 again → `(+ 10 10)` = 20). Regression pin for the B2 flip-target.
+#[test]
+fn a_re_performing_escaping_continuation_declines_cleanly_until_reentry_at_apply() {
+    use crate::testkit::parse;
+    let src = "(do (effect A (op a (-> Unit Int64))) \
+               (def (use-k (: stored-k (-> Int64 Int64))) (stored-k 10)) \
+               (def (main) (handle A 5 ((a () s k (use-k k))) (+ (A.a) (A.a)))) (export main))";
+    match compile_component(&crate::codec::encode(&parse(src))) {
+        // Not yet folded — the decline must be CLEAN (no leaked internal state-param name).
+        Err(e) => assert!(
+            !e.message.contains("#eff") && !e.message.contains("$s"),
+            "the re-performing escaping-k decline must not leak an internal state-param name, got: {}",
+            e.message
+        ),
+        // If a future increment (B2) folds it, the value MUST be correct — never a miscompile.
+        Ok(bytes) => {
+            if let Some(v) = run_linked(&bytes, "main") {
+                assert_eq!(
+                    v, "20",
+                    "if the re-performing escaping-k folds, apply(k,10) runs C=(+ □ (A.a)) whose own \
+                     (A.a) re-enters the handler → (+ 10 10) = 20, not a wrong value"
+                );
+            }
+        }
+    }
 }
 
 /// A handler arm that DESTRUCTURES its state (or its arg) with a `match` and resumes inside EACH branch —
@@ -38431,13 +38620,19 @@ mod match_engine {
 
     #[test]
     fn a_variant_tuple_payload_destructure_runs_at_runtime() {
-        // The runtime heap walk: `(classify n)` builds `(Both (tuple n (+ n 1)))` for n>0 else `Neither`,
-        // then destructures the tuple payload — `(Both (tuple a b))` → `(+ a b)` reads the payload tuple's
-        // two elements via `sum-payload` then `arr-get 0/1`. classify(4) = 4+5 = 9; classify(0) = -1.
+        // The runtime heap walk: `(mk n)` builds `(Both (tuple n (+ n 1)))` for n>0 else `Neither`, and
+        // `classify` destructures the tuple payload — `(Both (tuple a b))` → `(+ a b)` reads the payload
+        // tuple's two elements via `sum-payload` then `arr-get 0/1`. classify(4) = 4+5 = 9; classify(0) = -1.
+        // `mk`'s body is a `match` (not a bare `if` of ctors) so the sum is GENUINELY runtime — the
+        // match-into-if fusion does not see through a match-bodied call, so `(match (mk n) …)` keeps the
+        // runtime tuple-payload destructure (a bare-`if` `mk` would fuse it away to `(if … (+ n (+ n 1)) -1)`,
+        // dropping the runtime import this asserts). Semantics unchanged.
         let src = "(module m \
                      (type Pair (Both (Tuple Int64 Int64)) Neither) \
+                     (def (mk (: n Int64)) \
+                        (match (> n 0) (true (Pair.Both (tuple n (+ n 1)))) (false Pair.Neither))) \
                      (def (classify (: n Int64)) \
-                        (match (if (> n 0) (Pair.Both (tuple n (+ n 1))) Pair.Neither) \
+                        (match (mk n) \
                           ((Pair.Both (tuple a b)) (+ a b)) \
                           (Pair.Neither (- 0 1)))) \
                      (export classify))";
@@ -57992,14 +58187,18 @@ mod stage1 {
     #[test]
     fn a_generic_sum_matches_and_runs_at_a_concrete_instantiation() {
         // The G2 end-to-end: a GENERIC `Option` built + matched at a concrete payload, composed + run.
-        // `(pick n)` builds `(Option.Some n)` / `Option.None` (an `Option Int64` by inference) and
+        // `(mk n)` builds `(Option.Some n)` / `Option.None` (an `Option Int64` by inference) and `pick`
         // matches it — `(Some x) → x`, `None → -1`. So `pick 7` → 7 (reads the Int64 payload via
         // `sum-payload`), `pick 0` → -1. Exercises a generic sum's construction + disc dispatch + payload
-        // binding at a concrete instantiation, all through the ordinary machinery.
+        // binding at a concrete instantiation, all through the ordinary machinery. `mk`'s body is a `match`
+        // (not a bare `if` of ctors) so the sum is GENUINELY runtime — the match-into-if fusion does not see
+        // through a match-bodied call, so `(match (mk n) …)` keeps the runtime dispatch (a bare-`if` `mk`
+        // would fuse it away, dropping the runtime import this asserts). Semantics unchanged.
         use crate::testkit::parse;
         let src = "(module m (type Option (Some a) None) \
+                     (def (mk (: n Int64)) (match (> n 0) (true (Option.Some n)) (false Option.None))) \
                      (def (pick (: n Int64)) \
-                        (match (if (> n 0) (Option.Some n) Option.None) \
+                        (match (mk n) \
                           ((Option.Some x) x) (Option.None -1))) \
                      (export pick))";
         let bytes = compile_component(&crate::codec::encode(&parse(src)))
@@ -59117,14 +59316,18 @@ mod stage1 {
     #[test]
     fn a_runtime_sum_match_dispatches_on_the_discriminant() {
         // The RUNTIME sum match, composed + run: a function builds a sum from a runtime param, matches
-        // it, and returns a scalar. `(pick n)` builds `(Some n)` when n>0 else `None`, then matches:
+        // it, and returns a scalar. `(mk n)` builds `(Some n)` when n>0 else `None`, then `pick` matches:
         // `(Some x) → x`, `None → -1`. So `pick 5` → 5 (the `Some` arm reads the payload via
         // `sum-payload`), `pick 0` → -1 (the `None` arm). Exercises `sum-disc` dispatch + `sum-payload`
-        // binding end-to-end through the composed runtime.
+        // binding end-to-end through the composed runtime. `mk`'s body is a `match` (not a bare `if` of
+        // ctors) so the sum is GENUINELY runtime — the match-into-if fusion does not see through a
+        // match-bodied call, so `(match (mk n) …)` stays a runtime dispatch (a bare-`if` `mk` would fuse it
+        // away to `(if … n -1)`, dropping the runtime import this asserts). Semantics unchanged.
         use crate::testkit::parse;
         let src = "(module m (type Option (Some Int64) None) \
+                     (def (mk (: n Int64)) (match (> n 0) (true (Option.Some n)) (false Option.None))) \
                      (def (pick (: n Int64)) \
-                        (match (if (> n 0) (Option.Some n) Option.None) \
+                        (match (mk n) \
                           ((Option.Some x) x) (Option.None -1))) \
                      (export pick))";
         let bytes =
@@ -59172,8 +59375,13 @@ mod stage1 {
             "an all-nullary enum is a bare i32 — no value-heap runtime import (no dead sum-new/sum-disc)"
         );
         // A boxed sum in the SAME shape (Option) STILL imports the runtime — the elision is enum-only.
+        // `mk`'s body is a `match` (not a bare `if` of ctors) so the sum is a GENUINE runtime value: the
+        // match-into-if fusion (which pushes a match through an `if` of visible ctors and eliminates the sum)
+        // does NOT see through a match-bodied call, so `(get (mk n))` keeps building the boxed Option on the
+        // heap — the runtime import this asserts. (A bare-`if` `mk` would fold the sum away and drop the
+        // import, defeating the test's premise.) Semantics unchanged: n<0 → None, else Some n.
         let boxed = "(module m \
-                       (def (mk (: n Int64)) (if (< n 0) (None) (Some n))) \
+                       (def (mk (: n Int64)) (match (< n 0) (true (None)) (false (Some n)))) \
                        (def (get (: o (Option Int64))) (match o ((Some x) x) ((None) 0))) \
                        (def (main (: n Int64)) (get (mk n))) \
                        (export main))";
@@ -59348,9 +59556,14 @@ mod stage1 {
         // match still dispatches correctly across the present/absent variants (composed run). `Some`
         // first so its disc-0 probe is the eqz.
         use crate::testkit::parse;
+        // `mk`'s body is a `match` (not a bare `if` of ctors) so the Option is a GENUINE runtime sum and the
+        // disc probe actually emits — the match-into-if fusion does not see through a match-bodied call, so
+        // it does NOT fold the sum away (a bare-`if` `mk` would let `(match (mk n) …)` fuse to `(if … n -1)`,
+        // eliminating the sum + its disc-0 eqz probe, defeating this test). Semantics unchanged: n>0 → Some n.
         let src = "(module m (type Option (Some Int64) None) \
+                     (def (mk (: n Int64)) (match (> n 0) (true (Option.Some n)) (false Option.None))) \
                      (def (pick (: n Int64)) \
-                        (match (if (> n 0) (Option.Some n) Option.None) \
+                        (match (mk n) \
                           ((Option.Some x) x) (Option.None -1))) \
                      (export pick))";
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");

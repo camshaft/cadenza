@@ -411,6 +411,21 @@ interface heap {
   //    constant). Consistent with `value-eq`: `value-cmp == 0` iff `value-eq == true`. APPENDED last
   //    (frozen-contract rule). See `value_cmp_shaped`.
   value-cmp: func(a: u32, b: u32, desc: u32) -> s32;   // 86 — blessed three-way order (-1/0/1, 2=unordered; borrows a+b)
+
+  //  value-canonicalize(a, desc) -> handle
+  //    The blessed CANONICAL form of a runtime value of the type `desc` describes: a fresh OWNED value that
+  //    is byte-identical for any two values EQUAL as values, regardless of how each was constructed. Emitted
+  //    at a Map/Set KEY site for a list-typed (or list-containing) key: a List is an RRB vector that is
+  //    element-canonical but NOT shape-canonical (a concat-built and a push-built list with the same
+  //    elements have different internal trees), so the tagless `champ_hash`/`champ_eq` byte-walk would place
+  //    construction-equal list keys in DIFFERENT slots — a false-miss violating `collections-and-text.md`
+  //    #162 (a key's identity is construction-independent). This rebuilds every list to its unique strict
+  //    left-full shape (recursing through list-containing compounds), so the byte-walk becomes exact.
+  //    Ownership: BORROWS `a` (the caller retains/releases it) and `desc` (a constant); returns a FRESH
+  //    owned handle the caller drops after a borrowing key op, exactly like a `bytes-compact`ed rope key. A
+  //    malformed descriptor declines to an identity dup of `a` (never a trap, never a leak) — total.
+  //    APPENDED last (frozen-contract rule). See `value_canonicalize_shaped`.
+  value-canonicalize: func(a: u32, desc: u32) -> u32;  // 87 — canonical form for a KEY (borrows a; fresh owned result)
 }
 
 world runtime {

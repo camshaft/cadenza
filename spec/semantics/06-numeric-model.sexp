@@ -766,6 +766,33 @@
   (call   main (: 2 Int64) (: 5 Int64))
   (output (: 1 Int64)))
 
+(case "a runtime BigInt three-way compare agrees with the boolean ordering"
+  (doc    "`(compare (BigInt.of a) (BigInt.of b))` over runtime BigInts yields the Ordering variant matching
+           the boolean `<` above: a=2,b=5 → `Less` → 1. core-semantics.md #A Total Order Is Observed Through
+           A Three-Way Comparison (the boolean ordering operators MUST agree with the three-way comparison):
+           the runtime BigInt `compare` desugars to the nested-if over the SAME runtime `bigint-cmp` op the
+           boolean `<` emits — no new runtime op, both backends agree. The three-way twin of the runtime
+           BigInt `<` case above.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (match (compare (BigInt.of a) (BigInt.of b))
+                ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+            (export main)))
+  (call   main (: 2 Int64) (: 5 Int64))
+  (output (: 1 Int64)))
+
+(case "a runtime BigInt three-way compare reports equality as Equal"
+  (doc    "`(compare (BigInt.of a) (BigInt.of b))` with a=b=5 → `Equal` → 2: the runtime `bigint-cmp` reports
+           the middle variant, exactly as the constant-fold compare does, and consistent with `(< 5 5)` being
+           false. The Equal-arm companion of the runtime BigInt three-way case.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (match (compare (BigInt.of a) (BigInt.of b))
+                ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+            (export main)))
+  (call   main (: 5 Int64) (: 5 Int64))
+  (output (: 2 Int64)))
+
 (case "a runtime BigInt comparison sees an intermediate that overflows Int64"
   (doc    "`(> (* big big) big)` with `big = BigInt.of 5000000000`: the product 2.5e19 OVERFLOWS Int64 but
            is a valid BigInt, and `bigint-cmp` orders it against `big` by the TRUE unbounded value → the
@@ -4072,6 +4099,33 @@
             (export main)))
   (call   main (: 2 Int64))
   (output (: 0 Int64)))
+
+(case "a runtime Rational three-way compare agrees with the boolean ordering"
+  (doc    "`(compare (Rational.of a 3) (Rational.of 1 2))` over a runtime-built Rational yields the Ordering
+           variant matching the boolean `<` above: a=1 → 1/3 vs 1/2 → `Less` → 1. core-semantics.md #A Total
+           Order Is Observed Through A Three-Way Comparison (the boolean ordering operators MUST agree with the
+           three-way comparison): the runtime Rational `compare` desugars to the nested-if over the SAME runtime
+           `rational-cmp` op the boolean `<` emits — no new runtime op, both backends agree. The three-way twin
+           of the runtime Rational `<` case above; a=2 (2/3 vs 1/2 → Greater → 3) pins the other direction.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (compare (Rational.of a 3) (Rational.of 1 2))
+                ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64)))
+
+(case "a runtime Rational three-way compare reports the greater operand as Greater"
+  (doc    "The Greater-direction companion: `(compare (Rational.of a 3) (Rational.of 1 2))` with a=2 → 2/3 vs
+           1/2 → `Greater` → 3 (2/3 > 1/2), consistent with `(< 2/3 1/2)` being false. Pins that the runtime
+           Rational three-way reaches the Greater arm, not only Less.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (compare (Rational.of a 3) (Rational.of 1 2))
+                ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 3 Int64)))
 
 (case "runtime Rational arithmetic adds two parameter-built fractions exactly"
   (doc    "`(< (+ (Rational.of a b) (Rational.of 1 2)) (Rational.of 1 1))` with a=1,b=3: the sum

@@ -3596,6 +3596,114 @@ fn is_empty_sum_ty(db: &mut Db, ty: &crate::ty::Ty) -> bool {
     false
 }
 
+/// MATCH-INTO-IF: `(match (if c A B) arms)` where BOTH branches `A`/`B` reduce to a compile-time-visible
+/// COMPOUND (a `Core::SumNew` constructor or a `Core::Tuple`) → `(if c (match A arms) (match B arms))`,
+/// pushing the match into each branch so each inner match FOLDS against its now-constant scrutinee (the
+/// existing direct-scrutinee `SumNew`/`Tuple` collapse in `lower_match_sum`/`build_tree`). The match
+/// analogue of the `PROJECTION-INTO-IF` / `MEMBER-INTO-IF` folds (a tuple/record built through an `if`,
+/// projected/read back, never reaches the heap): a SUM (or tuple) built through an `if` and immediately
+/// deconstructed by a `match` builds and tears down a THROWAWAY heap value PER branch (`arr-alloc` + box
+/// each payload + the deconstruct's `arr-get`/unbox), purely to read the payload back out. Pushing the
+/// match in lets each branch's constant constructor fold to the arm body directly — `(match (if c (Some x)
+/// (None)) ((Some v) v) ((None) 0))` → `(if c x 0)`, zero heap.
+///
+/// SOUND unconditionally (the fold is a PROFITABILITY gate, not a correctness one): `(if c A B)` evaluates
+/// `c` then the SELECTED branch to a value then matches it; `(if c (match A arms) (match B arms))` evaluates
+/// `c` then the selected inner match, which evaluates that SAME branch then matches — identical value, same
+/// only-the-selected-branch evaluation, and `c`'s trap is preserved either way (it is evaluated first in
+/// both). The `arms` appear in BOTH branches, so each branch gets its OWN deep COPY (`clone_subtree_db` — a
+/// single node cannot have two parents; `push_list` reparents), each re-resolved so its payload binders
+/// re-bind against THAT branch's scrutinee (a reused arm's `SumPayload` still points at the OLD `if`
+/// scrutinee). `reduce_to_if` stops at a kept multi-use `if`-binding, so a shared scrutinee is left as a
+/// runtime match. Returns `None` (fall through to the ordinary match lowering) when the scrutinee is not
+/// such an `if`, or a branch does not reduce to a visible compound (then the rewrite would not fold — just
+/// duplicate the match and grow code).
+fn fuse_match_into_if(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    let (cond, then_, else_) = crate::eval::reduce_to_if(db, scrutinee)?;
+    // PROFITABILITY: fire only when each branch reduces to a compile-time-visible compound the inner match
+    // FOLDS (a `Core::SumNew` ctor or a `Core::Tuple`). Otherwise the pushed-in matches stay runtime — the
+    // rewrite would just duplicate the match over two branches, growing code for no fold. (A poison branch
+    // falls through here too — the ordinary path reports it once.)
+    let branch_folds = |db: &mut Db, b: StructId| {
+        matches!(
+            core_of(db, b),
+            crate::core::Core::SumNew { .. } | crate::core::Core::Tuple { .. }
+        )
+    };
+    if !branch_folds(db, then_) || !branch_folds(db, else_) {
+        return None;
+    }
+    // The ORIGINAL match form (scrutinee's parent) — the rewritten `if` grafts UNDER it so a free name
+    // inside a cloned arm body (an enclosing param/`let`) ascends through it to the enclosing scope.
+    let orig_match = db.parent_of(scrutinee);
+    // Build `(match <branch> <cloned-arms>)` for one branch: each arm is a fresh DEEP copy (the arms appear
+    // in both branches, and a reused arm's binders resolve to the OLD if-scrutinee). The branch occurrence
+    // itself is REUSED (it appears once, in its own branch) — its `core_of` already folds to the visible
+    // ctor, and the following `forget`+`resolve` re-resolves it in place under the new match.
+    let build_branch_match = |db: &mut Db, branch: StructId| -> StructId {
+        let match_head = db.push_name("match");
+        let mut items = vec![match_head, branch];
+        for &(pat, body) in arms {
+            let pat_c = clone_subtree_db(db, pat);
+            let body_c = clone_subtree_db(db, body);
+            items.push(db.push_list(vec![pat_c, body_c]));
+        }
+        db.push_list(items)
+    };
+    let then_match = build_branch_match(db, then_);
+    let else_match = build_branch_match(db, else_);
+    let if_head = db.push_name("if");
+    let rewritten = db.push_list(vec![if_head, cond, then_match, else_match]);
+    // GRAFT the rewritten `if` UNDER the ORIGINAL match node (its parent POINTER = the original match, at the
+    // scrutinee's former child slot) — the same discipline the `handle`-reduce fold (E1c) uses. Ascent from a
+    // free name in a cloned arm body then climbs `rewritten` → original-match → the enclosing binder (`def`/
+    // `fn`/`let`), which recognizes the original match as the child it recorded (its `body_occ`) — so the
+    // enclosing param resolves. Reparenting to the match's PARENT instead would present `rewritten` as the
+    // body child, which the `def`/`fn` body-identity check (Case 4/3, identity-only — unlike `let` Case 1) would
+    // reject → the CDZ0101 an enclosing-param arm reference hit.
+    if let Some(orig) = orig_match {
+        db.reparent(rewritten, Some(orig), db.child_ix_of(scrutinee) as u32);
+    }
+    // Lower each inner match via `core_of`, which resolves LAZILY on demand — like the `PROJECTION-INTO-IF`
+    // mirror fold, which builds a `Core::If` over reused occurrences and NEVER calls `resolve_subtree`.
+    // Crucially we do NOT re-resolve the tree: the REUSED `cond`/`then_`/`else_` occurrences come from
+    // `reduce_to_if`, which may β-reduce a CALL scrutinee (`(bump n)` → `(if … (N.I n) …)`) — their free names
+    // were bound by that β-SUBSTITUTION, not lexically, and are already resolve-PINNED, so an eager re-resolve
+    // would re-derive them lexically and report the substituted name unbound (CDZ0101). The FRESH synthesized
+    // nodes (the inner matches + their CLONED arms) are unmemoized, so `core_of`→`resolved_of` resolves each
+    // on demand; each cloned arm's payload binder resolves against THAT branch's constant scrutinee.
+    let then_core = core_of(db, then_match);
+    let else_core = core_of(db, else_match);
+    // COMMIT the fusion ONLY when BOTH inner matches FULLY FOLD to a non-match Core — i.e. the constant
+    // scrutinee statically selected an arm and the sum was truly ELIMINATED. That is at once the
+    // PROFITABILITY condition (a branch that stays a residual `Core::Match*` still builds + tears down the
+    // sum on the heap — no win, just a duplicated match) AND the SAFETY condition: the constant-scrutinee
+    // decision path (`fold_sum_path`) has coverage GAPS the runtime decision-tree does not — a deeply-NESTED
+    // constant pattern with a DEAD arm of unconstrained payload type (`(Some (Ok (C.R n)))` + a dead `Err e`)
+    // folds to the live body but leaves a residual switch whose dead sub-path declines at EMIT ("dispatches
+    // on a non-sum sub-value") — a decline the original runtime match never hits. A residual match (or a
+    // poison) → BACK OUT (`None`) and let the caller lower the ORIGINAL runtime match unchanged.
+    let fully_folded = |c: &Core| {
+        !matches!(
+            c,
+            crate::core::Core::Poison(_)
+                | crate::core::Core::MatchSum { .. }
+                | crate::core::Core::MatchList { .. }
+                | crate::core::Core::Match { .. }
+        )
+    };
+    if !fully_folded(&then_core) || !fully_folded(&else_core) {
+        trace!(target: "rcdzc::fold", scrutinee = scrutinee.0, "match-into-if fusion backed out (a branch did not fully fold); keeping the runtime match");
+        return None;
+    }
+    trace!(target: "rcdzc::fold", scrutinee = scrutinee.0, "match pushed into an if of constant constructors (no heap build)");
+    Some(core_of(db, rewritten))
+}
+
 fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     // A ZERO-ARM match is the DEGENERATE base case of exhaustiveness: it is well-formed ONLY when the
     // scrutinee is UNINHABITED (`Never` — a diverging expression), for which no arm is needed to cover
@@ -3667,6 +3775,14 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
              (a literal, a tuple, or a constructor), and a function has none; call it, or match on \
              the value it returns",
         ));
+    }
+    // MATCH-INTO-IF: `(match (if c A B) arms)` where both branches build a compile-time-visible compound →
+    // `(if c (match A arms) (match B arms))`, so each inner match folds against its now-constant scrutinee
+    // (the sum/tuple built through the `if` never reaches the heap). Tried BEFORE the compound-dispatch
+    // below — the fused form fully replaces this match. A non-`if`/non-const-branch scrutinee returns `None`
+    // and falls through unchanged.
+    if let Some(fused) = fuse_match_into_if(db, scrutinee, arms) {
+        return fused;
     }
     // A COMPOUND scrutinee — a SUM, a TUPLE, or a RECORD — is matched by the DECISION TREE, not the
     // scalar-probe path. A sum dispatches on the discriminant; a tuple has no discriminant, so its match
@@ -4376,6 +4492,28 @@ fn clone_literal_atom(db: &mut Db, e: StructId) -> StructId {
             db.push_atom(leaf)
         }
         _ => e,
+    }
+}
+
+/// A FRESH DEEP COPY of the subtree rooted at `id` — every List node re-pushed with copied children, every
+/// NAME atom re-pushed (a fresh binder/reference the re-resolve re-binds against its NEW position), and every
+/// CONSTANT-leaf atom SHARED (a literal resolves to its own value regardless of scope, so sharing it is
+/// sound — the same rule `sums::copy_subtree` uses). Unlike the module-local `Arenas::copy_subtree` copies
+/// (accum/effects/sums/param_sidecar), this goes through `Db::push_*` so the copy's parent/`child_ix` index
+/// is recorded — required before a following `resolve_subtree`, whose scope ascent reads `parent_of`. Used
+/// by the MATCH-INTO-IF fusion to give each `if` branch its OWN copy of the arms (a single node cannot have
+/// two parents — `push_list` reparents — so the two branches cannot share one arm set).
+fn clone_subtree_db(db: &mut Db, id: StructId) -> StructId {
+    match db.ast.get(id).clone() {
+        crate::ast::Struct::Atom(lid) => match db.ast.leaf(lid).clone() {
+            crate::ast::Leaf::Name(n) => db.push_name(&n),
+            // A constant leaf resolves to its own value regardless of scope — share it.
+            _ => id,
+        },
+        crate::ast::Struct::List(children) => {
+            let copied: Vec<StructId> = children.iter().map(|&c| clone_subtree_db(db, c)).collect();
+            db.push_list(copied)
+        }
     }
 }
 
@@ -17215,35 +17353,67 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
             // double-evaluate it (the same materialize-once discipline the runtime bin-match scrutinee uses).
             //= spec/capabilities/core-semantics.md#a-total-order-is-observed-through-a-three-way-comparison
             //# The boolean ordering operators MUST agree with the three-way comparison.
-            // Float is NOT `is_scalar` (Int/Bool only) — a runtime float `compare` (a NaN operand is
-            // unordered) and a compound operand (the descriptor-guided `value-cmp` heap walk, a later slice)
-            // still decline here.
-            if is_scalar(db, lhs) && is_scalar(db, rhs) {
-                lower_scalar_compare(db, id, lhs, rhs, lt, eq, gt)
+            // Float is NOT covered — a runtime float `compare` (a NaN operand is unordered) and a general
+            // compound operand (the descriptor-guided `value-cmp` heap walk, a later slice pending the
+            // `value-cmp` emit) still decline here. Every OTHER machine-orderable runtime type — Int/Bool
+            // (`Core::Compare`), String/Symbol (`Core::StrCmp`), BigInt (`Core::BigIntCmp`), Rational
+            // (`Core::RationalCmp`) — already realizes its total order as a boolean ordering op the `<`/`>`
+            // operators emit, so it takes the same nested-if desugaring over that op.
+            let operands = [lhs, rhs];
+            let kind = if is_scalar(db, lhs) && is_scalar(db, rhs) {
+                Some(CmpKind::Scalar)
+            } else if operand_is_string_or_symbol(db, lhs) && operand_is_string_or_symbol(db, rhs) {
+                Some(CmpKind::Str)
+            } else if bigint_operand(db, &operands) {
+                // A `BigInt`/fixed mix is rejected CDZ0301 before lowering, so a BigInt operand proves both
+                // are BigInt — the same invariant `lower_comparison`'s `bigint_operand` dispatch relies on.
+                Some(CmpKind::BigInt)
+            } else if rational_operand(db, &operands) {
+                Some(CmpKind::Rational)
             } else {
-                Core::Poison(Reject::decline(
+                None
+            };
+            match kind {
+                Some(kind) => lower_runtime_compare(db, id, lhs, rhs, (lt, eq, gt), kind),
+                None => Core::Poison(Reject::decline(
                     "compare of a runtime/compound operand (or a NaN pair) is not yet computed (constant scalars only)",
-                ))
+                )),
             }
         }
     }
 }
 
-/// Build the runtime three-way `(compare a b)` over two RUNTIME SCALAR operands (Int/Bool) as the nested-`if`
-/// `if (a < b) Less else if (a > b) Greater else Equal`, yielding the built-in `Ordering` sum (its
-/// Less/Equal/Greater discs `lt`/`eq`/`gt`). Reuses the existing scalar boolean `Core::Compare` machine op —
-/// no new runtime op. Each operand is read twice (the `<` and the `>`), so BOTH are materialized ONCE into a
-/// self-keyed `Core::Let` binding read through a shared `Core::LocalRef` — an operand may trap or perform, so
-/// re-emitting its computation would double-evaluate it (the runtime-bin-match materialize-once precedent).
-fn lower_scalar_compare(
+/// The machine ORDERING op a runtime `compare` desugars its two boolean sub-comparisons to — one per
+/// machine-orderable type family: a scalar `Core::Compare` (Int/Bool), a String/Symbol `Core::StrCmp` (the
+/// content-lexicographic byte walk), a BigInt `Core::BigIntCmp`, or a Rational `Core::RationalCmp`. Each is
+/// the SAME op the boolean `<`/`>` operators emit for that type, so the three-way `compare` built over it
+/// agrees with those operators (§331) on both backends.
+#[derive(Clone, Copy)]
+enum CmpKind {
+    Scalar,
+    Str,
+    BigInt,
+    Rational,
+}
+
+/// Build the runtime three-way `(compare a b)` over two RUNTIME operands of a machine-orderable type as the
+/// nested-`if` `if (a < b) Less else if (a > b) Greater else Equal`, yielding the built-in `Ordering` sum (its
+/// Less/Equal/Greater discs `lt`/`eq`/`gt`). Reuses the EXISTING boolean ordering op for the operands' kind
+/// (`Core::Compare` for a scalar, `Core::StrCmp` for a String/Symbol, `Core::BigIntCmp` for a BigInt,
+/// `Core::RationalCmp` for a Rational) — no new runtime op, and the same op the boolean `<`/`>` operators
+/// emit, so the two surfaces cannot diverge (§331). Each operand is read twice (the `<` and the `>`), so BOTH
+/// are materialized ONCE into a self-keyed `Core::Let` binding read through a shared `Core::LocalRef` — an
+/// operand may trap or perform, so re-emitting its computation would double-evaluate it (the runtime-bin-match
+/// materialize-once precedent).
+fn lower_runtime_compare(
     db: &mut Db,
     id: StructId,
     lhs: StructId,
     rhs: StructId,
-    lt: u32,
-    eq: u32,
-    gt: u32,
+    discs: (u32, u32, u32),
+    kind: CmpKind,
 ) -> Core {
+    let (lt, eq, gt) = discs;
     let ordering_ty = crate::infer::type_of(db, id);
     let lhs_ty = crate::infer::type_of(db, lhs);
     let rhs_ty = crate::infer::type_of(db, rhs);
@@ -17253,26 +17423,21 @@ fn lower_scalar_compare(
     db.kept_bindings.insert(rhs);
     let lhs_ref = synth_core(db, Core::LocalRef { binder: lhs }, lhs_ty);
     let rhs_ref = synth_core(db, Core::LocalRef { binder: rhs }, rhs_ty);
-    // `a < b` and `a > b` — the existing scalar boolean machine comparisons (the emit widths them from the
-    // operands' solved scalar type, the same path the `<`/`>` operators lower to).
-    let lt_cmp = synth_core(
-        db,
-        Core::Compare {
-            op: Prim::Lt,
-            lhs: lhs_ref,
-            rhs: rhs_ref,
-        },
-        crate::ty::Ty::Bool,
-    );
-    let gt_cmp = synth_core(
-        db,
-        Core::Compare {
-            op: Prim::Gt,
-            lhs: lhs_ref,
-            rhs: rhs_ref,
-        },
-        crate::ty::Ty::Bool,
-    );
+    // `a < b` and `a > b` — the existing boolean machine comparison for the operands' kind (a scalar
+    // `Core::Compare` the emit widths from the solved scalar type; a `Core::StrCmp` content-lex byte walk;
+    // a `Core::BigIntCmp`/`Core::RationalCmp` runtime three-way then compare-with-zero), the same path the
+    // `<`/`>` operators lower to for that type.
+    let mk_cmp = |db: &mut Db, op: Prim, l: StructId, r: StructId| {
+        let core = match kind {
+            CmpKind::Scalar => Core::Compare { op, lhs: l, rhs: r },
+            CmpKind::Str => Core::StrCmp { op, lhs: l, rhs: r },
+            CmpKind::BigInt => Core::BigIntCmp { op, lhs: l, rhs: r },
+            CmpKind::Rational => Core::RationalCmp { op, lhs: l, rhs: r },
+        };
+        synth_core(db, core, crate::ty::Ty::Bool)
+    };
+    let lt_cmp = mk_cmp(db, Prim::Lt, lhs_ref, rhs_ref);
+    let gt_cmp = mk_cmp(db, Prim::Gt, lhs_ref, rhs_ref);
     // The three nullary Ordering variants (`Less`/`Greater`/`Equal`), built at this node's solved Ordering
     // type — the same `Core::SumNew { disc, payloads: [] }` a constant `compare` fold produces.
     let less = synth_core(
@@ -17302,7 +17467,7 @@ fn lower_scalar_compare(
     // `if (a > b) Greater else Equal`, then `if (a < b) Less else <that>`.
     let inner = synth_if(db, gt_cmp, greater, equal);
     let outer = synth_if(db, lt_cmp, less, inner);
-    trace!(target: "rcdzc::lower", node = id.0, "compare of runtime scalars → nested-if over scalar Compare (three-way, materialize-once)");
+    trace!(target: "rcdzc::lower", node = id.0, "compare of runtime operands → nested-if over the boolean ordering op (three-way, materialize-once)");
     Core::Let {
         bindings: vec![(lhs, lhs), (rhs, rhs)],
         body: outer,

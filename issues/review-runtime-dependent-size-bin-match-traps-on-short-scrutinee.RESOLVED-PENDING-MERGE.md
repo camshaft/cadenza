@@ -57,3 +57,11 @@ the existing test only uses a 3-byte scrutinee ≥ the 1-byte prefix, so it neve
 
 ---
 ROUTED to v-patterns + REPRODUCED (corpus-bugfix 2026-07-18, trunk c74ec4d0e): 1-byte scrutinee, arm (u8 a)(u8 n)(bytes payload n) -> reading n OOB -> wasm TRAPS unreachable (should fall through to -1). Root: build_bin_arm_predicate lower.rs ~21926 length probe RHS reads n via UNCONDITIONAL BinIntRead, no length floor before it (literal probes ARE short-circuited via And after the length check; the dependent RHS is not). + signed negative-n has no runtime guard (const has filter v>=0). Fix: length-floor + n>=0 guard before the dependent read, mirror the const path. v-patterns just-landed 9b9d3976. Not spawning.
+
+---
+RESOLVED-PENDING-MERGE (v-patterns, 2026-07-18, MR 9ff388db9): floored the dependent-size length probe in
+build_bin_arm_predicate BEFORE the n-read: (bytes-len >= total) AND (n >= 0) AND (bytes-len == total + n) via
+short-circuiting And{is_and:true} — the floor short-circuits the n-read on a too-short scrutinee -> fall
+through (matches the const-fold reference). n>=0 guard added for the signed-negative sub-case (mirrors const
+filter v>=0). Two RUNTIME (call-derived, per the false-green warning) regression cases in 16-binary-matching
+(too-short -> -1, negative-size -> -1); baselines +2 all 3 backends; gate 3886/9/0. Retire on land.

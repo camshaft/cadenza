@@ -179,12 +179,28 @@
   (host-responses (respond Param.width (: 42 Int64)))
   (output (: 42 Int64)))
 
-; PLACEMENT: a `@!param` is a v1 TOP-LEVEL module directive (like `@!default-fraction`). A nested `@!param`
-; (inside a `do`-block value position) SHOULD be a placement error — but the pragma-placement guard for
-; `param` specifically is a v-syntax follow-up (a nested `(pragma param …)` is currently tolerated as an
-; inert directive rather than rejected). Tracked as a v-syntax coordination item; not pinned here until that
-; guard lands. (The OLD `@param`-annotation placement reject — CDZ0201 on a misplaced `(@ …)` — no longer
-; applies now that `@!param` is a pragma, not a following-form annotation.)
+; PLACEMENT: a `@!param` is a TOP-LEVEL module directive (like `@!default-fraction`) — it parameterizes the
+; whole MODULE, so it is well-placed ONLY as a direct top-level member of the program root. A nested
+; `(pragma param …)` (inside a def body / a `(do …)` value position) is MISPLACED: v-syntax confirmed the
+; parser does no placement enforcement (it parses a pragma identically at any depth), so the judgment is a
+; compile-time semantic one owned by rcdzc's pragma pass (the same pass that owns the `param` registry arm).
+; The guard reports it as CDZ0602 (a misplaced module directive) — the PRIMARY fault — and the sidecar scans
+; (generate + manifest) skip a nested pragma so it declares no accessor and surfaces no widget. (The OLD
+; `@param`-annotation placement reject — CDZ0201 on a misplaced `(@ …)` — no longer applies now that
+; `@!param` is a pragma, not a following-form annotation.)
+(case "a nested @!param is a misplaced module directive (CDZ0602), not a module parameter"
+  (doc    "`@!param` is a MODULE directive — well-placed only as a direct top-level member of the program
+           root. A `(pragma param …)` nested inside a definition's body (a `do`-block value position) is
+           misplaced: it is not a module directive there. rcdzc's pragma pass reports the placement as
+           CDZ0602 (the primary fault), rather than letting the nested pragma's config names raise only a
+           confusing CDZ0101 unbound cascade; and the sidecar scans (generate + manifest) skip it so a buried
+           pragma declares no accessor / surfaces no widget. Pins the placement guard v-syntax routed to this
+           crate (the parser parses a pragma identically at any depth; placement is a compile-time judgment).")
+  (input  (do
+            (def (helper) (do (pragma param (param (: widget slider)) (: width Int64)) 5))
+            (def (main) 0)
+            (export main)))
+  (error  CDZ0602))
 (case "a @param accessor splices into a quasiquote and the eval computes with the host value"
   (doc    "Composition of the @param sidecar with quasiquote metaprogramming: the generated `Param.width`
            accessor is unquoted into a template `(+ ,(Param.width) 1)`, reified to an AST, and `eval`

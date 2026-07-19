@@ -5181,6 +5181,35 @@ impl Guest for Component {
             None => 2, // a non-orderable shape (float/bytes/set/map leaf) — unordered sentinel
         }
     }
+    // Value CANONICALIZE (index 87) — the blessed canonical form of a runtime value of the type `desc`
+    // describes: a fresh OWNED value byte-identical for any two values EQUAL as values, whatever their
+    // construction. Emitted at a Map/Set KEY site for a list-typed (or list-containing) key so the tagless
+    // CHAMP byte-walk (`champ_hash`/`champ_eq`) places construction-equal list keys in the SAME slot
+    // (collections-and-text.md §162 — a key's identity is construction-independent). BORROWS `a` (the
+    // caller retains/releases it) and `desc` (a constant); returns a fresh owned handle the caller drops
+    // after a borrowing key op, exactly like a `bytes-compact`ed rope key. On a malformed descriptor the
+    // canonicalize declines and we return a DUP of the input (identity — degrades to the pre-fix byte-walk,
+    // never a trap, never a leak): the op is total.
+    fn value_canonicalize(a: u32, desc: u32) -> u32 {
+        let a_h = Handle::from_u32(a);
+        let desc_h = Handle::from_u32(desc);
+        let n = op_bytes_len(desc_h);
+        let mut bytes = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            bytes.push(op_bytes_get(desc_h, i) as u8);
+        }
+        let out = match decode_descriptor(&bytes) {
+            Some(descriptor) => value_canonicalize_shaped(&descriptor, a_h, descriptor.root),
+            None => None,
+        };
+        match out {
+            Some(h) => h.to_u32(),
+            None => {
+                op_dup(a_h); // decline → fresh owned identity (never trap/leak)
+                a_h.to_u32()
+            }
+        }
+    }
     // `set-to-list(s, desc)` (index 83) — a SET's elements as a `List a` in canonical element-value order,
     // and `map-to-list(m, desc)` (index 84) — a MAP's entries as a `List (Tuple k v)` in canonical KEY
     // order. Both BORROW their collection + the compiler-baked shape `desc` (a Bytes handle read the same
@@ -5875,6 +5904,214 @@ fn value_cmp_shaped(
         }
     }
     Some(Ordering::Equal)
+}
+
+/// A task for the iterative post-order rebuild in `value_canonicalize_shaped`. `Visit` expands a node
+/// (pushing a matching `Build*` then its children); each `Build*` pops its now-canonical children off the
+/// results stack and assembles the canonical parent. A single explicit stack → no native recursion over
+/// deep data (wasm-safe, like `champ_key_cmp`/`encode_value`).
+enum CanonTask {
+    Visit { h: Handle, shape_ix: u32, refs: u32 },
+    /// Pop `n` canonical elements (in child order) → a fresh `arr`, then `op_vec_of_arr` → the canonical
+    /// STRICT left-full RRB vec (the unique push-shape). This is what makes a concat-built list key
+    /// byte-identical to a push-built one.
+    BuildList { n: usize },
+    /// Pop `n` canonical elements → a fresh `arr` (the runtime rep of a tuple/record/spread).
+    BuildArr { n: usize },
+    /// Pop ONE canonical payload → `op_sum_new(disc, payload)`.
+    BuildSum { disc: u32 },
+}
+
+/// Build a fresh `arr` from the LAST `n` handles on `results` (in child order), which are MOVED in (each
+/// is a fresh owned canonical child — no dup, no drop). Returns the arr (owned). `n == 0` → the inline unit.
+fn canon_build_arr(results: &mut Vec<Handle>, n: usize) -> Handle {
+    let start = results.len() - n;
+    let arr = op_arr_alloc(n as u32);
+    for (i, h) in results.drain(start..).enumerate() {
+        op_arr_set(arr, i as u32, h);
+    }
+    arr
+}
+
+/// Drop every partially-built canonical handle on `results` and return `None` — the cleanup path when a
+/// malformed descriptor / arity mismatch aborts the walk, so a decline never LEAKS the work done so far.
+fn canon_decline(results: &mut Vec<Handle>) -> Option<Handle> {
+    for h in results.drain(..) {
+        op_drop(h);
+    }
+    None
+}
+
+/// Produce the BLESSED CANONICAL form of a heap value `a` of the type described by `desc`/`root_shape`: a
+/// fresh OWNED value, byte-identical for any two values that are EQUAL as values regardless of how each was
+/// constructed. The load-bearing case is a **List** (RRB vector): a concat-built and a push-built list with
+/// the same elements have DIFFERENT internal shapes (relaxed interior nodes vs a strict trie), so the
+/// tagless `champ_hash`/`champ_eq` byte-walk places them in different CHAMP slots — a Map/Set with such a
+/// list KEY false-MISSES (collections-and-text.md §162: a key's identity is construction-INDEPENDENT). This
+/// rebuilds every list to its unique strict left-full shape (via `op_vec_of_arr`), recursing through any
+/// list-CONTAINING compound (a `(tuple (list…) Int)` key), so the byte-walk becomes exact.
+///
+/// BORROWS `a` (returns a fresh owned tree; the caller/key-site releases `a` and later drops the returned
+/// temporary — the model `value-encode` uses). Scalar leaves (Int/BigInt/Rational/Bool/Unit/Float/Float32)
+/// are canonical by construction → dup as-is. Str/Bytes → `bytes_flatten` (a rope's canonical flat leaf,
+/// shared). Set/Map → dup as-is: a CHAMP is canonical at its OWN level; a Set-of-lists / Map-with-list-
+/// values (a list buried inside a collection that is itself a key) is a rarer RESIDUAL — the same nested
+/// edge the String/Bytes key story leaves — deferred to a follow-on. TOTAL: a malformed descriptor or
+/// arity mismatch declines to `None` (the caller falls back to the input as-is), never traps, never leaks.
+/// Iterative (an explicit `CanonTask` stack) so a deeply-nested list does not overflow the guest stack.
+fn value_canonicalize_shaped(desc: &Descriptor, a: Handle, root_shape: u32) -> Option<Handle> {
+    let mut work: Vec<CanonTask> = vec![CanonTask::Visit {
+        h: a,
+        shape_ix: root_shape,
+        refs: 0,
+    }];
+    let mut results: Vec<Handle> = Vec::new();
+    while let Some(task) = work.pop() {
+        match task {
+            CanonTask::BuildList { n } => {
+                let arr = canon_build_arr(&mut results, n);
+                results.push(op_vec_of_arr(arr));
+            }
+            CanonTask::BuildArr { n } => {
+                let arr = canon_build_arr(&mut results, n);
+                results.push(arr);
+            }
+            CanonTask::BuildSum { disc } => {
+                let payload = results.pop()?;
+                results.push(op_sum_new(disc, payload));
+            }
+            CanonTask::Visit { h, shape_ix, refs } => {
+                if refs > ENCODE_REF_CYCLE_CAP {
+                    return canon_decline(&mut results); // a Ref/Named chain that never reaches a node
+                }
+                match desc.table.get(shape_ix as usize) {
+                    None => return canon_decline(&mut results),
+                    // Indirections: same `h`, no node reached → count toward the cycle cap.
+                    Some(Shape::Ref(target) | Shape::Named(_, target)) => {
+                        work.push(CanonTask::Visit {
+                            h,
+                            shape_ix: *target,
+                            refs: refs + 1,
+                        });
+                    }
+                    // Scalar leaves are canonical BY CONSTRUCTION (`box_*` normalizes: BigInt sign-magnitude,
+                    // Rational lowest-terms, Float NaN one byte form). Retain the borrowed handle as the fresh
+                    // owned result — an immediate's `op_dup` is a no-op and owns no heap.
+                    Some(
+                        Shape::Int
+                        | Shape::BigInt
+                        | Shape::Rational
+                        | Shape::Bool
+                        | Shape::Unit
+                        | Shape::Float
+                        | Shape::Float32,
+                    ) => {
+                        op_dup(h);
+                        results.push(h);
+                    }
+                    // A String/Bytes may be a ROPE → flatten to its canonical flat leaf (in place, content-
+                    // preserving/unobservable even on a shared node), then retain. A flat leaf flattens no-op.
+                    Some(Shape::Str | Shape::Bytes) => {
+                        bytes_flatten(h);
+                        op_dup(h);
+                        results.push(h);
+                    }
+                    // A Set/Map handle is canonical at its OWN level (order-independent CHAMP). Retain as-is;
+                    // a list buried inside it is the documented residual (see the fn doc).
+                    Some(Shape::Set(_) | Shape::Map(..)) => {
+                        op_dup(h);
+                        results.push(h);
+                    }
+                    // THE load-bearing arm: rebuild the list to its canonical strict shape. Canonicalize each
+                    // element first (recurse), then `BuildList` reassembles via `op_vec_of_arr`.
+                    Some(Shape::List(elem)) => {
+                        let elem = *elem;
+                        let len = op_vec_len(h);
+                        work.push(CanonTask::BuildList { n: len as usize });
+                        for i in (0..len).rev() {
+                            work.push(CanonTask::Visit {
+                                h: op_vec_get(h, i),
+                                shape_ix: elem,
+                                refs: 0,
+                            });
+                        }
+                    }
+                    // A tuple / record / multi-payload spread is an `arr` at run time; canonicalize each field
+                    // in the descriptor's canonical order, then `BuildArr` reassembles the arr.
+                    Some(Shape::Tuple(elems)) => {
+                        let elems = elems.clone();
+                        if (op_arr_len(h) as usize) < elems.len() {
+                            return canon_decline(&mut results);
+                        }
+                        work.push(CanonTask::BuildArr { n: elems.len() });
+                        for (i, &es) in elems.iter().enumerate().rev() {
+                            work.push(CanonTask::Visit {
+                                h: op_arr_get(h, i as u32),
+                                shape_ix: es,
+                                refs: 0,
+                            });
+                        }
+                    }
+                    Some(Shape::Spread(elems)) => {
+                        let elems = elems.clone();
+                        if (op_arr_len(h) as usize) < elems.len() {
+                            return canon_decline(&mut results);
+                        }
+                        work.push(CanonTask::BuildArr { n: elems.len() });
+                        for (i, &es) in elems.iter().enumerate().rev() {
+                            work.push(CanonTask::Visit {
+                                h: op_arr_get(h, i as u32),
+                                shape_ix: es,
+                                refs: 0,
+                            });
+                        }
+                    }
+                    Some(Shape::Record(fields)) => {
+                        let field_ixs: Vec<u32> = fields.iter().map(|(_, ix)| *ix).collect();
+                        if (op_arr_len(h) as usize) < field_ixs.len() {
+                            return canon_decline(&mut results);
+                        }
+                        work.push(CanonTask::BuildArr { n: field_ixs.len() });
+                        for (i, &fs) in field_ixs.iter().enumerate().rev() {
+                            work.push(CanonTask::Visit {
+                                h: op_arr_get(h, i as u32),
+                                shape_ix: fs,
+                                refs: 0,
+                            });
+                        }
+                    }
+                    // A sum: canonicalize the payload under the ACTIVE variant's shape, then rebuild the shell.
+                    Some(Shape::Sum(variants)) => {
+                        let variants = variants.clone();
+                        let disc = op_sum_disc(h);
+                        let Some((_, payload_shape)) = variants.get(disc as usize) else {
+                            return canon_decline(&mut results);
+                        };
+                        work.push(CanonTask::BuildSum { disc });
+                        work.push(CanonTask::Visit {
+                            h: op_sum_payload(h),
+                            shape_ix: *payload_shape,
+                            refs: 0,
+                        });
+                    }
+                    // A `(: value type-node)` frame — transparent for the VALUE: canonicalize the inner value.
+                    Some(Shape::Framed(_type_node, inner)) => {
+                        work.push(CanonTask::Visit {
+                            h,
+                            shape_ix: *inner,
+                            refs: refs + 1,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    // Exactly one fully-assembled canonical root remains (a well-formed walk); anything else is malformed.
+    if results.len() == 1 {
+        results.pop()
+    } else {
+        canon_decline(&mut results)
+    }
 }
 
 // ─── CHAMP persistent MAP: empty / lookup / insert / size ───────────────────────────────
@@ -12942,6 +13179,127 @@ mod tests {
             Some(Ordering::Less),
             "a 200-deep nested list compares by its innermost leaf without a stack overflow (iterative walk)"
         );
+    }
+
+    /// THE list-key miscompile fix (`value_canonicalize_shaped`): a Map with a CONCAT-built list KEY must be
+    /// found by a PUSH-built equal key AFTER canonicalizing both keys, at sizes straddling the leaf/multi-
+    /// level boundary (n≤32 already collapsed; n≥33 was the false-miss). Also nested (`(tuple (list) Int)`),
+    /// and a genuinely-different list must still MISS. Leak-clean: canonicalize BORROWS its input and returns
+    /// a fresh owned key; dropping the map + the two fresh canonical keys per size must net to 0 live cells.
+    #[test]
+    fn value_canonicalize_makes_concat_and_push_list_keys_collide() {
+        use super::{Descriptor, Shape};
+        reset();
+        // desc: [0]=Int, [1]=List(0). A concat-built and a push-built [0..n) canonicalize byte-identical.
+        let desc_list = Descriptor { table: vec![Shape::Int, Shape::List(0)], root: 1 };
+        let push_list = |n: i64| {
+            let mut v = op_vec_empty();
+            for i in 0..n {
+                v = op_vec_push(v, op_box_int(i));
+            }
+            v
+        };
+        let concat_list = |n: i64| {
+            let split = (n / 2).max(1);
+            let lo = {
+                let mut v = op_vec_empty();
+                for i in 0..split {
+                    v = op_vec_push(v, op_box_int(i));
+                }
+                v
+            };
+            let hi = {
+                let mut v = op_vec_empty();
+                for i in split..n {
+                    v = op_vec_push(v, op_box_int(i));
+                }
+                v
+            };
+            op_vec_concat(lo, hi)
+        };
+        for &n in &[3i64, 32, 33, 40, 100] {
+            // Canonicalize the concat-built key BEFORE it goes in as a map key.
+            let raw_key = concat_list(n);
+            let key = value_canonicalize_shaped(&desc_list, raw_key, 1).expect("canon key");
+            op_drop(raw_key);
+            let m = op_map_insert(op_map_empty(), key, op_box_int(999));
+            // Query with a canonicalized PUSH-built equal key — must HIT.
+            let raw_q = push_list(n);
+            let q = value_canonicalize_shaped(&desc_list, raw_q, 1).expect("canon query");
+            op_drop(raw_q);
+            let hit = op_map_lookup(m, q);
+            assert_ne!(hit, Handle::NULL, "n={n}: canonicalized concat-key must be found by push-key");
+            assert_eq!(op_get_int(hit), 999, "n={n}: and yield the stored value");
+            op_drop(q);
+            // A genuinely different list ([0..n) with the last element bumped) must still MISS.
+            let raw_diff = {
+                let mut v = op_vec_empty();
+                for i in 0..n {
+                    v = op_vec_push(v, op_box_int(if i == n - 1 { i + 1000 } else { i }));
+                }
+                v
+            };
+            let diff = value_canonicalize_shaped(&desc_list, raw_diff, 1).expect("canon diff");
+            op_drop(raw_diff);
+            assert_eq!(op_map_lookup(m, diff), Handle::NULL, "n={n}: a different list must still miss");
+            op_drop(diff);
+            op_drop(m);
+        }
+        // Nested key: (tuple (list Int) Int) — a list buried in a compound key must ALSO canonicalize.
+        let desc_nested = Descriptor {
+            table: vec![Shape::Int, Shape::List(0), Shape::Tuple(vec![1, 0])],
+            root: 2,
+        };
+        let mk_pair = |list_h: Handle, tag: i64| {
+            let t = op_arr_alloc(2);
+            op_arr_set(t, 0, list_h);
+            op_arr_set(t, 1, op_box_int(tag));
+            t
+        };
+        let raw_k = mk_pair(concat_list(40), 7);
+        let k = value_canonicalize_shaped(&desc_nested, raw_k, 2).expect("canon nested key");
+        op_drop(raw_k);
+        let m = op_map_insert(op_map_empty(), k, op_box_int(555));
+        let raw_qn = mk_pair(push_list(40), 7);
+        let qn = value_canonicalize_shaped(&desc_nested, raw_qn, 2).expect("canon nested query");
+        op_drop(raw_qn);
+        let hit = op_map_lookup(m, qn);
+        assert_ne!(hit, Handle::NULL, "nested (concat-list, tag) key found by (push-list, tag)");
+        assert_eq!(op_get_int(hit), 555);
+        op_drop(qn);
+        op_drop(m);
+        #[cfg(any(test, feature = "debug-counters"))]
+        assert_eq!(live_object_count(), 0, "canonicalize is borrow-and-copy: no leaked cells");
+    }
+
+    /// `value_canonicalize_shaped` is ITERATIVE (wasm-safe): a 200-deep nested list canonicalizes without
+    /// overflowing the native stack, and the result reads back to the same innermost leaf.
+    #[test]
+    fn value_canonicalize_deep_nested_list_is_stack_safe() {
+        use super::{Descriptor, Shape};
+        reset();
+        let mut table = vec![Shape::Int];
+        let mut cur = 0u32;
+        for _ in 0..200 {
+            table.push(Shape::List(cur));
+            cur = (table.len() - 1) as u32;
+        }
+        let desc_deep = Descriptor { table, root: cur };
+        let mut v = op_box_int(42);
+        for _ in 0..200 {
+            let outer = op_vec_empty();
+            v = op_vec_push(outer, v);
+        }
+        let canon = value_canonicalize_shaped(&desc_deep, v, cur).expect("deep canon");
+        op_drop(v);
+        // Peel 200 levels of single-element lists back down to the leaf.
+        let mut cursor = canon;
+        for _ in 0..200 {
+            assert_eq!(op_vec_len(cursor), 1);
+            cursor = op_vec_get(cursor, 0);
+        }
+        assert_eq!(op_get_int(cursor), 42, "deep canonicalized list preserves its innermost leaf");
+        op_drop(canon);
     }
 
     #[test]
