@@ -105,6 +105,24 @@ def se-typed-param-call() =
     | Option.None(_) => trap("a typed-param call runs end-to-end"))
 
 @test
+def se-param-passed-as-arg() =
+  // slice-3c COMPOSITION fix: a param used as the ARG to another call — `(def (f n) (g n))`, `g(m) = m*2`,
+  // `(f 21)` → 42. The call's ARGUMENT resolves in the CALLER's scope (where `n` = f's param is bound), while
+  // the callee body resolves lexically. Before the resolve-arg fix, the NApp arm resolved only the callee body,
+  // NOT the arg, so the arg's `n` was left unresolved → infer TErr → decline. Differential-verified vs rcdzc.
+  (match run-src("(do (def (g m) (* m 2)) (def (f n) (g n)) (def (main) (f 21)) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("(def (f n) (g n)) (f 21) → 42"))
+    | Option.None(_) => trap("a param passed as an arg to another call runs"))
+
+@test
+def se-nested-call-as-arg() =
+  // a CALL whose arg is itself a CALL — `(f (g 20))`, `g(m)=m+1`, `f(n)=n*2` → 42. The inner call `(g 20)`
+  // resolves as the outer call's arg (in the caller's scope). Same resolve-arg fix. Differential-verified.
+  (match run-src("(do (def (g m) (+ m 1)) (def (f n) (* n 2)) (def (main) (f (g 20))) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("(f (g 20)) → 42 (nested call as arg)"))
+    | Option.None(_) => trap("a call whose arg is a call runs"))
+
+@test
 def se-unbound-declines() =
   // a bare unbound var → None (declined), NOT a value: the differential must see decline, not a bogus value.
   (match run-src("y") with | Option.None(_) => unit | Option.Some(_) => trap("unbound y declines"))

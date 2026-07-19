@@ -1811,6 +1811,33 @@
             (export main)))
   (trap   "unreachable"))
 
+(case "a PLAIN @ensures over a HEAP result (List) is enforced — ret binds a heap value, value-transparent when satisfied"
+  (doc    "The runtime @ensures cases so far all return a SCALAR (Int64); this pins @ensures over a def
+           that returns a HEAP value. The injected `(let ((ret BODY)) (if Q ret (trap …)))` binds `ret`
+           to a LIST, the predicate reads it via `(List.len ret)`, and the pass arm returns that same
+           heap value — value-transparency must hold for a heap return, not only a scalar. `(f 7)` builds
+           `(List.push (list) 7)` (a 1-element list), `(> (List.len ret) 0)` holds, so the def returns the
+           list and `main` reads its length `1`. Pins that the @ensures rewrite binds + returns a heap
+           `ret` correctly (no ownership/drop hazard from the extra let-binding of a heap value).")
+  (input  (do
+            (@ (ensures (> (List.len ret) 0)) (def (f (: x Int64)) (List.push (list) x)))
+            (def (main) (List.len (f 7)))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a PLAIN @ensures over a HEAP result (List) TRAPS when violated — the postcondition checks the heap value"
+  (doc    "The trap half of the heap-result postcondition above. `@ensures(> (List.len ret) 0)` on
+           `(g x) = (list)` — the result must be non-empty, but the body returns the EMPTY list, so the
+           postcondition is violated. The injected `(let ((ret (list))) (if (> (List.len ret) 0) ret
+           (trap …)))` binds `ret` to the empty list, `(List.len ret) = 0`, `(> 0 0)` is FALSE, so the
+           `if` takes the trap arm — `unreachable`. Together with the case above this pins that an
+           @ensures over a heap return enforces in both directions.")
+  (input  (do
+            (@ (ensures (> (List.len ret) 0)) (def (g (: x Int64)) (list)))
+            (def (main) (List.len (g 7)))
+            (export main)))
+  (trap   "unreachable"))
+
 (case "@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)"
   (doc    "The result-binder-capture guard, as a REJECT (breaker 2026-07-17). `@ensures(Q)` enforcement binds
            the def's RESULT to `ret` (`(let ((ret BODY)) (if Q ret (trap)))`). If a PARAMETER is

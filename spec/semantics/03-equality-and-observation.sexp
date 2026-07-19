@@ -230,6 +230,23 @@
   (call   main)
   (output (: 42 Int64)))
 
+(case "Map.remove of a Rational key canonicalizes: a normalized-equal key removes the entry"
+  (doc    "The DELETE-side companion of the Rational-map-key cases above (which pin lookup/insert
+           canonicalization): `Map.remove` must also match the key by its normalized form. Insert under
+           `(Rational.of 1 2)` (value 10) and `(Rational.of 1 3)` (value 20), then `Map.remove` with
+           `(Rational.of 2 4)` — 2/4 normalizes to the same 1/2 node, so the remove drops the 1/2 entry (its
+           lookup is now None) while the sibling 1/3 survives (its lookup is still Some 20). Encoded
+           `100*(lookup 1/2 present ? 1 : 0) + (lookup 1/3 value)` = 100*0 + 20 = 20. Pins that remove
+           canonicalizes the key on the CHAMP delete path, not only lookup/insert — a remove that hashed the
+           as-written 2/4 would miss the 1/2 slot and delete nothing.")
+  (input  (do
+            (def (main)
+              (let ((m (Map.remove (Map.insert (Map.insert (Map.empty) (Rational.of 1 2) 10) (Rational.of 1 3) 20) (Rational.of 2 4))))
+                (+ (* 100 (match (Map.lookup m (Rational.of 1 2)) ((Some w) 1) ((None u) 0)))
+                   (match (Map.lookup m (Rational.of 1 3)) ((Some v) v) ((None u) -1)))))
+            (export main)))
+  (output (: 20 Int64)))
+
 (case "equality over a Rational carried in a SUM payload respects normalization"
   (doc    "The variant-payload face (a `Vec3r`-shaped value): a Rational in a sum variant is compared by its
            canonical normalized form through the value-eq walk. `(V.Mk (Rational.of 1 2))` equals

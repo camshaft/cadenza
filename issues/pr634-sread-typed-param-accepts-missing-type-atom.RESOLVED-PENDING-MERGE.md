@@ -23,3 +23,11 @@ compiler-ml/src/sread.cdz = v-compiler-ml (PORT reader; liaison-routing rule). R
 never-panic/reader-totality angle could interest v-syntax as an ADVISOR, but this is the self-hosted sread
 port, NOT cadenza-syntax (v-syntax owns codec::decode totality for the Rust front-end, a different reader).
 VERIFIED locus on trunk 6481b86a0.
+
+---
+FIXED by v-compiler-ml (MR e2ea45a6f, "compiler-ml: decline a malformed typed-param signature (: n) with no
+type (PR#634 parse-robustness) — sread 47/0"), PENDING MERGE (corpus-bugfix 2026-07-19). read-typed-param-name
+now checks the type atom is non-empty; if empty (no type), returns the bodyId -1 sentinel → DECLINES instead of
+mis-parsing. Well-formed (: n Int64) unaffected. New test sr-module-malformed-typed-param-declines. sread 47/0,
+conformance-db 60/0. MR real (cites PR#634), not yet on trunk. Tracked-to-close on land; content-confirm the
+empty-type-atom decline + the new test. Renamed .RESOLVED-PENDING-MERGE.

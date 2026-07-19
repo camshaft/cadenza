@@ -48,22 +48,26 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
         (let c1 = resolve-node(tree, condId, env, col) in
          (let c2 = resolve-node(tree, thenId, env, c1) in
           resolve-node(tree, elseId, env, c2)))
-    | Option.Some(Node.NApp(calleeId, _)) =>
-        // RESOLVE the callee BODY (reached only via this call node when the call is the module root), so
-        // infer/lower/eval can process it. Resolution is LEXICAL (matching rcdzc — walk PARENTS from each name's
-        // own occurrence, core-semantics.md#binding-is-lexical): the body resolves against its OWN scope, NOT
-        // the caller's env, so a helper body's free name can NEVER capture a caller `let` binding (dynamic
-        // scope). A NULLARY def's body sees an EMPTY scope (no params, first-order). A SINGLE-PARAM def's body
-        // (slice-3c) resolves with JUST its PARAMETER bound: `{paramName → paramNode}` — so the body's `n`
-        // resolves to RBound(paramNode), which lower canonicalizes to CVar(paramNode), matching the
-        // CLet(paramNode, arg, body) the call lowers to. The param is found by bodyId (sread keyed it there).
-        (match param-of(tree, calleeId) with
-          | Option.Some(paramId) =>
-              (match node-at(tree, paramId) with
-                | Option.Some(Node.NVar(pnm)) =>
-                    resolve-node(tree, calleeId, Map.insert((Map.empty : Map(Int64, Int64)), pnm, paramId), col)
-                | _ => resolve-node(tree, calleeId, (Map.empty : Map(Int64, Int64)), col))
-          | Option.None(_) => resolve-node(tree, calleeId, (Map.empty : Map(Int64, Int64)), col))
+    | Option.Some(Node.NApp(calleeId, argId)) =>
+        // A call resolves TWO subtrees, in DIFFERENT scopes (matching rcdzc's beta-reduction discipline):
+        //  (1) the ARGUMENT resolves in the CALLER's scope (the CURRENT env) — the arg is written where the call
+        //      is, so its free names (an enclosing param, an outer let) bind there. A nullary call (argId -1)
+        //      has no arg to resolve. This is the fix for a call whose arg is a compound (another call `(f (g
+        //      x))`, or the enclosing param `(def (f n) (g n))`): without resolving the arg, its vars were left
+        //      unresolved → infer TErr → decline.
+        //  (2) the callee BODY resolves LEXICALLY against its OWN scope (rcdzc walks parents from each name's
+        //      own occurrence, core-semantics.md#binding-is-lexical), NOT the caller's env — so a helper body's
+        //      free name can NEVER capture a caller binding (dynamic scope). A nullary body sees an EMPTY scope;
+        //      a single-param body sees JUST its PARAMETER `{paramName → paramNode}` (found by bodyId, sread-
+        //      keyed) → the body's `n` resolves RBound(paramNode) → lower CVar(paramNode), matching CLet.
+        (let colArg = (if (argId == (0 - 1)) then col else resolve-node(tree, argId, env, col)) in
+         (match param-of(tree, calleeId) with
+           | Option.Some(paramId) =>
+               (match node-at(tree, paramId) with
+                 | Option.Some(Node.NVar(pnm)) =>
+                     resolve-node(tree, calleeId, Map.insert((Map.empty : Map(Int64, Int64)), pnm, paramId), colArg)
+                 | _ => resolve-node(tree, calleeId, (Map.empty : Map(Int64, Int64)), colArg))
+           | Option.None(_) => resolve-node(tree, calleeId, (Map.empty : Map(Int64, Int64)), colArg)))
     | Option.None(_) => col   // an id not in the arena (a malformed tree) resolves to nothing
 
 /// The resolve COLUMN builder: resolve the whole tree from `root`, starting with an empty scope + column.
