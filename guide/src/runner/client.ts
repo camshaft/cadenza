@@ -193,9 +193,10 @@ export async function runTestComponent(
 /// per-test pass/fail — the browser equivalent of `cdz test`. A compile failure (incl. "no `@test`") returns
 /// the compile diagnostics as an error outcome; otherwise a `TestResult` per nullary test (clean = pass,
 /// trap = fail) AND per PROPERTY test driven live (scalar over generated call-args, compound over a
-/// `Test.gen-int` pool, both with shrinking). A `deferred` entry appears only for a parameterized `@test`
-/// whose parameter shape has no synthesized generator yet, so the UI shows it pending rather than dropping
-/// it. `<Runnable mode="test">` + the check-examples test-branch call this.
+/// `Test.gen-int` pool, both with shrinking). A `deferred` entry (UI shows it pending, not dropped) appears
+/// when a parameterized `@test` can't be driven — either its parameter shape has no synthesized generator yet
+/// (routed here), or a property run hit an unanswered/name-drifted gen host op (deferred by the worker driver
+/// rather than counted a failure). `<Runnable mode="test">` + the check-examples test-branch call this.
 export type TestRunOutcome =
   | { kind: "tests"; results: TestResult[] }
   | { kind: "error"; message: string };

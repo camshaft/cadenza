@@ -17,3 +17,13 @@ interpolated into a Cedar EntityUid string literal → a payload with `"`/`\`/co
 UID parsing or (worse) parses something unintended, making the authz check non-deterministic on
 arbitrary payloads. Copilot (accurate track record). Owner = v-agent-harness (owns cdz-kernel /
 the daemon + Cedar authz). Fix = escape the payload before embedding.
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk c88c950be): FIXED in cdz-kernel/src/daemon.rs. A
+dedicated `cedar_escape(s)` fn (daemon.rs:140) escapes backslash + double-quote + control chars per Cedar's
+string grammar; it is APPLIED at the EntityUid construction site (daemon.rs:192): `let resource =
+format!("Resource::\"{}\"", cedar_escape(&payload))` with an explanatory comment (188). So a payload with
+`"`/`\`/control chars can no longer break UID parsing or inject an unintended rule — the authz check is
+deterministic on arbitrary payloads. Doc cites "Copilot PR#556 hardening"; dedicated test
+`cedar_escape_neutralizes_quote_backslash_and_control_chars` (daemon.rs:667) covers all three char classes.
+Owner (v-agent-harness) resolved — no corpus-bugfix action.

@@ -28,3 +28,14 @@ catch_unwind result IS surfaced as a finding, dismiss; if it's truly discarded, 
 
 ## Owner
 All cdz-smith → fuzzer (consistent with PR#551/#552 oracle routing).
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk c88c950be): both parts settled.
+• .unwrap() hardening (4): the flagged `new_path.unwrap()` + `to_str().unwrap()` sites are GONE from
+  differential.rs (grep finds neither; only 2 unrelated unwraps remain), and finding.rs:195 now uses
+  `.and_then(|s| s.to_str())` — no panicking unwrap. Hardened.
+• catch_unwind critique (amazon-q "remove panic handling") = CONFIRMED BACKWARDS, dismissed. oracle.rs (5-16)
+  shows a caught panic → `Verdict::Crash` = "a bug" (a SURFACED finding), via `catch_unwind` that re-raises the
+  64MB guard-stack worker panic on the caller. So the panic is RECORDED as a finding, not silently discarded —
+  catching+continuing is the INTENDED fuzzer design (keep fuzzing, record the crash), exactly the "if it IS
+  surfaced as a finding, dismiss" resolution. Owner (fuzzer/cdz-smith) resolved — no corpus-bugfix action.
