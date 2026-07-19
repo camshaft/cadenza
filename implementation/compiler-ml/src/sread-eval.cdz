@@ -57,6 +57,14 @@ def se-let() =
   (match run-src("(let ((x 10)) x)") with | Option.Some(v) => (if v == 10 then unit else trap("let x=10 → 10")) | Option.None(_) => trap("runs"))
 
 @test
+def se-underscore-led-identifier-runs() =
+  // reader-completeness: a `_`-led identifier (`_x`) is a valid name — `(let ((_x 5)) _x)` → 5. Before the
+  // is-alpha `_` fix, compiler-ml DECLINED it (the read-form dispatch didn't treat `_` as an atom lead), a
+  // conformance gap vs rcdzc (which accepts `let _x = 5 in _x` → 5, differential-verified). The corpus uses
+  // `_1`/`_000`-style names (e.g. `(def (f _1) …)`), so this unblocks those cases too.
+  (match run-src("(let ((_x 5)) _x)") with | Option.Some(v) => (if v == 5 then unit else trap("_x binds 5")) | Option.None(_) => trap("a _-led identifier reads + runs"))
+
+@test
 def se-milestone-from-source() =
   // ★ THE MILESTONE, FROM SOURCE TEXT ★ — (let ((x 2)) (+ (* x 3) 1)) → 7. The re-charter's headline program
   // now runs source → sread → arena → resolve/infer/lower/eval → 7, with the source READ by the ML compiler

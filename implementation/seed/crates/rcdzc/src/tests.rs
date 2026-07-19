@@ -4353,12 +4353,22 @@ fn dependent_size_bin_match_payload_read_leaves_no_live_objects() {
 /// VALUE-CORRECT (no UAF: the shell outlives the borrow; nothing is freed early) and NON-OOB, so the
 /// value/drop-import tests miss it — only the live-objects counter sees it (~2 cells/iter here).
 ///
+/// GENERAL across compound-payload producers (NOT String-specific): the same root leaks for
+/// `Option.expect (Map.lookup m k)` where the map VALUE is compound (a `List` → measured ~3 cells/iter) and
+/// `Option.expect (List.at xs i)` over a list-of-lists — any fallible read whose Some payload is a non-dup'd
+/// COMPOUND borrowed-then-dead. The SCALAR-payload twin is SOUND (see
+/// `option_expect_over_an_owned_some_shell_leaves_no_live_objects`, which nets to 0) — the differentiator is
+/// purely the compound payload. This witness pins the String face; the Map-value/List-of-lists faces share it.
+///
 /// ⚠ This asserts the VALUE is right + documents the leak as a KNOWN residual (NOT `== 0`): the sound fix
 /// needs a NODE-KEYED "does this SumExpect's extracted payload ESCAPE its consumer" analysis (the existing
 /// `binding_escapes` is BINDER-keyed and does not answer this), so the shell can be dropped after the last
-/// borrow ONLY when the payload does not flow out. That is a genuine analysis increment (v-memory-safety
-/// lane, select.rs ~8771), deferred until a forcing leak-at-scale consumer — this witness is its executable
-/// target. When it lands, flip the `>= ` guard below to `== 0`. See the memory-safety vertical log.
+/// borrow ONLY when the payload does not flow out. MEASURED to need THREE pieces (see the vertical log):
+/// (a) the fallible-read producer classified Owned, (b) dup the payload + drop the shell, (c) DROP the
+/// extracted payload after its last borrow — (a)+(b) alone only halve the leak (reclaim the shell, not the
+/// payload). A genuine analysis increment (v-memory-safety lane, select.rs ~8771), deferred until a forcing
+/// leak-at-scale consumer — this witness is its executable target. When it lands, flip the guard below to
+/// `== 0`. See the memory-safety vertical log.
 /// `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
 #[test]
 #[ignore]
@@ -7694,38 +7704,58 @@ fn two_helper_state_advances_both_thread_to_the_caller() {
     }
 }
 
-/// The residual sub-case of the effectful-helper-in-a-self-call-arg family: an inlined helper whose perform
-/// sits UNDER A CONDITIONAL (`if`/`match`) — either in a branch (`if c then acc + B.b x else acc`) or in the
-/// condition (`if B.b x == 1 then …`). The deep-fresh-copy fixes fold a helper that performs on its
-/// unconditional spine, but a CONDITIONAL perform threads branch-state-locally and leaked the internal
-/// `f#ctx$s0` state-param in a confusing CDZ0101. It now DECLINES CLEANLY ("not yet reducible") — pinned so a
-/// future change either folds it (clearing this) or keeps the clean decline, never regressing to the `$s0`
-/// leak. (v-agent-harness Inc-3 residual; the non-conditional effectful-helper family folds — see the two
-/// `_folds` tests above.)
+/// The former residual of the effectful-helper-in-a-self-call-arg family, NOW FOLDING: an inlined helper
+/// whose perform sits UNDER A CONDITIONAL (`if`/`match`) — in a branch (`if c then acc + B.b x else acc`), in
+/// the condition (`if B.b x == 1 then …`), or nested. Threading the self-call arg inlines the helper's `if`;
+/// the `if`/`match` thread arms give each branch its own copy of the incoming state-refs. That copy was
+/// `copy_pure` (`beta_reduce`), whose pinned-name fast path returned a RESOLVE-PINNED `f#ctx$s{k}` ref AS-IS,
+/// so both branches SHARED the one pinned node — a single-parent-arena orphan re-parented onto a dead node,
+/// leaking the internal `$s0` in a confusing CDZ0101. Switching those branch/arm state copies to
+/// `deep_fresh_copy` (re-push the leaf unpinned, so each branch re-resolves against the spec sig) folds the
+/// whole family. Pins the fold value (`run(4,0)`: only `fuel==1` performs, `B.b 1`→1, `resume(x,x)` returns
+/// the op arg → acc becomes 0+…+1 = 1) so a regression to the leak — OR a wrong fold value — is caught.
+/// (v-agent-harness Inc-3 residual, now cleared; the non-conditional family folds via the two `_folds` tests
+/// above.)
 #[test]
-fn an_effectful_helper_with_a_conditional_perform_in_a_selfcall_arg_declines_cleanly() {
+fn an_effectful_helper_with_a_conditional_perform_in_a_selfcall_arg_folds() {
     use crate::testkit::parse;
-    for src in [
+    for (src, want) in [
         // perform in a BRANCH of the inlined helper's if
-        "(do (effect B (op b (-> Int64 Int64)) (op done (-> Int64 Int64))) \
-         (def (turn (: x Int64) (: acc Int64)) (if (= x 1) (+ acc (B.b x)) acc)) \
-         (def (run (: fuel Int64) (: acc Int64)) \
-           (if (= fuel 0) (B.done acc) (run (- fuel 1) (turn fuel acc)))) \
-         (def (main) (handle B 0 ((b (x) s (resume x x)) (done (x) s (resume x x))) (run 4 0))) (export main))",
+        (
+            "(do (effect B (op b (-> Int64 Int64)) (op done (-> Int64 Int64))) \
+             (def (turn (: x Int64) (: acc Int64)) (if (= x 1) (+ acc (B.b x)) acc)) \
+             (def (run (: fuel Int64) (: acc Int64)) \
+               (if (= fuel 0) (B.done acc) (run (- fuel 1) (turn fuel acc)))) \
+             (def (main) (handle B 0 ((b (x) s (resume x x)) (done (x) s (resume x x))) (run 4 0))) (export main))",
+            "1",
+        ),
         // perform in the CONDITION of the inlined helper's if
-        "(do (effect B (op b (-> Int64 Int64)) (op done (-> Int64 Int64))) \
-         (def (turn (: x Int64) (: acc Int64)) (if (= (B.b x) 1) (+ acc 1) acc)) \
-         (def (run (: fuel Int64) (: acc Int64)) \
-           (if (= fuel 0) (B.done acc) (run (- fuel 1) (turn fuel acc)))) \
-         (def (main) (handle B 0 ((b (x) s (resume x x)) (done (x) s (resume x x))) (run 4 0))) (export main))",
+        (
+            "(do (effect B (op b (-> Int64 Int64)) (op done (-> Int64 Int64))) \
+             (def (turn (: x Int64) (: acc Int64)) (if (= (B.b x) 1) (+ acc 1) acc)) \
+             (def (run (: fuel Int64) (: acc Int64)) \
+               (if (= fuel 0) (B.done acc) (run (- fuel 1) (turn fuel acc)))) \
+             (def (main) (handle B 0 ((b (x) s (resume x x)) (done (x) s (resume x x))) (run 4 0))) (export main))",
+            "1",
+        ),
+        // perform in a NESTED if branch of the inlined helper
+        (
+            "(do (effect B (op b (-> Int64 Int64)) (op done (-> Int64 Int64))) \
+             (def (turn (: x Int64) (: acc Int64)) (if (= x 1) (if (= x 1) (+ acc (B.b x)) acc) acc)) \
+             (def (run (: fuel Int64) (: acc Int64)) \
+               (if (= fuel 0) (B.done acc) (run (- fuel 1) (turn fuel acc)))) \
+             (def (main) (handle B 0 ((b (x) s (resume x x)) (done (x) s (resume x x))) (run 4 0))) (export main))",
+            "1",
+        ),
     ] {
-        let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-            "an inlined helper with a conditional perform in a self-call arg must decline",
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "an inlined helper with a conditional perform in a self-call arg now folds (deep_fresh_copy \
+             per-branch state)",
         );
-        assert!(
-            !err.message.contains("#eff") && !err.message.contains("$s"),
-            "the decline must be clean (no leaked internal state-param name), got: {}",
-            err.message
+        assert_eq!(
+            run_linked(&bytes, "main").as_deref(),
+            Some(want),
+            "the conditional-perform helper folds to the resumed accumulator"
         );
     }
 }

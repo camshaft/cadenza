@@ -798,8 +798,8 @@ pass	a default-integer pragma fixes a type but adds no conversion — no-promoti
 pass	a default-integer pragma makes a bare literal take the declared integer type
 pass	a default-integer pragma naming a non-integer type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
-pass	a deferred resume-thunk stored in a MULTI-PAYLOAD pqueue entry and tuple-match-extracted folds
 pass	a deferred resume-thunk STORED IN A SUM and match-extracted through a helper before apply folds
+pass	a deferred resume-thunk stored in a MULTI-PAYLOAD pqueue entry and tuple-match-extracted folds
 pass	a delegated capability is not itself an export field
 pass	a delegation naming an effect that is never reached is rejected as latent authority
 pass	a dense if-equality chain dispatches every value including the default
@@ -1647,6 +1647,7 @@ pass	a record field holding a sum is projected then matched
 pass	a record field key that coincides with a parameter name survives the call
 pass	a record field with no value expression is rejected, not a crash
 pass	a record is constructed and a field is read
+pass	a record map key with a Rational field matches by the field's normalized form
 pass	a record match arm + a wildcard alternative selects by shape
 pass	a record match field may be a LITERAL that probes the field by equality
 pass	a record match pattern binds fields by name — partial and out of order
@@ -2137,6 +2138,7 @@ pass	a stacked @test @ensures def called as a function returns its value, not un
 pass	a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)
 pass	a state-advancing helper called before a later read threads its write through the continuation
 pass	a stateful handler threads its counter across a function boundary
+pass	a stored continuation is popped from a time-ordered pqueue (multi-payload match) and resumed
 pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strength-reduced multiply nested as an operand computes in place
 pass	a strict greater-than of equal operands is false
@@ -2905,6 +2907,7 @@ pass	constructing an unsigned segment from a negative value is rejected
 pass	constructor pattern binders capture the payload uniformly
 pass	context that constrains a nullary variant's element makes Type.of concrete
 pass	converting a BigInt back to a fixed width is checked and a compile-provable out-of-range narrowing is rejected
+pass	converting a NEGATIVE integer to a char yields None
 pass	converting a char to its integer scalar value is total
 pass	converting a fixed-width integer to BigInt is explicit
 pass	converting a float to its own width is the identity
@@ -2912,6 +2915,7 @@ pass	converting a scalar-valued integer to a char yields Some
 pass	converting a surrogate code point to a char yields None
 pass	converting a unit to another unit of the same dimension is an exact rational scale
 pass	converting an out-of-range integer to a char yields None
+pass	converting zero to a char yields Some — U+0000 (NUL) is a valid scalar
 pass	cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) emits (total)
 pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decode of a Float tag with a non-finite (NaN) bit pattern yields the error case

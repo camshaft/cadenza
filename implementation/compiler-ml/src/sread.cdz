@@ -50,7 +50,12 @@ def is-alpha(c: String) =
   or c == "a" or c == "b" or c == "d" or c == "h" or c == "s" or c == "x"
   or c == "y" or c == "z" or c == "r" or c == "u" or c == "o" or c == "m"
   or c == "p" or c == "g" or c == "v" or c == "w" or c == "k" or c == "q"
-  or c == "c" or c == "j"
+  or c == "c" or c == "j" or c == "_"
+  // `_` leads an identifier too (`_x`, `_1`, `_000` — the corpus uses these as param/binder names). rcdzc
+  // accepts a `_`-led identifier (`let _x = 5 in _x` → 5); without this compiler-ml DECLINED them (the read-
+  // form dispatch didn't treat `_` as an atom lead). scan-atom already carries `_` mid-token; only the LEAD
+  // dispatch needed it. Digits still lead a NUMBER (checked before is-alpha in read-form), so `_1` (letter-led
+  // by `_`) reads as a name while `1` reads as an int — no ambiguity.
 
 /// Scan an ATOM (keyword/symbol/identifier) from `i` — a run of non-space, non-paren chars — returning
 /// `(atom-string, next-index)`. Used to read `true`/`false` and (later) operator symbols / names.
