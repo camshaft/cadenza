@@ -31,3 +31,11 @@ now checks the type atom is non-empty; if empty (no type), returns the bodyId -1
 mis-parsing. Well-formed (: n Int64) unaffected. New test sr-module-malformed-typed-param-declines. sread 47/0,
 conformance-db 60/0. MR real (cites PR#634), not yet on trunk. Tracked-to-close on land; content-confirm the
 empty-type-atom decline + the new test. Renamed .RESOLVED-PENDING-MERGE.
+
+---
+LANDED + CONTENT-CONFIRMED (corpus-bugfix 2026-07-19, trunk d4a13829d): e2ea45a6f on trunk. Verified
+read-typed-param-name (sread.cdz) now binds (ty, a3) (was _ty) and checks `if (ty == "") then (name-id(nm),
+0-1, 0-1, a1, tree)` — declines via the -1 bodyId sentinel (matching read-typed-param's (:-check-fails arm)
+instead of mis-parsing from a wrong index; a well-formed (: n Int64) has a non-empty type, unaffected. The
+regression test `sr-module-malformed-typed-param-declines()` (sread.cdz:678) asserts a malformed (: n)
+declines (f not recorded). Exactly the fix routed. FULLY CLOSED.

@@ -115,6 +115,49 @@ fn rustc_roundtrip_narrow_literal_operand_computes_and_traps() {
 }
 
 #[test]
+fn rustc_roundtrip_const_wrap_to_signed_unusual_width_sign_extends() {
+    // A CONSTANT `.wrap` to a SIGNED UNUSUAL width (not a machine boundary — `Int4`/`Int12`, stored in the
+    // next-larger primitive) must SIGN-EXTEND from the declared top bit, matching `IntValue::wrap_to` + the
+    // runtime `Convert(Wrap)` path + the wasm oracle. The bug (breaker/corpus-bugfix finding): the
+    // const-int emit wrote the low-N bit pattern in the storage-width unsigned type and cast (`8u8 as i8`),
+    // which reinterprets at 8 bits — so bit 3 (the 4-bit sign) is NOT the i8 sign bit and `(Int 4).wrap 8`
+    // silently gave +8 instead of -8. `lower` already folds `.wrap` via `wrap_to` (sign-extends), so the
+    // const value IS -8; the fix emits its true signed decimal for a signed unusual width.
+    for (width, input, want) in [
+        (4u32, "8", "-8"),     // bit-3 set → negative
+        (4, "15", "-1"),       // all 4 bits set → -1
+        (4, "7", "7"),         // bit-3 clear → stays positive
+        (12, "2048", "-2048"), // bit-11 set (2^11) → Int12.min
+        (12, "4095", "-1"),    // all 12 bits set → -1
+        (12, "2047", "2047"),  // Int12.max, bit-11 clear → positive
+    ] {
+        let src = format!("(module m (def (go) ((. (Int {width}) wrap) {input})) (export go))");
+        let rs = compile_rust(&src);
+        if let Some(out) = rustc_run(&rs, "go()") {
+            assert_eq!(
+                out, want,
+                "(Int {width}).wrap {input} sign-extends to {want} (const-fold path):\n{rs}"
+            );
+        }
+    }
+    // CONTROL — an UNSIGNED unusual width keeps the low N bits, no sign reinterpretation: `(UInt 4).wrap 17`
+    // = 17 & 0xF = 1 (unchanged behavior; the fix is signed-only).
+    let u = compile_rust("(module m (def (go) ((. (UInt 4) wrap) 17)) (export go))");
+    if let Some(out) = rustc_run(&u, "go()") {
+        assert_eq!(out, "1", "(UInt 4).wrap 17 = 1 (unsigned keeps low bits)");
+    }
+    // CONTROL — a MACHINE-width signed wrap is unchanged (bit N-1 IS the storage sign bit): `(Int 8).wrap
+    // 200` = -56 (still the bit-pattern cast).
+    let m = compile_rust("(module m (def (go) ((. (Int 8) wrap) 200)) (export go))");
+    if let Some(out) = rustc_run(&m, "go()") {
+        assert_eq!(
+            out, "-56",
+            "(Int 8).wrap 200 = -56 (machine width unchanged)"
+        );
+    }
+}
+
+#[test]
 fn a_provably_in_range_arith_op_elides_its_overflow_check_on_the_rust_backend() {
     // BOTH-BACKEND PARITY (v-core-opt Slice-2): the rust backend now consults the SAME Core-tier
     // `lower::arith_provably_in_range` predicate the wasm backend uses (`select.rs:12542`), so a

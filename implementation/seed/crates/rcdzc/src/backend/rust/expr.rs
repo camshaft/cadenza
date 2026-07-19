@@ -2681,6 +2681,17 @@ fn emit_const_int_at(it: IntTy, v: &IntValue) -> Result<String, Reject> {
     let ubits = types::unsigned_bits_type(it).ok_or_else(|| {
         Reject::decline("integer literal width has no native Rust representation")
     })?;
+    // A SIGNED UNUSUAL width (not a machine boundary — `Int4`/`Int12`, stored in the next-larger primitive):
+    // the `<bits>u8 as i8` bit-pattern cast reinterprets at the STORAGE width (8 bits), NOT the declared
+    // 4-bit width — so a 4-bit-negative value like `(Int 4).wrap 8` (= -8, its bit-3 sign set) would emit
+    // `8u8 as i8` = +8 (WRONG), because bit 3 is not the i8 sign bit. The value `v` is ALREADY the correct
+    // signed narrow value (lower folds `.wrap` via `IntValue::wrap_to`, which sign-extends), so emit its
+    // TRUE SIGNED DECIMAL (`-8i8`) — unambiguous and in range for the storage type. (This is the const-fold
+    // twin of the runtime `Convert(Wrap)` sign-extend; a plain bit-pattern cast only round-trips at machine
+    // widths, where bit N-1 IS the storage sign bit.)
+    if signed && !matches!(width, 8 | 16 | 32 | 64) {
+        return Ok(format!("{}{target}", int_value_signed_decimal(v)));
+    }
     // The unsigned bit pattern of the value at its width: the low `width` bits of its two's-complement
     // representation, as an unsigned magnitude. `wrap_to(false, width)` computes exactly that, and the
     // result is a non-negative `IntValue` whose decimal is the unsigned literal.
@@ -2690,8 +2701,9 @@ fn emit_const_int_at(it: IntTy, v: &IntValue) -> Result<String, Reject> {
         // The target is itself the unsigned bit type (a `UIntN`): write the literal directly.
         Ok(format!("{literal}{ubits}"))
     } else {
-        // A signed (or otherwise reinterpreted) target: write the bit pattern in the unsigned type and
-        // cast, so the sign is set from the bit pattern (`128u8 as i8` = -128), never a decimal minus.
+        // A signed MACHINE-width target: write the bit pattern in the unsigned type and cast, so the sign
+        // is set from the bit pattern (`128u8 as i8` = -128), never a decimal minus. (For a machine width,
+        // bit N-1 IS the storage sign bit, so this reinterprets correctly.)
         Ok(format!("({literal}{ubits} as {target})"))
     }
 }
