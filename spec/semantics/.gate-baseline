@@ -305,9 +305,12 @@ pass	a CBOR skip steps over a tagged item to the value it wraps
 pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a COMPOUND generated value is reproducible from its seed (a tuple draws identically twice)
 pass	a COMPOUND map key with a Rational leaf hashes+matches by the leaf's normalized form
+pass	a CONSTANT in-range Int 12 truncation keeps its value (no sign bit set)
 pass	a CONSTANT recursive sum compares equal to a differently-built RUNTIME one
 pass	a CONSTANT signed nibble truncation of an all-ones nibble is -1
 pass	a CONSTANT signed nibble truncation sign-extends — the const-fold companion of the runtime .wrap
+pass	a CONSTANT signed truncation of an all-ones Int 12 is -1
+pass	a CONSTANT signed truncation sign-extends at a WIDER storage width (Int 12, i16 storage)
 pass	a CURRIED closure capturing an inner-handled perform result closes over it through partial application
 pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DEFERRED resume-thunk escaping to another function re-installs the handler at apply, over a re-performing do-continuation
@@ -371,6 +374,8 @@ pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
+pass	a PLAIN @ensures over a HEAP result (List) TRAPS when violated — the postcondition checks the heap value
+pass	a PLAIN @ensures over a HEAP result (List) is enforced — ret binds a heap value, value-transparent when satisfied
 pass	a PLAIN @ensures postcondition is ENFORCED at body-exit: a VIOLATED postcondition traps when the def is called
 pass	a PLAIN @ensures postcondition is value-transparent when SATISFIED: the def returns its computed value
 pass	a PLAIN @ensures relating ret to a PARAMETER (> ret x) TRAPS when violated — the result-vs-input postcondition is checked
@@ -920,6 +925,7 @@ pass	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (ho
 pass	a fixed-width integer segment of a non-byte-aligned width is rejected
 pass	a fixpoint loop that threads a growing list accumulator returns that list
 pass	a fixpoint that re-seeds a fresh list each round via a helper returns a list
+pass	a flat multi-param lambda stored in a tuple is applied through curried syntax
 pass	a flat string map key is found by a runtime rope twin
 pass	a float annotation reaches the 32-bit width
 pass	a float in integer-width position is rejected
@@ -2728,6 +2734,7 @@ pass	an in-bounds slice yields Some of the bytes at that range
 pass	an in-program handler OVERRIDES an effect's peer binding (the test-mock, no peer call)
 pass	an in-range constant argument to a narrow parameter computes at the parameter width
 pass	an in-range left shift on an unusual signed width computes at the declared width
+pass	an in-range unusual-width division computes at the declared width
 pass	an indexed read is not shared across a shadowing rebinding
 pass	an indexed read of an updated list is not shared with the original's
 pass	an init after the failing `?` never evaluates — even a provably-trapping one
@@ -2831,6 +2838,7 @@ pass	an unusual signed width overflows its own maximum and is rejected CDZ0304
 pass	an unusual signed width underflows its own minimum and is rejected CDZ0304
 pass	an unusual unsigned width overflows its own maximum and is rejected CDZ0304
 pass	an unusual unsigned width underflows below zero and is rejected CDZ0304
+pass	an unusual-width minimum modulo -1 is zero and does not overflow
 pass	an unusual-width value that overflows its computed range is rejected at compile time
 pass	an unwrapped conversion result is a bare number under ordinary numeric rules
 pass	an unwrapped length adds to an unwrapped time with no dimension error
@@ -2942,6 +2950,7 @@ pass	comparing two same-shape nominal sum types is a type error, not false
 pass	comparing two same-unit Float-inner quantities at RUNTIME rides the scalar float compare
 pass	comparing two same-unit scalar-Int quantities at RUNTIME rides the scalar integer compare
 pass	comparing two units of one dimension converts before comparing
+pass	comparison on an unusual signed width orders by the sign-extended declared value (negative < zero)
 pass	compound equality over a Rational leaf respects normalization (1/2 = 2/4)
 pass	compound equality over a runtime BigInt leaf compares by the canonical bytes
 pass	compound equality over a runtime BigInt leaf distinguishes different values
@@ -3080,6 +3089,7 @@ pass	distinct-signature closures alongside a plain export — the Int64->Int64 c
 pass	distinct-signature closures alongside a plain export — the plain export runs
 pass	dividing a quantity by a bare number keeps its dimension
 pass	dividing a rational by a negative rational normalizes the quotient's sign
+pass	dividing an unusual-width minimum by -1 overflows its declared range and is rejected CDZ0304
 pass	dividing quantities divides their dimensions
 pass	dividing two same-dimension quantities cancels to a dimensionless number
 pass	division by zero traps
@@ -3110,6 +3120,7 @@ pass	equality of an integer and a float is rejected, not silently promoted
 pass	equality of an integer and a string is a type error
 pass	equality of two records with different field sets is a type error
 pass	equality of two tuples of different arity is a type error
+pass	equality on an unusual signed width holds for two equal sign-extended values
 pass	equality over a Rational carried in a SUM payload respects normalization
 pass	equality over a compound mixing a float and a Bytes leaf walks both
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
@@ -3174,6 +3185,7 @@ pass	generated FLOAT values are totally ordered (a trichotomy property over two 
 pass	greater-than at the integer extremes is signed
 pass	greater-than comparison
 pass	greater-than of an integer and a float is rejected
+pass	greater-than on an unusual signed width orders a positive above the negative minimum
 pass	greater-than-or-equal
 pass	greater-than-or-equal of an integer and a float is rejected
 pass	heap string elements of a hoisted list if select by branch
@@ -3918,6 +3930,7 @@ pass	uint8 wrap of a negative runtime value reads the low byte as unsigned
 pass	uint8 wrap truncates a wide runtime value to the low 8 bits
 pass	unary negation binds tighter than binary addition
 pass	unary negation in a lambda body negates the argument
+pass	unary negation of a SECOND unusual width's minimum (Int 12) is also rejected CDZ0304
 pass	unary negation of a bound integer name yields its opposite
 pass	unary negation of a float flips the sign, preserving signed zero
 pass	unary negation of a non-numeric value is a type error
@@ -3927,6 +3940,8 @@ pass	unary negation of a quantity preserves its unit
 pass	unary negation of a runtime integer parameter negates at run time
 pass	unary negation of an arbitrary-precision integer
 pass	unary negation of an exact rational negates the numerator
+pass	unary negation of an in-range unusual-width value computes at the declared width
+pass	unary negation of an unusual-width minimum overflows its declared range and is rejected CDZ0304
 pass	under-applying a unary constructor is a type error, not a fabricated unit payload
 pass	unequal-depth payload paths bind distinctly
 pass	union cardinality with a runtime-element operand

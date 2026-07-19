@@ -1,0 +1,23 @@
+// The Discrete-Event Simulation library, written in Cadenza itself — a port of camshaft/bach as an
+// idiomatic Cadenza library over the `Sim` effect (design: implementation/design/DESIGN-discrete-event-
+// simulation.md). A simulation is ordinary tasks that `sleep` on a virtual clock a scheduler
+// FAST-FORWARDS between events; the scheduler is a `handle Sim` block.
+//
+// `cdz` reads these well-known top-level defs to build / run / test the project (a def is the manifest).
+//   cdz test implementation/des   — run the @test suite
+//
+// STATUS (2026-07-19): this packages the SINGLE-TASK fast-forward scheduler (delivered + corpus-pinned
+// in spec/semantics/27-discrete-event-simulation.sexp), so a consumer (v-music's DES-composed piece)
+// IMPORTS it rather than inlining def-sets. A monophonic — or a flattened-to-time-order polyphonic —
+// piece plays over this single task. TRUE concurrent-voice tasks await the multi-task run-sim (parked;
+// see design §6 increment 4 KNOWN LIMITATION).
+
+def name = "des"
+
+// Library modules — every source file under src/ (a wildcard, so a new module just drops in).
+def modules = ["src/*.cdz"]
+
+// The modules whose `@test` definitions form the suite (same-file with their code).
+def tests = ["src/*.cdz"]
+
+def exclude = []

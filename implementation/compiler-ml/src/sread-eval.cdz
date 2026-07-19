@@ -105,6 +105,26 @@ def se-typed-param-call() =
     | Option.None(_) => trap("a typed-param call runs end-to-end"))
 
 @test
+def se-narrow-param-out-of-range-declines() =
+  // ★ NARROW-INT ENFORCEMENT, FROM SOURCE ★ (corpus 09-functions CDZ0302): `(def (f (: a Int8)) a)` called
+  // `(f 200)` → DECLINES. 200 is out of Int8 (-128..127), so the param annotation constrains the constant arg
+  // exactly as a direct `(: 200 Int8)` does — the arg does NOT get β-reduced into the body and laundered to a
+  // wide 200. Before this slice the ML compiler DISCARDED the param type and ran to 200 (a wrong VALUE
+  // disagreeing with rcdzc). Now infer's param-fit-ok fails → TErr → None. Differential-verified vs rcdzc CDZ0302.
+  (match run-src("(do (def (f (: a Int8)) a) (def (main) (f 200)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("(f 200) to an Int8 param MUST decline (200 out of Int8 range — CDZ0302)"))
+
+@test
+def se-narrow-param-in-range-runs() =
+  // the BOUNDARY is sharp: an IN-range constant to the SAME narrow param runs. `(f 100)` with an Int8 param →
+  // 100 (100 fits Int8). Pins that the enforcement rejects ONLY the out-of-range constant, not every narrow
+  // param — the companion to the decline case (differential: rcdzc `f(100)` → 100).
+  (match run-src("(do (def (f (: a Int8)) a) (def (main) (f 100)) (export main))") with
+    | Option.Some(v) => (if v == 100 then unit else trap("(f 100) Int8 → 100"))
+    | Option.None(_) => trap("an in-range constant to a narrow param runs"))
+
+@test
 def se-param-passed-as-arg() =
   // slice-3c COMPOSITION fix: a param used as the ARG to another call — `(def (f n) (g n))`, `g(m) = m*2`,
   // `(f 21)` → 42. The call's ARGUMENT resolves in the CALLER's scope (where `n` = f's param is bound), while
@@ -131,6 +151,24 @@ def se-corpus-underscore-param-call() =
   (match run-src("(do (def (f _1) (+ _1 1)) (def (main) (f 41)) (export main))") with
     | Option.Some(v) => (if v == 42 then unit else trap("corpus (def (f _1) (+ _1 1)) called (f 41) → 42"))
     | Option.None(_) => trap("the corpus _1-param function call runs end-to-end"))
+
+@test
+def se-two-param-call() =
+  // ★ slice-3d PAYOFF ★ — a TWO-argument function call: `(def (add a b) (+ a b))` called `(add 40 2)` → 42.
+  // Full pipeline: sread reads both args (NApp(bodyId, arg1) + arg2-table entry) → resolve binds BOTH params
+  // in the body scope + resolves both args in the caller scope → infer types both params from the args → lower
+  // builds the NESTED CLet(param1, arg1, CLet(param2, arg2, body)) → eval binds both, evals. Differential vs rcdzc.
+  (match run-src("(do (def (add a b) (+ a b)) (def (main) (add 40 2)) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("(add 40 2) where add(a,b)=a+b → 42"))
+    | Option.None(_) => trap("a two-argument call runs end-to-end"))
+
+@test
+def se-two-param-call-both-used() =
+  // both args FLOW to distinct params: `(def (sub a b) (- a b))` called `(sub 50 8)` → 42 (order matters —
+  // proves arg1→param1, arg2→param2, not swapped/duplicated). Differential-verified vs rcdzc.
+  (match run-src("(do (def (sub a b) (- a b)) (def (main) (sub 50 8)) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("(sub 50 8) → 42 (arg order preserved)"))
+    | Option.None(_) => trap("a two-arg call binds args to params in order"))
 
 @test
 def se-bool-param-call() =

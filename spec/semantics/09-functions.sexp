@@ -1372,6 +1372,22 @@
   (call   main)
   (output (: 12 Int64)))
 
+(case "a flat multi-param lambda stored in a tuple is applied through curried syntax"
+  (doc    "`(let ((t (tuple (fn (a b) (+ a b))))) (((. t 0) 3) 4))` stores a FLAT 2-param lambda, projects
+           it, and applies it through CURRIED syntax `((f a) b)` → 7. The inner `((. t 0) 3)` is a PARTIAL
+           application of a projected fn (its result is still a function); β-reducing it dangled the residual
+           at emit. Instead the whole curried spine routes to one runtime `CallClosure` (materialize the
+           element + call_indirect at full arity). Distinct from a DIRECT full application `(f a b)`, and from
+           the capturing-single FULL-apply that must stay FOLDED (the case above / #A Capturing Closure …).
+           The flat-lambda companion of the curried-lambda case above.")
+  (input  (do
+            (def (main)
+              (let ((t (tuple (fn (a b) (+ a b)))))
+                (((. t 0) 3) 4)))
+            (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
 ; A PREDICATE closure — a runtime closure whose RESULT TYPE is Bool. `(fn (x) (= x k))` is a `(-> Int64
 ; Bool)` value threaded through the recursive `anyp` ("does any i in n…1 satisfy the predicate?"), which
 ; SHORT-CIRCUITS on the first `true`. The closure's result crosses the `call_indirect` boundary as a

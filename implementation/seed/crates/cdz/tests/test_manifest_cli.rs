@@ -2019,3 +2019,109 @@ fn a_failing_requires_property_shrinks_to_an_in_domain_counterexample() {
         "the shrunk @requires counterexample stays IN-DOMAIN [10,99], not below the bound: {stdout}"
     );
 }
+
+/// A property with THREE parameters is generated and checked across all three. This pins the 3-plus-param
+/// property path, which sits adjacent to a NEIGHBORING parser boundary: trunk `fd23c9d09` declines a
+/// 3-plus-param s-expr `(def (f a b c) …)`. A property `@test` — ML surface (scalar params) AND the
+/// synthesized compound `-gen` wrapper — must NOT be caught by that decline: every param is generated,
+/// and a false property yields a full three-tuple counterexample. This covers two faces. Face one:
+/// three scalar params yield a genuine overflow counterexample naming all three arguments. Face two:
+/// three compound (List) params yield a synthesized `-gen` wrapper that draws all three and runs clean.
+#[test]
+fn a_three_parameter_property_generates_and_checks_every_parameter() {
+    // Running a property (`cdz test --trials`) executes it, which resolves the value-heap runtime; CI's
+    // storeless `cargo test --workspace` (no `cargo xtask build`) has no store, so the run declines
+    // instead of producing the FAIL/PASS verdict this pins → skip storeless (the store-having gate +
+    // `@test suites` jobs exercise it fully). Same guard the sibling runtime-driving tests use.
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — a property run resolves the runtime"
+        );
+        return;
+    }
+    let d = dir("proptest-three-params");
+    // (a) Three scalar params: commutativity is always true, but a full-domain triple overflows the
+    // checked `+`, so it fails with a counterexample that names all three arguments.
+    let f = write(
+        &d,
+        "scalar.cdz",
+        "@test def three(a: Int64, b: Int64, c: Int64) = if a + b + c == c + b + a then unit else trap(\"noncomm\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        !ok,
+        "the overflow-prone three-param property fails on a large triple: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("FAIL three")
+            && stdout.contains("body trapped")
+            && stdout.contains("overflow"),
+        "a three-scalar-param property is generated across all three and reports the overflow: {stdout}"
+    );
+    // The counterexample names a three-argument call `three(_, _, _)` — proof all three were generated,
+    // not just the first two (the >2-param decline would have dropped or mis-parsed the third).
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.contains("counterexample: three(") && l.matches(',').count() == 2),
+        "the counterexample carries all THREE generated arguments: {stdout}"
+    );
+
+    // (b) Three compound (List) params: the synthesized `-gen` wrapper draws all three; the property
+    // (len >= 0) is always true, so it passes 100 trials — proving the >2-param compound path synthesizes
+    // a wrapper rather than declining.
+    let f2 = write(
+        &d,
+        "lists.cdz",
+        "@test def three_lists(xs: List(Int64), ys: List(Int64), zs: List(Int64)) = if List.len(xs) >= 0 then unit else trap(\"neg\")\n",
+    );
+    let (ok2, stdout2, stderr2) = run(&["test", &f2, "--trials", "100"]);
+    assert!(
+        ok2,
+        "a three-compound-param property synthesizes its `-gen` wrapper and passes: {stdout2}{stderr2}"
+    );
+    assert!(
+        stdout2.contains("PASS three_lists-gen"),
+        "the three-List-param property runs via a synthesized generator: {stdout2}"
+    );
+}
+
+/// A property whose parameter is annotated at an UNRECOGNIZED type declines cleanly, rather than
+/// synthesizing a generator that runs to a fabricated value. This pins the property path against trunk
+/// `64346a8ca`, which enforces param type annotations: a typed param at a type not in scope declines
+/// (CDZ0101) instead of silently running. A property `@test` routes its params through `-gen` synthesis,
+/// so the enforcement must reach that path too — an unknown-type param must NOT be fabricated and tested.
+/// The sibling with a recognized type still runs, proving the enforcement did not over-reject.
+#[test]
+fn a_property_parameter_at_an_unrecognized_type_declines_rather_than_fabricating_a_value() {
+    let d = dir("proptest-unknown-param-type");
+    // A property param at an undeclared type `Nonexistent` — the compiler must decline (CDZ0101), NOT
+    // synthesize a generator and run to a fabricated value.
+    let bogus = write(
+        &d,
+        "bogus.cdz",
+        "@test def prop_bogus(x: Nonexistent) = if x == x then unit else trap(\"neq\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &bogus]);
+    let out = format!("{stdout}{stderr}");
+    assert!(
+        !ok,
+        "a property param at an unrecognized type declines, it does not run: {out}"
+    );
+    assert!(
+        out.contains("CDZ0101") && out.contains("Nonexistent"),
+        "the decline names the unknown type (CDZ0101), not a fabricated-value run: {out}"
+    );
+
+    // The recognized-type sibling still runs 100 trials — the enforcement did not over-reject a valid param.
+    let okf = write(
+        &d,
+        "ok.cdz",
+        "@test def prop_ok(x: Int64) = if x == x then unit else trap(\"neq\")\n",
+    );
+    let (ok2, stdout2, stderr2) = run(&["test", &okf]);
+    assert!(
+        ok2 && stdout2.contains("PASS prop_ok"),
+        "a property at a recognized type still runs after the annotation-enforcement change: {stdout2}{stderr2}"
+    );
+}

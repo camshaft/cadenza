@@ -24,6 +24,29 @@ fn run(args: &[&str]) -> (bool, String, String) {
     )
 }
 
+/// Whether the value-heap runtime STORE is present beside the `cdz` binary. CI's bare `test` job runs
+/// `cargo test --workspace` with NO `cargo xtask build`, so there is no store — and `cdz run-ml`
+/// resolves the runtime (to run the module to its value) BEFORE it can report the `value <n>` verdict, so
+/// storeless it `declined`s (or errors) instead. Skip the VALUE assertion when absent; the store-having
+/// `gate` + `@test suites` jobs exercise it fully. Mirrors `run_emitted_cli`/`test_manifest_cli`'s guard.
+fn store_present() -> bool {
+    // Resolve the store dir the SAME way the runtime resolver does (`CADENZA_STORE` first, else the
+    // physical `<target>/cadenza-store`), so this guard AGREES with the storeless-rerun mechanism: xtask's
+    // storeless-CI rerun sets `CADENZA_STORE=<empty temp dir>`, and this guard must then report ABSENT so
+    // the runtime-driving value-check SKIPS — exactly as in the real storeless CI job.
+    if let Ok(dir) = std::env::var("CADENZA_STORE") {
+        return std::path::Path::new(&dir).is_dir()
+            && std::fs::read_dir(&dir)
+                .map(|mut e| e.next().is_some())
+                .unwrap_or(false);
+    }
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_cdz"))
+        .parent()
+        .and_then(|d| d.parent())
+        .map(|t| t.join("cadenza-store").exists())
+        .unwrap_or(false)
+}
+
 /// Write `src` to a unique temp `.sexp` file; return (dir, path).
 fn temp_src(tag: &str, src: &str) -> (std::path::PathBuf, String) {
     let dir = std::env::temp_dir().join(format!("cdz-runml-{tag}-{}", std::process::id()));
@@ -125,6 +148,51 @@ fn run_ml_leaves_no_driver_file_behind() {
         leaked.display(),
         out.status
     );
+}
+
+#[test]
+fn run_ml_runs_a_multi_def_nullary_main_module() {
+    // The `looks_in_ml_subset` shape gate must ADMIT a multi-definition module with a NULLARY `main` (a
+    // helper def + a main that calls it) — the ML reader resolves calls to sibling defs, so this runs
+    // end-to-end. Before the widening, the gate fast-declined any module with more than one `(def`, so a
+    // program the ML compiler ACTUALLY RUNS was reported `declined` — an under-count of real conformance.
+    // Pin the value verdict: `(do (def (g) 7) (def (main) (+ (g) 5)) (export main))` → 12.
+    let (dir, path) = temp_src(
+        "multidef",
+        "(do (def (g) 7) (def (main) (+ (g) 5)) (export main))",
+    );
+    let (ok, out, err) = run(&[&path]);
+    assert!(ok, "a multi-def module exits 0 with a verdict: {err}{out}");
+    // The VALUE verdict needs the runtime store (run-ml resolves + runs it). CI's storeless
+    // `cargo test --workspace` has no store, so skip the value-check there; the store-having gate +
+    // @test suites jobs pin `value 12`. Storeless, the exit-0 verdict contract above still holds.
+    if store_present() {
+        assert!(
+            out.trim() == "value 12",
+            "a multi-def nullary-main module runs (not fast-declined): got {out:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_ml_declines_a_type_annotated_module() {
+    // The widened shape gate must STILL fast-decline any module carrying a TYPE ANNOTATION `(: … …)`. The
+    // ML front-end reads a typed param `(: x T)` but DISCARDS `T` (no annotation enforcement yet), so an
+    // unbound type name `(: x foo)` — which the corpus requires to reject CDZ0101 — would otherwise RUN to a
+    // bogus value instead of declining. Excluding `(: ` keeps the differential HONEST: the truthful verdict
+    // for an annotation-bearing program today is `declined` (coverage-not-yet), not a fabricated value.
+    let (dir, path) = temp_src(
+        "annotated",
+        "(do (def (f (: x foo)) x) (def (main) (f 7)) (export main))",
+    );
+    let (ok, out, err) = run(&[&path]);
+    assert!(ok, "a type-annotated module exits 0: {err}{out}");
+    assert!(
+        out.trim() == "declined",
+        "a type-annotated module fast-declines (annotations not yet enforced): got {out:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

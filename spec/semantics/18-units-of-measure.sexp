@@ -133,6 +133,18 @@
   (input  (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))
   (output (: (Qty.of 5000.0 (Unit.base #"meter")) (Qty Float64 (Unit.base #"meter")))))
 
+(case "a quantity whose reference-scaled magnitude overflows its inner Int is rejected"
+  (doc    "`(Qty.of 9223372036854776 kilometer)` : `(Qty Int64 …)` scales to `9223372036854776 × 1000` at
+           its reference `meter` = 9.2e18, which EXCEEDS Int64's max (9223372036854775807). A quantity
+           displays scaled to its reference, but the scaled magnitude must FIT the inner numeric type —
+           the value form cannot render an out-of-range Int (the OLD render emitted 9223372036854776000, a
+           wrong-VALUE miscompile). Per the overflow policy (numeric-model.md §Overflow Is Defined): a
+           STATICALLY-KNOWN scaled magnitude that overflows DECLINES at compile time (CDZ0304), the constant
+           twin of the runtime scale-multiply's trap-on-overflow — so the constant and runtime paths agree.
+           A value whose scaled magnitude FITS (`5 km` → 5000 m) renders normally.")
+  (input  (do (def (main) (Qty.of 9223372036854776 (Unit.prefix kilo (Unit.base #"meter")))) (export main)))
+  (error  CDZ0304))
+
 (case "a family quantity displays scaled exactly to its reference (Rational)"
   (doc    "`5 mile` = `(Qty.of (Rational.of 5 1) (Unit.of #\"mile\"))` DISPLAYS as `201168/25 meter`
            EXACTLY: mile = 201168/125 m, so 5 mile = 5·201168/125 = 201168/25 m, scaled at the reference

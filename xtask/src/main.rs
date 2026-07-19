@@ -3197,6 +3197,8 @@ fn check(paths: &Paths, profile: &str) {
         "implementation/agent-harness",
         "implementation/iterators",
         "implementation/choreography",
+        "implementation/music",
+        "implementation/des",
     ] {
         let name = format!("cdz-test {suite}");
         let cmd = format!("{cdz} test {suite}");
@@ -3226,10 +3228,36 @@ fn check(paths: &Paths, profile: &str) {
     // tests): a correctly-guarded test SKIPS (its guard now reports the store absent — the guards +
     // resolvers honor `CADENZA_STORE` uniformly), so the rerun stays GREEN; a missing/wrong guard RUNS,
     // hits "no runtime in the store", and FAILS here — catching the CI-red BEFORE the MR lands rather
-    // than as an integrator fix-forward. Cheap: test-EXECUTION only (the `build`/`test` steps above
-    // already compiled these crates); the store-skipped tests don't run the runtime. Concierge ruling
-    // (2026-07-19): the surgical, contention-aware fix vs a full second `cargo test --workspace`.
-    log.step_native("storeless-rerun", || storeless_rerun(paths));
+    // than as an integrator fix-forward. Concierge ruling (2026-07-19): the surgical, contention-aware
+    // fix vs a full second `cargo test --workspace`.
+    //
+    // CONTENT-CACHED (2026-07-19): this re-runs the full `rcdzc --lib` (2176 tests) + 2 cdz targets
+    // storeless, ~230s on a loaded host — too costly to pay EVERY batch when a store-guard can only
+    // regress if the rcdzc/cdz TEST sources change. The rcdzc `--lib` tests are COMPILED INTO the `cdz`
+    // binary (rcdzc is a lib dep of cdz), so editing them rebuilds `cdz`; the cdz integration tests live
+    // in `cdz/tests/`. So key the cached verdict on (cdz binary ‖ the cdz tests tree): either input
+    // changing flips the key -> full storeless re-run; both unchanged -> the guarded test set is
+    // unchanged -> skip the ~230s sweep. Same mechanism as the compiler-ml suite. Fail-open (no cache
+    // handle -> always run), and only a just-observed GREEN is ever recorded (a false green is impossible).
+    let storeless_cache = CachedStep::new(
+        paths,
+        "storeless-rerun",
+        Path::new(&cdz),
+        &paths.seed.join("crates/cdz/tests"),
+    );
+    if let Some(cache) = &storeless_cache
+        && cache.is_green()
+    {
+        println!(
+            "  ✓ storeless-rerun (cached green @ {} — cdz binary unchanged, guarded test set unchanged)",
+            cache.short_key()
+        );
+    } else {
+        log.step_native("storeless-rerun", || storeless_rerun(paths));
+        if let Some(cache) = &storeless_cache {
+            cache.record_green();
+        }
+    }
 
     // Citation-coverage regression gate: fail if a `//=` / `//#` duvet citation was deleted/stranded
     // (live cited < the committed floor). Skips only when `duvet` isn't installed; a present-but-

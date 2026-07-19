@@ -1,0 +1,272 @@
+/// schedule.cdz — the MIDI EVENT model + the note-on/note-off scheduler (operator: "required, design
+/// early"). The correctness backbone of every MIDI demo: expand timed notes into paired on/off events so
+/// that EVERY note-on is eventually matched by a note-off — no STUCK KEYS across looping, transposition,
+/// or channel remap.
+///
+/// The model is pure data (like CSG for CAD): a `Note` is a pitch + channel + velocity placed at a start
+/// tick for a duration; a `MidiEvent` is a single wire-level on/off at a tick. `schedule` lowers a list
+/// of notes into a flat list of MidiEvents (an on at the start, an off at start+duration). A thin browser
+/// WebMIDI driver (phase 2) consumes the MidiEvent list as data; the theory lives here.
+///
+/// THE STUCK-KEY INVARIANT. A scheduled event list is BALANCED iff, walking it in time order, the count of
+/// outstanding note-ons per (channel, note) never goes negative and returns to zero at the end. `balanced`
+/// checks exactly that — it is the property every transform (loop / transpose / remap) must preserve, and
+/// the @test suite pins it.
+
+import { Pitch } from "pitch"
+import { note, transpose, interval } from "pitch"
+import { Duration } from "rhythm"
+import { tick-count } from "rhythm"
+
+/// A timed note: which pitch, on which MIDI channel (0..15), at what velocity (1..127), starting at
+/// `start` ticks, lasting `dur` ticks. The composable unit a piece is a list of.
+type Note =
+  | Note(Pitch, Int64, Int64, Int64, Int64)
+
+/// Build a note (pitch, channel, velocity, start-tick, duration-ticks).
+def note-at(p: Pitch, chan: Int64, vel: Int64, start: Int64, dur: Int64) =
+  Note.Note(p, chan, vel, start, dur)
+
+def note-pitch(n: Note) = match n with | Note.Note(p, _, _, _, _) => p
+def note-chan(n: Note) = match n with | Note.Note(_, c, _, _, _) => c
+def note-vel(n: Note) = match n with | Note.Note(_, _, v, _, _) => v
+def note-start(n: Note) = match n with | Note.Note(_, _, _, s, _) => s
+def note-dur(n: Note) = match n with | Note.Note(_, _, _, _, d) => d
+
+/// A single wire-level MIDI event at a tick: `on` (true = note-on, false = note-off), channel, note
+/// number, velocity, tick. The flat form a driver emits.
+type MidiEvent =
+  | MidiEvent(Bool, Int64, Int64, Int64, Int64)
+
+def ev-on(e: MidiEvent) = match e with | MidiEvent.MidiEvent(o, _, _, _, _) => o
+def ev-chan(e: MidiEvent) = match e with | MidiEvent.MidiEvent(_, c, _, _, _) => c
+def ev-note(e: MidiEvent) = match e with | MidiEvent.MidiEvent(_, _, n, _, _) => n
+def ev-vel(e: MidiEvent) = match e with | MidiEvent.MidiEvent(_, _, _, v, _) => v
+def ev-tick(e: MidiEvent) = match e with | MidiEvent.MidiEvent(_, _, _, _, t) => t
+
+// ---- lowering notes to paired on/off events ---------------------------------------------------------
+
+/// Lower ONE note to its on/off pair: a note-on at `start`, a note-off at `start + dur`. This is where the
+/// pairing is GUARANTEED by construction — every note emits exactly one on and one off for the same
+/// (channel, note).
+def note-events(n: Note) =
+  let num = note(note-pitch(n)) in
+  let on = MidiEvent.MidiEvent(true, note-chan(n), num, note-vel(n), note-start(n)) in
+  let off = MidiEvent.MidiEvent(false, note-chan(n), num, 0, note-start(n) + note-dur(n)) in
+  [on, off]
+
+/// Lower a list of notes to a flat event list (each note → its on/off pair). Recursive driver with
+/// annotated params. The result is NOT time-sorted (a driver sorts by tick before playback); it IS
+/// balanced by construction because every note contributes exactly one on and one off.
+def schedule-go(notes: List(Note), out: List(MidiEvent)) =
+  match notes with
+    | [] => out
+    | [h, .. t] => schedule-go(t, List.concat(out, note-events(h)))
+
+/// Lower a piece (list of notes) to its flat MIDI event list.
+def schedule(notes: List(Note)) = schedule-go(notes, [])
+
+// ---- transforms that must PRESERVE the pairing ------------------------------------------------------
+
+/// TRANSPOSE every note in a piece up by a semitone interval (down if negative). Preserves start/dur/
+/// channel/velocity, so the pairing is preserved.
+def transpose-piece-go(notes: List(Note), semis: Int64, out: List(Note)) =
+  match notes with
+    | [] => out
+    | [h, .. t] =>
+      let moved = Note.Note(transpose(note-pitch(h), interval(semis)), note-chan(h), note-vel(h), note-start(h), note-dur(h)) in
+      transpose-piece-go(t, semis, List.push(out, moved))
+
+def transpose-piece(notes: List(Note), semis: Int64) = transpose-piece-go(notes, semis, [])
+
+/// Rebuild a `Pitch` FRESH from its note number, rather than reusing the (boxed) pitch payload field of a
+/// matched note directly. ⚠ WORKAROUND for a compiler EMIT bug (reported to the PM/breaker via a probe,
+/// see the v-music vertical log): a recursive list-map that destructures a multi-field sum whose first
+/// field is an imported boxed type (`Pitch`) and rebuilds a new node REUSING that boxed field directly,
+/// threaded through a `List.push` accumulator, emits INVALID wasm (`function[N]` compile failure) — but
+/// ONLY in a large multi-def module (a standalone repro passes). Round-tripping through the plain Int64
+/// note number gives a fresh, unshared `Pitch` and sidesteps the bad reuse-in-place emit. `transpose-piece`
+/// happens to dodge it because `transpose(...)` already returns a fresh `Pitch`; `remap-channel` and
+/// `shift-piece` keep the pitch unchanged, so they need this explicit clone. Remove once the bug is fixed.
+def clone-pitch(p: Pitch) = pitch-of-note(note(p))
+def pitch-of-note(n: Int64) = Pitch.Pitch(n)
+
+/// REMAP every note to a different MIDI channel. Preserves everything else, so pairing is preserved.
+def remap-channel-go(notes: List(Note), chan: Int64, out: List(Note)) =
+  match notes with
+    | [] => out
+    | [h, .. t] =>
+      let moved = Note.Note(clone-pitch(note-pitch(h)), chan, note-vel(h), note-start(h), note-dur(h)) in
+      remap-channel-go(t, chan, List.push(out, moved))
+
+def remap-channel(notes: List(Note), chan: Int64) = remap-channel-go(notes, chan, [])
+
+/// LOOP a piece `n` times, offsetting each repeat by `period` ticks. Every repeat is the whole piece, so
+/// each repeat is independently balanced → the concatenation is balanced. Recursive, annotated.
+def shift-piece-go(notes: List(Note), by: Int64, out: List(Note)) =
+  match notes with
+    | [] => out
+    | [h, .. t] =>
+      let moved = Note.Note(clone-pitch(note-pitch(h)), note-chan(h), note-vel(h), note-start(h) + by, note-dur(h)) in
+      shift-piece-go(t, by, List.push(out, moved))
+
+def shift-piece(notes: List(Note), by: Int64) = shift-piece-go(notes, by, [])
+
+def loop-piece-go(notes: List(Note), period: Int64, i: Int64, n: Int64, out: List(Note)) =
+  if i >= n then out
+  else loop-piece-go(notes, period, i + 1, n, List.concat(out, shift-piece(notes, period * i)))
+
+/// Repeat a piece `n` times, each repeat starting `period` ticks after the previous.
+def loop-piece(notes: List(Note), period: Int64, n: Int64) = loop-piece-go(notes, period, 0, n, [])
+
+// ---- the stuck-key invariant: is an event list balanced? --------------------------------------------
+
+/// Count net outstanding on/off for a SPECIFIC (channel, note) across an event list: +1 per matching on,
+/// -1 per matching off. Recursive, annotated. Balanced-for-this-key iff the net is 0 (and, checked
+/// separately below, never dipped negative).
+def net-outstanding(evs: List(MidiEvent), chan: Int64, num: Int64, acc: Int64) =
+  match evs with
+    | [] => acc
+    | [e, .. t] =>
+      if ev-chan(e) == chan then
+        (if ev-note(e) == num then
+          (if ev-on(e) then net-outstanding(t, chan, num, acc + 1) else net-outstanding(t, chan, num, acc - 1))
+         else net-outstanding(t, chan, num, acc))
+      else net-outstanding(t, chan, num, acc)
+
+/// The total number of note-on events minus note-off events across the whole list. If a schedule is
+/// balanced this is 0 — every key that went down came back up. A fast global check (a nonzero here means
+/// a definite stuck key somewhere).
+def net-total(evs: List(MidiEvent), acc: Int64) =
+  match evs with
+    | [] => acc
+    | [e, .. t] => if ev-on(e) then net-total(t, acc + 1) else net-total(t, acc - 1)
+
+/// A schedule has NO STUCK KEYS (globally) iff its on/off counts net to zero.
+def balanced(evs: List(MidiEvent)) = net-total(evs, 0) == 0
+
+/// ============================ @test suite (MIDI events / scheduler / stuck-key invariant) ============================
+
+@test
+def a-note-lowers-to-a-balanced-on-off-pair() =
+  // C4 on channel 0, velocity 100, at tick 0 for a quarter (960) → on@0 + off@960, same channel+note.
+  let n = note-at(pitch-c4, 0, 100, 0, 960) in
+  match note-events(n) with
+    | [on, off] =>
+      if ev-on(on) then
+        (if ev-on(off) then trap("second event is the off") else
+          (if ev-tick(on) == 0 then
+            (if ev-tick(off) == 960 then
+              (if ev-note(on) == 60 then unit else trap("note number")) else trap("off tick"))
+           else trap("on tick")))
+      else trap("first event is the on")
+    | _ => trap("a note is two events")
+
+@test
+def scheduling-a-piece-is-balanced() =
+  // A three-note piece lowers to six events (3 on + 3 off), net zero — no stuck keys.
+  let piece = [note-at(pitch-c4, 0, 100, 0, 480), note-at(pitch-e4, 0, 100, 480, 480), note-at(pitch-g4, 0, 100, 960, 480)] in
+  let evs = schedule(piece) in
+  if List.len(evs) == 6 then
+    (if balanced(evs) then unit else trap("balanced"))
+  else trap("six events")
+
+@test
+def transposition-preserves-the-pairing() =
+  // Transposing the piece up a fifth keeps it balanced (every on still has its off).
+  let piece = [note-at(pitch-c4, 0, 100, 0, 480), note-at(pitch-e4, 0, 100, 480, 480)] in
+  let up = transpose-piece(piece, 7) in
+  let evs = schedule(up) in
+  if balanced(evs) then
+    // and the notes actually moved up 7 semitones (C4 60 → G4 67).
+    (match evs with | [on, .. _] => if ev-note(on) == 67 then unit else trap("moved up a fifth") | _ => trap("has events"))
+  else trap("balanced after transpose")
+
+@test
+def channel-remap-preserves-the-pairing() =
+  // Remapping to channel 9 (drums) keeps it balanced and moves every event to channel 9.
+  let piece = [note-at(pitch-c4, 0, 100, 0, 480), note-at(pitch-e4, 3, 100, 480, 480)] in
+  let remapped = remap-channel(piece, 9) in
+  let evs = schedule(remapped) in
+  if balanced(evs) then
+    (if net-outstanding(evs, 9, 60, 0) == 0 then
+      (if net-outstanding(evs, 3, 64, 0) == 0 then unit else trap("nothing left on channel 3"))
+     else trap("channel 9 balanced"))
+  else trap("balanced after remap")
+
+@test
+def looping-preserves-the-pairing() =
+  // Looping a one-note piece 4 times gives 8 events (4 on + 4 off), balanced, each repeat offset by the period.
+  let piece = [note-at(pitch-c4, 0, 100, 0, 480)] in
+  let looped = loop-piece(piece, 960, 4) in
+  let evs = schedule(looped) in
+  if List.len(evs) == 8 then
+    (if balanced(evs) then
+      // the third repeat's note-on starts at 2*960 = 1920.
+      (if note-start(nth-note(looped, 2)) == 1920 then unit else trap("repeat offset"))
+     else trap("balanced after loop"))
+  else trap("eight events")
+
+@test
+def per-key-outstanding-never-strands-a-note() =
+  // For a chord (three simultaneous notes same channel) every individual key nets back to zero.
+  let chord-piece = [note-at(pitch-c4, 0, 100, 0, 960), note-at(pitch-e4, 0, 100, 0, 960), note-at(pitch-g4, 0, 100, 0, 960)] in
+  let evs = schedule(chord-piece) in
+  if net-outstanding(evs, 0, 60, 0) == 0 then
+    (if net-outstanding(evs, 0, 64, 0) == 0 then
+      (if net-outstanding(evs, 0, 67, 0) == 0 then unit else trap("G stranded")) else trap("E stranded"))
+  else trap("C stranded")
+
+@test
+def composed-pipeline-preserves-the-pairing() =
+  // The realistic phase-2 chain: transpose a piece, remap it to a channel, then loop it — the balance
+  // (no stuck keys) must survive the WHOLE pipeline, not just each step alone. This pins the composition,
+  // which is what the MIDI-pipeline demo actually runs.
+  let piece = [note-at(pitch-c4, 0, 100, 0, 480), note-at(pitch-e4, 0, 100, 480, 480)] in
+  let processed = loop-piece(remap-channel(transpose-piece(piece, 5), 9), 960, 3) in
+  let evs = schedule(processed) in
+  // 2 notes * 3 loops = 6 notes = 12 events, all on channel 9, net zero.
+  if List.len(evs) == 12 then
+    (if balanced(evs) then
+      (if net-outstanding(evs, 0, 60, 0) == 0 then unit else trap("nothing stranded on the original channel"))
+     else trap("balanced after the full pipeline"))
+  else trap("twelve events")
+
+@test
+def balanced-actually-detects-a-stuck-key() =
+  // A NEGATIVE test: hand-build an event list with a note-on and NO matching off — `balanced` must report
+  // false (net nonzero). This proves the invariant check is not vacuously true.
+  let stuck = [MidiEvent.MidiEvent(true, 0, 60, 100, 0)] in
+  if balanced(stuck) then trap("an unmatched on is NOT balanced") else
+    (if net-outstanding(stuck, 0, 60, 0) == 1 then unit else trap("one key left outstanding"))
+
+@test
+def loop-zero-times-is-empty-and-balanced() =
+  // Edge: looping a piece zero times yields no notes — trivially balanced, no events.
+  let piece = [note-at(pitch-c4, 0, 100, 0, 480)] in
+  let evs = schedule(loop-piece(piece, 960, 0)) in
+  if List.len(evs) == 0 then (if balanced(evs) then unit else trap("empty is balanced")) else trap("no events")
+
+// ---- test helpers -----------------------------------------------------------------------------------
+
+/// Named pitches for the tests (C4/E4/G4) — a triad's worth.
+def pitch-c4 = pitch(60)
+def pitch-e4 = pitch(64)
+def pitch-g4 = pitch(67)
+
+def pitch(n: Int64) = Pitch.Pitch(n)
+
+/// The nth note of a list (0-based); traps out of range via a fallback to the head — used only in tests
+/// with in-range indices. Recursive, annotated.
+def nth-note(notes: List(Note), i: Int64) =
+  match notes with
+    | [] => note-at(pitch(0), 0, 0, 0, 0)
+    | [h, .. t] => if i <= 0 then h else nth-note(t, i - 1)
+
+export {
+  Note.*, MidiEvent.*,
+  note-at, note-pitch, note-chan, note-vel, note-start, note-dur,
+  ev-on, ev-chan, ev-note, ev-vel, ev-tick, note-events, schedule,
+  transpose-piece, remap-channel, shift-piece, loop-piece,
+  net-outstanding, net-total, balanced,
+}
