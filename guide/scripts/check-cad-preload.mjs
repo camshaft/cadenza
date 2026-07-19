@@ -354,13 +354,12 @@ if (heapImport) {
       // GUARDED DISPOSE: jco's generated [resource-drop] glue OOBs (`RuntimeError: memory access out of
       // bounds` at heap.js drop → wasm-function[27]) when tearing down a LARGE heap value's resource handle
       // — a jco/browser-path tooling bug (v-memory-safety + v-runtime verified the SAME component's native
-      // drop is clean + iterative op_drop doesn't overflow; only jco's host glue trips). make()/encode() are
-      // fine — ONLY the handle's Symbol.dispose() throws. Dispose it explicitly INSIDE a try/catch so the
-      // known OOB is consumed deterministically here (once) rather than thrown UNGUARDED by GC finalization at
-      // process-exit (which would fail this CI job after the ✓ line). Verified: guarded dispose → the OOB is
-      // swallowed once, the already-disposed handle is not re-dropped by finalization, and the gate exits 0.
-      // This is a WORKAROUND for the jco resource-drop bug (tracked); it lets the big snowflake mesh be gated
-      // here instead of deferred. Remove the try/catch once the jco heap-drop function[27] OOB is fixed.
+      // drop is clean; only jco's host glue trips). make()/encode() are fine — ONLY the handle's teardown
+      // throws, whether by an explicit Symbol.dispose() OR by GC FINALIZATION mid-run if the handle goes
+      // unreferenced. So dispose it explicitly INSIDE a try/catch: consumes the known OOB deterministically
+      // here (once), instead of an unguarded finalization throw that fails this CI job after the ✓ line.
+      // (NB: the rcdzc emit fix 2d3bb98ce for the compiler-ml function[27] freeze did NOT resolve THIS jco
+      // heap-drop OOB — verified it still trips without the guard. Remove once jco's resource-drop is fixed.)
       try { handle?.[Symbol.dispose]?.(); } catch { /* known jco resource-drop-glue OOB on a large heap value — consumed */ }
       const mesh = await meshFromSolid(rendered);
       if (!mesh.ok) {

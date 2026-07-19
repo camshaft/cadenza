@@ -237,6 +237,20 @@ def lw-annlit-signed-narrow() =
       | Option.None(_) => trap("a signed annotated literal lowers")))
 
 @test
+def lw-narrow-arith-cbin-preserves-width() =
+  // narrow ARITH lowers to a CBin carrying the NARROW RESULT width — `Int8 + Int8` → CBin(op, signed, 8, …),
+  // NOT the canonical width 64. This is the lowering-level twin of infer's id-same-narrow-arith-preserves-width
+  // + the literal-level lw-annlit-lowers-to-narrow-cnum: the width flows literal→infer→lower so eval's CBin
+  // overflow-check fires at width 8 (Int8 100+20=120 fits; 100+100=200 traps — pinned in eval-db). Completes
+  // the narrow-width flow across all three columns (infer TIntW → lower CBin width → eval overflow-check).
+  (match add-node(empty-tree(), Node.NAnnLit(100, 1, 8)) with | (lId, t1) =>
+    (match add-node(t1, Node.NAnnLit(20, 1, 8)) with | (rId, t2) =>
+      (match add-node(t2, Node.NBin(43, lId, rId)) with | (root, tree) =>
+        (match lower-tree(tree, root) with
+          | Option.Some(Core.CBin(_, _, w, _, _)) => (if w == 8 then unit else trap("Int8 + Int8 lowers to a CBin of width 8, not widened to 64"))
+          | _ => trap("Int8 + Int8 lowers to a CBin")))))
+
+@test
 def lw-napp-nullary-inlines-body-slice2() =
   // SLICE-2 NULLARY-CALL SEMANTICS: a nullary call NApp(calleeBodyId, -1) lowers by INLINING the callee body's
   // Core (β-reduction over zero args — no new Core node). Body = NLit(42) → the call lowers to CNum 42.

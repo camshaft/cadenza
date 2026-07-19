@@ -162,6 +162,23 @@ def rd-nested-distinct-bindings() =
       | _ => trap("root is a let")))
 
 @test
+def rd-outer-var-in-inner-let-value() =
+  // "let a = 1 in let b = a in b" → the INNER let's VALUE is `a`, which must resolve to the OUTER let. This
+  // exercises the scope-threading DISTINCT from rd-nested-distinct-bindings (which uses the outer var in the
+  // inner BODY): here the outer binding must be visible in the inner let's VALUE position, resolved in the
+  // env the outer let extended BEFORE the inner let's own binding is added (let is non-recursive — the inner
+  // value sees the outer scope, not the inner binder). Pins that resolve threads the outer env into a nested
+  // let-value, the path a `let b = <expr-using-outer> in …` takes.
+  (match parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), var(1), inkw(), var(2)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(_, _, innerLetId)) =>
+        (match node-at(tree, innerLetId) with
+          | Option.Some(Node.NLet(_, valId, _)) =>
+            (if resolved-to(tree, root, valId, root) then unit else trap("inner let's value `a` binds to the OUTER let"))
+          | _ => trap("body is the inner let"))
+      | _ => trap("root is a let")))
+
+@test
 def rd-milestone-body-var-bound() =
   // THE MILESTONE `let x = 2 in x * 3 + 1`: the `x` in the body resolves to the let binder; the two literals
   // (3, 1) and the value literal (2) fill NO resolve facts. Exactly one resolved fact (the single NVar).

@@ -59,9 +59,10 @@ export type RunResult =
 
 /// One `@test`'s outcome. `pass` = the test export returned cleanly; `!pass` with `error` = it trapped
 /// (assertion failure). Scalar AND compound property `@test`s now run live (scalar via generated call-args,
-/// compound via a `Test.gen-int` pool); `deferred` is reported only for a parameterized `@test` whose
-/// parameter shape the compiler couldn't synthesize a generator for (a not-yet-supported leaf) — NOT failed,
-/// so the UI can show it as pending rather than dropping it.
+/// compound via a `Test.gen-int` pool). `deferred` (NOT failed — the UI shows it pending, not dropped) is
+/// reported when a parameterized `@test` can't be driven, for either of two reasons: its parameter shape has
+/// no synthesized generator yet (a not-yet-supported leaf), OR a property run hit an unanswered/name-drifted
+/// gen host op (a wrapper that slipped classification, or a `Test.gen-int` mismatch) rather than a real trap.
 export interface TestResult {
   name: string;
   pass: boolean;
