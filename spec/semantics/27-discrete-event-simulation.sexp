@@ -400,6 +400,44 @@
             (export main)))
   (output (: 5000000000 Int64)))
 
+(case "a stored continuation is popped from a time-ordered pqueue (tuple-payload match) and resumed"
+  (doc    "The multi-task step over the single-escaping-continuation case: the scheduler's pending
+           resumptions live in a time-ordered priority queue whose entries are `(waketime, boxed-k, rest)`
+           — a single tuple-payload ctor destructured into 3 binders (`(PQCons (Tuple Instant KBox PQ))`
+           arrives as ONE payload, the same single-tuple-payload distinction as fold_ctor_match slice-2,
+           not N separate payload args). Popping the earliest event match-binds all three fields, then
+           extracts and applies the boxed continuation. This exercises the pqueue POP that a multi-task
+           run-sim is built on: `(match q ((PQCons (tuple wake kb rest)) (match kb ((KBox k) (k unit)))))`.
+           The continuation is a deferred resume-thunk closing over its wake instant (`(fn (_u) (resume
+           unit wake))`), extracted THROUGH the multi-binder tuple pattern and applied — so `(now)` reads
+           the advanced clock → 5_000_000_000. This declined until v-inference extended `fold_ctor_match`
+           to the multi-payload/tuple-payload path (each tuple binder substituted to its `Elem(i)`
+           projection) — the reach beyond the single-payload single-binder extract; it regression-locks
+           that a continuation stored in a pqueue entry and popped via a multi-field match still folds.
+           A `pass`→`fail` flip is a miscompile (continuation not applied / clock not advanced / resumed
+           at the pre-pop state).")
+  (input  (do
+            (type Instant (Instant UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (type KBox (KBox (-> Unit Unit)))
+            (type PQ PQNil (PQCons (Tuple Instant KBox PQ)))
+            (def (pop-apply (: q PQ))
+              (match q
+                ((PQ.PQNil _) unit)
+                ((PQ.PQCons (tuple wake kb rest)) (match kb ((KBox.KBox k) (k unit))))))
+            (effect Sim
+              (op sleep (-> Instant Unit))
+              (op now   (-> Unit Instant)))
+            (def (main)
+              (handle Sim (Instant.Instant 0)
+                ( (now   (u) s (resume s s))
+                  (sleep (wake) s
+                    (pop-apply (PQ.PQCons (tuple wake (KBox.KBox (fn (_u) (resume unit wake))) (PQ.PQNil ()))))) )
+                (do (Sim.sleep (Instant.Instant 5000000000))
+                    (inst-ns (Sim.now)))))
+            (export main)))
+  (output (: 5000000000 Int64)))
+
 ; ────────────────────────────────────────────────────────────────────────────────────────────────
 ; Increment 1 — event-queue determinism edge cases (design §8: guard the §3.4 FIFO tie-break at N=3,
 ; interleaved times, and the sleep(0)/pop-then-reinsert scheduler-step primitive). Pure substrate.

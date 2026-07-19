@@ -2134,9 +2134,10 @@ pub fn fold_ctor_match(db: &mut Db, node: StructId) -> Option<StructId> {
     };
     // The scrutinee must be a VISIBLE ctor `(Ctor payload)` — else leave it a runtime match.
     let (disc, _head, args) = reduce_to_visible_ctor(db, scrutinee)?;
-    // A single-payload ctor. The payload may itself be a TUPLE destructured by a tuple sub-pattern (slice
-    // 2) — a variant declared `(Ctor (Tuple A B C))` still arrives as ONE payload arg (the tuple). A
-    // nullary (`args.is_empty()`) ctor binds nothing; a genuine multi-arg application declines here.
+    // This fold handles ONLY a single-payload ctor (`args.len() == 1`). The one payload may itself be a
+    // TUPLE destructured by a tuple sub-pattern (slice 2) — a variant declared `(Ctor (Tuple A B C))` still
+    // arrives as ONE payload arg (the tuple). Both a NULLARY (`args.is_empty()`, binds nothing) and a
+    // genuine MULTI-arg application decline to `None` here (left a runtime match).
     if args.len() != 1 {
         return None;
     }
