@@ -11,7 +11,7 @@
 /// `read-form` + a test here. Reuses `strlex`'s char helpers (`char-at`, `is-digit`, `scan-number`) and
 /// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
 
-import { Node, Tree, empty-tree, add-node, node-at, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit } from "parse-db"
+import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit } from "parse-db"
 import { recognize, is-int-type, ty-signed, ty-width } from "int-type"
 import { fits-width } from "int-width"
 
@@ -141,11 +141,29 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
       else (if (sym == "and") then read-and-form(s, a0, tree)
       else (if (sym == "or") then read-or-form(s, a0, tree)
       else (if (sym == "not") then read-not-form(s, a0, tree)
-      else
-        (match read-form(s, a0, tree) with | (leftId, a1, t1) =>
-          (match read-form(s, a1, t1) with | (rightId, a2, t2) =>
-            (let a3 = close-paren(s, a2) in
-             (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a3, t3))))))))))))))
+      else read-app-or-bin(s, sym, a0, tree))))))))))
+
+/// The paren-form fallthrough head `sym` (not a keyword/op-symbol): either a CALL to a def-name or a binary
+/// op. slice-3b: if `sym` is a known def-name AND the form is NULLARY (the atom is immediately followed by
+/// `)`), it's a call → `NApp(defBodyId, -1)`. Otherwise (unknown name, or a form with operands) read two
+/// operands as `NBin(op-code-of(sym), …)` — a real op folds; an unknown name gives op -1 → infer TErr → decline.
+/// (A call WITH arguments is the param slice — for now it lands in the NBin arm and declines.)
+def read-app-or-bin(s: String, sym: String, a0: Int64, tree: Tree) =
+  (match def-body-of(tree, name-id(sym)) with
+    | Option.Some(bodyId) => (if (char-at(s, skip-space(s, a0)) == ")") then read-nullary-call(s, a0, bodyId, tree) else read-bin-form(s, sym, a0, tree))
+    | Option.None(_) => read-bin-form(s, sym, a0, tree))
+
+/// A nullary call `(mk)`: emit `NApp(bodyId, -1)` and consume the closing `)`.
+def read-nullary-call(s: String, a0: Int64, bodyId: Int64, tree: Tree) =
+  (let k = skip-space(s, a0) in
+   (match add-node(tree, Node.NApp(bodyId, 0 - 1)) with | (id, t1) => (id, k + 1, t1)))
+
+/// A prefix binary op `(sym a b)`: read two operands + emit `NBin(op-code-of(sym), a, b)`.
+def read-bin-form(s: String, sym: String, a0: Int64, tree: Tree) =
+  (match read-form(s, a0, tree) with | (leftId, a1, t1) =>
+    (match read-form(s, a1, t1) with | (rightId, a2, t2) =>
+      (let a3 = close-paren(s, a2) in
+       (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a3, t3)))))
 
 /// After `(:` (index `i` past the `:` head): a TYPE ANNOTATION `(: <literal> TypeName)` — the range-check
 /// an integer annotation performs. This slice (2a-ii) handles a LITERAL operand at a fixed-width integer
@@ -530,6 +548,15 @@ def sr-module-non-main-first-def-declines() =
   // a helper def before `main` is out of subset (the reader peels only a leading nullary `main`) → decline.
   (match read-source("(do (def (helper) 1) (def (main) 2) (export main))") with | (root, tree) =>
     (if is-var(tree, root, 0) then unit else trap("non-main first def declines to unbound NVar(0)")))
+
+@test
+def sr-unknown-name-call-declines() =
+  // slice-3b-i (call-resolution arm, behavior-preserving): a nullary paren whose head is an UNKNOWN name
+  // `(foo)` (NOT a recorded def) routes read-app-or-bin → read-bin-form → NBin(op -1). Pins that the new
+  // NApp arm fires ONLY for a recorded def-name — read-do-form doesn't record defs yet (slice-3b-ii), so the
+  // def-table is empty and `(foo)` reads as an (ill-typed) NBin, not a spurious NApp.
+  (match read-source("(foo)") with | (root, tree) =>
+    (if is-bin-op(tree, root, 0 - 1) then unit else trap("unknown-name `(foo)` → NBin(-1), not a spurious NApp")))
 
 @test
 def sr-do-form-in-cycle-reads() =

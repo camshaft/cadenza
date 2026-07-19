@@ -216,6 +216,22 @@
   (input  (= (Set.union (Set.of (list 1 2 3)) (Set.of (list 1 2 3))) (Set.of (list 1 2 3))))
   (output (: true Bool)))
 
+(case "intersection of a set with itself is the set (idempotent)"
+  (doc    "`(Set.intersection (Set.of (list 1 2 3)) (Set.of (list 1 2 3)))` is {1, 2, 3} — every element is
+           in both operands, so the intersection is the whole set. Pins A ∩ A = A, the intersection
+           companion of the union-idempotent law above; an intersection that de-duplicated incorrectly or
+           dropped a shared element would fail this. MUST be true.")
+  (input  (= (Set.intersection (Set.of (list 1 2 3)) (Set.of (list 1 2 3))) (Set.of (list 1 2 3))))
+  (output (: true Bool)))
+
+(case "the difference of a set with the empty set is the set (identity)"
+  (doc    "`(Set.difference (Set.of (list 1 2 3)) (Set.of (list)))` is {1, 2, 3} — removing nothing leaves
+           the set unchanged. Pins A ∖ ∅ = A, the identity element of difference and the companion of the
+           self-difference law A ∖ A = ∅ above (the two boundaries of `difference`: subtracting everything
+           gives empty, subtracting nothing gives the whole set). MUST be true.")
+  (input  (= (Set.difference (Set.of (list 1 2 3)) (Set.of (list))) (Set.of (list 1 2 3))))
+  (output (: true Bool)))
+
 (case "union is associative"
   (doc    "`(A ∪ B) ∪ C` equals `A ∪ (B ∪ C)` for overlapping A={1,2}, B={2,3}, C={3,4} — the union
            regrouping does not change the result (both are {1,2,3,4}). The MULTI-way companion of

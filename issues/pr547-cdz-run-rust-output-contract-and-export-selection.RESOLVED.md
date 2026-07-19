@@ -42,3 +42,16 @@ differential-orchestration subcommand — not nits. #2/#3 are the same stdout-ve
 contract violation on two failure paths; #4 is a determinism issue that matters specifically for
 the differential/oracle use case this subcommand exists for; #1 is a silent-wrong-export hazard.
 Owner = v-cdz-tooling (owns the `cdz` CLI + this subcommand).
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk 03736613c): all 4 concerns fixed in
+implementation/seed/crates/cdz/src/main.rs `run_run_rust` (main.rs:1198).
+• Comment 1 (arbitrary export): the naive first-`pub fn` split is gone — now uses the SOLE exported pub fn;
+  if the module has SEVERAL, does NOT guess, requires `--call` ("exports {N} functions … pass --call NAME").
+  Comment cites "Copilot PR #547: splitting on the first pub fn picked an arbitrary export."
+• Comments 2+3 (contract violations): `current_exe`/env + harness failures now print an `error <msg>` VERDICT
+  to stdout + `ExitCode::SUCCESS` (exit 0), NOT stderr+FAILURE — "the fuzzer's oracle always expects a verdict
+  line (the sole non-zero exit is a source READ error)." Doc contract (main.rs:318-320) carves out read-error +
+  ambiguous-`--call` usage as the only non-zero exits.
+• Comment 4 (export ambiguity) = same as Comment 1, resolved by the require-`--call` path.
+Owner (cdz-tooling/fuzzer) resolved — no corpus-bugfix action.
