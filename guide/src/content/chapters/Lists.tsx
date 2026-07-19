@@ -23,6 +23,13 @@ export default function Lists() {
       </P>
       <Runnable source={`(List.push (list 1 2) 3)`} />
       <P>
+        <C>List.prepend</C> is the mirror of <C>push</C>: it adds an element to the <em>front</em> rather
+        than the end. It takes the list first and the new element second, the same receiver-first order as{" "}
+        <C>push</C>, so prepending <C>1</C> to <C>(list 2 3)</C> gives <C>(list 1 2 3)</C>, the new element
+        leading:
+      </P>
+      <Runnable source={`(List.prepend (list 2 3) 1)`} />
+      <P>
         <C>List.concat</C> joins two lists into a new one, so Run this and you see the whole joined list,{" "}
         <C>(list 1 2 3 4 5)</C>, the two inputs laid end to end:
       </P>
@@ -199,6 +206,30 @@ export default function Lists() {
             The base case has to be the value that leaves a product unchanged, so multiplying by it does nothing.
             For <C>+</C> that identity was <C>0</C>; for <C>*</C> it's <C>1</C>. (Try <C>0</C> and
             watch the whole product collapse to <C>0</C>.)
+          </>
+        }
+      />
+
+      <Exercise
+        id="lists:4"
+        prompt={
+          <>
+            Add <C>0</C> to the <em>front</em> of <C>(list 1 2 3)</C>, then read index <C>0</C> back with{" "}
+            <C>List.at</C> for the answer <C>0</C>. Which operation adds to the front, <C>push</C> or{" "}
+            <C>prepend</C>? Fill in the blank.
+          </>
+        }
+        starter={`(match (List.at (List.? (list 1 2 3) 0) 0)
+  ((Some x) x)
+  ((None _) -1))`}
+        solution={`(match (List.at (List.prepend (list 1 2 3) 0) 0)
+  ((Some x) x)
+  ((None _) -1))`}
+        expected="0"
+        hint={
+          <>
+            <C>push</C> adds to the end, so index <C>0</C> would stay <C>1</C>; <C>prepend</C> adds to the
+            front, so the new <C>0</C> becomes the element at index <C>0</C>.
           </>
         }
       />

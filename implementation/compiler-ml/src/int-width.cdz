@@ -150,6 +150,16 @@ def iw-fits-i8-min() = if fits-width(0 - 128, true, 8) then unit else trap("-128
 def iw-fits-i8-under() = if fits-width(0 - 129, true, 8) then trap("-129 does NOT fit Int8") else unit
 
 @test
+def iw-fits-i8-two-hundred-declines() =
+  // THE EXACT CDZ0302 corpus boundary (09-functions: `(def (f (: a Int8)) a) (f 200)` → CDZ0302). 200 is
+  // OUT of signed Int8 (max 127) → fits-width returns false, the DECLINE the narrow-param fit-check reads to
+  // reject the constant arg (rather than laundering 200 through the body). Distinct from `iw-fits-i8-over`
+  // (128, one-past): 200 is the specific corpus arg, and it ALSO fits UInt8 — pinning both proves the SIGN
+  // matters (200 fits unsigned-8 but not signed-8), the crux of the fit-check the enforcement slice will call.
+  if fits-width(200, true, 8) then trap("200 does NOT fit signed Int8 (max 127) — the CDZ0302 arg")
+  else (if fits-width(200, false, 8) then unit else trap("200 DOES fit UInt8 (max 255) — sign is what rejects it"))
+
+@test
 def iw-fits-i16-i32-boundaries() =
   // Int16.max=32767, Int32.max=2147483647 fit at their widths; one past does not.
   if fits-width(32767, true, 16) and (if fits-width(32768, true, 16) then false else true)

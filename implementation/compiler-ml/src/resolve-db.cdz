@@ -16,7 +16,7 @@
 /// resolve column (`Map(NodeId, Resolved)`) as it descends. Once built, a lookup is O(1) — the column IS the
 /// memo (the DB discipline; rcdzc's resolve fills all of a tree's resolved facts in one demand-driven walk).
 
-import { Tok, Node, Tree, node-at, parse-tokens, is-let, add-node, empty-tree, param-of } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, is-let, add-node, empty-tree, param-of, param2-of, arg2-of } from "parse-db"
 
 /// The resolve fact for a variable reference. `RBound(binderId)` = bound to the `NLet` at `binderId`;
 /// `RPoison` = the name is unbound (a FILLED negative decision — not absence).
@@ -26,6 +26,14 @@ type Resolved =
 
 /// Resolve the subtree rooted at `id` under scope `env` (nameId → binder NodeId), threading the resolve
 /// column `col` (NodeId → Resolved) that it fills for every `NVar` reached.
+/// Add a PARAM binder to a scope: the param node `paramId` is an `NVar(pnm)`, so bind `pnm → paramId` (its own
+/// node-id is the canonical binder). Used to build the callee-body scope for a param call. A non-NVar param
+/// (shouldn't happen) leaves the scope unchanged.
+def param-scope(tree: Tree, paramId: Int64, scope: Map(Int64, Int64)) =
+  (match node-at(tree, paramId) with
+    | Option.Some(Node.NVar(pnm)) => Map.insert(scope, pnm, paramId)
+    | _ => scope)
+
 def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, Resolved)) =
   match node-at(tree, id) with
     | Option.Some(Node.NLit(_)) => col
@@ -60,14 +68,20 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
         //      free name can NEVER capture a caller binding (dynamic scope). A nullary body sees an EMPTY scope;
         //      a single-param body sees JUST its PARAMETER `{paramName → paramNode}` (found by bodyId, sread-
         //      keyed) → the body's `n` resolves RBound(paramNode) → lower CVar(paramNode), matching CLet.
-        (let colArg = (if (argId == (0 - 1)) then col else resolve-node(tree, argId, env, col)) in
-         (match param-of(tree, calleeId) with
-           | Option.Some(paramId) =>
-               (match node-at(tree, paramId) with
-                 | Option.Some(Node.NVar(pnm)) =>
-                     resolve-node(tree, calleeId, Map.insert((Map.empty : Map(Int64, Int64)), pnm, paramId), colArg)
-                 | _ => resolve-node(tree, calleeId, (Map.empty : Map(Int64, Int64)), colArg))
-           | Option.None(_) => resolve-node(tree, calleeId, (Map.empty : Map(Int64, Int64)), colArg)))
+        //  slice-3d: a 2-ARG call `(add a b)` resolves BOTH args in the caller scope, and the body sees BOTH
+        //  params bound `{p1→param1, p2→param2}` (found by bodyId). arg2 is keyed by this NApp node-id (id).
+        (let colA1 = (if (argId == (0 - 1)) then col else resolve-node(tree, argId, env, col)) in
+         (let colArg = (match arg2-of(tree, id) with
+                          | Option.Some(a2) => resolve-node(tree, a2, env, colA1)   // resolve arg2 in caller scope too
+                          | Option.None(_) => colA1) in
+          (match param-of(tree, calleeId) with
+            | Option.Some(paramId) =>
+                (let scope1 = param-scope(tree, paramId, (Map.empty : Map(Int64, Int64))) in
+                 (let bodyScope = (match param2-of(tree, calleeId) with
+                                     | Option.Some(param2Id) => param-scope(tree, param2Id, scope1)  // + 2nd param
+                                     | Option.None(_) => scope1) in
+                  resolve-node(tree, calleeId, bodyScope, colArg)))
+            | Option.None(_) => resolve-node(tree, calleeId, (Map.empty : Map(Int64, Int64)), colArg))))
     | Option.None(_) => col   // an id not in the arena (a malformed tree) resolves to nothing
 
 /// The resolve COLUMN builder: resolve the whole tree from `root`, starting with an empty scope + column.

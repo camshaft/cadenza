@@ -2019,3 +2019,59 @@ fn a_failing_requires_property_shrinks_to_an_in_domain_counterexample() {
         "the shrunk @requires counterexample stays IN-DOMAIN [10,99], not below the bound: {stdout}"
     );
 }
+
+/// A property with THREE parameters is generated and checked across all three. This pins the 3-plus-param
+/// property path, which sits adjacent to a NEIGHBORING parser boundary: trunk `fd23c9d09` declines a
+/// 3-plus-param s-expr `(def (f a b c) …)`. A property `@test` — ML surface (scalar params) AND the
+/// synthesized compound `-gen` wrapper — must NOT be caught by that decline: every param is generated,
+/// and a false property yields a full three-tuple counterexample. This covers two faces. Face one:
+/// three scalar params yield a genuine overflow counterexample naming all three arguments. Face two:
+/// three compound (List) params yield a synthesized `-gen` wrapper that draws all three and runs clean.
+#[test]
+fn a_three_parameter_property_generates_and_checks_every_parameter() {
+    let d = dir("proptest-three-params");
+    // (a) Three scalar params: commutativity is always true, but a full-domain triple overflows the
+    // checked `+`, so it fails with a counterexample that names all three arguments.
+    let f = write(
+        &d,
+        "scalar.cdz",
+        "@test def three(a: Int64, b: Int64, c: Int64) = if a + b + c == c + b + a then unit else trap(\"noncomm\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        !ok,
+        "the overflow-prone three-param property fails on a large triple: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("FAIL three")
+            && stdout.contains("body trapped")
+            && stdout.contains("overflow"),
+        "a three-scalar-param property is generated across all three and reports the overflow: {stdout}"
+    );
+    // The counterexample names a three-argument call `three(_, _, _)` — proof all three were generated,
+    // not just the first two (the >2-param decline would have dropped or mis-parsed the third).
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.contains("counterexample: three(") && l.matches(',').count() == 2),
+        "the counterexample carries all THREE generated arguments: {stdout}"
+    );
+
+    // (b) Three compound (List) params: the synthesized `-gen` wrapper draws all three; the property
+    // (len >= 0) is always true, so it passes 100 trials — proving the >2-param compound path synthesizes
+    // a wrapper rather than declining.
+    let f2 = write(
+        &d,
+        "lists.cdz",
+        "@test def three_lists(xs: List(Int64), ys: List(Int64), zs: List(Int64)) = if List.len(xs) >= 0 then unit else trap(\"neg\")\n",
+    );
+    let (ok2, stdout2, stderr2) = run(&["test", &f2, "--trials", "100"]);
+    assert!(
+        ok2,
+        "a three-compound-param property synthesizes its `-gen` wrapper and passes: {stdout2}{stderr2}"
+    );
+    assert!(
+        stdout2.contains("PASS three_lists-gen"),
+        "the three-List-param property runs via a synthesized generator: {stdout2}"
+    );
+}
