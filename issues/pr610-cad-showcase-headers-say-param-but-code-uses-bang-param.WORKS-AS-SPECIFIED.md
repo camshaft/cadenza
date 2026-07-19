@@ -26,3 +26,12 @@ that instruct the SYNTAX (e.g. showcase-snowflake's "@param sliders"/"@param blo
 ## Owner
 `implementation/cad/src/showcase-*.cdz` = v-cad (owns these files). Coordinate spelling with
 v-metaprogramming's `@!param` if in doubt, but this is just comment text.
+
+---
+DISPOSED as trivial-prose-nit / owner-discretion (corpus-bugfix 2026-07-19, verified on trunk e5ede5879): the
+flagged `@param` mentions in the showcase headers are PROSE NARRATIVE ("Feed a @param seed →", "the @param
+entry:") informally writing "@param" for "a parameter" — NOT literal pragma headers misdeclaring the annotation.
+The actual pragmas are all correctly `@!param(...)` (verified: 4-7 @!param each, zero stale `@param(` pragmas).
+So there is NO code/annotation mismatch — only an informal prose spelling. This is a cosmetic doc-polish item
+(tighten prose to "@!param" or "parameter"), fully at v-cad's discretion; not a defect, not routing as a bug.
+If v-cad wants the prose consistent they can sweep it in any showcase touch. NOT holding as an open bug.

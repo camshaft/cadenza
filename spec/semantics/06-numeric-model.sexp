@@ -4538,6 +4538,21 @@
   (input  (+ ((. (Int 4) wrap) 8) ((. (Int 4) wrap) 15)))
   (error  CDZ0304))
 
+(case "the unusual-width overflow check is width-parametric: a SECOND width (Int 12) also enforces its own range"
+  (doc    "The (Int 4) cases above pin one non-machine-boundary width; this pins a SECOND, (Int 12), range
+           [-2048, 2047] (stored in i16), to show the overflow-RANGE check is genuinely width-parametric and
+           not accidentally tied to the nibble. In-range: `2046 + 1` = 2047 (the (Int 12) max), a value of
+           type (Int 12). A check that hardcoded any single width would fail one of these two widths.")
+  (input  (+ ((. (Int 12) wrap) 2046) ((. (Int 12) wrap) 1)))
+  (output (: 2047 (Int 12))))
+
+(case "an Int 12 sum past its maximum is rejected CDZ0304"
+  (doc    "`2047 + 1` = 2048 exceeds the (Int 12) maximum 2047 → CDZ0304, the overflow companion at the
+           12-bit width. Together with the in-range case above and the (Int 4) cases, pins that the
+           compile-time overflow check reads the DECLARED width's range at two distinct non-machine widths.")
+  (input  (+ ((. (Int 12) wrap) 2047) ((. (Int 12) wrap) 1)))
+  (error  CDZ0304))
+
 ; --- Unary negation: prefix `-<expr>` is the arity-1 subtraction `(- e)` -----------------------
 ; The ML surface `-x` (prefix minus applied to an expression, not a bare literal) canonicalizes to the
 ; ONE-operand subtraction `(- e)`, negation. It is `0 - e` at the operand's numeric type — closed over

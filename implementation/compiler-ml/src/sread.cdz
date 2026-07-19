@@ -579,6 +579,18 @@ def sr-module-nullary-call-is-napp() =
     (match node-at(tree, root) with | Option.Some(Node.NApp(_, _)) => unit | _ => trap("(mk) call → root is an NApp")))
 
 @test
+def sr-module-forward-call-declines-known-limitation() =
+  // KNOWN LIMITATION (surfaced to concierge — motivates the slice-3c NApp-shape design). The reference (rcdzc)
+  // SUPPORTS forward references between top-level defs: `def main() = mk()  def mk() = 42` compiles to 42. But
+  // compiler-ml's `read-do-form` records defs IN-SEQUENCE, so when main's body is read, a FORWARD callee `mk`
+  // (defined AFTER main) is not yet in the def-table → the call reads as an ill-typed NBin(-1), NOT an NApp, and
+  // the module DECLINES. This is the honest current behavior (helper-BEFORE-main works via 3b-ii; helper-AFTER
+  // does not). Pinned so the future fix (name-keyed NApp resolved post-parse, or a two-pass def-table pre-scan)
+  // is a LEGIBLE flip: this test changes to `NApp` when compiler-ml reaches rcdzc's forward-ref conformance.
+  (match read-source("(do (def (main) (mk)) (def (mk) 42) (export main))") with | (root, tree) =>
+    (if is-bin-op(tree, root, 0 - 1) then unit else trap("forward call `(mk)` reads as NBin(-1) — forward-ref not yet supported (rcdzc gap)")))
+
+@test
 def sr-unknown-name-call-declines() =
   // slice-3b-i (call-resolution arm, behavior-preserving): a nullary paren whose head is an UNKNOWN name
   // `(foo)` (NOT a recorded def) routes read-app-or-bin → read-bin-form → NBin(op -1). Pins that the new

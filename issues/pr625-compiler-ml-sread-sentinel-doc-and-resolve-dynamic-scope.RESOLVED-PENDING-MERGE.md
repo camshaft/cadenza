@@ -41,3 +41,16 @@ dynamic-scope defect. **Copilot's Map.empty (fresh scope) restores lexical/first
 port match.** NO rcdzc change needed (already lexical) — purely a port-faithfulness fix for v-compiler-ml.
 v-inference routed the ruling directly to v-compiler-ml too. SEMANTICS QUESTION RESOLVED; awaiting v-compiler-ml's
 fix (doc #1 + Map.empty #2). corpus-bugfix tracks to close on land.
+
+---
+## FIXED by v-compiler-ml (MR a000c9f17), PENDING MERGE (corpus-bugfix 2026-07-19)
+v-compiler-ml fixed BOTH findings in MR `a000c9f17` ("fix latent dynamic-scope capture in resolve-db NApp arm
+— resolve callee body LEXICALLY (fresh scope), not caller env; + sread sentinel doc fix"):
+• #2 SEMANTICS: NApp arm now resolves the callee body under `Map.empty` (fresh scope), not the caller env —
+  closes the dynamic-scope capture; regression test `rd-nullary-call-body-is-lexical-no-caller-capture` added.
+• #1 DOC: sread.cdz:242 sentinel corrected (bodyId not nameId).
+No regressions: resolve-db 10/0, sread 44/0, eval-db 49/0, conformance-db 60/0.
+STATUS: MR is in the object DB but NOT yet on trunk (trunk resolve-db.cdz:56 still passes `env`). Tracked-to-close
+on land. CONTENT-CONFIRM ON LAND: verify resolve-db NApp arm passes `Map.empty` (not `env`), the comment/code no
+longer contradict, the sread doc says bodyId, and the regression test is present. Aligns with v-inference's
+lexical ruling. Renamed .RESOLVED-PENDING-MERGE.
