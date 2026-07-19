@@ -480,4 +480,18 @@ def ev-param-call-clet() =
                | Option.Some(v) => (if v == 42 then unit else trap("f(41) where f(n)=n+1 → 42"))
                | Option.None(_) => trap("a single-param call lowers to CLet + evals")))))))))
 
+@test
+def ev-nested-clet-two-params() =
+  // multi-param eval SHAPE pre-validation (slice-3d): the NESTED CLet a 2-arg call `(add a b)` = `(+ a b)`
+  // will lower to — CLet(p1, arg1, CLet(p2, arg2, CBin(+, CVar p1, CVar p2))). Binds arg1→p1, arg2→p2, evals
+  // the body → 40+2 = 42. Direct-Core (no reader): pins that eval-core handles the two-binder nesting the
+  // multi-param wiring emits, BEFORE that wiring lands — so the eval semantics are proven independently.
+  (match eval-core(
+     Core.CLet(100, Core.CNum(40, true, 64),
+       Core.CLet(101, Core.CNum(2, true, 64),
+         Core.CBin(43, true, 64, Core.CVar(100), Core.CVar(101)))),
+     (Map.empty : Map(Int64, Int64))) with
+    | Option.Some(v) => (if v == 42 then unit else trap("nested CLet (two params) → 40+2 = 42"))
+    | Option.None(_) => trap("a two-param nested CLet evaluates"))
+
 export { eval-core, eval-bin, eval-tree, run, milestone-tokens, run-milestone }

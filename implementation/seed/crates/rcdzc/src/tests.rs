@@ -80889,36 +80889,44 @@ fn fold_ctor_match_slice2_folds_a_tuple_destructured_multi_payload_ctor_match() 
     );
 }
 
-/// `eval::fold_ctor_match` folds a match over a NULLARY visible ctor `(match (Nullary ()) ((Nullary _)
-/// body) …)` to the selected arm's body. A nullary variant applied to unit resolves to `Apply{args:[unit]}`
-/// (`args.len() == 1`), so it takes the SLICE-1 path: the unit payload is substituted into the arm binder
-/// (an `_` wildcard, which binds nothing), leaving the body intact. Verified by folding `(match (PQ.PQNil
-/// ()) ((PQ.PQNil _) 7) ((PQ.PQCons (tuple a r)) a))` and checking the folded body is the constant `7` —
-/// the base arm, NOT the `PQCons` arm. This pins the invariant that v-effects' recursive-callee-base-arm
-/// unfold relies on (`des-inc4-recursive-insert`: `pins(PQNil, …)` selects its non-recursive PQNil base
-/// arm, whose body `fold_ctor_match` must then fold) — so a future change can't quietly stop folding the
-/// nullary-ctor scrutinee and silently re-opacify that reach.
+/// `eval::fold_ctor_match` folds a match over a NULLARY visible ctor to the selected arm's body, for BOTH
+/// spellings of the nullary constructor:
+/// - APPLIED `(PQNil ())` resolves to `Apply{head, args:[unit]}` (`args.len() == 1`) → slice-1 path, the
+///   unit payload substituted into the arm's `_` wildcard (binds nothing), body intact.
+/// - BARE `PQNil` (no explicit `()`) resolves to `Resolved::Member` carrying the disc, with NO payload
+///   (`args.is_empty()`) → slice-0 path. `reduce_to_visible_ctor`'s `Member` arm recognizes it; without
+///   that arm the bare form declined (it is not an `Apply`), silently opacifying the base-arm fold.
+///
+/// Both fold `(match <PQNil> ((PQNil _) 7) ((PQCons (tuple a r)) a))` to the constant `7` — the base arm,
+/// NOT `PQCons`. This pins the invariant v-effects' recursive-callee-base-arm unfold relies on
+/// (`des-inc4-recursive-insert`: `pins(PQNil, …)` selects its non-recursive PQNil base arm — and the
+/// substituted scrutinee is the BARE `PQNil` Member form, exactly the slice-0 shape). A future change that
+/// stops folding either spelling re-opacifies that reach.
 #[test]
 fn fold_ctor_match_folds_a_nullary_ctor_scrutinee_to_the_selected_base_arm() {
     use crate::testkit::parse;
-    let src = "(module m (type PQ PQNil (PQCons (Tuple Int64 PQ))) \
-        (def (probe) (match (PQ.PQNil ()) ((PQ.PQNil _) 7) ((PQ.PQCons (tuple a r)) a))) \
-        (def (main) 0) (export main))";
-    let mut db = crate::db::Db::load(parse(src));
-    let d = db.def_by_name("probe").expect("probe def");
-    let body = db.defs[d].body.expect("probe body");
-    let folded = crate::eval::fold_ctor_match(&mut db, body)
-        .expect("a match over a visible nullary ctor must fold to its selected arm");
-    // The folded body is the base arm `7` — the nullary ctor selected the `PQNil` arm, not `PQCons`.
-    let v = match crate::lower::core_of(&mut db, folded) {
-        crate::core::Core::ConstInt(iv) => iv.to_i64(),
-        _ => None,
+    for (label, scrut) in [("applied", "(PQ.PQNil ())"), ("bare", "PQ.PQNil")] {
+        let src = format!(
+            "(module m (type PQ PQNil (PQCons (Tuple Int64 PQ))) \
+            (def (probe) (match {scrut} ((PQ.PQNil _) 7) ((PQ.PQCons (tuple a r)) a))) \
+            (def (main) 0) (export main))"
+        );
+        let mut db = crate::db::Db::load(parse(&src));
+        let d = db.def_by_name("probe").expect("probe def");
+        let body = db.defs[d].body.expect("probe body");
+        let folded = crate::eval::fold_ctor_match(&mut db, body)
+            .unwrap_or_else(|| panic!("[{label}] a match over a visible nullary ctor must fold"));
+        // The folded body is the base arm `7` — the nullary ctor selected the `PQNil` arm, not `PQCons`.
+        let v = match crate::lower::core_of(&mut db, folded) {
+            crate::core::Core::ConstInt(iv) => iv.to_i64(),
+            _ => None,
+        }
+        .unwrap_or_else(|| panic!("[{label}] the folded body must lower to a constant int"));
+        assert_eq!(
+            v, 7,
+            "[{label}] a nullary-ctor scrutinee folds to its matching base arm (7), not PQCons"
+        );
     }
-    .expect("the folded body must lower to a constant int");
-    assert_eq!(
-        v, 7,
-        "a nullary-ctor scrutinee folds to its matching base arm (7), not the PQCons arm"
-    );
 }
 
 /// The IR types (`Resolved`/`Ty`/`Core`) carry their variable-length payloads behind `Rc<[…]>`, NOT

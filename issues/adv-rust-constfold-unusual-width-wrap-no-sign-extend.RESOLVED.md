@@ -76,3 +76,9 @@ folded the correct sign-extended values via wrap_to → fixing the emit fixes BO
 arith-propagated (range-escaping) faces. No additional fix needed. Still PENDING MERGE.
 CONTENT-CONFIRM ON LAND (corpus-bugfix): verify BOTH (Int 4).wrap 8→-8 (standalone) AND (+ (wrap 8)(wrap 1))→-7
 (propagated) on trunk + the differential/propagation pins present.
+
+---
+LANDED + CONTENT-CONFIRMED BOTH FACES (corpus-bugfix 2026-07-19, trunk 7f64d5e30): 41946d40a on trunk.
+Verified on a fresh trunk-tip build: standalone (Int 4).wrap 8 → rust emit `-8i8` (was `8u8 as i8`);
+propagated (+ (wrap 8)(wrap 1)) → rust emit `-7i8` (was the range-escaping `9u8 as i8`). Both faces match wasm.
+FULLY CLOSED.
