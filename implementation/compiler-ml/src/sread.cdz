@@ -297,9 +297,13 @@ def read-typed-param(s: String, nm: String, k: Int64, tree: Tree) =
 /// declared Type is read + discarded here. Hands off to read-typed-param-body with the closing indices.
 def read-typed-param-name(s: String, nm: String, a1: Int64, tree: Tree) =
   (match scan-atom(s, a1, "") with | (pnm, a2) =>              // the param name
-    (match scan-atom(s, skip-space(s, a2), "") with | (_ty, a3) =>   // the Type — read + skip
-      (match add-node(tree, Node.NVar(name-id(pnm))) with | (paramId, t1) =>
-        read-typed-param-body(s, nm, paramId, a3, t1))))
+    (match scan-atom(s, skip-space(s, a2), "") with | (ty, a3) =>   // the Type — read + skip
+      // A MALFORMED signature `(: n)` (name but NO type) → the 2nd scan-atom sits at `)` and returns EMPTY.
+      // DECLINE via the bodyId -1 sentinel (matching read-typed-param's `(:`-check-fails arm) rather than
+      // mis-parsing the sig/body boundary from a wrong index. A well-formed `(: n Int64)` has a non-empty type.
+      (if (ty == "") then (name-id(nm), 0 - 1, 0 - 1, a1, tree)
+       else (match add-node(tree, Node.NVar(name-id(pnm))) with | (paramId, t1) =>
+              read-typed-param-body(s, nm, paramId, a3, t1)))))
 
 /// After the typed param's type ended at `a3`: consume the param's `)` and the signature-closing `)`, then
 /// read the body. Returns `(nameId, bodyId, paramId, nextIndex, tree')`.
@@ -669,6 +673,17 @@ def sr-module-single-param-def-reads-and-records-param() =
              | Option.None(_) => trap("f's body is recorded"))
          | Option.None(_) => trap("f's single param is recorded in the param-table"))
      else trap("main's body (NLit 5) is the module root — the param def sequence read cleanly")))
+
+@test
+def sr-module-malformed-typed-param-declines() =
+  // PARSE ROBUSTNESS (PR#634): a MALFORMED typed-param signature `(: n)` — a param name with NO type — must
+  // DECLINE, not mis-parse. read-typed-param-name's 2nd scan-atom (the Type) returns EMPTY at the `)`, so it
+  // returns the bodyId -1 sentinel → read-do-def declines. Before the fix it close-paren'd from a wrong index,
+  // mis-parsing the sig/body boundary. The root reads as an unbound NVar (the decline shape) → module declines.
+  (match read-source("(do (def (f (: n)) (+ n 1)) (def (main) 5) (export main))") with | (root, tree) =>
+    (match def-body-of(tree, name-id("f")) with
+      | Option.None(_) => unit   // f was NOT recorded (its malformed signature declined) → correct
+      | Option.Some(_) => trap("a malformed typed-param `(: n)` (no type) declines — f is not recorded")))
 
 @test
 def sr-module-forward-call-declines-known-limitation() =
