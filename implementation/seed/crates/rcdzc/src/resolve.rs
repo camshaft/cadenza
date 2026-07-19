@@ -1523,18 +1523,39 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             heads: heads.into(),
         });
     }
+    // Case 6recg: `form` is a GUARD `(guard (record (x a) …) <cond>)`, ascended from `<cond>` → a field
+    // binder of the record pattern is in scope in the guard cond (`(guard (record (x a)) (> a 0))` — the
+    // guard reads `a`). The record analogue of Case 6tg: a bare-binder field resolves to a `Member`
+    // projection of the scrutinee at that field (the same form Case 6rec gives the body reference). Caught
+    // here for the same reason as 6g/6lg/6tg (at the arm, `from` is the guard wrapper, not the cond).
+    if let Some((scrutinee, key)) = guard_cond_record_binds(db, form, from, name) {
+        return Some(Resolved::Member {
+            operand: scrutinee,
+            key,
+        });
+    }
     // Case 6rec: `form` is a MATCH ARM whose pattern is a `(record (field binder) …)` RECORD pattern
-    // binding `name` at a field — a pattern kind not yet implemented (the match twin of the `(record …)`
-    // binding decline). The field binder does not wire, so WITHOUT this the body/guard reference fell
-    // through to a misleading CDZ0101 "unbound name" blaming the user. Resolve it to a CODED decline that
-    // names the real cause — the unimplemented feature — so `cdz check` reports the actionable message
-    // (v-diagnostics note). A COMPILE-provable well-formedness decline surfaced at the reference (the
-    // binder position), matching how the binding path decline reads; replaced by real field-directed
-    // resolution when record match patterns land.
-    if match_arm_record_binds(db, form, from, name) {
-        return Some(Resolved::Poison(Reject::decline(
-            "a record match pattern is not yet supported (Increment B)",
-        )));
+    // binding `name` at a field. A TOP-LEVEL record match destructures a record scrutinee BY FIELD (the
+    // match twin of the record BINDING pattern, Increment B): a bare-binder field value `a` in `(record (x
+    // a))` resolves to a PROJECTION of the scrutinee at field `x` — `Resolved::Member { operand: scrutinee,
+    // key: x }`, the same `(. scrutinee x)` form that folds to a `Core::Proj` at the field's sorted slot
+    // (records have no discriminant, so a top-level record arm needs no probe — the binder read is the
+    // ordinary member access, zero new IR). A binder NESTED in a compound field value cannot yet be wired
+    // (a record field projects by NAME and `PathStep` has no name-keyed step to compose a further descent),
+    // so `match_arm_record_binds` returns `None` for the key and we decline cleanly, naming the feature
+    // rather than emitting a misleading CDZ0101.
+    if let Some((scrutinee, key)) = match_arm_record_binds(db, form, from, name) {
+        return Some(match key {
+            Some(key) => Resolved::Member {
+                operand: scrutinee,
+                key,
+            },
+            None => Resolved::Poison(Reject::decline(
+                "a nested compound sub-pattern inside a record match pattern is not yet supported \
+                 (a record match binds its fields to bare names; destructure a nested field with a \
+                 further `match` or `let`)",
+            )),
+        });
     }
     // Case 7: `form` is a HANDLE ARM `(op (params…) state body)`, ascended from `body`, and `name` is one
     // of the operation PARAMETERS or the STATE binder → it binds for this arm's body. Like a lambda
@@ -2282,6 +2303,56 @@ fn guard_cond_tuple_binds(
         .then_some((scrutinee, path, heads))
 }
 
+/// If `form` is a GUARD `(guard (record (x a) …) <cond>)`, ascended from the cond, whose record pattern
+/// binds `name` at a BARE-binder field, return `(scrutinee, field-key)` — the enclosing match's scrutinee
+/// and the field label, so a guard-cond reference resolves to a `Member` projection (the record analogue
+/// of [`guard_cond_tuple_binds`], Case 6recg). A field binder is a `(field <name>)` VALUE position; the
+/// KEY is a label, never a binder. A NESTED compound field value is not returned here (Case 6rec's body
+/// path handles the decline); only the wireable bare-binder field is resolved in the guard cond.
+fn guard_cond_record_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, Symbol)> {
+    // `form` must be `(guard <record-pattern> <cond>)`, ascended from the cond.
+    let g = db.ast.as_form(form, "guard")?;
+    if g.len() != 2 || g[1] != from {
+        return None;
+    }
+    let pattern = g[0];
+    let fields = db
+        .ast
+        .as_form(pattern, "record")
+        .or_else(|| db.ast.as_ctor_form(pattern, "record"))?;
+    // The guard must be the PATTERN of a match arm `((guard …) body)` whose parent is a `(match …)`.
+    let arm = db.parent_of(form)?;
+    let Struct::List(pb) = db.ast.get(arm) else {
+        return None;
+    };
+    if pb.len() != 2 || pb[0] != form {
+        return None; // `form` must be the arm's pattern position
+    }
+    let matchf = db.parent_of(arm)?;
+    let mtail = db.ast.as_form(matchf, "match")?;
+    let scrutinee = *mtail.first()?;
+    if arm == scrutinee {
+        return None;
+    }
+    // A bare-binder field value `(x a)` binding `name` → the field key, for a `Member` projection.
+    for &pair in fields {
+        if let Struct::List(kv) = db.ast.get(pair)
+            && kv.len() == 2
+            && db.ast.as_name(kv[1]) == Some(name)
+            && name != "_"
+            && let Some(key) = read_key(db, kv[0])
+        {
+            return Some((scrutinee, key));
+        }
+    }
+    None
+}
+
 /// If `form` is a match ARM `(pattern body)` whose parent is a `(match scrutinee arm…)`, ascended from
 /// the arm's `body` (or, for a GUARDED arm, its guard cond), and `pattern` is a bare BINDER name equal to
 /// `name` (not a literal, not the wildcard `_`), the enclosing match's SCRUTINEE occurrence — the value
@@ -2342,20 +2413,33 @@ fn match_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Optio
 
 /// Whether `form` is a MATCH ARM `(pattern body)` (ascended from `body`, or a guarded arm's guard cond)
 /// whose pattern is a `(record (field binder) …)` RECORD pattern that binds `name` at one of its field
-/// positions. Record MATCH patterns are not yet implemented (the match twin of `check_binding_pattern`'s
-/// `(record …)` binding decline) — the arm's field binders never wire, so a body/guard reference to one
-/// (`(match r ((record (x a)) a))`'s body `a`) fell through every binder case to a MISLEADING CDZ0101
-/// "unbound name `a`" that points at the reference and blames the user, hiding the real cause (the
-/// feature is unimplemented). This detector lets `binder_in` resolve such a reference to a CLEAR CODED
-/// decline naming the feature instead (v-diagnostics note 2026-07-16). Returns `true` when `name` is a
-/// field binder of a record match-arm pattern; the caller turns that into the decline. GATED to a genuine
-/// match arm over a record pattern, so a `(record …)` VALUE expression (not a pattern) is untouched.
-fn match_arm_record_binds(db: &Db, form: StructId, from: StructId, name: &str) -> bool {
+/// positions — returning HOW to resolve the reference. A TOP-LEVEL record match `(match r ((record (x a)
+/// (y b)) …))` destructures a record scrutinee BY FIELD, the match twin of the record BINDING pattern
+/// (Increment B): a field's bare-binder value `a` resolves to a PROJECTION of the scrutinee at that field
+/// — `(. scrutinee x)` = `Resolved::Member { operand: scrutinee, key: x }`, folding to a `Core::Proj` at
+/// the field's sorted slot exactly as the let-binder record arm does (`last_binder_named`). A record has
+/// NO discriminant (like a tuple), so a top-level record arm imposes no probe and the binder read is the
+/// ordinary member access.
+///
+/// Returns `Some((scrutinee, Some(key)))` when `name` is a BARE-binder field value (resolve to a `Member`
+/// projection at `key`); `Some((scrutinee, None))` when `name` is bound NESTED inside a field's COMPOUND
+/// value (`(record (p (tuple a b)))`), which cannot yet be WIRED — a record field projects by name→slot
+/// and a nested descent needs a composed path `PathStep` has no name-keyed step for, so the caller declines
+/// cleanly naming the feature rather than emitting a misleading CDZ0101; and `None` when `name` is not
+/// bound by this record pattern (a genuinely-unbound reference falls through to its real CDZ0101). GATED to
+/// a genuine match arm over a record pattern, so a `(record …)` VALUE expression (not a pattern) is
+/// untouched.
+fn match_arm_record_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, Option<Symbol>)> {
     let Struct::List(pb) = db.ast.get(form) else {
-        return false;
+        return None;
     };
     if pb.len() != 2 {
-        return false;
+        return None;
     }
     let (pattern, body) = (pb[0], pb[1]);
     // Peel a `(guard <record-pattern> <cond>)` wrapper — a reference in the guard cond binds the same
@@ -2365,32 +2449,56 @@ fn match_arm_record_binds(db: &Db, form: StructId, from: StructId, name: &str) -
         _ => (pattern, None),
     };
     if from != body && Some(from) != guard_cond {
-        return false;
+        return None;
     }
     // The pattern must be a `(record (key value) …)` form.
-    let Some(fields) = db.ast.as_form(record_pat, "record") else {
-        return false;
-    };
+    let fields = db
+        .ast
+        .as_form(record_pat, "record")
+        .or_else(|| db.ast.as_ctor_form(record_pat, "record"))?;
     // `form` must be an arm of an enclosing `(match scrutinee arm…)`, not the scrutinee itself.
-    let parent = match db.parent_of(form) {
-        Some(p) => p,
-        None => return false,
+    let parent = db.parent_of(form)?;
+    let mtail = db.ast.as_form(parent, "match")?;
+    let scrutinee = match mtail.first() {
+        Some(&s) if s != form => s,
+        _ => return None,
     };
-    let Some(mtail) = db.ast.as_form(parent, "match") else {
-        return false;
-    };
-    match mtail.first() {
-        Some(&scrutinee) if scrutinee != form => {}
-        _ => return false,
+    // A BARE-binder field value `(x a)` binding `name` → a projection of the scrutinee at field `x`.
+    for &pair in fields {
+        if let Struct::List(kv) = db.ast.get(pair)
+            && kv.len() == 2
+            && db.ast.as_name(kv[1]) == Some(name)
+            && name != "_"
+            && let Some(key) = read_key(db, kv[0])
+        {
+            return Some((scrutinee, Some(key)));
+        }
     }
-    // Does any field pair `(key value)` bind `name` as its VALUE sub-pattern (a bare binder)? The KEY is a
-    // field LABEL, never a binder — only the value position binds. (A nested value sub-pattern would also
-    // fail to wire, but the whole record pattern is declined regardless, so a bare-binder match suffices to
-    // attribute the reference to this unimplemented pattern.)
-    fields.iter().any(|&pair| {
-        matches!(db.ast.get(pair), Struct::List(kv) if kv.len() == 2
-            && db.ast.as_name(kv[1]) == Some(name) && name != "_")
-    })
+    // Otherwise: is `name` bound NESTED inside a field's compound value? (The not-yet-wired case — the
+    // caller declines naming the feature. A name bound by NO field returns `None` → its real CDZ0101.)
+    for &pair in fields {
+        if let Struct::List(kv) = db.ast.get(pair)
+            && kv.len() == 2
+        {
+            let value_pat = kv[1];
+            let (mut path, mut heads) = (Vec::new(), Vec::new());
+            let bound = if is_tuple_pattern(db, value_pat) {
+                find_binder_in_tuple(db, value_pat, name, &mut path, &mut heads)
+            } else if is_list_pattern(db, value_pat) {
+                find_binder_in_list(db, value_pat, name, &mut path, &mut heads)
+            } else if db.ast.as_form(value_pat, "record").is_some()
+                || db.ast.as_ctor_form(value_pat, "record").is_some()
+            {
+                record_pattern_binds_name(db, value_pat, name)
+            } else {
+                find_binder_in_pattern(db, value_pat, name, &mut path, &mut heads)
+            };
+            if bound {
+                return Some((scrutinee, None));
+            }
+        }
+    }
+    None
 }
 
 /// Descend a LIST PATTERN `(list p… [.. rest])` looking for a LEADING element binder `name` — the
@@ -2719,7 +2827,16 @@ fn is_variant_pattern_binder_occurrence(db: &Db, id: StructId) -> bool {
                     let mut p = Vec::new();
                     let mut h = Vec::new();
                     find_binder_in_tuple(db, pattern, nm, &mut p, &mut h)
-                });
+                })
+                // A TOP-LEVEL RECORD pattern `(record (x a) (y b))` binds its field VALUES (`a`/`b`) — a
+                // field-value binder in the pattern position must inert exactly like a tuple element binder,
+                // else the eager subtree walk mis-binds a shadowing field binder to an outer param. Its own
+                // resolution (Case 6rec → `Member`) is a projection of the scrutinee, so the pattern
+                // occurrence carries no value. (`find_binder_in_pattern` excludes the `record` compound
+                // head, so the record shape needs this explicit check.)
+                || ((db.ast.as_form(pattern, "record").is_some()
+                    || db.ast.as_ctor_form(pattern, "record").is_some())
+                    && record_pattern_binds_name(db, pattern, nm));
             if !binds {
                 return false;
             }

@@ -1,7 +1,7 @@
 // showcase-snowflake.cdz -- the SEED-DRIVEN parametric snowflake (operator: "a seed input that you feed it
 // and it does a prng internally and builds out a unique snowflake! There's also some config that it would be
-// great to parameterize"). A @param SEED drives the internal MINSTD LCG (prng.cdz) so one integer selects a
-// unique, deterministic, 6-fold-symmetric snowflake; @param sliders tune the config (recursion depth, arm
+// great to parameterize"). A @!param SEED drives the internal MINSTD LCG (prng.cdz) so one integer selects a
+// unique, deterministic, 6-fold-symmetric snowflake; @!param sliders tune the config (recursion depth, arm
 // length). Drag the seed -> a different snowflake; drag depth/length -> finer or coarser. This is the
 // code+CAD "really cool results" showcase, and the parametric-@param direction the operator loves.
 //

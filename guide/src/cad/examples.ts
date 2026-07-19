@@ -267,6 +267,35 @@ def main() = host Param in
   },
 };
 
+/// The PARAMETRIC SNOWFLAKE (v-cad's flagship showcase — the operator's "seed → unique snowflake"): feed a
+/// seed and an internal PRNG builds a unique, deterministic 6-fold snowflake; sliders drive the seed, arm
+/// length, and recursion depth. The heavy branch builder lives in the preloaded `snowflake` lib (11 recursive
+/// defs, imports prng) — so the buffer is just the `@!param` declarations + `main` calling `snowflake(...)`;
+/// snowflake.cdz + prng.cdz are PRELOADED (added to the CAD preload set for this). Single-mode auto-surfaces
+/// the 3 sliders (seed/arm-length/depth). Mesh = v-cad's driver. Uses `@!param` (the migrated param sigil).
+const PARAMETRIC_SNOWFLAKE: ExampleModel = {
+  slug: "parametric-snowflake",
+  title: "Parametric snowflake (seed → unique)",
+  description: "Feed a seed; an internal PRNG builds a unique deterministic 6-fold snowflake. Sliders: seed, arm-length, depth.",
+  source: {
+    ml: `@!param(widget: slider, range: [1, 200], default: 42) seed : Int64
+@!param(widget: slider, range: [10, 40], default: 20) arm-length : Rational
+@!param(widget: slider, range: [1, 3], default: 2) depth : Int64
+def main() = host Param in
+  (let s = Param.seed() in
+   let len = Param.arm-length() in
+   let d = Param.depth() in
+     lower(snowflake(s, len, d)))`,
+    sexpr: `(pragma param (param (: widget slider) (: range (list 1 200)) (: default 42)) (: seed Int64))
+(pragma param (param (: widget slider) (: range (list 10 40)) (: default 20)) (: arm-length Rational))
+(pragma param (param (: widget slider) (: range (list 1 3)) (: default 2)) (: depth Int64))
+(def (main)
+  (host (Param)
+    (let ((s ((. Param seed))) (len ((. Param arm-length))) (d ((. Param depth))))
+      (lower (snowflake s len d)))))`,
+  },
+};
+
 /// The example models the /cad example-switcher offers, in display order. Every one is verified to compile
 /// + mesh against the preloaded library. Keep the FIRST entry the canonical simple starter (the /cad route
 /// opens with `DEFAULT_EXAMPLE`). The parametric plate is one of these — in single-mode a parametric model
@@ -281,6 +310,7 @@ export const EXAMPLES: ExampleModel[] = [
   UNITS_BRACKET,
   ASSEMBLY_L_BRACKET,
   ASSEMBLY_PARAMETRIC_BRACKET,
+  PARAMETRIC_SNOWFLAKE,
 ];
 
 /// The model the /cad route opens with (the canonical cube-with-dent starter).

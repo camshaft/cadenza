@@ -143,6 +143,15 @@ async function instantiateComponent(job: RunJob): Promise<Record<string, unknown
     const camel = (s: string) => s.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase());
     const param: Record<string, () => bigint> = {};
     for (const [name, { num, den }] of Object.entries(job.params)) {
+      // A param's host accessor(s) depend on its DECLARED TYPE, which we don't carry here — so bind BOTH
+      // shapes; jco wires only the accessors the component actually imports + ignores the rest (extra JS
+      // members are harmless):
+      //   - RATIONAL `@param name : Rational` → the pair `<name>-num`/`<name>-den` (guest recombines
+      //     Rational.of(num, den)) — the mounting-plate/bracket case.
+      //   - INT64 `@param name : Int64` → a SINGLE `<name>` accessor returning the whole i64 (num, den=1) —
+      //     the snowflake's seed/depth case. Binding only the num/den pair left the single `<name>` (e.g.
+      //     `seed`/`depth`) unbound → "undefined instance import 'depth'".
+      param[camel(name)] = () => BigInt(num);
       param[camel(`${name}-num`)] = () => BigInt(num);
       param[camel(`${name}-den`)] = () => BigInt(den);
     }

@@ -32,21 +32,23 @@ const pkgDir = join(guideRoot, "src/wasm/pkg");
 const wasm = await import(pathToFileURL(join(pkgDir, "cdz_wasm.js")).href);
 await wasm.default(await readFile(join(pkgDir, "cdz_wasm_bg.wasm")));
 
-let exactSrc, helpersSrc, unitsSrc;
+let exactSrc, helpersSrc, unitsSrc, snowflakeSrc, prngSrc;
 try {
   exactSrc = await readFile(join(guideRoot, "src/wasm/cad/exact.cdz"), "utf8");
   helpersSrc = await readFile(join(guideRoot, "src/wasm/cad/helpers.cdz"), "utf8");
   unitsSrc = await readFile(join(guideRoot, "src/wasm/cad/units.cdz"), "utf8");
+  snowflakeSrc = await readFile(join(guideRoot, "src/wasm/cad/snowflake.cdz"), "utf8");
+  prngSrc = await readFile(join(guideRoot, "src/wasm/cad/prng.cdz"), "utf8");
 } catch {
   console.error(
-    "\n✗ cad-preload conformance FAILED — a staged CAD lib (src/wasm/cad/{exact,helpers,units}.cdz) is missing " +
+    "\n✗ cad-preload conformance FAILED — a staged CAD lib (src/wasm/cad/{exact,helpers,units,snowflake,prng}.cdz) is missing " +
       "(run `cargo xtask guide-wasm` to stage it). /cad cannot preload without them.",
   );
   process.exit(1);
 }
 
 // Reuse the REAL injection + preload arrays /cad uses (no private copy — the gate must match what ships).
-const { injectImport, CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME, CAD_LIB_FORMAT } = await import(
+const { injectImport, CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME, CAD_SNOWFLAKE_NAME, CAD_PRNG_NAME, CAD_LIB_FORMAT } = await import(
   pathToFileURL(join(guideRoot, "src/cad/preloadModel.ts")).href
 );
 
@@ -59,12 +61,13 @@ const MODELS = {
   sexpr: `(def (main) (lower ((. Solid Difference) ((. Solid Cube) (v3 (/ 4 1) (/ 4 1) (/ 4 1))) ((. Solid Sphere) (/ 5 2)))))`,
 };
 
-// SINGLE-MODE preloads ALL THREE modules (exact base vocab + helpers ergonomic wrappers + units ctors) for
-// every model, and `injectImport` now emits all three import clauses — so the gate must preload all three or
-// the injected `import "units"` faults CDZ0201 (unknown package file). Mirrors CadPage's `runModel` arrays.
-const names = [CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME];
-const sources = [exactSrc, helpersSrc, unitsSrc];
-const formats = [CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT];
+// SINGLE-MODE preloads ALL modules (exact + helpers + units + snowflake, plus prng which snowflake imports)
+// for every model, and `injectImport` emits the exact/helpers/units/snowflake import clauses — so the gate
+// must preload all of them or the injected `import "snowflake"` faults CDZ0201 (unknown package file).
+// Mirrors CadPage's `runModel` arrays.
+const names = [CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME, CAD_SNOWFLAKE_NAME, CAD_PRNG_NAME];
+const sources = [exactSrc, helpersSrc, unitsSrc, snowflakeSrc, prngSrc];
+const formats = [CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT];
 
 const failures = [];
 
@@ -228,6 +231,36 @@ if (!pbracket) {
       const missing = EXPECTED.filter((n) => !params.includes(n));
       if (missing.length) failures.push(`[${surface}] assembly-parametric-bracket param_manifest missing @param(s): ${missing.join(", ")} (got ${params.join(", ") || "none"})`);
       else console.log(`  ✓ [${surface}] assembly-parametric-bracket: compiles (rotate-x + fuse) + surfaces its 5 @params (${params.join(", ")})`);
+    }
+  }
+}
+
+// PARAMETRIC SNOWFLAKE showcase (v-cad's flagship): the buffer imports `{ snowflake }` from the PRELOADED
+// multi-def snowflake lib (which itself imports prng) — so it gates the snowflake+prng preload + the injected
+// snowflake import. Must compile + surface its 3 @!param sliders (seed/arm-length/depth). A missing snowflake
+// preload → CDZ0201; a missing prng (snowflake's dep) → the lib itself won't link.
+const snow = EXAMPLES.find((e) => e.slug === "parametric-snowflake");
+if (!snow) {
+  failures.push("snowflake: the parametric-snowflake example is missing from EXAMPLES");
+} else {
+  const EXPECTED = ["seed", "arm-length", "depth"];
+  for (const surface of ["ml", "sexpr"]) {
+    const program = injectImport(snow.source[surface], surface);
+    let cr;
+    try {
+      cr = wasm.compile_with_preloaded(program, surface, names, sources, formats);
+    } catch (e) {
+      failures.push(`[${surface}] parametric-snowflake compile THREW: ${String(e && e.message ? e.message : e).slice(0, 120)}`);
+      continue;
+    }
+    const errs = (cr.diagnostics ?? []).filter((d) => d.error);
+    if (!cr.component || errs.length) {
+      failures.push(`[${surface}] parametric-snowflake did not compile against preloaded snowflake+prng${errs.length ? ` — ${errs.map((d) => `${d.code ?? ""} ${d.message ?? ""}`.trim()).join("; ")}` : " (no component)"}`);
+    } else {
+      const params = (wasm.param_manifest(program, surface) ?? []).map((x) => x.name);
+      const missing = EXPECTED.filter((n) => !params.includes(n));
+      if (missing.length) failures.push(`[${surface}] parametric-snowflake param_manifest missing @!param(s): ${missing.join(", ")} (got ${params.join(", ") || "none"})`);
+      else console.log(`  ✓ [${surface}] parametric-snowflake: compiles against preloaded snowflake+prng + surfaces its 3 @!params (${params.join(", ")})`);
     }
   }
 }

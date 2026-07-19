@@ -7209,6 +7209,22 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
             Some(g) if g.len() == 2 => (g[0], Some(g[1])),
             _ => (pat, None),
         };
+        // A GUARDED RECORD arm is not yet lowered (record match landed WITHOUT the guard interaction — a
+        // record pattern produces no discriminant constraint, so `build_tree`'s guard-fall-through gating
+        // for a record row is not yet wired and would MISCOMPILE to a runtime `unreachable` trap on a
+        // guard-fail rather than falling to the next arm). DECLINE cleanly until the guard×record leaf
+        // gating lands — a decline is sound (the whole match is rejected), a trap is a wrong-value
+        // miscompile. The UNGUARDED record arm is fully supported. (Guarded tuple/list/variant arms are
+        // unaffected — this narrows only the record shape.)
+        if guard.is_some()
+            && (db.ast.as_form(inner_pat, "record").is_some()
+                || db.ast.as_ctor_form(inner_pat, "record").is_some())
+        {
+            return Core::Poison(Reject::decline(
+                "a guarded record match arm is not yet lowered (record match is supported without a \
+                 guard; move the field test into the arm body or match the field explicitly)",
+            ));
+        }
         // LINEARITY: a pattern is a BINDER POSITION and must bind each name at most once (core-semantics.md
         // §Patterns Compose: "A pattern MUST bind each name at most once … rather than silently shadowing").
         // `(tuple x x)` / `(Some (tuple x x))` binds `x` twice — CDZ0102, the same non-linear-binder error a
@@ -8318,27 +8334,92 @@ fn pattern_constraints(
         return Ok(Vec::new());
     }
     // A `(record (field p) …)` pattern — destructuring a record BY FIELD — is not yet matched (the record
-    // MATCH twin of the `(record …)` BINDING decline, `check_binding_pattern` above). Without this arm, a
-    // `record`-headed pattern would fall through to the compound/variant-ctor block below, where `record`
-    // is read as a variant-constructor head; over a `Ty::Record` scrutinee that names no such variant, so
-    // the arm silently contributed no discriminant and its field binders (`a` in `(record (x a))`) resolved
-    // UNBOUND — a misleading CDZ0101 "unbound name `a`" pointing at the binder instead of naming the real
-    // cause (v-diagnostics note 2026-07-16). DECLINE cleanly here with the same "not yet supported" message
-    // the binding path gives, so the diagnostic names the unimplemented FEATURE, not a phantom unbound name.
-    // (When record match patterns land, this arm is replaced by the real field-directed constraint logic.)
-    // CODED (`Malformed`) rather than an uncoded decline so `type_errors`' `match_pattern_fault` accessor
-    // surfaces it in `cdz check` on EVERY body — the same coded-fault-so-check-sees-it discipline as the
-    // list/map coded-head fixes (Inc 39/40); an uncoded decline here would be silent in `check` on a
-    // recursive / directly-exported body (only the emit-path walk over nullary-exported bodies produces
-    // it) while `compile` rejects — the very check≡compile gap those closed. The workaround (a whole-value
-    // binder + field projection `(. r x)`) is named so the message routes the user to it.
-    if db.ast.as_form(pat, "record").is_some() {
-        return Err(Reject::coded(
-            Code::Malformed,
-            "a record match pattern is not yet supported — bind the whole record and project its fields \
-             (`(match r (whole (. whole field)))`) until record match patterns land (Increment B)",
-        )
-        .at(pat));
+    // MATCH twin of the record BINDING pattern (Increment B, `check_binding_pattern` above). A record is a
+    // fixed-shape product like a tuple, projected by NAME: a field at the record type's SORTED slot `i` is
+    // read by `Elem(i)` — the SAME array-cell access a tuple element uses (a record value is a sorted-field
+    // array; `runtime_member_index`/the `Member`→`Proj` fold read that slot). A record has NO discriminant,
+    // so a record pattern imposes NO constraint of its own (like a tuple) — each named field's sub-pattern
+    // descends at `path + [Elem(sorted_slot)]` with the field's type, recursing exactly as the tuple arm
+    // does. A field the record type lacks is a CDZ0201 shape error; a non-record scrutinee is CDZ0201.
+    //= spec/capabilities/core-semantics.md#a-record-is-a-set-of-named-fields
+    //# A record MUST be deconstructible by pattern matching on its field names, binding each named field's sub-value, the named fields matched recursively in the sense of *Patterns Compose*.
+    if let Some(fields) = db
+        .ast
+        .as_form(pat, "record")
+        .or_else(|| db.ast.as_ctor_form(pat, "record"))
+        .map(<[_]>::to_vec)
+    {
+        // The scrutinee's record field types by name→sorted-slot. When the type is a solved record, each
+        // named field must exist (CDZ0201) and descends at its sorted index; an `Any`/unsolved type descends
+        // permissively (slot by written order — harmless, refutability is a pattern-shape property). A
+        // non-record, non-`Any` scrutinee cannot be destructured by a record pattern (CDZ0201).
+        let field_slots: Option<
+            std::rc::Rc<std::collections::BTreeMap<crate::resolved::Symbol, crate::ty::Ty>>,
+        > = match ty.strip_nominal() {
+            crate::ty::Ty::Record(fs) => Some(fs.clone()),
+            crate::ty::Ty::Any => None,
+            other => {
+                return Err(Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "this record pattern cannot destructure a value of type {} — a `(record …)` \
+                         pattern matches only a record value",
+                        other.render_name()
+                    ),
+                )
+                .at(pat));
+            }
+        };
+        let mut out = Vec::new();
+        for (written_ix, &pair) in fields.iter().enumerate() {
+            let crate::ast::Struct::List(kv) = db.ast.get(pair) else {
+                return Err(Reject::coded(
+                    Code::Malformed,
+                    "a record pattern field must be a `(field <pattern>)` pair",
+                )
+                .at(pair));
+            };
+            if kv.len() != 2 {
+                return Err(Reject::coded(
+                    Code::Malformed,
+                    "a record pattern field must be a `(field <pattern>)` pair",
+                )
+                .at(pair));
+            }
+            let (key_occ, value_pat) = (kv[0], kv[1]);
+            // The field's sorted slot + type. A solved record resolves the slot by name (CDZ0201 if the
+            // field is absent); an `Any` scrutinee uses the written order and types the field `Any`.
+            let (slot, field_ty) = match &field_slots {
+                Some(fs) => {
+                    let key = crate::resolve::read_key(db, key_occ);
+                    match key
+                        .as_ref()
+                        .and_then(|k| fs.keys().position(|fk| fk == k).map(|i| (i, fs[k].clone())))
+                    {
+                        Some(hit) => hit,
+                        None => {
+                            return Err(Reject::coded(
+                                Code::Malformed,
+                                format!(
+                                    "a record pattern names field `{}`, which the matched value of type \
+                                     {} does not have",
+                                    key.map(|k| k.name).unwrap_or_default(),
+                                    ty.render_name()
+                                ),
+                            )
+                            .at(pair));
+                        }
+                    }
+                }
+                None => (written_ix, crate::ty::Ty::Any),
+            };
+            let mut deeper = path.clone();
+            deeper.push(crate::core::PathStep::Elem(slot));
+            out.extend(pattern_constraints(
+                db, value_pat, &field_ty, deeper, lit_tests,
+            )?);
+        }
+        return Ok(out);
     }
     // A compound pattern. Its head is the variant CONSTRUCTOR — a member `(. Sum V)` or a bare variant
     // name — and the remaining children are payload sub-patterns.
@@ -22125,9 +22206,30 @@ fn build_bin_arm_predicate(
         Core::ConstInt(IntValue::from_i64(total as i64)),
         crate::ty::Ty::Int(crate::ty::IntTy::i64()),
     );
-    // The right-hand side of the length compare: `total`, or `total + n` for a dependent-size tail.
-    let rhs_node = match final_dep_size {
-        None => total_node,
+    // The length predicate. For a fixed / final-rest tail it is a single compare (`== total` / `>= total`).
+    // For a DEPENDENT-SIZE tail `(bytes payload n)` the exact test is `bytes-len == total + n`, whose RHS
+    // reads `n` (a `BinIntRead` at the size segment's static offset, which needs the first `total` bytes to
+    // be PRESENT). That read must be GUARDED: on a scrutinee too short to even hold the fixed prefix, an
+    // UNCONDITIONAL read overruns and TRAPS, where the const-fold reference path (`bin_match_decode`) returns
+    // `None` = fall-through at every overrun (`off + w > raw.len()`, a negative size, the size overrunning
+    // the remainder). So FLOOR the predicate before the dependent read, mirroring the const path's guards:
+    //   (bytes-len >= total)  AND  (n >= 0)  AND  (bytes-len == total + n)
+    // with short-circuiting `And { is_and: true }` (`if lhs then rhs else false`), so the `n`-read + the
+    // exact compare are reached ONLY when at least `total` bytes are present. A too-short scrutinee fails the
+    // floor → the whole arm predicate is `false` → fall through to the catch-all, matching the reference.
+    // (The floor is redundant-but-harmless for the fixed/rest tails, which read no dependent `n`, so it is
+    // added only on the dependent-size path.) Reviewer finding 2026-07-18 (corpus-bugfix): a truncated
+    // length-prefixed frame trapped instead of falling through.
+    let mut pred = match final_dep_size {
+        None => synth_core(
+            db,
+            Core::Compare {
+                op: if has_final_rest { Prim::Ge } else { Prim::Eq },
+                lhs: len_node,
+                rhs: total_node,
+            },
+            crate::ty::Ty::Bool,
+        ),
         Some(n_occ) => {
             // `n` is the runtime value of the earlier int segment named by `n_occ` — a `BinIntRead`.
             let Some(n_read) = bin_size_len_read(db, scrutinee, segs, segs.len() - 1, n_occ) else {
@@ -22135,26 +22237,80 @@ fn build_bin_arm_predicate(
                     "a runtime dependent-size bin match needs a fixed-int size segment at a static offset",
                 ));
             };
-            synth_core(
+            // FLOOR: `bytes-len >= total` — evaluated FIRST, short-circuits the `n`-read below when false.
+            let floor = synth_core(
+                db,
+                Core::Compare {
+                    op: Prim::Ge,
+                    lhs: len_node,
+                    rhs: total_node,
+                },
+                crate::ty::Ty::Bool,
+            );
+            // `n >= 0` — the const path's `filter(|v| *v >= 0)`; a signed size reading negative is a
+            // non-match (else `total + n < total` could spuriously satisfy the `==` on a shorter length).
+            let zero_node = synth_core(
+                db,
+                Core::ConstInt(IntValue::from_i64(0)),
+                crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+            );
+            let n_nonneg = synth_core(
+                db,
+                Core::Compare {
+                    op: Prim::Ge,
+                    lhs: n_read,
+                    rhs: zero_node,
+                },
+                crate::ty::Ty::Bool,
+            );
+            // EXACT: `bytes-len == total + n`. Re-read `n` for the sum (a fresh `BinIntRead` — the read is
+            // pure; the backend materializes each independently, matching the literal-probe reads).
+            let Some(n_read2) = bin_size_len_read(db, scrutinee, segs, segs.len() - 1, n_occ)
+            else {
+                return Err(Reject::decline(
+                    "a runtime dependent-size bin match needs a fixed-int size segment at a static offset",
+                ));
+            };
+            let total_plus_n = synth_core(
                 db,
                 Core::Arith {
                     op: Prim::Add,
                     lhs: total_node,
-                    rhs: n_read,
+                    rhs: n_read2,
                 },
                 crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+            );
+            let exact = synth_core(
+                db,
+                Core::Compare {
+                    op: Prim::Eq,
+                    lhs: len_node,
+                    rhs: total_plus_n,
+                },
+                crate::ty::Ty::Bool,
+            );
+            // `(n >= 0) AND exact` — the guarded dependent test.
+            let guarded = synth_core(
+                db,
+                Core::And {
+                    lhs: n_nonneg,
+                    rhs: exact,
+                    is_and: true,
+                },
+                crate::ty::Ty::Bool,
+            );
+            // `floor AND (n>=0 AND exact)` — floor short-circuits the whole dependent read.
+            synth_core(
+                db,
+                Core::And {
+                    lhs: floor,
+                    rhs: guarded,
+                    is_and: true,
+                },
+                crate::ty::Ty::Bool,
             )
         }
     };
-    let mut pred = synth_core(
-        db,
-        Core::Compare {
-            op: if has_final_rest { Prim::Ge } else { Prim::Eq },
-            lhs: len_node,
-            rhs: rhs_node,
-        },
-        crate::ty::Ty::Bool,
-    );
     // Per LITERAL segment: `BinIntRead(seg) == literal`. A binder slot (a bare name) adds no probe.
     let mut off: u32 = 0;
     for (i, seg) in segs.iter().enumerate() {

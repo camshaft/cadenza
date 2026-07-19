@@ -2297,6 +2297,24 @@ impl<'a> Printer<'a> {
                     });
                     return;
                 }
+                // record pattern `(record (field p) …)` -> `{ field = p, … }`, the field-directed twin of
+                // the record literal (the operator-ruled bare-brace pattern surface). Each entry is a
+                // `(field sub-pattern)` pair; the field is a plain name, the value slot a sub-pattern.
+                // Always renders `field = p` (a punned `(x x)` prints `{ x = x }`, which re-reads to the
+                // same `(record (x x))`). Guarded on the record-pattern shape (all entries `(name p)`).
+                if self.head_name(items[0]).as_deref() == Some("record")
+                    && self.is_record_pattern(&items[1..])
+                {
+                    self.print_pattern_seq("{ ", " }", &items[1..], |p, entry| {
+                        if let Struct::List(pair) = p.a.get(entry) {
+                            let (field, sub) = (pair[0], pair[1]);
+                            p.expr(field, 0);
+                            p.doc.word(" = ");
+                            p.pattern(sub);
+                        }
+                    });
+                    return;
+                }
                 // binary pattern `(bin <segment> …)` -> `b[<segment>, …]`, the pattern-position twin of
                 // the construction literal (unconditional — `bin` is a reserved grammar form, not a
                 // shadowable ctor). Each segment is a sub-pattern (`u16(n)` binds `n`); `(bin)` -> `b[]`.
@@ -2377,6 +2395,19 @@ impl<'a> Printer<'a> {
             Some(i) => i + 2 == items.len() && self.is_pairs(&items[..i]),
             None => self.is_pairs(items),
         }
+    }
+
+    /// A record PATTERN body `(field sub-pattern)…` — every entry is a 2-element pair whose FIELD (first
+    /// element) is a plain name (`head_name`), so `{ field = p, … }` re-reads to the same `(record …)`.
+    /// (No `..` rest — a record destructure names fields by exact label; a PARTIAL pattern simply lists
+    /// fewer fields, still all `(name p)` pairs.) Distinguishes a genuine record pattern from a
+    /// name-headed constructor application (`(Record a b)`, positional) that must NOT print as braces.
+    fn is_record_pattern(&self, items: &[StructId]) -> bool {
+        !items.is_empty()
+            && items.iter().all(|&e| {
+                matches!(self.a.get(e), Struct::List(p)
+                    if p.len() == 2 && self.head_name(p[0]).is_some())
+            })
     }
 
     /// `,x` when the interior is atomic (a name / literal / member chain), else `,{ expr }`.
@@ -2884,6 +2915,13 @@ impl<'a> Printer<'a> {
         };
         let name = self.head_ctor(head).or_else(|| self.head_name(head));
         if matches!(name.as_deref(), Some("tuple" | "list" | "map" | "bin")) {
+            return true;
+        }
+        // a RECORD pattern `(record (field p) …)` — the operator-ruled bare-brace binder surface
+        // (`let { x = a } = r in …`, `def f({ x = a }) = …`). Renders `{ field = p, … }`, re-read by the
+        // parser's `LBrace` pattern arm. Guarded on the record-pattern shape so a positional `(record …)`
+        // (which is not a valid field-pattern body) still falls through rather than mis-sugaring.
+        if name.as_deref() == Some("record") && self.is_record_pattern(&items[1..]) {
             return true;
         }
         // A CONSTRUCTOR pattern in binding position — `Ctor(p…)` (name-headed application, e.g. `(C c)` /
@@ -5029,6 +5067,50 @@ mod tests {
             assert!(
                 parser::read_ml(&ml).arenas.structurally_eq(&a),
                 "ctor-pattern let round-trips: {ml:?}"
+            );
+        }
+        // RECORD binding patterns — the operator-ruled bare-brace surface `{ field = p, … }` (arena
+        // `(record (field p) …)`, distinct from the map `#{…}` = `(map …)`). In a param, a let binder, and
+        // a match arm; a PARTIAL pattern (fewer fields) too. (v-guide-editor issue 2026-07-18; unblocked by
+        // v-patterns' Increment-B compiler support landing.)
+        assert_eq!(
+            assert_roundtrip("def f({ x = a, y = b }) = a + b", 80),
+            "def f({ x = a, y = b }) = a + b"
+        );
+        assert_eq!(
+            assert_roundtrip("def f({ x = a }) = a", 80),
+            "def f({ x = a }) = a"
+        );
+        assert_eq!(
+            assert_roundtrip("let { x = a, y = b } = r in a + b", 80),
+            "let { x = a, y = b } = r in\na + b"
+        );
+        assert_eq!(
+            assert_roundtrip("match r with | { x = a } => a", 80),
+            "match r with\n  | { x = a } => a"
+        );
+        // The oracle: a hand-authored `(record …)` binder prints the brace surface (NOT the backtick-let
+        // fallback), in both let and param position.
+        assert_eq!(
+            print(
+                &sexpr::read("(def (main) (let (((record (x a) (y b)) r)) (+ a b)))").unwrap(),
+                80
+            ),
+            "def main() =\n  let { x = a, y = b } = r in\n  a + b"
+        );
+        for sx in [
+            "(def (main) (let (((record (x a) (y b)) (record (x 3) (y 4)))) (+ a b)))",
+            "(def (f (record (x a))) a)",
+        ] {
+            let a = sexpr::read(sx).unwrap();
+            let ml = print(&a, 80);
+            assert!(
+                !ml.contains("`let`"),
+                "record pattern must not backtick-fallback: {ml:?}"
+            );
+            assert!(
+                parser::read_ml(&ml).arenas.structurally_eq(&a),
+                "record pattern round-trips: {ml:?}"
             );
         }
     }

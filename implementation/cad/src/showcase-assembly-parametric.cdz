@@ -1,6 +1,6 @@
-// showcase-assembly-parametric.cdz -- a PARAMETRIC L-bracket assembly: shared dims as @param sliders.
+// showcase-assembly-parametric.cdz -- a PARAMETRIC L-bracket assembly: shared dims as @!param sliders.
 // Drag a slider and the whole bracket re-mates (origin-relative dimension arithmetic). Assembly-as-code
-// meets the parametric @param slider UX. @tests use per-part bboxes only (whole-assembly bounding-box
+// meets the parametric @!param slider UX. @tests use per-part bboxes only (whole-assembly bounding-box
 // hits the routed v-memory-safety O(2^n) nested-union miscompile); the mesh path is unaffected.
 @!default-fraction Rational
 

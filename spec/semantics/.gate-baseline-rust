@@ -793,6 +793,7 @@ pass	a dense zero-based jump-table match hits a covered arm
 pass	a dense zero-based jump-table match routes an out-of-range scrutinee to the default
 pass	a dependent size of zero binds an empty body and leaves the rest untouched
 pass	a dependent size one past the remaining bytes overruns and falls through
+pass	a dependent utf8 bin segment whose length exceeds the remaining bytes is a non-match
 pass	a dependent-size segment binding exactly the remaining bytes leaves an empty rest
 pass	a dependent-size segment binds exactly the number of bytes an earlier segment named
 pass	a dependent-size segment that overruns the remaining bytes falls through
@@ -1620,7 +1621,9 @@ pass	a record field holding a sum is projected then matched
 pass	a record field key that coincides with a parameter name survives the call
 pass	a record field with no value expression is rejected, not a crash
 pass	a record is constructed and a field is read
-pass	a record match pattern is named as unimplemented, not leaked as an unbound field binder (CDZ0201)
+pass	a record match arm + a wildcard alternative selects by shape
+pass	a record match pattern binds fields by name — partial and out of order
+pass	a record match pattern destructures a record scrutinee by field
 pass	a record missing a field the annotation names is rejected
 pass	a record scrutinee is bound whole by a match binder
 pass	a record whose field is a runtime tuple nests across the boundary
@@ -1819,6 +1822,8 @@ pass	a runtime conditional selects its then-branch when the runtime condition ho
 pass	a runtime conjunction still shields a comparison right operand whose subexpression traps
 pass	a runtime const-multiply at its exact fitting boundary does not trap
 pass	a runtime const-multiply one past its fitting boundary traps
+pass	a runtime dependent-size match falls through when the scrutinee is too short for the size prefix
+pass	a runtime dependent-size match with a signed negative size falls through
 pass	a runtime division by zero traps
 pass	a runtime division of the minimum integer by -1 overflows and traps
 pass	a runtime division truncates toward zero
@@ -3623,6 +3628,7 @@ pass	two closures from one factory capture distinct values
 pass	two constant records with the same fields in different written order are equal
 pass	two constant sums with the same payload but different variants are not equal
 pass	two definitions imported under the same name are rejected
+pass	two dependent utf8 bin segments each sized by its own preceding length byte
 pass	two dependent-size segments each bind the count a preceding segment named
 pass	two different variants of the SAME sum compare unequal
 pass	two differing runtime Ok values of a multi-parameter sum compare unequal by a heap walk

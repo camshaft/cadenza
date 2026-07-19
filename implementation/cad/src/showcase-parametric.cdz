@@ -1,5 +1,5 @@
 /// showcase-parametric.cdz — GENUINELY-PARAMETRIC CAD showcase models (operator: "showcase the parametric
-/// models — that's where things get super cool"). Each is a `@param`-driven model built with the ergonomic
+/// models — that's where things get super cool"). Each is a `@!param`-driven model built with the ergonomic
 /// `helpers.cdz` surface + returning `lower(...)` so it renders to the mesh driver. The host supplies each
 /// `@param` at run time (a slider in /cad → a host-response), so "change a number, the model updates" — the
 /// exact-Rational payoff: a fractional slider dimension (e.g. 7/2) is carried EXACTLY, no float drift.
@@ -21,7 +21,7 @@ import { box, cyl, hole-through, fuse, move-z } from "helpers"
 @!param(widget: slider, range: [1, 15], default: 3) bore : Rational
 
 /// A parametric mounting PLATE: a `width × depth × thickness` plate with a central bolt hole of radius
-/// `bore` drilled through it. Every dimension is a runtime `@param` — drag the sliders, the plate resizes
+/// `bore` drilled through it. Every dimension is a runtime `@!param` — drag the sliders, the plate resizes
 /// and the hole re-bores, all exact. Built entirely with the ergonomic helpers (box + hole-through).
 def plate(w: Rational, d: Rational, t: Rational, r: Rational) =
   hole-through(box(w, d, t), r, t)
