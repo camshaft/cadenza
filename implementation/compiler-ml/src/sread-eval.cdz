@@ -133,6 +133,23 @@ def se-corpus-underscore-param-call() =
     | Option.None(_) => trap("the corpus _1-param function call runs end-to-end"))
 
 @test
+def se-bool-param-call() =
+  // a single param used in a BOOLEAN position: `(def (f b) (if b 1 0))` called `(f true)` → 1. Pins that a
+  // param flows through the whole pipeline with a Bool type (infer types the param as the arg's type = Bool,
+  // resolve binds it, lower/eval the if). Differential-verified vs rcdzc. Complements the arithmetic param tests.
+  (match run-src("(do (def (f b) (if b 1 0)) (def (main) (f true)) (export main))") with
+    | Option.Some(v) => (if v == 1 then unit else trap("(f true) where f(b)=if b 1 0 → 1"))
+    | Option.None(_) => trap("a bool-typed param call runs end-to-end"))
+
+@test
+def se-param-in-comparison-call() =
+  // a param feeding a COMPARISON (a Bool-RESULT body): `(def (f n) (< n 10))` called `(f 5)` → true (1). The
+  // call's result type is Bool (the body's comparison type), not the param's Int — pins the body-type flow.
+  (match run-src("(do (def (f n) (< n 10)) (def (main) (f 5)) (export main))") with
+    | Option.Some(v) => (if v == 1 then unit else trap("(f 5) where f(n)=(< n 10) → true"))
+    | Option.None(_) => trap("a param-in-comparison call runs end-to-end"))
+
+@test
 def se-unbound-declines() =
   // a bare unbound var → None (declined), NOT a value: the differential must see decline, not a bogus value.
   (match run-src("y") with | Option.None(_) => unit | Option.Some(_) => trap("unbound y declines"))

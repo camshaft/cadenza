@@ -4513,6 +4513,23 @@
   (call   main (: 15 Int64))
   (output (: -1 (Int 4))))
 
+(case "a CONSTANT signed nibble truncation sign-extends — the const-fold companion of the runtime .wrap"
+  (doc    "The runtime `.wrap` case above pins the RUNTIME lowering; this pins the CONST-FOLD path, which
+           lowers `.wrap` on a compile-time constant separately and MUST also sign-extend from bit N-1.
+           `((Int 4) wrap 8)` as a constant is -8 (8 = 0b1000, bit 3 set → 8 - 2^4), NOT +8. Regression pin
+           for a rust-backend const-fold miscompile (fixed `41946d40a`) where the const path did `8u8 as i8`
+           = +8 — skipping the sign-extend the runtime path and wasm both perform — yielding a wrong VALUE
+           that also escaped the type range under arithmetic (8+1=9, out of [-8,7]). A runtime-only pin does
+           NOT cover the const-fold lowering, so this closes that blind spot.")
+  (input  ((. (Int 4) wrap) 8))
+  (output (: -8 (Int 4))))
+
+(case "a CONSTANT signed nibble truncation of an all-ones nibble is -1"
+  (doc    "The all-bits-set companion: `((Int 4) wrap 15)` = 0b1111, every kept bit set → -1 (const-fold).
+           Pairs with the -8 case to pin both a mid-range negative and the -1 boundary on the const path.")
+  (input  ((. (Int 4) wrap) 15))
+  (output (: -1 (Int 4))))
+
 (case "arithmetic on an unusual signed width enforces the type's OWN range at compile time"
   (doc    "The `.wrap` case above pins the value's sign-extend; this pins ARITHMETIC on the result. The
            compile-provable-overflow check (CDZ0304) enforces the (Int 4) type's OWN 4-bit range [-8, 7],
