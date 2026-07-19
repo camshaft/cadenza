@@ -3280,6 +3280,7 @@ pass	popping a field yields its value and the remaining record
 pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple
 pass	popping an absent field is rejected
+pass	prepending an element onto a list inserts it at the front
 pass	print of a NEGATIVE Ast.Float round-trips through read (sign survives the text path)
 pass	print of a negative-zero Ast.Float preserves the sign through read (text-path signed-zero)
 pass	print of a quote containing a float renders re-readably
@@ -3572,6 +3573,7 @@ pass	the length of a concatenation is the sum of the two lengths
 pass	the length of a fixed-width construction is the sum of its segment widths
 pass	the length of a grown list is its element count
 pass	the length of a list looked up from a map by a runtime key
+pass	the length of a prepended-onto list grows by one
 pass	the length of a runtime byte sequence is its byte count
 pass	the length of a slice is the slice's byte count
 pass	the magnitude of a bare-scaled quantity reads back

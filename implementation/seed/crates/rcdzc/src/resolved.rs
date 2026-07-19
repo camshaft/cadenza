@@ -379,6 +379,12 @@ pub enum Prim {
     /// `List.push` — append an element to a list, returning the new list. `∀a. (List a) → a → (List a)`.
     /// Lowers to the runtime `vec-push` op (persistent — returns a new handle, does not mutate).
     ListPush,
+    /// `List.prepend` — insert an element at the FRONT of a list, returning the new list. Receiver-first,
+    /// like `push`/`at`/`update`: `∀a. (List a) → a → (List a)` (operator ruling — consistent arg order,
+    /// pipeline-friendly). Phase-1 is a DERIVED lowering — `concat(list-new(elem), list)` (a singleton list
+    /// prepended, reusing the persistent `vec-concat`), so NO dedicated runtime op and NO frozen-hash bump.
+    /// The front-insertion companion of `List.push` (which appends at the tail).
+    ListPrepend,
     /// `List.concat` — concatenate two lists of the same element type into one. `∀a. (List a) → (List a)
     /// → (List a)`. Lowers to the runtime `vec-concat` op.
     ListConcat,
@@ -847,6 +853,7 @@ impl Prim {
             "list-new" => Some(Prim::ListNew),
             "list-len" => Some(Prim::ListLen),
             "list-push" => Some(Prim::ListPush),
+            "list-prepend" => Some(Prim::ListPrepend),
             "list-concat" => Some(Prim::ListConcat),
             "list-update" => Some(Prim::ListUpdate),
             "list-at" => Some(Prim::ListAt),

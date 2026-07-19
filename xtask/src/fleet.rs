@@ -3342,6 +3342,12 @@ fn archive(fleet: &Fleet, no_commit: bool) {
 /// footgun); and if any cherry-pick fails (e.g. a real conflict against the advanced trunk), it aborts
 /// the pick and RESTORES the pre-sync HEAD, so the worst case is exactly where the agent started —
 /// `fleet sync` can never lose or half-apply work. On a conflict it exits non-zero with guidance.
+/// A worktree base trailing `trunk` by MORE than this many commits earns a warning on a refused sync —
+/// far enough behind that a stale-base conflict/rejection is a real risk when the queued MR is gated
+/// (concierge 9740). Short lags are fine (pr-sync rebases the sent ref onto trunk), so the threshold is
+/// generous; it flags only a base that has drifted well behind a fast-moving trunk.
+const SYNC_BASE_LAG_WARN: usize = 20;
+
 fn sync(fleet: &Fleet, force: bool) {
     let cwd = std::env::current_dir().expect("cwd");
     let git = |args: &[&str]| -> std::process::Output {
@@ -3422,6 +3428,19 @@ fn sync(fleet: &Fleet, force: bool) {
                      onto current trunk and re-gates). If that MR is dead and you'll resend a fresh \
                      --ref, re-run with `--force`."
                 );
+                // BASE-LAG WARNING (concierge 9740): the refuse leaves the branch on its current base.
+                // That's fine for a short lag (pr-sync rebases the sent ref onto trunk + re-gates), but a
+                // base that trails trunk by MANY commits risks a stale-base conflict/rejection when the
+                // queued MR is finally judged. Surface how far behind the base is so the agent notices
+                // and can plan a `--force` resync (after its MR resolves) rather than drifting silently.
+                let behind = git_stdout(&["rev-list", "--count", &format!("{old_head}..{TRUNK}")]);
+                if behind.parse::<usize>().unwrap_or(0) > SYNC_BASE_LAG_WARN {
+                    eprintln!(
+                        "  ⚠ your base is {behind} commits behind trunk — a lag this large risks a \
+                         stale-base conflict when your queued MR is gated. Once it lands/rejects, \
+                         `cargo xtask fleet sync --force` to rebase onto current trunk before new work."
+                    );
+                }
                 std::process::exit(1);
             }
         }

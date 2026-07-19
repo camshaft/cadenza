@@ -1609,6 +1609,21 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         },
                     }
                 }
+                // `List.prepend` — insert an element at the FRONT (receiver-first: args = [list, elem]).
+                // Phase-1 DERIVED lowering: `concat(list-new(elem), list)` — a singleton list of the element
+                // concatenated ahead of the operand list, reusing the persistent `vec-concat` (no dedicated
+                // runtime op, hash-neutral). A poison operand propagates. A compile-time-visible list literal
+                // FOLDS: the element is INSERTED AT THE FRONT of the constant `Core::ListNew` (mirroring the
+                // `ListConcat` fold of `[elem] ++ xs`), so a constant prepend bakes / folds through
+                // `List.at`/`len` exactly as a written `(list …)`.
+                // `List.prepend` — the body is in an `#[inline(never)]` helper so its locals (a `Vec`, the
+                // `synth_core` scratch) stay OFF `core_of`'s per-frame stack: `core_of` is the recursive
+                // lowering hub every nested node walks through, and a `DESCENT_DEPTH_LIMIT`-deep input (the
+                // `a_sum_payload_wrapped_self_application` decline test) overflows the spawned compile thread's
+                // stack if the hub's frame grows (the printer-arm-locals-bloat family).
+                Some(Prim::ListPrepend) if args.len() == 2 => {
+                    lower_list_prepend(db, id, args[0], args[1])
+                }
                 // `ast-splice-lift` — the quasiquote-splice lift `(List a) → (List Ast)`: wrap each element
                 // in the `Ast` leaf its constant kind denotes (Int64→`Ast.Int`, Float64→`Ast.Float`,
                 // Bool→`Ast.Bool`, String→`Ast.Str`). FOLD a constant list literal into a `Core::ListNew`
@@ -17401,6 +17416,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::ListNew
         | Prim::ListLen
         | Prim::ListPush
+        | Prim::ListPrepend
         | Prim::ListConcat
         | Prim::ListUpdate
         | Prim::ListAt
@@ -22650,6 +22666,32 @@ fn bin_size_len_read(
 /// it lowers/types directly without re-resolution — the same trick `Bytes.slice`'s fold payload uses).
 /// Used by the runtime bin matcher to build the `if`-chain + per-arm predicate out of `Core` directly,
 /// and by select's equal-refined-branch collapse to materialize the shared constant.
+/// `List.prepend list elem` → insert `elem` at the FRONT. Kept `#[inline(never)]` so its locals stay off
+/// `core_of`'s recursive frame (the printer-arm-locals-bloat family — a deep-input decline test overflows
+/// the compile thread's stack if the lowering hub's frame grows). FOLD onto a constant list (element at
+/// index 0); a runtime list builds `concat(list-new(elem), list)` reusing the persistent `vec-concat`.
+#[inline(never)]
+fn lower_list_prepend(db: &mut Db, id: StructId, list: StructId, elem: StructId) -> Core {
+    match (core_of(db, list), core_of(db, elem)) {
+        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+        (Core::ListNew { elems }, _) => {
+            let mut a = Vec::with_capacity(elems.len() + 1);
+            a.push(elem);
+            a.extend(elems);
+            trace!(target: "rcdzc::fold", node = id.0, len = a.len(), "List.prepend folds onto a constant list");
+            Core::ListNew { elems: a }
+        }
+        _ => {
+            let list_ty = crate::infer::type_of(db, list);
+            let singleton = synth_core(db, Core::ListNew { elems: vec![elem] }, list_ty);
+            Core::ListConcat {
+                lhs: singleton,
+                rhs: list,
+            }
+        }
+    }
+}
+
 pub(crate) fn synth_core(db: &mut Db, core: Core, ty: crate::ty::Ty) -> StructId {
     let id = db.push_atom(crate::ast::Leaf::Bytes(Vec::new())); // placeholder leaf; core/ty are authoritative
     db.core.fill(id, core);
@@ -23307,6 +23349,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::ListNew => "list-new",
         Prim::ListLen => "list-len",
         Prim::ListPush => "list-push",
+        Prim::ListPrepend => "list-prepend",
         Prim::ListConcat => "list-concat",
         Prim::ListUpdate => "list-update",
         Prim::ListAt => "list-at",
