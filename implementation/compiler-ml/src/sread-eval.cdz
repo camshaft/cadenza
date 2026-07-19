@@ -69,6 +69,24 @@ def se-nested-let() =
   (match run-src("(let ((a 1)) (let ((b 2)) (+ a b)))") with | Option.Some(v) => (if v == 3 then unit else trap("nested let → 3")) | Option.None(_) => trap("runs"))
 
 @test
+def se-single-param-call() =
+  // ★ slice-3c PAYOFF, FROM SOURCE ★ — a SINGLE-PARAM function call: `(def (f n) (+ n 1))` called `(f 41)` → 42.
+  // Full pipeline: sread reads the param def + the call NApp(bodyId, argId) → resolve binds the body's `n` to
+  // the param node → infer types the param as the arg's type → lower builds CLet(param, argCore, bodyCore) →
+  // eval binds arg to param + evals the body. Differential-verified vs rcdzc (`def f(n)=n+1; f(41)` → 42).
+  (match run-src("(do (def (f n) (+ n 1)) (def (main) (f 41)) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("(f 41) where f(n)=n+1 → 42"))
+    | Option.None(_) => trap("a single-param call runs end-to-end"))
+
+@test
+def se-single-param-call-uses-arg() =
+  // the arg FLOWS: `(def (double n) (+ n n))` called `(double 21)` → 42 (proves the arg binds the param, not a
+  // constant). A different arg → a different result: pins the param is genuinely substituted, not ignored.
+  (match run-src("(do (def (double n) (+ n n)) (def (main) (double 21)) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("(double 21) → 42 (arg flows to param)"))
+    | Option.None(_) => trap("a param call substitutes its arg"))
+
+@test
 def se-unbound-declines() =
   // a bare unbound var → None (declined), NOT a value: the differential must see decline, not a bogus value.
   (match run-src("y") with | Option.None(_) => unit | Option.Some(_) => trap("unbound y declines"))

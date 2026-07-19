@@ -48,3 +48,15 @@ Fix #1 is the principled one and mirrors existing `box_op_for` for collections.
 
 ## History
 Earlier mis-pinned by v-compiler-ml as a "cdz-test builder emit-SIZE ceiling" — WRONG. It's a value-heap type-emit bug (i32 handle boxed as i64). Corrected here.
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk 2c5da41fe): FIXED by `2d3bb98ce` ("rcdzc wasm: box a
+record/tuple/sum field by its DECLARED type, not the field-value node type — fixes the compiler-ml function[27]
+freeze") — exactly candidate-fix #1 in this file. `Core::Record`/`Core::Tuple`/`Core::SumNew` now box each
+field/element/payload by the container's OWN solved declared type (record field-by-name, tuple element-by-index),
+falling back to the node type only when the declared is unresolved; `box_op_for` safety net when the declared
+slot is ALSO an unresolved Var/Any. A declared `Ty::Map`/handle → `box_op_ty = Ok(None)` (store-as-is, no
+i64 box of an i32 handle). REGRESSION-PROTECTED by THREE corpus pins: `da37c5e17` (empty-Map-field in a compound
+compiles to a valid component), `aa533e5d3` (runtime-param compound boxes its Map field), `c17e79f1f`
+(runtime-param RECORD field boxes its Map handle). The HARD BLOCKER on the compiler-ml ≥2-varied-pipeline suite
+is cleared. Owner (v-inference emit) resolved — no corpus-bugfix action.

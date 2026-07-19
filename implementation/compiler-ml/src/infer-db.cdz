@@ -13,7 +13,7 @@
 /// there is one ground type — so this column is the DB-shaped monomorphic specialization. It widens to call
 /// the HM engine when the language grows function types.)
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of } from "parse-db"
 import { Resolved, resolve-tree } from "resolve-db"
 import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ground-default } from "ty"
 import { unify-ty } from "unify-ty"
@@ -85,7 +85,21 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
             (match Map.lookup(t1, calleeId) with
               | Option.Some(bodyTy) => Map.insert(t1, id, bodyTy)
               | Option.None(_) => Map.insert(t1, id, Typed.TErr)))
-         else Map.insert(tcol, id, Typed.TErr))
+         // slice-3c SINGLE-PARAM call `(f arg)`: type the ARG, bind the param node's type to the arg's type
+         // (so the body's param uses type via var-type's NVar arm), type the body, then the call's type IS the
+         // body's type. The param is found by bodyId (calleeId). A call WITH an arg but NO param → TErr.
+         else (match param-of(tree, calleeId) with
+                | Option.Some(paramId) =>
+                    (let ta = infer-node(tree, argId, rcol, tcol) in
+                     (match Map.lookup(ta, argId) with
+                       | Option.Some(argTy) =>
+                           (let tp = Map.insert(ta, paramId, argTy) in       // param node : arg's type
+                            (let tb = infer-node(tree, calleeId, rcol, tp) in
+                             (match Map.lookup(tb, calleeId) with
+                               | Option.Some(bodyTy) => Map.insert(tb, id, bodyTy)
+                               | Option.None(_) => Map.insert(tb, id, Typed.TErr))))
+                       | Option.None(_) => Map.insert(ta, id, Typed.TErr)))
+                | Option.None(_) => Map.insert(tcol, id, Typed.TErr)))
     | Option.None(_) => tcol
 
 /// The type of a variable reference bound at `binder` (an `NLet` node-id): the type of that let's VALUE
@@ -95,6 +109,10 @@ def var-type(tree: Tree, binder: Int64, tcol: Map(Int64, Typed)) =
   (match node-at(tree, binder) with
     | Option.Some(Node.NLet(_, valId, _)) =>
         (match Map.lookup(tcol, valId) with | Option.Some(t) => t | Option.None(_) => Typed.TErr)
+    // slice-3c: a PARAMETER binder is the param's own NVar node (not an NLet). Its type is whatever the NApp
+    // param arm stored at the param node-id (the ARGUMENT's type) — read it directly by the binder's node-id.
+    | Option.Some(Node.NVar(_)) =>
+        (match Map.lookup(tcol, binder) with | Option.Some(t) => t | Option.None(_) => Typed.TErr)
     | _ => Typed.TErr)
 
 /// The result type of a binary node with op `op` and operands at `a`,`b`. ARITHMETIC (43 `+`, 45 `-`, 42

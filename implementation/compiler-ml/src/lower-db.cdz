@@ -14,7 +14,7 @@
 /// NO core form (a filled `None`), not a bogus tree. Lowering reads the infer column to make this decision,
 /// and reads the resolve column to canonicalize vars — producer-reads-two-producers.
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of } from "parse-db"
 import { Resolved, resolve-tree } from "resolve-db"
 import { Typed, infer-tree } from "infer-db"
 
@@ -101,12 +101,22 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
               | Option.None(_) => Option.None(unit))
           | Option.None(_) => Option.None(unit))
     | Option.Some(Node.NApp(calleeId, argId)) =>
-        // slice-2 NULLARY call semantics: a nullary call `(mk)` = NApp(calleeBodyId, -1) INLINES the callee
-        // body's Core (β-reduction over zero args — no params to bind, so the call IS the body). Lower the
-        // callee body at calleeId; that Core is the call's Core. A call WITH an arg (argId != -1) is the param
-        // slice (lowers to CLet(param, argCore, bodyCore)) — not yet, declines None. No new Core node.
+        // NULLARY call `(mk)` = NApp(calleeBodyId, -1) INLINES the callee body's Core (β-reduction over zero
+        // args — the call IS the body). slice-3c SINGLE-PARAM call `(f arg)` = NApp(calleeBodyId, argId) lowers
+        // to `CLet(paramId, argCore, bodyCore)` — a call binds its param exactly like a `let`: eval the arg,
+        // bind it to the param's canonical node-id, eval the body under that binding. The paramId is found by
+        // BODYID (`param-of(tree, calleeId)` — sread keyed the param-table by bodyId for exactly this). A call
+        // WITH an arg but NO param (an over-applied nullary def) → param-of None → declines (no Core).
         (if (argId == (0 - 1)) then lower-node(tree, calleeId, rcol, tcol)
-         else Option.None(unit))
+         else (match param-of(tree, calleeId) with
+                | Option.Some(paramId) =>
+                    (match lower-node(tree, argId, rcol, tcol) with
+                      | Option.Some(argCore) =>
+                          (match lower-node(tree, calleeId, rcol, tcol) with
+                            | Option.Some(bodyCore) => Option.Some(Core.CLet(paramId, argCore, bodyCore))
+                            | Option.None(_) => Option.None(unit))
+                      | Option.None(_) => Option.None(unit))
+                | Option.None(_) => Option.None(unit)))
     | Option.None(_) => Option.None(unit)
 
 /// The lower COLUMN builder: build resolve + infer columns (demanding parse under them), then lower over
