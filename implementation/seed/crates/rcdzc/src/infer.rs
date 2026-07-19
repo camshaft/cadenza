@@ -9377,6 +9377,17 @@ fn check_application(
                         _ => None,
                     }
                 }
+                // prepend: args = [list, elem]; like push, the elem must match the list's element type
+                // (the front-insertion companion — same homogeneity fault, same actionable locus).
+                Some(crate::resolved::Prim::ListPrepend) if args.len() == 2 => {
+                    match type_of(db, args[0]) {
+                        Ty::List(elem) => {
+                            let given = type_of(db, args[1]);
+                            (!elem.agrees_with(&given)).then(|| ((*elem).clone(), given, args[1]))
+                        }
+                        _ => None,
+                    }
+                }
                 // update: args = [list, index, elem]; the elem must match the list's element type.
                 Some(crate::resolved::Prim::ListUpdate) if args.len() == 3 => {
                     match type_of(db, args[0]) {

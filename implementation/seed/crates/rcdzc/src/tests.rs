@@ -31041,6 +31041,150 @@ mod match_engine {
     }
 
     #[test]
+    fn every_collection_receiver_op_takes_its_receiver_first() {
+        // DRIFT GUARD for the operator's consistent-arg-order directive (concierge 9699/9758): every
+        // collection / text / compound RECEIVER-op's scheme MUST carry the receiver (the List/Map/Set/
+        // String/Bytes it operates on) as ARG-0, uniform with push/at/update/prepend and pipeline-friendly
+        // (a data-first pipe passes the receiver as the first argument). A new prelude op that puts the
+        // element/key/index before the receiver FAILS this test rather than shipping an inconsistent
+        // surface. Constructors-from-scalars (`Rational.of`, `Char.from-int`) and unary conversions are
+        // EXCLUDED (they have no receiver) — this asserts only the multi-arg receiver-ops.
+        //
+        // Mechanism: a def whose body is the bare member op `(. Module op)` infers to the op's arrow; the
+        // OUTERMOST arrow's parameter is arg-0. We assert that parameter's `Ty` is the receiver kind. (A
+        // bare-value member op reduces to its `(meta t)` scheme's arrow — the same arrow an application
+        // unifies against.)
+        use crate::testkit::parse;
+        use crate::ty::Ty;
+        // (module, op, receiver-kind predicate on the arg-0 Ty). Only multi-arg receiver-ops; a nullary
+        // (`Map.empty`) or unary op (`List.len`) still has the receiver in arg-0 where it takes one.
+        #[allow(clippy::type_complexity)]
+        let cases: &[(&str, &str, fn(&Ty) -> bool, &str)] = &[
+            ("List", "push", |t| matches!(t, Ty::List(_)), "List"),
+            ("List", "prepend", |t| matches!(t, Ty::List(_)), "List"),
+            ("List", "concat", |t| matches!(t, Ty::List(_)), "List"),
+            ("List", "update", |t| matches!(t, Ty::List(_)), "List"),
+            ("List", "at", |t| matches!(t, Ty::List(_)), "List"),
+            ("List", "len", |t| matches!(t, Ty::List(_)), "List"),
+            ("Map", "insert", |t| matches!(t, Ty::Map(..)), "Map"),
+            ("Map", "lookup", |t| matches!(t, Ty::Map(..)), "Map"),
+            ("Map", "remove", |t| matches!(t, Ty::Map(..)), "Map"),
+            ("Map", "swap", |t| matches!(t, Ty::Map(..)), "Map"),
+            ("Map", "take", |t| matches!(t, Ty::Map(..)), "Map"),
+            ("Set", "contains", |t| matches!(t, Ty::Set(_)), "Set"),
+            ("Set", "insert", |t| matches!(t, Ty::Set(_)), "Set"),
+            ("Set", "remove", |t| matches!(t, Ty::Set(_)), "Set"),
+            ("Set", "union", |t| matches!(t, Ty::Set(_)), "Set"),
+            ("Set", "intersection", |t| matches!(t, Ty::Set(_)), "Set"),
+            ("Set", "difference", |t| matches!(t, Ty::Set(_)), "Set"),
+            ("Bytes", "at", |t| matches!(t, Ty::Bytes), "Bytes"),
+            ("Bytes", "concat", |t| matches!(t, Ty::Bytes), "Bytes"),
+            ("Bytes", "slice", |t| matches!(t, Ty::Bytes), "Bytes"),
+            ("String", "at", |t| matches!(t, Ty::String), "String"),
+            ("String", "scalar-at", |t| matches!(t, Ty::String), "String"),
+            ("String", "concat", |t| matches!(t, Ty::String), "String"),
+            ("String", "slice", |t| matches!(t, Ty::String), "String"),
+        ];
+        for (module, op, is_receiver, kind) in cases {
+            let src =
+                format!("(module m (def (probe) (. {module} {op})) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(parse(&src));
+            let d = db.def_by_name("probe").expect("probe def");
+            let body = db.defs[d].body.expect("probe body");
+            let ty = crate::infer::type_of(&mut db, body);
+            match &ty {
+                Ty::Fn(arg0, _) => assert!(
+                    is_receiver(arg0),
+                    "prelude arg-order drift: `{module}.{op}` arg-0 is {} — expected the {kind} receiver \
+                     (operator's consistent receiver-first directive, concierge 9699)",
+                    arg0.render_name()
+                ),
+                other => panic!(
+                    "`{module}.{op}` did not infer to an arrow (got {}); the drift guard needs a \
+                     receiver-op with an arrow scheme",
+                    other.render_name()
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn a_list_prepend_puts_the_element_at_the_front_and_grows_the_length() {
+        // `List.prepend : ∀a. (List a) → a → (List a)` (receiver-first, operator ruling) — insert an
+        // element at the FRONT, returning a new list one longer. Phase-1 lowers to `concat(list-new(elem),
+        // list)`. To exercise the RUNTIME path (a constant-list prepend folds), the operand is BUILT at run
+        // time (`build 0 3` = `[0 1 2]`); prepending 9 yields `[9 0 1 2]`. Element 0 must be the prepended
+        // 9 (front-insertion, NOT append), and the length must be 4. Pins value-order + growth on the
+        // runtime `Core::ListConcat` path (a genuinely-runtime operand, so no const-fold false-green).
+        let Some(front) = run_on_heap(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) ((. Option expect) \
+                  ((. List at) ((. List prepend) (build 0 3 (list)) 9) 0) \"f\")) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            front, "9",
+            "prepend puts the element at the FRONT (index 0)"
+        );
+        let Some(len) = run_on_heap(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) ((. List len) ((. List prepend) (build 0 3 (list)) 9))) (export main))",
+        ) else {
+            return;
+        };
+        assert_eq!(len, "4", "prepend grows the length by one");
+    }
+
+    #[test]
+    fn a_list_prepend_type_mismatch_is_rejected() {
+        // `List.prepend : ∀a. (List a) → a → (List a)` — like `push`, the prepended element must match the
+        // list's element type. `(List.prepend (list 1 2) true)` prepends a Bool onto a `List Int64` — a
+        // heterogeneous result, a MALFORMED COLLECTION (CDZ0201), the front-insertion companion of the push
+        // mismatch, coded with the same UNIFORM homogeneity code.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) ((. List len) ((. List prepend) (list 1 2) true))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201")
+        );
+    }
+
+    #[test]
+    fn a_constant_list_prepend_folds_at_the_front() {
+        // A `List.prepend` over a COMPILE-TIME-VISIBLE list literal FOLDS to a constant `(list …)` with the
+        // element inserted at index 0 — no runtime heap (so this uses `run_returns`/`component`, NOT
+        // `run_on_heap` which asserts a value-heap import). `List.at 0` of the folded `[9 1 2 3]` folds to
+        // `Some 9` (consumed by a match so `main` returns a scalar, avoiding the sum-escape ABI); `List.len`
+        // folds to 4. Pins the constant-fold arm (front insertion + length) alongside the runtime path above.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (match ((. List at) ((. List prepend) (list 1 2 3) 9) 0) \
+                       ((Some x) x) (None -1))) (export main))"
+                ),
+                "main"
+            ),
+            9,
+            "constant prepend folds the element to the front (index 0)"
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) ((. List len) ((. List prepend) (list 1 2 3) 9))) (export main))"
+                ),
+                "main"
+            ),
+            4,
+            "constant prepend folds to length 4"
+        );
+    }
+
+    #[test]
     fn a_list_update_replaces_and_its_length_is_unchanged() {
         // `List.update(l, i, x)` replaces the element at index `i`, returning a new list of the SAME
         // length (a replacement, not a growth). To exercise the RUNTIME `vec-update` (a constant-list

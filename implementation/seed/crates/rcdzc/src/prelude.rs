@@ -607,6 +607,10 @@ fn list_module(ast: &mut Arenas) -> StructId {
     // Each lambda is built first (a `&mut ast` borrow) then handed to `list_op_record`.
     let len_lambda = list_len_type_lambda(ast);
     let push_lambda = list_push_type_lambda(ast);
+    // `prepend` shares `push`'s scheme exactly — `∀a. (List a) → a → (List a)` — so it reuses the
+    // `list_push_type_lambda` shape (a second, independent build to avoid sharing one StructId across
+    // two module fields).
+    let prepend_lambda = list_push_type_lambda(ast);
     let concat_lambda = list_concat_type_lambda(ast);
     let update_lambda = list_update_type_lambda(ast);
     let at_lambda = list_at_type_lambda(ast);
@@ -614,6 +618,7 @@ fn list_module(ast: &mut Arenas) -> StructId {
     for (name, prim, lambda) in [
         ("len", "list-len", len_lambda),
         ("push", "list-push", push_lambda),
+        ("prepend", "list-prepend", prepend_lambda),
         ("concat", "list-concat", concat_lambda),
         ("update", "list-update", update_lambda),
         ("at", "list-at", at_lambda),

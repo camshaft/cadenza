@@ -8688,6 +8688,26 @@
             (def (main)  (put 99)) (export main)))
   (output (: (list 99 2) (List Int64))))
 
+(case "prepending an element onto a list inserts it at the front"
+  (doc    "`List.prepend` is the front-insertion companion of `List.push` (which appends at the tail):
+           `∀a. (List a) → a → (List a)`, receiver-first so it reads and pipes like `push`/`at`/`update`.
+           It produces a NEW list with the element at index 0 and the operand's elements following, leaving
+           the operand unchanged. Prepending a runtime `n` onto `(list 8 9)` yields `(list 7 8 9)` for
+           `n=7` — the same grown `(list …)` form, front-inserted rather than appended.")
+  (input  (do
+            (def (front n) (List.prepend (List.push (List.push (list) 8) 9) n))
+            (def (main)  (front 7)) (export main)))
+  (output (: (list 7 8 9) (List Int64))))
+
+(case "the length of a prepended-onto list grows by one"
+  (doc    "`List.prepend` grows the list by one exactly as `List.push` does — only the insertion position
+           differs (front, not tail). `(List.len (List.prepend (List.push (list) 8) n))` = 2 for any `n`,
+           reading the grown list however it was built. The length companion of the front-insertion case.")
+  (input  (do
+            (def (sz n) (List.len (List.prepend (List.push (list) 8) n)))
+            (def (main)  (sz 7)) (export main)))
+  (output (: 2 Int64)))
+
 ; The replace-at-index operation is DEFINED ONLY for an in-bounds index (collections-and-text.md #A List
 ; Is Grown By Functional Construction, 2nd sentence: "The replace-at-index operation MUST be defined only
 ; for an index that is in bounds"). An out-of-bounds update therefore has NO value. When the list AND the
