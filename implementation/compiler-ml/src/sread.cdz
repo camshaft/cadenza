@@ -292,9 +292,14 @@ def read-2nd-param-or-close(s: String, nm: String, paramId: Int64, k: Int64, tre
   (if (char-at(s, k) == ")")
    then (match read-form(s, k + 1, tree) with | (bodyId, j, t1) => (name-id(nm), bodyId, paramId, 0 - 1, j, t1))
    else (match scan-atom(s, k, "") with | (p2nm, k1) =>       // a SECOND untyped param name
-          (match add-node(tree, Node.NVar(name-id(p2nm))) with | (param2Id, t1) =>
-            (let k2 = close-paren(s, skip-space(s, k1)) in     // consume the signature-closing `)`
-             (match read-form(s, k2, t1) with | (bodyId, j, t2) => (name-id(nm), bodyId, paramId, param2Id, j, t2))))))
+          (let e = skip-space(s, k1) in
+           (if (char-at(s, e) == ")")                          // exactly 2 params: the signature closes here
+            then (match add-node(tree, Node.NVar(name-id(p2nm))) with | (param2Id, t1) =>
+                   (match read-form(s, e + 1, t1) with | (bodyId, j, t2) => (name-id(nm), bodyId, paramId, param2Id, j, t2)))
+            // a THIRD param is present (the char after param2 is NOT `)`) — >2-param defs aren't supported yet.
+            // DECLINE via the bodyId -1 sentinel (read-do-def declines on -1) rather than mis-reading the 3rd
+            // param as the body (the old close-paren TOLERATED the missing `)`, silently mis-parsing). PR#641.
+            else (name-id(nm), 0 - 1, paramId, 0 - 1, e, tree)))))
 
 /// A TYPED single param `(: pname Type)` at `k` (pointing at the opening `(`). Consume `(`, expect `:`; a
 /// missing `:` → bodyId -1 decline. Otherwise hand off to read-typed-param-name. FLAT (≤2 nesting) to avoid
@@ -334,10 +339,11 @@ def read-do-form(s: String, i: Int64, tree: Tree) =
    (match scan-atom(s, skip-space(s, d0), "") with | (kw, d1) =>
      (if (kw == "def") then read-do-def(s, d1, tree) else unsupported-at(tree, d1))))
 
-/// Handle one `(def …)` inside a `do`: read it (nullary or single-param); if it's `main`, its body is the root;
-/// if a helper, record its body + (if present) its param, then recurse to the next def; if the signature is
-/// unsupported (bodyId -1 = typed param), decline. A helper with a single param records BOTH the def-body and
-/// the param node (via record-param) so a `(name arg)` call can key `CLet(param, arg, body)` (slice-3c). Flat.
+/// Handle one `(def …)` inside a `do`: read it (nullary, single-, or two-param); if it's `main`, its body is
+/// the root; if a helper, record its body + (if present) its param(s), then recurse to the next def; if the
+/// signature is unsupported (bodyId -1 = a malformed typed param, or a >2-param def), decline. A helper with a
+/// param records BOTH the def-body and the param node(s) — record-param (slice-3c) + record-param2 (slice-3d) —
+/// so a `(name arg…)` call can key `CLet(param, arg, body)` / the nested 2-param CLet. Flat.
 def read-do-def(s: String, d1: Int64, tree: Tree) =
   (match read-def-form(s, d1, tree) with | (nameId, bodyId, paramId, param2Id, j, t1) =>
     (if (bodyId == (0 - 1)) then unsupported-at(t1, j)   // -1 bodyId = unsupported signature → decline
@@ -711,6 +717,17 @@ def sr-module-two-param-def-reads-and-records-both() =
              | Option.None(_) => trap("add's SECOND param is recorded (param2-of)"))
          | Option.None(_) => trap("add's first param is recorded"))
      else trap("main's body (NLit 5) is the module root — the 2-param def read cleanly")))
+
+@test
+def sr-module-three-param-def-declines() =
+  // PARSE ROBUSTNESS (PR#641, cf PR#634): a >2-param def `(def (f a b c) …)` is NOT yet supported and must
+  // DECLINE, not mis-parse. read-2nd-param-or-close now checks the char after param2 is `)`; a 3rd param (the
+  // char is NOT `)`) → bodyId -1 sentinel → read-do-def declines → `f` is NOT recorded. Before the fix, the
+  // close-paren TOLERATED the missing `)` and read-form read the 3rd param `c` as the body (a silent mis-parse).
+  (match read-source("(do (def (f a b c) (+ a b)) (def (main) 5) (export main))") with | (root, tree) =>
+    (match def-body-of(tree, name-id("f")) with
+      | Option.None(_) => unit   // f's >2-param signature declined → NOT recorded (correct)
+      | Option.Some(_) => trap("a >2-param def `(def (f a b c) …)` declines — f is not recorded")))
 
 @test
 def sr-module-malformed-typed-param-declines() =
