@@ -218,6 +218,18 @@
   (call   main)
   (output (: 42 Int64)))
 
+(case "a COMPOUND map key with a Rational leaf hashes+matches by the leaf's normalized form"
+  (doc    "Composes the two faces above: the tuple-element walk (:194/:207) pins Rational `=` inside a tuple,
+           and the CHAMP-KEY face (:211) pins a BARE Rational key — this pins their COMPOSITION, a compound
+           key `(tuple (Rational.of 1 2) 5)` whose Rational LEAF must normalize on the map-key path. Insert
+           under `(tuple 1/2 5)`, look up with `(tuple 2/4 5)` — the tuple's Rational element normalizes to
+           the same 1/2 node, so `champ_hash`/`champ_eq` descend into the compound, canonicalize the leaf,
+           and find the same slot → 42. A key path that canonicalized a bare Rational but NOT one nested in
+           a tuple would false-miss here. The compound-key companion of the bare-Rational-key case.")
+  (input  (do (def (main) (Option.expect (Map.lookup (Map.insert (Map.empty) (tuple (Rational.of 1 2) 5) 42) (tuple (Rational.of 2 4) 5)) "found")) (export main)))
+  (call   main)
+  (output (: 42 Int64)))
+
 (case "equality over a Rational carried in a SUM payload respects normalization"
   (doc    "The variant-payload face (a `Vec3r`-shaped value): a Rational in a sum variant is compared by its
            canonical normalized form through the value-eq walk. `(V.Mk (Rational.of 1 2))` equals

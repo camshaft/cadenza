@@ -25,3 +25,11 @@ div-by-zero from the line-43 list. This is the more substantive of the two.
 
 ## Owner
 `guide/src/content/chapters/` = guide narrative → v-guide-editor (area=guide). Both fold into one edit.
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk 0d8b661f7): both fixed in guide/src/content/chapters/Errors.tsx.
+• Grammar (line 14): now "or look up a missing key" — the missing "look" word added.
+• Div-by-zero narrative (lines 17-19): now "A genuinely undefined operation like dividing by zero is a different
+  story that HALTS rather than inventing a value … so this chapter is about the kind of absence you can handle" —
+  correctly distinguishes division-by-zero (halting/trapping) from Option-style absence, resolving the contradiction
+  with the preceding paragraph the reviewer flagged. Guide-narrative nits resolved by v-guide-editor. No action.

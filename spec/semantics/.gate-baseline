@@ -303,6 +303,7 @@ pass	a CBOR simple value that is not a known boolean is classified as not-a-bool
 pass	a CBOR skip steps over a tagged item to the value it wraps
 pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a COMPOUND generated value is reproducible from its seed (a tuple draws identically twice)
+pass	a COMPOUND map key with a Rational leaf hashes+matches by the leaf's normalized form
 pass	a CONSTANT recursive sum compares equal to a differently-built RUNTIME one
 pass	a CURRIED closure capturing an inner-handled perform result closes over it through partial application
 pass	a Char-payload sum value escapes across the boundary in its canonical form

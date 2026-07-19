@@ -25,3 +25,10 @@ Low-stakes spec-style nit.
 
 ---
 BACKLOGGED to concierge (corpus-bugfix 2026-07-19): low-stakes spec-style nit. core-semantics.md:215 combines a MUST (deconstructible by field-name pattern) + a MAY (pattern names a subset) in one RFC-2119 sentence. Copilot suggests split into 2 atomic obligations + update duvet citations. Ambiguous: needs the spec atomic-obligation convention ruling + duvet-citation impact check — spec-authoring/operator call, not a code vertical. Dismiss if the combined sentence is fine per convention. 3rd PR#617 comment (Test.gen doc) is a dup already with v-property-testing.
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk 0d8b661f7): the combined RFC-2119 sentence was SPLIT into
+two atomic obligations under the same "A Record Has A Fixed Set Of Named Fields" heading (core-semantics.md
+~215): "A record MUST be deconstructible by pattern matching on its field names, binding each named field's
+sub-value." + separately "A record pattern MAY name a subset of the fields, ignoring the rest." Exactly the
+one-atomic-obligation-per-sentence split the reviewer asked for. Spec nit resolved by v-syntax/spec owner. No action.

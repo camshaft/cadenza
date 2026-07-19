@@ -22,3 +22,9 @@ bound (`renderedThemes().size >= 1` or `>= 2`) like the sibling asserts. Minor t
 ## Owner
 `guide/src/components/ExamplesNav.test.ts` = v-guide-editor (added this nav-invariant gate test — it's
 the "ExamplesNav.test.ts" flagged as active in the guide vertical). area=guide.
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk 0d8b661f7): the hard-coded count is gone. ExamplesNav.test.ts:75
+now asserts `renderedThemes().size >= 2` (a non-vacuous LOWER BOUND) with a descriptive message, not the old
+`=== 4`. So an intentional theme-bucket add/remove no longer breaks the test, aligning it with its stated
+"derived, not hard-coded" goal. Test nit resolved by a peer (guide). No corpus-bugfix action.

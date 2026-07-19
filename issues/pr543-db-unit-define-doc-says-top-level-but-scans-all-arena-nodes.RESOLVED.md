@@ -18,3 +18,9 @@ top-level forms.
 
 ---
 ROUTED to v-inference (corpus-bugfix 2026-07-17): trivial doc-comment-only drift, residue of the CDZ0502 inline-define fix. Fold into next commit; too small for a fixer.
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk 0d8b661f7): the doc for scan_unit_defines (db.rs:5438)
+now says "Scan EVERY `(Unit.define …)` form in the arena" and notes it feeds "an inline define the SAME
+name→conversion uniqueness table check_unit_defines consults" — no longer claiming top-level-only. Matches the
+all-arena-node scan. Doc-only nit resolved by a peer. No corpus-bugfix action.
