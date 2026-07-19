@@ -279,12 +279,19 @@ pub fn emit(
             // live handle rather than baking constant bytes (R2). Build the value-form TEMPLATE for the
             // result type; if it has one, route through `assemble_runtime_resource`.
             // A SCALAR-ERASED result (a runtime `Qty` — it erases to its bare inner scalar, not a heap
-            // handle) needs `make` to BOX that scalar before `resource-new`; signal the box op. Today only a
-            // Qty over an Int inner takes the runtime-scalar template (the `Ty::Qty` arm scopes to Int +
-            // reference unit), so `box-int` is the only case; a compound result stays `None` (already a
-            // handle).
+            // handle) needs `make` to BOX that scalar before `resource-new`; signal the box op + any extend.
+            // Only a Qty over an Int inner takes the runtime-scalar template (the `Ty::Qty` arm scopes to Int
+            // + reference unit). `box-int` boxes it; a NARROW int inner (width 8/16/32) is an i32 core value
+            // that must be i32→i64 widened first (signed/unsigned per its signedness) — the same extend
+            // `emit_box_i32_to_i64_extend` applies to a boxed narrow leaf. A full-width Int64/UInt64 needs no
+            // extend. A compound result stays `None` (already a handle).
             let scalar_box = match result.strip_nominal() {
-                crate::ty::Ty::Qty { .. } => Some("box-int"),
+                crate::ty::Ty::Qty { inner, .. } => match inner.strip_nominal() {
+                    crate::ty::Ty::Int(it) if it.ground_width() < 64 => {
+                        Some(("box-int", Some(it.ground_signed())))
+                    }
+                    _ => Some(("box-int", None)),
+                },
                 _ => None,
             };
             return emit_runtime_resource(db, layout, e.def, &tpl, scalar_box, spans);
@@ -1769,11 +1776,13 @@ fn emit_runtime_resource(
     layout: &Layout,
     export_def: usize,
     tpl: &crate::lower::ValueFormTemplate,
-    // `Some(box_op)` when the export result is a SCALAR-ERASED value (a runtime `Qty` — it erases to its bare
-    // inner scalar, not a heap handle): the `make` body must box that scalar (`box-int`) before `resource-new`
-    // so the root rep is a real handle the walker can `get-int`. `None` for a compound result (already a
-    // handle). See `EscapeForm::FlatScalar`.
-    scalar_box: Option<&'static str>,
+    // `Some((box_op, extend))` when the export result is a SCALAR-ERASED value (a runtime `Qty` — it erases to
+    // its bare inner scalar, not a heap handle): the `make` body must box that scalar (`box-int`) before
+    // `resource-new` so the root rep is a real handle the walker can `get-int`. `extend` = `Some(signed)` when
+    // the inner is a NARROW int (i32 core value) needing an i32→i64 widen before `box-int`; `None` for a
+    // full-width Int64/UInt64. `None` (outer) for a compound result (already a handle). See
+    // `EscapeForm::FlatScalar`.
+    scalar_box: Option<(&'static str, Option<bool>)>,
     spans: Option<&crate::spans::SpanData>,
 ) -> Result<Vec<u8>, Reject> {
     // The `make`-forwarded params: a compound parameter is rebuilt in-guest from its flattened leaves,
@@ -1799,8 +1808,9 @@ fn emit_runtime_resource(
         };
     }
     // A SCALAR-ERASED result (a runtime Qty) needs its box op (`box-int`) in the import set — the `make`
-    // body calls it to box the erased scalar into the root heap cell before `resource-new`.
-    if let Some(box_op) = scalar_box {
+    // body calls it to box the erased scalar into the root heap cell before `resource-new`. (The i32→i64
+    // extend, if any, is a core instruction, not an imported op.)
+    if let Some((box_op, _extend)) = scalar_box {
         used.insert(box_op);
     }
     // The resource DTOR calls `drop` to release the escaped compound's rc handle on host-drop (or when
@@ -1923,7 +1933,11 @@ fn emit_runtime_resource(
             true, // leading ops are HOST — import from "host"
             export_abs,
             match scalar_box {
-                Some(box_op) => serialize::EscapeForm::FlatScalar { tpl, box_op },
+                Some((box_op, extend)) => serialize::EscapeForm::FlatScalar {
+                    tpl,
+                    box_op,
+                    extend,
+                },
                 None => serialize::EscapeForm::Flat(tpl),
             },
             &[],
@@ -1993,7 +2007,11 @@ fn emit_runtime_resource(
         false, // leading ops are PEER (extern), not host — import from "peer"
         export_abs,
         match scalar_box {
-            Some(box_op) => serialize::EscapeForm::FlatScalar { tpl, box_op },
+            Some((box_op, extend)) => serialize::EscapeForm::FlatScalar {
+                tpl,
+                box_op,
+                extend,
+            },
             None => serialize::EscapeForm::Flat(tpl),
         },
         &[],

@@ -11,7 +11,7 @@
 /// `read-form` + a test here. Reuses `strlex`'s char helpers (`char-at`, `is-digit`, `scan-number`) and
 /// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
 
-import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit } from "parse-db"
+import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit } from "parse-db"
 import { recognize, is-int-type, ty-signed, ty-width } from "int-type"
 import { fits-width } from "int-width"
 
@@ -175,8 +175,19 @@ def read-nullary-call(s: String, a0: Int64, bodyId: Int64, tree: Tree) =
 /// closing `)`. lower reaches the param via `param-of(tree, bodyId)` → `CLet(param, argCore, bodyCore)` (3c).
 def read-param-call(s: String, a0: Int64, bodyId: Int64, tree: Tree) =
   (match read-form(s, a0, tree) with | (argId, a1, t1) =>
-    (let a2 = close-paren(s, a1) in
-     (match add-node(t1, Node.NApp(bodyId, argId)) with | (id, t2) => (id, a2, t2)))))
+    (let e = skip-space(s, a1) in
+     (if (char-at(s, e) == ")")                          // exactly 1 arg: `(f arg)`
+      then (match add-node(t1, Node.NApp(bodyId, argId)) with | (id, t2) => (id, e + 1, t2))
+      else read-2nd-arg(s, e, bodyId, argId, t1))))      // a 2nd arg present: `(add a b)`
+
+/// A 2-arg call `(name a b)` — arg1 already read (node `argId`), `k` at the 2nd arg. Read arg2, emit
+/// `NApp(bodyId, arg1)`, and record arg2 in the arg2-table keyed by the NApp node-id (so lower builds the
+/// nested `CLet(param1, arg1, CLet(param2, arg2, body))`, slice-3d). Consume the closing `)`. Flat helper.
+def read-2nd-arg(s: String, k: Int64, bodyId: Int64, argId: Int64, tree: Tree) =
+  (match read-form(s, k, tree) with | (arg2Id, a2, t1) =>
+    (let a3 = close-paren(s, a2) in
+     (match add-node(t1, Node.NApp(bodyId, argId)) with | (id, t2) =>
+       (id, a3, record-arg2(t2, id, arg2Id)))))
 
 /// A prefix binary op `(sym a b)`: read two operands + emit `NBin(op-code-of(sym), a, b)`.
 def read-bin-form(s: String, sym: String, a0: Int64, tree: Tree) =

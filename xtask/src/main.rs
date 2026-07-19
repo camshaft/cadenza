@@ -3197,6 +3197,7 @@ fn check(paths: &Paths, profile: &str) {
         "implementation/agent-harness",
         "implementation/iterators",
         "implementation/choreography",
+        "implementation/music",
     ] {
         let name = format!("cdz-test {suite}");
         let cmd = format!("{cdz} test {suite}");

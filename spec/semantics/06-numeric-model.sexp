@@ -4650,6 +4650,63 @@
   (input  (| ((. (Int 4) wrap) 7) ((. (Int 4) wrap) 8)))
   (output (: -1 (Int 4))))
 
+; DIVISION/MODULO at the unusual-width MIN/-1 boundary: the div/mod member of the unusual-width family. The
+; Int64/32/16/8 MIN/-1 cases (:1902/:1920/:1928/:1935) trap at the machine width; an UNUSUAL width overflows
+; its DECLARED narrow range instead — `(Int 4).wrap 8` = -8 (the min), and -8 / -1 = +8 which exceeds Int4.max
+; 7, a compile-provable overflow → CDZ0304. Modulo never overflows: x % -1 = 0 at every width, including the
+; narrow min. A check reading the i8 storage range [-128,127] would wrongly accept the +8 quotient.
+
+(case "dividing an unusual-width minimum by -1 overflows its declared range and is rejected CDZ0304"
+  (doc    "`(Int 4).wrap 8` = -8 (Int4.min); `(Int 4).wrap 15` = -1. `-8 / -1` = +8, which exceeds the (Int 4)
+           maximum 7 → a compile-provable overflow, CDZ0304 at the declared 4-bit range [-8, 7]. The div member
+           of the unusual-width overflow family and the narrow-width analogue of the Int64 MIN/-1 division
+           overflow (:1902) — here the overflow is caught by the declared-width RANGE check, not the i64 bound.")
+  (input  (/ ((. (Int 4) wrap) 8) ((. (Int 4) wrap) 15)))
+  (error  CDZ0304))
+
+(case "an unusual-width minimum modulo -1 is zero and does not overflow"
+  (doc    "`-8 % -1` = 0 at the (Int 4) width: `x % -1` is 0 for every x (the remainder of dividing by ±1 is
+           always 0), and modulo does not overflow even where the sibling division does — the exact
+           companion of the Int64 `min % -1 = 0` case (:1880) at an unusual width. So the SAME operands that
+           overflow under `/` (above) yield a well-defined 0 under `%`, on both backends.")
+  (input  (% ((. (Int 4) wrap) 8) ((. (Int 4) wrap) 15)))
+  (output (: 0 (Int 4))))
+
+(case "an in-range unusual-width division computes at the declared width"
+  (doc    "`(Int 4).wrap 6` = 6; `6 / 2` = 3, within the (Int 4) range [-8, 7], so it computes to 3, a value
+           of type (Int 4). The in-range control for the MIN/-1 overflow case above — a division whose quotient
+           fits the narrow width is accepted and computed, not rejected.")
+  (input  (/ ((. (Int 4) wrap) 6) ((. (Int 4) wrap) 2)))
+  (output (: 3 (Int 4))))
+
+; COMPARISON on an unusual signed width orders by the DECLARED-width (sign-extended) value, not the raw
+; storage bits. `(Int 4).wrap 8` = -8, `.wrap 15` = -1, `.wrap 7` = 7. So a value whose declared sign bit is
+; set compares as negative: -8 < 0, 7 > -8. The comparison member of the unusual-width family — a compare
+; reading the i8 storage bits (where -8 is stored as 0b...11111000 but a naive unsigned read could misorder)
+; would get these wrong; ordering must use the sign-extended declared-width value.
+
+(case "comparison on an unusual signed width orders by the sign-extended declared value (negative < zero)"
+  (doc    "`(Int 4).wrap 8` = -8 (the declared sign bit is set); `-8 < 0` is true. Pins that `<` on an unusual
+           width compares by the sign-extended declared-width value — the negative nibble is genuinely less
+           than zero, not a large positive from an unsigned/storage-width read. The comparison member of the
+           unusual-width family (arith/shift/bitwise/div/negate pinned nearby).")
+  (input  (< ((. (Int 4) wrap) 8) ((. (Int 4) wrap) 0)))
+  (output (: true Bool)))
+
+(case "equality on an unusual signed width holds for two equal sign-extended values"
+  (doc    "`(Int 4).wrap 15` = -1 both times; `-1 = -1` is true. The equality companion — two unusual-width
+           values with the same sign-extended declared value compare equal, pinning that `=` at the narrow
+           width compares the declared value (both are -1), not a raw-bits artifact.")
+  (input  (= ((. (Int 4) wrap) 15) ((. (Int 4) wrap) 15)))
+  (output (: true Bool)))
+
+(case "greater-than on an unusual signed width orders a positive above the negative minimum"
+  (doc    "`(Int 4).wrap 7` = 7 (Int4.max), `(Int 4).wrap 8` = -8 (Int4.min); `7 > -8` is true — the maximum
+           orders above the minimum. Pins the full ordering across the declared range's endpoints, the
+           greater-than companion confirming `<`/`=`/`>` all read the sign-extended declared value.")
+  (input  (> ((. (Int 4) wrap) 7) ((. (Int 4) wrap) 8)))
+  (output (: true Bool)))
+
 ; --- Unary negation: prefix `-<expr>` is the arity-1 subtraction `(- e)` -----------------------
 ; The ML surface `-x` (prefix minus applied to an expression, not a bare literal) canonicalizes to the
 ; ONE-operand subtraction `(- e)`, negation. It is `0 - e` at the operand's numeric type — closed over
@@ -4687,6 +4744,29 @@
   (output (: -7 Int64))
   (call   main (: -9223372036854775808 Int64))
   (trap   "integer overflow"))
+
+(case "unary negation of an unusual-width minimum overflows its declared range and is rejected CDZ0304"
+  (doc    "The unusual-width member of the negate-MIN family. `(Int 4).wrap 8` = -8 (Int4.min); `-(-8)` = +8,
+           which exceeds the (Int 4) maximum 7 → a compile-provable overflow, CDZ0304 at the declared 4-bit
+           range [-8, 7]. The negation face of the unusual-width overflow family (arith/shift/bitwise/div all
+           pinned nearby): negating the narrow minimum overflows the DECLARED range, not the i8 storage range
+           (which would accept +8), the same width-parametric check as the arithmetic on that width.")
+  (input  (- ((. (Int 4) wrap) 8)))
+  (error  CDZ0304))
+
+(case "unary negation of an in-range unusual-width value computes at the declared width"
+  (doc    "`(Int 4).wrap 7` = 7; `-(7)` = -7, within the (Int 4) range [-8, 7], so it computes to -7, a value
+           of type (Int 4). The in-range control for the negate-MIN overflow case above — negating a value
+           whose opposite fits the narrow width is accepted and computed.")
+  (input  (- ((. (Int 4) wrap) 7)))
+  (output (: -7 (Int 4))))
+
+(case "unary negation of a SECOND unusual width's minimum (Int 12) is also rejected CDZ0304"
+  (doc    "`(Int 12).wrap 2048` = -2048 (Int12.min); `-(-2048)` = +2048 exceeds the (Int 12) maximum 2047 →
+           CDZ0304 at the 12-bit range [-2048, 2047]. The second-width witness that the negate overflow check
+           is width-parametric, paralleling the Int12 arithmetic/shift cases.")
+  (input  (- ((. (Int 12) wrap) 2048)))
+  (error  CDZ0304))
 
 (case "unary negation in a lambda body negates the argument"
   (doc    "A negating function `(def (neg x) (- x))` applied to 7 yields -7 — prefix negation in a

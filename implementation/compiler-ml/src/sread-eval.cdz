@@ -133,6 +133,24 @@ def se-corpus-underscore-param-call() =
     | Option.None(_) => trap("the corpus _1-param function call runs end-to-end"))
 
 @test
+def se-two-param-call() =
+  // ★ slice-3d PAYOFF ★ — a TWO-argument function call: `(def (add a b) (+ a b))` called `(add 40 2)` → 42.
+  // Full pipeline: sread reads both args (NApp(bodyId, arg1) + arg2-table entry) → resolve binds BOTH params
+  // in the body scope + resolves both args in the caller scope → infer types both params from the args → lower
+  // builds the NESTED CLet(param1, arg1, CLet(param2, arg2, body)) → eval binds both, evals. Differential vs rcdzc.
+  (match run-src("(do (def (add a b) (+ a b)) (def (main) (add 40 2)) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("(add 40 2) where add(a,b)=a+b → 42"))
+    | Option.None(_) => trap("a two-argument call runs end-to-end"))
+
+@test
+def se-two-param-call-both-used() =
+  // both args FLOW to distinct params: `(def (sub a b) (- a b))` called `(sub 50 8)` → 42 (order matters —
+  // proves arg1→param1, arg2→param2, not swapped/duplicated). Differential-verified vs rcdzc.
+  (match run-src("(do (def (sub a b) (- a b)) (def (main) (sub 50 8)) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("(sub 50 8) → 42 (arg order preserved)"))
+    | Option.None(_) => trap("a two-arg call binds args to params in order"))
+
+@test
 def se-bool-param-call() =
   // a single param used in a BOOLEAN position: `(def (f b) (if b 1 0))` called `(f true)` → 1. Pins that a
   // param flows through the whole pipeline with a Bool type (infer types the param as the arg's type = Bool,
