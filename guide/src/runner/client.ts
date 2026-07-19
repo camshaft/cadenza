@@ -140,8 +140,8 @@ export async function run(
 
 /// Run a TEST-LAYOUT component (from `compile_tests`) and report each named `@test`'s pass/fail. Same
 /// worker + watchdog + stale-runtime guard as `run`; posts a `mode: "test"` job so the worker invokes each
-/// `testNames` export (clean return = pass, trap = fail, unanswered-`Test.gen` = deferred). Serialized like
-/// `run`. A timeout marks every test as errored (the whole suite ran past the watchdog).
+/// nullary `testNames` export (clean = pass, trap = fail) AND drives the `scalarProps` + `compoundProps`
+/// property tests live. Serialized like `run`. A timeout marks every test as errored (suite ran past the watchdog).
 export async function runTestComponent(
   component: Uint8Array,
   testNames: string[],
@@ -189,12 +189,13 @@ export async function runTestComponent(
   }
 }
 
-/// The full in-browser `@test` runner: compile `source` in test-layout mode, then invoke each nullary
-/// `@test` export and report per-test pass/fail — the browser equivalent of `cdz test`. A compile failure
-/// (incl. "no `@test`") returns the compile diagnostics as an error outcome; otherwise a `TestResult` per
-/// nullary test (clean return = pass, trap = fail), plus a `deferred` entry per PARAMETERIZED `@test`
-/// (property/exhaustive — real trials are a follow-up), so the UI can show "N property tests deferred"
-/// rather than dropping them. `<Runnable mode="test">` + the check-examples test-branch call this.
+/// The full in-browser `@test` runner: compile `source` in test-layout mode, then run each `@test` and report
+/// per-test pass/fail — the browser equivalent of `cdz test`. A compile failure (incl. "no `@test`") returns
+/// the compile diagnostics as an error outcome; otherwise a `TestResult` per nullary test (clean = pass,
+/// trap = fail) AND per PROPERTY test driven live (scalar over generated call-args, compound over a
+/// `Test.gen-int` pool, both with shrinking). A `deferred` entry appears only for a parameterized `@test`
+/// whose parameter shape has no synthesized generator yet, so the UI shows it pending rather than dropping
+/// it. `<Runnable mode="test">` + the check-examples test-branch call this.
 export type TestRunOutcome =
   | { kind: "tests"; results: TestResult[] }
   | { kind: "error"; message: string };

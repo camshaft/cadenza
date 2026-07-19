@@ -29,7 +29,7 @@ export interface RunJob {
   /** SCALAR-param property `@test`s to drive (from `param_test_signatures` with `compound: false`): the
    *  export takes its params as function args, so the driver generates a value per `paramTypes` entry and
    *  calls `fn(...args)` over `trials` trials, shrinking a failing input. A `compound: true` (`-gen`
-   *  wrapper) test is NOT here — the client still defers it (phase 2). */
+   *  wrapper) test is driven separately via `compoundProps` (below), not here. */
   scalarProps?: { name: string; paramTypes: string[] }[];
   /** COMPOUND-param property `@test`s to drive (from `param_test_signatures` with `compound: true`): the
    *  compiler synthesized a NULLARY `<name>` wrapper that builds its compound argument guest-side by consuming
@@ -58,17 +58,18 @@ export type RunResult =
   | { kind: "tests"; results: TestResult[] };
 
 /// One `@test`'s outcome. `pass` = the test export returned cleanly; `!pass` with `error` = it trapped
-/// (assertion failure). `deferred` = the export performed `Test.gen` (a property test compiled to a `-gen`
-/// wrapper) so a bare invoke can't run it — reported as deferred, NOT failed (property trials are a
-/// follow-up that supplies the `Test.gen` host-responses).
+/// (assertion failure). Scalar AND compound property `@test`s now run live (scalar via generated call-args,
+/// compound via a `Test.gen-int` pool); `deferred` is reported only for a parameterized `@test` whose
+/// parameter shape the compiler couldn't synthesize a generator for (a not-yet-supported leaf) — NOT failed,
+/// so the UI can show it as pending rather than dropping it.
 export interface TestResult {
   name: string;
   pass: boolean;
   error?: string;
   deferred?: boolean;
-  /** For a SCALAR property test: how many trials ran (a pass shows "(N trials)"). */
+  /** For a property test (scalar or compound): how many trials ran (a pass shows "(N trials)"). */
   trials?: number;
-  /** For a FAILED scalar property test: the shrunk failing arguments (rendered) + the replay seed. */
+  /** For a FAILED property test: the shrunk failing arguments/pool (rendered) + the replay seed. */
   counterexample?: { args: string; seed: number };
 }
 
@@ -184,9 +185,10 @@ async function instantiateComponent(
 
 /// Run each named `@test` export and report per-test pass/fail. Contract (mirrors `cdz test`): a test
 /// export that RETURNS CLEANLY passed; one that TRAPS (an assertion via `trap(msg)`) failed. Belt +
-/// suspenders on top of `compile_tests`'s `-gen`-suffix classification: if invoking an export errors in a
-/// way that signals an unanswered `Test.gen` host op (a property `-gen` wrapper that slipped through), it
-/// is reported DEFERRED, not failed — property-trial driving is a follow-up.
+/// suspenders on top of `compile_tests`'s `-gen`-suffix classification: if invoking a nullary export errors
+/// in a way that signals an unanswered gen host op (a property `-gen` wrapper that slipped through the
+/// classification into the nullary list), it is reported DEFERRED, not failed — the real property drivers
+/// (scalar `runScalarProperties` / compound `runCompoundProperties`) handle classified property tests.
 /// Normalize an identifier for cross-naming-convention matching: a Cadenza source name (`one_plus_one`)
 /// crosses the component boundary as a kebab WIT name (`one-plus-one`) that jco then binds in JS as
 /// camelCase (`onePlusOne`) — so strip `-`/`_` and lowercase to compare source names to actual exports.
@@ -227,7 +229,7 @@ async function runTests(job: RunJob): Promise<RunResult> {
     }
   }
   // Drive the SCALAR-param property tests (their params are on the export → generated call-args). Compound
-  // `-gen` tests are not in `scalarProps` (the client defers them), so this only adds real property runs.
+  // `-gen` tests are not in `scalarProps` — they're driven by `runCompoundProperties` below (a gen-int pool).
   // REUSE the `root` already instantiated above — a property test calls the same exports (by name) as the
   // nullary tests, so re-instantiating (a second jco transpile + wasm load) would be pure waste (flagged in
   // PR #533). The nullary invokes above don't persist state into the exports we re-call (each @test/property
@@ -293,8 +295,8 @@ const DEFAULT_TRIALS = 100;
 /// The inclusive value range for each scalar `paramType` enum (from `param_test_signatures`). Signed widths
 /// are [-2^(n-1), 2^(n-1)-1]; unsigned are [0, 2^n-1]; `bool` is 0/1 (mapped to a boolean); float widths
 /// generate an integer-valued magnitude (never NaN, matching the compiler's `float-of-int` generator). A
-/// type not here (`"other"`, a compound) is never a scalar prop (the client routes those to the deferred
-/// phase-2 path), so it is not represented.
+/// type not here (`"other"`, a compound) is never a SCALAR prop — a compound param is driven by the separate
+/// compound driver (a `-gen` wrapper over a `Test.gen-int` pool), not by this call-arg generator.
 function intRange(t: string): { min: bigint; max: bigint } | null {
   switch (t) {
     case "int8": return { min: -128n, max: 127n };
@@ -415,8 +417,8 @@ async function runScalarProperty(
 }
 
 /// Run each SCALAR-param property test (from `param_test_signatures`, `compound: false`) over generated
-/// inputs — the browser equivalent of `cdz test`'s property driver. Compound (`-gen`) tests are not here
-/// (the client still defers them).
+/// inputs — the browser equivalent of `cdz test`'s property driver. Compound (`-gen`) tests are driven by
+/// `runCompoundProperties` instead (they need a `Test.gen-int` pool + per-trial instance).
 // `preInstantiated` lets the caller (`runTests`) pass the component instance it ALREADY built for the
 // nullary tests, so a mixed nullary+property run instantiates ONCE, not twice (PR #533). When called
 // standalone (no pre-built root), it instantiates itself — but only after the empty-props early-return, so

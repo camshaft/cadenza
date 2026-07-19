@@ -40,7 +40,7 @@ export function compileTests(text: string, from: Surface): Promise<TestCompileOu
 }
 
 /// The signatures of every PARAMETERIZED `@test` in `text` — for the property-test driver. Each carries the
-/// test name, its scalar param types (arg-driver), and `compound` (a `-gen` wrapper → deferred phase-2).
+/// test name, its scalar param types (arg-driver), and `compound` (a `-gen` wrapper → the gen-int-pool driver).
 export function paramTestSignatures(text: string, from: Surface): Promise<ParamTestSig[]> {
   return client().paramTestSignatures(text, from);
 }

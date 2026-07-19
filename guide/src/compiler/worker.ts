@@ -91,10 +91,10 @@ export interface TestCompileOutcome {
 
 /**
  * One parameterized `@test`'s signature, for the property-test driver. `compound: false` = a scalar-param
- * test whose params are on the export (the driver generates a JS arg per `paramTypes` entry and calls the
- * export); `compound: true` = a synthesized `-gen` wrapper (a compound param hoisted to an internal
- * `Test.gen`) the driver routes to its deferred phase-2 path. `paramTypes` is a stable lowercase enum per
- * param (`int8`..`uint64`|`bool`|`float32`|`float64`|`other`); empty for a `-gen` wrapper.
+ * test whose params are on the export (the scalar driver generates a JS arg per `paramTypes` entry and calls
+ * the export); `compound: true` = a synthesized nullary `-gen` wrapper (a compound param built guest-side by
+ * consuming a `Test.gen-int` pool) which the COMPOUND driver runs over that pool. `paramTypes` is a stable
+ * lowercase enum per param (`int8`..`uint64`|`bool`|`float32`|`float64`|`other`); empty for a `-gen` wrapper.
  */
 export interface ParamTestSig {
   name: string;
@@ -298,7 +298,7 @@ const api = {
 
   /// The signatures of every PARAMETERIZED `@test` in `text` (`param_test_signatures`) — the metadata the
   /// property-test driver needs to generate inputs: each param test's name, its scalar param types (for the
-  /// arg-driver), and whether it's a `-gen` wrapper (`compound` → deferred phase-2). A parse error / no
+  /// arg-driver), and whether it's a `-gen` wrapper (`compound` → the gen-int-pool driver). A parse error / no
   /// `@test` yields an empty list (this is metadata, not a compile — an unparseable buffer just has none).
   async paramTestSignatures(text: string, from: Surface): Promise<ParamTestSig[]> {
     await ensureReady();
