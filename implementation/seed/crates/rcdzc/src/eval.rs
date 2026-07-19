@@ -2087,6 +2087,141 @@ pub fn reduce_to_match_direct(db: &mut Db, id: StructId) -> Option<StructId> {
     }
 }
 
+/// Peel `id` to a VISIBLE variant-constructor application `(Ctor payload…)` — a `Resolved::Apply` whose
+/// head names a variant (`variant_disc_of` is `Some`). Follows `Ref` (stopping at a kept multi-use
+/// binding) and `Annot`, exactly as `reduce_to_match`/`reduce_to_if` do. Returns `(disc, head, args)`.
+/// Does NOT β-reduce a call head — the caller (`fold_ctor_match`) wants a scrutinee that is ALREADY a
+/// visible ctor (v-effects β-reduces its stored-thunk compound into the scrutinee before calling), so a
+/// call scrutinee (which might not reduce to a ctor) stays a runtime match. `None` if not a visible ctor.
+fn reduce_to_visible_ctor(db: &mut Db, id: StructId) -> Option<(u32, StructId, Vec<StructId>)> {
+    match resolved_of(db, id) {
+        Resolved::Apply { head, args } => {
+            let disc = variant_disc_of(db, head)?;
+            Some((disc, head, args.to_vec()))
+        }
+        Resolved::Ref { value } => {
+            if db.kept_bindings.contains(&value) {
+                None
+            } else {
+                reduce_to_visible_ctor(db, value)
+            }
+        }
+        Resolved::Annot { expr, .. } => reduce_to_visible_ctor(db, expr),
+        _ => None,
+    }
+}
+
+/// CASE-OF-KNOWN-CTOR fold at eval/classification time — the resolve-time analogue of the lowering's
+/// direct-scrutinee `SumNew` collapse (`lower_match_sum` / the `Resolved::SumPayload` fold). Given a
+/// `(match S ((Ctor v) body) …)` whose scrutinee `S` peels to a VISIBLE ctor `(Ctor payload)`, select the
+/// arm whose constructor matches `S`'s discriminant and return that arm's BODY with the arm's payload
+/// binder substituted by the payload — so `(match (Box.Box th) ((Box.Box t) (t unit)))` folds to `(th
+/// unit)`. `None` when it is not a match over a visible ctor, or the matching arm is not a plain
+/// single-binder `(Ctor v)` (a guarded / literal / nested / wildcard / multi-payload pattern), or no arm
+/// matches — the caller leaves those a runtime match.
+///
+/// Exposed for v-effects' DES-inc-4 fold-classifier (a stored resume-thunk in a compound, match-extracted
+/// before apply): its arm-body reduction pass calls this between two β-reduces so the thunk surfaces for
+/// apply. The substitution reuses `beta_reduce` keyed on the SCRUTINEE occurrence → the visible ctor: the
+/// arm's binder `v` resolves to `SumPayload{scrutinee: S, [Payload]}` (NOT `Ref{v}`), and `beta_reduce`'s
+/// SumPayload capture-share exception (`scrutinee_is_substituted`) re-resolves it against the substituted
+/// scrutinee, where the `SumPayload` fold projects the `[Payload]` step to the ctor's payload. SLICE 1:
+/// single-payload single-binder `(Ctor v)` only; a multi-payload / nested pattern declines to `None` (a
+/// later increment). No Core clone — a resolve-time β-reduction on the AST, pre-lower.
+pub fn fold_ctor_match(db: &mut Db, node: StructId) -> Option<StructId> {
+    let Resolved::Match { scrutinee, arms } = resolved_of(db, node) else {
+        return None;
+    };
+    // The scrutinee must be a VISIBLE ctor `(Ctor payload)` — else leave it a runtime match.
+    let (disc, _head, args) = reduce_to_visible_ctor(db, scrutinee)?;
+    // SLICE 1: single-payload only. A nullary (`args.is_empty()`) or multi-payload ctor declines here (a
+    // later increment threads the multi-payload `[Payload, Elem(i)]` projection).
+    if args.len() != 1 {
+        return None;
+    }
+    // Find the arm whose pattern is a plain single-binder `(Ctor v)` for the SAME discriminant.
+    for (pat, body) in &arms {
+        // A guarded arm (`(guard <pat> <cond>)`) is refutable at runtime — never fold it away.
+        if db.ast.as_form(*pat, "guard").is_some() {
+            continue;
+        }
+        // The pattern must be a 2-element list `(ctor_head binder)`: the head names the variant, the
+        // second child is the payload binder. (A bare nullary variant, a literal, a wildcard, a nested
+        // `(Ctor (tuple …))`, or a multi-binder `(Ctor a b)` is NOT this slice — skip / decline.)
+        let crate::ast::Struct::List(kids) = db.ast.get(*pat) else {
+            continue;
+        };
+        if kids.len() != 2 {
+            continue;
+        }
+        let (pat_head, binder) = (kids[0], kids[1]);
+        // The binder must be a bare name (not a nested pattern) — the single-binder slice.
+        if db.ast.as_name(binder).is_none() {
+            continue;
+        }
+        // The pattern's ctor must match the scrutinee's discriminant.
+        if variant_disc_of(db, pat_head) != Some(disc) {
+            continue;
+        }
+        // MATCH. The arm's payload binder `v`'s USES resolve to `SumPayload{scrutinee: S, steps:[Payload]}`
+        // (NOT `Ref{binder}`), so `beta_reduce`'s binder-keyed substitution can't catch them, and a plain
+        // copy re-resolves `v` UNBOUND (the copy leaves the match-arm context). Instead do a TARGETED
+        // rewrite: replace each subtree node whose `resolved_of` is that `SumPayload` with the ctor's
+        // payload — the resolve-time analogue of the lowering `Resolved::SumPayload` fold over a visible
+        // ctor. SLICE 1: steps == [Payload] (single payload) → `args[0]`.
+        let folded = rewrite_sum_payload(db, *body, scrutinee, args[0]);
+        return Some(folded);
+    }
+    None
+}
+
+/// Recursively COPY `body`, replacing every node whose `resolved_of` is `SumPayload{scrutinee == S,
+/// steps == [Payload]}` with `payload` — the single-payload payload-binder substitution `fold_ctor_match`
+/// performs after selecting a matching arm. A non-SumPayload node is rebuilt structurally (a list rebuilds
+/// its rewritten children; an atom is shared for a constant / copied for a name so a copied scope still
+/// resolves). Only the `[Payload]` single-step shape is substituted (slice 1); a deeper path (`[Payload,
+/// Elem(i)]`, a multi-payload/nested destructure) is left intact — the caller only folds when the arm is a
+/// plain single-binder `(Ctor v)`, so no deeper SumPayload over `S` appears in a matched body here.
+fn rewrite_sum_payload(
+    db: &mut Db,
+    body: StructId,
+    scrutinee: StructId,
+    payload: StructId,
+) -> StructId {
+    use crate::core::PathStep;
+    // A node that RESOLVES to the arm's payload binder — a `SumPayload` reading THIS match's scrutinee via
+    // a single `[Payload]` step — is the binder use; replace it with the payload occurrence.
+    if let Resolved::SumPayload {
+        scrutinee: s,
+        steps,
+        ..
+    } = resolved_of(db, body)
+        && s == scrutinee
+        && steps.len() == 1
+        && matches!(steps[0], PathStep::Payload)
+    {
+        return payload;
+    }
+    match db.ast.get(body).clone() {
+        // A CONSTANT leaf is self-contained (shares); a NAME atom that is NOT the substituted binder is
+        // copied fresh so a copied enclosing scope re-resolves it correctly (matching `copy_structural`).
+        crate::ast::Struct::Atom(lid) => match db.ast.leaf(lid).clone() {
+            crate::ast::Leaf::Name(_) => {
+                let leaf = db.ast.leaf(lid).clone();
+                db.push_atom(leaf)
+            }
+            _ => body,
+        },
+        crate::ast::Struct::List(children) => {
+            let rewritten: Vec<StructId> = children
+                .iter()
+                .map(|&c| rewrite_sum_payload(db, c, scrutinee, payload))
+                .collect();
+            db.push_list(rewritten)
+        }
+    }
+}
+
 pub fn reduce_to_if(db: &mut Db, id: StructId) -> Option<(StructId, StructId, StructId)> {
     match resolved_of(db, id) {
         Resolved::If { cond, then_, else_ } => Some((cond, then_, else_)),

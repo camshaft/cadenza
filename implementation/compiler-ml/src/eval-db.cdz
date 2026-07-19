@@ -425,4 +425,17 @@ def ev-nullary-call-over-arith-body() =
             | Option.Some(v) => (if v == 42 then unit else trap("nullary call over (+ 40 2) = 42"))
             | Option.None(_) => trap("a nullary call over an arith body runs"))))))
 
+@test
+def ev-nullary-call-nested-in-arith() =
+  // a nullary call as a SUB-EXPRESSION (not the root): `(+ (mk) 1)` where mk's body = 41 → 42. Pins that
+  // NApp composes inside a CBin — the inlined body Core sits as a CBin operand and evaluates. (slice-2 pinned
+  // NApp-as-root; this pins NApp-nested, the shape a real program uses: a call feeding an operator.)
+  (match add-node(empty-tree(), Node.NLit(41)) with | (mkBody, t1) =>
+    (match add-node(t1, Node.NApp(mkBody, 0 - 1)) with | (callId, t2) =>
+      (match add-node(t2, Node.NLit(1)) with | (oneId, t3) =>
+        (match add-node(t3, Node.NBin(43, callId, oneId)) with | (root, tree) =>
+          (match eval-tree(tree, root) with
+            | Option.Some(v) => (if v == 42 then unit else trap("(+ (mk) 1) = 42 (call nested in arith)"))
+            | Option.None(_) => trap("a nullary call nested in arith evals"))))))
+
 export { eval-core, eval-bin, eval-tree, run, milestone-tokens, run-milestone }
