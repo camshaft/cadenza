@@ -12074,6 +12074,17 @@ fn should_keep_binding(db: &mut Db, init: StructId, uses: &BindingUses) -> bool 
     // and direct-let controls do. A compound that ESCAPES whole (returned / passed / nested) genuinely
     // needs materialization and is LEFT to the lift+keep path below: no inline fold shares its lambda body
     // there (the projection happens at RUNTIME via `call_indirect`), so that lift is correct, not pollution.
+    // A projection-only compound whose element is a CURRIED lambda `(fn (a) (fn (b) …))` is the ONE
+    // sub-shape of `compound_contains_lambda` that MUST be KEPT (materialized), not folded: folding it
+    // through the projection-apply β-reduces the outer lambda, yields the INNER lambda, and inlining that
+    // returned lambda dangles its param (no closure frame) → an emit decline ("no local slot") though
+    // check passes. Force-keeping materializes the compound so the curried element LIFTS to a runtime
+    // closure and applies via `call_indirect` (head_is_runtime_fn_value's Proj arm + the emit routing).
+    // Checked BEFORE the fold-through short-circuit below. A flat/single fn element (which folds correctly
+    // today) is NOT matched by `compound_contains_curried_lambda`, so it still folds — no regression.
+    if !uses.escapes_whole.contains(&init) && compound_contains_curried_lambda(db, init) {
+        return true;
+    }
     if !uses.escapes_whole.contains(&init) && compound_contains_lambda(db, init) {
         return false;
     }
@@ -12154,6 +12165,37 @@ fn is_compound_value(db: &mut Db, init: StructId) -> bool {
 /// ctor prim, not a bare `Resolved::Record`/`Tuple`. Used to keep a projection-only
 /// compound-holding-a-closure binding on the fold-through path (`should_keep_binding` returns `false`),
 /// matching the inline-record and direct-let controls.
+/// Whether `init` reduces to a compound (tuple/record/list) that holds a CURRIED function element — an
+/// element that reduces to a lambda whose OWN BODY reduces to ANOTHER lambda, `(fn (a) (fn (b) …))`. This
+/// is the narrow shape that MISCOMPILES when a projection-only compound folds through: projecting +
+/// applying `((. t 0) 3)` folds `(. t 0)` to the outer lambda, β-reduces `a := 3`, YIELDS the inner
+/// `(fn (b) …)`, then applies that — and inlining the returned inner lambda's body dangles its param `b`
+/// (no closure frame for the returned fn) → "parameter reference has no local slot" (select.rs) at emit,
+/// though `cdz check` passes (a check-vs-compile gap). A FLAT/SINGLE-arg fn element (`(fn (a) …)`, `(fn (a
+/// b) …)`) folds correctly today (verified: single→4, flat-2→7, capturing-single→9), so it must NOT be
+/// force-kept — only the CURRIED shape needs the compound materialized so the element lifts as a runtime
+/// closure and applies via `call_indirect`. `lambda_body` reduces without lowering, so the probe is
+/// lift-free (same discipline as `compound_contains_lambda`).
+fn compound_contains_curried_lambda(db: &mut Db, init: StructId) -> bool {
+    let elem_is_curried = |db: &mut Db, e: StructId| {
+        // The element reduces to a lambda whose body ALSO reduces to a lambda = curried (arity ≥ 2 via
+        // nesting). A nested compound is recursed (a curried fn stored inside a nested tuple/record).
+        match crate::eval::lambda_body(db, e) {
+            Some(body) => crate::eval::lambda_body(db, body).is_some(),
+            None => compound_contains_curried_lambda(db, e),
+        }
+    };
+    if let Some(elems) = crate::eval::reduce_to_tuple_elems(db, init) {
+        return elems.iter().copied().any(|e| elem_is_curried(db, e));
+    }
+    if let Some(rec) = crate::eval::reduce_to_record_id(db, init)
+        && let Resolved::Record { fields } = resolved_of(db, rec)
+    {
+        return fields.values().copied().any(|v| elem_is_curried(db, v));
+    }
+    false
+}
+
 fn compound_contains_lambda(db: &mut Db, init: StructId) -> bool {
     // A function-valued element (a bare lambda, or one reached through a nested compound). `lambda_body`
     // reduces without lowering, so the element probe stays lift-free.
@@ -13242,6 +13284,37 @@ fn template_value_ast_flagged(
                 children.push(b.list(vec![fname, fval]));
             }
             Some(b.list(children))
+        }
+        // A RUNTIME QUANTITY renders its construction form `((. Qty of) <inner-hole> <unit>)` — the SAME
+        // surface the CONSTANT path bakes (`const_value_ast`'s Qty arm), but with the inner magnitude left
+        // as a RUNTIME HOLE instead of a baked constant. The unit is a COMPILE-TIME constant baked into the
+        // template (units are compile-time-only — the operator ruling: a Qty erases to its bare inner scalar
+        // at runtime, zero runtime cost, no runtime unit tracking; the label is injected here at compile
+        // time from the SOLVED `Ty::Qty`). The erased inner scalar is boxed on the heap by the `make` body
+        // (`EscapeForm::FlatScalar`'s `box-int` before `resource-new`), so the walker reads its `get-int`
+        // hole off the resulting root handle exactly like a plain Int leaf reached at an empty path.
+        // SCOPED (slice 1): a REFERENCE unit (scale 1/1) over an Int inner. A non-reference unit needs a
+        // compile-time SCALE MULTIPLY before the scalar crosses (the flat leaf-hole template can't express
+        // it) and a non-Int inner (Float) needs `LeafFill::Float` — both decline here (return `None`),
+        // falling back to today's bare-scalar cross, until their slices land.
+        Ty::Qty { inner, unit } => {
+            let (num, den) = unit.scale();
+            if (num, den) != (1, 1) {
+                return None;
+            }
+            // FULL-WIDTH Int64 inner only. A NARROW int (8/16/32) is an i32 core param, but `make`'s
+            // `box-int` takes i64 — a narrow scalar reaches it without the i32→i64 extend a boxed narrow
+            // int needs (`emit_box_i32_to_i64_extend`), so `resource-new` would get an i32 where the boxed
+            // form expects i64 → invalid wasm. Gate to width 64 here; the narrow case (emit the extend in
+            // `make`) is slice 2. A non-Int inner (Float) is slice 4. Both decline → valid bare fallback.
+            match inner.as_ref() {
+                Ty::Int(it) if it.ground_width() == 64 => {}
+                _ => return None,
+            }
+            let inner_hole = template_value_ast_flagged(b, inner, path, out, via_sum_payload)?;
+            let unit_ast = unit_value_ast(b, &unit.at_reference());
+            let qty_of = member_access(b, "Qty", "of");
+            Some(b.list(vec![qty_of, inner_hole, unit_ast]))
         }
         _ => None,
     }

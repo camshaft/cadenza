@@ -65,53 +65,66 @@ type Node =
 /// NULLARY def records only its body (no param entry), so `param-of` returns `None` — preserving slice-2/3b
 /// behavior exactly; only a parameterized def (slice-3c) adds a param entry.
 type Tree =
-  | Arena(Map(Int64, Node), Int64, Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64))
+  | Arena(Map(Int64, Node), Int64, Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64))
 
-def empty-tree() = Tree.Arena(Map.empty, 0, Map.empty, Map.empty, Map.empty)
+def empty-tree() = Tree.Arena(Map.empty, 0, Map.empty, Map.empty, Map.empty, Map.empty)
 
 /// Intern a node into the arena, returning `(its fresh NodeId, tree')`. The def + param tables ride unchanged.
 def add-node(tree: Tree, n: Node) = match tree with
-  | Tree.Arena(m, next, dt, pt, p2) => (next, Tree.Arena(Map.insert(m, next, n), next + 1, dt, pt, p2))
+  | Tree.Arena(m, next, dt, pt, p2, a2) => (next, Tree.Arena(Map.insert(m, next, n), next + 1, dt, pt, p2, a2))
 
 /// The node at `id`, or `None` (absence — a caller that requires it declines).
 def node-at(tree: Tree, id: Int64) = match tree with
-  | Tree.Arena(m, _, _, _, _) => Map.lookup(m, id)
+  | Tree.Arena(m, _, _, _, _, _) => Map.lookup(m, id)
 
 /// How many nodes the arena holds (also the next fresh id).
-def node-count(tree: Tree) = match tree with | Tree.Arena(m, _, _, _, _) => Map.len(m)
+def node-count(tree: Tree) = match tree with | Tree.Arena(m, _, _, _, _, _) => Map.len(m)
 
 /// Record a `(def (name) body)` in the def-table: name-id → its body node-id. Returns the updated tree.
 /// (The param-tables are untouched — a nullary def has no param; a parameterized def calls `record-param` too.)
 def record-def(tree: Tree, nameId: Int64, bodyId: Int64) = match tree with
-  | Tree.Arena(m, next, dt, pt, p2) => Tree.Arena(m, next, Map.insert(dt, nameId, bodyId), pt, p2)
+  | Tree.Arena(m, next, dt, pt, p2, a2) => Tree.Arena(m, next, Map.insert(dt, nameId, bodyId), pt, p2, a2)
 
 /// The body node-id a def-name binds, or `None` (name not a known def) — a call `(name)` looks its head up here.
 def def-body-of(tree: Tree, nameId: Int64) = match tree with
-  | Tree.Arena(_, _, dt, _, _) => Map.lookup(dt, nameId)
+  | Tree.Arena(_, _, dt, _, _, _) => Map.lookup(dt, nameId)
 
 /// Record a def's FIRST PARAMETER node-id: name-id → its param node-id (slice-3c). A `(name arg)` call looks
 /// this up to build `CLet(paramId, argCore, bodyCore)`. Only a PARAMETERIZED def records a param; a nullary
 /// def never calls this, so `param-of` stays `None` for it (additive — nullary behavior unchanged).
 def record-param(tree: Tree, nameId: Int64, paramId: Int64) = match tree with
-  | Tree.Arena(m, next, dt, pt, p2) => Tree.Arena(m, next, dt, Map.insert(pt, nameId, paramId), p2)
+  | Tree.Arena(m, next, dt, pt, p2, a2) => Tree.Arena(m, next, dt, Map.insert(pt, nameId, paramId), p2, a2)
 
 /// The first-parameter node-id a def-name declares, or `None` (a nullary def, or not a known def) — a
 /// `(name arg)` call reads this to key the `CLet` binder. Absence = no parameter (nullary), distinct from a value.
 def param-of(tree: Tree, nameId: Int64) = match tree with
-  | Tree.Arena(_, _, _, pt, _) => Map.lookup(pt, nameId)
+  | Tree.Arena(_, _, _, pt, _, _) => Map.lookup(pt, nameId)
 
 /// Record a def's SECOND PARAMETER node-id (multi-param foundation, slice-3d): name-id → its 2nd param node-id.
 /// A 2-arg call `(name a b)` reads this to build the NESTED CLet(param1, a, CLet(param2, b, body)). Only a
 /// TWO-param def records it; single-param/nullary defs never call this, so `param2-of` stays `None` — ADDITIVE
 /// + behavior-preserving (single-param slice-3c unaffected; param2-of None distinguishes 1-param from 2-param).
 def record-param2(tree: Tree, nameId: Int64, param2Id: Int64) = match tree with
-  | Tree.Arena(m, next, dt, pt, p2) => Tree.Arena(m, next, dt, pt, Map.insert(p2, nameId, param2Id))
+  | Tree.Arena(m, next, dt, pt, p2, a2) => Tree.Arena(m, next, dt, pt, Map.insert(p2, nameId, param2Id), a2)
 
 /// The second-parameter node-id a def-name declares, or `None` (a def with < 2 params, or not a known def).
 /// Absence = fewer than 2 params (nullary/single), distinct from a value — a 2-arg call reads this for the
 /// inner CLet binder.
 def param2-of(tree: Tree, nameId: Int64) = match tree with
-  | Tree.Arena(_, _, _, _, p2) => Map.lookup(p2, nameId)
+  | Tree.Arena(_, _, _, _, p2, _) => Map.lookup(p2, nameId)
+
+/// Record a 2-arg call's SECOND ARGUMENT node-id, keyed by the CALL's NApp NODE-ID (2-arg-call foundation,
+/// slice-3d). A `(name a b)` call reads as `NApp(bodyId, arg1)` (carrying arg1) PLUS an arg2-table entry
+/// `nAppId → arg2`; lower reads BOTH to build the nested `CLet(param1, arg1, CLet(param2, arg2, body))`. Keyed
+/// by the NApp node-id (not name/body) since a callee may be applied at multiple call sites with different
+/// args. ADDITIVE: a 1-arg/nullary call records no arg2, so `arg2-of` stays `None` (distinguishes 1-arg from 2-arg).
+def record-arg2(tree: Tree, nAppId: Int64, arg2Id: Int64) = match tree with
+  | Tree.Arena(m, next, dt, pt, p2, a2) => Tree.Arena(m, next, dt, pt, p2, Map.insert(a2, nAppId, arg2Id))
+
+/// The second-argument node-id a call (NApp node `nAppId`) carries, or `None` (a 1-arg/nullary call, or not a
+/// call). Absence = fewer than 2 args — lower reads this for the inner CLet's value in a 2-arg call.
+def arg2-of(tree: Tree, nAppId: Int64) = match tree with
+  | Tree.Arena(_, _, _, _, _, a2) => Map.lookup(a2, nAppId)
 
 /// The token at index `i`, or `TEnd` past the end (a total indexed read).
 def tok-at(ts: List(Tok), i: Int64) = match List.at(ts, i) with
@@ -603,4 +616,20 @@ def pd-record-param2-then-lookup() =
               else trap("param2-of returns the recorded 2nd param"))
           | Option.None(_) => trap("a recorded param2 is found")))))))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, record-param, param-of, record-param2, param2-of, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
+@test
+def pd-record-arg2-then-lookup() =
+  // 2-arg-call foundation (slice-3d): the ARG2-table, keyed by the CALL's NApp NODE-ID. record-arg2(nAppId → arg2)
+  // then arg2-of(nAppId) = arg2. A 1-arg/nullary call records no arg2 → arg2-of = None (distinguishes 1-arg from
+  // 2-arg). Keyed by node-id (not name) since one callee can be applied at multiple sites with different args.
+  (match add-node(empty-tree(), Node.NLit(2)) with | (arg2Id, t1) =>
+    (match add-node(t1, Node.NApp(7, 5)) with | (callId, t2) =>          // a call node NApp(body=7, arg1=5)
+      (let t3 = record-arg2(t2, callId, arg2Id) in
+       (match arg2-of(t3, callId) with
+         | Option.Some(x) => (if x == arg2Id
+             then (match arg2-of(t3, 999) with                            // an unrecorded call node → None
+               | Option.None(_) => unit
+               | Option.Some(_) => trap("unrecorded call node has no arg2"))
+             else trap("arg2-of returns the recorded 2nd arg"))
+         | Option.None(_) => trap("a recorded arg2 is found"))))))
+
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }

@@ -278,7 +278,16 @@ pub fn emit(
             // built on the heap) crosses through the SAME resource shape, but its `encode()` WALKS the
             // live handle rather than baking constant bytes (R2). Build the value-form TEMPLATE for the
             // result type; if it has one, route through `assemble_runtime_resource`.
-            return emit_runtime_resource(db, layout, e.def, &tpl, spans);
+            // A SCALAR-ERASED result (a runtime `Qty` — it erases to its bare inner scalar, not a heap
+            // handle) needs `make` to BOX that scalar before `resource-new`; signal the box op. Today only a
+            // Qty over an Int inner takes the runtime-scalar template (the `Ty::Qty` arm scopes to Int +
+            // reference unit), so `box-int` is the only case; a compound result stays `None` (already a
+            // handle).
+            let scalar_box = match result.strip_nominal() {
+                crate::ty::Ty::Qty { .. } => Some("box-int"),
+                _ => None,
+            };
+            return emit_runtime_resource(db, layout, e.def, &tpl, scalar_box, spans);
         } else if matches!(result, crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_))
             && let Some(desc) = crate::lower::sum_shape_descriptor(db, &result)
         {
@@ -1760,6 +1769,11 @@ fn emit_runtime_resource(
     layout: &Layout,
     export_def: usize,
     tpl: &crate::lower::ValueFormTemplate,
+    // `Some(box_op)` when the export result is a SCALAR-ERASED value (a runtime `Qty` — it erases to its bare
+    // inner scalar, not a heap handle): the `make` body must box that scalar (`box-int`) before `resource-new`
+    // so the root rep is a real handle the walker can `get-int`. `None` for a compound result (already a
+    // handle). See `EscapeForm::FlatScalar`.
+    scalar_box: Option<&'static str>,
     spans: Option<&crate::spans::SpanData>,
 ) -> Result<Vec<u8>, Reject> {
     // The `make`-forwarded params: a compound parameter is rebuilt in-guest from its flattened leaves,
@@ -1783,6 +1797,11 @@ fn emit_runtime_resource(
             crate::lower::LeafFill::Int => used.insert("get-int"),
             crate::lower::LeafFill::Bool => used.insert("get-bool"),
         };
+    }
+    // A SCALAR-ERASED result (a runtime Qty) needs its box op (`box-int`) in the import set — the `make`
+    // body calls it to box the erased scalar into the root heap cell before `resource-new`.
+    if let Some(box_op) = scalar_box {
+        used.insert(box_op);
     }
     // The resource DTOR calls `drop` to release the escaped compound's rc handle on host-drop (or when
     // `encode` consumes the `own<t>`). `drop` appears only in the synthesized dtor, never in a reachable
@@ -1903,7 +1922,10 @@ fn emit_runtime_resource(
             &host_as_extern,
             true, // leading ops are HOST — import from "host"
             export_abs,
-            serialize::EscapeForm::Flat(tpl),
+            match scalar_box {
+                Some(box_op) => serialize::EscapeForm::FlatScalar { tpl, box_op },
+                None => serialize::EscapeForm::Flat(tpl),
+            },
             &[],
             &make_params.leaf_vts,
             &make_params.core_slots(),
@@ -1970,7 +1992,10 @@ fn emit_runtime_resource(
         &extern_imports,
         false, // leading ops are PEER (extern), not host — import from "peer"
         export_abs,
-        serialize::EscapeForm::Flat(tpl),
+        match scalar_box {
+            Some(box_op) => serialize::EscapeForm::FlatScalar { tpl, box_op },
+            None => serialize::EscapeForm::Flat(tpl),
+        },
         &[],
         &make_params.leaf_vts,
         &make_params.core_slots(),

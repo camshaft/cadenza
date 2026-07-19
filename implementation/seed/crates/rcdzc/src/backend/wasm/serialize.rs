@@ -1071,6 +1071,16 @@ pub fn runtime_resource_core_module(
 /// type/import/func/memory/export envelope; only the data layout + the `t-encode` body differ.
 pub enum EscapeForm<'a> {
     Flat(&'a crate::lower::ValueFormTemplate),
+    /// A FLAT template whose export result is a SCALAR-ERASED value (a runtime `Qty` — it erases to its bare
+    /// inner scalar, not a heap handle). The `make` body must BOX that scalar (`box_op`, e.g. `box-int`)
+    /// after `call <export>` so `resource-new` receives a real i32 root handle; the template's single leaf
+    /// hole then reads `get-int` off it at an empty path, exactly like a one-element runtime tuple. `box_op`
+    /// takes the raw scalar (Int64 → S64, no extend for now — narrow-inner is a later slice) and returns the
+    /// i32 handle. Units are compile-time-only: the label is baked into `tpl`; only the scalar crosses.
+    FlatScalar {
+        tpl: &'a crate::lower::ValueFormTemplate,
+        box_op: &'static str,
+    },
     Sum(&'a crate::lower::SumFormTemplate),
     /// A RUNTIME `Bytes` result — a VARIABLE-length value form the walker builds by LOOPING (the first
     /// non-unrolled `encode()`): write the static prefix, the runtime `bytes-len` as a LEB, a
@@ -1333,6 +1343,9 @@ pub fn runtime_resource_core_module_form_ex2(
     let mut placed: Vec<Placed> = Vec::new();
     let templates: Vec<&crate::lower::ValueFormTemplate> = match &form {
         EscapeForm::Flat(t) => vec![*t],
+        // A scalar-erased flat form lays its ONE template exactly like `Flat`; the only difference is the
+        // `make` body boxes the scalar (below) before `resource-new`.
+        EscapeForm::FlatScalar { tpl, .. } => vec![*tpl],
         EscapeForm::Sum(s) => s.variants.iter().collect(),
         // RuntimeBytes writes its entire output at run time (variable length) — no preloaded template,
         // no data section. The walker uses a fixed retarea at offset 0 and writes the value form after it.
@@ -1429,6 +1442,13 @@ pub fn runtime_resource_core_module_form_ex2(
         let mut inner = inner;
         inner.push(op::CALL);
         uleb128(export_abs as u64, &mut inner);
+        // A SCALAR-ERASED result (a runtime Qty) leaves a bare scalar on the stack, not an i32 heap handle —
+        // BOX it (`box-int` : (S64)->i32 handle) so `resource-new` gets a real rep. A compound export already
+        // returns its handle, so no box for `Flat`/`Sum`/etc.
+        if let EscapeForm::FlatScalar { box_op, .. } = &form {
+            inner.push(op::CALL);
+            uleb128(import_index[*box_op] as u64, &mut inner);
+        }
         inner.push(op::CALL);
         uleb128(f_rnew as u64, &mut inner);
         inner.push(op::END);
@@ -1444,7 +1464,10 @@ pub fn runtime_resource_core_module_form_ex2(
     let _ = f_rrep; // borrow: the rep is the param, so resource.rep is not called
     let rep_src = RepSource::Borrow;
     let encode_body = match &form {
-        EscapeForm::Flat(t) => encode_walk_body(
+        // A scalar-erased flat form walks IDENTICALLY to `Flat`: `make` boxed the scalar into the root cell,
+        // so the template's single leaf hole reads `get-int` off the rep at an empty path, exactly as for a
+        // one-element runtime tuple.
+        EscapeForm::Flat(t) | EscapeForm::FlatScalar { tpl: t, .. } => encode_walk_body(
             t,
             placed[0].byte_off,
             placed[0].ret_off,
