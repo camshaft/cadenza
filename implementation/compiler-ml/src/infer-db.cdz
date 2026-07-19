@@ -467,6 +467,29 @@ def id-same-narrow-comparison-still-bool() =
         (if is-bool-at(tree, root, root) then unit else trap("Int8 < Int8 → TBool (same-type comparison unaffected)")))))
 
 @test
+def id-same-narrow-arith-preserves-width() =
+  // narrow ARITHMETIC (op 43, `Int8 + Int8`) types as the SAME narrow width — TIntW(_, 8), NOT widened to
+  // Int64 (that would be a silent promotion). The arith twin of id-same-narrow-comparison-still-bool: a
+  // comparison collapses to TBool, but arith PRESERVES the operand width so lower emits a narrow CNum and the
+  // overflow-check fires at that width. Pins that same-width narrow arith keeps its width through infer.
+  (match add-node(empty-tree(), Node.NAnnLit(100, 1, 8)) with | (lId, t1) =>
+    (match add-node(t1, Node.NAnnLit(20, 1, 8)) with | (rId, t2) =>
+      (match add-node(t2, Node.NBin(43, lId, rId)) with | (root, tree) =>
+        (match type-at(tree, root, root) with
+          | Option.Some(Typed.TIntW(_, w)) => (if w == 8 then unit else trap("Int8 + Int8 preserves width 8, not widened"))
+          | _ => trap("Int8 + Int8 is a narrow TIntW")))))
+
+@test
+def id-mixed-width-arith-is-err() =
+  // narrow ARITH with MISMATCHED widths (`Int8 + Int16`, op 43) → the operands don't unify → TErr (declines),
+  // matching rcdzc's CDZ0301 (no implicit width conversion). The arith twin of id-mixed-width-comparison-is-err;
+  // the infer-level pin under sread-eval's se-ann-mixed-width-arith-declines (which needs the full pipeline).
+  (match add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) with | (lId, t1) =>
+    (match add-node(t1, Node.NAnnLit(5, 1, 16)) with | (rId, t2) =>
+      (match add-node(t2, Node.NBin(43, lId, rId)) with | (root, tree) =>
+        (if type-err-at(tree, root, root) then unit else trap("Int8 + Int16 → TErr (mixed-width arith declines, CDZ0301)")))))
+
+@test
 def id-napp-nullary-types-as-body-slice2() =
   // SLICE-2 NULLARY-CALL SEMANTICS: a nullary call NApp(calleeBodyId, -1) types as the callee BODY's type
   // (β-reduction over zero args). Body = NLit(42) → Int64, so the call node types Int64. Hand-arena, no sread.

@@ -1571,6 +1571,7 @@ pass	a performed operation is the scrutinee of a match that dispatches on its re
 pass	a performed operation whose result is a sum is matched on its variant
 pass	a performed sum carrying a TUPLE payload is matched and the arm reads MULTIPLE payload elements
 pass	a performing argument to a multiply-using performing callee is not duplicated
+pass	a performing closure homed TRANSITIVELY through a pass-through function is not falsely rejected
 pass	a performing closure passed to a function that applies it UNDER a handler is homed at the apply site
 pass	a performing match SCRUTINEE threads its state into a performing arm body
 pass	a performing match-arm guard folds with WILDCARD patterns (no binder to let-bind)
@@ -3182,6 +3183,7 @@ pass	interleaved same/different Instants keep FIFO within a time and ascending a
 pass	interning the same string twice yields equal symbols
 pass	intersection cardinality with a runtime-element operand
 pass	intersection is associative
+pass	intersection of a set with itself is the set (idempotent)
 pass	intersection with the empty set is the empty set
 pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
 pass	keyed lookups at different keys are not shared
@@ -3603,6 +3605,7 @@ pass	the decode error's kind is matchable
 pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
 pass	the difference of a set with itself is empty
+pass	the difference of a set with the empty set is the set (identity)
 pass	the display truncation does not lose the stored magnitude (Qty.value reads it back)
 pass	the element tie survives producer self-composition
 pass	the else-branch of an if threads a performed state to the continuation

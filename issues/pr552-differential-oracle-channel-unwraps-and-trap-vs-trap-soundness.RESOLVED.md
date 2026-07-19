@@ -30,3 +30,14 @@ line numbers shifted post-merge). Reasonable to harden to `?`/`map_err`.
 All in `cdz-smith/src/differential.rs` = fuzzer/cdz-smith territory (PM already routed PR#551's
 differential-oracle findings to the fuzzer). Soundness (#120) is the substantive one; the 4 unwraps
 are a robustness sweep.
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk 03736613c): BOTH concerns fixed in
+implementation/seed/crates/cdz-smith/src/differential.rs.
+• SOUNDNESS (Trap-vs-Trap hid rust-artifact-error): a dedicated `Side::ArtifactError` variant now exists, and
+  `compare()` matches `(Side::ArtifactError(e), other)` / `(other, Side::ArtifactError(e))` FIRST — before both
+  the Declined arm AND the Trap-vs-Trap agreement arm — yielding `Diff::Mismatch { kind: Artifact }`. Comment
+  cites "PR#552 soundness … must be surfaced NO MATTER what the other side did." So a rust build-blocking
+  miscompile can no longer be masked by a wasm trap/decline. Exactly the reviewer's ask.
+• ROBUSTNESS (4 channel .unwrap()s): grep for `_rx.recv().await` / `_tx.send(...).await` on trunk returns
+  NOTHING — the panicking unwraps are gone (hardened). Owner (fuzzer/cdz-smith) resolved — no corpus-bugfix action.

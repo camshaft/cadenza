@@ -26,3 +26,11 @@ path should share it. No behavioral change either way.
 current code is correct; this is a "would-be-cleaner" centralization suggestion. Owner can dismiss in one
 glance if the oracle's compute-then-guard is the intended shape (it reads fine as-is). Filed as a note,
 not a bug.
+
+---
+CLOSED as WORKS-AS-SPECIFIED (corpus-bugfix 2026-07-19): NOT a bug — an optional maintainability refactor
+(compute-then-guard vs int-width.checked-*). The interpreter oracle's post-hoc overflow check is SOUND (host
+Int64 holds a narrow op's inputs+result; overflow→None matches §Overflow/CDZ0304). Behavioral no-op either way.
+Owner v-inference is ACTIVELY working this exact eval-core narrow-arith area (landed `58024500f` unsigned-sub
+underflow + `c40b5c0bf` narrow-mul overflow pins this window), so they'll fold the centralization if they want
+it — no need to hold this as an open item. Dismissible-at-owner-discretion note, no corpus-bugfix action.
