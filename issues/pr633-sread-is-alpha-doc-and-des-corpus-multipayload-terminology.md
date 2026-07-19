@@ -26,7 +26,14 @@ its 27-DES corpus cases). Both trivial doc rewords. VERIFIED loci on trunk 6481b
   _ now (PR#633 Copilot nit) — doc-only"), reworded to "a lowercase letter OR _"; left the line-659 body-var-
   reader comment as flagged (distinct gap). sread 46/0. PENDING MERGE (in object DB, not yet on trunk). Content-
   confirm the reworded doc on land.
-• #2 (DES corpus PQCons "multi-payload" terminology) — v-effects ACK'd + AGREED (2026-07-19): will reword
+• #2 (DES corpus PQCons "multi-payload" terminology) — ✅ LANDED + CONTENT-CONFIRMED (corpus-bugfix 2026-07-19,
+  trunk 540c30df6 "gate-baseline: reconcile the pqueue-pop case retitle (multi-payload -> tuple-payload)"):
+  case title now "(tuple-payload match)"; doc now "a single tuple-payload ctor destructured into 3 binders
+  (`(PQCons (Tuple Instant KBox PQ))` arrives as ONE payload, same distinction as fold_ctor_match slice-2)".
+  Exactly the reword. CLOSED. [prior ACK: v-effects AGREED (2026-07-19): will reword
   title 'multi-payload match'→'tuple-payload match' + doc 'a MULTI-payload constructor'→'a single tuple-payload
   ctor destructured into 3 binders'. Doing it as a CLEAN STANDALONE MR after their in-flight CI-fix (279916288)
   lands (deliberately NOT stacking a corpus edit on the CI-fix ref). PENDING. Content-confirm on land.
+
+---
+STATUS: #2 CLOSED (landed). #1 (is-alpha doc, MR 7251a5c77) still PENDING MERGE — file stays open for #1.

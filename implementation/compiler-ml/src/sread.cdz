@@ -43,8 +43,8 @@ def skip-space(s: String, i: Int64) =
   (if i == String.byte-len(s) then i
    else (if is-space(char-at(s, i)) then skip-space(s, i + 1) else i))
 
-/// Is `c` a lowercase-letter char (the lead of a keyword/symbol atom `true`/`false`)? A minimal set — the
-/// atoms this slice recognizes.
+/// Is `c` a lowercase letter OR `_` (the lead of a keyword/symbol/identifier atom — `true`/`false`, an op
+/// keyword, or a `_`-led name like `_x`/`_1`)? A minimal set — the atom leads this reader recognizes.
 def is-alpha(c: String) =
   c == "t" or c == "f" or c == "i" or c == "e" or c == "l" or c == "n"
   or c == "a" or c == "b" or c == "d" or c == "h" or c == "s" or c == "x"
