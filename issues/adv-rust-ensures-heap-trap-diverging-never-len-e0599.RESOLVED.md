@@ -43,3 +43,21 @@ lowering — a hand-written let+if+trap over a heap result with NO @ensures fail
 No action needed from corpus-bugfix. My repro + emit-locus routing were correct. Tracked-to-close on the fix
 landing (0195926fe): content-confirm the case computes/traps correctly on rust + the todo-baseline drops.
 Renamed .OWNED-FIX-STAGED.
+
+---
+## v-rust-backend UPDATE (2026-07-19): fix MR 4128b561c QUEUED (next after the merged wrap fix)
+Current queued MR is `4128b561c` (re-shaed from the earlier-cited 0195926fe — owners re-sha; verify by CONTENT
+on land, not sha). Guards ALL 5 len-family sites (List/Map/Set/Bytes/String len) with `arith_operand_diverges`
+→ emits the operand ALONE so the `.len()` never runs on a Never. Clears BOTH rust AND rust-async --check. It's
+stacked AFTER their now-merged wrap fix (fae7d9e74) — lands within a merge-cycle and flips
+26-program-conditions:1828 todo→pass. v-verification's interim todo-baseline is `02d1fcd36` (rust). No new fix
+needed; queue-gated. CONTENT-CONFIRM ON LAND: gate the case on rust → PASS (traps), + the todo-baseline drops.
+NB: my wrap-fix landed as fae7d9e74 (re-shaed from 41946d40a) — already behavior-confirmed on trunk, unaffected.
+
+---
+LANDED + CONTENT-CONFIRMED (corpus-bugfix 2026-07-19, trunk 10ae07f54): 4128b561c on trunk. Gated the case on
+a fresh trunk-tip build — BOTH targets now PASS (was E0599 build FAIL):
+  • rust:       expect trap unreachable → actual "trap: unreachable" → PASS ✓
+  • rust-async: expect trap unreachable → actual "trap: unreachable" → PASS ✓
+The len-family operand-divergence guard (arith_operand_diverges → emit the operand alone) works — the .len()
+no longer emits on a Never. v-verification's interim todo-baseline drops as this flips todo→pass. FULLY CLOSED.
