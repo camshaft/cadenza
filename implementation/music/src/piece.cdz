@@ -1,0 +1,92 @@
+/// piece.cdz — a complete SHOWCASE composition, built from the theory + composition primitives as pure
+/// data. This is the "built from visible primitives, not an opaque library fn" showcase (the CAD-snowflake
+/// discipline): a real multi-part piece — a I–V–vi–IV chord progression with an arpeggiated accompaniment
+/// and a bass line — assembled ENTIRELY from scale/chord/rhythm/compose, returning one `List(Note)` the
+/// scheduler lowers to MIDI. It is the raw material the phase-2 DES-composed-piece demo plays over the Sim
+/// clock, and it doubles as an end-to-end gate: if any lower primitive regresses, the piece's note count /
+/// balance changes and these @tests fail.
+///
+/// Harmony: C major. Progression I–V–vi–IV = C–G–Am–F (roots 60,67,69,65), one bar each in 4/4 (a bar =
+/// 3840 ticks at PPQ 960). Accompaniment arpeggiates each chord across the bar; the bass plays each chord
+/// root as a whole note. Channels: 0 = accompaniment, 1 = bass. All Int64 ticks, all built fresh (dodges
+/// issue 9927 the same way compose.cdz does).
+
+import { Note } from "schedule"
+import { schedule, balanced, note-pitch, note-chan, note-start } from "schedule"
+import { chord-notes, major-triad, minor-triad } from "chord"
+import { pitch, note } from "pitch"
+import { arpeggiate, melody-note } from "compose"
+
+/// Ticks per bar in 4/4 at PPQ 960.
+def bar = 3840
+/// A quarter note (one arpeggio step / four per bar).
+def step = 960
+
+/// The arpeggiated accompaniment for ONE chord (given its realized note numbers) filling a bar starting at
+/// `start`: notes spread a quarter apart, each a quarter long, on channel 0.
+def accompaniment-bar(nums: List(Int64), start: Int64) = arpeggiate(nums, 0, 90, start, step, step)
+
+/// The bass note for a bar: the chord root as a whole note on channel 1.
+def bass-bar(root: Int64, start: Int64) = melody-note(root, 1, 110, start, bar)
+
+/// The four chords of the I–V–vi–IV progression in C major, as realized note-number lists.
+def chord-c = chord-notes(major-triad(pitch(60)))   // I  — C major
+def chord-g = chord-notes(major-triad(pitch(67)))   // V  — G major
+def chord-am = chord-notes(minor-triad(pitch(69)))  // vi — A minor
+def chord-f = chord-notes(major-triad(pitch(65)))   // IV — F major
+
+/// The full progression piece: for each bar, the arpeggiated accompaniment plus the bass root. Built by
+/// concatenating the per-bar note lists (four bars, bars start at 0/3840/7680/11520).
+def progression =
+  List.concat(
+    List.concat(accompaniment-bar(chord-c, 0), bass-bar-list(60, 0)),
+    List.concat(
+      List.concat(accompaniment-bar(chord-g, bar), bass-bar-list(67, bar)),
+      List.concat(
+        List.concat(accompaniment-bar(chord-am, bar * 2), bass-bar-list(69, bar * 2)),
+        List.concat(accompaniment-bar(chord-f, bar * 3), bass-bar-list(65, bar * 3)))))
+
+/// The bass note as a singleton list (so it concatenates uniformly with the accompaniment list).
+def bass-bar-list(root: Int64, start: Int64) = [bass-bar(root, start)]
+
+/// ============================ @test suite (the showcase piece) ============================
+
+@test
+def the-progression-has-every-note() =
+  // 4 bars * (3 arpeggio notes + 1 bass) = 16 notes.
+  if List.len(progression) == 16 then unit else trap("sixteen notes")
+
+@test
+def the-progression-schedules-with-no-stuck-keys() =
+  // The end-to-end gate: the whole piece lowers to paired on/off events, net zero — no stuck keys.
+  let evs = schedule(progression) in
+  if List.len(evs) == 32 then (if balanced(evs) then unit else trap("balanced")) else trap("32 events")
+
+@test
+def the-bass-carries-the-progression-roots() =
+  // The bass line (channel 1) plays C, G, A, F roots (60, 67, 69, 65) in order — the harmonic skeleton.
+  if bass-note-at(progression, 0) == 60 then
+    (if bass-note-at(progression, bar) == 67 then
+      (if bass-note-at(progression, bar * 2) == 69 then
+        (if bass-note-at(progression, bar * 3) == 65 then unit else trap("F")) else trap("A")) else trap("G"))
+  else trap("C")
+
+// ---- test helpers -----------------------------------------------------------------------------------
+
+/// The note number of a note — via the exported accessors, NOT a nested `Note.Note(Pitch.Pitch(k),…)`
+/// destructure (a nested match on the imported boxed `Pitch` traps at runtime; issue-9927 family).
+def note-num(n: Note) = note(note-pitch(n))
+
+/// The note number of the CHANNEL-1 (bass) note starting at tick `t` (recursive search, annotated).
+def bass-note-at(notes: List(Note), t: Int64) =
+  match notes with
+    | [] => 0 - 1
+    | [h, .. rest] =>
+      if note-chan(h) == 1 then
+        (if note-start(h) == t then note-num(h) else bass-note-at(rest, t))
+      else bass-note-at(rest, t)
+
+export {
+  progression, accompaniment-bar, bass-bar,
+  chord-c, chord-g, chord-am, chord-f,
+}

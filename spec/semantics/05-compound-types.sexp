@@ -8708,6 +8708,38 @@
             (def (main)  (sz 7)) (export main)))
   (output (: 2 Int64)))
 
+(case "prepending onto the empty list yields a one-element list"
+  (doc    "`List.prepend` onto `(list)` gives a singleton — the front-insertion base case. `(List.at (List.prepend
+           (list) 5) 0)` is 5 and its length is 1: prepending to nothing produces exactly `[5]`. The empty-list
+           companion of the front-insertion case, pinning that prepend handles the zero-length operand (no
+           element to shift).")
+  (input  (do
+            (def (main) (Option.expect (List.at (List.prepend (list) 5) 0) "in range"))
+            (export main)))
+  (output (: 5 Int64)))
+
+(case "prepend shifts the existing elements one position toward the tail"
+  (doc    "`(List.prepend (list 2 3) 1)` = `[1, 2, 3]`: the new element lands at index 0 and the existing
+           elements move to indices 1 and 2. Reading `(List.at … 1)` = 2 pins that prepend does not overwrite
+           or drop — it inserts at the front and shifts the rest right, the ordering companion of the
+           front-insertion case (which reads index 0).")
+  (input  (do
+            (def (main) (Option.expect (List.at (List.prepend (list 2 3) 1) 1) "in range"))
+            (export main)))
+  (output (: 2 Int64)))
+
+(case "prepend leaves the original list binding unchanged (persistent, copy-on-write)"
+  (doc    "`List.prepend` is persistent: prepending onto a bound list does NOT mutate the binding — the
+           original still reads its own length while the prepended result is one longer. `(let ((xs (list 2 3)))
+           …)` : `List.len (List.prepend xs 1)` = 3 AND the original `List.len xs)` = 2, both live. Encoded
+           `100·3 + 2` = 302 so a mutate-in-place bug (which would make xs length 3 too → 303) diverges. The
+           front-insertion twin of the List.push persistence case (`a list consumed by List.push in one operand
+           is unchanged for a later read`).")
+  (input  (do
+            (def (main) (let ((xs (list 2 3))) (+ (* 100 (List.len (List.prepend xs 1))) (List.len xs))))
+            (export main)))
+  (output (: 302 Int64)))
+
 ; The replace-at-index operation is DEFINED ONLY for an in-bounds index (collections-and-text.md #A List
 ; Is Grown By Functional Construction, 2nd sentence: "The replace-at-index operation MUST be defined only
 ; for an index that is in bounds"). An out-of-bounds update therefore has NO value. When the list AND the
