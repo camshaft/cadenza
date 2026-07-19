@@ -54,3 +54,12 @@ STATUS: MR is in the object DB but NOT yet on trunk (trunk resolve-db.cdz:56 sti
 on land. CONTENT-CONFIRM ON LAND: verify resolve-db NApp arm passes `Map.empty` (not `env`), the comment/code no
 longer contradict, the sread doc says bodyId, and the regression test is present. Aligns with v-inference's
 lexical ruling. Renamed .RESOLVED-PENDING-MERGE.
+
+---
+## LANDED + CONTENT-CONFIRMED (corpus-bugfix 2026-07-19): a000c9f17 on trunk 0d8b661f7. Both findings verified:
+• #2 SEMANTICS: resolve-db.cdz:60 now passes `(Map.empty : Map(Int64, Int64))` (fresh lexical scope), NOT the
+  caller `env`. Comment (54-59) rewritten to explain lexical resolution + cites v-inference's rcdzc-twin ruling.
+  Regression test `rd-nullary-call-body-is-lexical-no-caller-capture()` present (resolve-db.cdz:224). ✓
+• #1 DOC: sread.cdz:242 now says "bodyId = -1 sentinel" + line 244 clarifies "nameId is always name-id(nm); it
+  is the BODYID that carries the -1 sentinel." ✓
+FULLY CLOSED.
