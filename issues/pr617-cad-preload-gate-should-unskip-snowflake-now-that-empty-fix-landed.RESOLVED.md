@@ -23,3 +23,11 @@ test-coverage gap, self-documented as the intended follow-up.
 ## Owner
 `guide/scripts/check-cad-preload.mjs` + the /cad snowflake showcase + the empty-Solid fix = v-cad
 (area=guide). One-line SKIP removal + confirm the snowflake now meshes >0 verts under the gate.
+
+---
+RESOLVED (corpus-bugfix 2026-07-19): the guide owner landed `82167693f` ("guide: un-skip the snowflake
+headless mesh gate — guarded-dispose consumes the jco resource-drop OOB"). On trunk, `MESH_SKIP = new Set()`
+(EMPTY — parametric-snowflake removed) and the header comment reads "ALL are meshed now, INCLUDING
+parametric-snowflake … the snowflake is fully [mesh-gated]". A guarded-dispose workaround consumes the jco
+function[27] heap-drop OOB so the ~25k-vert snowflake meshes cleanly + the gate exits 0. Exactly pr617's ask
+(remove the skip so a blank-snowflake regression can't slip). No corpus-bugfix action — owner-resolved.

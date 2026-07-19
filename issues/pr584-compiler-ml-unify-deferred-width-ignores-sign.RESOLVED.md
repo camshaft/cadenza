@@ -37,3 +37,13 @@ So #53 and #169 are ONE change: fixing the sign-check + updating the deferred te
 
 ## Owner
 `compiler-ml/src/unify.cdz` = v-inference (owns infer/unify/resolve). Both together.
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk dcc81d629): the deferred-sign gap is FIXED in
+implementation/compiler-ml/src/unify.cdz. Sign is now a 3-state axis {1=signed, 0=unsigned, 2=DEFERRED}
+(header comment 13-21); `sign-agrees` (line 44) grounds a DEFERRED sign (2) to the other + rejects a
+fixed-signed/fixed-unsigned mismatch (CDZ0301), checked INDEPENDENT of width. A bare literal is now
+`IntW(2,0)` (both-deferred), NOT the old `IntW(0,0)` (spuriously unsigned). The deferred test literals were
+updated to match (`unify-intw-deferred-grounds-left/right/meets-deferred` all use `IntW(2,0)`, lines 174-186)
+and there's a dedicated `unify-intw-sign-mismatch` test (line 169). Exactly the "#53 + #169 as ONE change"
+the review asked for. Owner (v-inference/v-compiler-ml PORT) resolved — no corpus-bugfix action.

@@ -3410,6 +3410,7 @@ pass	rejection sampling terminates on fuel exhaustion when the refinement is uns
 pass	remainder (%) on a quantity declines cleanly (not a leaked scheme mismatch)
 pass	remainder on two strings is rejected — the whole family, including %
 pass	removing a key drops its association and the size
+pass	removing a key drops the ASSOCIATION and keeps the sibling — a lookup-after check, not just size
 pass	removing a runtime element drops it or is a no-op if absent
 pass	removing a runtime element lowers the cardinality only when present
 pass	removing an absent key leaves the map unchanged
