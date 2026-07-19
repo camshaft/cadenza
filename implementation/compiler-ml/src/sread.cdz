@@ -11,7 +11,7 @@
 /// `read-form` + a test here. Reuses `strlex`'s char helpers (`char-at`, `is-digit`, `scan-number`) and
 /// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
 
-import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit } from "parse-db"
+import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param-type, param-type-of, encode-param-type, pt-width, pt-signed, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit } from "parse-db"
 import { recognize, is-int-type, ty-signed, ty-width } from "int-type"
 import { fits-width } from "int-width"
 
@@ -175,8 +175,19 @@ def read-nullary-call(s: String, a0: Int64, bodyId: Int64, tree: Tree) =
 /// closing `)`. lower reaches the param via `param-of(tree, bodyId)` → `CLet(param, argCore, bodyCore)` (3c).
 def read-param-call(s: String, a0: Int64, bodyId: Int64, tree: Tree) =
   (match read-form(s, a0, tree) with | (argId, a1, t1) =>
-    (let a2 = close-paren(s, a1) in
-     (match add-node(t1, Node.NApp(bodyId, argId)) with | (id, t2) => (id, a2, t2)))))
+    (let e = skip-space(s, a1) in
+     (if (char-at(s, e) == ")")                          // exactly 1 arg: `(f arg)`
+      then (match add-node(t1, Node.NApp(bodyId, argId)) with | (id, t2) => (id, e + 1, t2))
+      else read-2nd-arg(s, e, bodyId, argId, t1))))      // a 2nd arg present: `(add a b)`
+
+/// A 2-arg call `(name a b)` — arg1 already read (node `argId`), `k` at the 2nd arg. Read arg2, emit
+/// `NApp(bodyId, arg1)`, and record arg2 in the arg2-table keyed by the NApp node-id (so lower builds the
+/// nested `CLet(param1, arg1, CLet(param2, arg2, body))`, slice-3d). Consume the closing `)`. Flat helper.
+def read-2nd-arg(s: String, k: Int64, bodyId: Int64, argId: Int64, tree: Tree) =
+  (match read-form(s, k, tree) with | (arg2Id, a2, t1) =>
+    (let a3 = close-paren(s, a2) in
+     (match add-node(t1, Node.NApp(bodyId, argId)) with | (id, t2) =>
+       (id, a3, record-arg2(t2, id, arg2Id)))))
 
 /// A prefix binary op `(sym a b)`: read two operands + emit `NBin(op-code-of(sym), a, b)`.
 def read-bin-form(s: String, sym: String, a0: Int64, tree: Tree) =
@@ -310,18 +321,29 @@ def read-typed-param(s: String, nm: String, k: Int64, tree: Tree) =
      (if (colon == ":") then read-typed-param-name(s, nm, skip-space(s, a1), tree)
       else (name-id(nm), 0 - 1, 0 - 1, 0 - 1, k, tree))))       // not `(:` → malformed signature, decline (param2 -1)
 
-/// After `(:` at `a1`: read the param NAME as an NVar binder (paramId), then SKIP the Type atom. The param's
-/// concrete type flows from the ARGUMENT at the call (infer binds the param node to the arg's type), so the
-/// declared Type is read + discarded here. Hands off to read-typed-param-body with the closing indices.
+/// After `(:` at `a1`: read the param NAME as an NVar binder (paramId), VALIDATE the declared Type name, then
+/// (its concrete type flows from the ARGUMENT at the call — infer binds the param node to the arg's type) hand
+/// off to read-typed-param-body. ENFORCEMENT (annotation-slice-1, the miscompile v-compiler-ml surfaced): the
+/// declared type MUST be a recognized integer type (`is-int-type` — structural, `Int<N>`/`UInt<N>` standard
+/// widths). A type name that ISN'T one — an UNBOUND type `(: x foo)` (corpus 07-type-system wants CDZ0101, was
+/// silently ran to the arg), or a non-int ground type like `(: x Bool)` (the compiler can't enforce a Bool
+/// annotation yet) — DECLINES via the bodyId -1 sentinel. Declining is the HONEST verdict (coverage-not-yet /
+/// the reject the corpus wants), never the fabricated value the discard-the-type path produced. A well-formed
+/// `(: n Int64)` (any standard int width) still runs — the arg's type flows as before.
 def read-typed-param-name(s: String, nm: String, a1: Int64, tree: Tree) =
   (match scan-atom(s, a1, "") with | (pnm, a2) =>              // the param name
-    (match scan-atom(s, skip-space(s, a2), "") with | (ty, a3) =>   // the Type — read + skip
-      // A MALFORMED signature `(: n)` (name but NO type) → the 2nd scan-atom sits at `)` and returns EMPTY.
-      // DECLINE via the bodyId -1 sentinel (matching read-typed-param's `(:`-check-fails arm) rather than
-      // mis-parsing the sig/body boundary from a wrong index. A well-formed `(: n Int64)` has a non-empty type.
-      (if (ty == "") then (name-id(nm), 0 - 1, 0 - 1, 0 - 1, a1, tree)
+    (match scan-atom(s, skip-space(s, a2), "") with | (ty, a3) =>   // the Type name
+      // An EMPTY type (`(: n)` — the 2nd scan sits at `)`) OR a type that is NOT a recognized integer type
+      // (`foo`, `Bool`, …) → DECLINE via the bodyId -1 sentinel (matching read-typed-param's `(:`-fails arm),
+      // rather than mis-parsing the boundary or ignoring a type the compiler can't yet enforce.
+      (if ((ty == "") or (if is-int-type(ty) then false else true)) then (name-id(nm), 0 - 1, 0 - 1, 0 - 1, a1, tree)
        else (match add-node(tree, Node.NVar(name-id(pnm))) with | (paramId, t1) =>
-              read-typed-param-body(s, nm, paramId, a3, t1)))))
+              // FOUNDATION (narrow-int enforcement, slice annotation-2): record the param's declared int type
+              // (recognized above) in the param-type table, keyed by the param NODE-id, ENCODED as
+              // `width*2+signflag`. Behavior-neutral for now — infer's fit-check (DECLINE `(f 200)` to an Int8
+              // param, corpus CDZ0302) reads this next slice; today NOTHING reads it, so the def still runs.
+              (let t2 = record-param-type(t1, paramId, encode-param-type(ty-signed(ty), ty-width(ty))) in
+               read-typed-param-body(s, nm, paramId, a3, t2)))))
 
 /// After the typed param's type ended at `a3`: consume the param's `)` and the signature-closing `)`, then
 /// read the body. Returns the 6-tuple `(nameId, bodyId, paramId, param2Id, nextIndex, tree')` — a typed def is
@@ -868,5 +890,76 @@ def sr-ann-uint64-negative-declines() =
   // `(: -1 UInt64)` — a negative CANNOT be UInt64 (fits-ann: unsigned-64 needs v >= 0) → decline.
   (match read-source("(: -1 UInt64)") with | (root, tree) =>
     (if is-var(tree, root, 0) then unit else trap("(: -1 UInt64) must DECLINE (unsigned has no negatives)")))
+
+@test
+def sr-typed-param-unbound-type-declines() =
+  // ANNOTATION-ENFORCEMENT slice-1 (the miscompile v-compiler-ml surfaced): a typed param whose declared type
+  // is an UNBOUND type name — `(: x foo)` — must DECLINE. Corpus 07-type-system.sexp:220 requires CDZ0101 (the
+  // garbage parameter type `foo` denotes nothing); before this, the reader DISCARDED the type atom, so the def
+  // was recorded and `(f 7)` silently ran to 7 (a fabricated value disagreeing with rcdzc). Now
+  // read-typed-param-name's `is-int-type` guard fails → bodyId -1 sentinel → f is NOT recorded → module declines.
+  (match read-source("(do (def (f (: x foo)) x) (def (main) (f 7)) (export main))") with | (root, tree) =>
+    (match def-body-of(tree, name-id("f")) with
+      | Option.None(_) => unit   // f declined (unbound type `foo`) → correct (was recorded + ran to 7)
+      | Option.Some(_) => trap("a typed param with an UNBOUND type `(: x foo)` declines — f is not recorded (corpus wants CDZ0101)")))
+
+@test
+def sr-typed-param-non-int-type-declines() =
+  // A typed param at a NON-INTEGER ground type the compiler can't yet enforce — `(: x Bool)` — DECLINES too
+  // (honest coverage-not-yet). `is-int-type("Bool")` is false (Bool isn't `Int<N>`/`UInt<N>`), so the param
+  // reader returns the bodyId -1 sentinel. Before this, `(: x Bool)` fed `5` ran to 5 (the annotation was
+  // discarded, so a non-Bool arg was never rejected). Mirrors the annotated-LITERAL rule (sr-ann-non-int-type).
+  (match read-source("(do (def (f (: x Bool)) x) (def (main) (f 5)) (export main))") with | (root, tree) =>
+    (match def-body-of(tree, name-id("f")) with
+      | Option.None(_) => unit
+      | Option.Some(_) => trap("a Bool-typed param declines (annotation not yet enforced) — f is not recorded")))
+
+@test
+def sr-typed-param-int-type-still-runs() =
+  // REGRESSION GUARD: a RECOGNIZED integer type still records the def (runs). `(: n Int64)` — a standard width —
+  // passes is-int-type, so f IS recorded (the arg's type flows via infer as before). Pins the enforcement guard
+  // rejects ONLY unrecognized types, never a valid `Int<N>`/`UInt<N>` annotation.
+  (match read-source("(do (def (f (: n Int64)) (+ n 1)) (def (main) (f 41)) (export main))") with | (root, tree) =>
+    (match def-body-of(tree, name-id("f")) with
+      | Option.Some(_) => unit   // f recorded → a valid int-typed param still runs
+      | Option.None(_) => trap("a valid int-typed param `(: n Int64)` still records f (must not over-decline)")))
+
+@test
+def sr-typed-param-narrow-int-type-runs() =
+  // A narrow standard width `(: a Int8)` is a recognized int type → records f (runs). Pins the guard admits the
+  // FULL standard width set (not just Int64). (Narrow-int RANGE enforcement — Int8 fed 200 → overflow — is a
+  // later slice that threads the width into infer; here the annotation is merely RECOGNIZED, so the def runs.)
+  (match read-source("(do (def (f (: a Int8)) a) (def (main) (f 100)) (export main))") with | (root, tree) =>
+    (match def-body-of(tree, name-id("f")) with
+      | Option.Some(_) => unit
+      | Option.None(_) => trap("a valid narrow int-typed param `(: a Int8)` still records f")))
+
+@test
+def sr-typed-param-records-declared-type() =
+  // FOUNDATION (narrow-int enforcement, slice annotation-2): a recognized int-typed param now RECORDS its
+  // declared `(signed, width)` in the param-type table, keyed by the param NODE-id. Read `(def (f (: a Int8)) a)`
+  // and confirm f's param node has param-type-of = Some(encoded Int8) — signed, width 8. Behavior-neutral: the
+  // def still records + runs (nothing reads the type yet); this just pins the reader captures it for infer's
+  // next-slice fit-check. (param-of gives f's FIRST param node-id; param-type-of reads its recorded type.)
+  (match read-source("(do (def (f (: a Int8)) a) (def (main) 5) (export main))") with | (root, tree) =>
+    (match param-of(tree, name-id("f")) with
+      | Option.Some(paramId) =>
+          (match param-type-of(tree, paramId) with
+            | Option.Some(e) => (if ((pt-width(e) == 8) and pt-signed(e)) then unit else trap("Int8 param records signed width 8"))
+            | Option.None(_) => trap("a typed param records its declared type"))
+      | Option.None(_) => trap("f has a first param node")))
+
+@test
+def sr-untyped-param-records-no-type() =
+  // ADDITIVE guard: an UNTYPED param `(def (f n) …)` records NO param type → param-type-of = None (the arg's own
+  // type flows, as today). Distinguishes a narrow-typed param from a plain one — infer's fit-check fires ONLY on
+  // a recorded type, so an untyped param is untouched.
+  (match read-source("(do (def (f n) (+ n 1)) (def (main) 5) (export main))") with | (root, tree) =>
+    (match param-of(tree, name-id("f")) with
+      | Option.Some(paramId) =>
+          (match param-type-of(tree, paramId) with
+            | Option.None(_) => unit
+            | Option.Some(_) => trap("an untyped param records no declared type"))
+      | Option.None(_) => trap("f has a first param node")))
 
 export { skip-space, read-form, read-source, scan-atom, op-code-of, name-id }

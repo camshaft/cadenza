@@ -1075,11 +1075,14 @@ pub enum EscapeForm<'a> {
     /// inner scalar, not a heap handle). The `make` body must BOX that scalar (`box_op`, e.g. `box-int`)
     /// after `call <export>` so `resource-new` receives a real i32 root handle; the template's single leaf
     /// hole then reads `get-int` off it at an empty path, exactly like a one-element runtime tuple. `box_op`
-    /// takes the raw scalar (Int64 → S64, no extend for now — narrow-inner is a later slice) and returns the
-    /// i32 handle. Units are compile-time-only: the label is baked into `tpl`; only the scalar crosses.
+    /// takes the raw scalar and returns the i32 handle. `extend` = `Some(signed)` when the inner is a NARROW
+    /// int (an i32 core param) that must be i32→i64 widened BEFORE `box-int` (which takes i64) — signed for
+    /// a signed narrow int, unsigned otherwise; `None` for a full-width Int64/UInt64 (already i64). Units are
+    /// compile-time-only: the label is baked into `tpl`; only the scalar crosses.
     FlatScalar {
         tpl: &'a crate::lower::ValueFormTemplate,
         box_op: &'static str,
+        extend: Option<bool>,
     },
     Sum(&'a crate::lower::SumFormTemplate),
     /// A RUNTIME `Bytes` result — a VARIABLE-length value form the walker builds by LOOPING (the first
@@ -1444,8 +1447,17 @@ pub fn runtime_resource_core_module_form_ex2(
         uleb128(export_abs as u64, &mut inner);
         // A SCALAR-ERASED result (a runtime Qty) leaves a bare scalar on the stack, not an i32 heap handle —
         // BOX it (`box-int` : (S64)->i32 handle) so `resource-new` gets a real rep. A compound export already
-        // returns its handle, so no box for `Flat`/`Sum`/etc.
-        if let EscapeForm::FlatScalar { box_op, .. } = &form {
+        // returns its handle, so no box for `Flat`/`Sum`/etc. A NARROW-int inner is an i32 core value, so
+        // i32→i64 widen it FIRST (signed/unsigned per `extend`) — `box-int` takes i64, and an unextended i32
+        // would be an invalid arg. This is the make-side twin of `emit_box_i32_to_i64_extend`.
+        if let EscapeForm::FlatScalar { box_op, extend, .. } = &form {
+            if let Some(signed) = extend {
+                inner.push(if *signed {
+                    op::I64_EXTEND_I32_S
+                } else {
+                    op::I64_EXTEND_I32_U
+                });
+            }
             inner.push(op::CALL);
             uleb128(import_index[*box_op] as u64, &mut inner);
         }

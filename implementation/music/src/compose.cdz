@@ -1,0 +1,123 @@
+/// compose.cdz — the COMPOSITION layer: turn theory primitives (chords, scales, rhythm) into `Note`
+/// pieces that the scheduler lowers to MIDI events. This is the bridge from "what to play" (harmony +
+/// time) to "when each note sounds" (a list of timed `Note`s), and the raw material demo #1 (the
+/// DES-composed piece) consumes — v-music is the forcing consumer of DES, so a piece must be plain data
+/// DES can emit over its clock.
+///
+/// Two core builders:
+///   - `chord-block` — sound a whole chord at once (a block chord) at a start tick for a duration.
+///   - `arpeggiate`  — spread a chord's notes out in time, one per step, ascending (a broken chord).
+/// Both take a chord's already-realized note numbers (from chord.cdz `chord-notes`) so this module never
+/// re-derives harmony — it only PLACES notes in time. Everything grounds on schedule.cdz's `Note`.
+///
+/// ⚠ Uses `pitch(n)` fresh-built from a plain Int64 note number throughout — never reuses an imported
+/// boxed `Pitch` field in place (issue 9927: cross-module imported-boxed × reuse-in-place → invalid wasm;
+/// building fresh from the Int64 sidesteps it, same as schedule.cdz's `clone-pitch`).
+
+import { Pitch } from "pitch"
+import { Note } from "schedule"
+import { note-at } from "schedule"
+
+/// Build a `Pitch` fresh from a plain note number (never reuse an imported boxed field — see 9927).
+def pitch-of(n: Int64) = Pitch.Pitch(n)
+
+/// A BLOCK CHORD: place every note of `nums` (MIDI note numbers, e.g. from `chord-notes`) at the SAME
+/// start tick, all for `dur` ticks, on one channel + velocity. Recursive driver with annotated params.
+def chord-block-go(nums: List(Int64), chan: Int64, vel: Int64, start: Int64, dur: Int64, out: List(Note)) =
+  match nums with
+    | [] => out
+    | [h, .. t] =>
+      chord-block-go(t, chan, vel, start, dur, List.push(out, note-at(pitch-of(h), chan, vel, start, dur)))
+
+/// Sound a whole chord at once, starting at `start` for `dur` ticks.
+def chord-block(nums: List(Int64), chan: Int64, vel: Int64, start: Int64, dur: Int64) =
+  chord-block-go(nums, chan, vel, start, dur, [])
+
+/// An ARPEGGIO: spread the notes out in time, one per `step` ticks, each lasting `dur` ticks, ascending
+/// from `start`. Recursive driver; `at` threads the running tick position (annotated).
+def arpeggiate-go(nums: List(Int64), chan: Int64, vel: Int64, at: Int64, step: Int64, dur: Int64, out: List(Note)) =
+  match nums with
+    | [] => out
+    | [h, .. t] =>
+      arpeggiate-go(t, chan, vel, at + step, step, dur, List.push(out, note-at(pitch-of(h), chan, vel, at, dur)))
+
+/// Spread a chord's notes into a broken chord: note `i` starts at `start + i*step`, lasts `dur` ticks.
+def arpeggiate(nums: List(Int64), chan: Int64, vel: Int64, start: Int64, step: Int64, dur: Int64) =
+  arpeggiate-go(nums, chan, vel, start, step, dur, [])
+
+/// Place a single melodic note (a MIDI number) at a tick — the atom a melody line is a sequence of.
+def melody-note(num: Int64, chan: Int64, vel: Int64, start: Int64, dur: Int64) =
+  note-at(pitch-of(num), chan, vel, start, dur)
+
+/// A SEQUENCE of note numbers played back to back, each `dur` ticks, starting at `start` (a monophonic
+/// melody line at a fixed note length). Recursive driver, `at` threads the position (annotated).
+def sequence-go(nums: List(Int64), chan: Int64, vel: Int64, at: Int64, dur: Int64, out: List(Note)) =
+  match nums with
+    | [] => out
+    | [h, .. t] =>
+      sequence-go(t, chan, vel, at + dur, dur, List.push(out, note-at(pitch-of(h), chan, vel, at, dur)))
+
+/// Play a list of note numbers back to back, each `dur` ticks, from `start`.
+def sequence(nums: List(Int64), chan: Int64, vel: Int64, start: Int64, dur: Int64) =
+  sequence-go(nums, chan, vel, start, dur, [])
+
+/// ============================ @test suite (composition: block / arpeggio / sequence) ============================
+
+@test
+def a-block-chord-sounds-every-note-at-the-same-tick() =
+  // A C-major triad [60,64,67] as a block chord at tick 0 for 960: three notes, all starting at 0.
+  let block = chord-block([60, 64, 67], 0, 100, 0, 960) in
+  if List.len(block) == 3 then
+    (if all-start-at(block, 0) then unit else trap("all notes start together"))
+  else trap("three notes")
+
+@test
+def an-arpeggio-spreads-the-notes-in-time() =
+  // The same triad arpeggiated with step 240: notes start at 0, 240, 480 — ascending in time.
+  let arp = arpeggiate([60, 64, 67], 0, 100, 0, 240, 240) in
+  match arp with
+    | [a, b, c] =>
+      if start-of(a) == 0 then
+        (if start-of(b) == 240 then (if start-of(c) == 480 then unit else trap("third at 480")) else trap("second at 240"))
+      else trap("first at 0")
+    | _ => trap("three notes")
+
+@test
+def a-sequence-plays-notes-back-to-back() =
+  // A four-note run, each a quarter (960): starts at 0, 960, 1920, 2880 — no gaps, no overlaps.
+  let seq = sequence([60, 62, 64, 65], 0, 100, 0, 960) in
+  match seq with
+    | [_, b, _, d] => if start-of(b) == 960 then (if start-of(d) == 2880 then unit else trap("fourth start")) else trap("second start")
+    | _ => trap("four notes")
+
+@test
+def block-and-arpeggio-carry-the-same-notes() =
+  // Placing in time changes WHEN, not WHICH — both forms carry the same three note numbers.
+  let block = chord-block([60, 64, 67], 0, 100, 0, 960) in
+  let arp = arpeggiate([60, 64, 67], 0, 100, 0, 240, 240) in
+  if has-note(block, 64) then
+    (if has-note(arp, 64) then unit else trap("arp has E")) else trap("block has E")
+
+// ---- test helpers -----------------------------------------------------------------------------------
+
+/// The start tick of a note (mirrors schedule.cdz's accessor; local to keep this test self-contained).
+def start-of(n: Note) = match n with | Note.Note(_, _, _, s, _) => s
+
+/// The note number of a note.
+def num-of(n: Note) = match n with | Note.Note(Pitch.Pitch(k), _, _, _, _) => k
+
+/// Do all notes start at `t`? Recursive, annotated.
+def all-start-at(notes: List(Note), t: Int64) =
+  match notes with
+    | [] => true
+    | [h, .. rest] => if start-of(h) == t then all-start-at(rest, t) else false
+
+/// Does the piece contain a note with number `k`? Recursive, annotated.
+def has-note(notes: List(Note), k: Int64) =
+  match notes with
+    | [] => false
+    | [h, .. rest] => if num-of(h) == k then true else has-note(rest, k)
+
+export {
+  pitch-of, chord-block, arpeggiate, melody-note, sequence,
+}

@@ -1,0 +1,25 @@
+// The project manifest for Cadenza Music — a music-theory + synthesis library written in Cadenza
+// itself (operator directive 2026-07-19). `cdz` reads these well-known top-level defs to build / run /
+// test the project, the same manifest shape the CAD + compiler-ml ports use (a def is the manifest — no
+// new syntax, no per-command flags).
+//
+//   cdz test implementation/music     — run the music library's @test suite (like cargo test)
+//   cdz test implementation/music/.   — same, naming this directory
+//
+// This is the pure-Cadenza MODEL layer: the theory (pitch/interval/scale/chord/rhythm), the event model,
+// and eventually the DSP/synthesis graph — all ordinary Cadenza data. Per-surface DRIVERS (native
+// audio-out, browser WebMIDI/WebAudio) consume the model as DATA and are kept separate, exactly like
+// CAD's model-vs-driver split. See README.md for the full mandate + phase plan. euphony-rs
+// (implementation/music/reference, gitignored) is a READ-ONLY design reference, never a dependency.
+
+def name = "music"
+
+// The model library — every source file under src/ (a wildcard, so a new module drops into src/ and is
+// picked up with no manifest edit, exactly as CAD + compiler-ml grow).
+def modules = ["src/*.cdz"]
+
+// The modules whose `@test` definitions form the suite (same-file with their code for now).
+def tests = ["src/*.cdz"]
+
+// Files removed from the globs above (none yet).
+def exclude = []

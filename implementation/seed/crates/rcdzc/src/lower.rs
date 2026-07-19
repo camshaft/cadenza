@@ -1112,6 +1112,29 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 trace!(target: "rcdzc::lower", node = id.0, head = head.0, callee, "apply: cost heuristic → emit_call_or_specialize (emit once)");
                 return emit_call_or_specialize(db, head, callee, &args);
             }
+            // PARTIAL APPLICATION OF A PROJECTED/STORED LAMBDA (PA1a): `((. t 0) 3)` where `(. t 0)`
+            // projects a multi-param lambda out of a compound and is applied through CURRIED syntax to fewer
+            // args than its arity — the inner `(. t 0) 3` has a RESULT that is still a function. β-reducing
+            // it yields the RESIDUAL inner lambda, whose params then dangle when the enclosing `(… 4)`
+            // inlines it ("parameter reference has no local slot" / a materialized-cell stack imbalance).
+            // Instead, collapse the WHOLE curried spine to ONE `Core::CallClosure` on the PROJECTED closure:
+            // the projected element is materialized (its cell read) + applied at the full gathered arity via
+            // `call_indirect`. A DIRECT full application of a projected lambda (`((. r f) 10)` — head IS the
+            // projection, one level, result a non-fn value) is NOT matched, so a capturing-single closure
+            // keeps FOLDING inline (the `a_capturing_closure_in_a_let_bound_compound_projected_and_applied_folds`
+            // guard + 09-functions 316/337/349). Gated on the SYNTACTIC head being a projection (a genuinely
+            // STORED fn — `syntactic_head` peels Apply heads WITHOUT folding to a lambda, unlike `apply_spine`).
+            if is_curried_application_of_projected_fn(db, head) {
+                let closure = syntactic_head(db, id);
+                let spine_args = syntactic_spine_args(db, id);
+                if !spine_args.is_empty() {
+                    trace!(target: "rcdzc::lower", node = id.0, head = closure.0, n_args = spine_args.len(), "apply: curried application of a projected lambda → Core::CallClosure on the projected closure");
+                    return Core::CallClosure {
+                        closure,
+                        args: spine_args,
+                    };
+                }
+            }
             // A LAMBDA head β-reduces (substitute args for params) and the reduced body lowers — this
             // is how a user function call folds/monomorphizes: `((fn (x) (+ x 1)) 5)` reduces to
             // `(+ 5 1)` → `6`, with no function value emitted. The reduction runs UNDER a guard keyed
@@ -13308,23 +13331,20 @@ fn template_value_ast_flagged(
         // time from the SOLVED `Ty::Qty`). The erased inner scalar is boxed on the heap by the `make` body
         // (`EscapeForm::FlatScalar`'s `box-int` before `resource-new`), so the walker reads its `get-int`
         // hole off the resulting root handle exactly like a plain Int leaf reached at an empty path.
-        // SCOPED (slice 1): a REFERENCE unit (scale 1/1) over an Int inner. A non-reference unit needs a
-        // compile-time SCALE MULTIPLY before the scalar crosses (the flat leaf-hole template can't express
-        // it) and a non-Int inner (Float) needs `LeafFill::Float` — both decline here (return `None`),
-        // falling back to today's bare-scalar cross, until their slices land.
+        // SCOPED (slices 1+2): a REFERENCE unit (scale 1/1) over ANY-width Int inner. A non-reference unit
+        // needs a compile-time SCALE MULTIPLY before the scalar crosses (the flat leaf-hole template can't
+        // express it) and a non-Int inner (Float) needs `LeafFill::Float` — both decline here (return
+        // `None`), falling back to today's bare-scalar cross, until their slices land. A NARROW int (8/16/32)
+        // is fine here: its magnitude hole is width-agnostic (8-byte, like any Int leaf), the width lives in
+        // the baked type annotation, and the i32→i64 extend a narrow scalar needs before `box-int` is emitted
+        // in the `make` body (`EscapeForm::FlatScalar { extend }`, computed by `emit_runtime_resource`).
         Ty::Qty { inner, unit } => {
             let (num, den) = unit.scale();
             if (num, den) != (1, 1) {
                 return None;
             }
-            // FULL-WIDTH Int64 inner only. A NARROW int (8/16/32) is an i32 core param, but `make`'s
-            // `box-int` takes i64 — a narrow scalar reaches it without the i32→i64 extend a boxed narrow
-            // int needs (`emit_box_i32_to_i64_extend`), so `resource-new` would get an i32 where the boxed
-            // form expects i64 → invalid wasm. Gate to width 64 here; the narrow case (emit the extend in
-            // `make`) is slice 2. A non-Int inner (Float) is slice 4. Both decline → valid bare fallback.
-            match inner.as_ref() {
-                Ty::Int(it) if it.ground_width() == 64 => {}
-                _ => return None,
+            if !matches!(inner.as_ref(), Ty::Int(_)) {
+                return None;
             }
             let inner_hole = template_value_ast_flagged(b, inner, path, out, via_sum_payload)?;
             let unit_ast = unit_value_ast(b, &unit.at_reference());
@@ -22690,6 +22710,67 @@ fn lower_list_prepend(db: &mut Db, id: StructId, list: StructId, elem: StructId)
             }
         }
     }
+}
+
+/// [PA1a] Whether `head` is (transitively through `Ref`/`Annot`) a PROJECTION out of a compound — a
+/// stored fn read via `(. compound i)` / a record field. Used to gate the partial-application keep+lift.
+fn head_reached_through_projection(db: &mut Db, head: StructId) -> bool {
+    match resolved_of(db, head) {
+        Resolved::Proj { .. } => true,
+        Resolved::Member { .. } => {
+            // A member of a RUNTIME compound (not a prelude op / ctor / a const-folding record).
+            crate::eval::meta_apply_of(db, head).is_none()
+                && crate::eval::variant_disc_of(db, head).is_none()
+        }
+        Resolved::Ref { value } | Resolved::Annot { expr: value, .. } => {
+            head_reached_through_projection(db, value)
+        }
+        _ => false,
+    }
+}
+
+/// [PA1a] Peel the SYNTACTIC application-head chain (nested `Apply` heads, transparent through `Ref`/
+/// `Annot`) WITHOUT fold-through reduction, returning the innermost non-`Apply` head. Unlike `apply_spine`
+/// (which β-reduces the bottom to a lambda), this stops at the syntactic head — so a `((. t 0) a) b` chain
+/// bottoms at the `(. t 0)` PROJECTION, not the lambda it folds to.
+fn syntactic_head(db: &mut Db, head: StructId) -> StructId {
+    match resolved_of(db, head) {
+        Resolved::Apply { head: inner, .. } => syntactic_head(db, inner),
+        Resolved::Ref { value } | Resolved::Annot { expr: value, .. } => syntactic_head(db, value),
+        _ => head,
+    }
+}
+
+/// [PA1a] Gather the args of a curried application spine LEFT-TO-RIGHT (the deeper `Apply` head's args
+/// bind the function's leading params), stopping at the innermost syntactic head. `(((. t 0) a) b)` →
+/// `[a, b]`. Transparent through `Ref`/`Annot` (they wrap the same application).
+fn syntactic_spine_args(db: &mut Db, id: StructId) -> Vec<StructId> {
+    match resolved_of(db, id) {
+        Resolved::Apply { head, args } => {
+            let args: Vec<StructId> = args.to_vec();
+            let mut acc = syntactic_spine_args(db, head);
+            acc.extend_from_slice(&args);
+            acc
+        }
+        Resolved::Ref { value } | Resolved::Annot { expr: value, .. } => {
+            syntactic_spine_args(db, value)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// [PA1a] Whether `head` is itself an APPLICATION whose SYNTACTIC spine bottoms at a PROJECTED fn — the
+/// current node is `((proj a) b …)`, a CURRIED application of a stored lambda. Its inner `(proj a)` is a
+/// partial application that would β-reduce to a dangling residual; the whole spine must instead collapse to
+/// one runtime `Core::CallClosure` (the projected element lifts + applies via `call_indirect` at full
+/// arity). A DIRECT full application `(proj a)` (head IS the projection, not an application of it) is NOT
+/// matched — it folds inline (the capturing-single-closure fold guard, tests.rs:61008 / 09-functions).
+fn is_curried_application_of_projected_fn(db: &mut Db, head: StructId) -> bool {
+    if !matches!(resolved_of(db, head), Resolved::Apply { .. }) {
+        return false;
+    }
+    let bottom = syntactic_head(db, head);
+    head_reached_through_projection(db, bottom)
 }
 
 pub(crate) fn synth_core(db: &mut Db, core: Core, ty: crate::ty::Ty) -> StructId {

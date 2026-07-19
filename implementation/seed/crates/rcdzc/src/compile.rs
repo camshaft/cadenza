@@ -2879,6 +2879,54 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         .collect();
     for (body, name, occ, nullary) in export_results {
         let ty = crate::infer::type_of(db, body);
+        // A CONSTANT QUANTITY export whose DISPLAY-scaled magnitude overflows its inner Int width is a
+        // provable trap (CDZ0304), NOT a value to render. A quantity displays at its dimension's REFERENCE
+        // unit with the magnitude scaled by the unit's ratio (`5 km` → `5000 m`); when that scaled value
+        // exceeds the inner Int (`9223372036854776 km` × 1000 > i64 MAX), the OLD render emitted an
+        // out-of-range value form — a wrong-VALUE miscompile. Per the operator overflow ruling (decline when
+        // statically detectable, else trap): a CONSTANT (statically-known) scaled magnitude that overflows
+        // DECLINES here with CDZ0304, unifying the constant path with the runtime path's trap-on-overflow.
+        // Uses the SAME scale (`unit.scale()` of the solved type) the render (`const_value_ast_scaled`) uses,
+        // so check and render agree. Only a fixed-width Int inner with a const magnitude is checkable; a
+        // BigInt inner (unbounded) or a non-constant magnitude never overflows-at-compile-time here.
+        if let crate::ty::Ty::Qty { inner, unit } = &ty
+            && let crate::ty::Ty::Int(it) = inner.as_ref()
+            && let Core::ConstInt(v) = core_of(db, body)
+            && let Some(raw) = v.to_i128()
+        {
+            // `ground_width`/`ground_signed` resolve a still-DEFERRED inner (an un-annotated `Qty.of 5 km`
+            // has a deferred inner width that grounds to Int64) — the SAME grounding the render and the
+            // machine-boundary use, so check and render agree on the width the scaled magnitude must fit.
+            let w = it.ground_width();
+            let (num, den) = unit.scale();
+            if let Some(scaled) = raw.checked_mul(num).map(|p| p / den) {
+                let scaled_iv = crate::ast::IntValue::from_i128(scaled);
+                if !scaled_iv.fits_width(it.ground_signed(), w) {
+                    faults.push(
+                        Reject::coded(
+                            Code::ConstTrap,
+                            format!(
+                                "quantity `{name}` overflows its inner type when scaled to its reference \
+                                 unit — the displayed magnitude does not fit (a compile-time overflow)"
+                            ),
+                        )
+                        .at(occ),
+                    );
+                    continue;
+                }
+            } else {
+                // The scale multiply itself overflowed i128 (an astronomically large magnitude × scale) —
+                // still a provable overflow.
+                faults.push(
+                    Reject::coded(
+                        Code::ConstTrap,
+                        format!("quantity `{name}` overflows when scaled to its reference unit"),
+                    )
+                    .at(occ),
+                );
+                continue;
+            }
+        }
         // A TYPE-VALUED export — `(def (main) Int64)` exports a bare type value. A Type is a FIRST-CLASS
         // value that can be returned and inspected at run time (core-semantics.md §Types Are First-Class
         // Values), so a NULLARY export whose type-value reduces to a concrete `Ty` CROSSES the boundary via

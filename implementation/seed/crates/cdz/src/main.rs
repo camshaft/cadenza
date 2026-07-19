@@ -552,23 +552,34 @@ fn looks_in_ml_subset(src: &str) -> bool {
     if s.contains('"') || s.contains('.') {
         return false;
     }
-    // The canonical corpus MODULE wrapper `(do (def (main) <body>) (export main))` IS in subset — the
-    // ML reader peels a NULLARY `main` to its body. Accept exactly that shape (a `(do (def (main) ` prefix
-    // with a nullary `(main)` signature — the `)` right after `main`); everything else about a module is
-    // out of subset. A PARAMETERIZED main `(def (main (: n …)) …)` has a `(` after `main`, a helper def
-    // before `main`, or a `(fn …)` — none of which the reader supports — so those still fast-decline.
+    // A `(do …)` MODULE with a NULLARY `main` IS in subset — the ML reader peels `main` to its body and
+    // resolves calls to sibling `def`s (nullary + UNtyped parameterized helpers), so a multi-definition
+    // module like `(do (def (g) 7) (def (f x) (+ x (g))) (def (main) (f 5)) (export main))` runs end-to-end.
+    // Detect a nullary main ANYWHERE in the module (`(def (main) ` — the `)` right after `main` = no params),
+    // not just as the FIRST def, so helper-first modules qualify too. A PARAMETERIZED main
+    // `(def (main (: n …)) …)` has a `(` after `main` (never `(def (main) `), so it does NOT match here.
+    //
+    // We DELIBERATELY no longer cap the `(def` count at 1: the reader handles UNTYPED helper defs + calls, and
+    // the cadenza-ml conformance step is REPORT-ONLY (differential vs the wasm oracle, never a gate baseline).
+    //
+    // BUT we STILL fast-decline a program that carries a TYPE ANNOTATION `(: … …)` OR a `(fn …)` lambda. The
+    // reader has no lambda; and — the load-bearing reason — the ML front-end today READS a typed param
+    // `(: x T)` but DISCARDS `T`, so it does NOT enforce the annotation: an unbound type name (`(: x foo)`,
+    // corpus wants CDZ0101), a mismatched type (`(: x Bool)` fed `5`), or a narrow-int overflow
+    // (`(: a Int8)` fed `200`) all RUN to a bogus value instead of rejecting. That is a real miscompile; the
+    // TRUTHFUL verdict for such a program TODAY is `declined` (coverage-not-yet — the compiler does not yet
+    // support type-annotation semantics), NOT a wrong value. So excluding `(: ` keeps the differential HONEST
+    // (no fabricated agreements/disagreements) until the annotation-enforcement slice lands. (Tracked: filed
+    // to the concierge — "ML ignores param type annotations".)
     let is_nullary_main_module = {
         let no_ws: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-        no_ws.starts_with("(do (def (main) ")
+        no_ws.starts_with("(do ") && no_ws.contains("(def (main) ")
     };
     if is_nullary_main_module {
-        // A nullary-main module with no nested `(fn …)`/second `(def …)` helper is in subset. Reject a
-        // module that also declares a helper or a lambda (the reader reads only the leading main body).
-        if s.contains("(fn") {
+        if s.contains("(fn") || s.contains("(: ") {
             return false;
         }
-        // A second `(def ` beyond the leading `main` def is a multi-definition module — out of subset.
-        return s.matches("(def").count() == 1;
+        return true;
     }
     // A bare `(do …)` that is NOT the nullary-main shape, or any top-level definition/module, is out of
     // subset (the bare-expression subset is a single expression).

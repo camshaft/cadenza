@@ -167,6 +167,23 @@ def c-cx-neg-dividend() = Case.Case([Tok.TNeg, Tok.TNum(12), Tok.TOp(47), Tok.TN
 /// `7 % 0` → Declines (modulo-by-zero yields None, like div-by-zero — the trap-free absent outcome). The
 /// `c-div-by-zero` companion for `%`, which the corpus didn't pin.
 def c-cx-mod-by-zero-declines() = Case.Case([Tok.TNum(7), Tok.TOp(37), Tok.TNum(0)], Expect.Declines)
+
+// ---- Compositional integer-subset shapes: currently PASS but were UN-WITNESSED. Pinned so a future change
+//      to the reader/infer/lower/eval can't silently break them (the loop-doc "add a case even if it passes"
+//      gate-coverage discipline). Each value is arithmetically unambiguous (standard precedence/associativity),
+//      verified through the same run-tokens-db path the scoreboard uses. ----
+
+/// `if 1 < 2 then (if 3 < 4 then 7 else 8) else 9` → 7 — a nested `if` in the THEN branch (an `if` as a
+/// branch RESULT, not just at top level). Pins that a branch can itself be a full control-flow expression.
+def c-cx-nested-if-in-branch() = Case.Case([Tok.TIf, Tok.TNum(1), Tok.TOp(60), Tok.TNum(2), Tok.TThen, Tok.TIf, Tok.TNum(3), Tok.TOp(60), Tok.TNum(4), Tok.TThen, Tok.TNum(7), Tok.TElse, Tok.TNum(8), Tok.TElse, Tok.TNum(9)], Expect.Runs(7))
+/// `let x = 4 in let y = x + 1 in x * y` → 20 — the outer binding `x` used in BOTH the inner let's VALUE
+/// (`x+1`) and the body (`x*y`). Pins outer-scope visibility across a nested-let value + body together.
+def c-cx-let-chain-outer-in-value-and-body() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(4), Tok.TIn, Tok.TLet, Tok.TName(2), Tok.TEq, Tok.TName(1), Tok.TOp(43), Tok.TNum(1), Tok.TIn, Tok.TName(1), Tok.TOp(42), Tok.TName(2)], Expect.Runs(20))
+/// `5 != 3` → 1 — the `!=` relational (op 65) yielding a Bool. The corpus pinned `==` (`c-eq-*`) but not `!=`.
+def c-cx-ne-true() = Case.Case([Tok.TNum(5), Tok.TOp(65), Tok.TNum(3)], Expect.Runs(1))
+/// `20 - 2 * 3 - 4` → 10 — mul binds tighter than the two left-associative subtractions: `(20 - (2*3)) - 4`
+/// = (20-6)-4 = 10. Combines `*`-precedence with `-` left-assoc in one expression (each pinned separately).
+def c-cx-mul-prec-in-sub-chain() = Case.Case([Tok.TNum(20), Tok.TOp(45), Tok.TNum(2), Tok.TOp(42), Tok.TNum(3), Tok.TOp(45), Tok.TNum(4)], Expect.Runs(10))
 /// `((5))` → 5 (redundant NESTED parens collapse to the inner literal — the paren-nests-full-grammar recursion).
 /// QUARANTINED-from-corpus repro (see the comment block below): kept as the root-cause reproducer for the
 /// open nested-paren hang (bug #4, v-inference). NOT dead — intentionally retained. Leading `_` marks it
@@ -189,7 +206,9 @@ def corpus() = [
   c-cx-bool-let-as-cond(), c-cx-div-paren-divisor(),
   c-cx-paren-overrides-precedence(), c-cx-paren-right-operand(),
   c-cx-sub-left-assoc(), c-cx-mod-precedence(), c-cx-mod-precedence-distinguishes(),
-  c-cx-neg-dividend(), c-cx-mod-by-zero-declines()
+  c-cx-neg-dividend(), c-cx-mod-by-zero-declines(),
+  c-cx-nested-if-in-branch(), c-cx-let-chain-outer-in-value-and-body(),
+  c-cx-ne-true(), c-cx-mul-prec-in-sub-chain()
 ]
 
 /// THE SCOREBOARD: `(passed, total)` over the corpus — what the `cadenza-ml` gate target prints as `X/N`.
@@ -220,7 +239,7 @@ def cf-declines-mismatch-is-fail() =
 
 @test
 def cf-corpus-size-floor() =
-  // The corpus SIZE floor: exactly 54 cases, so a case can't be silently dropped from `corpus()`.
+  // The corpus SIZE floor: exactly 58 cases, so a case can't be silently dropped from `corpus()`.
   // This does NOT re-run the compiles — each case's pass/decline is already proven by its own
   // `conformance-<case>` @test below, and the `count-passing` fold logic by
   // `cf-count-passing-partial`. The old `cf-corpus-all-pass` re-ran the entire corpus
@@ -229,7 +248,7 @@ def cf-corpus-size-floor() =
   // v-fleet-tooling as the compiler-ml gate-throughput + false-hang source). The conformance FLOOR
   // is now: per-case @tests (each case correct) + this size check (no case dropped), with none of
   // the redundant full-corpus re-run.
-  (if List.len(corpus()) == 54 then unit else trap("corpus has 54 cases"))
+  (if List.len(corpus()) == 58 then unit else trap("corpus has 58 cases"))
 
 @test
 def cf-count-passing-partial() =
@@ -360,5 +379,14 @@ def conformance-cx-mod-by-zero-declines() = (if check-case(c-cx-mod-by-zero-decl
 // is the known nested-paren compile/eval hang (parse-db paren-nests-full-grammar via the reader SCC —
 // coordinate with v-inference's SCC/paren-hang class). SINGLE parens are fine (paren-overrides-precedence +
 // paren-right-operand still gated + passing); only NESTED `(( … ))` hangs.
+
+@test
+def conformance-cx-nested-if-in-branch() = (if check-case(c-cx-nested-if-in-branch()) then unit else trap("if 1<2 then (if 3<4 then 7 else 8) else 9 → 7"))
+@test
+def conformance-cx-let-chain-outer-in-value-and-body() = (if check-case(c-cx-let-chain-outer-in-value-and-body()) then unit else trap("let x=4 in let y=x+1 in x*y → 20"))
+@test
+def conformance-cx-ne-true() = (if check-case(c-cx-ne-true()) then unit else trap("5 != 3 → 1"))
+@test
+def conformance-cx-mul-prec-in-sub-chain() = (if check-case(c-cx-mul-prec-in-sub-chain()) then unit else trap("20 - 2*3 - 4 → 10"))
 
 export { Expect.*, Case.*, case-passes, check-case, count-passing, corpus, conformance, all-pass }

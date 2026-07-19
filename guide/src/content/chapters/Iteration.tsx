@@ -75,12 +75,13 @@ export default function Iteration() {
 (def (rev xs acc)
   (match xs
     ((list) acc)
-    ((list x .. rest) (rev rest (List.concat (list x) acc)))))`}
+    ((list x .. rest) (rev rest (List.prepend acc x)))))`}
       />
       <P>
         Prepending is what does the reversing: element <C>1</C> is placed first, then <C>2</C> goes in
         front of it, then <C>3</C> in front of that, so <C>(list 1 2 3)</C> comes back as{" "}
-        <C>(list 3 2 1)</C>. Prepending with <C>List.concat (list x)</C> flips the order; appending each
+        <C>(list 3 2 1)</C>. <Link to="/lists" className="text-cadenza-300 underline-offset-2 hover:underline">
+        <C>List.prepend</C></Link> adds an element to the front, which is what flips the order; appending each
         element to the end with <C>List.push</C> would instead copy the list unchanged. A quick{" "}
         <C>@test</C> pins it, reading the three positions of the result back and checking they spell{" "}
         <C>3</C>, <C>2</C>, <C>1</C> (as the single number <C>321</C>):
@@ -90,7 +91,7 @@ export default function Iteration() {
         source={`(def (rev xs acc)
   (match xs
     ((list) acc)
-    ((list x .. rest) (rev rest (List.concat (list x) acc)))))
+    ((list x .. rest) (rev rest (List.prepend acc x)))))
 (def (nth xs i) (match (List.at xs i) ((Some v) v) ((None _) 0)))
 (@ test (def (rev-reverses)
   (let ((r (rev (list 1 2 3) (list))))

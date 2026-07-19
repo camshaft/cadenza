@@ -13,7 +13,8 @@
 /// there is one ground type — so this column is the DB-shaped monomorphic specialization. It widens to call
 /// the HM engine when the language grows function types.)
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of, param2-of, arg2-of, param-type-of, record-param-type, encode-param-type, pt-width, pt-signed } from "parse-db"
+import { fits-width } from "int-width"
 import { Resolved, resolve-tree } from "resolve-db"
 import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ground-default } from "ty"
 import { unify-ty } from "unify-ty"
@@ -92,15 +93,36 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
                 | Option.Some(paramId) =>
                     (let ta = infer-node(tree, argId, rcol, tcol) in
                      (match Map.lookup(ta, argId) with
-                       | Option.Some(argTy) =>
-                           (let tp = Map.insert(ta, paramId, argTy) in       // param node : arg's type
-                            (let tb = infer-node(tree, calleeId, rcol, tp) in
-                             (match Map.lookup(tb, calleeId) with
-                               | Option.Some(bodyTy) => Map.insert(tb, id, bodyTy)
-                               | Option.None(_) => Map.insert(tb, id, Typed.TErr))))
+                       // NARROW-INT ENFORCEMENT (CDZ0302): a param with a declared narrow type rejects a
+                       // CONSTANT arg out of its range — `(def (f (: a Int8)) a) (f 200)` → TErr → decline (200
+                       // can't be Int8), NOT a laundered 200. param-fit-ok is true for an untyped param or a
+                       // non-literal arg, so this only fires on the constant-out-of-range case.
+                       | Option.Some(_) => (if (if param-fit-ok(tree, paramId, argId) then false else true)
+                            then Map.insert(ta, id, Typed.TErr)
+                            else infer-app-with-arg-ty(tree, id, calleeId, paramId, argId, rcol, ta, Map.lookup(ta, argId)))
                        | Option.None(_) => Map.insert(ta, id, Typed.TErr)))
                 | Option.None(_) => Map.insert(tcol, id, Typed.TErr)))
     | Option.None(_) => tcol
+
+/// The body-typing tail of the single-param NApp arm, factored out so the fit-check guard above stays flat.
+/// `argTyOpt` is `Map.lookup(ta, argId)` (already computed). Binds param1 : arg1's type, types arg2 + binds
+/// param2 (via infer-param2), then the call's type IS the body's type. A 2nd arg with no param2 → TErr.
+def infer-app-with-arg-ty(tree: Tree, id: Int64, calleeId: Int64, paramId: Int64, argId: Int64, rcol: Map(Int64, Resolved), ta: Map(Int64, Typed), argTyOpt: Option(Typed)) =
+  (match argTyOpt with
+    | Option.Some(argTy) =>
+        (let tp = Map.insert(ta, paramId, argTy) in       // param1 node : arg1's type
+         // slice-3d: a 2-ARG call also types arg2 + binds param2 (both params in tcol before the body is
+         // typed, so var-type resolves each param use). Then the call's type IS the body's type. 1-arg
+         // (arg2-of None) skips straight to the body.
+         (let tp2 = infer-param2(tree, id, calleeId, rcol, tp) in
+          (match tp2 with
+            | Option.Some(tb0) =>
+                (let tb = infer-node(tree, calleeId, rcol, tb0) in
+                 (match Map.lookup(tb, calleeId) with
+                   | Option.Some(bodyTy) => Map.insert(tb, id, bodyTy)
+                   | Option.None(_) => Map.insert(tb, id, Typed.TErr)))
+            | Option.None(_) => Map.insert(tp, id, Typed.TErr))))   // 2nd arg present but no param2 → TErr
+    | Option.None(_) => Map.insert(ta, id, Typed.TErr))
 
 /// The type of a variable reference bound at `binder` (an `NLet` node-id): the type of that let's VALUE
 /// node, which the walk already typed (value before body). `TErr` if the binder isn't a let or its value
@@ -114,6 +136,46 @@ def var-type(tree: Tree, binder: Int64, tcol: Map(Int64, Typed)) =
     | Option.Some(Node.NVar(_)) =>
         (match Map.lookup(tcol, binder) with | Option.Some(t) => t | Option.None(_) => Typed.TErr)
     | _ => Typed.TErr)
+
+/// slice-3d: type a 2-ARG call's SECOND arg + bind param2's type, for the NApp node `id` / callee `calleeId`.
+/// `None` if a 2nd arg is present but the callee has no 2nd param (over-applied → the caller maps to TErr).
+/// `Some(tcol')` = either no 2nd arg (1-arg call — tcol unchanged) or arg2 typed + param2 bound. The caller
+/// then types the body under tcol', so var-type resolves BOTH param uses.
+def infer-param2(tree: Tree, id: Int64, calleeId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+  (match arg2-of(tree, id) with
+    | Option.None(_) => Option.Some(tcol)                               // 1-arg call — nothing to add
+    | Option.Some(arg2Id) =>
+        (match param2-of(tree, calleeId) with
+          | Option.None(_) => Option.None(unit)                          // arg2 but no param2 → over-applied
+          | Option.Some(param2Id) =>
+              (let ta2 = infer-node(tree, arg2Id, rcol, tcol) in
+               (match Map.lookup(ta2, arg2Id) with
+                 | Option.Some(arg2Ty) => Option.Some(Map.insert(ta2, param2Id, arg2Ty))   // param2 : arg2's type
+                 | Option.None(_) => Option.None(unit)))))
+
+/// Does the CONSTANT argument at node `argId` FIT the declared narrow type of the param `paramId`? — the
+/// narrow-int-enforcement CHECK (corpus 07/09 CDZ0302: `(def (f (: a Int8)) a) (f 200)` rejects because 200 is
+/// out of Int8; `(f -1)` to a UInt8 param rejects — the annotation constrains the arg exactly as a direct
+/// `(: 200 Int8)` does). Returns `true` (the call is fine) when EITHER the param has no declared narrow type
+/// (`param-type-of` None — an untyped param, the arg's own type flows as before) OR the arg is not a plain
+/// constant (only a literal is compile-time fit-checkable here; a computed/opaque arg keeps its own checked
+/// type — matching the corpus note "a RUNTIME argument keeps its own already-checked type"). Returns `false`
+/// ONLY when the param declares a narrow type, the arg is a literal `NLit(v)`, and `v` does NOT fit that type —
+/// the CDZ0302 reject the caller turns into TErr. Width 64 (`Int64`/`UInt64`) is the NATIVE identity (mirrors
+/// sread's `fits-ann`: signed-64 always fits; unsigned-64 needs v >= 0), since `int-width.fits-width` only
+/// reasons about widths 1..=62; widths 1..=62 delegate to `fits-width`'s exact range check.
+def param-fit-ok(tree: Tree, paramId: Int64, argId: Int64) =
+  (match param-type-of(tree, paramId) with
+    | Option.None(_) => true                                            // untyped param — no narrow constraint
+    | Option.Some(enc) =>
+        (match node-at(tree, argId) with
+          | Option.Some(Node.NLit(v)) =>
+              (let width = pt-width(enc) in
+               (let signed = pt-signed(enc) in
+                (if (width == 64)
+                 then (if signed then true else (v >= 0))               // native identity (fits-width can't do 64)
+                 else fits-width(v, signed, width))))
+          | _ => true)))                                                // non-literal arg — keeps its own type
 
 /// The result type of a binary node with op `op` and operands at `a`,`b`. ARITHMETIC (43 `+`, 45 `-`, 42
 /// `*`, 47 `/`, 37 `%`) requires both operands to be the SAME integer type (via `arith-result-type` → unify-ty
@@ -529,5 +591,53 @@ def id-napp-with-arg-still-declines() =
     (match add-node(t1, Node.NLit(5)) with | (argId, t2) =>
       (match add-node(t2, Node.NApp(bodyId, argId)) with | (root, tree) =>
         (if type-err-at(tree, root, root) then unit else trap("a call WITH an arg declines until the param slice")))))
+
+@test
+def id-param-fit-ok-narrow-const-out-of-range() =
+  // NARROW-INT ENFORCEMENT (CDZ0302): param-fit-ok is FALSE when a param has a declared narrow type and the
+  // arg is a CONSTANT out of that range. Build a param node + an arg literal 200, record the param's type as
+  // Int8 (signed, width 8): 200 does NOT fit → param-fit-ok false (the call will TErr = decline). Hand-arena.
+  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
+    (match add-node(t1, Node.NLit(200)) with | (argId, t2) =>
+      (let t3 = record-param-type(t2, paramId, encode-param-type(true, 8)) in
+       (if param-fit-ok(t3, paramId, argId) then trap("200 does NOT fit Int8 → param-fit-ok must be false (CDZ0302)")
+        else unit)))))
+
+@test
+def id-param-fit-ok-narrow-const-in-range() =
+  // the in-range constant FITS: arg 100 to an Int8 param → param-fit-ok true (the call proceeds, runs to 100).
+  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
+    (match add-node(t1, Node.NLit(100)) with | (argId, t2) =>
+      (let t3 = record-param-type(t2, paramId, encode-param-type(true, 8)) in
+       (if param-fit-ok(t3, paramId, argId) then unit else trap("100 fits Int8 → param-fit-ok true"))))))
+
+@test
+def id-param-fit-ok-width64-identity() =
+  // width 64 is the NATIVE identity (fits-width can't reason about it): a big value to an Int64 param FITS
+  // (signed-64 always fits) → param-fit-ok true. Pins that a plain `(: n Int64)` param never falsely declines.
+  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
+    (match add-node(t1, Node.NLit(1000000)) with | (argId, t2) =>
+      (let t3 = record-param-type(t2, paramId, encode-param-type(true, 64)) in
+       (if param-fit-ok(t3, paramId, argId) then unit else trap("Int64 (width 64) is the native identity → always fits"))))))
+
+@test
+def id-param-fit-ok-untyped-param-always-ok() =
+  // an UNTYPED param (no param-type recorded) → param-fit-ok true regardless of the arg (the arg's own type
+  // flows, as before the enforcement). Pins the enforcement fires ONLY on a declared-narrow param.
+  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
+    (match add-node(t1, Node.NLit(999999)) with | (argId, t2) =>
+      (if param-fit-ok(t2, paramId, argId) then unit else trap("an untyped param imposes no fit constraint")))))
+
+@test
+def id-param-fit-ok-nonliteral-arg-ok() =
+  // a NON-literal arg (here an NBin) is NOT compile-time fit-checked here → param-fit-ok true (it keeps its
+  // own already-checked type, per the corpus note "a RUNTIME argument keeps its own type"). Only a plain NLit
+  // constant is rejected by this check.
+  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
+    (match add-node(t1, Node.NLit(1)) with | (aId, t2) =>
+      (match add-node(t2, Node.NLit(2)) with | (bId, t3) =>
+        (match add-node(t3, Node.NBin(43, aId, bId)) with | (argId, t4) =>
+          (let t5 = record-param-type(t4, paramId, encode-param-type(true, 8)) in
+           (if param-fit-ok(t5, paramId, argId) then unit else trap("a non-literal arg is not compile-time fit-checked here"))))))))
 
 export { Typed.*, infer-node, infer-tree, type-at, well-typed, type-err-at, typed-count, is-bool-at, is-int-at }

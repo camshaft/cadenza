@@ -1,0 +1,101 @@
+// The Sim effect + single-task fast-forward scheduler — the DES library core.
+//
+// A task performs `Sim.sleep(wake)` to suspend until an absolute instant and `Sim.now()` to read the
+// virtual clock. The scheduler is a `handle Sim` block whose state is the clock: `now` reads it
+// (tail-resumptive), `sleep` advances it to the wake instant and resumes the rest of the task. The
+// clock FAST-FORWARDS straight to each wake — a five-second sleep costs no real time.
+//
+// Time is UInt64 nanoseconds wrapped in a nominal newtype `Instant` (strong typing, not the Qty units
+// layer — operator ruling). A `Duration` is the same underlying ns count as a span between instants.
+type Instant =
+  | Instant(UInt64)
+
+type Duration =
+  | Duration(UInt64)
+
+// Unwrap an Instant to its raw nanosecond count.
+def inst-ns(t: Instant) = match t with
+  | Instant.Instant(n) => n
+
+// Unwrap a Duration to its raw nanosecond count.
+def dur-ns(d: Duration) = match d with
+  | Duration.Duration(n) => n
+
+// Duration constructors (bach's `5.s()` / `.ms()` / `.us()` / `.ns()`), scaling a count to ns.
+def secs(n: UInt64) = Duration.Duration(n * 1000000000)
+
+def ms(n: UInt64) = Duration.Duration(n * 1000000)
+
+def us(n: UInt64) = Duration.Duration(n * 1000)
+
+def ns(n: UInt64) = Duration.Duration(n)
+
+// `at(t, d)` = the instant `d` after `t` (the scheduler's wake-time computation).
+def at(t: Instant, d: Duration) = Instant.Instant(inst-ns(t) + dur-ns(d))
+
+// `since(later, earlier)` = the span between two instants (later - earlier).
+def since(later: Instant, earlier: Instant) = Duration.Duration(inst-ns(later) - inst-ns(earlier))
+
+// `before?(a, b)` = the strict time order the event queue sorts wake-times by.
+def `before?`(a: Instant, b: Instant) = inst-ns(a) < inst-ns(b)
+
+// The effect a task performs. `sleep` suspends until an absolute instant; `now` reads the clock.
+effect Sim =
+  | sleep : Instant -> Unit
+  | now : Unit -> Instant
+
+// `run-sim(task)` installs the single-task fast-forward scheduler and runs `task` to completion,
+// returning its result. The handler state is the clock (starts at 0 ns). `now` reads it in place;
+// `sleep(wake)` resumes the rest of the task with the clock ADVANCED to `wake` (the fast-forward) —
+// the clock-advance is expressed as `resume`'s new-state argument, no per-effect magic.
+def run-sim(task: Unit -> Instant) =
+  handle Sim(Instant.Instant(0)) with
+    | now(u, s) => resume(s, s)
+    | sleep(wake, s) => resume(unit, wake)
+  in
+  task(unit)
+
+// A task-facing `sleep` wrapper over a Duration: sleep for a span from the current clock. Performs
+// Sim ops, so it is called only inside a `run-sim` handler (not exported — a bare effectful export
+// has no home; a consumer sleeps via `Sim.sleep(at(now, d))` or gets an effect-delegating wrapper later).
+def sleep-for(d: Duration) =
+  let start = Sim.now() in
+  Sim.sleep(at(start, d))
+
+// ─── tests (a @test PASSES by returning unit, FAILS by trapping) ───
+// Return unit iff the two ns counts are equal; TRAP (a genuinely-runtime UInt64 underflow) if they
+// differ. `(actual - expected) + (expected - actual)` underflows exactly when actual != expected; the
+// sum `diff` is CONSUMED by the `if` guard (kept LIVE — not a dead binding the DCE could drop, which
+// would make the assert false-green), so an unequal case traps before the test can return unit.
+def assert-eq-ns(actual: UInt64, expected: UInt64) =
+  let diff = actual - expected + (expected - actual) in
+  if diff == 0 then unit else unit
+
+@test
+def sleep-then-now-observes-advanced-clock() =
+  let observed = run-sim(fn(_u) =>
+      Sim.sleep(Instant.Instant(5000000000));
+      Sim.now()) in
+  assert-eq-ns(inst-ns(observed), 5000000000)
+
+@test
+def two-sequential-sleeps-fast-forward-through-both() =
+  let observed = run-sim(fn(_u) =>
+      Sim.sleep(Instant.Instant(2000000000));
+      Sim.sleep(Instant.Instant(5000000000));
+      Sim.now()) in
+  assert-eq-ns(inst-ns(observed), 5000000000)
+
+@test
+def sleep-for-a-duration-advances-by-the-span() =
+  let observed = run-sim(fn(_u) =>
+      sleep-for(secs(3));
+      Sim.now()) in
+  assert-eq-ns(inst-ns(observed), 3000000000)
+
+@test
+def now-before-any-sleep-reads-zero() =
+  let observed = run-sim(fn(_u) => Sim.now()) in
+  assert-eq-ns(inst-ns(observed), 0)
+
+export { inst-ns, dur-ns, secs, ms, us, ns, at, since, `before?`, run-sim }
