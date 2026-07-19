@@ -306,6 +306,8 @@ pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a COMPOUND generated value is reproducible from its seed (a tuple draws identically twice)
 pass	a COMPOUND map key with a Rational leaf hashes+matches by the leaf's normalized form
 pass	a CONSTANT recursive sum compares equal to a differently-built RUNTIME one
+pass	a CONSTANT signed nibble truncation of an all-ones nibble is -1
+pass	a CONSTANT signed nibble truncation sign-extends — the const-fold companion of the runtime .wrap
 pass	a CURRIED closure capturing an inner-handled perform result closes over it through partial application
 pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DEFERRED resume-thunk escaping to another function re-installs the handler at apply, over a re-performing do-continuation
@@ -3295,6 +3297,7 @@ pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
 pass	multiply-by-zero is NOT an annihilator for FLOAT — nan * 0.0 is nan, not 0.0
+pass	multiplying a compound (tuple) by a number is a cross-kind type error, not invalid wasm
 pass	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
 pass	multiplying quantities multiplies their dimensions
 pass	narrowing a BigInt-valued if back to Int64 works over both branches

@@ -672,6 +672,23 @@
   (input  (+ (list 1 2) "ab"))
   (error  CDZ0201))
 
+; A cross-kind arithmetic operand that is a COMPOUND (a tuple) against a numeric operand — `(* (tuple) 0)`
+; multiplies the empty tuple by `0`. The tuple is not a number, so the operator's numeric requirement fails
+; (CDZ0201, "a (Tuple) and an Int64 are different types … across that kind boundary"), the compound sibling
+; of the `(+ 1 "two")` cross-kind reject. This was a `cdz-smith` fuzzer finding
+; (`invalid-wasm-type-mismatch-expected-i-found-i-at-offset`, filed @ c9940747e): the generated program
+; `(match ((fn (v0) (* (tuple) 0)) 0) (_ 0))` had SLIPPED PAST check and emitted INVALID wasm (a type
+; mismatch i64/i32) — a check-vs-compile gap. It is now correctly rejected AT CHECK, no wasm emitted. Pinned
+; so a future change to the arithmetic operand check can't silently reintroduce the miscompile.
+(case "multiplying a compound (tuple) by a number is a cross-kind type error, not invalid wasm"
+  (doc    "`(* (tuple) 0)` multiplies an empty tuple by `0`. The tuple is not numeric, so the arithmetic
+           operator's numeric-operand requirement fails: rejected CDZ0201 naming the mismatched kinds (a
+           `(Tuple)` and an `Int64`). Regression pin for a cdz-smith invalid-wasm finding (the operation
+           used to slip past check and emit an invalid component with a type mismatch); now caught at check,
+           the compound-operand sibling of the `(+ 1 \"two\")` cross-kind arithmetic reject.")
+  (input  (* (tuple) 0))
+  (error  CDZ0201))
+
 (case "addition of a string and a byte sequence names both text types"
   (doc    "`(+ \"ab\" (Bytes.of (list 1)))` adds a String and a Bytes — two different text-ish types,
            both non-numeric, rejected (CDZ0201) naming both. Pins that the mismatched-pair diagnostic
