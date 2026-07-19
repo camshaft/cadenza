@@ -125,6 +125,53 @@ def se-narrow-param-in-range-runs() =
     | Option.None(_) => trap("an in-range constant to a narrow param runs"))
 
 @test
+def se-narrow-body-arith-overflow-declines() =
+  // ★ NARROW-INT ENFORCEMENT CDZ0304, FROM SOURCE ★ (corpus 09-functions): `(def (f (: a Int8)) (+ a a))`
+  // called `(f 100)` → DECLINES. The ARG 100 fits Int8 (in-range), but the BODY `(+ a a)` = 200 OVERFLOWS
+  // Int8 (max 127). The param's declared Int8 type now DRIVES the body: `a` is Int8, so `(+ a a)` is Int8
+  // arith → lower stamps a narrow CBin → eval's overflow-trap fires → None. Before this the param took the
+  // arg's default Int64 type, so `(+ a a)` was Int64 arith that never overflow-checked and laundered 200 (a
+  // wrong VALUE). Differential-verified vs rcdzc CDZ0304 (a compile-provable narrow overflow = ConstTrap).
+  (match run-src("(do (def (f (: a Int8)) (+ a a)) (def (main) (f 100)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("(+ a a) on an Int8 param fed 100 = 200 OVERFLOWS Int8 → must decline (CDZ0304)"))
+
+@test
+def se-narrow-body-arith-in-range-runs() =
+  // the sharp companion: an in-range body result RUNS. `(f 50)` → `(+ a a)` = 100, which FITS Int8 → 100.
+  // Pins the overflow trap fires ONLY on the actual overflow, not on every narrow-body arith.
+  (match run-src("(do (def (f (: a Int8)) (+ a a)) (def (main) (f 50)) (export main))") with
+    | Option.Some(v) => (if v == 100 then unit else trap("(f 50) → (+ a a) = 100 fits Int8 → 100"))
+    | Option.None(_) => trap("an in-range narrow-body arith runs"))
+
+@test
+def se-wide-body-arith-no-false-overflow() =
+  // REGRESSION GUARD: an Int64 param's body arith must NOT false-trap. `(def (f (: n Int64)) (+ n n))` `(f
+  // 100)` → 200 (width 64 never overflow-checks — the CDZ0304 trap is narrow-only). Pins the enforcement
+  // doesn't leak into the wide default (the param-bind-type width-64 path stays plain Int64 arith).
+  (match run-src("(do (def (f (: n Int64)) (+ n n)) (def (main) (f 100)) (export main))") with
+    | Option.Some(v) => (if v == 200 then unit else trap("(f 100) Int64 → (+ n n) = 200 (no overflow at width 64)"))
+    | Option.None(_) => trap("a wide (Int64) body arith must not false-decline"))
+
+@test
+def se-over-application-typed-declines() =
+  // ARITY (corpus 09-functions:1988 → CDZ0203): over-applying a unary function by an EXTRA arg is a type
+  // error. `(def (f (: x Int64)) (+ x 1))` called `(f 5 9)` applies the 1-param `f` to TWO args → DECLINES.
+  // The 2nd arg has no param2 (infer-param2 → None → the call is TErr; lower declines) — already correct, now
+  // WITNESSED so a future multi-param change can't silently accept an over-application. Differential vs rcdzc.
+  (match run-src("(do (def (f (: x Int64)) (+ x 1)) (def (main) (f 5 9)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("(f 5 9) over-applies a 1-param f → must decline (CDZ0203 arity)"))
+
+@test
+def se-over-application-untyped-declines() =
+  // the untyped companion (corpus's `(def (f x) (+ x 1))` form): `(f 5 9)` to an untyped unary `f` also
+  // declines — arity is checked regardless of whether the param is annotated. Pins both spellings.
+  (match run-src("(do (def (f x) (+ x 1)) (def (main) (f 5 9)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("(f 5 9) over-applies an untyped 1-param f → must decline"))
+
+@test
 def se-param-passed-as-arg() =
   // slice-3c COMPOSITION fix: a param used as the ARG to another call — `(def (f n) (g n))`, `g(m) = m*2`,
   // `(f 21)` → 42. The call's ARGUMENT resolves in the CALLER's scope (where `n` = f's param is bound), while

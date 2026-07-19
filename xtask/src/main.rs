@@ -3233,23 +3233,30 @@ fn check(paths: &Paths, profile: &str) {
     //
     // CONTENT-CACHED (2026-07-19): this re-runs the full `rcdzc --lib` (2176 tests) + 2 cdz targets
     // storeless, ~230s on a loaded host — too costly to pay EVERY batch when a store-guard can only
-    // regress if the rcdzc/cdz TEST sources change. The rcdzc `--lib` tests are COMPILED INTO the `cdz`
-    // binary (rcdzc is a lib dep of cdz), so editing them rebuilds `cdz`; the cdz integration tests live
-    // in `cdz/tests/`. So key the cached verdict on (cdz binary ‖ the cdz tests tree): either input
-    // changing flips the key -> full storeless re-run; both unchanged -> the guarded test set is
-    // unchanged -> skip the ~230s sweep. Same mechanism as the compiler-ml suite. Fail-open (no cache
-    // handle -> always run), and only a just-observed GREEN is ever recorded (a false green is impossible).
-    let storeless_cache = CachedStep::new(
+    // regress if the rcdzc/cdz TEST sources change. Key the cached verdict on the `cdz` binary PLUS the
+    // two guarded-test source trees: `cdz/tests` (the cdz integration tests) AND `rcdzc/src` (the rcdzc
+    // `--lib` unit tests). CRUCIAL: rcdzc's tests are `#[cfg(test)]`, so they are NOT compiled into the
+    // release `cdz` binary — keying on the binary alone would MISS an edit to `rcdzc/src/tests.rs` (the
+    // exact file holding the rcdzc store-guarded `run_heap_value`/`find_runtime_wasm` tests) and wrongly
+    // skip the rerun though the guarded set changed (PR#648 / Copilot catch — my original claim that the
+    // binary covered them was wrong). With all three inputs in the key: any of them changing flips the
+    // key -> full storeless re-run; all unchanged -> the guarded test set is unchanged -> skip the ~230s
+    // sweep. Same mechanism as the compiler-ml suite. Fail-open (no cache handle -> always run), and only
+    // a just-observed GREEN is ever recorded (a false green is impossible).
+    let storeless_cache = CachedStep::new_multi(
         paths,
         "storeless-rerun",
         Path::new(&cdz),
-        &paths.seed.join("crates/cdz/tests"),
+        &[
+            &paths.seed.join("crates/cdz/tests"),
+            &paths.seed.join("crates/rcdzc/src"),
+        ],
     );
     if let Some(cache) = &storeless_cache
         && cache.is_green()
     {
         println!(
-            "  ✓ storeless-rerun (cached green @ {} — cdz binary unchanged, guarded test set unchanged)",
+            "  ✓ storeless-rerun (cached green @ {} — cdz binary + cdz/tests + rcdzc/src all unchanged)",
             cache.short_key()
         );
     } else {
@@ -4117,11 +4124,22 @@ impl CachedStep {
     /// cache dir. Fail-open to a real run is always safe; the only unsafe outcome (a false green) is
     /// impossible because we only ever CACHE a verdict we just observed green.
     fn new(paths: &Paths, name: &str, binary: &Path, tree: &Path) -> Option<CachedStep> {
+        Self::new_multi(paths, name, binary, &[tree])
+    }
+
+    /// Like `new`, but the key covers SEVERAL source trees — for a step whose inputs span more than one
+    /// dir (e.g. the storeless rerun, whose guarded tests live in BOTH `cdz/tests` AND `rcdzc/src`: the
+    /// rcdzc `#[cfg(test)]` unit tests are NOT compiled into the release `cdz` binary, so keying on the
+    /// binary alone would miss an edit to `rcdzc/src/tests.rs` — the exact file holding the rcdzc
+    /// store-guarded tests). Each tree is hashed and folded into the key in the given order, domain-
+    /// separated from the binary and from each other so a byte can't migrate between inputs.
+    fn new_multi(paths: &Paths, name: &str, binary: &Path, trees: &[&Path]) -> Option<CachedStep> {
         let bin_bytes = std::fs::read(binary).ok()?;
-        let tree_hash = hash_tree(tree)?;
-        // Key = H( binary-hash ‖ tree-hash ). Domain-separate the two so a byte can't migrate between
-        // them and alias a different (binary, tree) pair to the same key.
-        let combined = format!("{}:{}", content_address(&bin_bytes), tree_hash);
+        let mut combined = content_address(&bin_bytes);
+        for tree in trees {
+            combined.push(':');
+            combined.push_str(&hash_tree(tree)?);
+        }
         let key = content_address(combined.as_bytes());
         let dir = paths.repo.join("target/xtask-cache");
         std::fs::create_dir_all(&dir).ok()?;
@@ -5370,6 +5388,59 @@ mod trap_grading_tests {
         assert!(
             !c3.is_green(),
             "a compiler-binary change invalidates the cached green"
+        );
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn cached_step_multi_tree_key_covers_every_tree() {
+        // The storeless-rerun cache keys on the cdz binary + TWO trees (cdz/tests + rcdzc/src) because
+        // rcdzc's #[cfg(test)] tests aren't in the release binary (PR#648). A change to EITHER tree must
+        // invalidate the cached green — the gap that binary-only keying missed.
+        let repo = std::env::temp_dir().join(format!("cdz-cachemulti-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        let a = repo.join("a"); // stands in for cdz/tests
+        let b = repo.join("b"); // stands in for rcdzc/src
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("t.rs"), "cdz-test-1").unwrap();
+        std::fs::write(b.join("tests.rs"), "rcdzc-test-1").unwrap();
+        let binary = repo.join("cdz.bin");
+        std::fs::write(&binary, b"cdz-v1").unwrap();
+        let paths = Paths {
+            repo: repo.clone(),
+            seed: repo.clone(),
+        };
+        let trees: [&Path; 2] = [&a, &b];
+
+        let c1 = CachedStep::new_multi(&paths, "storeless-rerun", &binary, &trees)
+            .expect("key computable");
+        c1.record_green();
+        assert!(
+            CachedStep::new_multi(&paths, "storeless-rerun", &binary, &trees)
+                .unwrap()
+                .is_green(),
+            "identical (binary + both trees) → hit"
+        );
+
+        // Change the SECOND tree (rcdzc/src) — the one the old binary-only key MISSED → must now be a miss.
+        std::fs::write(b.join("tests.rs"), "rcdzc-test-2").unwrap();
+        assert!(
+            !CachedStep::new_multi(&paths, "storeless-rerun", &binary, &trees)
+                .unwrap()
+                .is_green(),
+            "an rcdzc/src edit invalidates the cached green (the PR#648 gap is closed)"
+        );
+
+        // Restore tree b, change the FIRST tree (cdz/tests) → also a miss.
+        std::fs::write(b.join("tests.rs"), "rcdzc-test-1").unwrap();
+        std::fs::write(a.join("t.rs"), "cdz-test-2").unwrap();
+        assert!(
+            !CachedStep::new_multi(&paths, "storeless-rerun", &binary, &trees)
+                .unwrap()
+                .is_green(),
+            "a cdz/tests edit invalidates the cached green"
         );
 
         let _ = std::fs::remove_dir_all(&repo);

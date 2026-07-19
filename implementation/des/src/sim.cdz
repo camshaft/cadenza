@@ -44,11 +44,14 @@ effect Sim =
   | sleep : Instant -> Unit
   | now : Unit -> Instant
 
-// `run-sim(task)` installs the single-task fast-forward scheduler and runs `task` to completion,
-// returning its result. The handler state is the clock (starts at 0 ns). `now` reads it in place;
-// `sleep(wake)` resumes the rest of the task with the clock ADVANCED to `wake` (the fast-forward) —
-// the clock-advance is expressed as `resume`'s new-state argument, no per-effect magic.
-def run-sim(task: Unit -> Instant) =
+// `run-sim(t, task)` installs the single-task fast-forward scheduler and runs `task` to completion,
+// returning its result — of the task's OWN type `t` (a consumer passes its result type, e.g.
+// `run-sim(List(MidiEvent), fn(_u) => …)`). The handler state is the clock (starts at 0 ns). `now`
+// reads it in place; `sleep(wake)` resumes the rest of the task with the clock ADVANCED to `wake` (the
+// fast-forward) — the clock-advance is expressed as `resume`'s new-state argument, no per-effect magic.
+// `t` is an explicit `Type` parameter because Cadenza has no forall-binder in an annotation and an
+// exported boundary parameter needs a concrete type — this keeps `run-sim` generic AND exportable.
+def run-sim(t: Type, task: Unit -> t) =
   handle Sim(Instant.Instant(0)) with
     | now(u, s) => resume(s, s)
     | sleep(wake, s) => resume(unit, wake)
@@ -73,14 +76,14 @@ def assert-eq-ns(actual: UInt64, expected: UInt64) =
 
 @test
 def sleep-then-now-observes-advanced-clock() =
-  let observed = run-sim(fn(_u) =>
+  let observed = run-sim(Instant, fn(_u) =>
       Sim.sleep(Instant.Instant(5000000000));
       Sim.now()) in
   assert-eq-ns(inst-ns(observed), 5000000000)
 
 @test
 def two-sequential-sleeps-fast-forward-through-both() =
-  let observed = run-sim(fn(_u) =>
+  let observed = run-sim(Instant, fn(_u) =>
       Sim.sleep(Instant.Instant(2000000000));
       Sim.sleep(Instant.Instant(5000000000));
       Sim.now()) in
@@ -88,14 +91,25 @@ def two-sequential-sleeps-fast-forward-through-both() =
 
 @test
 def sleep-for-a-duration-advances-by-the-span() =
-  let observed = run-sim(fn(_u) =>
+  let observed = run-sim(Instant, fn(_u) =>
       sleep-for(secs(3));
       Sim.now()) in
   assert-eq-ns(inst-ns(observed), 3000000000)
 
 @test
 def now-before-any-sleep-reads-zero() =
-  let observed = run-sim(fn(_u) => Sim.now()) in
+  let observed = run-sim(Instant, fn(_u) => Sim.now()) in
   assert-eq-ns(inst-ns(observed), 0)
+
+// The generic return: a task may return a type OTHER than Instant (e.g. a consumer accumulating a
+// played-in-order event stream returns that list). Here the task sleeps then returns a raw UInt64 tick
+// count, so `run-sim(UInt64, …)` is typed and returns UInt64 — the shape v-music's piece uses with its
+// own element type. Pins that `run-sim` is generic in the task's result, not fixed to Instant.
+@test
+def run-sim-returns-the-tasks-own-type-not-instant() =
+  let observed = run-sim(UInt64, fn(_u) =>
+      Sim.sleep(Instant.Instant(4000000000));
+      inst-ns(Sim.now())) in
+  assert-eq-ns(observed, 4000000000)
 
 export { inst-ns, dur-ns, secs, ms, us, ns, at, since, `before?`, run-sim }
