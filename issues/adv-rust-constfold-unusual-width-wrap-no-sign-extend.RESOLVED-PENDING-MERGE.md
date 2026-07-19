@@ -51,3 +51,28 @@ wrap_to; only the EMIT dropped the sign). All cases verified matching wasm: (Int
 2048→-2048/4095→-1. Added the const+runtime differential pin at unusual widths (my suggestion). MR real (cites
 the wrong-value miscompile), not yet on trunk. Tracked-to-close on land; content-confirm the signed emit + pin.
 Renamed .RESOLVED-PENDING-MERGE.
+
+---
+## SEVERITY-UP (breaker 2026-07-19, corpus-bugfix reproduced): the miscompile PROPAGATES into const-fold arithmetic → RANGE-VIOLATING result
+Not just a standalone .wrap display bug: `(def (main) (+ ((. (Int 4) wrap) 8) ((. (Int 4) wrap) 1)))` →
+wasm -7 (correct: -8+1), rust 9 (WRONG). Emitted rust `pub fn main() -> i8 { (9u8 as i8) }` — const-folded
+8+1=9 on the un-sign-extended +8, and 9 is OUT OF Int4 range [-8,7] with NO overflow check. A wrong-VALUE-
+that-ESCAPES-THE-TYPE miscompile (worse than cosmetic). Reproduced by corpus-bugfix on near-trunk build.
+(Curiosity: a standalone COMPARISON `(< (wrap 8) 0)` gives correct 1 on rust — so some paths carry -8
+internally but the const-fold ARITHMETIC/boundary path uses +8; the const-fold arith path is the broken one.)
+VERIFY the pending fix 41946d40a covers THIS propagated case too (its emit_const_int_at signed-decimal fix
+SHOULD make the fold use -8, but confirm the (+ (wrap 8)(wrap 1)) → -7 case + add a propagation pin, not just
+the standalone .wrap pin). Forwarded to v-rust-backend.
+
+---
+## v-rust-backend CONFIRMED (2026-07-19): 41946d40a covers BOTH faces — one emit fix suffices
+v-rust-backend verified on their HEAD that 41946d40a covers the escalated propagated-arith case too:
+• (+ (wrap 8) (wrap 1)) now emits `pub fn main() -> i8 { -7i8 }`, runs -7 (was the wrong `9u8 as i8`)
+• (+ (wrap 15) (wrap 15))→-2; (* (wrap 2048) 1)→-2048 [Int12] — all match wasm
+• (- (wrap 8) 1) = -9 correctly DECLINES (checked-sub catches the Int4 [-8,7] overflow — RIGHT behavior,
+  not a silent out-of-range escape)
+ROOT confirmed emit-only: emit_const_int_at rendered the correct signed IntValue as `9u8 as i8`; lower always
+folded the correct sign-extended values via wrap_to → fixing the emit fixes BOTH the standalone-display and
+arith-propagated (range-escaping) faces. No additional fix needed. Still PENDING MERGE.
+CONTENT-CONFIRM ON LAND (corpus-bugfix): verify BOTH (Int 4).wrap 8→-8 (standalone) AND (+ (wrap 8)(wrap 1))→-7
+(propagated) on trunk + the differential/propagation pins present.

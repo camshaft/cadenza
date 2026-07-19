@@ -123,6 +123,16 @@ def se-nested-call-as-arg() =
     | Option.None(_) => trap("a call whose arg is a call runs"))
 
 @test
+def se-corpus-underscore-param-call() =
+  // THE EXACT CORPUS PROGRAM (spec/semantics/01-literals.sexp): `(do (def (f _1) (+ _1 1)) (def (main) (f 41))
+  // (export main))` → 42. Combines the `_`-led param name `_1` (is-alpha `_` fix) with the single untyped-param
+  // call wiring — the two compose for the real corpus shape. Differential-verified vs rcdzc. This is the
+  // headline conformance case for user functions with an argument, byte-for-byte from the corpus.
+  (match run-src("(do (def (f _1) (+ _1 1)) (def (main) (f 41)) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("corpus (def (f _1) (+ _1 1)) called (f 41) → 42"))
+    | Option.None(_) => trap("the corpus _1-param function call runs end-to-end"))
+
+@test
 def se-unbound-declines() =
   // a bare unbound var → None (declined), NOT a value: the differential must see decline, not a bogus value.
   (match run-src("y") with | Option.None(_) => unit | Option.Some(_) => trap("unbound y declines"))
