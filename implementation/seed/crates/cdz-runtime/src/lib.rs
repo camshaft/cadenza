@@ -5906,6 +5906,160 @@ fn value_cmp_shaped(
     Some(Ordering::Equal)
 }
 
+/// A task for the iterative `value_eq_shaped` walk — a pair of handles to compare under a shape. Simpler
+/// than `CmpTask`: equality has no length-tiebreak (a length mismatch is decided immediately, in-line).
+#[allow(dead_code)] // wired in BRICK 2 (the value-eq-shaped op export + List<Float> `=` emit routing)
+enum EqTask {
+    Pair { a: Handle, b: Handle, shape_ix: u32 },
+}
+
+/// STRUCTURAL EQUALITY of two heap values of the same type, guided by the compiler-baked shape `desc` —
+/// the equality companion of `value_cmp_shaped`. Returns `Some(true/false)`, or `None` on a malformed
+/// descriptor (defensive; the compiler bakes only a well-formed one). BORROWS both operands (an inspector,
+/// like `value-eq`/`value-cmp`).
+///
+/// Unlike `value_cmp_shaped`, EVERY leaf is compared by EQUALITY — including the ones value-cmp DECLINES for
+/// ordering: a Float/Float32/Bytes leaf compares by its CANONICAL BYTE FORM (spec core-semantics §313: float
+/// equality is TOTAL — NaN canonicalized to one form, ±0 distinct — even though float ORDERING is only the
+/// §319 IEEE partial order; and a Bytes leaf is byte-canonical at construction). This is WHY a `List<Float>`
+/// (or any list-containing-float compound) `=` needs THIS walk, not value-cmp (which declines the float leaf)
+/// nor the tagless `champ_eq` (unsound for the non-shape-canonical RRB list SPINE): the walk descends the
+/// list ELEMENT-WISE (shape-independent, like value-cmp's List arm) while comparing each leaf by its
+/// byte-canonical form. Iterative (an explicit `EqTask` stack — wasm-safe on deep data, like
+/// `champ_key_cmp`/`value_cmp_shaped`); the FIRST inequality (or length/discriminant mismatch) short-circuits.
+#[allow(dead_code)] // wired in BRICK 2 (the value-eq-shaped op export + List<Float> `=` emit routing)
+fn value_eq_shaped(desc: &Descriptor, a: Handle, b: Handle, root_shape: u32) -> Option<bool> {
+    // Compare two byte-canonical LEAVES (Float/Float32/Bytes/String/Symbol) by their raw bytes. A rope
+    // String/Bytes is flattened first (content-preserving, unobservable) so `raw` holds the logical bytes —
+    // exactly the `Shape::Str` discipline in value_cmp_shaped, extended to the float/bytes leaves that
+    // equality (unlike ordering) admits. A float leaf's `raw` is its canonical byte form (`op_box_float`
+    // normalizes NaN + preserves ±0's sign bit), so byte-equality IS the spec's canonical-byte-form rule.
+    fn leaf_bytes_eq(a: Handle, b: Handle) -> bool {
+        bytes_flatten(a);
+        bytes_flatten(b);
+        let av = unsafe { a.0.as_ref() };
+        let bv = unsafe { b.0.as_ref() };
+        let as_ = av.map_or(&[][..], |n| n.raw.as_slice());
+        let bs = bv.map_or(&[][..], |n| n.raw.as_slice());
+        as_ == bs
+    }
+    let mut work: Vec<EqTask> = vec![EqTask::Pair { a, b, shape_ix: root_shape }];
+    while let Some(EqTask::Pair { a, b, shape_ix }) = work.pop() {
+        let shape = resolve_shape(desc, shape_ix)?;
+        match shape {
+            Shape::Int => {
+                if op_get_int(a) != op_get_int(b) {
+                    return Some(false);
+                }
+            }
+            Shape::Bool => {
+                if op_get_bool(a) != op_get_bool(b) {
+                    return Some(false);
+                }
+            }
+            Shape::Unit => {} // singleton — always equal
+            Shape::BigInt => {
+                if op_bigint_cmp(a, b) != 0 {
+                    return Some(false);
+                }
+            }
+            Shape::Rational => {
+                if op_rational_cmp(a, b) != 0 {
+                    return Some(false);
+                }
+            }
+            // Byte-canonical leaves — equality by canonical raw bytes (float eq TOTAL per §313; Bytes/String
+            // byte-canonical). This is the KEY difference from value_cmp_shaped, which DECLINES these.
+            Shape::Float | Shape::Float32 | Shape::Bytes | Shape::Str => {
+                if !leaf_bytes_eq(a, b) {
+                    return Some(false);
+                }
+            }
+            // Set/Map are canonical-by-construction CHAMP handles — equal iff champ_eq (byte-identical), which
+            // IS sound for them (order-independent canonical rep). No descriptor descent needed.
+            Shape::Set(_) | Shape::Map(..) => {
+                if !champ_eq(a, b) {
+                    return Some(false);
+                }
+            }
+            Shape::Tuple(elems) => {
+                let elems = elems.clone();
+                if (op_arr_len(a) as usize) < elems.len() || (op_arr_len(b) as usize) < elems.len() {
+                    return None;
+                }
+                for (i, &es) in elems.iter().enumerate() {
+                    work.push(EqTask::Pair {
+                        a: op_arr_get(a, i as u32),
+                        b: op_arr_get(b, i as u32),
+                        shape_ix: es,
+                    });
+                }
+            }
+            Shape::Record(fields) => {
+                let fields: Vec<u32> = fields.iter().map(|(_, ix)| *ix).collect();
+                if (op_arr_len(a) as usize) < fields.len() || (op_arr_len(b) as usize) < fields.len() {
+                    return None;
+                }
+                for (i, &fs) in fields.iter().enumerate() {
+                    work.push(EqTask::Pair {
+                        a: op_arr_get(a, i as u32),
+                        b: op_arr_get(b, i as u32),
+                        shape_ix: fs,
+                    });
+                }
+            }
+            Shape::List(elem) => {
+                // Element-wise, SHAPE-INDEPENDENT (the whole point — the RRB spine is not byte-canonical):
+                // equal iff same length AND every element equal. A length mismatch is decided immediately.
+                let elem = *elem;
+                let (la, lb) = (op_vec_len(a), op_vec_len(b));
+                if la != lb {
+                    return Some(false);
+                }
+                for i in 0..la {
+                    work.push(EqTask::Pair {
+                        a: op_vec_get(a, i),
+                        b: op_vec_get(b, i),
+                        shape_ix: elem,
+                    });
+                }
+            }
+            Shape::Sum(variants) => {
+                let variants = variants.clone();
+                let (da, db) = (op_sum_disc(a), op_sum_disc(b));
+                if da != db {
+                    return Some(false); // different variants ⇒ unequal
+                }
+                let (_, payload_shape) = variants.get(da as usize)?;
+                work.push(EqTask::Pair {
+                    a: op_sum_payload(a),
+                    b: op_sum_payload(b),
+                    shape_ix: *payload_shape,
+                });
+            }
+            Shape::Spread(elems) => {
+                let elems = elems.clone();
+                if (op_arr_len(a) as usize) < elems.len() || (op_arr_len(b) as usize) < elems.len() {
+                    return None;
+                }
+                for (i, &es) in elems.iter().enumerate() {
+                    work.push(EqTask::Pair {
+                        a: op_arr_get(a, i as u32),
+                        b: op_arr_get(b, i as u32),
+                        shape_ix: es,
+                    });
+                }
+            }
+            Shape::Framed(_type_node, inner) => {
+                let inner = *inner;
+                work.push(EqTask::Pair { a, b, shape_ix: inner });
+            }
+            Shape::Ref(_) | Shape::Named(..) => return None,
+        }
+    }
+    Some(true)
+}
+
 /// A task for the iterative post-order rebuild in `value_canonicalize_shaped`. `Visit` expands a node
 /// (pushing a matching `Build*` then its children); each `Build*` pops its now-canonical children off the
 /// results stack and assembles the canonical parent. A single explicit stack → no native recursion over
@@ -13179,6 +13333,80 @@ mod tests {
             Some(Ordering::Less),
             "a 200-deep nested list compares by its innermost leaf without a stack overflow (iterative walk)"
         );
+    }
+
+    /// `value_eq_shaped` (the equality companion of `value_cmp_shaped`): handles the leaves value-cmp
+    /// DECLINES for ordering — a `List<Float>` compares element-wise by CANONICAL BYTE FORM (§313 float eq
+    /// total), which value-cmp can't (it declines the float leaf) and champ_eq can't (unsound for the
+    /// non-shape-canonical RRB spine). Pins: concat-vs-push List<Float> equal; a differing float → not equal;
+    /// NaN == NaN (canonicalized); -0.0 ≠ +0.0; a deep list-of-float nesting is stack-safe.
+    #[test]
+    fn value_eq_shaped_handles_float_leaves_and_list_spine() {
+        use super::{Descriptor, Shape};
+        reset();
+        // desc: [0]=Float, [1]=List(0).
+        let desc = Descriptor { table: vec![Shape::Float, Shape::List(0)], root: 1 };
+        let push_flist = |xs: &[f64]| {
+            let mut v = op_vec_empty();
+            for &x in xs {
+                v = op_vec_push(v, op_box_float(x));
+            }
+            v
+        };
+        let concat_flist = |lo: &[f64], hi: &[f64]| {
+            op_vec_concat(push_flist(lo), push_flist(hi))
+        };
+        // (1) concat-built vs push-built List<Float> with the same elements → EQUAL (element-wise, spine-indep).
+        // Use n=40 elements so the concat leaves a RELAXED (non-shape-canonical) node — champ_eq would MISS.
+        let xs: Vec<f64> = (0..40).map(|i| i as f64 * 0.5).collect();
+        let a = concat_flist(&xs[..20], &xs[20..]);
+        let b = push_flist(&xs);
+        assert_eq!(value_eq_shaped(&desc, a, b, 1), Some(true), "concat-vs-push List<Float> equal (element-wise)");
+        op_drop(a);
+        op_drop(b);
+        // (2) a differing float element → NOT equal.
+        let c = push_flist(&[1.0, 2.0, 3.0]);
+        let d = push_flist(&[1.0, 2.5, 3.0]);
+        assert_eq!(value_eq_shaped(&desc, c, d, 1), Some(false), "a differing float element → not equal");
+        // (3) different length → not equal.
+        let e = push_flist(&[1.0, 2.0]);
+        assert_eq!(value_eq_shaped(&desc, c, e, 1), Some(false), "different length → not equal");
+        op_drop(c);
+        op_drop(d);
+        op_drop(e);
+        // (4) NaN == NaN (canonical byte form), and -0.0 ≠ +0.0, at the LEAF (bare Float shape).
+        let desc_f = Descriptor { table: vec![Shape::Float], root: 0 };
+        assert_eq!(
+            value_eq_shaped(&desc_f, op_box_float(f64::NAN), op_box_float(f64::NAN), 0),
+            Some(true),
+            "NaN == NaN by canonical byte form (§313)"
+        );
+        assert_eq!(
+            value_eq_shaped(&desc_f, op_box_float(-0.0), op_box_float(0.0), 0),
+            Some(false),
+            "-0.0 ≠ +0.0 (canonical byte form distinguishes sign)"
+        );
+        // (5) deep nesting: a 200-deep list-of-...-of-List<Float> is stack-safe (iterative EqTask walk).
+        let mut table = vec![Shape::Float];
+        let mut cur = 0u32;
+        for _ in 0..200 {
+            table.push(Shape::List(cur));
+            cur = (table.len() - 1) as u32;
+        }
+        let desc_deep = Descriptor { table, root: cur };
+        let build_deep = |leaf: f64| {
+            let mut v = op_box_float(leaf);
+            for _ in 0..200 {
+                let outer = op_vec_empty();
+                v = op_vec_push(outer, v);
+            }
+            v
+        };
+        let da = build_deep(3.5);
+        let db = build_deep(3.5);
+        assert_eq!(value_eq_shaped(&desc_deep, da, db, cur), Some(true), "200-deep list<float> equal, no overflow");
+        op_drop(da);
+        op_drop(db);
     }
 
     /// THE list-key miscompile fix (`value_canonicalize_shaped`): a Map with a CONCAT-built list KEY must be

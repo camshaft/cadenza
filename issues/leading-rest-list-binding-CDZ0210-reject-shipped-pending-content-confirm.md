@@ -12,3 +12,16 @@ Baselines net +1 each backend; gates green all 3.
 
 ## corpus-bugfix confirmation
 REASONING confirmed spec-correct (2026-07-19): leading-element rest refutable → reject; zero-leading irrefutable → binds. CONTENT-CONFIRM PENDING: 2d537d6ed not on trunk yet — will verify the 3 revised cases (rejects fire + positive binds sum=60) once it lands.
+
+## Content-confirm harness READY (corpus-bugfix 2026-07-19, tick post-compact)
+Re-checked: `git merge-base --is-ancestor 2d537d6ed refs/heads/trunk` = NO (still pending). Trunk spec
+02 lines 2956-2981 STILL describe the OLD behavior (a `(list a b .. rest)` let-binder binds) → confirms
+not landed. The MR object IS fetchable (owners re-sha but the ref stays reachable) and its message matches
+my approved reasoning verbatim (dd>0 leading-rest binding refutable → CDZ0210; only dd==0 stays irrefutable;
+match-arm path unchanged). CAPTURED the PRE-LAND baseline on fresh build (runtime operands):
+  • BINDING position `(let (((list a .. rest) xs)) a)` (list built from --arg, only Int crosses boundary)
+    → CURRENTLY COMPILES, run --arg 5 → 5  [the unsound behavior the MR flips to CDZ0210]
+  • ZERO-leading `(let (((list .. rest) xs)) …)` recursive sum → compiles, → 60  [irrefutable both eras]
+  • match-arm leading-rest still fine (arm path untouched).
+POST-LAND action (fire when 2d537d6ed lands): binding case must now REJECT CDZ0210; zero-leading must
+still bind (60); match-arm still compiles. Witnesses: /tmp/lrb.sexp (→CDZ0210 expected), /tmp/lrz.sexp (→60).

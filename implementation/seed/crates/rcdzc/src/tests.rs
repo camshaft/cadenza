@@ -3065,9 +3065,12 @@ fn a_record_match_pattern_destructures_a_record_scrutinee_by_field() {
 
 /// A record match arm composes with a following WILDCARD alternative, and its field binders shadow
 /// correctly. A record arm + a `_` alternative type-checks (the record arm covers the record shape, `_`
-/// the rest). A field binder `a` shadowing an outer param `a` binds the FIELD, not the param. (A GUARDED
-/// record arm is a later increment — it currently DECLINES cleanly rather than lowering, pending the
-/// guard×record leaf gating; the guard-cond field-binder resolution, Case 6recg, is already in place.)
+/// the rest). A field binder `a` shadowing an outer param `a` binds the FIELD, not the param. A GUARDED
+/// record arm also LOWERS (the guard-cond field-binder resolution, Case 6recg, was already in place; the
+/// missing piece was a borrow fix so the guard-cond's field Proj borrows the materialized record scrutinee
+/// rather than reclaiming it — the arm body's field reads then see a live handle. Its end-to-end run
+/// values are corpus-pinned in 05-compound-types.sexp, which links the value-heap runtime a record-value
+/// scrutinee imports; run_returns here can't link it, so this only pins it lowers without a decline).
 #[test]
 fn a_record_match_pattern_composes_with_wildcard_and_shadowing() {
     use crate::testkit::parse;
@@ -3091,18 +3094,15 @@ fn a_record_match_pattern_composes_with_wildcard_and_shadowing() {
         ),
         10
     );
-    // a GUARDED record arm declines cleanly (not a trap) until the guard×record interaction lands.
+    // a GUARDED record arm LOWERS cleanly (no decline) — the borrow fix (a Proj over the materialized
+    // record scrutinee borrows, not reclaims) removed the guard-cond→body use-after-free. Its runtime
+    // values (guard-holds → sum, guard-fails → fall-through) are corpus-pinned; here we pin only that it
+    // compiles rather than declining.
     let guarded = "(module m (def (f (: r (Record (x Int64) (y Int64)))) \
                (match r ((guard (record (x a) (y b)) (> a 0)) (+ a b)) (_ 0))) \
-               (def (main) (f (record (x 5) (y 6)))) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(guarded)))
-        .expect_err("a guarded record arm declines pending the guard×record leaf gating");
-    assert!(
-        err.message
-            .contains("guarded record match arm is not yet lowered"),
-        "guarded record arm declines with the feature message, got: {}",
-        err.message
-    );
+               (def (main (: k Int64)) (f (record (x k) (y (+ k 1))))) (export main))";
+    compile_component(&crate::codec::encode(&parse(guarded)))
+        .expect("a guarded record match arm lowers cleanly (borrow fix landed)");
 
     // A LITERAL field value probes that field by equality, and the EMPTY record pattern always fires.
     // Both COMPILE cleanly (their end-to-end run values — the literal-field probe hit/miss and the empty
@@ -4267,6 +4267,59 @@ fn option_expect_over_an_owned_some_shell_leaves_no_live_objects() {
              (expected 0 — SumExpect must drop the owned shell after the payload read; was ~N before the fix)"
         );
     }
+}
+
+/// DIRECT leak witness for the DEPENDENT-SIZE bin-match payload read (Core::BinSizedRead). A `(bin (u8 n)
+/// (bytes payload n))` pattern binds `payload` via `bytes-slice(scrutinee, off, n)`. The emit DUPs the
+/// materialized scrutinee (a borrowed `LocalRef`) and lets `bytes-slice` CONSUME the dup'd copy, returning a
+/// fresh owned slice — so the dup (rc++) and the slice's consume (rc−−) must balance, leaving the scrutinee
+/// live for its owner (the `match`'s stashed slot) and NO leaked slice/scrutinee cell per match. This pins
+/// that balance with a live-objects counter (the drop-import tests can't — `BinSizedRead` emits no explicit
+/// `drop`, it reclaims by the dup/consume pairing). Driven through a LOOP over a RUNTIME-header frame so
+/// `BinSizedRead` is genuinely emitted (a const header would fold the whole match away — verified the
+/// prototype emits `bytes-slice`) and any per-match leak SCALES past the benign entrypoint temporary.
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
+#[test]
+#[ignore]
+fn dependent_size_bin_match_payload_read_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "debug-counters runtime not in the store (run `cargo xtask build`); skipping BinSizedRead leak probe"
+        );
+        return;
+    };
+    // `loop` builds a fresh runtime 3-byte frame `[h, 7, 8]` each iteration, matches the dependent-size
+    // `(bytes payload k)` (k = the runtime header `u8` binder), reads `Bytes.len payload`, and accumulates.
+    // h=2 binds exactly 2 payload bytes ([7,8]) at each of N iterations → N owned slice handles created +
+    // N dup'd scrutinee frames, all of which must net to 0. A missed reclaim (a leaked slice or an
+    // unbalanced scrutinee dup) would leave live-objects ~ N even though the value is correct.
+    let src = "(module m \
+                 (def (loop (: j Int64) (: n Int64) (: h Int64) (: tot Int64)) \
+                     (if (< j n) \
+                         (loop (+ j 1) n h \
+                           (+ tot \
+                              (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8))) \
+                                ((bin (u8 k) (bytes payload k)) (Bytes.len payload)) \
+                                (_ -1)))) \
+                         tot)) \
+                 (def (f (: h Int64)) (loop 0 500 h 0)) (export f))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("f", &[Val::S64(2)]),
+        Val::S64(1000),
+        "dependent-size bin match binds 2 payload bytes per iter → 500 × 2 = 1000 (value-correct + NO UAF)"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "BinSizedRead leak: a fresh slice handle (or an unbalanced scrutinee dup) is still live after the \
+         dependent-size payload read (expected 0 — the dup/bytes-slice-consume pairing must net the heap to \
+         zero)"
+    );
 }
 
 /// DIRECT leak witness for the `match` (Core::MatchSum) OWNED-sum-SHELL reclaim — the twin of the
@@ -31755,56 +31808,64 @@ mod match_engine {
     }
 
     #[test]
-    fn a_list_rest_binding_pattern_binds_over_a_runtime_list() {
-        // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern: a list REST pattern `(list x
-        // .. rest)` is irrefutable (matches any length ≥ leading count), so it may appear in a `let` binder
-        // or a `def`/`fn` PARAMETER — not only a `match` arm. A def param pattern is desugared to a
-        // destructuring `let` (`binding_params::lower`), so BOTH reuse the same resolve-side `SumPayload`
-        // redirection (a leading binder → `Elem(i)`, the rest binder → `RestFrom(lead)`) reading out of a
-        // RUNTIME list value. Before, every list binding pattern declined "not yet supported".
+    fn a_zero_leading_list_rest_binding_binds_over_a_runtime_list_leading_rest_is_rejected() {
+        // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern / §147: a list binding
+        // pattern is irrefutable ONLY in the ZERO-LEADING rest form `(list .. rest)` — that form matches
+        // EVERY list (empty included), binding `rest` (→ `SumPayload{RestFrom(0)}`) to the whole list, so it
+        // may appear in a `let` binder or a `def`/`fn` PARAMETER (desugared to a destructuring `let`). A
+        // LEADING-element rest `(list a .. rest)` is REFUTABLE (it misses the empty list) → CDZ0210 in a
+        // binding position, the same rule the fixed-arity form gets. (Earlier this bound unsoundly and would
+        // TRAP on the empty list — the operator/spec ruled it CDZ0210.)
 
-        // A def PARAM `(list x .. rest)` binds the head of a runtime-built list. build pushes 10,20,30 → 10.
+        // A def PARAM `(list .. rest)` binds the WHOLE runtime list; a recursive `sum` folds it. build pushes
+        // 10,20,30 → 60.
         let Some(v) = run_heap_value(
             "(module m \
+               (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))) \
                (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (* i 10))) out)) \
-               (def (head (list x .. rest)) x) \
-               (def (main) (head (build 1 4 (list)))) (export main))",
+               (def (total (: ys (List Int64))) (let (((list .. rest) ys)) (sum rest))) \
+               (def (main) (total (build 1 4 (list)))) (export main))",
             vec![],
         ) else {
-            eprintln!("runtime wasm not found; skipping list-rest binding-pattern run");
+            eprintln!(
+                "runtime wasm not found; skipping zero-leading list-rest binding-pattern run"
+            );
             return;
         };
-        assert_eq!(v, "10", "list-rest param binds the head of a runtime list");
-
-        // The REST binder binds a genuine SUBLIST usable by a recursive consumer: `drop-head` binds `x ..
-        // rest` (a param) and sums the rest via a `match`-recursing helper. Runtime [1 2 3 4] → 2+3+4 = 9.
         assert_eq!(
-            run_heap_value(
-                "(module m \
-                   (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))) \
-                   (def (drop-head (list x .. rest)) (sum rest)) \
-                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-                   (def (main) (drop-head (build 1 5 (list)))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "9",
-            "a list-rest binding's rest binder is a usable sublist (sum 2+3+4)"
+            v, "60",
+            "zero-leading list-rest param binds the whole runtime list (10+20+30)"
         );
 
-        // A `let` binder `(list a b .. rest)` over a runtime list binds two leading elements. [5 6 7] → 11.
+        // A LEADING-element rest in a def PARAM is now CDZ0210 (refutable — misses the empty list).
+        let head_err = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (head (list x .. rest)) x) (def (main) (head (list 7 8 9))) (export main))",
+        )))
+        .expect_err("a leading-element list rest param is refutable");
         assert_eq!(
-            run_heap_value(
-                "(module m \
-                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (+ i 5))) out)) \
-                   (def (f xs) (let (((list a b .. rest) xs)) (+ a b))) \
-                   (def (main) (f (build 0 3 (list)))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "11",
-            "a let list-rest binder reads two leading elements of a runtime list"
+            head_err.code.as_deref(),
+            Some("CDZ0210"),
+            "leading-element list-rest param rejects CDZ0210, got: {head_err:?}"
         );
+
+        // A LEADING-element rest in a `let` binder is likewise CDZ0210.
+        let let_err = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (main) (let (((list a b .. rest) (list 1 2 3 4))) a)) (export main))",
+        )))
+        .expect_err("a leading-element list rest let binder is refutable");
+        assert_eq!(
+            let_err.code.as_deref(),
+            Some("CDZ0210"),
+            "leading-element list-rest let binder rejects CDZ0210, got: {let_err:?}"
+        );
+
+        // The zero-leading form is the ONE exemption; a fixed-arity `(list a b)` binding stays CDZ0210 too
+        // (the pre-existing rejection, unchanged).
+        let fixed_err = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (main) (let (((list a b) (list 1 2))) (+ a b))) (export main))",
+        )))
+        .expect_err("a fixed-arity list binding is refutable");
+        assert_eq!(fixed_err.code.as_deref(), Some("CDZ0210"));
     }
 
     #[test]
@@ -51181,13 +51242,16 @@ mod stage1 {
                 && rest_msg.contains("(list a .. rest)"),
             "the `..`-in-tuple reject names the fixed-arity reason + the list alternative: {rest_msg}"
         );
-        // NO false positive: a `..` in a nested LIST element of a tuple pattern is fine — only a `..` that
-        // is a DIRECT element of the tuple is rejected. (`(tuple (list a .. r1) …)`'s `..` belongs to the
-        // inner list, not the tuple.)
+        // NO false positive on the tuple-`..` detection: a `..` in a nested LIST element of a tuple pattern
+        // is NOT the "`..` is a direct tuple element" malformed error — it belongs to the inner list. The
+        // inner `(list a .. r1)` is a LEADING-element rest, though, which is REFUTABLE in a binding position
+        // → CDZ0210 (§139/§147, the operator ruling), NOT the tuple-fixed-arity malformed reject. So the
+        // reject code distinguishes the two: a nested leading-rest list is CDZ0210, a direct tuple `..` is
+        // Malformed.
         assert_eq!(
             code("(let (((tuple (list a .. r1) c) (tuple (list 1 2) 3))) c)"),
-            None,
-            "a `..` inside a nested list element of a tuple pattern is valid"
+            Some("CDZ0210".to_string()),
+            "a nested leading-element list rest inside a tuple binding is refutable (CDZ0210), not the tuple-`..` malformed error"
         );
     }
 
@@ -51443,14 +51507,14 @@ mod stage1 {
     }
 
     #[test]
-    fn a_let_binder_may_be_a_list_rest_pattern() {
-        // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern + §A List Is Deconstructed:
-        // a list pattern is irrefutable ONLY in the REST form `(list p… .. rest)` — it matches ANY length ≥
-        // the leading count, so it may bind. A leading element resolves to a `SumPayload{[Elem(i)]}` and the
-        // rest binder to `SumPayload{[RestFrom(lead)]}` reading out of the bound value — the SAME machinery a
-        // `(match v ((list x .. rest) …))` arm uses, so this is a pure resolve-side lift (no new IR). This
-        // test asserts the well-formed forms COMPILE (a list value engages the heap runtime, so the RUNTIME
-        // VALUES are exercised in `match_engine::a_list_rest_binding_pattern_binds_over_a_runtime_list`).
+    fn a_let_binder_may_be_a_zero_leading_list_rest_pattern_leading_element_rest_is_refutable() {
+        // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern + §147: a list pattern is
+        // irrefutable ONLY in the ZERO-LEADING rest form `(list .. rest)` — it matches EVERY list (empty
+        // included), binding `rest` (→ `SumPayload{[RestFrom(0)]}`) to the whole value, so it may bind. A
+        // LEADING-element rest `(list a .. rest)` is REFUTABLE (it requires ≥1 element, missing the empty
+        // list), so in a binding position it is CDZ0210 — the same rule the fixed-arity form gets (operator
+        // ruling: only the zero-leading form is irrefutable; a possibly-empty leading destructure belongs in
+        // a `match`). This test asserts the zero-leading form COMPILES and the leading forms REJECT.
         let code = |body: &str| -> Option<String> {
             let src = format!("(module m (def (main) {body}) (export main))");
             let out = crate::compile::compile(
@@ -51472,113 +51536,34 @@ mod stage1 {
                 .find(|d| d.severity == crate::abi::Severity::Error)
                 .and_then(|d| d.code.clone())
         };
-        // Leading + rest binder over a constant list — compiles (the rest binder is bound, the leading `a`/`b`
-        // read via `Elem`).
-        assert_eq!(
-            code("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
-            None
-        );
-        // Zero-leading `(list .. all)` binds the WHOLE list as `all` (irrefutable, matches any length).
+        // Zero-leading `(list .. all)` binds the WHOLE list as `all` (irrefutable, matches every list).
         assert_eq!(
             code("(let (((list .. all) (list 1 2 3 4))) ((. List len) all))"),
             None
         );
-        // A NESTED tuple leading element composes.
+        // A LEADING + rest binder is now refutable → CDZ0210 (misses the empty list).
+        assert_eq!(
+            code("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
+            Some("CDZ0210".to_string())
+        );
+        // A NESTED tuple leading element is STILL a leading element (dd > 0) → CDZ0210.
         assert_eq!(
             code("(let (((list (tuple a b) .. rest) (list (tuple 1 2) (tuple 3 4)))) (+ a b))"),
-            None
+            Some("CDZ0210".to_string())
         );
-        // A constant list-let read ONLY through its element binders now FOLDS to a scalar (no heap), so it
-        // runs via the scalar path with the CORRECT value — `a`+`b` = 10+20 = 30 (the binders fold to the
-        // constant elements via `SumPayload{Elem}` → `fold_sum_path`'s `ListNew` arm). See
-        // `a_constant_list_let_read_by_element_binders_folds_to_a_scalar` for the no-heap assertion.
+        // A single-leading-element rest → CDZ0210 as well.
         assert_eq!(
-            run_main("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
-            30
-        );
-        assert_eq!(
-            run_main("(let (((list (tuple a b) .. rest) (list (tuple 1 2) (tuple 3 4)))) (+ a b))"),
-            3
+            code("(let (((list a .. rest) (list 10 20 30))) a)"),
+            Some("CDZ0210".to_string())
         );
     }
 
-    #[test]
-    fn a_constant_list_let_read_by_element_binders_folds_to_a_scalar() {
-        // A CONSTANT list bound by a rest pattern and read ONLY through its element/rest PATTERN binders
-        // FOLDS to a scalar — no `vec-empty`/`vec-push` heap build — exactly as a constant tuple-`let`'s
-        // projections fold. Each `SumPayload{Elem(i)}`/`{RestFrom(k)}` reads a constant element/tail via
-        // `fold_sum_path`, so the list never needs to exist at run time. Before, 2+ leading-element reads
-        // tripped `should_keep_binding`'s ≥2-use rule and materialized the list (a `vec-*` heap build) for a
-        // value that never varies. The PROOF a fold happened: the emitted core reads NO value-heap op — its
-        // `MatchList`/`Let` collapsed to a `ConstInt` (`main`'s body folds to `Core::ConstInt(30)`).
-        let folds_to_const = |body: &str| -> Option<i64> {
-            let src = format!("(module m (def (main) {body}) (export main))");
-            let mut db = crate::db::Db::load(parse(&src));
-            let d = db.def_by_name("main")?;
-            let m_body = db.defs[d].body?;
-            match crate::lower::core_of(&mut db, m_body) {
-                crate::core::Core::ConstInt(v) => v.to_i64(),
-                _ => None,
-            }
-        };
-        // Two leading element reads over a constant list — folds to the constant `30` (10+20), no heap.
-        assert_eq!(
-            folds_to_const("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
-            Some(30),
-            "a constant list-let read by element binders folds to a scalar constant"
-        );
-        // A nested tuple leading element folds too (1+2=3).
-        assert_eq!(
-            folds_to_const(
-                "(let (((list (tuple a b) .. rest) (list (tuple 1 2) (tuple 3 4)))) (+ a b))"
-            ),
-            Some(3),
-            "a constant list-let with a nested tuple element folds"
-        );
-        // NO OVER-FOLD: the fold is confined to the SCALAR-result case (a `ConstInt` body). A body whose
-        // result is the LIST itself (the rest binder RETURNED) is not a scalar, so it does not fold to a
-        // constant — `binding_escapes_whole` sees the whole-value use and keeps the binding, so the list
-        // materializes on the heap (the escape path) exactly as before this fix.
-        assert_eq!(
-            folds_to_const("(let (((list a .. rest) (list 10 20 30))) rest)"),
-            None,
-            "a list-let whose result is a (sub)list escapes whole → not a scalar constant, still materialized"
-        );
-        // A materialized list emits the value-heap `resource-new`/`vec-*` ops, whose names appear verbatim
-        // in the component bytes; a folded scalar emits none. Confirm the escaping case DOES import the heap
-        // (byte-scan for the distinctive `resource-new` op — dependency-free).
-        let materializes = |body: &str| -> bool {
-            let src = format!("(module m (def (main) {body}) (export main))");
-            let out = crate::compile::compile(
-                &[crate::abi::Artifact::new(
-                    crate::abi::Artifact::KIND_AST,
-                    "m",
-                    crate::codec::encode(&parse(&src)),
-                )],
-                &[crate::backend::Target::Wasm],
-            );
-            let wasm = out
-                .artifact(crate::backend::Target::Wasm.artifact_kind())
-                .expect("compiles")
-                .to_vec();
-            wasm.windows(b"resource-new".len())
-                .any(|w| w == b"resource-new")
-        };
-        assert!(
-            materializes("(let (((list a .. rest) (list 10 20 30))) rest)"),
-            "a constant list-let whose rest escapes as a whole value still materializes (heap ops present)"
-        );
-        assert!(
-            !materializes("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
-            "the element-only-read list-let does NOT materialize (folded, no heap ops)"
-        );
-        // And the folded value runs correctly via the scalar path (was un-runnable by `run_main` before,
-        // since the list-let materialized on the heap — now it folds, so `run_main`'s scalar path works).
-        assert_eq!(
-            run_main("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
-            30
-        );
-    }
+    // (Removed `a_constant_list_let_read_by_element_binders_folds_to_a_scalar`: it asserted the constant-fold
+    // of a LEADING-element list-let `(list a b .. rest)` read by its element binders. Under the operator/spec
+    // ruling (only the ZERO-LEADING `(list .. rest)` is irrefutable in a binding position; a leading-element
+    // rest is refutable → CDZ0210, §139/§147), that binding form no longer compiles, so the fold is moot —
+    // its inputs are now compile-time rejects. The zero-leading form binds the whole list, which escapes and
+    // materializes, so there is no scalar-fold case left to pin here.)
 
     #[test]
     fn an_ill_formed_list_binding_pattern_is_rejected() {
@@ -51621,18 +51606,24 @@ mod stage1 {
             code("(let (((list 0 .. rest) (list 0 1))) 42)").as_deref(),
             Some("CDZ0210")
         );
-        // A non-linear list binding (a binder repeated) is CDZ0102.
+        // A non-linear list binding (a binder repeated) is CDZ0102 — linearity is checked BEFORE the
+        // leading-element refutability guard, so the non-linear diagnostic wins.
         assert_eq!(
             code("(let (((list a a .. rest) (list 1 2 3))) a)").as_deref(),
             Some("CDZ0102")
         );
-        // NO OVER-REJECTION: a well-formed rest binding compiles (flat + nested + zero-leading).
-        assert_eq!(code("(let (((list x .. rest) (list 1 2 3))) x)"), None);
-        assert_eq!(code("(let (((list .. all) (list 1 2))) 0)"), None);
+        // A LEADING-element rest is REFUTABLE (misses the empty list) → CDZ0210 (operator ruling, §139/§147):
+        // a single bare-binder leading element, and a nested-tuple leading element, both reject.
         assert_eq!(
-            code("(let (((list (tuple a b) .. rest) (list (tuple 1 2)))) (+ a b))"),
-            None
+            code("(let (((list x .. rest) (list 1 2 3))) x)").as_deref(),
+            Some("CDZ0210")
         );
+        assert_eq!(
+            code("(let (((list (tuple a b) .. rest) (list (tuple 1 2)))) (+ a b))").as_deref(),
+            Some("CDZ0210")
+        );
+        // NO OVER-REJECTION: the ZERO-LEADING rest form `(list .. all)` is irrefutable → compiles.
+        assert_eq!(code("(let (((list .. all) (list 1 2))) 0)"), None);
     }
 
     #[test]

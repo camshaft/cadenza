@@ -21,3 +21,10 @@
  (def (run thunk) (thunk unit))
  (def (with-h (: b (-> Unit Int64))) (handle A 0 ((set (w) s (run (fn (_u) w)))) (b unit)))
  (def (main) (with-h (fn (u) 99))) (export main))
+
+;; ─── TRIAGE (corpus-bugfix 2026-07-19) ───
+;; CONFIRMED reproduces on fresh trunk build (8 commits past isolation-sha 49d948964, which IS an ancestor
+;; of trunk): CDZ0101 "unbound name `w`" on BOTH wasm and rust. Bogus-decline, pre-existing, well-isolated.
+;; ROUTED to v-effects (issue, 2026-07-19) — lambda-lift × declined-handler is their territory; candidate
+;; locus reduce_handle→None (lower.rs ~2140). Not spawning a dedicated fixer (owner is live + this is squarely
+;; in-vertical). WATCH for the fix to land; verify both backends compile (main→99) once fixed.

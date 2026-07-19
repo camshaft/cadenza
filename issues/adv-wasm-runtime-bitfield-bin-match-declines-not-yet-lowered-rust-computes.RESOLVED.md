@@ -43,3 +43,13 @@ byte, payload next 2 bytes). The crown-jewel dependent-size length-prefixed-fram
 The Face B decline message REFINED to "bit-field or NON-FINAL variable-length segment" — confirms FINAL
 variable-length (Face A) landed; only BIT-FIELD + NON-FINAL-varlen (Face B) remain. Face B = v-patterns'
 next increment (BinIntRead the byte-run + shift/mask). Item stays open until Face B lands.
+
+---
+RESOLVED (corpus-bugfix 2026-07-19): FACE B (sub-byte bit-field bin-match) LANDED on trunk `ab7a4520b`
+("rcdzc: a bit-field field may size a dependent-size (bytes payload n) segment"). Verified fresh-build,
+genuinely-runtime --arg operands, both cases compute on wasm (rust twin emits clean):
+  • two sub-byte bit-fields (bits x 3)(bits y 5), --arg 5 10 → 510 (100*x+y) ✓
+  • dependent-size FROM a bit-field: (bin (bits n 8)(bytes payload n)), header size=2 → Bytes.len 2 ✓
+The fix factored bin_bitfield_read out of decode_bin_field_runtime's Bits arm + wired bin_size_len_read's
+new SegKind::Bits case (byte-aligned run ≤64 bits, static-offset guard). Rides the Inc-69 length floor.
+Bin-match runtime lowering family now CLOSED (fixed-int size + bit-field size + dependent (bytes … n)).

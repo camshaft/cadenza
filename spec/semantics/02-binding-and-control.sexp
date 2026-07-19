@@ -2953,36 +2953,50 @@
   (input  (do (def (f p) (let (((tuple a b) p)) (+ a b))) (def (main) (f (tuple 10 20))) (export main)))
   (output (: 30 Int64)))
 
-; A LIST binding pattern. A list pattern is irrefutable ONLY in the REST form `(list p… .. rest)` — it
-; matches ANY length ≥ the leading count (and `(list .. all)` matches every list), so it may bind in a
-; `let` binder or a `def`/`fn` parameter, exactly as a `(match v ((list x .. rest) …))` arm does. A leading
-; element resolves to `SumPayload{Elem(i)}` and the rest binder to `SumPayload{RestFrom(lead)}` reading out
-; of the bound value (core-semantics.md #A Binding Position Accepts An Irrefutable Pattern / #A List Is
-; Deconstructed By Element Patterns With An Optional Rest). A FIXED-ARITY `(list a b)` binding is refutable
-; (it matches only its exact length) → CDZ0210, the rejection below.
+; A LIST binding pattern. A list pattern is irrefutable ONLY in the ZERO-LEADING rest form `(list .. rest)`
+; — that form matches EVERY list (the empty list included), binding `rest` to the whole list, so it may
+; bind in a `let` binder or a `def`/`fn` parameter (the rest binder resolves to `SumPayload{RestFrom(0)}`
+; reading the whole bound value; core-semantics.md #A Binding Position Accepts An Irrefutable Pattern / #A
+; List Is Deconstructed By Element Patterns With An Optional Rest). A LEADING-element rest `(list a .. rest)`
+; is REFUTABLE — it requires at least one element, so it does NOT match the empty list (§147: only the
+; zero-leading form matches every list) → CDZ0210 in a binding position, exactly like the FIXED-ARITY
+; `(list a b)` form (which matches only its exact length). A possibly-empty leading-element destructure
+; belongs in a `match`, whose arms cover the empty case. Both refutable forms are the rejections below.
 
-(case "a def parameter may be a list rest pattern binding the head"
-  (doc    "`(def (head (list x .. rest)) x)` names the head of its list argument directly — a list REST
-           pattern is irrefutable (matches any non-empty list here), so it is a valid PARAMETER pattern
-           (core-semantics.md #A Binding Position Accepts An Irrefutable Pattern). The parameter is
-           desugared to a destructuring `let`, so `x` resolves to `SumPayload{Elem(0)}` reading the first
-           element of the runtime list. `head` of `(list 7 8 9)` = 7.")
-  (input  (do (def (head (list x .. rest)) x) (def (main) (head (list 7 8 9))) (export main)))
-  (output (: 7 Int64)))
-
-(case "a let binder may be a list rest pattern binding a leading element and the rest"
-  (doc    "`(let (((list a b .. rest) xs)) …)` binds the first two elements of the runtime list `xs` and the
-           remaining elements as the sublist `rest` (core-semantics.md #A List Is Deconstructed By Element
-           Patterns With An Optional Rest) — the ergonomic form of the bind-then-`match` fold. Here `drop2`
-           binds `a`/`b` (dropped) and sums `rest` via a recursive `match` consumer: over `(list 1 2 3 4)`,
-           `rest` is `(list 3 4)` → 7. Pins that a rest binder in a BINDING position is a usable sublist,
-           not only a match-arm one.")
+(case "a zero-leading list rest pattern binds the whole list in a def parameter"
+  (doc    "`(def (all (list .. rest)) rest)` — the ONLY irrefutable list binding form: `(list .. rest)` with
+           NO leading element matches EVERY list (empty included), binding `rest` to the whole list
+           (core-semantics.md #A Binding Position Accepts An Irrefutable Pattern). The parameter desugars to
+           a destructuring `let` and `rest` resolves to `SumPayload{RestFrom(0)}` = the whole runtime list;
+           `sum` over it folds `(list 7 8 9)` → 24. Pins that the zero-leading rest form earns the
+           binding-position exemption (a leading-element rest does not — see the CDZ0210 case below).")
   (input  (do
             (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list x .. rest) (+ x (sum rest)))))
-            (def (drop2 ys) (let (((list a b .. rest) ys)) (sum rest)))
-            (def (main) (drop2 (list 1 2 3 4)))
+            (def (all (: ys (List Int64))) (let (((list .. rest) ys)) (sum rest)))
+            (def (main) (all (list 7 8 9)))
             (export main)))
-  (output (: 7 Int64)))
+  (output (: 24 Int64)))
+
+(case "a leading-element list rest pattern in a def parameter is refutable and rejected"
+  (doc    "`(def (head (list x .. rest)) x)` binds a LEADING element `x` before the rest — a REFUTABLE
+           pattern: `(list x .. rest)` requires at least one element, so it does NOT match the EMPTY list
+           (core-semantics.md §147 — only the zero-leading `(list .. rest)` matches every list). A binding
+           position has no alternative arm, so a refutable pattern MUST be a compile-time error: CDZ0210
+           (§139), the same rule the fixed-arity form gets. Were it accepted (the earlier unsound behavior),
+           `(head (list))` would TRAP at runtime reading element 0 of an empty list — a fault the type
+           system must reject up front. A leading-element destructure of a possibly-empty list belongs in a
+           `match`. Pins that ONLY the zero-leading rest form is irrefutable in a binding position.")
+  (input  (do (def (head (list x .. rest)) x) (def (main) (head (list 7 8 9))) (export main)))
+  (error  CDZ0210))
+
+(case "a leading-element list rest pattern in a let binder is refutable and rejected"
+  (doc    "The `let` twin of the parameter rejection: `(let (((list a b .. rest) ys)) …)` binds two LEADING
+           elements before the rest, so it does not match lists shorter than 2 (nor the empty list) — a
+           REFUTABLE pattern in a binding position → CDZ0210 (core-semantics.md §139/§147). The spec-correct
+           idiom for a possibly-short list is a `match` with an empty/short arm, not a `let` destructure.
+           Pins the leading-element rest boundary in the `let` position, mirroring the parameter case.")
+  (input  (do (def (main) (let (((list a b .. rest) (list 1 2 3 4))) a)) (export main)))
+  (error  CDZ0210))
 
 (case "a fixed-arity list binding pattern is refutable and rejected"
   (doc    "The contrast to the rest form: a FIXED-ARITY `(list a b)` binding pattern matches ONLY lists of
