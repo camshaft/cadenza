@@ -286,6 +286,15 @@ const OP_VALUE_EQ: &str = "value-eq";
 /// owned-temporary operand is `drop`ped after the compare. The runtime `<`/`<=`/`>`/`>=` on two runtime
 /// compounds the compiler could not fold.
 const OP_VALUE_CMP: &str = "value-cmp";
+/// `value-canonicalize(a, desc) -> handle` — the blessed CANONICAL form of a heap value of the type `desc`
+/// describes, baked as a Bytes constant exactly as `value-cmp`/`value-encode` bake it. Emitted at a Map/Set
+/// KEY site for a list-typed (or list-containing) key: a List is an RRB vector that is element-canonical but
+/// NOT shape-canonical, so a concat-built and a push-built equal-element list key would hash into different
+/// CHAMP slots (a false-miss violating `collections-and-text.md` §162 — a key's identity is construction-
+/// independent). Rebuilds every list to its unique strict shape so the tagless byte-walk is exact. BORROWS
+/// `a` + `desc`, returns a FRESH owned handle the emit drops after a borrowing key op (like a compacted rope
+/// key). A malformed descriptor declines to an identity dup (total). See `value_canonicalize_shaped`.
+const OP_VALUE_CANONICALIZE: &str = "value-canonicalize";
 /// Persistent CHAMP map ops. `map-empty() -> handle` — the canonical empty map; `map-insert(m, key, val)
 /// -> handle` — add-or-replace (CONSUMES m, key, val; returns the new map); `map-lookup(m, key) -> handle`
 /// — the value for `key` or NULL when absent (BORROWS m + key); `map-remove(m, key) -> handle` — m without
@@ -798,8 +807,17 @@ fn collect_consuming_payload_sites_expr(
             collect_consuming_payload_sites_expr(db, start, scrut, false, out);
             collect_consuming_payload_sites_expr(db, end, scrut, false, out);
         }
+        // BORROWING compares/ops (mirror `binding_escapes` arm-for-arm): each reads both operands in place
+        // (dropping only an OWNED temporary), so a scrutinee-child reached DIRECTLY as an operand is BORROWED,
+        // never moved out — descend with `consuming=false` so it is NOT marked a consumed-child dup site.
+        // `Core::ValueCmp` (the runtime compound-ordering `<`/`<=`/`>`/`>=` walk — the blessed heap-order op)
+        // borrows both operands exactly like `Core::ValueEq`; without it here a shell child compared via `<`
+        // in a match arm fell to the `_ =>` CONSUMING fallback and was wrongly marked a dup site (the deep
+        // shell drop happened to absorb the over-dup in the cases tested, but the divergence from
+        // `binding_escapes` is a latent over-retain — keep the two walks identical).
         Core::ValueEq { lhs, rhs }
         | Core::StrCmp { lhs, rhs, .. }
+        | Core::ValueCmp { lhs, rhs, .. }
         | Core::BigIntCmp { lhs, rhs, .. }
         | Core::RationalCmp { lhs, rhs, .. }
         | Core::BigIntBinOp { lhs, rhs, .. }
@@ -2367,6 +2385,11 @@ fn collect_used_ops_into(
                 if key_needs_compaction(db, *k) {
                     out.insert(OP_BYTES_COMPACT);
                 }
+                if key_needs_canonicalize(db, *k) {
+                    out.insert(OP_VALUE_CANONICALIZE);
+                    out.insert(OP_BYTES_ALLOC); // descriptor bake
+                    out.insert(OP_BYTES_SET);
+                }
                 collect_used_ops_into(db, *k, out);
                 collect_used_ops_into(db, *v, out);
             }
@@ -2389,6 +2412,11 @@ fn collect_used_ops_into(
             }
             if key_needs_compaction(db, key) {
                 out.insert(OP_BYTES_COMPACT);
+            }
+            if key_needs_canonicalize(db, key) {
+                out.insert(OP_VALUE_CANONICALIZE);
+                out.insert(OP_BYTES_ALLOC); // descriptor bake
+                out.insert(OP_BYTES_SET);
             }
             collect_used_ops_into(db, map, out);
             collect_used_ops_into(db, key, out);
@@ -2416,6 +2444,11 @@ fn collect_used_ops_into(
             if key_needs_compaction(db, key) {
                 out.insert(OP_BYTES_COMPACT);
             }
+            if key_needs_canonicalize(db, key) {
+                out.insert(OP_VALUE_CANONICALIZE);
+                out.insert(OP_BYTES_ALLOC); // descriptor bake
+                out.insert(OP_BYTES_SET);
+            }
             collect_used_ops_into(db, map, out);
             collect_used_ops_into(db, key, out);
         }
@@ -2428,6 +2461,11 @@ fn collect_used_ops_into(
             }
             if key_needs_compaction(db, key) {
                 out.insert(OP_BYTES_COMPACT);
+            }
+            if key_needs_canonicalize(db, key) {
+                out.insert(OP_VALUE_CANONICALIZE);
+                out.insert(OP_BYTES_ALLOC); // descriptor bake
+                out.insert(OP_BYTES_SET);
             }
             collect_used_ops_into(db, map, out);
             collect_used_ops_into(db, key, out);
@@ -2460,6 +2498,11 @@ fn collect_used_ops_into(
                 if key_needs_compaction(db, e) {
                     out.insert(OP_BYTES_COMPACT);
                 }
+                if key_needs_canonicalize(db, e) {
+                    out.insert(OP_VALUE_CANONICALIZE);
+                    out.insert(OP_BYTES_ALLOC); // descriptor bake
+                    out.insert(OP_BYTES_SET);
+                }
                 collect_used_ops_into(db, e, out);
             }
         }
@@ -2472,6 +2515,11 @@ fn collect_used_ops_into(
             }
             if key_needs_compaction(db, elem) {
                 out.insert(OP_BYTES_COMPACT);
+            }
+            if key_needs_canonicalize(db, elem) {
+                out.insert(OP_VALUE_CANONICALIZE);
+                out.insert(OP_BYTES_ALLOC); // descriptor bake
+                out.insert(OP_BYTES_SET);
             }
             collect_used_ops_into(db, set, out);
             collect_used_ops_into(db, elem, out);
@@ -2487,6 +2535,11 @@ fn collect_used_ops_into(
             if key_needs_compaction(db, elem) {
                 out.insert(OP_BYTES_COMPACT);
             }
+            if key_needs_canonicalize(db, elem) {
+                out.insert(OP_VALUE_CANONICALIZE);
+                out.insert(OP_BYTES_ALLOC); // descriptor bake
+                out.insert(OP_BYTES_SET);
+            }
             collect_used_ops_into(db, set, out);
             collect_used_ops_into(db, elem, out);
         }
@@ -2500,6 +2553,11 @@ fn collect_used_ops_into(
             }
             if key_needs_compaction(db, elem) {
                 out.insert(OP_BYTES_COMPACT);
+            }
+            if key_needs_canonicalize(db, elem) {
+                out.insert(OP_VALUE_CANONICALIZE);
+                out.insert(OP_BYTES_ALLOC); // descriptor bake
+                out.insert(OP_BYTES_SET);
             }
             collect_used_ops_into(db, set, out);
             collect_used_ops_into(db, elem, out);
@@ -7029,6 +7087,10 @@ fn emit(
                 if key_needs_compaction(db, k) {
                     out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
                 }
+                if key_needs_canonicalize(db, k) {
+                    // list-typed/-containing key → canonical RRB shape (champ slot exactness)
+                    emit_key_canonicalize(db, k, &key_ty, high, scratch_ty, out)?; // [map, canon-key]
+                }
                 let val_base = base.max(*high);
                 emit(db, v, slots, val_base, high, scratch_ty, layout, out)?; // [map, key, val]
                 let val_boxed = box_op_for(db, v, &val_ty)?;
@@ -7061,6 +7123,10 @@ fn emit(
             if key_needs_compaction(db, key) {
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf (champ contract)
             }
+            if key_needs_canonicalize(db, key) {
+                // list-typed/-containing key → canonical RRB shape (champ slot exactness)
+                emit_key_canonicalize(db, key, &key_ty, high, scratch_ty, out)?; // [map, canon-key]
+            }
             let val_base = base.max(*high);
             emit(db, val, slots, val_base, high, scratch_ty, layout, out)?; // [map, key, val]
             let val_boxed = box_op_for(db, val, &val_ty)?;
@@ -7087,6 +7153,10 @@ fn emit(
             if key_needs_compaction(db, key) {
                 // Compact BEFORE the tee so key_slot holds the owned flat leaf the later drop reclaims.
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
+            }
+            if key_needs_canonicalize(db, key) {
+                // Canonicalize BEFORE the tee so key_slot holds the fresh owned canonical key the drop reclaims.
+                emit_key_canonicalize(db, key, &key_ty, high, scratch_ty, out)?; // [map, canon-key]
             }
             // OWNERSHIP GATE (mirrors `MapLookup`): `map-remove` BORROWS the key, so drop it AFTER only when
             // it is an OWNED TEMPORARY. A BORROWED String/compound key (param / kept-local / a live
@@ -7149,6 +7219,10 @@ fn emit(
                 if key_needs_compaction(db, e) {
                     out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
                 }
+                if key_needs_canonicalize(db, e) {
+                    // list-typed/-containing element → canonical RRB shape (champ slot exactness)
+                    emit_key_canonicalize(db, e, &elem_ty, high, scratch_ty, out)?; // [set, canon-elem]
+                }
                 out.push(Lir::CallImport(OP_SET_INSERT)); // → [set'] (consumes set, elem)
             }
             Ok(()) // leaves [set] — the set handle
@@ -7167,6 +7241,9 @@ fn emit(
             emit_heap_store_tail(db, elem, elem_boxed, out); // [set, elem-handle]
             if key_needs_compaction(db, elem) {
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
+            }
+            if key_needs_canonicalize(db, elem) {
+                emit_key_canonicalize(db, elem, &elem_ty, high, scratch_ty, out)?; // [set, canon-elem]
             }
             out.push(Lir::CallImport(OP_SET_INSERT)); // → [set']
             Ok(())
@@ -7189,6 +7266,10 @@ fn emit(
             if key_needs_compaction(db, elem) {
                 // Compact BEFORE the tee so elem_slot holds the owned flat leaf the later drop reclaims.
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
+            }
+            if key_needs_canonicalize(db, elem) {
+                // Canonicalize BEFORE the tee so elem_slot holds the fresh owned canonical elem the drop reclaims.
+                emit_key_canonicalize(db, elem, &elem_ty, high, scratch_ty, out)?; // [set, canon-elem]
             }
             // OWNERSHIP GATE (mirrors `SetContains`): `set-remove` BORROWS the element, so drop it AFTER only
             // when it is an OWNED TEMPORARY. A BORROWED element (param / kept-local / a live sum-payload
@@ -7326,6 +7407,10 @@ fn emit(
                 // Compact BEFORE the tee so elem_slot holds the owned flat leaf the later drop reclaims.
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
             }
+            if key_needs_canonicalize(db, elem) {
+                // Canonicalize BEFORE the tee so elem_slot holds the fresh owned canonical elem the drop reclaims.
+                emit_key_canonicalize(db, elem, &elem_ty, high, scratch_ty, out)?; // [set, canon-elem]
+            }
             // OWNERSHIP GATE (mirrors `MapLookup`): `set-contains` BORROWS the element, so drop it AFTER
             // only when it is an OWNED TEMPORARY (a boxed scalar, a compacted rope, or a fresh owned
             // compound). A BORROWED String/compound element — a param / kept-local / a live sum-payload or
@@ -7396,6 +7481,10 @@ fn emit(
             if key_needs_compaction(db, key) {
                 // Compact BEFORE the tee so key_slot holds the owned flat leaf the later drop reclaims.
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
+            }
+            if key_needs_canonicalize(db, key) {
+                // Canonicalize BEFORE the tee so key_slot holds the fresh owned canonical key the drop reclaims.
+                emit_key_canonicalize(db, key, &key_ty, high, scratch_ty, out)?; // [map, canon-key]
             }
             // OWNERSHIP GATE: `map-lookup` BORROWS the key (never consumes it), so we drop it AFTER only
             // when it is an OWNED TEMPORARY (a boxed scalar, a compacted rope, or a fresh owned compound).
@@ -10689,6 +10778,73 @@ fn key_needs_compaction(db: &mut Db, key: StructId) -> bool {
         && matches!(heap_operand_ownership(db, key), Ok(HandleOwnership::Owned))
 }
 
+/// Whether a type CONTAINS a `List` anywhere (the type is a List, or a Tuple/Record/Sum/Nominal/Qty/Frame
+/// whose component does). A List is an RRB vector — element-canonical but NOT shape-canonical (a concat-
+/// built and a push-built equal-element list have different internal trees), so the tagless CHAMP byte-walk
+/// would place two EQUAL list values in different slots. When such a value is a Map/Set KEY, the key must be
+/// `value-canonicalize`d at the key site so the walk becomes exact. A Set/Map is NOT itself a list (it is
+/// canonical at its own level), but a list buried inside a Set-of-lists / Map-with-list-values is the
+/// documented residual `value_canonicalize_shaped` leaves — so we do NOT descend into Set/Map here (matching
+/// the runtime canonicalize, which dups a Set/Map as-is). `seen` breaks a recursive Sum.
+fn ty_contains_list(db: &mut Db, ty: &Ty, seen: &mut Vec<StructId>) -> bool {
+    match ty {
+        Ty::List(_) => true,
+        Ty::Tuple(elems) => {
+            let elems: Vec<Ty> = elems.to_vec();
+            elems.iter().any(|e| ty_contains_list(db, e, seen))
+        }
+        Ty::Record(fields) => {
+            let vals: Vec<Ty> = fields.values().cloned().collect();
+            vals.iter().any(|v| ty_contains_list(db, v, seen))
+        }
+        Ty::Sum { decl, .. } => {
+            if seen.contains(decl) {
+                return false;
+            }
+            seen.push(*decl);
+            let Some(variant_count) = db.type_decl_by_occ(*decl).map(|t| t.variants.len()) else {
+                seen.pop();
+                return false;
+            };
+            let mut found = false;
+            for disc in 0..variant_count {
+                let ctor = db
+                    .type_decl_by_occ(*decl)
+                    .and_then(|t| t.variants.get(disc))
+                    .and_then(|v| v.ctor);
+                if let Some(ctor) = ctor
+                    && let Some(payload_ty) =
+                        crate::infer::payload_ty_at_instantiation(db, ctor, ty)
+                    && ty_contains_list(db, &payload_ty, seen)
+                {
+                    found = true;
+                    break;
+                }
+            }
+            seen.pop();
+            found
+        }
+        Ty::Nominal { inner, .. } => {
+            let inner = (**inner).clone();
+            ty_contains_list(db, &inner, seen)
+        }
+        Ty::Qty { inner, .. } => {
+            let inner = (**inner).clone();
+            ty_contains_list(db, &inner, seen)
+        }
+        _ => false, // scalars, String, Bytes, Char, Set, Map (canonical at own level), Fn, etc.
+    }
+}
+
+/// Whether a Map/Set KEY must be `value-canonicalize`d before it reaches the tagless CHAMP key path: its
+/// type is a `List` or CONTAINS one. This is the `value-canonicalize` analogue of `key_needs_compaction`
+/// (which handles the String/Bytes-rope axis). Unlike a rope compaction, this reshapes the RRB spine, so it
+/// needs the key's shape descriptor baked at the key site (see the emit).
+fn key_needs_canonicalize(db: &mut Db, key: StructId) -> bool {
+    let ty = type_of(db, key);
+    ty_contains_list(db, &ty, &mut Vec::new())
+}
+
 /// Whether the key/element handle left on the stack after `emit` (+ optional box, + optional compact) is
 /// an OWNED TEMPORARY the frame must `drop` after a BORROWING key op (`map-lookup`/`set-contains`, which
 /// read the key without consuming it) — vs a BORROW of a live owner it must NOT drop. Owned iff the key
@@ -10709,9 +10865,70 @@ fn key_handle_is_owned_temporary(db: &mut Db, key: StructId, key_ty: &Ty) -> Res
     if key_needs_compaction(db, key) {
         return Ok(true); // an owned rope key → a fresh compacted flat leaf we drop
     }
+    if key_needs_canonicalize(db, key) {
+        return Ok(true); // a list-typed/-containing key → a FRESH owned canonical value we drop
+    }
     // An unboxed, uncompacted key is used as-is: drop it only if the operand is a fresh owned handle (a
     // constructor / call / const compound); a borrowed param/local/projection is left to its owner.
     Ok(heap_operand_ownership(db, key)? == HandleOwnership::Owned)
+}
+
+/// Emit the KEY CANONICALIZATION at a Map/Set key site: the boxed key handle is ON TOP OF THE STACK; replace
+/// it with its `value-canonicalize`d form so a list-typed/-containing key hashes into the correct CHAMP slot
+/// (the RRB-shape-canonicality fix). Bakes the key's shape descriptor into a fresh scratch Bytes slot (the
+/// same const-Bytes build `Core::ValueCmp` uses), calls `value-canonicalize(key, desc)` (→ a FRESH owned
+/// canonical key; the input is borrowed and its own reclamation is unchanged — value-canonicalize borrows),
+/// then drops the descriptor temporary. Declines if the key type has no bakeable descriptor (reject-don't-
+/// miscompile — the pre-fix byte-walk still applies, only the false-miss persists rather than a bad emit).
+/// Called ONLY when `key_needs_canonicalize` (a list-containing key). Two fresh i32 scratch slots (key stash
+/// + descriptor); `high` is advanced past them.
+fn emit_key_canonicalize(
+    db: &mut Db,
+    key: StructId,
+    key_ty: &Ty,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let Some(desc) = crate::lower::value_cmp_shape_descriptor(db, key_ty) else {
+        return Err(Reject::decline(
+            "list-key canonicalization: key type has no bakeable shape descriptor",
+        ));
+    };
+    // `value-canonicalize` BORROWS its input and returns a FRESH owned canonical value — so the RAW key on
+    // the stack must be reclaimed HERE iff it was an OWNED TEMPORARY (a fresh `List.concat`/build result),
+    // else it leaks; a BORROWED key (a param / kept-local / a live projection) is left to its owner (dropping
+    // it would free a live reference — a UAF). Mirrors the box/compact ownership discipline.
+    let raw_owned = matches!(heap_operand_ownership(db, key), Ok(HandleOwnership::Owned));
+    let key_slot = *high;
+    let desc_slot = *high + 1;
+    *high = desc_slot + 1;
+    scratch_ty.insert(key_slot, ValType::I32);
+    scratch_ty.insert(desc_slot, ValType::I32);
+    // Stash the raw key handle (top of stack), clearing the stack for the descriptor bake.
+    out.push(Lir::LocalSet(key_slot)); // [] (raw key stashed)
+    // Bake the descriptor Bytes into desc_slot (build then store — the ValueCmp bake pattern).
+    out.push(Lir::ConstI32(desc.len() as i32));
+    out.push(Lir::CallImport(OP_BYTES_ALLOC)); // [desc-buf]
+    for (j, &byte) in desc.iter().enumerate() {
+        out.push(Lir::ConstI32(j as i32));
+        out.push(Lir::ConstI32(byte as i32));
+        out.push(Lir::CallImport(OP_BYTES_SET)); // [desc-buf]
+    }
+    out.push(Lir::LocalSet(desc_slot)); // [] (descriptor stored)
+    // canonicalize(raw, desc) → fresh owned canonical key on the stack (replacing the raw key).
+    out.push(Lir::LocalGet(key_slot)); // [raw]
+    out.push(Lir::LocalGet(desc_slot)); // [raw, desc]
+    out.push(Lir::CallImport(OP_VALUE_CANONICALIZE)); // [canon-key] (borrows raw + desc)
+    // Drop the borrowed-only descriptor Bytes temporary (value-canonicalize borrowed it).
+    out.push(Lir::LocalGet(desc_slot));
+    out.push(Lir::CallImport(OP_DROP));
+    // Reclaim the raw key if it was an owned temporary (canonicalize only borrowed it).
+    if raw_owned {
+        out.push(Lir::LocalGet(key_slot));
+        out.push(Lir::CallImport(OP_DROP));
+    }
+    Ok(())
 }
 
 /// Whether a compound ELEMENT (tuple/record/list element, sum payload) is a rope-capable byte value — a

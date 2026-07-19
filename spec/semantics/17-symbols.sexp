@@ -112,6 +112,22 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "a genuinely-runtime symbol three-way compare agrees with the boolean ordering"
+  (doc    "The three-way `(compare x y)` over genuinely-runtime Symbols (`Symbol.of (String.concat s \"\")`
+           off a parameter, so no fold) yields the Ordering variant matching the boolean `<` above:
+           `(compare (mk \"alpha\") (mk \"beta\"))` is `Less` → 1 ('a'=0x61 < 'b'=0x62). core-semantics.md
+           #A Total Order Is Observed Through A Three-Way Comparison (the boolean ordering operators MUST
+           agree with the three-way comparison): the runtime Symbol compare desugars to the nested-if over
+           the SAME `Core::StrCmp` content-lexicographic byte walk the boolean `<` emits — no new runtime
+           op, both backends agree. The three-way twin of the runtime-Symbol `<` case above.")
+  (input  (do
+            (def (mk (: s String)) (Symbol.of (String.concat s "")))
+            (def (cmp (: x Symbol) (: y Symbol))
+              (match (compare x y) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+            (def (main) (cmp (mk "alpha") (mk "beta")))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "a symbol's identity is its content, not how the content was derived"
   (doc    "`(= (Symbol.of (String.concat \"map\" \"-insert\")) (Symbol.of \"map-insert\"))` is true: a
            Symbol interned from a COMPUTED string equals one interned from the literal of the same

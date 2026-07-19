@@ -3175,9 +3175,14 @@ fn rustc_roundtrip_two_disc_ge_1_nested_sum_variants_over_a_runtime_disc() {
     // hint can — each arm records ITS variant's payload type, and the two nested switches (`U`'s Option,
     // `V`'s Result) each resolve their subject by lookup. `f(5)` → `W.U(Some 5)` → 5; `f(-1)` →
     // `W.V(Ok 0)` → 0. Was a Rust-backend decline (`sum construction node is not a sum type`).
+    // `mk`'s body is a `match` (not a bare `if` of ctors) so the W is GENUINELY runtime — the match-into-if
+    // fusion does not see through a match-bodied call, so `(match (mk k) …)` keeps the two runtime nested
+    // switches this asserts (a bare-`if` `mk` would fuse the match into each branch and fold both switches
+    // away, eliminating the `Option::Some(__pay`/`Result::Ok(__pay` code). Semantics unchanged.
     let rs = compile_rust(
         "(module m (type W (A Int64) (U (Option Int64)) (V (Result Int64 Int64))) \
-           (def (f (: k Int64)) (match (if (> k 0) (W.U (Option.Some k)) (W.V (Result.Ok 0))) \
+           (def (mk (: k Int64)) (match (> k 0) (true (W.U (Option.Some k))) (false (W.V (Result.Ok 0))))) \
+           (def (f (: k Int64)) (match (mk k) \
                                   ((W.A h) h) ((W.U (Option.Some n)) n) ((W.U (Option.None)) -1) \
                                   ((W.V (Result.Ok o)) o) ((W.V (Result.Err e)) e))) (export f))",
     );

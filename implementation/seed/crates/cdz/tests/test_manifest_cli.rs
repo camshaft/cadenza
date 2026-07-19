@@ -1810,6 +1810,53 @@ fn a_param_requires_min_length_constrains_list_generation() {
     );
 }
 
+/// A GENUINELY-failing param-level `@requires` min-length property renders a counterexample of the correct
+/// IN-DOMAIN LENGTH — replayable, not a bogus `p([])`. The wrapper draws a floored-length list; the shrunk
+/// counterexample must DECODE with the same floor. This works because `synthesize` leaves the `(@ (requires
+/// …) …)` wrapper INTACT on the neutralized def (neutralizing only the test/exhaustive markers), so strip
+/// records the predicate into `db.requires` and `gen_ty_of_wrapper_param` re-applies the min_len floor on the
+/// decode side. Property: `@requires(len >= 2)` on a body that ALWAYS traps → the failing value must be a
+/// length-≥2 list (renderable + replayable), not the empty list (which violates the requires and can't
+/// replay). Store-guarded (compound heap value).
+#[test]
+fn a_failing_requires_min_length_property_renders_an_in_domain_length_counterexample() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — a compound generator builds a heap value"
+        );
+        return;
+    }
+    let d = dir("requires-min-len-render");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do (@ (requires (<= 2 (List.len xs))) \
+               (@ test (def (p (: xs (List Int64))) (trap \"always fails\")))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, _) = run(&["test", &f, "--seed", "0", "--trials", "20"]);
+    assert!(!ok, "the always-trapping property fails: {stdout}");
+    // The counterexample must be a list of length >= 2 (in-domain), NOT `p([])` — extract + count elements.
+    let ce = stdout
+        .lines()
+        .find(|l| l.contains("counterexample: p(["))
+        .unwrap_or("");
+    let inner = ce
+        .split("p([")
+        .nth(1)
+        .and_then(|s| s.split(']').next())
+        .unwrap_or("");
+    let len = if inner.trim().is_empty() {
+        0
+    } else {
+        inner.split(',').count()
+    };
+    assert!(
+        len >= 2,
+        "a failing @requires(len>=2) property renders an IN-DOMAIN (len>=2) counterexample, not p([]): {stdout}"
+    );
+}
+
 // NOTE: the two TESTED-tier `@test @ensures` integration tests (a true postcondition passes over trials; a
 // false one fails with a counterexample) MOVED OUT of this file in the `@ensures`-ownership lockstep. `@ensures`
 // enforcement — bare AND `@test`-stacked — is now v-verification's `verify_enforce::enforce` pass (it rewrites a

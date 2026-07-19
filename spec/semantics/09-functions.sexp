@@ -5221,3 +5221,32 @@
   (input  (do (def (main (: o (Option Int64))) (match o ((Some n) n) ((None _) -1))) (export main)))
   (call   main (: (Some 5) (Option Int64)))
   (output (: 5 Int64)))
+
+; ============================================================================================
+; MATCH-INTO-IF fusion (backend-independent Core opt, v-core-opt): a `match` over a SUM built through an
+; `if` pushes the match INTO each branch so each branch's constant constructor folds to the arm body —
+; `(match (if c (Some x) (None)) ((Some v) v) ((None) 0))` → `(if c x 0)`. The un-fused form built +
+; deconstructed a THROWAWAY sum per if-branch (heap alloc + box + arr-get/unbox to read the payload back);
+; the fused form is heap-free. These cases pin the OBSERVABLE VALUE unchanged on BOTH backends across both
+; branches (a miscompile if the fold altered a result); the byte/heap-count win is asserted in the lib test
+; `a_match_over_an_if_selected_sum_pushes_into_the_branches`.
+
+(case "a match over an if-selected Option folds through the then branch (Some)"
+  (doc    "`(match (if (> x 0) (Some x) (None)) ((Some v) v) ((None) 0))` at x=5 → the `if` selects `(Some
+           5)`, which the pushed-in match folds to the payload `5`. Value unchanged by the fusion.")
+  (input  (do (type Option (Some Int64) None)
+              (def (f (: x Int64)) (match (if (> x 0) (Option.Some x) Option.None)
+                                     ((Option.Some v) v) (Option.None 0)))
+              (export f)))
+  (call   f (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "a match over an if-selected Option folds through the else branch (None)"
+  (doc    "`(match (if (> x 0) (Some x) (None)) ((Some v) v) ((None) 0))` at x=-3 → the `if` selects
+           `(None)`, which the pushed-in match folds to the None arm body `0`. Value unchanged.")
+  (input  (do (type Option (Some Int64) None)
+              (def (f (: x Int64)) (match (if (> x 0) (Option.Some x) Option.None)
+                                     ((Option.Some v) v) (Option.None 0)))
+              (export f)))
+  (call   f (: -3 Int64))
+  (output (: 0 Int64)))

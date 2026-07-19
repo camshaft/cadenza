@@ -7,7 +7,7 @@ export default function Lists() {
   return (
     <article>
       <H1>Lists</H1>
-      <Lede>Ordered, immutable sequences — built and measured on the value heap.</Lede>
+      <Lede>Ordered, immutable sequences, built and measured on the value heap.</Lede>
 
       <P>
         A list is written with <C>list</C>. Lists are <em>persistent</em>: operations like{" "}
@@ -19,11 +19,11 @@ export default function Lists() {
       <H2>Building lists</H2>
       <P>
         <C>List.push</C> adds an element to the end; <C>List.concat</C> joins two lists. Each returns a
-        whole new list — Run this and you'll see the result, <C>(list 1 2 3)</C>, not just a count:
+        whole new list, so Run this and you'll see the result, <C>(list 1 2 3)</C>, not just a count:
       </P>
       <Runnable source={`(List.push (list 1 2) 3)`} />
       <P>
-        <C>List.concat</C> joins two lists into a new one — Run this and you see the whole joined list,{" "}
+        <C>List.concat</C> joins two lists into a new one, so Run this and you see the whole joined list,{" "}
         <C>(list 1 2 3 4 5)</C>, the two inputs laid end to end:
       </P>
       <Runnable source={`(List.concat (list 1 2) (list 3 4 5))`} />
@@ -31,8 +31,8 @@ export default function Lists() {
       <H2>Reaching in safely</H2>
       <P>
         <C>List.at</C> gets the element at an index. But what if the index is out of range? Rather than
-        crash, <C>List.at</C> returns an <C>Option</C> — <C>(Some x)</C> when the element exists,{" "}
-        <C>(None unit)</C> when it doesn't — which you take apart with <C>match</C>. Here index 1 exists,
+        crash, <C>List.at</C> returns an <C>Option</C>, either <C>(Some x)</C> when the element exists or{" "}
+        <C>(None unit)</C> when it doesn't, which you take apart with <C>match</C>. Here index 1 exists,
         so you get its value, <C>20</C>:
       </P>
       <Runnable
@@ -43,23 +43,23 @@ export default function Lists() {
       />
       <P>
         Change the index <C>1</C> to <C>9</C> and Run: the lookup misses, the <C>None</C> arm fires,
-        and you get <C>-1</C> — no crash, just a value that says "nothing there".
+        and you get <C>-1</C>, no crash, just a value that says "nothing there".
       </P>
 
       <Why tenet="Partiality is data, not a trap">
-        Reading past the end of a list, looking up a missing key, decoding bad text — in Cadenza these
+        Reading past the end of a list, looking up a missing key, decoding bad text: in Cadenza these
         yield an <C>Option</C> (or a result), never a crash or a garbage value. Absence is an ordinary
         value your program <em>handles</em>. If you ever do want "crash on missing", that's a single,
-        explicit operation that demands a message — so the one place a program turns absence into a halt
+        explicit operation that demands a message, so the one place a program turns absence into a halt
         is visible right where it happens, not hidden inside every accessor.
       </Why>
 
-      <H2>Updating a slot — without touching the original</H2>
+      <H2>Updating a slot without touching the original</H2>
       <P>
         <C>List.update</C> takes a list, an index, and a new value, and hands back a list with that one
         slot changed. The word "update" is doing something specific here: it does <em>not</em> reach into
-        your list and overwrite a slot — nothing in Cadenza does that. It builds a <em>new</em> list. The
-        old one is still exactly what it was. This snippet proves it — bind a list, make a bumped version,
+        your list and overwrite a slot, since nothing in Cadenza does that. It builds a <em>new</em> list. The
+        old one is still exactly what it was. This snippet proves it: bind a list, make a bumped version,
         then read the original back:
       </P>
       <Runnable
@@ -71,19 +71,19 @@ export default function Lists() {
       />
       <P>
         The answer is <C>20</C>, not <C>99</C>: <C>original</C> never changed. The <C>99</C> lives only in{" "}
-        <C>bumped</C>. Swap <C>original</C> for <C>bumped</C> in the <C>List.at</C> line and Run again —
-        now you'll see <C>99</C>. Two lists, sharing most of their structure under the hood, each with its
+        <C>bumped</C>. Swap <C>original</C> for <C>bumped</C> in the <C>List.at</C> line and Run again to
+        see <C>99</C>. Two lists, sharing most of their structure under the hood, each with its
         own value.
       </P>
       <P>
-        Return the updated list itself and you can see the change in place — one slot different,{" "}
+        Return the updated list itself and you can see the change in place, one slot different,{" "}
         <C>(list 10 99 30)</C>, and the input <C>(list 10 20 30)</C> still intact wherever else it's held:
       </P>
       <Runnable source={`(List.update (list 10 20 30) 1 99)`} />
 
       <Why tenet="Immutable, persistent values">
         Every value in Cadenza is immutable; an "update" always produces a fresh value and leaves every
-        existing reference untouched. That's not just tidiness — it's what makes the whole system tractable.
+        existing reference untouched. That's not just tidiness; it's what makes the whole system tractable.
         Because values can never form a cycle, the runtime reclaims memory by simple reference counting, no
         garbage collector needed. Because a list you handed to a function can't change underneath you,
         there's a whole class of aliasing bug that simply cannot happen. And whether a list is stored as a
@@ -93,7 +93,7 @@ export default function Lists() {
 
       <H2>Lists through functions</H2>
       <P>
-        A function can take a list and compute over it — the element type rides along, so <C>count</C>{" "}
+        A function can take a list and compute over it, and the element type rides along, so <C>count</C>{" "}
         works on a list of any element type:
       </P>
       <Runnable
@@ -101,12 +101,12 @@ export default function Lists() {
 (def (main) (count (list 10 20 30 40)))`}
       />
       <P>
-        Four elements in, so <C>4</C> out — and you never wrote the element type: <C>count</C> works on a
+        Four elements in, so <C>4</C> out, and you never wrote the element type: <C>count</C> works on a
         list of anything, because <C>List.len</C> doesn't care what the elements are.
       </P>
       <P>
         To visit <em>every</em> element, match the list by shape. A <C>match</C> on a list has two
-        cases: the empty list <C>(list)</C>, and a non-empty one <C>(list x .. rest)</C> — which binds the
+        cases: the empty list <C>(list)</C>, and a non-empty one <C>(list x .. rest)</C>, which binds the
         first element to <C>x</C> and the <em>rest</em> of the list to <C>rest</C>. Recurse on <C>rest</C>{" "}
         and you fold over the whole list. Here <C>sum</C> adds the elements:
       </P>
@@ -118,7 +118,7 @@ export default function Lists() {
 (def (main) (sum (list 10 20 30)))`}
       />
       <P>
-        The empty case is the base case — <C>0</C>, the sum of nothing — and each step peels off one
+        The empty case is the base case, <C>0</C>, the sum of nothing, and each step peels off one
         element and sums the rest, so <C>(list 10 20 30)</C> is <C>10 + (20 + (30 + 0))</C> = <C>60</C>.
         Toggle to the ML surface and the pattern reads as <C>[x, .. rest]</C>, the shape spelled out. You
         didn't declare the element type either: it flows from the <C>+</C>, so <C>sum</C> is inferred over
@@ -127,7 +127,7 @@ export default function Lists() {
 
       <P>
         A list holds every element at once. Sometimes you want the elements without ever building the
-        whole sequence — even an endless one. That's an <em>iterator</em>, next.
+        whole sequence, even an endless one. That's an <em>iterator</em>, next.
       </P>
 
       <H2>Your turn</H2>
@@ -148,7 +148,7 @@ export default function Lists() {
         expected="50"
         hint={
           <>
-            <C>List.update</C> takes the list, the index (<C>0</C>), and the new value (<C>50</C>) — in that
+            <C>List.update</C> takes the list, the index (<C>0</C>), and the new value (<C>50</C>), in that
             order. Then <C>List.at … 0</C> reads the slot you just set.
           </>
         }
@@ -158,7 +158,7 @@ export default function Lists() {
         id="lists:2"
         prompt={
           <>
-            Add the single element <C>99</C> to the end of <C>(list 10 20 30)</C>, then ask its length — a
+            Add the single element <C>99</C> to the end of <C>(list 10 20 30)</C>, then ask its length, so a
             three-element list grows to <C>4</C>. Which operation appends <em>one element</em>,{" "}
             <C>push</C> or <C>concat</C>? Fill in the blank.
           </>
@@ -178,7 +178,7 @@ export default function Lists() {
         id="lists:3"
         prompt={
           <>
-            Here's the same fold shape as <C>sum</C>, but <em>multiplying</em> — and this time the recursive
+            Here's the same fold shape as <C>sum</C>, but <em>multiplying</em>, and this time the recursive
             step is written for you; the <em>empty</em> case is the hole. What should <C>prod</C> of the
             empty list be, so that folding <C>(list 1 2 3 4)</C> gives <C>24</C>? Fill in the base case.
           </>
@@ -196,8 +196,8 @@ export default function Lists() {
         expected="24"
         hint={
           <>
-            The base case has to be the value that leaves a product unchanged — multiply by it and nothing
-            happens. For <C>+</C> that identity was <C>0</C>; for <C>*</C> it's <C>1</C>. (Try <C>0</C> and
+            The base case has to be the value that leaves a product unchanged, so multiplying by it does nothing.
+            For <C>+</C> that identity was <C>0</C>; for <C>*</C> it's <C>1</C>. (Try <C>0</C> and
             watch the whole product collapse to <C>0</C>.)
           </>
         }

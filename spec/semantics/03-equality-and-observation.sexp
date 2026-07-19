@@ -1450,6 +1450,35 @@
   (input  (compare "a" "b"))
   (output (: (Less unit) Ordering)))
 
+(case "the three-way comparison over a genuinely-runtime String computes content-lexicographically"
+  (doc    "The String case above compares CONSTANT strings (folded before emit). Forcing genuinely-runtime
+           strings — `(String.concat s \"z\")` off a parameter, so neither operand is compile-time known —
+           makes `compare` WALK the content: `(compare (mk \"a\") (mk \"b\"))` is `Less` → 1 ('az' before
+           'bz', content-lexicographic over Unicode scalars, collections-and-text.md #String Comparison Is
+           Defined On Scalar Values). No new runtime op — the three-way desugars to the nested-if over the
+           SAME `Core::StrCmp` byte-lex walk the boolean String `<`/`>` emit, so the two surfaces agree at
+           runtime (§331) on both backends.")
+  (input  (do
+            (def (mk (: s String)) (String.concat s "z"))
+            (def (cmp (: x String) (: y String))
+              (match (compare x y) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+            (def (main) (cmp (mk "a") (mk "b")))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "the three-way comparison over an equal runtime String yields Equal"
+  (doc    "`(compare (mk \"m\") (mk \"m\"))` over runtime strings (built via concat off a literal, so the
+           two share content but are distinct allocations) yields `Equal` → 2 — the content-lexicographic
+           walk reports equality by CONTENT, not allocation identity (memory-and-resource-model.md #Sharing
+           Is Not Observable). The middle-variant companion of the runtime-String Less case.")
+  (input  (do
+            (def (mk (: s String)) (String.concat s "!"))
+            (def (cmp (: x String) (: y String))
+              (match (compare x y) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+            (def (main) (cmp (mk "m") (mk "m")))
+            (export main)))
+  (output (: 2 Int64)))
+
 (case "the three-way comparison orders Float64 by numeric value — Less"
   (doc    "`(compare 1.5 2.5)` is `(Ordering.Less unit)`: Float64 offers the same total order the numeric
            model defines for it, and `compare` reports it as the Less variant exactly as over Int64

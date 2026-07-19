@@ -805,6 +805,16 @@ pub mod exports {
                     let result0 = T::value_cmp(arg0 as u32, arg1 as u32, arg2 as u32);
                     _rt::as_i32(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_value_canonicalize_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::value_canonicalize(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -1243,6 +1253,21 @@ pub mod exports {
                     ///    constant). Consistent with `value-eq`: `value-cmp == 0` iff `value-eq == true`. APPENDED last
                     ///    (frozen-contract rule). See `value_cmp_shaped`.
                     fn value_cmp(a: u32, b: u32, desc: u32) -> i32;
+                    /// 86 — blessed three-way order (-1/0/1, 2=unordered; borrows a+b)
+                    ///  value-canonicalize(a, desc) -> handle
+                    ///    The blessed CANONICAL form of a runtime value of the type `desc` describes: a fresh OWNED value that
+                    ///    is byte-identical for any two values EQUAL as values, regardless of how each was constructed. Emitted
+                    ///    at a Map/Set KEY site for a list-typed (or list-containing) key: a List is an RRB vector that is
+                    ///    element-canonical but NOT shape-canonical (a concat-built and a push-built list with the same
+                    ///    elements have different internal trees), so the tagless `champ_hash`/`champ_eq` byte-walk would place
+                    ///    construction-equal list keys in DIFFERENT slots — a false-miss violating `collections-and-text.md`
+                    ///    #162 (a key's identity is construction-independent). This rebuilds every list to its unique strict
+                    ///    left-full shape (recursing through list-containing compounds), so the byte-walk becomes exact.
+                    ///    Ownership: BORROWS `a` (the caller retains/releases it) and `desc` (a constant); returns a FRESH
+                    ///    owned handle the caller drops after a borrowing key op, exactly like a `bytes-compact`ed rope key. A
+                    ///    malformed descriptor declines to an identity dup of `a` (never a trap, never a leak) — total.
+                    ///    APPENDED last (frozen-contract rule). See `value_canonicalize_shaped`.
+                    fn value_canonicalize(a: u32, desc: u32) -> u32;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1557,7 +1582,11 @@ pub mod exports {
                         } #[unsafe (export_name = "cadenza:runtime/heap#value-cmp")]
                         unsafe extern "C" fn export_value_cmp(arg0 : i32, arg1 : i32,
                         arg2 : i32,) -> i32 { unsafe { $($path_to_types)*::
-                        _export_value_cmp_cabi::<$ty > (arg0, arg1, arg2) } } };
+                        _export_value_cmp_cabi::<$ty > (arg0, arg1, arg2) } } #[unsafe
+                        (export_name = "cadenza:runtime/heap#value-canonicalize")] unsafe
+                        extern "C" fn export_value_canonicalize(arg0 : i32, arg1 : i32,)
+                        -> i32 { unsafe { $($path_to_types)*::
+                        _export_value_canonicalize_cabi::<$ty > (arg0, arg1) } } };
                     };
                 }
                 #[doc(hidden)]
@@ -1766,9 +1795,9 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2152] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xea\x0f\x01A\x02\x01\
-A\x02\x01B\x88\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2189] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x8f\x10\x01A\x02\x01\
+A\x02\x01B\x8a\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0\
 x\x04\0\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bool\x01\x02\x01@\x01\
 \x06handley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\x04\0\x09box-float\
 \x01\x04\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01@\x01\x03leny\0y\x04\
@@ -1812,10 +1841,11 @@ my\x03deny\0y\x04\0\x0brational-of\x01,\x01@\x01\x01ry\0y\x04\0\x0crational-num\
 \x01\x1d\x04\0\x0crational-mul\x01\x1d\x04\0\x0crational-div\x01\x1d\x04\0\x0cra\
 tional-cmp\x01+\x04\0\x0fbigint-of-bytes\x01\x0e\x01@\x02\x01sy\x04descy\0y\x04\0\
 \x0bset-to-list\x01.\x01@\x02\x01my\x04descy\0y\x04\0\x0bmap-to-list\x01/\x04\0\x0e\
-str-from-bytes\x01\x0e\x01@\x03\x01ay\x01by\x04descy\0z\x04\0\x09value-cmp\x010\x04\
-\0\x14cadenza:runtime/heap\x05\0\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\
-\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x07\
-0.227.1\x10wit-bindgen-rust\x060.41.0";
+str-from-bytes\x01\x0e\x01@\x03\x01ay\x01by\x04descy\0z\x04\0\x09value-cmp\x010\x01\
+@\x02\x01ay\x04descy\0y\x04\0\x12value-canonicalize\x011\x04\0\x14cadenza:runtim\
+e/heap\x05\0\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\
+\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-\
+bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

@@ -111,8 +111,8 @@ pub fn synthesize(ast: &mut Arenas) {
     // Find each `(@ test (def SIG BODY))` item whose SIG has exactly one `(: name (List ELEM))` param
     // with ELEM an integer type. Record (item index, def-name occ text, param count) to synthesize for.
     let mut plans: Vec<TestPlan> = Vec::new();
-    for (idx, &item) in items.iter().enumerate() {
-        if let Some(plan) = plan_for_item(ast, idx, item, &items) {
+    for &item in &items {
+        if let Some(plan) = plan_for_item(ast, item, &items) {
             plans.push(plan);
         }
     }
@@ -120,22 +120,29 @@ pub fn synthesize(ast: &mut Arenas) {
         return;
     }
 
-    // Neutralize each planned `(@ test (def …))` IN PLACE: rewrite the annotation node to BE its inner
-    // `(def …)` (adopt the def's children). This matters because `strip_annotations` (which runs after
-    // this pass) scans EVERY arena node, not just root-reachable ones — so merely dropping the annotation
-    // from the root's child list would leave the orphaned `(@ test …)` node behind, and `strip_annotations`
-    // would still record the original compound-param def as a test (→ the boundary decline we are avoiding).
-    // Rewriting in place makes the original a plain `(def …)` everywhere: no longer a test, just the
-    // wrapper's callee. (Mirrors `strip_annotations`'s own in-place unwrap.)
+    // Neutralize ONLY the `@test`/`@exhaustive` MARKER layers of each plan IN PLACE: rewrite that annotation
+    // node to BE its inner `(def …)` (adopt the def's children). `strip_annotations` (which runs after this
+    // pass) scans EVERY arena node, not just root-reachable ones — so an orphaned `(@ test …)`/`(@ exhaustive …)`
+    // left behind would make it re-record the original compound-param def as a test → the boundary decline we
+    // are avoiding. So the test-marker layers MUST be neutralized. But a `(@ (requires Q) …)`/`(@ (ensures Q) …)`
+    // VERIFICATION layer is DELIBERATELY LEFT INTACT: strip records its predicate into `db.requires`/`db.ensures`
+    // (keyed on the now-plain def) — which the DECODER reads (`gen_ty_of_wrapper_param`) to re-apply a
+    // param-level `@requires` min-length floor, so a shrunk counterexample renders the correct in-domain LENGTH
+    // (not `p([])` for a `len>=2` property). Neutralizing the requires layer too would drop that predicate and
+    // desync the decode. `plan.nested_anns` holds every `@` layer (outermost-first, incl. `item`); rewrite the
+    // test/exhaustive ones, skip requires/ensures.
     for plan in &plans {
         if let crate::ast::Struct::List(inner_children) = ast.get(plan.inner_def).clone() {
-            let item = items[plan.item_idx];
-            ast.structure[item.0 as usize] = crate::ast::Struct::List(inner_children.clone());
-            // A stacked `@exhaustive @test` leaves a MIDDLE `(@ test (def…))` node in the arena; rewrite it
-            // to the def too, so `strip_annotations`'s full-arena scan does not re-record the compound def
-            // as a test (which would revive the boundary decline).
-            for &mid in &plan.nested_anns {
-                ast.structure[mid.0 as usize] = crate::ast::Struct::List(inner_children.clone());
+            for &layer in &plan.nested_anns {
+                let is_test_marker = ast
+                    .as_form(layer, "@")
+                    .and_then(|l| l.first())
+                    .and_then(|&h| ast.as_name(h))
+                    .is_some_and(|n| n == "test" || n == "exhaustive");
+                if is_test_marker {
+                    ast.structure[layer.0 as usize] =
+                        crate::ast::Struct::List(inner_children.clone());
+                }
             }
         }
     }
@@ -165,7 +172,6 @@ pub fn synthesize(ast: &mut Arenas) {
 /// node (the `@test` unwrapped), the def name (the wrapper calls `(NAME arg…)`), and the `GenTy` for EACH
 /// parameter (the wrapper builds + passes one `<gen:T>` per param, in order).
 struct TestPlan {
-    item_idx: usize,
     inner_def: StructId,
     /// The def's name as text (e.g. `"p"`) — the wrapper calls `(p <gen-arg>…)`.
     def_name: String,
@@ -246,12 +252,7 @@ pub enum GenTy {
 
 /// Recognize `(@ test (def (NAME (: PARAM (List ELEM))) BODY))` with ELEM an integer type; return its
 /// plan, or `None` if the item is not such a test.
-fn plan_for_item(
-    ast: &Arenas,
-    item_idx: usize,
-    item: StructId,
-    items: &[StructId],
-) -> Option<TestPlan> {
+fn plan_for_item(ast: &Arenas, item: StructId, items: &[StructId]) -> Option<TestPlan> {
     // `(@ NAME INNER)` where NAME is `test` or `exhaustive` — the two annotations that mark a property
     // test this pass synthesizes a generator wrapper for. `@exhaustive` is included so a COMPOUND-param
     // `@exhaustive` def gets a wrapper too (else its compound param declines at the export boundary,
@@ -358,7 +359,6 @@ fn plan_for_item(
             // (layout reports "parameter type is ambiguous"); returning None here keeps that path unchanged.
             None if is_compound_form => {
                 return Some(TestPlan {
-                    item_idx,
                     inner_def: inner,
                     wrapper_name: format!("{def_name}-gen"),
                     def_name,
@@ -375,7 +375,6 @@ fn plan_for_item(
         return None; // all-scalar signature — the boundary-arg route handles it; no wrapper
     }
     Some(TestPlan {
-        item_idx,
         inner_def: inner,
         // Suffix `-gen`: a hyphen-delimited segment that begins with a letter, so the wrapper name is a
         // valid component extern name (an extern name's `-`-separated segments must each start with a
@@ -431,14 +430,28 @@ pub fn gen_ty_of_wrapper_param(db: &crate::db::Db, wrapper_name: &str) -> Option
     // the GENERATOR ran pre-strip and DID constrain it, so the decoder must match or a counterexample renders
     // the raw pool int (e.g. `Pct(-716…)`) instead of the in-domain value. Re-apply via `Db::invariant_of`.
     reapply_recorded_invariant(db, &mut gt);
-    // NOTE: a param-level `@requires` MIN-LENGTH is applied to GENERATION (plan_for_item) but NOT re-applied
-    // here on the DECODE side — because `synthesize` NEUTRALIZES the `(@ (requires …) …)` wrapper (rewrites it
-    // to the def) before `strip_annotations` runs, so `db.requires_of` does not carry the predicate for this
-    // def. Consequence: a GENUINELY-failing min-length `@requires` property renders a wrong-LENGTH list in the
-    // counterexample (the decode count-draw uses min_len 0, not the floored min). The spurious-FAILURE bug (a
-    // too-short draw tripping the pre) IS fixed by the generation-side floor; only the counterexample RENDER
-    // of a real failure is affected. Fixing it needs `synthesize` to preserve the `@requires` wrapper on the
-    // neutralized def (so strip records it) — a larger change that risks the verify_enforce seam; deferred.
+    // RE-APPLY a param-level `@requires` MIN-LENGTH on the DECODE side, matching the generation-side floor
+    // (`plan_for_item`). `synthesize` deliberately LEAVES the `(@ (requires …) …)` wrapper intact on the
+    // neutralized def (it neutralizes only the test/exhaustive markers), so `strip_annotations` records the
+    // predicate into `db.requires` and `db.requires_of(def)` carries it here. Floor the `(List …)` param's
+    // `min_len` so the shrunk counterexample decodes the SAME count the generator drew (a bare-min decode
+    // would render a wrong LENGTH — `p([])` for a `len>=2` property, which a user can't even replay).
+    if let GenTy::List(_, ml) = &mut gt
+        && let Some(pname) = db
+            .ast
+            .as_form(param, ":")
+            .and_then(|t| t.first())
+            .and_then(|&n| db.ast.as_name(n))
+    {
+        let floor = db
+            .requires_of(def)
+            .iter()
+            .filter_map(|&q| min_len_for_param(&db.ast, q, pname))
+            .max();
+        if let Some(m) = floor {
+            *ml = (*ml).max(m);
+        }
+    }
     Some(gt)
 }
 

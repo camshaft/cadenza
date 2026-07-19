@@ -324,6 +324,7 @@ pass	a List-returning closure alongside a plain export — the plain
 pass	a MAP built from generated pairs is equal regardless of insertion order (the Map analogue of set convergence)
 pass	a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds
 pass	a MIXED Int-and-Float Tuple closure ARG flattens + rebuilds (box-int + box-float)
+pass	a MULTI-LEVEL concat-built list map key (n>=33) is found by a push-built equal key
 pass	a MULTI-PAYLOAD variant with a nested same-sum variant reads the right payload depth (known outer disc)
 pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
 pass	a MULTI-shot arm folds a perform in a let-bound lambda applied in the body
@@ -967,6 +968,7 @@ pass	a genuinely-runtime negative right-shift count traps rather than masking
 pass	a genuinely-runtime shift count that is a multiple of 2^32 traps rather than truncating to zero
 pass	a genuinely-runtime subtraction underflow at the minimum traps
 pass	a genuinely-runtime symbol orders by content-lexicographic byte order
+pass	a genuinely-runtime symbol three-way compare agrees with the boolean ordering
 pass	a grafted template is structurally equal to the directly-quoted tree
 pass	a guard combines the payload binder with the rest binder
 pass	a guard compares two distinct sum payloads from one tuple
@@ -1255,6 +1257,8 @@ pass	a match on an open sum with an open-tail arm is exhaustive
 pass	a match on an uninhabited scrutinee is exhaustive with zero arms
 pass	a match on the result of a match threads sum values through nested control flow
 pass	a match over a statically-known constructor with a runtime payload elides the dispatch
+pass	a match over an if-selected Option folds through the else branch (None)
+pass	a match over an if-selected Option folds through the then branch (Some)
 pass	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 pass	a match over multiple nullary constructors with uniform patterns
 pass	a match pattern naming a non-existent variant is a coded rejection
@@ -1396,6 +1400,7 @@ pass	a negative zero in a record field is distinct from positive zero
 pass	a negative zero nested in a tuple is distinct from positive zero
 pass	a negative-power SI prefix converts over Float
 pass	a negative-power SI prefix is an exact rational scale
+pass	a nested @!param is a misplaced module directive (CDZ0602), not a module parameter
 pass	a nested Ast.List match falls through when the inner leaf variant differs
 pass	a nested Ast.List match over a constant quote reads the deep leaf at the right depth
 pass	a nested OR by the same constant collapses to a single OR
@@ -1800,6 +1805,8 @@ pass	a runtime BigInt is found as a Set element by value
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime BigInt remainder takes the dividend's sign
+pass	a runtime BigInt three-way compare agrees with the boolean ordering
+pass	a runtime BigInt three-way compare reports equality as Equal
 pass	a runtime Bytes rope in a SUM payload compares equal to its flat twin
 pass	a runtime Bytes rope in a record field compares equal to its flat twin
 pass	a runtime Bytes rope is found as a Set element by its flat twin
@@ -1830,6 +1837,8 @@ pass	a runtime Option carrying a user sum is matched by a nested constructor pat
 pass	a runtime Rational MAP KEY is found by a normalized-equal key
 pass	a runtime Rational built from a parameter compares by its exact value
 pass	a runtime Rational comparison of a parameter is false when it should be
+pass	a runtime Rational three-way compare agrees with the boolean ordering
+pass	a runtime Rational three-way compare reports the greater operand as Greater
 pass	a runtime Result carrying a String error is matched
 pass	a runtime Result constructed from a condition selects its Ok or Err arm
 pass	a runtime SIGNED nibble truncation sign-extends from the top kept bit
@@ -3697,9 +3706,11 @@ pass	the three-way comparison orders chars by scalar value — Equal
 pass	the three-way comparison orders chars by scalar value — Greater
 pass	the three-way comparison orders chars by scalar value — Less
 pass	the three-way comparison orders strings lexicographically
+pass	the three-way comparison over a genuinely-runtime String computes content-lexicographically
 pass	the three-way comparison over a runtime greater scalar yields Greater
 pass	the three-way comparison over a runtime lesser scalar yields Less
 pass	the three-way comparison over a runtime scalar performs the operand exactly once
+pass	the three-way comparison over an equal runtime String yields Equal
 pass	the three-way comparison over equal runtime scalars yields Equal
 pass	the three-way comparison over runtime booleans orders false before true
 pass	the true-literal coercion of a float ordering compare returns the compare, NaN stays false
