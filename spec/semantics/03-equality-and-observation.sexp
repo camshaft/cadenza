@@ -372,6 +372,44 @@
             (export main)))
   (declines))
 
+; The two carve-outs above are on the BOOLEAN `<` path; the three-way `compare` mirrors them. A float
+; `compare` DECLINES because a floating-point type is the IEEE PARTIAL order (§319 / numeric-model: the
+; relational operators are a DISTINCT facility from the total order `compare` reports), so it offers no
+; three-way comparison at all — the fix is the relational operators, which DO work on floats. This is the
+; three-way twin of the float-compound `<` decline; distinct from it in that a BARE float `<` COMPUTES (the
+; IEEE partial order) while a bare float `compare` cannot exist (there is no total order to report).
+(case "a runtime float compare declines — a float offers the IEEE partial order, not a total three-way"
+  (doc    "`(compare a b)` over runtime Float64 params asks for a THREE-WAY total-order comparison, but a
+           floating-point type offers only the IEEE partial order (a not-a-number is unordered), so it has no
+           `compare` — it DECLINES on all backends (reject-don't-miscompile, §319). Contrast the runtime scalar/
+           String/BigInt/Rational `compare` cases, which compute: those types offer a total order, float does
+           not. The actionable path is the relational operators `<`/`<=`/`>`/`>=`, which DO work on floats
+           (the IEEE partial order). The three-way twin of the float-compound ordering decline above.")
+  (input  (do
+            (def (main (: a Float64) (: b Float64))
+              (match (compare a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+            (export main)))
+  (declines))
+
+; A runtime COMPOUND `compare` is orderable (all-orderable leaves) but the descriptor-guided `value-cmp`
+; three-way heap walk is not wired yet — a genuine NOT-YET (distinct from the float permanent carve-out). The
+; boolean compound `<` already COMPUTES via `Core::ValueCmp`; the three-way `compare` over the same value
+; awaits the value-cmp emit carrying `op=Compare` (owned by v-runtime). This case pins the current decline so a
+; future value-cmp-Compare emit flips it to an executing witness rather than silently changing behavior.
+(case "a runtime compound compare declines pending the value-cmp three-way heap walk"
+  (doc    "`(compare (tuple a 1) (tuple b 1))` over runtime Int64-leaf tuples is orderable (every leaf offers a
+           total order), but the three-way `compare` over a COMPOUND needs the descriptor-guided `value-cmp`
+           heap walk (returning the Ordering sum from the raw -1/0/1), which is not yet emitted — so it DECLINES
+           (a genuine not-yet, NOT the float permanent carve-out). The boolean compound `<` on the same tuples
+           already computes (via the value-cmp walk coerced to bool); only the three-way surface awaits the
+           value-cmp emit carrying op=Compare. Pins the reject so the future emit flips it to a witness.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (match (compare (tuple a 1) (tuple b 1))
+                ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+            (export main)))
+  (declines))
+
 ; The §313-vs-§319 SPLIT made concrete: the SAME float-containing compound that DECLINES ordering (above)
 ; still EQUALITY-compares. Float EQUALITY follows the canonical byte form (§313, total — NaN canonicalized,
 ; ±0 distinct), so a float leaf inside a compound is equality-comparable by its bytes even though it is not

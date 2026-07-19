@@ -7501,9 +7501,9 @@ pub(crate) fn check_binding_pattern(
     // name→index mapping handled by `runtime_member_index` where the record type is solved. This shape is
     // more flexible than a tuple: a PARTIAL record pattern `(record (x a))` over `(Record (x …)(y …))` binds
     // only `x` and is still irrefutable (a record pattern names the fields it wants; the rest are ignored),
-    // whereas a tuple pattern must match the full arity.
-    //= spec/capabilities/core-semantics.md#a-binding-position-accepts-an-irrefutable-pattern
-    //# A record pattern whose every named field's sub-pattern is irrefutable is itself irrefutable, matched recursively to any depth in the sense of *Patterns Compose*; it binds the named fields' sub-values and ignores any unnamed field, so a record pattern may name a subset of the record's fields.
+    // whereas a tuple pattern must match the full arity. (Record-pattern irrefutability is governed by the
+    // general §A Binding Position Accepts An Irrefutable Pattern sentence, cited above at the binding-position
+    // entry — the spec has no record-pattern-specific sentence to //# here, so no dedicated citation.)
     if let Some(fields) = db.ast.as_form(pat, "record").map(<[_]>::to_vec) {
         // Linearity across the WHOLE pattern (CDZ0102) — two field values may not bind the same name.
         check_pattern_linear(db, pat)?;
@@ -17433,7 +17433,7 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
             // carry a trap or a perform (`(compare (/ a b) c)`), and re-emitting its computation would
             // double-evaluate it (the same materialize-once discipline the runtime bin-match scrutinee uses).
             //= spec/capabilities/core-semantics.md#a-total-order-is-observed-through-a-three-way-comparison
-            //# The boolean ordering operators MUST agree with the three-way comparison.
+            //# The boolean ordering operators MUST agree with the three-way comparison, so that a type has one total order surfaced two ways that cannot disagree.
             // Float is NOT covered — a runtime float `compare` (a NaN operand is unordered) and a general
             // compound operand (the descriptor-guided `value-cmp` heap walk, a later slice pending the
             // `value-cmp` emit) still decline here. Every OTHER machine-orderable runtime type — Int/Bool
@@ -17456,8 +17456,24 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
             };
             match kind {
                 Some(kind) => lower_runtime_compare(db, id, lhs, rhs, (lt, eq, gt), kind),
+                // Neither a machine-orderable runtime type nor a constant fold. Two distinct reasons, kept
+                // as SEPARATE messages (accuracy matters — every scalar/String/Symbol/BigInt/Rational
+                // `compare`, constant or runtime, now computes, so the old blanket "constant scalars only"
+                // is wrong):
+                //  • a FLOAT operand does not OFFER a three-way `compare` — a floating-point type is the IEEE
+                //    PARTIAL order (a NaN is unordered), NOT the total order `compare` reports, so this is a
+                //    permanent CARVE-OUT, not a not-yet (§319 / numeric-model §the floating-point relational
+                //    operators are a distinct facility). The fix is to use the boolean relational operators
+                //    (`<`/`<=`/`>`/`>=`), which DO work on floats.
+                //  • a COMPOUND operand (tuple/record/list/sum) is orderable but the descriptor-guided
+                //    `value-cmp` three-way heap walk is not wired yet — a genuine not-yet.
+                //= spec/capabilities/core-semantics.md#ordering-where-offered-is-total
+                //# A floating-point type MUST NOT be treated as offering an ordering in the sense of this section, because its relational operators are the IEEE partial order defined for the floating-point type rather than a total order — so the requirement that an offered ordering be total does not apply to the floating-point relational operators.
+                None if float_operand(db, &operands) => Core::Poison(Reject::decline(
+                    "`compare` needs a total order, but a floating-point type offers only the IEEE partial order (a not-a-number is unordered), so it has no three-way comparison — use the relational operators `<`, `<=`, `>`, `>=` instead",
+                )),
                 None => Core::Poison(Reject::decline(
-                    "compare of a runtime/compound operand (or a NaN pair) is not yet computed (constant scalars only)",
+                    "`compare` of a compound value (a tuple, record, list, or sum) needs the value-cmp heap walk, which is not yet built — compare its components individually for now",
                 )),
             }
         }
