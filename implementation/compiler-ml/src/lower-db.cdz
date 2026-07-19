@@ -233,4 +233,14 @@ def lw-annlit-signed-narrow() =
       | Option.Some(c) => (if is-cnum-w(c, 0 - 5, true, 8) then unit else trap("Int8 -5 lowers to CNum(-5, signed, 8)"))
       | Option.None(_) => trap("a signed annotated literal lowers")))
 
+@test
+def lw-napp-has-no-core-slice1() =
+  // SLICE-1 CONTRACT pin: a call node NApp has NO core form yet — infer types it TErr, so lower-node declines
+  // it before reaching the NApp arm (which returns None as the exhaustive-match backstop). So lower-tree over
+  // a NApp is None. Pins the "a call has no core until the def-table slice" behavior; a future change that
+  // lowers NApp (nullary = inline the callee body) must UPDATE this. NApp has no producing Tok — build directly.
+  (match add-node(empty-tree(), Node.NLit(42)) with | (bodyId, t1) =>
+    (match add-node(t1, Node.NApp(bodyId, 0 - 1)) with | (root, tree) =>
+      (match lower-tree(tree, root) with | Option.None(_) => unit | Option.Some(_) => trap("a NApp call has no core form until the def-table slice lowers it"))))
+
 export { Core.*, lower-tree, lower-node, cnum64, is-cnum, is-cnum-w, is-cvar }

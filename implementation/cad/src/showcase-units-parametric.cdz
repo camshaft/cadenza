@@ -1,6 +1,6 @@
 /// showcase-units-parametric.cdz — a UNITS-PARAMETRIC CAD showcase (P4): sliders whose values are read in a
 /// real-world unit (INCHES) and converted, exactly over Rational, into the model's millimetres. This is the
-/// "@param Length layer" the operator asked for, built on machinery that already exists: a Rational @param
+/// "@!param Length layer" the operator asked for, built on machinery that already exists: a Rational @param
 /// (v-metaprogramming's num/den desugar) plus the units.cdz edge constructors. A slider reading a quarter
 /// means a quarter INCH, carried exact with zero float drift.
 ///

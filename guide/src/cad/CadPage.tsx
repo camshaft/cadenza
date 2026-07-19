@@ -36,7 +36,7 @@ import { SyntaxToggle } from "../syntax/SyntaxToggle.tsx";
 import { meshFromSolid, type MeshResult } from "./index.ts";
 import { MeshView } from "./MeshView.tsx";
 import { wrapPrefixOf } from "../components/wrapModule.ts";
-import { injectImport, CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME, CAD_LIB_FORMAT } from "./preloadModel.ts";
+import { injectImport, CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME, CAD_SNOWFLAKE_NAME, CAD_PRNG_NAME, CAD_LIB_FORMAT } from "./preloadModel.ts";
 import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
 import { slidersFromManifest } from "./manifestSlider.ts";
 import { downloadMesh } from "./download.ts";
@@ -54,6 +54,8 @@ import { LazyCodeEditor } from "../editor/LazyCodeEditor.tsx";
 import EXACT_CDZ from "../wasm/cad/exact.cdz?raw";
 import HELPERS_CDZ from "../wasm/cad/helpers.cdz?raw";
 import UNITS_CDZ from "../wasm/cad/units.cdz?raw";
+import SNOWFLAKE_CDZ from "../wasm/cad/snowflake.cdz?raw";
+import PRNG_CDZ from "../wasm/cad/prng.cdz?raw";
 
 // /cad's IDE config is built INSIDE the component (it must read the LIVE edit surface) — see `cadIde`
 // below. The program is a self-contained module (no wrapping), so the compiled text IS the editor text
@@ -145,13 +147,14 @@ export default function CadPage() {
       const compiled = injectImport(editorText, from);
       return { compiled, wrapPrefixBytes: wrapPrefixOf(editorText, compiled) };
     },
-    // Preload ALL THREE modules the injected imports reference (exact + helpers + units), so the linter
-    // resolves the full injected vocab — otherwise a model using `box`/`hole-through`/`inch` faults them as
-    // unbound (the same class as the earlier Solid/v3 all-red-squiggles bug), even though it runs fine.
+    // Preload ALL modules the injected imports reference (exact + helpers + units + snowflake, plus prng
+    // which snowflake imports), so the linter resolves the full injected vocab — otherwise a model using
+    // `box`/`inch`/`snowflake` faults them as unbound (the same class as the earlier Solid/v3 all-red-
+    // squiggles bug), even though it runs fine.
     preload: () => ({
-      names: [CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME],
-      sources: [EXACT_CDZ, HELPERS_CDZ, UNITS_CDZ],
-      formats: [CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT],
+      names: [CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME, CAD_SNOWFLAKE_NAME, CAD_PRNG_NAME],
+      sources: [EXACT_CDZ, HELPERS_CDZ, UNITS_CDZ, SNOWFLAKE_CDZ, PRNG_CDZ],
+      formats: [CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT],
     }),
   }).current;
 
@@ -172,9 +175,9 @@ export default function CadPage() {
         const out = await compileWithPreloaded(
           program,
           from,
-          [CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME],
-          [EXACT_CDZ, HELPERS_CDZ, UNITS_CDZ],
-          [CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT],
+          [CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME, CAD_SNOWFLAKE_NAME, CAD_PRNG_NAME],
+          [EXACT_CDZ, HELPERS_CDZ, UNITS_CDZ, SNOWFLAKE_CDZ, PRNG_CDZ],
+          [CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT],
         );
         if (!out.component) {
           const d = out.diagnostics.find((x) => x.error) ?? out.diagnostics[0];

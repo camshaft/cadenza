@@ -44,8 +44,18 @@ export default function IrrefutablePatterns() {
       />
       <P>
         A single-constructor type is irrefutable in the same way, since there's no other shape it could
-        be, so a pattern like <C>(C c)</C> on a one-constructor type can unwrap its payload directly with
-        no <C>match</C>. One constructor means one shape, so the compiler knows the pattern can't miss.
+        be, so a pattern like <C>(C c)</C> on a one-constructor type unwraps its payload directly in the
+        parameter, with no <C>match</C>. Here <C>Celsius</C> wraps an <C>Int64</C>, and <C>to-f</C> names
+        the wrapped value <C>c</C> right in its parameter list:
+      </P>
+      <Runnable
+        source={`(type Celsius (C Int64))
+(def (to-f (C c)) (+ (/ (* c 9) 5) 32))
+(def (main) (to-f (C 100)))`}
+      />
+      <P>
+        <C>(to-f (C 100))</C> is <C>212</C>, unwrapping the <C>100</C> and converting it. One constructor
+        means one shape, so the compiler knows the pattern can't miss.
       </P>
 
       <H2>Where the line is drawn</H2>

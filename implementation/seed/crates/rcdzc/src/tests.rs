@@ -2982,6 +2982,130 @@ fn a_record_binding_pattern_admits_a_wildcard_field_and_feeds_a_later_binding() 
     assert_eq!(run_returns::<i64>(&bytes, "main"), 12);
 }
 
+/// A RECORD MATCH pattern (the match twin of the record binding pattern) — `(match r ((record (x a) (y b))
+/// …))` destructures a record scrutinee BY FIELD, binding `a`/`b` to the `x`/`y` fields. A record has no
+/// discriminant (like a tuple), so a record arm imposes no probe; each field binder resolves to a
+/// projection of the scrutinee at that field (`a` ≡ `(. r x)` → `Core::Proj` at the sorted slot). Covers
+/// the basic single-arm match, a PARTIAL pattern (naming a subset), OUT-OF-ORDER fields (bound by name,
+/// not position), a RUNTIME record scrutinee (a real heap read), and a WILDCARD field value.
+#[test]
+fn a_record_match_pattern_destructures_a_record_scrutinee_by_field() {
+    use crate::testkit::parse;
+    let run_i64 = |src: &str| {
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        run_returns::<i64>(&bytes, "main")
+    };
+    // basic single-arm
+    assert_eq!(
+        run_i64(
+            "(module m (def (main) \
+               (match (record (x 3) (y 4)) ((record (x a) (y b)) (+ a b)))) (export main))"
+        ),
+        7
+    );
+    // partial (names a subset)
+    assert_eq!(
+        run_i64(
+            "(module m (def (main) \
+               (match (record (x 3) (y 4)) ((record (x a)) a))) (export main))"
+        ),
+        3
+    );
+    // out-of-order fields (bound by name → c=a=10, b=z=20 → 1020)
+    assert_eq!(
+        run_i64(
+            "(module m (def (main) \
+               (match (record (a 10) (z 20)) ((record (z b) (a c)) (+ (* 100 c) b)))) (export main))"
+        ),
+        1020
+    );
+    // RUNTIME record scrutinee (via a param — a real heap read, not a const fold)
+    assert_eq!(
+        run_i64(
+            "(module m (def (f p) (match p ((record (x a) (y b)) (+ a b)))) \
+               (def (main) (f (record (x 5) (y 6)))) (export main))"
+        ),
+        11
+    );
+    // wildcard field value binds nothing
+    assert_eq!(
+        run_i64(
+            "(module m (def (main) \
+               (match (record (x 7) (y 4)) ((record (x a) (y _)) a))) (export main))"
+        ),
+        7
+    );
+}
+
+/// A record match arm composes with a following WILDCARD alternative, and its field binders shadow
+/// correctly. A record arm + a `_` alternative type-checks (the record arm covers the record shape, `_`
+/// the rest). A field binder `a` shadowing an outer param `a` binds the FIELD, not the param. (A GUARDED
+/// record arm is a later increment — it currently DECLINES cleanly rather than lowering, pending the
+/// guard×record leaf gating; the guard-cond field-binder resolution, Case 6recg, is already in place.)
+#[test]
+fn a_record_match_pattern_composes_with_wildcard_and_shadowing() {
+    use crate::testkit::parse;
+    let run_i64 = |src: &str| {
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        run_returns::<i64>(&bytes, "main")
+    };
+    // record arm + wildcard alternative
+    assert_eq!(
+        run_i64(
+            "(module m (def (f p) (match p ((record (x a)) a) (_ 99))) \
+               (def (main) (f (record (x 3)))) (export main))"
+        ),
+        3
+    );
+    // a field binder shadows an outer param — binds the field (10), not the param (99)
+    assert_eq!(
+        run_i64(
+            "(module m (def (f a) (match (record (x 10)) ((record (x a)) a))) \
+               (def (main) (f 99)) (export main))"
+        ),
+        10
+    );
+    // a GUARDED record arm declines cleanly (not a trap) until the guard×record interaction lands.
+    let guarded = "(module m (def (f (: r (Record (x Int64) (y Int64)))) \
+               (match r ((guard (record (x a) (y b)) (> a 0)) (+ a b)) (_ 0))) \
+               (def (main) (f (record (x 5) (y 6)))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(guarded)))
+        .expect_err("a guarded record arm declines pending the guard×record leaf gating");
+    assert!(
+        err.message
+            .contains("guarded record match arm is not yet lowered"),
+        "guarded record arm declines with the feature message, got: {}",
+        err.message
+    );
+}
+
+/// A record match pattern's faults are actionable and LOCKSTEP with resolve: a field the scrutinee's
+/// record type lacks is CDZ0201 (naming the field); a NESTED compound field value — irrefutable but not
+/// yet wired (a record match binds fields to bare names) — is a clean DECLINE naming the feature, NOT a
+/// misleading CDZ0101 on the nested binder (the match twin of the record-BINDING lockstep).
+#[test]
+fn a_record_match_pattern_faults_are_actionable_and_lockstep() {
+    use crate::testkit::parse;
+    // absent field → CDZ0201
+    let absent = compile_component(&crate::codec::encode(&parse(
+        "(module m (def (main) (match (record (x 3)) ((record (nope a)) a))) (export main))",
+    )))
+    .expect_err("absent field rejects");
+    assert_eq!(absent.code.as_deref(), Some("CDZ0201"));
+    // nested compound field value → clean decline, NOT CDZ0101
+    let nested = compile_component(&crate::codec::encode(&parse(
+        "(module m (def (main) \
+           (match (record (p (tuple 1 2))) ((record (p (tuple a b))) (+ a b)))) (export main))",
+    )))
+    .expect_err("nested compound record match field declines");
+    assert_ne!(nested.code.as_deref(), Some("CDZ0101"));
+    assert!(
+        nested.message.contains("nested compound sub-pattern"),
+        "nested-field decline should name the feature, got: {}",
+        nested.message
+    );
+}
+
 /// The atom-copy fix must NOT substitute a BINDER occurrence that shadows the parameter. `(def (f x)
 /// (let ((x true)) x))` binds the inner `x = true` shadowing the Int64 param `x`; `(f 99)` must return
 /// `true`. The atom-copy pass resolved the let's BINDER-name occurrence `x` (a `Ref` up to the param,
@@ -44824,53 +44948,39 @@ mod diagnostics {
         );
     }
 
-    /// A RECORD match pattern is not yet implemented; the diagnostic must NAME that (a coded CDZ0201 with
-    /// the whole-binder-and-project workaround), NOT leak a misleading "unbound name" for its field binder.
-    /// The `(record (field binder) …)` arm used to fall through to the variant-ctor block (where `record`
-    /// is read as a variant head over a `Ty::Record` scrutinee that has none), so the arm bound nothing and
-    /// a body/guard reference to a field binder resolved UNBOUND (CDZ0101 blaming the reference). Two
-    /// coordinated pieces fix it: (1) `pattern_constraints` declines the `(record …)` arm as a CODED
-    /// `Malformed` so `match_pattern_fault` surfaces it in `cdz check` on EVERY body (not just
-    /// nullary-exported — the Inc 39/40 discipline); (2) resolve Case 6rec resolves a field-binder
-    /// reference to that same decline, SUPPRESSING the consequent unbound-name cascade. Flagged by
-    /// v-diagnostics (2026-07-16). Replaced by real field-directed matching when record patterns land.
+    /// A RECORD match pattern is now IMPLEMENTED (record match landed — the match twin of the record
+    /// binding pattern). A field-binder reference in the body must CHECK CLEAN (resolve to a scrutinee
+    /// projection, Case 6rec), NOT leak the old misleading "unbound name" CDZ0101 nor the superseded "not
+    /// yet supported" CDZ0201. This test was the v-diagnostics regression pin for the UNIMPLEMENTED era
+    /// (2026-07-16); it now pins that the field binder resolves and the arm type-checks. (The whole-binder
+    /// + projection form — the old workaround — remains valid too.)
     #[test]
     fn a_record_match_pattern_is_named_not_leaked_as_an_unbound_field_binder() {
-        // Body references the field binder `a` — the case v-diagnostics flagged. `f` is a parameterized
-        // (non-nullary) body, so this exercises the check≡compile path via `match_pattern_fault`.
+        // Body references the field binder `a`. `f` is a parameterized (non-nullary) body, so this
+        // exercises the check≡compile path — it must be CLEAN now that record match resolves the binder.
         let uses_binder = "(module m (def (f (: r (Record (x Int64)))) \
                            (match r ((record (x a)) a))) (export f))";
         let all = diags_of(uses_binder);
         assert!(
-            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message
-                    .contains("record match pattern is not yet supported")),
-            "check names the unimplemented record match pattern (CDZ0201): {all:?}"
+            all.iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a record match binding a field checks clean now that record match is implemented: {all:?}"
         );
         assert!(
-            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
-            "no misleading 'unbound name' for the field binder — the real cause is named instead: {all:?}"
-        );
-        // Body does NOT reference a binder (just `99`) — still the clear coded decline (the
-        // `pattern_constraints` arm fires regardless of whether resolve Case 6rec is exercised).
-        let ignores_binder = "(module m (def (f (: r (Record (x Int64)))) \
-                             (match r ((record (x a)) 99))) (export f))";
-        let all = diags_of(ignores_binder);
-        assert!(
-            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")
+                && !d
+                    .message
                     .contains("record match pattern is not yet supported")),
-            "a record match arm declines clearly even when its binder is unused: {all:?}"
+            "no misleading unbound-name and no superseded 'not yet supported' decline: {all:?}"
         );
-        // NO false alarm: a record match with a WHOLE-value binder + field projection (the workaround) is
-        // the SUPPORTED form and stays clean.
+        // The WHOLE-value binder + field projection form (the former workaround) still checks clean.
         let workaround = "(module m (def (f (: r (Record (x Int64)))) \
                           (match r (whole (. whole x)))) (export f))";
         assert!(
             diags_of(workaround)
                 .iter()
                 .all(|d| d.severity != crate::abi::Severity::Error),
-            "the whole-binder + projection workaround still checks clean: {:?}",
+            "the whole-binder + projection form still checks clean: {:?}",
             diags_of(workaround)
         );
     }

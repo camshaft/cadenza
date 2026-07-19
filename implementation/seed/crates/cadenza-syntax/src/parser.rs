@@ -2482,6 +2482,50 @@ impl<'a> Parser<'a> {
                 let mspan = span.merge(self.prev_span());
                 self.list(items, mspan)
             }
+            Kind::LBrace => {
+                // `{ field = p, … }` — a RECORD PATTERN, destructuring a record BY FIELD (the s-expr
+                // `(record (field p) …)` twin, the dual of the record-value literal). Head is the NAME
+                // `record`; each entry is a `(field sub-pattern)` pair. Field SHORTHAND `{ x }` puns to
+                // `{ x = x }` (the field `x` binds a same-named binder), matching the record literal. The
+                // operator ruled the bare-brace surface (default, consistent with tuple/list patterns —
+                // a pattern slot can't hold a value, so `{ … }` here is unambiguously a pattern, not a
+                // record VALUE literal). A PARTIAL pattern (fewer fields than the type) is fine — the
+                // compiler's `(record …)` binding lowering binds the named fields by projection.
+                self.bump(); // '{'
+                let head = self.name("record", span);
+                let mut items = vec![head];
+                if !self.at(Kind::RBrace) {
+                    loop {
+                        let before = self.pos;
+                        let f_start = self.cur_span();
+                        // Capture the field spelling BEFORE `binder()` consumes it, so a shorthand field
+                        // can pun the same name as its binder sub-pattern.
+                        let pun = self.binder_spelling();
+                        let field = self.binder();
+                        let value = if self.at(Kind::Eq) {
+                            self.bump(); // `=`
+                            self.pattern()
+                        } else if let Some(n) = pun {
+                            // shorthand `{ x }` -> `(x x)`: the field binds a same-named binder.
+                            self.name(n, f_start)
+                        } else {
+                            self.expect(Kind::Eq, "`=`");
+                            self.pattern()
+                        };
+                        let f_span = f_start.merge(self.prev_span());
+                        items.push(self.list(vec![field, value], f_span));
+                        if !self.sep_continue(Kind::RBrace) {
+                            break;
+                        }
+                        if self.pos == before {
+                            self.bump(); // no field token consumed — avoid a missing-`,` spin
+                        }
+                    }
+                }
+                self.expect(Kind::RBrace, "`}`");
+                let rspan = span.merge(self.prev_span());
+                self.list(items, rspan)
+            }
             Kind::BinOpen => {
                 // `b[ <segment>, … ]` — a binary PATTERN, destructuring a Bytes scrutinee (the dual of
                 // the construction literal). Head is the `bin` NAME, and each segment is a sub-PATTERN
@@ -2836,7 +2880,10 @@ impl<'a> Parser<'a> {
     /// param is not a destructure). Keyed here — not by delegating every token to `pattern` — so a
     /// plain `name`/`name: Type` parameter keeps the fast [`Self::binder`] path and its diagnostics.
     fn at_pattern_param_start(&self) -> bool {
-        matches!(self.kind(), Kind::LParen | Kind::LBracket | Kind::BinOpen)
+        // `{` opens a RECORD pattern (`{ x = a }`), `#{` a MAP pattern — DISTINCT arenas ((record …) vs
+        // (map …)). The bare-brace record pattern is the operator-ruled surface (a pattern slot can't hold
+        // a value, so `{ … }` here is unambiguously a pattern, not a record VALUE literal).
+        matches!(self.kind(), Kind::LParen | Kind::LBracket | Kind::BinOpen | Kind::LBrace)
             || (self.at(Kind::Hash) && self.nth_kind(1) == Kind::LBrace)
             // A CONSTRUCTOR pattern `Ctor(binders…)` / `Mod.Ctor(binders…)` in binding position — an
             // `Ident` that HEADS a constructor pattern, i.e. immediately followed by `(` (an application,

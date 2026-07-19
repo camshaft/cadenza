@@ -1440,6 +1440,33 @@
             ((bin (u8 n) (utf8 name n)) name)))
   (error  CDZ0210))
 
+(case "two dependent utf8 bin segments each sized by its own preceding length byte"
+  (doc    "The dependent-cursor face: a `bin` pattern reads a length byte, decodes that many bytes, then
+           reads a SECOND length byte and decodes that many more — `(bin (u8 a) (utf8 s1 a) (u8 b) (utf8 s2
+           b))`. The second segment's length `b` is a value read AFTER the first segment consumed `a` bytes,
+           so the match cursor must advance past `s1` before reading `b`. Against `(list 2 65 66 1 67)` —
+           a=2 → \"AB\", then b=1 → \"C\" — binds s1=\"AB\", s2=\"C\", and `(String.concat s1 s2)` = \"ABC\".
+           Extends the single-dependent `(bin (u8 n) (utf8 name n))` case to a MULTI-segment pattern where a
+           later segment's length depends on a value the pattern read earlier, pinning that the decode cursor
+           threads correctly across segments (options/binary-syntax/).")
+  (input  (match (Bytes.of (list 2 65 66 1 67))
+            ((bin (u8 a) (utf8 s1 a) (u8 b) (utf8 s2 b)) (String.concat s1 s2))
+            (_ "x")))
+  (output (: "ABC" String)))
+
+(case "a dependent utf8 bin segment whose length exceeds the remaining bytes is a non-match"
+  (doc    "The same `(bin (u8 n) (utf8 name n))` pattern against `(list 5 102 111)` — n=5 but only 2 bytes
+           follow — cannot read the 5 bytes the length demands, so the `utf8` segment does NOT match and
+           control falls to the catch-all, yielding \"invalid\". The over-length read is a NON-MATCH, never
+           a trap or an out-of-bounds read past the buffer: a dependent length that outruns the input is
+           handled by the same exhaustiveness-required catch-all every `bin` match obeys (the length-overrun
+           companion of the ill-formed-UTF-8 non-match; collections-and-text.md #Decoding Bytes To A String
+           Is Total, Not Trapping).")
+  (input  (match (Bytes.of (list 5 102 111))
+            ((bin (u8 n) (utf8 name n)) name)
+            (_ "invalid")))
+  (output (: "invalid" String)))
+
 ; --- Char — a single validated Unicode scalar, the element type of a string's scalar sequence ----
 ; collections-and-text.md #A Char Is A Single Unicode Scalar Value: a `Char` is one Unicode scalar
 ; (a code point in U+0000..=U+10FFFF EXCLUDING the surrogate range U+D800..=U+DFFF), the element type

@@ -858,6 +858,44 @@
   (call   main (: 1 Int64))
   (output (: -1 Int64)))
 
+(case "a runtime dependent-size match falls through when the scrutinee is too short for the size prefix"
+  (doc    "The truncated-frame boundary the dependent-size length probe must GUARD: a RUNTIME scrutinee too
+           short to even READ the size prefix must FALL THROUGH, not trap. The arm `(bin (u8 a) (u8 n) (bytes
+           payload n))` needs a TWO-byte fixed prefix (a header `a` then the size `n`), but the scrutinee is
+           ONE byte. The exact length probe is `bytes-len == prefix(2) + n`, and reading `n` is a fixed-offset
+           read at byte 1 — which OVERRUNS a one-byte scrutinee. The probe must be FLOORED (`bytes-len >=
+           prefix` short-circuits BEFORE the `n`-read) so a too-short scrutinee is a non-match, matching the
+           const-fold reference (`bin_match_decode` returns None at every overrun). The scrutinee is built
+           from a runtime `h` so the match cannot fold. h=9 → a one-byte frame `[9]` → too short for the
+           2-byte prefix → falls through to -1. Earlier this TRAPPED (wasm `unreachable`): the length probe's
+           `n`-read was an unconditional outermost compare operand with no length floor (reviewer finding
+           2026-07-18, corpus-bugfix — the literal-segment probes were short-circuited but the dependent-size
+           read was not).")
+  (input  (do (def (main (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap h)))
+                  ((bin (u8 a) (u8 n) (bytes payload n)) (+ a (Bytes.len payload)))
+                  (_ -1)))
+              (export main)))
+  (call   main (: 9 Int64))
+  (output (: -1 Int64)))
+
+(case "a runtime dependent-size match with a signed negative size falls through"
+  (doc    "The signed-size soundness guard: a SIGNED size segment `(i8 n)` whose byte reads NEGATIVE must
+           FALL THROUGH, not spuriously match or trap. The const path filters `n >= 0`; the runtime path adds
+           the same `n >= 0` guard in the length probe. Here `(bin (i8 n) (bytes payload n))` over a runtime
+           two-byte scrutinee whose size byte is 0xFF = -1 (as i8): `prefix(1) + (-1) = 0`, which could
+           spuriously satisfy `bytes-len == 0` on an empty tail, or drive a negative slice. The `n >= 0`
+           guard makes it a clean non-match → -1. Built from a runtime `h` so it cannot fold. h=255 → size
+           byte 0xFF → n = -1 → falls through. Pins the runtime negative-size guard mirrors the const path's
+           `filter(|v| *v >= 0)` (reviewer finding 2026-07-18).")
+  (input  (do (def (main (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 20)))
+                  ((bin (i8 n) (bytes payload n)) (Bytes.len payload))
+                  (_ -1)))
+              (export main)))
+  (call   main (: 255 Int64))
+  (output (: -1 Int64)))
+
 (case "a runtime bit-field packs a runtime value into a nibble"
   (doc    "`(bin (bits ((UInt 4).wrap n) 4) (bits 5 4))` with a RUNTIME `n` packs the low nibble of `n`
            into the HIGH nibble and the constant 5 into the low nibble of one byte (most-significant field

@@ -10814,21 +10814,43 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 30 Int64)))
-(case "a record match pattern is named as unimplemented, not leaked as an unbound field binder (CDZ0201)"
-  (doc    "A record MATCH pattern `((record (x a)) …)` is a not-yet-implemented feature (the match twin of
-           the `(record …)` BINDING decline). The diagnostic MUST name that — a coded CDZ0201 pointing at
-           the record pattern, carrying the whole-binder + field-projection workaround — NOT the misleading
-           'unbound name `a`' the field binder used to leak (the `record`-headed arm fell through to the
-           variant-ctor path, bound nothing, and the body's `a` reference resolved unbound, blaming the
-           user instead of naming the unimplemented feature). Pins that `cdz check` reports the CODED
-           feature decline on a PARAMETERIZED body (via match_pattern_fault, not only the emit-path walk on
-           nullary-exported bodies) and that NO CDZ0101 unbound-name cascade accompanies it. Flagged by
-           v-diagnostics 2026-07-16. When record match patterns land, this case is replaced by a runtime
-           destructuring case; until then it guards the diagnostic against re-leaking the confusing message.")
+(case "a record match pattern destructures a record scrutinee by field"
+  (doc    "A record MATCH pattern `((record (x a) (y b)) …)` destructures a record scrutinee BY FIELD — the
+           match twin of the record BINDING pattern (Increment B). A record has no discriminant (like a
+           tuple), so the arm imposes no probe; each field binder resolves to a projection of the scrutinee
+           at that field (`a` ≡ `(. r x)` → a `Core::Proj` at the field's sorted slot), matched by NAME so a
+           partial pattern or out-of-order fields bind correctly. Here `f` destructures its runtime record
+           parameter `r` — `(f (record (x 3) (y 4)))` binds `a`=3, `b`=4 → 7 (a real heap read, not a const
+           fold). Earlier the record-match arm was a not-yet-implemented decline (CDZ0201) and a field
+           reference leaked a misleading 'unbound name' — this case now pins the working destructure.")
+  (input  (do (def (f (: r (Record (x Int64) (y Int64))))
+                (match r ((record (x a) (y b)) (+ a b))))
+              (def (main) (f (record (x 3) (y 4))))
+              (export main)))
+  (output (: 7 Int64)))
+
+(case "a record match pattern binds fields by name — partial and out of order"
+  (doc    "A record match projects each field by NAME, not position: a PARTIAL pattern names a subset of
+           the fields, and the pattern MAY name them in a different order than the record's type. Here
+           `(record (z b) (a c))` over a `(Record (a Int64) (z Int64))` binds `c` to field `a` and `b` to
+           field `z` regardless of written order → `100*c + b` = 100*10 + 20 = 1020. The match twin of the
+           record BINDING pattern's field-order independence — a flexibility a positional tuple pattern lacks.")
+  (input  (do (def (f (: r (Record (a Int64) (z Int64))))
+                (match r ((record (z b) (a c)) (+ (* 100 c) b))))
+              (def (main) (f (record (a 10) (z 20))))
+              (export main)))
+  (output (: 1020 Int64)))
+
+(case "a record match arm + a wildcard alternative selects by shape"
+  (doc    "A record match arm composes with a following wildcard alternative: `(match r ((record (x a)) a)
+           (_ 99))` — the record arm binds field `x` and the `_` covers the rest. Over `(record (x 3))` the
+           record arm is taken → 3. (An UNGUARDED record arm; a GUARDED record arm is a later increment —
+           it currently declines cleanly rather than lowering, pending the guard×record leaf gating.)")
   (input  (do (def (f (: r (Record (x Int64))))
-                (match r ((record (x a)) a)))
-              (export f)))
-  (error CDZ0201))
+                (match r ((record (x a)) a) (_ 99)))
+              (def (main) (f (record (x 3))))
+              (export main)))
+  (output (: 3 Int64)))
 
 (case "a map match pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)"
   (doc    "A MAP match pattern whose `..` rest is malformed — a `..` NOT followed by exactly one binder,

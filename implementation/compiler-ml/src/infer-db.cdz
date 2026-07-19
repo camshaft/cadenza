@@ -458,4 +458,14 @@ def id-same-narrow-comparison-still-bool() =
       (match add-node(t2, Node.NBin(60, lId, rId)) with | (root, tree) =>
         (if is-bool-at(tree, root, root) then unit else trap("Int8 < Int8 → TBool (same-type comparison unaffected)")))))
 
+@test
+def id-napp-declines-slice1() =
+  // SLICE-1 CONTRACT pin: a call node NApp is NOT yet typed (the def-table slice types it as the callee's
+  // result) — infer's NApp arm returns TErr, so the node DECLINES. Pins the "a call declines until slice-2"
+  // behavior + guards the exhaustive-match arm (a future change that types NApp must UPDATE this). Build a
+  // nullary call NApp(bodyId, -1) over a body literal directly (NApp has no producing Tok yet).
+  (match add-node(empty-tree(), Node.NLit(42)) with | (bodyId, t1) =>
+    (match add-node(t1, Node.NApp(bodyId, 0 - 1)) with | (root, tree) =>
+      (if type-err-at(tree, root, root) then unit else trap("a NApp call node declines (TErr) until the def-table slice types it"))))
+
 export { Typed.*, infer-node, infer-tree, type-at, well-typed, type-err-at, typed-count, is-bool-at, is-int-at }
