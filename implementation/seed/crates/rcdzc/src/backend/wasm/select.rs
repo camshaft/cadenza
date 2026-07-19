@@ -357,6 +357,19 @@ fn is_heap_type(ty: &Ty) -> bool {
         | Ty::String
         | Ty::Symbol
         | Ty::Bytes => true,
+        // A BIGINT is ALWAYS a heap leaf (never a fixnum immediate — `box_bigint`'s sign-magnitude raw
+        // leaf) and a RATIONAL is a 2-BigInt-handle heap node (`box_rational_normalized`). Both are HEAP
+        // values, so a `let`-bound / param BigInt or Rational threaded past a consuming use — e.g. a
+        // Rational `m` bound from an `rmax`/`rabs` fold then FANNED into a compound constructor
+        // (`Vec3(rzero()-m, rzero()-m, rzero()-m)` / `Vec3(m, m, m)`, the cad rotate-bbox shape) — MUST be a
+        // Perceus RETAIN candidate. Else `collect_retain_candidate_binders` skips it, `mark_binder_dups`
+        // never runs for it, NO `dup` is emitted for its multi-use, the shared handle is freed after the
+        // first consume, and a later `arr-set` stores/derefs the recycled slot → wasm OUT OF BOUNDS (a
+        // wrong-value/OOB miscompile). This is the numeric-leaf twin of the String/Symbol omission fixed
+        // just above; `lower.rs`'s `ty_heap_walkable` already classifies `Ty::BigInt | Ty::Rational` as
+        // heap, so this restores the select.rs/lower.rs agreement.
+        | Ty::BigInt
+        | Ty::Rational => true,
         // A quantity ERASES to its inner numeric type before the backend (`lower` strips the `Qty`), so
         // a `Ty::Qty` should not reach selection. Defensively classify it by its inner type — a quantity
         // over a heap numeric would be heap, but Layer 1's numerics are all scalars (int/float).

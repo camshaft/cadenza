@@ -7608,6 +7608,29 @@ fn is_builtin_partial_application(
     args.len() < arity
 }
 
+/// The DISPLAY name of the constructor an `(Ctor arg…)` application applies — read from the SOURCE
+/// spelling (`app`'s first child), so it works whether the head was written bare (`(None x)`) or qualified
+/// (`(Option.None x)` → the member key `None`). Reads the surface spelling rather than the resolved head
+/// (which may be a synthesized cached-ctor record, not a name atom). `"this variant"` when the spelling is
+/// unreadable — a safe fallback for a message subject. The construction-site twin of `ctor_pattern_name`
+/// (`lower.rs`), which does the same for a `(Ctor …)` MATCH pattern.
+fn ctor_app_name(db: &Db, app: StructId) -> String {
+    let first = match db.ast.get(app) {
+        crate::ast::Struct::List(cs) => cs.first().copied(),
+        _ => None,
+    };
+    first
+        .and_then(|h| {
+            db.ast
+                .as_form(h, ".")
+                .and_then(|t| t.get(1).copied())
+                .or(Some(h))
+        })
+        .and_then(|k| db.ast.as_name(k))
+        .unwrap_or("this variant")
+        .to_string()
+}
+
 fn check_application(
     db: &mut Db,
     app: StructId,
@@ -9507,17 +9530,26 @@ fn check_application(
         // applied to a wrong-type payload (the nullary-Unit and the unary declared-payload cases in
         // 05-compound-types both pin CDZ0201 — a malformed construction, not a plain type mismatch).
         // Check the supplied argument's type against Unit, then descend for the argument's own faults.
+        // NAME the variant in the message (read from `app`'s source spelling — bare `None` or qualified
+        // `Option.None`) and point at the errant payload argument, so the diagnostic is actionable: it says
+        // WHICH constructor and HOW to fix it (drop the payload / use the unit form), the rustc-gold bar.
+        let vname = ctor_app_name(db, app);
         for &arg in args {
             let at = type_of(db, arg);
             if !at.agrees_with(&Ty::Unit) {
                 trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, at = %at.render_name(), "fault: nullary variant applied to a non-unit payload (CDZ0201)");
-                out.push(Reject::coded(
-                    Code::Malformed,
-                    format!(
-                        "a nullary variant takes the unit value, but a payload of type {} was applied",
-                        at.render_name()
-                    ),
-                ));
+                out.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "the variant `{vname}` is nullary — it carries no payload, so it cannot be \
+                             applied to a value of type {}; construct it as `{vname}` alone (or `({vname} \
+                             unit)`)",
+                            at.render_name()
+                        ),
+                    )
+                    .at(arg),
+                );
             }
             // Descend for the argument's OWN faults (an unbound name in `(None (frob))`).
             collect(db, arg, out);

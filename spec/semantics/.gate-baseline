@@ -1865,6 +1865,7 @@ pass	a runtime bytes value is spliced into a length-prefixed frame
 pass	a runtime char reaches a later char-literal arm by scalar value
 pass	a runtime closure compares its argument to a captured value in a branch
 pass	a runtime closure whose body calls a recursive top-level function
+pass	a runtime compound compare declines pending the value-cmp three-way heap walk
 pass	a runtime compound containing a float leaf declines ordering — floats offer no total order (§319)
 pass	a runtime compound structural equality is expressible as a hand-written recursive comparator
 pass	a runtime compound with a String leaf orders by the blessed content-lexicographic String order
@@ -1887,6 +1888,7 @@ pass	a runtime fixed-width segment is emitted big-endian and read back by index
 pass	a runtime float absent from a Set is not found
 pass	a runtime float addition emits the machine add
 pass	a runtime float addition with nan propagates the nan
+pass	a runtime float compare declines — a float offers the IEEE partial order, not a total three-way
 pass	a runtime float divide by zero yields a non-trapping infinity
 pass	a runtime float divided by ITSELF is not folded to 1.0 — 0.0/0.0 is nan, no trap
 pass	a runtime float division rounds under the fixed mode

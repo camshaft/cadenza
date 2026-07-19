@@ -270,6 +270,23 @@
             (def (main) (handle A 0 ((f () s k (use-k k))) (+ 1 (A.f)))) (export main)))
   (output (: 11 Int64)))
 
+(case "an escaping continuation that itself RE-PERFORMS the handled effect re-enters its handler at apply"
+  (doc    "E5 step-3 (FACE-1 B2): the escaping-`k` case whose delimited continuation `C` itself RE-PERFORMS
+           the handled effect. `(a () s k (use-k k))` over `(+ (A.a) (A.a))`: after the leading `(A.a)` the
+           continuation `C = (+ □ (A.a))` performs `A.a` AGAIN. A pure-continuation closure reification does
+           not serve it — applying `k` runs `C` in a SEPARATE activation where the re-performed op has no
+           home. So `k` reifies as a SELF-RE-INSTALLING handler-wrapped closure `k = (fn (kv) (handle A 5
+           (arm) (+ kv (A.a))))` — the continuation carries the handler around itself. `use-k` applies it to
+           10: the re-installed handle folds `(+ 10 (A.a))` (one remaining perform) → (+ 10 10) = 20. Each
+           re-install removes one perform (N→N-1), bottoming out at the pure-one-hole fold — no bespoke frame
+           chain. The state-oblivious 2-perform case; a state-advancing arm or a deeper continuation is a
+           further increment (declines cleanly). The re-entry-at-apply the DES scheduler's stored-k builds on.")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (def (use-k (: stored-k (-> Int64 Int64))) (stored-k 10))
+            (def (main) (handle A 5 ((a () s k (use-k k))) (+ (A.a) (A.a)))) (export main)))
+  (output (: 20 Int64)))
+
 (case "a ctl-style arm applying its continuation inside a match scrutinee resolves and folds"
   (doc    "The continuation binder `k` of a `ctl`-style arm must be in scope everywhere in the arm body,
            including inside a MATCH scrutinee. `(flip () s k (match (k 10) (z (* z 2))))` applies `k`

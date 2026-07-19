@@ -5059,9 +5059,18 @@ fn collect_type_params(ast: &Arenas, occ: StructId, params: &mut Vec<String>) {
         }
         // A `(Record (field Type)…)` type: a field NAME is a label, never a type parameter. Descend only
         // into each field pair's TYPE element, skipping the name (which may be lowercase — `(Record (v
-        // Int64))` — and would otherwise be collected as a spurious param).
+        // Int64))` — and would otherwise be collected as a spurious param). Matches BOTH the capital
+        // `Record` and the lowercase `record` ALIAS — the lowercase compound-type aliases (`tuple`/
+        // `record`/`list`/`map`) are recognized type constructors in a payload-type position exactly as
+        // they are in an annotation position (`(: e (record …))`), so their head is a TYPE CTOR, not a
+        // type parameter. Without matching `record` here, a `(type P (Mk (record (x Int64))))` harvested
+        // the lowercase head `record` (and each field label) as spurious params, making `P` bogus-generic
+        // → the `Mk` ctor scheme mis-reduced and read as NULLARY (CDZ0201/0203 on construction).
         Struct::List(children)
-            if children.first().and_then(|&h| ast.as_name(h)) == Some("Record") =>
+            if matches!(
+                children.first().and_then(|&h| ast.as_name(h)),
+                Some("Record") | Some("record")
+            ) =>
         {
             for &pair in children.iter().skip(1) {
                 if let Struct::List(items) = ast.get(pair)
@@ -5070,6 +5079,24 @@ fn collect_type_params(ast: &Arenas, occ: StructId, params: &mut Vec<String>) {
                     // The field TYPE (second element); the name (first) is a label, skipped.
                     collect_type_params(ast, items[1], params);
                 }
+            }
+        }
+        // A lowercase compound-type ALIAS application whose args are all TYPES — `(tuple T…)`, `(list T)`,
+        // `(map K V)`. The head (`tuple`/`list`/`map`) is a recognized type constructor (a prelude alias),
+        // NOT a type parameter, so it must be SKIPPED — the capital spellings (`Tuple`/`List`/`Map`) are
+        // already skipped by the lowercase filter in the `Atom` arm, but the lowercase alias head would
+        // otherwise be harvested. Descend into the type arguments only (they may hold a real param, e.g.
+        // `(tuple a Int64)`). Without this a `(type P (Mk (tuple Int64 Int64)))` harvested `tuple` as a
+        // spurious param → `P` bogus-generic → `Mk` read as NULLARY (CDZ0201 on construction). (`record`
+        // is handled above with its label-skipping; a lowercase `set` alias does not exist in the reader.)
+        Struct::List(children)
+            if matches!(
+                children.first().and_then(|&h| ast.as_name(h)),
+                Some("tuple") | Some("list") | Some("map")
+            ) =>
+        {
+            for &arg in children.iter().skip(1) {
+                collect_type_params(ast, arg, params);
             }
         }
         // A `(Qty T u)` quantity type: the FIRST argument is the inner numeric TYPE, but the SECOND is a

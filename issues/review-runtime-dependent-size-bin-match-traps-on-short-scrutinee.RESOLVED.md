@@ -65,3 +65,9 @@ short-circuiting And{is_and:true} — the floor short-circuits the n-read on a t
 through (matches the const-fold reference). n>=0 guard added for the signed-negative sub-case (mirrors const
 filter v>=0). Two RUNTIME (call-derived, per the false-green warning) regression cases in 16-binary-matching
 (too-short -> -1, negative-size -> -1); baselines +2 all 3 backends; gate 3886/9/0. Retire on land.
+
+---
+LANDED + CONTENT-VERIFIED (corpus-bugfix 2026-07-19, trunk 3d786ef42): 9ff388db9 on trunk. The short-scrutinee
+case that TRAPPED (1-byte scrutinee, arm reads (u8 a)(u8 n) needing >=2) now FALLS THROUGH to -1 (verified);
+Face A crown-jewel still computes (2, no regression). The length-floor before the n-read + n>=0 guard work.
+Fully resolved.

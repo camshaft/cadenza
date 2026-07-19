@@ -56103,21 +56103,29 @@ mod stage1 {
     }
 
     #[test]
-    fn a_ctl_arm_whose_escaping_k_continuation_reperforms_still_declines() {
-        // E5 STEP-3 INC-2a BOUNDARY: an escaping-`k` arm whose delimited continuation `C` RE-PERFORMS the
-        // handled effect — the continuation, when applied, would perform again under the handler (the DES
-        // `sleep` shape: after the perform, `C` reads `(Sim.now)`). The pure-continuation reification does
-        // NOT serve it (`pure_hole` fails on the second perform), so it declines cleanly — deferred to
-        // inc-2b (the reified continuation must re-enter its handler at apply, cross-activation). Pins that
-        // inc-2a's pure-C reification does not accidentally admit a re-performing continuation.
+    fn a_ctl_arm_whose_escaping_k_continuation_reperforms_folds_via_handler_reinstall() {
+        // E5 STEP-3 INC-2b (FACE-1 B2): an escaping-`k` arm whose delimited continuation `C` RE-PERFORMS the
+        // handled effect — the continuation, when applied, performs again under the handler. `pure_hole`
+        // fails on the second perform, so inc-2a's pure-C reification does NOT serve it; instead B2 reifies
+        // `k` as a SELF-RE-INSTALLING handler-wrapped closure `k = (fn (#kv) H[leading-perform := #kv])`
+        // where `H` is the whole handle node — so applying `k` re-enters the handler and the re-performed
+        // op has a home. `(handle St 0 ((tick (u) s k (use-k k))) (+ (St.tick) (St.tick)))`: apply(k,10) →
+        // (handle St 0 (arm) (+ 10 (St.tick))) — a one-remaining-perform handle that folds pure-one-hole →
+        // (+ 10 10) = 20. Was a decline (inc-2a boundary); B2 now folds the state-oblivious 2-perform case.
+        // A state-ADVANCING arm or a >2-perform body still declines cleanly (the deeper-recursion / state-
+        // threading follow-on). This is the escaping-k → value flip the DES scheduler builds on.
         let src = "(do (effect St (op tick (-> Unit Int64))) \
                    (def (use-k (: f (-> Int64 Int64))) (f 10)) \
                    (def (main) (handle St 0 ((tick (u) s k (use-k k))) (+ (St.tick) (St.tick)))) \
                    (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "an escaping-k arm whose continuation re-performs must still decline (inc-2b, handler re-entry)"
-        );
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("an escaping-k arm whose continuation re-performs now folds via handler re-install (B2)");
+        if let Some(v) = run_linked(&bytes, "main") {
+            assert_eq!(
+                v, "20",
+                "apply(k,10) re-installs the handler around C=(+ 10 (St.tick)), whose tick folds → (+ 10 10) = 20"
+            );
+        }
     }
 
     #[test]
@@ -80257,6 +80265,79 @@ mod cross_component_oracle {
     fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
     }
+}
+
+/// A variant whose PAYLOAD TYPE is written with the LOWERCASE compound-type alias `(tuple …)` is read as a
+/// real single-payload variant, not mistakenly as NULLARY — the v-patterns-routed type-decl-reading bug.
+/// `(type P (Mk (tuple Int64 Int64)))` then `(P.Mk (tuple 4 5))` must construct and match. The reader's
+/// implicit-type-parameter collector (`collect_type_params`) descended a `(Head arg…)` payload uniformly
+/// and, seeing the LOWERCASE alias head `tuple`, harvested it as a spurious type PARAMETER (the free-
+/// lowercase-name rule that legitimately picks up `a` in `(Some a)`). That made `P` bogus-generic over
+/// `tuple`, so the `Mk` constructor's scheme mis-reduced and read as ARITY 0 → CDZ0201 "a nullary variant
+/// takes the unit value, but a payload of type (Tuple Int64 Int64) was applied" on the construction. The
+/// fix excludes the lowercase compound-type aliases (`tuple`/`list`/`map`, plus `record` with its label-
+/// skipping) from param collection — the lowercase twin of the capital-`Record`/`Qty` head exclusions
+/// already present. (An ML-surface corpus pin is deferred: the lowercase-alias payload renders as the
+/// comma tuple `(Int64, Int64)` on the ML surface and does not yet round-trip back to the alias spelling —
+/// a separate v-syntax concern — so this is pinned as a Rust end-to-end test instead.)
+#[test]
+fn a_variant_with_a_lowercase_tuple_alias_payload_reads_as_a_payload_variant_not_nullary() {
+    use crate::testkit::parse;
+    // Lowercase `(tuple …)` payload — the bug's exact shape. Constructs `Mk` with a tuple payload, matches
+    // it, returns a constant: the point is that construction + match SUCCEED (the bug rejected them).
+    let low = "(module m (type P (Mk (tuple Int64 Int64))) (def (main) (match (P.Mk (tuple 4 5)) ((P.Mk t) 9))) (export main))";
+    assert_eq!(
+        run_returns::<i64>(
+            &compile_component(&crate::codec::encode(&parse(low))).expect("compile"),
+            "main"
+        ),
+        9
+    );
+    // The capital `(Tuple …)` spelling always worked — its head is Capitalized, so the lowercase-name
+    // param filter never harvested it. Pin it alongside so the two spellings are proven equivalent.
+    let cap = "(module m (type P (Mk (Tuple Int64 Int64))) (def (main) (match (P.Mk (tuple 4 5)) ((P.Mk t) 9))) (export main))";
+    assert_eq!(
+        run_returns::<i64>(
+            &compile_component(&crate::codec::encode(&parse(cap))).expect("compile"),
+            "main"
+        ),
+        9
+    );
+}
+
+/// Applying a NULLARY variant to a non-unit payload — `(None 5)` — is rejected CDZ0201 with an ACTIONABLE
+/// message: it NAMES the variant, says it carries no payload, and gives the fix (construct it bare). The
+/// old message was a generic "a nullary variant takes the unit value, but a payload of type Int64 was
+/// applied" — accurate but it named neither the variant nor the fix. Pins the rustc-gold wording + that the
+/// variant name is read from the SOURCE spelling for BOTH the bare (`None`) and qualified (`Option.None`)
+/// forms (`ctor_app_name`). The improved message anchors at the payload argument, not the whole call.
+#[test]
+fn a_nullary_variant_applied_to_a_payload_names_the_variant_and_the_fix() {
+    use crate::testkit::parse;
+    // Bare `None` with an Int64 payload — the message names `None` and the fix.
+    let bare = compile_component(&crate::codec::encode(&parse(
+        "(do (def (main) (match (None 5) ((Some x) x) ((None _) 0))) (export main))",
+    )))
+    .expect_err("a nullary variant applied to a non-unit payload must be rejected CDZ0201");
+    assert_eq!(bare.code.as_deref(), Some("CDZ0201"));
+    assert!(
+        bare.message.contains("`None` is nullary")
+            && bare.message.contains("cannot be applied")
+            && bare.message.contains("construct it as `None`"),
+        "nullary-payload reject should name the variant + the fix, got: {}",
+        bare.message
+    );
+    // Qualified `Option.None` — the variant name is read from the member key, not the module segment.
+    let qual = compile_component(&crate::codec::encode(&parse(
+        "(do (def (main) (match (Option.None 5) ((Some x) x) ((None _) 0))) (export main))",
+    )))
+    .expect_err("a qualified nullary variant applied to a payload must be rejected CDZ0201");
+    assert_eq!(qual.code.as_deref(), Some("CDZ0201"));
+    assert!(
+        qual.message.contains("`None` is nullary"),
+        "qualified nullary-payload reject should name the bare variant `None`, got: {}",
+        qual.message
+    );
 }
 
 /// The IR types (`Resolved`/`Ty`/`Core`) carry their variable-length payloads behind `Rc<[…]>`, NOT

@@ -1903,6 +1903,93 @@ pub fn reduce_handle(
         }
         return Some(folded);
     }
+    // E5 ESCAPING-K over a RE-PERFORMING continuation (step-3 inc-2b / FACE-1 B2). A general `ctl`-style arm
+    // that lets `k` ESCAPE (`cont: Some` carried here) whose delimited continuation `C` ITSELF re-performs
+    // the handled effect — `(handle A 5 ((a () s k (use-k k))) (+ (A.a) (A.a)))`, where after the leading
+    // `(A.a)` hole `C = (+ □ (A.a))` re-performs `A.a`. The pure-one-hole block above did NOT fire (`pure_
+    // hole` fails on the second perform), and the two-hole refold below is keyed on a `resume` node this arm
+    // has NONE of — so without this block it declines. It CANNOT be a compile-time in-place fold: `apply(k,
+    // v)` runs `C[v]` in a SEPARATE activation, so the re-performed `A.a` in `C` must RE-ENTER the handler.
+    // REIFY `k` as a SELF-RE-INSTALLING handler-wrapped closure: `k = (fn (#kv) H[perform := #kv])` where
+    // `H` is the WHOLE handle node — splicing the leading perform inside `H` yields `(handle A 5 (arm) (+
+    // #kv (A.a)))`, a copy of the handler wrapped around the continuation. Applying it (`(use-k k)` → `(k
+    // 10)`) re-enters that handle, whose remaining `(A.a)` now has a home; the re-installed handle has ONE
+    // FEWER perform, so `reduce_handle`'s natural re-entry folds it (recursively, N→N-1) — bottoming out at
+    // the pure-one-hole reify when a single perform remains. So `(+ (A.a) (A.a))` → `(k 10)` = `(handle A 5
+    // (arm) (+ 10 (A.a)))` → (+ 10 10) = 20. NO frame chain / `br_table` — a re-performing continuation is a
+    // handler-wrapped closure; the recursion is the existing fold, bounded by the re-entry guard.
+    //
+    // SOUND SUBSET (this increment): the arm must be STATE-OBLIVIOUS — its body does not reference the state
+    // binder `s`. Re-installing with the ORIGINAL `init` seed is only correct when the arm never advanced
+    // the state (b2-min's `(use-k k)` never mentions `s`). A STATE-ADVANCING arm (the DES `sleep`'s `(at s
+    // d)` wake computation) needs the advanced state threaded into the re-installed handle's seed — the
+    // follow-on increment — so it still DECLINES cleanly here (never a wrong value). Also require exactly ONE
+    // escaping application shape (single-value `k`), and the continuation must reach only THIS handler's
+    // performs (no foreign/host perform in `C`, `body_reaches_foreign_perform` false) — a reified
+    // continuation must not span a host boundary (§4.4), and a foreign perform in `C` has no home under the
+    // re-installed same-effect handler.
+    if let Some(perform) = leading_strict_hole(db, body, &ctx)
+        && let Resolved::Apply { head, args } = resolved_of(db, perform)
+        && let Some((decl, idx)) = is_perform(db, head, &ctx)
+        && let Some(arm) = ctx.arms.get(&(decl, idx)).cloned()
+        // ESCAPING-K: the arm binds `k` and let it escape (`cont: Some` — carried past the classifier).
+        && let Some(k_binder) = arm.cont
+        && !ctx.abortive.contains(&(decl, idx))
+        // EXACTLY TWO discharged performs in the body: the leading hole + ONE remaining in the continuation
+        // `C`. The self-re-installing reify drives ONE re-entry (removing the leading perform), leaving a
+        // single-perform handle the pure-one-hole fold bottoms out. A body with >2 performs would need
+        // repeated re-installs this single-level reify does not complete (it produces a residual non-
+        // applyable continuation), so decline cleanly there — the deeper-recursion increment's job.
+        && count_discharged_performs(db, body, &ctx) == 2
+        // STATE-OBLIVIOUS: the arm body must not read the state binder (else re-install with `init` is stale).
+        && count_param_refs(db, arm.body, arm.state) == 0
+        // The continuation must not span a foreign/host perform (host-composition invariant §4.4).
+        && !body_reaches_foreign_perform(db, body, &ctx)
+        // The whole handle node (H) must be reconstructable. By the time the fold runs, the canonical
+        // `(handle E seed arms body)` has been desugared to the INTERNAL `(handle-internal seed arms body)`
+        // (its head re-spelled, effect dropped) — that is `body`'s parent. Splicing the leading perform
+        // inside it yields `(handle-internal seed arms C[#kv])`, the self-re-installing wrapped handle.
+        && let Some(handle_node) = db.parent_of(body)
+        && db.ast.head_name(handle_node) == Some(HANDLE_INTERNAL)
+    {
+        // Substitute the arm's params ↦ (pure-copied) leading-perform args and its state binder ↦ the init
+        // seed (nothing runs before the leading perform on the strict spine, so the state there is the seed).
+        let mut subst: HashMap<StructId, StructId> = HashMap::default();
+        if arm.params.len() == args.len() {
+            for (&p, &a) in arm.params.iter().zip(args.iter()) {
+                if !is_unit_param(db, p) {
+                    subst.insert(p, copy_pure(db, a));
+                }
+            }
+        } else if arm.params.len() == 1 && args.is_empty() {
+            let p = arm.params[0];
+            if !is_unit_param(db, p) {
+                let unit = db.push_list(vec![]);
+                subst.insert(p, unit);
+            }
+        } else {
+            return None;
+        }
+        subst.insert(arm.state, init);
+        // Reify `k = (fn (#kv) H[leading-perform := #kv])`: splice the leading perform inside the WHOLE
+        // handle node (not just the body) so the continuation carries the handler around itself.
+        let kv_name = format!("#kv{}", perform.0);
+        let kv_binder = db.push_atom(Leaf::Name(kv_name.clone()));
+        let kv_ref = db.push_atom(Leaf::Name(kv_name));
+        let cont_body = splice_context(db, handle_node, perform, kv_ref);
+        let fn_head = db.push_atom(Leaf::Name("fn".to_string()));
+        let params_list = db.push_list(vec![kv_binder]);
+        let k_lambda = db.push_list(vec![fn_head, params_list, cont_body]);
+        subst.insert(k_binder, k_lambda);
+        let folded = crate::eval::beta_reduce(db, arm.body, &subst);
+        reparent_under_handle_site(db, folded, body);
+        // Type-consistency guard (as the pure-one-hole block) — the synthesized term is not re-checked
+        // before codegen, so an ill-typed composition must decline, never miscompile.
+        if !crate::infer::type_errors(db, folded).is_empty() {
+            return None;
+        }
+        return Some(folded);
+    }
     // E5 TWO-HOLE (general one-shot) fold: a NON-tail one-shot arm whose LEADING discharged perform sits on
     // the strict spine but whose continuation ITSELF performs (a second hole) — `(+ (Amb.flip) (Amb.flip))`
     // under `(flip (u) s (+ 1 (resume 10 s)))`. The pure one-hole block above declined it (`C` is not pure).
@@ -5973,6 +6060,32 @@ fn subtree_performs_uncached(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> b
     match db.ast.get(node).clone() {
         Struct::List(children) => children.iter().any(|&c| subtree_performs(db, c, ctx)),
         Struct::Atom(_) => false,
+    }
+}
+
+/// The number of SYNTACTIC discharged-perform occurrences in `node` — a `(op …)` application whose head is
+/// one of this handler's discharged operations (`is_perform`). Does NOT follow calls into effectful callees
+/// (unlike `subtree_performs`, which is a reachability predicate) and does NOT descend into lambda bodies (a
+/// perform inside a closure fires only when applied). Used by the escaping-k re-performing reify (FACE-1 B2)
+/// to gate on the number of holes in the continuation: the self-re-installing reify folds cleanly only when
+/// the continuation carries EXACTLY ONE remaining perform after the leading hole (so a single natural re-
+/// entry bottoms out at the pure-one-hole fold). A body with more discharged performs would need repeated
+/// re-installs the current single-level reify does not drive to completion — decline cleanly instead.
+fn count_discharged_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> u32 {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && is_perform(db, head, ctx).is_some()
+    {
+        return 1;
+    }
+    if matches!(resolved_of(db, node), Resolved::Lambda { .. }) {
+        return 0;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .map(|&c| count_discharged_performs(db, c, ctx))
+            .sum(),
+        Struct::Atom(_) => 0,
     }
 }
 
