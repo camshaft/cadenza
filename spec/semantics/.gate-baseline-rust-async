@@ -2126,6 +2126,7 @@ pass	an IEC binary prefix scales a unit by a power of two
 pass	an IEC-prefixed quantity displays scaled to its reference over Int64
 pass	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 pass	an Instant and a Duration are DISTINCT nominal types — a point cannot be used where a span is expected
+pass	an Int 12 sum past its maximum is rejected CDZ0304
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an Int16 sum-payload literal-match hits the literal arm, result widens to Int64
@@ -3258,6 +3259,7 @@ pass	the union contains the elements of either set
 pass	the unit recovered from a runtime-magnitude quantity is dimensionally checked
 pass	the unit value
 pass	the untaken branch's runtime div-by-zero does not fire
+pass	the unusual-width overflow check is width-parametric: a SECOND width (Int 12) also enforces its own range
 pass	the value-yielding insert of a new key adds the entry
 pass	the value-yielding insert reports None when the key is new
 pass	the value-yielding insert reports the prior value at a runtime key

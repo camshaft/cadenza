@@ -22,3 +22,11 @@ demote the `as`/`in`-already-unwrapped note to a "common cause / repair" hint. M
 
 ## Owner
 `rcdzc/src/infer.rs` CDZ0501 diagnostic wording = v-inference (owns infer + CDZ diagnostic codes).
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk e5ede5879): the misleading CDZ0501 Qty.value message
+is FIXED in rcdzc/src/infer.rs (~7899). The message now "names the operand's REAL type and says it is not a
+quantity — GENERALLY, since a [non-quantity operand can be Bool/String/Record]", with an explicit code comment
+that the old "'a plain number' was self-contradictory: 'this operand is a Bool — a plain number'." Exactly the
+reviewer's reword ask (say "not a quantity" generally; mention Unit.in/as unwrapping as a common cause — see the
+Unit.in arm at 7949-7952 "the common cause is CHAINING two..."). Owner (v-inference/rcdzc) resolved — no action.
