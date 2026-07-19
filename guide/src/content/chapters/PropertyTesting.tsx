@@ -115,7 +115,7 @@ export default function PropertyTesting() {
       </P>
       <P>
         Shrinking isn't just for scalars; it minimizes <em>compound</em> values the same way. Here a property
-        claims no generated list ever has exactly three elements — a deliberately-wrong claim. The parameter is
+        claims no generated list ever has exactly three elements, a deliberately-wrong claim. The parameter is
         a <C>(List Int64)</C>, so the compiler synthesizes a <em>list</em> generator (a random length, then an
         element per slot); press Run and the runner finds a failing list and shrinks it:
       </P>
@@ -128,7 +128,7 @@ export default function PropertyTesting() {
       <P>
         It fails and hands back the shrunk witness. The runner found some failing list, then shrank it: it
         pinned the length at the failing <C>3</C> (a shorter list stops failing) while driving the elements
-        toward zero — the smallest list of the failing shape, not the arbitrary <C>[7, 42, 5]</C> it may have
+        toward zero, the smallest list of the failing shape, not the arbitrary <C>[7, 42, 5]</C> it may have
         stumbled on first. That's the shrink made visible on a <em>structured</em> value, and it runs right
         here in the browser: the same generator-and-shrink the command-line <C>cdz test</C> uses, driving a
         compound parameter live.

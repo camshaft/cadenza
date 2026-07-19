@@ -254,6 +254,36 @@ def ev-narrow-cbin-unsigned-overflow-is-none() =
     | Option.Some(_) => trap("UInt8 200+100 = 300 overflows → None"))
 
 @test
+def ev-narrow-cbin-unsigned-underflow-is-none() =
+  // unsigned SUBTRACTION underflow, at the eval-core UNIT level: `CBin(-, UInt8, CNum 0, CNum 1)` = -1
+  // UNDERFLOWS UInt8 (min 0, can't hold -1) → None (the width<64 overflows-check catches -1 as out-of-range
+  // for unsigned; NOT a wrapped 255). This is the direct-Core complement to sread-eval's
+  // se-ann-unsigned-narrow-underflow-declines (which runs end-to-end but can't validate until the value-heap
+  // box emit fix lands); this hand-built CBin exercises the trap arm WITHOUT the reader/infer/lower/emit
+  // chain, so it compiles + guards the underflow decline today. rcdzc rejects the same at compile time (CDZ0304).
+  (match eval-core(Core.CBin(45, false, 8, Core.CNum(0, false, 8), Core.CNum(1, false, 8)), (Map.empty : Map(Int64, Int64))) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("UInt8 0-1 = -1 underflows → None (not wrapped 255)"))
+
+@test
+def ev-narrow-cbin-mul-in-range-is-some() =
+  // narrow MULTIPLICATION at eval-core: `CBin(*, Int8, CNum 10, CNum 12)` = 120 fits Int8 (max 127) → Some 120.
+  // The eval-core narrow tests covered + (43) and - (45); this + the twin below add * (42), the third arith op
+  // the width<64 overflow-check arm handles uniformly. Direct-Core complement to sread-eval's narrow-mul tests.
+  (match eval-core(Core.CBin(42, true, 8, Core.CNum(10, true, 8), Core.CNum(12, true, 8)), (Map.empty : Map(Int64, Int64))) with
+    | Option.Some(v) => (if v == 120 then unit else trap("Int8 10*12 = 120 (in range)"))
+    | Option.None(_) => trap("an in-range narrow MUL evaluates to Some"))
+
+@test
+def ev-narrow-cbin-mul-overflow-is-none() =
+  // narrow MUL that OVERFLOWS: `CBin(*, Int8, CNum 20, CNum 20)` = 400 OVERFLOWS Int8 (max 127) → None (the
+  // width<64 + overflows check traps, per CDZ0304 — NOT a wrapped value). Completes the eval-core arith-op
+  // coverage (+, -, * all trap narrow overflow); direct-Core complement to se-ann-narrow-mul-overflow-declines.
+  (match eval-core(Core.CBin(42, true, 8, Core.CNum(20, true, 8), Core.CNum(20, true, 8)), (Map.empty : Map(Int64, Int64))) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("Int8 20*20 = 400 overflows → None (traps, not wraps)"))
+
+@test
 def ev-width64-cbin-never-overflow-checks() =
   // the complement proving the guard is width-SELECTIVE, not a blanket check: a width-64 CBin does NOT
   // overflow-check (the `width < 64` arm is false → straight Some). A large-but-Int64-valued sum evaluates to

@@ -32,3 +32,13 @@ edit.
 
 ## Owner
 v-cad (`implementation/cad/*`). The extent bug is the substantive one.
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk 3578bb130): the SUBSTANTIVE bug (relative-path-seg
+extent under-approximation) is FIXED in implementation/cad/src/exact.cdz. `path-extent-go` (line 170) now
+THREADS the running cursor: `path-seg-cursor` advances it (Abs sets to the point, Rel adds the delta),
+`path-seg-reach` resolves each segment's ABSOLUTE reached point (a cubic also folds its two control points),
+and v2max folds the resolved absolute points — not raw deltas. Doc (160-165) cites the reviewer's exact
+counterexample: "two LineToRel(10,0) reach x=20, not 10." So PathProfile bounding-box/profile-half-extent no
+longer under-approximate. The trap-msg "typo" (tool→too) is not present on trunk (the "tool ... too" at 458-459
+is intentional CSG subtract-tool wording, not the flagged typo). Owner (v-cad) resolved — no corpus-bugfix action.
