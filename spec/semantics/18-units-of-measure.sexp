@@ -69,6 +69,19 @@
   (input  (Qty.of 5.0 (Unit.base #"meter")))
   (output (: (Qty.of 5.0 (Unit.base #"meter")) (Qty Float64 (Unit.base #"meter")))))
 
+(case "a RUNTIME quantity is returned WITH its unit (the unit label is injected at compile time)"
+  (doc    "A parameterized `(def (main (: v Int64)) (Qty.of v (Unit.base #\"meter\")))` returns a RUNTIME
+           quantity: `main 7` renders `(: (Qty.of 7 meter) (Qty Int64 meter))` — the unit crosses the host
+           boundary WITH the erased runtime magnitude. Units are COMPILE-TIME-ONLY (units-of-measure.md
+           §Dimensions Are Checked Then Erased): the Qty erases to its bare inner scalar at run time (zero
+           runtime cost, no runtime unit tracking), and the boundary formatter injects the unit LABEL — a
+           compile-time constant from the statically-known `Qty` type — alongside the scalar. So a computed
+           quantity is returnable/printable without an explicit `Qty.value`, the same value form a CONSTANT
+           quantity crosses as, only the magnitude is a runtime hole.")
+  (input  (do (def (main (: v Int64)) (Qty.of v (Unit.base #"meter"))) (export main)))
+  (call   main (: 7 Int64)) (output (: (Qty.of 7 (Unit.base #"meter")) (Qty Int64 (Unit.base #"meter"))))
+  (call   main (: 42 Int64)) (output (: (Qty.of 42 (Unit.base #"meter")) (Qty Int64 (Unit.base #"meter")))))
+
 (case "Qty.value recovers the underlying numeric value, discarding the unit"
   (doc    "`(Qty.value (Qty.of 5.0 (Unit.base #\"meter\")))` = 5.0 : Float64 — the explicit exit from
            the dimensional layer (the widening that requires no check, verification-layers.md #Refinement

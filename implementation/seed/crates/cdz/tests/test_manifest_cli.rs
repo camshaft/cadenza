@@ -2114,6 +2114,17 @@ fn a_property_parameter_at_an_unrecognized_type_declines_rather_than_fabricating
     );
 
     // The recognized-type sibling still runs 100 trials — the enforcement did not over-reject a valid param.
+    // Running a property (`cdz test --trials`) executes it, which resolves the value-heap runtime; CI's
+    // storeless `cargo test --workspace` (no `cargo xtask build`) has no store, so the run declines instead
+    // of producing the PASS verdict. The decline assertion above is a COMPILE-time check (no store), so it
+    // stays live everywhere; only this run half is skipped storeless (the store-having gate + `@test suites`
+    // jobs exercise it fully). Same guard the sibling runtime-driving tests use.
+    if !store_present() {
+        eprintln!(
+            "skipping the recognized-type run half: no cadenza-store (storeless test job) — a property run resolves the runtime"
+        );
+        return;
+    }
     let okf = write(
         &d,
         "ok.cdz",

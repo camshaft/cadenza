@@ -107,10 +107,21 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
 /// The body-typing tail of the single-param NApp arm, factored out so the fit-check guard above stays flat.
 /// `argTyOpt` is `Map.lookup(ta, argId)` (already computed). Binds param1 : arg1's type, types arg2 + binds
 /// param2 (via infer-param2), then the call's type IS the body's type. A 2nd arg with no param2 → TErr.
+/// The TYPE to bind a param node to. If the param DECLARES a narrow int type (`param-type-of` Some — a
+/// typed param `(: a Int8)`), the param takes THAT declared type, so its body uses type at the declared
+/// WIDTH — `(+ a a)` on an Int8 param is Int8 arith, and eval's narrow-overflow trap fires (CDZ0304: `(f
+/// 100)` → `(+ a a)` = 200 overflows Int8 → declines, not a laundered wide 200). The arg's own fit against
+/// the declared type is already gated by `param-fit-ok` (CDZ0302). An UNTYPED param has no declared type →
+/// it takes the ARG's type (the flow as before). Width 64 (`Int64`) reconstructs the plain Int64 fact.
+def param-bind-type(tree: Tree, paramId: Int64, argTy: Typed) =
+  (match param-type-of(tree, paramId) with
+    | Option.Some(enc) => Typed.TIntW(pt-signed(enc), pt-width(enc))   // declared narrow type drives the body
+    | Option.None(_) => argTy)                                          // untyped param → arg's type flows
+
 def infer-app-with-arg-ty(tree: Tree, id: Int64, calleeId: Int64, paramId: Int64, argId: Int64, rcol: Map(Int64, Resolved), ta: Map(Int64, Typed), argTyOpt: Option(Typed)) =
   (match argTyOpt with
     | Option.Some(argTy) =>
-        (let tp = Map.insert(ta, paramId, argTy) in       // param1 node : arg1's type
+        (let tp = Map.insert(ta, paramId, param-bind-type(tree, paramId, argTy)) in   // param1 : declared narrow type, else arg's type
          // slice-3d: a 2-ARG call also types arg2 + binds param2 (both params in tcol before the body is
          // typed, so var-type resolves each param use). Then the call's type IS the body's type. 1-arg
          // (arg2-of None) skips straight to the body.
@@ -639,5 +650,27 @@ def id-param-fit-ok-nonliteral-arg-ok() =
         (match add-node(t3, Node.NBin(43, aId, bId)) with | (argId, t4) =>
           (let t5 = record-param-type(t4, paramId, encode-param-type(true, 8)) in
            (if param-fit-ok(t5, paramId, argId) then unit else trap("a non-literal arg is not compile-time fit-checked here"))))))))
+
+@test
+def id-param-bind-type-declared-narrow-drives-body() =
+  // NARROW-INT ENFORCEMENT (CDZ0304): a param with a DECLARED narrow type binds to THAT type (not the arg's
+  // default Int64), so its body arith types at the declared width. `param-bind-type` for an Int8-declared param
+  // returns TIntW(true, 8) REGARDLESS of the arg's type — so `(+ a a)` on an Int8 param is Int8 arith, and
+  // lower/eval carry the width to trap overflow. (Before this, the param took the arg's Int64 type → body arith
+  // was Int64, never overflow-checked → `(f 100)` laundered `(+ a a)`=200 as a wide value.)
+  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
+    (let t2 = record-param-type(t1, paramId, encode-param-type(true, 8)) in
+     (match param-bind-type(t2, paramId, Typed.TIntW(true, 64)) with     // arg is Int64, but the DECLARED type wins
+       | Typed.TIntW(s, w) => (if s and (w == 8) then unit else trap("declared Int8 drives the param type, not the arg's Int64"))
+       | _ => trap("a narrow-declared param binds to TIntW"))))
+
+@test
+def id-param-bind-type-untyped-takes-arg-type() =
+  // an UNTYPED param (no declared type) binds to the ARG's type (the flow unchanged from before enforcement).
+  // param-bind-type returns the arg type verbatim when param-type-of is None.
+  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
+    (match param-bind-type(t1, paramId, Typed.TIntW(false, 16)) with     // no declared type → arg's UInt16 flows
+      | Typed.TIntW(s, w) => (if (if s then false else true) and (w == 16) then unit else trap("untyped param takes the arg's type"))
+      | _ => trap("untyped param binds to the arg type"))))
 
 export { Typed.*, infer-node, infer-tree, type-at, well-typed, type-err-at, typed-count, is-bool-at, is-int-at }
