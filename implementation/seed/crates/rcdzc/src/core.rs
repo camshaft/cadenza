@@ -337,28 +337,43 @@ pub enum Core {
     //# A tuple MUST be a fixed-size value whose elements are accessed positionally.
     //= spec/capabilities/core-semantics.md#a-tuple-is-a-fixed-size-positional-product
     //# A tuple MAY hold elements of distinct types.
-    Tuple { elems: Vec<StructId> },
+    Tuple {
+        elems: Vec<StructId>,
+    },
     /// A tuple PROJECTION — read element `index` of the tuple the `operand` occurrence denotes. Present
     /// only when the operand is a RUNTIME tuple (a projection of a compile-time-visible tuple folds to
     /// the element directly in `lower`, so it never reaches here). The backend emits `arr-get` +
     /// `get-*`. The `index` is within the operand's static arity (checked in `type_errors` before
     /// selection — an out-of-arity index is a compile-time reject, never a runtime trap).
-    Proj { operand: StructId, index: usize },
+    Proj {
+        operand: StructId,
+        index: usize,
+    },
     /// A LIST value construction — `(list 1 2 3)`. Present when it survives to selection as a RUNTIME
     /// value (constructed from runtime operands, or a constant list that escapes). The backend builds it
     /// on the persistent `vec-*` heap: `vec-empty` then a `vec-push` per element (each boxed by the
     /// element type). Elements are lowered on demand. Homogeneous — one element type.
-    ListNew { elems: Vec<StructId> },
+    ListNew {
+        elems: Vec<StructId>,
+    },
     /// `List.len` of the list the `operand` occurrence denotes — the runtime `vec-len` op, an `Int64`.
     /// Present when the operand is a RUNTIME list (a constant list's length folds to a `ConstInt` in
     /// `lower`, so it never reaches here).
-    ListLen { operand: StructId },
+    ListLen {
+        operand: StructId,
+    },
     /// `List.push` — append `elem` to `list`, returning the new list (runtime `vec-push`; persistent, no
     /// mutation). `elem` is boxed by its type before the push, exactly as a list element is at construction.
-    ListPush { list: StructId, elem: StructId },
+    ListPush {
+        list: StructId,
+        elem: StructId,
+    },
     /// `List.concat` — concatenate `lhs` and `rhs` into one list (runtime `vec-concat`). Both are list
     /// handles of the same element type.
-    ListConcat { lhs: StructId, rhs: StructId },
+    ListConcat {
+        lhs: StructId,
+        rhs: StructId,
+    },
     /// `List.update` — replace the element at `index` of `list` with `elem`, returning the new list
     /// (runtime `vec-update`; persistent, no mutation; an out-of-bounds `index` traps). `index` is an
     /// `Int64` occurrence wrapped to the `u32` the op takes; `elem` is boxed by its type before the
@@ -389,11 +404,15 @@ pub enum Core {
     /// rope `bytes-*` heap: `bytes-alloc(len)` then a range-checked `bytes-set` per element (an element
     /// `< 0` or `> 255` traps at run time, matching the fold's compile-time CDZ0304). Only the
     /// literal-length form is built here; a runtime-length list source is a later increment.
-    BytesOf { elems: Vec<StructId> },
+    BytesOf {
+        elems: Vec<StructId>,
+    },
     /// `Bytes.len` of the bytes the `operand` denotes — the runtime `bytes-len` op, an `Int64`. Present
     /// when the operand is a RUNTIME bytes value (a compile-time-visible `Bytes.of` folds its length to
     /// a `ConstInt` in `lower`, so it never reaches here). The bytes companion of `ListLen`.
-    BytesLen { operand: StructId },
+    BytesLen {
+        operand: StructId,
+    },
     /// `String.scalar-len` of a RUNTIME string — the number of Unicode SCALAR VALUES (codepoints), an
     /// `Int64`. A constant-string `scalar-len` folds to a `ConstInt` in `lower` (never reaching here); this
     /// node is the RUNTIME face. A String is a flat UTF-8 byte leaf, so the backend WALKS the byte buffer
@@ -402,7 +421,9 @@ pub enum Core {
     /// reuses the same `push_is_lead` machinery `Core::StrAt`'s scalar-scan emits. Unlike `scalar-at`, the
     /// result is a plain `Int64` — no runtime Char representation is involved. The scalar companion of
     /// `BytesLen` (which counts bytes, not scalars — they differ exactly on a multi-byte string).
-    StrScalarLen { operand: StructId },
+    StrScalarLen {
+        operand: StructId,
+    },
     /// `Bytes.at` — the FALLIBLE indexed byte read, present when the bytes operand is a RUNTIME value (a
     /// constant `Bytes.of` + constant index FOLDS to a `SumNew` in `lower`, so it never reaches here). The
     /// backend emits a bounds-checked runtime form: read `bytes-len`, and if `0 <= index < len` build
@@ -453,7 +474,10 @@ pub enum Core {
     /// `Bytes.concat` — append `lhs` and `rhs` into one byte sequence (runtime `bytes-concat`; consumes
     /// both, empty is the identity). Present when the pair is not both compile-time-visible constants (a
     /// constant pair folds to a `Core::BytesOf` in `lower`). The byte companion of `Core::ListConcat`.
-    BytesConcat { lhs: StructId, rhs: StructId },
+    BytesConcat {
+        lhs: StructId,
+        rhs: StructId,
+    },
     /// `String.from-bytes b` on a RUNTIME `Bytes` — the TOTAL UTF-8 decode `Bytes → (Option String)`.
     /// Present when the operand is not a compile-time-visible constant `Bytes.of` (a constant folds in
     /// `lower` via `std::str::from_utf8`). Emits the runtime `str-from-bytes` op, which CONSUMES `buf`,
@@ -478,17 +502,23 @@ pub enum Core {
     /// (no new runtime op, frozen hash unchanged); the exact inverse of `str-from-bytes` on well-formed input.
     /// CONSUMES `string` (`bytes-compact` transfers the handle out as the Bytes result). The runtime
     /// companion of the constant fold in `lower_str_to_bytes`.
-    StrToBytes { string: StructId },
+    StrToBytes {
+        string: StructId,
+    },
     /// `BigInt.of x` on a RUNTIME fixed-width integer — widen `x` (an i64-slot value) into a `BigInt`
     /// heap leaf via the runtime `bigint-of-i64` op. A CONSTANT source folds to `Core::ConstInt` retyped
     /// `BigInt` in `lower` (B1) and never reaches here; this is the runtime path (B3b).
-    BigIntOfI64 { value: StructId },
+    BigIntOfI64 {
+        value: StructId,
+    },
     /// `Int64.of b` / `(UInt N).of b` on a RUNTIME `BigInt` `b` — the checked narrowing back to a
     /// fixed width via `bigint-to-i64-checked` (traps out of range at run time). The `width`/`signed` of
     /// the target refine the range the runtime op checks against once narrower-than-i64 checking lands;
     /// today the runtime checks the i64 range and a narrower target's over-range constant is already
     /// rejected at compile time (B1). A constant `BigInt` source folds in `lower`.
-    BigIntToI64 { operand: StructId },
+    BigIntToI64 {
+        operand: StructId,
+    },
     /// A runtime BigInt BINARY op — `+`/`-`/`*`/`/` (the runtime `bigint-add`/`-sub`/`-mul`/`-div`) or a
     /// comparison lowered through `bigint-cmp`. Present when at least one operand is a runtime `BigInt`
     /// (a constant pair folds via `num-bigint` in `lower`). Produces a `BigInt` handle for arithmetic;
@@ -514,10 +544,28 @@ pub enum Core {
     /// `rational-of` (normalize + build the 2-handle node; TRAPS on a zero denominator at run time). A
     /// constant pair folds to `Core::ConstRational` in `lower` and never reaches here; this is the runtime
     /// path (R3b). Both operand slots are i64 values (the fixed-width ints), widened at emit.
-    RationalOfInts { num: StructId, den: StructId },
+    RationalOfInts {
+        num: StructId,
+        den: StructId,
+    },
     /// `Rational.of-int n` on a RUNTIME fixed-width integer — the whole rational `n/1`: widen `n` to a
     /// `BigInt`, `bigint-of-i64(1)` for the denominator, then `rational-of`. A constant folds in `lower`.
-    RationalOfIntWiden { value: StructId },
+    RationalOfIntWiden {
+        value: StructId,
+    },
+    /// `Rational.numerator r` / `Rational.denominator r` on a RUNTIME Rational — read the numerator /
+    /// denominator BigInt out of the normalized pair (`rational-num`/`rational-den`), returning a fresh
+    /// owned `BigInt` handle. The op BORROWS the Rational operand (the emit drops an owned temporary), like
+    /// the Rational arithmetic. A constant `Core::ConstRational` folds to a constant BigInt in `lower`.
+    /// Result is a `BigInt` — a numerator/denominator can exceed i64, so the surface is `Rational → BigInt`
+    /// (numeric-model.md: a Rational is a numerator/denominator pair of big-integers); floor/round/projection
+    /// are written in Cadenza on top (BigInt divmod, then `Int64.of` the small final value).
+    RationalNum {
+        operand: StructId,
+    },
+    RationalDen {
+        operand: StructId,
+    },
     /// A runtime Rational BINARY op `+`/`-`/`*`/`/` (the runtime `rational-add`/`-sub`/`-mul`/`-div`).
     /// Present when at least one operand is a runtime `Rational` (a constant pair folds in `lower`).
     /// Produces a normalized `Rational` handle; `rational-div` traps on a zero divisor at run time. The
@@ -541,7 +589,9 @@ pub enum Core {
     /// fit segment" if out of range — the runtime companion of the constant CDZ0304) and writes its `w`
     /// bytes big-endian (`le` reversed). The segments are the LEAN [`BinSeg`] form (width/signedness/
     /// endianness + the value occurrence), so `Core` does not depend on the resolver's `Segment`.
-    BinBuild { segs: Vec<BinSeg> },
+    BinBuild {
+        segs: Vec<BinSeg>,
+    },
     /// A RUN of `(bits v k)` bit-field segments with at least one RUNTIME value, packed MSB-first into a
     /// `Bytes` on the rope heap at run time. The run is byte-aligned (CDZ0220 guaranteed `sum(k) % 8 == 0`),
     /// so it produces `sum(k) / 8` bytes. Each field's value range-checks against its `k`-bit width (trap
@@ -549,7 +599,9 @@ pub enum Core {
     /// then its low `k` bits shift into a u64 accumulator that flushes whole bytes from the top as they
     /// close. Emitted by `lower` when a `bits`-only maximal run has a runtime value; a run mixing bits with
     /// int/bytes segments concatenates the pieces (`Core::BytesConcat`), like the int-run splitter.
-    BinBitsBuild { fields: Vec<BinBitsField> },
+    BinBitsBuild {
+        fields: Vec<BinBitsField>,
+    },
     /// Read a fixed-width INTEGER segment out of a runtime `Bytes` scrutinee at a STATIC byte offset — the
     /// value a `bin`-pattern binder decodes when matching a runtime scrutinee (`(match b ((bin (u16 n)) n)
     /// …)`). Emits `w` `bytes-get`s from `bytes` at `byte_offset..+width`, assembles them (big-endian, `le`
@@ -569,7 +621,10 @@ pub enum Core {
     /// (the tail after the fixed prefix). The caller (`lower_match_bin`) guarded `bytes-len >= byte_offset`
     /// (the arm's length probe), so the slice is in bounds. `byte_offset` is static (a final rest after
     /// fixed-width int segments; a dependent-size `(bytes b n)` with a dynamic offset is a later slice).
-    BinRestRead { bytes: StructId, byte_offset: u32 },
+    BinRestRead {
+        bytes: StructId,
+        byte_offset: u32,
+    },
     /// Read a DEPENDENT-SIZE `(bytes payload n)` segment out of a runtime `Bytes` scrutinee — exactly `n`
     /// bytes at a static `byte_offset`, where `n` is the RUNTIME value of an earlier integer segment
     /// (`len` is a `Core::BinIntRead` of that segment). Emits `bytes-slice(bytes, byte_offset, n)` — the
@@ -596,7 +651,9 @@ pub enum Core {
     },
     /// `Bytes.compact` — a content-equal byte sequence with independent storage (runtime `bytes-compact`;
     /// consumes its operand). Present when the operand is a RUNTIME value (a constant folds to itself).
-    BytesCompact { operand: StructId },
+    BytesCompact {
+        operand: StructId,
+    },
     /// A MAP value construction — `(map (k v) …)` or `Map.empty`. `entries` are `(key, value)` occurrence
     /// pairs, IN SOURCE ORDER (a later duplicate key overwrites an earlier one, keys compared by value).
     /// Present when it survives to selection as a RUNTIME value. The backend builds it on the persistent
@@ -642,7 +699,9 @@ pub enum Core {
     /// `Map.size` — the count of distinct keys the map associates, present when the map is a RUNTIME value.
     /// The backend emits `map-size(map)` (BORROWS; O(1) from the CHAMP root) + an i32→i64 extend to `Int64`.
     /// The map companion of `ListLen`.
-    MapSize { map: StructId },
+    MapSize {
+        map: StructId,
+    },
     /// A SET value construction — `(Set.of (list …))`. `elems` are the element occurrences (in source
     /// order; DUPLICATES collapse at build). The backend builds it on the persistent CHAMP `set-*` heap:
     /// `set-empty` then a `set-insert(elem)` per element (each boxed by `elem_ty`, which `set-insert`
@@ -692,7 +751,9 @@ pub enum Core {
     },
     /// `Set.len` — the count of distinct elements, present when the set is a RUNTIME value. The backend
     /// emits `set-size(set)` (BORROWS; O(1)) + an i32→i64 extend to `Int64`. The set analogue of `MapSize`.
-    SetLen { set: StructId },
+    SetLen {
+        set: StructId,
+    },
     /// `Set.union`/`Set.intersection`/`Set.difference` — the binary set-algebra ops, present when an
     /// operand is a RUNTIME value. The backend emits the runtime `set-union`/`set-intersection`/
     /// `set-difference` op (each CONSUMES both operands, returns the result set). `op` names which.
@@ -732,7 +793,10 @@ pub enum Core {
     //# A "nullary" variant MUST be a constructor whose argument type is Unit, not a pre-constructed Sum value.
     //= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
     //# Construction MUST be via application in all cases: `(Some 5)`, `(None unit)`, `(Sign.Zero unit)`.
-    SumNew { disc: u32, payloads: Vec<StructId> },
+    SumNew {
+        disc: u32,
+        payloads: Vec<StructId>,
+    },
     /// A MATCH over a SUM scrutinee, compiled to a DECISION TREE. The ROOT switch dispatches on
     /// `sum-disc(scrutinee)` (`path` is empty — the scrutinee itself); each arm's continuation is a leaf
     /// body or a NESTED switch on a deeper sub-value ([`SumCont`]). This is what lets `(Some (Some x))`,
@@ -862,7 +926,9 @@ pub enum Core {
     /// slot, exactly as a `Param` reads a parameter slot. Present only when the referenced binding was
     /// KEPT as a `Core::Let` (a multi-use runtime value); a reference to a propagated binding lowers to
     /// the value's own core instead.
-    LocalRef { binder: StructId },
+    LocalRef {
+        binder: StructId,
+    },
     /// A runtime arithmetic operation on two operands (children by AST `StructId`). Present only when
     /// the fold could NOT reduce the operation to a constant (an operand is not compile-time-known — a
     /// FUNCTION PARAMETER). Constant arithmetic folds to `ConstInt`/`Poison` in `lower`. The machine op
@@ -922,7 +988,10 @@ pub enum Core {
     /// (the same tagless `champ_eq` walk the map/set key path runs): equal iff same shape + component-wise
     /// equal, variant discriminant before payload (core-semantics.md §Equality Is Structural). `value-eq`
     /// BORROWS both operands, so an owned-temporary operand is dropped after the compare.
-    ValueEq { lhs: StructId, rhs: StructId },
+    ValueEq {
+        lhs: StructId,
+        rhs: StructId,
+    },
     /// A runtime ORDERING comparison on two COMPOUND operands (a tuple/record/list/sum heap value whose
     /// leaves are all orderable) — result is a `Bool`. Present only for `<`/`<=`/`>`/`>=` when the fold
     /// could not decide it (a runtime compound operand; two constant compounds fold in `lower`). The backend
@@ -946,11 +1015,16 @@ pub enum Core {
     /// fold could not reduce it (the operand is a runtime value). `Prim::Wrap` truncates the operand to
     /// the node's solved TARGET width/signedness (read off at selection); a constant operand folds to a
     /// `ConstInt` in `lower`. The target is the conversion node's OWN solved type, not the operand's.
-    Convert { op: Prim, operand: StructId },
+    Convert {
+        op: Prim,
+        operand: StructId,
+    },
     /// A runtime boolean NEGATION `!operand` — the `operand` is a `Bool` (an i32 0/1). Present only from
     /// the `(if c false true)` fold in `lower` (a boolean-coercion negation); a constant operand folds to
     /// the negated `ConstBool` there instead. The backend emits `<operand> ; i32.eqz`.
-    Not { operand: StructId },
+    Not {
+        operand: StructId,
+    },
     /// A runtime CALL to a top-level function — `callee` is the `db.defs` index of the function, `args`
     /// the call-site argument occurrences (lowered in the CALLER's frame, pushed in order). Present only
     /// when the application could NOT β-reduce to a normal form at compile time — i.e. a RECURSIVE
@@ -966,14 +1040,19 @@ pub enum Core {
     //# A recursive definition MUST refer to itself through a static reference to code rather than through a value that points back into the heap, so that recursion introduces no cycle into the value heap.
     //= spec/capabilities/memory-and-resource-model.md#the-value-heap-is-acyclic
     //# The compiler MUST NOT emit a construct that forms a cycle among heap values, so that a reference-count reclamation discipline leaves no value uncollected.
-    Call { callee: usize, args: Vec<StructId> },
+    Call {
+        callee: usize,
+        args: Vec<StructId>,
+    },
     /// A reference to a FUNCTION PARAMETER — the `binder` is the parameter's name occurrence (its
     /// identity, matching what `resolve` binds a reference to). The backend maps it to a `local.get` of
     /// the parameter's slot. This is the runtime value a bare literal is not: a parameter's value is
     /// unknown at compile time, so a `Param` reaching selection lowers to a local read rather than a
     /// constant. (Only present when a function body is lowered STANDALONE — i.e. it is emitted as a real
     /// wasm function, not inlined-and-folded at a constant call site.)
-    Param { binder: StructId },
+    Param {
+        binder: StructId,
+    },
     /// A RUNTIME CLOSURE VALUE — a flat closure built on the value heap. The backend builds a product
     /// cell (the same tagless `arr` cell a tuple uses) whose slot 0 is `box-int(code)` — the funcref
     /// TABLE slot naming the lambda-lifted function's code — and whose remaining slots are the
@@ -1087,7 +1166,9 @@ pub enum Core {
     /// `T_B`, e.g. `Option.None` / `Result.Err(r)`); everything after the break in the block body is
     /// abandoned. The target is resolved LEXICALLY at desugar time (the innermost enclosing boundary — the
     /// under-frame rule handlers use), so this is a plain block-label reference, not a runtime search.
-    Break { value: StructId },
+    Break {
+        value: StructId,
+    },
     /// A produced "no" carried into the core.
     Poison(Reject),
 }

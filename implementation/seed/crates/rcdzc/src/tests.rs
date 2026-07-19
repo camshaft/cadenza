@@ -30149,6 +30149,90 @@ mod match_engine {
         }
     }
 
+    /// `run_on_heap` for a `main` that takes ONE `Int64` argument — passes `arg` as the runtime parameter
+    /// (so the operand is genuinely runtime, not a constant fold), links the value-heap runtime, and returns
+    /// the printed result. Skips (`None`) when the runtime wasm is not built.
+    fn run_on_heap_arg(src: &str, arg: i64) -> Option<String> {
+        let bytes = component(src);
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "a runtime op must import the value-heap runtime (genuine heap, not a fold)"
+        );
+        let runtime = super::find_runtime_wasm()?;
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![arg.to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => Some(s),
+            cdz_run::Outcome::Trap(t) => panic!("rational heap run trapped (miscompile?): {t}"),
+        }
+    }
+
+    #[test]
+    fn rational_numerator_and_denominator_read_the_normalized_components_as_bigint() {
+        // `Rational.numerator`/`denominator : Rational → BigInt` — read the components of the NORMALIZED
+        // (lowest-terms, denominator > 0) pair. `(Rational.of n 4)` at n=6 is 6/4 = 3/2, so numerator = 3,
+        // denominator = 2. The result is a BigInt (a numerator/denominator can exceed i64); narrowed here
+        // with `Int64.of` for the scalar assertion. Runtime Rational (built from the parameter `n`), so it
+        // exercises the `rational-num`/`rational-den` ops (not the constant fold). Pins the value + that the
+        // components observe the REDUCED fraction (3/2, not 6/4).
+        // `main` takes the runtime param `n` (passed = 6), so `(Rational.of n 4)` is a RUNTIME
+        // `RationalOfInts` (not a constant fold) → exercises the runtime `rational-num`/`rational-den` ops.
+        // 6/4 = 3/2.
+        let Some(num) = run_on_heap_arg(
+            "(module m (def (main (: n Int64)) \
+               ((. Int64 of) ((. Rational numerator) ((. Rational of) n 4)))) (export main))",
+            6,
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(num, "3", "numerator of 6/4 = 3/2 is 3 (reduced)");
+        let Some(den) = run_on_heap_arg(
+            "(module m (def (main (: n Int64)) \
+               ((. Int64 of) ((. Rational denominator) ((. Rational of) n 4)))) (export main))",
+            6,
+        ) else {
+            return;
+        };
+        assert_eq!(den, "2", "denominator of 6/4 = 3/2 is 2 (reduced)");
+    }
+
+    #[test]
+    fn a_constant_rational_numerator_denominator_fold_to_a_constant_bigint() {
+        // A CONSTANT `Rational.numerator`/`denominator` FOLDS (no runtime import): `(Rational.of 6 4)` is a
+        // compile-time-visible `Core::ConstRational(3, 2)` (already normalized), so `numerator` folds to the
+        // constant BigInt 3 and `denominator` to 2 — a `Core::ConstInt` typed BigInt, narrowed by `Int64.of`
+        // for the scalar result. Uses `run_returns`/`component` (bare linker) — the fold means NO value-heap
+        // runtime is imported. Pins the const-fold arm alongside the runtime path above.
+        for (prog, want) in [
+            (
+                "((. Int64 of) ((. Rational numerator) ((. Rational of) 6 4)))",
+                3,
+            ),
+            (
+                "((. Int64 of) ((. Rational denominator) ((. Rational of) 6 4)))",
+                2,
+            ),
+        ] {
+            let src = format!("(module m (def (main) {prog}) (export main))");
+            let bytes = component(&src);
+            assert!(
+                cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+                "a constant Rational.numerator/denominator folds — no runtime import: {prog}"
+            );
+            assert_eq!(
+                run_returns::<i64>(&bytes, "main"),
+                want,
+                "constant fold: {prog}"
+            );
+        }
+    }
+
     /// Whether the component `bytes` imports the runtime op named `op` (a core-module import from the
     /// `heap` interface). Used to assert the FBIP fast path emits NO `dup` for a single-use consume.
     fn component_imports_op(bytes: &[u8], op: &str) -> bool {

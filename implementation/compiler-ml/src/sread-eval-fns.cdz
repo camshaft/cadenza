@@ -1,0 +1,60 @@
+/// sread-eval-fns.cdz — COMPOSITIONAL user-function end-to-end tests, SPLIT OUT of sread-eval.cdz. Each test
+/// runs a multi-def / user-function program through the full source→value pipeline (`run-src`, imported from
+/// sread-eval). SPLIT RATIONALE (same as sread-eval-ann): every `run-src` @test compiles the WHOLE compiler-ml
+/// pipeline into its own wasm test-component, so a single file with many such tests exceeds the 360s gate
+/// timeout under load (the standing compiler-ml hang). Keeping these compositional-function pins in their own
+/// file keeps each file's component-build under the timeout. `run-src` stays in sread-eval.cdz.
+///
+/// These shapes currently RUN correctly but were UN-WITNESSED (the loop-doc "add a case even if it passes"
+/// gate-coverage discipline) — pinned so a future reader/resolve/infer/lower/eval change can't silently break
+/// them. Each value is differential-verified vs rcdzc.
+
+import { run-src } from "sread-eval"
+
+@test
+def se-let-in-def-body() =
+  // a def BODY that is a nested `let`: `(def (f x) (let ((y 10)) (+ x y)))` `(f 5)` → 15. Pins that a call's
+  // inlined body can itself introduce a binder (the param `x` and the let's `y` coexist in the body scope).
+  (match run-src("(do (def (f x) (let ((y 10)) (+ x y))) (def (main) (f 5)) (export main))") with
+    | Option.Some(v) => (if v == 15 then unit else trap("(def (f x) (let y=10 in x+y)) (f 5) → 15"))
+    | Option.None(_) => trap("a let-bodied def call runs"))
+
+@test
+def se-if-in-def-body() =
+  // a def body with CONTROL FLOW: `(def (f x) (if (< x 10) x 0))` `(f 5)` → 5. Pins an `if` inside a called
+  // body (the param flows into the condition + a branch).
+  (match run-src("(do (def (f x) (if (< x 10) x 0)) (def (main) (f 5)) (export main))") with
+    | Option.Some(v) => (if v == 5 then unit else trap("(def (f x) (if x<10 then x else 0)) (f 5) → 5"))
+    | Option.None(_) => trap("an if-bodied def call runs"))
+
+@test
+def se-param-used-twice-in-body() =
+  // the param referenced MORE THAN ONCE: `(def (sq x) (* x x))` `(sq 7)` → 49. Pins that a single CLet binder
+  // is read by multiple uses of the param (the arg is bound once, both `x` occurrences resolve to it).
+  (match run-src("(do (def (sq x) (* x x)) (def (main) (sq 7)) (export main))") with
+    | Option.Some(v) => (if v == 49 then unit else trap("(def (sq x) (* x x)) (sq 7) → 49"))
+    | Option.None(_) => trap("a param used twice runs"))
+
+@test
+def se-two-distinct-helpers-in-main() =
+  // `main` calls TWO DIFFERENT helper defs: `(g 3)` + `(h 4)` where g(x)=x*2, h(x)=x+1 → 6+5 = 11. Pins that
+  // multiple distinct def-names resolve at distinct call sites in one expression.
+  (match run-src("(do (def (g x) (* x 2)) (def (h x) (+ x 1)) (def (main) (+ (g 3) (h 4))) (export main))") with
+    | Option.Some(v) => (if v == 11 then unit else trap("(g 3)+(h 4) = 6+5 = 11"))
+    | Option.None(_) => trap("two distinct helpers run"))
+
+@test
+def se-call-results-as-arith-operands() =
+  // call RESULTS as operands: `(+ (dbl 5) (dbl 3))` where dbl(x)=x*2 → 10+6 = 16. Pins that the SAME def
+  // applied at two sites (with different args) composes under an arith op.
+  (match run-src("(do (def (dbl x) (* x 2)) (def (main) (+ (dbl 5) (dbl 3))) (export main))") with
+    | Option.Some(v) => (if v == 16 then unit else trap("(dbl 5)+(dbl 3) = 10+6 = 16"))
+    | Option.None(_) => trap("call results as arith operands run"))
+
+@test
+def se-nested-two-arg-calls() =
+  // NESTED 2-arg calls: `(add (add 1 2) (add 3 4))` where add(a,b)=a+b → add(3,7) = 10. Pins that a 2-arg
+  // call's args can themselves be 2-arg calls (the nested-CLet wiring composes recursively at the call sites).
+  (match run-src("(do (def (add a b) (+ a b)) (def (main) (add (add 1 2) (add 3 4))) (export main))") with
+    | Option.Some(v) => (if v == 10 then unit else trap("add(add(1,2), add(3,4)) = add(3,7) = 10"))
+    | Option.None(_) => trap("nested 2-arg calls run"))

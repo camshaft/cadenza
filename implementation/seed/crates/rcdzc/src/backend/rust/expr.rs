@@ -2208,6 +2208,19 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let n = emit_int_as_big(db, value, env, ctx)?;
             Ok(format!("cdz_num::Rational::from_big({n})"))
         }
+        // `Rational.numerator`/`denominator` → read the `Big` numerator/denominator out of the normalized
+        // pair (`cdz_num::Rational` has public `num`/`den` fields — the same canonical form the wasm
+        // `rational-num`/`rational-den` ops read). Clone the `Big` (the Rational operand is borrowed, its
+        // components are owned by it). Result is a `Big` (`Ty::BigInt`), matching the `Rational → BigInt`
+        // surface — a numerator/denominator can exceed i64.
+        Core::RationalNum { operand } => {
+            let r = emit(db, operand, env, ctx)?;
+            Ok(format!("({r}).num.clone()"))
+        }
+        Core::RationalDen { operand } => {
+            let r = emit(db, operand, env, ctx)?;
+            Ok(format!("({r}).den.clone()"))
+        }
         // A runtime Rational binary op → the `Rational` method (borrow both, return owned). `div` traps on
         // a zero divisor (mirrors `rational-div`).
         Core::RationalBinOp { op, lhs, rhs } => {

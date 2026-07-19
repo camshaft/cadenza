@@ -1888,6 +1888,26 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 },
                 // `Rational.value r` — the identity that just names `r`'s type. Folds to its operand.
                 Some(Prim::RationalValue) if args.len() == 1 => core_of(db, args[0]),
+                // `Rational.numerator r` / `Rational.denominator r` — read the numerator / denominator as a
+                // `BigInt`. A CONSTANT `Core::ConstRational(n, d)` (already normalized: lowest terms, sign on
+                // the numerator, denominator > 0) folds to the constant BigInt of `n` / `d` — a
+                // `Core::ConstInt` retyped `Ty::BigInt` (its `IntValue` can exceed i64; the same const-BigInt
+                // shape `BigInt.of` leaves). A RUNTIME Rational emits `Core::RationalNum` / `RationalDen` (the
+                // runtime `rational-num` / `rational-den` ops, which borrow the Rational + return a fresh
+                // BigInt handle). A poison operand propagates.
+                Some(Prim::RationalNum) if args.len() == 1 => match core_of(db, args[0]) {
+                    // A `Core::ConstInt` at this node (typed `Ty::BigInt` by inference — the op's result
+                    // type) is the constant-BigInt shape, exactly as `BigInt.of` leaves. Its `IntValue` can
+                    // exceed i64; the emit choke-point materializes it as a BigInt leaf.
+                    Core::ConstRational(n, _) => Core::ConstInt(n),
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => Core::RationalNum { operand: args[0] },
+                },
+                Some(Prim::RationalDen) if args.len() == 1 => match core_of(db, args[0]) {
+                    Core::ConstRational(_, d) => Core::ConstInt(d),
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => Core::RationalDen { operand: args[0] },
+                },
                 // `Symbol.to-string` — recover a Symbol's content String (`Symbol → String`, the inverse of
                 // `Symbol.of`). A constant symbol IS its `Core::ConstStr`, so this folds to that same node
                 // retyped `String` (the node's solved type); the rep is unchanged. A RUNTIME symbol is a
@@ -17510,11 +17530,13 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::BigIntTy
         | Prim::BigIntOf
         | Prim::RationalTy
-        // `RationalOf`/`RationalOfInt`/`RationalValue` are rational construction/conversion ops (they fold
-        // in their own arms), not integer binary operations.
+        // `RationalOf`/`RationalOfInt`/`RationalValue`/`RationalNum`/`RationalDen` are rational construction/
+        // conversion/accessor ops (they fold in their own arms), not integer binary operations.
         | Prim::RationalOf
         | Prim::RationalOfInt
         | Prim::RationalValue
+        | Prim::RationalNum
+        | Prim::RationalDen
         // The unit/quantity prims are compile-time unit builders / erasing quantity ops — never an
         // integer binary operation (a `Qty.of`/`Qty.value` lowers to its value argument, a unit builder
         // is reduced away by `eval`), so they never reach this integer fold.
@@ -23408,6 +23430,8 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::RationalOf => "rational-of",
         Prim::RationalOfInt => "rational-of-int",
         Prim::RationalValue => "rational-value",
+        Prim::RationalNum => "rational-num",
+        Prim::RationalDen => "rational-den",
         Prim::CharTy => "Char",
         Prim::CharToInt => "char-to-int",
         Prim::CharFromInt => "char-from-int",

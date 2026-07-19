@@ -1378,6 +1378,7 @@ pass	a rational operation does not silently promote an integer operand
 pass	a rational with near-Int64 numerator and denominator normalizes by gcd exactly
 pass	a rational with numerator and denominator both negative normalizes to positive
 pass	a rational with the Int64 minimum as denominator normalizes past the i64 sign-flip
+pass	a rational's numerator and denominator are read as BigInt from the normalized pair
 pass	a rational's sign is normalized onto the numerator
 pass	a rational-magnitude quantity erases to its exact rational value
 pass	a re-declared same-name theorem type in another module is a distinct type a kernel value does not satisfy
@@ -3158,6 +3159,7 @@ pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
 pass	the difference of a set with itself is empty
 pass	the difference of a set with the empty set is the set (identity)
+pass	the difference of sets of TUPLES removes elements by their whole-tuple content
 pass	the display truncation does not lose the stored magnitude (Qty.value reads it back)
 pass	the element tie survives producer self-composition
 pass	the else-branch of an if threads a performed state to the continuation
@@ -3196,6 +3198,7 @@ pass	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogu
 pass	the int-to-float generator is order-preserving (a < b implies of a <= of b — NON-decreasing)
 pass	the intersection contains the elements in both sets
 pass	the intersection of disjoint sets is empty
+pass	the intersection of sets of TUPLES matches elements by their whole-tuple content
 pass	the keeping + bitwise self-identities hold on a runtime SIGNED narrow Int8 at a negative value
 pass	the kernel defines T (truth) as a constant and DERIVES |- T through the rules
 pass	the kernel proves reflexivity end-to-end: refl t yields a theorem whose conclusion is (t = t)

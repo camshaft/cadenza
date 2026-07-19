@@ -230,6 +230,8 @@ const OP_RATIONAL_SUB: &str = "rational-sub";
 const OP_RATIONAL_MUL: &str = "rational-mul";
 const OP_RATIONAL_DIV: &str = "rational-div";
 const OP_RATIONAL_CMP: &str = "rational-cmp";
+const OP_RATIONAL_NUM: &str = "rational-num";
+const OP_RATIONAL_DEN: &str = "rational-den";
 /// `bytes-slice(buf, start, len) -> handle` — `len` bytes from `start` (consumes buf; `start+len >
 /// bytes-len` TRAPS, so the caller bounds-checks first and returns `None` instead).
 const OP_BYTES_SLICE: &str = "bytes-slice";
@@ -492,6 +494,11 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
             binding_escapes(db, num, binder, false) || binding_escapes(db, den, binder, false)
         }
         Core::RationalOfIntWiden { value } => binding_escapes(db, value, binder, false),
+        // `rational-num`/`rational-den` BORROW the Rational operand (unbox-read without consuming),
+        // returning a fresh BigInt handle — so a binding used directly as the operand does NOT escape.
+        Core::RationalNum { operand } | Core::RationalDen { operand } => {
+            binding_escapes(db, operand, binder, true)
+        }
         Core::BytesSlice {
             bytes, start, len, ..
         } => {
@@ -1029,6 +1036,8 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::BigIntOfI64 { value: operand }
         | Core::RationalOfIntWiden { value: operand }
         | Core::BigIntToI64 { operand }
+        | Core::RationalNum { operand }
+        | Core::RationalDen { operand }
         | Core::BinIntRead { bytes: operand, .. }
         | Core::BinRestRead { bytes: operand, .. }
         | Core::StrFromBytes { bytes: operand, .. }
@@ -1503,6 +1512,10 @@ fn mark_binder_dups_inner(
             consume(db, value, live_after, sites)
         }
         Core::BigIntToI64 { operand } => borrow(db, operand, live_after, sites),
+        // `rational-num`/`rational-den` BORROW the Rational operand (return a fresh BigInt handle).
+        Core::RationalNum { operand } | Core::RationalDen { operand } => {
+            borrow(db, operand, live_after, sites)
+        }
         Core::RationalOfInts { num, den } => {
             seq(db, &[(num, false), (den, false)], live_after, sites)
         }
@@ -2794,6 +2807,17 @@ fn collect_used_ops_into(
             out.insert(OP_BIGINT_OF_I64);
             out.insert(OP_RATIONAL_OF);
             collect_used_ops_into(db, value, out);
+        }
+        // `Rational.numerator`/`denominator` — `rational-num`/`rational-den` BORROW the operand (import
+        // `drop` to reclaim an owned-temporary Rational after the borrowing read), returning a BigInt.
+        Core::RationalNum { operand } | Core::RationalDen { operand } => {
+            out.insert(if matches!(core_of(db, id), Core::RationalNum { .. }) {
+                OP_RATIONAL_NUM
+            } else {
+                OP_RATIONAL_DEN
+            });
+            out.insert(OP_DROP);
+            collect_used_ops_into(db, operand, out);
         }
         // The borrowing Rational arithmetic ops import their op + `drop` (reclaim an owned-temporary
         // operand after the borrowing call — the `emit_rational_borrow_binary` helper).
@@ -8173,6 +8197,31 @@ fn emit(
             layout,
             out,
         ),
+        // `Rational.numerator`/`denominator` on a runtime Rational — `rational-num`/`rational-den` BORROW
+        // the Rational handle (`unbox` reads without consuming) and return a FRESH owned BigInt handle. Same
+        // borrow-and-reclaim shape as `BigIntToI64` (drop an owned-temporary operand after the read); the
+        // returned BigInt handle stays on the stack. (`emit_bigint_borrow_unary` is result-type-agnostic —
+        // the operand is an i32 heap handle either way; here it's a Rational rather than a BigInt.)
+        Core::RationalNum { operand } => emit_bigint_borrow_unary(
+            db,
+            operand,
+            OP_RATIONAL_NUM,
+            high,
+            slots,
+            scratch_ty,
+            layout,
+            out,
+        ),
+        Core::RationalDen { operand } => emit_bigint_borrow_unary(
+            db,
+            operand,
+            OP_RATIONAL_DEN,
+            high,
+            slots,
+            scratch_ty,
+            layout,
+            out,
+        ),
         // A runtime BigInt `+`/`-`/`*`/`/` — the runtime op BORROWS both operand handles (`unbox_bigint`)
         // and returns a FRESH owned result handle, so each OWNED-temporary operand is dropped after the
         // call while the new result is kept. A borrowed param/local operand is NOT dropped (its owner
@@ -11233,6 +11282,12 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // so it is not a heap operand and never reaches here.)
         | Core::BigIntOfI64 { .. }
         | Core::BigIntBinOp { .. }
+        // `rational-num`/`rational-den` return a FRESH owned BigInt handle (they unbox the Rational's
+        // component + re-box it, borrowing the Rational), so a `Rational.numerator`/`denominator` result
+        // used as a borrowing-op operand (e.g. `Int64.of (Rational.numerator r)`) is Owned — the enclosing
+        // op drops it after borrowing.
+        | Core::RationalNum { .. }
+        | Core::RationalDen { .. }
         // A Rational PRODUCER likewise returns a fresh owned handle: `rational-of` (`RationalOfInts`/
         // `RationalOfIntWiden`) builds a new 2-handle node, and each `rational-add`/…-`div` re-normalizes
         // into a new node. So a Rational operand that is itself a Rational op's result is owned.
