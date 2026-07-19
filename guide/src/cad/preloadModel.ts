@@ -18,13 +18,6 @@ import type { Surface } from "../compiler/client.ts";
 export const CAD_LIB_NAME = "exact";
 export const CAD_HELPERS_NAME = "helpers";
 export const CAD_UNITS_NAME = "units";
-/// The snowflake showcase's branch-builder library (`snowflake.cdz`, 11 recursive defs) + its PRNG dep
-/// (`prng.cdz`). Unlike exact/helpers/units (general vocab), these are one-showcase-specific — but the
-/// snowflake model imports `{ snowflake }` from a multi-def lib too big to inline in a picker buffer, so it's
-/// PRELOADED like the others. `prng.cdz` is preloaded too because `snowflake.cdz` imports it (the preload
-/// link resolves the whole chain). Only `snowflake` is injected into buffers (prng is snowflake's internal dep).
-export const CAD_SNOWFLAKE_NAME = "snowflake";
-export const CAD_PRNG_NAME = "prng";
 export const CAD_LIB_FORMAT: Surface = "ml";
 /// The names /cad's model buffer imports from `exact` (the auto-injected superset — a model only uses the
 /// ones it needs; an UNUSED import is benign, verified, so all models share one import clause):
@@ -44,10 +37,6 @@ export const CAD_HELPER_NAMES = ["box", "cube", "ball", "cyl", "move", "move-x",
 /// scale. The units-parametric showcase (an imperial bracket authored in inches) uses `inch`; a plain model
 /// leaves it unused (benign — an unused import is verified).
 export const CAD_UNIT_NAMES = ["inch"] as const;
-/// The name /cad's buffer imports from `snowflake` — the top-level `snowflake(seed, len, depth)` builder (the
-/// parametric-snowflake showcase's entry). The lib's other exports (segment/branch-go/arm/six-fold) are its
-/// internals, not injected. A non-snowflake model leaves this import unused (benign, verified).
-export const CAD_SNOWFLAKE_NAMES = ["snowflake"] as const;
 
 /// Auto-inject the `import … from "exact"` clause + the `@!default-fraction Rational` pragma + the
 /// `export main` around the reader's model buffer before compiling — so the buffer shows ONLY the model
@@ -71,12 +60,10 @@ export function injectImport(editorText: string, surface: Surface): string {
     const exact = CAD_IMPORTED_NAMES.join(" ");
     const helpers = CAD_HELPER_NAMES.join(" ");
     const units = CAD_UNIT_NAMES.join(" ");
-    const snow = CAD_SNOWFLAKE_NAMES.join(" ");
-    return `(do\n(import "${CAD_LIB_NAME}" (${exact}))\n(import "${CAD_HELPERS_NAME}" (${helpers}))\n(import "${CAD_UNITS_NAME}" (${units}))\n(import "${CAD_SNOWFLAKE_NAME}" (${snow}))\n(pragma default-fraction Rational)\n${t}\n(export main))`;
+    return `(do\n(import "${CAD_LIB_NAME}" (${exact}))\n(import "${CAD_HELPERS_NAME}" (${helpers}))\n(import "${CAD_UNITS_NAME}" (${units}))\n(pragma default-fraction Rational)\n${t}\n(export main))`;
   }
   const exact = CAD_IMPORTED_NAMES.join(", ");
   const helpers = CAD_HELPER_NAMES.join(", ");
   const units = CAD_UNIT_NAMES.join(", ");
-  const snow = CAD_SNOWFLAKE_NAMES.join(", ");
-  return `import { ${exact} } from "${CAD_LIB_NAME}"\nimport { ${helpers} } from "${CAD_HELPERS_NAME}"\nimport { ${units} } from "${CAD_UNITS_NAME}"\nimport { ${snow} } from "${CAD_SNOWFLAKE_NAME}"\n@!default-fraction Rational\n${t}\nexport { main }`;
+  return `import { ${exact} } from "${CAD_LIB_NAME}"\nimport { ${helpers} } from "${CAD_HELPERS_NAME}"\nimport { ${units} } from "${CAD_UNITS_NAME}"\n@!default-fraction Rational\n${t}\nexport { main }`;
 }

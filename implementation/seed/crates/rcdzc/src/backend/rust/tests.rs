@@ -2977,6 +2977,38 @@ fn rustc_roundtrip_recursive_match_scrutinee_materializes_once_not_exponentially
 }
 
 #[test]
+fn rustc_roundtrip_record_match_literal_field_probe_computes() {
+    // A record-match LITERAL FIELD probe `((record (x 3) (y b)) …)` renders + runs on the RUST backend.
+    // The refutable field probe lowers to a `lit_test` at `[Elem(sorted_slot)]` over the record scrutinee;
+    // its subject read reaches `emit_sum_payload` with NO bind → before, the record path fell through to
+    // "sum payload has no bound match arm" and DECLINED on rust (it computed on wasm only — a wasm-only
+    // capability that a hand-baseline wrongly marked rust=pass, breaker-caught). The fix reads the record
+    // field directly (`(<r>).slot`, the record twin of the runtime-tuple direct read — a record is a Rust
+    // tuple in sorted-field order). `(match (record (x 3)(y 4)) ((record (x 3)(y b)) b) (_ -1)))` → the
+    // x-literal matches, b=4; and the miss (x=9) → -1. Const-folds to a scalar (no runtime).
+    let hit = compile_rust(
+        "(module m (def (run) \
+           (match (record (x 3) (y 4)) ((record (x 3) (y b)) b) (_ -1))) (export run))",
+    );
+    if let Some(out) = rustc_run(&hit, "run()") {
+        assert_eq!(
+            out, "4",
+            "record-match literal-field HIT binds the other field on rust"
+        );
+    }
+    let miss = compile_rust(
+        "(module m (def (run) \
+           (match (record (x 9) (y 4)) ((record (x 3) (y b)) b) (_ -1))) (export run))",
+    );
+    if let Some(out) = rustc_run(&miss, "run()") {
+        assert_eq!(
+            out, "-1",
+            "record-match literal-field MISS falls through on rust"
+        );
+    }
+}
+
+#[test]
 fn rustc_roundtrip_boxed_payload_projected_more_than_once_clones() {
     // A recursive sum whose `Cons` payload the Rust backend BOXES (`Cons(Box<(i64,L)>)`), where the bound
     // payload field is PROJECTED MORE THAN ONCE: `(let ((d (f t))) (if (= d 0) h d))` uses the recursive

@@ -14,7 +14,7 @@
 /// composes lowering (itself gated on typing) with eval, so an ill-typed source program yields `None`
 /// (no core form → nothing to run) — absence≠value carried all the way to the result.
 
-import { Tok, Tree, parse-tokens } from "parse-db"
+import { Tok, Tree, Node, parse-tokens, empty-tree, add-node } from "parse-db"
 import { Core, lower-tree } from "lower-db"
 import { overflows } from "int-width"
 
@@ -368,5 +368,31 @@ def ev-mod-by-neg-one-is-zero() =
 def ev-div-precedence() =
   // 1 + 8 / 2 → 5 (division tighter than addition).
   (match run([n(1), plus(), n(8), divop(), n(2)]) with | Option.Some(v) => (if v == 5 then unit else trap("1+8/2=5")) | Option.None(_) => trap("runs"))
+
+// ---- user-functions slice-2: a NULLARY CALL evaluates END-TO-END (infer→lower→eval) ----
+// infer-db/lower-db pin the nullary-call type + lowering; this pins it EVALUATES to the right value through
+// the whole eval-tree pipeline (the slice-2 payoff). NApp has no producing Tok — build the arena directly.
+
+@test
+def ev-nullary-call-evaluates-to-body() =
+  // a nullary call NApp(calleeBodyId, -1) over a body `NLit(42)` runs through eval-tree (lower inlines the
+  // body → CNum 42 → eval) to 42. The end-to-end proof of slice-2's β-reduction-over-zero-args.
+  (match add-node(empty-tree(), Node.NLit(42)) with | (bodyId, t1) =>
+    (match add-node(t1, Node.NApp(bodyId, 0 - 1)) with | (root, tree) =>
+      (match eval-tree(tree, root) with
+        | Option.Some(v) => (if v == 42 then unit else trap("nullary call evaluates to its body value (42)"))
+        | Option.None(_) => trap("a nullary call runs end-to-end"))))
+
+@test
+def ev-nullary-call-over-arith-body() =
+  // the body can be COMPOUND: a nullary call over `(+ 40 2)` (NBin) evaluates to 42 — lower inlines the whole
+  // body Core, eval runs it. Pins that the inlined body is evaluated (not just a literal passthrough).
+  (match add-node(empty-tree(), Node.NLit(40)) with | (aId, t1) =>
+    (match add-node(t1, Node.NLit(2)) with | (bId, t2) =>
+      (match add-node(t2, Node.NBin(43, aId, bId)) with | (bodyId, t3) =>
+        (match add-node(t3, Node.NApp(bodyId, 0 - 1)) with | (root, tree) =>
+          (match eval-tree(tree, root) with
+            | Option.Some(v) => (if v == 42 then unit else trap("nullary call over (+ 40 2) = 42"))
+            | Option.None(_) => trap("a nullary call over an arith body runs"))))))
 
 export { eval-core, eval-bin, eval-tree, run, milestone-tokens, run-milestone }

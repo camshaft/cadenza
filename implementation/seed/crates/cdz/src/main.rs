@@ -1300,28 +1300,44 @@ fn run_run_rust(args: &RunRustArgs) -> ExitCode {
     // 4. Build a driver: wrap the emitted module in `mod prog {…}` (so its `pub fn main` becomes
     //    `prog::main` and does NOT collide with the driver's own `fn main`), then print the boundary value
     //    rendered by the SHARED crate — byte-identical to what `cdz-run` prints.
-    let render = match &ret_ty {
-        Some(ty) => {
-            let sums = cdz_rust_render::cdz_sum_descriptors(&module);
-            let newtypes = cdz_rust_render::cdz_newtype_descriptors(&module);
-            let sum_params = cdz_rust_render::cdz_sum_params(&module);
-            let unit_form = cdz_rust_render::cdz_unit_form(&module, &export);
-            let scale = cdz_rust_render::cdz_scale(&module, &export);
-            cdz_rust_render::cdz_render_expr(
-                ty,
-                &sums,
-                &newtypes,
-                &sum_params,
-                unit_form.as_deref(),
-                scale,
-            )
-        }
-        // No `cdz-return` note (an older/void export) — fall back to Display of the result.
-        None => "format!(\"{}\", __r)".to_string(),
+    //
+    // A DIVERGING export (`cdz-return[export]: !` — a provable-trap program lowers to `pub fn <export>() ->
+    // ! { panic!(…) }`) is a special case: its result has type `!`, so there is NOTHING to bind or render —
+    // the call itself panics. Emit a driver that just CALLS it (no `let __r`, no `println!`): `prog::main()`
+    // diverges → panics → `compile_and_run_rust_driver` maps the panic to the `trap` verdict, matching
+    // wasm's clean `trap unreachable`. Without this, run-rust reported `error` for EVERY diverging program:
+    // first the post-call render was unreachable (rustc `-D warnings` → hard error), and even silencing that
+    // (`#[allow(unreachable_code)]`) then failed because `!`/`()` doesn't `Display` — a `!`-typed result
+    // can't be rendered at all. So diverging programs are handled by NOT rendering (breaker + corpus-bugfix,
+    // whose fuzzer rust-vs-wasm differential this false-`error` would otherwise poison for every trap case).
+    let driver = if ret_ty.as_deref() == Some("!") {
+        format!(
+            "#[allow(warnings)]\nmod prog {{\n{module}\n}}\nfn main() {{\n    prog::{export}();\n}}\n"
+        )
+    } else {
+        let render = match &ret_ty {
+            Some(ty) => {
+                let sums = cdz_rust_render::cdz_sum_descriptors(&module);
+                let newtypes = cdz_rust_render::cdz_newtype_descriptors(&module);
+                let sum_params = cdz_rust_render::cdz_sum_params(&module);
+                let unit_form = cdz_rust_render::cdz_unit_form(&module, &export);
+                let scale = cdz_rust_render::cdz_scale(&module, &export);
+                cdz_rust_render::cdz_render_expr(
+                    ty,
+                    &sums,
+                    &newtypes,
+                    &sum_params,
+                    unit_form.as_deref(),
+                    scale,
+                )
+            }
+            // No `cdz-return` note (an older/void export) — fall back to Display of the result.
+            None => "format!(\"{}\", __r)".to_string(),
+        };
+        format!(
+            "#[allow(warnings)]\nmod prog {{\n{module}\n}}\nfn main() {{\n    let __r = prog::{export}();\n    println!(\"{{}}\", {render});\n}}\n"
+        )
     };
-    let driver = format!(
-        "#[allow(warnings)]\nmod prog {{\n{module}\n}}\nfn main() {{\n    let __r = prog::{export}();\n    println!(\"{{}}\", {render});\n}}\n"
-    );
 
     // 5. rustc the driver, linking the pre-built `cdz-rt`/`cdz-num` rlibs beside the `cdz` binary (same
     //    dir `current_exe` is in — `cargo build` puts `libcdz_{rt,num}.rlib` in `target/<profile>/`). A
@@ -3543,7 +3559,7 @@ fn run_doctor(args: &DoctorArgs) -> ExitCode {
 ///  4. Run each test IN-PROCESS via the `cdz-run` LIBRARY (`run_capturing` — no sibling binary), calling
 ///     the test's kebab export. The export RETURNING = PASS; it TRAPPING = FAIL. A failure's message rides
 ///     an OBSERVED host-op entry (the assertion text the test emitted via its report host effect before
-///     trapping); `run_capturing`'s observed-op list also yields the `Test.gen` count that distinguishes a
+///     trapping); `run_capturing`'s observed-op list also yields the `Test.gen-int` count that distinguishes a
 ///     property test from a plain unit test — no subprocess, no stderr parsing.
 ///
 /// Exits non-zero if ANY test fails (or if a file's compile declines / no `@test` is present) — the CI
@@ -4024,10 +4040,10 @@ fn run_test_file(
                 );
             }
             // Nullary SOURCE signature — but this splits at runtime into two cases by whether the body
-            // performs `Test.gen`: a GENERATOR-DRIVEN property test (a nullary wrapper that pulls random
+            // performs `Test.gen-int`: a GENERATOR-DRIVEN property test (a nullary wrapper that pulls random
             // ints from the runner to build its own inputs — the compound/int-stream route) vs a plain
             // unit test (pulls no generated int). Decide it by RUNNING once under a seeded int pool and
-            // counting the `Test.gen` calls the guest made.
+            // counting the `Test.gen-int` calls the guest made.
             Some(gens) if gens.is_empty() => {
                 match run_gen_driven(
                     &component,
@@ -4613,7 +4629,7 @@ const RUNNER_LIST_LEN: usize = 3;
 /// than the raw driver ints. `gty` is `proptest_gen`'s OWN `GenTy` (via `gen_ty_of_wrapper_param`), so the
 /// decode vocabulary is the SAME one the generator was built from — it can never drift out of sync, and a
 /// `Sum`/nested shape is covered identically to the wrapper. The pool is consumed via a shared cursor in the
-/// SAME order the wrapper pulls `Test.gen`. `None` only if the pool runs dry (a malformed shrink).
+/// SAME order the wrapper pulls `Test.gen-int`. `None` only if the pool runs dry (a malformed shrink).
 fn render_pool_value(gty: &rcdzc::proptest_gen::GenTy, pool: &[i64]) -> Option<String> {
     let mut cursor = 0usize;
     decode_value(gty, pool, &mut cursor)
@@ -4642,14 +4658,14 @@ fn exhaustive_newtype_range(gen_ty: Option<&rcdzc::proptest_gen::GenTy>) -> Opti
 }
 
 /// One step of the pool→value decode (see [`render_pool_value`]). `cursor` advances by exactly the number of
-/// `Test.gen` ints the corresponding `build_gen` arm consumes, in the same order.
+/// `Test.gen-int` ints the corresponding `build_gen` arm consumes, in the same order.
 fn decode_value(
     gty: &rcdzc::proptest_gen::GenTy,
     pool: &[i64],
     cursor: &mut usize,
 ) -> Option<String> {
     use rcdzc::proptest_gen::GenTy;
-    // Pull the next driver int (the wrapper's `Test.gen`); `None` if the shrunk pool is exhausted.
+    // Pull the next driver int (the wrapper's `Test.gen-int`); `None` if the shrunk pool is exhausted.
     let next = |cursor: &mut usize| -> Option<i64> {
         let v = pool.get(*cursor).copied()?;
         *cursor += 1;
@@ -4763,16 +4779,16 @@ fn run_one_trial(
 }
 
 /// The well-known GENERATOR effect operation a property test performs to pull one random `Int64` from the
-/// runner's driver: `Test.gen : Unit -> Int64` (the "well-known `Test` effect extends" convention — the
-/// same `Test` effect that carries `fail`). `cdz test` answers a `Test.gen` performance with the next int
+/// runner's driver: `Test.gen-int : Unit -> Int64` (the "well-known `Test` effect extends" convention — the
+/// same `Test` effect that carries `fail`). `cdz test` answers a `Test.gen-int` performance with the next int
 /// from a seeded pool, so a generator built on this ONE op — bolero's Driver model, one int source that
 /// type-directed generation decodes — needs no per-shape host coordination.
-const GEN_OP_LABEL: &str = "test.gen";
+const GEN_OP_LABEL: &str = "test.gen-int";
 
 /// Run the test component IN-PROCESS (via the `cdz-run` LIBRARY — `run_capturing`, no sibling binary),
-/// ALSO supplying a seeded int `pool` as ordered `Test.gen=<n>` host responses (consumed IN ORDER by each
-/// `Test.gen` performance — a result-bearing op; a unit op like `Test.fail` consumes none). Returns the
-/// trial outcome AND how many `Test.gen` calls the guest actually made (counted from the OBSERVED host-op
+/// ALSO supplying a seeded int `pool` as ordered `Test.gen-int=<n>` host responses (consumed IN ORDER by each
+/// `Test.gen-int` performance — a result-bearing op; a unit op like `Test.fail` consumes none). Returns the
+/// trial outcome AND how many `Test.gen-int` calls the guest actually made (counted from the OBSERVED host-op
 /// list `run_capturing` returns) — the signal that distinguishes a PROPERTY test (pulls ≥1 generated int)
 /// from a plain unit test (pulls none). An unconsumed pool response is harmless (ignored).
 fn run_one_trial_with_pool(
@@ -4783,12 +4799,12 @@ fn run_one_trial_with_pool(
     arg_vals: &[String],
     pool: &[i64],
 ) -> (TrialOutcome, usize) {
-    // Each pool int becomes a `Test.gen` host response, consumed in order. The op label pairs it with the
+    // Each pool int becomes a `Test.gen-int` host response, consumed in order. The op label pairs it with the
     // call for the ordered-consume model (the value is coerced to the op's `Int64` result at binding).
     let host_responses: Vec<cdz_run::HostResponse> = pool
         .iter()
         .map(|n| cdz_run::HostResponse {
-            op: "Test.gen".to_string(),
+            op: "Test.gen-int".to_string(),
             value: n.to_string(),
         })
         .collect();
@@ -4833,9 +4849,9 @@ fn run_one_trial_with_pool(
     }
 }
 
-/// How many `Test.gen` performances the guest made, from the OBSERVED host-op list `run_capturing` returns
+/// How many `Test.gen-int` performances the guest made, from the OBSERVED host-op list `run_capturing` returns
 /// (each entry is a dotted `E.op`, optionally `\t<str-args>`). `> 0` ⇒ the test is a PROPERTY test driven
-/// by the int pool. Matches the op field (before any tab) case-insensitively against the `Test.gen` label.
+/// by the int pool. Matches the op field (before any tab) case-insensitively against the `Test.gen-int` label.
 fn count_gen_calls(observed: &[String]) -> usize {
     observed
         .iter()
@@ -4936,7 +4952,7 @@ enum GenDrivenOutcome {
 const GEN_POOL_SIZE: usize = 64;
 
 /// Run a nullary-signature test, deciding PLAIN vs generator-driven PROPERTY by whether it pulls any
-/// `Test.gen` int. The FIRST run uses a seeded pool (`seed`); if the guest consumed ZERO generated ints
+/// `Test.gen-int` int. The FIRST run uses a seeded pool (`seed`); if the guest consumed ZERO generated ints
 /// it is a plain unit test — return its outcome directly (one run, today's semantics, unaffected by the
 /// unconsumed pool). If it consumed ≥1, it is a property test: run `trials` trials each with a FRESH
 /// seeded pool (`seed + trial`, reproducible), failing on the first trapping trial with the SHRUNK pool.

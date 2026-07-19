@@ -1838,7 +1838,7 @@ impl Db {
         // plain `@requires`. (Universal `@ensures` enforcement — plain + `@test`-stacked via a shared helper
         // — is the immediately-following increment; this pass covers only plain `@requires` today.)
         crate::verify_enforce::enforce(&mut ast);
-        // F1: for a `@test` whose parameter is a `(List <Int>)`, synthesize a nullary `Test.gen`-driven
+        // F1: for a `@test` whose parameter is a `(List <Int>)`, synthesize a nullary `Test.gen-int`-driven
         // generator WRAPPER (and drop `@test` from the original, which becomes the wrapper's callee), so
         // `cdz test` can property-test over a list rather than declining the compound param at the
         // boundary. Runs BEFORE `strip_annotations` (so the synthesized `@test` wrapper is hoisted as the

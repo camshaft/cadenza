@@ -399,19 +399,21 @@
 ; lands (builds the Ordering sum from the walk's -1/0/1 as `res+1` — all-nullary enum discs; owned by v-runtime).
 ; This case pins the current decline so that emit arm flips it to an executing witness rather than silently
 ; changing behavior.
-(case "a runtime compound compare declines pending the value-cmp three-way heap walk"
-  (doc    "`(compare (tuple a 1) (tuple b 1))` over runtime Int64-leaf tuples is orderable (every leaf offers a
-           total order), but the three-way `compare` over a COMPOUND needs the descriptor-guided `value-cmp`
-           heap walk (returning the Ordering sum from the raw -1/0/1), which is not yet emitted — so it DECLINES
-           (a genuine not-yet, NOT the float permanent carve-out). The boolean compound `<` on the same tuples
-           already computes (via the value-cmp walk coerced to bool); only the three-way surface awaits the
-           value-cmp emit carrying op=Compare. Pins the reject so the future emit flips it to a witness.")
+(case "a runtime compound compare COMPUTES the three-way Ordering via the value-cmp heap walk (§331)"
+  (doc    "`(compare (tuple a 1) (tuple b 1))` over runtime Int64-leaf tuples yields the three-way `Ordering`
+           sum: the descriptor-guided `value-cmp` heap walk returns -1/0/1, and the emit builds the Ordering
+           discriminant as `res + 1` (all-nullary enum: Less=disc 0, Equal=1, Greater=2). §331 — the boolean
+           compound `<`/`<=`/`>`/`>=` (which already compute via the same walk coerced to bool) and the
+           three-way `compare` now surface the SAME total order over a compound. a=1,b=2 → tuple(1,1) <
+           tuple(2,1) (first leaf 1<2) → Less → 1. Was a NOT-YET decline (the value-cmp op=Compare emit arm,
+           v-runtime) until this landed alongside the lower-side routing; now an executing witness on all
+           three backends (wasm res+1; rust/rust-async a nested-if over the derived-Ord compound → Ordering ctor).")
   (input  (do
             (def (main (: a Int64) (: b Int64))
               (match (compare (tuple a 1) (tuple b 1))
                 ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
             (export main)))
-  (declines))
+  (call main (: 1 Int64) (: 2 Int64)) (output (: 1 Int64)))
 
 ; The §313-vs-§319 SPLIT made concrete: the SAME float-containing compound that DECLINES ordering (above)
 ; still EQUALITY-compares. Float EQUALITY follows the canonical byte form (§313, total — NaN canonicalized,

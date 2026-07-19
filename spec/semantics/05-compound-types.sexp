@@ -2437,6 +2437,28 @@
             (export main)))
   (call main (: 40 Int64)) (output (: 42 Int64)))
 
+(case "a concat-built list = a push-built list with the same elements (element-wise, shape-independent, n>=33)"
+  (doc    "The standalone `=` companion of the list-KEY case above. Two lists with the SAME elements built two
+           ways — `concat-list = List.concat(build 0..half, build half..n)` (RELAXED interior RRB nodes at
+           n>=33) and `push-list = build 0..n` (a strict trie) — are EQUAL: `(= concat-list push-list)` → true.
+           A List is element-canonical but NOT shape-canonical, so the tagless `value-eq`/`champ_eq` byte-walk
+           is UNSOUND for it (`ty_heap_walkable` returns false for `Ty::List` by design); this routes `=` on a
+           list-containing orderable type to the descriptor-guided `value-cmp` element-wise walk instead
+           (op=Eq → `res == 0`), which compares by ELEMENTS in order — shape-independent. For n=40 the two
+           40-element lists are equal → 1. Was a decline (whole-List `=` needed the value-cmp heap walk) until
+           the ValueCmp op=Eq emit arm landed. Computes on all three backends (wasm i32.eqz on the walk result;
+           rust/rust-async native `==` on the derived-Eq Vec). A genuinely different list still compares false.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (main (: n Int64))
+              (let ((half (/ n 2))
+                    (concat-list (List.concat (build 0 half (list)) (build half n (list))))
+                    (push-list (build 0 n (list))))
+                (if (= concat-list push-list) 1 0)))
+            (export main)))
+  (call main (: 40 Int64)) (output (: 1 Int64)))
+
 (case "a list-concatenating helper threads lists through a call"
   (doc    "`(def (cat a b) (List.concat a b))` applied to two literals — concatenation works on list
            PARAMETERS, not only inline literals, so both operands are inferred `Heap` and the helper
@@ -5247,6 +5269,23 @@
   (input  (do
             (type Pair (Mk Int64 Int64))
             (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a b c) (+ a b))))
+            (export main)))
+  (error  CDZ0201))
+
+(case "a multi-payload pattern with too FEW binders is a malformed destructure"
+  (doc    "The too-FEW twin of the over-arity reject above: `(Mk a)` against a 2-payload `Mk` binds ONE
+           name where the constructor carries TWO fields, so it MUST reject (CDZ0201, 'binds 1 element …
+           carries 2 fields — bind exactly as many'), NOT silently bind `a` to the whole payload tuple. A
+           multi-field variant is MULTI-arity (matching construction's two-arg strictness — `(Pair.Mk n)`
+           under-applies — and the two-binder `(Mk a b)` blessing), so the arity check is TWO-SIDED: both
+           too-many (3>2, above) and too-few (1<2, here) fault. Keyed on the DECLARED field count, so a
+           genuinely single-field variant whose one payload is a compound VALUE (e.g. `(Pt (Tuple T T))`
+           matched `(Pt r)`) still binds the whole payload with one sub-pattern — only a >1-FIELD
+           declaration faults on under-binding. (Ruling: the core-semantics §195/207 'single-arity' is the
+           internal curried-application ABI, not the surface field arity.)")
+  (input  (do
+            (type Pair (Mk Int64 Int64))
+            (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a) a)))
             (export main)))
   (error  CDZ0201))
 
@@ -10851,6 +10890,47 @@
               (def (main) (f (record (x 3))))
               (export main)))
   (output (: 3 Int64)))
+
+(case "a record match field may be a LITERAL that probes the field by equality"
+  (doc    "A record match field's value may be a LITERAL, which probes that field by equality (like a
+           literal tuple element or variant payload): `(record (x 3) (y b))` matches only a record whose `x`
+           field is 3, binding `b` to `y`. Over `(record (x 3) (y 4))` the `x`-literal holds → b=4; over
+           `(record (x 9) (y 4))` it does not → falls through to the catch-all → -1. Pins that a record
+           match arm supports a refutable field probe (not only bare-binder fields), the record analogue of
+           `(tuple 3 b)` / `(Some 0)`. Two `(call …)` values drive the runtime scrutinee through `f`.")
+  (input  (do (def (f (: r (Record (x Int64) (y Int64))))
+                (match r ((record (x 3) (y b)) b) (_ -1)))
+              (def (main (: k Int64)) (f (record (x k) (y 4))))
+              (export main)))
+  (call   main (: 3 Int64))
+  (output (: 4 Int64))
+  (call   main (: 9 Int64))
+  (output (: -1 Int64)))
+
+(case "an empty record pattern matches any record of its type"
+  (doc    "The empty record pattern `(record)` names NO fields, so it is irrefutable over any record of the
+           matched type — it binds nothing and always fires (the record analogue of `(tuple)` / a bare
+           binder). `(match (record (x 5)) ((record) 0) (_ 1))` → 0 (the `(record)` arm is taken, the `_`
+           unreached). Pins that a zero-field record pattern is the trivial always-match, not a shape
+           mismatch against a non-empty record.")
+  (input  (do (def (main) (match (record (x 5)) ((record) 0) (_ 1))) (export main)))
+  (output (: 0 Int64)))
+
+(case "a record sub-pattern nested inside a tuple match names the feature, not an unbound binder (CDZ0201)"
+  (doc    "A record match binds its fields to bare names at the TOP level, but a record sub-pattern NESTED
+           inside a tuple/list/constructor match — `(tuple (record (x a)) c)` — is not yet wired: a record
+           field projects by NAME and there is no name-keyed access step to compose the projection under a
+           tuple/list/variant descent. A body reference to the nested field binder `a` MUST name that
+           unimplemented feature (a coded CDZ0201), NOT leak the misleading 'unbound name `a`' it did before
+           (the tuple-descent walker skips the `record` head, so the binder never wired and `a` resolved
+           unbound). The PATTERN itself lowers fine — a body that ignores the nested binder (returns `c`)
+           compiles — so the fault is reference-specific; the coded decline surfaces it in `cdz check` on a
+           parameterized body, not only the emit walk. The nested-in-compound twin of the top-level
+           record-match + the record-BINDING nested-compound declines.")
+  (input  (do (def (f (: t (Tuple (Record (x Int64)) Int64)))
+                (match t ((tuple (record (x a)) c) (+ a c))))
+              (export f)))
+  (error  CDZ0201))
 
 (case "a map match pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)"
   (doc    "A MAP match pattern whose `..` rest is malformed — a `..` NOT followed by exactly one binder,

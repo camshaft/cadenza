@@ -1101,6 +1101,123 @@ fn op_result_type(db: &mut Db, head: StructId) -> Option<crate::ty::Ty> {
     if peeled { Some(result) } else { None }
 }
 
+/// For a call whose head resolves to the lambda `callee_body`, return — per parameter position (0..`arity`)
+/// — the effect decls under which the callee APPLIES that parameter, i.e. the handlers/delegations
+/// enclosing an application `(param_i …)` in the callee body. Used by [`check_no_home_walk`] to home a
+/// LAMBDA ARGUMENT at its APPLICATION site rather than its definition site: if `callee_body` applies its
+/// param `i` under a `handle E` (`with-seed(body) = handle E … (body unit)`), a lambda arg passed there
+/// has its `E`-performs homed, so it must be walked with `E` added to the handled set — else a legitimate
+/// `handler-runs-a-passed-closure` idiom is falsely rejected CDZ0401. Returns an empty inner vec for a
+/// param the callee applies under NO extra handler (a bare `(body unit)` — `apply-fn`), so a genuinely-
+/// ungranted effect in the lambda STAYS reported (soundness). Conservative: only a direct `(param_i …)`
+/// application inside the callee's own `handle`/`host` scopes contributes; a param passed onward to a
+/// further call is not chased (a miss → declines/reports as before, never a wrong grant).
+/// If `head` (an application head) resolves to one of the lambda's `params` — directly as a `Param`, or
+/// through a `Ref` chain that reaches a param binder — return that param's index. (A `let`/param reference
+/// resolves to `Ref { value }` whose chain reaches the binder; mirrors `ctl_arm_lexical_k_to_resume`'s
+/// `refs_to_k`.) Used to detect `(param_i …)` applications inside a callee body.
+fn param_index_of_head(db: &mut Db, head: StructId, params: &[StructId]) -> Option<usize> {
+    // The binder each param occurrence names.
+    let param_binders: Vec<Option<StructId>> = params
+        .iter()
+        .map(|&p| match resolved_of(db, p) {
+            Resolved::Param { binder } => Some(binder),
+            _ => None,
+        })
+        .collect();
+    let target = match resolved_of(db, head) {
+        Resolved::Param { binder } => binder,
+        Resolved::Ref { value } => {
+            let mut t = value;
+            loop {
+                match resolved_of(db, t) {
+                    Resolved::Param { binder } => break binder,
+                    Resolved::Ref { value: n } => t = n,
+                    _ => return None,
+                }
+            }
+        }
+        _ => return None,
+    };
+    param_binders.iter().position(|&b| b == Some(target))
+}
+
+fn param_apply_extra_handled(
+    db: &mut Db,
+    head: StructId,
+    callee_body: StructId,
+    arity: usize,
+) -> Vec<Vec<u32>> {
+    let Some(params) = crate::eval::lambda_params_of(db, head) else {
+        return Vec::new();
+    };
+    let mut out: Vec<Vec<u32>> = vec![Vec::new(); arity];
+    // Walk the callee body tracking the handled set (mirrors `check_no_home_walk`'s handle/host threading);
+    // at an application whose head resolves to callee param `i`, record the current handled set for `i`.
+    fn walk(
+        db: &mut Db,
+        node: StructId,
+        params: &[StructId],
+        handled: &mut Vec<u32>,
+        out: &mut [Vec<u32>],
+        depth: u32,
+    ) {
+        if depth > 64 {
+            return;
+        }
+        match resolved_of(db, node) {
+            Resolved::Apply { head, args } => {
+                // Is the head a reference to one of the callee's params? If so, that param is APPLIED here,
+                // under the current handled set — record it (only the extra grants matter to the caller).
+                if let Some(i) = param_index_of_head(db, head, params)
+                    && i < out.len()
+                    && out[i].is_empty()
+                {
+                    out[i] = handled.clone();
+                }
+                walk(db, head, params, handled, out, depth);
+                for &a in args.iter() {
+                    walk(db, a, params, handled, out, depth);
+                }
+            }
+            Resolved::Handle { init, arms, body } => {
+                walk(db, init, params, handled, out, depth);
+                for arm in arms.iter() {
+                    walk(db, arm.body, params, handled, out, depth);
+                }
+                let added: Vec<u32> = arms
+                    .iter()
+                    .filter_map(|a| crate::eval::effect_op_of(db, a.op).map(|(d, _)| d.0))
+                    .collect();
+                let before = handled.len();
+                handled.extend(&added);
+                walk(db, body, params, handled, out, depth);
+                handled.truncate(before);
+            }
+            Resolved::Host { effects, body } => {
+                let added: Vec<u32> = effects
+                    .iter()
+                    .filter_map(|&e| host_effect_decl(db, e))
+                    .collect();
+                let before = handled.len();
+                handled.extend(&added);
+                walk(db, body, params, handled, out, depth);
+                handled.truncate(before);
+            }
+            _ => {
+                if let Struct::List(children) = db.ast.get(node).clone() {
+                    for c in children {
+                        walk(db, c, params, handled, out, depth);
+                    }
+                }
+            }
+        }
+    }
+    let mut handled: Vec<u32> = Vec::new();
+    walk(db, callee_body, &params, &mut handled, &mut out, 0);
+    out
+}
+
 /// Report CDZ0401 for every effect operation reached from ENTRYPOINT body `node` with no home — neither
 /// an enclosing handler discharging its effect nor a host delegation of it
 /// (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error). Walks the resolved tree
@@ -1196,15 +1313,52 @@ fn check_no_home_walk(
             // (it declines at lowering rather than mis-reporting). Following is DEDUPED per
             // `(callee, handled)`: N call sites of the same pure/nullary helper re-walk its body ONCE per
             // distinct handler context, not once per site (the O(N²)→O(N) fix).
-            if let Some(callee) = crate::eval::lambda_body(db, head)
+            // APPLY-SITE HOMING for a LAMBDA argument: a `(fn … (E.op))` passed as a fn-param is homed
+            // where the CALLEE APPLIES that param, not at its definition site here. If the callee applies
+            // param `i` under a handler discharging `E` — `with-seed(body) = handle E … (body unit)` — then
+            // the lambda's perform IS homed, and walking its body under THIS call's (E-less) handled set
+            // would falsely report CDZ0401. So, before the recursion, compute for the known callee the
+            // EXTRA effects each param is applied under (`param_apply_extra_handled`); a lambda arg is then
+            // walked below with those effects ADDED to the handled set. A bare `(body unit)` callee (no
+            // handler — `apply-fn`) adds nothing, so a genuinely-ungranted effect in the lambda STAYS
+            // reported (soundness). CONSERVATIVE: only a KNOWN, non-recursive callee contributes extra
+            // grants; an opaque/param/recursive head adds nothing (the lambda is walked under the plain set,
+            // matching the pre-fix behaviour). (Root-caused from v-cad's passed-closure-under-handler bug.)
+            let callee = crate::eval::lambda_body(db, head)
                 .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
-                && !crate::eval::is_recursive(db, callee)
-                && followed.insert((callee, handled_key(handled)))
+                .filter(|&c| !crate::eval::is_recursive(db, c));
+            let param_extra: Vec<Vec<u32>> = match callee {
+                Some(callee_body) => param_apply_extra_handled(db, head, callee_body, args.len()),
+                None => Vec::new(),
+            };
+            if let Some(callee_body) = callee
+                && followed.insert((callee_body, handled_key(handled)))
             {
-                check_no_home_walk(db, callee, entrypoint, handled, followed, out, depth + 1);
+                check_no_home_walk(
+                    db,
+                    callee_body,
+                    entrypoint,
+                    handled,
+                    followed,
+                    out,
+                    depth + 1,
+                );
             }
-            for &a in args.iter() {
-                check_no_home_walk(db, a, entrypoint, handled, followed, out, depth);
+            for (i, &a) in args.iter().enumerate() {
+                // A lambda arg whose callee-param is applied under extra handlers: walk it under `handled`
+                // PLUS those extra effect decls (pushed, then popped), so its perform is homed at the apply
+                // site. A non-lambda arg, or a param with no extra grant, is walked under `handled` as before.
+                let extra = param_extra.get(i).filter(|e| !e.is_empty());
+                if let Some(extra) = extra
+                    && matches!(resolved_of(db, a), Resolved::Lambda { .. })
+                {
+                    let before = handled.len();
+                    handled.extend(extra.iter().copied());
+                    check_no_home_walk(db, a, entrypoint, handled, followed, out, depth);
+                    handled.truncate(before);
+                } else {
+                    check_no_home_walk(db, a, entrypoint, handled, followed, out, depth);
+                }
             }
         }
         // A `handle` — its arms DISCHARGE their effects for the BODY (dynamic extent). Push each arm's
@@ -1928,7 +2082,7 @@ pub fn reduce_handle(
     // performs (no foreign/host perform in `C`, `body_reaches_foreign_perform` false) — a reified
     // continuation must not span a host boundary (§4.4), and a foreign perform in `C` has no home under the
     // re-installed same-effect handler.
-    if let Some(perform) = escaping_k_leading_hole(db, body, &ctx)
+    if let Some(perform) = do_aware_leading_hole(db, body, &ctx)
         && let Resolved::Apply { head, args } = resolved_of(db, perform)
         && let Some((decl, idx)) = is_perform(db, head, &ctx)
         && let Some(arm) = ctx.arms.get(&(decl, idx)).cloned()
@@ -1999,7 +2153,7 @@ pub fn reduce_handle(
     // `C` exactly once, so the inner perform in `C` runs exactly once (a multi-shot arm would duplicate it —
     // the frame vertical's job). The leading perform's ARGS are strongly pure (`leading_strict_hole` checks),
     // so they need no state threading; the state at the leading perform is the seed (nothing runs before it).
-    if let Some(perform) = leading_strict_hole(db, body, &ctx)
+    if let Some(perform) = do_aware_leading_hole(db, body, &ctx)
         && let Resolved::Apply { head, args } = resolved_of(db, perform)
         && let Some((decl, idx)) = is_perform(db, head, &ctx)
         && let Some(arm) = ctx.arms.get(&(decl, idx)).cloned()
@@ -2007,6 +2161,15 @@ pub fn reduce_handle(
         // A tail-resumptive arm (bare OR do-wrapped interpose/forward) is served by the `thread` path — do
         // NOT steal it here (it would decline a forwarding arm whose resume value is a foreign perform).
         && !is_tail_resumptive_arm(db, arm.body)
+        // A MATCH-SHAPED resumptive arm (`(match s ((Some n) (resume n s)) …)`) is served by the thread
+        // path's match-shaped-resume-PEEL (`peel_resume_from_arm_body`), which folds a `do`-sequenced
+        // multi-perform body over it. The `do`-aware leading-hole above would otherwise let THIS block reach
+        // such a `do`-bodied case (`(do (St.get) (+ 1 (St.get)))` over a match-arm) and steal-then-decline it
+        // (the refold does not serve a match-peel arm). So defer any peelable arm to the thread path — only a
+        // NON-peelable arm (e.g. the DES deferred-resume-thunk `(set (w) s (run-thunk (fn (_u) (resume w w))))`)
+        // is this block's. Without the `do`-aware finder this guard was unnecessary (the global finder never
+        // reached a `do` body); it becomes load-bearing exactly because `do_aware_leading_hole` now does.
+        && peel_resume_from_arm_body(db, arm.body).is_none()
         // MULTI-SHOT is sound only when the continuation `C` (re-reduced per resume) reaches NO FOREIGN
         // perform — i.e. only THIS handler's discharged ops, which the refold folds away into pure code.
         // A ONE-SHOT arm splices `C` once, so any foreign perform in it runs once (sound). But a MULTI-shot
@@ -5464,15 +5627,19 @@ fn pure_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> PureHole {
 /// (its inits then body, in order), and a `match` SCRUTINEE (evaluated first). SOUND ONLY for a ONE-SHOT
 /// arm (the caller checks `count_resumes == 1`): a multi-shot arm would splice a performing `C` more than
 /// once, duplicating the inner effect.
-/// The leading-strict-hole finder for the ESCAPING-K re-performing reify (FACE-1 B2 `do`-slice) ONLY.
-/// Identical to [`leading_strict_hole`] except it ALSO treats a `(do e0 … en)` body as a strict spine
-/// (each item unconditional, in order; the leading hole is the first performing item). `do` is scoped here
-/// rather than added to the global `leading_strict_hole` because the two-hole / thread / tail paths also
-/// call that function and ALREADY fold `do`-sequenced multi-perform bodies via the match-shaped-resume-peel
-/// / threading path — a global `do`-arm would STEAL those (regressing `a_state_destructuring_arm_…` and
-/// `a_sequenced_memoize_helper_…`). The escaping-k block is the ONLY consumer that needs to see through a
-/// `do`, so the `do`-awareness lives here and the global finder stays byte-identical for every other path.
-fn escaping_k_leading_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId> {
+/// A `do`-aware leading-strict-hole finder, for the E5 non-tail CONTINUATION-FOLD blocks (the escaping-k
+/// re-performing reify AND the two-hole general-one-shot refold) ONLY. Identical to [`leading_strict_hole`]
+/// except it ALSO treats a `(do e0 … en)` body as a strict spine (each item unconditional, in order; the
+/// leading hole is the first performing item). `do` is scoped here rather than added to the global
+/// [`leading_strict_hole`] because the THREAD / tail paths also call that function and ALREADY fold
+/// `do`-sequenced multi-perform bodies via the match-shaped-resume-peel / threading path — a global
+/// `do`-arm STEALS those (regressed `a_state_destructuring_arm_…` and `a_sequenced_memoize_helper_…` when
+/// tried globally). The two continuation-fold blocks are the only consumers that need to see through a `do`
+/// (the DES `(do (Sim.sleep w) (inst-ns (Sim.now)))` body shape — a deferred-resume-thunk whose continuation
+/// re-performs under a `do`), so the `do`-awareness lives here and the global finder stays byte-identical
+/// for every other path. Both blocks gate against the thread path first (`!is_tail_resumptive_arm`), so a
+/// `do`-wrapped interpose/forward arm is not stolen.
+fn do_aware_leading_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId> {
     if let Some(items) = db.ast.as_form(node, "do").map(<[_]>::to_vec) {
         let positions: Vec<StructId> = items
             .into_iter()

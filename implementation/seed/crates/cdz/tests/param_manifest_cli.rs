@@ -36,8 +36,8 @@ fn temp_src(tag: &str, src: &str) -> (std::path::PathBuf, String) {
 
 /// A module with two `@param` sites: `width` (a slider with a range) and `mirror` (a toggle, no range).
 const PROG: &str = "(module m \
-    (: (@ (param (: widget slider) (: range (list 0 100))) width) Int64) \
-    (: (@ (param (: widget toggle)) mirror) Bool) \
+    (pragma param (param (: widget slider) (: range (list 0 100))) (: width Int64)) \
+    (pragma param (param (: widget toggle)) (: mirror Bool)) \
     (def (main) 0) (export main))";
 
 #[test]

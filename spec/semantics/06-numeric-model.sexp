@@ -793,6 +793,22 @@
   (call   main (: 5 Int64) (: 5 Int64))
   (output (: 2 Int64)))
 
+(case "a runtime BigInt three-way compare reports Equal at a BEYOND-Int64 magnitude"
+  (doc    "The Equal-arm above uses `BigInt.of 5` — a single-limb value that fits Int64. This pins Equal at a
+           genuinely MULTI-LIMB magnitude computed two DIFFERENT ways: with `big = BigInt.of a` (a=Int64.max),
+           `(* big (BigInt.of 2))` and `(+ big big)` both equal 2·(2^63−1) = 2^64−2, which OVERFLOWS Int64 but
+           is one exact BigInt value. `bigint-cmp` must report `Equal` → 2 by comparing the full unbounded
+           magnitudes, not a wrapped machine word. A comparison that only handled a single limb (or compared a
+           truncated low word) would wrongly disagree. The beyond-Int64 twin of the single-limb Equal case.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((big (BigInt.of a)))
+                (match (compare (* big (BigInt.of 2)) (+ big big))
+                  ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3))))
+            (export main)))
+  (call   main (: 9223372036854775807 Int64))
+  (output (: 2 Int64)))
+
 (case "a runtime BigInt comparison sees an intermediate that overflows Int64"
   (doc    "`(> (* big big) big)` with `big = BigInt.of 5000000000`: the product 2.5e19 OVERFLOWS Int64 but
            is a valid BigInt, and `bigint-cmp` orders it against `big` by the TRUE unbounded value → the
@@ -4137,6 +4153,22 @@
             (export main)))
   (call   main (: 2 Int64))
   (output (: 3 Int64)))
+
+(case "a runtime Rational three-way compare reports canonically-equal fractions as Equal"
+  (doc    "The Equal-arm companion: `(compare (Rational.of a 4) (Rational.of 1 2))` with a=2 → 2/4, which
+           `rational-of` NORMALIZES to 1/2, so the runtime `rational-cmp` reports `Equal` → 2 (consistent
+           with `(< 2/4 1/2)` and `(< 1/2 2/4)` both being false). The pinned Less/Greater cases above hit
+           only those two arms; this pins the middle arm AND that equality is decided AFTER canonicalization
+           — a `rational-cmp` that compared numerator/denominator pairs without normalizing would wrongly
+           report 2/4 vs 1/2 as unequal. The three-way twin of the Rational-key canonicalization the map
+           cases rely on.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (compare (Rational.of a 4) (Rational.of 1 2))
+                ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 2 Int64)))
 
 (case "runtime Rational arithmetic adds two parameter-built fractions exactly"
   (doc    "`(< (+ (Rational.of a b) (Rational.of 1 2)) (Rational.of 1 1))` with a=1,b=3: the sum

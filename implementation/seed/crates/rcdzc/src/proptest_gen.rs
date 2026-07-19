@@ -2,7 +2,7 @@
 //! compiler-synthesis; see `implementation/design/DESIGN-property-test-collection-generators-rcdzc.md`).
 //!
 //! `cdz test` already property-tests a `@test` def with SCALAR parameters: the runner generates each
-//! scalar and (for a guest that performs `Test.gen : Unit -> Int64`) drives a seeded int pool with
+//! scalar and (for a guest that performs `Test.gen-int : Unit -> Int64`) drives a seeded int pool with
 //! shrinking. A `@test` with a COMPOUND parameter (`List Int64`, …) has no boundary representation, so it
 //! could not be property-tested — it declined at the export boundary.
 //!
@@ -26,11 +26,11 @@
 //! ```
 //!
 //! The wrapper builds the argument by a recursive `<gen:T>` derivation over the parameter type: a scalar
-//! consumes one `Test.gen` int (`Bool` = `(= (% gen 2) 0)`, the parity), a `(List ELEM)` builds a
+//! consumes one `Test.gen-int` int (`Bool` = `(= (% gen 2) 0)`, the parity), a `(List ELEM)` builds a
 //! VARIABLE-length list (`0..=G1_LIST_LEN`, a gen'd count picking a prefix — so the empty + short lists
-//! are exercised), a `(Tuple T…)` builds `(tuple <gen:T> …)`. Every `Test.gen` is hoisted into a `let`
+//! are exercised), a `(Tuple T…)` builds `(tuple <gen:T> …)`. Every `Test.gen-int` is hoisted into a `let`
 //! (an inlined one under a constructor is not seen within the `host` scope). The existing gen-driven
-//! runner detects the wrapper (it pulls `Test.gen` ints), runs `--trials` trials, and shrinks over the
+//! runner detects the wrapper (it pulls `Test.gen-int` ints), runs `--trials` trials, and shrinks over the
 //! int pool — no ABI change, no runner change. Increments so far cover G1 `List<Int>`, G2 `List<Bool>` +
 //! element recursion, G3 `Tuple` + nesting, G4 `Record`, G5 user `sum` (bounded — a recursive sum
 //! declines), G6 `Set`/`Map`, G7 variable-length lists, G8 multi-parameter, and G9 `Float32`/`Float64`
@@ -67,9 +67,18 @@ fn int_lit(ast: &mut Arenas, v: i64) -> StructId {
 }
 
 /// The fixed list length the G1 wrapper generates. Small — enough to exercise a non-trivial list while
-/// keeping the synthesized `let`-chain short. Variable length (a `Test.gen`-derived, bounded count) is a
+/// keeping the synthesized `let`-chain short. Variable length (a `Test.gen-int`-derived, bounded count) is a
 /// later increment.
 const G1_LIST_LEN: usize = 3;
+
+/// The `Test` effect's driver-op NAME — the op each generator performs to pull one random `Int64`. Named
+/// `gen-int` (NOT bare `gen`): the browser test driver transpiles the component with jco, which emits an
+/// internal top-level `let gen = …` (its `_initGenerator`), and importing a component op member literally
+/// named `gen` collides — `const { gen } = imports.test` → `SyntaxError: Identifier 'gen' has already been
+/// declared`, throwing at import before any run (v-guide-infra 2026-07-19). `gen-int` sidesteps the jco
+/// internal (also avoiding bare `next`, which jco calls on generators). A single source of truth for the
+/// name so the effect decl, the member-access call, and the collision guards can never drift.
+const GEN_OP: &str = "gen-int";
 
 /// Rewrite the top-level block so every `@test` whose def takes a single `(List <Int>)` parameter gains a
 /// synthesized nullary generator wrapper (and the original loses its `@test` marker). A no-op for a
@@ -101,9 +110,9 @@ pub fn synthesize(ast: &mut Arenas) {
     // deeply when both passes rewrote the same body). This pass NEVER touches an `@ensures` node now.
 
     // If the program declares an effect named `Test` WITHOUT a `gen` op, this pass cannot proceed: the
-    // wrapper needs `Test.gen`, appending its own `(effect Test …)` would collide with the existing name,
+    // wrapper needs `Test.gen-int`, appending its own `(effect Test …)` would collide with the existing name,
     // and the existing one has no `gen` to reuse. Bail out (the compound-param `@test` then declines at
-    // the boundary as before) rather than emit a wrapper calling a non-existent `Test.gen` (PR #406).
+    // the boundary as before) rather than emit a wrapper calling a non-existent `Test.gen-int` (PR #406).
     if test_declared_without_gen(ast, &items) {
         return;
     }
@@ -201,7 +210,7 @@ struct TestPlan {
 }
 
 /// A type this pass can GENERATE, and the recursive shape of its `<gen:T>` expression (each built from
-/// one or more `Test.gen` ints). This is the compiler-directed "Arbitrary-like" derivation over the type
+/// one or more `Test.gen-int` ints). This is the compiler-directed "Arbitrary-like" derivation over the type
 /// structure: a scalar consumes one gen int; a `List`/`Tuple` recurses into its element/slot types. A
 /// type outside this set (`Char`, a bare/unresolved type) is not (yet) generatable — `classify_ty` returns
 /// `None`, so the `@test` declines at the boundary as before.
@@ -211,7 +220,7 @@ pub enum GenTy {
     Int,
     /// An integer CONSTRAINED to an inclusive range `[lo, hi]` — from a type-level `@invariant` whose
     /// predicate is a recognized range over `self` (`(and (>= self LO) (<= self HI))` and mirrors). `<gen>` maps a
-    /// fresh `Test.gen` int into the range so the generated value ALWAYS satisfies the invariant (no wasted
+    /// fresh `Test.gen-int` int into the range so the generated value ALWAYS satisfies the invariant (no wasted
     /// reject cycle): `(+ LO (Int64.rem-euclid ((. Test gen)) SPAN))` where `SPAN = HI-LO+1`. This is the
     /// constrained-generation path (operator directive: "invariants inform how random values are generated,
     /// so we never waste a cycle just to get rejected"). An unrecognized invariant shape stays plain `Int`.
@@ -219,7 +228,7 @@ pub enum GenTy {
     /// `Bool`: `<gen>` = `(= (% ((. Test gen)) 2) 0)` (the gen int's parity → a ~50/50 boolean).
     Bool,
     /// A float type (`Float32`/`Float64`), carrying its width: `<gen>` = `((. FloatWIDTH of-int) <gen-int>)`
-    /// — an integer-valued float from a fresh `Test.gen` int (the TOTAL `float-of-int` conversion, realized
+    /// — an integer-valued float from a fresh `Test.gen-int` int (the TOTAL `float-of-int` conversion, realized
     /// in both backends). A LONE float parameter already crosses the boundary (the runner generates it), so
     /// this variant only matters NESTED under a `List`/`Tuple`/… where no boundary representation exists.
     Float(u32),
@@ -235,7 +244,7 @@ pub enum GenTy {
     /// `(Record (f T)…)`: `<gen>` = `(record (f <gen:T>) …)`, one generated value per named field.
     Record(Vec<(String, GenTy)>),
     /// A user SUM `(type NAME (V PAYLOAD?)…)` named by a bare type name: `<gen>` picks a variant by
-    /// `Test.gen % k` and constructs `((. NAME V) <gen:PAYLOAD>)` (a nullary variant is just `(. NAME V)`).
+    /// `Test.gen-int % k` and constructs `((. NAME V) <gen:PAYLOAD>)` (a nullary variant is just `(. NAME V)`).
     /// Carries the sum's NAME and each variant's `(ctor-name, optional payload GenTy)`.
     Sum {
         #[allow(dead_code)] // read by the cdz-test counterexample renderer, not within this crate
@@ -399,7 +408,7 @@ fn classify_ty(ast: &Arenas, ty: StructId, items: &[StructId]) -> Option<GenTy> 
 }
 
 /// The `GenTy` for the parameter of a synthesized `-gen` wrapper — the EXACT generator shape the wrapper
-/// draws, so a caller can decode a shrunk `Test.gen` int pool back into the concrete value (the `cdz test`
+/// draws, so a caller can decode a shrunk `Test.gen-int` int pool back into the concrete value (the `cdz test`
 /// counterexample renderer). `proptest_gen` leaves the ORIGINAL def in place beside the wrapper (name =
 /// `<wrapper-without-"-gen">`, its `@test` stripped so it is a plain callee) with its single compound
 /// parameter's TYPE-EXPRESSION intact, so we classify that node the same way the wrapper's generator was
@@ -881,25 +890,25 @@ fn declares_test_gen(ast: &Arenas, items: &[StructId]) -> bool {
         if let Some(eff) = ast.as_form(item, "effect")
             && eff.first().and_then(|&n| ast.as_name(n)) == Some("Test")
         {
-            // The op children follow the effect name: `(effect Test (op gen …) (op fail …) …)`. Reuse the
-            // existing `Test` ONLY if it actually declares a `gen` op — a `Test` effect that declares only
-            // `fail` (or anything but `gen`) does NOT provide `Test.gen`, and treating it as if it did
-            // would make the wrapper call a non-existent op (Copilot PR #406). Check the op names, not
-            // just the effect name.
+            // The op children follow the effect name: `(effect Test (op gen-int …) (op fail …) …)`. Reuse
+            // the existing `Test` ONLY if it actually declares the driver op — a `Test` effect that declares
+            // only `fail` (or anything but the driver op) does NOT provide `Test.gen-int`, and treating it as
+            // if it did would make the wrapper call a non-existent op (Copilot PR #406). Check the op names,
+            // not just the effect name.
             return eff[1..]
                 .iter()
                 .filter_map(|&op| ast.as_form(op, "op"))
-                .any(|op_tail| op_tail.first().and_then(|&n| ast.as_name(n)) == Some("gen"));
+                .any(|op_tail| op_tail.first().and_then(|&n| ast.as_name(n)) == Some(GEN_OP));
         }
     }
     false
 }
 
-/// Whether the program declares an effect named `Test` that does NOT carry a `gen` op — the case where
-/// this pass CANNOT proceed: the wrapper needs `Test.gen`, but appending its own `(effect Test …)` would
-/// collide with the existing `Test` name, and the existing one has no `gen` to reuse. Synthesis bails
+/// Whether the program declares an effect named `Test` that does NOT carry the driver op — the case where
+/// this pass CANNOT proceed: the wrapper needs `Test.gen-int`, but appending its own `(effect Test …)` would
+/// collide with the existing `Test` name, and the existing one has no driver op to reuse. Synthesis bails
 /// out for such a program (the compound-param `@test` then declines at the boundary as before, rather
-/// than emitting a wrapper that calls a non-existent `Test.gen`).
+/// than emitting a wrapper that calls a non-existent `Test.gen-int`).
 fn test_declared_without_gen(ast: &Arenas, items: &[StructId]) -> bool {
     for &item in items {
         if let Some(eff) = ast.as_form(item, "effect")
@@ -908,16 +917,16 @@ fn test_declared_without_gen(ast: &Arenas, items: &[StructId]) -> bool {
             let has_gen = eff[1..]
                 .iter()
                 .filter_map(|&op| ast.as_form(op, "op"))
-                .any(|op_tail| op_tail.first().and_then(|&n| ast.as_name(n)) == Some("gen"));
+                .any(|op_tail| op_tail.first().and_then(|&n| ast.as_name(n)) == Some(GEN_OP));
             return !has_gen;
         }
     }
     false
 }
 
-/// Build `(effect Test (op gen (-> Unit Int64)))`.
+/// Build `(effect Test (op gen-int (-> Unit Int64)) (op fail (-> String Unit)))`.
 fn build_test_effect(ast: &mut Arenas) -> StructId {
-    // `gen : Unit -> Int64` — the driver op every generator pulls from.
+    // `gen-int : Unit -> Int64` — the driver op every generator pulls from (see [`GEN_OP`] for why not `gen`).
     let gen_op = {
         let arrow = {
             let head = name(ast, "->");
@@ -926,7 +935,7 @@ fn build_test_effect(ast: &mut Arenas) -> StructId {
             push_list(ast, vec![head, unit, i64])
         };
         let head = name(ast, "op");
-        let gen_nm = name(ast, "gen");
+        let gen_nm = name(ast, GEN_OP);
         push_list(ast, vec![head, gen_nm, arrow])
     };
     // `fail : String -> Unit` — the report op a test performs to name WHY it failed. The runner recovers a
@@ -953,14 +962,14 @@ fn build_test_effect(ast: &mut Arenas) -> StructId {
 
 /// Build the `@test`-marked nullary wrapper for a plan:
 /// `(@ test (def (NAME-gen) (host (Test) (NAME <gen:ParamType>))))`, where `<gen:ParamType>` is the
-/// recursively-built generator expression for the parameter's type. Every `Test.gen` performance is a
+/// recursively-built generator expression for the parameter's type. Every `Test.gen-int` performance is a
 /// fresh `((. Test gen))`, so the runner's seeded int pool drives (and shrinks) the whole generated value.
 fn build_wrapper(ast: &mut Arenas, plan: &TestPlan) -> StructId {
     // A DECLINING wrapper: the compound param has a non-generatable leaf (e.g. `Char`), so there is no
     // `<gen:T>` to build. Emit a nullary `(def (NAME-gen) (trap "…"))` that TRAPS with an actionable
     // message — the runner reports a clean per-test `FAIL NAME-gen: <message>` (a trap is the existing
     // per-test failure channel) and the file's SIBLING tests still run, instead of the compound param
-    // aborting the whole file at the export boundary. No `host`/`Test.gen` — a bare trap is a plain nullary
+    // aborting the whole file at the export boundary. No `host`/`Test.gen-int` — a bare trap is a plain nullary
     // test the runner invokes directly.
     if plan.declining {
         // Perform `Test.fail("reason")` THEN `trap`, inside `(host (Test) …)`. The runner recovers a FAIL
@@ -1025,13 +1034,13 @@ fn build_wrapper(ast: &mut Arenas, plan: &TestPlan) -> StructId {
         );
         return push_list(ast, vec![at, ann, def]);
     }
-    // Build `<gen:ParamType>`, HOISTING every `Test.gen` performance into its own `let` binding: a
-    // `Test.gen` inlined directly inside a compound constructor argument (`(tuple (Test.gen) …)`) is not
+    // Build `<gen:ParamType>`, HOISTING every `Test.gen-int` performance into its own `let` binding: a
+    // `Test.gen-int` inlined directly inside a compound constructor argument (`(tuple (Test.gen-int) …)`) is not
     // seen as within the enclosing `(host (Test) …)` scope and is rejected ("no enclosing handler"),
     // whereas a `let`-bound one is fine. So each leaf becomes `gk`, bound to its gen expression, and the
     // constructors reference the bound names.
     let mut binds: Vec<(StructId, StructId)> = Vec::new();
-    // Build one `<gen:T>` per parameter, in signature order (each hoists its own `Test.gen`s into `binds`).
+    // Build one `<gen:T>` per parameter, in signature order (each hoists its own `Test.gen-int`s into `binds`).
     let gen_args: Vec<StructId> = plan
         .gen_tys
         .iter()
@@ -1084,10 +1093,10 @@ fn build_wrapper(ast: &mut Arenas, plan: &TestPlan) -> StructId {
 }
 
 /// Recursively build the `<gen:T>` VALUE expression for a generatable type — the Arbitrary-like
-/// derivation — while HOISTING every `Test.gen` performance into `binds` (a `(var, gen-expr)` list the
+/// derivation — while HOISTING every `Test.gen-int` performance into `binds` (a `(var, gen-expr)` list the
 /// caller wraps in `let`s). A scalar consumes one gen int (a hoisted `let`, returning the bound var); a
 /// `(List ELEM)` builds `(list …)` of `G1_LIST_LEN` recursively-generated elements; a `(Tuple T…)` builds
-/// `(tuple …)`. Hoisting is required because an inlined `Test.gen` inside a constructor argument is not
+/// `(tuple …)`. Hoisting is required because an inlined `Test.gen-int` inside a constructor argument is not
 /// seen within the enclosing `host` scope (rejected), but a `let`-bound one is.
 fn build_gen(ast: &mut Arenas, ty: &GenTy, binds: &mut Vec<(StructId, StructId)>) -> StructId {
     match ty {
@@ -1165,10 +1174,10 @@ fn build_gen(ast: &mut Arenas, ty: &GenTy, binds: &mut Vec<(StructId, StructId)>
             })
         }
         // A VARIABLE-length list in `0..=G1_LIST_LEN`: generate `G1_LIST_LEN` candidate elements + a
-        // hoisted count `c = (% Test.gen (LEN+1))`, then an `if`-chain picking the length-`c` prefix
+        // hoisted count `c = (% Test.gen-int (LEN+1))`, then an `if`-chain picking the length-`c` prefix
         // (`(list)` / `(list e0)` / `(list e0 e1)` / …). This exercises the EMPTY list + short lists (the
         // classic off-by-one / empty-case property-test coverage) that a fixed-length never reached — with
-        // no recursive-helper synthesis (all inline, still let-hoisted so each `Test.gen` lives in `host`).
+        // no recursive-helper synthesis (all inline, still let-hoisted so each `Test.gen-int` lives in `host`).
         GenTy::List(elem, min_len) => build_var_list_gen(ast, elem, *min_len, binds),
         // `(tuple <gen:T> …)` — one generated value per slot.
         GenTy::Tuple(slots) => {
@@ -1191,7 +1200,7 @@ fn build_gen(ast: &mut Arenas, ty: &GenTy, binds: &mut Vec<(StructId, StructId)>
             }
             push_list(ast, children)
         }
-        // A user sum: pick a variant by a hoisted `Test.gen % k`, then a nested `if`-chain constructs the
+        // A user sum: pick a variant by a hoisted `Test.gen-int % k`, then a nested `if`-chain constructs the
         // chosen variant `((. TYPE V) <gen:payload>)` (nullary variant = `(. TYPE V)`). The LAST variant is
         // the final `else`, so every draw lands on some variant (`% k` in `0..k`, and the chain covers all).
         GenTy::Sum {
@@ -1270,7 +1279,7 @@ fn build_sum_gen(
         binds.push((var, sel_expr));
     }
     // Build each variant's construction expression (payloads recurse through `build_gen`, hoisting their
-    // own `Test.gen`s into the same `binds` — evaluated unconditionally before the `if`, which is fine:
+    // own `Test.gen-int`s into the same `binds` — evaluated unconditionally before the `if`, which is fine:
     // an unused draw is harmless, and it keeps every gen a plain `let`).
     let ctors: Vec<StructId> = variants
         .iter()
@@ -1321,7 +1330,7 @@ fn build_sum_gen(
 /// length-`c` prefix: `(if (<= c 0) (list) (if (<= c 1) (list e0) … (list e0 … e_{LEN-1})))`. `min_len` (a
 /// floor from a recognized min-length refinement, clamped to `G1_LIST_LEN`) shifts the count into
 /// `[min_len, LEN]` so a "non-empty"/"at least K" list generates in-domain: `c = MIN + (% gen (LEN+1-MIN))`
-/// (MIN=0 → the original `% (LEN+1)`). All inline (no recursive helper); every `Test.gen` is a `let` in the
+/// (MIN=0 → the original `% (LEN+1)`). All inline (no recursive helper); every `Test.gen-int` is a `let` in the
 /// caller's chain, so it lives within the wrapper's `host`.
 fn build_var_list_gen(
     ast: &mut Arenas,
@@ -1405,7 +1414,7 @@ fn build_var_list_gen(
 
 /// Hoist a scalar generator EXPRESSION into a fresh `let` binding `gN = <expr>` (recorded in `binds`) and
 /// return a reference to the bound name `gN`. The binding index is `binds.len()`, so names are unique +
-/// stable in generation order (`g0`, `g1`, …). Keeping every `Test.gen` in a `let` is what makes it live
+/// stable in generation order (`g0`, `g1`, …). Keeping every `Test.gen-int` in a `let` is what makes it live
 /// within the wrapper's `host` scope (an inlined one under a constructor is rejected).
 fn hoist_scalar(
     ast: &mut Arenas,
@@ -1420,12 +1429,12 @@ fn hoist_scalar(
     name(ast, &var_name)
 }
 
-/// `((. Test gen))` — one `Test.gen` performance (the nullary application of the member access
-/// `Test.gen`). A fresh occurrence each call, so each pulls the next int from the runner's seeded pool.
+/// `((. Test gen-int))` — one `Test.gen-int` performance (the nullary application of the member access
+/// `Test.gen-int`). A fresh occurrence each call, so each pulls the next int from the runner's seeded pool.
 fn gen_call(ast: &mut Arenas) -> StructId {
     let dot = name(ast, ".");
     let test = name(ast, "Test");
-    let gen_nm = name(ast, "gen");
+    let gen_nm = name(ast, GEN_OP);
     let member = push_list(ast, vec![dot, test, gen_nm]);
     push_list(ast, vec![member])
 }
@@ -1800,7 +1809,7 @@ mod tests {
     }
 
     /// G5: a `@test` over a USER SUM `(type NAME (V PAYLOAD?)…)` gains a wrapper — the generator picks a
-    /// variant by `Test.gen % k` and builds its payload. Covers a mix of payload'd + nullary variants,
+    /// variant by `Test.gen-int % k` and builds its payload. Covers a mix of payload'd + nullary variants,
     /// and a sum nested inside a `List`.
     #[test]
     fn synthesizes_a_generator_wrapper_for_a_sum_test() {
@@ -2022,9 +2031,9 @@ mod tests {
         );
     }
 
-    /// PR #406: a program that declares `(effect Test (op fail …))` WITHOUT a `gen` op must NOT get a
-    /// synthesized wrapper — appending a `(op gen …)` effect would collide with the existing `Test`, and
-    /// reusing the gen-less one would call a non-existent `Test.gen`. The pass bails, leaving the
+    /// PR #406: a program that declares `(effect Test (op fail …))` WITHOUT the `gen-int` driver op must NOT
+    /// get a synthesized wrapper — appending a `(op gen-int …)` effect would collide with the existing `Test`,
+    /// and reusing the driver-less one would call a non-existent `Test.gen-int`. The pass bails, leaving the
     /// compound-param `@test` to decline at the boundary as before.
     #[test]
     fn a_test_effect_without_gen_suppresses_synthesis() {
@@ -2040,16 +2049,16 @@ mod tests {
             .collect();
         assert!(
             !test_names.iter().any(|n| n == "p-gen"),
-            "a Test effect without `gen` suppresses the wrapper (no spurious Test.gen): {test_names:?}"
+            "a Test effect without `gen` suppresses the wrapper (no spurious Test.gen-int): {test_names:?}"
         );
     }
 
-    /// The complement: a program that declares `(effect Test (op gen …))` itself IS usable — the pass
+    /// The complement: a program that declares `(effect Test (op gen-int …))` itself IS usable — the pass
     /// reuses it (does not append a colliding second `Test`) and still synthesizes the wrapper.
     #[test]
     fn a_test_effect_with_gen_is_reused() {
         let ast = crate::testkit::parse(
-            "(do (effect Test (op gen (-> Unit Int64))) \
+            "(do (effect Test (op gen-int (-> Unit Int64))) \
                  (@ test (def (p (: xs (List Int64))) (List.len xs))) (def (other) 1))",
         );
         let db = Db::load(ast);

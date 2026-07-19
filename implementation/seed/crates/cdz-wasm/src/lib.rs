@@ -2396,8 +2396,8 @@ mod tests {
         // s-expr reader reads `[0` / `100]` as two atoms, so a `.sexp`/s-expr fixture must use `(list …)`
         // (the canonical arena node `[lo hi]` desugars to on the ML side).
         let src = "(do \
-                     (: (@ (param (: widget slider) (: range (list 0 100)) (: default 5)) width) Int64) \
-                     (: (@ (param (: widget slider)) rate) Rational) \
+                     (pragma param (param (: widget slider) (: range (list 0 100)) (: default 5)) (: width Int64)) \
+                     (pragma param (param (: widget slider)) (: rate Rational)) \
                      (def (main) (host (Param) (+ (Param.width) (Rational.value (Param.rate))))) \
                      (export main))";
         let entries = param_manifest(src, "sexpr").expect("param_manifest runs");
@@ -2465,7 +2465,7 @@ mod tests {
         // would have to parse. `(Rational.of 1 4)` folds to `Core::ConstRational(1, 4)`, so `default_num`/
         // `default_den` are `"1"`/`"4"`; the literal-text `default` is kept for a tooltip.
         let src = "(do \
-                     (: (@ (param (: widget slider) (: default (Rational.of 1 4))) frac) Rational) \
+                     (pragma param (param (: widget slider) (: default (Rational.of 1 4))) (: frac Rational)) \
                      (def (main) (host (Param) (Param.frac))) \
                      (export main))";
         let entries = param_manifest(src, "sexpr").expect("param_manifest runs");
@@ -2491,7 +2491,7 @@ mod tests {
         );
         // A reducible fraction is normalized by the compiler's fold (gcd-reduce): `(Rational.of 2 8)` = 1/4.
         let src2 = "(do \
-                      (: (@ (param (: widget slider) (: default (Rational.of 2 8))) frac) Rational) \
+                      (pragma param (param (: widget slider) (: default (Rational.of 2 8))) (: frac Rational)) \
                       (def (main) (host (Param) (Param.frac))) \
                       (export main))";
         let e2 = param_manifest(src2, "sexpr").expect("runs");
@@ -2512,7 +2512,7 @@ mod tests {
         // slider's bounds. rational_num_den now maps `ConstInt(n)` → (n, 1), so the exact-slider path
         // populates for integer bounds too, not only written fractions.
         let src = "(do \
-                     (: (@ (param (: widget slider) (: range (list 2 20)) (: default 5)) thickness) Rational) \
+                     (pragma param (param (: widget slider) (: range (list 2 20)) (: default 5)) (: thickness Rational)) \
                      (def (main) (host (Param) (Param.thickness))) \
                      (export main))";
         let entries = param_manifest(src, "sexpr").expect("param_manifest runs");

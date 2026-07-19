@@ -2305,6 +2305,12 @@ impl<'a> Printer<'a> {
                 if self.head_name(items[0]).as_deref() == Some("record")
                     && self.is_record_pattern(&items[1..])
                 {
+                    // Empty record pattern `(record)` -> `{}` (no inner padding), matching the param
+                    // path's empty render; `print_pattern_seq` would otherwise emit `{  }` (double space).
+                    if items.len() == 1 {
+                        self.doc.word("{}");
+                        return;
+                    }
                     self.print_pattern_seq("{ ", " }", &items[1..], |p, entry| {
                         if let Struct::List(pair) = p.a.get(entry) {
                             let (field, sub) = (pair[0], pair[1]);
@@ -2403,11 +2409,15 @@ impl<'a> Printer<'a> {
     /// fewer fields, still all `(name p)` pairs.) Distinguishes a genuine record pattern from a
     /// name-headed constructor application (`(Record a b)`, positional) that must NOT print as braces.
     fn is_record_pattern(&self, items: &[StructId]) -> bool {
-        !items.is_empty()
-            && items.iter().all(|&e| {
-                matches!(self.a.get(e), Struct::List(p)
-                    if p.len() == 2 && self.head_name(p[0]).is_some())
-            })
+        // Every entry is a `(field sub-pattern)` pair with a plain-name field. An EMPTY record pattern
+        // `(record)` (`{}`, binds nothing) is ALSO a valid record pattern — the parser produces it
+        // uniformly in param/let/match (`def f({}) = …` -> `(record)`), so accepting it here lets the
+        // let-binder render `{}` consistently with the param (which already does), not the backtick-`let`
+        // fallback. (`items.is_empty()` short-circuits the `all` to true, so no field check runs.)
+        items.iter().all(|&e| {
+            matches!(self.a.get(e), Struct::List(p)
+                if p.len() == 2 && self.head_name(p[0]).is_some())
+        })
     }
 
     /// `,x` when the interior is atomic (a name / literal / member chain), else `,{ expr }`.
@@ -5113,6 +5123,19 @@ mod tests {
                 "record pattern round-trips: {ml:?}"
             );
         }
+        // An EMPTY record pattern `{}` (arena `(record)`, binds nothing) renders `{}` (no inner padding)
+        // in BOTH param and let-binder position — consistent, no backtick fallback — and round-trips.
+        assert_eq!(
+            print(&sexpr::read("(def (f (record)) a)").unwrap(), 80),
+            "def f({}) = a"
+        );
+        assert_eq!(
+            print(
+                &sexpr::read("(def (main) (let (((record) v)) v))").unwrap(),
+                80
+            ),
+            "def main() =\n  let {} = v in\n  v"
+        );
         // NESTED compositions of the binding patterns (tuple/list/map/record/ctor) — the interaction of
         // the record + ctor pattern surfaces with each other and the pre-existing tuple/list/map ones is
         // where a printer/parser asymmetry would most likely hide, so pin the mixes: a tuple inside a

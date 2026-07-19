@@ -1,6 +1,7 @@
 import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
+import { Link } from "react-router-dom";
 import { Why } from "../../components/Why.tsx";
 
 export default function RecordsTuples() {
@@ -23,6 +24,13 @@ export default function RecordsTuples() {
         source={`(def (area r) (* (. r w) (. r h)))
 (def (main) (area (record (w 4) (h 5))))`}
       />
+
+      <P>
+        Reaching in with <C>.</C> repeatedly gets noisy when a function wants several fields. You can
+        instead name them up front with a <em>record pattern</em> that binds each field in one move, right
+        in the parameter, which <Link to="/irrefutable-patterns" className="text-cadenza-300 underline-offset-2 hover:underline">Irrefutable patterns</Link>{" "}
+        covers in full alongside tuple destructuring.
+      </P>
 
       <H2>Updating a field</H2>
       <P>

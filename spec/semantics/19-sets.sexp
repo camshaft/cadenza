@@ -628,6 +628,36 @@
                           ((None u) -1))) (export main)))
   (output (: 2 Int64)))
 
+(case "Set.to-list enumerates the FULL interior order, not just the smallest element"
+  (doc    "The element-0 case above only pins the smallest element (2) at index 0 — a canonical-order bug
+           that kept the smallest first but mis-ordered the INTERIOR (e.g. {2,8,5}) would still pass it. This
+           weights all three positions into one scalar: `100*nth0 + 10*nth1 + nth2` over `Set.of (list 5 2 8)`
+           = 100*2 + 10*5 + 8 = 258, pinning the whole sorted sequence [2,5,8]. A mis-order like [2,8,5] would
+           give 285. Pins the interior enumeration order an index-0-only check cannot see.")
+  (input  (do
+            (def (main)
+              (let ((xs (Set.to-list (Set.of (list 5 2 8)))))
+                (+ (+ (* 100 (Option.expect (List.at xs 0) "0"))
+                      (* 10 (Option.expect (List.at xs 1) "1")))
+                   (Option.expect (List.at xs 2) "2"))))
+            (export main)))
+  (output (: 258 Int64)))
+
+(case "Set.to-list canonical order is independent of insertion order"
+  (doc    "The same full-sequence weighting over a set built in REVERSE insertion order `Set.of (list 8 5 2)`
+           still yields 258 — Set.to-list orders by element VALUE (canonical sorted), not by the order elements
+           were inserted. The insertion-independence companion of the full-order case, made observable through
+           the whole sequence rather than a length or element-0 check (a set compares equal regardless of
+           enumeration order, so only a to-list-INDEXED read can witness an order divergence).")
+  (input  (do
+            (def (main)
+              (let ((xs (Set.to-list (Set.of (list 8 5 2)))))
+                (+ (+ (* 100 (Option.expect (List.at xs 0) "0"))
+                      (* 10 (Option.expect (List.at xs 1) "1")))
+                   (Option.expect (List.at xs 2) "2"))))
+            (export main)))
+  (output (: 258 Int64)))
+
 (case "Set.to-list length is the set's cardinality (deduped)"
   (doc    "`(List.len (Set.to-list (Set.of (list 3 1 2 1 3))))` — the enumerated list has one element per
            DISTINCT set element ({1,2,3} → 3), so its length equals Set.len. Pins the dedup + round count.
