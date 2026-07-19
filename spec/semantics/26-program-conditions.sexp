@@ -1782,6 +1782,35 @@
             (export main)))
   (output (: 100 Int64)))
 
+(case "a PLAIN @ensures relating ret to a PARAMETER (> ret x) is enforced — the param stays in scope alongside ret in the predicate"
+  (doc    "The most common real-world postcondition shape: the result related to an INPUT, not just a
+           constant. Every other runtime @ensures case pins `ret` against a literal (`>= ret 0`,
+           `<= ret MAXINT`); this pins `@ensures(> ret x)` — \"the result exceeds the input\". The
+           injected `(let ((ret (+ x 1))) (if (> ret x) ret (trap …)))` must keep the def's PARAM `x`
+           in scope INSIDE the predicate ALONGSIDE the synthesized `ret` binder — the predicate reads
+           BOTH. `(f 5)` computes `6`, and `6 > 5` holds, so the `if` takes the pass arm and the def
+           returns `ret` = `6`. Pins that a multi-name postcondition (result-vs-parameter) resolves and
+           enforces exactly like a hand-written `(if (> (+ x 1) x) …)`.")
+  (input  (do
+            (@ (ensures (> ret x)) (def (f (: x Int64)) (+ x 1)))
+            (def (main) (f 5))
+            (export main)))
+  (output (: 6 Int64)))
+
+(case "a PLAIN @ensures relating ret to a PARAMETER (> ret x) TRAPS when violated — the result-vs-input postcondition is checked"
+  (doc    "The trap half of the result-vs-parameter postcondition above. `@ensures(> ret x)` on
+           `(g x) = x - 1` — the result must exceed the input, but `x - 1 < x` always, so the
+           postcondition is violated for every argument. The injected
+           `(let ((ret (- x 1))) (if (> ret x) ret (trap …)))` binds `ret = 4` for `(g 5)`, and
+           `4 > 5` is FALSE, so the `if` takes the trap arm — `unreachable`. Together with the case
+           above this pins that a postcondition reading BOTH `ret` and a param enforces in both
+           directions, not only the satisfied one.")
+  (input  (do
+            (@ (ensures (> ret x)) (def (g (: x Int64)) (- x 1)))
+            (def (main) (g 5))
+            (export main)))
+  (trap   "unreachable"))
+
 (case "@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)"
   (doc    "The result-binder-capture guard, as a REJECT (breaker 2026-07-17). `@ensures(Q)` enforcement binds
            the def's RESULT to `ret` (`(let ((ret BODY)) (if Q ret (trap)))`). If a PARAMETER is

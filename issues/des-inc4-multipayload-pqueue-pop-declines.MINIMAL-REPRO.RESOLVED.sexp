@@ -26,3 +26,16 @@
 ;; owned by the DES ⇄ v-effects step-3 workstream (v-effects builds escaping-k; DES consumes). It resolves
 ;; the moment escaping-resume-thunk lands (same unblock as the single-task gated file). Marked STEP3-GATED.
 ;; No decline-severity concern: reject-don't-miscompile, with an accurate "later increment" diagnostic.
+
+;; ─── CORRECTION + RESOLVED (corpus-bugfix 2026-07-19) ───
+;; My 2026-07-19 "STEP3-GATED" triage was WRONG (a frozen-checkout mis-attribution — the exact anti-stale trap
+;; my own memory warns about). I reproduced the decline on a build 113 commits behind trunk and attributed it to
+;; the escaping-continuation step-3 gate. In fact the blocker was the MULTI-PAYLOAD tuple-destructure fold, a
+;; DIFFERENT gap, now FIXED by `bcd241590` ("rcdzc: extend fold_ctor_match to the multi-payload [Payload,Elem(i)]
+;; tuple-destructure path (DES inc-4 pqueue)"). Re-verified on a fresh TRUNK-TIP build (295573dde, throwaway
+;; worktree, removed): this repro now COMPILES and RUNS to 5000000000 on wasm — matching the commit's own claim
+;; ("folds to 5000000000 on all three backends"). NOT step-3-gated; the `resume` here IS tail-resumptive after
+;; the pop-apply fold resolves the pqueue destructure. RESOLVED. Renamed .RESOLVED.
+;; LESSON: even a "declines with a later-increment message" can be a STALE decline — verify the reject shape on
+;; a trunk-tip build before attributing it to a specific gate, exactly like a false-green (both directions of
+;; frozen-checkout error). [[probing-fresh-trunk-features-while-worktree-frozen-behind-trunk-gives-false-declines]]

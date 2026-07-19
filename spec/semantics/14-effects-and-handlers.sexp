@@ -4173,6 +4173,27 @@
             (export main)))
   (output (: 6 Int64)))
 
+(case "an effectful helper performing UNDER A CONDITIONAL folds in a self-call arg"
+  (doc    "The inlined helper's perform sits inside an `if` BRANCH — `turn(x,acc) = if x==1 then acc + B.b x
+           else acc`, called in the self-call arg `(run (- fuel 1) (turn fuel acc))`. Threading the arg
+           inlines the helper's `if`; each branch gets its own copy of the incoming state-refs. That copy was
+           `copy_pure` (`beta_reduce`), whose pinned-name fast path returned the RESOLVE-PINNED `run#eff$s0`
+           state ref AS-IS, so both branches SHARED the one node — a single-parent-arena orphan re-parented
+           onto a dead node → CDZ0101 leaking `run#eff$s0`. `deep_fresh_copy` per branch (an unpinned fresh
+           leaf that re-resolves against the spec sig, which declares `$s0`) folds it. run(4,0): only fuel==1
+           performs, B.b 1 → 1 (resume hands the op arg back), so acc = 0 + 1 = 1. A shared/stale pin would
+           leak `$s0`; a dropped branch-state advance would give a wrong value.")
+  (input  (do
+            (effect B (op b (-> Int64 Int64)) (op done (-> Int64 Int64)))
+            (def (turn (: x Int64) (: acc Int64)) (if (= x 1) (+ acc (B.b x)) acc))
+            (def (run (: fuel Int64) (: acc Int64))
+              (if (= fuel 0) (B.done acc) (run (- fuel 1) (turn fuel acc))))
+            (def (main)
+              (handle B 0 ((b (x) s (resume x x)) (done (x) s (resume x x)))
+                (run 4 0)))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "an effectful helper whose own parameter name shadows a driver parameter folds in a self-call arg"
   (doc    "Name-collision edge: the helper's OWN param is named `acc` — the same name as `run`'s driver
            param — and the helper performs on it: `turn(acc) = acc + Tools.dispatch acc`, called `(turn acc)`

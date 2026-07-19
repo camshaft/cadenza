@@ -1166,6 +1166,16 @@
   (input  (= (String.from-bytes (Bytes.of (list 99 97 102 195 169))) (Some "café")))
   (output (: true Bool)))
 
+(case "decoding an EMPTY byte sequence yields Some of the empty string"
+  (doc    "The degenerate VALID boundary of the decode (the invalid cases below and the well-formed case
+           above all feed NON-empty input): zero bytes is trivially well-formed UTF-8 — the empty string
+           encodes to zero bytes — so `(String.from-bytes (Bytes.of (list)))` is `(Some "")`, NOT None. A
+           state-machine decoder with an off-by-one on the input length, or one that treated "consumed no
+           bytes / produced no scalar" as a decode failure, would wrongly return None for empty input. Pins
+           that empty is a valid decode (collections-and-text.md #Decoding Bytes To A String Is Total).")
+  (input  (= (String.from-bytes (Bytes.of (list))) (Some "")))
+  (output (: true Bool)))
+
 (case "decoding ill-formed UTF-8 bytes yields none, not a trap"
   (doc    "`(String.from-bytes (Bytes.of (list 255)))` is given 0xFF, which is not a well-formed UTF-8
            sequence (0xFF never appears in valid UTF-8), so the decode yields `None` — NOT a trap and NOT
@@ -1560,6 +1570,23 @@
            as data, not traps.")
   (input  (Char.from-int 1114112))
   (output (: (None unit) (Option Char))))
+
+(case "converting a NEGATIVE integer to a char yields None"
+  (doc    "The LOW-end companion of the out-of-range cases above (which pin the high end U+10FFFF/U+110000
+           and the surrogate block): no negative integer is a Unicode scalar value, so `(Char.from-int -1)`
+           yields None — handled as data, not a trap, and NOT wrapped to a huge unsigned value that might
+           alias a valid scalar. Pins the lower bound of the valid-scalar check.")
+  (input  (match (Char.from-int -1) ((Some c) (Char.to-int c)) ((None u) -1)))
+  (output (: -1 Int64)))
+
+(case "converting zero to a char yields Some — U+0000 (NUL) is a valid scalar"
+  (doc    "The load-bearing low-boundary pin: U+0000 (NUL) IS a valid Unicode scalar and MUST convert, so
+           `(Char.from-int 0)` is `Some` and its `Char.to-int` round-trips to 0. A lower-bound check written
+           `> 0` instead of `>= 0`, or one that excluded NUL as a control character, would wrongly reject it.
+           The accept-side companion of the negative-rejection case (collections-and-text.md #A Char Converts
+           To And From An Integer Totally).")
+  (input  (match (Char.from-int 0) ((Some c) (Char.to-int c)) ((None u) -1)))
+  (output (: 0 Int64)))
 
 ; The cases above use U+D800 (first surrogate) and U+110000 (one PAST the max). These pin the EXACT
 ; boundaries where an off-by-one in the range/surrogate check surfaces: U+10FFFF (the MAXIMUM valid scalar,

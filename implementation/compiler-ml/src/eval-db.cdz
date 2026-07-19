@@ -14,7 +14,7 @@
 /// composes lowering (itself gated on typing) with eval, so an ill-typed source program yields `None`
 /// (no core form → nothing to run) — absence≠value carried all the way to the result.
 
-import { Tok, Tree, Node, parse-tokens, empty-tree, add-node } from "parse-db"
+import { Tok, Tree, Node, parse-tokens, empty-tree, add-node, record-param } from "parse-db"
 import { Core, lower-tree } from "lower-db"
 import { overflows } from "int-width"
 
@@ -451,16 +451,33 @@ def ev-nullary-call-chain-inlines-transitively() =
           | Option.None(_) => trap("a chain of nullary calls inlines transitively")))))
 
 @test
-def ev-napp-with-arg-declines-end-to-end() =
-  // the nullary/param BOUNDARY, end-to-end: a call WITH an arg (argId != -1) is the param slice (slice-3c, not
-  // yet) → lower yields no Core → eval-tree declines None. lower-db + infer-db each pin this boundary in their
-  // own layer; this pins it through the WHOLE pipeline (the eval path a real `(f arg)` would take). When
-  // slice-3c lands (NApp(f,arg) → CLet(param,arg,body)), THIS test flips to a value — a legible guard.
+def ev-napp-with-arg-but-no-param-declines() =
+  // a call WITH an arg but NO recorded param (an OVER-APPLIED nullary def `(mk 5)`) declines: lower's NApp arm
+  // finds param-of(calleeId) = None → no Core → eval None. This is DISTINCT from a genuine param call (which
+  // records a param — see ev-param-call-clet below). slice-3c is LANDED; the decline here is correct because
+  // no param was recorded, NOT because param-calls are unimplemented. (No record-param on this tree.)
   (match add-node(empty-tree(), Node.NLit(7)) with | (bodyId, t1) =>
     (match add-node(t1, Node.NLit(5)) with | (argId, t2) =>
       (match add-node(t2, Node.NApp(bodyId, argId)) with | (root, tree) =>
         (match eval-tree(tree, root) with
           | Option.None(_) => unit
-          | Option.Some(_) => trap("a call WITH an arg declines end-to-end until the param slice")))))
+          | Option.Some(_) => trap("a call WITH an arg but NO recorded param declines (over-applied nullary)")))))
+
+@test
+def ev-param-call-clet() =
+  // slice-3c at the eval-core UNIT level: a SINGLE-PARAM call `f(41)` where `f(n) = n + 1` → 42. Hand-arena:
+  // param NVar node `n`, body `NBin(+, n, 1)`, record the param BY BODYID (record-param), then NApp(bodyId,
+  // argId) with argId a real arg node. eval-tree lowers to CLet(paramNode, argCore, bodyCore) → binds 41 to the
+  // param, evals the body → 42. The direct-Core complement to sread-eval's se-single-param-call (which runs the
+  // full source pipeline); this exercises the CLet lowering+eval WITHOUT the reader.
+  (match add-node(empty-tree(), Node.NVar(7)) with | (paramId, t1) =>
+    (match add-node(t1, Node.NLit(1)) with | (oneId, t2) =>
+      (match add-node(t2, Node.NBin(43, paramId, oneId)) with | (bodyId, t3) =>
+        (match add-node(t3, Node.NLit(41)) with | (argId, t4) =>
+          (match add-node(t4, Node.NApp(bodyId, argId)) with | (root, t5) =>
+            (let tree = record-param(t5, bodyId, paramId) in
+             (match eval-tree(tree, root) with
+               | Option.Some(v) => (if v == 42 then unit else trap("f(41) where f(n)=n+1 → 42"))
+               | Option.None(_) => trap("a single-param call lowers to CLet + evals")))))))))
 
 export { eval-core, eval-bin, eval-tree, run, milestone-tokens, run-milestone }
