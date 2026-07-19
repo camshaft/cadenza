@@ -3704,6 +3704,129 @@ fn fuse_match_into_if(
     Some(core_of(db, rewritten))
 }
 
+/// CASE-OF-MATCH — the direct twin of [`fuse_match_into_if`] over a MATCH scrutinee instead of an `if`:
+/// `(match (match s (p0 A) (p1 B)…) outer_arms)` where each INNER arm body `A`/`B` builds a compile-time-
+/// visible constructor pushes the OUTER match INTO each inner arm body →
+/// `(match s (p0 (match A outer_arms)) (p1 (match B outer_arms))…)`. Each pushed-in `(match A outer_arms)`
+/// then folds against `A`'s constant constructor (the same construct-then-match collapse `fuse_match_into_if`
+/// relies on), so the THROWAWAY sum the inner match built per arm — purely to be deconstructed by the outer
+/// match — never reaches the heap: `(match (match (> n 0) (true (Some n)) (false (None))) ((Some v) v)
+/// ((None) 0))` → `(match (> n 0) (true n) (false 0))` → `(if (> n 0) n 0)`, zero heap.
+///
+/// SOUND (the fold is a PROFITABILITY gate, not a correctness one): the inner match evaluates `s`, selects
+/// ONE arm, evaluates its body `A` to a value, then the outer match deconstructs it; the rewritten form
+/// evaluates `s`, selects the SAME arm, then its body is `(match A outer_arms)` — evaluates `A` then matches
+/// it — identical value, identical only-the-selected-arm evaluation, `s`'s trap preserved (evaluated first
+/// either way). The INNER arm PATTERNS are reused verbatim (their binders stay in scope for the rewritten
+/// body — the same discipline the case-of-match-in-APPLY-head rewrite uses), and `outer_arms` appear in
+/// every inner arm body so each inner arm gets its OWN deep COPY (`clone_subtree_db` — a node has one
+/// parent). Commit ONLY when EVERY pushed-in inner match FULLY FOLDS to a non-match Core (sum truly
+/// eliminated = the win, and it sidesteps the constant-scrutinee decision path's coverage gaps exactly as
+/// the `if` twin does); any residual/poison → BACK OUT (`None`) to the ordinary runtime match. Returns
+/// `None` when the scrutinee is not a reducible match, or an inner arm is malformed, or a fold check fails.
+fn fuse_match_into_match(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    // Only fire on a DIRECTLY-VISIBLE inner match — the scrutinee is literally a `(match …)` form, or a
+    // ref/annotation chain to one — NOT a match reached by β-reducing an APPLICATION. `reduce_to_match`
+    // would β-reduce a call scrutinee (`(step s)`), but for a CONST-CLOSURE / specialization-sensitive
+    // callee in a still-generic driver body that β-reduce disturbs the const-specialization path (a
+    // partially-applied `step` mis-resolves → a spurious CDZ0201 "`Option` is a type, not a function").
+    // The if-twin never hits this (a call scrutinee is not an `if`); the win case here is always a
+    // syntactically-present inner match, so the narrower `reduce_to_match_direct` (Ref/Annot only, no Apply)
+    // covers the gap without touching a call scrutinee.
+    let inner_form = crate::eval::reduce_to_match_direct(db, scrutinee)?;
+    let mtail = db.ast.as_form(inner_form, "match").map(<[_]>::to_vec)?;
+    let [inner_scrut, inner_arm_occs @ ..] = mtail.as_slice() else {
+        return None;
+    };
+    let inner_scrut = *inner_scrut;
+    if inner_arm_occs.is_empty() {
+        return None;
+    }
+    // PROFITABILITY pre-check: every inner arm's body must fold to a compile-time-visible compound the
+    // pushed-in outer match can collapse (a `Core::SumNew` ctor or a `Core::Tuple`). A single runtime-valued
+    // inner arm body means the rewrite would just duplicate the outer match with no fold — bail before any
+    // synthesis. (A poison body bails here too; the ordinary path reports it once.)
+    let mut inner_arms: Vec<(StructId, StructId)> = Vec::with_capacity(inner_arm_occs.len());
+    for &arm in inner_arm_occs {
+        let (pat, body) = match db.ast.get(arm) {
+            crate::ast::Struct::List(kv) if kv.len() == 2 => (kv[0], kv[1]),
+            _ => return None,
+        };
+        if !matches!(
+            core_of(db, body),
+            crate::core::Core::SumNew { .. } | crate::core::Core::Tuple { .. }
+        ) {
+            return None;
+        }
+        inner_arms.push((pat, body));
+    }
+    // The ORIGINAL outer match form (scrutinee's parent) — the rewritten inner match grafts UNDER it so a
+    // free name in a cloned outer-arm body ascends through it to the enclosing scope (same rationale as the
+    // `if` twin's graft-under-orig).
+    let orig_match = db.parent_of(scrutinee);
+    // Build the rewritten inner match: reuse each inner arm's PATTERN verbatim (its binders stay in scope for
+    // the new body), and wrap its body as `(match <body> <cloned-outer-arms>)`. `outer_arms` appear in every
+    // inner arm body, so each gets its OWN deep copy.
+    let inner_head = db.push_name("match");
+    let mut items = vec![inner_head, inner_scrut];
+    for (pat, body) in inner_arms {
+        let match_head = db.push_name("match");
+        let mut inner_match = vec![match_head, body];
+        for &(opat, obody) in arms {
+            let opat_c = clone_subtree_db(db, opat);
+            let obody_c = clone_subtree_db(db, obody);
+            inner_match.push(db.push_list(vec![opat_c, obody_c]));
+        }
+        let pushed_body = db.push_list(inner_match);
+        items.push(db.push_list(vec![pat, pushed_body]));
+    }
+    let rewritten = db.push_list(items);
+    if let Some(orig) = orig_match {
+        db.reparent(rewritten, Some(orig), db.child_ix_of(scrutinee) as u32);
+    }
+    // Lower LAZILY via `core_of` — do NOT `resolve_subtree` (the same discipline as the `if` twin). The
+    // reused inner arm BODIES come from `reduce_to_match`, which may β-reduce a CALL/closure scrutinee
+    // (`(step s)` for a const-closure driver → `(match s ((list) (None)) …)`) — their free names were bound
+    // by β-SUBSTITUTION and are resolve-PINNED, so an eager `resolve_subtree` would re-derive them lexically
+    // and mis-resolve (a specialized `Option.None`/`Option.Some` occurrence re-resolving standalone hit
+    // "`Option` is a type, not a function"). The FRESH nodes (the outer `match` head, the cloned outer arms)
+    // are unmemoized, so `core_of`→`resolved_of` resolves each on demand against its grafted parent; a cloned
+    // outer-arm payload binder resolves against its inner-arm-body constant scrutinee. (The APPLY-head
+    // case-of-match DOES `resolve_subtree` because its rewritten bodies `(f args…)` splice reused arg
+    // subtrees needing re-resolution; here the reused parts are whole arm bodies kept intact.)
+    // COMMIT only when EVERY inner arm's pushed-in outer match FULLY FOLDS (the sum eliminated). Re-lower each
+    // inner arm's wrapped body and check; a residual `Core::Match*` / poison in any → BACK OUT to the runtime
+    // match (strictly an opt — same fully-folds gate as the `if` twin).
+    let rewritten_arms: Vec<StructId> = match db.ast.get(rewritten) {
+        crate::ast::Struct::List(kv) => kv.iter().skip(2).copied().collect(),
+        _ => return None,
+    };
+    for arm in rewritten_arms {
+        // Each rewritten inner arm is `(pat (match body outer_arms…))`; re-lower its wrapped body and require
+        // it fully folds (no residual `Core::Match*`, no poison) — else back out to the runtime match.
+        let body = match db.ast.get(arm) {
+            crate::ast::Struct::List(kv) if kv.len() == 2 => kv[1],
+            _ => return None,
+        };
+        if matches!(
+            core_of(db, body),
+            crate::core::Core::Poison(_)
+                | crate::core::Core::MatchSum { .. }
+                | crate::core::Core::MatchList { .. }
+                | crate::core::Core::Match { .. }
+        ) {
+            trace!(target: "rcdzc::fold", scrutinee = scrutinee.0, "case-of-match fusion backed out (an inner arm did not fully fold); keeping the runtime match");
+            return None;
+        }
+    }
+    trace!(target: "rcdzc::fold", scrutinee = scrutinee.0, "match pushed into a match of constant constructors (no heap build)");
+    Some(core_of(db, rewritten))
+}
+
 fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     // A ZERO-ARM match is the DEGENERATE base case of exhaustiveness: it is well-formed ONLY when the
     // scrutinee is UNINHABITED (`Never` — a diverging expression), for which no arm is needed to cover
@@ -3782,6 +3905,13 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     // below — the fused form fully replaces this match. A non-`if`/non-const-branch scrutinee returns `None`
     // and falls through unchanged.
     if let Some(fused) = fuse_match_into_if(db, scrutinee, arms) {
+        return fused;
+    }
+    // CASE-OF-MATCH (the twin over a `match` scrutinee): `(match (match s (p0 A) (p1 B)…) arms)` where each
+    // inner arm builds a visible constructor → push the outer match into each inner arm body so each folds
+    // against its constant ctor (the throwaway sum the inner match built per arm never reaches the heap).
+    // Same fully-folds back-out as the `if` twin. A non-match/non-const-arm scrutinee returns `None`.
+    if let Some(fused) = fuse_match_into_match(db, scrutinee, arms) {
         return fused;
     }
     // A COMPOUND scrutinee — a SUM, a TUPLE, or a RECORD — is matched by the DECISION TREE, not the

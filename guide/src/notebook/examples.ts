@@ -79,6 +79,26 @@ two series stack:
 (def (main) (list (tuple 1 (+ 5 boost) 3) (tuple 2 (+ 8 boost) 6) (tuple 3 (+ 6 boost) 4)))
 ~~~`;
 
+/// A RECORDS showcase: build a record with named fields and read one back with field access `(. r field)`.
+/// Exercises the record literal + field-access binding-pattern shapes on the notebook run + surface-toggle
+/// round-trip path (v-syntax landed record/ctor ML round-trip; this pins it stays clean through s-expr↔ML for
+/// a shipped notebook cell). A `width` slider drives the record so it recomputes live. Rational-by-default
+/// (no floats — width + height are whole Int64).
+const RECORDS_DEMO = `# Records
+
+A **record** groups named fields. Drag **width** and the rectangle's area recomputes.
+
+~~~cadenza widget
+width : Int64 = slider(1, 20, default: 4)
+~~~
+
+Build a rectangle record, then read its fields with \`(. r field)\`:
+
+~~~cadenza
+(def (rect) (record (w width) (h 3)))
+(def (main) (* (. (rect) w) (. (rect) h)))
+~~~`;
+
 /// A plain-value example: any cell with no directive renders its value.
 const VALUE_DEMO = `# Values
 
@@ -209,6 +229,7 @@ export const EXAMPLES: ExampleNotebook[] = [
   { slug: "tables", title: "Tables", markdown: TABLE_DEMO },
   { slug: "charts", title: "Charts", markdown: CHART_DEMO },
   { slug: "chart-types", title: "Chart types", markdown: CHART_TYPES_DEMO },
+  { slug: "records", title: "Records", markdown: RECORDS_DEMO },
   { slug: "formulas", title: "Formulas", markdown: FORMULA_DEMO },
   { slug: "values", title: "Values", markdown: VALUE_DEMO },
 ];

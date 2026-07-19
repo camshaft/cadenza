@@ -5250,3 +5250,34 @@
               (export f)))
   (call   f (: -3 Int64))
   (output (: 0 Int64)))
+
+; ============================================================================================
+; CASE-OF-MATCH fusion (the twin of match-into-if over a MATCH scrutinee, v-core-opt): a `match` over a sum
+; built through an INNER match pushes the outer match INTO each inner-arm body so each inner arm's constant
+; constructor folds — (match (match (> n 0) (true (Some n)) (false (None))) ((Some v) v) ((None) 0)) ->
+; (match (> n 0) (true n) (false 0)). The inner match built a throwaway sum per arm purely to be
+; deconstructed by the outer match; the fused form is heap-free. These pin the observable value unchanged on
+; BOTH backends across both inner arms; the heap-free win is asserted in the lib test
+; a_match_over_a_match_selected_sum_pushes_into_the_arms.
+
+(case "a match over a match-selected Option folds through the true arm (Some)"
+  (doc    "`(match (match (> n 0) (true (Some n)) (false (None))) ((Some v) v) ((None) 0))` at n=5 → the
+           inner match selects `(Some 5)`, which the pushed-in outer match folds to the payload `5`. Value
+           unchanged by the fusion (case-of-match twin of match-into-if).")
+  (input  (do (type Option (Some Int64) None)
+              (def (f (: n Int64)) (match (match (> n 0) (true (Option.Some n)) (false Option.None))
+                                     ((Option.Some v) v) (Option.None 0)))
+              (export f)))
+  (call   f (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "a match over a match-selected Option folds through the false arm (None)"
+  (doc    "`(match (match (> n 0) (true (Some n)) (false (None))) ((Some v) v) ((None) 0))` at n=-3 → the
+           inner match selects `(None)`, which the pushed-in outer match folds to the None arm body `0`.
+           Value unchanged.")
+  (input  (do (type Option (Some Int64) None)
+              (def (f (: n Int64)) (match (match (> n 0) (true (Option.Some n)) (false Option.None))
+                                     ((Option.Some v) v) (Option.None 0)))
+              (export f)))
+  (call   f (: -3 Int64))
+  (output (: 0 Int64)))

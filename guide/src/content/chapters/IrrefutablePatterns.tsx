@@ -32,6 +32,17 @@ export default function IrrefutablePatterns() {
         is destructured at the same time as the outer one, binding <C>a</C>, <C>b</C>, and <C>c</C> at once:
       </P>
       <Runnable source={`(def (main) (let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c))))`} />
+      <P>
+        A record binder works the same way, naming fields instead of positions. This one binds{" "}
+        <C>a</C> to the <C>x</C> field and <C>b</C> to the <C>y</C> field, so the sum is <C>7</C>:
+      </P>
+      <Runnable source={`(def (main) (let (((record (x a) (y b)) (record (x 3) (y 4)))) (+ a b)))`} />
+      <P>
+        And a record pattern needn't name every field: bind just the one you want and leave the rest. Since
+        a record is keyed by name, the fields you skip simply don't appear, and the order you write them in
+        doesn't matter. Here only <C>x</C> is bound, reading back <C>3</C>:
+      </P>
+      <Runnable source={`(def (main) (let (((record (x a)) (record (x 3) (y 4)))) a))`} />
 
       <H2>Destructuring in a function's arguments</H2>
       <P>
@@ -57,6 +68,15 @@ export default function IrrefutablePatterns() {
         <C>(to-f (C 100))</C> is <C>212</C>, unwrapping the <C>100</C> and converting it. One constructor
         means one shape, so the compiler knows the pattern can't miss.
       </P>
+      <P>
+        Records destructure in a parameter too. <C>mag</C> takes one point record and names its <C>x</C>{" "}
+        and <C>y</C> fields directly in the parameter list, so the body reads <C>a</C> and <C>b</C> with no
+        accessor. The squared magnitude of <C>(3, 4)</C> is <C>3² + 4² = 25</C>:
+      </P>
+      <Runnable
+        source={`(def (mag (record (x a) (y b))) (+ (* a a) (* b b)))
+(def (main) (mag (record (x 3) (y 4))))`}
+      />
 
       <H2>Where the line is drawn</H2>
       <P>
@@ -84,11 +104,6 @@ export default function IrrefutablePatterns() {
         safe line for you. A tuple or single-constructor pattern binds directly, and a refutable one is
         turned away with <C>CDZ0210</C> rather than silently ignoring a case it didn't handle.
       </Why>
-
-      <Note>
-        Record destructuring (binding a record's fields directly in a <C>let</C> or a parameter) is coming
-        soon; for now, reach a record's fields with the <C>.</C> accessor from <strong>Tuples &amp; records</strong>.
-      </Note>
 
       <P>
         Irrefutable destructuring shows up constantly in the recursive code ahead, binding a list's head

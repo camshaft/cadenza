@@ -1972,6 +1972,17 @@
   (call   main (: 5 Int64) (: 0 Int64))
   (trap   "divide by zero"))
 
+(case "a runtime signed modulo by zero traps as divide-by-zero, the companion of runtime divide-by-zero"
+  (doc    "The runtime zero guard fires for `%` exactly as for `/`: `(% a b)` with the RUNTIME parameter
+           b = 0 traps. The constant `(% 5 0)` is a compile-time CDZ0304 rejection, and runtime
+           divide-by-zero is pinned above; this is the runtime-modulo companion the corpus lacked. The
+           wasm backend traps on `i64.rem_s` by zero; the rust backend panics `remainder by zero` — both
+           classify as the one divide-by-zero trap kind (numeric-model.md #Division And Modulo By Zero
+           Have No Result). Pins that modulo keeps its zero guard at run time, not only as a constant.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (% a b)) (export main)))
+  (call   main (: 10 Int64) (: 0 Int64))
+  (trap   "divide by zero"))
+
 (case "division of the minimum integer by -1 overflows and traps"
   (doc    "`(/ -9223372036854775808 -1)` = +2^63, which is out of the Int64 range. The compiler can
            prove this overflow via constant folding and rejects at compile time (CDZ0304) rather than

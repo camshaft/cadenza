@@ -1229,6 +1229,8 @@ pass	a match on the result of a match threads sum values through nested control 
 pass	a match over a statically-known constructor with a runtime payload elides the dispatch
 pass	a match over an if-selected Option folds through the else branch (None)
 pass	a match over an if-selected Option folds through the then branch (Some)
+pass	a match over a match-selected Option folds through the false arm (None)
+pass	a match over a match-selected Option folds through the true arm (Some)
 pass	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 pass	a match over multiple nullary constructors with uniform patterns
 pass	a match pattern naming a non-existent variant is a coded rejection
@@ -1896,6 +1898,7 @@ pass	a runtime set-union result escapes to the host as its value form
 pass	a runtime signed division by zero traps as divide-by-zero, not overflow
 pass	a runtime signed little-endian segment lays the low byte first
 pass	a runtime signed little-endian segment round-trips a negative value
+pass	a runtime signed modulo by zero traps as divide-by-zero, the companion of runtime divide-by-zero
 pass	a runtime square multiply traps exactly past the Int64 square-root boundary
 pass	a runtime string bound from a sum payload compares equal to a string parameter
 pass	a runtime string compared against a literal folds against the literal side

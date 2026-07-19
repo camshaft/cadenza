@@ -133,23 +133,23 @@ const ARCH_FIN: ExampleModel = {
 };
 
 /// A PARAMETRIC mounting plate — a `width × depth × thickness` block with a central bolt hole of radius
-/// `bore`, every dimension a `@param`. In SINGLE-MODE this is just another example: the buffer DECLARES its
-/// own `@param`s, and /cad auto-surfaces a slider per param (read live from the compiled model's manifest —
+/// `bore`, every dimension a `@!param`. In SINGLE-MODE this is just another example: the buffer DECLARES its
+/// own `@!param`s, and /cad auto-surfaces a slider per param (read live from the compiled model's manifest —
 /// no hardcoded slider list). Drag a slider and the model recomputes + re-meshes with EXACT (Rational)
 /// dimensions — a fractional thickness (3.5 = 7/2) is the exact-fraction payoff a float slider can't hold.
 /// Bare like every example: the `import`s (exact + helpers), the `@!default-fraction Rational` pragma, and
-/// the `export` are auto-injected by `injectImport`; the buffer shows ONLY the model (@param decls + main).
+/// the `export` are auto-injected by `injectImport`; the buffer shows ONLY the model (@!param decls + main).
 /// Uses the ergonomic helpers (`box` + `hole-through`) from the injected `helpers` superset. `main` reads
-/// each `@param` via the `Param` host accessor; /cad supplies each from its slider's exact {num,den}.
+/// each `@!param` via the `Param` host accessor; /cad supplies each from its slider's exact {num,den}.
 const PARAMETRIC_PLATE: ExampleModel = {
   slug: "parametric-plate",
   title: "Parametric mounting plate (sliders)",
-  description: "A width×depth×thickness plate with a central bolt hole — every dimension a live @param slider, exact.",
+  description: "A width×depth×thickness plate with a central bolt hole — every dimension a live @!param slider, exact.",
   source: {
-    ml: `@param(widget: slider, range: [20, 200], default: 50) width : Rational
-@param(widget: slider, range: [20, 150], default: 30) depth : Rational
-@param(widget: slider, range: [2, 20], default: 5) thickness : Rational
-@param(widget: slider, range: [1, 15], default: 3) bore : Rational
+    ml: `@!param(widget: slider, range: [20, 200], default: 50) width : Rational
+@!param(widget: slider, range: [20, 150], default: 30) depth : Rational
+@!param(widget: slider, range: [2, 20], default: 5) thickness : Rational
+@!param(widget: slider, range: [1, 15], default: 3) bore : Rational
 def plate(w: Rational, d: Rational, t: Rational, r: Rational) = hole-through(box(w, d, t), r, t)
 def main() = host Param in
   (let w = Param.width() in
@@ -157,10 +157,10 @@ def main() = host Param in
    let t = Param.thickness() in
    let r = Param.bore() in
      lower(plate(w, d, t, r)))`,
-    sexpr: `(: (@ (param (: widget slider) (: range (list 20 200)) (: default 50)) width) Rational)
-(: (@ (param (: widget slider) (: range (list 20 150)) (: default 30)) depth) Rational)
-(: (@ (param (: widget slider) (: range (list 2 20)) (: default 5)) thickness) Rational)
-(: (@ (param (: widget slider) (: range (list 1 15)) (: default 3)) bore) Rational)
+    sexpr: `(pragma param (param (: widget slider) (: range (list 20 200)) (: default 50)) (: width Rational))
+(pragma param (param (: widget slider) (: range (list 20 150)) (: default 30)) (: depth Rational))
+(pragma param (param (: widget slider) (: range (list 2 20)) (: default 5)) (: thickness Rational))
+(pragma param (param (: widget slider) (: range (list 1 15)) (: default 3)) (: bore Rational))
 (def (plate (: w Rational) (: d Rational) (: t Rational) (: r Rational)) (hole-through (box w d t) r t))
 (def (main)
   (host (Param)
@@ -172,7 +172,7 @@ def main() = host Param in
 /// A UNITS-PARAMETRIC imperial bracket (v-cad's P4 showcase, `showcase-units-parametric.cdz`) — sliders whose
 /// values are read in INCHES and converted, exactly over Rational, to the model's millimetres via `inch`. A
 /// quarter-inch bore is 127/20 mm exactly; a 3-inch plate is 381/5 mm exactly — mixed-unit authoring with zero
-/// float drift, the reason Rational + Qty exist. In single-mode this is just another example whose `@param`s
+/// float drift, the reason Rational + Qty exist. In single-mode this is just another example whose `@!param`s
 /// auto-surface as sliders; the difference is each magnitude is fed through `inch` (from the injected `units`
 /// superset) so the slider reads inches. Bare like every example (imports + pragma + export auto-injected).
 const UNITS_BRACKET: ExampleModel = {
@@ -180,10 +180,10 @@ const UNITS_BRACKET: ExampleModel = {
   title: "Imperial bracket (inch sliders)",
   description: "A plate + bolt hole authored in INCHES, converted exactly to model mm — unit-aware sliders, zero float drift.",
   source: {
-    ml: `@param(widget: slider, range: [1, 8], default: 3) bwidth : Rational
-@param(widget: slider, range: [1, 6], default: 2) bdepth : Rational
-@param(widget: slider, range: [1, 4], default: 1) bthickness : Rational
-@param(widget: slider, range: [1, 2], default: 1) bbore : Rational
+    ml: `@!param(widget: slider, range: [1, 8], default: 3) bwidth : Rational
+@!param(widget: slider, range: [1, 6], default: 2) bdepth : Rational
+@!param(widget: slider, range: [1, 4], default: 1) bthickness : Rational
+@!param(widget: slider, range: [1, 2], default: 1) bbore : Rational
 def bracket(w: Rational, d: Rational, t: Rational, r: Rational) =
   hole-through(box(inch(w), inch(d), inch(t)), inch(r), inch(t))
 def main() = host Param in
@@ -192,10 +192,10 @@ def main() = host Param in
    let t = Param.bthickness() in
    let r = Param.bbore() in
      lower(bracket(w, d, t, r)))`,
-    sexpr: `(: (@ (param (: widget slider) (: range (list 1 8)) (: default 3)) bwidth) Rational)
-(: (@ (param (: widget slider) (: range (list 1 6)) (: default 2)) bdepth) Rational)
-(: (@ (param (: widget slider) (: range (list 1 4)) (: default 1)) bthickness) Rational)
-(: (@ (param (: widget slider) (: range (list 1 2)) (: default 1)) bbore) Rational)
+    sexpr: `(pragma param (param (: widget slider) (: range (list 1 8)) (: default 3)) (: bwidth Rational))
+(pragma param (param (: widget slider) (: range (list 1 6)) (: default 2)) (: bdepth Rational))
+(pragma param (param (: widget slider) (: range (list 1 4)) (: default 1)) (: bthickness Rational))
+(pragma param (param (: widget slider) (: range (list 1 2)) (: default 1)) (: bbore Rational))
 (def (bracket (: w Rational) (: d Rational) (: t Rational) (: r Rational))
   (hole-through (box (inch w) (inch d) (inch t)) (inch r) (inch t)))
 (def (main)
@@ -225,21 +225,21 @@ def main() = lower(fuse(base(), arm()))`,
 };
 
 /// A PARAMETRIC ASSEMBLY (v-cad's showcase-assembly-parametric.cdz, distilled): the L-bracket — a base plate
-/// + a 90°-rotated standing arm, each with a bolt hole — where EVERY dimension is a `@param` slider. This is
+/// + a 90°-rotated standing arm, each with a bolt hole — where EVERY dimension is a `@!param` slider. This is
 /// the one example that combines BOTH the assembly-as-code story (rotate-x mated parts, fuse) AND the
 /// parametric story (5 live sliders, exact Rational dims) — neither the plain L-bracket nor the mounting
-/// plate does both. Single-mode auto-surfaces its 5 @params (pa-len/wid/thick/rise/bolt); the transforms
+/// plate does both. Single-mode auto-surfaces its 5 @!params (pa-len/wid/thick/rise/bolt); the transforms
 /// (rotate-x/move-*/cut/fuse/box/cyl) are all in the injected `helpers` superset. Mesh = v-cad's driver.
 const ASSEMBLY_PARAMETRIC_BRACKET: ExampleModel = {
   slug: "assembly-parametric-bracket",
   title: "Parametric L-bracket (assembly + sliders)",
-  description: "An L-bracket assembly (base + a 90-degree arm) with every dimension a live @param slider.",
+  description: "An L-bracket assembly (base + a 90-degree arm) with every dimension a live @!param slider.",
   source: {
-    ml: `@param(widget: slider, range: [20, 80], default: 40) pa-len : Rational
-@param(widget: slider, range: [15, 50], default: 30) pa-wid : Rational
-@param(widget: slider, range: [2, 10], default: 4) pa-thick : Rational
-@param(widget: slider, range: [10, 50], default: 25) pa-rise : Rational
-@param(widget: slider, range: [1, 8], default: 3) pa-bolt : Rational
+    ml: `@!param(widget: slider, range: [20, 80], default: 40) pa-len : Rational
+@!param(widget: slider, range: [15, 50], default: 30) pa-wid : Rational
+@!param(widget: slider, range: [2, 10], default: 4) pa-thick : Rational
+@!param(widget: slider, range: [10, 50], default: 25) pa-rise : Rational
+@!param(widget: slider, range: [1, 8], default: 3) pa-bolt : Rational
 def base-plate(len: Rational, wid: Rational, t: Rational, r: Rational) =
   cut(move-z(t / (2 / 1), box(len, wid, t)), move-z(t / (2 / 1), move-x(len / (4 / 1), cyl(t * (2 / 1), r))))
 def arm-flat(wid: Rational, rise: Rational, t: Rational, r: Rational) =
@@ -249,11 +249,11 @@ def standing-arm(wid: Rational, rise: Rational, t: Rational, r: Rational) =
 def main() = host Param in
   (let len = Param.pa-len() in let wid = Param.pa-wid() in let t = Param.pa-thick() in let rise = Param.pa-rise() in let r = Param.pa-bolt() in
      lower(fuse(base-plate(len, wid, t, r), standing-arm(wid, rise, t, r))))`,
-    sexpr: `(: (@ (param (: widget slider) (: range (list 20 80)) (: default 40)) pa-len) Rational)
-(: (@ (param (: widget slider) (: range (list 15 50)) (: default 30)) pa-wid) Rational)
-(: (@ (param (: widget slider) (: range (list 2 10)) (: default 4)) pa-thick) Rational)
-(: (@ (param (: widget slider) (: range (list 10 50)) (: default 25)) pa-rise) Rational)
-(: (@ (param (: widget slider) (: range (list 1 8)) (: default 3)) pa-bolt) Rational)
+    sexpr: `(pragma param (param (: widget slider) (: range (list 20 80)) (: default 40)) (: pa-len Rational))
+(pragma param (param (: widget slider) (: range (list 15 50)) (: default 30)) (: pa-wid Rational))
+(pragma param (param (: widget slider) (: range (list 2 10)) (: default 4)) (: pa-thick Rational))
+(pragma param (param (: widget slider) (: range (list 10 50)) (: default 25)) (: pa-rise Rational))
+(pragma param (param (: widget slider) (: range (list 1 8)) (: default 3)) (: pa-bolt Rational))
 (def (base-plate (: len Rational) (: wid Rational) (: t Rational) (: r Rational))
   (cut (move-z (/ t (/ 2 1)) (box len wid t)) (move-z (/ t (/ 2 1)) (move-x (/ len (/ 4 1)) (cyl (* t (/ 2 1)) r)))))
 (def (arm-flat (: wid Rational) (: rise Rational) (: t Rational) (: r Rational))
@@ -299,7 +299,7 @@ def main() = host Param in
 /// The example models the /cad example-switcher offers, in display order. Every one is verified to compile
 /// + mesh against the preloaded library. Keep the FIRST entry the canonical simple starter (the /cad route
 /// opens with `DEFAULT_EXAMPLE`). The parametric plate is one of these — in single-mode a parametric model
-/// is just an example that declares `@param`s, and its sliders auto-surface from the compiled manifest.
+/// is just an example that declares `@!param`s, and its sliders auto-surface from the compiled manifest.
 export const EXAMPLES: ExampleModel[] = [
   CUBE_WITH_DENT,
   HOLLOW_TUBE,
