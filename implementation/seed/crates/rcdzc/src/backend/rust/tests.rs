@@ -155,6 +155,21 @@ fn rustc_roundtrip_const_wrap_to_signed_unusual_width_sign_extends() {
             "(Int 8).wrap 200 = -56 (machine width unchanged)"
         );
     }
+    // PROPAGATED into const-fold ARITHMETIC (breaker/corpus-bugfix severity-up): the missing sign-extend
+    // would fold `8 + 1 = 9` on the un-sign-extended +8 and emit `9u8 as i8` — a WRONG value (9) that is
+    // also OUT OF `Int4` range [-8,7] with no overflow check (a range-escaping miscompile, worse than the
+    // standalone display). Since lower folds `.wrap` via `wrap_to` (sign-extends) BEFORE the arithmetic, the
+    // fold is `-8 + 1 = -7` and the emit renders it `-7i8` — correct. Pins that the fix covers the arith-
+    // propagated face, not just the standalone wrap.
+    let arith = compile_rust(
+        "(module m (def (go) (+ ((. (Int 4) wrap) 8) ((. (Int 4) wrap) 1))) (export go))",
+    );
+    if let Some(out) = rustc_run(&arith, "go()") {
+        assert_eq!(
+            out, "-7",
+            "(+ (Int4.wrap 8) (Int4.wrap 1)) = -8+1 = -7 (const-fold arith)"
+        );
+    }
 }
 
 #[test]
@@ -2553,6 +2568,32 @@ fn a_diverging_body_or_operand_emits_never_not_a_decline_or_a_method_call_on_nev
         .is_ok(),
         "the diverging-comparison emit is well-formed Rust (no E0277)"
     );
+
+    // (f) The `.len()`-RECEIVER twin — `List.len` (and Map/Set/Bytes/String len) of a DIVERGING operand.
+    // `(List.len (g 7))` where `g` always traps (e.g. a violated `@ensures` folds `g`'s body to a trap)
+    // would emit `(panic!("unreachable")).len()` — a method call on Rust's `!`, E0599 ("no method `len` for
+    // `!`"). The diverging-operand guard on the len-family emit paths emits only the trap. Uses a violated
+    // plain `@ensures` over a List result (the corpus shape corpus-bugfix flagged) so `g` folds to a trap.
+    let len_diverging = compile_rust(
+        "(module m (@ (ensures (> (List.len ret) 0)) (def (g (: x Int64)) (list))) \
+           (def (run) (List.len (g 7))) (export run))",
+    );
+    assert!(
+        len_diverging.contains("panic!(\"unreachable\")")
+            && !len_diverging.contains("panic!(\"unreachable\")).len()"),
+        "a `List.len` of a diverging operand emits only the trap, no `.len()` on `!`:\n{len_diverging}"
+    );
+    assert!(
+        compile_rust_result(
+            "(module m (@ (ensures (> (List.len ret) 0)) (def (g (: x Int64)) (list))) \
+               (def (run) (List.len (g 7))) (export run))",
+        )
+        .is_ok(),
+        "the diverging-len emit is well-formed Rust (no E0599 on `!`)"
+    );
+    // (The build-succeeds assert is the fix's proof — before it, the emit was `(panic!(…)).len()`, an
+    // E0599. The RUNTIME trap outcome is graded by the gate's corpus case "a PLAIN @ensures over a HEAP
+    // result (List) TRAPS when violated"; `rustc_run` here would panic on the trap, so it is not used.)
 }
 
 #[test]

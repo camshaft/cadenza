@@ -1393,6 +1393,15 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // `List.len` → `<list>.len() as i64` (the result is an Int64). `.len()` is a `usize`; cast to the
         // machine `i64` a Cadenza length crosses as. Parenthesize the operand so a compound expression binds.
         Core::ListLen { operand } => {
+            // A DIVERGING operand makes the `.len()` dead — the twin of `emit_arith`/`Compare`'s guard, for
+            // the `.len()` receiver. A `List.len` of a provably-diverging list (`(List.len (g 7))` where `g`
+            // always traps — e.g. a violated `@ensures` folds `g`'s body to `Core::Trap`) would otherwise
+            // emit `(panic!("unreachable")).len()` — a method call on Rust's `!`, which E0599s ("no method
+            // `len` for type `!`"). Cadenza evaluates the operand before `.len()`, so if it diverges the whole
+            // expression is just that divergence — emit the operand alone (the `.len()` never runs).
+            if arith_operand_diverges(db, operand) {
+                return emit(db, operand, env, ctx);
+            }
             let v = emit(db, operand, env, ctx)?;
             Ok(format!("(({v}).len() as i64)"))
         }
@@ -1545,6 +1554,11 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         }
         // `Map.len` (the node is `MapSize`) → the distinct-key count as `Int64`.
         Core::MapSize { map } => {
+            // A diverging operand makes the `.len()` dead (see `Core::ListLen`) — emit it alone, else
+            // `(panic!(…)).len()` E0599s on `!`.
+            if arith_operand_diverges(db, map) {
+                return emit(db, map, env, ctx);
+            }
             let m = emit(db, map, env, ctx)?;
             Ok(format!("(({m}).len() as i64)"))
         }
@@ -1642,6 +1656,10 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         }
         // `Set.len` → the cardinality (deduped) as `Int64`.
         Core::SetLen { set } => {
+            // A diverging operand makes the `.len()` dead (see `Core::ListLen`).
+            if arith_operand_diverges(db, set) {
+                return emit(db, set, env, ctx);
+            }
             let s = emit(db, set, env, ctx)?;
             Ok(format!("(({s}).len() as i64)"))
         }
@@ -1696,6 +1714,10 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         }
         // `Bytes.len` → the byte count as `Int64`.
         Core::BytesLen { operand } => {
+            // A diverging operand makes the `.len()` dead (see `Core::ListLen`).
+            if arith_operand_diverges(db, operand) {
+                return emit(db, operand, env, ctx);
+            }
             let v = emit(db, operand, env, ctx)?;
             Ok(format!("(({v}).len() as i64)"))
         }
@@ -1703,6 +1725,10 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // `.chars().count()` is the scalar count (`.len()` would be the BYTE count — that is `BytesLen`).
         // The native twin of the wasm lead-byte-counting walk.
         Core::StrScalarLen { operand } => {
+            // A diverging operand makes the `.chars().count()` dead (see `Core::ListLen`).
+            if arith_operand_diverges(db, operand) {
+                return emit(db, operand, env, ctx);
+            }
             let v = emit(db, operand, env, ctx)?;
             Ok(format!("(({v}).chars().count() as i64)"))
         }

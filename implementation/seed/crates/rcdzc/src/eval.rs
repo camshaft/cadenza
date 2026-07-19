@@ -2087,17 +2087,30 @@ pub fn reduce_to_match_direct(db: &mut Db, id: StructId) -> Option<StructId> {
     }
 }
 
-/// Peel `id` to a VISIBLE variant-constructor application `(Ctor payload…)` — a `Resolved::Apply` whose
-/// head names a variant (`variant_disc_of` is `Some`). Follows `Ref` (stopping at a kept multi-use
-/// binding) and `Annot`, exactly as `reduce_to_match`/`reduce_to_if` do. Returns `(disc, head, args)`.
-/// Does NOT β-reduce a call head — the caller (`fold_ctor_match`) wants a scrutinee that is ALREADY a
-/// visible ctor (v-effects β-reduces its stored-thunk compound into the scrutinee before calling), so a
-/// call scrutinee (which might not reduce to a ctor) stays a runtime match. `None` if not a visible ctor.
+/// Peel `id` to a VISIBLE variant constructor — a `(Ctor payload…)` application OR a BARE nullary
+/// constructor — returning `(disc, head, args)`. A payload-carrying ctor is a `Resolved::Apply` whose head
+/// names a variant (`variant_disc_of` is `Some`); a NULLARY ctor written without an explicit `()` (e.g. a
+/// bare `PQ.PQNil`) resolves to a `Resolved::Member` that itself carries the `(meta variant)` disc and
+/// takes NO payload, so its `args` is empty. (The `(PQNil ())` applied spelling instead resolves to
+/// `Apply{args:[unit]}` — a single unit arg — and is handled by the `Apply` arm; both spellings of a
+/// nullary ctor thus reduce, one with an empty arg list, one with a unit arg an `_` binder ignores.)
+/// Follows `Ref` (stopping at a kept multi-use binding) and `Annot`, exactly as `reduce_to_match`/
+/// `reduce_to_if` do. Does NOT β-reduce a call head — the caller (`fold_ctor_match`) wants a scrutinee
+/// that is ALREADY a visible ctor (v-effects β-reduces its stored-thunk compound into the scrutinee before
+/// calling), so a call scrutinee stays a runtime match. `None` if not a visible ctor.
 fn reduce_to_visible_ctor(db: &mut Db, id: StructId) -> Option<(u32, StructId, Vec<StructId>)> {
     match resolved_of(db, id) {
         Resolved::Apply { head, args } => {
             let disc = variant_disc_of(db, head)?;
             Some((disc, head, args.to_vec()))
+        }
+        // A BARE nullary variant constructor — `(match PQNil …)`, no explicit `()`. It resolves to a
+        // `Member` (not an `Apply`) that carries the variant disc directly and has no payload, so `args` is
+        // empty. This is the shape v-effects' recursive-callee-base-arm unfold produces after substituting
+        // the base ctor into `q` (`(match PQNil ((PQNil _) …) …)`); without this arm it declined.
+        Resolved::Member { .. } => {
+            let disc = variant_disc_of(db, id)?;
+            Some((disc, id, Vec::new()))
         }
         Resolved::Ref { value } => {
             if db.kept_bindings.contains(&value) {
@@ -2132,16 +2145,15 @@ pub fn fold_ctor_match(db: &mut Db, node: StructId) -> Option<StructId> {
     let Resolved::Match { scrutinee, arms } = resolved_of(db, node) else {
         return None;
     };
-    // The scrutinee must be a VISIBLE ctor `(Ctor payload)` — else leave it a runtime match.
+    // The scrutinee must be a VISIBLE ctor — a payload-carrying `(Ctor payload)` OR a bare nullary ctor
+    // (empty `args`) — else leave it a runtime match.
     let (disc, _head, args) = reduce_to_visible_ctor(db, scrutinee)?;
-    // This fold handles ONLY a single-payload ctor (`args.len() == 1`). The one payload may itself be a
-    // TUPLE destructured by a tuple sub-pattern (slice 2) — a variant declared `(Ctor (Tuple A B C))` still
-    // arrives as ONE payload arg (the tuple). Both a NULLARY (`args.is_empty()`, binds nothing) and a
-    // genuine MULTI-arg application decline to `None` here (left a runtime match).
-    if args.len() != 1 {
+    // This fold handles a NULLARY ctor (`args.is_empty()`, slice 0) or a SINGLE-payload ctor
+    // (`args.len() == 1`, slices 1/2 — the one payload may itself be a TUPLE destructured by a tuple
+    // sub-pattern). A genuine MULTI-arg application declines to `None` (left a runtime match).
+    if args.len() > 1 {
         return None;
     }
-    let payload = args[0];
     // Find the arm whose pattern matches the scrutinee's discriminant and is one this fold handles.
     for (pat, body) in &arms {
         // A guarded arm (`(guard <pat> <cond>)`) is refutable at runtime — never fold it away.
@@ -2149,8 +2161,7 @@ pub fn fold_ctor_match(db: &mut Db, node: StructId) -> Option<StructId> {
             continue;
         }
         // The pattern must be a 2-element list `(ctor_head sub_pattern)`: the head names the variant, the
-        // second child is the payload sub-pattern. (A bare nullary variant, a literal, or a wildcard is
-        // NOT one of the slices here — skip / decline.)
+        // second child is the payload sub-pattern (or, for a nullary ctor, a `_` wildcard binding nothing).
         let crate::ast::Struct::List(kids) = db.ast.get(*pat) else {
             continue;
         };
@@ -2162,6 +2173,16 @@ pub fn fold_ctor_match(db: &mut Db, node: StructId) -> Option<StructId> {
         if variant_disc_of(db, pat_head) != Some(disc) {
             continue;
         }
+        // SLICE 0: a NULLARY ctor — the scrutinee has no payload, so the arm's `_`/binder binds nothing and
+        // no `SumPayload` over this scrutinee appears in the body. Return a structural COPY of the body (no
+        // substitution): passing `scrutinee` as the never-matched payload placeholder leaves every node
+        // intact while still rebuilding it hygienically (a copied name re-resolves in the enclosing scope),
+        // exactly as slices 1/2 copy. This is the base-arm fold v-effects' recursive-insert unfold needs.
+        if args.is_empty() {
+            let folded = rewrite_sum_payload(db, *body, scrutinee, scrutinee, None);
+            return Some(folded);
+        }
+        let payload = args[0];
         // SLICE 1: a bare-name binder `(Ctor v)` — the WHOLE payload substitutes. The binder's USES
         // resolve to `SumPayload{scrutinee: S, steps:[Payload]}` (NOT `Ref{binder}`), so `beta_reduce`'s
         // binder-keyed substitution can't catch them and a plain copy re-resolves `v` UNBOUND (the copy
