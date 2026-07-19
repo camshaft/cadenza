@@ -262,6 +262,23 @@ the moment v-effects' E5 step 3 is green, co-verified against increment 3's repr
    two verticals.
 4. **The live scheduler.** Once E5 step 3 (stored/escaping `k`) is green, land the `scheduler-step`
    fast-forward loop and `run-sim`; the increment-3 repro flips from `todo`→`pass`. This is the DES.
+   **STATUS (2026-07-19):** the SINGLE-task fast-forward scheduler is DELIVERED and regression-locked in
+   the corpus — a `sleep` continuation reified as an escaping deferred-resume-thunk, stored in a
+   time-ordered pqueue entry, popped via a multi-payload match, and resumed cross-activation at the
+   advanced clock (→ 5e9). The full E5-step-3 escaping-continuation machinery (step-3 heap rep +
+   single-/multi-payload `fold_ctor_match` + deferred-resume refold) landed to support it.
+   **KNOWN LIMITATION — the multi-task cap (PARKED, concierge ruling 2026-07-19).** The general
+   multi-task run-sim (several tasks' continuations coexisting in the pqueue, resumed in time order)
+   additionally routes a continuation through a DATA-RECURSIVE sorted-insert (`pins`) before the pop, and
+   that shape DECLINES to fold today — a clean feature-absent decline, not a miscompile. Root-caused
+   (co-confirmed with v-inference): the deferred-resume fold's recursion-unfold re-resolves the rebuilt
+   arm and drops the pin on the spliced resume-closure's captured handler-arm binder (`wake`), poisoning
+   the closure before the pop-fold sees it. PARKED pending a re-resolve design pass (graft the unfolded
+   node under the handler arm so lexical re-resolution reaches `wake`) — a v-effects + v-inference
+   co-design, checkpointed at v-effects WIP `f4d45a53e`. Resumes on a forcing consumer or operator
+   priority. Until then a multi-task scheduler must bound its inserts (hand-unrolled, capped task count)
+   rather than use a data-recursive `pins`; the cap is recorded here (and in the corpus) rather than
+   hidden behind a passing-but-bounded case.
 5. **The bach breadth.** bach's higher-level layers, each a sub-slice on top of the core (§7.3):
    `sync` channels / mpsc / mutex / semaphore / rwlock (§7.3), composable `queue`s (latency / loss /
    sojourn), `net` UDP simulation, `rand`/seeded interleaving. Scope + ordering per §7.3; v1 core is
