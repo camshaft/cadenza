@@ -1099,6 +1099,17 @@
   (input  (do (def (main) (match (Map.lookup (Map.insert (Map.empty) (record (x 1) (y 2)) 42) (record (y 2) (x 1))) ((Some v) v) ((None u) -1))) (export main)))
   (output (: 42 Int64)))
 
+(case "a record map key with a Rational field matches by the field's normalized form"
+  (doc    "Composes the record-key path above with Rational-leaf canonicalization: a record key whose field
+           holds a Rational must normalize that leaf on the map-key path. Insert under `(record (r (Rational.of
+           1 2)))`, look up with `(record (r (Rational.of 2 4)))` — the record's `r` field normalizes 2/4 to
+           the same 1/2 node, so `champ_hash`/`champ_eq` descend into the record, canonicalize the Rational
+           leaf, and find the same slot -> 42. A key path that canonicalized a bare or tuple-nested Rational
+           but NOT one nested in a record would false-miss. The record companion of the compound (tuple)
+           Rational-leaf map-key case in 03-equality.")
+  (input  (do (def (main) (Option.expect (Map.lookup (Map.insert (Map.empty) (record (r (Rational.of 1 2))) 42) (record (r (Rational.of 2 4)))) "found")) (export main)))
+  (output (: 42 Int64)))
+
 (case "projecting a field is independent of the order fields are written"
   (doc    "Member access finds a field by NAME, not by position, so `(. (record (b 2) (a 1)) a)`
            projects `a` = 1 even though `a` is written second. Pins that projection resolves the field

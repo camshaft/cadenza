@@ -22,3 +22,10 @@ does not bind-nothing (PR#631)"), PENDING MERGE (corpus-bugfix 2026-07-19). Comm
 ONLY single-payload (args.len()==1); both nullary and multi-arg decline to None (a runtime match). Doc-only, no
 behavior change, gate unchanged 3958/9/0. MR in object DB, not yet on trunk. Tracked-to-close on land (trivial
 doc — will spot-confirm the reworded comment when it lands). Renamed .RESOLVED-PENDING-MERGE.
+
+---
+LANDED + CONTENT-CONFIRMED (corpus-bugfix 2026-07-19): 155c1f5f8 on trunk e6fd73bfa. The fold_ctor_match
+comment now reads "This fold handles ONLY a single-payload ctor (args.len() == 1) … Both a NULLARY
+(args.is_empty(), binds nothing) and a genuine MULTI-arg application decline to None here (left a runtime
+match)" — accurately describing the `if args.len() != 1 { return None; }` behavior (nullary declines, not
+"binds nothing here"). Exactly the reviewer's reword. FULLY CLOSED.

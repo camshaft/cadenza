@@ -1561,6 +1561,23 @@
   (input  (Char.from-int 1114112))
   (output (: (None unit) (Option Char))))
 
+(case "converting a NEGATIVE integer to a char yields None"
+  (doc    "The LOW-end companion of the out-of-range cases above (which pin the high end U+10FFFF/U+110000
+           and the surrogate block): no negative integer is a Unicode scalar value, so `(Char.from-int -1)`
+           yields None — handled as data, not a trap, and NOT wrapped to a huge unsigned value that might
+           alias a valid scalar. Pins the lower bound of the valid-scalar check.")
+  (input  (match (Char.from-int -1) ((Some c) (Char.to-int c)) ((None u) -1)))
+  (output (: -1 Int64)))
+
+(case "converting zero to a char yields Some — U+0000 (NUL) is a valid scalar"
+  (doc    "The load-bearing low-boundary pin: U+0000 (NUL) IS a valid Unicode scalar and MUST convert, so
+           `(Char.from-int 0)` is `Some` and its `Char.to-int` round-trips to 0. A lower-bound check written
+           `> 0` instead of `>= 0`, or one that excluded NUL as a control character, would wrongly reject it.
+           The accept-side companion of the negative-rejection case (collections-and-text.md #A Char Converts
+           To And From An Integer Totally).")
+  (input  (match (Char.from-int 0) ((Some c) (Char.to-int c)) ((None u) -1)))
+  (output (: 0 Int64)))
+
 ; The cases above use U+D800 (first surrogate) and U+110000 (one PAST the max). These pin the EXACT
 ; boundaries where an off-by-one in the range/surrogate check surfaces: U+10FFFF (the MAXIMUM valid scalar,
 ; one below the U+110000 rejection) is Some; U+DFFF (the LAST surrogate, the block's upper endpoint) is
