@@ -64766,14 +64766,38 @@ mod r2_runtime_resource {
     }
 
     #[test]
-    fn a_runtime_qty_declines_the_template_for_a_scaled_unit_narrow_int_or_float_inner() {
-        // Slice-1 scope: only a FULL-WIDTH Int64/UInt64 inner at a REFERENCE unit takes the runtime-scalar
-        // template. A scaled (non-reference) unit needs a compile-time scale multiply the flat leaf-hole
-        // template can't carry; a NARROW int (8/16/32) is an i32 core param that `make`'s `box-int` (i64)
-        // would receive unextended → invalid wasm (slice 2 adds the extend); a Float inner needs
-        // `LeafFill::Float` (slice 4) — all DECLINE (return None) so the export falls back to today's valid
-        // bare-scalar cross rather than emitting a wrong/invalid form.
+    fn a_runtime_qty_over_a_narrow_int_at_reference_unit_templates_too() {
+        // Slice 2: a NARROW int inner (8/16/32, signed OR unsigned) at a reference unit ALSO templates — its
+        // magnitude hole is width-agnostic (8-byte, like any Int leaf), the width lives in the baked type
+        // annotation, and the i32→i64 extend the narrow scalar needs before `box-int` is emitted in the
+        // `make` body (`EscapeForm::FlatScalar { extend }`). So the template itself is produced for every
+        // int width; only the make-side extend differs. (Slice 1 had gated this to width 64; the gate is
+        // lifted now that the extend is wired.)
         use crate::ty::{IntTy, Unit};
+        for signed in [true, false] {
+            for w in [8u32, 16, 32, 64] {
+                let ty = Ty::Qty {
+                    inner: Box::new(Ty::Int(IntTy::fixed(signed, w))),
+                    unit: Unit::base("meter"),
+                };
+                let tpl = runtime_value_form_template(&ty)
+                    .unwrap_or_else(|| panic!("Int width={w} signed={signed} Qty has a template"));
+                assert_eq!(tpl.leaves.len(), 1, "one hole (width={w})");
+                assert_eq!(tpl.leaves[0].kind, LeafFill::Int);
+                assert!(
+                    tpl.leaves[0].path.is_empty(),
+                    "scalar is the root (width={w})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_runtime_qty_declines_the_template_for_a_scaled_unit_or_a_float_inner() {
+        // A scaled (non-reference) unit needs a compile-time scale multiply the flat leaf-hole template can't
+        // carry (slice 3); a Float inner needs `LeafFill::Float` (slice 4) — both DECLINE (return None) so
+        // the export falls back to today's valid bare-scalar cross rather than emitting a wrong/invalid form.
+        use crate::ty::Unit;
         let scaled = Ty::Qty {
             inner: Box::new(Ty::int64()),
             unit: Unit::base("meter").scaled(1000, 1).expect("scaled unit"),
@@ -64782,18 +64806,6 @@ mod r2_runtime_resource {
             runtime_value_form_template(&scaled).is_none(),
             "a scaled-unit Qty declines the runtime template (falls back)"
         );
-        // A NARROW int inner — the bug the width gate closes: an Int8/16/32 Qty must NOT take the resource
-        // path (its i32 scalar would reach the i64 `box-int` unextended → invalid wasm).
-        for w in [8u32, 16, 32] {
-            let narrow = Ty::Qty {
-                inner: Box::new(Ty::Int(IntTy::fixed(true, w))),
-                unit: Unit::base("meter"),
-            };
-            assert!(
-                runtime_value_form_template(&narrow).is_none(),
-                "an Int{w}-inner Qty declines the runtime template (needs the box extend — slice 2)"
-            );
-        }
         let float_inner = Ty::Qty {
             inner: Box::new(Ty::float64()),
             unit: Unit::base("meter"),

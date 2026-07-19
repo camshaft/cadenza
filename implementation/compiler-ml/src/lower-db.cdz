@@ -14,7 +14,7 @@
 /// NO core form (a filled `None`), not a bogus tree. Lowering reads the infer column to make this decision,
 /// and reads the resolve column to canonicalize vars — producer-reads-two-producers.
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of, param2-of, arg2-of } from "parse-db"
 import { Resolved, resolve-tree } from "resolve-db"
 import { Typed, infer-tree } from "infer-db"
 
@@ -113,7 +113,20 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                     (match lower-node(tree, argId, rcol, tcol) with
                       | Option.Some(argCore) =>
                           (match lower-node(tree, calleeId, rcol, tcol) with
-                            | Option.Some(bodyCore) => Option.Some(Core.CLet(paramId, argCore, bodyCore))
+                            | Option.Some(bodyCore) =>
+                                // slice-3d 2-ARG call `(add a b)`: if this NApp node (id) has a 2nd arg recorded
+                                // (arg2-of) AND the callee a 2nd param (param2-of), NEST a second CLet INSIDE the
+                                // first — CLet(p1, arg1, CLet(p2, arg2, body)). A 1-arg call has arg2-of None →
+                                // the single CLet (slice-3c). The inner binds LAST so the body sees both params.
+                                (match arg2-of(tree, id) with
+                                  | Option.Some(arg2Id) =>
+                                      (match param2-of(tree, calleeId) with
+                                        | Option.Some(param2Id) =>
+                                            (match lower-node(tree, arg2Id, rcol, tcol) with
+                                              | Option.Some(arg2Core) => Option.Some(Core.CLet(paramId, argCore, Core.CLet(param2Id, arg2Core, bodyCore)))
+                                              | Option.None(_) => Option.None(unit))
+                                        | Option.None(_) => Option.None(unit))       // arg2 but no param2 → over-applied → decline
+                                  | Option.None(_) => Option.Some(Core.CLet(paramId, argCore, bodyCore)))  // 1-arg
                             | Option.None(_) => Option.None(unit))
                       | Option.None(_) => Option.None(unit))
                 | Option.None(_) => Option.None(unit)))

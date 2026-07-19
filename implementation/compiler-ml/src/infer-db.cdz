@@ -13,7 +13,7 @@
 /// there is one ground type — so this column is the DB-shaped monomorphic specialization. It widens to call
 /// the HM engine when the language grows function types.)
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of, param2-of, arg2-of } from "parse-db"
 import { Resolved, resolve-tree } from "resolve-db"
 import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ground-default } from "ty"
 import { unify-ty } from "unify-ty"
@@ -93,11 +93,18 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
                     (let ta = infer-node(tree, argId, rcol, tcol) in
                      (match Map.lookup(ta, argId) with
                        | Option.Some(argTy) =>
-                           (let tp = Map.insert(ta, paramId, argTy) in       // param node : arg's type
-                            (let tb = infer-node(tree, calleeId, rcol, tp) in
-                             (match Map.lookup(tb, calleeId) with
-                               | Option.Some(bodyTy) => Map.insert(tb, id, bodyTy)
-                               | Option.None(_) => Map.insert(tb, id, Typed.TErr))))
+                           (let tp = Map.insert(ta, paramId, argTy) in       // param1 node : arg1's type
+                            // slice-3d: a 2-ARG call also types arg2 + binds param2 (both params in tcol before
+                            // the body is typed, so var-type resolves each param use). Then the call's type IS
+                            // the body's type. 1-arg (arg2-of None) skips straight to the body.
+                            (let tp2 = infer-param2 (tree, id, calleeId, rcol, tp) in
+                             (match tp2 with
+                               | Option.Some(tb0) =>
+                                   (let tb = infer-node(tree, calleeId, rcol, tb0) in
+                                    (match Map.lookup(tb, calleeId) with
+                                      | Option.Some(bodyTy) => Map.insert(tb, id, bodyTy)
+                                      | Option.None(_) => Map.insert(tb, id, Typed.TErr)))
+                               | Option.None(_) => Map.insert(tp, id, Typed.TErr))))   // 2nd arg present but no param2 → TErr
                        | Option.None(_) => Map.insert(ta, id, Typed.TErr)))
                 | Option.None(_) => Map.insert(tcol, id, Typed.TErr)))
     | Option.None(_) => tcol
@@ -114,6 +121,22 @@ def var-type(tree: Tree, binder: Int64, tcol: Map(Int64, Typed)) =
     | Option.Some(Node.NVar(_)) =>
         (match Map.lookup(tcol, binder) with | Option.Some(t) => t | Option.None(_) => Typed.TErr)
     | _ => Typed.TErr)
+
+/// slice-3d: type a 2-ARG call's SECOND arg + bind param2's type, for the NApp node `id` / callee `calleeId`.
+/// `None` if a 2nd arg is present but the callee has no 2nd param (over-applied → the caller maps to TErr).
+/// `Some(tcol')` = either no 2nd arg (1-arg call — tcol unchanged) or arg2 typed + param2 bound. The caller
+/// then types the body under tcol', so var-type resolves BOTH param uses.
+def infer-param2(tree: Tree, id: Int64, calleeId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+  (match arg2-of(tree, id) with
+    | Option.None(_) => Option.Some(tcol)                               // 1-arg call — nothing to add
+    | Option.Some(arg2Id) =>
+        (match param2-of(tree, calleeId) with
+          | Option.None(_) => Option.None(unit)                          // arg2 but no param2 → over-applied
+          | Option.Some(param2Id) =>
+              (let ta2 = infer-node(tree, arg2Id, rcol, tcol) in
+               (match Map.lookup(ta2, arg2Id) with
+                 | Option.Some(arg2Ty) => Option.Some(Map.insert(ta2, param2Id, arg2Ty))   // param2 : arg2's type
+                 | Option.None(_) => Option.None(unit)))))
 
 /// The result type of a binary node with op `op` and operands at `a`,`b`. ARITHMETIC (43 `+`, 45 `-`, 42
 /// `*`, 47 `/`, 37 `%`) requires both operands to be the SAME integer type (via `arith-result-type` → unify-ty

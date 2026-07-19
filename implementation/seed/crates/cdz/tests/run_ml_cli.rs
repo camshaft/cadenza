@@ -128,6 +128,46 @@ fn run_ml_leaves_no_driver_file_behind() {
 }
 
 #[test]
+fn run_ml_runs_a_multi_def_nullary_main_module() {
+    // The `looks_in_ml_subset` shape gate must ADMIT a multi-definition module with a NULLARY `main` (a
+    // helper def + a main that calls it) — the ML reader resolves calls to sibling defs, so this runs
+    // end-to-end. Before the widening, the gate fast-declined any module with more than one `(def`, so a
+    // program the ML compiler ACTUALLY RUNS was reported `declined` — an under-count of real conformance.
+    // Pin the value verdict: `(do (def (g) 7) (def (main) (+ (g) 5)) (export main))` → 12.
+    let (dir, path) = temp_src(
+        "multidef",
+        "(do (def (g) 7) (def (main) (+ (g) 5)) (export main))",
+    );
+    let (ok, out, err) = run(&[&path]);
+    assert!(ok, "a multi-def module exits 0 with a verdict: {err}{out}");
+    assert!(
+        out.trim() == "value 12",
+        "a multi-def nullary-main module runs (not fast-declined): got {out:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_ml_declines_a_type_annotated_module() {
+    // The widened shape gate must STILL fast-decline any module carrying a TYPE ANNOTATION `(: … …)`. The
+    // ML front-end reads a typed param `(: x T)` but DISCARDS `T` (no annotation enforcement yet), so an
+    // unbound type name `(: x foo)` — which the corpus requires to reject CDZ0101 — would otherwise RUN to a
+    // bogus value instead of declining. Excluding `(: ` keeps the differential HONEST: the truthful verdict
+    // for an annotation-bearing program today is `declined` (coverage-not-yet), not a fabricated value.
+    let (dir, path) = temp_src(
+        "annotated",
+        "(do (def (f (: x foo)) x) (def (main) (f 7)) (export main))",
+    );
+    let (ok, out, err) = run(&[&path]);
+    assert!(ok, "a type-annotated module exits 0: {err}{out}");
+    assert!(
+        out.trim() == "declined",
+        "a type-annotated module fast-declines (annotations not yet enforced): got {out:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn run_ml_on_an_unreadable_file_exits_non_zero() {
     // The ONE non-zero exit: a HARNESS failure that produced no verdict (a file READ error). A script /
     // the gate distinguishes "the ML compiler judged this program" (exit 0 + a verdict) from "the input

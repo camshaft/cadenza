@@ -13308,23 +13308,20 @@ fn template_value_ast_flagged(
         // time from the SOLVED `Ty::Qty`). The erased inner scalar is boxed on the heap by the `make` body
         // (`EscapeForm::FlatScalar`'s `box-int` before `resource-new`), so the walker reads its `get-int`
         // hole off the resulting root handle exactly like a plain Int leaf reached at an empty path.
-        // SCOPED (slice 1): a REFERENCE unit (scale 1/1) over an Int inner. A non-reference unit needs a
-        // compile-time SCALE MULTIPLY before the scalar crosses (the flat leaf-hole template can't express
-        // it) and a non-Int inner (Float) needs `LeafFill::Float` — both decline here (return `None`),
-        // falling back to today's bare-scalar cross, until their slices land.
+        // SCOPED (slices 1+2): a REFERENCE unit (scale 1/1) over ANY-width Int inner. A non-reference unit
+        // needs a compile-time SCALE MULTIPLY before the scalar crosses (the flat leaf-hole template can't
+        // express it) and a non-Int inner (Float) needs `LeafFill::Float` — both decline here (return
+        // `None`), falling back to today's bare-scalar cross, until their slices land. A NARROW int (8/16/32)
+        // is fine here: its magnitude hole is width-agnostic (8-byte, like any Int leaf), the width lives in
+        // the baked type annotation, and the i32→i64 extend a narrow scalar needs before `box-int` is emitted
+        // in the `make` body (`EscapeForm::FlatScalar { extend }`, computed by `emit_runtime_resource`).
         Ty::Qty { inner, unit } => {
             let (num, den) = unit.scale();
             if (num, den) != (1, 1) {
                 return None;
             }
-            // FULL-WIDTH Int64 inner only. A NARROW int (8/16/32) is an i32 core param, but `make`'s
-            // `box-int` takes i64 — a narrow scalar reaches it without the i32→i64 extend a boxed narrow
-            // int needs (`emit_box_i32_to_i64_extend`), so `resource-new` would get an i32 where the boxed
-            // form expects i64 → invalid wasm. Gate to width 64 here; the narrow case (emit the extend in
-            // `make`) is slice 2. A non-Int inner (Float) is slice 4. Both decline → valid bare fallback.
-            match inner.as_ref() {
-                Ty::Int(it) if it.ground_width() == 64 => {}
-                _ => return None,
+            if !matches!(inner.as_ref(), Ty::Int(_)) {
+                return None;
             }
             let inner_hole = template_value_ast_flagged(b, inner, path, out, via_sum_payload)?;
             let unit_ast = unit_value_ast(b, &unit.at_reference());
