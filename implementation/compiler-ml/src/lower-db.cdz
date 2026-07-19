@@ -100,10 +100,13 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                   | Option.None(_) => Option.None(unit))
               | Option.None(_) => Option.None(unit))
           | Option.None(_) => Option.None(unit))
-    | Option.Some(Node.NApp(_, _)) => Option.None(unit)   // SLICE-1 foundation: a call has no core form yet
-                                            // (infer types it TErr → lower-node declines before reaching here;
-                                            // this arm keeps the exhaustive match compiling). The def-table
-                                            // slice lowers a nullary call to the inlined body Core.
+    | Option.Some(Node.NApp(calleeId, argId)) =>
+        // slice-2 NULLARY call semantics: a nullary call `(mk)` = NApp(calleeBodyId, -1) INLINES the callee
+        // body's Core (β-reduction over zero args — no params to bind, so the call IS the body). Lower the
+        // callee body at calleeId; that Core is the call's Core. A call WITH an arg (argId != -1) is the param
+        // slice (lowers to CLet(param, argCore, bodyCore)) — not yet, declines None. No new Core node.
+        (if (argId == (0 - 1)) then lower-node(tree, calleeId, rcol, tcol)
+         else Option.None(unit))
     | Option.None(_) => Option.None(unit)
 
 /// The lower COLUMN builder: build resolve + infer columns (demanding parse under them), then lower over
@@ -234,13 +237,21 @@ def lw-annlit-signed-narrow() =
       | Option.None(_) => trap("a signed annotated literal lowers")))
 
 @test
-def lw-napp-has-no-core-slice1() =
-  // SLICE-1 CONTRACT pin: a call node NApp has NO core form yet — infer types it TErr, so lower-node declines
-  // it before reaching the NApp arm (which returns None as the exhaustive-match backstop). So lower-tree over
-  // a NApp is None. Pins the "a call has no core until the def-table slice" behavior; a future change that
-  // lowers NApp (nullary = inline the callee body) must UPDATE this. NApp has no producing Tok — build directly.
+def lw-napp-nullary-inlines-body-slice2() =
+  // SLICE-2 NULLARY-CALL SEMANTICS: a nullary call NApp(calleeBodyId, -1) lowers by INLINING the callee body's
+  // Core (β-reduction over zero args — no new Core node). Body = NLit(42) → the call lowers to CNum 42.
   (match add-node(empty-tree(), Node.NLit(42)) with | (bodyId, t1) =>
     (match add-node(t1, Node.NApp(bodyId, 0 - 1)) with | (root, tree) =>
-      (match lower-tree(tree, root) with | Option.None(_) => unit | Option.Some(_) => trap("a NApp call has no core form until the def-table slice lowers it"))))
+      (match lower-tree(tree, root) with
+        | Option.Some(c) => (if is-cnum(c, 42) then unit else trap("nullary NApp inlines the body → CNum 42"))
+        | Option.None(_) => trap("a nullary NApp lowers to its inlined body Core"))))
+
+@test
+def lw-napp-with-arg-still-no-core() =
+  // a call WITH an arg (argId != -1) is the param slice (not yet) → no core form. Pins the nullary/param boundary.
+  (match add-node(empty-tree(), Node.NLit(7)) with | (bodyId, t1) =>
+    (match add-node(t1, Node.NLit(5)) with | (argId, t2) =>
+      (match add-node(t2, Node.NApp(bodyId, argId)) with | (root, tree) =>
+        (match lower-tree(tree, root) with | Option.None(_) => unit | Option.Some(_) => trap("a call WITH an arg has no core until the param slice")))))
 
 export { Core.*, lower-tree, lower-node, cnum64, is-cnum, is-cnum-w, is-cvar }

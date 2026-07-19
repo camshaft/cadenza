@@ -4138,6 +4138,22 @@
   (call   main (: 2 Int64))
   (output (: 3 Int64)))
 
+(case "a runtime Rational three-way compare reports canonically-equal fractions as Equal"
+  (doc    "The Equal-arm companion: `(compare (Rational.of a 4) (Rational.of 1 2))` with a=2 → 2/4, which
+           `rational-of` NORMALIZES to 1/2, so the runtime `rational-cmp` reports `Equal` → 2 (consistent
+           with `(< 2/4 1/2)` and `(< 1/2 2/4)` both being false). The pinned Less/Greater cases above hit
+           only those two arms; this pins the middle arm AND that equality is decided AFTER canonicalization
+           — a `rational-cmp` that compared numerator/denominator pairs without normalizing would wrongly
+           report 2/4 vs 1/2 as unequal. The three-way twin of the Rational-key canonicalization the map
+           cases rely on.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (compare (Rational.of a 4) (Rational.of 1 2))
+                ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 2 Int64)))
+
 (case "runtime Rational arithmetic adds two parameter-built fractions exactly"
   (doc    "`(< (+ (Rational.of a b) (Rational.of 1 2)) (Rational.of 1 1))` with a=1,b=3: the sum
            1/3 + 1/2 = 5/6 is computed by the runtime `rational-add` (both operands built from runtime ints

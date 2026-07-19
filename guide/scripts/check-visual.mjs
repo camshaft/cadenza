@@ -129,6 +129,24 @@ const ROUTES = [
       // The editor must be the shared CodeMirror IDE component (highlighting), not a plain textarea.
       const cm = await page.locator(".cm-editor").count();
       check(cm > 0, `${label}: source editor is the CodeMirror IDE component (Cadenza highlighting)`);
+      // VISIBLE-RENDER gate (operator's blank-viewport report): a mounted <canvas> is NOT sufficient — a
+      // 0-triangle empty mesh still mounts a canvas and shows BLANK (the empty-Solid-annihilation bug class:
+      // Union(Empty,x) meshing to nothing). Assert the preview reports NON-ZERO geometry (`data-mesh-tris`),
+      // so a starter that compiles+runs+"meshes" but produces no visible triangles is caught here, not by the
+      // operator. Poll until it settles (auto-run mesh is async behind the lazy 3D chunk).
+      const tris = await page
+        .waitForFunction(
+          () => {
+            const el = document.querySelector('[data-testid="cad-preview"]');
+            if (!el) return false;
+            const n = Number(el.getAttribute("data-mesh-tris") || "0");
+            return n > 0 ? n : false;
+          },
+          { timeout: 30000 },
+        )
+        .then((h) => h.jsonValue())
+        .catch(() => null);
+      check(tris !== null && tris > 0, `${label}: the /cad starter renders NON-ZERO geometry (${tris ? `${tris} triangles` : "0 tris — BLANK viewport, geometry annihilated"})`);
       // DESKTOP LAYOUT (operator: the viewer was squished to a ~400px sliver off to the side): the 3D preview
       // is the PRIMARY pane, so at desktop width its <canvas> must claim a generous share (≥500px, ≥50% of the
       // editor+preview row) — not get eaten by the editor column. Regression-locks the md:flex-[3] + md:min-w-0

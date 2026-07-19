@@ -941,6 +941,21 @@
   (call   run (: 165 Int64))
   (output (: 505 Int64)))
 
+(case "a runtime bin match reads an int segment after a byte-aligned bit-field run"
+  (doc    "A byte-aligned bit-field run CLOSES to a whole byte, so a FOLLOWING fixed-width int segment
+           reads at a STATIC byte offset — `(bin (bits a 3) (bits b 5) (u8 c))` decodes the run's two
+           sub-byte fields from byte 0 then `c` from byte 1. Over a RUNTIME scrutinee `[h, 42]`: h=165 →
+           a=5, b=5 (byte 0), c=42 (byte 1) → 100*5+5+42 = 547. Pins that the bit-field run's byte width
+           advances the static offset of a trailing byte-aligned segment (a bitfield header + a byte
+           payload — a common wire shape); earlier a segment after ANY bit-field declined outright.")
+  (input  (do (def (run (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 42)))
+                  ((bin (bits a 3) (bits b 5) (u8 c)) (+ (+ (* 100 a) b) c))
+                  (_ -1)))
+              (export run)))
+  (call   run (: 165 Int64))
+  (output (: 547 Int64)))
+
 (case "a runtime bin match dispatches on a leading literal bit-field tag"
   (doc    "A LITERAL bit-field segment is a probe: `(bin (bits 1 1) (bits x 7))` matches only a byte whose
            TOP bit is 1, binding `x` to the low 7 bits. The runtime predicate reads the run and shift/masks

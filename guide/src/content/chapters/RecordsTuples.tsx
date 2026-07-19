@@ -24,6 +24,35 @@ export default function RecordsTuples() {
 (def (main) (area (record (w 4) (h 5))))`}
       />
 
+      <H2>Destructuring a record</H2>
+      <P>
+        Reaching in with <C>.</C> repeatedly gets noisy. When a function wants several fields, name them
+        up front with a <em>record pattern</em>, which binds each field to a variable in one move. The
+        pattern works in a function parameter, so <C>dist</C> takes a point and binds its <C>x</C> and{" "}
+        <C>y</C> directly:
+      </P>
+      <Runnable
+        source={`(def (dist (record (x a) (y b))) (+ (* a a) (* b b)))
+(def (main) (dist (record (x 3) (y 4))))`}
+      />
+      <P>
+        That's <C>3² + 4² = 25</C>. Toggle to the ML surface and the pattern reads as{" "}
+        <C>{`{ x = a, y = b }`}</C>. The same shape destructures in a <C>let</C> and in a <C>match</C> arm,
+        and unlike a positional tuple pattern a record pattern binds by <em>name</em>, so you can list the
+        fields in any order and name only the ones you want. Here the pattern names <C>y</C> before{" "}
+        <C>x</C> and the arithmetic still finds the right values:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (match (record (x 3) (y 4))
+    ((record (y b) (x a)) (+ (* 10 a) b))))`}
+      />
+      <P>
+        The result is <C>34</C>: <C>a</C> bound to <C>x</C>'s <C>3</C> and <C>b</C> to <C>y</C>'s <C>4</C>,
+        by field name rather than position. Naming a subset is fine too, since a partial pattern like{" "}
+        <C>(record (x a))</C> binds just <C>x</C> and ignores the rest.
+      </P>
+
       <H2>Updating a field</H2>
       <P>
         Records are immutable, so you never <em>change</em> a field but instead produce a new record that

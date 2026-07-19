@@ -1228,11 +1228,11 @@ pass	a match on an open sum omitting the open-tail arm is rejected
 pass	a match on an open sum with an open-tail arm is exhaustive
 pass	a match on an uninhabited scrutinee is exhaustive with zero arms
 pass	a match on the result of a match threads sum values through nested control flow
+pass	a match over a match-selected Option folds through the false arm (None)
+pass	a match over a match-selected Option folds through the true arm (Some)
 pass	a match over a statically-known constructor with a runtime payload elides the dispatch
 pass	a match over an if-selected Option folds through the else branch (None)
 pass	a match over an if-selected Option folds through the then branch (Some)
-pass	a match over a match-selected Option folds through the false arm (None)
-pass	a match over a match-selected Option folds through the true arm (Some)
 pass	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 pass	a match over multiple nullary constructors with uniform patterns
 pass	a match pattern naming a non-existent variant is a coded rejection
@@ -1278,6 +1278,7 @@ pass	a multi-parameter closure keeps its captured environment distinct from its 
 pass	a multi-payload destructure binds the head and recurses on the tail
 pass	a multi-payload nested same-sum match falls through when the nested variant differs
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
+pass	a multi-payload pattern with too FEW binders is a malformed destructure
 pass	a multi-payload variant destructures its payloads positionally
 pass	a multi-payload variant whose spread element is itself a compound escapes correctly
 pass	a multi-payload variant with MIXED-width, MIXED-type payloads deconstructs each field
@@ -1630,6 +1631,7 @@ pass	a record match pattern binds fields by name — partial and out of order
 pass	a record match pattern destructures a record scrutinee by field
 pass	a record missing a field the annotation names is rejected
 pass	a record scrutinee is bound whole by a match binder
+pass	a record sub-pattern nested inside a tuple match names the feature, not an unbound binder (CDZ0201)
 pass	a record whose field is a runtime tuple nests across the boundary
 pass	a record whose field is misnamed is both missing and extra
 pass	a record with a duplicate field name is a type error
@@ -1792,6 +1794,7 @@ pass	a runtime Rational MAP KEY is found by a normalized-equal key
 pass	a runtime Rational built from a parameter compares by its exact value
 pass	a runtime Rational comparison of a parameter is false when it should be
 pass	a runtime Rational three-way compare agrees with the boolean ordering
+pass	a runtime Rational three-way compare reports canonically-equal fractions as Equal
 pass	a runtime Rational three-way compare reports the greater operand as Greater
 pass	a runtime Result carrying a String error is matched
 pass	a runtime Result constructed from a condition selects its Ok or Err arm
@@ -1807,6 +1810,7 @@ pass	a runtime bin match binds the tail after a fixed header via a final rest se
 pass	a runtime bin match decodes a byte-aligned bit-field run
 pass	a runtime bin match dispatches on a leading literal bit-field tag
 pass	a runtime bin match dispatches on a literal tag across arms
+pass	a runtime bin match reads an int segment after a byte-aligned bit-field run
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
 pass	a runtime bit-field literal tag that does not match falls through
 pass	a runtime bit-field packs a runtime value into a nibble
@@ -1819,7 +1823,7 @@ pass	a runtime bytes value is spliced into a length-prefixed frame
 pass	a runtime char reaches a later char-literal arm by scalar value
 pass	a runtime closure compares its argument to a captured value in a branch
 pass	a runtime closure whose body calls a recursive top-level function
-pass	a runtime compound compare declines pending the value-cmp three-way heap walk
+pass	a runtime compound compare COMPUTES the three-way Ordering via the value-cmp heap walk (§331)
 pass	a runtime compound containing a float leaf declines ordering — floats offer no total order (§319)
 pass	a runtime compound structural equality is expressible as a hand-written recursive comparator
 pass	a runtime compound with a String leaf orders by the blessed content-lexicographic String order
@@ -2562,6 +2566,7 @@ pass	an escaping closure captures two values and takes three arguments
 pass	an escaping closure whose body binds a multi-variable let
 pass	an escaping closure whose body is a match hits the literal arm
 pass	an escaping closure whose body is a match hits the wildcard arm
+pass	an escaping continuation that itself RE-PERFORMS the handled effect re-enters its handler at apply
 pass	an escaping tuple evaluates its trapping element
 pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit Bytes annotation on a runtime bin result compares the same

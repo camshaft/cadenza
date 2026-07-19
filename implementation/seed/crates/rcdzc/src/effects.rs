@@ -1928,7 +1928,7 @@ pub fn reduce_handle(
     // performs (no foreign/host perform in `C`, `body_reaches_foreign_perform` false) — a reified
     // continuation must not span a host boundary (§4.4), and a foreign perform in `C` has no home under the
     // re-installed same-effect handler.
-    if let Some(perform) = escaping_k_leading_hole(db, body, &ctx)
+    if let Some(perform) = do_aware_leading_hole(db, body, &ctx)
         && let Resolved::Apply { head, args } = resolved_of(db, perform)
         && let Some((decl, idx)) = is_perform(db, head, &ctx)
         && let Some(arm) = ctx.arms.get(&(decl, idx)).cloned()
@@ -1999,7 +1999,7 @@ pub fn reduce_handle(
     // `C` exactly once, so the inner perform in `C` runs exactly once (a multi-shot arm would duplicate it —
     // the frame vertical's job). The leading perform's ARGS are strongly pure (`leading_strict_hole` checks),
     // so they need no state threading; the state at the leading perform is the seed (nothing runs before it).
-    if let Some(perform) = leading_strict_hole(db, body, &ctx)
+    if let Some(perform) = do_aware_leading_hole(db, body, &ctx)
         && let Resolved::Apply { head, args } = resolved_of(db, perform)
         && let Some((decl, idx)) = is_perform(db, head, &ctx)
         && let Some(arm) = ctx.arms.get(&(decl, idx)).cloned()
@@ -2007,6 +2007,15 @@ pub fn reduce_handle(
         // A tail-resumptive arm (bare OR do-wrapped interpose/forward) is served by the `thread` path — do
         // NOT steal it here (it would decline a forwarding arm whose resume value is a foreign perform).
         && !is_tail_resumptive_arm(db, arm.body)
+        // A MATCH-SHAPED resumptive arm (`(match s ((Some n) (resume n s)) …)`) is served by the thread
+        // path's match-shaped-resume-PEEL (`peel_resume_from_arm_body`), which folds a `do`-sequenced
+        // multi-perform body over it. The `do`-aware leading-hole above would otherwise let THIS block reach
+        // such a `do`-bodied case (`(do (St.get) (+ 1 (St.get)))` over a match-arm) and steal-then-decline it
+        // (the refold does not serve a match-peel arm). So defer any peelable arm to the thread path — only a
+        // NON-peelable arm (e.g. the DES deferred-resume-thunk `(set (w) s (run-thunk (fn (_u) (resume w w))))`)
+        // is this block's. Without the `do`-aware finder this guard was unnecessary (the global finder never
+        // reached a `do` body); it becomes load-bearing exactly because `do_aware_leading_hole` now does.
+        && peel_resume_from_arm_body(db, arm.body).is_none()
         // MULTI-SHOT is sound only when the continuation `C` (re-reduced per resume) reaches NO FOREIGN
         // perform — i.e. only THIS handler's discharged ops, which the refold folds away into pure code.
         // A ONE-SHOT arm splices `C` once, so any foreign perform in it runs once (sound). But a MULTI-shot
@@ -5464,15 +5473,19 @@ fn pure_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> PureHole {
 /// (its inits then body, in order), and a `match` SCRUTINEE (evaluated first). SOUND ONLY for a ONE-SHOT
 /// arm (the caller checks `count_resumes == 1`): a multi-shot arm would splice a performing `C` more than
 /// once, duplicating the inner effect.
-/// The leading-strict-hole finder for the ESCAPING-K re-performing reify (FACE-1 B2 `do`-slice) ONLY.
-/// Identical to [`leading_strict_hole`] except it ALSO treats a `(do e0 … en)` body as a strict spine
-/// (each item unconditional, in order; the leading hole is the first performing item). `do` is scoped here
-/// rather than added to the global `leading_strict_hole` because the two-hole / thread / tail paths also
-/// call that function and ALREADY fold `do`-sequenced multi-perform bodies via the match-shaped-resume-peel
-/// / threading path — a global `do`-arm would STEAL those (regressing `a_state_destructuring_arm_…` and
-/// `a_sequenced_memoize_helper_…`). The escaping-k block is the ONLY consumer that needs to see through a
-/// `do`, so the `do`-awareness lives here and the global finder stays byte-identical for every other path.
-fn escaping_k_leading_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId> {
+/// A `do`-aware leading-strict-hole finder, for the E5 non-tail CONTINUATION-FOLD blocks (the escaping-k
+/// re-performing reify AND the two-hole general-one-shot refold) ONLY. Identical to [`leading_strict_hole`]
+/// except it ALSO treats a `(do e0 … en)` body as a strict spine (each item unconditional, in order; the
+/// leading hole is the first performing item). `do` is scoped here rather than added to the global
+/// [`leading_strict_hole`] because the THREAD / tail paths also call that function and ALREADY fold
+/// `do`-sequenced multi-perform bodies via the match-shaped-resume-peel / threading path — a global
+/// `do`-arm STEALS those (regressed `a_state_destructuring_arm_…` and `a_sequenced_memoize_helper_…` when
+/// tried globally). The two continuation-fold blocks are the only consumers that need to see through a `do`
+/// (the DES `(do (Sim.sleep w) (inst-ns (Sim.now)))` body shape — a deferred-resume-thunk whose continuation
+/// re-performs under a `do`), so the `do`-awareness lives here and the global finder stays byte-identical
+/// for every other path. Both blocks gate against the thread path first (`!is_tail_resumptive_arm`), so a
+/// `do`-wrapped interpose/forward arm is not stolen.
+fn do_aware_leading_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId> {
     if let Some(items) = db.ast.as_form(node, "do").map(<[_]>::to_vec) {
         let positions: Vec<StructId> = items
             .into_iter()

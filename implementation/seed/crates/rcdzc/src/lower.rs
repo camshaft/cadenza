@@ -8478,8 +8478,8 @@ fn pattern_constraints(
     // so a record pattern imposes NO constraint of its own (like a tuple) — each named field's sub-pattern
     // descends at `path + [Elem(sorted_slot)]` with the field's type, recursing exactly as the tuple arm
     // does. A field the record type lacks is a CDZ0201 shape error; a non-record scrutinee is CDZ0201.
-    // (Record deconstruction is governed generically by §Patterns Compose — the spec has no record-specific
-    // "MUST be deconstructible" sentence the way tuples do; a dedicated one is backlogged, not cited here.)
+    //= spec/capabilities/core-semantics.md#a-record-has-a-fixed-set-of-named-fields
+    //# A record MUST be deconstructible by pattern matching on its field names, binding each named field's sub-value; a record pattern MAY name a subset of the fields, ignoring the rest.
     if let Some(fields) = db
         .ast
         .as_form(pat, "record")
@@ -8658,7 +8658,44 @@ fn pattern_constraints(
             // A bare `(Mk)` / member `(. T Mk)` with no payload arg — nothing to bind (a unit newtype).
             0 => Ok(Vec::new()),
             // `(Mk n)` — bind the single payload at `[Payload]` (erased later), typed as `inner`.
+            //
+            // ARITY: a MULTI-FIELD variant `(Mk Int64 Int64)` is MULTI-arity (two DECLARED fields, boxed as
+            // a payload tuple), so a ONE-binder pattern `(Mk a)` — a lone BARE NAME — under-binds: it would
+            // silently bind `a` to the whole field-tuple, the surprising slip a too-MANY `(Mk a b c)` is
+            // already rejected for. Reject it symmetrically (concierge/operator ruling 8922: a multi-field
+            // variant is multi-arity; "single-arity" in core-semantics §195/207 is the internal curried-
+            // application ABI, not the surface field arity).
+            //
+            // TWO shapes are NOT under-binding and pass through:
+            //  (1) the single arg is an explicit `(tuple …)` PATTERN — `(Mk (tuple a _))` — the CANONICAL
+            //      single-arity payload-tuple destructure (§207); it recurses below and `pattern_constraints`'
+            //      tuple arm arity-checks it against the payload tuple `inner`. This is the form the emit /
+            //      recursive-match tests use.
+            //  (2) a genuinely SINGLE-FIELD variant whose one payload is a compound VALUE — `(Pt (Tuple T
+            //      T))`, `(Pt (Record …))`, `(Mk (-> …))` — has DECLARED arity 1 (`variant_payload_arity`),
+            //      so `(Pt a)` correctly binds that whole payload (the corpus-blessed `(Pt r)` form).
+            // So reject ONLY a >1-DECLARED-FIELD variant matched with a single NON-tuple sub-pattern — the
+            // too-FEW twin of the `_ =>` too-MANY check.
             1 => {
+                let arg_is_tuple_pattern = is_tuple_pattern(db, args[0]);
+                if !arg_is_tuple_pattern
+                    && crate::eval::variant_payload_arity(db, head).is_some_and(|n| n > 1)
+                    && let crate::ty::Ty::Tuple(ts) = &inner
+                {
+                    let ctor = ctor_pattern_name(db, pat);
+                    let plural = |k: usize| if k == 1 { "" } else { "s" };
+                    return Err(Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "this pattern binds 1 element for `{ctor}`, but `{ctor}` carries {} \
+                             field{} — a constructor pattern must bind exactly as many as the \
+                             constructor has",
+                            ts.len(),
+                            plural(ts.len()),
+                        ),
+                    )
+                    .at(pat));
+                }
                 let mut deeper = path;
                 deeper.push(crate::core::PathStep::Payload);
                 pattern_constraints(db, args[0], &inner, deeper, lit_tests)
@@ -22143,14 +22180,37 @@ fn decode_bin_field(
 /// The runtime matcher (fixed-offset int segments) uses this to place a `BinIntRead`.
 fn bin_static_offset(segs: &[crate::resolved::Segment], seg_index: usize) -> Option<u32> {
     use crate::resolved::SegKind;
-    let mut off: u32 = 0;
+    let mut off: u32 = 0; // byte offset
+    let mut bits: u32 = 0; // open sub-byte bits accumulated across a bit-field run (0 at a byte boundary)
     for seg in segs.iter().take(seg_index) {
         match &seg.kind {
-            SegKind::Int { width, .. } => off += *width as u32,
-            // A bit-field / bytes / utf8 segment before the target makes the runtime read's offset
-            // non-trivial (sub-byte cursor, or dynamic length) — not built yet.
-            SegKind::Bits { .. } | SegKind::Bytes { .. } | SegKind::Utf8 { .. } => return None,
+            SegKind::Int { width, .. } => {
+                // An int segment is byte-aligned — a well-formed bin (CDZ0220) has closed any bit-field run
+                // to a whole byte before it, so `bits` is 0 here; be defensive and decline if not.
+                if bits != 0 {
+                    return None;
+                }
+                off += *width as u32;
+            }
+            // A BIT-FIELD contributes `k` sub-byte bits; a run closes to whole bytes (CDZ0220), so fold
+            // every completed byte into `off`. A following int/bytes segment therefore reads at a STATIC
+            // byte offset once the run is byte-aligned (the case that previously declined outright).
+            SegKind::Bits { k } => {
+                bits += *k;
+                off += bits / 8;
+                bits %= 8;
+            }
+            // A bytes / utf8 segment before the target makes the offset dynamic (variable length) — not
+            // built yet. (A bit-field run mid-byte at this point would also be ill-formed; `bits != 0`
+            // means the preceding structure did not byte-align, so decline.)
+            SegKind::Bytes { .. } | SegKind::Utf8 { .. } => return None,
         }
+    }
+    // The target segment starts at a byte boundary only if the preceding bit-field run closed a whole
+    // number of bytes; a mid-byte position (an odd bit-field run before a byte-aligned segment) is
+    // ill-formed for a byte-offset read — decline.
+    if bits != 0 {
+        return None;
     }
     Some(off)
 }

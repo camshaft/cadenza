@@ -287,6 +287,26 @@
             (def (main) (handle A 5 ((a () s k (use-k k))) (+ (A.a) (A.a)))) (export main)))
   (output (: 20 Int64)))
 
+(case "a DEFERRED resume-thunk escaping to another function re-installs the handler at apply, over a re-performing do-continuation"
+  (doc    "E5 step-3 (the DES scheduler's `sleep`/`now` step-3 shape, contract-A1). The escaping continuation
+           is a DEFERRED RESUME-THUNK: the `set` arm hands `(fn (_u) (resume w w))` to `run-thunk`, which
+           applies it cross-activation. `resume`'s SECOND arg `w` is the NEW handler state (the advance),
+           EXPRESSED in the program — no op-arg magic. The handle BODY `(do (A.set 42) (A.get))` is a
+           SEQUENCE whose continuation `C = (do □ (A.get))` itself RE-PERFORMS a different op (`get`) that
+           reads the advanced state. The two-hole general-one-shot refold re-reduces `C[w]` under the handler
+           re-seeded with `w` (the resume's new-state), so `get` reads 42. The `do` yields its LAST item, so
+           `set`'s result is discarded → the value is `get` = 42. Witnesses the deferred-resume-thunk /
+           cross-activation resume the DES scheduler builds on (its `sleep` fast-forwards the clock to the
+           wake instant via exactly this shape, then observes it with `now`). Distinct from the escaping-`k`
+           reify (that one has an explicit `k` binder); here the escape is a `resume`-bearing lambda.")
+  (input  (do
+            (effect A (op set (-> Int64 Int64)) (op get (-> Unit Int64)))
+            (def (run-thunk thunk) (thunk unit))
+            (def (main)
+              (handle A 0 ((get (u) s (resume s s)) (set (w) s (run-thunk (fn (_u) (resume w w)))))
+                (do (A.set 42) (A.get)))) (export main)))
+  (output (: 42 Int64)))
+
 (case "a ctl-style arm applying its continuation inside a match scrutinee resolves and folds"
   (doc    "The continuation binder `k` of a `ctl`-style arm must be in scope everywhere in the arm body,
            including inside a MATCH scrutinee. `(flip () s k (match (k 10) (z (* z 2))))` applies `k`

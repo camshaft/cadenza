@@ -5250,6 +5250,23 @@
             (export main)))
   (error  CDZ0201))
 
+(case "a multi-payload pattern with too FEW binders is a malformed destructure"
+  (doc    "The too-FEW twin of the over-arity reject above: `(Mk a)` against a 2-payload `Mk` binds ONE
+           name where the constructor carries TWO fields, so it MUST reject (CDZ0201, 'binds 1 element …
+           carries 2 fields — bind exactly as many'), NOT silently bind `a` to the whole payload tuple. A
+           multi-field variant is MULTI-arity (matching construction's two-arg strictness — `(Pair.Mk n)`
+           under-applies — and the two-binder `(Mk a b)` blessing), so the arity check is TWO-SIDED: both
+           too-many (3>2, above) and too-few (1<2, here) fault. Keyed on the DECLARED field count, so a
+           genuinely single-field variant whose one payload is a compound VALUE (e.g. `(Pt (Tuple T T))`
+           matched `(Pt r)`) still binds the whole payload with one sub-pattern — only a >1-FIELD
+           declaration faults on under-binding. (Ruling: the core-semantics §195/207 'single-arity' is the
+           internal curried-application ABI, not the surface field arity.)")
+  (input  (do
+            (type Pair (Mk Int64 Int64))
+            (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a) a)))
+            (export main)))
+  (error  CDZ0201))
+
 ; --- A multi-payload constructor applied in CURRIED / PARTIAL form ---
 ; A sum constructor is a single-arity function (core-semantics.md §A Sum Type Constructor Is A Single-
 ; Arity Function), and §Functions Are Single-Arity makes `(f a b)` sugar for `((f a) b)`. So a two-payload
@@ -10851,6 +10868,22 @@
               (def (main) (f (record (x 3))))
               (export main)))
   (output (: 3 Int64)))
+
+(case "a record sub-pattern nested inside a tuple match names the feature, not an unbound binder (CDZ0201)"
+  (doc    "A record match binds its fields to bare names at the TOP level, but a record sub-pattern NESTED
+           inside a tuple/list/constructor match — `(tuple (record (x a)) c)` — is not yet wired: a record
+           field projects by NAME and there is no name-keyed access step to compose the projection under a
+           tuple/list/variant descent. A body reference to the nested field binder `a` MUST name that
+           unimplemented feature (a coded CDZ0201), NOT leak the misleading 'unbound name `a`' it did before
+           (the tuple-descent walker skips the `record` head, so the binder never wired and `a` resolved
+           unbound). The PATTERN itself lowers fine — a body that ignores the nested binder (returns `c`)
+           compiles — so the fault is reference-specific; the coded decline surfaces it in `cdz check` on a
+           parameterized body, not only the emit walk. The nested-in-compound twin of the top-level
+           record-match + the record-BINDING nested-compound declines.")
+  (input  (do (def (f (: t (Tuple (Record (x Int64)) Int64)))
+                (match t ((tuple (record (x a)) c) (+ a c))))
+              (export f)))
+  (error  CDZ0201))
 
 (case "a map match pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)"
   (doc    "A MAP match pattern whose `..` rest is malformed — a `..` NOT followed by exactly one binder,

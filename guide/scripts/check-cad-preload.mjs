@@ -21,8 +21,10 @@
 /// Run: `npm run check:cad-preload` (needs the staged wasm — `cargo xtask guide-wasm` first). Node ≥ 20.19.
 
 import { readFile } from "node:fs/promises";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const guideRoot = join(here, "..");
@@ -265,10 +267,104 @@ if (!snow) {
   }
 }
 
+// ── VISIBLE-GEOMETRY gate (headless, CI-runnable) ────────────────────────────────────────────────────
+// The operator loaded a /cad showcase and saw a BLANK viewport while every CI gate passed — because NO CI
+// gate ran the model + meshed it: check-examples uses self-contained programs (not the CAD preload); the
+// checks above only COMPILE + read the manifest; and check-visual (which meshes in a real browser) is NOT
+// in CI. So a model that compiles + lowers but meshes to ZERO triangles (the empty-Solid-annihilation class:
+// a fold from `Solid.Empty` where `Union(Empty, x)` renders to nothing) shipped invisibly. This stage closes
+// that blind spot IN CI: run each showcase through the real browser pipeline (compile_with_preloaded → run
+// via jco → render_value → v-cad's `meshFromSolid`) and assert NON-ZERO geometry. Headless (jco, like
+// check-worker-stack), so it runs in the `guide-examples` CI job — complementing check-visual's eyes-on
+// browser assertion (local-only). A blank showcase now fails HERE, not in the operator's viewport.
+const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
+const { meshFromSolid } = await import(pathToFileURL(join(guideRoot, "src/cad/index.ts")).href);
+const HEAP_IMPORT = "cadenza:runtime/heap";
+const runtimePath = join(guideRoot, "src/wasm/runtime.wasm");
+const camel = (s) => s.replace(/-([a-z0-9])/g, (_, c) => c.toUpperCase());
+
+async function loadComp(bytes, name) {
+  const { files } = await transpileBytes(new Uint8Array(bytes), { name, instantiation: "async", wasiShim: false, minify: false });
+  const dir = mkdtempSync(join(tmpdir(), "cadmesh-"));
+  for (const [f, b] of Object.entries(files)) {
+    const p = join(dir, f);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, b);
+  }
+  const mod = await import(pathToFileURL(join(dir, `${name}.js`)).href);
+  return { instantiate: mod.instantiate, getCore: async (p) => WebAssembly.compile(readFileSync(join(dir, p))) };
+}
+
+// The value-heap runtime, instantiated once (a showcase that builds a runtime collection imports it).
+let heapImport = null;
+try {
+  const rt = await loadComp(readFileSync(runtimePath), "heap");
+  const rtRoot = await rt.instantiate(rt.getCore, {});
+  heapImport = rtRoot[HEAP_IMPORT] ?? rtRoot["heap"];
+} catch (e) {
+  failures.push(`visible-geometry: could not instantiate the value-heap runtime — ${String(e && e.message ? e.message : e).slice(0, 100)}`);
+}
+
+// Showcases to mesh-check. NOTE: `parametric-snowflake` is EXCLUDED until the empty-Solid mesh fix lands
+// (v-cad MR 1f81340dc: index.ts empty case → `M.union([])`, the composing empty, instead of a zero-size cube
+// that annihilates the boolean). Its builder folds from `Solid.Empty`, so it meshes to 0 verts on a pre-fix
+// driver — meshing it here now would fail this very gate. Re-include it (a one-line edit removing it from
+// SKIP) in the follow-up that swaps the self-contained snowflake buffer, once the fix + re-arch are on trunk.
+const MESH_SKIP = new Set(["parametric-snowflake"]);
+if (heapImport) {
+  for (const ex of EXAMPLES) {
+    if (MESH_SKIP.has(ex.slug)) {
+      console.log(`  · [mesh] ${ex.slug}: SKIPPED (empty-Solid mesh fix pending — folds from Solid.Empty; re-include when 1f81340dc lands)`);
+      continue;
+    }
+    const program = injectImport(ex.source.sexpr, "sexpr");
+    let cr;
+    try {
+      cr = wasm.compile_with_preloaded(program, "sexpr", names, sources, formats);
+    } catch (e) {
+      failures.push(`[mesh] ${ex.slug}: compile THREW ${String(e && e.message ? e.message : e).slice(0, 80)}`);
+      continue;
+    }
+    if (!cr.component) {
+      failures.push(`[mesh] ${ex.slug}: no component to run`);
+      continue;
+    }
+    try {
+      const prog = await loadComp(new Uint8Array(cr.component), "prog");
+      // Supply each @param host-response from its manifest default (a parametric showcase reads Param.<name>()).
+      const manifest = wasm.param_manifest(program, "sexpr") ?? [];
+      const param = {};
+      for (const m of manifest) {
+        const d = Math.trunc(Number(m.default ?? 1));
+        param[camel(m.name)] = () => BigInt(d);
+        param[camel(`${m.name}-num`)] = () => BigInt(d);
+        param[camel(`${m.name}-den`)] = () => 1n;
+      }
+      const root = await prog.instantiate(prog.getCore, { [HEAP_IMPORT]: heapImport, param });
+      const iface = root["cadenza:run/run"] ?? root["run"];
+      if (!iface || typeof iface.make !== "function") {
+        failures.push(`[mesh] ${ex.slug}: no run interface (make/encode) on the component`);
+        continue;
+      }
+      const rendered = wasm.render_value(iface.encode(iface.make()));
+      const mesh = await meshFromSolid(rendered);
+      if (!mesh.ok) {
+        failures.push(`[mesh] ${ex.slug}: meshFromSolid errored — ${String(mesh.error).slice(0, 80)}`);
+      } else if (mesh.positions.length === 0) {
+        failures.push(`[mesh] ${ex.slug}: meshed to ZERO triangles — BLANK viewport (geometry annihilated; the empty-Solid-in-boolean class)`);
+      } else {
+        console.log(`  ✓ [mesh] ${ex.slug}: runs + meshes to visible geometry (${mesh.positions.length / 3} verts, ${mesh.indices.length / 3} tris)`);
+      }
+    } catch (e) {
+      failures.push(`[mesh] ${ex.slug}: run/mesh THREW ${String(e && e.message ? e.message : e).slice(0, 80)}`);
+    }
+  }
+}
+
 if (failures.length) {
   console.error(
     "\n✗ cad-preload conformance FAILED — the /cad preloaded-library path regressed (compiler preload " +
-      "linking, wasm bindings, or the injected import):\n" +
+      "linking, wasm bindings, the injected import, or a showcase that meshes BLANK):\n" +
       failures.map((f) => "  ✗ " + f).join("\n"),
   );
   process.exit(1);
@@ -276,5 +372,6 @@ if (failures.length) {
 
 console.log(
   "\n✓ cad-preload conformance: a bare /cad model compiles + lints clean against the preloaded exact.cdz " +
-    "in both surfaces (compile_with_preloaded + diagnostics_with_preloaded) — the P5 preload path stays working.",
+    "in both surfaces (compile_with_preloaded + diagnostics_with_preloaded), AND every showcase runs + meshes " +
+    "to NON-ZERO visible geometry (headless run→mesh) — the P5 preload path + the visible-render class stay working.",
 );

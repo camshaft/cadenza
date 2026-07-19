@@ -2439,8 +2439,21 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // wasm walk. So emit the native `(l <op> r)`, mirroring `Core::StrCmp`'s native-String compare. A
         // diverging operand short-circuits like `Core::Compare`/`StrCmp`.
         Core::ValueCmp { op, lhs, rhs, .. } => {
-            let sym = compare_sym(op)
-                .ok_or_else(|| Reject::decline("ValueCmp carries a non-compare prim"))?;
+            // Lt/Le/Gt/Ge → the BOOLEAN the op names (a native relational compare on the derived-Ord
+            // compound). Compare → the three-way `Ordering` SUM (§331: the boolean ops and `compare`
+            // surface the SAME total order). For the wasm twin the Ordering value is `res+1` over the
+            // value-cmp result; here on the RUST backend the compound `l`/`r` have a derived `Ord`, so we
+            // build the Ordering ctor from a NESTED-IF over the native `<`/`>` (the same shape v-inference's
+            // scalar/String/BigInt compare uses — `(if l<r Less (if l>r Greater Equal))` — which the rust
+            // backend already lowers to the emitted `enum Ordering` ctor paths). The compare NODE's result
+            // type IS `Ordering`, so its ctor paths come from `sum_variant_path_of_ty(type_of(id), disc)`
+            // (Less=disc 0, Equal=1, Greater=2 — sums.rs). No `.cmp()`→bool collapse; a real Ordering value.
+            let is_compare = matches!(op, Prim::Compare);
+            let sym = if is_compare {
+                "" // unused for Compare (nested-if built below)
+            } else {
+                compare_sym(op).ok_or_else(|| Reject::decline("ValueCmp carries a non-compare prim"))?
+            };
             if arith_operand_diverges(db, lhs) {
                 return emit(db, lhs, env, ctx);
             }
@@ -2451,7 +2464,22 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             }
             let l = emit(db, lhs, env, ctx)?;
             let r = emit(db, rhs, env, ctx)?;
-            Ok(format!("({l} {sym} {r})"))
+            if is_compare {
+                // The compare node's result type is `Ordering`; build its ctor paths and the nested-if.
+                // BIND l/r to locals first — each operand is referenced TWICE (`< ` and `> `), and a
+                // compound operand may be a call/have effects, so re-emitting the expression would evaluate
+                // it twice (wrong + a possible double-borrow). `.cmp(&)` needs a ref; a block with two lets
+                // + the nested-if reads the bound values by ref.
+                let ord_ty = type_of(db, id);
+                let less = sum_variant_path_of_ty(db, &ord_ty, 0)?;
+                let equal = sum_variant_path_of_ty(db, &ord_ty, 1)?;
+                let greater = sum_variant_path_of_ty(db, &ord_ty, 2)?;
+                Ok(format!(
+                    "{{ let __cl = {l}; let __cr = {r}; if __cl < __cr {{ {less} }} else if __cl > __cr {{ {greater} }} else {{ {equal} }} }}"
+                ))
+            } else {
+                Ok(format!("({l} {sym} {r})"))
+            }
         }
     }
 }
