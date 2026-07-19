@@ -2722,15 +2722,45 @@ fn check_lease_dir(repo: &Path) -> Option<PathBuf> {
 /// pr-sync preempting a gate) runs no `Drop`, so the file LEAKS. On Linux a live pid has a `/proc/<pid>`
 /// entry; a dead one does not. `None` = "can't tell" (unparseable name / non-Linux) → treat as alive so
 /// we NEVER reap a lease we're unsure about (the TTL is the backstop for that case).
+///
+/// ZOMBIE GAP (concierge: a leaked priority lease stalled the fleet twice, `leases_reaped=0` during the
+/// stall): a SIGKILL'd gate sub-process becomes a DEFUNCT (zombie) entry — `/proc/<pid>` still EXISTS
+/// until its parent `wait()`s it, but it will never run `Drop`, so a bare-existence check reports it
+/// ALIVE and the lease is never reaped. So don't stop at existence: read `/proc/<pid>/stat`'s process
+/// state and treat `Z` (zombie) as DEAD. A live process in any other state (`R`/`S`/`D`/`T`/…) is alive.
 fn check_lease_holder_alive(lease_name: &str) -> Option<bool> {
     let pid: u32 = lease_name.split('-').next()?.parse().ok()?;
-    let proc_entry = Path::new("/proc").join(pid.to_string());
-    // Only trust a definitive "the /proc tree exists but this pid is gone" as dead; if /proc itself is
+    // Only trust a definitive "/proc exists but this pid is gone/zombie" as dead; if /proc itself is
     // absent (non-Linux) we can't tell, so report alive and let the TTL handle staleness.
     if !Path::new("/proc").is_dir() {
         return None;
     }
-    Some(proc_entry.exists())
+    let proc_entry = Path::new("/proc").join(pid.to_string());
+    if !proc_entry.exists() {
+        return Some(false); // reaped/gone → dead
+    }
+    // Present in /proc — but a zombie (SIGKILL'd, not yet wait()'d) is effectively dead for our purpose
+    // (it holds the lease but will never Drop it). Read its `stat` state; a Z means reap now.
+    match std::fs::read_to_string(proc_entry.join("stat")) {
+        Ok(stat) => Some(!proc_stat_is_zombie(&stat)),
+        // /proc/<pid> exists but stat is unreadable (a race: it just exited) — treat as alive and let
+        // the next scan / the TTL settle it, rather than reaping on an ambiguous read.
+        Err(_) => Some(true),
+    }
+}
+
+/// Is a `/proc/<pid>/stat` line a ZOMBIE (defunct) process? The state is the field AFTER the parenthesized
+/// comm, e.g. `1234 (cargo) Z 1200 …` → `Z`. The comm can contain spaces/parens, so scan to the LAST `)`
+/// and take the first non-space token after it. Returns false if the line can't be parsed (caller then
+/// treats an unparseable-but-present pid as alive — the TTL is the backstop). Pure, so it's unit-testable.
+fn proc_stat_is_zombie(stat: &str) -> bool {
+    match stat.rfind(')') {
+        Some(i) => stat[i + 1..]
+            .split_whitespace()
+            .next()
+            .is_some_and(|state| state == "Z"),
+        None => false,
+    }
 }
 
 /// Live (`priority`, `vertical`) lease counts in `dir`, reaping leaked leases first. A lease is leaked —
@@ -3162,12 +3192,25 @@ fn reissue_loop(session: &str, agent: &str, interval: &str, tick_prompt: &str) -
 
 // ── archive ────────────────────────────────────────────────────────────────────────────────────
 
+/// Is a queue entry in a DONE state (resolved/rejected/works-as-specified), by its filename tag? The
+/// fleet convention tags a closed issue with a dotted `RESOLVED`/`REJECTED` marker anywhere in the name
+/// (`foo.RESOLVED.sexp`, `bar.sexp.RESOLVED`, `baz.WORKS-AS-SPECIFIED-diag-RESOLVED.sexp`). Match on the
+/// uppercase tag as a dot-delimited component so a substring in ordinary prose can't false-positive.
+/// Pure, so the done-routing decision is unit-testable. Checks the file NAME only (subdirs don't matter).
+fn entry_is_done(rel: &Path) -> bool {
+    let Some(name) = rel.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    name.split('.')
+        .any(|seg| seg == "RESOLVED" || seg == "REJECTED" || seg.ends_with("-RESOLVED"))
+}
+
 /// Mirror the live gitignored work queue into the TRACKED `issues/` archive so the reproducers are
 /// preserved in git history, not just agent-local state. The archive is written into the CURRENT
 /// worktree (whoever runs this — pr-sync, on `trunk`), which is where the commit lands. The queue
 /// itself is read from the hub's `.claude/fleet/queue` (shared). Mirror semantics: copy every queue
-/// entry into `issues/`, delete tracked `issues/` files no longer present in the queue (git history
-/// still holds them), then commit unless `--no-commit`.
+/// entry into `issues/` (a RESOLVED/REJECTED-tagged entry → `issues/done/`), delete tracked `issues/`
+/// files the mirror no longer writes (git history still holds them), then commit unless `--no-commit`.
 fn archive(fleet: &Fleet, no_commit: bool) {
     let queue = fleet.root.join("queue");
     // The archive lives in the CURRENT worktree (cwd), not the hub — the hub is bare (no working
@@ -3180,13 +3223,33 @@ fn archive(fleet: &Fleet, no_commit: bool) {
     // in and detect archive files that should be removed.
     let mut queue_rel: Vec<PathBuf> = Vec::new();
     collect_rel(&queue, &queue, &mut queue_rel);
-    let queue_set: std::collections::HashSet<PathBuf> = queue_rel.iter().cloned().collect();
 
-    // Copy every queue file into issues/, preserving subdirectory structure.
+    // Copy every queue file into issues/. A RESOLVED/REJECTED-tagged entry is routed to `issues/done/`
+    // (by basename) regardless of its queue subdir, so a closed issue stops listing as assigned; every
+    // other entry preserves its queue-relative path under `issues/`. This makes the mirror itself honor
+    // the resolved tag rather than reverting a manual `git mv … issues/done/` on the next run (concierge
+    // ask: agents were hand-moving resolved issues to done and the mirror kept dragging them back to
+    // assigned). The `issues/done/<name>` destination is derived, so a later un-tagging correctly moves
+    // it back (the stale-removal pass below deletes the done/ copy once the tag is gone).
+    // The DESTINATION relative path each queue entry mirrors to: a RESOLVED/REJECTED-tagged entry goes
+    // to `done/<basename>` (so a closed issue stops listing as assigned) regardless of its queue subdir;
+    // every other entry keeps its queue-relative path. Computed once and reused for the stale-removal
+    // pass below, so removal deletes exactly what the copy DIDN'T write (routing the two consistently —
+    // otherwise done/ copies, whose rel-path isn't a queue path, would be wrongly reaped every run).
+    let dest_rel = |rel: &Path| -> PathBuf {
+        if entry_is_done(rel) {
+            Path::new("done").join(rel.file_name().unwrap_or(rel.as_os_str()))
+        } else {
+            rel.to_path_buf()
+        }
+    };
+    let dest_set: std::collections::HashSet<PathBuf> =
+        queue_rel.iter().map(|r| dest_rel(r)).collect();
+
     let mut copied = 0usize;
     for rel in &queue_rel {
         let src = queue.join(rel);
-        let dst = archive.join(rel);
+        let dst = archive.join(dest_rel(rel));
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -3195,13 +3258,15 @@ fn archive(fleet: &Fleet, no_commit: bool) {
         }
     }
 
-    // Remove archive files that are no longer in the queue (resolved-and-migrated, or renamed). Git
-    // history preserves them, so this keeps `issues/` a faithful mirror of live state.
+    // Remove archive files no longer written by the mirror (resolved-and-migrated, renamed, or a tag
+    // that flipped so the destination moved). Compare against the DESTINATION set, not the raw queue
+    // set, so a `done/<name>` copy is kept while a stale assigned-path copy of a now-resolved issue is
+    // reaped (and vice-versa). Git history preserves anything removed.
     let mut archive_rel: Vec<PathBuf> = Vec::new();
     collect_rel(&archive, &archive, &mut archive_rel);
     let mut removed = 0usize;
     for rel in &archive_rel {
-        if !queue_set.contains(rel) && std::fs::remove_file(archive.join(rel)).is_ok() {
+        if !dest_set.contains(rel) && std::fs::remove_file(archive.join(rel)).is_ok() {
             removed += 1;
         }
     }
@@ -6376,6 +6441,65 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn entry_is_done_routes_resolved_and_rejected_tags_only() {
+        use std::path::PathBuf;
+        // The real tag variants observed in the queue (tag anywhere in the dotted name).
+        assert!(entry_is_done(&PathBuf::from("foo.RESOLVED.sexp")));
+        assert!(entry_is_done(&PathBuf::from("bar.sexp.RESOLVED")));
+        assert!(entry_is_done(&PathBuf::from("adv-x.REJECTED.md")));
+        assert!(entry_is_done(&PathBuf::from(
+            "adv-dup.WORKS-AS-SPECIFIED-diag-RESOLVED.sexp"
+        )));
+        // A subdir doesn't matter — we check the file name only.
+        assert!(entry_is_done(&PathBuf::from("assigned/foo.RESOLVED.sexp")));
+        // NOT done: open work, other tags, and prose that merely contains the letters.
+        assert!(!entry_is_done(&PathBuf::from(
+            "witness-generic-driver-tie.cdz"
+        )));
+        assert!(!entry_is_done(&PathBuf::from("leak-x.CONFIRMED.sexp")));
+        assert!(!entry_is_done(&PathBuf::from("des-inc4.PRE-STEP3.sexp")));
+        // A word merely CONTAINING "resolved" (not a dotted tag) must NOT match — no false-positive.
+        assert!(!entry_is_done(&PathBuf::from(
+            "how-resolved-issues-work.md"
+        )));
+        assert!(!entry_is_done(&PathBuf::from(
+            "DIRECTIVE-retire-needs-tag.md"
+        )));
+    }
+
+    #[test]
+    fn proc_stat_zombie_detection_reaps_defunct_lease_holders() {
+        // The zombie gap: a SIGKILL'd gate proc lingers as a DEFUNCT `/proc/<pid>` entry (exists, but
+        // will never Drop its lease). Its stat state is `Z` — must read as dead so the lease is reaped.
+        // A running/sleeping/etc. holder is alive and kept.
+        assert!(
+            proc_stat_is_zombie("1234 (cargo) Z 1200 1234 1200 0 -1 4194560 0 0"),
+            "state Z after the comm → zombie (reap)"
+        );
+        assert!(
+            !proc_stat_is_zombie("1234 (cargo) R 1200 1234 1200 0 -1 4194560 0 0"),
+            "state R → running, alive"
+        );
+        assert!(
+            !proc_stat_is_zombie("1234 (cargo) S 1200 1234 1200 0 -1 4194560 0 0"),
+            "state S → sleeping, alive"
+        );
+        // The comm field can contain spaces AND parens — scan to the LAST ')' so the state is read from
+        // the right place, not fooled by an embedded `) Z`.
+        assert!(
+            proc_stat_is_zombie("1234 (weird ) name) Z 1200 1234"),
+            "comm with spaces/parens: state after the LAST ) is Z → zombie"
+        );
+        assert!(
+            !proc_stat_is_zombie("1234 (odd) R)ame) R 1200"),
+            "comm with an embedded ) then R state → alive (read after the last ))"
+        );
+        // Unparseable / no paren → false (caller treats a present-but-unparseable pid as alive; TTL backs up).
+        assert!(!proc_stat_is_zombie("garbage with no paren"));
+        assert!(!proc_stat_is_zombie(""));
     }
 
     #[test]

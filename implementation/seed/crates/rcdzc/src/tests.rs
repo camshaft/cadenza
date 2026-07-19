@@ -64575,6 +64575,91 @@ mod r2_runtime_resource {
         }
     }
 
+    #[test]
+    fn a_runtime_qty_over_int_at_reference_unit_templates_with_the_unit_baked() {
+        // A RUNTIME Qty over an Int64 at the REFERENCE unit (scale 1/1) gets a value-form template whose
+        // unit label is BAKED as a compile-time constant and whose ONE leaf hole is the erased inner scalar,
+        // reached at an EMPTY path (the boxed scalar IS the root rep — the `make` body boxes it via
+        // `box-int`, then the walker `get-int`s it directly). This is the operator-ruled compile-time-only
+        // unit render: the Qty erases to its scalar at runtime; the unit lives only in the baked bytes.
+        use crate::ty::Unit;
+        let ty = Ty::Qty {
+            inner: Box::new(Ty::int64()),
+            unit: Unit::base("meter"),
+        };
+        let tpl =
+            runtime_value_form_template(&ty).expect("Int-inner reference-unit Qty has a template");
+        // Exactly one runtime hole: the inner magnitude, an Int at the ROOT (empty path, not via a sum
+        // payload) — the scalar the `make` body boxes into the root cell.
+        assert_eq!(tpl.leaves.len(), 1, "one hole (the erased inner scalar)");
+        assert_eq!(tpl.leaves[0].kind, LeafFill::Int);
+        assert!(tpl.leaves[0].path.is_empty(), "the scalar is the root rep");
+        assert!(!tpl.leaves[0].via_sum_payload);
+        // The baked bytes carry the unit label + the `Qty`/`of` construction names as leaf strings — decode
+        // and confirm the value form is the `Qty.of` construction with the unit, not a bare scalar.
+        let arenas = crate::codec::decode(&tpl.bytes).expect("template bytes decode");
+        let names: std::collections::HashSet<&str> = arenas
+            .leaves
+            .iter()
+            .filter_map(|l| match l {
+                crate::ast::Leaf::Name(n) => Some(n.as_str()),
+                crate::ast::Leaf::Sym(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            names.contains("Qty"),
+            "the Qty.of construction is baked: {names:?}"
+        );
+        assert!(
+            names.contains("of"),
+            "the Qty.of member is baked: {names:?}"
+        );
+        assert!(
+            names.contains("meter"),
+            "the unit label is baked: {names:?}"
+        );
+    }
+
+    #[test]
+    fn a_runtime_qty_declines_the_template_for_a_scaled_unit_narrow_int_or_float_inner() {
+        // Slice-1 scope: only a FULL-WIDTH Int64/UInt64 inner at a REFERENCE unit takes the runtime-scalar
+        // template. A scaled (non-reference) unit needs a compile-time scale multiply the flat leaf-hole
+        // template can't carry; a NARROW int (8/16/32) is an i32 core param that `make`'s `box-int` (i64)
+        // would receive unextended → invalid wasm (slice 2 adds the extend); a Float inner needs
+        // `LeafFill::Float` (slice 4) — all DECLINE (return None) so the export falls back to today's valid
+        // bare-scalar cross rather than emitting a wrong/invalid form.
+        use crate::ty::{IntTy, Unit};
+        let scaled = Ty::Qty {
+            inner: Box::new(Ty::int64()),
+            unit: Unit::base("meter").scaled(1000, 1).expect("scaled unit"),
+        };
+        assert!(
+            runtime_value_form_template(&scaled).is_none(),
+            "a scaled-unit Qty declines the runtime template (falls back)"
+        );
+        // A NARROW int inner — the bug the width gate closes: an Int8/16/32 Qty must NOT take the resource
+        // path (its i32 scalar would reach the i64 `box-int` unextended → invalid wasm).
+        for w in [8u32, 16, 32] {
+            let narrow = Ty::Qty {
+                inner: Box::new(Ty::Int(IntTy::fixed(true, w))),
+                unit: Unit::base("meter"),
+            };
+            assert!(
+                runtime_value_form_template(&narrow).is_none(),
+                "an Int{w}-inner Qty declines the runtime template (needs the box extend — slice 2)"
+            );
+        }
+        let float_inner = Ty::Qty {
+            inner: Box::new(Ty::float64()),
+            unit: Unit::base("meter"),
+        };
+        assert!(
+            runtime_value_form_template(&float_inner).is_none(),
+            "a Float-inner Qty declines the runtime template (falls back)"
+        );
+    }
+
     /// The PROGRAM core for the BORROW design: `encode` takes `borrow<t>` self and uses its i32 param
     /// DIRECTLY as the heap rep — NO `resource.rep` (which traps on a borrow: the canonical ABI's
     /// `lift_borrow` returns the rep itself, not a table index — verified in wasmtime 37's

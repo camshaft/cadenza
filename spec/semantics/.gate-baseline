@@ -518,6 +518,9 @@ pass	a bit-field value that needs more bits than its width does not fit its segm
 pass	a bit-field wider than a byte packs across the byte boundary big-endian
 pass	a bit-field width that is not a compile-time constant is ill-formed
 pass	a bits pattern segment reads sub-byte fields back into integers
+pass	a bitwise AND on an unusual signed width clears the sign bit to a non-negative result
+pass	a bitwise OR on an unusual signed width sign-extends a result that sets the sign bit
+pass	a bitwise XOR on an unusual signed width sign-extends a result that sets the sign bit
 pass	a bitwise operator on a boolean operand names the integer requirement
 pass	a bool match missing the false arm is non-exhaustive
 pass	a bool match missing the true arm is non-exhaustive
@@ -781,6 +784,7 @@ pass	a ctl-style arm whose continuation ESCAPES to another function reifies it a
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a curried function can be partially applied
 pass	a curried function-type annotation checks its inner result type against the argument
+pass	a curried lambda stored in a tuple is projected and applied through both levels
 pass	a curried newtype constructor applies to completion
 pass	a curried-syntax application of a multi-payload constructor reaches full arity and constructs
 pass	a curried-syntax application of a runtime closure flattens to one full-arity indirect call
@@ -1107,6 +1111,8 @@ pass	a leading-element list rest pattern in a let binder is refutable and reject
 pass	a leading-rest arm matches an exactly-minimum list with an empty rest
 pass	a left shift by a floating-point count does not silently promote
 pass	a left shift by the bit width or more traps rather than wrapping
+pass	a left shift overflowing a SECOND unusual width (Int 12) is also rejected CDZ0304
+pass	a left shift overflowing an unusual signed width is rejected CDZ0304
 pass	a left shift that overflows Int64 traps like multiplication
 pass	a length-prefixed frame is built from a size segment and a bytes segment
 pass	a let binder may be a record pattern that destructures by field
@@ -2721,6 +2727,7 @@ pass	an imported name resolves to a sibling file's exported definition
 pass	an in-bounds slice yields Some of the bytes at that range
 pass	an in-program handler OVERRIDES an effect's peer binding (the test-mock, no peer call)
 pass	an in-range constant argument to a narrow parameter computes at the parameter width
+pass	an in-range left shift on an unusual signed width computes at the declared width
 pass	an indexed read is not shared across a shadowing rebinding
 pass	an indexed read of an updated list is not shared with the original's
 pass	an init after the failing `?` never evaluates — even a provably-trapping one
@@ -2822,6 +2829,8 @@ pass	an unused let-init that does not reduce to a value is eliminated, so it doe
 pass	an unusual in-range width is a first-class type
 pass	an unusual signed width overflows its own maximum and is rejected CDZ0304
 pass	an unusual signed width underflows its own minimum and is rejected CDZ0304
+pass	an unusual unsigned width overflows its own maximum and is rejected CDZ0304
+pass	an unusual unsigned width underflows below zero and is rejected CDZ0304
 pass	an unusual-width value that overflows its computed range is rejected at compile time
 pass	an unwrapped conversion result is a bare number under ordinary numeric rules
 pass	an unwrapped length adds to an unwrapped time with no dimension error
@@ -2842,6 +2851,7 @@ pass	arithmetic between a char and a Rational is rejected with a working two-ste
 pass	arithmetic between a char and an Int64 is rejected with the plain Char.to-int fix
 pass	arithmetic on a bound Rational payload computes and escapes exactly
 pass	arithmetic on a let binding whose initializer diverges traps
+pass	arithmetic on an unusual UNSIGNED width enforces its own range at compile time
 pass	arithmetic on an unusual signed width enforces the type's OWN range at compile time
 pass	arithmetic reached via an inlined diverging call argument traps
 pass	arithmetic right shift

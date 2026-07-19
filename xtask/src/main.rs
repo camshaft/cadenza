@@ -593,13 +593,29 @@ fn run_timeout() -> std::time::Duration {
 /// runs ~73 cases), so the cap is GENEROUS — the point is to convert a TRUE HANG (e.g. `cf-corpus-all-pass`
 /// spinning on a known compile-hang, which emits no output and looks to every observer like a silent kill
 /// with no TOTAL) into a LOUD, NAMED, auto-bisectable FAIL, NOT to throttle a slow-but-passing suite.
-/// Default 6min; override with `CDZ_SUITE_TIMEOUT_SECS`.
-fn suite_timeout() -> std::time::Duration {
-    let secs = std::env::var("CDZ_SUITE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .filter(|&s| s > 0)
-        .unwrap_or(6 * 60);
+/// Per-suite wall-clock cap. Most suites are quick and share the 6min default, but `compiler-ml` is the
+/// dominant sweep — ~73 cases each compiling a Cadenza program through the ML compiler AND running it
+/// under wasmtime, and its heaviest file (sread-eval: 40 run-src @tests, each building the WHOLE pipeline
+/// into its own component) alone measured >300s UNDER LOAD. At the flat 6min cap a load-spike pushes the
+/// suite past 360s NONDETERMINISTICALLY → a false HANG-fail on a known-good base (the standing
+/// throughput-drag red gate). Until v-compiler-ml's file SPLIT lands (their in-lane fix — shrinks the
+/// per-file build so no file nears the cap), give compiler-ml a larger cap so a load-spike can't
+/// false-fail it, WITHOUT blinding the suite (a true infinite hang still fails loud+named at the higher
+/// cap — this raises the false-hang threshold, it does not quarantine). `CDZ_SUITE_TIMEOUT_SECS`
+/// overrides ALL suites when set (an operator escape hatch). Value chosen to comfortably clear the
+/// measured ~25-30min worst-case full compiler-ml sweep with margin.
+fn suite_timeout_for(suite: &str) -> std::time::Duration {
+    if let Ok(secs) = std::env::var("CDZ_SUITE_TIMEOUT_SECS")
+        && let Ok(secs) = secs.parse::<u64>()
+        && secs > 0
+    {
+        return std::time::Duration::from_secs(secs);
+    }
+    let secs = if suite.contains("compiler-ml") {
+        45 * 60 // the heavy sweep — clear its ~25-30min worst case + load margin (not a throttle)
+    } else {
+        6 * 60
+    };
     std::time::Duration::from_secs(secs)
 }
 
@@ -3195,9 +3211,9 @@ fn check(paths: &Paths, profile: &str) {
         // hanging with no output). compiler-ml additionally content-caches its green verdict.
         if suite == "implementation/compiler-ml" {
             let cache = CachedStep::new(paths, &name, Path::new(&cdz), &paths.repo.join(suite));
-            log.step_cached(&name, &cmd, repo, cache.as_ref(), suite_timeout());
+            log.step_cached(&name, &cmd, repo, cache.as_ref(), suite_timeout_for(suite));
         } else {
-            log.step_timed(&name, &cmd, repo, suite_timeout());
+            log.step_timed(&name, &cmd, repo, suite_timeout_for(suite));
         }
     }
 
@@ -3789,6 +3805,12 @@ fn storeless_rerun(paths: &Paths) -> Result<(), String> {
             .args(args)
             .current_dir(&paths.repo)
             .env("CADENZA_STORE", &store_str)
+            // rcdzc's `--lib` suite has deep-recursion tests that overflow the default 8MB thread stack
+            // under gate-batch load (the known dev-profile `rcdzc-compile` stack trip — nondeterministic,
+            // load-dependent). Bake the same 64MB bump the miri + bench rcdzc runs use, so a known-good
+            // base never reds this step on a stack overflow (which would flat-line trunk — it did, ~29min
+            // / backlog 173, before this). Harmless for the cdz test targets that don't need it.
+            .env("RUST_MIN_STACK", "67108864")
             .output();
         match out {
             Ok(o) if o.status.success() => {}
@@ -5327,30 +5349,41 @@ mod trap_grading_tests {
 
     #[test]
     fn suite_timeout_reads_env_with_generous_default() {
-        // Default is generous (6min) so a slow-but-passing suite isn't false-failed; a positive override
-        // parses; zero/garbage fall back. (Env is process-global; set+clear around the assert.)
+        // Default is generous (6min for a normal suite, 45min for the heavy compiler-ml sweep) so a
+        // slow-but-passing suite isn't false-failed; a positive override parses + applies to ALL suites;
+        // zero/garbage fall back. (Env is process-global; set+clear around the assert.)
         // SAFETY: single-threaded test, no other thread reads the env concurrently.
         unsafe { std::env::remove_var("CDZ_SUITE_TIMEOUT_SECS") };
         assert_eq!(
-            suite_timeout(),
+            suite_timeout_for(""),
             std::time::Duration::from_secs(360),
-            "default 6min"
+            "normal suite default 6min"
+        );
+        assert_eq!(
+            suite_timeout_for("implementation/compiler-ml"),
+            std::time::Duration::from_secs(45 * 60),
+            "compiler-ml gets the heavy-sweep cap (raises the false-hang threshold, not a quarantine)"
         );
         unsafe { std::env::set_var("CDZ_SUITE_TIMEOUT_SECS", "480") };
         assert_eq!(
-            suite_timeout(),
+            suite_timeout_for(""),
             std::time::Duration::from_secs(480),
             "override parses"
         );
+        assert_eq!(
+            suite_timeout_for("implementation/compiler-ml"),
+            std::time::Duration::from_secs(480),
+            "an explicit override applies to ALL suites, compiler-ml included (operator escape hatch)"
+        );
         unsafe { std::env::set_var("CDZ_SUITE_TIMEOUT_SECS", "0") };
         assert_eq!(
-            suite_timeout(),
+            suite_timeout_for(""),
             std::time::Duration::from_secs(360),
             "zero rejected → default"
         );
         unsafe { std::env::set_var("CDZ_SUITE_TIMEOUT_SECS", "nope") };
         assert_eq!(
-            suite_timeout(),
+            suite_timeout_for(""),
             std::time::Duration::from_secs(360),
             "garbage → default"
         );

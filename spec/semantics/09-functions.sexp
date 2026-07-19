@@ -1347,6 +1347,31 @@
   (call   main (: 3 Int64))
   (output (: 21 Int64)))
 
+; A CURRIED lambda STORED in a tuple, then PROJECTED and applied through both levels. `(fn (a) (fn (b) (+
+; (+ a b) x)))` (curried, capturing `x`) is stored in `ops`; `(((. ops 0) 3) 4)` projects it and applies
+; through both arrows → (3+4)+5 = 12. This shape USED TO DECLINE at emit ("parameter reference has no local
+; slot") while `cdz check` passed — a check-vs-compile gap: a projection-only compound holding the lambda
+; folded through, β-reduced the OUTER lambda, yielded the INNER `(fn (b) …)`, and inlining that returned
+; lambda dangled its param `b` (no closure frame). The fix keeps the compound (materialized) when its
+; element is a CURRIED lambda, so the element lifts as a runtime closure and applies via `call_indirect`.
+; A FLAT/single-arg fn element still folds (no regression). Pins that a stored curried closure is a
+; callable first-class value across both currying levels.
+(case "a curried lambda stored in a tuple is projected and applied through both levels"
+  (doc    "`(let ((x 5)) (let ((ops (tuple (fn (a) (fn (b) (+ (+ a b) x)))))) (((. ops 0) 3) 4)))` stores a
+           curried capturing lambda in a tuple, projects it, and applies through both arrows: (3+4)+5 = 12.
+           A projection-only compound holding a CURRIED lambda must be KEPT (materialized) so the element
+           lifts as a runtime closure — folding it through β-reduced the outer lambda and dangled the inner
+           lambda's param at emit ('no local slot') though check passed. A flat/single-arg fn element still
+           folds unchanged. Pins the stored-curried-closure-projected-and-applied path.")
+  (input  (do
+            (def (main)
+              (let ((x 5))
+                (let ((ops (tuple (fn (a) (fn (b) (+ (+ a b) x))))))
+                  (((. ops 0) 3) 4))))
+            (export main)))
+  (call   main)
+  (output (: 12 Int64)))
+
 ; A PREDICATE closure — a runtime closure whose RESULT TYPE is Bool. `(fn (x) (= x k))` is a `(-> Int64
 ; Bool)` value threaded through the recursive `anyp` ("does any i in n…1 satisfy the predicate?"), which
 ; SHORT-CIRCUITS on the first `true`. The closure's result crosses the `call_indirect` boundary as a

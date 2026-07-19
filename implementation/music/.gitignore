@@ -1,0 +1,4 @@
+# euphony-rs is a READ-ONLY design reference (operator directive 2026-07-19), NOT a dependency —
+# Cadenza is dependency-free. Cloned here so the v-music agent can study the primitives (the
+# rcdzc-copies-syntax-verbatim pattern); never tracked, never built, never linked.
+/reference/

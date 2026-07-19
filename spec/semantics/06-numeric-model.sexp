@@ -2174,6 +2174,34 @@
   (input  (do (def (main) (<< -1 63)) (export main)))
   (output (: -9223372036854775808 Int64)))
 
+; The left-shift overflow cases above are at the Int64 (machine) boundary. A shift on an UNUSUAL width
+; (Int4/Int12, stored in i8/i16) must enforce the DECLARED width's range, not the storage width's: a left
+; shift whose product exceeds the narrow maximum is a provable overflow → CDZ0304, exactly as the +/-
+; arithmetic on that width is (the unusual-width arith cases near :4533). A check reading the i8/i16 storage
+; range would wrongly accept these. The shift companion of the unusual-width arithmetic-overflow family.
+
+(case "a left shift overflowing an unusual signed width is rejected CDZ0304"
+  (doc    "`(Int 4).wrap 4` = 4; `4 << 1` = 8 exceeds the (Int 4) maximum 7 → a compile-provable overflow,
+           rejected CDZ0304 at the declared 4-bit range [-8, 7], NOT the i8 storage range (which would
+           accept 8). The shift member of the unusual-width overflow family — a left shift is exact
+           multiplication by a power of two, so it overflows the narrow width exactly as `7 + 1` does.")
+  (input  (<< ((. (Int 4) wrap) 4) 1))
+  (error  CDZ0304))
+
+(case "an in-range left shift on an unusual signed width computes at the declared width"
+  (doc    "`(Int 4).wrap 1` = 1; `1 << 1` = 2, which is within the (Int 4) range [-8, 7], so it computes to
+           2, a value of type (Int 4). The in-range companion of the overflow case above, pinning that the
+           width-parametric shift check accepts a product that fits the narrow width.")
+  (input  (<< ((. (Int 4) wrap) 1) 1))
+  (output (: 2 (Int 4))))
+
+(case "a left shift overflowing a SECOND unusual width (Int 12) is also rejected CDZ0304"
+  (doc    "`(Int 12).wrap 1024` = 1024; `1024 << 1` = 2048 exceeds the (Int 12) maximum 2047 → CDZ0304 at
+           the 12-bit range [-2048, 2047]. The second-width witness (paralleling the Int12 arithmetic case)
+           that the shift-overflow check is genuinely WIDTH-PARAMETRIC, not tied to the nibble.")
+  (input  (<< ((. (Int 12) wrap) 1024) 1))
+  (error  CDZ0304))
+
 ; The three shift cases above use CONSTANT operands (folded at compile time). The SAME shift with
 ; RUNTIME operands (function parameters) must trap identically — a shift is a shift regardless of
 ; whether its operands are compile-time-known. The overflow/out-of-range-count check must be emitted
@@ -4569,6 +4597,58 @@
            compile-time overflow check reads the DECLARED width's range at two distinct non-machine widths.")
   (input  (+ ((. (Int 12) wrap) 2047) ((. (Int 12) wrap) 1)))
   (error  CDZ0304))
+
+(case "arithmetic on an unusual UNSIGNED width enforces its own range at compile time"
+  (doc    "The unsigned companion of the signed unusual-width cases above. `(UInt 4)` has range [0, 15]
+           (NOT the host storage range), so `15 + 0` = 15 (the max) is in-range, a value of type (UInt 4).
+           The overflow-RANGE check is width-parametric for UNSIGNED unusual widths too: a check hardcoding
+           the u8 storage range [0, 255] would wrongly accept the overflowing sum below.")
+  (input  (+ ((. (UInt 4) wrap) 15) ((. (UInt 4) wrap) 0)))
+  (output (: 15 (UInt 4))))
+
+(case "an unusual unsigned width overflows its own maximum and is rejected CDZ0304"
+  (doc    "`15 + 1` = 16 exceeds the (UInt 4) maximum 15, so it is a compile-provable overflow → CDZ0304,
+           at the declared 4-bit unsigned width [0, 15] rather than a machine boundary. The unsigned twin of
+           the signed `7 + 1` overflow, pinning the width-parametric range check on the UNSIGNED upper bound.")
+  (input  (+ ((. (UInt 4) wrap) 15) ((. (UInt 4) wrap) 1)))
+  (error  CDZ0304))
+
+(case "an unusual unsigned width underflows below zero and is rejected CDZ0304"
+  (doc    "`0 - 1` = -1 is below the (UInt 4) minimum 0 — an unsigned width cannot hold a negative value — so
+           it is a compile-provable underflow → CDZ0304. The unsigned lower-bound companion: unlike the signed
+           width (whose minimum is negative), the unsigned minimum is 0, and going below it is rejected exactly
+           as the signed underflow is. Pins that the width-parametric check enforces the unsigned lower bound 0.")
+  (input  (- ((. (UInt 4) wrap) 0) ((. (UInt 4) wrap) 1)))
+  (error  CDZ0304))
+
+; A BITWISE op (& | ^) on an unusual signed width must re-sign-extend its RESULT from the declared sign bit
+; (bit N-1), not leave it at the i8/i16 storage width — the same width-parametric hazard the arithmetic and
+; shift cases above pin, but for the boolean-algebra ops. `(Int 4).wrap 8` = -8 (0b1000), `.wrap 15` = -1
+; (0b1111), `.wrap 7` = 7 (0b0111). A bitwise result that SETS bit 3 must read as negative; one that CLEARS
+; it must read as non-negative. A fold operating at the storage width would give +8 / +15 instead.
+
+(case "a bitwise XOR on an unusual signed width sign-extends a result that sets the sign bit"
+  (doc    "`7 ^ -8` = `0b0111 ^ 0b1000` = `0b1111`, which at the (Int 4) width is -1 (bit 3 set → the sign
+           bit). The XOR sets the declared sign bit, so the result must sign-extend to -1, NOT read as +15
+           at the i8 storage width. The bitwise member of the unusual-width family — pins that `^` narrows
+           and sign-extends its result at the declared 4-bit width.")
+  (input  (^ ((. (Int 4) wrap) 7) ((. (Int 4) wrap) 8)))
+  (output (: -1 (Int 4))))
+
+(case "a bitwise AND on an unusual signed width clears the sign bit to a non-negative result"
+  (doc    "`-1 & 7` = `0b1111 & 0b0111` = `0b0111` = 7 at the (Int 4) width: the AND CLEARS bit 3 (the sign
+           bit), so a value that was -1 becomes the non-negative 7. The companion of the XOR case — masking
+           off the declared sign bit yields a positive (Int 4), pinning that the result narrows to the
+           declared width both when the sign bit ends up set and when it is cleared.")
+  (input  (& ((. (Int 4) wrap) 15) ((. (Int 4) wrap) 7)))
+  (output (: 7 (Int 4))))
+
+(case "a bitwise OR on an unusual signed width sign-extends a result that sets the sign bit"
+  (doc    "`7 | -8` = `0b0111 | 0b1000` = `0b1111` = -1 at the (Int 4) width: the OR sets bit 3, so the
+           result sign-extends to -1. The third bitwise op, confirming `&`/`|`/`^` all narrow-and-sign-extend
+           their result at the declared unusual width, exactly as the arithmetic on that width does.")
+  (input  (| ((. (Int 4) wrap) 7) ((. (Int 4) wrap) 8)))
+  (output (: -1 (Int 4))))
 
 ; --- Unary negation: prefix `-<expr>` is the arity-1 subtraction `(- e)` -----------------------
 ; The ML surface `-x` (prefix minus applied to an expression, not a bare literal) canonicalizes to the
