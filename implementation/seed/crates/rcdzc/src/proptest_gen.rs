@@ -67,9 +67,18 @@ fn int_lit(ast: &mut Arenas, v: i64) -> StructId {
 }
 
 /// The fixed list length the G1 wrapper generates. Small — enough to exercise a non-trivial list while
-/// keeping the synthesized `let`-chain short. Variable length (a `Test.gen`-derived, bounded count) is a
+/// keeping the synthesized `let`-chain short. Variable length (a `Test.gen-int`-derived, bounded count) is a
 /// later increment.
 const G1_LIST_LEN: usize = 3;
+
+/// The `Test` effect's driver-op NAME — the op each generator performs to pull one random `Int64`. Named
+/// `gen-int` (NOT bare `gen`): the browser test driver transpiles the component with jco, which emits an
+/// internal top-level `let gen = …` (its `_initGenerator`), and importing a component op member literally
+/// named `gen` collides — `const { gen } = imports.test` → `SyntaxError: Identifier 'gen' has already been
+/// declared`, throwing at import before any run (v-guide-infra 2026-07-19). `gen-int` sidesteps the jco
+/// internal (also avoiding bare `next`, which jco calls on generators). A single source of truth for the
+/// name so the effect decl, the member-access call, and the collision guards can never drift.
+const GEN_OP: &str = "gen-int";
 
 /// Rewrite the top-level block so every `@test` whose def takes a single `(List <Int>)` parameter gains a
 /// synthesized nullary generator wrapper (and the original loses its `@test` marker). A no-op for a
@@ -881,25 +890,25 @@ fn declares_test_gen(ast: &Arenas, items: &[StructId]) -> bool {
         if let Some(eff) = ast.as_form(item, "effect")
             && eff.first().and_then(|&n| ast.as_name(n)) == Some("Test")
         {
-            // The op children follow the effect name: `(effect Test (op gen …) (op fail …) …)`. Reuse the
-            // existing `Test` ONLY if it actually declares a `gen` op — a `Test` effect that declares only
-            // `fail` (or anything but `gen`) does NOT provide `Test.gen`, and treating it as if it did
-            // would make the wrapper call a non-existent op (Copilot PR #406). Check the op names, not
-            // just the effect name.
+            // The op children follow the effect name: `(effect Test (op gen-int …) (op fail …) …)`. Reuse
+            // the existing `Test` ONLY if it actually declares the driver op — a `Test` effect that declares
+            // only `fail` (or anything but the driver op) does NOT provide `Test.gen-int`, and treating it as
+            // if it did would make the wrapper call a non-existent op (Copilot PR #406). Check the op names,
+            // not just the effect name.
             return eff[1..]
                 .iter()
                 .filter_map(|&op| ast.as_form(op, "op"))
-                .any(|op_tail| op_tail.first().and_then(|&n| ast.as_name(n)) == Some("gen"));
+                .any(|op_tail| op_tail.first().and_then(|&n| ast.as_name(n)) == Some(GEN_OP));
         }
     }
     false
 }
 
-/// Whether the program declares an effect named `Test` that does NOT carry a `gen` op — the case where
-/// this pass CANNOT proceed: the wrapper needs `Test.gen`, but appending its own `(effect Test …)` would
-/// collide with the existing `Test` name, and the existing one has no `gen` to reuse. Synthesis bails
+/// Whether the program declares an effect named `Test` that does NOT carry the driver op — the case where
+/// this pass CANNOT proceed: the wrapper needs `Test.gen-int`, but appending its own `(effect Test …)` would
+/// collide with the existing `Test` name, and the existing one has no driver op to reuse. Synthesis bails
 /// out for such a program (the compound-param `@test` then declines at the boundary as before, rather
-/// than emitting a wrapper that calls a non-existent `Test.gen`).
+/// than emitting a wrapper that calls a non-existent `Test.gen-int`).
 fn test_declared_without_gen(ast: &Arenas, items: &[StructId]) -> bool {
     for &item in items {
         if let Some(eff) = ast.as_form(item, "effect")
@@ -908,16 +917,16 @@ fn test_declared_without_gen(ast: &Arenas, items: &[StructId]) -> bool {
             let has_gen = eff[1..]
                 .iter()
                 .filter_map(|&op| ast.as_form(op, "op"))
-                .any(|op_tail| op_tail.first().and_then(|&n| ast.as_name(n)) == Some("gen"));
+                .any(|op_tail| op_tail.first().and_then(|&n| ast.as_name(n)) == Some(GEN_OP));
             return !has_gen;
         }
     }
     false
 }
 
-/// Build `(effect Test (op gen (-> Unit Int64)))`.
+/// Build `(effect Test (op gen-int (-> Unit Int64)) (op fail (-> String Unit)))`.
 fn build_test_effect(ast: &mut Arenas) -> StructId {
-    // `gen : Unit -> Int64` — the driver op every generator pulls from.
+    // `gen-int : Unit -> Int64` — the driver op every generator pulls from (see [`GEN_OP`] for why not `gen`).
     let gen_op = {
         let arrow = {
             let head = name(ast, "->");
@@ -926,7 +935,7 @@ fn build_test_effect(ast: &mut Arenas) -> StructId {
             push_list(ast, vec![head, unit, i64])
         };
         let head = name(ast, "op");
-        let gen_nm = name(ast, "gen");
+        let gen_nm = name(ast, GEN_OP);
         push_list(ast, vec![head, gen_nm, arrow])
     };
     // `fail : String -> Unit` — the report op a test performs to name WHY it failed. The runner recovers a
@@ -1420,12 +1429,12 @@ fn hoist_scalar(
     name(ast, &var_name)
 }
 
-/// `((. Test gen))` — one `Test.gen` performance (the nullary application of the member access
-/// `Test.gen`). A fresh occurrence each call, so each pulls the next int from the runner's seeded pool.
+/// `((. Test gen-int))` — one `Test.gen-int` performance (the nullary application of the member access
+/// `Test.gen-int`). A fresh occurrence each call, so each pulls the next int from the runner's seeded pool.
 fn gen_call(ast: &mut Arenas) -> StructId {
     let dot = name(ast, ".");
     let test = name(ast, "Test");
-    let gen_nm = name(ast, "gen");
+    let gen_nm = name(ast, GEN_OP);
     let member = push_list(ast, vec![dot, test, gen_nm]);
     push_list(ast, vec![member])
 }
@@ -2022,9 +2031,9 @@ mod tests {
         );
     }
 
-    /// PR #406: a program that declares `(effect Test (op fail …))` WITHOUT a `gen` op must NOT get a
-    /// synthesized wrapper — appending a `(op gen …)` effect would collide with the existing `Test`, and
-    /// reusing the gen-less one would call a non-existent `Test.gen`. The pass bails, leaving the
+    /// PR #406: a program that declares `(effect Test (op fail …))` WITHOUT the `gen-int` driver op must NOT
+    /// get a synthesized wrapper — appending a `(op gen-int …)` effect would collide with the existing `Test`,
+    /// and reusing the driver-less one would call a non-existent `Test.gen-int`. The pass bails, leaving the
     /// compound-param `@test` to decline at the boundary as before.
     #[test]
     fn a_test_effect_without_gen_suppresses_synthesis() {
@@ -2044,12 +2053,12 @@ mod tests {
         );
     }
 
-    /// The complement: a program that declares `(effect Test (op gen …))` itself IS usable — the pass
+    /// The complement: a program that declares `(effect Test (op gen-int …))` itself IS usable — the pass
     /// reuses it (does not append a colliding second `Test`) and still synthesizes the wrapper.
     #[test]
     fn a_test_effect_with_gen_is_reused() {
         let ast = crate::testkit::parse(
-            "(do (effect Test (op gen (-> Unit Int64))) \
+            "(do (effect Test (op gen-int (-> Unit Int64))) \
                  (@ test (def (p (: xs (List Int64))) (List.len xs))) (def (other) 1))",
         );
         let db = Db::load(ast);

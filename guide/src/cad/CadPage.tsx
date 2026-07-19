@@ -445,7 +445,15 @@ export default function CadPage() {
             `md:flex-[2]` (a 60/40 split) + `md:min-w-[24rem]` so the viewer never squishes to a sliver again
             (the operator's "~400px off to the side" desktop bug — the editor column lacked `min-w-0` and ate
             the width; fixed there + the preview now claims the majority share). `md:h-auto` fills the column. */}
-        <div className="relative h-[65vh] shrink-0 overflow-hidden rounded-lg border border-slate-800 bg-slate-950 md:h-auto md:min-h-[16rem] md:min-w-[24rem] md:flex-[3] md:shrink">
+        <div
+          data-testid="cad-preview"
+          // The rendered geometry's triangle count — a DOM-visible signal for a VISIBLE-render check (a
+          // headless "a <canvas> mounted" assertion is NOT enough: a 0-triangle empty mesh still mounts a
+          // canvas and shows BLANK, which is exactly the empty-Solid-annihilation blank the operator hit).
+          // 0 (or absent) = nothing to see; >0 = real geometry on the canvas. check:visual asserts this > 0.
+          data-mesh-tris={lastMesh ? lastMesh.indices.length / 3 : 0}
+          className="relative h-[65vh] shrink-0 overflow-hidden rounded-lg border border-slate-800 bg-slate-950 md:h-auto md:min-h-[16rem] md:min-w-[24rem] md:flex-[3] md:shrink"
+        >
           {lastMesh ? (
             // Keep MeshView MOUNTED once we have any mesh — a recompute (running) swaps its geometry to the
             // latest `lastMesh` WITHOUT unmounting, so the camera vantage persists (operator's top irritant).

@@ -603,11 +603,11 @@ fn an_imported_library_test_is_not_double_counted() {
 fn proptest_src() -> String {
     // `refl` is a true property over any generated int; `plain` pulls no gen (a unit test).
     "effect Test =\n\
-     \x20 | gen : Unit -> Int64\n\
+     \x20 | gen-int : Unit -> Int64\n\
      \x20 | fail : String -> Unit\n\
      def assert(cond, msg: String) =\n\
      \x20 if cond then unit else host Test in (Test.fail(msg); trap(\"assertion failed\"))\n\
-     @test def refl() = host Test in (let n = Test.gen() in assert(n == n, \"int equals itself\"))\n\
+     @test def refl() = host Test in (let n = Test.gen-int() in assert(n == n, \"int equals itself\"))\n\
      @test def plain() = assert(1 + 1 == 2, \"1+1 is 2\")\n"
         .to_string()
 }
@@ -639,11 +639,11 @@ fn a_false_property_fails_with_a_shrunk_counterexample_and_a_seed() {
     let d = dir("proptest-fail");
     // `n > 0` is false for a generated 0 / negatives — the property fails and shrinks toward 0.
     let src = "effect Test =\n\
-        \x20 | gen : Unit -> Int64\n\
+        \x20 | gen-int : Unit -> Int64\n\
         \x20 | fail : String -> Unit\n\
         def assert(cond, msg: String) =\n\
         \x20 if cond then unit else host Test in (Test.fail(msg); trap(\"assertion failed\"))\n\
-        @test def always_positive() = host Test in (let n = Test.gen() in assert(n > 0, \"n should be positive\"))\n";
+        @test def always_positive() = host Test in (let n = Test.gen-int() in assert(n > 0, \"n should be positive\"))\n";
     let f = write(&d, "p.cdz", src);
     let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0"]);
     assert!(!ok, "a false property → non-zero exit: {stdout}{stderr}");

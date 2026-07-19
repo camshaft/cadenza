@@ -417,10 +417,12 @@ function toManifold(M: ManifoldStatic, CS: CrossSectionStatic, s: Solid): Manifo
   switch (s.t) {
     case "empty":
       // An empty solid → manifold's canonical EMPTY (no geometry), matching the Rust cdz-cad driver's
-      // `Manifold::empty()`. The encapsulated API has no bare empty ctor, so use a zero-size cube — which
-      // manifold documents (and we verified: `isEmpty()===true`, 0 triangles) as returning an empty Manifold,
-      // NOT degenerate geometry. This composes correctly when nested (an empty arm of a union/difference).
-      return M.cube([0, 0, 0], true);
+      // `Manifold::empty()`. 🪤 A zero-size cube (`M.cube([0,0,0])`) is NOT a safe empty here: it reports
+      // isEmpty/0-tri in isolation but ANNIHILATES a boolean — `cube([0,0,0]).add(realCube)` yields 0 tris,
+      // zeroing the whole model (this blanked the snowflake, whose 6-fold fold starts from an Empty base:
+      // `Union(Empty, body)` → nothing). The encapsulated API has no bare empty ctor, but `M.union([])`
+      // (union of no manifolds) IS a proper empty that COMPOSES: `M.union([]).add(realCube)` === the cube.
+      return M.union([]);
     case "cube":
       return M.cube(s.s, true); // FULL size, centred (matches Cube semantics)
     case "sphere":

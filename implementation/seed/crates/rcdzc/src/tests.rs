@@ -18104,6 +18104,42 @@ mod match_engine {
     }
 
     #[test]
+    fn a_multi_payload_pattern_with_too_few_binders_is_rejected() {
+        // The too-FEW twin of the over-arity check: `(Mk a)` against a 2-FIELD `Mk` under-binds — it must
+        // REJECT (CDZ0201), not silently bind `a` to the whole payload tuple (the one-sided-arity slip
+        // v-inference flagged, 8901; ruling 8922 = a multi-field variant is multi-arity). Keyed on the
+        // DECLARED field count (`variant_payload_arity`), so it is symmetric with the too-many check.
+        let too_few = reject_full(
+            "(module m (type Pair (Mk Int64 Int64)) \
+               (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a) a))) (export main))",
+        )
+        .expect("a one-binder pattern on a two-field variant is a malformed destructure");
+        assert_eq!(
+            too_few.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            too_few.message
+        );
+        assert!(
+            too_few
+                .message
+                .contains("this pattern binds 1 element for `Mk`, but `Mk` carries 2 fields"),
+            "names the ctor + counts fields (the too-few twin): {}",
+            too_few.message
+        );
+        // CRITICAL: a genuinely SINGLE-field variant whose one payload is a compound VALUE is UNAFFECTED —
+        // `(Pt (Tuple Int64 Int64))` has declared arity 1, so `(Pt a)` binds the whole tuple payload and
+        // runs (the corpus-blessed `(Pt r)` form). Keying on the payload TYPE shape (a `Ty::Tuple`) instead
+        // of the DECLARED field count would wrongly reject this.
+        let single_compound = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (type R (Pt (Tuple Int64 Int64))) \
+               (def (main) (match (R.Pt (tuple 3 4)) ((R.Pt a) (. a 0)))) (export main))",
+        )))
+        .expect("a one-binder pattern on a single-tuple-payload variant binds the whole payload");
+        assert_eq!(run_returns::<i64>(&single_compound, "main"), 3);
+    }
+
+    #[test]
     fn an_exported_closure_body_is_type_checked() {
         // TYPE-SOUNDNESS HOLE: an EXPORTED closure `(def (a) (fn …))` crosses the host boundary and is
         // never β-reduced, so its body escaped the type-checker (`collect_node`'s `Lambda` arm is a no-op)

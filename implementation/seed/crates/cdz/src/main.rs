@@ -4767,7 +4767,7 @@ fn run_one_trial(
 /// same `Test` effect that carries `fail`). `cdz test` answers a `Test.gen` performance with the next int
 /// from a seeded pool, so a generator built on this ONE op — bolero's Driver model, one int source that
 /// type-directed generation decodes — needs no per-shape host coordination.
-const GEN_OP_LABEL: &str = "test.gen";
+const GEN_OP_LABEL: &str = "test.gen-int";
 
 /// Run the test component IN-PROCESS (via the `cdz-run` LIBRARY — `run_capturing`, no sibling binary),
 /// ALSO supplying a seeded int `pool` as ordered `Test.gen=<n>` host responses (consumed IN ORDER by each
@@ -4783,12 +4783,12 @@ fn run_one_trial_with_pool(
     arg_vals: &[String],
     pool: &[i64],
 ) -> (TrialOutcome, usize) {
-    // Each pool int becomes a `Test.gen` host response, consumed in order. The op label pairs it with the
+    // Each pool int becomes a `Test.gen-int` host response, consumed in order. The op label pairs it with the
     // call for the ordered-consume model (the value is coerced to the op's `Int64` result at binding).
     let host_responses: Vec<cdz_run::HostResponse> = pool
         .iter()
         .map(|n| cdz_run::HostResponse {
-            op: "Test.gen".to_string(),
+            op: "Test.gen-int".to_string(),
             value: n.to_string(),
         })
         .collect();

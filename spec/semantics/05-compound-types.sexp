@@ -5250,6 +5250,23 @@
             (export main)))
   (error  CDZ0201))
 
+(case "a multi-payload pattern with too FEW binders is a malformed destructure"
+  (doc    "The too-FEW twin of the over-arity reject above: `(Mk a)` against a 2-payload `Mk` binds ONE
+           name where the constructor carries TWO fields, so it MUST reject (CDZ0201, 'binds 1 element …
+           carries 2 fields — bind exactly as many'), NOT silently bind `a` to the whole payload tuple. A
+           multi-field variant is MULTI-arity (matching construction's two-arg strictness — `(Pair.Mk n)`
+           under-applies — and the two-binder `(Mk a b)` blessing), so the arity check is TWO-SIDED: both
+           too-many (3>2, above) and too-few (1<2, here) fault. Keyed on the DECLARED field count, so a
+           genuinely single-field variant whose one payload is a compound VALUE (e.g. `(Pt (Tuple T T))`
+           matched `(Pt r)`) still binds the whole payload with one sub-pattern — only a >1-FIELD
+           declaration faults on under-binding. (Ruling: the core-semantics §195/207 'single-arity' is the
+           internal curried-application ABI, not the surface field arity.)")
+  (input  (do
+            (type Pair (Mk Int64 Int64))
+            (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a) a)))
+            (export main)))
+  (error  CDZ0201))
+
 ; --- A multi-payload constructor applied in CURRIED / PARTIAL form ---
 ; A sum constructor is a single-arity function (core-semantics.md §A Sum Type Constructor Is A Single-
 ; Arity Function), and §Functions Are Single-Arity makes `(f a b)` sugar for `((f a) b)`. So a two-payload

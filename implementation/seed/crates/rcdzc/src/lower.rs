@@ -8658,7 +8658,44 @@ fn pattern_constraints(
             // A bare `(Mk)` / member `(. T Mk)` with no payload arg — nothing to bind (a unit newtype).
             0 => Ok(Vec::new()),
             // `(Mk n)` — bind the single payload at `[Payload]` (erased later), typed as `inner`.
+            //
+            // ARITY: a MULTI-FIELD variant `(Mk Int64 Int64)` is MULTI-arity (two DECLARED fields, boxed as
+            // a payload tuple), so a ONE-binder pattern `(Mk a)` — a lone BARE NAME — under-binds: it would
+            // silently bind `a` to the whole field-tuple, the surprising slip a too-MANY `(Mk a b c)` is
+            // already rejected for. Reject it symmetrically (concierge/operator ruling 8922: a multi-field
+            // variant is multi-arity; "single-arity" in core-semantics §195/207 is the internal curried-
+            // application ABI, not the surface field arity).
+            //
+            // TWO shapes are NOT under-binding and pass through:
+            //  (1) the single arg is an explicit `(tuple …)` PATTERN — `(Mk (tuple a _))` — the CANONICAL
+            //      single-arity payload-tuple destructure (§207); it recurses below and `pattern_constraints`'
+            //      tuple arm arity-checks it against the payload tuple `inner`. This is the form the emit /
+            //      recursive-match tests use.
+            //  (2) a genuinely SINGLE-FIELD variant whose one payload is a compound VALUE — `(Pt (Tuple T
+            //      T))`, `(Pt (Record …))`, `(Mk (-> …))` — has DECLARED arity 1 (`variant_payload_arity`),
+            //      so `(Pt a)` correctly binds that whole payload (the corpus-blessed `(Pt r)` form).
+            // So reject ONLY a >1-DECLARED-FIELD variant matched with a single NON-tuple sub-pattern — the
+            // too-FEW twin of the `_ =>` too-MANY check.
             1 => {
+                let arg_is_tuple_pattern = is_tuple_pattern(db, args[0]);
+                if !arg_is_tuple_pattern
+                    && crate::eval::variant_payload_arity(db, head).is_some_and(|n| n > 1)
+                    && let crate::ty::Ty::Tuple(ts) = &inner
+                {
+                    let ctor = ctor_pattern_name(db, pat);
+                    let plural = |k: usize| if k == 1 { "" } else { "s" };
+                    return Err(Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "this pattern binds 1 element for `{ctor}`, but `{ctor}` carries {} \
+                             field{} — a constructor pattern must bind exactly as many as the \
+                             constructor has",
+                            ts.len(),
+                            plural(ts.len()),
+                        ),
+                    )
+                    .at(pat));
+                }
                 let mut deeper = path;
                 deeper.push(crate::core::PathStep::Payload);
                 pattern_constraints(db, args[0], &inner, deeper, lit_tests)
