@@ -150,13 +150,28 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
 /// (A call WITH arguments is the param slice — for now it lands in the NBin arm and declines.)
 def read-app-or-bin(s: String, sym: String, a0: Int64, tree: Tree) =
   (match def-body-of(tree, name-id(sym)) with
-    | Option.Some(bodyId) => (if (char-at(s, skip-space(s, a0)) == ")") then read-nullary-call(s, a0, bodyId, tree) else read-bin-form(s, sym, a0, tree))
+    | Option.Some(bodyId) =>
+        (if (char-at(s, skip-space(s, a0)) == ")")
+         then read-nullary-call(s, a0, bodyId, tree)     // `(mk)` — nullary call
+         // a recorded def WITH an argument: a nullary def `(mk 5)` is over-applied (still read as a call, arg
+         // present) — but a PARAMETERIZED def `(f 41)` is the slice-3c param call. Both emit NApp(bodyId, argId);
+         // lower keys the param via bodyId (nullary → param-of None → still declines; param def → CLet).
+         else (match param-of(tree, name-id(sym)) with
+                | Option.Some(_) => read-param-call(s, a0, bodyId, tree)   // `(f arg)` — a single-param call
+                | Option.None(_) => read-bin-form(s, sym, a0, tree)))      // no param → treat as bin (ill-typed)
     | Option.None(_) => read-bin-form(s, sym, a0, tree))
 
 /// A nullary call `(mk)`: emit `NApp(bodyId, -1)` and consume the closing `)`.
 def read-nullary-call(s: String, a0: Int64, bodyId: Int64, tree: Tree) =
   (let k = skip-space(s, a0) in
    (match add-node(tree, Node.NApp(bodyId, 0 - 1)) with | (id, t1) => (id, k + 1, t1)))
+
+/// A single-param call `(f arg)`: read the ONE argument form, then emit `NApp(bodyId, argId)` and consume the
+/// closing `)`. lower reaches the param via `param-of(tree, bodyId)` → `CLet(param, argCore, bodyCore)` (3c).
+def read-param-call(s: String, a0: Int64, bodyId: Int64, tree: Tree) =
+  (match read-form(s, a0, tree) with | (argId, a1, t1) =>
+    (let a2 = close-paren(s, a1) in
+     (match add-node(t1, Node.NApp(bodyId, argId)) with | (id, t2) => (id, a2, t2)))))
 
 /// A prefix binary op `(sym a b)`: read two operands + emit `NBin(op-code-of(sym), a, b)`.
 def read-bin-form(s: String, sym: String, a0: Int64, tree: Tree) =
@@ -281,7 +296,11 @@ def read-do-def(s: String, d1: Int64, tree: Tree) =
            else (let t2 = record-def(t1, nameId, bodyId) in
                  (if (paramId == (0 - 1))
                   then read-do-next(s, j, t2)                       // nullary helper — body only
-                  else read-do-next(s, j, record-param(t2, nameId, paramId)))))))  // single-param helper
+                  // single-param helper: record the param under BOTH the nameId AND the bodyId. lower-db's NApp
+                  // arm has the callee BODY node (calleeId==bodyId), NOT the name, so it looks the param up by
+                  // bodyId (`param-of(tree, calleeId)`) to build CLet(param, arg, body) — no NApp arity change.
+                  else (let t3 = record-param(t2, nameId, paramId) in
+                        read-do-next(s, j, record-param(t3, bodyId, paramId)))))))  // + bodyId-keyed for lower
 
 /// After a HELPER def ended at `j`: skip its closing `)` (if present) and read the next `(def …)` in the do.
 def read-do-next(s: String, j: Int64, tree: Tree) =
