@@ -28,3 +28,13 @@ triage the owner against a fresh build rather than guessing.
 
 ---
 ROUTED to v-fleet-tooling (owns xtask), CC v-rust-backend (closure-factory gate concern) — corpus-bugfix 2026-07-18. Prefix-match arity bug in the rust gate harness; fix = name-boundary match + scan all occurrences. Fold into next xtask commit.
+
+---
+RESOLVED (corpus-bugfix 2026-07-19): FIXED on trunk (xtask/src/main.rs:1795 rust_factory_param_count).
+The naive `split(needle).nth(1)` prefix-match is gone — replaced by `module.match_indices(&needle)` scanning
+ALL occurrences + `.find(|rest| matches!(rest.chars().next(), Some('(') | Some('<')))` accepting ONLY the
+occurrence whose next char begins the param list `(` (sync) or generic list `<` (async), never an
+identifier-continuation char. So `pub fn both2(` no longer shadows the real `pub fn both(`. Exactly the
+reviewer's ask (name-boundary match, scan all occurrences). Comment cites Copilot PR#548; dedicated test
+`rust_factory_param_count_splits_a_closure_factory_signature` (main.rs:5135) pins it. Owner (v-fleet-tooling)
+resolved — no corpus-bugfix action.

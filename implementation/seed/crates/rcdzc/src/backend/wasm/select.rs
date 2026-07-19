@@ -1803,9 +1803,49 @@ fn box_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
 /// as-is; only an unresolved declared type defers to the element node.)
 fn box_op_for(db: &mut Db, node: StructId, declared: &Ty) -> Result<Option<&'static str>, Reject> {
     if matches!(declared, Ty::Var(_) | Ty::Any) {
+        // Both the declared slot type AND (below) the node type are unresolved. `box_op(node)` →
+        // `box_op_ty(Ty::Var)` = `box-int` (i64), the "dead phantom position" default. But if the value
+        // node PROVABLY produces a live i32 HEAP HANDLE (a `Map.empty`/`sum-new`/`vec-*`/record/tuple —
+        // known by its Core shape, independent of its unresolved type), box-int'ing it feeds an i32 to the
+        // i64 `box-int` → an invalid module (the compiler-ml `function[27]` freeze: an at-scale
+        // `Tree.Arena(Map.empty, …)` field whose element type never got pinned). A handle is already the
+        // heap cell — store it AS-IS (`Ok(None)`), the same as a RESOLVED handle type takes. This is the
+        // Var-default-is-unsafe-for-a-live-handle safety net; it fires only in the both-unresolved case,
+        // so a genuinely-dead phantom position still takes the uniform box-int cell.
+        if node_produces_heap_handle(db, node) {
+            return Ok(None);
+        }
         box_op(db, node)
     } else {
         box_op_ty(db, declared)
+    }
+}
+
+/// Whether the value node PROVABLY produces a u32 heap HANDLE (an i32 that is a heap-cell handle, not a
+/// boxed scalar) — read from its Core SHAPE, independent of its (possibly unresolved) solved type. Used by
+/// [`box_op_for`] to avoid box-int'ing a live handle when the slot type is an unresolved `Var`/`Any` (which
+/// would default to the i64 `box-int` and reject an i32 handle). Conservative: only shapes whose emit
+/// leaves a handle on the stack. A scalar/const/arith node is NOT a handle (returns false → box normally).
+fn node_produces_heap_handle(db: &mut Db, node: StructId) -> bool {
+    match core_of(db, node) {
+        // A SumNew is a handle UNLESS it is an enum-disc (a bare i32 discriminant that DOES box as int).
+        Core::SumNew { .. } => !node_is_enum_disc(db, node),
+        Core::MapNew { .. }
+        | Core::MapInsert { .. }
+        | Core::MapRemove { .. }
+        | Core::ListNew { .. }
+        | Core::ListPush { .. }
+        | Core::ListConcat { .. }
+        | Core::ListUpdate { .. }
+        | Core::SetOf { .. }
+        | Core::SetInsert { .. }
+        | Core::SetRemove { .. }
+        | Core::SetAlgebra { .. }
+        | Core::Record { .. }
+        | Core::Tuple { .. }
+        | Core::BytesOf { .. }
+        | Core::BytesConcat { .. } => true,
+        _ => false,
     }
 }
 
@@ -6321,7 +6361,19 @@ fn emit(
         Core::Record { fields } => {
             out.push(Lir::ConstI32(fields.len() as i32));
             out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [arr]
-            for (i, (_, &value)) in fields.iter().enumerate() {
+            // The record's OWN solved type carries each field's DECLARED type by name — box each field by
+            // THAT, not by the field-value NODE's type (which, at scale, can resolve to a bare `Ty::Var`
+            // for an empty-collection field like `Map.empty` whose element vars never got pinned). A `Var`
+            // node type defaults to `box-int` (i64) in `box_op_ty`, which WRONGLY boxes a live i32 Map
+            // handle → "expected i64 found i32" at `Component::new` (the compiler-ml `function[27]` freeze:
+            // `Tree.Arena(Map.empty, 0, Map.empty)`). `box_op_for` prefers the declared field type (here
+            // `Ty::Map` → `Ok(None)`, store the handle as-is) and falls back to the node only when the
+            // declared field type is itself unresolved — exactly as `Core::Set`/`Map` element boxing does.
+            let field_tys = match crate::infer::type_of(db, id).strip_nominal() {
+                crate::ty::Ty::Record(m) => Some((*m).clone()),
+                _ => None,
+            };
+            for (i, (name, &value)) in fields.iter().enumerate() {
                 // Each field starts its scratch ABOVE the running high-water, NOT at a fixed `base` — the
                 // same disjoint-slot discipline `Core::Tuple`/`Core::ListNew` apply. A field initialized by
                 // a checked-arith op stashes an i64 into a scratch slot; if a sibling (or an enclosing
@@ -6337,7 +6389,10 @@ fn emit(
                 // A scalar element boxes to a handle (a NARROW int first extends i32→i64, as box-int
                 // takes an i64 cell); a nested compound is ALREADY a u32 handle → `arr-set` it directly;
                 // a UNIT field pushed nothing → its slot holds the inline-unit sentinel.
-                let boxed = box_op(db, value)?;
+                let boxed = match field_tys.as_ref().and_then(|m| m.get(name)) {
+                    Some(declared) => box_op_for(db, value, declared)?,
+                    None => box_op(db, value)?,
+                };
                 emit_heap_store_tail(db, value, boxed, out); // [arr, i, handle]
                 // Canonicalize a rope-capable String/Bytes field to a flat leaf on construction (see the
                 // `Core::Tuple` arm) — a record IS a tuple at run time, so the same nested-rope face.
@@ -6356,6 +6411,15 @@ fn emit(
         Core::Tuple { elems } => {
             out.push(Lir::ConstI32(elems.len() as i32));
             out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [arr]
+            // Box each element by the tuple's OWN solved element type (positional), not the element NODE's
+            // type — same fix as `Core::Record`: an at-scale empty-collection element (`Map.empty`) can
+            // reach here with a `Ty::Var` node type that `box_op_ty` defaults to `box-int` (i64), wrongly
+            // boxing a live i32 handle. `box_op_for` prefers the declared element type, falling back to the
+            // node only when the declared is itself unresolved.
+            let elem_tys = match crate::infer::type_of(db, id).strip_nominal() {
+                crate::ty::Ty::Tuple(ts) => Some(ts.clone()),
+                _ => None,
+            };
             // Each element starts its scratch ABOVE the high-water the PREVIOUS elements reached, NOT at a
             // fixed `base`. An element that stashes a value in a scratch slot at a given TYPE (a
             // `SumExpect`/match materializing an i32 heap handle) fixes that slot's declared type; a LATER
@@ -6371,7 +6435,10 @@ fn emit(
                 // A scalar element boxes (a NARROW int extends i32→i64 first, box-int takes i64); a
                 // nested compound is ALREADY a u32 handle → `arr-set` it directly, no box; a UNIT element
                 // pushed nothing → its slot holds the inline-unit sentinel.
-                let boxed = box_op(db, elem)?;
+                let boxed = match elem_tys.as_ref().and_then(|ts| ts.get(i)) {
+                    Some(declared) => box_op_for(db, elem, declared)?,
+                    None => box_op(db, elem)?,
+                };
                 emit_heap_store_tail(db, elem, boxed, out); // [arr, i, handle]
                 // CANONICALIZE a rope-capable String/Bytes element to a flat leaf on construction (the
                 // nested-leaf twin of the `op_box_float` normalize-on-construct + the top-level `=`
@@ -6938,6 +7005,14 @@ fn emit(
         //    payload box + `arr-set`).
         // Leaves the sum's u32 handle on the stack.
         Core::SumNew { disc, payloads } => {
+            // The variant's DECLARED payload type(s) at this sum's instantiation — box each payload by THAT,
+            // not the payload-value NODE's type. Same fix as `Core::Record`/`Core::Tuple`: an at-scale
+            // empty-collection payload (`(Some Map.empty)`, or a sum whose payload is a Map/sum) can reach
+            // here with a `Ty::Var` node type that `box_op_ty` defaults to `box-int` (i64), wrongly boxing a
+            // live i32 handle → "expected i64 found i32 @func27". For a SINGLE payload the declared type IS
+            // the payload type; for MULTIPLE it is a `Ty::Tuple` whose element `i` is payload `i`'s type.
+            let sum_ty = crate::infer::type_of(db, id);
+            let payload_decl = variant_payload_ty_at(db, &sum_ty, disc);
             // ENUM-DISCRIMINANT sum (every variant nullary, ≥2 variants): the value IS its discriminant,
             // so construction is JUST the constant — no `sum-new` box, no unit payload. The i32 slot holds
             // the discriminant directly; a match switches on it and equality is `i32.eq` (see those sites).
@@ -6965,7 +7040,10 @@ fn emit(
                     // value pushed nothing. A SCALAR boxes; a compound payload is already a handle. Without
                     // this the payload was absent and `sum-new` underflowed the stack (invalid wasm).
                     emit(db, p, slots, base, high, scratch_ty, layout, out)?; // [disc, value | nothing]
-                    let boxed = box_op(db, p)?;
+                    let boxed = match payload_decl.as_ref() {
+                        Some(declared) => box_op_for(db, p, declared)?,
+                        None => box_op(db, p)?,
+                    };
                     emit_heap_store_tail(db, p, boxed, out); // [disc, payload-handle]
                     // Canonicalize a rope-capable String/Bytes payload to a flat leaf on construction (see
                     // the `Core::Tuple` arm) — a rope in a sum payload (e.g. `(Some (concat …))`) is the
@@ -6981,10 +7059,20 @@ fn emit(
                     // NOTHING before, underflowing the per-payload `arr-set` into invalid wasm.
                     out.push(Lir::ConstI32(n as i32)); // [disc, n]
                     out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc, arr]
+                    // A multi-payload variant's declared type is a `Ty::Tuple` — element `i` is payload `i`'s
+                    // declared type (box each by that, falling back to the node when the tuple/element is
+                    // unresolved), the multi-payload twin of the single-payload declared-type box above.
+                    let payload_elem_tys = match payload_decl.as_ref().map(|t| t.strip_nominal()) {
+                        Some(crate::ty::Ty::Tuple(ts)) => Some(ts.clone()),
+                        _ => None,
+                    };
                     for (i, &p) in payloads.iter().enumerate() {
                         out.push(Lir::ConstI32(i as i32)); // [disc, arr, i]
                         emit(db, p, slots, base, high, scratch_ty, layout, out)?; // [disc, arr, i, value]
-                        let boxed = box_op(db, p)?;
+                        let boxed = match payload_elem_tys.as_ref().and_then(|ts| ts.get(i)) {
+                            Some(declared) => box_op_for(db, p, declared)?,
+                            None => box_op(db, p)?,
+                        };
                         emit_heap_store_tail(db, p, boxed, out); // [disc, arr, i, handle]
                         // Canonicalize a rope-capable payload element on construction (see above).
                         if elem_needs_rope_compaction(db, p) {

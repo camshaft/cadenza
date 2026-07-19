@@ -33,3 +33,13 @@ box (needs trig).
 
 ## Owner
 `implementation/cad/*` = v-cad. The bound fix + both test updates land together (else the tests fail).
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk dcc81d629): the unsound Rotate-AABB under-approximation
+is FIXED in implementation/cad/src/exact.cdz. `aabbr-corner-max-abs` (exact.cdz:278) now returns the L1 sum
+`mx + my + mz` (per-axis max-abs summed), NOT the old `rmax(...)` max|coord|. Doc (272-276) explains: "sqrt has
+no exact Rational form, so we use the L1 upper bound mx+my+mz which SOUNDLY ENCLOSES the rotated shape for ANY
+angle" and explicitly cites "the reviewer-flagged under-approximation. The L1 sum fixes it." The pinning test
+was RENAMED conservatively→soundly (`rotate-bounds-soundly-encloses`, exact.cdz:1035) reflecting the corrected
+bound; helpers.cdz rotate tests consistent. Exactly Copilot's fix (‖Rp‖₂ ≤ ‖p‖₁ ≤ ax+ay+az, exact-Rational,
+no trig/sqrt). Owner (v-cad) resolved — no corpus-bugfix action.

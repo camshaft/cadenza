@@ -8972,6 +8972,23 @@
               (Map.len (Map.remove (Map.insert (Map.insert Map.empty 1 10) 2 20) 1))) (export main)))
   (output (: 1 Int64)))
 
+(case "removing a key drops the ASSOCIATION and keeps the sibling — a lookup-after check, not just size"
+  (doc    "The size case above (size 1 after removing one of two keys) cannot distinguish a correct remove
+           from bugs that preserve the COUNT: a remove that decremented the size but left the binding
+           (lookup 1 still Some 10), or one that dropped the WRONG key (removed 2 instead of 1). This checks
+           the LOOKUP after remove: over {1↦10, 2↦20} with key 1 removed, `Map.lookup 1` is None (the removed
+           key's association is genuinely gone) AND `Map.lookup 2` is still Some 20 (the sibling survives, so
+           the RIGHT key was removed). Encoded `100*(lookup1 present ? 1 : 0) + (lookup2 value)` = 100*0 + 20
+           = 20. The value-side companion of the size-only case — a size-preserving remove bug passes the
+           size check but fails this.")
+  (input  (do
+            (def (main)
+              (let ((m (Map.remove (Map.insert (Map.insert Map.empty 1 10) 2 20) 1)))
+                (+ (* 100 (match (Map.lookup m 1) ((Some w) 1) ((None u) 0)))
+                   (match (Map.lookup m 2) ((Some v) v) ((None u) 0)))))
+            (export main)))
+  (output (: 20 Int64)))
+
 (case "removing an absent key leaves the map unchanged"
   (doc    "Removing a key the map does not contain yields a map equal to the operand rather than
            trapping (collections-and-text.md §A Map Is Built By Functional Construction — removal is

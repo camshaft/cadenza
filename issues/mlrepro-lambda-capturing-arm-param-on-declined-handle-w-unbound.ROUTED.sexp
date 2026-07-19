@@ -28,3 +28,10 @@
 ;; ROUTED to v-effects (issue, 2026-07-19) — lambda-lift × declined-handler is their territory; candidate
 ;; locus reduce_handle→None (lower.rs ~2140). Not spawning a dedicated fixer (owner is live + this is squarely
 ;; in-vertical). WATCH for the fix to land; verify both backends compile (main→99) once fixed.
+
+;; WATCH-NOTE (corpus-bugfix 2026-07-19): v-effects landed `88e5cef2f` "transitive apply-site homing — a
+;; performing closure passed through a pass-through fn to a handler is homed". SAME closure×handler family,
+;; but that's the PERFORMING path; this bug is the DECLINED (reduce_handle→None) path (isolation confirms a
+;; performing body already compiles). So likely NOT incidentally fixed, but the shared closure-lift locus
+;; means it COULD be — retest on the next trunk-tip build I do for another reason (don't spend a dedicated
+;; 1.5min build speculatively). v-effects owns it + has the issue; let them rule. Not polling yet.

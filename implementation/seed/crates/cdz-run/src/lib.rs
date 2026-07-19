@@ -131,15 +131,39 @@ fn arm_epoch_ticker(engine: &Engine) {
 /// JIT-compiling the ~67KB runtime component is ~75ms, and it is BYTE-IDENTICAL for every heap program
 /// (fixed by its content hash), yet `cdz-run` spawns fresh per program — so the gate recompiled the
 /// SAME runtime hundreds of times. With `opts.runtime_cache_dir` set, the first run compiles + writes
-/// `<dir>/<hash>-<wt>.cwasm` (wasmtime version fingerprint `<wt>` in the name), and every later run
-/// `deserialize`s that (~0.25ms — a ~300× drop on runtime composition).
+/// `<dir>/<hash>-wt<engine-fingerprint>.cwasm` (an engine-compatibility fingerprint in the name), and
+/// every later run `deserialize`s that (~0.25ms — a ~300× drop on runtime composition).
 ///
-/// Safety: `Component::deserialize` is `unsafe` because arbitrary bytes could be malformed, but it
-/// VALIDATES its own header (engine config + wasmtime version) and returns `Err` on any mismatch rather
-/// than misbehaving — so a stale/incompatible `.cwasm` is REJECTED, not misread. We additionally key
-/// the filename on the wasmtime version and only ever read a file THIS binary itself wrote, and any
-/// `deserialize` error falls straight through to a fresh `Component::new`. So the cache can only make a
-/// run faster, never change what it does.
+/// Safety: `Component::deserialize` is `unsafe` because arbitrary bytes could be malformed, but the
+/// deserialize path (`load_code` → `serialization::check_compatible`) VALIDATES the artifact's embedded
+/// header — the exact wasmtime version (`env!("CARGO_PKG_VERSION")`, string-equal), the native-host ISA
+/// flags, and the compiler `Metadata` — and returns `Err` on any mismatch rather than misbehaving. So a
+/// stale/incompatible `.cwasm` is REJECTED, not misread, EVEN IF the filename didn't distinguish it.
+///
+/// The filename fingerprint is therefore NOT the soundness net — that's the header check — it is what
+/// keeps DIFFERENT engine versions/configs from THRASHING one shared path (each deserialize-failing then
+/// overwriting the other's file). It comes from `Engine::precompile_compatibility_hash()`, wasmtime's
+/// purpose-built AOT-cache fingerprint: its doc guarantees that if the hash matches between two engines,
+/// an artifact from one deserializes in the other. So it captures the wasmtime version AND every `Config`
+/// input that affects the compiled bytes — strictly stronger, and self-maintaining across a wasmtime
+/// bump, than the old `CARGO_PKG_VERSION_MAJOR` of `cdz-run` (which is perma-`0`, since cdz-run is
+/// `0.0.0` — so the version component NEVER changed across a wasmtime upgrade, and every artifact shared
+/// the one `wt0` path). We only ever read a file THIS binary itself wrote, and any `deserialize` error
+/// falls straight through to a fresh `Component::new`. So the cache can only make a run faster, never
+/// change what it does.
+///
+/// A short hex fingerprint of the engine's AOT compatibility, for use in the `.cwasm` filename. Derived
+/// from `Engine::precompile_compatibility_hash()` (wasmtime's guarantee: equal hash ⇒ artifacts
+/// interchange), so it changes whenever a wasmtime bump or a `Config` change would make old artifacts
+/// deserialize-fail — giving those artifacts a distinct path instead of thrashing a shared one. Fed
+/// through `DefaultHasher` only to render the opaque `impl Hash` as a compact stable hex token.
+fn engine_fp(engine: &Engine) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    engine.precompile_compatibility_hash().hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
 fn load_runtime_component(
     engine: &Engine,
     runtime_bytes: &[u8],
@@ -151,15 +175,12 @@ fn load_runtime_component(
         return Component::new(engine, runtime_bytes)
             .map_err(|e| anyhow!("value-heap runtime component invalid: {e}"));
     };
-    // `<hash>-<wasmtime-version>.cwasm`: the runtime's content address pins the SOURCE, the version pins
-    // the COMPILER, so a cache file is only ever consulted for the exact runtime+wasmtime it was made
-    // for. (`hash` is empty only for an unpinned import, which errors earlier; guard anyway.)
-    let cache_path = (!hash.is_empty()).then(|| {
-        dir.join(format!(
-            "{hash}-wt{}.cwasm",
-            env!("CARGO_PKG_VERSION_MAJOR") // cdz-run's own version — bumps if we change wasmtime deps
-        ))
-    });
+    // `<hash>-wt<engine-fingerprint>.cwasm`: the runtime's content address pins the SOURCE, the engine
+    // fingerprint pins the COMPILER (wasmtime version + every `Config` input affecting the artifact), so a
+    // cache file is only ever consulted for the exact runtime+engine it was made for. (`hash` is empty
+    // only for an unpinned import, which errors earlier; guard anyway.)
+    let cache_path =
+        (!hash.is_empty()).then(|| dir.join(format!("{hash}-wt{}.cwasm", engine_fp(engine))));
 
     // Fast path: a cached artifact that deserializes cleanly.
     if let Some(path) = &cache_path
@@ -2582,6 +2603,58 @@ mod tests {
             format!("{err}").contains("() -> i64"),
             "the mismatch names the expected signature: {err}"
         );
+    }
+
+    #[test]
+    fn engine_fingerprint_is_stable_nonempty_and_versioned() {
+        // The `.cwasm` cache filename fingerprint (`engine_fp`) must be deterministic for a fixed engine
+        // config (else every run writes a fresh path and the cache never hits) and non-trivial (the OLD
+        // `CARGO_PKG_VERSION_MAJOR` was perma-"0" — a constant that never distinguished wasmtime versions,
+        // so cross-version artifacts thrashed one `wt0` path). Two fingerprints of the SAME shared engine
+        // must be equal; the token must be the fixed-width hex we format into the name.
+        let e = engine();
+        let a = engine_fp(&e);
+        let b = engine_fp(&e);
+        assert_eq!(a, b, "fingerprint must be stable for a fixed engine config");
+        assert_eq!(a.len(), 16, "rendered as fixed-width 16-hex ({a:?})");
+        assert!(
+            a.chars().all(|c| c.is_ascii_hexdigit()),
+            "fingerprint is hex ({a:?})"
+        );
+        assert_ne!(a, "0", "not the old perma-wt0 constant");
+    }
+
+    #[test]
+    fn runtime_cache_roundtrips_through_the_fingerprinted_path() {
+        // End-to-end: `load_runtime_component` must WRITE a `<hash>-wt<fp>.cwasm` on the first call and
+        // DESERIALIZE it on the second (the ~300× speedup that keeps the corpus gate fast). Pins that the
+        // fingerprinted filename is actually produced + re-read — a regression that broke the name (e.g.
+        // reverting to a non-varying token, or a write/read path mismatch) fails here. An empty `(component)`
+        // needs no runtime import, so this is hermetic (no value-heap store).
+        let e = engine();
+        let bytes = wat::parse_str("(component)").expect("assemble an empty component");
+        let dir = std::env::temp_dir().join(format!("cdz-run-cache-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp cache dir");
+        let opts = RunOpts {
+            runtime_cache_dir: Some(dir.clone()),
+            ..Default::default()
+        };
+        let hash = "deadbeefcafe";
+
+        // First call: cache miss → compile + write the fingerprinted artifact.
+        load_runtime_component(&e, &bytes, hash, &opts).expect("first load compiles");
+        let expected = dir.join(format!("{hash}-wt{}.cwasm", engine_fp(&e)));
+        assert!(
+            expected.exists(),
+            "first load must write the fingerprinted cache file at {expected:?}"
+        );
+
+        // Second call: the file exists → it must DESERIALIZE cleanly (the fast path), not error.
+        load_runtime_component(&e, &bytes, hash, &opts)
+            .expect("second load deserializes the cached artifact");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
