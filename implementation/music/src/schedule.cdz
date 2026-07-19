@@ -145,6 +145,33 @@ def net-total(evs: List(MidiEvent), acc: Int64) =
 /// A schedule has NO STUCK KEYS (globally) iff its on/off counts net to zero.
 def balanced(evs: List(MidiEvent)) = net-total(evs, 0) == 0
 
+// ---- flatten to a PLAYABLE stream: sort events by tick ----------------------------------------------
+
+/// A single driver (or a single-task DES scheduler) plays a piece by walking events in TICK ORDER. `schedule`
+/// emits each note's on/off pair as the note is visited, so the raw list is NOT tick-sorted (a later note's
+/// on can precede an earlier note's off). `play-order` sorts events ascending by tick — a STABLE insertion
+/// sort so events at the SAME tick keep their emission order (which, because a note's on is pushed before its
+/// off and offs carry velocity 0, keeps a zero-length edge case from reordering an on after its own off).
+/// This is the key realization for the DES demo: ANY polyphonic piece flattens to one tick-ordered stream a
+/// SINGLE task can emit (sleep to next tick → emit → repeat) — concurrent per-voice tasks are only needed for
+/// LIVE add/remove (the live-coding / looping-pedal demos), not for playing a fixed composition.
+def insert-by-tick(e: MidiEvent, sorted: List(MidiEvent)) =
+  match sorted with
+    | [] => [e]
+    | [h, .. t] =>
+      // Insert BEFORE the first element strictly later in tick (stable: ties keep `h` ahead of `e`).
+      if ev-tick(e) < ev-tick(h) then List.prepend(sorted, e)
+      else List.prepend(insert-by-tick(e, t), h)
+
+/// Sort an event list ascending by tick (stable insertion sort). Recursive driver, annotated.
+def play-order-go(evs: List(MidiEvent), out: List(MidiEvent)) =
+  match evs with
+    | [] => out
+    | [e, .. t] => play-order-go(t, insert-by-tick(e, out))
+
+/// The events of a piece in ascending tick order — the playable stream a driver / single DES task walks.
+def play-order(evs: List(MidiEvent)) = play-order-go(evs, [])
+
 /// ============================ @test suite (MIDI events / scheduler / stuck-key invariant) ============================
 
 @test
@@ -247,6 +274,46 @@ def loop-zero-times-is-empty-and-balanced() =
   let evs = schedule(loop-piece(piece, 960, 0)) in
   if List.len(evs) == 0 then (if balanced(evs) then unit else trap("empty is balanced")) else trap("no events")
 
+@test
+def play-order-sorts-events-ascending-by-tick() =
+  // A two-note piece emits on@0/off@480 (note1) then on@240/off@720 (note2) — raw order is 0,480,240,720.
+  // play-order must yield ascending ticks: 0,240,480,720.
+  let piece = [note-at(pitch-c4, 0, 100, 0, 480), note-at(pitch-e4, 0, 100, 240, 480)] in
+  let stream = play-order(schedule(piece)) in
+  if ticks-ascending(stream) then
+    (if List.len(stream) == 4 then unit else trap("four events")) else trap("ascending by tick")
+
+@test
+def play-order-is-stable-for-same-tick-events() =
+  // Two notes both starting at tick 0: their four events include two ons at tick 0. A STABLE sort keeps
+  // the first note's on ahead of the second note's on (same tick), so a chord's voices emit in a
+  // deterministic order. Build C then E, both at 0; the first event at tick 0 must be C's on (note 60).
+  let piece = [note-at(pitch-c4, 0, 100, 0, 480), note-at(pitch-e4, 0, 100, 0, 480)] in
+  let stream = play-order(schedule(piece)) in
+  match stream with
+    | [first, .. _] => if ev-note(first) == 60 then (if ev-on(first) then unit else trap("on")) else trap("C's on comes first (stable)")
+    | _ => trap("has events")
+
+@test
+def play-order-keeps-a-zero-length-notes-on-before-its-off() =
+  // Edge: a zero-duration note has on@t and off@t at the SAME tick. Stability (on emitted before off)
+  // must keep the on ahead of the off after sorting — a driver never sees the off first.
+  let piece = [note-at(pitch-c4, 0, 100, 100, 0)] in
+  let stream = play-order(schedule(piece)) in
+  match stream with
+    | [first, second] => if ev-on(first) then (if ev-on(second) then trap("second is the off") else unit) else trap("on before off")
+    | _ => trap("two events")
+
+@test
+def play-order-preserves-balance-and-on-before-off-at-play-time() =
+  // Sorting keeps the schedule balanced, and a note's on still precedes its off (a driver walking the
+  // sorted stream never sees an off before its on for the whole-piece single-note case).
+  let piece = [note-at(pitch-c4, 0, 100, 0, 960)] in
+  let stream = play-order(schedule(piece)) in
+  if balanced(stream) then
+    (match stream with | [first, .. _] => if ev-on(first) then unit else trap("first event is the on") | _ => trap("has events"))
+  else trap("balanced after sort")
+
 // ---- test helpers -----------------------------------------------------------------------------------
 
 /// Named pitches for the tests (C4/E4/G4) — a triad's worth.
@@ -263,10 +330,17 @@ def nth-note(notes: List(Note), i: Int64) =
     | [] => note-at(pitch(0), 0, 0, 0, 0)
     | [h, .. t] => if i <= 0 then h else nth-note(t, i - 1)
 
+/// Are the event ticks non-decreasing (ascending) down the list? Recursive, annotated.
+def ticks-ascending(evs: List(MidiEvent)) =
+  match evs with
+    | [] => true
+    | [_] => true
+    | [a, b, .. rest] => if ev-tick(a) <= ev-tick(b) then ticks-ascending(List.prepend(rest, b)) else false
+
 export {
   Note.*, MidiEvent.*,
   note-at, note-pitch, note-chan, note-vel, note-start, note-dur,
   ev-on, ev-chan, ev-note, ev-vel, ev-tick, note-events, schedule,
   transpose-piece, remap-channel, shift-piece, loop-piece,
-  net-outstanding, net-total, balanced,
+  net-outstanding, net-total, balanced, play-order,
 }

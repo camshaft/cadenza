@@ -3384,7 +3384,10 @@ pass	popping a field yields its value and the remaining record
 pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple
 pass	popping an absent field is rejected
+pass	prepend leaves the original list binding unchanged (persistent, copy-on-write)
+pass	prepend shifts the existing elements one position toward the tail
 pass	prepending an element onto a list inserts it at the front
+pass	prepending onto the empty list yields a one-element list
 pass	print of a NEGATIVE Ast.Float round-trips through read (sign survives the text path)
 pass	print of a negative-zero Ast.Float preserves the sign through read (text-path signed-zero)
 pass	print of a quote containing a float renders re-readably
