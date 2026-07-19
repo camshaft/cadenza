@@ -7786,6 +7786,20 @@
   (call   main (: 5 Int64))
   (output (: 6 Int64)))
 
+(case "a RECORD field built from a runtime param boxes its Map handle correctly (function[27] record-path twin)"
+  (doc    "The `Core::Record` counterpart of the func27 sum-payload pins: a record whose `m` field is a
+           runtime-built `(Map.insert (Map.empty) k k)` (cannot const-fold, forcing the field-box emit)
+           exercises the box-by-declared-field-type PATH-1 record-field-by-name branch — a distinct emit
+           site from the `SumNew` payload pins above. Projecting `(. r m)` back out and taking `Map.len`
+           (=1) plus the scalar `(. r n)` field. `k=5` → 6. Together with the two sum-payload pins this
+           covers BOTH the record-field and sum-payload live-Map-handle boxing sites the func27 fix touched.")
+  (input  (do
+            (def (build (: k Int64)) (record (m (Map.insert (Map.empty) k k)) (n k)))
+            (def (main (: k Int64)) (let ((r (build k))) (+ (Map.len (. r m)) (. r n))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
 (case "a unary constructor is a single-arity function"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (1st sentence): Some is a single-arity constructor. Applied to an

@@ -884,6 +884,65 @@
   (call   main (: 40 Int64))
   (output (: 42 Int64)))
 
+; The CONVERSE of the call-argument cases above: those pin that a caller's binding flows INTO a callee
+; (an argument keeps its call-site binding under substitution). This pins the other direction — a
+; callee's body resolves its OWN free names in the CALLEE's lexical scope, and is NOT captured by a
+; same-name binding live at the CALL SITE. `helper`'s body references `base`, which lexically names the
+; top-level `(def (base) 5)`; a `let` in `main` that rebinds `base` to a different function is invisible
+; to `helper`. So `(helper)` = 5 + 10 = 15 regardless of main's local `base`, and main = 15 + 100 = 115.
+; A compiler that resolves a called def's body under the CALLER's environment (dynamic scope) would let
+; main's `base` = 100 capture `helper`'s reference, computing 110 + 100 = 210 — a silent miscompile. This
+; is the value-discriminating witness of core-semantics.md #Binding Is Lexical for the callee-body
+; direction (helper bodies are first-order: they see no caller bindings), the twin of the unbound-name
+; cases (which pin that a callee body name with NO lexical binding is CDZ0101, never dynamically found).
+
+(case "a called function's body resolves its free names lexically, not in the caller's scope"
+  (doc    "`helper`'s body references `base`, which lexically resolves to the top-level `(def (base) 5)`.
+           `main` introduces a `let` binding `base` = `(fn () 100)` and then calls `(helper)`. Under
+           lexical scope `helper` cannot see main's local `base`: `(helper)` = 5 + 10 = 15, and main =
+           15 + main's `(base)` (100) = 115. A compiler that resolves the called body under the CALLER's
+           environment (dynamic scope) would have main's `base` = 100 capture `helper`'s reference,
+           computing 110 + 100 = 210 — a silent miscompile. Pins that a callee body is first-order (sees
+           no caller bindings), the value-discriminating converse of the call-argument cases above (which
+           pin a caller binding flowing INTO the callee) and of the unbound-name cases (a callee free
+           name with no lexical binding is CDZ0101, never dynamically resolved). core-semantics.md
+           #Binding Is Lexical.")
+  (input  (do
+            (def (base) 5)
+            (def (helper) (+ (base) 10))
+            (def (main) (let ((base (fn () 100))) (+ (helper) (base))))
+            (export main)))
+  (call   main)
+  (output (: 115 Int64)))
+
+; The PARAMETERIZED companion of the case above: that one used a NULLARY helper, so its body is emitted
+; without an argument substitution. This exercises the β-reduction / argument-splice path — a helper
+; that BOTH takes an argument (`x`, substituted at the call) AND references a free top-level name
+; (`scale`) that COLLIDES with a caller `let` binding. Substituting the argument must not drag the
+; callee body's OWN free names into the caller's scope: `helper`'s `scale` still resolves to the
+; top-level `(def (scale) 3)`, so `(helper 4)` = 4 * 3 = 12, and main = 12 + main's `(scale)` (1000) =
+; 1012. A dynamic-scope compiler that resolves the substituted body under the caller env would have
+; main's `scale` = 1000 capture `helper`'s reference: 4 * 1000 + 1000 = 5000 — a silent miscompile on
+; the arg-substitution path specifically (distinct emit from the nullary case).
+
+(case "a parameterized called function's free names resolve lexically while its argument substitutes"
+  (doc    "`helper` takes an argument `x` and references a free top-level name `scale` = `(def (scale)
+           3)`. `main` binds a local `scale` = `(fn () 1000)` and calls `(helper 4)`. Under lexical
+           scope the argument `4` substitutes for `x` while `scale` still resolves to the top-level def:
+           `(helper 4)` = 4 * 3 = 12, and main = 12 + main's `(scale)` (1000) = 1012. A compiler that
+           resolves the substituted body under the CALLER's environment (dynamic scope) would have
+           main's `scale` = 1000 capture `helper`'s reference: 4 * 1000 + 1000 = 5000 — a silent
+           miscompile. The parameterized companion of the nullary callee-body case above: it pins the
+           same first-order-body invariant on the β-reduction / argument-splice emit path, where a
+           dynamic-scope leak could ride in with the substitution. core-semantics.md #Binding Is Lexical.")
+  (input  (do
+            (def (scale) 3)
+            (def (helper (: x Int64)) (* x (scale)))
+            (def (main) (let ((scale (fn () 1000))) (+ (helper 4) (scale))))
+            (export main)))
+  (call   main)
+  (output (: 1012 Int64)))
+
 (case "a declaration in a do block shadows an outer binding"
   (doc    "`(let ((x 1)) (do (def x 99) x))`: the `def x 99` inside the `do` shadows the outer `let`
            binding of `x` for the forms that follow it, so the block yields 99. Pins that a do-block

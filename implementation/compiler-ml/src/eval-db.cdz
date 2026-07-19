@@ -438,4 +438,29 @@ def ev-nullary-call-nested-in-arith() =
             | Option.Some(v) => (if v == 42 then unit else trap("(+ (mk) 1) = 42 (call nested in arith)"))
             | Option.None(_) => trap("a nullary call nested in arith evals"))))))
 
+@test
+def ev-nullary-call-chain-inlines-transitively() =
+  // a CHAIN of nullary calls: `g`'s body IS a call to `f` (f body = 42), and the root calls `g`. So the root
+  // NApp inlines g's body — which is ITSELF an NApp — which in turn inlines f's body 42. Pins that lowering
+  // inlines a callee body TRANSITIVELY (NApp over NApp), the shape `(def (f) 42) (def (g) (f)) (g)` produces.
+  (match add-node(empty-tree(), Node.NLit(42)) with | (fBody, t1) =>
+    (match add-node(t1, Node.NApp(fBody, 0 - 1)) with | (gBody, t2) =>
+      (match add-node(t2, Node.NApp(gBody, 0 - 1)) with | (root, tree) =>
+        (match eval-tree(tree, root) with
+          | Option.Some(v) => (if v == 42 then unit else trap("(g) where g=(f), f=42 → 42 (transitive inline)"))
+          | Option.None(_) => trap("a chain of nullary calls inlines transitively")))))
+
+@test
+def ev-napp-with-arg-declines-end-to-end() =
+  // the nullary/param BOUNDARY, end-to-end: a call WITH an arg (argId != -1) is the param slice (slice-3c, not
+  // yet) → lower yields no Core → eval-tree declines None. lower-db + infer-db each pin this boundary in their
+  // own layer; this pins it through the WHOLE pipeline (the eval path a real `(f arg)` would take). When
+  // slice-3c lands (NApp(f,arg) → CLet(param,arg,body)), THIS test flips to a value — a legible guard.
+  (match add-node(empty-tree(), Node.NLit(7)) with | (bodyId, t1) =>
+    (match add-node(t1, Node.NLit(5)) with | (argId, t2) =>
+      (match add-node(t2, Node.NApp(bodyId, argId)) with | (root, tree) =>
+        (match eval-tree(tree, root) with
+          | Option.None(_) => unit
+          | Option.Some(_) => trap("a call WITH an arg declines end-to-end until the param slice")))))
+
 export { eval-core, eval-bin, eval-tree, run, milestone-tokens, run-milestone }

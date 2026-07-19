@@ -16,7 +16,7 @@
 /// resolve column (`Map(NodeId, Resolved)`) as it descends. Once built, a lookup is O(1) — the column IS the
 /// memo (the DB discipline; rcdzc's resolve fills all of a tree's resolved facts in one demand-driven walk).
 
-import { Tok, Node, Tree, node-at, parse-tokens, is-let } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, is-let, add-node, empty-tree } from "parse-db"
 
 /// The resolve fact for a variable reference. `RBound(binderId)` = bound to the `NLet` at `binderId`;
 /// `RPoison` = the name is unbound (a FILLED negative decision — not absence).
@@ -51,9 +51,13 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
     | Option.Some(Node.NApp(calleeId, _)) =>
         // slice-3b-ii: a nullary call `(mk)` = NApp(calleeBodyId, -1) — RESOLVE the callee BODY (it lives in
         // the arena, reached only via this call node when the call is the module root), so infer/lower/eval
-        // can process it (they read the resolve column for the body's vars). The callee body resolves in the
-        // SAME env (a nullary def's body has no params; a helper's body sees no caller bindings — first-order).
-        resolve-node(tree, calleeId, env, col)
+        // can process it (they read the resolve column for the body's vars). Resolution is LEXICAL (matching
+        // rcdzc's resolve, which walks PARENTS from each name's own occurrence — core-semantics.md#binding-is-
+        // lexical): a called def's body resolves against its OWN lexical scope, NOT the caller's env, so a
+        // helper body's free name can NEVER capture a caller `let` binding (that would be DYNAMIC scope). Pass
+        // a FRESH empty scope — a nullary def's body has no params and sees no caller bindings (first-order).
+        // (v-inference, rcdzc resolve-twin owner, confirmed the port must match rcdzc's lexical resolve here.)
+        resolve-node(tree, calleeId, (Map.empty : Map(Int64, Int64)), col)
     | Option.None(_) => col   // an id not in the arena (a malformed tree) resolves to nothing
 
 /// The resolve COLUMN builder: resolve the whole tree from `root`, starting with an empty scope + column.
@@ -215,5 +219,21 @@ def rd-if-branches-share-enclosing-scope() =
              else trap("cond x binds to the enclosing let"))
           | _ => trap("body is an if"))
       | _ => trap("root is a let")))
+
+@test
+def rd-nullary-call-body-is-lexical-no-caller-capture() =
+  // LEXICAL RESOLUTION (rcdzc-faithful; v-inference ruling): a called def's body resolves under a FRESH scope,
+  // NOT the caller's env — so a helper body's free name can NEVER capture a caller `let` binding (that would be
+  // DYNAMIC scope, the latent defect corpus-bugfix flagged). Build `let x = 0 in (mk)` where mk's body is the
+  // bare var `x` (NVar name 1): at the NApp, the CALLER env has x→the let; but the callee body must resolve in
+  // a fresh scope → the body's `x` is POISON (unbound), NOT bound to the caller's let. This pins the fix —
+  // before it (caller-env resolve) the body var wrongly bound to the enclosing let (dynamic capture).
+  (match add-node(empty-tree(), Node.NLit(0)) with | (valId, t1) =>          // the let value `0`
+    (match add-node(t1, Node.NVar(1)) with | (mkBodyId, t2) =>               // mk's body: bare var `x` (name 1)
+      (match add-node(t2, Node.NApp(mkBodyId, 0 - 1)) with | (callId, t3) => // `(mk)` — a nullary call
+        (match add-node(t3, Node.NLet(1, valId, callId)) with | (root, tree) => // `let x(=1) = 0 in (mk)`
+          // the callee body's var (mkBodyId) must be POISON — a fresh-scope resolve, no caller-let capture.
+          (if resolved-poison(tree, root, mkBodyId) then unit
+           else trap("callee body var resolves LEXICALLY (fresh scope) → Poison, NOT captured by the caller let"))))))))
 
 export { Resolved.*, resolve-tree, resolved-at, resolved-count, resolved-to, resolved-poison }

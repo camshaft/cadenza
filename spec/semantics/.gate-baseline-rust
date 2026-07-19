@@ -381,6 +381,7 @@ pass	a RECORD closure ARG on the MULTI-EXPORT path
 pass	a RECORD closure ARG whose fields are NOT in sorted source order
 pass	a RECORD closure ARG with a LIST result
 pass	a RECORD closure ARG with a narrow Bool field, among scalars
+pass	a RECORD field built from a runtime param boxes its Map handle correctly (function[27] record-path twin)
 pass	a RECORD with a nested TUPLE field crosses the direct-call boundary
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
@@ -558,6 +559,7 @@ pass	a bytes value chosen by a runtime if is length-measured with valid wasm
 pass	a call-returned Bool newtype literal-payload arm spills correctly
 pass	a call-returned Int32 newtype literal-payload arm spills at the narrow width
 pass	a call-returned UInt8 newtype literal-payload arm spills at the narrow width
+pass	a called function's body resolves its free names lexically, not in the caller's scope
 pass	a camelCase same-signature multi-export normalizes each make-<name>
 pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly
 pass	a captured list survives a structural rebuild of the same source between capture and application
@@ -1491,6 +1493,7 @@ pass	a param-shadowing let with a param-referencing initializer folds at a const
 pass	a parameter annotation contradicting its use is rejected
 pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
+pass	a parameterized called function's free names resolve lexically while its argument substitutes
 pass	a parameterized compound-return export forwards distinct arguments to make
 pass	a parameterized export builds a list of tuples by a runtime-length loop and measures it
 pass	a parameterized export drives an Option-of-runtime-BigInt on both arms
