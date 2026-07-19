@@ -35,3 +35,10 @@
 ;; performing body already compiles). So likely NOT incidentally fixed, but the shared closure-lift locus
 ;; means it COULD be — retest on the next trunk-tip build I do for another reason (don't spend a dedicated
 ;; 1.5min build speculatively). v-effects owns it + has the issue; let them rule. Not polling yet.
+
+;; WATCH-RECHECK (corpus-bugfix 2026-07-19): STILL LIVE. My build (HEAD 104 behind trunk) still declines
+;; CDZ0101, and — per the frozen-checkout discipline — I checked HEAD..trunk: the ONLY effects commits in the
+;; gap are DES inc-4 deferred-resume-thunk (b3ffca83e), transitive apply-site homing (88e5cef2f, the PERFORMING
+;; path), and the ctor-match fold (ec885c068). NONE touch the declined-handle arm-lambda-lift path this bug
+;; lives in. So the CDZ0101 is a genuine current-trunk repro, not a stale-checkout artifact. Still pending with
+;; v-effects (owner, live); not re-notifying (already routed, not stale). Verify main→99 on both backends when fixed.
