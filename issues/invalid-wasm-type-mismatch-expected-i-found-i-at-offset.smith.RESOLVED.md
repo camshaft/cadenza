@@ -32,3 +32,6 @@ The compiler reported SUCCESS, but the emitted component failed wasm validation
 emitted components pass). The backend produced structurally-invalid wasm.
 
 - **Validator error:** type mismatch: expected i64, found i32 (at offset 0x123)
+
+## RESOLVED 2026-07-19 (v-inference)
+FIXED on trunk (verified @ 80bfe936e, fuzzer filed @ c9940747e). `(* (tuple) 0)` — and the fuzzer's `(match ((fn (v0) (* (tuple) 0)) 0) (_ 0))` — now REJECTS AT CHECK with CDZ0201 ("a (Tuple) and an Int64 are different types … across that kind boundary"), no invalid wasm emitted. The check-vs-compile gap is closed: the arithmetic-operand numeric-requirement check catches the compound operand before emit. PINNED as a regression witness: spec/semantics/07-type-system.sexp "multiplying a compound (tuple) by a number is a cross-kind type error, not invalid wasm" (CDZ0201 reject, +1 all three baselines). v-inference (diagnostics/inference lane).

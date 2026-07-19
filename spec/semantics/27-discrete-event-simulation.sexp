@@ -439,6 +439,28 @@
   (output (: 5000000000 Int64)))
 
 ; ────────────────────────────────────────────────────────────────────────────────────────────────
+; KNOWN LIMITATION (parked, concierge ruling 2026-07-19) — the multi-task run-sim cap.
+; ────────────────────────────────────────────────────────────────────────────────────────────────
+; The cases above deliver the SINGLE-task fast-forward scheduler end to end: a task's `sleep`
+; continuation is reified as an escaping deferred-resume-thunk, stored in a time-ordered pqueue entry,
+; popped via a (multi-payload) match, and resumed cross-activation at the advanced clock (→ 5e9). That
+; is the full E5-step-3 escaping-continuation machinery, delivered and regression-locked.
+;
+; The MULTI-task run-sim (several tasks whose continuations coexist in the pqueue, resumed in time order)
+; additionally requires a continuation to be routed through a DATA-RECURSIVE sorted-insert (`pins`) — the
+; priority queue's own time-ordering insert — before it is popped and resumed. That shape DECLINES to fold
+; today (a clean feature-absent decline, NOT a miscompile): the deferred-resume fold's recursion-unfold
+; re-resolves the rebuilt arm and drops the pin on the spliced resume-closure's captured handler-arm
+; binder (`wake`), poisoning the closure before the pop-fold sees it. Root-caused + co-confirmed with
+; v-inference; PARKED pending a re-resolve DESIGN pass (graft the unfolded node under the handler arm so
+; lexical re-resolution reaches `wake`), a v-effects + v-inference co-design — checkpointed at v-effects
+; WIP `f4d45a53e`. Resumes on a forcing consumer or operator priority. Until then the multi-task scheduler
+; would have to bound its inserts (hand-unrolled, capped task count) rather than use a data-recursive pins,
+; so the general unbounded multi-task run-sim is intentionally NOT yet in this corpus — the cap is recorded
+; here rather than hidden behind a passing-but-bounded case.
+; ────────────────────────────────────────────────────────────────────────────────────────────────
+
+; ────────────────────────────────────────────────────────────────────────────────────────────────
 ; Increment 1 — event-queue determinism edge cases (design §8: guard the §3.4 FIFO tie-break at N=3,
 ; interleaved times, and the sleep(0)/pop-then-reinsert scheduler-step primitive). Pure substrate.
 ; ────────────────────────────────────────────────────────────────────────────────────────────────
