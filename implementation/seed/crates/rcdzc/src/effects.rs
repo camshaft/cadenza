@@ -1928,7 +1928,7 @@ pub fn reduce_handle(
     // performs (no foreign/host perform in `C`, `body_reaches_foreign_perform` false) — a reified
     // continuation must not span a host boundary (§4.4), and a foreign perform in `C` has no home under the
     // re-installed same-effect handler.
-    if let Some(perform) = leading_strict_hole(db, body, &ctx)
+    if let Some(perform) = escaping_k_leading_hole(db, body, &ctx)
         && let Resolved::Apply { head, args } = resolved_of(db, perform)
         && let Some((decl, idx)) = is_perform(db, head, &ctx)
         && let Some(arm) = ctx.arms.get(&(decl, idx)).cloned()
@@ -5314,6 +5314,21 @@ enum PureHole {
 /// branch / the perform may not run), a `let` (the binding could be duplicated by a multi-shot resume in a
 /// way this simple splice does not model), a nested `handle`, a user/recursive call (its body may perform).
 fn pure_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> PureHole {
+    // A `(do e0 … en)` SEQUENCE runs each item unconditionally, in order — a strict spine whose value is the
+    // last item. It is a pure one-hole context iff exactly one item is the hole and the rest are strongly
+    // pure (the `let`-inits-then-body discipline). `do` is a raw AST form (collapses to its last item's
+    // `Ref` under `resolved_of`, hiding earlier items), so match it structurally first. `pure_hole_seq`
+    // returns `Impure` for a SECOND hole — so a do-sequenced MULTI-perform body (`(do (St.get) (+ 1 (St.
+    // get)))`) yields `Impure` here, falling through to the thread / match-shaped-resume-peel path EXACTLY
+    // as before (that path, not this one, folds a multi-perform do-body — this arm must not steal it). A
+    // do-local `(type …)`/`(effect …)` declaration runs nothing — skip it.
+    if let Some(items) = db.ast.as_form(node, "do").map(<[_]>::to_vec) {
+        let positions: Vec<StructId> = items
+            .into_iter()
+            .filter(|&it| !matches!(db.ast.head_name(it), Some("type") | Some("effect")))
+            .collect();
+        return pure_hole_seq(db, positions.into_iter(), ctx);
+    }
     // A discharged perform IS the hole. Its ARGS must be strongly pure (a nested perform in an arg would be
     // a second effect whose own continuation is non-trivial) — checked by the caller-side spine below via
     // `strongly_pure`. Here, at the perform node, verify the args are strongly pure and this is the hole.
@@ -5449,6 +5464,26 @@ fn pure_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> PureHole {
 /// (its inits then body, in order), and a `match` SCRUTINEE (evaluated first). SOUND ONLY for a ONE-SHOT
 /// arm (the caller checks `count_resumes == 1`): a multi-shot arm would splice a performing `C` more than
 /// once, duplicating the inner effect.
+/// The leading-strict-hole finder for the ESCAPING-K re-performing reify (FACE-1 B2 `do`-slice) ONLY.
+/// Identical to [`leading_strict_hole`] except it ALSO treats a `(do e0 … en)` body as a strict spine
+/// (each item unconditional, in order; the leading hole is the first performing item). `do` is scoped here
+/// rather than added to the global `leading_strict_hole` because the two-hole / thread / tail paths also
+/// call that function and ALREADY fold `do`-sequenced multi-perform bodies via the match-shaped-resume-peel
+/// / threading path — a global `do`-arm would STEAL those (regressing `a_state_destructuring_arm_…` and
+/// `a_sequenced_memoize_helper_…`). The escaping-k block is the ONLY consumer that needs to see through a
+/// `do`, so the `do`-awareness lives here and the global finder stays byte-identical for every other path.
+fn escaping_k_leading_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId> {
+    if let Some(items) = db.ast.as_form(node, "do").map(<[_]>::to_vec) {
+        let positions: Vec<StructId> = items
+            .into_iter()
+            .filter(|&it| !matches!(db.ast.head_name(it), Some("type") | Some("effect")))
+            .collect();
+        // Reuse the strict-spine sequencer: at most one item is the hole, the rest strongly pure.
+        return leading_strict_hole_seq(db, positions.into_iter(), ctx);
+    }
+    leading_strict_hole(db, node, ctx)
+}
+
 fn leading_strict_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId> {
     // A discharged perform IS the leading hole — provided its own ARGS are strongly pure (an effectful arg
     // would be an even-earlier hole this simple spine walk does not thread).

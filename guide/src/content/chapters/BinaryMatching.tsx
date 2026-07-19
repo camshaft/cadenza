@@ -123,6 +123,27 @@ export default function BinaryMatching() {
         frame in 16 bits is a real error, not a silent wrap.
       </P>
 
+      <H2>Sub-byte fields</H2>
+      <P>
+        Not every field is a whole number of bytes. A <C>(bits name k)</C> segment reads exactly <C>k</C>{" "}
+        bits, so you can split a single byte into smaller fields. Bits are read most-significant first, which
+        means the first segment takes the high bits. Here one byte splits into a 3-bit field and a 5-bit
+        field, and <C>165</C> is <C>0b101_00101</C>, so <C>a</C> reads the high <C>0b101 = 5</C> and <C>b</C>{" "}
+        the low <C>0b00101 = 5</C>:
+      </P>
+      <Runnable
+        source={`(match (Bytes.of (list (UInt8.wrap 165)))
+  ((bin (bits a 3) (bits b 5)) (+ (* 100 a) b))
+  (_                           -1))`}
+      />
+      <P>
+        That reads back as <C>505</C>. A bit-field literal dispatches the same way a byte literal does, so a
+        leading <C>(bits 1 1)</C> matches only when the top bit is set and binds the remaining seven, which
+        is how a one-bit tag selects a format. A run of bit-fields must still close a whole number of bytes,
+        and the compiler checks that alignment before the program runs (CDZ0220), so a layout whose bits
+        don't add up is a compile error rather than a runtime surprise.
+      </P>
+
       <Why tenet="A binary layout is width-typed, and checked at compile time">
         A fixed-width segment takes a value of <em>exactly</em> its width, so <C>(u8 v)</C> wants a{" "}
         <C>UInt8</C> and <C>(bits v k)</C> a <C>(UInt k)</C>. Hand it something wider or negative and it's a

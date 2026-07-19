@@ -88,6 +88,24 @@ export const EXAMPLES: Example[] = [
     expected: "20",
   },
   {
+    // Shows off: MATCHING on a record — destructure its fields right in the match arm, and use a
+    // LITERAL field (x 0)/(y 0) to single out a special case. Here the origin scores 0; any other
+    // point scores x² + y². (3,4) => 25. In ML the arms read `{ x = 0, y = 0 }` and `{ x = xv, y = yv }`.
+    id: "record-patterns",
+    name: "Record patterns (match on fields)",
+    theme: "basics",
+    surface: "sexpr",
+    source: `(do
+  ; Match destructures the record's fields; a literal field value guards the origin case.
+  (def (score p)
+    (match p
+      ((record (x 0) (y 0)) 0)
+      ((record (x xv) (y yv)) (+ (* xv xv) (* yv yv)))))
+  (def (main) (score (record (x 3) (y 4))))
+  (export main))`,
+    expected: "25",
+  },
+  {
     id: "tuple",
     name: "A tuple",
     theme: "basics",

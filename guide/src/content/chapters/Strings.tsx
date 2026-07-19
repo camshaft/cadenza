@@ -77,8 +77,8 @@ export default function Strings() {
 
       <H2>Crossing to bytes and back</H2>
       <P>
-        Text and raw bytes are different types (that's the <strong>Bytes</strong> chapter), and the crossing
-        is explicit. <C>String.to-bytes</C> gives a string's UTF-8 encoding, so <C>"café"</C> is five bytes,
+        Text and raw bytes are different types (the next chapter, <strong>Bytes</strong>, is all about the
+        raw side), and the crossing is explicit. <C>String.to-bytes</C> gives a string's UTF-8 encoding, so <C>"café"</C> is five bytes,
         the two-byte <C>é</C> included. Going back is <C>String.from-bytes</C>, which returns an{" "}
         <C>Option</C>, because not every byte sequence is valid UTF-8, and a round-trip of well-formed text
         succeeds:

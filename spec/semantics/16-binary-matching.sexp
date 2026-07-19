@@ -925,6 +925,50 @@
   (call   main (: 3 Int64))
   (output (: 42 Int64)))
 
+(case "a runtime bin match decodes a byte-aligned bit-field run"
+  (doc    "A `(bin (bits a 3) (bits b 5))` pattern over a RUNTIME one-byte scrutinee decodes two sub-byte
+           fields MSB-first: `a` is the high 3 bits, `b` the low 5. The runtime matcher reads the byte-
+           aligned run as one big-endian integer then shifts+masks each field (`a = (byte >> 5) & 0x7`,
+           `b = byte & 0x1F`), mirroring the const-fold `bin_match_decode`. The scrutinee is built from a
+           RUNTIME header `h` so the match cannot fold. h=165 (0b1010_0101) → a=0b101=5, b=0b00101=5 →
+           100*5+5 = 505. Pins runtime bit-field DECODING — the match companion of the runtime bit-field
+           construction cases above (was declined on wasm; now lowered via a run-read + shift/mask).")
+  (input  (do (def (run (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap h)))
+                  ((bin (bits a 3) (bits b 5)) (+ (* 100 a) b))
+                  (_ -1)))
+              (export run)))
+  (call   run (: 165 Int64))
+  (output (: 505 Int64)))
+
+(case "a runtime bin match dispatches on a leading literal bit-field tag"
+  (doc    "A LITERAL bit-field segment is a probe: `(bin (bits 1 1) (bits x 7))` matches only a byte whose
+           TOP bit is 1, binding `x` to the low 7 bits. The runtime predicate reads the run and shift/masks
+           the tag field, ANDing `((byte >> 7) & 1) == 1` into the arm's length probe (short-circuited).
+           Built from a runtime `h`: h=129 (0b1000_0001) → top bit 1 (match), x=0b0000001=1; h=1
+           (0b0000_0001) → top bit 0 → falls through to -1. This case checks the MATCH; the next the miss.
+           Pins sub-byte tag dispatch — a bitfield-tagged binary format's discriminator.")
+  (input  (do (def (run (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap h)))
+                  ((bin (bits 1 1) (bits x 7)) x)
+                  (_ -1)))
+              (export run)))
+  (call   run (: 129 Int64))
+  (output (: 1 Int64)))
+
+(case "a runtime bit-field literal tag that does not match falls through"
+  (doc    "The miss companion: the same `(bin (bits 1 1) (bits x 7))` over a byte whose top bit is 0
+           (h=1, 0b0000_0001) does NOT match the `(bits 1 1)` tag probe, so control falls to the catch-all
+           → -1. Pins that a literal bit-field probe is a genuine equality gate (a non-matching tag is a
+           non-match, not a bind), the sub-byte analogue of a literal int-segment tag miss.")
+  (input  (do (def (run (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap h)))
+                  ((bin (bits 1 1) (bits x 7)) x)
+                  (_ -1)))
+              (export run)))
+  (call   run (: 1 Int64))
+  (output (: -1 Int64)))
+
 (case "a decoded field re-encodes into the same-width segment without an explicit narrow"
   (doc    "The decode/encode dual is SYMMETRIC: a `(u16 m)` PATTERN binder decodes a field, and that same
            binder feeds a `(u16 m)` CONSTRUCTION directly — no `UInt16.wrap`/`UInt16.of` needed. The binder

@@ -7142,6 +7142,13 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                     // a following offset dynamic), is still a later slice.
                     let ok = segs.iter().enumerate().all(|(i, s)| match &s.kind {
                         crate::resolved::SegKind::Int { .. } => true,
+                        // A BIT-FIELD run is admitted iff each field decodes — `bin_bitfield_run` requires a
+                        // byte-aligned run of ≤64 bits preceded only by fixed-int segments (a mid-stream run
+                        // that makes a following int offset sub-byte, or a >64-bit run, still declines). A
+                        // LITERAL bit-field segment (a probe) is admitted too (its predicate reads the run).
+                        crate::resolved::SegKind::Bits { .. } => {
+                            bin_bitfield_run(segs, i).is_some()
+                        }
                         // A final bytes segment (unsized rest OR dependent-size payload) is the LAST segment.
                         crate::resolved::SegKind::Bytes { .. } => i + 1 == segs.len(),
                         _ => false,
@@ -8471,8 +8478,8 @@ fn pattern_constraints(
     // so a record pattern imposes NO constraint of its own (like a tuple) — each named field's sub-pattern
     // descends at `path + [Elem(sorted_slot)]` with the field's type, recursing exactly as the tuple arm
     // does. A field the record type lacks is a CDZ0201 shape error; a non-record scrutinee is CDZ0201.
-    //= spec/capabilities/core-semantics.md#a-record-is-a-set-of-named-fields
-    //# A record MUST be deconstructible by pattern matching on its field names, binding each named field's sub-value, the named fields matched recursively in the sense of *Patterns Compose*.
+    // (Record deconstruction is governed generically by §Patterns Compose — the spec has no record-specific
+    // "MUST be deconstructible" sentence the way tuples do; a dedicated one is backlogged, not cited here.)
     if let Some(fields) = db
         .ast
         .as_form(pat, "record")
@@ -17595,15 +17602,40 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
                 //    permanent CARVE-OUT, not a not-yet (§319 / numeric-model §the floating-point relational
                 //    operators are a distinct facility). The fix is to use the boolean relational operators
                 //    (`<`/`<=`/`>`/`>=`), which DO work on floats.
-                //  • a COMPOUND operand (tuple/record/list/sum) is orderable but the descriptor-guided
-                //    `value-cmp` three-way heap walk is not wired yet — a genuine not-yet.
+                //  • a COMPOUND operand (tuple/record/list/sum) whose leaves are all orderable routes to the
+                //    runtime `value-cmp` three-way walk (`Core::ValueCmp { op: Prim::Compare }`) — the SAME
+                //    descriptor-guided heap walk the boolean compound `<`/`<=`/`>`/`>=` already emit, so the
+                //    two surfaces agree (§331) exactly as the scalar/String/BigInt/Rational cases do. The
+                //    boolean ops map the walk's `-1/0/1` to a Bool; the three-way `compare` instead builds the
+                //    `Ordering` sum (Less/Equal/Greater at discs 0/1/2 — all-nullary enum, a bare `res+1`), the
+                //    emit's `op=Compare` arm (v-runtime `select.rs` `ValueCmp`). Until that emit arm lands, a
+                //    compound `compare` DECLINES cleanly AT EMIT ("ValueCmp carries a non-ordering prim") rather
+                //    than here — same reject verdict (no miscompile: `ValueCmp` reads `op` at emit, and the
+                //    non-ordering guard rejects `Compare`), so routing it now is safe and unblocks the emit work.
+                //    A float/bytes/set/map leaf makes the compound un-orderable (`is_orderable_compound` false)
+                //    → the float/heap-walk declines below (§319 float partial; no blessed Bytes/Set/Map order).
+                //= spec/capabilities/core-semantics.md#compound-ordering-is-lexicographic
+                //# The total order a compound offers MUST agree with its structural equality — two values compare equal under the three-way comparison exactly when they are equal — and MUST be surfaced through the same three-way comparison and boolean ordering operators as any other total order.
+                None if {
+                    let lhs_ty = crate::infer::type_of(db, lhs);
+                    is_orderable_compound(db, &lhs_ty)
+                } =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, "compare of a runtime orderable compound → ValueCmp{{op:Compare}} (three-way value-cmp heap walk)");
+                    Core::ValueCmp {
+                        op: Prim::Compare,
+                        lhs,
+                        rhs,
+                        ty: crate::infer::type_of(db, lhs),
+                    }
+                }
                 //= spec/capabilities/core-semantics.md#ordering-where-offered-is-total
                 //# A floating-point type MUST NOT be treated as offering an ordering in the sense of this section, because its relational operators are the IEEE partial order defined for the floating-point type rather than a total order — so the requirement that an offered ordering be total does not apply to the floating-point relational operators.
                 None if float_operand(db, &operands) => Core::Poison(Reject::decline(
                     "`compare` needs a total order, but a floating-point type offers only the IEEE partial order (a not-a-number is unordered), so it has no three-way comparison — use the relational operators `<`, `<=`, `>`, `>=` instead",
                 )),
                 None => Core::Poison(Reject::decline(
-                    "`compare` of a compound value (a tuple, record, list, or sum) needs the value-cmp heap walk, which is not yet built — compare its components individually for now",
+                    "`compare` of this value has no total order the compiler can walk yet (a float/bytes/set/map leaf, or an un-orderable shape) — compare its orderable components individually",
                 )),
             }
         }
@@ -22123,6 +22155,70 @@ fn bin_static_offset(segs: &[crate::resolved::Segment], seg_index: usize) -> Opt
     Some(off)
 }
 
+/// A byte-aligned BIT-FIELD RUN containing segment `seg_index` (which must be a `(bits k)`): its start
+/// BYTE offset, the run's total width in BITS (a whole number of bytes — CDZ0220 keeps a `bits` run
+/// byte-aligned), and this field's bit position (from the run's MSB) + its own width `k`. A run is a
+/// MAXIMAL consecutive sequence of `(bits …)` segments; the whole `bin` is byte-aligned, so a run's bits
+/// sum to a multiple of 8. `None` if any segment BEFORE the run makes the byte offset dynamic (a preceding
+/// bit-field the offset walk can't cross yet, or a bytes/utf8 segment). Used by the runtime decode to read
+/// the run's bytes as one integer then shift+mask a field out (MSB-first, mirroring `bin_match_decode`).
+///
+/// Returns `(run_byte_off, run_bits, field_bit_pos, k)`: read `run_bits/8` bytes at `run_byte_off` as one
+/// big-endian unsigned integer `R`, then `field = (R >> (run_bits - field_bit_pos - k)) & ((1<<k)-1)`.
+fn bin_bitfield_run(
+    segs: &[crate::resolved::Segment],
+    seg_index: usize,
+) -> Option<(u32, u32, u32, u32)> {
+    use crate::resolved::SegKind;
+    let SegKind::Bits { k } = &segs.get(seg_index)?.kind else {
+        return None;
+    };
+    let k = *k;
+    // Byte offset up to the START of this bit-field's run: sum the widths of the segments BEFORE the run,
+    // which must all be byte-aligned INT segments (a preceding bytes/utf8/bit-field run declines — a later
+    // slice handles a run that is not the first non-int structure). Walk back to the run start: the run
+    // begins at the first `(bits …)` in the maximal consecutive bit-field block ending at/containing
+    // `seg_index`.
+    let run_start = {
+        let mut i = seg_index;
+        while i > 0 && matches!(segs[i - 1].kind, SegKind::Bits { .. }) {
+            i -= 1;
+        }
+        i
+    };
+    // Everything before the run must be a fixed-width int (byte-aligned), else the run's byte offset is
+    // dynamic / unsupported.
+    let mut byte_off: u32 = 0;
+    for seg in segs.iter().take(run_start) {
+        match &seg.kind {
+            SegKind::Int { width, .. } => byte_off += *width as u32,
+            _ => return None,
+        }
+    }
+    // The run is the maximal consecutive `(bits …)` block from `run_start`. Sum its bits (must be a whole
+    // number of bytes) and find `seg_index`'s bit position from the run's MSB.
+    let mut run_bits: u32 = 0;
+    let mut field_bit_pos: u32 = 0;
+    let mut i = run_start;
+    while let Some(seg) = segs.get(i) {
+        let SegKind::Bits { k: kk } = &seg.kind else {
+            break;
+        };
+        if i == seg_index {
+            field_bit_pos = run_bits;
+        }
+        run_bits += *kk;
+        i += 1;
+    }
+    // The run must be byte-aligned as a whole (CDZ0220 guarantees it for a well-formed bin) and fit a u64
+    // read (≤ 64 bits). A field wider than the run, or a non-byte-aligned run, is malformed / unsupported.
+    if run_bits == 0 || !run_bits.is_multiple_of(8) || run_bits > 64 || field_bit_pos + k > run_bits
+    {
+        return None;
+    }
+    Some((byte_off, run_bits, field_bit_pos, k))
+}
+
 /// Decode a `bin`-pattern INTEGER segment binder out of a RUNTIME `Bytes` scrutinee (a `BinIntRead` at
 /// the segment's static offset). Only a fixed-width int segment at a fixed offset is supported; anything
 /// else (a bit-field or bytes binder, or an offset made dynamic by a preceding dependent size) declines —
@@ -22217,11 +22313,73 @@ fn decode_bin_field_runtime(
                 )),
             }
         }
-        SegKind::Bits { .. } | SegKind::Bytes { .. } | SegKind::Utf8 { .. } => {
-            Core::Poison(Reject::decline(
-                "a runtime bin bit-field / non-final sized-bytes / utf8 binder is not yet decoded",
-            ))
-        }
+        // A BIT-FIELD `(bits k)` binder — read its byte-aligned RUN as one big-endian unsigned integer,
+        // then shift+mask the field out MSB-first (mirroring `bin_match_decode`'s `(acc >> (nbits-k)) &
+        // mask`). `bin_bitfield_run` gives the run's byte offset, total bits, and this field's bit position
+        // from the run's MSB. `field = (R >> (run_bits - field_bit_pos - k)) & ((1<<k)-1)`, where `R` is the
+        // run's `run_bits/8` bytes read unsigned. A run that is not byte-aligned, wider than 64 bits, or
+        // preceded by a non-int structure declines (a later slice). The mask makes the read's signedness
+        // moot, so `R` is read unsigned.
+        SegKind::Bits { .. } => match bin_bitfield_run(segs, seg_index) {
+            Some((run_byte_off, run_bits, field_bit_pos, k)) => {
+                let scrut_ref = synth_core(
+                    db,
+                    Core::LocalRef { binder: scrutinee },
+                    crate::ty::Ty::Bytes,
+                );
+                // R = the run's bytes as one unsigned big-endian integer (i64 rep; run_bits ≤ 64).
+                let run_read = synth_core(
+                    db,
+                    Core::BinIntRead {
+                        bytes: scrut_ref,
+                        byte_offset: run_byte_off,
+                        width: (run_bits / 8) as u8,
+                        signed: false,
+                        little_endian: false,
+                    },
+                    crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+                );
+                // Shift the field down to the low bits: shift = run_bits - field_bit_pos - k.
+                let shift = run_bits - field_bit_pos - k;
+                let field_low = if shift == 0 {
+                    run_read
+                } else {
+                    let shift_node = synth_core(
+                        db,
+                        Core::ConstInt(IntValue::from_i64(shift as i64)),
+                        crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+                    );
+                    synth_core(
+                        db,
+                        Core::Arith {
+                            op: Prim::Shr,
+                            lhs: run_read,
+                            rhs: shift_node,
+                        },
+                        crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+                    )
+                };
+                // Mask to k bits: & ((1<<k)-1). (k ≤ run_bits ≤ 64; the mask fits an i64 for k ≤ 63.)
+                let mask_val: i64 = if k >= 63 { -1 } else { (1i64 << k) - 1 };
+                let mask_node = synth_core(
+                    db,
+                    Core::ConstInt(IntValue::from_i64(mask_val)),
+                    crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+                );
+                Core::Arith {
+                    op: Prim::BitAnd,
+                    lhs: field_low,
+                    rhs: mask_node,
+                }
+            }
+            None => Core::Poison(Reject::decline(
+                "a runtime bin bit-field binder needs a byte-aligned run of ≤64 bits after fixed-int \
+                 segments (a mid-stream or wide bit-field is a later slice)",
+            )),
+        },
+        SegKind::Bytes { .. } | SegKind::Utf8 { .. } => Core::Poison(Reject::decline(
+            "a runtime bin non-final sized-bytes / utf8 binder is not yet decoded",
+        )),
     }
 }
 
@@ -22321,13 +22479,19 @@ fn build_bin_arm_predicate(
     segs: &[crate::resolved::Segment],
 ) -> Result<StructId, Reject> {
     use crate::resolved::SegKind;
-    let total: u32 = segs
+    // The fixed BYTE prefix: int segment widths + bit-field bits (a byte-aligned `bits` run — CDZ0220 —
+    // contributes a whole number of bytes; summing each field's `k/8` … but a run's fields may not each be
+    // byte-aligned, so sum BITS then divide). Sum bits across all `bits` fields and int widths (in bits),
+    // then the fixed prefix is that total in bytes (a well-formed bin is byte-aligned overall).
+    let total_bits: u32 = segs
         .iter()
         .map(|s| match &s.kind {
-            SegKind::Int { width, .. } => *width as u32,
+            SegKind::Int { width, .. } => (*width as u32) * 8,
+            SegKind::Bits { k } => *k,
             _ => 0,
         })
         .sum();
+    let total: u32 = total_bits / 8;
     // Length probe. Whole-scrutinee accounting: a `bin` pattern with no trailing variable segment matches
     // only the EXACT fixed length (`bytes-len == total`); one ending in a final `(bytes rest)` matches any
     // length `>= total` (the fixed int prefix, rest absorbs the remainder); one ending in a DEPENDENT-SIZE
@@ -22457,63 +22621,129 @@ fn build_bin_arm_predicate(
             )
         }
     };
-    // Per LITERAL segment: `BinIntRead(seg) == literal`. A binder slot (a bare name) adds no probe.
-    let mut off: u32 = 0;
+    // Per LITERAL segment: `<read> == literal`. A binder slot (a bare name) adds no probe. An INT literal
+    // reads a `BinIntRead` at its static byte offset; a BIT-FIELD literal reads its run + shift+mask (the
+    // same extraction the binder decode uses, `bin_bitfield_run`), so a `(bin (bits 1 1) (u8 x))`-style tag
+    // dispatches on the sub-byte field. Offsets come from `bin_static_offset`/`bin_bitfield_run`, not a
+    // running counter, so a bit-field run does not desync the following int segment's offset.
     for (i, seg) in segs.iter().enumerate() {
-        let SegKind::Int { width, signed } = &seg.kind else {
+        // A bare-name slot is a binder, not a literal probe.
+        if db.ast.as_name(seg.slot).is_some() {
             continue;
-        };
-        let w = *width as u32;
-        if db.ast.as_name(seg.slot).is_none() {
-            // A literal segment — its slot must be a constant integer.
-            let lit = match core_of(db, seg.slot) {
-                Core::ConstInt(v) => v,
-                Core::Poison(r) => return Err(r),
-                _ => {
-                    return Err(Reject::decline(
-                        "a runtime bin pattern literal segment is not a constant integer",
-                    ));
-                }
-            };
-            let _ = i;
-            // `BinIntRead` always emits an i64; type it FIXED Int64 so the compare's `operand_int_ty`
-            // picks width 64 and grounds the literal operand to i64 (not a default-narrow i32).
-            let read = synth_core(
-                db,
-                Core::BinIntRead {
-                    bytes: scrutinee,
-                    byte_offset: off,
-                    width: *width,
-                    signed: *signed,
-                    little_endian: seg.little_endian,
-                },
-                crate::ty::Ty::Int(crate::ty::IntTy::i64()),
-            );
-            let lit_node = synth_core(
-                db,
-                Core::ConstInt(lit),
-                crate::ty::Ty::Int(crate::ty::IntTy::i64()),
-            );
-            let eq = synth_core(
-                db,
-                Core::Compare {
-                    op: Prim::Eq,
-                    lhs: read,
-                    rhs: lit_node,
-                },
-                crate::ty::Ty::Bool,
-            );
-            pred = synth_core(
-                db,
-                Core::And {
-                    lhs: pred,
-                    rhs: eq,
-                    is_and: true,
-                },
-                crate::ty::Ty::Bool,
-            );
         }
-        off += w;
+        let read = match &seg.kind {
+            SegKind::Int { width, signed } => {
+                let Some(byte_offset) = bin_static_offset(segs, i) else {
+                    return Err(Reject::decline(
+                        "a runtime bin literal int segment after a variable-length segment is not yet probed",
+                    ));
+                };
+                // `BinIntRead` always emits an i64; type it FIXED Int64 so the compare's `operand_int_ty`
+                // picks width 64 and grounds the literal operand to i64 (not a default-narrow i32).
+                synth_core(
+                    db,
+                    Core::BinIntRead {
+                        bytes: scrutinee,
+                        byte_offset,
+                        width: *width,
+                        signed: *signed,
+                        little_endian: seg.little_endian,
+                    },
+                    crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+                )
+            }
+            // A LITERAL bit-field probe: read its run + shift+mask, the same extraction the binder decode
+            // does. `bin_bitfield_run` gives (run_byte_off, run_bits, field_bit_pos, k).
+            SegKind::Bits { .. } => {
+                let Some((run_byte_off, run_bits, field_bit_pos, k)) = bin_bitfield_run(segs, i)
+                else {
+                    return Err(Reject::decline(
+                        "a runtime bin literal bit-field needs a byte-aligned run of ≤64 bits",
+                    ));
+                };
+                let run_read = synth_core(
+                    db,
+                    Core::BinIntRead {
+                        bytes: scrutinee,
+                        byte_offset: run_byte_off,
+                        width: (run_bits / 8) as u8,
+                        signed: false,
+                        little_endian: false,
+                    },
+                    crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+                );
+                let shift = run_bits - field_bit_pos - k;
+                let shifted = if shift == 0 {
+                    run_read
+                } else {
+                    let shift_node = synth_core(
+                        db,
+                        Core::ConstInt(IntValue::from_i64(shift as i64)),
+                        crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+                    );
+                    synth_core(
+                        db,
+                        Core::Arith {
+                            op: Prim::Shr,
+                            lhs: run_read,
+                            rhs: shift_node,
+                        },
+                        crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+                    )
+                };
+                let mask_val: i64 = if k >= 63 { -1 } else { (1i64 << k) - 1 };
+                let mask_node = synth_core(
+                    db,
+                    Core::ConstInt(IntValue::from_i64(mask_val)),
+                    crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+                );
+                synth_core(
+                    db,
+                    Core::Arith {
+                        op: Prim::BitAnd,
+                        lhs: shifted,
+                        rhs: mask_node,
+                    },
+                    crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+                )
+            }
+            // A literal bytes/utf8 segment is not probed here (a final bytes segment binds, it does not
+            // carry a literal in this path).
+            _ => continue,
+        };
+        // The literal value the segment must equal.
+        let lit = match core_of(db, seg.slot) {
+            Core::ConstInt(v) => v,
+            Core::Poison(r) => return Err(r),
+            _ => {
+                return Err(Reject::decline(
+                    "a runtime bin pattern literal segment is not a constant integer",
+                ));
+            }
+        };
+        let lit_node = synth_core(
+            db,
+            Core::ConstInt(lit),
+            crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+        );
+        let eq = synth_core(
+            db,
+            Core::Compare {
+                op: Prim::Eq,
+                lhs: read,
+                rhs: lit_node,
+            },
+            crate::ty::Ty::Bool,
+        );
+        pred = synth_core(
+            db,
+            Core::And {
+                lhs: pred,
+                rhs: eq,
+                is_and: true,
+            },
+            crate::ty::Ty::Bool,
+        );
     }
     Ok(pred)
 }

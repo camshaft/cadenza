@@ -11216,3 +11216,31 @@
               (export main)))
   (call   main)
   (output (: 5 Int64)))
+
+(case "a Rational fanned into a compound then re-read survives (Perceus retain over a BigInt/Rational leaf)"
+  (doc    "A `let`-bound RATIONAL `m` (from a recursive `rmax` fold, so runtime — not const-folded) is FANNED
+           into two compounds `MkV3(rzero()-m, .., ..)` / `MkV3(m,m,m)`, which are then RE-READ componentwise
+           by `v3min`/`v3max` (the aabbr-of-corners shape). A Rational is a heap value (a 2-BigInt-handle
+           node), so `m`'s multi-use must be Perceus-RETAINED (`dup`): before the `is_heap_type` BigInt/
+           Rational fix, `m` was not a retain candidate, no `dup` was emitted, `m` was freed after the first
+           consume, and the re-read `arr-set`/projection hit the recycled slot → wasm OOB/unreachable. Pins
+           that a BigInt/Rational fanned into a compound + re-read yields the right value (`(b-a) = 2m`). For
+           n=5, m=4, so `(b - a)` = 8 = `m + m`. Guards the numeric-leaf twin of the String is_heap_type gap.")
+  (input  (do
+            (type V3 (MkV3 Rational Rational Rational))
+            (def (rmin (: a Rational) (: b Rational)) (if (< a b) a b))
+            (def (rmax (: a Rational) (: b Rational)) (if (> a b) a b))
+            (def (v3min (: p V3) (: q V3))
+              (match p ((MkV3 px py pz) (match q ((MkV3 qx qy qz) (MkV3 (rmin px qx) (rmin py qy) (rmin pz qz)))))))
+            (def (v3max (: p V3) (: q V3))
+              (match p ((MkV3 px py pz) (match q ((MkV3 qx qy qz) (MkV3 (rmax px qx) (rmax py qy) (rmax pz qz)))))))
+            (def (foldmax (: i Int64) (: n Int64) (: acc Rational))
+              (if (< i n) (foldmax (+ i 1) n (rmax acc (Rational.of-int i))) acc))
+            (def (main (: n Int64))
+              (let ((m (foldmax 1 n (Rational.of-int 0)))
+                    (lo (MkV3 (- (Rational.of-int 0) m) (- (Rational.of-int 0) m) (- (Rational.of-int 0) m)))
+                    (hi (MkV3 m m m)))
+                (let ((mn (v3min lo hi)) (mx (v3max lo hi)))
+                  (match mn ((MkV3 a _ _) (match mx ((MkV3 b _ _) (if (= (- b a) (+ m m)) 1 0))))))))
+            (export main)))
+  (call main (: 5 Int64)) (output (: 1 Int64)))

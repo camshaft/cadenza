@@ -5113,6 +5113,32 @@ mod tests {
                 "record pattern round-trips: {ml:?}"
             );
         }
+        // NESTED compositions of the binding patterns (tuple/list/map/record/ctor) — the interaction of
+        // the record + ctor pattern surfaces with each other and the pre-existing tuple/list/map ones is
+        // where a printer/parser asymmetry would most likely hide, so pin the mixes: a tuple inside a
+        // record, a ctor inside a tuple / record / map-value, a record inside a ctor / list-rest / record.
+        // Assert structural round-trip (the property; layout varies by position) with no backtick fallback.
+        for src in [
+            "def f({ x = (a, b) }) = a",
+            "def f((C(c), d)) = c",
+            "def f({ p = C(c) }) = c",
+            "def f([{ x = a }, .. rest]) = a",
+            "def f(Some({ x = a })) = a",
+            "def f(#{ k = C(c) }) = c",
+            "let (C(a), { y = b }) = p in a",
+            "let { outer = { inner = a } } = r in a",
+        ] {
+            let a = parser::read_ml(src).arenas;
+            let ml = print(&a, 80);
+            assert!(
+                !ml.contains('`'),
+                "nested pattern must not backtick-fallback: {src} -> {ml:?}"
+            );
+            assert!(
+                parser::read_ml(&ml).arenas.structurally_eq(&a),
+                "nested pattern round-trips: {src} -> {ml:?}"
+            );
+        }
     }
 
     #[test]
