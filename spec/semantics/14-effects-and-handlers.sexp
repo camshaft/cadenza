@@ -307,6 +307,33 @@
                 (do (A.set 42) (A.get)))) (export main)))
   (output (: 42 Int64)))
 
+(case "a deferred resume-thunk STORED IN A SUM and match-extracted through a helper before apply folds"
+  (doc    "E5 step-3 (the DES multi-task scheduler's pqueue store→pop→apply reach). The escaping resume-thunk
+           is STORED in a compound (`Box.Box (fn (_u) (resume unit wake))`) and MATCH-EXTRACTED through a
+           helper `unbox-apply(b) = match b ((Box.Box th) (th unit))` before being applied — exactly how a
+           real scheduler stores (waketime, k) in a pqueue, pops the min via match, and applies the popped k.
+           The `resume` is buried behind the constructor + the match, so the fold's classifiers see no tail
+           resume. It is exposed by reducing the arm body: β-reduce the one-shot `unbox-apply` (its param is
+           used once — the DES one-shot contract, so the resume-thunk is not duplicated), then case-of-known-
+           constructor fold the `(match (Box.Box (fn..)) ((Box.Box th) (th unit)))` (a SumPayload-aware
+           substitution — the pattern binder resolves to a payload-read, not a plain reference), then
+           β-reduce the exposed `((fn (_u) (resume unit wake)) unit)` to `(resume unit wake)` — the resume-in-
+           place form the fold serves. The `now` arm reads the wake-seeded clock → 5s. Distinct from the
+           escaping-`k` reify (that has an explicit `k` binder + is left un-reduced); this 4-part arm's
+           resume is reached through the store→match round-trip.")
+  (input  (do
+            (type Instant (Instant UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (type Box (Box (-> Unit Instant)))
+            (def (unbox-apply (: b Box)) (match b ((Box.Box th) (th unit))))
+            (effect Sim (op sleep (-> Instant Unit)) (op now (-> Unit Instant)))
+            (def (main)
+              (handle Sim (Instant.Instant 0)
+                ( (now (u) s (resume s s))
+                  (sleep (wake) s (unbox-apply (Box.Box (fn (_u) (resume unit wake))))) )
+                (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) (export main)))
+  (output (: 5000000000 Int64)))
+
 (case "a performing closure passed to a function that applies it UNDER a handler is homed at the apply site"
   (doc    "The `handler runs a passed-in closure` idiom: `with-seed(body) = handle Rand … (body unit)` runs
            its `body` PARAM under the `Rand` handler, and `main` passes `(fn (u) (Rand.roll))`. The lambda's

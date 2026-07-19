@@ -19,3 +19,10 @@ doc comment to state non-`Trap` errors render with the full cause chain.
 
 ---
 ROUTED to v-cdz-tooling (corpus-bugfix 2026-07-17): trivial doc-comment-only drift. Fold into next commit; too small for a fixer.
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk f14408d1c): the trap-message doc in cdz-run/src/lib.rs
+(trap_message, ~247-259) now correctly describes rendering the "whole anyhow CAUSE CHAIN inline (`{e:#}`), not
+just the outer message" for both the Trap-code path and a non-Trap error — matching the current full-cause-chain
+behavior. The stale "as before" phrasing the reviewer flagged is GONE (grep finds no "as before"). Doc-only nit
+resolved by a peer. No corpus-bugfix action.

@@ -56512,6 +56512,42 @@ mod stage1 {
     }
 
     #[test]
+    fn a_deferred_resume_thunk_stored_in_a_sum_and_match_extracted_folds() {
+        // E5 STEP-3 (DES inc-4 multi-task pqueue reach): a deferred-resume-thunk STORED IN A COMPOUND (a sum
+        // ctor) and MATCH-EXTRACTED through a helper before apply — the scheduler's store→pop-min→apply
+        // round-trip. `(sleep (wake) s (unbox-apply (Box.Box (fn (_u) (resume unit wake)))))` where
+        // `unbox-apply(b) = match b ((Box.Box th) (th unit))`. The `resume` is buried behind `Box.Box` + the
+        // match, so the fold's classifiers see no tail resume and the arm declined (v-DES's inc-4 forcing
+        // repro). `reduce_arm_deferred_resume` (co-built with v-inference) exposes it: β-reduce the one-shot
+        // `unbox-apply` [count_param_refs≤1, DES-confirmed exactly-once] → `eval::fold_ctor_match` folds the
+        // `(match (Box.Box (fn..)) ((Box.Box th) (th unit)))` (SumPayload-aware substitution — the binder
+        // resolves to SumPayload, not Ref) → the exposed `((fn (_u) (resume unit wake)) unit)` β-reduces to
+        // `(resume unit wake)`, the resume-in-place form the fold serves. The `now` arm reads the wake-seeded
+        // clock → 5000000000. GATED to a 4-part arm (`cont: None`); an escaping-k arm (b2-min's `(a () s k
+        // (use-k k))`) is served by the reify path and NOT reduced here.
+        let src = "(do \
+                   (type Instant (Instant UInt64)) \
+                   (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n))) \
+                   (type Box (Box (-> Unit Instant))) \
+                   (def (unbox-apply (: b Box)) (match b ((Box.Box th) (th unit)))) \
+                   (effect Sim (op sleep (-> Instant Unit)) (op now (-> Unit Instant))) \
+                   (def (main) \
+                     (handle Sim (Instant.Instant 0) \
+                       ( (now (u) s (resume s s)) \
+                         (sleep (wake) s (unbox-apply (Box.Box (fn (_u) (resume unit wake))))) ) \
+                       (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "a deferred-resume-thunk stored in a sum + match-extracted before apply folds (DES inc-4)",
+        );
+        if let Some(v) = run_linked(&bytes, "main") {
+            assert_eq!(
+                v, "5000000000",
+                "unbox-apply β-reduces + the ctor-match folds → resume unit wake; now reads the wake clock"
+            );
+        }
+    }
+
+    #[test]
     fn ty_cont_variant_is_reserved_and_its_predicates_recurse() {
         // E5 STEP 3 increment 1 (gate-neutral): the `Ty::Cont { resume, answer }` variant EXISTS + every
         // exhaustive `Ty` match has an arm. Nothing CONSTRUCTS one yet (an escaping-k arm still declines to

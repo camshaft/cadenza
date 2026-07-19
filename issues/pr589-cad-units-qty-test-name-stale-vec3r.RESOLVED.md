@@ -16,3 +16,9 @@ NAME only (the `-vec3r-core` suffix). Trivial consistency rename, no behavior ch
 
 ## Owner
 `implementation/cad/*` = v-cad.
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk f14408d1c): the stale test name was corrected. On trunk
+the test is `vec3q-bridges-to-the-exact-vec3-core()` (units-qty.cdz:68) — the `vec3r` in the name is now
+`vec3-core`, matching its body which calls `vec3q-to-vec3` bridging to the bare-`Rational` `Vec3` core. No
+stale `vec3r`. Test-name nit resolved by a peer. No corpus-bugfix action.

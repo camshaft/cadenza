@@ -239,8 +239,9 @@ def unsupported-at(tree: Tree, i: Int64) =
   (match unsupported(tree) with | (id, t1) => (id, i, t1))
 
 /// Read ONE nullary `(def (name) body)` starting at `i` (just past the `def` atom). FLAT helper (slice-3b-ii):
-/// returns `(nameId, bodyId, nextIndex, tree')`. `nameId = -1` sentinel = a PARAMETERIZED def `(name (: p T))`
-/// (a `(` where the signature-closing `)` is expected) — out of the nullary subset, caller declines.
+/// returns `(nameId, bodyId, nextIndex, tree')`. `bodyId = -1` sentinel = a PARAMETERIZED def `(name (: p T))`
+/// (a `(` where the signature-closing `)` is expected) — out of the nullary subset, caller declines. (nameId is
+/// always `name-id(nm)`; it is the BODYID that carries the -1 sentinel — see read-def-body's else arm.)
 def read-def-form(s: String, i: Int64, tree: Tree) =
   (let m0 = open-paren(s, i) in
    (match scan-atom(s, skip-space(s, m0), "") with | (nm, m1) => read-def-body(s, nm, skip-space(s, m1), tree)))

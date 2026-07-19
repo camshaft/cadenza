@@ -447,6 +447,7 @@ struct HandlerCtx {
 /// thread it, and the state's TYPE (from the handle's `init` seed; `None` if undetermined → a recursive
 /// specialization declines). The slot's INDEX is its position in `HandlerCtx::slots` — the trailing
 /// state-parameter position a specialized fn threads it through.
+#[derive(Clone)]
 struct StateSlot {
     /// The effect declaration occurrence whose operations thread this slot's state.
     decl: u32,
@@ -1825,7 +1826,51 @@ pub fn reduce_handle(
         .map(|(d, _)| d.0)?;
     let state_ty = state_ty_of_arms(db, init, arms);
     let slot = StateSlot { decl, state_ty };
-    let ctx = HandlerCtx::new(db, map, vec![slot]);
+    let ctx = HandlerCtx::new(db, map, vec![slot.clone()]);
+    // DES multi-task reach: expose a DEFERRED resume that is stored in a compound and applied through a
+    // helper — `(sleep (wake) s (unbox-apply (Box.Box (fn (_u) (resume unit wake)))))` where `unbox-apply(b)
+    // = match b ((Box.Box th) (th unit))` — by reducing each arm body's store→match-extract→apply round-trip
+    // (β-reduce + `eval::fold_ctor_match`, via `reduce_arm_deferred_resume`) to the resume-in-place form the
+    // fold serves. Only an arm whose reduction EXPOSES a tail resume is rewritten; every other arm reduces to
+    // itself (`==`), so tail/abortive/already-foldable arms are byte-identical. Rebuild the ctx only when some
+    // arm changed. (v-discrete-event-sim inc-4's pqueue store→pop→apply reach; co-built with v-inference, who
+    // owns `fold_ctor_match`'s SumPayload-aware substitution.)
+    let exposed: HashMap<(u32, u32), HandleArm> = ctx
+        .arms
+        .iter()
+        .map(|(&k, a)| {
+            // ONLY a plain 4-part arm (no explicit continuation binder `k`): an escaping-k arm (`cont:
+            // Some`, e.g. b2-min's `(a () s k (use-k k))`) is served by the escaping-k reify below, which
+            // needs its body UN-reduced — β-reducing `(use-k k)` here to `(k 10)` breaks that reify ("value
+            // is not applyable"). The deferred-resume-thunk shape this pass targets is a 4-part arm whose
+            // resume is buried in a compound-stored closure, never a `cont: Some` arm.
+            let rb = if a.cont.is_none() {
+                reduce_arm_deferred_resume(db, a.body, &ctx)
+            } else {
+                a.body
+            };
+            let arm = if rb == a.body {
+                a.clone()
+            } else {
+                HandleArm {
+                    op: a.op,
+                    params: a.params.clone(),
+                    state: a.state,
+                    cont: a.cont,
+                    body: rb,
+                }
+            };
+            (k, arm)
+        })
+        .collect();
+    let ctx = if exposed
+        .iter()
+        .any(|(k, a)| ctx.arms.get(k).is_none_or(|o| o.body != a.body))
+    {
+        HandlerCtx::new(db, exposed, vec![slot])
+    } else {
+        ctx
+    };
     // ABORTIVE (E4) TYPE-CONSISTENCY GUARD. An abortive arm materializes its BODY as the abort value, which
     // becomes the value of the position the perform occupied — a position the type checker typed by the
     // op's declared RESULT type (a perform types as its result, never as the arm value). If the arm body's
@@ -2474,6 +2519,53 @@ fn desugar_performing_guard_match(
 /// EXCLUDED (`call_reaches_discharged_effect` returns false — it is specialized, not inlined) so the
 /// reduction terminates. A non-redex node is descended structurally. Bounded by `reduce_handle`'s re-entry
 /// guard (each reduced body is re-walked once).
+/// Reduce a handler-arm body that DEFERS its resume inside a closure STORED IN A COMPOUND and applied
+/// through a helper — the DES multi-task pqueue's store→pop→apply shape: `(sleep (wake) s (unbox-apply
+/// (Box.Box (fn (_u) (resume unit wake)))))` where `unbox-apply(b) = match b ((Box.Box th) (th unit))`.
+/// The `resume` is buried behind the `Box.Box` constructor + `unbox-apply`'s match, so the fold's
+/// classifiers see no TAIL resume and the arm declines. Compose reductions until it surfaces:
+///  (a) β-reduce a one-shot non-recursive helper call [`apply_lambda`]; ONE-SHOT guard `count_param_refs ≤ 1`
+///      so a resume-bearing closure argument is not DUPLICATED (v-discrete-event-sim CONFIRMED every stored
+///      continuation applies EXACTLY ONCE — pop removes before apply — so this guard IS the DES contract);
+///  (b) case-of-known-constructor fold a `match` over a visible ctor [`eval::fold_ctor_match`, v-inference's
+///      SumPayload-aware substitution — the `(Ctor v)` binder's uses resolve to `SumPayload{scrutinee}` not
+///      `Ref`, so a targeted resolve-time rewrite, not `beta_reduce`];
+/// repeating until a tail `resume` surfaces or no progress. Unchanged body ⇒ returned as-is (byte-identical),
+/// so tail/abortive/already-foldable arms are untouched. Bounded iteration. Conservative: any shape it
+/// cannot cleanly reduce is left as-is (the arm then declines exactly as before — never a mis-fold).
+fn reduce_arm_deferred_resume(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> StructId {
+    let mut cur = node;
+    for _ in 0..32 {
+        if tail_resume(db, cur).is_some() {
+            break; // exposed — done
+        }
+        // (b) a match over a known ctor → its arm body with SumPayload-binder refs substituted.
+        if let Some(folded) = crate::eval::fold_ctor_match(db, cur) {
+            cur = folded;
+            continue;
+        }
+        // (a) a one-shot non-recursive helper call whose args are pure or deferred resume-closures.
+        if let Resolved::Apply { head, args } = resolved_of(db, cur)
+            && is_perform(db, head, ctx).is_none()
+            && let Some((params, hbody)) = crate::eval::lambda_params_and_body(db, head)
+            && !crate::eval::is_recursive(db, hbody)
+            && params.len() == args.len()
+            && params
+                .iter()
+                .all(|&p| count_param_refs(db, hbody, crate::eval::param_name_occ(db, p)) <= 1)
+            && args.iter().all(|&a| {
+                strongly_pure(db, a, ctx) || matches!(resolved_of(db, a), Resolved::Lambda { .. })
+            })
+            && let Some(reduced) = crate::eval::apply_lambda(db, head, &args).ok().flatten()
+        {
+            cur = reduced;
+            continue;
+        }
+        break; // no further reduction applies
+    }
+    cur
+}
+
 fn reduce_applied_lambdas(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> StructId {
     // An application whose head is a (non-recursive) lambda/ref-to-lambda reaching the discharged effect,
     // AND whose arguments are all strongly pure (the soundness guard — see the doc comment): β-reduce it
