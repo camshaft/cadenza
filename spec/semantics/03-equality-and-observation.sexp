@@ -393,9 +393,12 @@
 
 ; A runtime COMPOUND `compare` is orderable (all-orderable leaves) but the descriptor-guided `value-cmp`
 ; three-way heap walk is not wired yet — a genuine NOT-YET (distinct from the float permanent carve-out). The
-; boolean compound `<` already COMPUTES via `Core::ValueCmp`; the three-way `compare` over the same value
-; awaits the value-cmp emit carrying `op=Compare` (owned by v-runtime). This case pins the current decline so a
-; future value-cmp-Compare emit flips it to an executing witness rather than silently changing behavior.
+; boolean compound `<` already COMPUTES via `Core::ValueCmp`; the three-way `compare` over the same value now
+; ROUTES to `Core::ValueCmp { op: Prim::Compare }` in lower too (the lower-side is in place), and declines
+; cleanly AT EMIT ("ValueCmp carries a non-ordering prim", both backends) until the emit's `op=Compare` arm
+; lands (builds the Ordering sum from the walk's -1/0/1 as `res+1` — all-nullary enum discs; owned by v-runtime).
+; This case pins the current decline so that emit arm flips it to an executing witness rather than silently
+; changing behavior.
 (case "a runtime compound compare declines pending the value-cmp three-way heap walk"
   (doc    "`(compare (tuple a 1) (tuple b 1))` over runtime Int64-leaf tuples is orderable (every leaf offers a
            total order), but the three-way `compare` over a COMPOUND needs the descriptor-guided `value-cmp`

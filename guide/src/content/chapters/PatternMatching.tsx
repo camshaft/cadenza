@@ -149,8 +149,9 @@ export default function PatternMatching() {
       <P>
         The map has a <C>"width"</C>, so the arm fires and binds <C>v</C> to <C>80</C>. Drop that key from
         the map and the pattern no longer matches, so it falls through to the wildcard, <C>-1</C>. Toggle to
-        the conventional surface and the pattern reads as <C>{`#{ "width" = v, .. rest }`}</C>, the same
-        map-literal shape from <strong>Maps &amp; sets</strong>, now on the left of a match arm.
+        the conventional surface and the pattern reads as <C>{`#{ "width" = v, .. rest }`}</C>, a
+        map-literal shape on the left of a match arm (the <strong>Maps &amp; sets</strong> chapter later
+        builds out maps as values).
       </P>
 
       <H2>Your turn</H2>

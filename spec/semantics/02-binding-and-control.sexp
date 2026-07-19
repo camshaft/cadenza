@@ -2837,13 +2837,18 @@
   (input  (let (((record (z b) (a c)) (record (a 10) (z 20)))) (+ (* 100 c) b)))
   (output (: 1020 Int64)))
 
-; NOTE: a record pattern in PARAMETER position (`(def (f (record (x a) (y b))) …)`) is supported by the
-; compiler (it desugars to a destructuring `let`, the SAME path the let-binder cases above exercise; a Rust
-; regression test `a_record_binding_pattern_in_a_parameter_destructures_by_field` pins it end-to-end), but
-; the ML SURFACE parser does not yet accept a record pattern in a parameter slot (`def f({ x = a })` →
-; "expected a name"), so a param-position case cannot yet round-trip through the ML surface the corpus gate
-; requires. Filed with v-syntax; the case is promoted here once the ML parser admits it — the record twin of
-; the list-rest / tuple param patterns the ML surface already spells.
+(case "a def parameter may be a record pattern that destructures by field"
+  (doc    "`(def (f (record (x a) (y b))) (+ a b))` destructures its single record argument by field,
+           keeping arity 1 (core-semantics.md #A Binding Position Accepts An Irrefutable Pattern: a
+           destructuring parameter occupies one argument position and names its parts). The parameter
+           desugars to a destructuring `let`, so `a`/`b` read the runtime record's fields — the same
+           binding-path the let-binder cases above exercise. `(f (record (x 3) (y 4)))` = 7. The record twin
+           of the list-rest / tuple param patterns; its ML surface `def f({ x = a, y = b })` round-trips now
+           that v-syntax admits a record pattern in a parameter slot (the surface gap this case waited on).")
+  (input  (do (def (f (record (x a) (y b))) (+ a b))
+              (def (main) (f (record (x 3) (y 4))))
+              (export main)))
+  (output (: 7 Int64)))
 
 (case "a record binding pattern naming an absent field is rejected"
   (doc    "The contrast: a record binding pattern that names a field the bound value's record type does NOT

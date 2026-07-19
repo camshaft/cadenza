@@ -388,6 +388,7 @@ pass	a RUNTIME string scrutinee matches string literals by equality
 pass	a RUNTIME-built Rational is usable as a map key, matched by its exact value
 pass	a RUNTIME-built Rational set deduplicates by exact value
 pass	a Rational accumulator threaded through recursion sums exactly
+pass	a Rational fanned into a compound then re-read survives (Perceus retain over a BigInt/Rational leaf)
 pass	a Rational is usable as a map key, matched by its exact value
 pass	a Rational set deduplicates by exact value regardless of how each was written
 pass	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)
@@ -792,6 +793,7 @@ pass	a deeply nested expression is diagnosed by the parser, never crashes it
 pass	a deeply nested literal in a tuple let-binder is refutable and rejected
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
 pass	a def parameter may be a list rest pattern binding the head
+pass	a def parameter may be a record pattern that destructures by field
 pass	a def-returning-lambda partial application passes through a HOF parameter
 pass	a default-fraction pragma fixes a type but adds no conversion — no-promotion still holds
 pass	a default-fraction pragma grounds a bare DECIMAL literal to its exact fraction
@@ -1855,8 +1857,11 @@ pass	a runtime bin construction result compares equal to the Bytes it builds
 pass	a runtime bin construction result unequal to different content is false
 pass	a runtime bin match binds a dependent-size bytes segment over a runtime scrutinee
 pass	a runtime bin match binds the tail after a fixed header via a final rest segment
+pass	a runtime bin match decodes a byte-aligned bit-field run
+pass	a runtime bin match dispatches on a leading literal bit-field tag
 pass	a runtime bin match dispatches on a literal tag across arms
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
+pass	a runtime bit-field literal tag that does not match falls through
 pass	a runtime bit-field packs a runtime value into a nibble
 pass	a runtime bit-field run spans two bytes and composes with an int segment
 pass	a runtime bitwise AND masks bits

@@ -29140,6 +29140,36 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bin_match_decodes_bit_field_segments_msb_first() {
+        use crate::testkit::parse;
+        // A byte-aligned bit-field run `(bits a 3)(bits b 5)` decodes MSB-first: `a` = high 3 bits, `b` =
+        // low 5. Over the constant byte 0b1010_0101 = 165 → a=0b101=5, b=0b00101=5 → 100*5+5 = 505. (A
+        // constant scrutinee folds via the reference decode; the RUNTIME path — a run-read + shift/mask — is
+        // corpus-pinned with a param-derived scrutinee. This pins the fold + the value the runtime path must
+        // agree with.)
+        let two_field = "(module m (def (main) \
+              (match (Bytes.of (list 165)) ((bin (bits a 3) (bits b 5)) (+ (* 100 a) b)) (_ -1))) \
+              (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(two_field))).expect("compile");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 505);
+
+        // A leading LITERAL bit-field tag `(bits 1 1)` gates the arm on the top bit; a 2-byte run spanning a
+        // byte boundary `(bits a 4)(bits b 12)` reads the run as one 16-bit int then shift/masks. 0xABCD →
+        // a=0xA=10, b=0xBCD=3021 → 10000*10 + 3021 = 103021.
+        let span = "(module m (def (main) \
+              (match (Bytes.of (list 171 205)) ((bin (bits a 4) (bits b 12)) (+ (* 10000 a) b)) (_ -1))) \
+              (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(span))).expect("compile");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 103021);
+
+        // A literal bit-field tag miss falls through: `(bits 1 1)` over 0b0000_0001 (top bit 0) → -1.
+        let miss = "(module m (def (main) \
+              (match (Bytes.of (list 1)) ((bin (bits 1 1) (bits x 7)) x) (_ -1))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(miss))).expect("compile");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), -1);
+    }
+
+    #[test]
     fn a_runtime_bin_construction_builds_and_range_checks_under_wasmtime() {
         // A `(bin …)` whose segment value is a genuine RUNTIME value (an EXPORTED boundary parameter, which
         // cannot fold) builds a Bytes on the rope heap at run time: `Core::BinBuild` allocs the buffer and
@@ -56154,6 +56184,33 @@ mod stage1 {
             assert_eq!(
                 v, "20",
                 "apply(k,10) re-installs the handler around C=(+ 10 (St.tick)), whose tick folds → (+ 10 10) = 20"
+            );
+        }
+    }
+
+    #[test]
+    fn a_do_sequenced_re_performing_escaping_k_folds_via_handler_reinstall() {
+        // E5 STEP-3 INC-2b (FACE-1 B2, `do`-spine slice): the re-performing escaping-k reify over a handle
+        // body that is a `(do …)` SEQUENCE (the DES scheduler's body shape). `do` is a raw AST form that
+        // collapses to its last item's `Ref` under `resolved_of`, so the escaping-k block finds the leading
+        // hole via `escaping_k_leading_hole` (a `do`-aware, B2-SCOPED copy of `leading_strict_hole` — scoped
+        // so the two-hole / thread / match-peel paths, which already fold multi-perform `do`-bodies, are
+        // untouched), and the re-installed handle's do-bodied continuation folds via `pure_hole`'s `do`-arm
+        // (which returns `Impure` for a multi-perform `do`, leaving those to the thread path). Without this
+        // the reify produced `(use-k (fn (#kv) (handle A 5 (arm) (do #kv (A.a)))))` whose inner do-handle
+        // did not fold → "value is not applyable". Now: `(handle A 5 ((a (u) s k (use-k k))) (do (A.a) (A.a)))`,
+        // use-k applies (k 7); apply(k,7) → (handle A 5 (arm) (do 7 (A.a))) → inner (A.a) folds → (k 7)=7 →
+        // (do 7 7) = 7. Regression pins the DES-shaped `do`-bodied handler folds CLEANLY, never "not
+        // applyable"; the cross-op + op-arg-seed DES gate (→5e9) is the next slice.
+        let src = "(do (effect A (op a (-> Unit Int64))) \
+                   (def (use-k (: k (-> Int64 Int64))) (k 7)) \
+                   (def (main) (handle A 5 ((a (u) s k (use-k k))) (do (A.a) (A.a)))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a do-sequenced re-performing escaping-k must fold cleanly (do-spine), not 'not applyable'");
+        if let Some(v) = run_linked(&bytes, "main") {
+            assert_eq!(
+                v, "7",
+                "apply(k,7) re-installs A around (do 7 (A.a)); the inner (A.a) folds to (k 7)=7 → (do 7 7) = 7"
             );
         }
     }
