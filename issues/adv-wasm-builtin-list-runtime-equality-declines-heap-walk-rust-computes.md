@@ -68,3 +68,15 @@ different bytes → champ_eq false at every split boundary). breaker's "same key
 lists were built the same way. So NO shape-independent list compare exists in the key path for n>=33; champ_eq
 STAYS VETOED. List = requires the ELEMENT-WISE walk (value_eq_shaped via op_vec_get, reusing slice-2 value-cmp),
 queued after slice-2. No shortcut.
+
+---
+LANDED (List<orderable>) + verified (corpus-bugfix 2026-07-19): built-in List `=` for ORDERABLE-leaf lists
+shipped on trunk `ae2eb02eb` (option A — route `Prim::Eq && is_orderable_compound` through `Core::ValueCmp{op:Eq}`,
+element-wise value-cmp walk, res==0; NO hash bump). Verified fresh-build, runtime operands: concat-built
+vs push-built `[k,k+1,k+2]` with `--arg 7` → `= ` returns 1 (equal, shape-independent) on wasm. Covers
+List<Int/String/BigInt/Rational/Bool/tuple/sum-of-those>. champ_eq route stays VETOED.
+RESIDUAL (still open, HELD): `List<Float>`/list-spine-containing-Float `=` still DECLINES (value-cmp excludes
+non-orderable leaves per §319). BRICK 1 core `value_eq_shaped` landed hash-neutral (`c41d3e368`); BRICK 2
+(export as a runtime op + emit routing) is HELD by concierge (C)-batch for the NEXT hash-bump window — reject-
+don't-miscompile meanwhile, no forcing consumer. WATCH: ride a hash-bump landing or a forcing consumer; do
+NOT solo-bump. This file stays OPEN for the List<Float> residual only.

@@ -10309,6 +10309,40 @@
             (export main)))
   (output (: 2 Int64)))
 
+(case "Map.to-list enumerates the FULL interior key order, not just the smallest"
+  (doc    "The element-0 case above only pins the smallest key (2) at index 0 — a canonical-order bug that
+           kept the smallest first but mis-ordered the INTERIOR entries would still pass it. This weights the
+           VALUES of all three entries into one scalar to pin the whole sorted-by-key sequence: inserting keys
+           3,1,2 (values 30,10,20), `Map.to-list` yields entries in canonical key order [1,2,3] → values
+           [10,20,30], and `100*v0 + 10*v1 + v2` = 100*10 + 10*20 + 30 = 1230. A mis-order like keys [1,3,2]
+           (values [10,30,20]) would give 1320. Pins the interior entry order an index-0-only check misses.")
+  (input  (do
+            (def (main)
+              (let ((m (Map.insert (Map.insert (Map.insert Map.empty 3 30) 1 10) 2 20)))
+                (let ((ps (Map.to-list m)))
+                  (+ (+ (* 100 (match (List.at ps 0) ((Some p) (match p ((tuple k v) v))) ((None u) -1)))
+                        (* 10 (match (List.at ps 1) ((Some p) (match p ((tuple k v) v))) ((None u) -1))))
+                     (match (List.at ps 2) ((Some p) (match p ((tuple k v) v))) ((None u) -1))))))
+            (export main)))
+  (output (: 1230 Int64)))
+
+(case "Map.to-list canonical key order is independent of insertion order"
+  (doc    "The same value-weighting over a map built in a DIFFERENT insertion order `insert 2,3,1` (values
+           20,30,10) still yields 1230 — Map.to-list orders entries by KEY value (canonical sorted), not by
+           the order keys were inserted. The insertion-independence companion, observable through the whole
+           value sequence rather than an element-0 or length check (a map compares equal regardless of
+           enumeration order, so only a to-list-INDEXED read can witness an order divergence). The Map twin of
+           the Set.to-list insertion-independence case.")
+  (input  (do
+            (def (main)
+              (let ((m (Map.insert (Map.insert (Map.insert Map.empty 2 20) 3 30) 1 10)))
+                (let ((ps (Map.to-list m)))
+                  (+ (+ (* 100 (match (List.at ps 0) ((Some p) (match p ((tuple k v) v))) ((None u) -1)))
+                        (* 10 (match (List.at ps 1) ((Some p) (match p ((tuple k v) v))) ((None u) -1))))
+                     (match (List.at ps 2) ((Some p) (match p ((tuple k v) v))) ((None u) -1))))))
+            (export main)))
+  (output (: 1230 Int64)))
+
 (case "Map.to-list length is the map's entry count"
   (doc    "`(List.len (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 1 99)))` —
            the enumerated list has one (k,v) tuple per DISTINCT key ({1,2} → 2, the second insert at key 1
@@ -10905,6 +10939,30 @@
   (call   main (: 3 Int64))
   (output (: 4 Int64))
   (call   main (: 9 Int64))
+  (output (: -1 Int64)))
+
+(case "a guarded record match arm gates the fields it binds and falls through on a failing guard"
+  (doc    "A record match arm may carry a `(guard <pattern> <cond>)`: the record's fields are bound and then
+           the guard cond is evaluated over those bindings — the arm fires only if the cond holds, otherwise
+           the match falls to the next arm (exactly like a guarded tuple/variant arm). `(match r ((guard
+           (record (x a) (y b)) (> a 0)) (+ a b)) (_ -1))` over a record whose `x` > 0 binds a,b and returns
+           their sum; over a record whose `x` <= 0 the guard fails and it falls to the catch-all → -1. Pins
+           the record-arm × guard interaction, whose fix required the guard-cond's field projection to BORROW
+           the materialized record scrutinee (not reclaim it) so the arm body's field reads see a live handle
+           rather than a freed one — the earlier version dropped the scrutinee after the guard cond and the
+           body's re-read was a use-after-free trap. A helper `f` with a `(Record …)` parameter keeps the
+           scrutinee a genuinely-runtime materialized value (a constant record would fold the fields away and
+           never exercise the projection). x=5 → guard holds → 5+6 = 11; x=-5 → guard fails → -1; x=0 →
+           guard `(> 0 0)` fails → -1.")
+  (input  (do (def (f (: r (Record (x Int64) (y Int64))))
+                (match r ((guard (record (x a) (y b)) (> a 0)) (+ a b)) (_ -1)))
+              (def (main (: k Int64)) (f (record (x k) (y (+ k 1)))))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 11 Int64))
+  (call   main (: -5 Int64))
+  (output (: -1 Int64))
+  (call   main (: 0 Int64))
   (output (: -1 Int64)))
 
 (case "an empty record pattern matches any record of its type"

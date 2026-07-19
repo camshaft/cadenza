@@ -519,15 +519,24 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::BinBitsBuild { fields } => fields
             .iter()
             .any(|f| binding_escapes(db, f.value, binder, false)),
-        // A `BinIntRead` reads (borrows) its bytes operand to decode a segment — a binding used as the
-        // scrutinee flows in; treat like a projection operand (does not consume-escape).
+        // A `BinIntRead` reads (borrows) its bytes operand to decode a segment: `bytes-get` COPIES each byte
+        // out as a raw i32, retaining nothing from the sequence. A `BinRestRead` slices the tail but DUPs the
+        // scrutinee first and slices the COPY (the original stays live). So a `LocalRef` used as the scrutinee
+        // BORROWS through either — recurse with `tail_borrowed: true`, exactly like `Proj`/`ListLen`/`BytesAt`.
+        // With `false` a bare `LocalRef` scrutinee was mis-marked ESCAPING, so the materializing `let`
+        // (`lower_match_bin` wraps the runtime bin-match in `Core::Let{(scrutinee,scrutinee), if-chain}`)
+        // skipped its closing drop → the owned `Bytes` scrutinee LEAKED one frame per match (value-correct —
+        // a leak, not a miscompile; the fixed-width-only witness in
+        // `dependent_size_bin_match_payload_read_leaves_no_live_objects`).
         Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
-            binding_escapes(db, bytes, binder, false)
+            binding_escapes(db, bytes, binder, true)
         }
-        // A `BinSizedRead` borrows both its bytes operand (sliced) and its runtime length operand (a
-        // `BinIntRead` read); the binding escapes if it flows into either.
+        // A `BinSizedRead` borrows its bytes operand (DUP-then-`bytes-slice` the copy — the original survives,
+        // like `BinRestRead`) and borrows its runtime length operand (a `BinIntRead` scalar read). The binding
+        // escapes only if it flows into either as a NON-borrow, so recurse with `tail_borrowed: true` on the
+        // bytes (borrowed) — the `len` is a scalar decode that cannot carry a heap reference out.
         Core::BinSizedRead { bytes, len, .. } => {
-            binding_escapes(db, bytes, binder, false) || binding_escapes(db, len, binder, false)
+            binding_escapes(db, bytes, binder, true) || binding_escapes(db, len, binder, false)
         }
         // `List.push`/`concat` CONSUME both operands (the persistent op takes ownership of the list and
         // the pushed/concatenated value into the result).
@@ -1533,12 +1542,20 @@ fn mark_binder_dups_inner(
             let cs: Vec<(StructId, bool)> = fields.iter().map(|f| (f.value, false)).collect();
             seq(db, &cs, live_after, sites)
         }
+        // A `BinIntRead` BORROWS its bytes (`bytes-get` copies each byte out, retaining nothing); a
+        // `BinRestRead` DUPs the scrutinee and slices the COPY (the original survives). So each occurrence
+        // BORROWS the shared scrutinee — recurse with `borrow`, NOT `consume`. `consume` inserted a spurious
+        // `dup` at each read of a still-live scrutinee binder (a bin-match reads the scrutinee once per field
+        // probe), so the frame's rc was bumped past its single closing drop and LEAKED one frame per match —
+        // the dup-placement twin of the `binding_escapes` borrow classification for these ops.
         Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
-            consume(db, bytes, live_after, sites)
+            borrow(db, bytes, live_after, sites)
         }
-        // A `BinSizedRead` reads its bytes + its runtime length (both borrowing reads of the scrutinee).
+        // A `BinSizedRead` BORROWS its bytes (DUP-then-`bytes-slice` the copy — original survives, like
+        // `BinRestRead`) and reads its runtime length (a `BinIntRead` scalar decode). Mark the bytes borrowed
+        // (`(bytes, true)`) so a still-live scrutinee binder gets no spurious dup; the `len` is a scalar.
         Core::BinSizedRead { bytes, len, .. } => {
-            seq(db, &[(bytes, false), (len, false)], live_after, sites)
+            seq(db, &[(bytes, true), (len, false)], live_after, sites)
         }
         Core::ListPush { list, elem } => {
             seq(db, &[(list, false), (elem, false)], live_after, sites)
@@ -11104,6 +11121,17 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // fine (a completeness gap, not a miscompile). `BinBitsBuild` (a `(bits v k)` run) is the same.
         | Core::BinBuild { .. }
         | Core::BinBitsBuild { .. }
+        // A dependent-size / final-rest bin-match PAYLOAD read returns a FRESH owned Bytes: `BinSizedRead`
+        // and `BinRestRead` both emit `dup(scrutinee); bytes-slice(copy, off, len)`, and `bytes-slice`
+        // CONSUMES the dup'd copy + hands back a NEW owned slice (exactly like `BytesSlice`). So the slice
+        // as a borrowing-op operand (`Bytes.len payload` — the payload binder lowers to an INLINE
+        // `BinSizedRead`, so `BytesLen`'s operand IS this node) is an owned temporary the borrow must
+        // reclaim. WITHOUT this the slice fell to `_ => decline`, `BytesLen`'s reclaim gate never fired,
+        // and a fresh slice LEAKED one Bytes cell per dependent-size match (value-correct — a leak, not a
+        // miscompile; witnessed by `dependent_size_bin_match_payload_read_leaves_no_live_objects`). The
+        // Bytes analog of the `ListConcat`/`ListPush` producer gap fixed earlier.
+        | Core::BinSizedRead { .. }
+        | Core::BinRestRead { .. }
         // A set construction/update/algebra (`set-empty`+inserts, `set-insert`, `set-remove`, union/
         // intersection/difference) returns a fresh owned set handle — the `value-eq` emit drops it.
         | Core::SetOf { .. }

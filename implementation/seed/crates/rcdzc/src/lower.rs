@@ -7346,22 +7346,18 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
             Some(g) if g.len() == 2 => (g[0], Some(g[1])),
             _ => (pat, None),
         };
-        // A GUARDED RECORD arm is not yet lowered (record match landed WITHOUT the guard interaction — a
-        // record pattern produces no discriminant constraint, so `build_tree`'s guard-fall-through gating
-        // for a record row is not yet wired and would MISCOMPILE to a runtime `unreachable` trap on a
-        // guard-fail rather than falling to the next arm). DECLINE cleanly until the guard×record leaf
-        // gating lands — a decline is sound (the whole match is rejected), a trap is a wrong-value
-        // miscompile. The UNGUARDED record arm is fully supported. (Guarded tuple/list/variant arms are
-        // unaffected — this narrows only the record shape.)
-        if guard.is_some()
-            && (db.ast.as_form(inner_pat, "record").is_some()
-                || db.ast.as_ctor_form(inner_pat, "record").is_some())
-        {
-            return Core::Poison(Reject::decline(
-                "a guarded record match arm is not yet lowered (record match is supported without a \
-                 guard; move the field test into the arm body or match the field explicitly)",
-            ));
-        }
+        // A GUARDED RECORD arm IS now lowered. The earlier decline (Inc-68) was NOT a `build_tree` gating
+        // gap — an unguarded record arm produces no discriminant constraint but `build_tree` already gates
+        // a record row's guard at the leaf like any other shape (it falls to the next arm on a guard-fail).
+        // The real fault was a Perceus/borrow UAF: the guard cond's `Member`→`Core::Proj` read of the
+        // record scrutinee reclaimed (dropped) the scrutinee handle after the cond, then the arm body's
+        // field reads hit the freed handle → runtime `unreachable`. v-memory-safety's borrow fix (a
+        // `Core::Proj` over a MATERIALIZED-SLOT operand BORROWS rather than reclaims — the enclosing match
+        // owns the slot and drops it once after the arm) removed that, so the cond's Proj borrows and the
+        // body's Proj reads a live handle. Verified end-to-end (guard-holds → value, guard-fails → next
+        // arm, no drop between the cond and body field reads). A SCALAR-field record scrutinee is fully
+        // sound; a COMPOUND-field record scrutinee is value-correct but leaks (the parked all-scalar
+        // shell-reclaim floor, v-compiler-perf — not a new bug).
         // LINEARITY: a pattern is a BINDER POSITION and must bind each name at most once (core-semantics.md
         // §Patterns Compose: "A pattern MUST bind each name at most once … rather than silently shadowing").
         // `(tuple x x)` / `(Some (tuple x x))` binds `x` twice — CDZ0102, the same non-linear-binder error a
@@ -7781,6 +7777,27 @@ pub(crate) fn check_binding_pattern(
                 "a list rest binder must be a name or `_` (a nested rest pattern is not yet supported)",
             ));
         }
+        // ONLY the ZERO-LEADING rest form `(list .. rest)` is IRREFUTABLE — it matches EVERY list (the
+        // empty list included), binding `rest` to the whole list. A LEADING-element rest `(list a .. rest)`
+        // (`dd > 0`) is REFUTABLE: it requires at least `dd` elements, so it does NOT match the EMPTY list
+        // (core-semantics.md §147 — "a single-leading-element-plus-rest pattern MUST match any NON-empty
+        // list"; only §"a-list-is-deconstructed…"'s zero-leading form matches every list). A refutable
+        // pattern in a BINDING position is CDZ0210 (§139), the same rule the fixed-arity form above gets —
+        // otherwise `(def (head (list x .. rest)) x)` would compile and then TRAP (`unreachable`) reading
+        // element 0 of an empty list, a fault the type system MUST reject at compile time. A possibly-empty
+        // leading-rest destructure belongs in a `match` (whose arms cover the empty case), not a binding.
+        //= spec/capabilities/core-semantics.md#a-binding-position-accepts-an-irrefutable-pattern
+        if dd > 0 {
+            return Err(Reject::coded(
+                Code::NonExhaustive,
+                "a leading-element list rest pattern `(list a .. rest)` is refutable — it does not match \
+                 the EMPTY list, so it cannot appear in a binding position (use the zero-leading \
+                 `(list .. rest)`, which matches every list, or a `match`)",
+            )
+            .at(pat));
+        }
+        // The zero-leading `(list .. rest)` has no leading elements to recurse; it binds `rest` = the whole
+        // list and is irrefutable. (The leading-element loop below is a no-op for `dd == 0`.)
         // The list's element type (for the leading sub-patterns' shape check); `Any` when unsolved.
         let elem_ty = match value_ty {
             crate::ty::Ty::List(e) => (**e).clone(),
@@ -18121,7 +18138,7 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 // (`is_orderable_compound` false) → declines below (a `List<Float>` `=` awaits a later increment;
                 // that leaf is byte-canonical but the list spine is not, so it needs a value-eq-shaped walk).
                 //= spec/capabilities/collections-and-text.md#a-list-is-an-ordered-homogeneous-sequence
-                //# Two lists MUST be equal exactly when they have the same length and equal elements in the same order, independent of how each was constructed.
+                //# Two lists MUST be equal exactly when they have equal elements in the same order.
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "runtime list-containing equality → ValueCmp op=Eq (value-cmp == 0, element-wise)");
                 Core::ValueCmp {
                     op,

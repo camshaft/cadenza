@@ -132,6 +132,8 @@ pass	MULTI-EXPORT: two same-sig closures each taking TWO Tuple args share one `c
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
+pass	Map.to-list canonical key order is independent of insertion order
+pass	Map.to-list enumerates the FULL interior key order, not just the smallest
 pass	Map.to-list enumerates the entries as a List of (key value) tuples in canonical KEY order
 pass	Map.to-list length is the map's entry count
 pass	Map.to-list of a runtime-empty but key/value-typed map is the empty list
@@ -154,7 +156,6 @@ pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	STACKED @requires: EVERY precondition is enforced — a violated OUTER @requires traps (not only the innermost)
 pass	STACKED @requires: value-transparent when ALL preconditions are satisfied
-todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 pass	Set.contains does not fold a set whose element is a runtime scalar
 pass	Set.contains finds a runtime STRING-rope element built via Set.of
 pass	Set.contains over nan finds nan
@@ -268,7 +269,6 @@ pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for 
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
 pass	a BOOL-result effect op threads state across two performs on a boolean connective's operands
-todo	a BigInt entry argument is marshalled through the value's own constructor
 pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
@@ -282,7 +282,6 @@ pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool generator derived from the seed is reproducible (same seed, same Bool)
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
-todo	a Bytes entry argument is marshalled as a Vec<u8>
 pass	a Bytes-returning closure alongside a plain export — the closure runs
 pass	a Bytes-returning closure alongside a plain export — the plain runs
 pass	a Bytes-returning closure on a different argument
@@ -307,6 +306,7 @@ pass	a COMPOUND generated value is reproducible from its seed (a tuple draws ide
 pass	a CONSTANT recursive sum compares equal to a differently-built RUNTIME one
 pass	a CURRIED closure capturing an inner-handled perform result closes over it through partial application
 pass	a Char-payload sum value escapes across the boundary in its canonical form
+pass	a DEFERRED resume-thunk escaping to another function re-installs the handler at apply, over a re-performing do-continuation
 pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
 pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
 pass	a Duration constructor `secs` scales a UInt64 count to nanoseconds
@@ -324,7 +324,6 @@ pass	a HOF callback matching a tuple argument computes through the nested reduct
 pass	a HOF callback matching its sum argument reaches the nullary arm
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
-todo	a List entry argument is marshalled as a vec!
 pass	a List-returning closure alongside a plain export — the closure
 pass	a List-returning closure alongside a plain export — the plain
 pass	a MAP built from generated pairs is equal regardless of insertion order (the Map analogue of set convergence)
@@ -394,7 +393,6 @@ pass	a RUNTIME string scrutinee matches string literals by equality
 pass	a RUNTIME-built Rational is usable as a map key, matched by its exact value
 pass	a RUNTIME-built Rational set deduplicates by exact value
 pass	a Rational accumulator threaded through recursion sums exactly
-todo	a Rational entry argument is marshalled through Rational::new
 pass	a Rational fanned into a compound then re-read survives (Perceus retain over a BigInt/Rational leaf)
 pass	a Rational is usable as a map key, matched by its exact value
 pass	a Rational set deduplicates by exact value regardless of how each was written
@@ -800,7 +798,6 @@ pass	a deeply nested constant expression compiles or declines without crashing
 pass	a deeply nested expression is diagnosed by the parser, never crashes it
 pass	a deeply nested literal in a tuple let-binder is refutable and rejected
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
-pass	a def parameter may be a list rest pattern binding the head
 pass	a def parameter may be a record pattern that destructures by field
 pass	a def-returning-lambda partial application passes through a HOF parameter
 pass	a default-fraction pragma fixes a type but adds no conversion — no-promotion still holds
@@ -1007,6 +1004,7 @@ pass	a guarded list-match arm whose guard fails falls through to the catch-all
 pass	a guarded match over a runtime scrutinee whose guard fails takes the wildcard
 pass	a guarded match over a runtime scrutinee with constant arms computes correctly
 pass	a guarded out-of-bounds indexed read is not hoisted by the sharing
+pass	a guarded record match arm gates the fields it binds and falls through on a failing guard
 pass	a guarded variant arm falls through when the guard fails
 pass	a guarded wildcard arm falls through to a tail-recursive call
 pass	a handle body reads an enclosing function parameter
@@ -1090,12 +1088,13 @@ pass	a later let binding sees an earlier pattern's binders
 pass	a later let binding sees an earlier record pattern's field binders
 pass	a le pattern segment reads a fixed-width integer little-endian
 pass	a leading nested-list element dispatches on the inner list's length
+pass	a leading-element list rest pattern in a def parameter is refutable and rejected
+pass	a leading-element list rest pattern in a let binder is refutable and rejected
 pass	a leading-rest arm matches an exactly-minimum list with an empty rest
 pass	a left shift by a floating-point count does not silently promote
 pass	a left shift by the bit width or more traps rather than wrapping
 pass	a left shift that overflows Int64 traps like multiplication
 pass	a length-prefixed frame is built from a size segment and a bytes segment
-pass	a let binder may be a list rest pattern binding a leading element and the rest
 pass	a let binder may be a record pattern that destructures by field
 pass	a let binder may be a single-variant-sum pattern that destructures the payload
 pass	a let binder may be a tuple pattern that destructures the value
@@ -1571,6 +1570,7 @@ pass	a performed operation is the scrutinee of a match that dispatches on its re
 pass	a performed operation whose result is a sum is matched on its variant
 pass	a performed sum carrying a TUPLE payload is matched and the arm reads MULTIPLE payload elements
 pass	a performing argument to a multiply-using performing callee is not duplicated
+pass	a performing closure passed to a function that applies it UNDER a handler is homed at the apply site
 pass	a performing match SCRUTINEE threads its state into a performing arm body
 pass	a performing match-arm guard folds with WILDCARD patterns (no binder to let-bind)
 pass	a pipeline chain applies its stages left to right
@@ -2435,6 +2435,7 @@ pass	a zero-Duration sleep files at the current instant — pop-min then reinser
 pass	a zero-arm match on an empty-sum scrutinee is exhaustive
 pass	a zero-arm match on an inhabited sum is non-exhaustive
 pass	a zero-bit integer width is rejected
+pass	a zero-leading list rest pattern binds the whole list in a def parameter
 pass	a zero-length slice is the empty byte sequence
 pass	accessing through an empty-side split-at is usable, like the equivalent literal
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
@@ -2484,7 +2485,6 @@ pass	an N suffix lets a huge literal need no annotation
 pass	an N-suffixed integer literal is a BigInt
 pass	an Ok and an Err decode compose through one shared handler
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
-todo	an Option (sum) entry argument is marshalled as a native Option
 pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
@@ -2664,7 +2664,6 @@ pass	an export with a tuple parameter before a scalar returns a list from both
 pass	an export with two tuple parameters returns a list from both
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
-todo	an exported entry with a String parameter is called with a string argument
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an i16 segment round-trips at its two's-complement minimum
 pass	an identity closure composes at a single Int element type (not only String)
@@ -3113,8 +3112,6 @@ pass	exact rational division is total and exact for a nonzero divisor
 pass	expansion recurses to a fixpoint through a tag whose body is another tagged template
 pass	expect makes a checked-arithmetic result trap on overflow
 pass	expect on a RUNTIME-absent optional traps with the canonical unreachable kind
-todo	expect on an overflowing checked add traps
-todo	expect traps on the absent case of a runtime optional
 pass	expect traps on the err case of a RUNTIME result
 pass	expect unwraps the ok case of a runtime result
 pass	expect unwraps the present case of a runtime optional
@@ -3939,3 +3936,12 @@ pass	wrapping-sub on a runtime UInt8 wraps modulo 256
 pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
+todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
+todo	a BigInt entry argument is marshalled through the value's own constructor
+todo	a Bytes entry argument is marshalled as a Vec<u8>
+todo	a List entry argument is marshalled as a vec!
+todo	a Rational entry argument is marshalled through Rational::new
+todo	an Option (sum) entry argument is marshalled as a native Option
+todo	an exported entry with a String parameter is called with a string argument
+todo	expect on an overflowing checked add traps
+todo	expect traps on the absent case of a runtime optional
