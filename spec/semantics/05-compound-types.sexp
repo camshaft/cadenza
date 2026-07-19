@@ -1088,6 +1088,17 @@
   (input  (= (record (a 1) (b 2)) (record (b 2) (a 1))))
   (output (: true Bool)))
 
+(case "a RECORD used as a map key hashes and matches by its field SET, independent of written order"
+  (doc    "The CHAMP-key face of record equality (distinct from the record `=` case above): insert a map
+           under the key `(record (x 1) (y 2))`, look it up with `(record (y 2) (x 1))` — the two records
+           have the same field-name set {x, y} with equal values, so `champ_hash`/`champ_eq` normalize the
+           field order and place+find them in the same slot -> the stored 42. Pins that a RECORD KEY hashes
+           and matches by its canonical field-set form, not the written field order — a key path that
+           hashed the written order would false-miss the reordered lookup. The record companion of the
+           bare-Rational and compound map-key cases.")
+  (input  (do (def (main) (match (Map.lookup (Map.insert (Map.empty) (record (x 1) (y 2)) 42) (record (y 2) (x 1))) ((Some v) v) ((None u) -1))) (export main)))
+  (output (: 42 Int64)))
+
 (case "projecting a field is independent of the order fields are written"
   (doc    "Member access finds a field by NAME, not by position, so `(. (record (b 2) (a 1)) a)`
            projects `a` = 1 even though `a` is written second. Pins that projection resolves the field

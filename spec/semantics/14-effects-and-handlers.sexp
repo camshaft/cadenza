@@ -334,6 +334,36 @@
                 (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) (export main)))
   (output (: 5000000000 Int64)))
 
+(case "a deferred resume-thunk stored in a MULTI-PAYLOAD pqueue entry and tuple-match-extracted folds"
+  (doc    "E5 step-3, the DES multi-task scheduler's REAL pqueue shape. The prior case stored the resume-thunk
+           in a single-payload `Box`; a genuine pqueue entry carries `(waketime, k, rest)` — a MULTI-payload
+           node `(PQCons (Tuple Instant KBox PQ))` popped by a tuple pattern `(PQCons (tuple wake kb rest))`,
+           then the popped `kb` (a `KBox`) unboxed and applied. The resume is buried behind TWO constructors
+           (the pqueue node + the KBox) and a tuple destructure. The fold reaches it in two steps its
+           classifier loop drives: case-of-known-constructor fold the outer `(match (PQCons (tuple …)) ((PQCons
+           (tuple wake kb rest)) …))` — a MULTI-payload SumPayload-aware substitution, each tuple binder
+           `wake`/`kb`/`rest` resolving to a `[Payload, Elem(i)]` payload-read projected into the visible
+           tuple's element `i` — exposing `(match kb ((KBox.KBox k) (k unit)))`, then the inner single-payload
+           fold + β-reduce as before. Distinct from the single-payload `Box` case above: the payload is a
+           TUPLE destructured by the pattern, so the binders read `[Payload, Elem(i)]` rather than `[Payload]`.
+           The `now` arm reads the wake-seeded clock → 5s. This is the pqueue pop-min-apply shape whole.")
+  (input  (do
+            (type Instant (Instant UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (type KBox (KBox (-> Unit Unit)))
+            (type PQ PQNil (PQCons (Tuple Instant KBox PQ)))
+            (def (pop-apply (: q PQ))
+              (match q
+                ((PQ.PQNil _) unit)
+                ((PQ.PQCons (tuple wake kb rest)) (match kb ((KBox.KBox k) (k unit))))))
+            (effect Sim (op sleep (-> Instant Unit)) (op now (-> Unit Instant)))
+            (def (main)
+              (handle Sim (Instant.Instant 0)
+                ( (now (u) s (resume s s))
+                  (sleep (wake) s (pop-apply (PQ.PQCons (tuple wake (KBox.KBox (fn (_u) (resume unit wake))) (PQ.PQNil ()))))) )
+                (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) (export main)))
+  (output (: 5000000000 Int64)))
+
 (case "a performing closure passed to a function that applies it UNDER a handler is homed at the apply site"
   (doc    "The `handler runs a passed-in closure` idiom: `with-seed(body) = handle Rand … (body unit)` runs
            its `body` PARAM under the `Rand` handler, and `main` passes `(fn (u) (Rand.roll))`. The lambda's

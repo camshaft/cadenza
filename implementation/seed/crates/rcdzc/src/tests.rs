@@ -80806,6 +80806,51 @@ fn fold_ctor_match_folds_a_visible_ctor_match_to_the_substituted_arm_body() {
     );
 }
 
+/// `eval::fold_ctor_match` SLICE 2: a variant whose single payload is a TUPLE type, destructured by a tuple
+/// sub-pattern `(Ctor (tuple v0 v1 …))` — each binder `vi` resolves to `SumPayload{scrutinee, [Payload,
+/// Elem(i)]}` (a payload-read into tuple element `i`), which slice 1 declined. Verified by folding `(match
+/// (P.Mk (tuple 40 2)) ((P.Mk (tuple a b)) (+ a b)))` over a visible ctor whose SINGLE payload is the tuple,
+/// and checking the folded body lowers to the constant `42` — i.e. `a` projected element 0 (=40) and `b`
+/// element 1 (=2). This is v-DES's real pqueue-entry shape (`(PQCons (tuple wake kb rest))`, whose declared
+/// payload is `(Tuple …)`); the caller's loop folds any inner single-payload match afterward via slice 1.
+/// Guards: a NON-visible (runtime-param) scrutinee still declines.
+#[test]
+fn fold_ctor_match_slice2_folds_a_tuple_destructured_multi_payload_ctor_match() {
+    use crate::testkit::parse;
+    // A variant whose SINGLE payload is a `(Tuple Int64 Int64)`, so the ctor arg is one explicit tuple,
+    // destructured by the arm's `(tuple a b)` sub-pattern (v-DES's `(PQCons (Tuple …))` shape). The def body
+    // IS the match over the visible ctor `(P.Mk (tuple 40 2))`.
+    let src = "(module m (type P (Mk (Tuple Int64 Int64))) \
+        (def (probe) (match (P.Mk (tuple 40 2)) ((P.Mk (tuple a b)) (+ a b)))) (def (main) 0) (export main))";
+    let mut db = crate::db::Db::load(parse(src));
+    let d = db.def_by_name("probe").expect("probe def");
+    let body = db.defs[d].body.expect("probe body");
+    let folded = crate::eval::fold_ctor_match(&mut db, body)
+        .expect("a match over a visible tuple-payload ctor with a tuple sub-pattern must fold");
+    // The folded `(+ a b)` with `a := 40`, `b := 2` lowers to the constant `42` — i.e. each tuple binder's
+    // `SumPayload{scrutinee, [Payload, Elem(i)]}` correctly projected element `i` of the payload tuple.
+    let v = match crate::lower::core_of(&mut db, folded) {
+        crate::core::Core::ConstInt(iv) => iv.to_i64(),
+        _ => None,
+    }
+    .expect("the folded body must lower to a constant int");
+    assert_eq!(
+        v, 42,
+        "slice 2 should project payload tuple elements 40, 2 into `(+ a b)` → 42"
+    );
+
+    // GUARD: a runtime-param scrutinee does NOT fold (no visible ctor) — stays a runtime tuple-match.
+    let param_src = "(module m (type P (Mk (Tuple Int64 Int64))) \
+        (def (probe (: p P)) (match p ((P.Mk (tuple a b)) (+ a b)))) (def (main) 0) (export main))";
+    let mut db2 = crate::db::Db::load(parse(param_src));
+    let d2 = db2.def_by_name("probe").expect("probe2");
+    let body2 = db2.defs[d2].body.expect("probe2 body");
+    assert!(
+        crate::eval::fold_ctor_match(&mut db2, body2).is_none(),
+        "a multi-payload match over a runtime param scrutinee must NOT fold (no visible ctor)"
+    );
+}
+
 /// The IR types (`Resolved`/`Ty`/`Core`) carry their variable-length payloads behind `Rc<[…]>`, NOT
 /// `Arc<[…]>` — a deliberate PERFORMANCE choice, not an oversight. The entire compile runs on a SINGLE
 /// scoped worker thread (`host::run_with_compiler_stack`, whose `F: Send`/`T: Send` bounds constrain only
