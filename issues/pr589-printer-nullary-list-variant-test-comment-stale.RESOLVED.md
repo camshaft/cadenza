@@ -21,3 +21,11 @@ no behavior change.
 
 ## Owner
 `cadenza-syntax/src/printer.rs` = v-syntax (owns the ML printer/round-trip).
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk cac57fd66): the self-contradicting comment was rewritten.
+On trunk `cadenza-syntax/src/printer.rs` (lines 1639-1649, shifted from the flagged 4112) the comment now
+correctly + thoroughly explains: "A 1-element list `(A)` is a nullary variant in its EMPTY-PARENS spelling —
+render it as `A()` (the `()` preserved), NOT bare `A` … `A()` re-reads to `(A)` while bare `A` re-reads to the
+atom … round-trip-preserving." Matches the assertions (`(A)`→`A()`). No contradiction remains — doc/test-comment
+nit resolved by a peer. No corpus-bugfix action.

@@ -4221,6 +4221,37 @@
   (input  (Set.len (Set.of (list (Rational.of 1 2) (Rational.of 2 4) (Rational.of 1 3)))))
   (output (: 2 Int64)))
 
+; The RATIONAL twin of the BigInt collection slot-clash guard (19-sets.sexp): a Set/Map build whose
+; element/key siblings interleave a boxed Rational ARITH result (i32 handle in scratch) with a `Rational.of`
+; over CHECKED Int64 arith (an i64 overflow-guard temp) must emit a VALID module. Element 1
+; `(+ (Rational.of n 1) (Rational.of 1 1))` = (n+1)/1 stashes i32 handles; element 2 `(Rational.of (+ n 2)
+; 1)` = (n+2)/1 carries an i64 temp — the fix advances each set/map sibling's scratch floor past the running
+; high-water (base.max(high)) so the i64 temp cannot reuse the i32 handle's slot number. The slot-clash was
+; generic over cdz-num boxed numerics (not BigInt-specific); the fix covered the whole family but only the
+; BigInt twin was pinned. `n` is a runtime PARAMETER (via `call`) so no constant fold hides the interleave.
+(case "a Rational set from a Rational sum and a Rational.of over integer arithmetic has both elements"
+  (doc    "`(Set.len (Set.of (list (+ (Rational.of n 1) (Rational.of 1 1)) (Rational.of (+ n 2) 1))))` at
+           n=5 holds 6/1 and 7/1 — two distinct rationals, so Set.len = 2. The first element (a Rational
+           sum) stashes i32 handles in scratch; the second (a Rational.of over a checked `(+ n 2)`) carries
+           an i64 overflow-guard temp — and the Set.of emit must keep them on disjoint slots or the wasm
+           local is declared at two widths (invalid module). The Rational face of the boxed-numeric family.")
+  (input  (do (def (main (: n Int64))
+                (Set.len (Set.of (list (+ (Rational.of n 1) (Rational.of 1 1)) (Rational.of (+ n 2) 1)))))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 2 Int64)))
+
+(case "a Rational map from a Rational sum key and a Rational.of-over-arithmetic key has both entries"
+  (doc    "The Map twin: `(Map.insert (Map.insert (Map.empty) (+ (Rational.of n 1) (Rational.of 1 1)) 1)
+           (Rational.of (+ n 2) 1) 2)` at n=5 has keys 6/1 and 7/1 — distinct, so Map.len = 2. Same i32-handle
+           then i64-temp key-sibling interleave as the Set case; guards the Rational key path's disjoint slots.")
+  (input  (do (def (main (: n Int64))
+                (Map.len (Map.insert (Map.insert (Map.empty) (+ (Rational.of n 1) (Rational.of 1 1)) 1)
+                                     (Rational.of (+ n 2) 1) 2)))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 2 Int64)))
+
 (case "a parameterized export returns a runtime BigInt computed from its argument"
   (doc    "A `main` that TAKES a parameter and RETURNS a BigInt crosses the host boundary as a resource
            whose `make` forwards the argument (`make(a) -> own<t>`), so the host computes the value from
@@ -4481,6 +4512,31 @@
   (output (: 7 (Int 4)))
   (call   main (: 15 Int64))
   (output (: -1 (Int 4))))
+
+(case "arithmetic on an unusual signed width enforces the type's OWN range at compile time"
+  (doc    "The `.wrap` case above pins the value's sign-extend; this pins ARITHMETIC on the result. The
+           compile-provable-overflow check (CDZ0304) enforces the (Int 4) type's OWN 4-bit range [-8, 7],
+           NOT the host i8 storage range [-128, 127]. In-range: `7 + 0` = 7 (the max), a value of type
+           (Int 4). A check that hardcoded the storage type's range instead of the declared width would
+           wrongly accept the overflowing sums below. The static-arithmetic companion of the sign-extend
+           `.wrap` case — every unusual-width CDZ0304 case in this file otherwise uses a STANDARD width.")
+  (input  (+ ((. (Int 4) wrap) 7) ((. (Int 4) wrap) 0)))
+  (output (: 7 (Int 4))))
+
+(case "an unusual signed width overflows its own maximum and is rejected CDZ0304"
+  (doc    "`7 + 1` = 8 exceeds the (Int 4) maximum 7, so it is a compile-provable overflow → CDZ0304, exactly
+           as an Int64 overflow is, but at the declared 4-bit width rather than a machine boundary. Pins that
+           the overflow-RANGE check is WIDTH-PARAMETRIC: a check using i8's [-128, 127] would accept 8.")
+  (input  (+ ((. (Int 4) wrap) 7) ((. (Int 4) wrap) 1)))
+  (error  CDZ0304))
+
+(case "an unusual signed width underflows its own minimum and is rejected CDZ0304"
+  (doc    "`-8 + -1` = -9 is below the (Int 4) minimum -8, so it is a compile-provable underflow → CDZ0304.
+           `(Int 4).wrap 8` = -8 (the min, per the sign-extend case) and `.wrap 15` = -1, so this adds the
+           4-bit minimum and -1. The underflow companion of the overflow case, pinning both range boundaries
+           of the unusual signed width are checked at compile time.")
+  (input  (+ ((. (Int 4) wrap) 8) ((. (Int 4) wrap) 15)))
+  (error  CDZ0304))
 
 ; --- Unary negation: prefix `-<expr>` is the arity-1 subtraction `(- e)` -----------------------
 ; The ML surface `-x` (prefix minus applied to an expression, not a bare literal) canonicalizes to the

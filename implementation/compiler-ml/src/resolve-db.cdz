@@ -48,10 +48,12 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
         (let c1 = resolve-node(tree, condId, env, col) in
          (let c2 = resolve-node(tree, thenId, env, c1) in
           resolve-node(tree, elseId, env, c2)))
-    | Option.Some(Node.NApp(_, _)) => col   // a call node: SLICE-1 foundation only — the callee is a def-body
-                                            // ref (already resolved) and the nullary arg is -1, so a call
-                                            // introduces no binding here + resolves nothing itself. The real
-                                            // callee-wiring + param binding land with the def-table slice.
+    | Option.Some(Node.NApp(calleeId, _)) =>
+        // slice-3b-ii: a nullary call `(mk)` = NApp(calleeBodyId, -1) — RESOLVE the callee BODY (it lives in
+        // the arena, reached only via this call node when the call is the module root), so infer/lower/eval
+        // can process it (they read the resolve column for the body's vars). The callee body resolves in the
+        // SAME env (a nullary def's body has no params; a helper's body sees no caller bindings — first-order).
+        resolve-node(tree, calleeId, env, col)
     | Option.None(_) => col   // an id not in the arena (a malformed tree) resolves to nothing
 
 /// The resolve COLUMN builder: resolve the whole tree from `root`, starting with an empty scope + column.

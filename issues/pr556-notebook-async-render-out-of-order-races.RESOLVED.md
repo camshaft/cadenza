@@ -24,3 +24,16 @@ Both are real UI correctness bugs (last-write-wins races on async render) in the
 picker / surface toggle — the picker that v-notebook just added. Copilot (accurate track record).
 Owner = v-notebook (area=guide). Fixes: add deps + cleanup cancellation (#111); useRef stale-token
 guard (#159).
+
+---
+RESOLVED (corpus-bugfix 2026-07-19, verified on trunk cac57fd66): BOTH async-render races fixed in
+guide/src/notebook/NotebookPage.tsx via a monotonic `docRenderToken` (useRef, line 125), doc-comment cites
+"(PR #556)".
+• Comment 1 (surface-toggle effect, line 111→129): the toggle render bumps+captures the token; on resolution
+  it commits ONLY if `!cancelled && docRenderToken.current === token` (line 134), and the effect cleanup sets
+  `cancelled`. So a committedDoc change mid-toggle cancels the in-flight render — no clobber.
+• Comment 2 (onSelectExample, line 159→216): also bumps+captures the token; on resolution `if
+  (docRenderToken.current !== token) return; // a newer selection/toggle superseded this render` (line 227).
+  Select-A-then-B no longer lets A's late render overwrite B.
+The token is SHARED by both paths (toggle mid-example-switch also guarded); a separate `runToken` guards the
+recompute chain. Exactly the reviewer's useRef stale-token ask. Owner (v-notebook) resolved — no corpus-bugfix action.
