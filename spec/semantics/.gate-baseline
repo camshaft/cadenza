@@ -1324,10 +1324,12 @@ pass	a multi-payload destructure binds the head and recurses on the tail
 pass	a multi-payload nested same-sum match falls through when the nested variant differs
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
 pass	a multi-payload pattern with too FEW binders is a malformed destructure
+pass	a multi-payload variant built from a runtime param boxes its Map field correctly (function[27] runtime twin)
 pass	a multi-payload variant destructures its payloads positionally
 pass	a multi-payload variant whose spread element is itself a compound escapes correctly
 pass	a multi-payload variant with MIXED-width, MIXED-type payloads deconstructs each field
 pass	a multi-payload variant with a scalar AND two recursive payloads escapes flat
+pass	a multi-payload variant with an EMPTY-Map first payload compiles + deconstructs (function[27] regression pin)
 pass	a multi-segment bin concatenates mixed-width signed and unsigned segments in order
 pass	a multi-step kernel derivation composes several primitive rules into one theorem
 pass	a multi-variant abstract proof type's constructor match outside the kernel is a withheld-constructor rejection

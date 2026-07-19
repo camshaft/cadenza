@@ -4343,6 +4343,68 @@ fn dependent_size_bin_match_payload_read_leaves_no_live_objects() {
     );
 }
 
+/// KNOWN VALUE-CORRECT LEAK WITNESS (pinned, not yet fixed) for the `Option.expect` (`Core::SumExpect`)
+/// OWNED-SHELL reclaim when the extracted payload is a COMPOUND that is BORROWED-then-dead-after. A fallible
+/// String read (`String.slice` → `Option String`) builds a fresh `sum-new` Some shell around an owned slice;
+/// `Option.expect` reads the payload (a compound String handle) and `String.scalar-len` then BORROWS it (a
+/// `bytes-len`/`bytes-get` walk, not a consume). The `SumExpect` emit drops the owned Some shell ONLY for a
+/// SCALAR payload or a DUP'd compound (`compound_dupd`) — here the payload is a non-dup'd compound that is
+/// dead after the borrow, so the shell (and its slice payload) is LEFT UN-DROPPED → a per-call LEAK. It is
+/// VALUE-CORRECT (no UAF: the shell outlives the borrow; nothing is freed early) and NON-OOB, so the
+/// value/drop-import tests miss it — only the live-objects counter sees it (~2 cells/iter here).
+///
+/// ⚠ This asserts the VALUE is right + documents the leak as a KNOWN residual (NOT `== 0`): the sound fix
+/// needs a NODE-KEYED "does this SumExpect's extracted payload ESCAPE its consumer" analysis (the existing
+/// `binding_escapes` is BINDER-keyed and does not answer this), so the shell can be dropped after the last
+/// borrow ONLY when the payload does not flow out. That is a genuine analysis increment (v-memory-safety
+/// lane, select.rs ~8771), deferred until a forcing leak-at-scale consumer — this witness is its executable
+/// target. When it lands, flip the `>= ` guard below to `== 0`. See the memory-safety vertical log.
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
+#[test]
+#[ignore]
+fn option_expect_over_a_dead_after_borrowed_compound_payload_is_value_correct_but_leaks_the_shell()
+{
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "debug-counters runtime not in the store (run `cargo xtask build`); skipping SumExpect dead-after-compound leak witness"
+        );
+        return;
+    };
+    // `sl` slices [1,3) out of its String param (→ `Some` of a 2-scalar slice), `Option.expect`s it, then
+    // `String.scalar-len` BORROWS the extracted slice (no consume). `loop` runs it 500× over an owned base
+    // rope "hixxx" (a param, so the slice is a genuine runtime owned temporary, not a const fold). Each iter
+    // leaks the Some shell + its slice (~2 cells); value is 500 × 2 = 1000.
+    let src = "(module m \
+                 (def (sl (: s String)) \
+                    ((. String scalar-len) ((. Option expect) ((. String slice) s 1 3) \"e\"))) \
+                 (def (loop (: j Int64) (: n Int64) (: base String) (: tot Int64)) \
+                     (if (< j n) (loop (+ j 1) n base (+ tot (sl base))) tot)) \
+                 (def (f (: h Int64)) (loop 0 500 \"hixxx\" 0)) (export f))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    // VALUE-CORRECT: slice [1,3) of "hixxx" = "ix" (2 unicode scalars), × 500 iters = 1000. A UAF would trap
+    // before returning; a wrong reclaim would corrupt the count. This proves the leak is NON-OOB, value-safe.
+    assert_eq!(
+        rt.call("f", &[Val::S64(0)]),
+        Val::S64(1000),
+        "String.scalar-len of Option.expect(String.slice base 1 3) = 2 per iter × 500 = 1000 (value-correct + NO UAF)"
+    );
+    // KNOWN LEAK (pinned, not yet fixed): the non-dup'd dead-after-borrow compound Some shell is left
+    // un-dropped, ~2 cells/iter. Assert the leak is PRESENT + BOUNDED (a witness, not a `== 0` gate) so a
+    // regression that made it WORSE (or a spurious UAF that made it 0-via-double-free) is still caught. When
+    // the node-keyed payload-escape fix lands, flip this to `assert_eq!(rt.live_objects(), 0, …)`.
+    let live = rt.live_objects();
+    assert!(
+        live > 0 && live <= 1200,
+        "SumExpect dead-after-compound shell leak: expected a KNOWN bounded leak (~1000, ≈2 cells × 500 iters) \
+         pending the node-keyed payload-escape fix — got {live}. If 0, the fix may have landed (flip to == 0); \
+         if far above 1200, a NEW leak compounded it."
+    );
+}
+
 /// DIRECT leak witness for the `match` (Core::MatchSum) OWNED-sum-SHELL reclaim — the twin of the
 /// `option_expect_…` SumExpect probe, NARROWED after v-patterns caught a UAF: the sound gate is that the
 /// sum's variants ALL carry SCALAR (or no) payloads, NOT merely a scalar RESULT. A fallible read
@@ -80661,6 +80723,50 @@ fn a_nullary_variant_applied_to_a_payload_names_the_variant_and_the_fix() {
         qual.message.contains("`None` is nullary"),
         "qualified nullary-payload reject should name the bare variant `None`, got: {}",
         qual.message
+    );
+}
+
+/// `eval::fold_ctor_match` folds a `(match (Ctor payload) ((Ctor v) body))` over a VISIBLE constructor
+/// scrutinee to the arm body with the payload binder substituted — the resolve-time case-of-known-ctor
+/// fold v-effects' DES-inc-4 classifier calls (a stored resume-thunk in a compound, match-extracted before
+/// apply). SLICE 1: single-payload single-binder. Verified by folding `(match (Box.Box 41) ((Box.Box t)
+/// (+ t 1)))` and checking the folded body reduces to the constant `42` — i.e. the `SumPayload{scrutinee}`
+/// binder `t` correctly projected the payload `41`. Also asserts the guards: a match over a NON-ctor
+/// scrutinee (a bare param) and a match whose arm has no bare-name binder both return `None` (left runtime).
+#[test]
+fn fold_ctor_match_folds_a_visible_ctor_match_to_the_substituted_arm_body() {
+    use crate::testkit::parse;
+    // The def body IS the match over a visible ctor `(Box.Box 41)`.
+    let src = "(module m (type Box (Box Int64)) \
+        (def (probe) (match (Box.Box 41) ((Box.Box t) (+ t 1)))) (def (main) 0) (export main))";
+    let mut db = crate::db::Db::load(parse(src));
+    let d = db.def_by_name("probe").expect("probe def");
+    let body = db.defs[d].body.expect("probe body");
+    // fold_ctor_match returns the arm body with `t` projected to the payload `41`.
+    let folded = crate::eval::fold_ctor_match(&mut db, body)
+        .expect("a match over a visible ctor with a single-binder arm must fold");
+    // The folded `(+ t 1)` with `t := 41` lowers to the constant `Core::ConstInt(42)` — i.e. the
+    // `SumPayload{scrutinee}` binder `t` correctly projected the payload `41`, then constant arithmetic
+    // folded `41 + 1`.
+    let v = match crate::lower::core_of(&mut db, folded) {
+        crate::core::Core::ConstInt(iv) => iv.to_i64(),
+        _ => None,
+    }
+    .expect("the folded body must lower to a constant int");
+    assert_eq!(
+        v, 42,
+        "fold should project the payload 41 into `(+ t 1)` → 42"
+    );
+
+    // GUARD: a match over a NON-ctor scrutinee (a bare param) does NOT fold — stays a runtime match.
+    let param_src = "(module m (type Box (Box Int64)) \
+        (def (probe (: b Box)) (match b ((Box.Box t) (+ t 1)))) (def (main) 0) (export main))";
+    let mut db2 = crate::db::Db::load(parse(param_src));
+    let d2 = db2.def_by_name("probe").expect("probe2");
+    let body2 = db2.defs[d2].body.expect("probe2 body");
+    assert!(
+        crate::eval::fold_ctor_match(&mut db2, body2).is_none(),
+        "a match over a runtime param scrutinee must NOT fold (no visible ctor)"
     );
 }
 

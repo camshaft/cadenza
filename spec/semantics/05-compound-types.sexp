@@ -7741,6 +7741,51 @@
   (call   main (: 5 Int64))
   (output (: 2 Int64)))
 
+; A multi-payload variant whose FIRST payload is an EMPTY `(Map.empty)` — the `function[27]` emit-freeze
+; shape. A `Core::SumNew`/`Core::Record`/`Core::Tuple` field boxes each payload; the empty map's element
+; type var is never unified (no value flows through `Map.empty`'s phantom element position), so the field
+; node's type could read a bare `Ty::Var` at emit — which the old `box_op` defaulted to `box-int` (an i64
+; cell), boxing the LIVE i32 map handle as an integer → an INVALID component (`func[N]: expected i64 found
+; i32` at `Component::new`). The fix boxes each field by the constructor's DECLARED payload type (here
+; `Map Int64 Int64` → store the handle as-is, no box). This pins the EMPTY-collection-field-in-a-compound
+; case specifically (distinct from the non-empty `Map.insert(...)` payload above, whose element type IS
+; pinned): `(Mk (Map.empty) 7)` → the map binds empty (`Map.len` = 0) and `k` = 7 → 7. A regression flips
+; it back to an invalid-component compile failure. (wasm-oracle: the Rust backend declines a Map value.)
+(case "a multi-payload variant with an EMPTY-Map first payload compiles + deconstructs (function[27] regression pin)"
+  (doc    "The `function[27]` emit-freeze shape: a variant/compound field that is a bare `(Map.empty)` was
+           boxed by the field NODE's type, which degenerates to `Ty::Var` for an empty collection (its
+           element var is never unified) → `box-int` over the live i32 map handle → invalid component. The
+           fix boxes by the constructor's DECLARED payload type (`Map Int64 Int64` → store the handle
+           as-is). `(Mk (Map.empty) 7)` deconstructs to `Map.len(empty)=0` + `k=7` → 7. Pins that an
+           empty-collection field in a compound COMPILES to a valid component (not the box-int OOB).")
+  (input  (do
+            (type Arena (Mk (Map Int64 Int64) Int64))
+            (def (main) (match (Mk (Map.empty) 7) ((Mk m k) (+ (Map.len m) k))))
+            (export main)))
+  (output (: 7 Int64)))
+
+; The RUNTIME-PARAM twin of the func27 pin above — the compound is built from a runtime PARAMETER so it
+; cannot const-fold (the case above builds from a literal, which folds the projection away at compile time
+; and so exercises the emit less directly; this one forces the `Mk` construction + field boxing to EMIT at
+; genuine runtime, closest to the at-scale-inlining trigger the freeze needed). `build k` = `(Mk
+; (Map.insert (Map.empty) k k) k)` — a one-entry map (element type PINNED by the insert, unlike the bare
+; `Map.empty` above whose element var degenerates) plus the scalar `k`; the match reads `Map.len` (=1) + the
+; scalar payload. `k=5` → 1 + 5 = 6. Pins the box-by-declared-type emit over a genuinely-runtime compound
+; field.
+(case "a multi-payload variant built from a runtime param boxes its Map field correctly (function[27] runtime twin)"
+  (doc    "The runtime-param twin of the empty-Map func27 pin: a `(Mk (Map.insert (Map.empty) k k) k)` built
+           from a runtime parameter (cannot const-fold, forcing the field-box emit) deconstructs to
+           `Map.len` (=1) + the scalar payload. `k=5` → 6. Pins that box-by-declared-field-type emits a
+           valid component for a genuinely-runtime compound with a Map field (the at-scale func27 trigger),
+           not just the const-foldable literal shape.")
+  (input  (do
+            (type Arena (Mk (Map Int64 Int64) Int64))
+            (def (build (: k Int64)) (Mk (Map.insert (Map.empty) k k) k))
+            (def (main (: k Int64)) (match (build k) ((Mk m k2) (+ (Map.len m) k2))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
 (case "a unary constructor is a single-arity function"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (1st sentence): Some is a single-arity constructor. Applied to an
