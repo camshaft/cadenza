@@ -5368,10 +5368,17 @@ fn emit_tail(
             let scrut_ty = type_of(db, scrutinee);
             let arms_tail_call =
                 matches!(tl, Some(t) if sum_cont_has_member_tail_call(db, &root, t.members));
+            // ⚠ SAFETY RESTRICTION (sread UAF fix, 2026-07-19): reclaim ONLY an ALL-SCALAR-payload shell —
+            // same sound floor as the non-tail arm. The inc2 compound broadening was unsound for a child
+            // BORROWED OUT via an aliasing op (`Map.lookup`/`List.at` return a handle aliasing into the shell
+            // child; the deep drop then frees a still-read value → the sread OOB/unreachable UAF). A scalar
+            // payload copies out (no alias), so the drop is safe; a compound shell is left un-dropped (leak,
+            // value-correct) pending a sound compound-reclaim increment.
             let reclaim_shell = !never_diverges
                 && !arms_tail_call
                 && is_heap_type(&scrut_ty)
                 && !ty_is_enum_disc(db, &scrut_ty)
+                && sum_has_only_scalar_payloads(db, &scrut_ty)
                 && matches!(stashed_slot, Some((_, ValType::I32)))
                 && matches!(
                     heap_operand_ownership(db, scrutinee),
@@ -9102,9 +9109,22 @@ fn emit(
             // reclaims as before. Requires a freshly-stashed owned scrutinee (a reused param/local is borrowed,
             // left to its owner), a REAL BOXED SUM (`is_heap_type && !ty_is_enum_disc`), and a non-diverging
             // match.
+            // ⚠ SAFETY RESTRICTION (sread UAF fix, 2026-07-19): reclaim ONLY an ALL-SCALAR-payload shell.
+            // The inc2 broadening ("any owned boxed sum + dup the consumed children") was UNSOUND: it handled
+            // a child MOVED OUT (consumed → dup'd) but NOT a child BORROWED OUT via an ALIASING op — e.g.
+            // `(match tree ((Arena m _) (Map.lookup m id)))` where `Map.lookup` returns a handle that ALIASES
+            // INTO `m` (a shell child); the result outlives the match, and the deep shell drop then frees `m`
+            // → the looked-up node is freed-then-read (the sread 33/9 OOB/unreachable UAF). `List.at` has the
+            // same alias-out shape. `sum_has_only_scalar_payloads` is the sound floor: a scalar payload COPIES
+            // out, so NO handle can alias the shell → the deep drop is safe. A compound-payload shell is left
+            // un-dropped (a residual leak — the bbox-arc's consumed-child/tail leak reopens for compound
+            // shells, value-correct/non-OOB, tracked as the reclaim-the-compound-shell increment) rather than
+            // risk the UAF. The `collect_shell_reclaim_child_dups` dup-injection is now a no-op (empty for a
+            // scalar sum) — retained but never fires here.
             let reclaim_shell = !never_diverges
                 && is_heap_type(&scrut_ty)
                 && !ty_is_enum_disc(db, &scrut_ty)
+                && sum_has_only_scalar_payloads(db, &scrut_ty)
                 && matches!(stashed_slot, Some((_, ValType::I32)))
                 && matches!(
                     heap_operand_ownership(db, scrutinee),

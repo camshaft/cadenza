@@ -62,10 +62,10 @@ export const MOUNTING_PLATE: ParametricModel = {
   source: {
     ml: `import { Solid, v3, lower } from "exact"
 import { box, hole-through } from "helpers"
-@param(widget: slider, range: [20, 200], default: 50) width : Rational
-@param(widget: slider, range: [20, 150], default: 30) depth : Rational
-@param(widget: slider, range: [2, 20], default: 5) thickness : Rational
-@param(widget: slider, range: [1, 15], default: 3) bore : Rational
+@!param(widget: slider, range: [20, 200], default: 50) width : Rational
+@!param(widget: slider, range: [20, 150], default: 30) depth : Rational
+@!param(widget: slider, range: [2, 20], default: 5) thickness : Rational
+@!param(widget: slider, range: [1, 15], default: 3) bore : Rational
 def plate(w: Rational, d: Rational, t: Rational, r: Rational) = hole-through(box(w, d, t), r, t)
 def main() = host Param in
   (let w = Param.width() in
@@ -75,10 +75,10 @@ def main() = host Param in
      lower(plate(w, d, t, r)))`,
     sexpr: `(import "exact" (Solid v3 lower))
 (import "helpers" (box hole-through))
-(: (@ (param (: widget slider) (: range (list 20 200)) (: default 50)) width) Rational)
-(: (@ (param (: widget slider) (: range (list 20 150)) (: default 30)) depth) Rational)
-(: (@ (param (: widget slider) (: range (list 2 20)) (: default 5)) thickness) Rational)
-(: (@ (param (: widget slider) (: range (list 1 15)) (: default 3)) bore) Rational)
+(pragma param (param (: widget slider) (: range (list 20 200)) (: default 50)) (: width Rational))
+(pragma param (param (: widget slider) (: range (list 20 150)) (: default 30)) (: depth Rational))
+(pragma param (param (: widget slider) (: range (list 2 20)) (: default 5)) (: thickness Rational))
+(pragma param (param (: widget slider) (: range (list 1 15)) (: default 3)) (: bore Rational))
 (def (plate (: w Rational) (: d Rational) (: t Rational) (: r Rational)) (hole-through (box w d t) r t))
 (def (main)
   (host (Param)

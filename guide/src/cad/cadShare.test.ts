@@ -26,7 +26,7 @@ test("round-trips a plain (non-parametric) model: source + surface", () => {
 test("round-trips a PARAMETRIC model with exact-fraction params (shared 7/2 comes back 7/2)", () => {
   const shared = {
     s: "ml" as const,
-    src: "@param(...) thickness : Rational\ndef main() = ...",
+    src: "@!param(...) thickness : Rational\ndef main() = ...",
     params: { thickness: { num: 7, den: 2 }, width: { num: 50, den: 1 } },
   };
   const back = decodeCadShare(cadHash(shared));

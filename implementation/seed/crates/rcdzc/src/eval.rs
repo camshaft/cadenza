@@ -2066,6 +2066,27 @@ pub fn reduce_to_match(db: &mut Db, id: StructId) -> Option<StructId> {
     }
 }
 
+/// Like [`reduce_to_match`] but STOPS at an application — it follows only `Ref`/`Annot` to a
+/// SYNTACTICALLY-PRESENT `(match …)` form, never β-reducing a `Resolved::Apply` callee. Used by the
+/// case-of-match FUSION (`fuse_match_into_match`), whose win case is always a match written directly in the
+/// scrutinee position: β-reducing a CALL scrutinee (`(step s)`) would disturb a const-closure /
+/// specialization-sensitive callee in a still-generic driver body (a spurious CDZ0201). A `kept` (multi-use)
+/// binding stops here too, as in `reduce_to_match`.
+pub fn reduce_to_match_direct(db: &mut Db, id: StructId) -> Option<StructId> {
+    match resolved_of(db, id) {
+        Resolved::Match { .. } => Some(id),
+        Resolved::Ref { value } => {
+            if db.kept_bindings.contains(&value) {
+                None
+            } else {
+                reduce_to_match_direct(db, value)
+            }
+        }
+        Resolved::Annot { expr, .. } => reduce_to_match_direct(db, expr),
+        _ => None,
+    }
+}
+
 pub fn reduce_to_if(db: &mut Db, id: StructId) -> Option<(StructId, StructId, StructId)> {
     match resolved_of(db, id) {
         Resolved::If { cond, then_, else_ } => Some((cond, then_, else_)),
