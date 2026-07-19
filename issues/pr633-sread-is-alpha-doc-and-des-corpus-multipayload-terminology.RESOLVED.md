@@ -36,4 +36,5 @@ its 27-DES corpus cases). Both trivial doc rewords. VERIFIED loci on trunk 6481b
   lands (deliberately NOT stacking a corpus edit on the CI-fix ref). PENDING. Content-confirm on land.
 
 ---
-STATUS: #2 CLOSED (landed). #1 (is-alpha doc, MR 7251a5c77) still PENDING MERGE — file stays open for #1.
+STATUS: BOTH CLOSED. #2 landed (540c30df6). #1 (is-alpha doc, MR 7251a5c77) LANDED + content-confirmed on
+trunk d971dee4d — sread.cdz:46 now reads "Is `c` a lowercase letter OR `_`", exactly the reword. FULLY CLOSED.
