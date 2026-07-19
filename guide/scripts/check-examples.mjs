@@ -252,6 +252,45 @@ async function runScalarProps(componentBytes, sigs) {
   return results;
 }
 
+// ---- drive COMPOUND-param property tests (mirrors runWorker's compound driver — keeps the gate in lockstep) ----
+// A compound-param @test (List/tuple/record/…) compiles to a NULLARY `-gen` wrapper that builds its argument
+// guest-side by consuming a seeded int stream via the `Test.gen-int` host op (jco binds the kebab op as the
+// camelCase member `genInt`). Per trial: instantiate with a `test.gen-int` pool + invoke; a throw = a failing
+// trial. On failure, shrink over the int pool (truncate trailing draws, then halve leaves toward 0), replaying
+// a preset pool that pads exhausted draws with 0 (so truncation is a faithful shrink). Byte-for-byte the same
+// contract as the in-browser runWorker compound driver.
+class GenPool {
+  constructor(seed, preset) { this.state = seed; this.replay = preset !== undefined; this.values = preset ? preset.slice() : []; this.i = 0;
+    this.next = () => { if (this.i >= this.values.length) { if (this.replay) return 0n; this.state = lcg(this.state); this.values.push(this.state & 0xffffffffffffffffn); } return this.values[this.i++]; }; }
+}
+async function runCompoundProps(componentBytes, sigs) {
+  const compound = sigs.filter((s) => s.compound);
+  if (compound.length === 0) return [];
+  const heap = await getHeap();
+  const results = [];
+  const runPool = async (name, pool) => {
+    const prog = await loadComponent(componentBytes, "prog");
+    const root = await prog.instantiate(prog.getCore, { [HEAP_IMPORT]: heap, test: { "gen-int": pool.next, genInt: pool.next } });
+    const byNorm = new Map(Object.entries(root).filter(([, v]) => typeof v === "function").map(([k, v]) => [normName(k), v]));
+    const fn = byNorm.get(normName(name));
+    if (typeof fn !== "function") throw new Error("compound property export not found");
+    try { await fn(); return false; } catch (e) { if (/gen-int|test\.gen|unhandled|host/i.test(String(e && e.message ? e.message : e))) throw e; return true; }
+  };
+  for (const sig of compound) {
+    const name = sig.name;
+    let failing = null;
+    try {
+      for (let t = 0; t < 100; t++) { const p = new GenPool(BigInt(t) + 1n); if (await runPool(name, p)) { failing = p.values.slice(); break; } }
+    } catch (e) { results.push({ name, pass: false, error: `compound driver: ${String(e && e.message ? e.message : e).slice(0, 60)}` }); continue; }
+    if (!failing) { results.push({ name, pass: true }); continue; }
+    let best = failing.slice();
+    for (let len = best.length - 1; len >= 1; len--) { const c = best.slice(0, len); if (await runPool(name, new GenPool(0n, c))) best = c; else break; }
+    for (let i = 0; i < best.length; i++) { let v = best[i]; while (v !== 0n) { const c = best.slice(); c[i] = v / 2n; if (await runPool(name, new GenPool(0n, c))) { best[i] = c[i]; v = c[i]; } else break; } }
+    results.push({ name, pass: false, error: "property failed", counterexample: { args: `${name}(<generated> pool:[${best.map((n) => n.toString()).join(",")}])`, seed: 0 } });
+  }
+  return results;
+}
+
 // ---- run a `mode="test"` snippet in ONE surface: compile-tests, run each @test, assert expected pass/fail ----
 // `snippet` is the test-defs source ALREADY in `surface`. Returns null on success, else a reason string.
 async function runTestInSurface(ex, snippet, surface, where) {
@@ -269,19 +308,21 @@ async function runTestInSurface(ex, snippet, surface, where) {
     const d = r.diagnostics.find((x) => x.error) ?? r.diagnostics[0];
     return `${ex.file} [test] (${where}): test compile DECLINED — ${d ? `${d.code} ${d.message}` : "no @test / no component"}\n    ${brief}`;
   }
-  // Gather SCALAR-param property signatures (compound:false) so a parameterized @test is DRIVEN, not
-  // treated as "nothing to run". A compound (`-gen`) test is still deferred (not run here).
+  // Gather property signatures so a parameterized @test is DRIVEN, not treated as "nothing to run".
+  // param_test_signatures classifies each: compound:false = scalar (arg-driver), compound:true = a `-gen`
+  // wrapper (gen-int-pool driver). BOTH run live now — in lockstep with the in-browser runWorker drivers.
   let sigs = [];
   try { sigs = param_test_signatures(program, surface) ?? []; } catch { sigs = []; }
-  const scalarSigs = sigs.filter((s) => !s.compound);
-  if (r.nullary_test_names.length === 0 && scalarSigs.length === 0) {
-    return `${ex.file} [test] (${where}): a mode="test" example has no runnable @test defs (no nullary, no scalar property)\n    ${brief}`;
+  const propSigs = sigs.filter((s) => s.compound || !s.compound); // all classified params are drivable
+  if (r.nullary_test_names.length === 0 && propSigs.length === 0) {
+    return `${ex.file} [test] (${where}): a mode="test" example has no runnable @test defs (no nullary, no property)\n    ${brief}`;
   }
   const nullaryResults = r.nullary_test_names.length > 0
     ? await runTestExports(r.component, r.nullary_test_names)
     : [];
   const propResults = await runScalarProps(r.component, sigs);
-  const results = [...nullaryResults, ...propResults];
+  const compoundResults = await runCompoundProps(r.component, sigs);
+  const results = [...nullaryResults, ...propResults, ...compoundResults];
   const failed = results.filter((t) => !t.pass);
   if (ex.expect === "error") {
     // A teaching example demonstrating a FAILING test: at least one @test must fail.

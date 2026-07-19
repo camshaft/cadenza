@@ -146,6 +146,7 @@ export async function runTestComponent(
   component: Uint8Array,
   testNames: string[],
   scalarProps: { name: string; paramTypes: string[] }[] = [],
+  compoundProps: { name: string }[] = [],
 ): Promise<TestResult[]> {
   if (busy) return testNames.map((name) => ({ name, pass: false, error: "a run is already in progress" }));
   busy = true;
@@ -170,14 +171,14 @@ export async function runTestComponent(
         worker = null;
         resolve({ kind: "error", message: e.message } as RunResult);
       };
-      const job: RunJob = { component, runtime, mode: "test", testNames, scalarProps };
+      const job: RunJob = { component, runtime, mode: "test", testNames, scalarProps, compoundProps };
       w.postMessage(job);
     });
 
     if (raw.kind === "tests") return raw.results;
-    // A timeout / whole-suite error surfaces against every test AND every scalar property (else a driven
-    // property that timed out would silently vanish from the report).
-    const allNames = [...testNames, ...scalarProps.map((p) => p.name)];
+    // A timeout / whole-suite error surfaces against every test AND every scalar/compound property (else a
+    // driven property that timed out would silently vanish from the report).
+    const allNames = [...testNames, ...scalarProps.map((p) => p.name), ...compoundProps.map((p) => p.name)];
     if (raw.kind === "timeout") return allNames.map((name) => ({ name, pass: false, error: "timed out" }));
     // A whole-suite error (couldn't instantiate the component, etc.) — surface it against every test so the
     // caller shows the failure rather than a silent empty result.
@@ -208,24 +209,24 @@ export async function runTests(source: string, surface: Surface = "sexpr"): Prom
     };
   }
   // Split the parameterized @tests into SCALAR (params on the export → the arg-driver runs them live over
-  // generated inputs) and COMPOUND (`-gen` wrappers performing `Test.gen` internally → still deferred,
-  // phase 2). `param_test_signatures` classifies each: `compound: false` = scalar, drivable now.
+  // generated call-args) and COMPOUND (`-gen` wrappers building their argument guest-side via `Test.gen-int`
+  // → the compound driver instantiates with a seeded gen-int pool + shrinks over it). `param_test_signatures`
+  // classifies each: `compound: false` = scalar, `compound: true` = a `-gen` wrapper. BOTH now run live.
   const sigs = await paramTestSignatures(source, surface).catch(() => [] as ParamTestSig[]);
   const scalarProps = sigs
     .filter((s) => !s.compound)
     .map((s) => ({ name: s.name, paramTypes: s.paramTypes }));
-  const compoundNames = new Set(sigs.filter((s) => s.compound).map((s) => s.name));
-  const ran = await runTestComponent(compiled.component, compiled.nullaryTestNames, scalarProps);
-  // A COMPOUND (`-gen`) property test still defers (needs the internal `Test.gen` host driver — phase 2).
-  // Fall back to `paramTestNames` for anything the signatures did not classify (a defensive union).
-  const deferredNames = compiled.paramTestNames.filter(
-    (n) => compoundNames.has(n) || !scalarProps.some((p) => p.name === n),
-  );
+  const compoundProps = sigs.filter((s) => s.compound).map((s) => ({ name: s.name }));
+  const ran = await runTestComponent(compiled.component, compiled.nullaryTestNames, scalarProps, compoundProps);
+  // Defer only what the signatures did NOT classify as scalar OR compound (a defensive union — e.g. a param
+  // shape the compiler couldn't synthesize a generator for, like a not-yet-supported leaf type).
+  const driven = new Set([...scalarProps, ...compoundProps].map((p) => p.name));
+  const deferredNames = compiled.paramTestNames.filter((n) => !driven.has(n));
   const deferred: TestResult[] = deferredNames.map((name) => ({
     name,
     pass: false,
     deferred: true,
-    error: "property test — deferred (compound generator; runs in a later increment)",
+    error: "property test — deferred (no synthesized generator for this parameter shape yet)",
   }));
   return { kind: "tests", results: [...ran, ...deferred] };
 }

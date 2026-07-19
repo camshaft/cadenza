@@ -2382,8 +2382,50 @@ fn watchdog(
         }
     }
 
+    // ── Out-of-band check-lease reap ─────────────────────────────────────────────────────────────
+    // A SIGKILL'd `cargo xtask check` runs no `Drop`, so its lease FILE leaks; the acquire-path reaper
+    // (`scan_check_leases` inside `acquire_check_lease`) only runs when SOMEONE tries to acquire — but
+    // the recurring fleet-stall is exactly when pr-sync's OWN gate is the wedged priority-acquirer
+    // (stuck retrying against a dead-PID priority lease), so no fresh acquire ever scans + reaps it and
+    // it lingers the full 45-min TTL, blocking every vertical (the concierge hand-reaped ~10 in one
+    // session). This periodic out-of-band sweep — run by the concierge's ~4-min watchdog cron, holding
+    // NO lease itself — reaps a dead-PID (or TTL-stale) lease of EITHER class regardless of who is
+    // acquiring, closing that gap. A dry-run previews the count without removing (report-only).
+    let leases_reaped = if dry_run {
+        // Count what a real sweep WOULD reap, without removing (mirror the reap predicate, no mutation).
+        check_lease_dir(&fleet.repo)
+            .map(|dir| {
+                std::fs::read_dir(&dir)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Result::ok)
+                    .filter(|e| {
+                        e.path()
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| {
+                                n.ends_with(".lease")
+                                    && (check_lease_holder_alive(n) == Some(false)
+                                        || file_mtime_unix(&e.path()).is_some_and(|m| {
+                                            now.saturating_sub(m) > CHECK_LEASE_TTL_SECS
+                                        }))
+                            })
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    } else {
+        reap_check_leases(&fleet.repo, now)
+    };
+    if leases_reaped > 0 {
+        println!(
+            "  ⌫ {}{leases_reaped} leaked check-lease(s) reaped (dead-PID/TTL-stale — would have stalled the merge gate)",
+            if dry_run { "DRY-RUN would reap " } else { "" }
+        );
+    }
+
     println!(
-        "fleet watchdog: checked {checked} active windowed agent(s); {}{rearmed} re-armed, {reaped} stopped window(s) reaped, {} queued-but-landed MR(s) surfaced.",
+        "fleet watchdog: checked {checked} active windowed agent(s); {}{rearmed} re-armed, {reaped} stopped window(s) reaped, {leases_reaped} leaked lease(s) reaped, {} queued-but-landed MR(s) surfaced.",
         if dry_run { "DRY-RUN: " } else { "" },
         landed_queued.len()
     );
@@ -2397,12 +2439,15 @@ fn watchdog(
     if !dry_run {
         let summary = watchdog_log_line(
             now,
-            rearmed,
-            reaped,
-            drain_stalls,
-            saturated,
-            landed_queued.len(),
-            wedge_escalations,
+            &WatchdogCounts {
+                rearmed,
+                reaped,
+                drain_stalls,
+                saturated,
+                queued_but_landed: landed_queued.len(),
+                wedge_escalations,
+                leases_reaped,
+            },
         );
         if let Some(line) = summary {
             let log = fleet.root.join("watchdog.log");
@@ -2436,26 +2481,39 @@ fn watchdog(
 /// was CLEAN (nothing re-armed/reaped/flagged) — a clean run writes no line, so the log stays a record
 /// of ANOMALIES only. Pure so the "notable?" gate + format are unit-testable. `now` is epoch seconds
 /// (stamped by the caller; the log is a host-tooling artifact, not compiled-program state).
-fn watchdog_log_line(
-    now: u64,
+/// The health-sweep counters a watchdog run tallies — grouped so the log formatter takes one value,
+/// not a long positional arg list (each field is a distinct anomaly class the log records).
+#[derive(Default)]
+struct WatchdogCounts {
     rearmed: usize,
     reaped: usize,
     drain_stalls: usize,
     saturated: usize,
     queued_but_landed: usize,
     wedge_escalations: usize,
-) -> Option<String> {
-    if rearmed == 0
-        && reaped == 0
-        && drain_stalls == 0
-        && saturated == 0
-        && queued_but_landed == 0
-        && wedge_escalations == 0
+    leases_reaped: usize,
+}
+
+fn watchdog_log_line(now: u64, c: &WatchdogCounts) -> Option<String> {
+    if c.rearmed == 0
+        && c.reaped == 0
+        && c.drain_stalls == 0
+        && c.saturated == 0
+        && c.queued_but_landed == 0
+        && c.wedge_escalations == 0
+        && c.leases_reaped == 0
     {
         return None;
     }
     Some(format!(
-        "{now}\trearmed={rearmed}\treaped={reaped}\tdrain_stalls={drain_stalls}\tsaturated={saturated}\tqueued_but_landed={queued_but_landed}\twedge_escalations={wedge_escalations}"
+        "{now}\trearmed={}\treaped={}\tdrain_stalls={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\tleases_reaped={}",
+        c.rearmed,
+        c.reaped,
+        c.drain_stalls,
+        c.saturated,
+        c.queued_but_landed,
+        c.wedge_escalations,
+        c.leases_reaped,
     ))
 }
 
@@ -2680,21 +2738,44 @@ fn check_lease_holder_alive(lease_name: &str) -> Option<bool> {
 /// can't-tell case (pid reuse, non-Linux) a lease older than the TTL is also reaped. Returns
 /// `(priority_live, vertical_live)`.
 fn scan_check_leases(dir: &Path, now: u64) -> (usize, usize) {
-    scan_check_leases_with(dir, now, check_lease_holder_alive)
+    let (prio, vert, _reaped) = scan_check_leases_with(dir, now, check_lease_holder_alive);
+    (prio, vert)
+}
+
+/// Reap leaked check-leases OUT OF BAND and return how many were reaped — the same reclaim logic the
+/// acquire loop runs, but callable by `fleet watchdog` (the concierge cron) WITHOUT taking a lease.
+/// This closes the recurring fleet-stall the acquire-path reaper can't: when pr-sync's OWN gate is the
+/// wedged priority-acquirer, a dead-PID priority lease it's blocking on is never scanned by a fresh
+/// acquire (there is none — pr-sync is stuck retrying), so it lingers the full 45-min TTL. A periodic
+/// out-of-band sweep reaps it regardless of who (if anyone) is trying to acquire. `None` dir → 0.
+fn reap_check_leases(repo: &Path, now: u64) -> usize {
+    let Some(dir) = check_lease_dir(repo) else {
+        return 0;
+    };
+    reap_check_leases_in(&dir, now)
+}
+
+/// Reap leaked leases in an already-resolved lease `dir`, returning the count — the reap core split out
+/// from `reap_check_leases`'s hub/git dir-resolution so it's unit-testable against a plain temp dir.
+fn reap_check_leases_in(dir: &Path, now: u64) -> usize {
+    let (_prio, _vert, reaped) = scan_check_leases_with(dir, now, check_lease_holder_alive);
+    reaped
 }
 
 /// The scan mechanics, parameterized on the pid-liveness probe so it's unit-testable without touching
 /// `/proc` or real pids. `is_alive(lease_name) -> Option<bool>`: `Some(false)` = reap now, anything else
-/// = keep (subject to the TTL backstop).
+/// = keep (subject to the TTL backstop). Returns `(priority_live, vertical_live, reaped)` — the reaped
+/// count lets the out-of-band watchdog sweep report how many leaked leases it reclaimed.
 fn scan_check_leases_with(
     dir: &Path,
     now: u64,
     is_alive: impl Fn(&str) -> Option<bool>,
-) -> (usize, usize) {
+) -> (usize, usize, usize) {
     let mut priority = 0usize;
     let mut vertical = 0usize;
+    let mut reaped = 0usize;
     let Ok(rd) = std::fs::read_dir(dir) else {
-        return (0, 0);
+        return (0, 0, 0);
     };
     for e in rd.filter_map(Result::ok) {
         let p = e.path();
@@ -2705,13 +2786,16 @@ fn scan_check_leases_with(
         // Reclaim a leaked lease. PRIMARY: the holder pid is dead (SIGKILL left the file behind) —
         // reap NOW rather than waiting out the 45-min TTL, which would stall every vertical check (a
         // leaked PRIORITY lease blocks ALL verticals). BACKSTOP: `None` (can't tell) falls through to
-        // the TTL so a reused pid or a non-Linux host still self-heals eventually.
+        // the TTL so a reused pid or a non-Linux host still self-heals eventually. A dead-PID reap and
+        // a TTL reap BOTH count — the out-of-band watchdog sweep reports the total reclaimed.
         if is_alive(&name) == Some(false) {
             let _ = std::fs::remove_file(&p);
+            reaped += 1;
             continue;
         }
         if file_mtime_unix(&p).is_some_and(|m| now.saturating_sub(m) > CHECK_LEASE_TTL_SECS) {
             let _ = std::fs::remove_file(&p);
+            reaped += 1;
             continue;
         }
         if name.contains("-priority.lease") {
@@ -2720,7 +2804,7 @@ fn scan_check_leases_with(
             vertical += 1;
         }
     }
-    (priority, vertical)
+    (priority, vertical, reaped)
 }
 
 /// The acquire DECISION (pure, so it's unit-testable without the fs/poll loop): may a caller take a
@@ -3228,6 +3312,29 @@ fn sync(fleet: &Fleet, force: bool) {
     // Bring trunk current (the hub shares the object store, but `fetch` refreshes origin for the
     // ahead/behind reporting and is harmless if there's nothing new).
     let _ = git_ok(&["fetch", "-q", "origin"]);
+
+    // NO-OP GUARD (the re-sha churn v-inference hit): if `trunk` is ALREADY an ancestor of HEAD, the
+    // branch fully contains trunk with any local commits cleanly on top — there is nothing to rebase
+    // ONTO, so a reset+cherry-pick would only re-parent those commits and give them FRESH shas (new
+    // committer-dates) for no reason, orphaning every queued merge-request `--ref` on EACH sync even
+    // though trunk never advanced. Skip entirely and leave the branch byte-identical. When trunk HAS
+    // advanced (not an ancestor of HEAD), fall through to the real reset+replay below. `--is-ancestor`
+    // exits 0 iff TRUNK is an ancestor of HEAD; treat a spawn failure as "advanced" (do the safe replay).
+    if git_ok(&["merge-base", "--is-ancestor", TRUNK, &old_head]) {
+        let trunk_sha = git_stdout(&["rev-parse", "--short", TRUNK]);
+        let ahead = git_stdout(&["rev-list", "--count", &format!("{TRUNK}..{old_head}")]);
+        let n: usize = ahead.parse().unwrap_or(0);
+        if n == 0 {
+            println!("fleet sync: on trunk ({trunk_sha}); already current, nothing to replay.");
+        } else {
+            println!(
+                "fleet sync: already on trunk ({trunk_sha}) with {n} local commit(s) on top — trunk \
+                 has not advanced, so nothing to rebase; leaving the branch UNCHANGED (no re-sha, so \
+                 any queued merge-request --ref stays valid)."
+            );
+        }
+        return;
+    }
 
     // Which local commits are genuinely unlanded (patch-id not upstream)? `git cherry trunk <head>`.
     let cherry = git_stdout(&["cherry", TRUNK, &old_head]);
@@ -4254,7 +4361,33 @@ fn scrub_gate_batch_worktree(wt: &Path) {
 /// Build the value-heap runtime store in the gate-batch scratch worktree (`cargo xtask build`), so the
 /// combined-tree gate can resolve the runtime by content address instead of false-failing every heap
 /// case as a store miss. Returns true on success. Runs in `wt` (its own `target/cadenza-store`).
+///
+/// The scratch worktree is REUSED across rounds (its `target/` stays warm), so its `target/cadenza-store`
+/// accumulates AOT caches (`<hash>-wt<v>.cwasm`, written by cdz-run) from every prior round's runtime.
+/// When a round MERGES a runtime-changing MR, `xtask build` writes the NEW runtime `.wasm` but leaves the
+/// OLD rounds' `.cwasm` behind — and a stale AOT artifact whose wasmtime-version header still matches can
+/// deserialize into code that mismatches the fresh source, OOB-trapping a heap case (observed: cad
+/// `rotate-bounds-conservatively-encloses`) as a FALSE red the pr-sync worktree + CI both pass. A
+/// `.cwasm` is a pure cache (it regenerates from the `.wasm` on next run), so PRUNE every `.cwasm` before
+/// rebuilding: cheap, and it can only force a recompile, never lose correctness. (pr-sync's recurring
+/// scratch-cad false-red; the durable form of its manual `rm -rf target/cadenza-store`.)
 fn gate_batch_build_store(wt: &Path) -> bool {
+    let store = wt.join("target/cadenza-store");
+    if let Ok(rd) = std::fs::read_dir(&store) {
+        let mut pruned = 0usize;
+        for e in rd.filter_map(Result::ok) {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "cwasm") && std::fs::remove_file(&p).is_ok() {
+                pruned += 1;
+            }
+        }
+        if pruned > 0 {
+            println!(
+                "gate-batch: pruned {pruned} stale AOT cache file(s) (.cwasm) from the scratch store \
+                 before rebuild (avoids a stale-cache OOB false-red on a runtime-changing round)."
+            );
+        }
+    }
     println!("gate-batch: building the runtime store in the scratch worktree (cargo xtask build)…");
     Command::new("cargo")
         .current_dir(wt)
@@ -5679,21 +5812,70 @@ mod tests {
     #[test]
     fn watchdog_log_line_writes_only_when_notable() {
         // A fully clean sweep → None (no log line; the log records anomalies only).
-        assert_eq!(watchdog_log_line(1000, 0, 0, 0, 0, 0, 0), None);
+        assert_eq!(watchdog_log_line(1000, &WatchdogCounts::default()), None);
         // ANY nonzero counter → a tab-separated summary stamped with `now`.
         assert_eq!(
-            watchdog_log_line(1700000000, 2, 1, 0, 3, 5, 1),
+            watchdog_log_line(
+                1700000000,
+                &WatchdogCounts {
+                    rearmed: 2,
+                    reaped: 1,
+                    drain_stalls: 0,
+                    saturated: 3,
+                    queued_but_landed: 5,
+                    wedge_escalations: 1,
+                    leases_reaped: 4,
+                }
+            ),
             Some(
-                "1700000000\trearmed=2\treaped=1\tdrain_stalls=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1"
+                "1700000000\trearmed=2\treaped=1\tdrain_stalls=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1\tleases_reaped=4"
                     .to_string()
             )
         );
         // A single drain-stall is notable on its own.
-        assert!(watchdog_log_line(1, 0, 0, 1, 0, 0, 0).is_some());
+        assert!(
+            watchdog_log_line(
+                1,
+                &WatchdogCounts {
+                    drain_stalls: 1,
+                    ..Default::default()
+                }
+            )
+            .is_some()
+        );
         // A single saturated agent is notable on its own.
-        assert!(watchdog_log_line(1, 0, 0, 0, 1, 0, 0).is_some());
+        assert!(
+            watchdog_log_line(
+                1,
+                &WatchdogCounts {
+                    saturated: 1,
+                    ..Default::default()
+                }
+            )
+            .is_some()
+        );
         // A wedge escalation alone is notable (even with no other anomaly).
-        assert!(watchdog_log_line(1, 0, 0, 0, 0, 0, 1).is_some());
+        assert!(
+            watchdog_log_line(
+                1,
+                &WatchdogCounts {
+                    wedge_escalations: 1,
+                    ..Default::default()
+                }
+            )
+            .is_some()
+        );
+        // A leaked-lease reap alone is notable (the out-of-band sweep reclaimed a fleet-stalling lease).
+        assert!(
+            watchdog_log_line(
+                1,
+                &WatchdogCounts {
+                    leases_reaped: 1,
+                    ..Default::default()
+                }
+            )
+            .is_some()
+        );
     }
 
     #[test]
@@ -6132,11 +6314,11 @@ mod tests {
         std::fs::write(dir.join("222-vertical.lease"), "x").unwrap();
         std::fs::write(dir.join("333-priority.lease"), "x").unwrap();
         std::fs::write(dir.join("notes.txt"), "ignore me").unwrap();
-        let (prio, vert) = scan_check_leases_with(&dir, now, all_alive);
+        let (prio, vert, reaped) = scan_check_leases_with(&dir, now, all_alive);
         assert_eq!(
-            (prio, vert),
-            (1, 2),
-            "counts priority vs vertical, ignores non-.lease"
+            (prio, vert, reaped),
+            (1, 2, 0),
+            "counts priority vs vertical, ignores non-.lease, reaps nothing when all alive + fresh"
         );
 
         // A lease whose mtime is older than the TTL is reclaimed (a crashed holder's leaked slot):
@@ -6144,11 +6326,12 @@ mod tests {
         let stale = dir.join("444-vertical.lease");
         std::fs::write(&stale, "x").unwrap();
         let stale_now = file_mtime_unix(&stale).unwrap() + CHECK_LEASE_TTL_SECS + 10;
-        let (prio2, vert2) = scan_check_leases_with(&dir, stale_now, all_alive);
+        let (prio2, vert2, reaped2) = scan_check_leases_with(&dir, stale_now, all_alive);
         // At stale_now ALL four originals are also older than TTL (written ~same time) → only reaping
         // remains; assert the stale one was removed and nothing lingers past the TTL.
         assert!(!stale.exists(), "a lease older than the TTL is reclaimed");
         assert_eq!((prio2, vert2), (0, 0), "everything past the TTL is reaped");
+        assert_eq!(reaped2, 4, "all four TTL-stale leases counted as reaped");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -6173,11 +6356,15 @@ mod tests {
             Some("111") | Some("222") => Some(false),
             _ => None,
         };
-        let (prio, vert) = scan_check_leases_with(&dir, now, probe);
+        let (prio, vert, reaped) = scan_check_leases_with(&dir, now, probe);
         assert_eq!(
             (prio, vert),
             (0, 1),
             "dead-pid leases reaped immediately (well within the TTL); only the live vertical remains"
+        );
+        assert_eq!(
+            reaped, 2,
+            "both dead-PID leases (priority 111 + vertical 222) counted as reaped"
         );
         assert!(
             !dir.join("111-priority.lease").exists(),
@@ -6188,6 +6375,36 @@ mod tests {
             "the live lease is kept"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reap_check_leases_out_of_band_reclaims_ttl_stale_without_acquiring() {
+        // The out-of-band watchdog sweep reaps a leaked (here TTL-stale) lease WITHOUT taking a lease
+        // itself — the path that self-heals a dead-PID priority lease even when pr-sync's own wedged
+        // gate is the (only, stuck) acquirer, so no fresh acquire-path scan ever runs. Drives the reap
+        // core (`reap_check_leases_in`) against a plain temp dir; the enclosing `reap_check_leases` just
+        // adds hub/git dir-resolution on top. Uses TTL staleness (not /proc pid-liveness) so the
+        // assertion is host-independent.
+        let dir = std::env::temp_dir().join(format!("cdz-oob-reap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let stale = dir.join("999-priority.lease");
+        std::fs::write(&stale, "x").unwrap();
+        let live = dir.join("888-vertical.lease"); // fresh mtime, can't-tell pid → kept via backstop
+        std::fs::write(&live, "x").unwrap();
+        // `now` far past the stale file's mtime + TTL → its TTL-reclaim path fires (no pid probe needed);
+        // 888 was written at ~the same time, so at this `now` it too is TTL-stale and reaped.
+        let now = file_mtime_unix(&stale).unwrap() + CHECK_LEASE_TTL_SECS + 10;
+        let reaped = reap_check_leases_in(&dir, now);
+        assert_eq!(
+            reaped, 2,
+            "the out-of-band sweep reaped both TTL-stale leases"
+        );
+        assert!(
+            !stale.exists(),
+            "the leaked priority lease is gone — the merge gate is no longer blocked on a dead holder"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

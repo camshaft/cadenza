@@ -1175,6 +1175,33 @@ fn param_apply_extra_handled(
                 {
                     out[i] = handled.clone();
                 }
+                // TRANSITIVE homing: if the head is a KNOWN (non-recursive) callee and one of THIS callee's
+                // params is passed as an argument to it, that param is applied wherever the SUB-callee applies
+                // its own corresponding param — so it inherits the sub-callee's extra-handled set (plus the
+                // handlers active here). `(def (outer b) (inner b))` with `inner` applying its param under
+                // `handle R`: `outer`'s `b` inherits `{R}`, so a lambda passed to `outer` homes its `R`
+                // perform. Bounded by `depth` (guards a recursive/cyclic sub-callee); a recursive sub-callee
+                // is not chased (its `lambda_body` is a fixpoint we do not unfold). Only fills an as-yet-empty
+                // slot (first-seen application wins, matching the direct case).
+                if depth < 32
+                    && param_index_of_head(db, head, params).is_none()
+                    && let Some(sub_body) = crate::eval::lambda_body(db, head)
+                        .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+                    && !crate::eval::is_recursive(db, sub_body)
+                {
+                    let sub_extra = param_apply_extra_handled(db, head, sub_body, args.len());
+                    for (j, &a) in args.iter().enumerate() {
+                        if let Some(i) = param_index_of_head(db, a, params)
+                            && i < out.len()
+                            && out[i].is_empty()
+                            && sub_extra.get(j).is_some_and(|e| !e.is_empty())
+                        {
+                            let mut set = handled.clone();
+                            set.extend(sub_extra[j].iter().copied());
+                            out[i] = set;
+                        }
+                    }
+                }
                 walk(db, head, params, handled, out, depth);
                 for &a in args.iter() {
                     walk(db, a, params, handled, out, depth);

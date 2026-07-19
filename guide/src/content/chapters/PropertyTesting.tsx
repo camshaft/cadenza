@@ -1,4 +1,4 @@
-import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
+import { H1, Lede, H2, P, C } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
@@ -114,20 +114,24 @@ export default function PropertyTesting() {
         over its trials; one that doesn't hands you the minimal witness.
       </P>
       <P>
-        Shrinking isn't just for scalars; it minimizes <em>compound</em> values the same way. Take a property
-        claiming no generated list ever has exactly three elements:
+        Shrinking isn't just for scalars; it minimizes <em>compound</em> values the same way. Here a property
+        claims no generated list ever has exactly three elements — a deliberately-wrong claim. The parameter is
+        a <C>(List Int64)</C>, so the compiler synthesizes a <em>list</em> generator (a random length, then an
+        element per slot); press Run and the runner finds a failing list and shrinks it:
       </P>
-      <Note>
-        <C>{`@test def never-three(xs: List(Int64)) = if List.len(xs) == 3 then trap("was three") else unit`}</C>
-      </Note>
+      <Runnable
+        mode="test"
+        expect="error"
+        source={`(@ test (def (never-three (: xs (List Int64)))
+  (if (= (List.len xs) 3) (trap "was three") unit)))`}
+      />
       <P>
-        Run under <C>cdz test</C>, it fails, and the report hands back{" "}
-        <C>{`never-three([0, 0, 0])`}</C>, with a replay seed. The runner found some failing list, then shrank
-        it: it pinned the length at the failing <C>3</C> (shortening it would stop it failing) while driving the
-        elements toward zero. That's the shrink made visible on a structured value: not the arbitrary{" "}
-        <C>[7, 42, 5]</C> it may have stumbled on first, but the smallest list of the failing shape. (In this
-        browser the runner drives scalar properties live, as above; compound generators like <C>List</C> run
-        at the command line with <C>cdz test</C> today.)
+        It fails and hands back the shrunk witness. The runner found some failing list, then shrank it: it
+        pinned the length at the failing <C>3</C> (a shorter list stops failing) while driving the elements
+        toward zero — the smallest list of the failing shape, not the arbitrary <C>[7, 42, 5]</C> it may have
+        stumbled on first. That's the shrink made visible on a <em>structured</em> value, and it runs right
+        here in the browser: the same generator-and-shrink the command-line <C>cdz test</C> uses, driving a
+        compound parameter live.
       </P>
 
       <H2>Proving a small domain, and tagging</H2>

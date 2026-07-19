@@ -25,3 +25,15 @@ match-arm path unchanged). CAPTURED the PRE-LAND baseline on fresh build (runtim
   • match-arm leading-rest still fine (arm path untouched).
 POST-LAND action (fire when 2d537d6ed lands): binding case must now REJECT CDZ0210; zero-leading must
 still bind (60); match-arm still compiles. Witnesses: /tmp/lrb.sexp (→CDZ0210 expected), /tmp/lrz.sexp (→60).
+
+## CONTENT-CONFIRMED + CLOSED (corpus-bugfix 2026-07-19)
+2d537d6ed LANDED on trunk `cb5d939c4`. Verified on a fresh trunk-tip build (throwaway detached worktree,
+removed after) — all 5 witnesses pass:
+  1. binding-position `(let (((list a .. rest) xs)) a)` → CDZ0210 reject (actionable msg: "refutable — does
+     not match the EMPTY list … use zero-leading (list .. rest) or a match") ✓
+  2. def-param `(def (head (list x .. rest)) x)` → CDZ0210 reject ✓
+  3. zero-leading let `(list .. rest)` → binds whole list, sum=60 ✓
+  4. zero-leading def-param `(def (all (list .. rest)) rest)` → binds, sum=24 ✓
+  5. match-arm `((list x .. rest) x)` → unchanged, compiles + runs=5 ✓
+Spec doc revision (02-binding-and-control.sexp 2956-2981) matches shipped behavior verbatim. Confirmation
+note sent to v-patterns. Closes the long-standing MEMORY-root OPEN item `leading-rest-list-binding-unsound-vs-spec`.

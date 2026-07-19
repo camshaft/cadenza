@@ -6773,6 +6773,38 @@ fn a_performing_lambda_applied_under_a_handler_via_a_fn_param_is_homed_at_the_ap
     );
 }
 
+/// TRANSITIVE apply-site homing: a performing lambda passed through a PASS-THROUGH function to one that
+/// applies it under a handler. `outer(b) = inner(b)`, `inner(b) = handle R … (b unit)`; `main` calls
+/// `(outer (fn (u) (R.roll)))`. `outer`'s `b` is applied (via `inner`) under `handle R`, so its `R.roll`
+/// is homed at that apply site — must COMPILE. `param_apply_extra_handled` propagates the sub-callee's
+/// extra-handled set through a param passed onward: `outer`'s `b` inherits `inner`'s `{R}`. SOUNDNESS: if
+/// the pass-through's target applies the param under NO handler (`inner(b) = (b unit)`), nothing propagates
+/// → the ungranted effect STAYS CDZ0401. Extends the single-level homing (which fixed v-cad's bug) one call
+/// deeper; the sub-callee recursion is depth-bounded and skips a recursive sub-callee.
+#[test]
+fn a_performing_lambda_homed_transitively_through_a_pass_through_function() {
+    use crate::testkit::parse;
+    // HOMED through a pass-through: outer → inner → handle R applies b.
+    let homed = "(do (effect R (op roll (-> Unit Int64))) \
+                 (def (inner (: b (-> Unit Int64))) (handle R 5 ((roll (u) s (resume s s))) (b unit))) \
+                 (def (outer (: b (-> Unit Int64))) (inner b)) \
+                 (def (main) (outer (fn (u) (R.roll)))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(homed)))
+        .expect("a performing lambda applied under a handler through a pass-through fn is homed transitively");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(v, "5", "the roll arm resumes with seed 5");
+    }
+    // SOUNDNESS: pass-through whose target has NO handler → stays rejected.
+    let unhomed = "(do (effect R (op roll (-> Unit Int64))) \
+                   (def (inner (: b (-> Unit Int64))) (b unit)) \
+                   (def (outer (: b (-> Unit Int64))) (inner b)) \
+                   (def (main) (outer (fn (u) (R.roll)))) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(unhomed))).is_err(),
+        "a performing lambda applied through a pass-through with NO handler must stay rejected (soundness)"
+    );
+}
+
 /// A recursive effectful walk whose self-call and a following perform sit in a `do`-SEQUENCE — `(do (walk
 /// (- n 1)) (Ctr.tick))` — is the SAME out-state-observing shape: the `do` runs the self-call for effect,
 /// then the perform reads the recursion's OUT-state. This used to DECLINE (single-return did not carry the
