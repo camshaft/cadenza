@@ -280,6 +280,17 @@ pub enum Prim {
     /// erased value; there is no narrower type to extract, unlike `Qty.value` erasing a unit). Present for
     /// surface symmetry; folds to its operand unchanged. B4-1.
     RationalValue,
+    /// `Rational.numerator r` / `Rational.denominator r` — read the numerator / denominator of a Rational as
+    /// a `BigInt` (`Rational → BigInt`). Result is `BigInt`, not `Int64`: a Rational is a numerator/
+    /// denominator pair of BIG-INTEGERS (numeric-model.md), and either can exceed i64 — so an `Int64` surface
+    /// would silently narrow/trap, violating rationals-everywhere exactness. Floor/round/integer-projection
+    /// are written in Cadenza on top (BigInt divmod, then `Int64.of` the small final value). A CONSTANT
+    /// Rational (`Core::ConstRational(n, d)`) folds to a constant BigInt of `n` / `d`; a runtime Rational
+    /// emits `Core::RationalNum`/`RationalDen` (the runtime `rational-num`/`rational-den` ops, which BORROW
+    /// the Rational and return a fresh BigInt handle). The denominator is always strictly positive + the pair
+    /// is in lowest terms (the normalized canonical form), so num/den observe the reduced fraction.
+    RationalNum,
+    RationalDen,
     /// `Symbol.of` — INTERN a String into a Symbol (`String → Symbol`, 17-symbols). A constant string
     /// FOLDS to a constant symbol (represented as the underlying `Core::ConstStr` at type `Ty::Symbol` —
     /// the identity is content-derived), so `(= (Symbol.of "a") (Symbol.of "a"))` folds via the shared
@@ -830,6 +841,8 @@ impl Prim {
             "rational-of" => Some(Prim::RationalOf),
             "rational-of-int" => Some(Prim::RationalOfInt),
             "rational-value" => Some(Prim::RationalValue),
+            "rational-num" => Some(Prim::RationalNum),
+            "rational-den" => Some(Prim::RationalDen),
             "Char" => Some(Prim::CharTy),
             "char-to-int" => Some(Prim::CharToInt),
             "char-from-int" => Some(Prim::CharFromInt),

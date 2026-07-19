@@ -103,6 +103,31 @@ for (const lib of cadLibs) {
   }
 }
 
+// Stage the MUSIC library sources so the upcoming /music showcase page can PRELOAD them via
+// `compile_with_preloaded` — same pattern as the CAD libs (a reader's buffer imports the music vocab; the
+// modules are link-merged). The showcases are IMPORT-DEPENDENT on these (a bare <Runnable> can't cross-module
+// import), which is why /music is a live page like /cad. v1 is the EVENT-STRUCTURE story (schedule()→
+// balanced() no-stuck-keys), so `synth.cdz` (Web Audio synthesis) is EXCLUDED — no event-structure lib
+// imports it (verified). The libs cross-import each other (piece→schedule/chord/pitch/compose, …), so ALL of
+// the event-structure closure is staged. Staging extra (unused) libs is harmless — an unused preload is
+// benign (CAD proved this), and it avoids a missing-lib break if a showcase imports one not anticipated here.
+// NOTE: the exact per-buffer IMPORT SURFACE (which symbols a showcase buffer imports) is v-music's authority
+// and not yet frozen — this stages the LIBS; the import clauses live in the MusicPreload module (pending).
+const musicLibs = [
+  "schedule.cdz", "pitch.cdz", "interval-ratio.cdz", "scale-ratio.cdz", "scale.cdz",
+  "chord-ratio.cdz", "chord.cdz", "rhythm.cdz", "compose.cdz", "piece.cdz",
+];
+await mkdir(join(dest, "music"), { recursive: true });
+for (const lib of musicLibs) {
+  const src = join(guide, "..", "implementation", "music", "src", lib);
+  if (existsSync(src)) {
+    await writeFile(join(dest, "music", lib), await readFile(src));
+    console.log(`[stage-wasm] staged music lib ${lib} -> src/wasm/music/${lib}`);
+  } else {
+    console.error(`[stage-wasm] music lib not found at ${src} — /music preload of '${lib}' will be unavailable (non-fatal).`);
+  }
+}
+
 // Sanity: report what we staged.
 const staged = await readdir(join(dest, "pkg"));
 console.log(`[stage-wasm] pkg contents: ${staged.join(", ")}`);

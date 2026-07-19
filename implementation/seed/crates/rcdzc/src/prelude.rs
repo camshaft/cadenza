@@ -1174,6 +1174,17 @@ fn rational_module(ast: &mut Arenas) -> StructId {
     let value_op = list_op_record(ast, "rational-value", value_ty);
     let value_key = push_atom(ast, Leaf::Name("value".to_string()));
     children.push(push_list(ast, vec![value_key, value_op]));
+    // `numerator : Rational → BigInt` / `denominator : Rational → BigInt` — read the components of the
+    // normalized (lowest-terms, denominator > 0) pair. BigInt-valued (either can exceed i64); floor/round/
+    // integer-projection compose in Cadenza on top.
+    let numerator_ty = rational_to_bigint_type(ast);
+    let numerator_op = list_op_record(ast, "rational-num", numerator_ty);
+    let numerator_key = push_atom(ast, Leaf::Name("numerator".to_string()));
+    children.push(push_list(ast, vec![numerator_key, numerator_op]));
+    let denominator_ty = rational_to_bigint_type(ast);
+    let denominator_op = list_op_record(ast, "rational-den", denominator_ty);
+    let denominator_key = push_atom(ast, Leaf::Name("denominator".to_string()));
+    children.push(push_list(ast, vec![denominator_key, denominator_op]));
     push_list(ast, children)
 }
 
@@ -1222,6 +1233,20 @@ fn rational_value_type(ast: &mut Arenas) -> StructId {
     let rational = intrinsic_node(ast, "Rational");
     let rational2 = intrinsic_node(ast, "Rational");
     let body = arrow_type(ast, rational, rational2);
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// `(fn () (-> Rational BigInt))` for `Rational.numerator` / `Rational.denominator` — read the numerator /
+/// denominator of a rational as a `BigInt` (NOT `Int64`: either can exceed i64, since a Rational is a
+/// numerator/denominator pair of big-integers). The zero-param `fn` wrapper makes `scheme_of` read it as a
+/// SCHEME over the monomorphic arrow (like `rational_value_type` / `string_to_int64_type`), so member
+/// access `(. Rational numerator)` resolves as an applyable op, not a bare type-value.
+fn rational_to_bigint_type(ast: &mut Arenas) -> StructId {
+    let rational = intrinsic_node(ast, "Rational");
+    let bigint = intrinsic_node(ast, "BigInt");
+    let body = arrow_type(ast, rational, bigint);
     let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])

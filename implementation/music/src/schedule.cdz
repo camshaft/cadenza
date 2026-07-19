@@ -134,16 +134,53 @@ def net-outstanding(evs: List(MidiEvent), chan: Int64, num: Int64, acc: Int64) =
          else net-outstanding(t, chan, num, acc))
       else net-outstanding(t, chan, num, acc)
 
-/// The total number of note-on events minus note-off events across the whole list. If a schedule is
-/// balanced this is 0 — every key that went down came back up. A fast global check (a nonzero here means
-/// a definite stuck key somewhere).
+/// The total number of note-on events minus note-off events across the whole list. A necessary (but NOT
+/// sufficient) condition for balance: if this is nonzero there is a definite stuck key, but a zero here can
+/// still hide a per-key imbalance that cancels globally (e.g. an extra on for note 60 and an extra off for
+/// note 64), or an off-before-on ordering. `balanced` below uses the STRONG per-key check; this stays as a
+/// fast global pre-filter / necessary-condition helper.
 def net-total(evs: List(MidiEvent), acc: Int64) =
   match evs with
     | [] => acc
     | [e, .. t] => if ev-on(e) then net-total(t, acc + 1) else net-total(t, acc - 1)
 
-/// A schedule has NO STUCK KEYS (globally) iff its on/off counts net to zero.
-def balanced(evs: List(MidiEvent)) = net-total(evs, 0) == 0
+// ---- the STRONG stuck-key invariant: per-(channel,note) non-negative prefix + return to zero ---------
+//
+// A schedule is BALANCED iff, walking it IN ORDER, no note-off ever fires for a (channel, note) that has
+// no outstanding note-on (the count never goes negative for any key), AND every key's count returns to
+// zero at the end. `net-total == 0` alone is too weak (PR#648): [off, on] nets to zero but goes negative,
+// and per-key imbalances that cancel globally (extra-on-60 + extra-off-64) also net to zero — both are
+// stuck-key-broken yet pass a global check. So `balanced` verifies the documented per-key invariant.
+
+/// The running per-(channel,note) outstanding count for the key of `e`, over the PREFIX up to AND INCLUDING
+/// `e` — i.e. net-outstanding of that key across `seen ++ [e]`. Used to detect an off that would drive a key
+/// negative. We recompute per prefix (O(n^2) overall) — fine for gate-sized pieces; clarity over speed here.
+def prefix-nonneg(seen-rev: List(MidiEvent), evs: List(MidiEvent)) =
+  match evs with
+    | [] => true
+    | [e, .. t] =>
+      // seen-rev is the reversed prefix BEFORE e; the count for e's key over that prefix, then apply e.
+      let before = net-outstanding(seen-rev, ev-chan(e), ev-note(e), 0) in
+      let after = if ev-on(e) then before + 1 else before - 1 in
+      if after < 0 then false                               // an off with nothing outstanding — stuck-key-broken
+      else prefix-nonneg(List.prepend(seen-rev, e), t)
+
+/// Every (channel, note) that appears returns to a zero outstanding count at the end. Because `prefix-nonneg`
+/// guarantees no key ever went negative, checking the whole-list per-key net is 0 for each key present is the
+/// "returns to zero" half. We fold over the events and, for each ON we encounter the first time, verify its
+/// key nets to zero across the full list.
+def all-keys-zero(evs: List(MidiEvent), all: List(MidiEvent)) =
+  match evs with
+    | [] => true
+    | [e, .. t] =>
+      if net-outstanding(all, ev-chan(e), ev-note(e), 0) == 0 then all-keys-zero(t, all)
+      else false
+
+/// A schedule has NO STUCK KEYS iff (a) walking in order, no key's outstanding count ever goes negative
+/// (no off without a matching outstanding on), AND (b) every key returns to zero at the end. This is the
+/// documented per-(channel,note) invariant — the correctness backbone the MIDI demos rely on.
+def balanced(evs: List(MidiEvent)) =
+  if prefix-nonneg([], evs) then all-keys-zero(evs, evs) else false
 
 // ---- flatten to a PLAYABLE stream: sort events by tick ----------------------------------------------
 
@@ -266,6 +303,28 @@ def balanced-actually-detects-a-stuck-key() =
   let stuck = [MidiEvent.MidiEvent(true, 0, 60, 100, 0)] in
   if balanced(stuck) then trap("an unmatched on is NOT balanced") else
     (if net-outstanding(stuck, 0, 60, 0) == 1 then unit else trap("one key left outstanding"))
+
+@test
+def balanced-rejects-an-off-before-its-on() =
+  // PR#648 case 1: [off, on] for the same key nets to zero GLOBALLY but goes NEGATIVE (an off fires with
+  // nothing outstanding) — a stuck-key-broken order. The strong balanced must REJECT it (the old global
+  // net-total==0 check wrongly accepted it).
+  let off-first = [MidiEvent.MidiEvent(false, 0, 60, 0, 0), MidiEvent.MidiEvent(true, 0, 60, 100, 480)] in
+  if balanced(off-first) then trap("an off before its on is NOT balanced") else
+    (if net-total(off-first, 0) == 0 then unit else trap("but it does net to zero globally — why the old check missed it"))
+
+@test
+def balanced-rejects-per-key-imbalance-that-cancels-globally() =
+  // PR#648 case 2: an EXTRA on for note 60 and an EXTRA off for note 64 — net-total is 0 (the +1 and -1
+  // cancel across DIFFERENT keys) but note 60 is stuck ON and note 64 got an orphan off. The strong
+  // balanced must REJECT it; the old global check accepted it.
+  let mixed = [
+    MidiEvent.MidiEvent(true, 0, 60, 100, 0),      // on 60
+    MidiEvent.MidiEvent(true, 0, 60, 100, 100),     // on 60 AGAIN (extra) — 60 will be left outstanding
+    MidiEvent.MidiEvent(false, 0, 60, 0, 200),      // off 60 (only one)
+    MidiEvent.MidiEvent(false, 0, 64, 0, 300)] in   // off 64 with no on — orphan off
+  if balanced(mixed) then trap("a per-key imbalance is NOT balanced") else
+    (if net-total(mixed, 0) == 0 then unit else trap("but it nets to zero globally — the exact gap PR#648 named"))
 
 @test
 def loop-zero-times-is-empty-and-balanced() =

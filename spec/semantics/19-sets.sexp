@@ -161,6 +161,25 @@
   (input  (= (Set.difference (Set.of (list 1 2 3)) (Set.of (list 2 3))) (Set.of (list 1))))
   (output (: true Bool)))
 
+(case "the intersection of sets of TUPLES matches elements by their whole-tuple content"
+  (doc    "The intersection extends to COMPOUND elements: `(Set.intersection {(1,2),(3,4)} {(3,4),(5,6)})` =
+           {(3,4)} — the tuple `(3, 4)` is the only element in both. Its membership is decided by the whole
+           tuple's content (the same content-address equality that dedups a set of tuples), NOT by identity,
+           so a separately-built `(tuple 3 4)` in each operand intersects. Pins set intersection over the
+           CHAMP compound-element path (a distinct hashing/compare from the scalar cases above): len 1.")
+  (input  (Set.len (Set.intersection (Set.of (list (tuple 1 2) (tuple 3 4)))
+                                     (Set.of (list (tuple 3 4) (tuple 5 6))))))
+  (output (: 1 Int64)))
+
+(case "the difference of sets of TUPLES removes elements by their whole-tuple content"
+  (doc    "The difference likewise extends to compound elements: `(Set.difference {(1,2),(3,4)} {(1,2)})` =
+           {(3,4)} — the tuple `(1, 2)` present in the second operand is removed by content, leaving one
+           element. The compound-element companion of the scalar difference case, pinning that a tuple in
+           the subtrahend is matched by its whole content on the CHAMP path: len 1.")
+  (input  (Set.len (Set.difference (Set.of (list (tuple 1 2) (tuple 3 4)))
+                                   (Set.of (list (tuple 1 2))))))
+  (output (: 1 Int64)))
+
 ; --- The algebraic laws the three operations satisfy: the empty set as identity/annihilator, and ----
 ; --- the union laws (commutative, idempotent). These pin the operations' DEFINING identities, which
 ; --- the overlapping-operand cases above (which give a nontrivial result) do not exercise — a

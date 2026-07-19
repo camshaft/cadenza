@@ -187,6 +187,20 @@
   (input  (Rational.of 2 4))
   (output (: 1/2 Rational)))
 
+(case "a rational's numerator and denominator are read as BigInt from the normalized pair"
+  (doc    "`Rational.numerator`/`denominator : Rational → BigInt` read the components of the NORMALIZED
+           (lowest-terms, denominator > 0) pair. `(Rational.of n 4)` at n=6 is 6/4, which reduces to 3/2, so
+           numerator = 3, denominator = 2 (the REDUCED fraction, not 6/4). The result is a BigInt
+           (a numerator/denominator can exceed i64 — numeric-model.md #An Exact Rational … pair of
+           big-integers — so an Int64 surface would silently narrow); `Int64.of` narrows the small result
+           for the scalar witness. A RUNTIME rational (built from the parameter `n`) exercises the runtime
+           `rational-num` op. This is the primitive the pure-Cadenza rational→integer projection (floor via
+           BigInt divmod) is written on top of.")
+  (input  (do (def (main (: n Int64))
+                (Int64.of (Rational.numerator (Rational.of n 4)))) (export main)))
+  (call   main (: 6 Int64))
+  (output (: 3 Int64)))
+
 ; The exact-arithmetic cases above use SMALL operands (1/3, 1/6) that never leave the i64 range. A Rational
 ; is a normalized pair of BigInt handles, so a gcd normalization over NEAR-i64 operands must run on the
 ; runtime bigint limbs and stay exact. This pins a large num/den reducing to 2/1 — both backends must agree

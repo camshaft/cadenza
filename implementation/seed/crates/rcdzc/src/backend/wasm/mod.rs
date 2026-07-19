@@ -1034,6 +1034,9 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
         Core::BigIntOfI64 { value } => collect_host_arg_strings(db, value, out),
         Core::BigIntToI64 { operand } => collect_host_arg_strings(db, operand, out),
         Core::RationalOfIntWiden { value } => collect_host_arg_strings(db, value, out),
+        Core::RationalNum { operand } | Core::RationalDen { operand } => {
+            collect_host_arg_strings(db, operand, out)
+        }
         Core::ListPush { list, elem } => {
             collect_host_arg_strings(db, list, out);
             collect_host_arg_strings(db, elem, out);
