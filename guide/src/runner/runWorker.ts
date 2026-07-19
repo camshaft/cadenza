@@ -31,6 +31,13 @@ export interface RunJob {
    *  calls `fn(...args)` over `trials` trials, shrinking a failing input. A `compound: true` (`-gen`
    *  wrapper) test is NOT here — the client still defers it (phase 2). */
   scalarProps?: { name: string; paramTypes: string[] }[];
+  /** COMPOUND-param property `@test`s to drive (from `param_test_signatures` with `compound: true`): the
+   *  compiler synthesized a NULLARY `<name>` wrapper that builds its compound argument guest-side by consuming
+   *  a seeded int stream via the `Test.gen-int` host op. The driver instantiates the component with a
+   *  `test.gen-int` import backed by an LCG pool, invokes the nullary wrapper over `trials` trials (trap =
+   *  fail), and shrinks over the INT POOL (the wrapper is deterministic in its gen-int sequence, so a shrunk
+   *  pool → a smaller compound). `paramTypes` is empty for a `-gen` wrapper (the shape is guest-side). */
+  compoundProps?: { name: string }[];
   /** Property-test trial count (default 100) and base seed (default 0), mirroring `cdz test`. */
   trials?: number;
   seed?: number;
@@ -122,7 +129,16 @@ function blobUrl(source: string): string {
 
 /// Transpile + instantiate the program component (wiring the value-heap runtime if it imports one),
 /// returning the exports root. Shared by the normal run path and the test-runner path.
-async function instantiateComponent(job: RunJob): Promise<Record<string, unknown>> {
+///
+/// `extraImports` are merged into the component's import object — used by the COMPOUND-property driver to
+/// supply the `test` interface (the `gen-int` host op) a synthesized `-gen` wrapper performs. A compound
+/// `@test def p(xs: List T)` is compiled to a NULLARY `p-gen` wrapper that builds `xs` guest-side by
+/// consuming a seeded int stream via `Test.gen-int : Unit -> Int64` (jco binds the kebab op `gen-int` as the
+/// camelCase member `genInt` on interface `test`). The driver re-instantiates per trial with a fresh pool.
+async function instantiateComponent(
+  job: RunJob,
+  extraImports: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
   let heap: Record<string, unknown> | null = null;
   if (job.runtime) {
     const rt = await loadComponent(job.runtime, "heap");
@@ -130,7 +146,13 @@ async function instantiateComponent(job: RunJob): Promise<Record<string, unknown
     heap = (rtRoot[HEAP_IMPORT] ?? rtRoot["heap"]) as Record<string, unknown>;
   }
   const prog = await loadComponent(job.component, "prog");
-  const imports: Record<string, unknown> = heap ? { [HEAP_IMPORT]: heap } : {};
+  // A COMPOUND `-gen` test component imports `test.gen-int` — jco's instantiate destructures `const { genInt }
+  // = imports.test` EAGERLY, so `test` must be present for the component to instantiate AT ALL, even on the
+  // nullary/scalar scan (runTests instantiates once up front to enumerate exports). Supply a benign default
+  // (`genInt` → 0n) so instantiation always succeeds; the compound driver OVERRIDES it via extraImports with a
+  // real seeded pool per trial. Harmless for a non-compound component (the unused import is ignored).
+  const defaultTest = { test: { "gen-int": () => 0n, genInt: () => 0n } };
+  const imports: Record<string, unknown> = { ...defaultTest, ...extraImports, ...(heap ? { [HEAP_IMPORT]: heap } : {}) };
   // A parametric model imports a `param` interface — one accessor per `@param`. A Rational `@param <name>`
   // desugars to the WIT accessors `<name>-num`/`<name>-den`, which jco binds as CAMELCASE JS names. jco
   // camelCases the WHOLE kebab identifier, so a KEBAB param name matters: `pa-bolt` → `pa-bolt-num` →
@@ -211,7 +233,11 @@ async function runTests(job: RunJob): Promise<RunResult> {
   // PR #533). The nullary invokes above don't persist state into the exports we re-call (each @test/property
   // export is a fresh evaluation), so one instance serves both.
   const propResults = await runScalarProperties(job, root);
-  return { kind: "tests", results: [...results, ...propResults] };
+  // Drive the COMPOUND-param property tests (their param is built guest-side by a nullary `-gen` wrapper that
+  // performs `Test.gen-int`). Each needs its OWN instance per trial (a fresh gen-int pool), so this does NOT
+  // reuse `root` — it re-instantiates with a `test` import. Empty `compoundProps` → no work, no instances.
+  const compoundResults = await runCompoundProperties(job);
+  return { kind: "tests", results: [...results, ...propResults, ...compoundResults] };
 }
 
 async function runComponent(job: RunJob): Promise<RunResult> {
@@ -411,6 +437,114 @@ async function runScalarProperties(job: RunJob, preInstantiated?: Record<string,
       continue;
     }
     results.push(await runScalarProperty(fn, name, paramTypes, trials, seed));
+  }
+  return results;
+}
+
+/// A seeded int POOL for the compound `Test.gen-int` driver. Two modes, because the wrapper calls `gen-int`
+/// an a-priori-unknown number of times (a `List` gens its length, then each element):
+///   - GENERATIVE (initial trial, no `preset`): lazily EXTENDS from the LCG on each draw, capturing the
+///     concrete sequence in `values` — every draw deterministic from `seed`, and `values` records exactly
+///     what was consumed so the shrinker can replay it.
+///   - REPLAY (a `preset` pool, from the shrinker): serves the preset draws, then pads EXHAUSTED draws with
+///     `0n` — it does NOT LCG-extend. This is what makes truncation a faithful shrink: a shorter pool means
+///     the wrapper genuinely sees fewer/zero draws (→ a shorter collection / zero-valued tail), not a
+///     different LCG-seeded tail. (A `0` gen-int typically drives a length/element toward its minimum.)
+class GenPool {
+  private state: bigint;
+  readonly values: bigint[] = [];
+  private i = 0;
+  private readonly replay: boolean;
+  constructor(seed: bigint, preset?: bigint[]) {
+    this.state = seed;
+    this.replay = preset !== undefined;
+    if (preset) this.values = preset.slice();
+  }
+  /// The `Test.gen-int` host op: yield the next i64 (jco lowers i64 ↔ JS bigint).
+  next = (): bigint => {
+    if (this.i >= this.values.length) {
+      if (this.replay) return 0n; // exhausted a preset pool → pad with 0 (faithful truncation-shrink)
+      this.state = lcgStep(this.state);
+      this.values.push(this.state & 0xffffffffffffffffn);
+    }
+    return this.values[this.i++];
+  };
+}
+
+/// Run ONE compound-param property test: the nullary `-gen` wrapper builds its compound argument from a
+/// seeded `gen-int` pool. Per trial (seeded `seed + t + 1`), instantiate with a fresh pool + invoke; a THROW
+/// (trap) is a failing trial. On failure, SHRINK the recorded pool toward a minimal counterexample — first
+/// truncating trailing draws (shorter collections), then halving each remaining draw toward 0 (smaller
+/// leaves) — re-running with the shrunk pool, keeping a step iff the failure persists. Mirrors the native
+/// `shrink_pool`: no compound-value introspection in JS, because the wrapper is deterministic in its pool.
+async function runCompoundProperty(job: RunJob, name: string, trials: number, seed: number): Promise<TestResult> {
+  // Instantiate the wrapper with a given pool + invoke it; returns true iff the trial FAILED (threw/trapped).
+  const runPool = async (pool: GenPool): Promise<boolean> => {
+    try {
+      const root = await instantiateComponent(job, { test: { "gen-int": pool.next, genInt: pool.next } });
+      const fn = new Map(exportedFunctions(root).map((f) => [normalizeName(f.name), f.fn])).get(normalizeName(name));
+      if (typeof fn !== "function") throw new Error("compound property export not found");
+      await (fn as () => unknown)();
+      return false;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // A still-unanswered gen op (name drift) is NOT a property failure — surface it so it's not a false ✗.
+      if (/gen-int|test\.gen|no enclosing handler|unhandled|host (op|function)/i.test(message)) throw err;
+      return true;
+    }
+  };
+
+  let failing: bigint[] | null = null;
+  try {
+    for (let t = 0; t < trials; t++) {
+      const pool = new GenPool(BigInt(seed) + BigInt(t) + 1n);
+      if (await runPool(pool)) {
+        failing = pool.values.slice(0, /* only the draws actually consumed */ pool.values.length);
+        break;
+      }
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { name, pass: false, deferred: true, error: `property test — deferred (${message.slice(0, 60)})` };
+  }
+  if (!failing) return { name, pass: true, trials };
+
+  // SHRINK over the int pool. (1) Truncate trailing draws while the failure persists (shorter collections).
+  let best = failing.slice();
+  for (let len = best.length - 1; len >= 1; len--) {
+    const cand = best.slice(0, len);
+    if (await runPool(new GenPool(0n, cand))) best = cand;
+    else break;
+  }
+  // (2) Halve each remaining draw toward 0 while the failure persists (smaller leaves).
+  for (let i = 0; i < best.length; i++) {
+    let v = best[i];
+    while (v !== 0n) {
+      const cand = best.slice();
+      cand[i] = v / 2n;
+      if (await runPool(new GenPool(0n, cand))) { best[i] = cand[i]; v = cand[i]; }
+      else break;
+    }
+  }
+  return {
+    name,
+    pass: false,
+    error: "property failed",
+    counterexample: { args: `${name}(<generated>)  [pool: ${best.map((n) => n.toString()).join(", ")}]`, seed },
+  };
+}
+
+/// Run each COMPOUND-param property test (from `param_test_signatures`, `compound: true`) — the browser
+/// equivalent of `cdz test`'s compound generator/shrink. Each is a nullary `-gen` wrapper driven over a
+/// `gen-int` pool. Re-instantiates per trial (fresh pool), so an empty `compoundProps` does no work.
+async function runCompoundProperties(job: RunJob): Promise<TestResult[]> {
+  const props = job.compoundProps ?? [];
+  if (props.length === 0) return [];
+  const trials = job.trials ?? DEFAULT_TRIALS;
+  const seed = job.seed ?? 0;
+  const results: TestResult[] = [];
+  for (const { name } of props) {
+    results.push(await runCompoundProperty(job, name, trials, seed));
   }
   return results;
 }

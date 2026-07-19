@@ -325,6 +325,23 @@
             (def (main) (with-seed (fn (u) (Rand.roll)))) (export main)))
   (output (: 5 Int64)))
 
+(case "a performing closure homed TRANSITIVELY through a pass-through function is not falsely rejected"
+  (doc    "Apply-site homing propagated ONE call deeper: `outer(b) = inner(b)` is a PASS-THROUGH — it hands
+           its `b` param onward to `inner`, which applies it under `handle R`. `main` passes `(fn (u)
+           (R.roll))` to `outer`. The lambda's `R.roll` is homed where `inner` applies the param (under the
+           handler), so `outer`'s `b` inherits `inner`'s granted effect `{R}` — the program compiles rather
+           than a false CDZ0401. The no-home analysis, computing per callee param the effects it is applied
+           under, follows a param passed as an argument to a known sub-callee and inherits the sub-callee's
+           extra-handled set. SOUNDNESS twin: if the pass-through's target applied the param under NO handler,
+           nothing propagates and an ungranted effect STAYS rejected (`04-capabilities`). The `roll` arm
+           resumes with the seed 5.")
+  (input  (do
+            (effect R (op roll (-> Unit Int64)))
+            (def (inner (: b (-> Unit Int64))) (handle R 5 ((roll (u) s (resume s s))) (b unit)))
+            (def (outer (: b (-> Unit Int64))) (inner b))
+            (def (main) (outer (fn (u) (R.roll)))) (export main)))
+  (output (: 5 Int64)))
+
 (case "a ctl-style arm applying its continuation inside a match scrutinee resolves and folds"
   (doc    "The continuation binder `k` of a `ctl`-style arm must be in scope everywhere in the arm body,
            including inside a MATCH scrutinee. `(flip () s k (match (k 10) (z (* z 2))))` applies `k`

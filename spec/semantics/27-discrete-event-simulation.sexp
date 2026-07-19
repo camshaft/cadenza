@@ -369,6 +369,37 @@
             (export main)))
   (output (: 3000000000 Int64)))
 
+(case "a genuinely-escaping continuation (deferred resume-thunk) resumes cross-activation at the advanced clock"
+  (doc    "The step-3 core (design §4.2), distilled to the ONE thing an ESCAPING continuation adds over the
+           step-2 tail-resumptive fold: a resume that LEAVES its arm and fires from another activation,
+           carrying the advanced clock. The `sleep` arm does NOT resume in place; it hands a DEFERRED
+           resume-thunk `(fn (_u) (resume unit wake))` to a SEPARATE top-level `scheduler-step`, which
+           applies it cross-activation `(resume-thunk unit)`. `resume`'s second arg `wake` IS the new
+           handler state (the advanced clock) — the same resume-with-new-state the tail-resumptive cases
+           use, but DEFERRED into an escaping thunk. So the clock-advance is expressed IN THE PROGRAM (no
+           per-effect op-arg-as-state-setter magic): the reified continuation re-enters the handler
+           re-seeded with `wake`, and `(Sim.now)` reads the advanced clock → 5_000_000_000. This is the
+           contract v-effects' E5 step-3 (deferred-resume-thunk refold via do-aware leading-hole) realizes;
+           it declined cleanly until step-3 landed. A `pass`→`fail` flip here is a real miscompile (thunk
+           not applied / resumed with the original seed 0 → 0 / double-resume / dropped continuation). This
+           single-task escaping core is what the increment-4 multi-task run-sim pqueue composes on.")
+  (input  (do
+            (type Instant (Instant UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (effect Sim
+              (op sleep (-> Instant Unit))
+              (op now   (-> Unit Instant)))
+            (def (scheduler-step (: wake Instant) resume-thunk) (resume-thunk unit))
+            (def (main)
+              (handle Sim (Instant.Instant 0)
+                ( (now   (u) s (resume s s))
+                  (sleep (wake) s
+                    (scheduler-step wake (fn (_u) (resume unit wake)))) )
+                (do (Sim.sleep (Instant.Instant 5000000000))
+                    (inst-ns (Sim.now)))))
+            (export main)))
+  (output (: 5000000000 Int64)))
+
 ; ────────────────────────────────────────────────────────────────────────────────────────────────
 ; Increment 1 — event-queue determinism edge cases (design §8: guard the §3.4 FIFO tie-break at N=3,
 ; interleaved times, and the sleep(0)/pop-then-reinsert scheduler-step primitive). Pure substrate.

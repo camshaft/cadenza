@@ -3201,6 +3201,20 @@ fn check(paths: &Paths, profile: &str) {
         }
     }
 
+    // STORELESS-rerun gate — the recurring local-green/CI-red class: a cdz/rcdzc test drives the
+    // value-heap runtime, PASSES pr-sync's store-having gate (the store is built per-batch), but FAILS
+    // CI's bare `test` job (`cargo test --workspace` with NO store) when its store-skip guard is missing
+    // or wrong — the author forgot the `store_present()`/`find_runtime_wasm→None` skip. This step
+    // reproduces the storeless CI condition LOCALLY by pointing `CADENZA_STORE` at an EMPTY temp dir and
+    // re-running exactly the two crates every incident came from (rcdzc `--lib` + the cdz integration
+    // tests): a correctly-guarded test SKIPS (its guard now reports the store absent — the guards +
+    // resolvers honor `CADENZA_STORE` uniformly), so the rerun stays GREEN; a missing/wrong guard RUNS,
+    // hits "no runtime in the store", and FAILS here — catching the CI-red BEFORE the MR lands rather
+    // than as an integrator fix-forward. Cheap: test-EXECUTION only (the `build`/`test` steps above
+    // already compiled these crates); the store-skipped tests don't run the runtime. Concierge ruling
+    // (2026-07-19): the surgical, contention-aware fix vs a full second `cargo test --workspace`.
+    log.step_native("storeless-rerun", || storeless_rerun(paths));
+
     // Citation-coverage regression gate: fail if a `//=` / `//#` duvet citation was deleted/stranded
     // (live cited < the committed floor). Skips only when `duvet` isn't installed; a present-but-
     // erroring duvet (a stranded citation) FAILS loudly. Thread `--profile` through like the gate step
@@ -3727,6 +3741,92 @@ fn needs_free_lint(paths: &Paths) -> Result<(), String> {
         hits.len(),
         hits.join("\n  ")
     ))
+}
+
+/// Reproduce CI's STORELESS `test` job locally: run the two crates every store-guard-miss incident came
+/// from (`rcdzc --lib` + the cdz integration tests) with `CADENZA_STORE` pointed at an EMPTY temp dir, so
+/// a value-heap-driving test whose store-skip guard is MISSING or WRONG runs, fails to resolve the
+/// runtime, and FAILS here — catching the local-green/CI-red BEFORE the MR lands. A correctly-guarded
+/// test SKIPS (the guards + resolvers honor `CADENZA_STORE` uniformly, reporting the empty store absent),
+/// so the rerun is GREEN. `Ok(())` = every test either passed or store-skipped; `Err(msg)` names the
+/// crate whose storeless run failed. Test-EXECUTION only — `check`'s `build`/`test` steps already
+/// compiled these crates, and the guarded tests don't run the runtime.
+fn storeless_rerun(paths: &Paths) -> Result<(), String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TICK: AtomicU64 = AtomicU64::new(0);
+    let tick = TICK.fetch_add(1, Ordering::Relaxed);
+    // An EMPTY store dir — the whole mechanism: the guards resolve `CADENZA_STORE` first and, finding it
+    // empty, report the store ABSENT so a runtime-driving test skips. Unique per invocation (PID + atomic
+    // tick; `Date`/rng unavailable) so concurrent gate workers never share/clobber it.
+    let empty_store =
+        std::env::temp_dir().join(format!("cdz-storeless-{}-{tick}", std::process::id()));
+    if let Err(e) = std::fs::create_dir_all(&empty_store) {
+        return Err(format!(
+            "could not create the empty storeless temp dir {}: {e}",
+            empty_store.display()
+        ));
+    }
+
+    // The exact crates/targets the 3 recurring incidents came from (rcdzc erased-newtype; cdz
+    // sum-property in test_manifest_cli; run-emitted-decline in run_emitted_cli). Scoped, not a full
+    // `--workspace`, so this stays a fraction of a second test phase (concierge contention ruling).
+    let store_str = empty_store.to_string_lossy().to_string();
+    let runs: [(&str, &[&str]); 3] = [
+        ("rcdzc --lib", &["test", "-p", "rcdzc", "--lib"]),
+        (
+            "cdz test_manifest_cli",
+            &["test", "-p", "cdz", "--test", "test_manifest_cli"],
+        ),
+        (
+            "cdz run_emitted_cli",
+            &["test", "-p", "cdz", "--test", "run_emitted_cli"],
+        ),
+    ];
+
+    let mut failures: Vec<String> = Vec::new();
+    for (label, args) in runs {
+        let out = std::process::Command::new("cargo")
+            .args(args)
+            .current_dir(&paths.repo)
+            .env("CADENZA_STORE", &store_str)
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => {
+                // A storeless failure = an under-guarded runtime-driving test (the CI-red this catches).
+                // Surface the captured tail so the offending test is named in the check log.
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                let tail: String = stderr
+                    .lines()
+                    .rev()
+                    .take(20)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                failures.push(format!(
+                    "`{label}` FAILED storeless (missing/wrong store-skip guard):\n{tail}"
+                ));
+            }
+            Err(e) => failures.push(format!("`{label}` could not launch: {e}")),
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&empty_store);
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} storeless rerun(s) FAILED — a value-heap-driving test ran without its store-skip guard, \
+             which reds CI's storeless `cargo test --workspace` (no store). Fix: add the \
+             `store_present()`/`find_runtime_wasm→None` skip to the offending test (see \
+             `cdz/tests/run_emitted_cli.rs::store_present`).\n\n{}",
+            failures.len(),
+            failures.join("\n\n")
+        ))
+    }
 }
 
 /// A captured-output log for a multi-step command. Each step's child process writes its stdout and
