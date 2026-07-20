@@ -743,6 +743,19 @@
             (def (main) (List.len (Set.to-list (Set.of (list 3 1 2 1 3))))) (export main)))
   (output (: 3 Int64)))
 
+(case "Set.to-list orders a set of COMPOUND (tuple) elements lexicographically"
+  (doc    "The scalar cases above enumerate an Int set; this pins that a set of ORDERABLE COMPOUNDS enumerates
+           in canonical LEXICOGRAPHIC order — the same total order the runtime `<` gives a tuple. `{(3,1),(1,2),
+           (2,0)}` orders as `(1,2),(2,0),(3,1)` (first component decisive), so index 0 is `(1,2)` and its first
+           component is 1. Regression witness for a wasm↔rust divergence where wasm FALSE-DECLINED a compound-
+           element set ('no orderable descriptor') while rust computed the sorted order; the fix sorts by the
+           descriptor-guided total order (`value_cmp_shaped`) on both. Expected: 1.")
+  (input  (do
+            (def (main) (match (List.at (Set.to-list (Set.of (list (tuple 3 1) (tuple 1 2) (tuple 2 0)))) 0)
+                          ((Some t) (. t 0))
+                          ((None u) -1))) (export main)))
+  (output (: 1 Int64)))
+
 ; The Set.to-list cases above enumerate a CONSTANT `Set.of` literal. A set built AT RUN TIME by a
 ; recursive `Set.insert` loop over a boundary parameter is a genuine runtime CHAMP the `set-to-list`
 ; runtime op (index 83) walks live — its canonical (sorted) order emerges from the cursor walk + the

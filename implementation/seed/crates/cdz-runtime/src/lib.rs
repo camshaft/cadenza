@@ -2133,32 +2133,6 @@ fn resolve_shape(desc: &Descriptor, mut shape_ix: u32) -> Option<&Shape> {
     None
 }
 
-/// Canonical ORDER of two SCALAR values under `shape` — matching the compiler's `const_key_order` (the
-/// order a map/set renders its keys/elements in, `collections-and-text.md`): an Int by NUMERIC value
-/// (NOT raw bytes — the CHAMP stores ints little-endian, so byte order ≠ value order), a String
-/// lexicographically (byte compare == UTF-8 lexicographic), a Bool `false < true`, Unit a singleton. Any
-/// other (non-scalar) shape has no canonical scalar order here → `None`, so the Set/Map encode declines
-/// exactly as `const_key_order` does for a nested-compound key.
-fn canonical_scalar_order(shape: &Shape, a: Handle, b: Handle) -> Option<core::cmp::Ordering> {
-    match shape {
-        Shape::Int => Some(op_get_int(a).cmp(&op_get_int(b))),
-        Shape::Bool => Some(op_get_bool(a).cmp(&op_get_bool(b))),
-        Shape::Unit => Some(core::cmp::Ordering::Equal),
-        Shape::Str => {
-            // Compare the stored UTF-8 bytes lexicographically (== string lexicographic order). BORROW
-            // both nodes' raw slices and compare IN PLACE — no `to_vec`. This runs inside a `sort_by`
-            // (O(N·log N) compares per string-keyed map/set encode), so a per-compare pair of transient
-            // Vec copies would be ~2·N·log N wasted allocations; the borrowed-slice compare is the same
-            // zero-alloc discipline `champ_eq` already uses on raw leaves. A null node reads as empty.
-            let av = unsafe { a.0.as_ref() };
-            let bv = unsafe { b.0.as_ref() };
-            let as_ = av.map_or(&[][..], |n| n.raw.as_slice());
-            let bs = bv.map_or(&[][..], |n| n.raw.as_slice());
-            Some(as_.cmp(bs))
-        }
-        _ => None,
-    }
-}
 
 /// Collect a SET's elements into a Vec of (borrowed) element handles, SORTED into canonical key-VALUE
 /// order under the element shape `elem_ix` (resolved through `Named`/`Ref`). The CHAMP iterates hash
@@ -2167,12 +2141,12 @@ fn canonical_scalar_order(shape: &Shape, a: Handle, b: Handle) -> Option<core::c
 /// declines a nested-compound element. The returned handles are BORROWED (the set still owns them); the
 /// caller only reads them to encode, so no dup/drop is needed.
 fn set_elements_canonical(desc: &Descriptor, set: Handle, elem_ix: u32) -> Option<Vec<Handle>> {
-    let elem_shape = resolve_shape(desc, elem_ix)?;
-    // Only a canonically-orderable scalar element is encodable (a nested-compound element declines).
-    if !matches!(elem_shape, Shape::Int | Shape::Bool | Shape::Unit | Shape::Str) {
-        return None;
-    }
-    // Walk the set's cursor, collecting borrowed element handles.
+    // The element must offer a total order — a blessed scalar leaf OR an orderable COMPOUND (a tuple/list/
+    // record/sum all of whose leaves are orderable). `value_cmp_shaped` supplies that order for BOTH cases
+    // (it's the same descriptor-guided total order the runtime `<`/`Core::ValueCmp` walk and value-encode
+    // use), so we probe orderability once and reuse the walk for the sort. A non-orderable element (a float/
+    // bytes/set/map leaf) makes `value_cmp_shaped` return `None` → the encode declines (empty list), matching
+    // the compiler, which only bakes a set descriptor over an orderable element.
     let mut elems: Vec<Handle> = Vec::new();
     let mut cur = op_set_iter(set);
     loop {
@@ -2184,11 +2158,20 @@ fn set_elements_canonical(desc: &Descriptor, set: Handle, elem_ix: u32) -> Optio
         cur = op_set_iter_next(cur);
     }
     op_drop(cur); // release the final (exhausted) cursor
-    // Sort into canonical value order. Set members are DISTINCT, so stability is irrelevant → the
-    // in-place `sort_unstable_by` (no merge scratch-buffer allocation, better constants) gives the same
-    // canonical order as a stable sort with one fewer heap allocation on this escape path.
+    // Probe orderability on a representative element (all elements share `elem_ix`'s shape). An empty set is
+    // trivially orderable — nothing to sort. A `None` on a non-empty set means a non-orderable element shape.
+    if let Some(&probe) = elems.first()
+        && value_cmp_shaped(desc, probe, probe, elem_ix).is_none()
+    {
+        return None; // a non-orderable element shape — unrenderable, decline
+    }
+    // Sort into canonical VALUE order via the descriptor-guided total order. Set members are DISTINCT, so
+    // stability is irrelevant → the in-place `sort_unstable_by` (no merge scratch-buffer allocation, better
+    // constants) gives the same canonical order as a stable sort with one fewer heap allocation. A `None`
+    // from `value_cmp_shaped` mid-sort (defensive — the orderability probe above already ruled it out) reads
+    // as Equal, keeping the sort total (never a panic).
     elems.sort_unstable_by(|&x, &y| {
-        canonical_scalar_order(elem_shape, x, y).unwrap_or(core::cmp::Ordering::Equal)
+        value_cmp_shaped(desc, x, y, elem_ix).unwrap_or(core::cmp::Ordering::Equal)
     });
     Some(elems)
 }
@@ -2200,11 +2183,11 @@ fn set_elements_canonical(desc: &Descriptor, set: Handle, elem_ix: u32) -> Optio
 /// canonically-orderable SCALAR — matching the compiler's `const_key_order`. The VALUE may be any
 /// encodable shape (the walk recurses on it). Handles are BORROWED (the map owns them); no dup/drop.
 fn map_entries_canonical(desc: &Descriptor, map: Handle, key_ix: u32) -> Option<Vec<(Handle, Handle)>> {
-    let key_shape = resolve_shape(desc, key_ix)?;
-    // Only a canonically-orderable scalar KEY is encodable (a nested-compound key declines, as const does).
-    if !matches!(key_shape, Shape::Int | Shape::Bool | Shape::Unit | Shape::Str) {
-        return None;
-    }
+    // The KEY must offer a total order — a blessed scalar leaf OR an orderable COMPOUND (tuple/list/record/
+    // sum of orderable leaves). `value_cmp_shaped` supplies that order for BOTH (the same total order the
+    // runtime `<`/value-encode use), so we probe orderability once and reuse the walk for the sort. A
+    // non-orderable key (a float/bytes/set/map leaf) makes it return `None` → the encode declines, matching
+    // the compiler, which only bakes a map descriptor over an orderable key.
     let mut entries: Vec<(Handle, Handle)> = Vec::new();
     let mut cur = op_map_iter(map);
     loop {
@@ -2217,11 +2200,19 @@ fn map_entries_canonical(desc: &Descriptor, map: Handle, key_ix: u32) -> Option<
         cur = op_map_iter_next(cur);
     }
     op_drop(cur); // release the final (exhausted) cursor
-    // Sort by canonical KEY order. Map keys are DISTINCT → stability is irrelevant, so `sort_unstable_by`
-    // (in-place, no merge scratch-buffer allocation) gives the same canonical order with one fewer heap
-    // allocation than the stable `sort_by`.
+    // Probe orderability on a representative KEY (all keys share `key_ix`'s shape); an empty map is trivially
+    // orderable. A `None` on a non-empty map means a non-orderable key shape.
+    if let Some(&(probe, _)) = entries.first()
+        && value_cmp_shaped(desc, probe, probe, key_ix).is_none()
+    {
+        return None; // a non-orderable key shape — unrenderable, decline
+    }
+    // Sort by canonical KEY order via the descriptor-guided total order. Map keys are DISTINCT → stability is
+    // irrelevant, so `sort_unstable_by` (in-place, no merge scratch-buffer allocation) gives the same
+    // canonical order with one fewer heap allocation than the stable `sort_by`. A defensive mid-sort `None`
+    // (ruled out by the probe) reads as Equal, keeping the sort total.
     entries.sort_unstable_by(|&(ka, _), &(kb, _)| {
-        canonical_scalar_order(key_shape, ka, kb).unwrap_or(core::cmp::Ordering::Equal)
+        value_cmp_shaped(desc, ka, kb, key_ix).unwrap_or(core::cmp::Ordering::Equal)
     });
     Some(entries)
 }
@@ -5181,6 +5172,33 @@ impl Guest for Component {
             None => 2, // a non-orderable shape (float/bytes/set/map leaf) — unordered sentinel
         }
     }
+    // Value-form structural EQUALITY (index 88) — the descriptor-guided companion of `value-eq` (index 61).
+    // `value-eq` is the tagless `champ_eq` PHYSICAL-byte walk (sound for a canonical-by-construction value);
+    // this walks the shape descriptor element-by-element, so it is exact for a LIST (an RRB vector that is
+    // element- but not shape-canonical) and for a FLOAT/BYTES leaf a list carries (byte-canonical equality —
+    // nan==nan, -0.0≠+0.0 — which `value-cmp` DECLINES since a float offers equality but no total order).
+    // BORROWS `a`, `b` (an inspector — the caller owns their release) and `desc` (a constant). A malformed
+    // descriptor / unrepresentable shape reads as `false` (defensive total — the compiler bakes a well-formed
+    // descriptor, so this is a not-reached). Consistent with `value-cmp`: `value-eq-shaped == true` iff
+    // `value-cmp == 0` for an orderable type.
+    fn value_eq_shaped(a: u32, b: u32, desc: u32) -> bool {
+        let desc_h = Handle::from_u32(desc);
+        let n = op_bytes_len(desc_h);
+        let mut bytes = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            bytes.push(op_bytes_get(desc_h, i) as u8);
+        }
+        let Some(descriptor) = decode_descriptor(&bytes) else {
+            return false; // malformed descriptor — defensive not-equal (never reached)
+        };
+        crate::value_eq_shaped(
+            &descriptor,
+            Handle::from_u32(a),
+            Handle::from_u32(b),
+            descriptor.root,
+        )
+        .unwrap_or(false) // an unrepresentable shape reads as not-equal (defensive total)
+    }
     // Value CANONICALIZE (index 87) — the blessed canonical form of a runtime value of the type `desc`
     // describes: a fresh OWNED value byte-identical for any two values EQUAL as values, whatever their
     // construction. Emitted at a Map/Set KEY site for a list-typed (or list-containing) key so the tagless
@@ -5788,7 +5806,7 @@ fn value_cmp_shaped(
                         // Content-lexicographic over the UTF-8 bytes (== Unicode-scalar order for well-formed
                         // UTF-8, #58). A String may be a ROPE — flatten both to a leaf first (iterative,
                         // content-preserving/unobservable) so `raw` holds the logical bytes, then compare the
-                        // borrowed slices without allocating (the discipline `canonical_scalar_order` uses).
+                        // borrowed slices without allocating (the same zero-alloc discipline `champ_eq` uses).
                         bytes_flatten(a);
                         bytes_flatten(b);
                         let ord = {
@@ -5908,7 +5926,6 @@ fn value_cmp_shaped(
 
 /// A task for the iterative `value_eq_shaped` walk — a pair of handles to compare under a shape. Simpler
 /// than `CmpTask`: equality has no length-tiebreak (a length mismatch is decided immediately, in-line).
-#[allow(dead_code)] // wired in BRICK 2 (the value-eq-shaped op export + List<Float> `=` emit routing)
 enum EqTask {
     Pair { a: Handle, b: Handle, shape_ix: u32 },
 }
@@ -8309,6 +8326,78 @@ mod tests {
         );
     }
 
+    /// A `(Set (Tuple Int64 Int64))` descriptor: table [0]=Int, [1]=Tuple[→0,→0], [2]=Set(→1); root=2.
+    /// Set tag = 12, Tuple tag = 6. Elements are ORDERABLE COMPOUNDS — `set-to-list` must sort them by the
+    /// SAME lexicographic total order `value_cmp_shaped` (== the runtime `<`) supplies, not decline.
+    fn set_tuple_int_int_descriptor() -> Vec<u8> {
+        fn leb(out: &mut Vec<u8>, mut v: u64) {
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        }
+        let mut d = Vec::new();
+        leb(&mut d, 3); // table_len = 3
+        d.push(0); // [0] Int
+        d.push(6); // [1] Tuple [→0, →0]
+        leb(&mut d, 2);
+        leb(&mut d, 0);
+        leb(&mut d, 0);
+        d.push(12); // [2] Set(→1)
+        leb(&mut d, 1);
+        leb(&mut d, 2); // root = 2
+        d
+    }
+
+    /// `set-to-list` over a set whose elements are ORDERABLE COMPOUNDS (`(Tuple Int64 Int64)`) enumerates them
+    /// in canonical LEXICOGRAPHIC element order — the SAME total order the runtime `<`/`Core::ValueCmp` walk
+    /// (`value_cmp_shaped`) supplies — NOT a decline. This is breaker's differential repro 10761: wasm used to
+    /// false-decline a compound-element set (the scalar-only guard), while the value form + rust computed the
+    /// order. Insert `(3,1),(1,2),(2,0)` in hash order; the result must be the lexicographic order
+    /// `(1,2),(2,0),(3,1)` (first component decisive, second breaking a tie), and the heap must balance.
+    #[test]
+    fn set_to_list_orders_compound_tuple_elements_lexicographically() {
+        reset();
+        let desc = set_tuple_int_int_descriptor();
+        let mk = |a: i64, b: i64| {
+            let t = op_arr_alloc(2);
+            op_arr_set(t, 0, op_box_int(a));
+            op_arr_set(t, 1, op_box_int(b));
+            t
+        };
+        let mut s = op_set_empty();
+        for &(a, b) in &[(3i64, 1i64), (1, 2), (2, 0)] {
+            s = op_set_insert(s, mk(a, b));
+        }
+        let list = op_set_to_list(s, &desc);
+        let got: Vec<(i64, i64)> = (0..op_vec_len(list))
+            .map(|i| {
+                let t = op_vec_get(list, i);
+                (op_get_int(op_arr_get(t, 0)), op_get_int(op_arr_get(t, 1)))
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![(1, 2), (2, 0), (3, 1)],
+            "set-to-list over compound elements must yield lexicographic order, not decline (breaker 10761)"
+        );
+        op_drop(s);
+        op_drop(list);
+        #[cfg(any(test, feature = "debug-counters"))]
+        assert_eq!(
+            live_object_count(),
+            0,
+            "compound set-to-list leak: the set + the result list of tuples (each dup'd in) must net to 0"
+        );
+    }
+
     /// `map-to-list` enumerates a map's entries as a `List (Tuple k v)` in CANONICAL KEY order, each entry
     /// a 2-element tuple `[key, value]`. Insert keys out of order; the result must be the entries sorted by
     /// key, with values intact, and the heap must balance.
@@ -9697,7 +9786,7 @@ mod tests {
 
     /// `value-encode` of a `Set String` — the EXACT shape the compiler-in-Cadenza port returns across the
     /// host boundary (e.g. `free-vars.cdz`'s `Set String` of an AST's identifier Names). The int set-render
-    /// test above covers `canonical_scalar_order`'s numeric-Int arm; this covers its `Shape::Str` arm
+    /// test above covers `value_cmp_shaped`'s numeric-Int arm; this covers its `Shape::Str` arm
     /// (lexicographic BYTE order over the flattened leaf) driving `set_elements_canonical`'s sort. A String
     /// element takes the arity-0 heap-byte-leaf champ path (distinct from an immediate int), and the
     /// render must be lexicographic — NOT the CHAMP hash order the set stores/iterates in. Verifies the
@@ -9831,10 +9920,10 @@ mod tests {
     /// divergence: a negative's little-endian `raw` bytes are `0xFF…` (large unsigned), so a raw-byte
     /// comparison — exactly what `champ_key_cmp` (the CHAMP KEY comparator) uses — sorts every negative
     /// AFTER every positive, the OPPOSITE of numeric order. The value-encode render order comes from a
-    /// SEPARATE function, `canonical_scalar_order`, which reads `op_get_int` (SIGNED) — so negatives
+    /// SEPARATE walk, `value_cmp_shaped`'s `Shape::Int` arm, which reads `op_get_int` (SIGNED) — so negatives
     /// render correctly BEFORE positives. This pins that: a signed-key map/set (symbol tables with
     /// sentinels, coordinate/offset maps) renders in true numeric order, and guards against a future
-    /// "optimization" that makes `canonical_scalar_order` reuse the raw-byte `champ_key_cmp` rule (which
+    /// "optimization" that makes `value_cmp_shaped` reuse the raw-byte `champ_key_cmp` rule (which
     /// would silently mis-order every negative — a bug the positive-only 256-vs-1 tests can't catch).
     ///
     /// Reconstructs each int leaf's SIGNED value from the wire (kind 0 = KIND_INT_POS_DEC positive, kind
@@ -11333,8 +11422,8 @@ mod tests {
         println!("ALLOC value_encode x{VE_REPS}: {venc}");
 
         // (L2) value-encode a STRING-KEYED MAP — exercises `map_entries_canonical`'s `sort_by`, whose
-        // comparator (`canonical_scalar_order` on `Shape::Str`) compares the keys' stored UTF-8 bytes.
-        // That comparator now BORROWS both nodes' raw slices and compares in place; a regression to
+        // comparator (`value_cmp_shaped`'s `Shape::Str` arm) compares the keys' stored UTF-8 bytes.
+        // That comparator BORROWS both nodes' raw slices and compares in place; a regression to
         // `to_vec`-per-compare would allocate ~2·N·log N transient Vecs PURELY to sort (here ~2·32·5 ≈ 320
         // per encode). The map is built ONCE outside the loop, so only the encode+sort is measured. A
         // scalar-Int-keyed map sorts by `op_get_int` (no alloc) — this row specifically guards the STRING
@@ -19204,9 +19293,10 @@ mod tests {
     /// Deterministic*: "a deterministic order derived from the keys, not from insertion order." BUT the
     /// spec has a SECOND clause: "The order in which a map's entries are visited MUST AGREE with the order
     /// its canonical byte form places them in" (collections-and-text.md §Map Iteration Is Deterministic,
-    /// cited at rcdzc lower.rs ~8207). The canonical byte form orders keys by `canonical_scalar_order`
-    /// (NUMERIC for ints, lexicographic for strings — what value-encode renders + what `Map.fold` output
-    /// must match). HASH order ≠ canonical order, so a `Map.fold`/`keys` emitted directly over the raw
+    /// cited at rcdzc lower.rs ~8207). The canonical byte form orders keys by `value_cmp_shaped`
+    /// (NUMERIC for ints, lexicographic for strings, lexicographic for orderable compounds — what
+    /// value-encode renders + what `Map.fold` output must match). HASH order ≠ canonical order, so a
+    /// `Map.fold`/`keys` emitted directly over the raw
     /// cursor would VIOLATE the spec AND disagree with the same map's own `print`/value-encode output.
     /// This test PINS that the two orders differ (so the discrepancy can't be forgotten) and documents the
     /// contract: when iteration is exposed to the language, the compiler MUST re-sort the cursor output
@@ -19301,7 +19391,7 @@ mod tests {
         }
         op_drop(cur);
         // (B) the canonical byte-form key order for strings = lexicographic (what value-encode's
-        //     `canonical_scalar_order` Str arm produces + what a spec-conformant `Map.fold` must match).
+        //     `value_cmp_shaped` Str arm produces + what a spec-conformant `Map.fold` must match).
         let mut lex: Vec<String> = names.iter().map(|s| s.to_string()).collect();
         lex.sort();
         // The cursor visits EVERY key exactly once (a correct, complete traversal)…

@@ -171,6 +171,7 @@ pass	Set.to-list enumerates the FULL interior order, not just the smallest eleme
 pass	Set.to-list enumerates the elements as a List in canonical (sorted) order
 pass	Set.to-list length is the set's cardinality (deduped)
 pass	Set.to-list of a runtime-empty but element-typed set is the empty list
+pass	Set.to-list orders a set of COMPOUND (tuple) elements lexicographically
 pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
 pass	Set.to-list over a runtime set sums its distinct elements
 pass	Sim.now reads the scheduler clock — a tail-resumptive handler arm that works today
@@ -401,6 +402,9 @@ pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
 pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
+pass	a RUNTIME list of floats compares equal element-wise (the value-eq-shaped walk)
+pass	a RUNTIME list of floats with a NaN element compares equal (value-eq-shaped canonical byte form)
+pass	a RUNTIME list of floats with a differing element compares unequal (value-eq-shaped)
 pass	a RUNTIME payload-literal refinement dispatches through its literal test
 pass	a RUNTIME string scrutinee matches string literals by equality
 pass	a RUNTIME-built Rational is usable as a map key, matched by its exact value

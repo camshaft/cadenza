@@ -288,6 +288,14 @@ const OP_VALUE_EQ: &str = "value-eq";
 /// owned-temporary operand is `drop`ped after the compare. The runtime `<`/`<=`/`>`/`>=` on two runtime
 /// compounds the compiler could not fold.
 const OP_VALUE_CMP: &str = "value-cmp";
+/// `value-eq-shaped(a, b, desc) -> bool` — descriptor-guided STRUCTURAL equality over two compound heap
+/// values, baked with the same Bytes descriptor `value-cmp`/`value-encode` use. The element-wise companion
+/// of `value-eq`: exact for a LIST(-containing) compound (an RRB spine is element- but not shape-canonical)
+/// and for a FLOAT/BYTES leaf a list carries (canonical byte form — nan==nan, -0.0≠+0.0 — which `value-cmp`
+/// declines, a float having equality but no total order). BORROWS both operands (like `value-eq`/`value-cmp`),
+/// so an owned-temporary operand is `drop`ped after the compare. The runtime `=` on a List<Float>/list-with-
+/// float-leaf compound the compiler could not fold (and `value-eq`'s physical byte-walk would misread).
+const OP_VALUE_EQ_SHAPED: &str = "value-eq-shaped";
 /// `value-canonicalize(a, desc) -> handle` — the blessed CANONICAL form of a heap value of the type `desc`
 /// describes, baked as a Bytes constant exactly as `value-cmp`/`value-encode` bake it. Emitted at a Map/Set
 /// KEY site for a list-typed (or list-containing) key: a List is an RRB vector that is element-canonical but
@@ -656,7 +664,8 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // escaping and the `let` skips its drop → a leak (the borrowing StrCmp left it to its owner).
         Core::ValueEq { lhs, rhs }
         | Core::StrCmp { lhs, rhs, .. }
-        | Core::ValueCmp { lhs, rhs, .. } => {
+        | Core::ValueCmp { lhs, rhs, .. }
+        | Core::ValueEqShaped { lhs, rhs, .. } => {
             binding_escapes(db, lhs, binder, true) || binding_escapes(db, rhs, binder, true)
         }
         Core::Convert { operand, .. } | Core::Not { operand } => {
@@ -847,6 +856,7 @@ fn collect_consuming_payload_sites_expr(
         Core::ValueEq { lhs, rhs }
         | Core::StrCmp { lhs, rhs, .. }
         | Core::ValueCmp { lhs, rhs, .. }
+        | Core::ValueEqShaped { lhs, rhs, .. }
         | Core::BigIntCmp { lhs, rhs, .. }
         | Core::RationalCmp { lhs, rhs, .. }
         | Core::BigIntBinOp { lhs, rhs, .. }
@@ -1067,6 +1077,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::RationalOfInts { num: a, den: b }
         | Core::ValueEq { lhs: a, rhs: b }
         | Core::ValueCmp { lhs: a, rhs: b, .. }
+        | Core::ValueEqShaped { lhs: a, rhs: b, .. }
         | Core::BytesConcat { lhs: a, rhs: b }
         | Core::ListConcat { lhs: a, rhs: b }
         | Core::ListPush { list: a, elem: b }
@@ -1519,8 +1530,10 @@ fn mark_binder_dups_inner(
         Core::RationalOfInts { num, den } => {
             seq(db, &[(num, false), (den, false)], live_after, sites)
         }
-        // `value-eq` BORROWS both operands.
-        Core::ValueEq { lhs, rhs } | Core::ValueCmp { lhs, rhs, .. } => {
+        // `value-eq`/`value-eq-shaped` BORROW both operands.
+        Core::ValueEq { lhs, rhs }
+        | Core::ValueCmp { lhs, rhs, .. }
+        | Core::ValueEqShaped { lhs, rhs, .. } => {
             seq(db, &[(lhs, true), (rhs, true)], live_after, sites)
         }
         // Consuming constructors / ops: every operand is consumed into the result.
@@ -2951,6 +2964,17 @@ fn collect_used_ops_into(
             collect_used_ops_into(db, lhs, out);
             collect_used_ops_into(db, rhs, out);
         }
+        // Runtime descriptor-guided structural EQUALITY imports `value-eq-shaped` + `drop` (reclaim the
+        // descriptor Bytes AND an owned-temporary operand after the borrowing compare) + `bytes-alloc`/
+        // `bytes-set` (the emit BAKES the shape descriptor inline as a Bytes constant, exactly like ValueCmp).
+        Core::ValueEqShaped { lhs, rhs, .. } => {
+            out.insert(OP_VALUE_EQ_SHAPED);
+            out.insert(OP_DROP);
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+            collect_used_ops_into(db, lhs, out);
+            collect_used_ops_into(db, rhs, out);
+        }
         Core::Convert { operand, .. } | Core::Not { operand } => {
             collect_used_ops_into(db, operand, out)
         }
@@ -4161,6 +4185,7 @@ fn licm_children(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::FloatCompare { lhs, rhs, .. }
         | Core::ValueEq { lhs, rhs }
         | Core::ValueCmp { lhs, rhs, .. }
+        | Core::ValueEqShaped { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. }
         | Core::ListConcat { lhs, rhs }
         | Core::BytesConcat { lhs, rhs } => vec![lhs, rhs],
@@ -9794,6 +9819,58 @@ fn emit(
                     return Err(Reject::decline("ValueCmp carries a non-ordering prim"));
                 }
             }
+            Ok(())
+        }
+        // RUNTIME DESCRIPTOR-GUIDED STRUCTURAL EQUALITY — a `value-eq-shaped(a, b, desc)` call: the element-
+        // wise structural-equality walk over two compound heap values, exact for a LIST(-containing) compound
+        // with a FLOAT/BYTES leaf (the physical `value-eq` byte-walk is unsound for an RRB list; `value-cmp`
+        // is unavailable — a float has no total ORDER). Same emit SHAPE as `ValueCmp` (bake the descriptor
+        // Bytes, emit both borrowed operands, drop the descriptor + any owned temporary after the compare),
+        // but the call returns a `bool` DIRECTLY — no three-way→boolean mapping. Reuses the SAME bare-rooted
+        // descriptor `value-cmp`/`value-encode` bake (`value_eq_shaped` resolves the root and walks it).
+        Core::ValueEqShaped { lhs, rhs, ty } => {
+            let Some(desc) = crate::lower::value_cmp_shape_descriptor(db, &ty) else {
+                return Err(Reject::decline(
+                    "runtime structural equality: operand shape has no descriptor",
+                ));
+            };
+            let lo = heap_operand_ownership(db, lhs)?;
+            let ro = heap_operand_ownership(db, rhs)?;
+            let slot_l = *high;
+            let slot_r = *high + 1;
+            let desc_slot = *high + 2;
+            *high = desc_slot + 1;
+            for s in [slot_l, slot_r, desc_slot] {
+                scratch_ty.insert(s, ValType::I32);
+            }
+            let op_base = *high;
+            // Bake the descriptor into desc_slot FIRST (clean stack for the operand emits), exactly as ValueCmp.
+            out.push(Lir::ConstI32(desc.len() as i32));
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // [desc-buf]
+            for (j, &byte) in desc.iter().enumerate() {
+                out.push(Lir::ConstI32(j as i32));
+                out.push(Lir::ConstI32(byte as i32));
+                out.push(Lir::CallImport(OP_BYTES_SET)); // [desc-buf]
+            }
+            out.push(Lir::LocalSet(desc_slot)); // [] — descriptor stored, stack clear
+            emit(db, lhs, slots, op_base, high, scratch_ty, layout, out)?;
+            out.push(Lir::LocalTee(slot_l)); // [a]
+            emit(db, rhs, slots, op_base, high, scratch_ty, layout, out)?;
+            out.push(Lir::LocalTee(slot_r)); // [a, b]
+            out.push(Lir::LocalGet(desc_slot)); // [a, b, desc]
+            out.push(Lir::CallImport(OP_VALUE_EQ_SHAPED)); // → [res:bool]
+            // Drop the borrowed-only descriptor Bytes, then any owned operand (like ValueCmp/ValueEq).
+            out.push(Lir::LocalGet(desc_slot));
+            out.push(Lir::CallImport(OP_DROP));
+            if lo == HandleOwnership::Owned {
+                out.push(Lir::LocalGet(slot_l));
+                out.push(Lir::CallImport(OP_DROP));
+            }
+            if ro == HandleOwnership::Owned {
+                out.push(Lir::LocalGet(slot_r));
+                out.push(Lir::CallImport(OP_DROP));
+            }
+            // The bool result is already on top — no mapping needed.
             Ok(())
         }
         // A runtime arithmetic op. The numeric model fixes each operation's DEFINED outcome, which the
