@@ -379,6 +379,51 @@ fn a_fix_the_patch_engine_cannot_build_shows_no_help_line_and_no_json_fix() {
 }
 
 #[test]
+fn a_match_arm_binder_used_deep_in_a_nested_let_if_chain_is_not_a_false_cdz0101() {
+    // REGRESSION (the false-CDZ0101 that stalled the fleet ~82min — v-inference fix 0025900937): the
+    // Diagnostics resolver surfaced a spurious `unbound name` CDZ0101 for a SYNTHESIZED node (an inference
+    // β-copy artifact) when a `match`-arm binder was used DEEP inside a nested `let`/`if` chain — the copy
+    // lost the binder's scope, and the false error even anchored onto a SIBLING call node (a span with no
+    // occurrence of the name). `cdz check` then FALSE-RED green source that `cdz test` ran clean
+    // (check≠test divergence). This pins the SHAPE: a match-arm binder (`tyname`) bound then used across a
+    // multi-level `let`/`if` nest, all types consistent — so any error is spurious. `cdz check` must be
+    // CLEAN (no CDZ0101, exit 0); a re-introduced synth-node false-positive reds this. (Check-path only —
+    // no `cdz test`, so this is storeless-CI-safe; the front-end resolve is what regressed, not execution.)
+    let dir = pkg_dir("match-binder-deep-nest");
+    let solo = write(
+        &dir,
+        "ann.cdz",
+        "def kind-of(n: String) = true\n\
+         def width-of(n: String) = 64\n\
+         def fits(k: Int64, w: Int64) = true\n\
+         def use-it(k: Int64) = k\n\
+         def scan(s: String, k: Int64) = (s, k + 1)\n\
+         \n\
+         def ann-with-value(s: String, k: Int64) =\n\
+           (match scan(s, k) with | (tyname, a2) =>\n\
+             (let a3 = width-of(tyname) in\n\
+              (if (kind-of(tyname)) then\n\
+                 (let w = width-of(tyname) in\n\
+                  (if (fits(k, w)) then use-it(k)\n\
+                   else use-it(a2)))\n\
+               else use-it(a2))))\n",
+    );
+    let (ok, stdout, stderr) = run(&["check", &solo]);
+    assert!(
+        ok,
+        "a match-arm binder used deep in a nested let/if chain checks CLEAN — exit 0: {stdout}{stderr}"
+    );
+    assert!(
+        !stdout.contains("unbound name `tyname`") && !stderr.contains("unbound name `tyname`"),
+        "the in-scope match-arm binder must NOT surface a false CDZ0101 (the synth-node β-copy bug): {stdout}{stderr}"
+    );
+    assert!(
+        !stdout.contains("error [CDZ0101]") && !stderr.contains("error [CDZ0101]"),
+        "no spurious unbound-name error anywhere in this well-formed program: {stdout}{stderr}"
+    );
+}
+
+#[test]
 fn a_legit_error_symbol_in_sexpr_is_not_suppressed_as_a_placeholder() {
     // The `<error>`-cascade suppression is GATED on the file having actually had a parse error. In s-expr
     // `<error>` is a LEGAL symbol (the reader hard-errors on a malformed program, so a well-formed one

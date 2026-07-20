@@ -4003,6 +4003,20 @@ fn run_test_file(
         }
     };
 
+    // JIT-COMPILE the test component ONCE, here, and reuse it across every test + trial below. `Component::new`
+    // (the wasmtime JIT) is the DOMINANT per-run cost — measured ~8s for the self-host test component vs ~0.1s
+    // to actually run it — so compiling it once instead of once-per-`@test` turns an N-test file's N JITs into
+    // ONE (~25× on the 34-test sread-eval, the gate's slowest file). Every trial still builds a fresh
+    // linker/store/host-binding set (per-run state), only the compiled artifact is shared. A malformed
+    // component (shouldn't happen — we just emitted it) surfaces here once, not per test.
+    let compiled = match cdz_run::compile_component(&component) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{PROG}: {file}: could not compile the test component: {e:#}");
+            return Err(());
+        }
+    };
+
     // Run each test IN-PROCESS (via the `cdz-run` library — no sibling binary), in declaration order. A
     // NULLARY test runs ONCE — PASS = the export returned, FAIL = it trapped. A PROPERTY test (parameters)
     // runs `trials` times with generated inputs; it PASSES only if every trial returns, and FAILS on the
@@ -4020,7 +4034,7 @@ fn run_test_file(
     {
         let kebab = cadenza_syntax::extern_name::kebab_extern_name(name);
         let run_one = |arg_vals: &[String]| -> TrialOutcome {
-            run_one_trial(&component, runtime.as_deref(), &kebab, store, arg_vals)
+            run_one_trial(&compiled, runtime.as_deref(), &kebab, store, arg_vals)
         };
         match gens {
             // A parameter whose type is not a generatable scalar — cannot property-test it. Report + fail.
@@ -4057,15 +4071,8 @@ fn run_test_file(
                 let full_gt = gen_ty.as_ref().unwrap();
                 let span = (hi - lo + 1) as usize;
                 let run_pool = |pool: &[i64]| -> TrialOutcome {
-                    run_one_trial_with_pool(
-                        &component,
-                        runtime.as_deref(),
-                        &kebab,
-                        store,
-                        &[],
-                        pool,
-                    )
-                    .0
+                    run_one_trial_with_pool(&compiled, runtime.as_deref(), &kebab, store, &[], pool)
+                        .0
                 };
                 // The `-gen` wrapper for a single-variant `Sum` newtype draws a variant SELECTOR first
                 // (`sel = gen % k`, here k=1 → any int selects the sole variant), THEN the `IntRange` payload
@@ -4120,7 +4127,7 @@ fn run_test_file(
             // counting the `Test.gen-int` calls the guest made.
             Some(gens) if gens.is_empty() => {
                 match run_gen_driven(
-                    &component,
+                    &compiled,
                     runtime.as_deref(),
                     &kebab,
                     store,
@@ -4843,7 +4850,7 @@ struct PropertyFailure {
 /// if any. `runtime` is the value-heap runtime bytes the component was resolved against (or `None` for a
 /// scalar/const test component that imports no runtime).
 fn run_one_trial(
-    component: &[u8],
+    component: &cdz_run::CompiledComponent,
     runtime: Option<&[u8]>,
     kebab: &str,
     store: &std::path::Path,
@@ -4866,7 +4873,7 @@ const GEN_OP_LABEL: &str = "test.gen-int";
 /// list `run_capturing` returns) — the signal that distinguishes a PROPERTY test (pulls ≥1 generated int)
 /// from a plain unit test (pulls none). An unconsumed pool response is harmless (ignored).
 fn run_one_trial_with_pool(
-    component: &[u8],
+    component: &cdz_run::CompiledComponent,
     runtime: Option<&[u8]>,
     kebab: &str,
     store: &std::path::Path,
@@ -4889,7 +4896,9 @@ fn run_one_trial_with_pool(
         runtime_cache_dir: Some(store.to_path_buf()),
         host_responses,
     };
-    match cdz_run::run_capturing(component, &opts) {
+    // The component is JIT-compiled ONCE by the caller (`run_test_file`) and reused across every test +
+    // trial — `Component::new` is ~99% of a run's cost, so re-JITing per trial would dominate the suite.
+    match cdz_run::run_capturing_compiled(component, &opts) {
         Ok((outcome, observed)) => {
             let gens = count_gen_calls(&observed);
             let trial = match outcome {
@@ -5031,7 +5040,7 @@ const GEN_POOL_SIZE: usize = 64;
 /// unconsumed pool). If it consumed ≥1, it is a property test: run `trials` trials each with a FRESH
 /// seeded pool (`seed + trial`, reproducible), failing on the first trapping trial with the SHRUNK pool.
 fn run_gen_driven(
-    component: &[u8],
+    component: &cdz_run::CompiledComponent,
     runtime: Option<&[u8]>,
     kebab: &str,
     store: &std::path::Path,

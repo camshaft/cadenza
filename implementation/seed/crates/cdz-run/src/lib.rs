@@ -357,10 +357,46 @@ pub fn run_core_module(module_bytes: &[u8], export: &str) -> Result<Outcome> {
 /// `E.op`, in call order) — so a caller (the corpus gate) can verify the observed host-call sequence
 /// against a case's recorded `(host-calls …)`. Empty for a program that makes no host call.
 pub fn run_capturing(component_bytes: &[u8], opts: &RunOpts) -> Result<(Outcome, Vec<String>)> {
-    use std::sync::{Arc, Mutex};
+    // The one-shot path: JIT-compile the bytes, then run once. A caller that runs the SAME component many
+    // times (the `cdz test` per-@test loop) should instead `compile_component` ONCE and call
+    // `run_capturing_compiled` per run — `Component::new` is the dominant cost (measured ~8s for the
+    // self-host test component vs ~0.1s to run it), so re-JITing identical bytes per test is the multiplier
+    // to avoid. This wrapper keeps the existing single-run API (the corpus/oracle callers) byte-identical.
+    let compiled = compile_component(component_bytes)?;
+    run_capturing_compiled(&compiled, opts)
+}
+
+/// A wasmtime-JIT-COMPILED component, ready to run — the reusable half of a run, split from the per-run
+/// state (linker/store/host-bindings). `Component::new` (the JIT) is the dominant cost of a run (measured
+/// ~8s for the self-host test component, vs ~0.1s to actually run it); compiling ONCE with
+/// [`compile_component`] and running many times with [`run_capturing_compiled`] turns an N-`@test` file's
+/// N JITs into one. Cheap to hold + pass by reference (`Component` is `Arc`-backed, `Send + Sync`). Compiled
+/// against the process-shared [`engine`], so it runs on that same engine (the epoch ticker + `Store`
+/// deadlines all refer to it).
+pub struct CompiledComponent {
+    component: Component,
+}
+
+/// JIT-compile `component_bytes` into a reusable [`CompiledComponent`] — the expensive step (see the type
+/// docs) done ONCE for a component run repeatedly. Equivalent to the compile half of [`run_capturing`].
+pub fn compile_component(component_bytes: &[u8]) -> Result<CompiledComponent> {
     let engine = engine();
     let component =
         Component::new(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+    Ok(CompiledComponent { component })
+}
+
+/// Run an already-[`compile_component`]d component — [`run_capturing`] minus the per-call JIT. Every call
+/// builds a FRESH linker + store + host-binding set (per-run state must not leak across runs), but reuses
+/// the one JIT-compiled `Component`. Returns the outcome + the ordered observed host-op list, identical to
+/// `run_capturing`.
+pub fn run_capturing_compiled(
+    compiled: &CompiledComponent,
+    opts: &RunOpts,
+) -> Result<(Outcome, Vec<String>)> {
+    use std::sync::{Arc, Mutex};
+    let engine = engine();
+    let component = &compiled.component;
 
     let mut linker: Linker<()> = Linker::new(&engine);
 
@@ -369,7 +405,7 @@ pub fn run_capturing(component_bytes: &[u8], opts: &RunOpts) -> Result<(Outcome,
     // (the hashed one), while the function set is DISCOVERED from the runtime component's own type —
     // never a hard-coded list — so it can never drift from the runtime the caller supplied.
     let mut store = new_store(&engine);
-    if let Some(req) = find_runtime_req(&engine, &component) {
+    if let Some(req) = find_runtime_req(&engine, component) {
         compose_runtime(&engine, &mut store, &mut linker, &req, opts)?;
     }
 
@@ -378,9 +414,9 @@ pub fn run_capturing(component_bytes: &[u8], opts: &RunOpts) -> Result<(Outcome,
     // dotted `E.op` to `observed`, so the caller can compare the observed sequence against the case's
     // recorded `(host-calls …)`. Inert for a program with no host import (the common case).
     let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    bind_host_imports(&engine, &component, &mut linker, opts, &observed, &[])?;
+    bind_host_imports(&engine, component, &mut linker, opts, &observed, &[])?;
 
-    let outcome = run_export(&engine, &component, &mut store, &linker, opts)?;
+    let outcome = run_export(&engine, component, &mut store, &linker, opts)?;
     let calls = observed.lock().expect("observed calls mutex").clone();
     Ok((outcome, calls))
 }
