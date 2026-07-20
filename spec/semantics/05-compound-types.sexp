@@ -1693,6 +1693,23 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 5 Int64)) (output (: 11 Int64)))
 
+(case "a map consumed by Map.swap in one operand is unchanged for a later read of the same binding"
+  (doc    "The VALUE-YIELDING-insert twin of the Map.insert persistence case above: `Map.swap` returns
+           `(tuple <prior-value-optional> <new-map>)`, so it likewise must NOT FBIP-mutate a shared
+           `let`-bound operand in place. `m = {1:10}` read TWICE — the match binds the swap's new map (key 1
+           replaced to 99) but the body then reads the ORIGINAL `m` at key 1: it must still be `(Some 10)`,
+           not the swapped 99. If swap mutated the shared `m` in place (retain missing on the multi-use
+           binding), the later read would see 99. Pins that the persistent value-yielding insert leaves its
+           source map unchanged — the swap completion of the Map.insert/List.push/Set.insert persistence
+           family.")
+  (input  (do
+            (def (main (: k Int64) (: v Int64))
+              (let ((m (Map.insert Map.empty 1 10)))
+                (match (Map.swap m k v) ((tuple _ _)
+                  (match (Map.lookup m 1) ((Some x) x) ((None) -1))))))
+            (export main)))
+  (call   main (: 1 Int64) (: 99 Int64)) (output (: 10 Int64)))
+
 (case "a heap arg threaded UNCHANGED to a self-recursive call while a sibling arg consumes it is retained"
   (doc    "The SIMULTANEOUSLY-LIVE-ARGS face of the still-live-binding retain: a self-recursive call passes
            `base` UNCHANGED in one arg position AND consumes it in a sibling arg (`(List.push base 99)`).
