@@ -258,6 +258,6 @@ def rd-nullary-call-body-is-lexical-no-caller-capture() =
         (match add-node(t3, Node.NLet(1, valId, callId)) with | (root, tree) => // `let x(=1) = 0 in (mk)`
           // the callee body's var (mkBodyId) must be POISON — a fresh-scope resolve, no caller-let capture.
           (if resolved-poison(tree, root, mkBodyId) then unit
-           else trap("callee body var resolves LEXICALLY (fresh scope) → Poison, NOT captured by the caller let"))))))))
+           else trap("callee body var resolves LEXICALLY (fresh scope) → Poison, NOT captured by the caller let"))))))
 
 export { Resolved.*, resolve-tree, resolved-at, resolved-count, resolved-to, resolved-poison }

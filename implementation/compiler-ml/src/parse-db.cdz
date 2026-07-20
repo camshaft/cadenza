@@ -645,7 +645,7 @@ def pd-record-param2-then-lookup() =
                     else trap("param-of still returns param1 for a 2-param def"))
                 | Option.None(_) => trap("a 2-param def keeps its param1"))
               else trap("param2-of returns the recorded 2nd param"))
-          | Option.None(_) => trap("a recorded param2 is found")))))))
+          | Option.None(_) => trap("a recorded param2 is found"))))))
 
 @test
 def pd-record-arg2-then-lookup() =
@@ -661,7 +661,7 @@ def pd-record-arg2-then-lookup() =
                | Option.None(_) => unit
                | Option.Some(_) => trap("unrecorded call node has no arg2"))
              else trap("arg2-of returns the recorded 2nd arg"))
-         | Option.None(_) => trap("a recorded arg2 is found"))))))
+         | Option.None(_) => trap("a recorded arg2 is found")))))
 
 @test
 def pd-record-param-type-then-lookup() =
@@ -690,6 +690,6 @@ def pd-encode-param-type-unsigned-and-widths() =
      then (if ((pt-width(i64) == 64) and pt-signed(i64))
            then (if (u32 == i64) then trap("distinct (signed,width) must encode distinctly") else unit)
            else trap("Int64 decodes to signed width 64"))
-     else trap("UInt32 decodes to unsigned width 32")))))
+     else trap("UInt32 decodes to unsigned width 32"))))
 
 export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param-type, param-type-of, encode-param-type, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }

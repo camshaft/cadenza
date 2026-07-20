@@ -186,7 +186,7 @@ def param-fit-ok(tree: Tree, paramId: Int64, argId: Int64) =
                 (if (width == 64)
                  then (if signed then true else (v >= 0))               // native identity (fits-width can't do 64)
                  else fits-width(v, signed, width))))
-          | _ => true)))                                                // non-literal arg — keeps its own type
+          | _ => true))                                                 // non-literal arg — keeps its own type
 
 /// The result type of a binary node with op `op` and operands at `a`,`b`. ARITHMETIC (43 `+`, 45 `-`, 42
 /// `*`, 47 `/`, 37 `%`) requires both operands to be the SAME integer type (via `arith-result-type` → unify-ty
@@ -612,7 +612,7 @@ def id-param-fit-ok-narrow-const-out-of-range() =
     (match add-node(t1, Node.NLit(200)) with | (argId, t2) =>
       (let t3 = record-param-type(t2, paramId, encode-param-type(true, 8)) in
        (if param-fit-ok(t3, paramId, argId) then trap("200 does NOT fit Int8 → param-fit-ok must be false (CDZ0302)")
-        else unit)))))
+        else unit))))
 
 @test
 def id-param-fit-ok-narrow-const-in-range() =
@@ -620,7 +620,7 @@ def id-param-fit-ok-narrow-const-in-range() =
   (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
     (match add-node(t1, Node.NLit(100)) with | (argId, t2) =>
       (let t3 = record-param-type(t2, paramId, encode-param-type(true, 8)) in
-       (if param-fit-ok(t3, paramId, argId) then unit else trap("100 fits Int8 → param-fit-ok true"))))))
+       (if param-fit-ok(t3, paramId, argId) then unit else trap("100 fits Int8 → param-fit-ok true")))))
 
 @test
 def id-param-fit-ok-width64-identity() =
@@ -629,7 +629,7 @@ def id-param-fit-ok-width64-identity() =
   (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
     (match add-node(t1, Node.NLit(1000000)) with | (argId, t2) =>
       (let t3 = record-param-type(t2, paramId, encode-param-type(true, 64)) in
-       (if param-fit-ok(t3, paramId, argId) then unit else trap("Int64 (width 64) is the native identity → always fits"))))))
+       (if param-fit-ok(t3, paramId, argId) then unit else trap("Int64 (width 64) is the native identity → always fits")))))
 
 @test
 def id-param-fit-ok-untyped-param-always-ok() =
@@ -637,7 +637,7 @@ def id-param-fit-ok-untyped-param-always-ok() =
   // flows, as before the enforcement). Pins the enforcement fires ONLY on a declared-narrow param.
   (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
     (match add-node(t1, Node.NLit(999999)) with | (argId, t2) =>
-      (if param-fit-ok(t2, paramId, argId) then unit else trap("an untyped param imposes no fit constraint")))))
+      (if param-fit-ok(t2, paramId, argId) then unit else trap("an untyped param imposes no fit constraint"))))
 
 @test
 def id-param-fit-ok-nonliteral-arg-ok() =
@@ -649,7 +649,7 @@ def id-param-fit-ok-nonliteral-arg-ok() =
       (match add-node(t2, Node.NLit(2)) with | (bId, t3) =>
         (match add-node(t3, Node.NBin(43, aId, bId)) with | (argId, t4) =>
           (let t5 = record-param-type(t4, paramId, encode-param-type(true, 8)) in
-           (if param-fit-ok(t5, paramId, argId) then unit else trap("a non-literal arg is not compile-time fit-checked here"))))))))
+           (if param-fit-ok(t5, paramId, argId) then unit else trap("a non-literal arg is not compile-time fit-checked here")))))))
 
 @test
 def id-param-bind-type-declared-narrow-drives-body() =
@@ -671,6 +671,6 @@ def id-param-bind-type-untyped-takes-arg-type() =
   (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
     (match param-bind-type(t1, paramId, Typed.TIntW(false, 16)) with     // no declared type → arg's UInt16 flows
       | Typed.TIntW(s, w) => (if (if s then false else true) and (w == 16) then unit else trap("untyped param takes the arg's type"))
-      | _ => trap("untyped param binds to the arg type"))))
+      | _ => trap("untyped param binds to the arg type")))
 
 export { Typed.*, infer-node, infer-tree, type-at, well-typed, type-err-at, typed-count, is-bool-at, is-int-at }
