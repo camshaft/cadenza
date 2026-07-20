@@ -51,9 +51,14 @@ def run-sim(t: Type, task: Unit -> t) =
 
 // ── the demo: walk a tick-ordered event stream, sleeping to each event's tick ──
 
-/// Wrap a music tick (Int64, always >= 0 in a played piece) as a DES `Instant` (UInt64 ns). The ticks ARE
-/// the ns unit here — no conversion, per the DES seam (ticks map directly onto the UInt64 clock).
-def tick-instant(tick: Int64) = Instant.Instant(UInt64.wrap(tick))
+/// Wrap a music tick as a DES `Instant` (UInt64 ns). A played piece's ticks are absolute positions ≥ 0,
+/// but nothing upstream ENFORCES that (`note-at`/`schedule` accept any Int64 start), so a negative tick
+/// would `UInt64.wrap` to ~2^64 and make the DES clock leap forward instead of failing fast (PR#662). We
+/// GUARD it: a negative tick traps (fail-fast, a caller bug) rather than silently corrupting virtual time.
+/// The ticks ARE the ns unit here — no conversion, per the DES seam (ticks map directly onto the clock).
+def tick-instant(tick: Int64) =
+  if tick < 0 then trap("negative tick cannot be a DES Instant (UInt64 ns) — a played piece's ticks must be >= 0")
+  else Instant.Instant(UInt64.wrap(tick))
 
 /// The play task: walk the tick-ordered events, sleeping the virtual clock forward to each event's tick.
 /// Returns the FINAL clock instant. Recursive driver, annotated — performs `Sim.sleep`, so it lives inside

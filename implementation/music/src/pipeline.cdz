@@ -93,7 +93,10 @@ def a-whole-chromatic-run-collapses-into-major() =
   let chromatic-run = [
     note-at(pitch(60), 0, 100, 0, 100), note-at(pitch(61), 0, 100, 100, 100),
     note-at(pitch(62), 0, 100, 200, 100), note-at(pitch(63), 0, 100, 300, 100),
-    note-at(pitch(64), 0, 100, 400, 100), note-at(pitch(66), 0, 100, 500, 100)] in
+    note-at(pitch(64), 0, 100, 400, 100), note-at(pitch(65), 0, 100, 500, 100),
+    note-at(pitch(66), 0, 100, 600, 100), note-at(pitch(67), 0, 100, 700, 100),
+    note-at(pitch(68), 0, 100, 800, 100), note-at(pitch(69), 0, 100, 900, 100),
+    note-at(pitch(70), 0, 100, 1000, 100), note-at(pitch(71), 0, 100, 1100, 100)] in
   if all-in-major(collapse-piece(cmaj, chromatic-run)) then unit else trap("every collapsed note is a C-major degree")
 
 // ---- test helpers -----------------------------------------------------------------------------------
