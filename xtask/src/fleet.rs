@@ -382,6 +382,12 @@ pub enum FleetCmd {
         /// next scheduled `/loop` tick). Use when seeding a batch of messages.
         #[arg(long)]
         no_wake: bool,
+        /// Bypass the merge-request contamination guard (which refuses an MR whose `trunk..<ref>`
+        /// range carries a commit touching ONLY another vertical's zone — a peer's work a load-spike
+        /// sync-replay may have stranded on your branch). Use only for a GENUINELY cross-cutting
+        /// change you really do own.
+        #[arg(long)]
+        force: bool,
     },
     /// Stamp an agent's `lastTick` — the presence heartbeat the loop calls at the top of every tick.
     Heartbeat {
@@ -658,7 +664,10 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             body,
             from,
             no_wake,
-        } => send(&fleet, &to, &kind, &subject, &r#ref, &body, from, no_wake),
+            force,
+        } => send(
+            &fleet, &to, &kind, &subject, &r#ref, &body, from, no_wake, force,
+        ),
         FleetCmd::Heartbeat { name } => heartbeat(&fleet, &name),
         FleetCmd::Describe { name } => describe(&fleet, &name),
         FleetCmd::Inbox { name } => inbox_list(&fleet, &name),
@@ -1321,6 +1330,7 @@ fn send(
     body: &str,
     from: Option<String>,
     no_wake: bool,
+    force: bool,
 ) {
     // Resolve the sender robustly. Priority: explicit `--from`, then `$FLEET_AGENT`, then DERIVE it
     // from the current worktree's branch (`fleet/<agent>` → `<agent>`). The derivation is the key
@@ -1373,6 +1383,43 @@ fn send(
              ref has caused a mis-verified merged-ack). Delivering anyway."
         );
     }
+    // CONTAMINATION GUARD (v-compiler-ml issue 10801): during an extreme-load window a fleet-sync
+    // replay can strand a PEER's unlanded commit onto this branch (the shared-base HEAD/reflog vector).
+    // If that stray commit rides along in a merge-request's `trunk..<ref>` range, the sender would
+    // submit another vertical's work under its OWN MR — a wrong-attribution merge (or an empty/
+    // conflicting gate). The sync-side guard only WARNS (dropping on the reset+replay hot-path could
+    // lose real work); at SEND it's the last safe moment and refusing loses NOTHING (the commit still
+    // exists), so here we REFUSE — with a `--force` escape for a genuinely cross-cutting change. Signal
+    // = the same sound CHANGED-PATHS-vs-roster-ZONE test the sync guard uses. Scoped to `merge-request`
+    // with a resolvable ref + a known sender zone; skipped silently (deliver) if any input is missing,
+    // so a normal in-lane MR is never impeded. `--force` bypasses (a real cross-zone change is legal).
+    if !force
+        && kind == "merge-request"
+        && !r#ref.trim().is_empty()
+        && from != "unknown"
+        && let Some(foreign) = merge_request_foreign_commits(fleet, &from, r#ref.trim())
+        && !foreign.is_empty()
+    {
+        eprintln!(
+            "fleet send: REFUSING — {} commit(s) in the range `trunk..{}` this merge-request \
+             names touch ONLY files outside your lane (zone '{}'), i.e. a PEER's work your base \
+             likely carried after a load-spike sync replay. Submitting it would merge another \
+             vertical's commit under YOUR name (wrong-attribution / stale-dup gate):",
+            foreign.len(),
+            &r#ref.trim()[..r#ref.trim().len().min(9)],
+            roster_zone_of(fleet, &from).unwrap_or_default(),
+        );
+        for sha in &foreign {
+            eprintln!("    {}", &sha[..sha.len().min(9)]);
+        }
+        eprintln!(
+            "  Reset your branch to clean trunk + cherry-pick back ONLY your own commits, then \
+             resend. If this MR is a GENUINELY cross-cutting change (you really do own these \
+             files), re-run with `--force`."
+        );
+        std::process::exit(1);
+    }
+
     // Deliver even if the recipient isn't in the registry yet (e.g. seeding before add commits) —
     // the inbox dir is created on demand.
     deliver(
@@ -4421,6 +4468,74 @@ fn commit_is_foreign_to_lane(changed_paths: &[String], my_zone: &str) -> bool {
     saw_known
 }
 
+/// The subset of `commits` (each a `(sha, changed_paths)` pair, e.g. the `trunk..<ref>` range a
+/// merge-request would introduce) that are FOREIGN to `my_zone` per [`commit_is_foreign_to_lane`].
+/// Pure aggregate over the per-commit test so the send-time contamination guard is unit-testable
+/// independent of git: a merge-request whose range carries ANY commit that touches ONLY another
+/// vertical's zone is a wrong-attribution risk — the sender would submit a peer's stranded commit
+/// (from a load-spike shared-base replay) under its own MR — so the guard refuses when this is
+/// non-empty (overridable with `--force` for a genuinely cross-cutting change). Inherits the
+/// conservative false-negatives-over-false-positives bias of the per-commit test: an all-mine or
+/// ambiguous range yields an empty result (no refusal).
+fn foreign_commits_in_range(commits: &[(String, Vec<String>)], my_zone: &str) -> Vec<String> {
+    commits
+        .iter()
+        .filter(|(_, paths)| commit_is_foreign_to_lane(paths, my_zone))
+        .map(|(sha, _)| sha.clone())
+        .collect()
+}
+
+/// The ownership `area`/zone the roster records for agent `name` (empty/`None` if unknown or arealess).
+/// Single source of truth for the send-time + sync-time lane guards so they agree on "my lane".
+fn roster_zone_of(fleet: &Fleet, name: &str) -> Option<String> {
+    fleet
+        .load_roster()
+        .agents
+        .into_iter()
+        .find(|a| a.name == name)
+        .map(|a| a.area)
+        .filter(|z| !z.is_empty())
+}
+
+/// Git-backed driver for the send-time contamination guard: the foreign-to-`from`'s-lane commits in the
+/// `trunk..<ref>` range a merge-request names, or `None` when the guard cannot/should-not run (unknown
+/// sender zone, unresolvable ref, or trunk not present — a MISSING signal must never manufacture a
+/// refusal). Returns `Some([])` when the range is clean or entirely in-lane (caller treats empty as
+/// "no contamination" → deliver). The per-commit ownership decision is the pure, unit-tested
+/// [`foreign_commits_in_range`]; this wrapper only gathers the (sha, changed-paths) range from git.
+fn merge_request_foreign_commits(fleet: &Fleet, from: &str, r#ref: &str) -> Option<Vec<String>> {
+    let my_zone = roster_zone_of(fleet, from)?;
+    let git_lines = |args: &[&str]| -> Option<Vec<String>> {
+        let out = Command::new("git")
+            .current_dir(&fleet.repo)
+            .args(args)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect(),
+        )
+    };
+    // The commits the MR would INTRODUCE relative to trunk. If trunk or ref is unresolvable, bail
+    // (None) rather than refuse — an unresolvable ref is pr-sync's problem to report, not ours to block.
+    let range = format!("{TRUNK}..{}", r#ref);
+    let shas = git_lines(&["rev-list", &range])?;
+    let commits: Vec<(String, Vec<String>)> = shas
+        .into_iter()
+        .filter_map(|sha| {
+            let paths = git_lines(&["show", "--name-only", "--format=", &sha])?;
+            Some((sha, paths))
+        })
+        .collect();
+    Some(foreign_commits_in_range(&commits, &my_zone))
+}
+
 /// Whether `git cherry <trunk> <ref>` output says `<ref>`'s patch is ALREADY upstream (landed) — i.e.
 /// every commit line is prefixed `-` (equivalent patch on trunk), with at least one line. `git cherry`
 /// prints `- <sha>` for a commit whose patch-id is upstream and `+ <sha>` for one that is not; for a
@@ -6189,6 +6304,44 @@ mod tests {
             &[p("guide/x.tsx")],
             "compiler-ml"
         ));
+    }
+
+    #[test]
+    fn foreign_commits_in_range_selects_only_out_of_lane_commits() {
+        let p = |s: &str| s.to_string();
+        let commit = |sha: &str, paths: &[&str]| {
+            (
+                sha.to_string(),
+                paths.iter().map(|s| p(s)).collect::<Vec<_>>(),
+            )
+        };
+        // A merge-request range the load-spike vector produces: one own commit + a stranded peer's.
+        let range = vec![
+            commit("aaaaaaaa", &["xtask/src/fleet.rs"]), // mine — kept out of the result
+            commit("bbbbbbbb", &["implementation/compiler-ml/src/parse-db.cdz"]), // a peer's — flagged
+            commit("cccccccc", &["guide/x.tsx", "guide/y.tsx"]), // another peer's — flagged
+        ];
+        assert_eq!(
+            foreign_commits_in_range(&range, "xtask"),
+            vec!["bbbbbbbb".to_string(), "cccccccc".to_string()]
+        );
+        // An all-in-lane range → nothing flagged (a normal MR must never be refused).
+        let clean = vec![
+            commit("dddddddd", &["xtask/src/main.rs"]),
+            commit("eeeeeeee", &["fleet/roster.json"]),
+        ];
+        assert!(foreign_commits_in_range(&clean, "xtask").is_empty());
+        // A mixed commit (touches my lane AND a peer's) is NOT foreign — could be a legit cross-cut.
+        let mixed = vec![commit("ffffffff", &["xtask/x.rs", "guide/y.tsx"])];
+        assert!(foreign_commits_in_range(&mixed, "xtask").is_empty());
+        // A commit with an unattributable (shared-crate) path stays in-lane-conservative → not flagged.
+        let ambiguous = vec![commit(
+            "99999999",
+            &["implementation/seed/crates/rcdzc/src/infer.rs"],
+        )];
+        assert!(foreign_commits_in_range(&ambiguous, "xtask").is_empty());
+        // Empty range → empty result (no MR content to judge).
+        assert!(foreign_commits_in_range(&[], "xtask").is_empty());
     }
 
     #[test]

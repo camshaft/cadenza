@@ -80,6 +80,7 @@ pass	Set.to-list enumerates the FULL interior order, not just the smallest eleme
 pass	Set.to-list enumerates the elements as a List in canonical (sorted) order
 pass	Set.to-list length is the set's cardinality (deduped)
 pass	Set.to-list of a runtime-empty but element-typed set is the empty list
+pass	Set.to-list orders a set of COMPOUND (tuple) elements lexicographically
 pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
 pass	Set.to-list over a runtime set sums its distinct elements
 pass	Sim.now reads the scheduler clock — a tail-resumptive handler arm that works today
@@ -204,6 +205,7 @@ pass	a Float element inserted into an empty (runtime) set boxes with box-float, 
 pass	a Float32 quantity stored as a map value round-trips through Map.lookup
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
+pass	a HEAP element pushed across the RRB 32→33 boundary reads back intact at every index
 pass	a HOF callback matching a tuple argument computes through the nested reduction
 pass	a HOF callback matching its sum argument reaches the nullary arm
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
@@ -254,6 +256,9 @@ pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
 pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
+pass	a RUNTIME list of floats compares equal element-wise (the value-eq-shaped walk)
+pass	a RUNTIME list of floats with a NaN element compares equal (value-eq-shaped canonical byte form)
+pass	a RUNTIME list of floats with a differing element compares unequal (value-eq-shaped)
 pass	a RUNTIME payload-literal refinement dispatches through its literal test
 pass	a RUNTIME string scrutinee matches string literals by equality
 pass	a RUNTIME-built Rational is usable as a map key, matched by its exact value
@@ -1409,6 +1414,7 @@ pass	a record match pattern destructures a record scrutinee by field
 pass	a record missing a field the annotation names is rejected
 pass	a record scrutinee is bound whole by a match binder
 pass	a record sub-pattern nested inside a tuple match names the feature, not an unbound binder (CDZ0201)
+pass	a record whose field is a List projects the list handle and indexes it, alongside a scalar field
 pass	a record whose field is a runtime tuple nests across the boundary
 pass	a record whose field is misnamed is both missing and extra
 pass	a record with a duplicate field name is a type error

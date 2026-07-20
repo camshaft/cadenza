@@ -10347,6 +10347,31 @@
   (call   main (: 33 Int64)) (output (: 561 Int64))
   (call   main (: 100 Int64)) (output (: 5050 Int64)))
 
+(case "a HEAP element pushed across the RRB 32→33 boundary reads back intact at every index"
+  (doc    "The heap-element companion of the scalar RRB-boundary case above: the scalar case pushes Int64s;
+           this pushes a COMPOUND element `(tuple i (* i 10))` 40 times, then reads elements back by index
+           across the leaf→trie split. A tuple element is a heap value in the vector's slot, so a
+           mis-indexed subtree or wrong element stride at the boundary would corrupt the COMPOUND reads
+           above 32 specifically. `build 0 40` → indices 0..39; reading `idx` and encoding `1000·a + b` of
+           its `(tuple a b)`: idx=31 → 31310 (last in the dense leaf), idx=32 → 32320 (first past the leaf,
+           in the trie), idx=33 → 33330, idx=39 → 39390 (last), idx=40 → -1 (out of bounds, List.at None).
+           Pins that a compound element survives the persistent-vector leaf→trie transition and reads back
+           intact at indices ≥ 32 on both backends.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List (Tuple Int64 Int64))))
+              (if (< i n) (build (+ i 1) n (List.push out (tuple i (* i 10)))) out))
+            (def (main (: idx Int64))
+              (let ((xs (build 0 40 (list))))
+                (match (List.at xs idx)
+                  ((Some p) (match p ((tuple a b) (+ (* 1000 a) b))))
+                  ((None _u) -1))))
+            (export main)))
+  (call   main (: 31 Int64)) (output (: 31310 Int64))
+  (call   main (: 32 Int64)) (output (: 32320 Int64))
+  (call   main (: 33 Int64)) (output (: 33330 Int64))
+  (call   main (: 39 Int64)) (output (: 39390 Int64))
+  (call   main (: 40 Int64)) (output (: -1 Int64)))
+
 ; --- Projection-chain child retains: the generalization faces beyond depth 2 -----------------------
 ; The single-level (e6e284f9) and doubly-nested (3d416e6c1) child-retain fixes each pinned their own
 ; depth over TUPLE chains. These pin the generalization: depth 3, MIXED compound kinds along the

@@ -2520,15 +2520,27 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 Ok(format!("({l} {sym} {r})"))
             }
         }
+        // RUNTIME DESCRIPTOR-GUIDED STRUCTURAL EQUALITY (`value-eq-shaped`) — the Rust twin of the wasm
+        // element-wise walk, for a LIST(-containing) compound with a FLOAT/BYTES leaf that neither native
+        // `==` (wrong NaN/-0.0) nor derived `Ord` (float is only `PartialOrd`) can compare. Bind both
+        // operands once (they may be compound/non-Copy) and recurse with `emit_value_eq_walk`, which walks a
+        // list element-wise (`.iter().zip().all()`) and compares a float leaf by canonical byte form —
+        // matching the wasm `value-eq-shaped` descriptor walk.
+        Core::ValueEqShaped { lhs, rhs, ty } => {
+            let l = emit(db, lhs, env, ctx)?;
+            let r = emit(db, rhs, env, ctx)?;
+            let cmp = emit_value_eq_walk(db, &ty, "__eq_l", "__eq_r")?;
+            Ok(format!("{{ let __eq_l = {l}; let __eq_r = {r}; {cmp} }}"))
+        }
     }
 }
 
 /// Whether `ty` is a compound whose leaves are each either native-`Eq` (via [`enums::ty_supports_eq`]) or a
 /// FLOAT — so a structural walk ([`emit_value_eq_walk`]) can compare it (float leaves by the canonical byte
-/// form, the rest by `==`). Only the shapes the walk emits qualify: a TUPLE/RECORD/NOMINAL of walkable
-/// leaves, or a bare float. A sum/list/map/fn does NOT (a runtime sum/list eq folds or declines at `lower`;
-/// admitting them here would emit an unhandled shape). Returns false when the type is ALREADY native-Eq
-/// (that path is taken before this) or carries a non-Eq-non-float leaf (a function, an unknown var).
+/// form, the rest by `==`). Only the shapes the walk emits qualify: a TUPLE/RECORD/NOMINAL/LIST of walkable
+/// leaves, or a bare float. A sum/map/fn does NOT (a runtime sum eq folds or declines at `lower`; admitting
+/// them here would emit an unhandled shape). Returns false when the type is ALREADY native-Eq (that path is
+/// taken before this) or carries a non-Eq-non-float leaf (a function, an unknown var).
 fn ty_float_walkable(db: &mut Db, ty: &Ty) -> bool {
     match ty {
         // A bare float leaf — walkable (canonical-byte compare).
@@ -2548,7 +2560,11 @@ fn ty_float_walkable(db: &mut Db, ty: &Ty) -> bool {
         Ty::Nominal { inner, .. } => ty_float_walkable(db, inner),
         // A Qty erases to its inner magnitude (unit is compile-time); walk the inner.
         Ty::Qty { inner, .. } => ty_float_walkable(db, inner),
-        // A sum, list, map, function, or unknown var — not walked by this slice.
+        // A LIST — walkable iff its element is (a `List<Float>` compares element-wise via the `.iter().zip()`
+        // walk, each float element by canonical byte form). This is what `Core::ValueEqShaped` routes here:
+        // a list spine that native `==` (`Vec: PartialEq`) would compare with the wrong NaN/-0.0 answer.
+        Ty::List(elem) => ty_float_walkable(db, elem),
+        // A sum, map, function, or unknown var — not walked by this slice.
         _ => false,
     }
 }
@@ -2611,6 +2627,20 @@ fn emit_value_eq_walk(db: &mut Db, ty: &Ty, l: &str, r: &str) -> Result<String, 
                 )?);
             }
             Ok(join_and(parts))
+        }
+        // A LIST — a `Vec<T>`, compared element-wise: equal LENGTHS and every zipped element equal under the
+        // element walk (a float element by canonical byte form). `.len()` first (a length mismatch decides
+        // immediately, and short-circuits the zip), then `.iter().zip().all()` with the element comparison
+        // built over the bound refs `__le`/`__re`. This is the rust twin of the wasm `value-eq-shaped` list
+        // spine walk — element-wise so a concat-built and a push-built `[1.0, 2.0]` compare equal (§"Two
+        // lists ... equal ... independent of how each was constructed"), and the float leaf uses the
+        // canonical byte form (NOT `Vec`'s derived `PartialEq`, which would give the wrong NaN/-0.0 answer).
+        Ty::List(elem) => {
+            let elem = (**elem).clone();
+            let elem_cmp = emit_value_eq_walk(db, &elem, "__le", "__re")?;
+            Ok(format!(
+                "({l}.len() == {r}.len() && {l}.iter().zip({r}.iter()).all(|(__le, __re)| {elem_cmp}))"
+            ))
         }
         // A NOMINAL newtype is transparent — its Rust value IS the inner, so walk the inner over the same
         // operands (no projection; the newtype adds no Rust wrapper).

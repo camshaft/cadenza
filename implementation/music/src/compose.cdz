@@ -10,15 +10,17 @@
 /// Both take a chord's already-realized note numbers (from chord.cdz `chord-notes`) so this module never
 /// re-derives harmony — it only PLACES notes in time. Everything grounds on schedule.cdz's `Note`.
 ///
-/// ⚠ Uses `pitch(n)` fresh-built from a plain Int64 note number throughout — never reuses an imported
-/// boxed `Pitch` field in place (issue 9927: cross-module imported-boxed × reuse-in-place → invalid wasm;
-/// building fresh from the Int64 sidesteps it, same as schedule.cdz's `clone-pitch`).
+/// Builds each `Pitch` from a plain Int64 note number the composer computes (chord tones, sequence steps)
+/// — there's no pre-existing boxed `Pitch` to carry here, so `pitch-of` is just the natural constructor,
+/// not a workaround. (Aside: the cross-module imported-boxed reuse-in-place miscompile that once needed
+/// such care, issue 9939, is fixed in v-inference #659.)
 
 import { Pitch } from "pitch"
 import { Note } from "schedule"
 import { note-at } from "schedule"
 
-/// Build a `Pitch` fresh from a plain note number (never reuse an imported boxed field — see 9927).
+/// Build a `Pitch` from a plain note number — the composer computes note numbers, so this is the natural
+/// constructor.
 def pitch-of(n: Int64) = Pitch.Pitch(n)
 
 /// A BLOCK CHORD: place every note of `nums` (MIDI note numbers, e.g. from `chord-notes`) at the SAME

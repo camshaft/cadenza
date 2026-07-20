@@ -815,6 +815,24 @@ pub mod exports {
                     let result0 = T::value_canonicalize(arg0 as u32, arg1 as u32);
                     _rt::as_i32(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_value_eq_shaped_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                    arg2: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::value_eq_shaped(
+                        arg0 as u32,
+                        arg1 as u32,
+                        arg2 as u32,
+                    );
+                    match result0 {
+                        true => 1,
+                        false => 0,
+                    }
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -1268,6 +1286,22 @@ pub mod exports {
                     ///    malformed descriptor declines to an identity dup of `a` (never a trap, never a leak) — total.
                     ///    APPENDED last (frozen-contract rule). See `value_canonicalize_shaped`.
                     fn value_canonicalize(a: u32, desc: u32) -> u32;
+                    /// 87 — canonical form for a KEY (borrows a; fresh owned result)
+                    /// ── Value-form structural EQUALITY (index 88) — deep STRUCTURAL equality over two RUNTIME compound heap
+                    ///    values of the same type, guided by the SAME shape descriptor `value-encode`/`value-cmp` read. The
+                    ///    DESCRIPTOR-GUIDED companion of `value-eq` (index 61): `value-eq` is the tagless `champ_eq` PHYSICAL-
+                    ///    byte walk, sound for a value that is canonical BY CONSTRUCTION (scalars, maps/sets, a compacted
+                    ///    String/Bytes) but UNSOUND for a LIST — an RRB vector is element-canonical yet NOT shape-canonical (a
+                    ///    concat-built and a push-built `[1.0, 2.0]` have different internal trees but ARE equal). This walk
+                    ///    compares element-by-element via the descriptor (shape-INDEPENDENT), so it is exact for a list AND for
+                    ///    a FLOAT/BYTES leaf a list carries (compared by canonical byte form — every NaN equal, -0.0 ≠ +0.0 —
+                    ///    which `value-cmp` DECLINES because a float has no total ORDER, only equality). Returns `true`/`false`
+                    ///    for a comparable pair; a malformed descriptor / unrepresentable shape reads as `false` (defensive
+                    ///    total — the compiler only bakes a well-formed descriptor). Ownership: an INSPECTOR of both `a` and `b`
+                    ///    (BORROWS them — the caller/escape owns the drop; identical to `value-eq`/`value-cmp`) and of `desc` (a
+                    ///    constant). Consistent with `value-cmp`: `value-eq-shaped == true` iff `value-cmp == 0` for an orderable
+                    ///    type. APPENDED last (frozen-contract rule). See `value_eq_shaped`.
+                    fn value_eq_shaped(a: u32, b: u32, desc: u32) -> bool;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1586,7 +1620,11 @@ pub mod exports {
                         (export_name = "cadenza:runtime/heap#value-canonicalize")] unsafe
                         extern "C" fn export_value_canonicalize(arg0 : i32, arg1 : i32,)
                         -> i32 { unsafe { $($path_to_types)*::
-                        _export_value_canonicalize_cabi::<$ty > (arg0, arg1) } } };
+                        _export_value_canonicalize_cabi::<$ty > (arg0, arg1) } } #[unsafe
+                        (export_name = "cadenza:runtime/heap#value-eq-shaped")] unsafe
+                        extern "C" fn export_value_eq_shaped(arg0 : i32, arg1 : i32, arg2
+                        : i32,) -> i32 { unsafe { $($path_to_types)*::
+                        _export_value_eq_shaped_cabi::<$ty > (arg0, arg1, arg2) } } };
                     };
                 }
                 #[doc(hidden)]
@@ -1795,9 +1833,9 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2189] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x8f\x10\x01A\x02\x01\
-A\x02\x01B\x8a\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2226] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xb4\x10\x01A\x02\x01\
+A\x02\x01B\x8c\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0\
 x\x04\0\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bool\x01\x02\x01@\x01\
 \x06handley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\x04\0\x09box-float\
 \x01\x04\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01@\x01\x03leny\0y\x04\
@@ -1842,10 +1880,11 @@ my\x03deny\0y\x04\0\x0brational-of\x01,\x01@\x01\x01ry\0y\x04\0\x0crational-num\
 tional-cmp\x01+\x04\0\x0fbigint-of-bytes\x01\x0e\x01@\x02\x01sy\x04descy\0y\x04\0\
 \x0bset-to-list\x01.\x01@\x02\x01my\x04descy\0y\x04\0\x0bmap-to-list\x01/\x04\0\x0e\
 str-from-bytes\x01\x0e\x01@\x03\x01ay\x01by\x04descy\0z\x04\0\x09value-cmp\x010\x01\
-@\x02\x01ay\x04descy\0y\x04\0\x12value-canonicalize\x011\x04\0\x14cadenza:runtim\
-e/heap\x05\0\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\
-\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-\
-bindgen-rust\x060.41.0";
+@\x02\x01ay\x04descy\0y\x04\0\x12value-canonicalize\x011\x01@\x03\x01ay\x01by\x04\
+descy\0\x7f\x04\0\x0fvalue-eq-shaped\x012\x04\0\x14cadenza:runtime/heap\x05\0\x04\
+\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09produ\
+cers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x06\
+0.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

@@ -4670,6 +4670,116 @@ fn compound_equality_over_a_runtime_rational_leaf_respects_normalization() {
     }
 }
 
+/// BRICK 2 — a runtime `List Float64` `=` ROUTES to `Core::ValueEqShaped` (the descriptor-guided
+/// `value-eq-shaped` element-wise walk) rather than declining: a List is NOT `champ_eq`-sound (an RRB spine
+/// is element- but not shape-canonical) AND a Float leaf has no total ORDER (so `value-cmp` declines), so
+/// neither the `ValueEq` nor the `ValueCmp{op:Eq}` arm applies — this is the gap `value-eq-shaped` closes.
+/// A recursive builder keeps the lists opaque runtime heap values (a two-literal-list `=` would fold). Two
+/// equal-element lists compare EQUAL → 1 (element-wise, so a differing build shape would still be equal);
+/// the float leaf compares by canonical byte form.
+#[test]
+fn a_runtime_list_of_floats_equality_routes_to_value_eq_shaped_and_compiles() {
+    use crate::testkit::parse;
+    // `build n x` recurses to a base `(list x x)` (an opaque runtime `List Float64`); `main` compares two
+    // such lists built from the same param. The `=` is on `List Float64` — the ValueEqShaped path.
+    let src = "(module m \
+                 (def (build (: n Int64) (: x Float64)) \
+                   (if (< n 0) (build (+ n 1) x) (list x x))) \
+                 (def (main (: x Float64)) (if (= (build 0 x) (build 0 x)) 1 0)) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "a runtime List Float64 `=` must compile via ValueEqShaped (value-eq-shaped), not decline",
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["3.5".to_string()],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "1",
+            "two equal runtime List Float64 values compare equal via the value-eq-shaped element-wise walk"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!("runtime List Float64 equality trapped: {t}"),
+    }
+}
+
+/// BRICK 2 float-leaf edge: a runtime `List Float64` holding `nan` compares EQUAL to another `[nan]`
+/// (`nan == nan` under the canonical byte form — the element-wise walk canonicalizes each float leaf, the
+/// KEY difference from `value-cmp`, which declines a float). `Float64.nan` is a runtime nan; the lists are
+/// kept opaque via the recursive builder. Confirms the value-eq-shaped walk applies the float canonical-byte
+/// rule per element (not `f64.eq`, which would say `nan ≠ nan`).
+#[test]
+fn a_runtime_list_of_floats_equality_treats_nan_as_equal_per_canonical_byte_form() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (build (: n Int64) (: x Float64)) \
+                   (if (< n 0) (build (+ n 1) x) (list x))) \
+                 (def (main) (if (= (build 0 Float64.nan) (build 0 Float64.nan)) 1 0)) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("a runtime List Float64 nan `=` must compile via ValueEqShaped");
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "1",
+            "[nan] = [nan] is TRUE via the canonical-byte float rule in the value-eq-shaped walk"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!("runtime List Float64 nan equality trapped: {t}"),
+    }
+}
+
+/// BRICK 2 not-equal face: two runtime `List Float64` values with a DIFFERING element compare `false` (0).
+/// Guards that the element-wise walk actually compares elements (a blanket `true` would pass the equal
+/// tests above). Built opaque via the recursive builder; the two lists differ in their sole element.
+#[test]
+fn a_runtime_list_of_floats_equality_distinguishes_a_differing_element() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (build (: n Int64) (: x Float64)) \
+                   (if (< n 0) (build (+ n 1) x) (list x))) \
+                 (def (main (: a Float64) (: b Float64)) (if (= (build 0 a) (build 0 b)) 1 0)) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("a runtime List Float64 `=` must compile via ValueEqShaped");
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["3.5".to_string(), "2.5".to_string()],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "0",
+            "[3.5] = [2.5] is FALSE — the value-eq-shaped walk compares elements"
+        ),
+        cdz_run::Outcome::Trap(t) => {
+            panic!("runtime List Float64 differing-element equality trapped: {t}")
+        }
+    }
+}
+
 /// RUNTIME STRUCTURAL EQUALITY leak balance: a `=` on two RUNTIME sum values (`value-eq`) leaves NO
 /// live heap cells. Both operands are OWNED temporaries — `(build 3)` allocates a cons-list each side —
 /// and `value-eq` only BORROWS them, so the emit must `drop` each after the compare (else two whole
@@ -5458,6 +5568,38 @@ fn set_to_list_enumerates_in_canonical_order() {
         rt_len.call("main", &[]),
         Val::S64(3),
         "Set.to-list length is the set's distinct-element count"
+    );
+}
+
+/// `Set.to-list` over a set of COMPOUND (tuple) elements enumerates them in canonical LEXICOGRAPHIC order —
+/// breaker's differential 10761: wasm used to FALSE-DECLINE a compound-element set ("no orderable
+/// descriptor") while rust computed the sorted order. The fix drops the scalar-only guards in `shape_of`
+/// (compiler) + `set_elements_canonical` (runtime), sorting via the descriptor-guided `value_cmp_shaped`
+/// (the SAME lexicographic order the runtime `<`/`Core::ValueCmp` walk uses). Here `{(3,1),(1,2),(2,0)}`
+/// enumerates as `(1,2),(2,0),(3,1)` — index 0's FIRST component is 1 (the min, first component decisive).
+/// `#[ignore]` — needs the runtime store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn set_to_list_over_compound_tuple_elements_enumerates_lexicographically() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[set-to-list-compound] runtime not in the store; skipping");
+        return;
+    };
+    // The canonical-first element of {(3,1),(1,2),(2,0)} is (1,2) — read its FIRST component (1), the min.
+    let src = "(module m (def (main) \
+                 (match (List.at (Set.to-list (Set.of (list (tuple 3 1) (tuple 1 2) (tuple 2 0)))) 0) \
+                   ((Some t) (. t 0)) ((None u) -1))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("Set.to-list over compound tuple elements must COMPILE (not false-decline)");
+    let mut rt = ComposedRuntime::new(&bytes, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(1),
+        "Set.to-list over tuple elements enumerates in lexicographic order — (1,2) is first, its .0 is 1"
     );
 }
 
@@ -38076,6 +38218,21 @@ mod match_engine {
             reject_code("(module m (def (main) (quote #\\a)) (export main))"),
             None,
             "an un-reifiable quote body (a char leaf) declines cleanly (no artifact, no coded rejection)"
+        );
+        // The other two un-reifiable value leaves — a SYMBOL (`#"…"`) and a BYTES (`b"…"`) literal —
+        // have no `Ast` variant either, so they take the SAME `reify` catch-all bail as a char: DECLINE
+        // (a Todo), never a coded rejection or a miscompile. Pins the full bail set (`Char/Sym/Bytes`)
+        // the quote-leaf dispatch documents, so a future `Ast` variant addition that quietly starts
+        // reifying one of them (or turns the honest decline into a hard error) trips a test.
+        assert_eq!(
+            reject_code("(module m (def (main) (quote #\"m\")) (export main))"),
+            None,
+            "an un-reifiable quote body (a symbol leaf) declines cleanly (no artifact, no coded rejection)"
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (quote b\"x\")) (export main))"),
+            None,
+            "an un-reifiable quote body (a bytes leaf) declines cleanly (no artifact, no coded rejection)"
         );
     }
 
