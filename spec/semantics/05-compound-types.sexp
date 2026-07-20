@@ -1452,6 +1452,41 @@
             (def (main) (f 2)) (export main)))
   (output (: (record (x 0) (y (tuple 0 1))) (Record (x Int64) (y (Tuple Int64 Int64))))))
 
+(case "a recursive sum constructor with a CHECKED-ARITH payload and a recursive-call sibling payload"
+  (doc    "A recursive `map` over a linked list `(type ILst (INil) (ICons Int64 ILst))` whose `ICons`
+           rebuilds with a CHECKED arithmetic payload `(+ h 1)` AND the recursive self-call `(bump t)` as
+           its sibling payload. The two payloads need SCRATCH LOCALS of DIFFERENT valtypes — `(+ h 1)` tees
+           its sum into an i64 overflow-guard slot (the `x == MIN` checked-add temp), while `(bump t)`'s
+           returned list handle is stashed in an i32 Perceus-`dup` slot. A backend that emitted both sibling
+           payloads from a FIXED scratch base made them SHARE one local index at conflicting types → the
+           i64 tee into an i32-declared slot fails wasm validation (`expected i32, found i64`), a
+           check-clean/compile-invalid MISCOMPILE. Each payload must emit its scratch ABOVE the running
+           high-water so siblings never alias a slot (the disjoint-slot discipline tuples/records/lists
+           already use). `(bump (ICons 5 (ICons 6 (INil))))` maps each element +1 then the head reads 6.
+           A FLOAT payload (no overflow guard) or a NON-recursive sibling did not trigger it — the collision
+           is specifically the integer-guard i64 temp vs the recursive-call i32 dup temp.")
+  (input  (do
+            (type ILst (INil) (ICons Int64 ILst))
+            (def (bump xs) (match xs ((INil) (INil)) ((ICons h t) (ICons (+ h 1) (bump t)))))
+            (def (main) (match (bump (ICons 5 (ICons 6 (INil)))) ((INil) 0) ((ICons h t) h)))
+            (export main)))
+  (output (: 6 Int64)))
+
+(case "a List.push of a checked-arith element behind a recursive-call list is disjoint-slotted"
+  (doc    "The `List.push` sibling of the recursive-sum-constructor scratch-slot case above: `(List.push (h
+           t) (+ v 1))` builds a list by pushing a CHECKED-ARITH element `(+ v 1)` (an i64 overflow-guard
+           scratch temp) onto the result of a RECURSIVE call `(h t)` (an i32 list handle in a `dup` slot).
+           The two operands must take DISJOINT scratch slots — a fixed base shared the i64 guard slot with
+           the i32 handle slot → invalid wasm. `(h (ICons 5 (INil)))` pushes 5+1 onto the empty tail → a
+           one-element list whose sole element reads 6. Guards the same disjoint-slot fix on the
+           `ListPush`/`ListConcat`/`ListUpdate` emit arms (they had a fixed base like the sum-payload arm).")
+  (input  (do
+            (type ILst (INil) (ICons Int64 ILst))
+            (def (h xs) (match xs ((INil) (list)) ((ICons v t) (List.push (h t) (+ v 1)))))
+            (def (main) (match (h (ICons 5 (INil))) ((list x) x) (_ 0)))
+            (export main)))
+  (output (: 6 Int64)))
+
 ; --- Runtime RECORD and LIST results (the same positional heap array as a tuple) ----------
 ; A record and a list carrying a runtime element are, at run time, the SAME positional heap
 ; array a tuple is — field names and the tuple/list/record distinction are static type
@@ -9340,6 +9375,28 @@
                 (Map.len (. (Map.take (Map.insert (Map.insert Map.empty 1 10) 2 20) k) 1))) (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 9 Int64)) (output (: 2 Int64)))
+
+(case "a map consumed by Map.take in one operand is unchanged for a later read of the same binding"
+  (doc    "The persistence companion of the Map.take cases above and the value-yielding-remove twin of the
+           Map.remove / Map.swap persistence pins: `Map.take` produces `(tuple <dropped-opt> <new-map>)` and
+           MUST leave its operand unchanged (a value must not be observably mutated through one reference
+           while read through another). `m = {1↦10, 2↦20}` is read TWICE — once consumed by `(Map.take m 1)`
+           bound to `r`, once read as the ORIGINAL `m`. Encodes `100·dropped + 10·(original m[1]) + len m2`:
+           `(. r 0)` reports the dropped `(Some 10)` → 1000; the original `(Map.lookup m 1)` STILL reports
+           `10` (the shared binding retains the key — persistence) → 100; and `(Map.len (. r 1))` = 1 (the
+           new map dropped key 1). If the take FBIP-mutated the shared CHAMP in place (a retain missing on
+           the multi-use binding), the original read would see the key gone (→ -1) and len 1. → 1101.
+           Completes the copy-on-write persistence family (Map.insert / Map.swap / Map.remove / Map.take +
+           Set.insert / Set.remove + List.push). Both backends.")
+  (input  (do
+            (def (main)
+              (let ((m (Map.insert (Map.insert Map.empty 1 10) 2 20)))
+                (let ((r (Map.take m 1)))
+                  (+ (* 100 (match (. r 0) ((Some d) d) (None -1)))
+                     (+ (* 10 (match (Map.lookup m 1) ((Some v) v) (None -1)))
+                        (Map.len (. r 1)))))))
+            (export main)))
+  (output (: 1101 Int64)))
 
 ; A map operation applies to a map that arrives through a FUNCTION PARAMETER, not only a map constructed
 ; inline in the same expression. Every OTHER heap collection already supports this — `(def (f xs) (List.len
