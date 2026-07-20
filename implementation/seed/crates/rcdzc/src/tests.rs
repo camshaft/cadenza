@@ -6150,6 +6150,59 @@ fn a_partial_ctor_in_a_runtime_tuple_completes_via_an_eta_closure_lift() {
     }
 }
 
+/// SITE-A CLOSURE-CELL LEAK PROBE (tracking, surfaced by v-memory-safety 2026-07-20): a runtime closure
+/// applied through `Core::CallClosure` — the eta-closure lift's cell — measures whether the `cell_slot`
+/// built at the application (select.rs ~10248: arr-alloc for the code slot + captures) is reclaimed after
+/// the call. This is the FACE-B shape (`a_partial_ctor_in_a_runtime_tuple…`): a partial ctor `(T.Mk 10)`
+/// held in a runtime tuple, projected and applied `((. p 0) 5)` — NOT beta-reduced away (the tuple hides it
+/// behind a recursive `if`), so it genuinely lowers to a `CallClosure` (or its devirt direct-`Call`) that
+/// materializes an env cell. The call BORROWS the env (the lifted body reads captures via `Core::Captured`
+/// arr-get; it does not consume the cell), so after the call `cell_slot` is dead and — today — never
+/// dropped. This probe PINS the observed live-object count so the leak cannot silently worsen; it documents
+/// SITE-A distinctly from the recursion-threaded `a_runtime_closure_leaks_exactly_one_cell_known_gap` (that
+/// is a Perceus-param-drop gap down a recursion; this is a single-application owned-temp cell). The FIX
+/// (when taken) drops `cell_slot` after the call when the closure operand is an owned `Core::Closure`
+/// producer (borrow-classified) — flip the expected count to the post-fix value then. `#[ignore]` — needs
+/// the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_site_a_closure_cell_leak_probe_tracks_the_owned_temp_env_cell() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[site-a-leak] debug-counters runtime not in the store; skipping probe");
+        return;
+    };
+    let src = "(module m \
+                 (type T (Mk Int64 Int64)) \
+                 (def (mk (: n Int64)) (if (< n 0) (tuple (T.Mk 0) 0) (tuple (T.Mk 10) n))) \
+                 (def (main) (let ((p (mk 1))) (match ((. p 0) 5) ((T.Mk a b) (+ a b))))) \
+                 (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    // Value is CORRECT (the eta-closure captures 10, applying 5 completes (T.Mk 10 5) → 15) — the leak, if
+    // any, is a reclamation gap, not a miscompile.
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(15),
+        "the eta-closure completes to 15"
+    );
+    // KNOWN GAP (observed 2026-07-20): 4 live cells leak after the eta-closure application — the env cell
+    // (arr-alloc: boxed code slot + captured `10`) + the partial-ctor `(T.Mk 10)` shell + its boxed payload,
+    // none reclaimed (the CallClosure env-cell owned-temp is never dropped after the borrowing call, and the
+    // matched `(T.Mk a b)` shell is the pervasive match-reclaim gap). This PINS the count so it cannot
+    // silently WORSEN (a count > 4 is a per-call allocation regression in the CallClosure path,
+    // select.rs ~10248); flip to the reduced count when the owned-temp closure-cell drop (SITE-A fix) lands.
+    assert_eq!(
+        rt.live_objects(),
+        4,
+        "SITE-A KNOWN GAP: an eta-closure applied via CallClosure leaks its owned-temp env cell (+ the \
+         partial-ctor shell/payload) = 4 cells; value is correct (15). A count > 4 is a regression. Flip \
+         to the reduced count when the owned-temp closure-cell drop after the borrowing call lands."
+    );
+}
+
 /// KNOWN LEAK (tracking probe, the PERVASIVE case): a recursive fold over a HEAP LIST leaks EVERY node —
 /// the recursion-heap-reclamation gap is NOT closure-specific and NOT O(1); it is O(N) in the data. A
 /// `match` reading `sum-payload` does not drop the matched shell, so a list threaded through a recursive
@@ -23235,6 +23288,21 @@ mod match_engine {
             "a value past every fixed width retypes to BigInt: {}",
             huge.message
         );
+        // ROUND TRIP: applying each widen (retype the annotation to the offered width) recompiles clean —
+        // the offered width is chosen precisely BECAUSE it holds the literal, so the applied form always
+        // type-checks. This is what makes the widen fix actionable: apply it and the CDZ0302 is gone.
+        for applied in [
+            "(module m (def (main) (: 999 Int16)) (export main))",
+            "(module m (def (main) (: 5000000000 Int64)) (export main))",
+            "(module m (def (main) (: 300 UInt16)) (export main))",
+            "(module m (def (main) (: 99999999999999999999999 BigInt)) (export main))",
+        ] {
+            assert_eq!(
+                reject_code(applied),
+                None,
+                "applying the widen fix must recompile clean: {applied}"
+            );
+        }
     }
 
     #[test]
@@ -23274,6 +23342,19 @@ mod match_engine {
             "a value beyond every fixed width retypes to BigInt: {}",
             huge.message
         );
+        // ROUND TRIP: applying each signed-retype recompiles clean — the offered signed width holds the
+        // negative value, so the applied form type-checks (the fix's promised repair actually lands).
+        for applied in [
+            "(module m (def (main) (: -5 Int8)) (export main))",
+            "(module m (def (main) (: -200 Int16)) (export main))",
+            "(module m (def (main) (: -99999999999999999999999 BigInt)) (export main))",
+        ] {
+            assert_eq!(
+                reject_code(applied),
+                None,
+                "applying the signed-retype fix must recompile clean: {applied}"
+            );
+        }
     }
 
     #[test]
@@ -53046,6 +53127,38 @@ mod stage1 {
     }
 
     #[test]
+    fn shape_descriptor_peels_a_quantity_element_to_its_inner() {
+        // A quantity erases to its inner scalar at runtime (the unit is compile-time-only), so the shape
+        // descriptor of a `(List (Qty Int64 meter))` must be Some — `shape_of` peels `Ty::Qty` to the inner
+        // and produces the SAME shape as `(List Int64)`. Without the peel, `shape_of` fell to `_ => None`, so
+        // a compound Map/Set KEY containing a quantity (a list-of-Qty / tuple-of-Qty key) DECLINED to compile
+        // ("list-key canonicalization: key type has no bakeable shape descriptor"). This pins the peel.
+        use crate::ty::{Ty, Unit};
+        let qty = Ty::Qty {
+            inner: Box::new(Ty::int64()),
+            unit: Unit::base("meter"),
+        };
+        let list_of_qty = Ty::List(Box::new(qty));
+        let list_of_int = Ty::List(Box::new(Ty::int64()));
+        let mut db = crate::db::Db::load(
+            crate::codec::decode(&crate::codec::encode(&parse(
+                "(module m (def (main) 0) (export main))",
+            )))
+            .unwrap(),
+        );
+        let desc_qty = crate::lower::value_cmp_shape_descriptor(&mut db, &list_of_qty)
+            .expect("a list-of-quantity key type now has a bakeable shape descriptor");
+        let desc_int = crate::lower::value_cmp_shape_descriptor(&mut db, &list_of_int)
+            .expect("a list-of-int key type has a shape descriptor");
+        // The quantity element erases to its inner Int64, so the two descriptors are BYTE-IDENTICAL — the
+        // key comparator/hasher canonicalizes a list-of-Qty exactly as a list-of-Int (the unit is erased).
+        assert_eq!(
+            desc_qty, desc_int,
+            "a (List (Qty Int64 meter)) key hashes/compares identically to a (List Int64) key — the unit erases"
+        );
+    }
+
+    #[test]
     fn a_nullary_function_call_invokes_it() {
         // `(def (g) 7)` is a NULLARY function; `(g)` — a zero-argument application — invokes it and
         // yields 7. A nullary def resolves its name to its body value (a bare `g` IS 7), so the call
@@ -59621,6 +59734,51 @@ mod stage1 {
         assert!(
             c400 < 200_000,
             "a wide arithmetic body must partition its CSE candidates in ~O(N) `core_eq` compares, not              O(N²) (the all-pairs scan needs shallow-hash bucketing — `core_hash_key`): N=400 made              {c400} within-bucket compares (linear is a few thousand; the all-pairs scan was millions)"
+        );
+    }
+
+    #[test]
+    fn a_deep_uniform_arith_chain_partitions_cse_candidates_in_bounded_time() {
+        // REGRESSION (perf): the CSE partition's hash bucketing (`core_hash_key`) must use a FULL-DEPTH
+        // memoized structural hash, NOT a shallow (one-level) one. A UNIFORM-shape body — a deep
+        // left-nested `(+ (+ … (* p 0)) (* p 1))` accumulator chain — has every node with the SAME shallow
+        // key (`Arith(Add)` over `[Arith,Arith]`, and every `(* p k)` is `Arith(Mul)` over `[Param,
+        // ConstInt]`), so a shallow hash collides ALL candidates into ONE bucket → the within-bucket
+        // `core_eq` scan degrades back to O(N²) with DEEP-recursive compares (measured: this shape compiled
+        // 21/75/486/3976ms @ N=100/200/400/800, ~8×/dbl, `core_eq` ~96% inclusive — WORSE than the balanced
+        // tree). The full-depth hash recurses to the LEAVES, so `(* p 0)`/`(* p 1)`/… and each distinct
+        // chain prefix hash DIFFERENTLY → distinct buckets → O(N) compares. Complements
+        // `a_wide_arithmetic_body_…` (balanced tree, distinct heads); this pins the uniform-shape case a
+        // shallow hash missed.
+        fn deep_chain_src(n: usize) -> String {
+            let mut e = String::from("p");
+            for i in 0..n {
+                e = format!("(+ {e} (* p {i}))");
+            }
+            format!("(module m (def (main (: p Int64)) {e}) (export main))")
+        }
+        // A small instance compiles clean.
+        let bytes =
+            crate::compile::compile_component(&crate::codec::encode(&parse(&deep_chain_src(4))));
+        assert!(
+            bytes.is_ok(),
+            "a deep uniform arith chain compiles: {bytes:?}"
+        );
+        fn compares(src: &str) -> u64 {
+            use std::sync::atomic::Ordering;
+            crate::db::CSE_PARTITION_CORE_EQ_CALLS.store(0, Ordering::Relaxed);
+            let _ = crate::compile::compile_component(&crate::codec::encode(&parse(src)));
+            crate::db::CSE_PARTITION_CORE_EQ_CALLS.load(Ordering::Relaxed)
+        }
+        // N=400: full-depth bucketing → each node its own bucket → ~0 within-bucket compares. A shallow
+        // hash (all-collide) would make ~cands²/2 = hundreds of thousands. Bound of 200_000 discriminates.
+        let c400 = compares(&deep_chain_src(400));
+        assert!(
+            c400 < 200_000,
+            "a deep UNIFORM-shape arith chain must partition its CSE candidates in ~O(N) `core_eq` \
+             compares, not O(N²) (a shallow one-level hash collides every same-shaped node into one \
+             bucket — needs the FULL-DEPTH memoized `core_hash_key`): N=400 made {c400} within-bucket \
+             compares (full-depth is ~0; a shallow/all-pairs scan was hundreds of thousands)"
         );
     }
 

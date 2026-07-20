@@ -1537,6 +1537,10 @@ pass	a nominal newtype over a Float32 quantity stored as a map value round-trips
 pass	a nominal record compared to a plain record of the same shape is a type error
 pass	a non-admitted float width NESTED in a compound annotation is rejected
 pass	a non-admitted float width in a parameter annotation is rejected
+pass	a newtype match-arm destructure reads the erased scalar back
+pass	a newtype wrapping a heap list compares by the inner heap walk
+pass	a newtype-wrapped scalar as a map key looks up through the erasure
+pass	a newtype-wrapped scalar as a set element deduplicates through the erasure
 pass	a non-admitted float width in a type-declaration payload is rejected
 pass	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 pass	a non-constructor type applied to arguments in type position is rejected

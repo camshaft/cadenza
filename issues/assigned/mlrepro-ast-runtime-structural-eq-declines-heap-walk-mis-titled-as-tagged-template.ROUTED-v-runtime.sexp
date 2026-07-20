@@ -25,3 +25,12 @@
 ;; rcdzc-core owner) — NOT just deleting the gate. Reported to corpus-bugfix.
 
 ;; TRIAGE 2026-07-16 (corpus-bugfix): evaluator-CORE gap (apply_lambda is_recursive early-decline, no depth guard on the beta path). Owned by v-metaprogramming (tagged-template seam) + rcdzc-core/v-inference (impl). Design-call territory (relax is_recursive on macro path under depth backstop). Parked; deep.
+
+; ===== PM triage (corpus-bugfix, 2026-07-20, trunk 9df1855b2) — RE-DIAGNOSED + RE-ROUTED =====
+; STALE TITLE: recursive tagged-template tags DO fold now (v-metaprogramming: 24-tagged-templates 123/146/170
+; pass). REAL bug = runtime structural = on an Ast value. VERIFIED: (= (Ast.Int n) (Ast.Int 3)) runtime n ->
+; "comparison of a compound value needs a heap walk (not yet built)" all 3 backends. ROOT: Ast admitted by
+; neither runtime-= path (ValueEq via Ast.List->Ty::List non-byte-canonical; ValueCmp via Ast.Float->non-
+; orderable) — same increment as the PARKED List<Float> =. ROUTED to v-runtime (heap-walk-eq lane); off
+; v-metaprogramming (their Ast/quote/eval surface complete). Renamed to reflect the real bug. corpus-bugfix
+; to pin an Ast-runtime-= case once v-runtime lands the descriptor-guided value-eq-shaped walk for it.

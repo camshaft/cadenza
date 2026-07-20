@@ -53,6 +53,14 @@ pub fn latest_program(events: &[crate::Event]) -> Option<String> {
 /// events the copy appends AFTER them (the caller owns that choice). Pure over the trait — testable with two
 /// `FileLog`s, no daemon. `upto` is a seq CUTOFF (exclusive): `Some(k)` branches the history "as of just
 /// before event k" (time-travel to a point), `None` mirrors the full log (a plain branch/hand-off).
+///
+/// The parent's [`crate::daemon::DAEMON_CURSOR`] records are DROPPED from the fork — they are the parent
+/// daemon's private RESUME BOOKMARK (progress meta-state keyed to the parent's seqs), NOT part of the recorded
+/// history. If they carried over, a daemon started on the fork (with no `--from`) would auto-resume at the
+/// PARENT's high-water mark ([`crate::daemon::latest_cursor`]) and SKIP re-performing the very history the fork
+/// exists to re-fold + extend — and for a cutoff fork that bookmark could even point past the fork's own tail.
+/// A fork is a FRESH timeline: it re-folds from the start. The recorded-effect trail (`prim-*`/`prim-result-*`)
+/// and all real history still carry (replay over the fork needs them) — only the resume bookmark is meta.
 pub fn fork_log(src: &impl Log, dst: &mut impl Log, upto: Option<Seq>) -> Result<usize> {
     let events = src.tail(0)?;
     let mut copied = 0usize;
@@ -61,6 +69,10 @@ pub fn fork_log(src: &impl Log, dst: &mut impl Log, upto: Option<Seq>) -> Result
             if e.seq >= cut {
                 break; // exclusive cutoff — events at/after `cut` are NOT in the forked timeline
             }
+        }
+        // Drop the parent daemon's resume bookmark — the fork is a fresh timeline that re-folds from the start.
+        if e.kind == crate::daemon::DAEMON_CURSOR {
+            continue;
         }
         dst.append(&e.kind, &e.payload)?;
         copied += 1;
@@ -196,6 +208,53 @@ mod tests {
         let _ = std::fs::remove_file(&spath);
         let _ = std::fs::remove_file(&dpath);
         let _ = std::fs::remove_file(&epath);
+    }
+
+    #[test]
+    fn fork_drops_the_parent_daemon_cursor_so_the_branch_re_folds_from_the_start() {
+        // A fork is a FRESH timeline — it must NOT inherit the parent daemon's resume bookmark (DAEMON_CURSOR),
+        // else a daemon started on the fork (no --from) would auto-resume at the parent's high-water mark and
+        // SKIP re-performing the branched history. The recorded-effect trail (prim-result-*) and real history
+        // DO carry (replay over the fork needs them) — only the resume bookmark is dropped.
+        use crate::daemon::{latest_cursor, DAEMON_CURSOR};
+        let (spath, mut src) = temp_log();
+        inject_genesis(&mut src, GENESIS).unwrap(); // seq 0
+        src.append("trigger", b"go").unwrap(); // seq 1
+        src.append("prim-result-exec", b"2").unwrap(); // seq 2 (effect trail — MUST carry)
+        src.append(DAEMON_CURSOR, b"3").unwrap(); // seq 3 (resume bookmark — MUST be dropped)
+
+        let (dpath, mut dst) = temp_log();
+        let copied = fork_log(&src, &mut dst, None).unwrap();
+        assert_eq!(
+            copied, 3,
+            "the daemon-cursor is dropped → 3 of 4 events copied"
+        );
+        let de = dst.tail(0).unwrap();
+        assert!(
+            de.iter().all(|e| e.kind != DAEMON_CURSOR),
+            "the fork carries NO daemon-cursor record"
+        );
+        assert_eq!(
+            latest_cursor(&de),
+            None,
+            "the fork has no resume bookmark → a daemon re-folds it from the start (not the parent's cursor)"
+        );
+        // The effect trail + genesis + trigger still carry (replay/re-fold over the fork needs the full history).
+        assert!(
+            de.iter().any(|e| e.kind == "prim-result-exec"),
+            "the recorded-effect trail carries into the fork (replay needs it)"
+        );
+        assert_eq!(
+            latest_program(&de).as_deref(),
+            Some(GENESIS),
+            "genesis carries"
+        );
+        assert!(
+            de.iter().any(|e| e.kind == "trigger"),
+            "the trigger history carries"
+        );
+        let _ = std::fs::remove_file(&spath);
+        let _ = std::fs::remove_file(&dpath);
     }
 
     #[test]

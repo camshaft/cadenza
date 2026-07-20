@@ -3756,6 +3756,70 @@
               (def (main) (f (list (Wrap 7)))) (export main)))
   (output (: 7 Int64)))
 
+; A newtype ERASES to its inner value but stays type-distinct — and the erasure must be transparent to
+; the COLLECTION machinery: a newtype-wrapped scalar used as a Set ELEMENT or Map KEY must hash, compare,
+; and dedup exactly as its erased inner scalar does (the CHAMP sees the erased value), and a
+; newtype-wrapped HEAP value must equality-compare by the inner heap walk. These pin the erasure at the
+; collection boundary with RUNTIME operands (nothing folds); the match-arm destructure control confirms
+; the erased scalar reads back through the pattern path.
+
+(case "a newtype-wrapped scalar as a set element deduplicates through the erasure"
+  (doc    "`(Set.of (list (Id a) (Id 5) (Id 7)))` with `Id = (Id Int64)`: the erased elements are the bare
+           scalars, so at a = 5 the first two collapse (one element {5, 7} plus nothing new → len 2) and at
+           a = 9 all three are distinct → len 3. A CHAMP that hashed the newtype wrapper differently from
+           its erased inner (or failed to see through the Nominal) would never dedup a = 5 against the
+           literal 5. Runtime `a` keeps the construction out of the fold. Expected: 2 (a=5), 3 (a=9).")
+  (input  (do
+            (type Id (Id Int64))
+            (def (main (: a Int64))
+              (Set.len (Set.of (list (Id a) (Id 5) (Id 7)))))
+            (export main)))
+  (call   main (: 5 Int64))  (output (: 2 Int64))
+  (call   main (: 9 Int64))  (output (: 3 Int64)))
+
+(case "a newtype-wrapped scalar as a map key looks up through the erasure"
+  (doc    "The Map-KEY twin: `(Map.lookup m (Id a))` over a map inserted with `(Id 5)`/`(Id 7)` keys — the
+           lookup key and stored keys compare by the ERASED scalar, so a = 5 finds 50 and a = 9 misses →
+           -1. Pins both the hit (the runtime-constructed key hashes to the stored bucket) and the miss
+           (no false positive from wrapper identity). Expected: 50 (a=5), -1 (a=9).")
+  (input  (do
+            (type Id (Id Int64))
+            (def (main (: a Int64))
+              (match (Map.lookup (Map.insert (Map.insert Map.empty (Id 5) 50) (Id 7) 70) (Id a))
+                ((Some v) v)
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 50 Int64))
+  (call   main (: 9 Int64)) (output (: -1 Int64)))
+
+(case "a newtype wrapping a heap list compares by the inner heap walk"
+  (doc    "`(= (Xs (list 1 a 3)) (Xs (list 1 2 3)))` with `Xs = (Xs (List Int64))`: the newtype erases to
+           its inner list, so `=` walks the two heap spines element-wise — a = 2 → equal (1), a = 4 →
+           unequal (0). Pins that the erasure composes with runtime compound equality (the walk starts at
+           the INNER list, not at an opaque wrapper cell). The heap companion of the scalar set/map cases
+           above; note the bare erased-SCALAR newtype `=` is a separate, still-declining face — this heap
+           form computes. Expected: 1 (a=2), 0 (a=4).")
+  (input  (do
+            (type Xs (Xs (List Int64)))
+            (def (main (: a Int64))
+              (if (= (Xs (list 1 a 3)) (Xs (list 1 2 3))) 1 0))
+            (export main)))
+  (call   main (: 2 Int64))  (output (: 1 Int64))
+  (call   main (: 4 Int64))  (output (: 0 Int64)))
+
+(case "a newtype match-arm destructure reads the erased scalar back"
+  (doc    "The pattern-path control: `(match (M a) ((M v) (* v 2)))` — construct the newtype from a runtime
+           scalar, destructure it in the single irrefutable arm, and compute on the bound payload → 42 at
+           a = 21. Confirms the erased scalar round-trips construct→match with the value intact (the
+           baseline the collection faces above build on). Expected: 42.")
+  (input  (do
+            (type M (M Int64))
+            (def (main (: a Int64))
+              (match (M a)
+                ((M v) (* v 2))))
+            (export main)))
+  (call   main (: 21 Int64)) (output (: 42 Int64)))
+
 ; The payload-value refinement above must work for a NARROW-width newtype too. A single-variant newtype over
 ; a narrow int `(type W (Wrap UInt8))` is stored on the heap as an i64 cell (`box-int`), so its raw i32
 ; payload must be WIDENED i32→i64 before being boxed as a tuple/sum/list element — exactly as a bare narrow
@@ -11373,6 +11437,30 @@
               (def (main) (f (record (a 10) (z 20))))
               (export main)))
   (output (: 1020 Int64)))
+
+; The heap-field-ownership companion of the partial-record-match case above: there the UNNAMED fields are
+; scalars (nothing to reclaim). Here a partial record pattern names only ONE field while the record's OTHER
+; fields carry HEAP values — a `(List Int64)` and a `String`. The matcher binds the named scalar and must
+; correctly DROP the unmatched heap fields of the owned scrutinee (a partial pattern that leaked, or that
+; double-freed a field it never bound, would corrupt the heap). Built from a runtime `n` so the record and
+; its heap fields are genuinely constructed (not const-folded away). `(record (id n) (tags [n,n+1]) (name
+; "x"))` matched by `(record (id k))` binds k=n and yields n*10; the tags list and name string are dropped.
+
+(case "a partial record match naming one scalar field drops the unnamed heap fields"
+  (doc    "A partial record pattern names a SUBSET of the fields; when the unnamed fields carry HEAP values
+           (a `(List Int64)` and a `String`), matching binds the one named scalar and must reclaim the
+           unmatched heap fields of the owned record — not leak them, not double-free. `probe n` builds
+           `(record (id n) (tags (list n (+ n 1))) (name \"x\"))` and matches `(record (id k))` → k*10. The
+           heap `tags`/`name` fields are never bound and must be dropped cleanly. Runtime `n` so the record
+           and its heap fields are actually constructed. Pins partial-record-match heap-field ownership.
+           Expected (n=5): 50.")
+  (input  (do
+            (def (probe (: n Int64))
+              (match (record (id n) (tags (list n (+ n 1))) (name "x"))
+                ((record (id k)) (* k 10))))
+            (def (main (: n Int64)) (probe n))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 50 Int64)))
 
 (case "a record match arm + a wildcard alternative selects by shape"
   (doc    "A record match arm composes with a following wildcard alternative: `(match r ((record (x a)) a)

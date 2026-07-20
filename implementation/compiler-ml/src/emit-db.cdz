@@ -622,6 +622,25 @@ def em-src-corpus-module-with-let-and-if() =
     | Option.None(_) => trap("module-wrapped let emits"))
 
 @test
+def em-src-user-function-module-emits() =
+  // a USER-FUNCTION module emits a valid wasm module: `main` calls a helper, and lower INLINES the call
+  // (β-reduction to a CLet), so emit sees a single self-contained expression tree — no real wasm call needed.
+  // Pins the source→emit path for functions (the emit-src tests were all bare/nullary-main before). A nullary
+  // helper `(g)` and a single-param helper `(sq x)` both emit; run-emitted runs them to 12 / 49 (W4-checked).
+  (match emit-src("(do (def (g) 7) (def (main) (+ (g) 5)) (export main))") with
+    | Option.Some(_) => (match emit-src("(do (def (sq x) (* x x)) (def (main) (sq 7)) (export main))") with
+        | Option.Some(_) => unit | Option.None(_) => trap("single-param helper module emits"))
+    | Option.None(_) => trap("nullary helper module emits"))
+
+@test
+def em-src-two-param-function-module-emits() =
+  // a TWO-param helper module also emits (the 2-arg call inlines to a nested CLet): `(add a b)` called from
+  // main → run-emitted 7. Pins that the 2-param inline path reaches emit as a valid module.
+  (match emit-src("(do (def (add a b) (+ a b)) (def (main) (add 3 4)) (export main))") with
+    | Option.Some(_) => unit
+    | Option.None(_) => trap("two-param helper module emits"))
+
+@test
 def em-src-bytes-matches-emit-src-len() =
   // emit-src-bytes is emit-src with Bytes→List(UInt8): Some when emit-src is Some, and the list length
   // equals the module's byte length (the conversion preserves every byte, in order).

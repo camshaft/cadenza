@@ -4540,8 +4540,12 @@ fn collect_cse_candidate_groups(db: &mut Db, body: StructId) -> Vec<Vec<StructId
     // change is which pairs it is asked about. Distinct hashes never merge, so class identity is stable.
     let mut classes: Vec<Vec<StructId>> = Vec::new();
     let mut by_key: crate::fxhash::FxHashMap<u64, Vec<usize>> = crate::fxhash::FxHashMap::default();
+    // Per-partition memo for the full-depth structural hash — each core node hashed once, so keying all
+    // candidates is O(total core nodes), not O(candidates · depth).
+    let mut hash_memo: crate::fxhash::FxHashMap<StructId, u64> =
+        crate::fxhash::FxHashMap::default();
     for id in cands {
-        let key = core_hash_key(db, id);
+        let key = core_hash_key(db, id, &mut hash_memo);
         let bucket = by_key.entry(key).or_default();
         let mut placed = false;
         for &ci in bucket.iter() {
@@ -14160,43 +14164,29 @@ fn m_slot(ot: IntTy) -> ValType {
 /// hold — two different values may collide — because within a bucket the exact `core_eq` still decides.
 /// So bucketing candidates by this key, then running `core_eq` only WITHIN a bucket, is behaviour-
 /// identical to the old all-pairs `core_eq` scan, but turns O(cands²) `core_eq` calls (each a
-/// subtree-cloning walk) into O(cands) key computations + `core_eq` only among genuine collisions — the
-/// fix for a wide arithmetic body (`(+ (calc0 p) (+ (calc1 p) …))`, N distinct scalar candidates) whose
-/// singleton-heavy partition was the emit path's dominant cost (`core_eq` ~88% inclusive at N=2000).
-fn core_hash_key(db: &mut Db, id: StructId) -> u64 {
+/// subtree-cloning walk) into O(cands) key computations + `core_eq` only among genuine collisions.
+///
+/// This is a FULL-DEPTH structural hash (kind + leaf values + each child's own full hash), MEMOIZED in
+/// `memo` so each node is hashed exactly ONCE — the whole pass over all candidates is O(total core
+/// nodes), NOT O(candidates · depth). A shallow (one-level) hash was insufficient: on a UNIFORM-shape
+/// body — a deep left-nested `(+ (+ … (* p 0)) (* p 1))` accumulator chain, or N distinct `(* p k)`
+/// terms — every node has the SAME shallow key (`Arith(Add)` over `[Arith,Arith]`, or `Arith(Mul)` over
+/// `[Param,ConstInt]`), so ALL candidates collided into ONE bucket and the within-bucket `core_eq`
+/// scan degraded right back to O(N²) with deep-recursive compares (measured: `deep_runtime_arith` N=400
+/// = 486ms, ~8×/dbl). Recursing to the LEAVES separates them by their differing constants/params, so a
+/// uniform chain's candidates land in distinct buckets. Contract unchanged: `core_eq(a,b) ⇒ hash(a) ==
+/// hash(b)` (equal core forms hash identically all the way down), so the exact `core_eq` still decides
+/// within a bucket — behaviour-identical, only the bucketing is finer.
+fn core_hash_key(
+    db: &mut Db,
+    id: StructId,
+    memo: &mut crate::fxhash::FxHashMap<StructId, u64>,
+) -> u64 {
     use std::hash::{Hash, Hasher};
+    if let Some(&h) = memo.get(&id) {
+        return h;
+    }
     let mut h = crate::fxhash::FxHasher::default();
-    // A one-level child descriptor: the child's kind discriminant + (for a leaf) its value, so two
-    // structurally-equal parents whose children are equal leaves/kinds hash the same, WITHOUT recursing
-    // the whole subtree (which would reintroduce the per-candidate walk cost this fix removes).
-    let child = |db: &mut Db, c: StructId, h: &mut crate::fxhash::FxHasher| {
-        match core_of(db, c) {
-            Core::ConstInt(v) => {
-                1u8.hash(h);
-                v.to_i64().hash(h);
-            }
-            Core::ConstBool(b) => {
-                2u8.hash(h);
-                b.hash(h);
-            }
-            Core::Unit => 3u8.hash(h),
-            Core::Param { binder } => {
-                4u8.hash(h);
-                binder.0.hash(h);
-            }
-            Core::LocalRef { binder } => {
-                5u8.hash(h);
-                binder.0.hash(h);
-            }
-            other => {
-                // A non-leaf child: hash only its KIND tag (a cheap `std::mem::discriminant`), never its
-                // operands — one level keeps the key O(1)-ish while still separating `(+ x y)` from
-                // `(* x y)` from `(- x y)` at the parent level.
-                6u8.hash(h);
-                std::mem::discriminant(&other).hash(h);
-            }
-        }
-    };
     match core_of(db, id) {
         Core::ConstInt(v) => {
             1u8.hash(&mut h);
@@ -14218,38 +14208,39 @@ fn core_hash_key(db: &mut Db, id: StructId) -> u64 {
         Core::Arith { op, lhs, rhs } => {
             10u8.hash(&mut h);
             op.hash(&mut h);
-            child(db, lhs, &mut h);
-            child(db, rhs, &mut h);
+            core_hash_key(db, lhs, memo).hash(&mut h);
+            core_hash_key(db, rhs, memo).hash(&mut h);
         }
         Core::Compare { op, lhs, rhs } => {
             11u8.hash(&mut h);
             op.hash(&mut h);
-            child(db, lhs, &mut h);
-            child(db, rhs, &mut h);
+            core_hash_key(db, lhs, memo).hash(&mut h);
+            core_hash_key(db, rhs, memo).hash(&mut h);
         }
         Core::Convert { op, operand } => {
             12u8.hash(&mut h);
             op.hash(&mut h);
-            child(db, operand, &mut h);
+            core_hash_key(db, operand, memo).hash(&mut h);
         }
         Core::Not { operand } => {
             13u8.hash(&mut h);
-            child(db, operand, &mut h);
+            core_hash_key(db, operand, memo).hash(&mut h);
         }
         Core::Proj { operand, index } => {
             14u8.hash(&mut h);
             index.hash(&mut h);
-            child(db, operand, &mut h);
+            core_hash_key(db, operand, memo).hash(&mut h);
         }
         // Everything else (float-compare, collection counts, indexed reads, payload reads, `if`, and any
-        // kind `core_eq` treats as UNEQUAL) hashes by its bare kind tag. That is still a SOUND pre-filter
-        // (equal values share a kind), just a coarser bucket — acceptable because these are far rarer as
-        // CSE candidates than the arith/compare/leaf forms above, so their buckets stay small.
+        // kind `core_eq` treats as UNEQUAL) hashes by its bare kind tag. Still a SOUND pre-filter (equal
+        // values share a kind); these are far rarer as CSE candidates so their buckets stay small.
         other => {
             std::mem::discriminant(&other).hash(&mut h);
         }
     }
-    h.finish()
+    let out = h.finish();
+    memo.insert(id, out);
+    out
 }
 
 fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {

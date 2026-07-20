@@ -122,6 +122,12 @@ const musicLibs = [
   "schedule.cdz", "pitch.cdz", "interval-ratio.cdz", "scale-ratio.cdz", "scale.cdz",
   "chord-ratio.cdz", "chord.cdz", "rhythm.cdz", "rhythm-ratio.cdz", "compose.cdz", "piece.cdz",
   "des-piece.cdz", "pipeline.cdz",
+  // `pattern.cdz` (Strudel/Tidal live-coding — /music R4, the page climax; v-guide authors + value-pins it).
+  // Its imports are ONLY schedule/compose/pitch — all three above — so it's self-consistent staged alone.
+  // STAGING-ONLY: not added to musicPreload.ts MUSIC_PRELOAD_NAMES yet (no showcase imports it until R4
+  // lands), and an unused staged lib is benign (the existsSync loop below + check-music-preload read their
+  // own name lists, not this array), so this add is gate-safe on its own.
+  "pattern.cdz",
 ];
 await mkdir(join(dest, "music"), { recursive: true });
 for (const lib of musicLibs) {

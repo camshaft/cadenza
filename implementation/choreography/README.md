@@ -42,10 +42,25 @@ A global protocol is a `Chor` value (`chor.cdz`). It flows through the passes, e
    through every pass on a real protocol.
 8. **`chor-consistency.cdz`** — cross-pass coverage pinning that project ↔ codegen ↔ run agree.
 9. **`chor-diag.cdz`** — actionable projectability diagnostics (name the role + the selection-message fix).
+10. **`chor-driver.cdz`** — the **pipeline as one runnable command**: `render`/`shred` (project + display each
+    actor's program), `verdict`/`report` (one-line wf+projectable+deadlock-free status, then the shred when
+    ok), and `render-all` (the per-actor bundle of complete compilable modules, one `==== <Role> ====`
+    section each — gated on wf+projectable so an un-shreddable protocol yields the verdict, not actor code).
+11. **`chor-sread.cdz`** — the **`.sexp` surface**: a minimal recursive-descent s-expr reader
+    (`read : String -> Option(Ast)`, total) so a protocol can be written as `(seq (comm Buyer Seller Title)
+    …)` instead of the constructor form, plus `roles-of` (the participating-role set) so a `.sexp` protocol
+    is self-describing.
 
-## Sidecar architecture (the intended shape)
+## The sidecar: `cdz chor`
 
-Today the library is a self-contained Cadenza package that the rust `cdz` compiles and tests. The sidecar
-program shape — a CLI/tool that reads a global-protocol source, projects it, and emits each actor's
-artifact (built via rcdzc) — layers on top of these modules; the projection/codegen/deadlock-free passes
-above are the reusable core.
+The sidecar program has shipped as a `cdz` subcommand (operator ruling, mirrors `cdz cad`/`cdz run-ml`):
+
+```
+cdz chor <protocol.cdz|.sexp> [--out <dir>] [--compile]
+```
+
+It reads a global-protocol source (either a constructor-form `.cdz` exporting `{ protocol, roles }`, or a
+bare self-describing `.sexp`), projects it via `render-all`, writes each actor to `out/<Role>.cdz`, and with
+`--compile` builds each to a self-contained `out/<Role>.wasm` — one standalone deployable artifact **per
+actor**. An un-projectable or ill-formed protocol is rejected (naming the offending role), emitting no
+actors. The `chor-driver` / `chor-sread` passes above are the reusable core the subcommand drives.
