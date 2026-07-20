@@ -423,6 +423,11 @@ jobs:
           npm run check:worker-stack
           npm run check:tuple-collection
           npm run check:cad-preload
+          #  - music-preload: the /music route compiles each bare showcase against the PRELOADED music libs
+          #    (compile_with_preloaded) + runs the piece → asserts a non-empty BALANCED MIDI event stream
+          #    (the no-stuck-keys correctness payoff). Same rationale as cad-preload (self-contained examples
+          #    + the browser page don't cover the preloaded-lib run path in CI).
+          npm run check:music-preload
           npm run build
           # First-paint bundle guard (reads the fresh dist/ from the build above): the entry chunk stays
           # under the size ceiling AND heavy deps (KaTeX) stay lazy (out of the entry). Catches a static

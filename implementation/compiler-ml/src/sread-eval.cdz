@@ -256,10 +256,10 @@ def se-trailing-junk-declines() =
   // `123abc` is malformed (rcdzc rejects it) — must DECLINE, not read `123` and ignore the trailing letters.
   (match run-src("123abc") with | Option.None(_) => unit | Option.Some(_) => trap("123abc declines, not value 123"))
 
-@test
-def se-plain-int-still-runs() =
-  // regression guard: a CLEAN int literal still runs (the boundary guard only rejects non-clean endings).
-  (match run-src("42") with | Option.Some(v) => (if v == 42 then unit else trap("42")) | Option.None(_) => trap("clean int still runs"))
+// NOTE: the "a CLEAN int literal still runs" boundary-guard regression (the guard rejects only non-clean
+// endings) is covered by `se-int-literal` above (same `run-src("42")` → 42) — the former `se-plain-int-still-
+// runs` was a byte-identical duplicate compile, removed to cut the suite's run-src compile cost (each run-src
+// @test is a full-pipeline wasm build; the suite time was head-of-line-blocking the fleet gate).
 
 @test
 def se-typed-int-flag() =

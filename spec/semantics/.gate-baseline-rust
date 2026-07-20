@@ -2098,6 +2098,7 @@ pass	a set is constructed from a list of its elements
 pass	a set nested in a tuple compares equal with a runtime element, order-independent
 pass	a set of lists deduplicates by the whole list, distinguishing element order
 pass	a set of negative zero and positive zero keeps both (distinct sign bits)
+pass	a set of records deduplicates by the whole record and its membership is field-order-INDEPENDENT
 pass	a set of tuples deduplicates by the whole tuple and its membership is component-order-sensitive
 pass	a set of two NaN floats dedups to one (canonical quiet-NaN)
 pass	a set of two identical positive floats dedups to one
