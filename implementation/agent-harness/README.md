@@ -60,13 +60,53 @@ aws-sdk tree never burdens the seed build/gate; a dedicated CI job builds+tests 
 checks.yml`, the `cdz-agent` job). The loop package's `@test` suite runs in the `cadenza @test suites`
 CI job + `cargo xtask check`.
 
-## Status (2026-07-16)
+## The minimal-kernel daemon (`cdz-kernel` + `cdz-agent` CLI)
 
-Charter pieces 1–3 SHIPPED + hardened: Bedrock-direct (embedder), the loop in Cadenza (loop.cdz + the
+Alongside the embedder, the vertical shipped the operator's **minimal-kernel** re-charter
+(`implementation/design/DESIGN-agent-runtime-minimal-kernel.md`): a log-native agent runtime where the
+Rust host understands NO events — a self-modifiable **Cadenza `interpret` program in the log** decides
+everything, and the kernel just compiles+runs it (`cdz-kernel`, `src/kernel.rs`) over an append-only event
+log (`Log` trait; `FileLog` local backend, DynamoDB L1d marshalling behind `--features aws`).
+
+The `cdz-agent` CLI (`implementation/seed/crates/cdz-kernel/src/bin/cdz-agent.rs`) is the thin operator
+surface — everything is data in the log:
+- **bootstrap / inject-genesis** — create the log; seed the genesis interpret program (a later inject
+  self-supersedes it, so even the first program is self-modifiable).
+- **emit / run / perform / hosted** — append a trigger; drive one daemon tick that COUNTS (`run`),
+  EXECUTES the scheduled ops (`perform`), or executes them via REAL host primitives recording each to the
+  log (`hosted`, the K1c→host rung). `hosted --policies <cedar>` Cedar-gates each primitive.
+- **emit-policy / authz-grant / authz-revoke / authz-requests** — the capability model: Cedar policy docs
+  in the log attenuate each invocation (deny-by-default); operator grants (optionally wall-clock-expiring)
+  widen within what the operator writes; a denied op auto-files an `authz-request` (the can't-brick hatch).
+- **schedule-create / schedule-cancel / schedule-list** — one-shot + periodic timers in the log (COALESCE
+  a backlog into one fire); the live daemon fires due schedules each round.
+- **replay** — RE-FOLD a recorded turn from the `prim-result-*` trail with NO live effect (the §2.3
+  recorded-effect determinism proof: same cognition, world non-determinism frozen).
+- **fork** — branch a recorded history into a new timeline (`--upto <seq>` for a time-travel cutoff); the
+  branch re-folds + extends independently (drops the parent's resume bookmark, keeps the effect trail).
+- **cursor** — show the daemon's resume high-water mark + pending-trigger backlog (read-only).
+- **start** — the LIVE daemon (poll → fire schedules → perform each new trigger → sleep). CRASH-RECOVERY:
+  it durably records a `daemon-cursor` high-water mark, so a restart AUTO-RESUMES where it left off
+  (`--from <seq>` overrides) and re-performs nothing — at-most-once.
+
+Record → replay → fork → crash-recovery are the four faces of the log-as-source-of-truth model, all pure
+folds over the event log. Gated in-tree: `cargo test -p cdz-kernel` (lib + the `cdz-agent` CLI integration
+suite), plus `fmt`/`clippy` under both the default and `--features live-exec` builds.
+
+## Status (2026-07-20)
+
+**Embedder (charter pieces 1–3) SHIPPED + hardened:** Bedrock-direct, the loop in Cadenza (loop.cdz + the
 driver binary reading a real inbox and returning the model's actual completion), Cedar permissions +
-on-behalf-of (authz gate + delegation with expiry/forbid coverage). Piece 4 — self-modification /
-evolvable toolchains (Inc-4) — is held pending the operator (add `rcdzc` as a dep for runtime
-compile-a-new-tool; Cedar-gate + optionally v-verification-prove each self-mod).
+on-behalf-of (authz gate + delegation with expiry/forbid coverage).
+
+**Minimal-kernel daemon COMPLETE + cross-feature-gated:** the 7-verb `cdz-agent` surface above +
+record/replay/fork/crash-recovery, with every invariant witnessed by the gate — including the fork×replay
+composition (a forked timeline is replay-faithful) and the operator-can't-forge-the-`daemon-cursor` guard.
+
+**Held pending the operator:** piece 4 — self-modification / evolvable toolchains (Inc-4: add `rcdzc` as a
+dep for runtime compile-a-new-tool; Cedar-gate + optionally v-verification-prove each self-mod) — and the
+L1d DynamoDB CLIENT wiring (the many-writer ordering authority: conditional `PutItem`; needs a live table,
+so the marshalling is tested in-tree but the network calls are `--features aws`, exercised manually).
 
 Like the compiler-ml port, this is a **stress test of the language**: gaps found here are reported
 (REPORT/FIX), not worked around. This vertical's probes drove several `v-effects` + `v-peer-linking`

@@ -58926,6 +58926,56 @@ mod stage1 {
     }
 
     #[test]
+    fn a_closed_literal_closure_forwarded_through_const_wrapper_hops_is_not_a_false_reject() {
+        // The const-wrapper-chain false-reject (arena parent-THEFT): a CLOSED literal closure
+        // `fn(a,x)=>a+x` forwarded through several const-param call hops (`sum` → `fold` → `drive`'s
+        // `const g`) used to be WRONGLY rejected CDZ0201 — a β-substitution splices the source lambda into
+        // a spec copy and STEALS its single arena parent pointer, so `arg_captures_runtime_binding`'s
+        // `is_within` walk saw the lambda's OWN params `a`/`x` as "outside" it → a false capture. The fix
+        // cross-checks with a theft-immune lexical free-name walk (`const_arg_is_lexically_closed`): a
+        // genuinely closed forwarded closure is accepted, while a DIVERGING derived-closure re-pass is
+        // still declined by the fingerprint-extension backstop (the twin test above). Pin BOTH halves the
+        // tracker asked for: the CHECK path is clean (no false CDZ0201) AND compile+run computes the right
+        // value. `sum(from-list([1,2,3]))` folds with `+` → 6. (S-expr matches the ML lowering exactly:
+        // curried `(-> Int64 (-> Int64 Int64))` arrow, `(. Option None)` patterns, bare closure params.)
+        let src = "(module m \
+               (type Iter (Mk (List Int64) (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) \
+               (def (from-list xs) ((. Iter Mk) xs (fn (s) (match s ((list) ((. Option None) unit)) ((list h .. t) ((. Option Some) (tuple h t))))))) \
+               (def (drive (const (: step (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) (: s (List Int64)) (: acc Int64) (const (: g (-> Int64 (-> Int64 Int64))))) \
+                 (match (step s) (((. Option None) _) acc) (((. Option Some) p) (match p ((tuple x s2) (drive step s2 (g acc x) g)))))) \
+               (def (fold it acc (: g (-> Int64 (-> Int64 Int64)))) (match it (((. Iter Mk) s step) (drive step s acc g)))) \
+               (def (sum it) (fold it 0 (fn (a x) (+ a x)))) \
+               (def (total) (sum (from-list (list 1 2 3)))) \
+               (def (main) (total)) (export main))";
+        // CHECK path: no false CDZ0201 (the standalone-lowering path the false-reject fired on).
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.severity == crate::abi::Severity::Error
+                    && d.code.as_deref() == Some("CDZ0201")),
+            "a closed literal closure forwarded through const-wrapper hops must NOT be a false CDZ0201 reject, got: {:?}",
+            out.diagnostics
+        );
+        // COMPILE + RUN: the forwarded closure specializes correctly and the fold computes 1+2+3 = 6.
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("the const-wrapper-chain program compiles");
+        if let Some(v) = run_linked(&bytes, "main") {
+            assert_eq!(
+                v, "6",
+                "sum([1,2,3]) with a forwarded const `+` closure folds to 6"
+            );
+        }
+    }
+
+    #[test]
     fn two_nested_recursive_const_closure_drivers_emit_valid_wasm() {
         // Regression for the nested-driver INVALID-WASM bug: a `filter` adapter whose recursive
         // `filter-step` takes a `const` step closure, consumed by a recursive `drive` fold that ALSO takes
@@ -78081,6 +78131,22 @@ mod cross_component_oracle {
             bind_err.fix.as_ref().map(|f| f.replacement.as_str()),
             Some("Logger"),
             "the bind typo carries a rename fix"
+        );
+        // ROUND TRIP: applying the rename (`Loger` → the real effect `Logger`) clears the CDZ0201 — the
+        // `bind` now names a declared effect. (Asserted at the diagnostics level, not full compile: an
+        // unconsumed `bind` may draw other advisories, but the bind-name-not-an-effect fault the fix
+        // targets is gone.)
+        let applied = "(do (effect Logger (op log (-> Int64 Unit))) (bind Logger \"cadenza:x/y\") \
+                       (def (main) 0) (export main))";
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(applied)))
+                .iter()
+                .any(|d| d.message.contains("names a declared EFFECT")),
+            "applying the bind rename clears the not-an-effect fault: {:?}",
+            crate::diagnostics(&mut crate::db::Db::load(parse(applied)))
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
         // (g) a `(bind E "…")` whose INTERFACE STRING is not a valid component interface name is CDZ0201.
         // The string is emitted verbatim as a peer-instance import extern name; a non-conforming one

@@ -509,6 +509,28 @@
             ((Err _) false)))
   (output (: true Bool)))
 
+; The metacircular face of the same optional-runtime-eval boundary: `eval` executes only a COMPILE-TIME-
+; VISIBLE `Ast` construction (a `(quote …)` / literal `Ast.*`) — NOT the result of ANOTHER `eval`. Nesting
+; `eval` around an inner `eval` gives the outer one a non-constant argument (an `eval` APPLICATION), so it
+; refuses (CDZ0101) rather than running a dynamically-produced AST. This is the nested-eval ENTRY PATH to
+; the "no runtime AST interpreter" line the Ast-value-splice case above pins by a different entry — both
+; land on the same spec sentence (metaprogramming.md: "the compiler … does not execute dynamically-
+; constructed AST"). A coded reject, so a future change that made the outer eval silently reconstruct the
+; inner eval's runtime result (a miscompile — running un-analyzed AST) would flip this to a value and trip.
+(case "eval does not execute the result of a nested eval — no runtime AST interpreter"
+  (doc    "`(eval (eval (quote (quote (+ 2 3)))))` is rejected CDZ0101. The OUTER `eval`'s argument is the
+           inner `(eval (quote (quote (+ 2 3))))` — an `eval` APPLICATION, i.e. a runtime / non-constant
+           construction, not a `(quote …)` or literal `Ast.*` the reconstructor sees through. `eval`
+           executes only a compile-time-visible AST construction (it reconstructs the source that AST
+           denotes and compiles it); it does NOT run the dynamically-produced result of another `eval`
+           (metaprogramming.md marks runtime eval OPTIONAL — the seed folds at compile time, it ships no
+           runtime AST interpreter). The metacircular companion of the Ast-value-splice boundary above:
+           same spec line, different entry path (nested eval vs a spliced Ast operand). A CODED reject, so
+           a future change that silently executed the inner eval's runtime result — running un-analyzed
+           AST — would flip this to a value and trip the gate.")
+  (input  (eval (eval (quote (quote (+ 2 3))))))
+  (error  CDZ0101))
+
 (case "an active unquote of a let-bound boolean lifts to Ast.Bool by inferred type"
   (doc    "A RUNTIME operand (a let-bound name) lifts by its inferred type: `b : Bool` → `Ast.Bool`.
            `(let ((b true)) `(f ,b))` builds `(Ast.List (list (Ast.Name \"f\") (Ast.Bool true)))`. Pins the
@@ -2352,3 +2374,23 @@
   (input  (= (quasiquote (+ (unquote (quote (* 2 3))) 1))
              (quote (+ (* 2 3) 1))))
   (output (: true Bool)))
+
+(case "a RUNTIME Ast structural equality compares by value (Ast.Int scalar leaf and Ast.List compound)"
+  (doc    "The case above compares two COMPILE-TIME quotes (const-folds). This pins the RUNTIME path: an
+           `Ast` value built from a boundary `Int64` parameter `n` (no fold), compared with `=`. `Ast` is a
+           user sum whose leaves span a scalar payload (`Ast.Int n`) AND a compound payload (`Ast.List [Ast.Int
+           n]`), so the runtime `=` must walk the sum structurally — element-wise, not the physical byte walk
+           (an `Ast.List` payload is a `List`, element- but not shape-canonical; an `Ast.Float` leaf is
+           non-orderable). Over `n`: `(= (Ast.Int n) (Ast.Int 3))` AND `(= (Ast.List [Ast.Int n]) (Ast.List
+           [Ast.Int 3]))`, encoded `10·intEq + listEq`. n=3 → both equal → 11; n=5 → both unequal → 0. wasm
+           computes this via the descriptor-guided value-eq-shaped walk; the RUST backend does not yet render
+           runtime structural `=` over this compound (a coverage `todo`, not a miscompile — it declines
+           cleanly). Regression witness that a runtime Ast `=` (the shape a self-hosted pass comparing syntax
+           trees relies on) computes on wasm.")
+  (input  (do
+            (def (main (: n Int64))
+              (+ (* 10 (if (= (Ast.Int n) (Ast.Int 3)) 1 0))
+                 (if (= (Ast.List (list (Ast.Int n))) (Ast.List (list (Ast.Int 3)))) 1 0)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 11 Int64))
+  (call   main (: 5 Int64)) (output (: 0 Int64)))

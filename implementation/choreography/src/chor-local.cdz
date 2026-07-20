@@ -190,4 +190,33 @@ def local-eq-reflexive-on-choice() =
   if local-eq(project(yes-no(), "Buyer"), project(yes-no(), "Buyer")) then unit
   else trap("local-eq is reflexive")
 
+/// A choice where the TOLD role does DIVERGENT multi-step work per branch: told Ship → recv Ship then send
+/// Tracking back; told Cancel → recv Cancel then send Refund back. Both branches inform Seller first, so
+/// projectable — but each arm's continuation is a distinct 2-step local type (recv ; send), unlike yes-no's
+/// single-recv arms.
+def divergent-told() =
+  Chor.Choice("Buyer", [
+    Chor.Branch("Ship", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ship"), Chor.Comm("Seller", "Buyer", "Tracking"))),
+    Chor.Branch("Cancel", Chor.Seq(Chor.Comm("Buyer", "Seller", "Cancel"), Chor.Comm("Seller", "Buyer", "Refund")))])
+
+@test
+def project-told-role-keeps-divergent-branch-continuations() =
+  // GOLDEN: the told role's external choice must preserve each branch's DISTINCT multi-step continuation
+  // (recv-selection THEN the branch-specific send back) — not collapse or merge them. Deeper than yes-no's
+  // single-recv arms; a projection change that dropped or unified branch tails would flip this.
+  let expect = Local.LExtC("Buyer", [
+    Local.LBranch("Ship", Local.LRecv("Buyer", "Ship", Local.LSend("Buyer", "Tracking", Local.LEnd))),
+    Local.LBranch("Cancel", Local.LRecv("Buyer", "Cancel", Local.LSend("Buyer", "Refund", Local.LEnd)))]) in
+  if local-eq(project(divergent-told(), "Seller"), expect) then unit
+  else trap("the told role's external choice keeps each branch's distinct recv-then-send continuation")
+
+@test
+def project-chooser-keeps-divergent-branch-continuations() =
+  // The chooser (Buyer) side: internal choice, each arm sends its selection THEN receives the branch reply.
+  let expect = Local.LIntC([
+    Local.LBranch("Ship", Local.LSend("Seller", "Ship", Local.LRecv("Seller", "Tracking", Local.LEnd))),
+    Local.LBranch("Cancel", Local.LSend("Seller", "Cancel", Local.LRecv("Seller", "Refund", Local.LEnd)))]) in
+  if local-eq(project(divergent-told(), "Buyer"), expect) then unit
+  else trap("the chooser's internal choice keeps each branch's distinct send-then-recv continuation")
+
 export { Local.*, project, local-eq }

@@ -184,6 +184,8 @@ pass	Set.to-list places a NaN element after the positives but before the negativ
 pass	Set.to-list sorts a PREFIX string before its extension (length tiebreak on equal prefixes)
 pass	Set.to-list sorts runtime ROPE string elements smallest-first by content byte order
 pass	String.concat with an empty operand is the identity on a RUNTIME string (the emit path, not the fold)
+pass	String.at addresses scalars across the seam of a runtime multibyte rope
+pass	String.at reads a multibyte scalar whole at its position in a runtime two-chunk rope
 pass	String.from-bytes accepts a two-byte sequence split across a concat seam
 pass	String.from-bytes decodes a RUNTIME byte sequence built by a recursive appender
 pass	String.from-bytes decodes a multibyte RUNTIME Bytes ROPE, flattening before validation
@@ -426,6 +428,7 @@ pass	a RECORD with a nested TUPLE field crosses the direct-call boundary
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
 pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
+pass	a RUNTIME Ast structural equality compares by value (Ast.Int scalar leaf and Ast.List compound)
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
 pass	a RUNTIME list of floats compares equal element-wise (the value-eq-shaped walk)
 pass	a RUNTIME list of floats with a NaN element compares equal (value-eq-shaped canonical byte form)
@@ -3214,6 +3217,7 @@ pass	equality over a Rational carried in a SUM payload respects normalization
 pass	equality over a compound mixing a float and a Bytes leaf walks both
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	equality over a runtime float in a SUM payload compares by the float leaf
+pass	eval does not execute the result of a nested eval — no runtime AST interpreter
 pass	eval does not forge a private constructor NESTED in a compound
 pass	eval does not see through a splice whose operand is itself an Ast value
 pass	eval is optional for macros and interactive use

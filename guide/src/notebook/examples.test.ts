@@ -122,3 +122,46 @@ for (const ex of EXAMPLES) {
     });
   });
 }
+
+// ── Zero-prose-em-dash tone (operator's guide-wide directive) ──────────────────────────────────────────
+// The guide's tone overhaul rewrote every rendered-PROSE em-dash into a flowing subordinated clause
+// ("X — Y" → "X, since Y" / "X, so Y" / "X: Y") and gates it fleet-wide: chapters + chapter blurbs +
+// the /music·/cad showcase metadata + the site shell are all scanned by src/content/proseEmDash.test.ts.
+// The /notebook STARTER EXAMPLES are user-facing prose too (the first notebook content a reader sees), but
+// they live in this module's markdown strings and were NEVER in that scan — an unguarded gap that left the
+// notebook prose inconsistent with the swept guide. Pin it here, in the notebook's own suite: scan each
+// example's PROSE CELLS (parseDocument already separates prose from the ~~~cadenza code fences, so an
+// em-dash legitimately inside a code cell is not flagged — only reader-facing prose is). An EN-dash (–,
+// U+2013, e.g. the quadratic's "x = −3 to 3" uses a MINUS U+2212, and numeric ranges use U+2013) is
+// correct typography and NOT flagged; only the em-dash (—, U+2014) is the tone target.
+const EM_DASH = "—";
+for (const ex of EXAMPLES) {
+  test(`example "${ex.slug}" prose is em-dash-free (guide-wide zero-prose-em-dash tone)`, () => {
+    const violations: string[] = [];
+    for (const c of parseDocument(ex.markdown)) {
+      if (c.kind !== "prose") continue; // code cells may legitimately contain — ; only prose is the tone target
+      for (const line of c.markdown.split("\n")) {
+        if (line.includes(EM_DASH)) violations.push(`…${line.trim().slice(0, 80)}…`);
+      }
+    }
+    assert.equal(
+      violations.length,
+      0,
+      `prose em-dash(es) in the ${ex.slug} example — rewrite as a flowing clause (", since …" / ", so …" / ` +
+        `": …"), matching the guide-wide tone (src/content/proseEmDash.test.ts):\n  ${violations.join("\n  ")}`,
+    );
+  });
+}
+
+test("the notebook-prose em-dash scan is not vacuous (a prose em-dash IS caught; a code-cell — is not)", () => {
+  // Guard against a broken scan silently passing: a prose em-dash must be flagged, and an em-dash inside a
+  // ~~~cadenza code cell must NOT be (parseDocument splits them, so only prose cells are scanned).
+  const withProseEmDash = "A clause — and more.";
+  const proseHit = parseDocument(withProseEmDash).some((c) => c.kind === "prose" && c.markdown.includes(EM_DASH));
+  assert.ok(proseHit, "a prose em-dash must be visible to the scan (else the gate is vacuous)");
+  const codeEmDash = "~~~cadenza\n(def (main) 1) ; a — in code\n~~~";
+  const codeCellHasIt = parseDocument(codeEmDash).some((c) => c.kind === "code" && c.source.includes(EM_DASH));
+  const proseCellHasIt = parseDocument(codeEmDash).some((c) => c.kind === "prose" && c.markdown.includes(EM_DASH));
+  assert.ok(codeCellHasIt, "the — should live in the code cell");
+  assert.ok(!proseCellHasIt, "an em-dash inside a code cell must NOT be flagged as prose");
+});

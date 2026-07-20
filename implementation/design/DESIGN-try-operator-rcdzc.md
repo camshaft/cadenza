@@ -240,6 +240,22 @@ checked only on the β-reduced inlined copy, whose parentless boundary-walk hit 
 inconclusive tolerance — and is enforced by descending the original parented applied-lambda body; see the
 `try-op-in-applied-anon-lambda` fix.)
 
+*Accepted limitation — a `?`-bodied lambda passed as a HIGHER-ORDER ARGUMENT.* The lambda-result-typing rule
+above is bottom-up and identical to a `def`: a bare `(fn (x) (try (Some x)))` types its result as the
+UNWRAPPED payload (`(-> Int64 Int64)`), NOT the fallible type — because auto-wrapping the result to `Option`
+would be exactly the §5.1 fork-B magic this design rejects, and would diverge a lambda from its `def` twin
+(whose bare-`?` body is `CDZ0230`/`CDZ0203`, not wrapped). A useful consequence: passed to a HOF expecting a
+FALLIBLE result (`(-> Int64 (Option Int64))`), such a bare-`?` lambda is a clear **CDZ0203** arrow-result
+mismatch, and the blessed idiom — RE-WRAP the tail (`(fn (x) (let ((y (try (Some x)))) (Some y)))`) — types
+`(-> Int64 (Option Int64))` and works. The one un-caught corner: a bare-`?` lambda passed to a HOF expecting
+a NON-fallible result (`(-> Int64 Int64)`) *type-matches* that slot and compiles silently (its `?` unwraps),
+where the named-helper twin would be `CDZ0230`. This is a knowingly-**accepted low-severity limitation** (a
+missing *rejection* on an uncommon shape, never a wrong-value miscompile): forcing `CDZ0230` there needs a
+use-site-arrow boundary read whose false-positive hazard on generic/uninstantiated HOF-arg lambdas outweighs
+rejecting a shape the author gets a correct `CDZ0203` for the moment the slot is given a fallible type (the
+useful case). Ruled by v-try-operator 2026-07-20; the immediately-applied fix (`db0e6a723`) is the right
+scope, deliberately not widened to HOF-arg.
+
 **v2 — an explicit `try { }` block.** `try { body }` is a boundary whose `T_B` is the block's own inferred /
 checked `Result`/`Option` type, and whose *value* (when no `?` fires) is `body`. It lets a `?` be caught
 *mid-function* and the result inspected without exiting the function:

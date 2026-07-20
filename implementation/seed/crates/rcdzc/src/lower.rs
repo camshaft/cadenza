@@ -11550,6 +11550,82 @@ fn arg_captures_runtime_binding(db: &mut Db, arg: StructId) -> bool {
     go(db, arg, arg)
 }
 
+/// Whether a FUNCTION-TYPED `const` argument is LEXICALLY CLOSED (references no enclosing runtime binding),
+/// judged by NAME rather than the arena parent chain — so it is immune to the β-substitution parent-THEFT
+/// that makes `arg_captures_runtime_binding` FALSE-flag a genuinely closed lambda. The const-wrapper-chain
+/// false-reject (`sum→fold→drive` forwarding `fn(a,x)=>a+x`) arises when a spliced source lambda's single
+/// mutable parent pointer is stolen, so its OWN-param references look "outside" it to `is_within`. This
+/// walk descends TOP-DOWN (theft corrupts a node's PARENT pointer, never its child structure) tracking
+/// names BOUND at each point by SPELLING (the lambda's own params + nested `fn` binders). A bare name that
+/// is neither bound NOR a resolvable global (a top-level def) — one resolving to a runtime Param/local-ref,
+/// or to Poison (an orphaned free var in a β-copy) — is a genuine capture → NOT closed. This only RESCUES
+/// an arg the primary `arg_captures_runtime_binding` already flagged; a self-recursive DIVERGING re-pass
+/// (the derived-closure twin, closed post-substitution but whose arg fingerprint strictly EXTENDS the
+/// prior spec's each depth) is caught separately by the fingerprint-extension backstop at the const-arg
+/// gate, so this needn't prove termination itself.
+fn const_arg_is_lexically_closed(db: &mut Db, a: crate::ast::StructId) -> bool {
+    if !matches!(crate::infer::type_of(db, a), crate::ty::Ty::Fn(_, _)) {
+        return false;
+    }
+    !body_captures_free_runtime_name(db, a, &mut Vec::new())
+}
+
+/// The lexical free-name walk behind `const_arg_is_lexically_closed`. `bound` is the stack of names bound
+/// by scopes enclosing `node` within the candidate lambda (its own params, then nested `fn` binders).
+/// Returns true if some bare name is neither bound nor a resolvable global — a genuine enclosing capture.
+/// Structural top-down descent only; never reads a parent pointer (`is_within`), so it is theft-immune.
+fn body_captures_free_runtime_name(
+    db: &mut Db,
+    node: crate::ast::StructId,
+    bound: &mut Vec<String>,
+) -> bool {
+    if let Some(tail) = db.ast.as_form(node, "fn").map(<[_]>::to_vec)
+        && let (Some(&params_occ), Some(&body)) = (tail.first(), tail.get(1))
+        && let crate::ast::Struct::List(params) = db.ast.get(params_occ)
+    {
+        let param_names: Vec<String> = params
+            .clone()
+            .iter()
+            .filter_map(|&p| {
+                db.ast
+                    .as_name(crate::eval::param_name_occ(db, p))
+                    .map(str::to_string)
+            })
+            .collect();
+        let added = param_names.len();
+        bound.extend(param_names);
+        let captured = body_captures_free_runtime_name(db, body, bound);
+        bound.truncate(bound.len() - added);
+        return captured;
+    }
+    if let Some(name) = db.ast.as_name(node).map(str::to_string)
+        && !bound.contains(&name)
+    {
+        let captures = match resolved_of(db, node) {
+            Resolved::Param { .. } => true,
+            // A Ref to a top-level def body is a GLOBAL (re-resolves in any copy); a Ref to a param/local
+            // binder is a capture.
+            Resolved::Ref { value } => {
+                db.ast.as_name(value).is_some() && db.def_index_by_body(value).is_none()
+            }
+            // An orphaned free var whose binding a β-copy lost — treat as a capture. A global never
+            // resolves to Poison (it re-resolves by name).
+            Resolved::Poison(_) => true,
+            _ => false, // a prelude record / prim / literal / type — compile-time-stable globals
+        };
+        if captures {
+            return true;
+        }
+    }
+    if let crate::ast::Struct::List(kids) = db.ast.get(node) {
+        return kids
+            .clone()
+            .iter()
+            .any(|&k| body_captures_free_runtime_name(db, k, bound));
+    }
+    false
+}
+
 /// A COMPACT source-like rendering of an arena subtree, for the `Instantiations` query's description of
 /// a `const`-inlined argument (a dictionary / constant) — so a report shows the concrete value an
 /// ad-hoc-polymorphic call baked in, not an opaque fingerprint. A best-effort human view, NOT a
@@ -11672,7 +11748,15 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
             // A `const` parameter — its argument MUST be a closed compile-time value (capturing no runtime
             // binding, from THIS def or an enclosing one). If it captures a runtime param, the contract is
             // violated → decline (the gate raises the coded error). Otherwise inline the arg's value node.
-            if arg_captures_runtime_binding(db, a) {
+            if arg_captures_runtime_binding(db, a) && !const_arg_is_lexically_closed(db, a) {
+                // The primary AST parent-chain walk flagged a capture. But its `is_within` is corrupted by
+                // β-substitution parent-THEFT (a spliced source lambda's own params look "outside" it), so
+                // cross-check with the theft-immune lexical free-name walk: only truly reject when the arg
+                // is NOT lexically closed. This rescues the const-wrapper-chain false-reject
+                // (`fn(a,x)=>a+x` forwarded through `sum→fold→drive`). A lexically-closed arg that
+                // nonetheless DIVERGES on a self-recursive re-pass (the derived-closure twin
+                // `fn(x)=>(step x)+1`, closed post-substitution but whose fingerprint strictly extends the
+                // prior spec's each depth) is caught by the fingerprint-extension backstop below.
                 return None; // the const arg depends on runtime data — not compile-time-known
             }
             // ⚠ MISCOMPILE GUARD: a `const` COLLECTION param (List/Map/Set) consumed by a SELF-RECURSIVE
@@ -11777,6 +11861,28 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
                     fp.push(':');
                     subtree_fingerprint(db, cap, &mut fp);
                 }
+            }
+            // TERMINATION BACKSTOP (decline-don't-hang): a self-recursive def re-passing a closure DERIVED
+            // from its own const param (the twin `fn(x)=>(step x)+1`) nests the prior depth's closure, so
+            // its fingerprint STRICTLY EXTENDS the immediately-preceding spec's for THIS def (contains it +
+            // longer): 22→46→70→… unbounded → a non-terminating spec unroll that HANGS. A genuine
+            // const-closure consumer (even a map/filter/fold fusion pipeline) passes DISTINCT unrelated
+            // closures to a driver — successive fps do NOT extend each other (probed across the whole
+            // iterators suite: zero extensions). So decline a re-pass whose fp strictly extends the last
+            // spec's for this `orig_body` — HERE, at the gate, before the divergent (malformed) spec builds,
+            // so the reject is the coded CDZ0201 not a downstream "no local slot". Keyed per orig_body on
+            // the IMMEDIATELY-preceding spec (not any-pair containment, which false-fires when a later
+            // `nstep;|clos1` contains an earlier `nstep;`). Per-compile-scoped (fresh `Db` per compile).
+            if matches!(crate::infer::type_of(db, a), crate::ty::Ty::Fn(_, _))
+                && crate::eval::is_recursive(db, orig_body)
+            {
+                if let Some(prev) = db.last_const_closure_fp.get(&orig_body)
+                    && fp.len() > prev.len()
+                    && fp.contains(prev.as_str())
+                {
+                    return None; // diverging derived-closure re-pass — decline rather than unroll forever
+                }
+                db.last_const_closure_fp.insert(orig_body, fp.clone());
             }
             kinds.push(ArgKind::ConstArg(a, fp));
         } else {

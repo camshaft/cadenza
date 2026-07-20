@@ -2367,6 +2367,64 @@
   (call   main (: 5 Int64))
   (output (: 6 Int64)))
 
+; --- A NOMINAL newtype over a quantity as a (compound) key: strip_nominal ∘ peel-Ty::Qty -----------
+; A single-variant nominal newtype `(type Len (Q (Qty Int64 meter)))` erases to the SAME machine slot as
+; its inner quantity, which erases to its inner scalar — so the key shape builder must strip the nominal
+; wrapper AND peel `Ty::Qty` to reach the scalar. These pin that composition on the KEY path: a
+; nominal-over-Qty is a valid Map key / Set element, and one nested in a list key too.
+
+(case "a nominal newtype over a quantity is a Map key that hits by content"
+  (doc    "`(type Len (Q (Qty Int64 meter)))` — a nominal newtype over a quantity — used as a Map key. The
+           newtype erases to the inner quantity's slot, which erases to the inner scalar, so the key
+           comparator strips the nominal wrapper then peels `Ty::Qty`. A separately-built equal `Len` key
+           HITS (42); one wrapping a different magnitude MISSES (0). Combined = 42. Pins strip_nominal ∘
+           peel-Ty::Qty on the key path.")
+  (input  (do
+            (type Len (Q (Qty Int64 (Unit.base #"meter"))))
+            (def (main (: v Int64))
+              (let ((m (Map.insert (Map.empty) (Len.Q (Qty.of v (Unit.base #"meter"))) 42)))
+                (+ (match (Map.lookup m (Len.Q (Qty.of v (Unit.base #"meter"))))
+                     ((Some x) x) ((None) 0))
+                   (match (Map.lookup m (Len.Q (Qty.of (+ v 1) (Unit.base #"meter"))))
+                     ((Some x) x) ((None) 0)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 42 Int64)))
+
+(case "a Set of nominal-over-quantity newtypes dedups equal members"
+  (doc    "The Set twin: `Set.of` over `(Len.Q (Qty …))` members. Two equal nominal-over-Qty values dedup to
+           `Set.len` 1; distinct magnitudes stay 2. Combined `dedup + 10*distinct` = 21. Pins the
+           strip_nominal ∘ peel-Ty::Qty composition through Set canonicalization.")
+  (input  (do
+            (type Len (Q (Qty Int64 (Unit.base #"meter"))))
+            (def (main (: v Int64))
+              (+ (Set.len (Set.of (list (Len.Q (Qty.of v (Unit.base #"meter")))
+                                        (Len.Q (Qty.of v (Unit.base #"meter"))))))
+                 (* 10 (Set.len (Set.of (list (Len.Q (Qty.of v (Unit.base #"meter")))
+                                              (Len.Q (Qty.of (+ v 1) (Unit.base #"meter")))))))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 21 Int64)))
+
+(case "a list of nominal-over-quantity newtypes is a compound Map key"
+  (doc    "The compound-key composition: a `(list (Len.Q (Qty …)))` Map key — a nominal-over-Qty nested in a
+           list key. The list-key canonicalization shape builder recurses into the element, strips the
+           nominal wrapper, and peels `Ty::Qty` to the scalar. A separately-built equal list key HITS (42);
+           one differing in the wrapped magnitude MISSES (0). Combined = 42. Pins the full recursive
+           strip_nominal ∘ peel-Ty::Qty on a compound key.")
+  (input  (do
+            (type Len (Q (Qty Int64 (Unit.base #"meter"))))
+            (def (main (: v Int64))
+              (let ((k (list (Len.Q (Qty.of v (Unit.base #"meter")))))
+                    (m (Map.insert (Map.empty) k 42)))
+                (+ (match (Map.lookup m (list (Len.Q (Qty.of v (Unit.base #"meter")))))
+                     ((Some x) x) ((None) 0))
+                   (match (Map.lookup m (list (Len.Q (Qty.of (+ v 1) (Unit.base #"meter")))))
+                     ((Some x) x) ((None) 0)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 42 Int64)))
+
 ; --- Quantity joins: the same-unit flow and the explicit-conversion repair --------------------------
 ; 806e45ba9 fixed the mixed-unit join DIAGNOSTIC (a scale clash, not a shadowed declaration). These
 ; pin the join semantics around it, promoted from passing breaker probes: a same-unit join is ONE

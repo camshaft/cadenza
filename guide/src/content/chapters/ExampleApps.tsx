@@ -87,7 +87,9 @@ export default function ExampleApps() {
         exactly itself. From those rational intervals it stacks chords, lays out a I-V-vi-IV progression, and
         lowers the whole piece to a stream of timed MIDI events. The payoff is one you can run: every note
         that switches on is proven to switch off again, so the piece can be transposed, looped, or remapped
-        and never hangs a key.
+        and never hangs a key. The page ends where live coders start, writing a rhythm as a Euclidean pattern
+        and rendering it live, so the same event stream that carries a composed piece also carries an
+        improvised one.
       </P>
 
       <P>

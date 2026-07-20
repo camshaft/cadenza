@@ -1148,6 +1148,48 @@
              (def (main)   (match (at "hi" 5) ((Some c) (String.byte-len c)) ((None _) -1))) (export main)))
   (output  (: -1 Int64)))
 
+; The runtime String.at cases above force ropes via `(String.concat s "")` — an EMPTY right chunk, so
+; the rope has no real interior seam and every scalar lives in one leaf. These use a GENUINE two-chunk
+; rope (if-selected left chunk ++ non-empty right chunk) with MULTIBYTE content in the left chunk: the
+; scalar→byte mapping must carry ACROSS the seam (scalar 2 begins at byte 3 when the left chunk is
+; "aé", at byte 2 when it is "xy" — same scalar index, different byte offset per branch), and a scalar
+; read AT the seam-adjacent position must return the multibyte scalar whole.
+
+(case "String.at addresses scalars across the seam of a runtime multibyte rope"
+  (doc    "`(String.at (String.concat (pick b) \"bc\") 2)` — the rope is `\"aé\" ++ \"bc\"` (b>0) or
+           `\"xy\" ++ \"bc\"` (b≤0). Scalar 2 is \"b\" in BOTH branches, but its BYTE offset differs: 3
+           after the two-byte é, 2 after ascii — so a byte-indexed (or per-leaf-only) walk gives the
+           wrong answer in exactly one branch. Both calls must see \"b\" → 1. Pins the scalar→byte map
+           spans the concat seam with multibyte content upstream of it. Expected: 1, 1.")
+  (input  (do
+            (def (pick (: b Int64))
+              (if (> b 0) "aé" "xy"))
+            (def (main (: b Int64))
+              (match (String.at (String.concat (pick b) "bc") 2)
+                ((Some c) (if (= c "b") 1 0))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 1 Int64))  (output (: 1 Int64))
+  (call   main (: -1 Int64)) (output (: 1 Int64)))
+
+(case "String.at reads a multibyte scalar whole at its position in a runtime two-chunk rope"
+  (doc    "The same two-chunk shape read AT the multibyte scalar: index 1 of `\"aé\" ++ \"cd\"` is \"é\"
+           (→ 1); the control branch `\"ab\" ++ \"cd\"` has \"b\" there (→ 2). The é spans two UTF-8
+           bytes ending at the leaf boundary — a reader that split the scalar at the leaf edge or
+           returned a one-BYTE slice would fail the content compare. Together with the across-the-seam
+           case this pins both halves of multibyte addressing in a genuine rope: landing ON the wide
+           scalar, and landing PAST it. Expected: 1 (b=1), 2 (b=-1).")
+  (input  (do
+            (def (pick (: b Int64))
+              (if (> b 0) "aé" "ab"))
+            (def (main (: b Int64))
+              (match (String.at (String.concat (pick b) "cd") 1)
+                ((Some c) (if (= c "é") 1 (if (= c "b") 2 0)))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 1 Int64))  (output (: 1 Int64))
+  (call   main (: -1 Int64)) (output (: 2 Int64)))
+
 (case "a runtime string returned across the run boundary renders as its quoted text"
   (doc    "A string BUILT at run time and returned as `main`'s value crosses the boundary as its proper
            String type and renders as the quoted canonical text — `(join \"hel\" \"lo\")` is
