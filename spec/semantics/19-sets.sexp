@@ -97,6 +97,26 @@
   (call main (: 3 Int64) (: 8 Int64)) (output (: 2 Int64))
   (call main (: 5 Int64) (: 5 Int64)) (output (: 1 Int64)))
 
+(case "a set of records deduplicates by the whole record and its membership is field-order-INDEPENDENT"
+  (doc    "The record-element companion of the tuple/list cases above, with the twist that distinguishes a
+           record from a tuple: field order does NOT matter. `(Set.of (list (record (x 1) (y 2)) (record (x 3) (y k)) (record (x 1) (y 2))))`
+           over a runtime `k`: the repeated `(record (x 1) (y 2))` collapses (dedup by the WHOLE record
+           value), so with k=4 the set is {⟨x1,y2⟩, ⟨x3,y4⟩} — len 2. Membership compares the whole record:
+           `(Set.contains s (record (x 1) (y 2)))` is true, AND `(Set.contains s (record (y 2) (x 1)))` is
+           ALSO true — the record written with its fields in REVERSE order is the SAME element, because a
+           record canonicalizes by sorted field name (unlike a tuple, whose component ORDER is part of its
+           identity — the tuple case above is order-SENSITIVE). Encodes 100·len + 10·has⟨x1,y2⟩ + has⟨y2,x1⟩
+           = 100·2 + 10·1 + 1 = 211. Pins the compound-element CHAMP path over records + the field-order-
+           independence a tuple element cannot witness.")
+  (input  (do
+            (def (main (: k Int64))
+              (let ((s (Set.of (list (record (x 1) (y 2)) (record (x 3) (y k)) (record (x 1) (y 2))))))
+                (+ (* 100 (Set.len s))
+                   (+ (* 10 (if (Set.contains s (record (x 1) (y 2))) 1 0))
+                      (if (Set.contains s (record (y 2) (x 1))) 1 0)))))
+            (export main)))
+  (call main (: 4 Int64)) (output (: 211 Int64)))
+
 (case "membership of an absent element is false, not a trap"
   (doc    "The absent companion: `(Set.contains (Set.of (list 1 2 3)) 5)` tests an element not in the
            set, so the total predicate yields false — NOT a trap and NOT an error (collections-and-text.md

@@ -79,8 +79,19 @@ export default function ExampleApps() {
         means" idea you met in <Ch to="/effects">effects &amp; handlers</Ch>, turned into a document.
       </P>
 
+      <H2>Music theory</H2>
       <P>
-        All four run the identical in-browser compiler that powers this guide's inline examples, so geometry,
+        The <AppLink to="/music">music page</AppLink> builds a short chord progression the way a theory
+        textbook would describe it, from intervals measured as exact fractions of an octave. A perfect fifth
+        is seven twelfths of an octave, not an approximation in cents, so a chord transposed to any key stays
+        exactly itself. From those rational intervals it stacks chords, lays out a I-V-vi-IV progression, and
+        lowers the whole piece to a stream of timed MIDI events. The payoff is one you can run: every note
+        that switches on is proven to switch off again, so the piece can be transposed, looped, or remapped
+        and never hangs a key.
+      </P>
+
+      <P>
+        All five run the identical in-browser compiler that powers this guide's inline examples, so geometry,
         tables, charts, and values are just what Cadenza's results look like when an app renders them
         instead of printing a single number.
       </P>
