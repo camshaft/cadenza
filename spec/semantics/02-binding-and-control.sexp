@@ -2286,6 +2286,26 @@
             (def (main) (f 41)) (export main)))
   (output (: 42 Int64)))
 
+; A `_`-PREFIXED match-arm binder (`_x`) is a real, USABLE binding — the `_` prefix only SILENCES the
+; unused-binding warning (CDZ0306), it does NOT turn the name into a bare `_` wildcard that drops the value.
+; So a `(Some _x)` arm whose body REFERENCES `_x` binds the payload and reads it normally. This is the
+; match-arm companion of the `let`/param `_x` cases in 01-literals (which bind `_x` in binding/param
+; position); pins it in a MATCH ARM specifically. A generation that treated any `_`-leading pattern name as
+; an unbindable wildcard would leave `_x` UNBOUND (a spurious CDZ0101) — the fault this guards.
+
+(case "an underscore-prefixed match-arm binder is a usable binding, not a wildcard"
+  (doc    "`(match o ((Some _x) _x) ((None) -1))` — the payload binder `_x` is `_`-PREFIXED, which only
+           silences the unused-binding warning; it is still a real binding its body can reference. Over
+           `(Some 8)` the arm binds `_x` = 8 and returns it → 8. Contrast a bare `_` (a wildcard that binds
+           nothing). Pins that the `_` prefix is a warning-silencer, not a wildcard, in match-arm position.
+           Expected: 8.")
+  (input  (do
+            (def (probe (: o (Option Int64)))
+              (match o ((Some _x) _x) ((None) -1)))
+            (def (main (: k Int64)) (probe (Some k)))
+            (export main)))
+  (call   main (: 8 Int64)) (output (: 8 Int64)))
+
 (case "an earlier name-binding arm shadows a later literal arm — first-match-wins, not specificity-ordered"
   (doc    "The precedence direction the two cases above do NOT cover: an earlier GENERAL (name-binding) arm
            makes a later MORE-SPECIFIC (literal) arm DEAD. `(match n (x (+ x 100)) (5 999))` — the binding

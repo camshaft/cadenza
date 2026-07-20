@@ -2185,6 +2185,28 @@
   (call   main (: -3 Int64))
   (trap   "unreachable"))
 
+(case "a @requires predicate that MATCHES on a sum-typed parameter dispatches and enforces (v-patterns seam)"
+  (doc    "A cross-seam composition pin (pattern-matching seam): the precondition predicate is not a scalar
+           comparison but a `match` that DISPATCHES on a sum-typed parameter, so the injected `(if (match o …)
+           BODY (trap …))` must resolve + lower a full match in the predicate position, binding the payload and
+           choosing the boolean arm. `(f o)` with `@requires(match o ((Opt.Some n) (>= n 0)) ((Opt.None)
+           false))`: the precondition is TRUE iff `o` is `Some n` with `n >= 0`. `(f (Opt.Some 7))`: matches the
+           Some arm, `(>= 7 0)` holds → body runs → `7`; `(f (Opt.Some -3))`: Some arm, `(>= -3 0)` FALSE → the
+           precondition check traps `unreachable`. Runtime payload via `main`'s param so no arm folds. Pins that
+           an @requires predicate may itself be a match over a sum parameter (the predicate is elaborated +
+           lowered in the def's scope exactly like a body expression) — a pattern-matching change that failed to
+           lower a match in the injected precondition guard would break this.")
+  (input  (do
+            (type Opt (None) (Some Int64))
+            (@ (requires (match o ((Opt.Some n) (>= n 0)) ((Opt.None) false)))
+              (def (f (: o Opt)) (match o ((Opt.Some n) n) ((Opt.None) 0))))
+            (def (main (: k Int64)) (f (Opt.Some k)))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 7 Int64))
+  (call   main (: -3 Int64))
+  (trap   "unreachable"))
+
 ; ── @requires × @test: constrained GENERATION (breaker pin, keyed on the 71efd45a6 slice) ──────────
 ; A `@requires` precondition on a `@test`-stacked def is a FILTER on the generated input domain, not a
 ; property the test may fail on. The ruling (v-verification + v-property-testing, 2026-07-17): the

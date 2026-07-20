@@ -5726,12 +5726,18 @@ fn top_items(ast: &Arenas) -> Vec<StructId> {
     vec![root]
 }
 
-/// The recognized TOP-LEVEL form heads — the constructs the scan turns into an index entry. A top-level
-/// item whose head is NOT one of these is a construct the compiler does not model (e.g. `(effect …)`,
-/// `(pragma …)`), and the whole program DECLINES rather than silently ignoring it and compiling the rest
-/// (decline-don't-miscompile — a program with an unmodeled declaration is out of scope, not partially
-/// meaningful). Kept in sync with `scan_top_level`'s branches.
-const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "bind"];
+/// The recognized TOP-LEVEL form heads — the constructs the scan turns into an index entry, PLUS
+/// `module-doc` (a benign no-op — see below). A top-level item whose head is NOT one of these is a
+/// construct the compiler does not model (e.g. `(pragma …)`), and the whole program DECLINES rather than
+/// silently ignoring it and compiling the rest (decline-don't-miscompile — a program with an unmodeled
+/// declaration is out of scope, not partially meaningful). Kept in sync with `scan_top_level`'s branches.
+///
+/// `module-doc` is a file/module-level doc-comment node — a `///` header before a non-documentable form
+/// (e.g. an `import`), emitted by the reader so a file header round-trips as `///` rather than a `//`
+/// comment. It DECLARES nothing (`scan_top_level` has no branch for it — it is simply skipped), so it
+/// produces no index entry; it is listed here ONLY so `unknown_top_forms` recognizes it as legitimate
+/// and does not reject it as an unmodeled declaration. It is inert at every later stage (a no-op form).
+const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "bind", "module-doc"];
 
 /// The declaration/directive keywords a top-level `(head …)` form may legitimately lead with — the
 /// closed candidate pool for a "did you mean?" when an unknown top-level head is a plausible TYPO of one

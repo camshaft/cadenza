@@ -258,6 +258,28 @@ mod tests {
     }
 
     #[test]
+    fn a_multi_line_grant_permit_survives_the_expiry_line_codec() {
+        // parse_grant splits the `expiry_line\n<permit>` payload on the FIRST newline only, so a realistic
+        // MULTI-LINE Cedar permit (a `when { ... }` condition block spanning newlines) must survive intact —
+        // its internal newlines belong to the permit, not the codec. Pin it: append a multi-line grant, then
+        // effective_policy carries the WHOLE permit (all lines), and its expiry still parses.
+        let (path, mut log) = temp_log();
+        let multi = "permit(\n  principal,\n  action == Action::\"prim:exec\",\n  resource\n)\nwhen { resource == Resource::\"ls\" };";
+        append_grant(&mut log, multi, Some(1000)).unwrap();
+        let eff = effective_policy(&log.tail(0).unwrap(), 0); // now_ms=0 < expiry 1000 → live
+        assert!(
+            eff.contains("prim:exec") && eff.contains("when {") && eff.contains("Resource::\"ls\""),
+            "the full multi-line permit (incl the `when` condition + all internal newlines) is carried: {eff}"
+        );
+        // The expiry line was stripped correctly (not part of the permit) — after expiry the grant drops.
+        assert!(
+            !effective_policy(&log.tail(0).unwrap(), 2000).contains("prim:exec"),
+            "past its expiry the multi-line grant is dropped (expiry line parsed, not left in the permit)"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn effective_policy_drops_revoked_and_expired_grants() {
         // A revoked grant + an expired grant are both excluded; a live grant stays.
         let (path, mut log) = temp_log();

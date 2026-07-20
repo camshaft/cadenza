@@ -217,6 +217,27 @@
              (Set.of (list (tuple 3 4)))))
   (output (: true Bool)))
 
+(case "the union of sets of TUPLES holds a shared tuple once and preserves component order"
+  (doc    "The UNION member of the compound-element algebra (intersection/difference above): `(Set.union
+           {(1,2),(3,a)} {(3,4),(5,6)})` at a = 4 shares the tuple (3,4) — the union must hold it ONCE
+           (len 3, dedup by whole-tuple content across the CHAMP union walk), while at a = 9 the operands
+           are disjoint (len 4). Membership after the union stays component-ORDER-sensitive: `(contains u
+           (tuple 3 a))` is true (the shared/first-operand tuple survives) but `(contains u (tuple 4 3))`
+           — the shared tuple's components CROSSED — is false. Encodes 100·len + 10·has(3,a) + has(4,3) =
+           310 (a=4) / 410 (a=9). Runtime `a` keeps the sets and the walk out of the fold. Expected: 310,
+           410.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((s1 (Set.of (list (tuple 1 2) (tuple 3 a))))
+                    (s2 (Set.of (list (tuple 3 4) (tuple 5 6)))))
+                (let ((u (Set.union s1 s2)))
+                  (+ (* 100 (Set.len u))
+                     (+ (* 10 (if (Set.contains u (tuple 3 a)) 1 0))
+                        (if (Set.contains u (tuple 4 3)) 1 0))))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 310 Int64))
+  (call   main (: 9 Int64)) (output (: 410 Int64)))
+
 (case "a binary set operation leaves BOTH its operands unchanged — set-algebra persistence"
   (doc    "The persistence face of the binary set algebra, the two-operand twin of the single-element
            Set.insert/Set.remove persistence pins: `Set.difference` (like union/intersection) produces a NEW

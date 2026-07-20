@@ -639,6 +639,16 @@ impl<'a> Printer<'a> {
                 "comment" if args.len() == 2 && self.is_string(args[0]) => {
                     return self.print_comment(args[0], args[1]);
                 }
+                // A `(module-doc "text")` — a FILE/MODULE-level doc-comment (a leading `///` on a
+                // non-documentable form, e.g. a file header before the first `import`). Unlike a
+                // `(doc …)` (which lives INSIDE a def/module body), a module-doc is a STANDALONE
+                // top-level/member form; it re-prints as its own `///` line so a file header round-trips
+                // as documentation rather than being downgraded to `//`. Distinct 2-elem `(module-doc
+                // "str")` shape; anything else falls through to the generic call form.
+                "module-doc" if args.len() == 1 && self.is_string(args[0]) => {
+                    self.print_doc(args[0]);
+                    return;
+                }
                 // A binary literal `(bin <segment> …)` renders as `b[<segment>, …]` — the inverse of the
                 // parser's `bin_literal`/`bin_pattern`. `bin` is a reserved grammar form (structurally
                 // dispatched like `match`, never a shadowable value), so this always sugars, in both
@@ -1395,6 +1405,17 @@ impl<'a> Printer<'a> {
                 self.print_doc(a[0]);
                 continue;
             }
+            // A `(module-doc "text")` is a standalone top-level doc line (a file/module header) — print
+            // it as its own `///` line, NO trailing `;` (a `///` runs to end-of-line, so a `;` after it
+            // would be swallowed INTO the doc text on re-read — breaking idempotence). Same handling as
+            // a top-level `(doc …)`.
+            if let Some(a) = self.a.as_form(form, "module-doc")
+                && a.len() == 1
+                && self.is_string(a[0])
+            {
+                self.print_doc(a[0]);
+                continue;
+            }
             // Separate this form from the next when the next is non-keyword-led — see the doc comment
             // for the three mechanisms (def-body parens / whole-form parens / trailing `;`).
             let need = i + 1 < forms.len() && !self.form_starts_with_keyword(forms[i + 1]);
@@ -1480,7 +1501,8 @@ impl<'a> Printer<'a> {
                     | "match"
                     | "handle"
                     | "host"
-                    | "doc",
+                    | "doc"
+                    | "module-doc",
             )
         )
     }
@@ -1497,7 +1519,14 @@ impl<'a> Printer<'a> {
     /// with a single break rather than a blank line. Keeps a `/// …` comment glued to what it
     /// documents while still blank-separating distinct top-level definitions.
     fn leads_doc_block(&self, forms: &[StructId], i: usize) -> bool {
-        i > 0 && self.is_doc(forms[i - 1])
+        i > 0 && (self.is_doc(forms[i - 1]) || self.is_module_doc(forms[i - 1]))
+    }
+
+    /// True if `id` is a well-formed `(module-doc "text")` node — a file/module-level doc line. Like a
+    /// `(doc …)`, it hugs the following form (a further header line or the documented decl) with a
+    /// single break rather than a blank, so a multi-line `///` file header prints as a contiguous block.
+    fn is_module_doc(&self, id: StructId) -> bool {
+        matches!(self.a.as_form(id, "module-doc"), Some(a) if a.len() == 1 && self.is_string(a[0]))
     }
 
     /// `module name { form… }` — one member per line (consistent box) when broken, blank-separated
@@ -5513,6 +5542,54 @@ mod tests {
             crate::sexpr::print(&a.arenas).matches("(comment ").count(),
             1,
             "[control] the between-defs comment survives"
+        );
+    }
+
+    #[test]
+    fn file_header_doc_before_a_non_documentable_form_becomes_a_module_doc() {
+        // A `///` file header before a NON-documentable form (an `import` — not a def/type/effect/module
+        // that drains its own docs) is preserved as a top-level `(module-doc …)` node, re-printing as
+        // `///` — NOT downgraded to `//`. (Before the module-doc node, `stmt`'s leftover-doc path wrapped
+        // it as `(comment …)` → `//`, the file-header doc-loss that blocked ~56 files from fmt-apply.)
+        let src = "/// Header one.\n/// Header two.\nimport { x } from \"dep\"\ndef f() = 1";
+        let a = parser::read_ml(src);
+        assert!(a.ok(), "parse: {:?}", a.errors);
+        let sexpr = crate::sexpr::print(&a.arenas);
+        assert_eq!(
+            sexpr.matches("(module-doc ").count(),
+            2,
+            "both header lines are `(module-doc …)` nodes: {sexpr}"
+        );
+        assert_eq!(
+            sexpr.matches("(comment ").count(),
+            0,
+            "no header line downgraded to `(comment …)`: {sexpr}"
+        );
+        // They re-print as `///` (count preserved), and the whole thing is idempotent + structurally
+        // round-trips (a `(module-doc)` re-reads to the same node).
+        let printed = print(&a.arenas, 100);
+        let doc_lines = printed
+            .lines()
+            .filter(|l| l.trim_start().starts_with("///"))
+            .count();
+        let comment_lines = printed
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                t.starts_with("//") && !t.starts_with("///")
+            })
+            .count();
+        assert_eq!(doc_lines, 2, "both headers re-print as `///`: {printed}");
+        assert_eq!(comment_lines, 0, "no header downgraded to `//`: {printed}");
+        let b = parser::read_ml(&printed);
+        assert!(b.ok(), "reparse: {:?}", b.errors);
+        assert_eq!(print(&b.arenas, 100), printed, "not idempotent");
+        assert_eq!(
+            crate::sexpr::print(&b.arenas)
+                .matches("(module-doc ")
+                .count(),
+            2,
+            "the `(module-doc)` nodes survive the round-trip"
         );
     }
 

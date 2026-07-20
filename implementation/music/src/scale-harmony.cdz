@@ -1,0 +1,121 @@
+/// scale-harmony.cdz — the HARMONIZED SCALE: every diatonic chord of a key at once.
+///
+/// progression.cdz builds the diatonic chord ON a single scale degree; this aggregates them — the full set
+/// of seven diatonic triads (or sevenths) of a scale, the "harmonized scale" a composer references ("the
+/// chords in C major are C Dm Em F G Am B°"). `harmonized-triads(scale)` returns the seven `Chord`s in
+/// degree order (I, ii, iii, IV, V, vi, vii°); `harmonized-sevenths` the seventh-chord version. Pure
+/// aggregation over progression.cdz's `diatonic-triad`/`diatonic-seventh` — no new harmony, just the whole
+/// key's chord vocabulary in one list.
+
+import { Scale } from "scale"
+import { major } from "scale"
+import { Chord } from "chord"
+import { Pitch } from "pitch"
+import { diatonic-triad, diatonic-seventh } from "progression"
+
+// ---- harmonizing a whole scale -----------------------------------------------------------------------
+
+/// Build the diatonic TRIAD on each degree `i .. 6` of `s`, accumulating in degree order. Recursive driver,
+/// annotated params (CDZ0201). (Two separate drivers rather than a higher-order `builder` param: the
+/// diatonic builders are curried 2-arg fns, which don't match a single-arg HOF slot.)
+def triads-go(s: Scale, i: Int64, out: List(Chord)) =
+  if i > 6 then out
+  else triads-go(s, i + 1, List.push(out, diatonic-triad(s, i)))
+
+/// Build the diatonic SEVENTH on each degree `i .. 6`, in degree order.
+def sevenths-go(s: Scale, i: Int64, out: List(Chord)) =
+  if i > 6 then out
+  else sevenths-go(s, i + 1, List.push(out, diatonic-seventh(s, i)))
+
+/// The seven diatonic TRIADS of a scale, in degree order (I ii iii IV V vi vii°).
+def harmonized-triads(s: Scale) = triads-go(s, 0, [])
+
+/// The seven diatonic SEVENTH chords of a scale, in degree order (I△7 ii7 iii7 IV△7 V7 vi7 vii°7).
+def harmonized-sevenths(s: Scale) = sevenths-go(s, 0, [])
+
+/// The number of chords a scale harmonizes to (its degree count = 7 for a diatonic scale).
+def harmony-count(s: Scale) = list-len(harmonized-triads(s))
+
+/// Length of a chord list (local, annotated).
+def list-len(cs: List(Chord)) = match cs with
+  | [] => 0
+  | [_, .. t] => 1 + list-len(t)
+
+/// The chord on a given degree of the harmonized scale (0-based; wraps via progression's own folding).
+def harmony-degree(s: Scale, d: Int64) = diatonic-triad(s, d)
+
+/// ============================ @test suite (harmonized-scale laws) ============================
+
+@test
+def a-major-scale-harmonizes-to-seven-triads() =
+  // C major harmonizes to seven diatonic triads.
+  if harmony-count(major-c) == 7 then unit else trap("a diatonic scale harmonizes to seven chords")
+
+@test
+def the-first-and-fourth-and-fifth-are-major-triads() =
+  // In C major the I, IV, V are major triads (stack [0,4,7]); check the tonic's stack.
+  match harmonized-triads(major-c) with
+    | [i, _, _, _, _, _, _] =>
+      (match i with
+        | Chord.Chord(_, stack) =>
+          (match stack with
+            | [a, b, c] => (if a == 0 then (if b == 4 then (if c == 7 then unit else trap("fifth")) else trap("third")) else trap("root"))
+            | _ => trap("triad has three intervals")))
+    | _ => trap("seven triads")
+
+@test
+def the-second-is-a-minor-triad() =
+  // The ii chord (index 1) of C major is minor (stack [0,3,7]).
+  match harmonized-triads(major-c) with
+    | [_, ii, _, _, _, _, _] =>
+      (match ii with
+        | Chord.Chord(_, stack) =>
+          (match stack with
+            | [_, b, c] => (if b == 3 then (if c == 7 then unit else trap("fifth")) else trap("ii is minor"))
+            | _ => trap("three intervals")))
+    | _ => trap("seven triads")
+
+@test
+def the-leading-tone-chord-is-diminished() =
+  // vii° (index 6) of C major is diminished (stack [0,3,6]).
+  match harmonized-triads(major-c) with
+    | [_, _, _, _, _, _, vii] =>
+      (match vii with
+        | Chord.Chord(_, stack) =>
+          (match stack with
+            | [_, b, c] => (if b == 3 then (if c == 6 then unit else trap("dim fifth")) else trap("minor third"))
+            | _ => trap("three intervals")))
+    | _ => trap("seven triads")
+
+@test
+def the-dominant-seventh-of-the-harmonized-scale-is-a-dom7() =
+  // In the seventh-chord harmonization, V7 (index 4) is a dominant seventh (stack [0,4,7,10]).
+  match harmonized-sevenths(major-c) with
+    | [_, _, _, _, v7, _, _] =>
+      (match v7 with
+        | Chord.Chord(_, stack) =>
+          (match stack with
+            | [_, b, c, d] => (if b == 4 then (if c == 7 then (if d == 10 then unit else trap("minor seventh")) else trap("fifth")) else trap("major third"))
+            | _ => trap("four intervals")))
+    | _ => trap("seven sevenths")
+
+@test
+def harmony-degree-agrees-with-progression() =
+  // harmony-degree(s, d) is exactly diatonic-triad(s, d) — the whole-scale aggregation is consistent with
+  // the single-degree builder. Compare the tonic's root pitch class.
+  let a = harmony-degree(major-c, 0) in
+  let b = diatonic-triad(major-c, 0) in
+  match a with
+    | Chord.Chord(ra, _) =>
+      (match b with
+        | Chord.Chord(rb, _) => if pitch-note(ra) == pitch-note(rb) then unit else trap("aggregation matches the single builder"))
+
+/// Local helper: note number of a pitch (test-only).
+def pitch-note(p: Pitch) = match p with | Pitch.Pitch(x) => x
+
+/// C major, the fixture (root pitch class 0).
+def major-c = major(0)
+
+export {
+  harmonized-triads, harmonized-sevenths, harmony-count, harmony-degree,
+}

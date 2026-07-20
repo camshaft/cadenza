@@ -340,10 +340,12 @@
 ; runtime Symbol one of a known set of names? `Set.contains` over a set of interned constants, queried
 ; with a RUNTIME Symbol operand, is exactly that dispatch. These pin it as a genuine content test on a
 ; runtime operand — the realized companion of the runtime-`=` cases above, lifted to a set of names.
-; (A Symbol stored INTO the value heap — `Set.of`/`Set.len` materializing a symbol set, a Symbol map
-; key — still declines: "a … element of type Symbol needs the value heap", the not-yet-realized part
-; of the form. `Set.contains` against a constant symbol list lowers to realized Symbol `=` checks, so
-; it runs; these cases pin that realized slice, and the heap-Symbol cases will join them additively.)
+; A Symbol stored INTO the value heap — `Set.of`/`Set.len` materializing a symbol set, a Symbol map key —
+; now RUNS on all three backends (a Symbol IS a String byte-leaf on the value heap, so it boxes/reads-back
+; and hashes+compares by content wherever a String does — collections-and-text.md #A Symbol Is An Interned
+; Name). So a symbol set DEDUPLICATES by content and a Symbol-keyed map looks up + overwrites by content,
+; exactly as the scalar/String collection cases do. The cases just below pin the `Set.contains` membership
+; dispatch; the two after them pin the heap-materialization slice (Set.len dedup + Symbol map key).
 
 (case "a runtime symbol is found among a set of known symbols"
   (doc    "`dispatch` takes a Symbol parameter and asks whether it is one of the known node-kind names
@@ -379,6 +381,39 @@
             (def (dispatch s) (Set.contains (Set.of (list (Symbol.of "map-insert") (Symbol.of "map-lookup"))) s))
             (def (main) (dispatch (Symbol.of (String.concat "map" "-insert")))) (export main)))
   (output (: true Bool)))
+
+(case "a set of symbols deduplicates by content — Set.len materializes the symbol set"
+  (doc    "The heap-MATERIALIZATION face (beyond membership): `Set.of` over a list of Symbols builds a
+           symbol set on the value heap, and `Set.len` reads its cardinality — DEDUPED by content, since a
+           Symbol is a String byte-leaf that hashes+compares by content on the CHAMP path. `{map-insert,
+           map-lookup, map-insert}` names `map-insert` twice; the set holds it once → len 2. A runtime
+           Symbol element `x` (a parameter, so it does not fold) matching an interned `map-insert` collapses
+           into it (len stays 2), while a fresh name would grow it to 3. Pins that a symbol set materializes
+           + dedups by content — the symbol-table-build the dispatch cases query.")
+  (input  (do
+            (def (mk (: x Symbol))
+              (Set.len (Set.of (list (Symbol.of "map-insert") (Symbol.of "map-lookup") x))))
+            (def (main (: which Int64))
+              (if (= which 0) (mk (Symbol.of "map-insert")) (mk (Symbol.of "map-remove"))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 2 Int64))
+  (call   main (: 1 Int64)) (output (: 3 Int64)))
+
+(case "a Symbol map key looks up by content and an overwrite does not grow the map"
+  (doc    "The Symbol-MAP-KEY face: a `Map` keyed by Symbol — the symbol table a self-hosting compiler
+           keys node metadata on. Insert `map-insert → 42`, then insert the SAME key (by content) `→ 99`:
+           the map still has ONE entry (`Map.len` 1 — an overwrite, not a grow), and `Map.lookup` by a
+           runtime Symbol built from a computed string finds 99 (the latest value), by content. Pins that a
+           Symbol hashes+matches as a map key exactly like a String key — insert/overwrite/lookup all by
+           content on the CHAMP key path.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((m (Map.insert (Map.insert Map.empty (Symbol.of "map-insert") 42)
+                                   (Symbol.of "map-insert") 99)))
+                (+ (* 10 (Map.len m))
+                   (match (Map.lookup m (Symbol.of (String.concat "map" "-insert"))) ((Some v) v) ((None) -1)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 109 Int64)))
 
 ; The case above interns a Symbol from a string the compiler can still FOLD (`(String.concat "map"
 ; "-insert")` = the constant `"map-insert"`). Interning a GENUINELY-RUNTIME string — one arriving at
