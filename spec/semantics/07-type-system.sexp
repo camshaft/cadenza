@@ -1240,6 +1240,26 @@
             (export main)))
   (output (: 0 Int64)))
 
+(case "a same-name generic type applied in a variant payload denotes the type"
+  (doc    "A generic sum whose declared NAME coincides with its sole variant's name — `(type Box (Box a))`
+           — used APPLIED in another type's variant payload `(type Holder (Holder (Box Int64)))`. In a
+           TYPE position the applied `(Box Int64)` can only mean the TYPE `Box Int64`, but the head `Box`
+           resolves to the VARIANT constructor (a same-name occurrence prefers the value binding), so a
+           payload type-position reader that only recognized the type-constructor form rejected the
+           well-formed program CDZ0203 (`a variant payload requires a type, but found a non-type`) — a
+           bogus decline. The BARE same-name form (`(type Note (Note Pitch))` with monomorphic `Pitch`)
+           already worked; only the APPLIED generic form hit the variant-head gap. Building `(Holder (Box
+           7))`, projecting the `Box Int64` payload, and matching its inner `Int64` = 7 pins that the
+           applied same-name generic in a payload denotes the type and its value round-trips. The reader
+           recovers the owning declaration from the variant head (its params are non-empty ⇒ generic) and
+           builds the sum type directly — the same `Ty` the type-constructor head produces.")
+  (input  (do
+            (type Box (Box a))
+            (type Holder (Holder (Box Int64)))
+            (def (main) (match (Holder (Box 7)) ((Holder b) (match b ((Box n) n)))))
+            (export main)))
+  (output (: 7 Int64)))
+
 (case "Type.of on a bare nullary variant reflects its element as UNDETERMINED"
   (doc    "`Type.of` reflects a value's INFERRED type, so a bare nullary variant — carrying no element —
            reflects an UNDETERMINED element. `(None)` is `Option ?a`, distinct from a concrete `Option

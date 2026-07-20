@@ -4262,3 +4262,25 @@
                   (+ a b))))
             (export run-twice)))
   (output (: 50 Int64)))
+
+; An effect operation whose declared RETURN type is a STRUCTURAL RECORD in the ML surface's field
+; spelling — each field a `(: name type)` annotation triple, `(op get (-> Unit (Record (: a Int64) (: b
+; Int64))))` — must type the PERFORM `(St.get)` at that declared record, so a field of the performed value
+; reads. The op's `(meta t)` scheme is read by `type_in_env` (the type-lambda scheme reducer), whose
+; `RecordCtor` decode originally accepted only the 2-element `(name type)` pair; the ML `{a: Int64, …}`
+; return lowers each field to a 3-element `(: a Int64)` triple, so the record decoded to `None` → the op had
+; NO `(-> Unit result)` scheme → the nullary-perform site fell back to the op's META-record and `St.get()`
+; typed as `(Record (apply …) (effect-op …) (t …))` instead of `{a, b}` (CDZ0203 "record has no field a" at
+; a consumer). Handling `St` with a `get` arm that resumes `(record (a 1) (b 2))` and reading field `a` = 1
+; pins that a structural-record effect-op return threads its declared type to the perform site (the
+; `type_in_env` companion of the same `(: name type)` decode fix `typeval_of` carries for variant payloads).
+(case "an effect op with a structural-record return types the perform at the declared record"
+  (input  (do
+            (effect St (op get (-> Unit (Record (: a Int64) (: b Int64)))))
+            (def (get-a (: r (Record (: a Int64) (: b Int64)))) (. r a))
+            (def (main)
+              (handle St (record (a 0) (b 0))
+                ((get (u) s (resume (record (a 1) (b 2)) s)))
+                (get-a (St.get unit))))
+            (export main)))
+  (output (: 1 Int64)))

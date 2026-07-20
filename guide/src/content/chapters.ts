@@ -191,7 +191,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Exact fractions",
     blurb: "Rationals: exact ratios, always in lowest terms — where floats round, these don't.",
     section: "Fundamentals",
-    exercises: 2,
+    exercises: 3,
     Component: lazy(() => import("./chapters/Rationals.tsx")),
   },
   {
