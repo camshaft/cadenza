@@ -313,6 +313,9 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo fmt --check
           cargo build --features aws
+          # The `live-exec` feature gates the one LIVE effect (a real subprocess `exec`) — lint + build it so a
+          # regression on that security-sensitive path is caught in CI, not just locally (default build can't spawn).
+          cargo clippy --all-targets --features live-exec -- -D warnings
 
   rcdzc-wasm:
     # The Cadenza COMPILER as a WASM artifact (implementation/seed/crates/rcdzc-wasm, v-agent-harness

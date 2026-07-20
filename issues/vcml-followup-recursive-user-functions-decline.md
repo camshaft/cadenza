@@ -43,3 +43,17 @@ A boundary-pins MR (9e963fae9) was pending → couldn't sync to a clean base, an
 stacked base. Also func[27] fix (a9340242d, v-memory-safety) + the db-records structural-record conversion are
 higher-priority unblocks landing imminently. Pick this up on a clean trunk once those clear. Corpus relevance:
 recursion is pervasive in the real corpus (fac/sum/fib-style), so this materially widens run-ml conformance.
+
+## UPDATE 2026-07-20: GENERALIZES to FORWARD/MUTUAL references (not just self-recursion)
+Same root cause, broader symptom. A def whose body calls a LATER-defined def declines (definition order matters):
+  (do (def (g x) (+ x 1)) (def (f x) (g x)) (def (main) (f 5)) (export main))  -> 6   (g BEFORE f: works)
+  (do (def (f x) (g x)) (def (g x) (+ x 1)) (def (main) (f 5)) (export main))  -> declined  (g AFTER f: GAP, ref=6)
+The reader records each def's name->bodyId AFTER reading its body (read-do-def), so f's body (g x) finds no
+def-body-of("g") yet when g is defined later -> declines. The reference is definition-order-INDEPENDENT. This
+is the SAME forward-declaration fix recursion needs (self-reference is the f==g case). A clean fix covers BOTH:
+PRE-SCAN the do-block's (def (name ...) ...) headers to seed the def-table (name -> reserved body node-id)
+BEFORE reading any body, so every call (forward, backward, self) resolves. Recursion then falls out for free.
+Scope: sread read-do-form two-pass (collect headers, then read bodies) + the lower inline path needs a
+non-inlining call form ONLY for true cycles (forward refs to non-recursive defs inline fine once bodyId is
+reserved). Highest-value FEATURE now (definition-order independence + recursion together). Needs a clean
+sread/resolve/lower base (blocked on my pending 3-param MRs).

@@ -2645,11 +2645,29 @@ fn signature_help_at(text: &str, is_ml: bool, pos: Position) -> Option<Signature
     })
 }
 
+/// The NAME a parameter binder introduces: a BARE name `x`, or the name of an ANNOTATED binder
+/// `(: name Type)` (a `:`-headed list whose second child is the name). `None` for any other shape.
+fn param_binder_name(
+    arenas: &cadenza_syntax::Arenas,
+    p: cadenza_syntax::StructId,
+) -> Option<String> {
+    if let Some(n) = arenas.as_name(p) {
+        return Some(n.to_string());
+    }
+    // `(: name Type)` — the annotated-parameter form; the binder name is the child after the `:` head.
+    arenas
+        .as_form(p, ":")
+        .and_then(|tail| tail.first())
+        .and_then(|&n| arenas.as_name(n))
+        .map(str::to_string)
+}
+
 /// Map each top-level `(def (name param…) …)` in `arenas` to its DECLARED parameter names, in order — the
 /// callee→params lookup the parameter-name inlay hints ride on. A bare-value `def name body` (no signature
 /// list) or a param-less `(def (name) …)` contributes nothing. Read purely from the parse tree, so it does
 /// NOT depend on the still-blocked inferred-binder TYPE query — a parameter's NAME is written in the source
-/// even when its type is not.
+/// even when its type is not. Handles both bare `x` and annotated `(: x Type)` params via
+/// [`param_binder_name`].
 fn local_def_params(
     arenas: &cadenza_syntax::Arenas,
 ) -> std::collections::HashMap<String, Vec<String>> {
@@ -2670,9 +2688,12 @@ fn local_def_params(
         let Some(name) = sig_kids.first().and_then(|&h| arenas.as_name(h)) else {
             continue;
         };
+        // A parameter is either a BARE name `x` or an ANNOTATED binder `(: name Type)` (a list headed by
+        // `:` whose second child is the name). Extract the name from both — an annotated param still has a
+        // written NAME, which is all the hint needs (the TYPE half is irrelevant here).
         let param_names: Vec<String> = sig_kids[1..]
             .iter()
-            .filter_map(|&p| arenas.as_name(p).map(str::to_string))
+            .filter_map(|&p| param_binder_name(arenas, p))
             .collect();
         if !param_names.is_empty() {
             out.insert(name.to_string(), param_names);
@@ -2696,11 +2717,32 @@ fn emit_param_hints(
     if params_by_callee.is_empty() {
         return Vec::new();
     }
+    // A def's SIGNATURE list `(name param…)` is a name-headed list of the SAME shape as a call, and its
+    // head is a known callee — so the walk below would wrongly hint the PARAMETER DECLARATIONS as if they
+    // were call arguments (`(scale (factor: (: factor Int64)))`). Collect the signature-list node ids (the
+    // second child of every `(def <sig> body)`) and skip them: they are declarations, not calls.
+    let mut def_sigs: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for i in 0..arenas.structure.len() {
+        let id = cadenza_syntax::StructId(i as u32);
+        let cadenza_syntax::ast::Struct::List(kids) = arenas.get(id) else {
+            continue;
+        };
+        if kids.first().and_then(|&h| arenas.as_name(h)) == Some("def")
+            && let Some(&sig) = kids.get(1)
+            && matches!(arenas.get(sig), cadenza_syntax::ast::Struct::List(_))
+        {
+            def_sigs.insert(sig.0);
+        }
+    }
     let range_lo = position_to_byte(text, range.start);
     let range_hi = position_to_byte(text, range.end);
     let mut hints: Vec<InlayHint> = Vec::new();
     for i in 0..arenas.structure.len() {
         let id = cadenza_syntax::StructId(i as u32);
+        // Skip a def's own signature list — it is a declaration, not a call.
+        if def_sigs.contains(&id.0) {
+            continue;
+        }
         let cadenza_syntax::ast::Struct::List(children) = arenas.get(id) else {
             continue;
         };
@@ -4702,6 +4744,29 @@ mod tests {
     // A range covering the whole buffer — inlay hints for the entire document.
     fn whole_range() -> Range {
         Range::new(Position::new(0, 0), Position::new(u32::MAX, 0))
+    }
+
+    #[test]
+    fn inlay_hints_do_not_leak_onto_a_defs_own_signature() {
+        // A def's SIGNATURE list `(scale (: factor Int64))` is itself a name-headed list whose head is a
+        // known callee — the hint walk must NOT treat it as a CALL and emit a spurious `factor:` hint on
+        // the parameter declaration. With an ANNOTATED param the sig "arg" is a `(: factor Int64)` list
+        // (not a bare name), so I3's name-match suppression does NOT mask it — only skipping def sigs does.
+        // Expect exactly ONE hint: `factor:` on the `(scale 3)` CALL, nothing on the declaration.
+        let text = "(module m (def (scale (: factor Int64)) (* factor 2)) (def (main) (scale 3)) (export main))";
+        let hints = inlay_hints_at(text, false, whole_range());
+        let labels: Vec<String> = hints
+            .iter()
+            .map(|h| match &h.label {
+                InlayHintLabel::String(s) => s.clone(),
+                other => panic!("expected a string label, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["factor:".to_string()],
+            "exactly one hint (on the `scale 3` call) — no hint leaked onto the def's signature; got {labels:?}"
+        );
     }
 
     #[test]

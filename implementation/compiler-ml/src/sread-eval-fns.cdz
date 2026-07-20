@@ -150,3 +150,36 @@ def se-logical-and-on-ints-declines() =
   (match run-src("(and 1 2)") with
     | Option.None(_) => unit
     | Option.Some(_) => trap("(and 1 2) — int operands to a logical op must decline"))
+
+@test
+def se-three-param-def-runs() =
+  // slice-3e: a THREE-param user function runs. `(def (f a b c) (+ a (+ b c)))` `(f 1 2 3)` → 6. The reader
+  // reads a 3rd param + 3rd arg (param3/arg3 tables), resolve binds param3 in the body scope, infer types it,
+  // and lower builds the 3-deep CLet(p1,a1,CLet(p2,a2,CLet(p3,a3,body))). Matches the reference. Before this,
+  // any >2-param def fast-declined.
+  (match run-src("(do (def (f a b c) (+ a (+ b c))) (def (main) (f 1 2 3)) (export main))") with
+    | Option.Some(v) => (if v == 6 then unit else trap("f(1,2,3) = 6"))
+    | Option.None(_) => trap("3-param def runs"))
+
+@test
+def se-three-param-with-if-and-mul() =
+  // a 3-param body using an if comparing two params + arith on the third: `(g x y z) = (if (< x y) z (* y z))`,
+  // g(1,2,5) takes the then (1<2) → z = 5. Pins all three params flow through a conditional + arith.
+  (match run-src("(do (def (g x y z) (if (< x y) z (* y z))) (def (main) (g 1 2 5)) (export main))") with
+    | Option.Some(v) => (if v == 5 then unit else trap("g(1,2,5) = 5 (then branch, z)"))
+    | Option.None(_) => trap("3-param if/arith body runs"))
+
+@test
+def se-three-param-over-application-declines() =
+  // arity check: a 3-param def applied to 4 args OVER-applies → declines (the 4th arg leaves leftover tokens
+  // the trailing-token guard poisons), matching the reference's CDZ0203. NOT a silently-dropped 4th arg.
+  (match run-src("(do (def (f a b c) (+ a (+ b c))) (def (main) (f 1 2 3 4)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("(f 1 2 3 4) over-applies a 3-param def → declines"))
+
+@test
+def se-three-param-under-application-declines() =
+  // the other arity edge: a 3-param def applied to 2 args UNDER-applies → declines (matches reference CDZ0201).
+  (match run-src("(do (def (f a b c) (+ a (+ b c))) (def (main) (f 1 2)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("(f 1 2) under-applies a 3-param def → declines"))

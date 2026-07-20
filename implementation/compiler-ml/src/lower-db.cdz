@@ -14,7 +14,7 @@
 /// NO core form (a filled `None`), not a bogus tree. Lowering reads the infer column to make this decision,
 /// and reads the resolve column to canonicalize vars — producer-reads-two-producers.
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of, param2-of, arg2-of } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of, param2-of, param3-of, arg2-of, arg3-of } from "parse-db"
 import { Resolved, resolve-tree } from "resolve-db"
 import { Typed, infer-tree } from "infer-db"
 
@@ -123,7 +123,13 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                                       (match param2-of(tree, calleeId) with
                                         | Option.Some(param2Id) =>
                                             (match lower-node(tree, arg2Id, rcol, tcol) with
-                                              | Option.Some(arg2Core) => Option.Some(Core.CLet(paramId, argCore, Core.CLet(param2Id, arg2Core, bodyCore)))
+                                              // slice-3e 3-ARG call `(f a b c)`: if this NApp has a 3rd arg (arg3-of)
+                                              // AND the callee a 3rd param (param3-of), nest a THIRD CLet innermost
+                                              // → CLet(p1,a1,CLet(p2,a2,CLet(p3,a3,body))). Else the 2-arg CLet.
+                                              | Option.Some(arg2Core) =>
+                                                  (match inner-body-with-param3(tree, id, calleeId, bodyCore, rcol, tcol) with
+                                                    | Option.Some(inner) => Option.Some(Core.CLet(paramId, argCore, Core.CLet(param2Id, arg2Core, inner)))
+                                                    | Option.None(_) => Option.None(unit))       // arg3 but no param3 → over-applied → decline
                                               | Option.None(_) => Option.None(unit))
                                         | Option.None(_) => Option.None(unit))       // arg2 but no param2 → over-applied → decline
                                   | Option.None(_) => Option.Some(Core.CLet(paramId, argCore, bodyCore)))  // 1-arg
@@ -131,6 +137,21 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                       | Option.None(_) => Option.None(unit))
                 | Option.None(_) => Option.None(unit)))
     | Option.None(_) => Option.None(unit)
+
+/// slice-3e: the innermost body of a call's nested-CLet chain, optionally wrapping a THIRD `CLet(param3, arg3,
+/// body)`. If this NApp node `id` has a 3rd arg (arg3-of) AND the callee a 3rd param (param3-of), lower arg3
+/// and wrap → `CLet(param3, arg3Core, bodyCore)`; a 2-arg call (arg3-of None) returns `bodyCore` unchanged.
+/// An arg3 with NO param3 (over-applied) → `None` (declines). Keeps the lower-node NApp arm flat.
+def inner-body-with-param3(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Core, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+  (match arg3-of(tree, id) with
+    | Option.None(_) => Option.Some(bodyCore)                        // 2-arg call — no 3rd CLet
+    | Option.Some(arg3Id) =>
+        (match param3-of(tree, calleeId) with
+          | Option.None(_) => Option.None(unit)                       // arg3 but no param3 → over-applied → decline
+          | Option.Some(param3Id) =>
+              (match lower-node(tree, arg3Id, rcol, tcol) with
+                | Option.Some(arg3Core) => Option.Some(Core.CLet(param3Id, arg3Core, bodyCore))
+                | Option.None(_) => Option.None(unit))))
 
 /// The lower COLUMN builder: build resolve + infer columns (demanding parse under them), then lower over
 /// them. The whole demand chain in one call — lower reaches infer reaches resolve reaches parse.

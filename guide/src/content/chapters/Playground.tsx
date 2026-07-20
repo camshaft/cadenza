@@ -97,7 +97,10 @@ export default function Playground() {
         softly, the declaration included, so you can see a value's whole reach at a glance.{" "}
         <strong>⌘-click</strong> (or Ctrl-click) that name to jump straight to where it's defined. And
         when a mistake has an obvious repair, the diagnostic offers a <em>quick-fix</em>: apply it and
-        the compiler's suggested edit is spliced in for you. These aren't editor heuristics guessing from
+        the compiler's suggested edit is spliced in for you. Call a function and the editor writes each
+        argument's name in front of it in soft grey, so <C>add(1, 2)</C> reads as <C>add(x: 1, y: 2)</C>{" "}
+        with the parameter names taken from the function's own definition, and an argument already named
+        after its parameter is left alone so the hints stay quiet. These aren't editor heuristics guessing from
         spelling: every one is the compiler answering a question about your actual program, live in the
         browser.
       </P>

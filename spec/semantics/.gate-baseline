@@ -279,6 +279,7 @@ pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a @param accessor splices into a quasiquote and the eval computes with the host value
 pass	a @param of type (Qty Rational unit) desugars to num/den scalars + a guest Qty.of with the unit (#13 B2)
 pass	a @param of type Rational desugars to two scalar num/den accessors the guest recombines (#13)
+pass	a @requires on a UNIT-returning def is enforced — the precondition traps before the unit body
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
 pass	a @requires precondition is enforced for a genuinely-runtime argument
 pass	a @requires predicate that CALLS a user-defined function resolves and enforces — not only prelude ops
@@ -2579,6 +2580,7 @@ pass	all-nullary enum equality compares discriminants
 pass	an 8-bit-integer closure crosses the host boundary
 pass	an @ensures on a recursive def is re-checked at every EXIT including self-call returns (not only the outermost)
 pass	an @ensures over a MATCH-bodied def wraps the whole match — the postcondition checks the match's result
+pass	an @ensures predicate reading a top-level GLOBAL alongside ret resolves and enforces (resolution seam)
 pass	an @ensures predicate that itself traps keeps its own trap kind (not the @ensures-failed unreachable)
 pass	an @param of a Bool type generates a Bool-typed accessor
 pass	an @param of a Float64 type generates a Float64-typed accessor
@@ -3645,6 +3647,7 @@ pass	scaling a quantity by a bare number of its own numeric type keeps its dimen
 pass	scaling a quantity by a dimensionless quantity keeps its dimension
 pass	scaling an integer quantity by a bare integer of its own type keeps its dimension
 pass	scan emits the seed plus one accumulator per element (n+1 outputs)
+pass	same-effect shadowing with ADVANCING states — the outer state survives the inner handle and resumes advanced
 pass	scan over an empty iterator emits just the seed
 pass	scan threads its accumulator left-to-right (an order-sensitive folder)
 pass	scan's kth emitted accumulator is the running fold of the first k elements

@@ -4585,7 +4585,8 @@ fn commits_to_replay(cherry_output: &str) -> Vec<String> {
 
 /// Map a repo-relative changed path to the coarse OWNERSHIP ZONE it belongs to, or `None` if the path
 /// doesn't map to a zone that a roster `area` names. Zones mirror the roster's `area` values where the
-/// top-level layout makes ownership UNAMBIGUOUS: `xtask/` (+ `fleet/`, which v-fleet-tooling owns) →
+/// top-level layout makes ownership UNAMBIGUOUS: `xtask/` (+ `fleet/` and `.cargo/`, the tracked
+/// build-throttle config, both v-fleet-tooling's) →
 /// "xtask"; `guide/` → "guide"; `spec/` → "spec"; `implementation/compiler-ml/` → "compiler-ml";
 /// `implementation/music/` → "music"; `implementation/cad/` → "cad"; `implementation/des/` → "des";
 /// `integrations/` → "integrations".
@@ -4602,6 +4603,7 @@ fn path_to_zone(path: &str) -> Option<&'static str> {
     const TABLE: &[(&str, &str)] = &[
         ("xtask/", "xtask"),
         ("fleet/", "xtask"), // v-fleet-tooling owns the fleet tooling + roster/loops source
+        (".cargo/", "xtask"), // the tracked build-throttle config (jobs cap) is fleet-tooling's
         ("guide/", "guide"),
         ("spec/", "spec"),
         ("integrations/", "integrations"),
@@ -6474,6 +6476,7 @@ mod tests {
     fn path_to_zone_maps_unambiguous_prefixes_only() {
         assert_eq!(path_to_zone("xtask/src/fleet.rs"), Some("xtask"));
         assert_eq!(path_to_zone("fleet/roster.json"), Some("xtask")); // fleet source is v-fleet-tooling's
+        assert_eq!(path_to_zone(".cargo/config.toml"), Some("xtask")); // build-throttle config is too
         assert_eq!(path_to_zone("guide/src/music/MusicPage.tsx"), Some("guide"));
         assert_eq!(
             path_to_zone("spec/semantics/06-numeric-model.sexp"),
