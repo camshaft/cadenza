@@ -1716,3 +1716,21 @@
            The rejection is the program's outcome; there is no value.")
   (input  (do (def (main) (tuple Int64 5)) (export main)))
   (error  CDZ0201))
+
+; A GENERIC newtype whose single variant's payload is a STRUCTURAL RECORD mentioning the type PARAMETER —
+; `(type Box (Box (Record (: v a) (: tag Int64))))` — must register `a` as a type parameter so the
+; constructor is GENERIC (a `(fn (a) (-> (Record …) (Box a)))` type-lambda), not nullary. The param scan
+; (`db::collect_type_params`) descends a record field's TYPE (skipping the name label), but originally only
+; the 2-element `(name Type)` pair spelling; the ML record-type surface `{v: a, tag: Int64}` lowers each
+; field to a 3-element `(: name Type)` annotation triple, so the param `a` nested in a field type was NOT
+; collected → `decl.params` empty → no ctor type-lambda → the free `a` in the ctor arrow made
+; `typeval_of` yield `None` → the ctor read NULLARY (CDZ0201 at construction). Building `(Box (record (v
+; 42) (tag 7)))` and reading its `tag` field = 7 pins that a record-field type parameter is collected (the
+; ctor is generic + constructs), the record companion of the `(Tuple a …)`/`(List a)` payload arms that
+; already descend params.
+(case "a generic newtype with a structural-record payload mentioning the type parameter constructs"
+  (input  (do
+            (type Box (Box (Record (: v a) (: tag Int64))))
+            (def (main) (match (Box (record (v 42) (tag 7))) ((Box r) (. r tag))))
+            (export main)))
+  (output (: 7 Int64)))

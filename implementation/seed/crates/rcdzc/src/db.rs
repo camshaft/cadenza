@@ -2501,14 +2501,37 @@ impl Db {
         // back together, so each `normalize_sum` reads the pre-rewrite template (a recursive newtype's
         // self-referential `Sum` back-edge normalizes to the SAME one-level-unfold `Nominal{inner:
         // template}` shape query-time `normalize_sum` already produces — finite, not re-expanded).
+        // ITERATE TO A FIXPOINT (PR#659 / Copilot): a single pass is NOT enough for a TRANSITIVE chain in
+        // reversed dependency order. `normalize_embedded_sums` stops at a produced `Ty::Nominal` WITHOUT
+        // descending its `inner` (a recursive newtype's `Sum` back-edge would loop); it relies on
+        // `normalize_sum` re-deriving that `inner` from the decl's OWN `newtype_inner[decl]` entry — so
+        // `Nominal{decl=B}.inner` is clean only if B's map entry is ALREADY normalized when A is rewritten.
+        // In a chain A→B→C declared A-first, one originals-then-write-back pass bakes `Nominal{decl=B,
+        // inner=<raw Sum{C}>}` into A, and the wasm backend recurses into `inner` (`valtype_of`/
+        // `is_heap_type`) → the erased-newtype-read-as-boxed-handle miscompile (invalid wasm) at transitive
+        // depth. Rewriting the whole map REPEATEDLY (each round reads the progressively-normalized map via
+        // `normalize_sum`) drives every `inner` clean regardless of declaration order. TERMINATES: a round
+        // only turns a raw keyed `Ty::Sum` into its `Nominal` (monotone, each occurrence flips at most once);
+        // a recursive newtype's back-edge normalizes to the SAME one-level `Nominal{inner: template}` shape
+        // every round (a fixed point, not re-expanded). Bounded by the key count as a non-convergence guard.
         let keyed: Vec<StructId> = db.newtype_inner.keys().copied().collect();
-        let mut renorm: Vec<(StructId, Ty)> = Vec::with_capacity(keyed.len());
-        for k in keyed {
-            let template = db.newtype_inner[&k].clone();
-            renorm.push((k, normalize_embedded_sums(&db, &template)));
-        }
-        for (k, t) in renorm {
-            db.newtype_inner.insert(k, t);
+        for _ in 0..=keyed.len() {
+            let mut changed = false;
+            let mut renorm: Vec<(StructId, Ty)> = Vec::with_capacity(keyed.len());
+            for &k in &keyed {
+                let template = db.newtype_inner[&k].clone();
+                let normalized = normalize_embedded_sums(&db, &template);
+                if normalized != template {
+                    changed = true;
+                }
+                renorm.push((k, normalized));
+            }
+            for (k, t) in renorm {
+                db.newtype_inner.insert(k, t);
+            }
+            if !changed {
+                break;
+            }
         }
         // ENUM-DISCRIMINANT REPRESENTATION: materialize which sums are C-style enums — MORE than one
         // variant, EVERY variant nullary. Such a value is just its discriminant, so the backend
@@ -5111,11 +5134,22 @@ fn collect_type_params(ast: &Arenas, occ: StructId, params: &mut Vec<String>) {
             ) =>
         {
             for &pair in children.iter().skip(1) {
-                if let Struct::List(items) = ast.get(pair)
-                    && items.len() == 2
-                {
-                    // The field TYPE (second element); the name (first) is a label, skipped.
-                    collect_type_params(ast, items[1], params);
+                if let Struct::List(items) = ast.get(pair) {
+                    // The field TYPE occurrence — the name is a label, skipped. A field is either a
+                    // 2-element `(name Type)` pair (s-expr `(Record (v a))`) OR a 3-element `(: name Type)`
+                    // annotation triple (the ML surface `{v: a}` lowering). Without the triple case, a
+                    // param mentioned in an ML-surfaced record field (`(type Box (Box (Record (: v a))))`)
+                    // was NOT collected → `decl.params` empty → no ctor type-lambda → the `a` in the ctor
+                    // arrow stayed free → `typeval_of` gave None → the ctor read NULLARY (CDZ0201 at
+                    // construction). The `collect_type_params` companion of the `(: name type)` decode the
+                    // RecordCtor reducers already accept.
+                    match items.as_slice() {
+                        [_name, ty] => collect_type_params(ast, *ty, params),
+                        [colon, _name, ty] if ast.as_name(*colon) == Some(":") => {
+                            collect_type_params(ast, *ty, params);
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -5843,6 +5877,19 @@ mod tests {
     /// asserted) template, and descending it would loop on a recursive newtype, exactly as the pass does
     /// not descend it.
     fn assert_no_keyed_sum(db: &Db, t: &crate::ty::Ty, ctx: &str) {
+        assert_no_keyed_sum_guarded(db, t, ctx, &mut std::collections::HashSet::new());
+    }
+
+    // Walks `t` asserting NO raw `Ty::Sum` naming a keyed newtype survives — including TRANSITIVELY inside a
+    // `Ty::Nominal.inner` (PR#659: the wasm backend recurses into `inner` via `valtype_of`/`is_heap_type`, so
+    // a raw keyed `Sum` there is a real miscompile). `visited` holds the `Nominal` decls already descended so
+    // a RECURSIVE newtype's `inner` (whose back-edge re-references its own decl) does not loop.
+    fn assert_no_keyed_sum_guarded(
+        db: &Db,
+        t: &crate::ty::Ty,
+        ctx: &str,
+        visited: &mut std::collections::HashSet<StructId>,
+    ) {
         use crate::ty::Ty;
         match t {
             Ty::Sum { decl, name, args } => {
@@ -5851,29 +5898,38 @@ mod tests {
                     "a raw Ty::Sum naming the KEYED newtype `{name}` survives in {ctx} — 9939 residual"
                 );
                 for a in args.iter() {
-                    assert_no_keyed_sum(db, a, ctx);
+                    assert_no_keyed_sum_guarded(db, a, ctx, visited);
                 }
             }
-            Ty::Nominal { args, .. } => {
-                // Only the identity args are walked; `inner` is the derived, un-descended hint.
+            Ty::Nominal {
+                decl, args, inner, ..
+            } => {
                 for a in args.iter() {
-                    assert_no_keyed_sum(db, a, ctx);
+                    assert_no_keyed_sum_guarded(db, a, ctx, visited);
+                }
+                // Descend `inner` too (a transitive keyed `Sum` here IS a miscompile), guarding against a
+                // recursive newtype's self-referential back-edge with the visited-decl set.
+                if visited.insert(*decl) {
+                    assert_no_keyed_sum_guarded(db, inner, ctx, visited);
+                    visited.remove(decl);
                 }
             }
-            Ty::Tuple(elems) => elems.iter().for_each(|e| assert_no_keyed_sum(db, e, ctx)),
-            Ty::List(e) | Ty::Set(e) => assert_no_keyed_sum(db, e, ctx),
+            Ty::Tuple(elems) => elems
+                .iter()
+                .for_each(|e| assert_no_keyed_sum_guarded(db, e, ctx, visited)),
+            Ty::List(e) | Ty::Set(e) => assert_no_keyed_sum_guarded(db, e, ctx, visited),
             Ty::Map(k, v) => {
-                assert_no_keyed_sum(db, k, ctx);
-                assert_no_keyed_sum(db, v, ctx);
+                assert_no_keyed_sum_guarded(db, k, ctx, visited);
+                assert_no_keyed_sum_guarded(db, v, ctx, visited);
             }
             Ty::Fn(p, r) => {
-                assert_no_keyed_sum(db, p, ctx);
-                assert_no_keyed_sum(db, r, ctx);
+                assert_no_keyed_sum_guarded(db, p, ctx, visited);
+                assert_no_keyed_sum_guarded(db, r, ctx, visited);
             }
             Ty::Record(fields) => fields
                 .values()
-                .for_each(|f| assert_no_keyed_sum(db, f, ctx)),
-            Ty::Qty { inner, .. } => assert_no_keyed_sum(db, inner, ctx),
+                .for_each(|f| assert_no_keyed_sum_guarded(db, f, ctx, visited)),
+            Ty::Qty { inner, .. } => assert_no_keyed_sum_guarded(db, inner, ctx, visited),
             _ => {}
         }
     }
@@ -5948,5 +6004,39 @@ mod tests {
         // and `Seq`'s own self-reference (a boxed `Sum{Seq}` back-edge — Seq is keyed) is likewise
         // normalized to its `Nominal` at every occurrence in the stored template.
         assert_no_keyed_sum(&db, seq_inner, "Seq's stored template");
+    }
+
+    /// PR#659 (Copilot): a TRANSITIVE newtype chain A→B→C declared in REVERSED dependency order (A first)
+    /// must have NO raw keyed `Ty::Sum` left inside a `Nominal.inner` at ANY depth of A's stored template.
+    /// A single re-normalize pass baked `Nominal{decl=B, inner=<raw Sum{C}>}` into A (B's own template was
+    /// still raw when A was rewritten), and the wasm backend recurses into `inner` (`valtype_of`/
+    /// `is_heap_type`) → the erased-newtype-read-as-boxed-handle miscompile (invalid wasm) at transitive
+    /// depth. The fixpoint iteration drives every `inner` clean regardless of declaration order. Uses the
+    /// `inner`-descending `assert_no_keyed_sum` (cycle-guarded) so a residual at depth is actually caught.
+    #[test]
+    fn a_transitive_newtype_chain_in_reversed_order_erases_at_every_inner_depth() {
+        // A wraps B wraps C wraps Int64, declared A-FIRST (reversed dependency order — the failing case).
+        let ast = crate::testkit::parse(
+            "(do \
+               (type A (A B Int64)) \
+               (type B (B C Int64)) \
+               (type C (C Int64)) \
+               (def (main) 0) (export main))",
+        );
+        let db = Db::load(ast);
+        let occ_of = |name: &str| {
+            db.type_decls
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("type {name}"))
+                .occ
+        };
+        // A's stored template — walked WITH `Nominal.inner` descent — must carry no raw keyed `Sum` at any
+        // transitive depth (the `B`-nominal's inner must not hold a raw `Sum{C}`).
+        let a_inner = db
+            .newtype_inner
+            .get(&occ_of("A"))
+            .expect("A is an erasable newtype");
+        assert_no_keyed_sum(&db, a_inner, "A's stored template (transitive)");
     }
 }
