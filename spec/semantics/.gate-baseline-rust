@@ -1537,6 +1537,10 @@ pass	a nullary variant applied to a non-unit payload rejects even when construct
 pass	a nullary variant applied to unit constructs correctly through the application path
 pass	a nullary variant list element dispatches by its discriminant
 pass	a nullary-variant dotted pattern matches inside a match nested directly in an arm body
+pass	a newtype match-arm destructure reads the erased scalar back
+pass	a newtype wrapping a heap list compares by the inner heap walk
+pass	a newtype-wrapped scalar as a map key looks up through the erasure
+pass	a newtype-wrapped scalar as a set element deduplicates through the erasure
 pass	a one-concat rope nested in a tuple equals its flat twin
 pass	a one-element tuple pattern against a two-tuple is a type error
 pass	a one-shot handler arm folds a body with TWO performs by re-reducing the continuation

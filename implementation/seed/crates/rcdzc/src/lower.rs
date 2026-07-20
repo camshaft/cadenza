@@ -13106,6 +13106,14 @@ impl ShapeTableBuilder {
                 self.table[self_ix as usize] = ShapeNode::Named(name.clone(), inner_ix);
                 self_ix
             }
+            // A QUANTITY erases to its inner scalar at runtime (the unit is a compile-time concern carried
+            // only in the solved `Ty::Qty`), so its RUNTIME SHAPE is exactly its inner's shape — peel `Ty::Qty`
+            // to the inner and recurse. This is what lets a quantity be an element of a compound Map/Set KEY (a
+            // `(List (Qty Int64 meter))` / `(Tuple (Qty …) …)` key): the key comparator/hasher canonicalizes
+            // on the erased magnitude, matching how a bare flat `(Qty …)` key already hashes by its inner. The
+            // VALUE-render frame (`type_node_of`) still declines a bare Qty element (the unit-labelled type node
+            // is a later slice), so this newly enables only the descriptor/key path, not a Qty value-render.
+            Ty::Qty { inner, .. } => self.shape_of(db, inner)?,
             // Float payload rendering is a later slice — decline (the escape falls through). Str/Bytes are
             // supported (→ `ShapeNode::Str`/`Bytes`, above); the runtime `value-encode` renders their leaves.
             _ => return None,

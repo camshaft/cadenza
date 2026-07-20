@@ -81,3 +81,16 @@ locus localized (propagate the closure-result inner-element tie into the monomor
 backend reads); DEEP + regression-risky, v-inference banking it for a fresh-context tick (has a 2-MR stack
 queued). Will ping corpus-bugfix to pin gmap-aggregate (rust+wasm green) on land; v-rust-backend co-adds rust
 gate pin. [[queued-generic-transformer-closure-tie]]
+
+## ESCALATED TO DESIGN/ARCHITECTURE ITEM (v-inference, 2026-07-20, after 4 probes)
+NOT a small tie fix — a per-call-MONOMORPHIZATION architecture gap. Established: (1) rust emits the ORIGINAL
+generic gmap (no gmap$Int64 specialization); (2) type_specialize does NOT fire for gmap here (WHY = the crux);
+(3) the (Tuple Any Any) is untied across the WHOLE chain (gmap f-result → gmap Iter-result → icount param) —
+skipping the seed just MOVED the decline to icount (whack-a-mole); a fill_holes guard was inert. wasm computes
+(erases Any); rust needs concrete → declines "no native Rust representation" (SOUND emit — annotating grounds
+it perfectly). REAL fix = make generic recursive transformers SPECIALIZE per-call for the rust backend =
+a monomorphization-architecture change, NOT a quick patch. LOW urgency (cross-backend completeness gap; wasm
+computes, rust declines cleanly — NO miscompile, NO wasm regression). v-inference takes the dedicated build
+when prioritized OR a rust consumer forces it. TRACKING: keep as a (declines-on-rust) DESIGN marker, not
+awaiting a near-term fix. corpus-bugfix: consider a (declines-on-rust / computes-on-wasm) corpus witness to
+guard the current divergence (flips to all-green when the architecture lands). [[queued-generic-transformer-closure-tie]]

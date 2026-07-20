@@ -2275,6 +2275,49 @@
   (call   main (: 5 Int64))
   (output (: 5/2 Rational)))
 
+; --- Quantity inside a COMPOUND key (list-of-Qty / tuple-of-Qty): key canonicalization -------------
+; A list-typed or list-CONTAINING Map/Set key is CANONICALIZED at the key site (value-canonicalize into
+; the correct CHAMP slot), which bakes the key type's shape descriptor. A quantity element erases to its
+; inner scalar, so the shape builder must peel `Ty::Qty` to the inner — without the peel a compound key
+; that CONTAINS a quantity (a `(List (Qty …))` / `(Tuple (Qty …) …)` key) DECLINED to compile
+; ("list-key canonicalization: key type has no bakeable shape descriptor"). These pin the peel.
+
+(case "a list-of-quantities used as a Map key canonicalizes and hits"
+  (doc    "`(list (Qty v m) (Qty (+ v 1) m))` as a Map key: a list-CONTAINING key is canonicalized at the
+           key site, which bakes the key's shape descriptor. The quantity elements erase to their inner
+           scalars, so the shape builder peels `Ty::Qty` to the inner (a list-of-Qty hashes exactly as a
+           list-of-Int). A separately-built equal list-of-Qty key HITS (42); one differing in a quantity
+           element MISSES (0). Combined = 42. Pins that a quantity is a valid COMPOUND-key element (before
+           the peel this DECLINED at compile time).")
+  (input  (do
+            (def (main (: v Int64))
+              (let ((k (list (Qty.of v (Unit.base #"meter")) (Qty.of (+ v 1) (Unit.base #"meter"))))
+                    (m (Map.insert (Map.empty) k 42)))
+                (+ (match (Map.lookup m (list (Qty.of v (Unit.base #"meter"))
+                                              (Qty.of (+ v 1) (Unit.base #"meter"))))
+                     ((Some found) found) ((None) 0))
+                   (match (Map.lookup m (list (Qty.of v (Unit.base #"meter"))
+                                              (Qty.of (+ v 2) (Unit.base #"meter"))))
+                     ((Some found) found) ((None) 0)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 42 Int64)))
+
+(case "a Set of lists-of-quantities dedups equal members and keeps distinct ones"
+  (doc    "The Set twin, on the canonicalization path: `Set.of` over two `(list (Qty …))` members. Two equal
+           lists-of-quantities canonicalize to the same CHAMP slot and dedup to `Set.len` 1; lists differing
+           in a quantity element stay `Set.len` 2. Combined `dedup + 10*distinct` = 21. Pins the compound-key
+           quantity-element peel through Set canonicalization.")
+  (input  (do
+            (def (main (: v Int64))
+              (+ (Set.len (Set.of (list (list (Qty.of v (Unit.base #"meter")))
+                                        (list (Qty.of v (Unit.base #"meter"))))))
+                 (* 10 (Set.len (Set.of (list (list (Qty.of v (Unit.base #"meter")))
+                                              (list (Qty.of (+ v 1) (Unit.base #"meter")))))))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 21 Int64)))
+
 ; --- Quantity joins: the same-unit flow and the explicit-conversion repair --------------------------
 ; 806e45ba9 fixed the mixed-unit join DIAGNOSTIC (a scale clash, not a shadowed declaration). These
 ; pin the join semantics around it, promoted from passing breaker probes: a same-unit join is ONE
