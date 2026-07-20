@@ -2796,6 +2796,31 @@ fn is_type_reflection_module(db: &mut Db, id: StructId) -> bool {
 }
 
 pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
+    // READ-THROUGH MEMO (post-load only). `typeval_of` is env-free and deterministic per `StructId` once
+    // the load-time newtype precompute+fixpoint has run, so a node's denoted type-VALUE caches. Without it
+    // a wide structural-record type ANNOTATION re-reduces from scratch at each of its ~1M referencing uses
+    // (resolve→infer→lower), exhausting the per-query reduction budget → spurious CDZ0999 (the DB-records
+    // whole-project case). Only `Some` is cached: a `None` may be BUDGET-induced (`enter_reduction`
+    // declines near the limit) and `reduce_nodes` resets per query, so a real later demand must be free to
+    // recompute it under a fresh budget. Gated on `typeval_memo_live` — off during the pre-normalization
+    // precompute (a `Ty::Sum` reduced before `newtype_inner` is complete must not be captured); the
+    // per-node entry is invalidated by `resolve::forget_subtree` when a lowering-time re-parent changes the
+    // node's resolved form.
+    if db.typeval_memo_live
+        && let crate::arena::Slot::Filled(t) = db.typeval.get(id)
+    {
+        return Some(t.clone());
+    }
+    let result = typeval_of_uncached(db, id);
+    if db.typeval_memo_live
+        && let Some(t) = &result
+    {
+        db.typeval.fill(id, t.clone());
+    }
+    result
+}
+
+fn typeval_of_uncached(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
     // A TYPE-VALUED PARAMETER used in a type position — `(: t Type)`'s `t`, referenced as a bare type
     // `(: b t)` or as a type-constructor argument `(: b (Box t))`. At the DEFINITION site the parameter's
     // concrete type-value is unknown (it arrives at the call), so `t` reduces to a stable TYPE VARIABLE
