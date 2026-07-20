@@ -311,3 +311,60 @@ fn metadata_resolved_files_report_only_existing_files() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn metadata_surfaces_manifest_warnings_so_null_malformed_is_distinguishable_from_null_absent() {
+    // `cdz metadata` resolves via `load_manifest` (it never builds), so the stderr warnings the project
+    // COMMANDS emit via `resolve_project_manifest` (malformed `name`/`opt-level`, duplicate keys) never fire
+    // here. A machine consumer reading ONLY `cdz metadata` would then see `"name":null` with no way to tell
+    // a MALFORMED value (wrong type, silently dropped) from an ABSENT one. The `warnings` array is the
+    // machine-readable twin: populated when a field was silently dropped, EMPTY for a clean manifest — so a
+    // tool learns WHY a field is null.
+    // Case 1: malformed `name` + malformed `opt-level` + a duplicate key → three warnings.
+    let dir = std::env::temp_dir().join(format!("cdz-metadata-warn-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Project.cdz"),
+        "def name = 42\ndef entry = \"a.cdz\"\ndef entry = \"b.cdz\"\ndef opt-level = 99\n",
+    )
+    .unwrap();
+    let (ok, out, err) = run_in(&dir, &["metadata", "."]);
+    assert!(ok, "metadata succeeds (read-only report): {err}");
+    assert!(
+        out.contains("\"name\":null"),
+        "malformed name → null: {out}"
+    );
+    let warnings = json_array(&out, "warnings").expect("warnings array present");
+    assert!(
+        warnings.contains("`name` is not a string"),
+        "the malformed name is reported as a warning: {warnings}"
+    );
+    assert!(
+        warnings.contains("`opt-level` is not a string"),
+        "the malformed opt-level is reported: {warnings}"
+    );
+    assert!(
+        warnings.contains("more than once"),
+        "the duplicate `entry` key is reported: {warnings}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Case 2: an ABSENT name → `"name":null` too, but NO warning — this is the distinction the array buys.
+    let dir2 = std::env::temp_dir().join(format!("cdz-metadata-absent-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir2);
+    std::fs::create_dir_all(&dir2).unwrap();
+    std::fs::write(dir2.join("Project.cdz"), "def entry = \"a.cdz\"\n").unwrap();
+    let (ok2, out2, _e2) = run_in(&dir2, &["metadata", "."]);
+    assert!(ok2, "metadata succeeds on an absent-name manifest");
+    assert!(
+        out2.contains("\"name\":null"),
+        "absent name → null too: {out2}"
+    );
+    assert_eq!(
+        json_array(&out2, "warnings").expect("warnings array present"),
+        "[]",
+        "an ABSENT (not malformed) name emits NO warning — null-absent is distinguishable from null-malformed: {out2}"
+    );
+    let _ = std::fs::remove_dir_all(&dir2);
+}
