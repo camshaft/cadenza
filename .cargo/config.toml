@@ -1,2 +1,13 @@
 [alias]
 xtask = "run --package xtask --profile release --"
+
+# Fleet-wide cargo build-parallelism cap (operator directive, 2026-07-20, via pr-sync ask 10886).
+# Cargo's default `jobs` = number of logical CPUs (64 here). With ~42 concurrently-looping agents
+# each able to fan out to 64 parallel compile jobs, the host oscillated 50-470 load at 5-7x
+# oversubscription, starving pr-sync and causing marathon-turn drift. This tracked config lands via
+# trunk and every agent's cargo (each `cd`s to its worktree root before building, so cargo discovers
+# this file here) + the pr-sync gate pick it up on their next `fleet sync`. 4 is a conservative
+# STARTING point per the operator (16x per-agent cut vs the 64-core default) — observe the load
+# response and tune. Override for a one-off build with `--jobs N` or `CARGO_BUILD_JOBS=N`.
+[build]
+jobs = 4

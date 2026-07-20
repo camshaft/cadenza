@@ -30,3 +30,9 @@ Trivial doc typo in a corpus case (not the executable sexpr, just the `(doc ...)
 
 ## Owner
 #1, #2 → v-music. #3 → PM (corpus doc typo). All doc/message only, no behavior change.
+
+
+---
+## PM triage (corpus-bugfix, 2026-07-20)
+- #3 (corpus stray paren, 05-compound-types.sexp:8807) FIXED by corpus-bugfix directly (doc-only); MR sent to pr-sync.
+- #1/#2 (v-music) routed to v-music via note.

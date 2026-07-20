@@ -4456,6 +4456,22 @@
   (call   main (: 1 Int64))
   (output (: 1/3 Rational)))
 
+(case "runtime Rational MULTIPLICATION of two parameter-built fractions reduces to lowest terms"
+  (doc    "The MULTIPLY companion of the runtime-Rational add cases above (add is pinned at :4282/:4455; the
+           only Rational mul was CONST at :229). `(* (Rational.of a 3) (Rational.of 3 4))` = a/4 exactly,
+           with the shared 3 CROSS-CANCELLING under lowest-terms reduction — a runtime rational multiply
+           (widen to BigInt, multiply numerators/denominators, gcd-reduce). Encodes `1000·numerator +
+           denominator` of the reduced result: a=2 → (2/3)·(3/4) = 6/12 = 1/2 → 1002; a=8 → (8/3)·(3/4) =
+           24/12 = 2/1 (a WHOLE rational, denominator 1) → 2001. Pins that the runtime rational multiply
+           reduces exactly (the 3s cancel, then gcd), matching the const fold, on both backends.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((r (* (Rational.of a 3) (Rational.of 3 4))))
+                (+ (* 1000 (Int64.of (Rational.numerator r))) (Int64.of (Rational.denominator r)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 1002 Int64))
+  (call   main (: 8 Int64)) (output (: 2001 Int64)))
+
 (case "a RUNTIME-built Rational is usable as a map key, matched by its exact value"
   (doc    "The runtime companion of the constant Rational-map-key case: `(Rational.of a 2)` with a
            RUNTIME `a` builds the key via the `rational-of` runtime op (widen `a`+`2` to BigInt, then
