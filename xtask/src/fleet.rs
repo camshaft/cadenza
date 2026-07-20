@@ -3551,6 +3551,72 @@ fn sync(fleet: &Fleet, force: bool) {
         }
     }
 
+    // FOREIGN-COMMIT WARNING (non-destructive; the coordination-integrity report from fuzzer, v-des,
+    // v-diagnostics, v-compiler-perf, github-liaison). `git cherry` is patch-id-based but the replay set
+    // it feeds us is only as clean as `old_head`: if the agent's base transiently carried a PEER's
+    // unlanded WIP (the shared `trunk` ref sat on a pr-sync TEST-integrate tip, or was reset to a stale
+    // sha, during a sync/reset window), that peer commit is genuinely not-upstream → marked `+` → about
+    // to be replayed onto this branch. We do NOT drop it (misjudged ownership on this reset+replay
+    // hot-path could lose real work) — we NAME the suspected-foreign commit + its out-of-lane paths so
+    // the agent never accidentally `fleet send`s a peer's commit as its own MR. Signal = CHANGED-PATHS
+    // vs the agent's roster ZONE (sound, unlike the reachability heuristic that false-flagged shared-base
+    // own-commits). Conservative: only whole-commit unambiguous cross-zone mismatches warn. Skipped
+    // silently if we can't resolve our agent name or its zone.
+    if !replay.is_empty() {
+        let branch = git_stdout(&["rev-parse", "--abbrev-ref", "HEAD"]);
+        let my_zone = sender_from_branch_name(&branch)
+            .and_then(|me| {
+                fleet
+                    .load_roster()
+                    .agents
+                    .into_iter()
+                    .find(|a| a.name == me)
+                    .map(|a| a.area)
+            })
+            .unwrap_or_default();
+        if !my_zone.is_empty() {
+            let foreign: Vec<(String, Vec<String>)> = replay
+                .iter()
+                .filter_map(|sha| {
+                    let paths: Vec<String> = git_stdout(&["show", "--name-only", "--format=", sha])
+                        .lines()
+                        .map(|l| l.trim().to_string())
+                        .filter(|l| !l.is_empty())
+                        .collect();
+                    commit_is_foreign_to_lane(&paths, &my_zone).then_some((sha.clone(), paths))
+                })
+                .collect();
+            if !foreign.is_empty() {
+                eprintln!(
+                    "fleet sync: ⚠ {} of your {} unlanded commit(s) touch ONLY files outside your lane \
+                     (zone '{my_zone}') — likely a PEER's in-flight work your base transiently carried, \
+                     NOT yours:",
+                    foreign.len(),
+                    replay.len()
+                );
+                for (sha, paths) in &foreign {
+                    let shown: Vec<&str> = paths.iter().take(3).map(String::as_str).collect();
+                    let more = if paths.len() > 3 {
+                        format!(" (+{} more)", paths.len() - 3)
+                    } else {
+                        String::new()
+                    };
+                    eprintln!(
+                        "    {} → {}{more}",
+                        &sha[..sha.len().min(9)],
+                        shown.join(", ")
+                    );
+                }
+                eprintln!(
+                    "  This sync will still replay them (never dropped, so nothing is lost), but do NOT \
+                     `fleet send` these to pr-sync — that would hijack the peer's MR. If they aren't \
+                     yours, `git reset --hard {TRUNK}` after this sync to shed them (safe when you have \
+                     no own WIP), or cherry-pick back ONLY your own commits before sending."
+                );
+            }
+        }
+    }
+
     // Land on the integrated tip.
     if !git_ok(&["reset", "--hard", TRUNK]) {
         eprintln!("fleet sync: `git reset --hard {TRUNK}` failed.");
@@ -4292,6 +4358,67 @@ fn commits_to_replay(cherry_output: &str) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// Map a repo-relative changed path to the coarse OWNERSHIP ZONE it belongs to, or `None` if the path
+/// doesn't map to a zone that a roster `area` names. Zones mirror the roster's `area` values where the
+/// top-level layout makes ownership UNAMBIGUOUS: `xtask/` (+ `fleet/`, which v-fleet-tooling owns) →
+/// "xtask"; `guide/` → "guide"; `spec/` → "spec"; `implementation/compiler-ml/` → "compiler-ml";
+/// `implementation/music/` → "music"; `implementation/cad/` → "cad"; `implementation/des/` → "des";
+/// `integrations/` → "integrations".
+///
+/// Deliberately CONSERVATIVE — it returns `None` for anything under `implementation/seed/crates/*`
+/// (rcdzc, cdz, cadenza-syntax, runtime, … all co-live there and 15+ verticals share `area: rcdzc`, so
+/// a crate path can't be attributed to ONE agent) and for any other unmapped path. The lane guard only
+/// warns when EVERY changed path in a replay commit maps to a zone that ISN'T the syncing agent's, so a
+/// `None` (unknown-owner) path SUPPRESSES the warning — a false-negative (no warning) is safe, whereas a
+/// false-positive that flags an agent's OWN work is what sank the earlier reachability heuristic. Match
+/// longest/most-specific prefix first.
+fn path_to_zone(path: &str) -> Option<&'static str> {
+    // (prefix, zone) — most-specific first so `implementation/compiler-ml/` wins over any broader rule.
+    const TABLE: &[(&str, &str)] = &[
+        ("xtask/", "xtask"),
+        ("fleet/", "xtask"), // v-fleet-tooling owns the fleet tooling + roster/loops source
+        ("guide/", "guide"),
+        ("spec/", "spec"),
+        ("integrations/", "integrations"),
+        ("implementation/compiler-ml/", "compiler-ml"),
+        ("implementation/music/", "music"),
+        ("implementation/cad/", "cad"),
+        ("implementation/des/", "des"),
+    ];
+    let p = path.trim();
+    TABLE
+        .iter()
+        .find(|(prefix, _)| p.starts_with(prefix))
+        .map(|(_, zone)| *zone)
+}
+
+/// Whether a replay commit (identified by its list of changed repo-relative paths) is FOREIGN to the
+/// syncing agent's lane — i.e. EVERY changed path maps to a known ownership zone OTHER than `my_zone`,
+/// with at least one path mapping to a known zone. This is the sound, changed-paths-based signal that
+/// replaces the unsound reachability heuristic: a commit that touches only `guide/` files replayed onto
+/// the `xtask`-lane fleet-tooling branch is clearly a peer's work the base transiently carried.
+///
+/// CONSERVATIVE by construction (false-negatives over false-positives): returns `false` (NOT foreign, no
+/// warning) if ANY changed path is in `my_zone`, OR if ANY changed path is unmappable (`path_to_zone`
+/// None — e.g. an `implementation/seed/crates/*` shared-crate path we can't attribute), OR if `my_zone`
+/// is empty/unknown, OR if there are no changed paths. So the guard stays silent whenever ownership is
+/// the least bit ambiguous, and only speaks up on an unambiguous whole-commit cross-zone mismatch. Pure
+/// + unit-testable.
+fn commit_is_foreign_to_lane(changed_paths: &[String], my_zone: &str) -> bool {
+    if my_zone.is_empty() || changed_paths.is_empty() {
+        return false;
+    }
+    let mut saw_known = false;
+    for path in changed_paths {
+        match path_to_zone(path) {
+            None => return false, // unattributable path → could be mine → stay silent
+            Some(z) if z == my_zone => return false, // touches my lane → not foreign
+            Some(_) => saw_known = true, // a known OTHER zone
+        }
+    }
+    saw_known
 }
 
 /// Whether `git cherry <trunk> <ref>` output says `<ref>`'s patch is ALREADY upstream (landed) — i.e.
@@ -5973,6 +6100,95 @@ mod tests {
         );
         // A `+ <sha> <subject>` form (some git configs append the subject) keeps just the sha.
         assert_eq!(commits_to_replay("+ 9999 wip: something"), vec!["9999"]);
+    }
+
+    #[test]
+    fn path_to_zone_maps_unambiguous_prefixes_only() {
+        assert_eq!(path_to_zone("xtask/src/fleet.rs"), Some("xtask"));
+        assert_eq!(path_to_zone("fleet/roster.json"), Some("xtask")); // fleet source is v-fleet-tooling's
+        assert_eq!(path_to_zone("guide/src/music/MusicPage.tsx"), Some("guide"));
+        assert_eq!(
+            path_to_zone("spec/semantics/06-numeric-model.sexp"),
+            Some("spec")
+        );
+        assert_eq!(
+            path_to_zone("implementation/compiler-ml/src/sread.cdz"),
+            Some("compiler-ml")
+        );
+        assert_eq!(
+            path_to_zone("implementation/music/src/piece.cdz"),
+            Some("music")
+        );
+        assert_eq!(
+            path_to_zone("integrations/slack/bridge.rs"),
+            Some("integrations")
+        );
+        // Shared-crate paths are DELIBERATELY unattributable (15+ verticals share area=rcdzc) → None.
+        assert_eq!(
+            path_to_zone("implementation/seed/crates/rcdzc/src/infer.rs"),
+            None
+        );
+        assert_eq!(
+            path_to_zone("implementation/seed/crates/cdz/src/main.rs"),
+            None
+        );
+        assert_eq!(
+            path_to_zone("implementation/seed/crates/cadenza-syntax/src/lib.rs"),
+            None
+        );
+        // Other unmapped paths → None (leading/trailing whitespace tolerated).
+        assert_eq!(path_to_zone("README.md"), None);
+        assert_eq!(path_to_zone("  xtask/src/main.rs "), Some("xtask"));
+    }
+
+    #[test]
+    fn commit_is_foreign_to_lane_flags_only_unambiguous_cross_zone() {
+        let p = |s: &str| s.to_string();
+        // All paths in a DIFFERENT zone → foreign (the reported case: guide/music commit on xtask lane).
+        assert!(commit_is_foreign_to_lane(
+            &[
+                p("guide/src/music/MusicPage.tsx"),
+                p("guide/scripts/stage-wasm.mjs")
+            ],
+            "xtask"
+        ));
+        // A liaison (or any agent) whose zone differs from every changed path → foreign.
+        assert!(commit_is_foreign_to_lane(
+            &[p("implementation/compiler-ml/src/parse-db.cdz")],
+            "xtask"
+        ));
+        // ANY path in MY zone → not foreign (even mixed with other zones — could be a legit cross-cut).
+        assert!(!commit_is_foreign_to_lane(
+            &[p("guide/x.tsx"), p("xtask/src/fleet.rs")],
+            "xtask"
+        ));
+        // ANY unattributable path → not foreign (conservative: could be mine; a shared-crate path).
+        assert!(!commit_is_foreign_to_lane(
+            &[
+                p("guide/x.tsx"),
+                p("implementation/seed/crates/rcdzc/src/infer.rs")
+            ],
+            "xtask"
+        ));
+        // A commit entirely in unmappable paths → not foreign (no known zone at all).
+        assert!(!commit_is_foreign_to_lane(
+            &[p("implementation/seed/crates/cdz/src/main.rs")],
+            "xtask"
+        ));
+        // Empty zone (couldn't resolve the agent's area) → never foreign.
+        assert!(!commit_is_foreign_to_lane(&[p("guide/x.tsx")], ""));
+        // No changed paths → never foreign.
+        assert!(!commit_is_foreign_to_lane(&[], "xtask"));
+        // My own zone's commit → not foreign (the false-positive the reachability version produced).
+        assert!(!commit_is_foreign_to_lane(
+            &[p("xtask/src/main.rs")],
+            "xtask"
+        ));
+        // A compiler-ml agent seeing a guide commit → foreign (symmetry check, different my_zone).
+        assert!(commit_is_foreign_to_lane(
+            &[p("guide/x.tsx")],
+            "compiler-ml"
+        ));
     }
 
     #[test]
