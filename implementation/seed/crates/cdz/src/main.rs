@@ -7747,7 +7747,10 @@ fn is_ml_source(file: &str) -> bool {
 ///
 /// Recognized defs (all relative to the manifest's own directory). A file list (`modules`/`tests`/
 /// `exclude`) entry may be a literal name OR a GLOB (`*.cdz`, `sub/*.cdz`, `**/x.cdz`).
-/// - `def name = "…"`            — the project name (display only).
+/// - `def name = "…"`            — the project name. NOT display-only: it becomes the published
+///   package interface segment `cadenza:<name>/api` that a DEPENDENT binds against, so it must be a valid
+///   lowercase interface segment (a `--check`-style `name_malformed`/dep-name validation enforces this);
+///   falls back to the manifest's DIRECTORY name when absent.
 /// - `def entry = "main.cdz"`     — the entry module `cdz build`/`run` compiles as the component root.
 /// - `def modules = ["a.cdz", …]` — the library modules the package links (the entry's importables).
 /// - `def tests = ["*.cdz", …]`   — the modules whose `@test` defs `cdz test` runs.

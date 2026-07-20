@@ -640,50 +640,6 @@ fn ml_per_file_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(12 * 60) // 2× the measured ~300s worst-case file, a hang bound
 }
 
-/// One worker's captured outcome for a single `cdz test <file>` in the parallel per-file sweep. The
-/// worker records this into its slot; the main thread replays them in file order for an order-stable log.
-struct PerFileResult {
-    verdict: PerFileVerdict,
-}
-
-/// The four ways a per-file `cdz test` can end — mirrors the arms of the old serial `wait_with_timeout`
-/// match, but as owned data so the verdict can cross the worker→main-thread boundary before it's acted on.
-enum PerFileVerdict {
-    /// The child exited within the cap; `ok` is `status.success()`. Output is captured for the log.
-    Ran {
-        stdout: Vec<u8>,
-        stderr: Vec<u8>,
-        ok: bool,
-    },
-    /// Killed for exceeding the per-file cap (runaway compile) after `elapsed` seconds.
-    TimedOut { elapsed: u64 },
-    /// The child could not be spawned at all.
-    LaunchErr(String),
-    /// The wait itself errored (an io failure, not a child verdict).
-    WaitErr(String),
-}
-
-/// How many compiler-ml `cdz test` files to run CONCURRENTLY in the per-file gate sweep. Each job is a
-/// full-pipeline WASM compile (memory-heavy — every run-src `@test` builds the whole pipeline into its
-/// own component), and the gate host is SHARED with the rest of the fleet, so the default is deliberately
-/// conservative — `min(cores, 4)`, not all cores. The suite's wall-clock is a SUM of per-file compiles
-/// dominated by ONE ~480s file (sread-eval), so even a few jobs collapse the serial ~45min sum toward
-/// that single-file floor without risking OOM under fleet load. `CDZ_ML_JOBS` overrides (an operator
-/// throughput/pressure lever); `=0`/garbage falls back to the default; the result is clamped to
-/// `[1, file_count]` so we never spawn idle workers.
-fn ml_test_jobs(file_count: usize) -> usize {
-    let cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-    let default = cores.clamp(1, 4);
-    let jobs = std::env::var("CDZ_ML_JOBS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(default);
-    jobs.clamp(1, file_count.max(1))
-}
-
 /// Like `Child::wait_with_output`, but with a hard wall-clock `timeout`. Returns `Ok(Some(output))` if
 /// the child exited within the deadline, `Ok(None)` if it was KILLED for exceeding it (a hang), or the
 /// underlying io error. Drains stdout+stderr on reader threads so a child that fills a pipe buffer
@@ -4205,8 +4161,6 @@ impl Log {
         whole_suite_timeout: std::time::Duration,
     ) {
         use std::io::Write;
-        use std::sync::Mutex;
-        use std::sync::atomic::{AtomicUsize, Ordering};
         if let Some(c) = cache
             && c.is_green()
         {
@@ -4260,89 +4214,41 @@ impl Log {
         }
 
         let per_file = ml_per_file_timeout();
-        let jobs = ml_test_jobs(files.len());
         writeln!(
             self.file,
-            "\n==== {name}: {} file(s), {jobs} concurrent job(s), per-file cap {}s ====",
+            "\n==== {name}: {} file(s), per-file cap {}s ====",
             files.len(),
             per_file.as_secs()
         )
         .ok();
         self.file.flush().ok();
 
-        // Run the files CONCURRENTLY (bounded worker pool pulling from a shared cursor), each still
-        // under the per-file cap. The suite's wall-clock is a SUM of per-file full-pipeline compiles
-        // dominated by one ~480s file, so overlapping them collapses the serial ~45min sum toward that
-        // single-file floor. Each worker captures its own file's output + verdict into its own slot;
-        // the main thread then writes them to the log IN FILE ORDER and dump-exits on the FIRST failure
-        // — so the captured log and the "FAILED at <file>" localization are byte-for-byte what the old
-        // serial loop produced, independent of the order workers happened to finish in. No shared
-        // mutable state across workers: each spawns its own child and writes only its own slot.
-        let n = files.len();
-        let slots: Vec<Mutex<Option<PerFileResult>>> = (0..n).map(|_| Mutex::new(None)).collect();
-        let cursor = AtomicUsize::new(0);
-        std::thread::scope(|scope| {
-            for _ in 0..jobs {
-                let cursor = &cursor;
-                let slots = &slots;
-                let files = &files;
-                scope.spawn(move || {
-                    loop {
-                        let i = cursor.fetch_add(1, Ordering::Relaxed);
-                        if i >= files.len() {
-                            break;
-                        }
-                        let file = &files[i];
-                        // Build the child directly from (binary, "test", file) rather than parsing a
-                        // command STRING — a whitespace-split would corrupt any path containing a space.
-                        let started = std::time::Instant::now();
-                        let verdict = match std::process::Command::new(cdz_bin)
-                            .arg("test")
-                            .arg(file)
-                            .current_dir(repo)
-                            .stdout(std::process::Stdio::piped())
-                            .stderr(std::process::Stdio::piped())
-                            .spawn()
-                        {
-                            Err(e) => PerFileVerdict::LaunchErr(e.to_string()),
-                            Ok(child) => match wait_with_timeout(child, per_file) {
-                                Ok(Some(out)) => PerFileVerdict::Ran {
-                                    stdout: out.stdout,
-                                    stderr: out.stderr,
-                                    ok: out.status.success(),
-                                },
-                                Ok(None) => PerFileVerdict::TimedOut {
-                                    elapsed: started.elapsed().as_secs(),
-                                },
-                                Err(e) => PerFileVerdict::WaitErr(e.to_string()),
-                            },
-                        };
-                        *slots[i].lock().unwrap() = Some(PerFileResult { verdict });
-                    }
-                });
-            }
-        });
-
-        // Ordered write-out: replay the workers' captured output/verdicts in FILE ORDER, and dump-exit
-        // on the FIRST failure — identical log + localization to the old serial loop.
-        for (i, file) in files.iter().enumerate() {
+        for file in &files {
             let fname = file.display().to_string();
+            // Build the child directly from (binary, "test", file) rather than parsing a command STRING —
+            // a whitespace-split would corrupt any path containing a space. cdz_bin/fname pass through
+            // verbatim as argv.
             writeln!(self.file, "\n──── {cdz_bin} test {fname} ────").ok();
-            let result = slots[i]
-                .lock()
-                .unwrap()
-                .take()
-                // A slot is always Some after the scope joins (every index i < n is claimed exactly once
-                // by fetch_add); treat a None as a launch/panic anomaly rather than silently skipping.
-                .unwrap_or(PerFileResult {
-                    verdict: PerFileVerdict::WaitErr("worker produced no result".into()),
+            self.file.flush().ok();
+
+            let child = std::process::Command::new(cdz_bin)
+                .arg("test")
+                .arg(file)
+                .current_dir(repo)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap_or_else(|e| {
+                    eprintln!("  ✗ {name} — could not launch ({fname}): {e}");
+                    std::process::exit(1);
                 });
-            match result.verdict {
-                PerFileVerdict::Ran { stdout, stderr, ok } => {
-                    self.file.write_all(&stdout).ok();
-                    self.file.write_all(&stderr).ok();
+            let started = std::time::Instant::now();
+            match wait_with_timeout(child, per_file) {
+                Ok(Some(out)) => {
+                    self.file.write_all(&out.stdout).ok();
+                    self.file.write_all(&out.stderr).ok();
                     self.file.flush().ok();
-                    if !ok {
+                    if !out.status.success() {
                         eprintln!("  ✗ {name} — FAILED at {fname}");
                         self.dump_and_exit(name);
                     }
@@ -4350,7 +4256,8 @@ impl Log {
                 // The runaway-compile case: this ONE file blew past the per-file cap. Fail loud + named
                 // so it is immediately bisectable, instead of the old whole-suite hang that burned 45min
                 // with no localization.
-                PerFileVerdict::TimedOut { elapsed } => {
+                Ok(None) => {
+                    let elapsed = started.elapsed().as_secs();
                     writeln!(
                         self.file,
                         "\n{name}: {fname} TIMED OUT after {elapsed}s (killed) — a single compile ran \
@@ -4365,21 +4272,14 @@ impl Log {
                     );
                     self.dump_and_exit(name);
                 }
-                PerFileVerdict::LaunchErr(e) => {
-                    eprintln!("  ✗ {name} — could not launch ({fname}): {e}");
-                    std::process::exit(1);
-                }
-                PerFileVerdict::WaitErr(e) => {
+                Err(e) => {
                     eprintln!("  ✗ {name} — wait failed ({fname}): {e}");
                     self.dump_and_exit(name);
                 }
             }
         }
 
-        println!(
-            "  ✓ {name} ({} files, {jobs} jobs, per-file capped)",
-            files.len()
-        );
+        println!("  ✓ {name} ({} files, per-file capped)", files.len());
         // Every file passed — record the whole-suite green on the same key the cache-hit path checks.
         if let Some(c) = cache {
             c.record_green();
@@ -5820,51 +5720,5 @@ mod trap_grading_tests {
             "garbage → default"
         );
         unsafe { std::env::remove_var("CDZ_ML_PER_FILE_TIMEOUT_SECS") };
-    }
-
-    #[test]
-    fn ml_test_jobs_clamps_default_and_override() {
-        // Env is process-global; set+clear around each assert. SAFETY: single-threaded test.
-        unsafe { std::env::remove_var("CDZ_ML_JOBS") };
-        // Default is conservative (min(cores, 4)) AND clamped to the file count so we never spawn idle
-        // workers — with 2 files the pool is at most 2 regardless of cores.
-        assert!(ml_test_jobs(2) <= 2, "default clamped to file count");
-        assert!(
-            ml_test_jobs(100) <= 4,
-            "default never exceeds the conservative cap of 4"
-        );
-        assert!(ml_test_jobs(100) >= 1, "always at least one job");
-
-        // A positive override applies, still clamped to [1, file_count].
-        unsafe { std::env::set_var("CDZ_ML_JOBS", "8") };
-        assert_eq!(
-            ml_test_jobs(100),
-            8,
-            "override applies below the file count"
-        );
-        assert_eq!(
-            ml_test_jobs(3),
-            3,
-            "override clamped down to the file count"
-        );
-
-        // Zero/garbage fall back to the default; the default is itself clamped, so with 1 file it's 1.
-        unsafe { std::env::set_var("CDZ_ML_JOBS", "0") };
-        assert_eq!(
-            ml_test_jobs(1),
-            1,
-            "zero → default, clamped to a single file"
-        );
-        unsafe { std::env::set_var("CDZ_ML_JOBS", "nope") };
-        assert!(ml_test_jobs(10) >= 1, "garbage → default (≥1)");
-
-        // A zero file count never yields a zero (or panicking) job count.
-        unsafe { std::env::remove_var("CDZ_ML_JOBS") };
-        assert_eq!(
-            ml_test_jobs(0),
-            1,
-            "empty file list still yields at least one worker"
-        );
-        unsafe { std::env::remove_var("CDZ_ML_JOBS") };
     }
 }

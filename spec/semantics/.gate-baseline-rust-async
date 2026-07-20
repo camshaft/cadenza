@@ -222,6 +222,8 @@ pass	a MULTI-shot arm re-reduces a continuation that reads a captured heap list 
 pass	a MULTI-shot arm whose FIRST resume value is chosen by an if on the state
 pass	a MULTI-shot arm whose each resume CONSUMES a captured heap list dups it per resume
 pass	a MULTI-shot handler arm folds a two-hole body by re-reducing per resume
+pass	a MULTIPLY on an unusual signed width computes in range at the declared width
+pass	a MULTIPLY overflowing an unusual signed width is rejected CDZ0304
 pass	a MUTUALLY-recursive effectful group is specialized under a state handler
 pass	a Map accumulator threaded through a non-tail double tree recursion accumulates both subtrees
 pass	a Map.lookup over a map literal with a runtime key finds it by value
@@ -3764,6 +3766,7 @@ todo	a function argument is applied through a recursive higher-order function
 todo	a function stored in a record field of a sum payload is called after a match
 todo	a generic recursive HOF taking a closure is monomorphized at three distinct closure types
 todo	a generic recursive HOF taking a closure is monomorphized at two distinct closure types
+todo	a genuinely-runtime MULTIPLY on an unusual signed width traps on overflow rather than wrapping to storage
 todo	a higher-order left fold applies its combiner, not a fixed operator
 todo	a higher-order left fold over a built-in list with an annotated callback
 todo	a higher-order left fold over a built-in list with an annotated fn parameter
