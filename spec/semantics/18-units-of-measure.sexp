@@ -396,6 +396,26 @@
   (output (: (Qty.of 3.0 (Unit./ (Unit.base #"meter") (Unit.base #"second")))
              (Qty Float64 (Unit./ (Unit.base #"meter") (Unit.base #"second"))))))
 
+(case "an acceleration dimension renders as a quotient with a squared denominator"
+  (doc    "`(/ (Qty.of 10.0 meter) (Qty.pow (Qty.of 2.0 second) 2))` derives meter/second² — an acceleration
+           — value 2.5. Beyond the simple `m/s` quotient, this pins a COMPOSITE derived dimension: the
+           denominator is itself a `(Unit.^ second 2)`, so the value-form renderer nests a power inside the
+           quotient — `(Unit./ (Unit.base meter) (Unit.^ (Unit.base second) 2))`. The `Qty.pow` on the second
+           builds the squared denominator dimension; the group quotient then divides. Pins the nested
+           quotient-of-power render (a distinct value-form shape from the flat `m/s`).")
+  (input  (/ (Qty.of 10.0 (Unit.base #"meter")) (Qty.pow (Qty.of 2.0 (Unit.base #"second")) 2)))
+  (output (: (Qty.of 2.5 (Unit./ (Unit.base #"meter") (Unit.^ (Unit.base #"second") 2)))
+             (Qty Float64 (Unit./ (Unit.base #"meter") (Unit.^ (Unit.base #"second") 2))))))
+
+(case "a reciprocal dimension renders as Unit.one over the unit"
+  (doc    "`(/ (Qty.of 1.0 Unit.one) (Qty.of 4.0 second))` derives 1/second — a reciprocal (frequency-like)
+           dimension — value 0.25. The dimensionless `Unit.one` numerator divided by a unit yields a quotient
+           whose numerator is `Unit.one`: `(Unit./ (Unit.one) (Unit.base second))`. Pins the reciprocal
+           value-form render (a `Unit.one` numerator, distinct from a base-unit numerator).")
+  (input  (/ (Qty.of 1.0 Unit.one) (Qty.of 4.0 (Unit.base #"second"))))
+  (output (: (Qty.of 0.25 (Unit./ Unit.one (Unit.base #"second")))
+             (Qty Float64 (Unit./ Unit.one (Unit.base #"second"))))))
+
 (case "a velocity multiplied by a time recovers the distance dimension"
   (doc    "The multiply-direction inverse of the velocity quotient: `(* (Qty.of 6.0 (meter/second))
            (Qty.of 2.0 second))` composes `(meter·second⁻¹)·second` = meter — the `second` cancels in the

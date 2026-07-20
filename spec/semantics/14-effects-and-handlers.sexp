@@ -2745,6 +2745,27 @@
                 (+ (handle E 5 ((get (u) s (resume s s))) (E.get)) (E.get)))) (export main)))
   (output (: 105 Int64)))
 
+(case "same-effect shadowing with ADVANCING states — the outer state survives the inner handle and resumes advanced"
+  (doc    "The STATEFUL upgrade of the lexical-partition case above (there both arms resume `s` unchanged,
+           so a shared or re-seeded state slot is invisible): here BOTH handlers ADVANCE a counter. The
+           outer `Ctr` seeds 10; its first tick reads 10 (state → 11). The inner `handle Ctr 2000` then
+           discharges its own region's two ticks — 2000 and 2001 (its own slot, seeded independently,
+           advancing independently) → 4001. The perform AFTER the inner handle exits reaches the OUTER
+           handler again and must read 11 — the outer state advanced by the pre-inner tick, UNTOUCHED by
+           the inner region's two discharges, resumed exactly where it left off. 10 + 4001 + 11 = 4022. A
+           shadow implementation sharing one state slot (inner ticks bleeding the outer to 12/13), or
+           re-seeding the outer on inner-exit (reading 10 again → 4021), breaks the value. Expected: 4022.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main)
+              (handle Ctr 10 ((tick (u) s (resume s (+ s 1))))
+                (+ (Ctr.tick)
+                   (+ (handle Ctr 2000 ((tick (u) s (resume s (+ s 1))))
+                        (+ (Ctr.tick) (Ctr.tick)))
+                      (Ctr.tick)))))
+            (export main)))
+  (output (: 4022 Int64)))
+
 (case "the same function called under two handlers is discharged by each in turn"
   (doc    "Witnesses capabilities-and-effects.md #Handler Resolution Is Dynamic In Extent And Statically
            Determined (the monomorphization property): a single function `ask` = `(+ (Get.get) 1)` is

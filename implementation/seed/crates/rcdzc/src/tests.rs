@@ -59104,13 +59104,25 @@ mod stage1 {
             )],
             &[crate::backend::Target::Wasm],
         );
-        let has_coded = out.diagnostics.iter().any(|d| {
+        let coded = out.diagnostics.iter().find(|d| {
             d.severity == crate::abi::Severity::Error && d.code.as_deref() == Some("CDZ0201")
         });
         assert!(
-            has_coded,
+            coded.is_some(),
             "a const arg capturing a runtime param must be a coded CDZ0201 reject, got: {:?}",
             out.diagnostics
+        );
+        // PIN THE MESSAGE WORDING (not just the code): the message names the `const` parameter AND that the
+        // argument depends on runtime data — the actionable phrasing an author acts on. This is pinned
+        // deliberately because a doc comment elsewhere (iterators `adapter.cdz`) describes this exact
+        // rejection; an un-pinned message could silently drift out of sync (PR #669/#670 review). If the
+        // wording is intentionally changed, this assert + that doc are the two places to update together.
+        assert!(
+            coded.unwrap().message.contains("`const` parameter")
+                && coded.unwrap().message.contains("compile-time-known")
+                && coded.unwrap().message.contains("runtime data"),
+            "the const-arg reject names the const parameter + compile-time requirement + runtime cause: {}",
+            coded.unwrap().message
         );
     }
 

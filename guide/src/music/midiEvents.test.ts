@@ -77,3 +77,14 @@ test("isBalanced: same note on different channels tracked independently", () => 
   ];
   assert.equal(isBalanced(two), true);
 });
+test("isBalanced: an empty stream is vacuously balanced (no notes, no stuck keys)", () => {
+  assert.equal(isBalanced([]), true);
+});
+test("isBalanced: a re-struck note (same chan+note) balances by COUNT, not a flag — on,on,off,off → true", () => {
+  // A voice re-struck before release: two ons then two offs must net to zero. This pins the counter
+  // semantics (a boolean-per-key refactor would wrongly report this balanced-or-not by last-write) — the
+  // net-outstanding approach is what makes overlapping same-note events correct.
+  assert.equal(isBalanced(rows([[true, 60, 0], [true, 60, 480], [false, 60, 960], [false, 60, 1440]])), true, "2 ons + 2 offs net to 0");
+  assert.equal(isBalanced(rows([[true, 60, 0], [true, 60, 480], [false, 60, 960]])), false, "2 ons + 1 off leaves 1 outstanding (stuck)");
+  assert.equal(isBalanced(rows([[true, 60, 0], [false, 60, 480], [false, 60, 960]])), false, "1 on + 2 offs goes negative (extra off)");
+});

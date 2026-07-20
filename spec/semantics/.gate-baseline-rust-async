@@ -274,6 +274,7 @@ pass	a 32-bit-float closure crosses the host boundary
 pass	a 100-key runtime map resolves every key through the trie
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
+pass	a @requires on a UNIT-returning def is enforced — the precondition traps before the unit body
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
 pass	a @requires precondition is enforced for a genuinely-runtime argument
 pass	a @requires predicate that CALLS a user-defined function resolves and enforces — not only prelude ops
@@ -2499,6 +2500,7 @@ pass	all-nullary enum equality compares discriminants
 pass	an 8-bit-integer closure crosses the host boundary
 pass	an @ensures on a recursive def is re-checked at every EXIT including self-call returns (not only the outermost)
 pass	an @ensures over a MATCH-bodied def wraps the whole match — the postcondition checks the match's result
+pass	an @ensures predicate reading a top-level GLOBAL alongside ret resolves and enforces (resolution seam)
 pass	an @ensures predicate that itself traps keeps its own trap kind (not the @ensures-failed unreachable)
 pass	an ABORTIVE arm whose value is a COMPOUND matches the handle body type and folds
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
@@ -3645,6 +3647,7 @@ pass	the kernel's DEDUCT_ANTISYM rule: from A |- p and B |- q derive (A-q)++(B-p
 pass	the kernel's EQ_MP rule: from |- p=q and G |- p derive G |- q (hypotheses unioned)
 pass	the kernel's GEN (∀-introduction) enforces its free-variable side-condition
 pass	the kernel's MK_COMB rule: equals applied to equals are equal — from f=g and x=y derive (f x)=(g y)
+pass	same-effect shadowing with ADVANCING states — the outer state survives the inner handle and resumes advanced
 pass	the kernel's SPEC (∀-elimination) instantiates the quantified body with the witness
 pass	the kernel's conjunction: CONJ unions hypotheses, CONJUNCT1/2 project (hyps survive)
 pass	the kernel's disjunction introduction (DISJ1/DISJ2) preserves hypotheses

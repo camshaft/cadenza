@@ -2207,6 +2207,42 @@
   (call   main (: -3 Int64))
   (trap   "unreachable"))
 
+(case "an @ensures predicate reading a top-level GLOBAL alongside ret resolves and enforces (resolution seam)"
+  (doc    "A cross-seam pin (name-resolution seam): the postcondition references a top-level GLOBAL definition,
+           not only the result binder `ret` and the def's params. `@ensures(< ret (limit))` on `(f x) = (+ x
+           1)` with `(def (limit) 100)`: the injected `(let ((ret (+ x 1))) (if (< ret (limit)) ret (trap …)))`
+           must RESOLVE `(limit)` (a top-level nullary def, in scope in the predicate exactly as in any body
+           expression) alongside the synthesized `ret`. `(f 5)`: `ret = 6`, `(< 6 100)` holds → returns `6`;
+           `(f 200)`: `ret = 201`, `(< 201 100)` FALSE → the postcondition traps `unreachable`. Runtime arg via
+           `main`'s param (no fold). Pins that predicate name-resolution reaches the global scope, not just
+           params + `ret` — a resolution change that scoped the predicate too narrowly would break this.")
+  (input  (do
+            (def (limit) 100)
+            (@ (ensures (< ret (limit))) (def (f (: x Int64)) (+ x 1)))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64))
+  (call   main (: 200 Int64))
+  (trap   "unreachable"))
+
+(case "a @requires on a UNIT-returning def is enforced — the precondition traps before the unit body"
+  (doc    "The degenerate-result pin: a def whose BODY is `unit` (the empty tuple) still gets its `@requires`
+           enforced. The injected `(if (>= x 0) unit (trap …))` checks the precondition at body-entry regardless
+           of the body's type — a unit body is not a special case that skips enforcement. `(f 5)`: `(>= 5 0)`
+           holds → returns `unit` (the body value, value-transparent even for unit); `(f -1)`: `(>= -1 0)` FALSE
+           → the precondition traps `unreachable` before the unit body. Pins that enforcement is orthogonal to
+           the body's result type — it wraps a unit-returning def as faithfully as a scalar one (a rewrite that
+           keyed on a non-unit result would drop the check here).")
+  (input  (do
+            (@ (requires (>= x 0)) (def (f (: x Int64)) unit))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output unit)
+  (call   main (: -1 Int64))
+  (trap   "unreachable"))
+
 ; ── @requires × @test: constrained GENERATION (breaker pin, keyed on the 71efd45a6 slice) ──────────
 ; A `@requires` precondition on a `@test`-stacked def is a FILTER on the generated input domain, not a
 ; property the test may fail on. The ruling (v-verification + v-property-testing, 2026-07-17): the

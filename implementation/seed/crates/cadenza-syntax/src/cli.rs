@@ -499,6 +499,87 @@ fn run_convert(args: &ConvertArgs) -> Result<(), String> {
 /// gate). A file that does not parse is a hard error and is NEVER written (the reader rejects a recovered
 /// tree, so a broken file can't be silently "reformatted" into a patched-up shape) — in a multi-file run
 /// it warns and skips, so one unparseable file can't abort a whole directory sweep.
+/// The number of DOC (`///`) and plain-COMMENT (`//`, not `///`) comment MARKERS in a text surface,
+/// counting a marker ANYWHERE on a line (leading OR trailing — `x = 1 // note` counts), scanning the
+/// raw text and SKIPPING a `//` that falls inside a `"…"` string or `#\…`-style char/`#"…"` symbol
+/// literal (so a `//` in a URL string is not miscounted). At most one comment marker per line (a `//`
+/// runs to end-of-line, so anything after it — including a second `//` — is comment text, not a new
+/// marker). A `///` counts ONLY as a doc, never also as a comment. Returned as `(doc, comment)`.
+///
+/// Used by the WRITE paths of `fmt`/`normalize` to detect a reprint that DROPS a comment marker — the
+/// exact signature of a reader comment/doc-attachment gap (a trailing `//` the reader loses is invisible
+/// to any ARENA-level check, because it never became a node; only this raw-text count catches it). The
+/// guard then refuses the write, turning silent comment-loss into a visible fail-safe no-op.
+fn comment_counts(text: &str) -> (usize, usize) {
+    let mut docs = 0;
+    let mut comments = 0;
+    for line in text.lines() {
+        // Scan the line for the first `//` that is NOT inside a string/char/symbol literal. A `"`
+        // toggles string state (a `\"` escape stays inside); `#\` starts a char literal token whose
+        // `//` (if any) is literal text — rare, but a `#\/` char followed by `/` shouldn't count. We
+        // approximate char/symbol handling by treating `#"` like a string quote and `#\` as escaping
+        // the next char.
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        let mut in_str = false;
+        while i + 1 < bytes.len() {
+            let c = bytes[i];
+            if in_str {
+                if c == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if c == b'"' {
+                    in_str = false;
+                }
+                i += 1;
+                continue;
+            }
+            if c == b'"' {
+                in_str = true;
+                i += 1;
+                continue;
+            }
+            if c == b'#' && bytes[i + 1] == b'\\' {
+                // A char literal `#\x` — skip the `#\` and the escaped char so its content never scans.
+                i += 3.min(bytes.len() - i);
+                continue;
+            }
+            if c == b'/' && bytes[i + 1] == b'/' {
+                if bytes.get(i + 2) == Some(&b'/') {
+                    docs += 1;
+                } else {
+                    comments += 1;
+                }
+                break; // rest of line is comment text
+            }
+            i += 1;
+        }
+    }
+    (docs, comments)
+}
+
+/// True if reprinting `input` as `output` would DROP a `///` doc or `//` comment line — the fail-safe
+/// signal for `fmt`/`normalize`'s write paths. Only a NET decrease in either count trips it (a transform
+/// that adds lines, or leaves counts equal, is fine); an increase never trips (so `normalize`'s
+/// match→let, which only adds a `let`, is unaffected). Both args are the final text about to be written.
+fn would_drop_comments(input: &[u8], output: &[u8]) -> Option<String> {
+    let (in_docs, in_comments) = comment_counts(&String::from_utf8_lossy(input));
+    let (out_docs, out_comments) = comment_counts(&String::from_utf8_lossy(output));
+    if out_docs < in_docs || out_comments < in_comments {
+        let mut lost = Vec::new();
+        if out_docs < in_docs {
+            lost.push(format!("{} doc-comment(s) (`///`)", in_docs - out_docs));
+        }
+        if out_comments < in_comments {
+            lost.push(format!("{} comment(s) (`//`)", in_comments - out_comments));
+        }
+        Some(lost.join(" + "))
+    } else {
+        None
+    }
+}
+
 fn run_fmt(args: &FmtArgs) -> Result<bool, String> {
     // `--check`/`--diff` inspect without writing; `--stdout` writes elsewhere. They are exclusive: a
     // single run has one output disposition, so an ambiguous combination is rejected up front rather
@@ -580,6 +661,18 @@ fn run_fmt(args: &FmtArgs) -> Result<bool, String> {
             print!(
                 "{}",
                 query::diff::unified(&before, &after, &format!("a/{path}"), &format!("b/{path}"))
+            );
+            continue;
+        }
+        // COMMENT-SAFETY GUARD: refuse to write a reprint that would DROP a `///`/`//` line. `fmt` is
+        // meant to preserve every comment; a drop means a reader doc/comment-attachment gap ate one, and
+        // silently overwriting the file would DESTROY it. Fail-safe: skip this file with a clear message
+        // + remember to exit non-zero, so a comment-loss becomes a visible no-op instead of data loss.
+        // (Guards the WRITE path only — `--stdout`/`--diff`/`--check` don't overwrite the source.)
+        if let Some(lost) = would_drop_comments(&input, &formatted) {
+            all_formatted = false;
+            eprintln!(
+                "cdz: refusing to format {path}: would drop {lost} (a reader comment-attachment gap)"
             );
             continue;
         }
@@ -675,6 +768,17 @@ fn run_normalize(args: &NormalizeArgs) -> Result<bool, String> {
             print!(
                 "{}",
                 query::diff::unified(&before, &after, &format!("a/{path}"), &format!("b/{path}"))
+            );
+            continue;
+        }
+        // COMMENT-SAFETY GUARD (same as run_fmt): a normalization must never DROP a comment. match→let
+        // only ADDS a `let` (never removes a `///`/`//`), so this won't false-trip today; it fail-safes
+        // any future normalization — or a latent reader gap in the reprint — into a visible no-op rather
+        // than silent comment-loss. Skip + exit non-zero (via `all_unchanged=false`) instead of writing.
+        if let Some(lost) = would_drop_comments(&input, &normalized) {
+            all_unchanged = false;
+            eprintln!(
+                "cdz: refusing to normalize {path}: would drop {lost} (a reader comment-attachment gap)"
             );
             continue;
         }
@@ -1349,6 +1453,37 @@ mod tests {
         // later) — so a nonexistent `.sexp` still infers sexpr here.
         assert!(resolve_from(None, Some("/tmp/cdz-nope.sexp")).is_ok());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn comment_counts_finds_leading_and_trailing_markers_skipping_strings() {
+        // Leading doc + leading comment + trailing comment, and a `//` inside a string is NOT counted.
+        assert_eq!(
+            comment_counts("/// doc\ndef f() = 1 // trailing\n// lead"),
+            (1, 2)
+        );
+        // A `///` counts ONLY as a doc, never also as a comment.
+        assert_eq!(comment_counts("/// just a doc"), (1, 0));
+        // `//` inside a string literal is skipped (a URL).
+        assert_eq!(comment_counts("def u() = \"http://x.com\""), (0, 0));
+        // A trailing comment AFTER a string still counts; the string's `//` does not.
+        assert_eq!(comment_counts("let u = \"a//b\" // real"), (0, 1));
+        // Only the FIRST marker per line counts (a `//` runs to end-of-line).
+        assert_eq!(comment_counts("x // a // b"), (0, 1));
+        // No markers.
+        assert_eq!(comment_counts("def f() = 1 + 2"), (0, 0));
+    }
+
+    #[test]
+    fn would_drop_comments_trips_only_on_a_net_decrease() {
+        // A dropped trailing comment (1 → 0) trips.
+        assert!(would_drop_comments(b"x = 1 // note\n", b"x = 1\n").is_some());
+        // A dropped doc trips.
+        assert!(would_drop_comments(b"/// d\ndef f() = 1\n", b"def f() = 1\n").is_some());
+        // Equal counts do NOT trip (a faithful reprint).
+        assert!(would_drop_comments(b"// c\nx = 1\n", b"// c\nx = 1\n").is_none());
+        // An INCREASE does not trip (e.g. a comment that reattaches to two lines — never a loss).
+        assert!(would_drop_comments(b"x = 1\n", b"// added\nx = 1\n").is_none());
     }
 
     /// A fresh temp dir unique to `tag` (the caller populates + removes it).

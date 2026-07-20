@@ -276,6 +276,7 @@ pass	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
 pass	a 32-bit-float closure crosses the host boundary
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
+pass	a @requires on a UNIT-returning def is enforced — the precondition traps before the unit body
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
 pass	a @requires precondition is enforced for a genuinely-runtime argument
 pass	a @requires predicate that CALLS a user-defined function resolves and enforces — not only prelude ops
@@ -3584,6 +3585,7 @@ pass	textually-identical performs are DISTINCT state-advancing reads, not a comm
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
 pass	the CHECKED ground axiom le-ax cannot forge a FALSE order fact (5 <= 3) — the axiom base is consistent
+pass	same-effect shadowing with ADVANCING states — the outer state survives the inner handle and resumes advanced
 pass	the DES Duration constructors ms / us / ns each scale to the right nanosecond magnitude
 pass	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the Float codec round-trips a negative value
@@ -4015,6 +4017,7 @@ todo	a round-trip consumer that does NOT apply the closure on the taken branch
 todo	a run's result is a deterministic function of a host call's recorded response
 pass	an @ensures on a recursive def is re-checked at every EXIT including self-call returns (not only the outermost)
 pass	an @ensures over a MATCH-bodied def wraps the whole match — the postcondition checks the match's result
+pass	an @ensures predicate reading a top-level GLOBAL alongside ret resolves and enforces (resolution seam)
 pass	an @ensures predicate that itself traps keeps its own trap kind (not the @ensures-failed unreachable)
 todo	an @param of a Bool type generates a Bool-typed accessor
 todo	an @param of a Float64 type generates a Float64-typed accessor
