@@ -343,7 +343,7 @@ def read-typed-param-name(s: String, nm: String, a1: Int64, tree: Tree) =
               // `width*2+signflag`. Behavior-neutral for now — infer's fit-check (DECLINE `(f 200)` to an Int8
               // param, corpus CDZ0302) reads this next slice; today NOTHING reads it, so the def still runs.
               (let t2 = record-param-type(t1, paramId, encode-param-type(ty-signed(ty), ty-width(ty))) in
-               read-typed-param-body(s, nm, paramId, a3, t2)))))
+               read-typed-param-body(s, nm, paramId, a3, t2))))))
 
 /// After the typed param's type ended at `a3`: consume the param's `)` and the signature-closing `)`, then
 /// read the body. Returns the 6-tuple `(nameId, bodyId, paramId, param2Id, nextIndex, tree')` — a typed def is

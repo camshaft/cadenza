@@ -478,7 +478,7 @@ def ev-param-call-clet() =
             (let tree = record-param(t5, bodyId, paramId) in
              (match eval-tree(tree, root) with
                | Option.Some(v) => (if v == 42 then unit else trap("f(41) where f(n)=n+1 → 42"))
-               | Option.None(_) => trap("a single-param call lowers to CLet + evals")))))))))
+               | Option.None(_) => trap("a single-param call lowers to CLet + evals"))))))))
 
 @test
 def ev-nested-clet-two-params() =
