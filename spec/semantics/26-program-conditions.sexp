@@ -2004,6 +2004,51 @@
   (call   main (: 10 Int64))
   (output (: 12 Int64)))
 
+(case "an EFFECTFUL @ensures predicate performs under the caller's handler at body-EXIT, after the body's own perform"
+  (doc    "The @ensures twin of the effectful-@requires case above — the exit-side handler-extent pin. The
+           postcondition `(> (Counter.bump) 100)` PERFORMS, so the injected exit check `(let ((ret BODY)) (if
+           (> (Counter.bump) 100) ret (trap …)))` is itself effectful: it must route to the dynamically
+           enclosing handler and be sequenced AFTER the body (the body already performed to compute `ret`), in
+           the same handler extent — not hoisted, not double-performed, not evaluated before the body. Handler
+           seeded 0, each `bump` resumes `s+1` and threads `s+1`: the BODY's bump is the FIRST perform (resumes
+           1, state→1), so `ret = 10 + 1 = 11`; the postcondition's bump is the SECOND (resumes 2, state→2).
+           `(> 2 100)` is FALSE, so the @ensures check takes the trap arm — `unreachable`. Pins that an
+           effectful postcondition performs in-handler at body-exit AND its verdict is enforced (a rewrite that
+           evaluated it before the body, or outside the handler, would resume 1 / fail to compile).")
+  (input  (do
+            (effect Counter (op bump (-> Unit Int64)))
+            (@ (ensures (> (Counter.bump) 100))
+              (def (f (: n Int64)) (+ n (Counter.bump))))
+            (def (main (: n Int64))
+              (handle Counter 0
+                ((bump (u) s (resume (+ s 1) (+ s 1))))
+                (f n)))
+            (export main)))
+  (call   main (: 10 Int64))
+  (trap   "unreachable"))
+
+(case "an EFFECTFUL @ensures predicate is value-transparent when SATISFIED — the body's own perform runs first"
+  (doc    "The satisfied control for the effectful-@ensures trap above, pinning the perform ORDER precisely.
+           Same shape but with a threshold `(> (Counter.bump) 0)` the second bump satisfies. Handler seeded 0,
+           resumes `s+1` threading `s+1`: the BODY's bump is FIRST (resumes 1) so `ret = 10 + 1 = 11`; the
+           postcondition's bump is SECOND (resumes 2), and `(> 2 0)` HOLDS, so the check takes the pass arm and
+           the def returns `ret` = `11` — its own value, no trap. The result being `11` (not `12`) is the load-
+           bearing detail: it proves the body performed BEFORE the postcondition (body drew state 1), and that
+           the postcondition's own perform advanced state WITHOUT being folded into the returned value. A
+           rewrite that evaluated the postcondition first would yield `12`; one that double-performed the body
+           would drift further.")
+  (input  (do
+            (effect Counter (op bump (-> Unit Int64)))
+            (@ (ensures (> (Counter.bump) 0))
+              (def (f (: n Int64)) (+ n (Counter.bump))))
+            (def (main (: n Int64))
+              (handle Counter 0
+                ((bump (u) s (resume (+ s 1) (+ s 1))))
+                (f n)))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 11 Int64)))
+
 (case "a @requires predicate that itself traps keeps its own trap kind"
   (doc    "The predicate `(> (/ 10 n) 0)` divides by its parameter, so at n=0 evaluating the PREDICATE
            traps `integer divide by zero` — a DIFFERENT kind from the requires-violation `unreachable`.

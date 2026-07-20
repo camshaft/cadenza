@@ -77,3 +77,8 @@
 ; VERIFIED on trunk 7a065bbf7 (corpus-bugfix): FACE A -> PASS (value 5); FACE B -> STILL CDZ0203 (b42821408
 ;   not yet landed); generic-via-helper -> declines CDZ0203 (as expected). => WAIT for b42821408 to land, THEN
 ;   pin the full battery in ONE corpus commit (all 3 baselines). Do NOT pin FACE B now (would gate-fail).
+
+; ===== PINNED (corpus-bugfix, 2026-07-20) — both faces landed + battery sent =====
+; FACE A (db43a9527) + FACE B (b42821408) both on trunk. Corpus battery committed 2cec45924, MR sent to pr-sync:
+; 07-type-system.sexp — {multi-variant direct, mono helper, multi-variant helper} = PASS (5); {generic-via-
+; helper} = (error CDZ0203) declines pin. All 4 green wasm+rust+rust-async, all 3 baselines. Awaiting merge.

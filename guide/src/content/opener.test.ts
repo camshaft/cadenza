@@ -66,6 +66,33 @@ test("every teaching chapter opens with a <Lede> hook", () => {
   );
 });
 
+/// Chapters that teach a concept but deliberately carry NO runnable example. `philosophy` is the guide's
+/// tenets essay — a prose manifesto in "Getting started" that argues *why* the language is shaped as it is,
+/// before any code; it earns its place without a <Runnable>. Any OTHER teaching chapter with no runnable is
+/// a broken promise (see the invariant below), so this exemption is a single named entry, not a section.
+const RUNNABLE_EXEMPT = new Set(["philosophy"]);
+
+test("every teaching chapter carries at least one <Runnable> (Welcome's 'every example is live' promise)", () => {
+  // Welcome tells the reader "every example below is live: you can edit the code and press Run". That
+  // interactivity IS the guide's pitch — a teaching chapter that presents only static prose quietly breaks
+  // it. Pin it: each teaching chapter (outside the non-teaching sections and the deliberately-essay
+  // `philosophy`) has a <Runnable>. Nothing else in the suite checks the interactive surface exists.
+  const map = fileForSlug();
+  const missing: string[] = [];
+  for (const c of CHAPTERS) {
+    if (NON_TEACHING_SECTIONS.has(c.section) || RUNNABLE_EXEMPT.has(c.slug)) continue;
+    const file = map.get(c.slug);
+    if (!file) continue;
+    const tsx = readFileSync(join(chaptersDir, file), "utf8");
+    if (!/<Runnable\b/.test(tsx)) missing.push(`${c.slug} (${file}, section ${JSON.stringify(c.section)})`);
+  }
+  assert.equal(
+    missing.length,
+    0,
+    `teaching chapter(s) with no <Runnable> — the reader gets static prose, breaking the "every example is live" promise:\n  ${missing.join("\n  ")}`,
+  );
+});
+
 test("the opener scan resolves files + sees both teaching and non-teaching chapters (guards a vacuous pass)", () => {
   // A broken registry parse or a mis-set exemption would make the invariants pass on nothing. Assert the
   // machinery reads real chapters and that BOTH buckets are non-empty (so neither test is checking zero rows).
@@ -75,4 +102,10 @@ test("the opener scan resolves files + sees both teaching and non-teaching chapt
   const nonTeaching = CHAPTERS.filter((c) => NON_TEACHING_SECTIONS.has(c.section));
   assert.ok(teaching.length >= 20, `expected many teaching chapters, got ${teaching.length}`);
   assert.ok(nonTeaching.length >= 1, `expected at least one non-teaching (lede-exempt) chapter, got ${nonTeaching.length}`);
+  // Every runnable-exempt slug must name a REAL chapter — a typo'd exemption would silently over-exempt
+  // (waive the <Runnable> requirement for a chapter that doesn't exist while a real one slips through).
+  const slugs = new Set(CHAPTERS.map((c) => c.slug));
+  for (const ex of RUNNABLE_EXEMPT) {
+    assert.ok(slugs.has(ex), `RUNNABLE_EXEMPT names "${ex}", which is not a registered chapter slug`);
+  }
 });

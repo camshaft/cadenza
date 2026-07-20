@@ -4877,11 +4877,6 @@ fn callee_def_index_of(db: &mut Db, head: StructId) -> Option<usize> {
     }
 }
 
-/// Whether `node` contains an APPLICATION whose head resolves to `def` (a call to that def) — a residual
-/// self-call check for the deferred-resume fold's one-level recursion-unfold: after unfolding a recursive
-/// callee once and folding its internal ctor-match, the base arm has no self-call (accept) while a
-/// recursive arm still calls back into the callee (discard). Walks the arena structurally; an application's
-/// HEAD is classified via `callee_def_index_of` (following Ref chains to the named def).
 /// Fold a case-of-known-ctor match that may sit under one or more leading `let` wrappers, KEEPING the
 /// `let`s around the folded arm. `apply_lambda`'s eval-once path let-binds a resume-closure argument
 /// (`(let ((kb …)) (match q …))`), so the unfolded recursive-callee body is a `let`-wrapped match rather
@@ -4933,6 +4928,11 @@ fn fold_ctor_match_through_lets(db: &mut Db, node: StructId) -> Option<StructId>
     crate::eval::fold_ctor_match(db, node)
 }
 
+/// Whether `node` contains an APPLICATION whose head resolves to `def` (a call to that def) — a residual
+/// self-call check for the deferred-resume fold's one-level recursion-unfold: after unfolding a recursive
+/// callee once and folding its internal ctor-match, the base arm has no self-call (accept) while a
+/// recursive arm still calls back into the callee (discard). Walks the arena structurally; an application's
+/// HEAD is classified via `callee_def_index_of` (following Ref chains to the named def).
 fn body_calls_def(db: &mut Db, node: StructId, def: usize) -> bool {
     if let Resolved::Apply { head, .. } = resolved_of(db, node)
         && callee_def_index_of(db, head) == Some(def)

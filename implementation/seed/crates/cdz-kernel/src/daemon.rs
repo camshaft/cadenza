@@ -119,6 +119,79 @@ where
     crate::kernel::run_interpret_hosted(&program, event_kind, runtime, prim)
 }
 
+/// The outcome of a HOSTED REPLAY (the prim counterpart of [`crate::fold::Replay`]): the summed per-op result
+/// the re-fold produced, plus how many ops were answered from the recorded `prim-result-*` trail (`replayed`)
+/// vs how many found NO recorded result left (`missing`). A faithful replay of a log recorded by [`tick_hosted`]
+/// has `missing == 0` and performs ZERO live effects (no subprocess/append) — the §2.3 recorded-effect
+/// determinism proof for the HOSTED path (the analog of `fold::replay_one_turn`'s `missing == 0`).
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReplayHosted {
+    pub sum: i64,
+    pub replayed: usize,
+    pub missing: usize,
+}
+
+/// RE-FOLD a hosted turn from a log recorded by [`tick_hosted`], WITHOUT performing any live effect — the prim
+/// counterpart of [`crate::fold::replay_one_turn`]. Each `Prim.exec`/`Prim.http`/`Prim.append` is answered NOT
+/// by [`perform_op_body`] (which under `live-exec` would spawn a subprocess) but by REPLAYING the recorded
+/// `prim-result-<op>` scalars in log order — so re-folding the same log reproduces the same summed cognition
+/// with the world's non-determinism (a real exit code) frozen. This is the load-bearing §2.3 proof for the
+/// hosted path: fork / hand-off / time-travel over a hosted agent are all re-fold, needing no live effect.
+///
+/// The recorded results are the payloads of the `prim-result-*` events in `recorded`, parsed as decimal i64,
+/// consumed in log order (a non-decimal payload counts as a miss + contributes 0 — a corrupt trail is loud,
+/// never a silent wrong sum). If the fold performs MORE ops than were recorded (a divergent re-fold), the
+/// extra ops get 0 and `missing` counts them — a loud signal the replay didn't match, never a live fallback.
+/// `program` is the genesis to re-fold under (the caller reads it from the same recorded log via
+/// [`crate::boot::latest_program`]); `runtime` is the value-heap wasm it needs.
+pub fn replay_hosted_turn(
+    recorded: &[crate::Event],
+    program: &str,
+    event_kind: i64,
+    runtime: Vec<u8>,
+) -> Result<ReplayHosted> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    // The recorded per-op results, in log order — the only thing the replayed prim returns (no live perform).
+    let results: Vec<String> = recorded
+        .iter()
+        .filter(|e| e.kind.starts_with(PRIM_RESULT_PREFIX))
+        .map(|e| String::from_utf8_lossy(&e.payload).into_owned())
+        .collect();
+
+    let cursor = Arc::new(AtomicUsize::new(0));
+    let missing = Arc::new(AtomicUsize::new(0));
+    let queue = Arc::new(Mutex::new(results));
+
+    let replay = {
+        let cursor = Arc::clone(&cursor);
+        let missing = Arc::clone(&missing);
+        let queue = Arc::clone(&queue);
+        move |_op: &str, _payload: String| -> i64 {
+            // Answer purely from the recorded tail — NO live perform. Pop the next recorded result; count a
+            // miss (and return 0) if the fold asked for more ops than were recorded, or the payload isn't a
+            // decimal scalar (a corrupt/foreign trail entry).
+            let i = cursor.fetch_add(1, Ordering::SeqCst);
+            let q = queue.lock().unwrap();
+            match q.get(i).and_then(|s| s.trim().parse::<i64>().ok()) {
+                Some(v) => v,
+                None => {
+                    missing.fetch_add(1, Ordering::SeqCst);
+                    0
+                }
+            }
+        }
+    };
+
+    let sum = crate::kernel::run_interpret_hosted(program, event_kind, runtime, replay)?;
+    Ok(ReplayHosted {
+        sum,
+        replayed: cursor.load(Ordering::SeqCst) - missing.load(Ordering::SeqCst),
+        missing: missing.load(Ordering::SeqCst),
+    })
+}
+
 /// The per-op effect BODY: given an op name + payload, do the effect and return its scalar result. The
 /// `append`/`http` ops (and the default) are RECORD-ONLY — the caller already appended the `prim-<op>` event;
 /// this returns the op's tag (Append→1, Http→3, Noop/other→0). `exec` is the one LIVE effect, and only when
@@ -679,6 +752,97 @@ mod tests {
         assert!(
             tick_hosted(Arc::new(Mutex::new(log)), 1, Vec::new()).is_err(),
             "no genesis → tick_hosted errors (like tick/tick_performing)"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn replay_hosted_turn_reproduces_the_sum_from_the_recorded_results_with_no_live_effect() {
+        // The §2.3 recorded-effect determinism proof for the HOSTED path (prim counterpart of
+        // fold::replay_one_turn): first tick_hosted records a turn (prim-<op> requests + prim-result-<op>
+        // responses), then replay_hosted_turn RE-FOLDS the SAME log answering each op from the recorded
+        // prim-result-* trail — reproducing the identical summed result, with missing==0 and performing ZERO
+        // live effects (it appends NO new events to the log). This is what makes fork/hand-off/time-travel a
+        // pure re-fold.
+        use std::sync::{Arc, Mutex};
+        let (path, mut log0) = temp_log();
+        crate::boot::inject_genesis(&mut log0, GENESIS).unwrap();
+        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let provider = match crate::kernel::compile_interpret_provider(GENESIS) {
+            Ok(p) => p,
+            Err(e) => panic!("genesis compiles: {e}"),
+        };
+        let Some(runtime) = crate::kernel::find_runtime_for(&provider, store_root) else {
+            eprintln!("[cdz-kernel::daemon] runtime absent/stale; skipping replay_hosted_turn");
+            let _ = std::fs::remove_file(&path);
+            return;
+        };
+        let log = Arc::new(Mutex::new(log0));
+        // LIVE record: kind=1 → [Append "ack", Exec "handle"] → sum 3, recording prim-result-append=1 + -exec=2.
+        let live_sum = tick_hosted(Arc::clone(&log), 1, runtime.clone())
+            .expect("the live hosted tick records the turn");
+        assert_eq!(live_sum, 3, "the live turn sums to 3");
+        let recorded = log.lock().unwrap().tail(0).unwrap();
+        let events_before = recorded.len();
+
+        // REPLAY: re-fold the same log from the recorded prim-result-* trail — NO live perform, NO new events.
+        let replay = replay_hosted_turn(&recorded, GENESIS, 1, runtime)
+            .expect("the recorded hosted turn replays");
+        assert_eq!(
+            replay.sum, live_sum,
+            "the replay reproduces the live sum from the recorded results"
+        );
+        assert_eq!(
+            replay.missing, 0,
+            "a faithful replay has no missing results (every op answered from the recorded trail)"
+        );
+        assert_eq!(
+            replay.replayed, 2,
+            "both ops (append, exec) were answered from the recorded prim-result-* trail"
+        );
+        // The replay performed NO live effect: it appended nothing to the log (replay is a pure re-fold).
+        let events_after = log.lock().unwrap().tail(0).unwrap().len();
+        assert_eq!(
+            events_after, events_before,
+            "replay_hosted_turn appends no events — it re-folds purely from the recorded trail"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn replay_hosted_turn_counts_missing_when_the_trail_lacks_recorded_results() {
+        // The loud divergence signal (like replay_one_turn's `missing`): re-folding a turn against a log with
+        // NO recorded prim-result-* events makes each op a miss (answered 0) — so the sum collapses to 0 and
+        // `missing` counts every op. Proves a replay never silently falls back to a live perform.
+        use std::sync::{Arc, Mutex};
+        let (path, mut log0) = temp_log();
+        crate::boot::inject_genesis(&mut log0, GENESIS).unwrap();
+        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let provider = match crate::kernel::compile_interpret_provider(GENESIS) {
+            Ok(p) => p,
+            Err(e) => panic!("genesis compiles: {e}"),
+        };
+        let Some(runtime) = crate::kernel::find_runtime_for(&provider, store_root) else {
+            eprintln!("[cdz-kernel::daemon] runtime absent/stale; skipping replay_hosted missing");
+            let _ = std::fs::remove_file(&path);
+            return;
+        };
+        let log = Arc::new(Mutex::new(log0));
+        // A log with the genesis but NO recorded prim-result-* events (never ticked hosted).
+        let recorded = log.lock().unwrap().tail(0).unwrap();
+        let replay = replay_hosted_turn(&recorded, GENESIS, 1, runtime)
+            .expect("replay runs even with an empty result trail");
+        assert_eq!(
+            replay.sum, 0,
+            "no recorded results → every op answers 0 → sum 0"
+        );
+        assert_eq!(
+            replay.replayed, 0,
+            "nothing was answered from a recorded result"
+        );
+        assert_eq!(
+            replay.missing, 2,
+            "both ops missed the (empty) recorded trail — a loud divergence signal, not a live fallback"
         );
         let _ = std::fs::remove_file(&path);
     }

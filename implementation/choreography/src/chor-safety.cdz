@@ -186,4 +186,23 @@ def deadlock-free-is-symmetric-witness() =
   if deadlock-free(["Shipper", "Seller", "Buyer"], purchase-linear()) then unit
   else trap("matched I/O is independent of role-check order")
 
+@test
+def sends-matched-rejects-a-phantom-send() =
+  // UNSOUND-DIRECTION PIN: the composed matcher (not just the `has-io` primitive) must REJECT an unmatched
+  // I/O. Feed `sends-matched` a phantom obligation — Buyer "sends" (to Seller, "Ghost") — that has no mirror
+  // recv in Seller's real projection of Purchase. `sends-matched` must return FALSE (an un-matched send = a
+  // deadlock source). Only the positive direction + the has-io primitive were pinned before; this exercises
+  // the full sends-matched reject path — the logic `deadlock-free` relies on to actually catch a dropped half.
+  if sends-matched(purchase-linear(), "Buyer", [IO.Ob("Seller", "Ghost")])
+  then trap("a phantom send with no mirror recv must NOT be reported matched")
+  else unit
+
+@test
+def recvs-matched-rejects-a-phantom-recv() =
+  // Mirror of the above for the recv direction: Buyer "receives" (from Seller, "Ghost") with no mirror send
+  // in Seller's projection → `recvs-matched` must return FALSE.
+  if recvs-matched(purchase-linear(), "Buyer", [IO.Ob("Seller", "Ghost")])
+  then trap("a phantom recv with no mirror send must NOT be reported matched")
+  else unit
+
 export { IO.*, local-sends, local-recvs, deadlock-free, has-io }

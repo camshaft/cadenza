@@ -63,3 +63,16 @@ def gmap(it, f) = match it with
 def t() = if count(gmap(from-list([1,2]), fn(x) => (x, x))) == 2 then unit else trap("t")
 @test
 def b() = if count(gmap(from-list(["a","b"]), fn(s) => String.concat(s,s))) == 2 then unit else trap("b")
+
+// ===== RESOLVED on WASM (corpus-bugfix, 2026-07-20, trunk 213415220) =====
+// The recursive-generic monomorphization tie — gmap at >=2 DISTINCT DOMAIN element types with >=1 AGGREGATE
+// result — now COMPILES + RUNS. Verified:
+//   gmap(from-list([1,2]), fn(x)=>(x,x)) + gmap(from-list(["a","b"]), fn(s)=>String.concat(s,s)) -> 4
+//   + a 3rd distinct domain (bool, aggregate) -> 6.
+// The type_specialize / tie-solver fix (the _w44 / flatten-tie family, 8dfa2074e neighborhood) landed —
+// the closure-DOMAIN var is now tied per-instantiation across coexisting distinct-domain monomorphizations.
+// This was the HIGH-RISK deferred item; the base direct-aggregate case is fixed. The remaining residual is
+// the EXOTIC nested-generic-call-in-compound-closure-result (fn(x)=>(from-list([x]),x)), still parked at
+// v-inference (queue/...closure-result-compound-containing-a-generic-call...PARKED-v-inference). NOTE:
+// run-rust still gracefully declines (separate stored-fn-typed-closure class, parked v-inference) — not this
+// tie; wasm is green. Marked RESOLVED.

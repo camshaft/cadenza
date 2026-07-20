@@ -1561,6 +1561,62 @@
                     (Fresh.next)))) (export main)))
   (output (: 2 Int64)))
 
+; The counter fold above SEQUENCES its performs with `do` — each perform is a separate statement, so
+; the state advance is witnessed only through the last value. These pin the fold where the advancing
+; state is observed by ORDER-SENSITIVE operand positions instead: two performs as SIBLING operands of
+; one arithmetic expression. The values differ per site (the counter advances between them), so the
+; operand evaluation ORDER is observable — an emit that evaluated the right operand first, or batched
+; the two performs against one state read, would produce a different value, not just a different trace.
+
+(case "a stateful counter is observed left-to-right by sibling performs in one expression"
+  (doc    "`(+ (* 100 (Fresh.next)) (Fresh.next))` under the counter arm seeded 0: the LEFT perform reads
+           0 and advances to 1, the RIGHT reads 1 → 0·100 + 1 = 1. The `*100` weighting makes the order
+           observable in the VALUE: right-first evaluation would give 1·100 + 0 = 100. The sibling-operand
+           companion of the `do`-sequenced counter fold above — same arm, but the state advance is
+           witnessed by strict left-to-right operand evaluation inside a single expression, the order
+           #Operands Evaluate Left To Right fixes. Expected: 1.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (+ (* 100 (Fresh.next)) (Fresh.next))))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "sibling performs feeding a subtraction witness the advancing state non-commutatively"
+  (doc    "`(- (Fresh.next) (Fresh.next))` seeded 5: left reads 5, right reads 6 → 5 − 6 = −1. The
+           non-commutative twin of the weighted-add case above — subtraction needs no weighting to expose
+           a swapped order (it would flip the sign to +1), so this is the minimal order witness over an
+           advancing handler state. Expected: -1.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (def (main)
+              (handle Fresh 5 ((next (u) s (resume s (+ s 1))))
+                (- (Fresh.next) (Fresh.next))))
+            (export main)))
+  (output (: -1 Int64)))
+
+(case "a stateful counter threads through a RECURSIVE callee performing inside the handled region"
+  (doc    "`drain` is a self-recursive function performing `(Fresh.next)` once per level, called from the
+           handle body with a RUNTIME depth: seeded 10 at n=3 the three activations read 10, 11, 12 →
+           10+11+12 = 33; n=0 performs nothing → 0. The stateful-fold companion of the delegation-reaches-
+           a-recursive-callee capability case (04-capabilities): there the effect is DELEGATED to the
+           entrypoint, here it is DISCHARGED by an in-program handler whose state must thread OUT of one
+           recursive activation and INTO the next — across call frames, not just across statements in one
+           body. An emit that re-seeded the handler per activation (3×10=30) or read one stale state for
+           all levels would miscount. Runtime `n` keeps the recursion out of the fold. Expected: 33 (n=3),
+           0 (n=0).")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (def (drain (: n Int64))
+              (if (<= n 0) 0 (+ (Fresh.next) (drain (- n 1)))))
+            (def (main (: n Int64))
+              (handle Fresh 10 ((next (u) s (resume s (+ s 1))))
+                (drain n)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 33 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
 (case "a performed operation is the scrutinee of a match that dispatches on its result"
   (doc    "Witnesses that an effect operation composes as a match SCRUTINEE, exactly as it composes as an
            `if` condition or an arithmetic operand: `(match (Fresh.next) (0 100) (_ 200))`. The scrutinee is

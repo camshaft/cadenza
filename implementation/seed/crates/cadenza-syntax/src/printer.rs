@@ -5537,6 +5537,21 @@ mod tests {
                 "/// Tagged.\n@tag(\"slow\")\ndef d() -> Int64 = 5",
                 "call-style annotation",
             ),
+            // The carry deposits at the wrapped-form slot, so EVERY documentable form that drains
+            // (type/effect/module, not just def) preserves a doc before its annotation. Pin them so a
+            // future change to any of those forms' doc-drain can't silently regress the annotated case.
+            (
+                "/// Annotated type.\n@derive\ntype Color = | Red | Green",
+                "annotated type",
+            ),
+            (
+                "/// Annotated effect.\n@handler\neffect E = | op : -> Unit",
+                "annotated effect",
+            ),
+            (
+                "/// Annotated module.\n@inline\nmodule M { def x() -> Int64 = 1 }",
+                "annotated module",
+            ),
         ] {
             let a = parser::read_ml(src);
             assert!(a.ok(), "[{label}] parse: {:?}", a.errors);

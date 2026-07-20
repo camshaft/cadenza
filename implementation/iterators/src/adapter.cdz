@@ -440,6 +440,26 @@ def law-take-while-is-a-prefix() =
   if count(take-while(from-list([1, 2, 3, 4, 5]), fn(x) => x < 4)) <= count(from-list([1, 2, 3, 4, 5]))
   then unit else trap("take-while count <= source count")
 
+/// SHORT-CIRCUIT CONSUMER LAWS — the search/predicate consumers (any/find/contains) all drive the step
+/// with EARLY EXIT, so their driving loops differ; these pin their algebraic ties so a fusion/short-circuit
+/// rewrite that reorders or merges the exit can't silently desync them.
+
+/// any is find-non-None: any(it, p) yields a match iff find(it, p) does. Same predicate, same source; only
+/// the RESULT differs (Bool vs the element). Pins that any doesn't over/under-shoot find's short-circuit.
+@test
+def law-any-is-find-some() =
+  if (match find(from-list([1, 2, 3, 4, 5]), fn(x) => x > 3) with
+      | Option.None(_) => false
+      | Option.Some(_) => true) == any(from-list([1, 2, 3, 4, 5]), fn(x) => x > 3)
+  then unit else trap("any(p) == is-Some(find(p))")
+
+/// contains is any-equal: contains(it, x) == any(it, ==x). Pins that the specialized equality search agrees
+/// with the general predicate search (both short-circuit at the first hit).
+@test
+def law-contains-is-any-eq() =
+  if contains(from-list([10, 20, 30]), 20) == any(from-list([10, 20, 30]), fn(x) => x == 20)
+  then unit else trap("contains(x) == any(==x)")
+
 /// EDGE-CASE PINS (self-adversarial probing, all verified to hold) — cover corners the single-combinator
 /// tests + the w3 fusion witness don't: a DEEPER (4-stage) fused chain, filter removing ALL elements into a
 /// fold, and negatives threaded through a map chain.

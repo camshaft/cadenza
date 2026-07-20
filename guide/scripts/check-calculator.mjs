@@ -159,4 +159,12 @@ await checkExact("bare thirds sum to 1", "(+ (+ (/ 1 3) (/ 1 3)) (/ 1 3))", "1/1
 await checkExact("bare decimal exact", "(+ 0.1 0.2)", "3/10");
 
 console.log(`\ncalculator check: ${pass} pass, ${fail} fail`);
+// Vacuous-pass floor: the scenarios are inline `await check(...)` calls, so if a refactor ever dropped
+// them the loop would run zero cases and print "0 pass, 0 fail" then exit 0 — a false green. Assert the
+// harness actually exercised the calculator engine. (Completes the vacuous-pass audit across the guide's
+// gate scripts — cf. check-examples / check-prose / check-music-preload floors.)
+if (pass + fail === 0) {
+  console.error("calculator check: ZERO scenarios ran — the check body likely broke; refusing a vacuous pass.");
+  process.exit(1);
+}
 process.exit(fail === 0 ? 0 : 1);

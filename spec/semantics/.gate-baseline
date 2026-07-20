@@ -2249,6 +2249,8 @@ pass	a stored continuation is popped from a time-ordered pqueue (tuple-payload m
 pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strength-reduced multiply nested as an operand computes in place
 pass	a strict greater-than of equal operands is false
+pass	a stateful counter is observed left-to-right by sibling performs in one expression
+pass	a stateful counter threads through a RECURSIVE callee performing inside the handled region
 pass	a strict less-than of equal operands is false
 pass	a string carried as a sum-variant payload is bound and measured at run time
 pass	a string compared to a symbol is a type error
@@ -2540,6 +2542,8 @@ pass	an @param with no widget config still generates its typed accessor
 pass	an ABORTIVE arm whose value is a COMPOUND matches the handle body type and folds
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
+pass	an EFFECTFUL @ensures predicate is value-transparent when SATISFIED — the body's own perform runs first
+pass	an EFFECTFUL @ensures predicate performs under the caller's handler at body-EXIT, after the body's own perform
 pass	an EFFECTFUL @requires predicate performs under the caller's handler and advances its state before the body
 pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
@@ -3613,6 +3617,7 @@ pass	slicing a byte sequence built at run time yields Some of the sub-range
 pass	slicing a runtime byte sequence past the end yields None
 pass	slicing a runtime byte sequence with a negative start yields None
 pass	slicing past the end of a byte sequence yields None
+pass	sibling performs feeding a subtraction witness the advancing state non-commutatively
 pass	slicing with a negative start yields None
 pass	slicing with a start near i64::MAX is out of range, not a trap
 pass	slicing with start+len overflowing i64 is out of range, not a wrong slice

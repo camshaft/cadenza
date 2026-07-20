@@ -2179,6 +2179,8 @@ pass	all-nullary enum equality compares discriminants
 pass	an ABORTIVE arm whose value is a COMPOUND matches the handle body type and folds
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
+pass	an EFFECTFUL @ensures predicate is value-transparent when SATISFIED — the body's own perform runs first
+pass	an EFFECTFUL @ensures predicate performs under the caller's handler at body-EXIT, after the body's own perform
 pass	an EFFECTFUL @requires predicate performs under the caller's handler and advances its state before the body
 pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
@@ -2249,6 +2251,8 @@ pass	an active unquote of a let-bound string lifts to Ast.Str by inferred type
 pass	an active unquote of a string literal lifts to an Ast.Str node
 pass	an active unquote of an Ast-valued expression splices the subtree as identity
 pass	an active-unquoted boolean literal equals the quoted form
+pass	a stateful counter is observed left-to-right by sibling performs in one expression
+pass	a stateful counter threads through a RECURSIVE callee performing inside the handled region
 pass	an agreeing Result error type short-circuits through the boundary
 pass	an agreeing arrow annotation on a lambda is accepted and the function applies normally
 pass	an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator
@@ -3613,6 +3617,7 @@ todo	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
+pass	sibling performs feeding a subtraction witness the advancing state non-commutatively
 todo	THREE Tuple args cross the direct-call boundary
 todo	THREE Tuple args with a LIST result
 todo	TWO Record args cross the direct-call boundary
