@@ -40,3 +40,13 @@ class are the template.
 - `(Map.len Map.empty)` / `(List.len (list))`: rust value 0 (Map/List unaffected).
 
 Not breaker's lane to fix. Filed adv + issue to v-rust-backend (rust Set emit element-type annotation).
+
+## Broadened (breaker 2026-07-20, same tick): the E0282 triggers wherever an unconstrained empty Set flows
+into an op that doesn't pin its element type — ALSO reproduces for:
+- `(Set.len (Set.union (Set.of (list)) (Set.of (list))))` → rust E0282
+- `(Set.len (Set.difference (Set.of (list)) (Set.of (list))))` → rust E0282
+AVOIDED when a sibling constrains the element type:
+- `(Set.contains (Set.of (list)) 5)` → rust value 0 (the `5` pins Int64)
+- `(List.len (Set.to-list (Set.of (list))))` → rust value 0 (Set.to-list pins it)
+So the fix (annotate the emitted BTreeSet element type from the defaulted frontend element type) covers the
+whole family — bare empty-Set into len/union/difference. wasm computes all of these (0).

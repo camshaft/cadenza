@@ -141,7 +141,7 @@ export default function MusicPage() {
       </div>
       <p className="text-sm text-slate-400">
         Build a chord progression from intervals measured as exact fractions of an octave, schedule it into
-        timed MIDI events, and check that every note that switches on switches off again — computed with exact
+        timed MIDI events, and check that every note that switches on switches off again, all computed with exact
         arithmetic and run in your browser.
       </p>
 

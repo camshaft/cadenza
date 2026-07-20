@@ -78,6 +78,39 @@ def rscale-size(s: RScale) = list-len-r(rscale-degrees(s))
 /// the arithmetic obvious).
 def list-len-r(xs: List(RInterval)) = match xs with | [] => 0 | [_, .. t] => 1 + list-len-r(t)
 
+// ---- COLLAPSE: snap a foreign interval to the nearest scale degree (euphony's collapse, in RATIONAL space) --
+//
+// euphony's `collapse` rounds an interval into a mode's tone set. We do it PURELY in rational space —
+// compare rational DISTANCES and keep the closest degree — so it needs no Rational→Int projection (the
+// still-open gap): the result is the nearest degree's `RInterval`, exact. This is the rational-core
+// analog of scale.cdz's Int64 `collapse-to-scale`, and works for ANY tuning's degree set (not just 12-TET),
+// since it only compares rational magnitudes.
+
+/// The absolute rational distance between two octave-fractions (|a - b|), via compare-and-negate.
+def r-dist(a: Rational, b: Rational) = if a < b then b - a else a - b
+
+/// Walk the degree list keeping the degree whose octave-fraction is closest to `target` (a Rational
+/// octave-fraction, tonic-relative). `best`/`best-d` thread the running nearest degree + its distance.
+/// Recursive driver, annotated.
+def nearest-degree-go(ds: List(RInterval), target: Rational, best: Rational, best-d: Rational) =
+  match ds with
+    | [] => best
+    | [h, .. t] =>
+      let d = r-dist(octaves(h), target) in
+      if d < best-d then nearest-degree-go(t, target, octaves(h), d)
+      else nearest-degree-go(t, target, best, best-d)
+
+/// COLLAPSE an absolute interval `i` into the scale `s`: return the nearest scale-degree interval (as an
+/// absolute `RInterval` from the reference). Snaps a foreign/chromatic interval onto the mode — the
+/// phase-2 "force into a mode" primitive, exact and tuning-agnostic. (An empty scale returns `i` unchanged.)
+def collapse-to-rscale(s: RScale, i: RInterval) =
+  let target = octaves(i) - octaves(rscale-tonic(s)) in
+  match rscale-degrees(s) with
+    | [] => i
+    | [h0, .. rest] =>
+      let nearest-frac = nearest-degree-go(rest, target, octaves(h0), r-dist(octaves(h0), target)) in
+      rinterval(octaves(rscale-tonic(s)) + nearest-frac)
+
 /// ============================ @test suite (rational scales / modes) ============================
 
 @test
@@ -124,8 +157,42 @@ def degrees-preserve-relationships-across-a-transposition() =
   let gap1 = rinterval(octaves(rscale-degree(s1, 2)) - octaves(rscale-degree(s1, 1))) in
   if r-eq(gap0, degree-r(1)) then (if r-eq(gap0, gap1) then unit else trap("gap invariant under transposition")) else trap("degree gap is 1/7")
 
+@test
+def collapse-snaps-a-foreign-interval-to-the-nearest-degree() =
+  // In a heptatonic scale (degrees k/7), an interval near 1/7 but off it (say 5/42 ≈ 0.119, between 0 and
+  // 1/7≈0.143) collapses to the nearer degree. 5/42 vs 0/7 (dist 5/42) vs 1/7=6/42 (dist 1/42) → nearest is 1/7.
+  let s = heptatonic-scale(rinterval(Rational.of(0, 1))) in
+  let foreign = rinterval(Rational.of(5, 42)) in
+  if r-eq(collapse-to-rscale(s, foreign), degree-r(1)) then unit else trap("5/42 snaps to the 1/7 degree")
+
+@test
+def collapse-is-identity-on-an-exact-degree() =
+  // An interval already ON a degree collapses to itself (distance 0 wins).
+  let s = heptatonic-scale(rinterval(Rational.of(0, 1))) in
+  if r-eq(collapse-to-rscale(s, degree-r(3)), degree-r(3)) then unit else trap("3/7 stays 3/7")
+
+@test
+def collapse-into-chromatic-snaps-a-quartertone-to-a-semitone() =
+  // A quarter-tone (1/24 of an octave) collapses into the chromatic scale (k/12): 1/24=0.5/12 is
+  // equidistant-ish between 0 and 1/12; 1/24 is exactly half a semitone — nearest is 0/12 (dist 1/24) vs
+  // 1/12=2/24 (dist 1/24): a tie; the FIRST-seen nearest (0/12, the tonic) wins since we keep strict <.
+  let s = chromatic-scale(rinterval(Rational.of(0, 1))) in
+  let quarter-tone = rinterval(Rational.of(1, 24)) in
+  // just assert it lands on an actual chromatic degree (in the scale)
+  if in-rscale(s, collapse-to-rscale(s, quarter-tone)) then unit else trap("collapsed to a chromatic degree")
+
+@test
+def collapse-is-tonic-relative() =
+  // Collapse works relative to a shifted tonic: on tonic 1/12, a foreign interval near tonic+1/7 snaps to
+  // that degree measured from the tonic (mode-independence carries through collapse).
+  let s = heptatonic-scale(edo-step(1, 12)) in
+  let near = rinterval(octaves(edo-step(1, 12)) + Rational.of(5, 42)) in   // tonic + ~0.119
+  let want = rinterval(octaves(edo-step(1, 12)) + octaves(degree-r(1))) in  // tonic + 1/7
+  if r-eq(collapse-to-rscale(s, near), want) then unit else trap("collapse is tonic-relative")
+
 export {
   RScale.*,
   rscale, rscale-tonic, rscale-degrees, heptatonic-degrees, chromatic-degrees,
+  collapse-to-rscale,
   heptatonic-scale, chromatic-scale, rscale-degree, in-rscale, rscale-size,
 }
