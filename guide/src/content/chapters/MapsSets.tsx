@@ -33,10 +33,7 @@ export default function MapsSets() {
       <P>
         <C>Set.contains</C> answers membership directly:
       </P>
-      <Runnable
-        source={`(def (main)
-  (if (Set.contains (Set.of (list 1 2 3)) 2) 1 0))`}
-      />
+      <Runnable source={`(Set.contains (Set.of (list 1 2 3)) 2)`} />
 
       <H2>Set algebra</H2>
       <P>

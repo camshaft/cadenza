@@ -2062,6 +2062,63 @@
   (call   main (: 5 Int64))
   (output (: 0 Int64)))
 
+; --- Quantity over a HEAP-NUMERIC inner (BigInt/Rational) as a Map key -----------------------------
+; The fixnum Map-key cases above erase to an immediate scalar in the key. These pin the heap-numeric
+; inner: a `(Qty BigInt u)` / `(Qty Rational u)` key erases to a heap HANDLE, so the map key comparator
+; must compare the pointed-to bignum/rational by CONTENT (not the handle), and — for Rational — the
+; construction-time canonicalization means equal VALUES with different spellings are the same key.
+
+(case "a runtime BigInt-inner quantity used as a Map key hits, and a different magnitude misses"
+  (doc    "`(Qty (BigInt.of v) meter)` as a Map key with `v` a runtime Int64: a BigInt inner erases to a
+           heap handle, so the key comparator compares the pointed-to bignum by content. A separately-built
+           equal key HITS (42); `(+ v 1)` MISSES (0). Pins that a heap-numeric quantity key compares by the
+           bignum's value, not the handle identity — the same content equality the fixnum key cases pin,
+           through the BigInt heap path.")
+  (input  (do
+            (def (main (: v Int64))
+              (let ((k (Qty.of (BigInt.of v) (Unit.base #"meter")))
+                    (m (Map.insert (Map.empty) k 42)))
+                (+ (match (Map.lookup m (Qty.of (BigInt.of v) (Unit.base #"meter")))
+                     ((Some found) found) ((None) 0))
+                   (match (Map.lookup m (Qty.of (BigInt.of (+ v 1)) (Unit.base #"meter")))
+                     ((Some found) found) ((None) 0)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 42 Int64)))
+
+(case "a runtime Rational-inner quantity used as a Map key hits, and a different magnitude misses"
+  (doc    "The Rational twin of the BigInt-key case: `(Qty (Rational.of v 2) meter)` as a Map key. A Rational
+           inner erases to a heap handle, so the key comparator compares the pointed-to rational by content.
+           A separately-built `v/2` key HITS (42); `(v+1)/2` MISSES (0). Pins content equality of a
+           Rational-inner quantity key through the rational heap path.")
+  (input  (do
+            (def (main (: v Int64))
+              (let ((k (Qty.of (Rational.of v 2) (Unit.base #"meter")))
+                    (m (Map.insert (Map.empty) k 42)))
+                (+ (match (Map.lookup m (Qty.of (Rational.of v 2) (Unit.base #"meter")))
+                     ((Some found) found) ((None) 0))
+                   (match (Map.lookup m (Qty.of (Rational.of (+ v 1) 2) (Unit.base #"meter")))
+                     ((Some found) found) ((None) 0)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 42 Int64)))
+
+(case "a Rational-inner quantity Map key matches an equal value written with a different spelling"
+  (doc    "Rational canonicalizes at construction, so a `(Qty (Rational.of v 2) meter)` key is looked up by
+           `(Qty (Rational.of (* v 2) 4) meter)` — `v/2` vs `2v/4`, the SAME rational value in a different
+           spelling — and HITS (42). Pins that a Rational-inner quantity key compares by the CANONICAL value,
+           not the written numerator/denominator, so equality is real value equality across spellings.")
+  (input  (do
+            (def (main (: v Int64))
+              (let ((k (Qty.of (Rational.of v 2) (Unit.base #"meter")))
+                    (m (Map.insert (Map.empty) k 42)))
+                (match (Map.lookup m (Qty.of (Rational.of (* v 2) 4) (Unit.base #"meter")))
+                  ((Some found) found)
+                  ((None) 0))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 42 Int64)))
+
 ; --- Quantity as a Set element: content-address dedup + membership --------------------------------
 ; The Map-key cases above pin a quantity on the key side of a Map. These pin the Set analogue: a
 ; quantity as a SET element is deduplicated + tested for membership by CONTENT (the erased magnitude

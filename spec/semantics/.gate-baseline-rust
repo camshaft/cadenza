@@ -269,6 +269,7 @@ pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
 pass	a @requires precondition is enforced for a genuinely-runtime argument
 pass	a @requires predicate that itself traps keeps its own trap kind
+pass	a @requires predicate that references `ret` is REJECTED CDZ0101 — only @ensures binds the result
 pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
@@ -384,6 +385,7 @@ pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
+pass	a PLAIN @ensures on a NULLARY def (no parameters) enforces — ret binds the body, predicate reads only ret
 pass	a PLAIN @ensures over a HEAP result (List) TRAPS when violated — the postcondition checks the heap value
 pass	a PLAIN @ensures over a HEAP result (List) is enforced — ret binds a heap value, value-transparent when satisfied
 pass	a PLAIN @ensures postcondition is ENFORCED at body-exit: a VIOLATED postcondition traps when the def is called
@@ -876,6 +878,7 @@ pass	a duplicate module declaration in one scope is rejected
 pass	a factorial that overflows the integer type traps through the recursion
 pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
+pass	a discarded do-statement that performs still advances the handler state
 pass	a factory-returned closure over its list parameter keeps the capture live across two applications
 pass	a failing guard falls through to a later arm
 pass	a failing payload-binder guard falls to a later arm re-binding the payload
@@ -2888,6 +2891,7 @@ pass	breaker holsubst: a free occurrence beside a shadow substitutes selectively
 pass	breaker holsubst: a shadowing binder blocks substitution
 pass	breaker holsubst: the naive subst's documented capture hazard
 pass	breaker specsubst: GEN of refl then SPEC substitutes the bound var throughout the body
+pass	an unused let binding whose init performs still advances the handler state
 pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count

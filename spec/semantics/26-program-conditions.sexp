@@ -1921,6 +1921,36 @@
             (export main)))
   (error  CDZ0201))
 
+(case "a @requires predicate that references `ret` is REJECTED CDZ0101 — only @ensures binds the result"
+  (doc    "The scope-boundary pin between the two annotations: `ret` is the @ENSURES result binder, and NOTHING
+           else introduces it. A `@requires` runs at body-ENTRY, before any result exists, so it binds only the
+           def's PARAMETERS (and prelude/global names) — `ret` is NOT in scope. A `@requires(>= ret 0)` therefore
+           references an UNBOUND name and is rejected CDZ0101 at the annotation. This guards the exact boundary:
+           a regression that leaked the @ensures `ret` binder into `@requires` scope would silently ACCEPT a
+           nonsensical precondition (a precondition over a not-yet-computed result), so pinning the reject keeps
+           the two contracts' scopes distinct. (`collect_faults` skips the def's params + — for @ensures ONLY —
+           the `ret` subject when checking predicate names; `@requires` passes no subject, so `ret` resolves to
+           Poison(CDZ0101) exactly as any stray name would.)")
+  (input  (do
+            (@ (requires (>= ret 0)) (def (f (: x Int64)) x))
+            (def (main) (f 5))
+            (export main)))
+  (error  CDZ0101))
+
+(case "a PLAIN @ensures on a NULLARY def (no parameters) enforces — ret binds the body, predicate reads only ret"
+  (doc    "Every runtime @ensures case so far has at least one parameter; this pins @ensures on a def with NO
+           parameters, where the postcondition predicate reads ONLY the result binder `ret` (no param is in
+           scope to reference). The injected `(let ((ret BODY)) (if Q ret (trap …)))` binds `ret` to the
+           nullary body and checks the predicate over it alone. `(def (f) (- 5 10))` computes `ret = -5`, which
+           violates `@ensures(>= ret 0)`, so the `if` takes the trap arm — `unreachable`. Pins that the
+           enforcement rewrite needs no parameter to inject its check (the empty param list is not a special
+           case that skips enforcement) and that a nullary def's postcondition is checked over the result alone.")
+  (input  (do
+            (@ (ensures (>= ret 0)) (def (f) (- 5 10)))
+            (def (main) (f))
+            (export main)))
+  (trap   "unreachable"))
+
 ; ── @requires enforcement EDGES (breaker) — beyond the const-arg violated/satisfied pair above ──────
 ; The two (D) pins above call `f` with a CONSTANT argument, so a fold could in principle have discharged
 ; the check at compile time. These pin the enforcement's REACH: a genuinely-runtime argument (the check

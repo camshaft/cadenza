@@ -8644,7 +8644,15 @@ fn emit(
                         // A NESTED-COMPOUND element: retain the returned child (rc++) so it outlives the
                         // parent, then drop the parent. `dup` POPS its handle, so re-read the child from a
                         // scratch slot for the dup and leave the original copy on the stack as the result.
-                        let child_slot = base + 1;
+                        // ⚠ The child slot floats ABOVE `*high` — NOT `base + 1` — because the `operand`
+                        // emit above may have spent scratch ABOVE `base + 1` and, crucially, may have bound
+                        // a `let` there at a DIFFERENT width (a wasm local has ONE type function-wide). At
+                        // MODULE SCALE this is a real miscompile: `(Map.size (. r 1))` where the record `r`'s
+                        // producer contains `let x: Int64 = f(...)` binding slot `base + 1` at i64 → this
+                        // i32 child tee at `base + 1` re-typed it → `expected i32, found i64`, the whole
+                        // component invalid (the shape compiles fine standalone — nothing binds that slot).
+                        // `*high` reflects the operand's scratch, so it hands a fresh, never-typed slot.
+                        let child_slot = *high;
                         if child_slot + 1 > *high {
                             *high = child_slot + 1;
                         }
@@ -8684,8 +8692,11 @@ fn emit(
                 // copy path and the parent's array stays intact for the later read; the consumer's own drop
                 // (or the persistent path's drop of its taken ref) reclaims the extra reference. `dup` POPS
                 // its arg and returns nothing, so re-materialize the child from a scratch slot: tee it, dup
-                // the copy, leave the original on the stack for the consumer.
-                let child_slot = base;
+                // the copy, leave the original on the stack for the consumer. Float the slot ABOVE `*high`
+                // (NOT `base`) — the `operand` emit above may have spent scratch at/above `base` (a `let`
+                // binding of a different width), and a wasm local has ONE type function-wide, so reusing
+                // `base` here re-types that slot → invalid module at module scale (see the reclaim arm).
+                let child_slot = *high;
                 if child_slot + 1 > *high {
                     *high = child_slot + 1;
                 }
@@ -8827,7 +8838,13 @@ fn emit(
             // dup the copy, leave the original for the consumer.
             let unit_leaf = matches!(type_of(db, id).strip_nominal(), Ty::Unit);
             if unboxed.is_none() && !unit_leaf && out.dup_sites.contains(&id) {
-                let child_slot = base;
+                // Float the retain slot ABOVE `*high` (NOT `base`) — the scrutinee walk above may have spent
+                // scratch at/above `base` (a `let`/materialize of a different width), and a wasm local has
+                // ONE type function-wide, so reusing `base` re-types that slot → invalid module at module
+                // scale. This is the v-music recursive-list-map bug: `match h with Note(p,..) => List.push(
+                // out, Note(p, ..))` reuses the destructured boxed payload `p` (this dup'd child) in a large
+                // body where slot `base` already held an i64 binding → `expected i32, found i64`.
+                let child_slot = *high;
                 if child_slot + 1 > *high {
                     *high = child_slot + 1;
                 }

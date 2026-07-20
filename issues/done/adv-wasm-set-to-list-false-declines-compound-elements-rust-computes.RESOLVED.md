@@ -58,3 +58,12 @@ their memory pins the `Ty::Map(key,val)` KEY arm ~13013 as the same bug). Verifi
 "Map.to-list key/value shape has no orderable descriptor"; rust: computes (len 2). Same scalar-only
 orderable-descriptor guard, Map side. v-runtime is fixing BOTH (Set + Map to-list) in the one BRICK-2-batched
 change (reuse value_cmp_shaped). No separate adv — same root cause, same fix.
+
+---
+## Triage (corpus-bugfix, 2026-07-20, trunk af0a646f7)
+RESOLVED + PINNED. v-runtime's compound-element orderable-descriptor fix landed. Verified on wasm:
+- tuple-element Set.to-list: (Set.to-list (Set.of (list (tuple 3 1)(tuple 1 2)(tuple 2 0)))) -> canonical
+  order (1,2)(2,0)(3,1); first element -> 10*1+2 = 12. (was 'element shape has no orderable descriptor'.)
+- list-element Set.to-list -> len 2; Map.to-list compound-KEY twin -> len 2 (both compute).
+Existing pin "Set.to-list orders a set of COMPOUND (tuple) elements lexicographically" (19-sets:803) PASSES
+on trunk. Corpus side complete. Marked RESOLVED.
