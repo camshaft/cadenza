@@ -67,6 +67,25 @@ def take-while(it, p: Int64 -> Bool) = match it with
     | Option.Some(pair) => (match pair with | (x, s2) =>
       if p(x) then Option.Some((x, s2)) else Option.None(unit)))
 
+/// `filter-map(it, f)` — the fused map-then-filter: apply `f : Int64 -> Option(Int64)` to each element,
+/// keep the `Some` results, drop the `None`s (transform + select in one pass). Same-state (`List(Int64)`),
+/// so it composes with every consumer. The worker `filter-map-step` recurses on `None` (skipping the dropped
+/// element) via a `match f(x)` whose keep-arm RETURNS and drop-arm RECURSES — a MIXED innermost match
+/// re-passing `const step`/`const f`. That exact shape used to decline (CDZ0101 const-binder-drop, then a
+/// tail-loop invalid-wasm); it is UNBLOCKED end-to-end by v-core-opt's const-param-drop fix + v-wasm-opt's
+/// tail-loop escape-module fix. This is the I4 extensibility demo — a brand-new combinator added by ONE new
+/// `def` pair, NO edit to any central dispatch (the operator's "trivial to extend" criterion), the payoff
+/// over the reified enum where a new combinator meant a new `Iter` variant AND a new `next` arm.
+def filter-map-step(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), const f: Int64 -> Option(Int64)) =
+  match step(s) with
+  | Option.None(_) => Option.None(unit)
+  | Option.Some(pair) => (match pair with | (x, s2) =>
+    (match f(x) with
+     | Option.None(_) => filter-map-step(step, s2, f)
+     | Option.Some(y) => Option.Some((y, s2))))
+def filter-map(it, f: Int64 -> Option(Int64)) = match it with
+  | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => filter-map-step(step, s, f))
+
 /// CONSUMERS (drive the step to exhaustion — the ONE loop the chain fuses into) ------------------------
 
 /// `drive(step, s, acc, g)` — the recursive fold worker: pull each element and thread it through `g`. Its
@@ -124,8 +143,9 @@ def position(it, p: Int64 -> Bool) = match it with | Iter.Mk(s, step) => positio
 /// `sum(it)` — total of the elements (fold with +, seeded 0). The canonical fused-pipeline consumer.
 /// Drives `drive` DIRECTLY (rather than via `fold`) so the literal `+` combiner reaches `drive`'s `const g`
 /// in one hop: const-provability does not survive a literal closure forwarded through TWO wrapper levels
-/// (`sum` → `fold` → `drive`), so the `sum(from-list(…))` call site would be rejected CDZ0201 "const arg not
-/// compile-time-known". Inlining the `fold` layer keeps the const chain one-hop and preserves fusion.
+/// (`sum` → `fold` → `drive`), so the `sum(from-list(…))` call site would be rejected because an argument to
+/// a `const` parameter must be compile-time-known (it would trace back through runtime data). Inlining the
+/// `fold` layer keeps the const chain one-hop and preserves fusion.
 def sum(it) = match it with | Iter.Mk(s, step) => drive(step, s, 0, fn(a, x) => a + x)
 
 /// `product(it)` — product of the elements (fold with *, seeded 1; empty → 1). Drives `drive` directly for
@@ -409,5 +429,38 @@ def filter-removes-all-then-sum-is-zero() =
 def negatives-through-map-sum() =
   if sum(map(from-list([0 - 5, 3, 0 - 2]), fn(x) => x * 2)) == 0 - 8
   then unit else trap("map*2 over [-5,3,-2] |> sum = -10+6-4 = -8")
+
+/// filter-map (I4 extensibility demo) — transform+select in one pass, unblocked by the const-param-drop +
+/// tail-loop fixes. Keep the doubled value only for even inputs: [1,2,3,4] → evens {2,4} → {4,8} → sum 12.
+@test
+def filter-map-selects-and-transforms() =
+  if sum(filter-map(from-list([1, 2, 3, 4]), fn(x) => if x - (x / 2) * 2 == 0 then Option.Some(x * 2) else Option.None(unit))) == 12
+  then unit else trap("filter-map even|>*2 |> sum = 4+8 = 12")
+
+/// filter-map dropping EVERYTHING (f always None) folds to the seed — the empty-result corner.
+@test
+def filter-map-all-none-is-zero() =
+  if sum(filter-map(from-list([1, 2, 3]), fn(_x) => Option.None(unit))) == 0
+  then unit else trap("filter-map all-None then sum = 0")
+
+/// filter-map keeping EVERYTHING (f always Some) equals a plain map — the total-function corner.
+@test
+def filter-map-all-some-equals-map() =
+  if sum(filter-map(from-list([1, 2, 3]), fn(x) => Option.Some(x + 10)))
+     == sum(map(from-list([1, 2, 3]), fn(x) => x + 10))
+  then unit else trap("filter-map(Some.f) == map(f)")
+
+/// LAW: filter-map decomposes into map then filter — pins that the fused transform+select is value-preserving.
+@test
+def law-filter-map-is-map-then-filter() =
+  if sum(filter-map(from-list([1, 2, 3, 4, 5]), fn(x) => (if x * 2 > 4 then Option.Some(x * 2) else Option.None(unit))))
+     == sum(filter(map(from-list([1, 2, 3, 4, 5]), fn(x) => x * 2), fn(x) => x > 4))
+  then unit else trap("filter-map == filter . map")
+
+/// filter-map composes INTO a further consumer over a chain — count the kept elements after a map.
+@test
+def filter-map-then-count() =
+  if count(filter-map(map(from-list([1, 2, 3, 4, 5, 6]), fn(x) => x + 1), fn(x) => if x > 4 then Option.Some(x) else Option.None(unit))) == 3
+  then unit else trap("map+1 |> filter-map(>4) |> count = {5,6,7} = 3")
 
 export { Iter.* }
