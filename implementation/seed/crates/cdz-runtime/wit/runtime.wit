@@ -426,6 +426,22 @@ interface heap {
   //    malformed descriptor declines to an identity dup of `a` (never a trap, never a leak) — total.
   //    APPENDED last (frozen-contract rule). See `value_canonicalize_shaped`.
   value-canonicalize: func(a: u32, desc: u32) -> u32;  // 87 — canonical form for a KEY (borrows a; fresh owned result)
+
+  // ── Value-form structural EQUALITY (index 88) — deep STRUCTURAL equality over two RUNTIME compound heap
+  //    values of the same type, guided by the SAME shape descriptor `value-encode`/`value-cmp` read. The
+  //    DESCRIPTOR-GUIDED companion of `value-eq` (index 61): `value-eq` is the tagless `champ_eq` PHYSICAL-
+  //    byte walk, sound for a value that is canonical BY CONSTRUCTION (scalars, maps/sets, a compacted
+  //    String/Bytes) but UNSOUND for a LIST — an RRB vector is element-canonical yet NOT shape-canonical (a
+  //    concat-built and a push-built `[1.0, 2.0]` have different internal trees but ARE equal). This walk
+  //    compares element-by-element via the descriptor (shape-INDEPENDENT), so it is exact for a list AND for
+  //    a FLOAT/BYTES leaf a list carries (compared by canonical byte form — every NaN equal, -0.0 ≠ +0.0 —
+  //    which `value-cmp` DECLINES because a float has no total ORDER, only equality). Returns `true`/`false`
+  //    for a comparable pair; a malformed descriptor / unrepresentable shape reads as `false` (defensive
+  //    total — the compiler only bakes a well-formed descriptor). Ownership: an INSPECTOR of both `a` and `b`
+  //    (BORROWS them — the caller/escape owns the drop; identical to `value-eq`/`value-cmp`) and of `desc` (a
+  //    constant). Consistent with `value-cmp`: `value-eq-shaped == true` iff `value-cmp == 0` for an orderable
+  //    type. APPENDED last (frozen-contract rule). See `value_eq_shaped`.
+  value-eq-shaped: func(a: u32, b: u32, desc: u32) -> bool; // 88 — descriptor-guided structural equality (borrows a+b)
 }
 
 world runtime {

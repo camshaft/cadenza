@@ -832,6 +832,36 @@
   (input  (= (Some Float64.nan) (Some Float64.nan)))
   (output (: true Bool)))
 
+(case "a RUNTIME list of floats compares equal element-wise (the value-eq-shaped walk)"
+  (doc    "The literal-list case above CONST-FOLDS; this pins the RUNTIME path — a `List Float64` built from a
+           boundary Float parameter (no fold). `champ_eq` (`value-eq`) is UNSOUND for a list (an RRB spine is
+           element- but not shape-canonical) and `value-cmp` DECLINES a float (no total order), so this routes
+           to the descriptor-guided `value-eq-shaped` element-wise walk: `(list x x) = (list x x)` compares each
+           float element by canonical byte form → true. Built via `(list x x)` on a runtime param so no operand
+           folds. Expected: true.")
+  (input  (do (def (main (: x Float64)) (= (list x x) (list x x))) (export main)))
+  (call   main (: 3.5 Float64))
+  (output (: true Bool)))
+
+(case "a RUNTIME list of floats with a NaN element compares equal (value-eq-shaped canonical byte form)"
+  (doc    "The runtime-list NaN face: a `List Float64` holding a runtime NaN — `x` forced to NaN via `(- x
+           Float64.nan)` so the list is genuinely runtime-built — compares equal to another such list, because
+           the value-eq-shaped walk canonicalizes each float leaf (`nan == nan`), NOT a raw `f64.eq` (which
+           would answer false). Distinguishes the shaped walk's float handling from a bit compare. Expected:
+           true.")
+  (input  (do (def (main (: x Float64)) (= (list (- x Float64.nan)) (list (- x Float64.nan)))) (export main)))
+  (call   main (: 1.0 Float64))
+  (output (: true Bool)))
+
+(case "a RUNTIME list of floats with a differing element compares unequal (value-eq-shaped)"
+  (doc    "The not-equal face of the runtime value-eq-shaped list walk: two `List Float64` values built from
+           DIFFERENT boundary params differ in their sole element, so the element-wise walk finds the mismatch
+           → false. Guards that the walk actually compares elements (a blanket true would pass the equal cases).
+           Expected: false.")
+  (input  (do (def (main (: a Float64) (: b Float64)) (= (list a) (list b))) (export main)))
+  (call   main (: 3.5 Float64) (: 2.5 Float64))
+  (output (: false Bool)))
+
 (case "a negative zero in a record field is distinct from positive zero"
   (doc    "The record companion of the nested -0.0 case: `(= (record (x -0.0)) (record (x 0.0)))` =
            false — the field `x` holds -0.0 in one record and 0.0 in the other, distinct canonical byte

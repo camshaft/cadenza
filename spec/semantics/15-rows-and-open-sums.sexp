@@ -14,6 +14,23 @@
             (def (main) (get-x (record (x 1) (y 2)))) (export main)))
   (output (: 1 Int64)))
 
+(case "a record whose field is a List projects the list handle and indexes it, alongside a scalar field"
+  (doc    "A record field may itself be a variable-length collection — distinct from a fixed-shape tuple
+           field (which the ABI flattens depth-first): a `List` field is a HEAP HANDLE that must round-trip
+           through the record's field slot. `r = (record (xs (list 10 20 30)) (n 5))`: `(. r xs)` projects
+           the list handle, `List.at … i` indexes it at run time, and `(. r n)` reads the sibling scalar
+           independently. Encodes `100·xs[i] + n`: i=0 → 100·10+5 = 1005, i=1 → 2005, i=2 → 3005. Pins that a
+           heap-collection record field survives projection as a usable list (the record analogue of the
+           Map-with-list-value case), and the sibling scalar reads independently on both backends.")
+  (input  (do
+            (def (main (: i Int64))
+              (let ((r (record (xs (list 10 20 30)) (n 5))))
+                (+ (* 100 (Option.expect (List.at (. r xs) i) "idx")) (. r n))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1005 Int64))
+  (call   main (: 1 Int64)) (output (: 2005 Int64))
+  (call   main (: 2 Int64)) (output (: 3005 Int64)))
+
 (case "subset record comparison is explicit projection, not an overloaded equality"
   (doc    "Witnesses type-system.md #Records Are Rows (subset comparison is explicit projection-then-=):
            comparing a two-field record against a one-field record by first projecting the shared field

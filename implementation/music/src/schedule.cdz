@@ -79,24 +79,15 @@ def transpose-piece-go(notes: List(Note), semis: Int64, out: List(Note)) =
 
 def transpose-piece(notes: List(Note), semis: Int64) = transpose-piece-go(notes, semis, [])
 
-/// Rebuild a `Pitch` FRESH from its note number, rather than reusing the (boxed) pitch payload field of a
-/// matched note directly. ⚠ WORKAROUND for a compiler EMIT bug (reported to the PM/breaker via a probe,
-/// see the v-music vertical log): a recursive list-map that destructures a multi-field sum whose first
-/// field is an imported boxed type (`Pitch`) and rebuilds a new node REUSING that boxed field directly,
-/// threaded through a `List.push` accumulator, emits INVALID wasm (`function[N]` compile failure) — but
-/// ONLY in a large multi-def module (a standalone repro passes). Round-tripping through the plain Int64
-/// note number gives a fresh, unshared `Pitch` and sidesteps the bad reuse-in-place emit. `transpose-piece`
-/// happens to dodge it because `transpose(...)` already returns a fresh `Pitch`; `remap-channel` and
-/// `shift-piece` keep the pitch unchanged, so they need this explicit clone. Remove once the bug is fixed.
-def clone-pitch(p: Pitch) = pitch-of-note(note(p))
-def pitch-of-note(n: Int64) = Pitch.Pitch(n)
-
-/// REMAP every note to a different MIDI channel. Preserves everything else, so pairing is preserved.
+/// REMAP every note to a different MIDI channel. Preserves everything else (incl. the pitch), so pairing
+/// is preserved. Reuses the matched `Pitch` field directly — the cross-module imported-boxed reuse-in-place
+/// miscompile (issue 9939) that once forced a `clone-pitch` round-trip here is FIXED (v-inference #659), so
+/// the direct reuse now emits valid wasm.
 def remap-channel-go(notes: List(Note), chan: Int64, out: List(Note)) =
   match notes with
     | [] => out
     | [h, .. t] =>
-      let moved = Note.Note(clone-pitch(note-pitch(h)), chan, note-vel(h), note-start(h), note-dur(h)) in
+      let moved = Note.Note(note-pitch(h), chan, note-vel(h), note-start(h), note-dur(h)) in
       remap-channel-go(t, chan, List.push(out, moved))
 
 def remap-channel(notes: List(Note), chan: Int64) = remap-channel-go(notes, chan, [])
@@ -107,7 +98,7 @@ def shift-piece-go(notes: List(Note), by: Int64, out: List(Note)) =
   match notes with
     | [] => out
     | [h, .. t] =>
-      let moved = Note.Note(clone-pitch(note-pitch(h)), note-chan(h), note-vel(h), note-start(h) + by, note-dur(h)) in
+      let moved = Note.Note(note-pitch(h), note-chan(h), note-vel(h), note-start(h) + by, note-dur(h)) in
       shift-piece-go(t, by, List.push(out, moved))
 
 def shift-piece(notes: List(Note), by: Int64) = shift-piece-go(notes, by, [])

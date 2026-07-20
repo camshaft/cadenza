@@ -1048,6 +1048,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
         | Core::FloatCompare { lhs, rhs, .. }
         | Core::ValueEq { lhs, rhs }
         | Core::ValueCmp { lhs, rhs, .. }
+        | Core::ValueEqShaped { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. }
         | Core::ListConcat { lhs, rhs }
         | Core::BytesConcat { lhs, rhs }

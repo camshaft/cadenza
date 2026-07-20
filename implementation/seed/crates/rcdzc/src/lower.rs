@@ -12993,28 +12993,27 @@ impl ShapeTableBuilder {
                 let e = self.shape_of(db, elem)?;
                 self.push(ShapeNode::List(e))
             }
-            // A SET renders `(Set.of (list …))` with elements in CANONICAL key-VALUE order. The runtime
-            // value-encode sorts by the element's scalar value, matching `const_key_order` — which only
-            // orders SCALAR keys (Int/Bool/Unit/String). So admit a set only over such an element (a
-            // nested-compound element has no canonical scalar order → decline, as the const escape does).
+            // A SET renders `(Set.of (list …))` with elements in CANONICAL element-VALUE order. The runtime
+            // sorts by the element's canonical value order via `value_cmp_shaped` — the SAME descriptor-guided
+            // total order the runtime `<`/`Core::ValueCmp` walk uses — which orders any ORDERABLE element:
+            // a blessed scalar leaf (Int/Bool/Unit/String/Symbol/BigInt/Rational) OR an orderable COMPOUND
+            // (a tuple/list/record/sum all of whose leaves are orderable), lexicographically. So admit a set
+            // over any such element (`orderable_leaf_or_compound`, stripping a nominal wrapper — a newtype is
+            // erased to its inner value). A float/bytes/set/map leaf has no blessed total order → decline
+            // (matching `<`'s carve-outs and the const escape).
             Ty::Set(elem)
-                if matches!(
-                    elem.strip_nominal(),
-                    Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String
-                ) =>
+                if orderable_leaf_or_compound(db, elem.strip_nominal(), &mut Vec::new()) =>
             {
                 let e = self.shape_of(db, elem)?;
                 self.push(ShapeNode::Set(e))
             }
-            // A MAP renders `(map (k1 v1) …)` with entries in CANONICAL KEY order. The runtime sorts by
-            // the KEY's scalar value (matching `const_key_order`), so admit a map only over a SCALAR key
-            // (Int/Bool/Unit/String); the VALUE may be any encodable shape (the walk recurses on it). A
-            // nested-compound key has no canonical scalar order → decline, as the const map escape does.
+            // A MAP renders `(map (k1 v1) …)` with entries in CANONICAL KEY order. The runtime sorts by the
+            // KEY's canonical value order via `value_cmp_shaped` (the same total order `<` uses), so admit a
+            // map over any ORDERABLE key — a blessed scalar leaf OR an orderable compound (tuple/list/record/
+            // sum of orderable leaves); the VALUE may be any encodable shape (the walk recurses on it). A
+            // float/bytes/set/map key leaf has no blessed total order → decline.
             Ty::Map(key, val)
-                if matches!(
-                    key.strip_nominal(),
-                    Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String
-                ) =>
+                if orderable_leaf_or_compound(db, key.strip_nominal(), &mut Vec::new()) =>
             {
                 let k = self.shape_of(db, key)?;
                 let v = self.shape_of(db, val)?;
@@ -18388,6 +18387,28 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                     rhs: args[1],
                     ty: crate::infer::type_of(db, args[0]),
                 }
+            } else if matches!(op, Prim::Eq) && {
+                let opnd_ty = crate::infer::type_of(db, args[0]);
+                is_value_eq_shaped_compound(&opnd_ty)
+            } {
+                // RUNTIME LIST(-CONTAINING) EQUALITY WITH A FLOAT/BYTES LEAF — reached ONLY after BOTH the
+                // `compound_eq_heap_walkable` `ValueEq` arm (a List is not `champ_eq`-sound — an RRB spine is
+                // element- but not shape-canonical) AND the `is_orderable_compound` `ValueCmp{op:Eq}` arm (a
+                // float/bytes leaf has no total ORDER) declined. Route to `Core::ValueEqShaped` — the runtime
+                // `value-eq-shaped` descriptor-guided element-wise walk: a list compared positionally, a float
+                // leaf by canonical byte form (nan==nan, -0.0≠+0.0). So a concat-built `[1.0,2.0]` `=` a
+                // push-built `[1.0,2.0]` is TRUE, and `[nan]` `=` `[nan]` is TRUE — the equality companion of
+                // the boolean `<` value-cmp path, extended to the float leaf that `<` cannot order.
+                //= spec/capabilities/collections-and-text.md#a-list-is-an-ordered-homogeneous-sequence
+                //# Two lists MUST be equal exactly when they have equal elements in the same order.
+                //= spec/capabilities/core-semantics.md#floating-point-equality-follows-the-canonical-byte-form
+                //# A floating-point value MUST be equal to another floating-point value exactly when their canonical byte forms are identical, so that a negative zero is distinct from a positive zero and all not-a-number values are equal to one another.
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "runtime list-with-float-leaf equality → ValueEqShaped (value-eq-shaped element-wise walk)");
+                Core::ValueEqShaped {
+                    lhs: args[0],
+                    rhs: args[1],
+                    ty: crate::infer::type_of(db, args[0]),
+                }
             } else {
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "decline: comparison of a compound value needs a heap walk");
                 Core::Poison(Reject::decline(
@@ -23402,6 +23423,70 @@ fn orderable_leaf_or_compound(
             ok
         }
         // Anything else (a bare var, a function, Any, a nominal we can't resolve) — not orderable.
+        _ => false,
+    }
+}
+
+/// Whether `ty` is a LIST(-containing) compound that `=` must compare with the descriptor-guided
+/// `value-eq-shaped` walk (`Core::ValueEqShaped`) rather than the physical `champ_eq` `value-eq` or the
+/// `value-cmp`-based `Core::ValueCmp{op:Eq}`. Reached ONLY after both cheaper arms declined: it requires
+///  (1) the root CONTAINS a `List` — a `List` is an RRB vector that is element-canonical but NOT
+///      shape-canonical (a concat-built and a push-built equal list differ in bytes), so `value-eq`'s
+///      physical byte-walk is unsound (`ty_heap_walkable`/`compound_eq_heap_walkable` return false for a
+///      list), AND
+///  (2) it is NOT orderable (`is_orderable_compound` false — it carries a FLOAT/BYTES leaf) — an
+///      all-orderable list-containing compound already took `Core::ValueCmp{op:Eq}`, AND
+///  (3) every leaf is equality-comparable by the shaped walk — a blessed-Eq scalar (Int/Bool/Unit/String/
+///      Symbol/BigInt/Rational) OR a FLOAT/BYTES leaf (byte-canonical equality — the walk's key difference
+///      from `value-cmp`, which declines a float since it has equality but no total ORDER) — through
+///      tuple/record/list/nominal/qty compounds. A Sum/Map/Set leaf is NOT walked by this slice (a runtime
+///      Map/Set `=` is canonical-by-construction and already takes `value-eq`; a Sum with a float leaf is a
+///      later increment). Mirrors the rust backend's `ty_float_walkable` domain exactly, so both backends
+///      render the SAME set of `Core::ValueEqShaped` types.
+///= spec/capabilities/collections-and-text.md#a-list-is-an-ordered-homogeneous-sequence
+///# Two lists MUST be equal exactly when they have equal elements in the same order.
+fn is_value_eq_shaped_compound(ty: &crate::ty::Ty) -> bool {
+    // (1) must contain a List, and (3) every leaf equality-walkable. `is_orderable_compound` false (2) is
+    // checked at the call site (this arm is reached only after the orderable-Eq arm declined).
+    ty_contains_list(ty) && eq_shaped_walkable(ty)
+}
+
+/// Whether `ty` mentions a `List` anywhere in its structure (the trigger for the shaped equality walk — a
+/// bare list, or a list nested in a tuple/record/nominal/qty). A Sum/Map/Set is not descended (out of this
+/// slice's domain).
+fn ty_contains_list(ty: &crate::ty::Ty) -> bool {
+    use crate::ty::Ty;
+    match ty {
+        Ty::List(_) => true,
+        Ty::Tuple(elems) => elems.iter().any(ty_contains_list),
+        Ty::Record(fields) => fields.values().any(ty_contains_list),
+        Ty::Nominal { inner, .. } => ty_contains_list(inner),
+        Ty::Qty { inner, .. } => ty_contains_list(inner),
+        _ => false,
+    }
+}
+
+/// The recursive equality-walkability predicate for `Core::ValueEqShaped` — a leaf is a blessed-Eq scalar OR
+/// a FLOAT/BYTES leaf (byte-canonical equality), and a compound (tuple/record/list/nominal/qty) is walkable
+/// iff every component is. A Sum/Map/Set/Char/Fn leaf is NOT (out of this slice — see [`is_value_eq_shaped_
+/// compound`]). Mirrors the rust `ty_float_walkable` domain so the two backends agree on which types route
+/// here. A pure structural predicate — no `Db` / recursion-guard needed since a Sum (the only cyclic shape)
+/// is not descended.
+fn eq_shaped_walkable(ty: &crate::ty::Ty) -> bool {
+    use crate::ty::Ty;
+    match ty {
+        // Blessed-Eq scalar leaves + FLOAT/BYTES (byte-canonical equality — nan==nan, -0.0≠+0.0; a Bytes
+        // leaf is byte-canonical wherever the walk reaches it, exactly as `ty_heap_walkable` admits).
+        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Symbol | Ty::BigInt | Ty::Rational => {
+            true
+        }
+        Ty::Float(_) | Ty::Bytes => true,
+        Ty::Tuple(elems) => elems.iter().all(eq_shaped_walkable),
+        Ty::List(elem) => eq_shaped_walkable(elem),
+        Ty::Record(fields) => fields.values().all(eq_shaped_walkable),
+        Ty::Nominal { inner, .. } => eq_shaped_walkable(inner),
+        Ty::Qty { inner, .. } => eq_shaped_walkable(inner),
+        // A Sum/Map/Set/Char/Fn/var — not walked by this slice.
         _ => false,
     }
 }

@@ -4091,7 +4091,8 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         | Core::StrCmp { lhs, rhs, .. }
         | Core::FloatCompare { lhs, rhs, .. }
         | Core::ValueEq { lhs, rhs }
-        | Core::ValueCmp { lhs, rhs, .. } => {
+        | Core::ValueCmp { lhs, rhs, .. }
+        | Core::ValueEqShaped { lhs, rhs, .. } => {
             collect_reached_poisons(db, lhs, out);
             collect_reached_poisons(db, rhs, out);
         }

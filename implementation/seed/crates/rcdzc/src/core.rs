@@ -1011,6 +1011,24 @@ pub enum Core {
         /// bake). Both operands share this type (the type checker unified them before lowering).
         ty: crate::ty::Ty,
     },
+    /// A runtime STRUCTURAL EQUALITY on two COMPOUND operands via the DESCRIPTOR-GUIDED `value-eq-shaped`
+    /// walk — result is a `Bool`. Present only for `=` when the operand is a LIST(-containing) compound
+    /// whose leaves are all equality-comparable but NOT all orderable (a FLOAT/BYTES leaf): the physical
+    /// `value-eq` (`Core::ValueEq`) is UNSOUND for a list (an RRB vector is element- but not shape-canonical),
+    /// and `Core::ValueCmp{op:Eq}` is unavailable (a float offers equality but no total ORDER). This walks
+    /// the shape descriptor element-by-element, comparing a list spine positionally and a float/bytes leaf by
+    /// canonical byte form (nan==nan, -0.0≠+0.0). A List-containing compound whose leaves are ALL orderable
+    /// still takes `Core::ValueCmp{op:Eq}` (cheaper, no float leaf); a List-FREE walkable compound takes
+    /// `Core::ValueEq` (champ_eq is sound). Carries the operands' shared solved type like `ValueCmp`; the
+    /// emit bakes its shape descriptor. `value-eq-shaped` BORROWS both operands (an owned temporary is
+    /// dropped after the compare, like `ValueEq`/`ValueCmp`).
+    ValueEqShaped {
+        lhs: StructId,
+        rhs: StructId,
+        /// The operands' solved type — the emit bakes its shape descriptor as the `desc` arg the runtime
+        /// `value-eq-shaped` walk reads. Both operands share this type (the type checker unified them).
+        ty: crate::ty::Ty,
+    },
     /// A runtime integer CONVERSION on one operand (child by AST `StructId`) — present only when the
     /// fold could not reduce it (the operand is a runtime value). `Prim::Wrap` truncates the operand to
     /// the node's solved TARGET width/signedness (read off at selection); a constant operand folds to a
