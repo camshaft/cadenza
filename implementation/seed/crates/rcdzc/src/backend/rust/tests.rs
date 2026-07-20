@@ -1380,6 +1380,30 @@ fn a_context_typed_empty_map_or_set_emits_a_bare_new_not_a_decline() {
 }
 
 #[test]
+fn rustc_roundtrip_unconstrained_empty_set_grounds_and_compiles_not_e0282() {
+    // REGRESSION (breaker adv-rust-backend-unconstrained-empty-set-E0282): an UNANNOTATED empty
+    // `(Set.of (list))` used len-only — nothing downstream fixes its element type — left a bare
+    // `BTreeSet::new()` whose `_` element rustc could not infer → error[E0282] "type annotations needed for
+    // BTreeSet<_>". wasm computes 0. This is the Set companion of the resolved empty-Map/List E0282 class.
+    // The fix GROUNDS the open element var to the default and annotates `BTreeSet::<i64>` (the empty-Map
+    // twin): rustc infers nothing from a len-only use, so the collection needs a spelled element type.
+    let src = "(module m (def (g) (Set.len (Set.of (list)))) (export g))";
+    let s = compile_rust(src);
+    assert!(
+        s.contains("BTreeSet<i64> = std::collections::BTreeSet::new()"),
+        "an unconstrained empty set grounds its element to i64 (not a bare `BTreeSet::new()` that E0282s):\n{s}"
+    );
+    // The whole point: it now COMPILES on rustc (was E0282) and computes 0 like wasm.
+    assert!(
+        compile_rust_result(src).is_ok(),
+        "the emitted set program is produced (not declined)"
+    );
+    if let Some(out) = rustc_run(&s, "g()") {
+        assert_eq!(out, "0", "an empty set has cardinality 0 — same as wasm");
+    }
+}
+
+#[test]
 fn bytes_slice_is_total_on_a_usize_overflowing_range() {
     // REGRESSION (Copilot PR#435): the `Bytes.slice` bounds guard summed `(start as usize)+(len as usize)`,
     // which OVERFLOWS usize for two near-i64::MAX operands (wraps to a small sum in release) → the guard
