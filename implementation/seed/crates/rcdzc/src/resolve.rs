@@ -230,6 +230,8 @@ pub fn resolve_subtree(db: &mut Db, id: StructId) {
 /// lazily and re-resolution alone does not invalidate it). Bounded by the subtree size.
 pub fn forget_subtree(db: &mut Db, id: StructId) {
     db.resolved.forget(id);
+    // The ground type-value memo derives from the resolved form; re-parenting invalidates it too.
+    db.typeval.forget(id);
     db.resolved_subtrees.remove(&id);
     if let Struct::List(children) = db.ast.get(id) {
         for c in children.clone() {

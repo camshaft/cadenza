@@ -1557,6 +1557,23 @@ pub struct Db {
     pub(crate) resolved: Column<StructId, Resolved>,
     /// The solved-type column. Filled only by [`crate::infer`].
     pub(crate) types: Column<StructId, Ty>,
+    /// The ground TYPE-VALUE memo — the read-through cache for [`crate::eval::typeval_of`]. Distinct from
+    /// [`Self::types`] (which memoizes `type_of`, the type OF a node's value): this holds the type-VALUE a
+    /// node DENOTES (`(: b (Box t))`'s `(Box t)` → `Ty::Sum{Box, [Var t]}`). `typeval_of` is env-free and
+    /// deterministic per `StructId` once the load-time newtype precompute+fixpoint completes, so its result
+    /// caches per node. Without it a wide structural-record type ANNOTATION (`{tree, resolved: Map(Int64,
+    /// Resolved), …}`) re-reduces from scratch at every one of its ~1M referencing uses through the
+    /// resolve→infer→lower chain, exhausting the per-query reduction budget → a spurious CDZ0999 "does not
+    /// reduce within limits" on a whole-project check (the DB-records self-host case). 🪤 STALENESS: filled
+    /// ONLY when [`Self::typeval_memo_live`] is set — the newtype precompute reduces payloads BEFORE
+    /// `newtype_inner` is complete (a pre-normalization `Ty::Sum`), so the memo must not capture those; the
+    /// flag flips true right after the post-population evict at load's end. Invalidated per node by
+    /// [`crate::resolve::forget_subtree`] alongside `resolved` (a lowering-time re-parent changes the node's
+    /// resolved form, so its denoted type-value can change too).
+    pub(crate) typeval: Column<StructId, Ty>,
+    /// Whether [`Self::typeval`] may be filled (see its doc). False during the load-time newtype precompute
+    /// — which reduces payloads against an incomplete `newtype_inner` — and true for every real query after.
+    pub(crate) typeval_memo_live: bool,
     /// The core-form column. Filled only by [`crate::lower`].
     pub(crate) core: Column<StructId, Core>,
     /// Pass-installed CORE OVERRIDES (the `PassManager`/`CorePass` seam, `crate::opt`). A backend-independent
@@ -2446,6 +2463,8 @@ impl Db {
             call_sites_by_callee: None,
             resolved: Column::new(),
             types: Column::new(),
+            typeval: Column::new(),
+            typeval_memo_live: false,
             core: Column::new(),
             core_override: crate::fxhash::FxHashMap::default(),
             effect_specializations: crate::fxhash::FxHashMap::default(),
@@ -2555,6 +2574,11 @@ impl Db {
         // getting the erased `Ty::Nominal`. (Cheap: the columns are otherwise empty at this point.)
         db.resolved = Column::new();
         db.types = Column::new();
+        // The newtype precompute+fixpoint above is the only pre-normalization caller of `typeval_of`; it ran
+        // with the memo OFF (a `Ty::Sum` reduced before `newtype_inner` was complete must not be cached).
+        // Now `newtype_inner` is final and every reader agrees on `normalize_sum` — so from here on
+        // `typeval_of` is deterministic per node and its result may be memoized into `db.typeval`.
+        db.typeval_memo_live = true;
         db
     }
 
@@ -6038,5 +6062,47 @@ mod tests {
             .get(&occ_of("A"))
             .expect("A is an erasable newtype");
         assert_no_keyed_sum(&db, a_inner, "A's stored template (transitive)");
+    }
+
+    #[test]
+    // The `typeval_of` READ-THROUGH MEMO (CDZ0999 fix) must never cache a PRE-normalization `Ty::Sum` for a
+    // keyed newtype — the exact staleness the load-time evict + `typeval_memo_live` gate exist to prevent.
+    // A whole-program reduction of every node fills `db.typeval`; scan the filled column and assert NO entry
+    // holds a raw keyed `Sum` (which the backend would read as a heap handle → the 9939 miscompile family
+    // that the un-memoized path already dodged via the post-load evict). Also asserts the memo is SOUND: a
+    // second read equals the first (the fill is idempotent, exercised by the double `typeval_of`).
+    fn the_typeval_memo_never_caches_a_pre_normalization_sum_for_a_keyed_newtype() {
+        // A newtype whose field references a LATER-declared newtype — the decl order that baked a raw `Sum`
+        // into the pre-normalization reduction. Annotate a value with the full type so its annotation node
+        // is reduced by `typeval_of` and memoized.
+        let ast = crate::testkit::parse(
+            "(do \
+               (type Note (Note Pitch Int64)) \
+               (type Pitch (Pitch Int64)) \
+               (def (mk (: p Pitch)) (Note p 1)) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        assert!(
+            db.typeval_memo_live,
+            "the memo must be live after load completes"
+        );
+        // Reduce EVERY user node twice — fills the memo, and the second pass reads it back. Each read must
+        // agree with the first (idempotent memo), and no reduction may panic.
+        let n = db.user_node_count;
+        for i in 0..n {
+            let id = StructId(i);
+            let first = crate::eval::typeval_of(&mut db, id);
+            let second = crate::eval::typeval_of(&mut db, id);
+            assert_eq!(first, second, "memoized typeval_of read must be idempotent");
+        }
+        // Scan the filled memo: NO cached type-value may be a raw `Ty::Sum` naming a keyed newtype (the
+        // pre-normalization boxed form). Every erasable-newtype reference must be the `Nominal` form.
+        for i in 0..n {
+            let id = StructId(i);
+            if let crate::arena::Slot::Filled(t) = db.typeval.get(id) {
+                assert_no_keyed_sum(&db, t, "a memoized typeval_of result");
+            }
+        }
     }
 }
