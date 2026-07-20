@@ -150,14 +150,14 @@ export default function Strings() {
           <>
             Now a slice, and the half-open range is the whole trick. Pull the first three characters,{" "}
             <C>"cad"</C>, out of <C>"cadenza"</C> by filling in the <em>end</em> index. The check compares
-            the slice against <C>"cad"</C>, so getting the boundary right gives <C>1</C>.
+            the slice against <C>"cad"</C>, so getting the boundary right gives <C>true</C>.
           </>
         }
         starter={`(def (main)
-  (if (= (Option.expect (String.slice "cadenza" 0 ?) "in range") "cad") 1 0))`}
+  (= (Option.expect (String.slice "cadenza" 0 ?) "in range") "cad"))`}
         solution={`(def (main)
-  (if (= (Option.expect (String.slice "cadenza" 0 3) "in range") "cad") 1 0))`}
-        expected="1"
+  (= (Option.expect (String.slice "cadenza" 0 3) "in range") "cad"))`}
+        expected="true"
         hint={
           <>
             The range is <C>[start, end)</C>, so <C>end</C> is <em>excluded</em>. To keep characters at

@@ -1805,6 +1805,34 @@
             ((None) -2)))
   (output (: -1 Int64)))
 
+; The stronger sibling of the shielded-body case above: there, the guard's VALUE is false and it shields
+; the BODY. Here the invariant is that a guard is NOT EVALUATED AT ALL when its own PATTERN does not match
+; — the runtime order is pattern-test → (only if it matches) guard-eval → (only if the guard holds) body.
+; The witness makes the guard itself TRAPPING (`(/ 100 d)` with a RUNTIME `d`=0, so it cannot const-fold):
+; on an arm whose literal pattern MISMATCHES, that trapping guard must never run. `classify` arm 1 is
+; `(guard 0 (> (/ 100 d) 0))`; with n=7 the literal-`0` pattern mismatches, so the div-by-zero guard is
+; NEVER evaluated and control reaches arm 2 `(guard x (> x 5))` → 2. (Companion runtime behavior, not
+; encodable as a single value here: with n=0 the literal-`0` arm MATCHES, so the guard DOES run and
+; `100/0` TRAPS — confirming the guard runs exactly when its pattern matches.) A guard-hoisting optimizer
+; that evaluated arm 1's guard before testing its pattern would wrongly trap here. Pins the
+; pattern-gates-guard evaluation order.
+
+(case "a trapping guard on a non-matching literal arm is never evaluated"
+  (doc    "See the comment above. `classify n 0` with n=7: arm 1 `(guard 0 (> (/ 100 d) 0))` has a literal
+           `0` pattern that MISMATCHES 7, so its guard — which would divide by the runtime `d`=0 and trap —
+           is NOT evaluated; control falls to arm 2 `(guard x (> x 5))`, and 7 > 5 → 2. Runtime `d` so the
+           guard cannot const-fold. Pins that a guard is evaluated only when its pattern matches (the
+           pattern-test gates the guard), so a would-trap guard on a skipped arm is harmless. Expected: 2.")
+  (input  (do
+            (def (classify (: n Int64) (: d Int64))
+              (match n
+                ((guard 0 (> (/ 100 d) 0)) 1)
+                ((guard x (> x 5)) 2)
+                (_ 3)))
+            (def (main (: n Int64) (: d Int64)) (classify n d))
+            (export main)))
+  (call   main (: 7 Int64) (: 0 Int64)) (output (: 2 Int64)))
+
 ; --- A match must cover every value of the scrutinee's type ------------------------------
 ; core-semantics.md #Matching Is Exhaustive Or Rejected: "A match whose patterns do not cover
 ; every value of the scrutinee's type MUST be a compile-time error." A Bool has exactly two

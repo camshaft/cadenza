@@ -31,10 +31,7 @@ export default function Bytes() {
         A literal and a built sequence are just two spellings of one value, and Cadenza compares them by
         value, so they're <em>equal</em> when their bytes match. <C>b"AB"</C> is the two bytes 65 and 66:
       </P>
-      <Runnable
-        source={`(def (main)
-  (if (= b"AB" (Bytes.of (list 65 66))) 1 0))`}
-      />
+      <Runnable source={`(= b"AB" (Bytes.of (list 65 66)))`} />
 
       <H2>Reaching in safely</H2>
       <P>
@@ -145,14 +142,14 @@ export default function Bytes() {
           <>
             <C>Bytes.concat</C> joins two byte sequences into a new one, and because <C>Bytes</C> compares
             by content, you can check the result against a literal. Fill the hole with the byte-string that
-            completes <C>b"AB"</C> into <C>b"ABC"</C>, so the equality holds and the answer is <C>1</C>.
+            completes <C>b"AB"</C> into <C>b"ABC"</C>, so the equality holds and the answer is <C>true</C>.
           </>
         }
         starter={`(def (main)
-  (if (= (Bytes.concat b"AB" ?) b"ABC") 1 0))`}
+  (= (Bytes.concat b"AB" ?) b"ABC"))`}
         solution={`(def (main)
-  (if (= (Bytes.concat b"AB" b"C") b"ABC") 1 0))`}
-        expected="1"
+  (= (Bytes.concat b"AB" b"C") b"ABC"))`}
+        expected="true"
         hint={
           <>
             Joining <C>b"AB"</C> with one more byte should give <C>b"ABC"</C>, so the missing piece is the

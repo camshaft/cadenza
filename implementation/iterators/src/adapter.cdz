@@ -1,58 +1,58 @@
 /// adapter.cdz — the operator-directed MONOMORPHIC/GENERIC/FUSING iterator, adapter-record form.
-///
-/// This is the operator's re-charter (2026-07-18): iterators as AD-HOC POLYMORPHISM — a record carrying a
-/// set of functions + a closure that implements the protocol — NOT an enum-dispatched step interpreter and
-/// NOT a trait system. "Make the combinator functions CONST and it should be ZERO COST" — a chain fuses to
-/// one loop as if hand-written. See `implementation/design/DESIGN-monomorphic-fusing-iterators-rcdzc.md`.
-///
-/// THE SHAPE. An iterator is a pair `(state, step)` where `step : state -> Option (elem, state)` pulls one
-/// element and returns the NEXT state (or `None` at exhaustion). A combinator (`map`/`filter`/…) is a plain
-/// function that WRAPS the upstream iterator's `step` into a NEW `step` calling the upstream one DIRECTLY —
-/// a static, monomorphized closure call, NOT a runtime tag match. A consumer (`fold`/`count`/…) drives the
-/// step to exhaustion. Because every `step` is a concrete monomorphized closure and rcdzc always-inlines
-/// non-recursive defs by default, a `map`/`filter` chain collapses into the consumer's ONE driving loop —
-/// no per-element dispatch, no intermediate iterator value materialized between stages (the fusion the
-/// operator wants). Adding a combinator = ONE new `def` returning a wrapped `step`; no central-enum edit.
-///
-/// ⚠ MONOMORPHIC (Int64 element, List(Int64) state) FOR NOW — this is the forcing proof that the adapter
-/// fused model RUNS on today's compiler (I1 milestone: cd9be4379 unblocked the generic-variant stored-closure
-/// callback; the chain runs end-to-end). The GENERIC (∀-element) form is gated on the recursive-generic
-/// monomorphization tie (v-inference's mono ceiling) — a recursive consumer/driver whose param types come
-/// from a generic Iter can't yet be monomorphized. So this mono form proves fusion NOW; the generic form
-/// generalizes it once the tie lands. This is the same staging that built iter.cdz.
-///
-/// 🔑 The recursive DRIVER (`drive`) needs its params ANNOTATED — a recursive function whose params infer as
-/// free vars has no machine representation (CDZ0201) until the driver's `step`/`state`/`acc`/combiner types
-/// are pinned. Non-recursive combinators (`map`/`filter`) need only their closure param annotated.
-
-/// The adapter iterator: a state (the remaining input) + a `step` that pulls one element and the next state.
-type Iter =
-  | Mk(List(Int64), List(Int64) -> Option((Int64, List(Int64))))
+  ///
+  /// This is the operator's re-charter (2026-07-18): iterators as AD-HOC POLYMORPHISM — a record carrying a
+  /// set of functions + a closure that implements the protocol — NOT an enum-dispatched step interpreter and
+  /// NOT a trait system. "Make the combinator functions CONST and it should be ZERO COST" — a chain fuses to
+  /// one loop as if hand-written. See `implementation/design/DESIGN-monomorphic-fusing-iterators-rcdzc.md`.
+  ///
+  /// THE SHAPE. An iterator is a pair `(state, step)` where `step : state -> Option (elem, state)` pulls one
+  /// element and returns the NEXT state (or `None` at exhaustion). A combinator (`map`/`filter`/…) is a plain
+  /// function that WRAPS the upstream iterator's `step` into a NEW `step` calling the upstream one DIRECTLY —
+  /// a static, monomorphized closure call, NOT a runtime tag match. A consumer (`fold`/`count`/…) drives the
+  /// step to exhaustion. Because every `step` is a concrete monomorphized closure and rcdzc always-inlines
+  /// non-recursive defs by default, a `map`/`filter` chain collapses into the consumer's ONE driving loop —
+  /// no per-element dispatch, no intermediate iterator value materialized between stages (the fusion the
+  /// operator wants). Adding a combinator = ONE new `def` returning a wrapped `step`; no central-enum edit.
+  ///
+  /// ⚠ MONOMORPHIC (Int64 element, List(Int64) state) FOR NOW — this is the forcing proof that the adapter
+  /// fused model RUNS on today's compiler (I1 milestone: cd9be4379 unblocked the generic-variant stored-closure
+  /// callback; the chain runs end-to-end). The GENERIC (∀-element) form is gated on the recursive-generic
+  /// monomorphization tie (v-inference's mono ceiling) — a recursive consumer/driver whose param types come
+  /// from a generic Iter can't yet be monomorphized. So this mono form proves fusion NOW; the generic form
+  /// generalizes it once the tie lands. This is the same staging that built iter.cdz.
+  ///
+  /// 🔑 The recursive DRIVER (`drive`) needs its params ANNOTATED — a recursive function whose params infer as
+  /// free vars has no machine representation (CDZ0201) until the driver's `step`/`state`/`acc`/combiner types
+  /// are pinned. Non-recursive combinators (`map`/`filter`) need only their closure param annotated.
+  /// The adapter iterator: a state (the remaining input) + a `step` that pulls one element and the next state.
+  type Iter =
+  | Mk(List(Int64), List(Int64) -> Option(Tuple(Int64, List(Int64))))
 
 /// PRODUCERS ------------------------------------------------------------------------------------------
-
 /// `from-list(xs)` — iterate the elements of `xs` in order. The base producer: state = the list, step pops
 /// the head. Every other iterator is built by wrapping this one's step.
-def from-list(xs) = Iter.Mk(xs, fn(s) => match s with
-  | [] => Option.None(unit)
-  | [h, .. t] => Option.Some((h, t)))
+def from-list(xs) =
+  Iter.Mk(xs, fn(s) => match s with
+    | [] => Option.None(unit)
+    | [h, .. t] => Option.Some((h, t)))
 
 /// COMBINATORS (wrap the upstream step into a new step — the fusing core) ------------------------------
-
 /// `map(it, f)` — apply `f` to every element. The new step calls the upstream step, then `f` on the element;
 /// state is unchanged (the upstream's). A static call to the upstream closure — fuses, no dispatch.
 def map(it, f: Int64 -> Int64) = match it with
   | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => match step(s) with
     | Option.None(_) => Option.None(unit)
-    | Option.Some(p) => (match p with | (x, s2) => Option.Some((f(x), s2))))
+    | Option.Some(p) => match p with
+      | (x, s2) => Option.Some((f(x), s2)))
 
 /// `filter(it, p)` — keep only elements satisfying `p`. The new step drives the upstream step forward,
 /// skipping non-matching elements, via the recursive `filter-step` worker (annotated, since it recurses).
-def filter-step(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), const p: Int64 -> Bool) =
-  match step(s) with
+def filter-step(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
+  -> Bool) = match step(s) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(pair) => (match pair with | (x, s2) =>
-    if p(x) then Option.Some((x, s2)) else filter-step(step, s2, p))
+  | Option.Some(pair) => match pair with
+    | (x, s2) => if p(x) then Option.Some((x, s2)) else filter-step(step, s2, p)
+
 def filter(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => filter-step(step, s, p))
 
@@ -64,8 +64,8 @@ def filter(it, p: Int64 -> Bool) = match it with
 def take-while(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => match step(s) with
     | Option.None(_) => Option.None(unit)
-    | Option.Some(pair) => (match pair with | (x, s2) =>
-      if p(x) then Option.Some((x, s2)) else Option.None(unit)))
+    | Option.Some(pair) => match pair with
+      | (x, s2) => if p(x) then Option.Some((x, s2)) else Option.None(unit))
 
 /// `filter-map(it, f)` — the fused map-then-filter: apply `f : Int64 -> Option(Int64)` to each element,
 /// keep the `Some` results, drop the `None`s (transform + select in one pass). Same-state (`List(Int64)`),
@@ -76,69 +76,86 @@ def take-while(it, p: Int64 -> Bool) = match it with
 /// tail-loop escape-module fix. This is the I4 extensibility demo — a brand-new combinator added by ONE new
 /// `def` pair, NO edit to any central dispatch (the operator's "trivial to extend" criterion), the payoff
 /// over the reified enum where a new combinator meant a new `Iter` variant AND a new `next` arm.
-def filter-map-step(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), const f: Int64 -> Option(Int64)) =
-  match step(s) with
+def filter-map-step(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const f: Int64
+  -> Option(Int64)) = match step(s) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(pair) => (match pair with | (x, s2) =>
-    (match f(x) with
-     | Option.None(_) => filter-map-step(step, s2, f)
-     | Option.Some(y) => Option.Some((y, s2))))
+  | Option.Some(pair) => match pair with
+    | (x, s2) => match f(x) with
+      | Option.None(_) => filter-map-step(step, s2, f)
+      | Option.Some(y) => Option.Some((y, s2))
+
 def filter-map(it, f: Int64 -> Option(Int64)) = match it with
   | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => filter-map-step(step, s, f))
 
 /// CONSUMERS (drive the step to exhaustion — the ONE loop the chain fuses into) ------------------------
-
 /// `drive(step, s, acc, g)` — the recursive fold worker: pull each element and thread it through `g`. Its
 /// params are ANNOTATED (a recursive generic-shaped def otherwise has no machine representation). This is
 /// the single loop a `map(filter(...))` chain inlines into.
-def drive(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), acc: Int64, const g: Int64 -> Int64 -> Int64) =
-  match step(s) with
+def drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), acc: Int64, const g: Int64
+  -> Int64 -> Int64) = match step(s) with
   | Option.None(_) => acc
-  | Option.Some(p) => (match p with | (x, s2) => drive(step, s2, g(acc, x), g))
+  | Option.Some(p) => match p with
+    | (x, s2) => drive(step, s2, g(acc, x), g)
 
 /// `fold(it, acc, g)` — left-fold the iterator through `g`, seeded by `acc`. The fusing consumer.
 def fold(it, acc, g: Int64 -> Int64 -> Int64) = match it with
   | Iter.Mk(s, step) => drive(step, s, acc, g)
 
 /// `count-drive`/`count` — number of elements (a closure-free consumer atop the same driving pattern).
-def count-drive(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), n: Int64) =
-  match step(s) with
+def count-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), n: Int64) = match step(
+    s
+  ) with
   | Option.None(_) => n
-  | Option.Some(p) => (match p with | (_x, s2) => count-drive(step, s2, n + 1))
-def count(it) = match it with | Iter.Mk(s, step) => count-drive(step, s, 0)
+  | Option.Some(p) => match p with
+    | (_x, s2) => count-drive(step, s2, n + 1)
+
+def count(it) = match it with
+  | Iter.Mk(s, step) => count-drive(step, s, 0)
 
 /// `any(it, p)` — does SOME element satisfy `p`? Short-circuits at the first match (stops driving). A
 /// closure-storing scalar consumer over the same driving pattern.
-def any-drive(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), const p: Int64 -> Bool) =
-  match step(s) with
+def any-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
+  -> Bool) = match step(s) with
   | Option.None(_) => false
-  | Option.Some(pr) => (match pr with | (x, s2) => if p(x) then true else any-drive(step, s2, p))
-def any(it, p: Int64 -> Bool) = match it with | Iter.Mk(s, step) => any-drive(step, s, p)
+  | Option.Some(pr) => match pr with
+    | (x, s2) => if p(x) then true else any-drive(step, s2, p)
+
+def any(it, p: Int64 -> Bool) = match it with
+  | Iter.Mk(s, step) => any-drive(step, s, p)
 
 /// `all(it, p)` — do ALL elements satisfy `p`? (vacuously true for empty). Short-circuits at the first
 /// failure. The `any` dual.
-def all-drive(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), const p: Int64 -> Bool) =
-  match step(s) with
+def all-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
+  -> Bool) = match step(s) with
   | Option.None(_) => true
-  | Option.Some(pr) => (match pr with | (x, s2) => if p(x) then all-drive(step, s2, p) else false)
-def all(it, p: Int64 -> Bool) = match it with | Iter.Mk(s, step) => all-drive(step, s, p)
+  | Option.Some(pr) => match pr with
+    | (x, s2) => if p(x) then all-drive(step, s2, p) else false
+
+def all(it, p: Int64 -> Bool) = match it with
+  | Iter.Mk(s, step) => all-drive(step, s, p)
 
 /// `find(it, p)` — the first element satisfying `p`, or `None`. Short-circuits. Returns `Option(Int64)`.
-def find-drive(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), const p: Int64 -> Bool) =
-  match step(s) with
+def find-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
+  -> Bool) = match step(s) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(pr) => (match pr with | (x, s2) => if p(x) then Option.Some(x) else find-drive(step, s2, p))
-def find(it, p: Int64 -> Bool) = match it with | Iter.Mk(s, step) => find-drive(step, s, p)
+  | Option.Some(pr) => match pr with
+    | (x, s2) => if p(x) then Option.Some(x) else find-drive(step, s2, p)
+
+def find(it, p: Int64 -> Bool) = match it with
+  | Iter.Mk(s, step) => find-drive(step, s, p)
 
 /// `position(it, p)` — the 0-based INDEX of the first element satisfying `p`, or `None` (Rust's
 /// `Iterator::position`; the index dual of `find`, which returns the element). Short-circuits at the first
 /// match. Threads a running index `i` alongside the state; recurses via if/else (like `find`), so it dodges
 /// the mixed-match Option-tail-loop wasm bug (v-wasm-opt) that the `match f(x)` form of filter-map hits.
-def position-drive(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), i: Int64, const p: Int64 -> Bool) =
-  match step(s) with
+def position-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), i: Int64, const p: Int64
+  -> Bool) = match step(s) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(pr) => (match pr with | (x, s2) => if p(x) then Option.Some(i) else position-drive(step, s2, i + 1, p))
-def position(it, p: Int64 -> Bool) = match it with | Iter.Mk(s, step) => position-drive(step, s, 0, p)
+  | Option.Some(pr) => match pr with
+    | (x, s2) => if p(x) then Option.Some(i) else position-drive(step, s2, i + 1, p)
+
+def position(it, p: Int64 -> Bool) = match it with
+  | Iter.Mk(s, step) => position-drive(step, s, 0, p)
 
 /// `sum(it)` — total of the elements (fold with +, seeded 0). The canonical fused-pipeline consumer.
 /// Drives `drive` DIRECTLY (rather than via `fold`) so the literal `+` combiner reaches `drive`'s `const g`
@@ -146,99 +163,133 @@ def position(it, p: Int64 -> Bool) = match it with | Iter.Mk(s, step) => positio
 /// (`sum` → `fold` → `drive`), so the `sum(from-list(…))` call site would be rejected because an argument to
 /// a `const` parameter must be compile-time-known (it would trace back through runtime data). Inlining the
 /// `fold` layer keeps the const chain one-hop and preserves fusion.
-def sum(it) = match it with | Iter.Mk(s, step) => drive(step, s, 0, fn(a, x) => a + x)
+def sum(it) = match it with
+  | Iter.Mk(s, step) => drive(step, s, 0, fn(a, x) => a + x)
 
 /// `product(it)` — product of the elements (fold with *, seeded 1; empty → 1). Drives `drive` directly for
 /// the same one-hop-const reason as `sum` (see above).
-def product(it) = match it with | Iter.Mk(s, step) => drive(step, s, 1, fn(a, x) => a * x)
+def product(it) = match it with
+  | Iter.Mk(s, step) => drive(step, s, 1, fn(a, x) => a * x)
 
 /// `nth(it, n)` — the `n`-th element (0-based), or `None` if the iterator is shorter OR `n` is negative.
 /// Matches the prelude's `List.at` fallible-indexing contract (both `n < 0` and `n >= len` → `None`); the
 /// `n < 0 => None` guard is at the entry, so `nth-drive` only ever sees a non-negative index (its `n <= 0`
 /// base then correctly returns the current head at index 0). Without the guard a negative index would
 /// silently return the FIRST element (`nth(-1) == nth(0)`), diverging from `List.at(-1) == None`.
-def nth-drive(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), n: Int64) =
-  match step(s) with
+def nth-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), n: Int64) = match step(
+    s
+  ) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(p) => (match p with | (x, s2) => if n <= 0 then Option.Some(x) else nth-drive(step, s2, n - 1))
-def nth(it, n) = if n < 0 then Option.None(unit) else (match it with | Iter.Mk(s, step) => nth-drive(step, s, n))
+  | Option.Some(p) => match p with
+    | (x, s2) => if n <= 0 then Option.Some(x) else nth-drive(step, s2, n - 1)
+
+def nth(it, n) =
+  if n < 0 then
+    Option.None(unit)
+  else
+    match it with
+      | Iter.Mk(s, step) => nth-drive(step, s, n)
 
 /// `contains(it, target)` — does the iterator yield `target`? Short-circuits at the first match (so it
 /// terminates on an infinite source that contains the target).
-def contains-drive(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), target: Int64) =
-  match step(s) with
+def contains-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), target: Int64) = match step(
+    s
+  ) with
   | Option.None(_) => false
-  | Option.Some(p) => (match p with | (x, s2) => if x == target then true else contains-drive(step, s2, target))
-def contains(it, target) = match it with | Iter.Mk(s, step) => contains-drive(step, s, target)
+  | Option.Some(p) => match p with
+    | (x, s2) => if x == target then true else contains-drive(step, s2, target)
+
+def contains(it, target) = match it with
+  | Iter.Mk(s, step) => contains-drive(step, s, target)
 
 /// `last(it)` — the final element, or `None` for an empty iterator. Drains, tracking the most-recent
 /// element via a `have` flag (so an empty source is `None`, not a bogus 0).
-def last-drive(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), seen: Int64, have: Bool) =
-  match step(s) with
+def last-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), seen: Int64, have: Bool) = match step(
+    s
+  ) with
   | Option.None(_) => (if have then Option.Some(seen) else Option.None(unit))
-  | Option.Some(p) => (match p with | (x, s2) => last-drive(step, s2, x, true))
-def last(it) = match it with | Iter.Mk(s, step) => last-drive(step, s, 0, false)
+  | Option.Some(p) => match p with
+    | (x, s2) => last-drive(step, s2, x, true)
 
+def last(it) = match it with
+  | Iter.Mk(s, step) => last-drive(step, s, 0, false)
+
+@test
 /// TESTS ----------------------------------------------------------------------------------------------
-
-@test
 def from-list-then-fold-sums() =
-  if fold(from-list([1, 2, 3, 4]), 0, fn(a, x) => a + x) == 10
-  then unit else trap("fold sum 1+2+3+4=10")
+  if fold(from-list([1, 2, 3, 4]), 0, fn(a, x) => a + x) == 10 then
+    unit
+  else
+    trap("fold sum 1+2+3+4=10")
 
 @test
-def count-counts-elements() =
-  if count(from-list([5, 6, 7])) == 3 then unit else trap("count 3")
+def count-counts-elements() = if count(from-list([5, 6, 7])) == 3 then unit else trap("count 3")
 
 @test
-def sum-of-empty-is-zero() =
-  if sum(from-list([])) == 0 then unit else trap("sum [] = 0")
+def sum-of-empty-is-zero() = if sum(from-list([])) == 0 then unit else trap("sum [] = 0")
 
 @test
 def map-transforms-each-element() =
-  if sum(map(from-list([1, 2, 3]), fn(x) => x + 10)) == 36
-  then unit else trap("map +10 then sum = 11+12+13 = 36")
+  if sum(map(from-list([1, 2, 3]), fn(x) => x + 10)) == 36 then
+    unit
+  else
+    trap("map +10 then sum = 11+12+13 = 36")
 
 @test
 def filter-keeps-matching() =
-  if sum(filter(from-list([1, 2, 3, 4, 5]), fn(x) => x > 2)) == 12
-  then unit else trap("filter >2 then sum = 3+4+5 = 12")
+  if sum(filter(from-list([1, 2, 3, 4, 5]), fn(x) => x > 2)) == 12 then
+    unit
+  else
+    trap("filter >2 then sum = 3+4+5 = 12")
 
-/// THE fusion showcase: a map().filter().fold() pipeline — the operator's "as if hand-written one loop".
 @test
+/// THE fusion showcase: a map().filter().fold() pipeline — the operator's "as if hand-written one loop".
 def map-filter-fold-fuses() =
-  if fold(filter(map(from-list([1, 2, 3, 4, 5]), fn(x) => x * 2), fn(x) => x > 4), 0, fn(a, x) => a + x) == 24
-  then unit else trap("map*2 |> filter>4 |> sum = 6+8+10 = 24")
+  if fold(filter(map(from-list([1, 2, 3, 4, 5]), fn(x) => x * 2), fn(x) => x > 4), 0, fn(a, x) =>
+        a + x) == 24 then
+    unit
+  else
+    trap("map*2 |> filter>4 |> sum = 6+8+10 = 24")
 
 @test
 def count-after-filter() =
-  if count(filter(from-list([1, 2, 3, 4, 5, 6]), fn(x) => x > 3)) == 3
-  then unit else trap("count of >3 in 1..6 = 3")
+  if count(filter(from-list([1, 2, 3, 4, 5, 6]), fn(x) => x > 3)) == 3 then
+    unit
+  else
+    trap("count of >3 in 1..6 = 3")
 
-/// take-while — same-state combinator, composes with the base Iter + its consumers.
 @test
+/// take-while — same-state combinator, composes with the base Iter + its consumers.
 def take-while-stops-at-first-failure() =
-  if sum(take-while(from-list([1, 2, 3, 10, 1]), fn(x) => x < 5)) == 6
-  then unit else trap("take-while <5 then sum = 1+2+3 = 6")
+  if sum(take-while(from-list([1, 2, 3, 10, 1]), fn(x) => x < 5)) == 6 then
+    unit
+  else
+    trap("take-while <5 then sum = 1+2+3 = 6")
 
 @test
 def take-while-all-pass() =
-  if sum(take-while(from-list([1, 2, 3]), fn(x) => x < 100)) == 6
-  then unit else trap("take-while all-pass = 6")
+  if sum(take-while(from-list([1, 2, 3]), fn(x) => x < 100)) == 6 then
+    unit
+  else
+    trap("take-while all-pass = 6")
 
 @test
 def take-while-first-fails-is-empty() =
-  if sum(take-while(from-list([9, 1, 2]), fn(x) => x < 5)) == 0
-  then unit else trap("take-while first-fail = 0")
+  if sum(take-while(from-list([9, 1, 2]), fn(x) => x < 5)) == 0 then
+    unit
+  else
+    trap("take-while first-fail = 0")
 
+@test
 /// take-while composes INTO a further stage (map over the taken prefix) — same-state fusion.
-@test
 def take-while-then-map-composes() =
-  if sum(map(take-while(from-list([1, 2, 3, 9]), fn(x) => x < 5), fn(x) => x * 10)) == 60
-  then unit else trap("take-while<5 |> map*10 |> sum = 10+20+30 = 60")
+  if sum(map(take-while(from-list([1, 2, 3, 9]), fn(x) => x < 5), fn(x) => x * 10)) == 60 then
+    unit
+  else
+    trap("take-while<5 |> map*10 |> sum = 10+20+30 = 60")
 
-/// scalar short-circuiting consumers.
 @test
+/// scalar short-circuiting consumers.
 def any-finds-a-match() =
   if any(from-list([1, 2, 3]), fn(x) => x > 2) then unit else trap("any >2 in 1..3")
 
@@ -247,100 +298,91 @@ def any-none-match-is-false() =
   if any(from-list([1, 2, 3]), fn(x) => x > 9) then trap("any >9 should be false") else unit
 
 @test
-def all-holds() =
-  if all(from-list([2, 4, 6]), fn(x) => x > 0) then unit else trap("all >0")
+def all-holds() = if all(from-list([2, 4, 6]), fn(x) => x > 0) then unit else trap("all >0")
 
 @test
 def all-fails-on-one() =
-  if all(from-list([2, 4, 5]), fn(x) => x > 0 - x + x - x + 1 - 1 + 0) then unit else trap("all >0 holds")
+  if all(from-list([2, 4, 5]), fn(x) => x > 0 - x + x - x + 1 - 1 + 0) then
+    unit
+  else
+    trap("all >0 holds")
 
 @test
-def find-first-matching() =
-  match find(from-list([1, 2, 3, 4]), fn(x) => x > 2) with
+def find-first-matching() = match find(from-list([1, 2, 3, 4]), fn(x) => x > 2) with
   | Option.None(_) => trap("find >2 should hit")
   | Option.Some(v) => if v == 3 then unit else trap("find value should be 3")
 
 @test
-def find-miss-is-none() =
-  match find(from-list([1, 2]), fn(x) => x > 9) with
+def find-miss-is-none() = match find(from-list([1, 2]), fn(x) => x > 9) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("find miss must be None")
 
-/// find over a filtered+mapped pipeline — composed short-circuit consumer.
 @test
-def find-after-map-filter() =
-  match find(filter(map(from-list([1, 2, 3, 4]), fn(x) => x * 3), fn(x) => x > 5), fn(x) => x > 0) with
+/// find over a filtered+mapped pipeline — composed short-circuit consumer.
+def find-after-map-filter() = match find(filter(map(from-list([1, 2, 3, 4]), fn(x) => x * 3), fn(x) =>
+    x > 5), fn(x) => x > 0) with
   | Option.None(_) => trap("find should hit 6")
   | Option.Some(v) => if v == 6 then unit else trap("first >5 of *3 is 6")
 
-/// position — the index dual of find.
 @test
-def position-finds-index() =
-  match position(from-list([5, 6, 7, 8]), fn(x) => x > 6) with
+/// position — the index dual of find.
+def position-finds-index() = match position(from-list([5, 6, 7, 8]), fn(x) => x > 6) with
   | Option.None(_) => trap("position should hit index 2")
   | Option.Some(i) => if i == 2 then unit else trap("first >6 is at index 2")
 
 @test
-def position-first-is-zero() =
-  match position(from-list([9, 1, 2]), fn(x) => x > 5) with
+def position-first-is-zero() = match position(from-list([9, 1, 2]), fn(x) => x > 5) with
   | Option.None(_) => trap("position should hit index 0")
   | Option.Some(i) => if i == 0 then unit else trap("first >5 is at index 0")
 
 @test
-def position-miss-is-none() =
-  match position(from-list([1, 2, 3]), fn(x) => x > 9) with
+def position-miss-is-none() = match position(from-list([1, 2, 3]), fn(x) => x > 9) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("position miss must be None")
 
-/// position over a mapped source — composed short-circuit index consumer.
 @test
-def position-after-map() =
-  match position(map(from-list([1, 2, 3, 4]), fn(x) => x * 10), fn(x) => x > 25) with
+/// position over a mapped source — composed short-circuit index consumer.
+def position-after-map() = match position(map(from-list([1, 2, 3, 4]), fn(x) => x * 10), fn(x) =>
+    x > 25) with
   | Option.None(_) => trap("position should hit index 2 (30 > 25)")
   | Option.Some(i) => if i == 2 then unit else trap("first *10 >25 is at index 2")
 
+@test
 /// LAW: find and position agree — when position finds index i, nth(it, i) is the element find returns.
-@test
-def law-position-agrees-with-find-via-nth() =
-  match position(from-list([3, 5, 8, 9]), fn(x) => x > 4) with
+def law-position-agrees-with-find-via-nth() = match position(from-list([3, 5, 8, 9]), fn(x) => x > 4) with
   | Option.None(_) => trap("position should hit")
-  | Option.Some(i) => (match nth(from-list([3, 5, 8, 9]), i) with
+  | Option.Some(i) => match nth(from-list([3, 5, 8, 9]), i) with
     | Option.None(_) => trap("nth at found index must be Some")
-    | Option.Some(v) => (match find(from-list([3, 5, 8, 9]), fn(x) => x > 4) with
+    | Option.Some(v) => match find(from-list([3, 5, 8, 9]), fn(x) => x > 4) with
       | Option.None(_) => trap("find should hit")
-      | Option.Some(fv) => if v == fv then unit else trap("nth(position) == find")))
+      | Option.Some(fv) => if v == fv then unit else trap("nth(position) == find")
 
-/// scalar consumers: product / nth / contains / last (all same-state).
 @test
+/// scalar consumers: product / nth / contains / last (all same-state).
 def product-multiplies() =
   if product(from-list([1, 2, 3, 4])) == 24 then unit else trap("product 1*2*3*4=24")
 
 @test
-def product-of-empty-is-one() =
-  if product(from-list([])) == 1 then unit else trap("product [] = 1")
+def product-of-empty-is-one() = if product(from-list([])) == 1 then unit else trap("product [] = 1")
 
 @test
-def nth-in-bounds() =
-  match nth(from-list([10, 20, 30]), 1) with
+def nth-in-bounds() = match nth(from-list([10, 20, 30]), 1) with
   | Option.None(_) => trap("nth in-bounds must be Some")
   | Option.Some(v) => if v == 20 then unit else trap("nth 1 = 20")
 
 @test
-def nth-out-of-bounds-is-none() =
-  match nth(from-list([1, 2]), 9) with
+def nth-out-of-bounds-is-none() = match nth(from-list([1, 2]), 9) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("nth past end must be None")
 
 @test
-def nth-after-filter() =
-  match nth(filter(from-list([1, 2, 3, 4, 5, 6]), fn(x) => x > 2), 0) with
+def nth-after-filter() = match nth(filter(from-list([1, 2, 3, 4, 5, 6]), fn(x) => x > 2), 0) with
   | Option.None(_) => trap("nth 0 of filtered must be Some")
   | Option.Some(v) => if v == 3 then unit else trap("first >2 is 3")
 
-/// nth of a NEGATIVE index is None — matches List.at's fallible-index contract (not the first element).
 @test
-def nth-negative-index-is-none() =
-  match nth(from-list([10, 20, 30]), 0 - 1) with
+/// nth of a NEGATIVE index is None — matches List.at's fallible-index contract (not the first element).
+def nth-negative-index-is-none() = match nth(from-list([10, 20, 30]), 0 - 1) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("nth(-1) must be None (List.at parity), not the first element")
 
@@ -352,13 +394,13 @@ def contains-finds-element() =
 def contains-missing-is-false() =
   if contains(from-list([1, 2, 3]), 9) then trap("should not contain 9") else unit
 
+@test
 /// EMPTY-SOURCE EDGE for the predicate/search consumers — the degenerate boundary where vacuous-truth
 /// bugs hide. Each drives its recursive `*-drive` worker with a step that returns `None` on the FIRST
 /// call, so the base arm's seed value IS the observable result: `any` → false (no witness), `all` →
 /// true (vacuously — no counterexample), `count` → 0, `find`/`position` → None, `contains` → false.
 /// Pinned so a future change to a consumer's base arm (or the coming fusion rewrite) can't silently
 /// flip a vacuous case (e.g. `all []` → false, the classic off-by-one on the empty fold).
-@test
 def any-of-empty-is-false() =
   if any(from-list([]), fn(x) => x > 0) then trap("any [] must be false (no witness)") else unit
 
@@ -367,18 +409,15 @@ def all-of-empty-is-vacuously-true() =
   if all(from-list([]), fn(x) => x > 0) then unit else trap("all [] must be vacuously true")
 
 @test
-def count-of-empty-is-zero() =
-  if count(from-list([])) == 0 then unit else trap("count [] = 0")
+def count-of-empty-is-zero() = if count(from-list([])) == 0 then unit else trap("count [] = 0")
 
 @test
-def find-of-empty-is-none() =
-  match find(from-list([]), fn(x) => x > 0) with
+def find-of-empty-is-none() = match find(from-list([]), fn(x) => x > 0) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("find [] must be None")
 
 @test
-def position-of-empty-is-none() =
-  match position(from-list([]), fn(x) => x > 0) with
+def position-of-empty-is-none() = match position(from-list([]), fn(x) => x > 0) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("position [] must be None")
 
@@ -387,134 +426,171 @@ def contains-in-empty-is-false() =
   if contains(from-list([]), 1) then trap("contains [] must be false") else unit
 
 @test
-def last-of-nonempty() =
-  match last(from-list([5, 6, 7])) with
+def last-of-nonempty() = match last(from-list([5, 6, 7])) with
   | Option.None(_) => trap("last of non-empty must be Some")
   | Option.Some(v) => if v == 7 then unit else trap("last = 7")
 
 @test
-def last-of-empty-is-none() =
-  match last(from-list([])) with
+def last-of-empty-is-none() = match last(from-list([])) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("last of empty must be None")
 
 @test
-def last-after-map() =
-  match last(map(from-list([1, 2, 3]), fn(x) => x * 10)) with
+def last-after-map() = match last(map(from-list([1, 2, 3]), fn(x) => x * 10)) with
   | Option.None(_) => trap("last of mapped must be Some")
   | Option.Some(v) => if v == 30 then unit else trap("last of *10 is 30")
 
+@test
 /// ALGEBRAIC LAWS — cross-combinator invariants pinned so a future change (ESPECIALLY the coming
 /// fusion/devirtualization optimization, which literally rewrites map∘map and folds step layers) cannot
 /// silently alter observable results. Each law equates two expressions that must compute the same value.
-
 /// map fusion: map(map(it, f), g) == map(it, g∘f). The optimizer WILL fuse these; this pins that the
 /// fusion is value-preserving.
-@test
 def law-map-fusion() =
   if sum(map(map(from-list([1, 2, 3]), fn(x) => x + 1), fn(x) => x * 2))
-     == sum(map(from-list([1, 2, 3]), fn(x) => (x + 1) * 2))
-  then unit else trap("map(map(f),g) == map(g.f)")
+      == sum(map(from-list([1, 2, 3]), fn(x) => (x + 1) * 2)) then
+    unit
+  else
+    trap("map(map(f),g) == map(g.f)")
 
+@test
 /// filter never grows the count: count(filter(it, p)) <= count(it).
-@test
 def law-filter-does-not-grow() =
-  if count(filter(from-list([1, 2, 3, 4, 5]), fn(x) => x > 2)) <= count(from-list([1, 2, 3, 4, 5]))
-  then unit else trap("filter count <= source count")
+  if count(filter(from-list([1, 2, 3, 4, 5]), fn(x) => x > 2)) <= count(from-list([1, 2, 3, 4, 5])) then
+    unit
+  else
+    trap("filter count <= source count")
 
+@test
 /// sum is fold(+, 0) — the definitional identity (pins sum's meaning across a fold rewrite).
-@test
 def law-sum-is-fold-plus() =
-  if sum(from-list([3, 4, 5])) == fold(from-list([3, 4, 5]), 0, fn(a, x) => a + x)
-  then unit else trap("sum == fold(+,0)")
+  if sum(from-list([3, 4, 5])) == fold(from-list([3, 4, 5]), 0, fn(a, x) => a + x) then
+    unit
+  else
+    trap("sum == fold(+,0)")
 
+@test
 /// count is the sum of ones: count(it) == sum(map(it, _ -> 1)).
-@test
 def law-count-is-sum-of-ones() =
-  if count(from-list([9, 8, 7, 6])) == sum(map(from-list([9, 8, 7, 6]), fn(_x) => 1))
-  then unit else trap("count == sum(map(->1))")
+  if count(from-list([9, 8, 7, 6])) == sum(map(from-list([9, 8, 7, 6]), fn(_x) => 1)) then
+    unit
+  else
+    trap("count == sum(map(->1))")
 
-/// take-while then count never exceeds the source count (take-while is a prefix).
 @test
+/// take-while then count never exceeds the source count (take-while is a prefix).
 def law-take-while-is-a-prefix() =
-  if count(take-while(from-list([1, 2, 3, 4, 5]), fn(x) => x < 4)) <= count(from-list([1, 2, 3, 4, 5]))
-  then unit else trap("take-while count <= source count")
+  if count(take-while(from-list([1, 2, 3, 4, 5]), fn(x) => x < 4))
+      <= count(from-list([1, 2, 3, 4, 5])) then
+    unit
+  else
+    trap("take-while count <= source count")
 
+@test
 /// SHORT-CIRCUIT CONSUMER LAWS — the search/predicate consumers (any/find/contains) all drive the step
 /// with EARLY EXIT, so their driving loops differ; these pin their algebraic ties so a fusion/short-circuit
 /// rewrite that reorders or merges the exit can't silently desync them.
-
 /// any is find-non-None: any(it, p) yields a match iff find(it, p) does. Same predicate, same source; only
 /// the RESULT differs (Bool vs the element). Pins that any doesn't over/under-shoot find's short-circuit.
-@test
 def law-any-is-find-some() =
   if (match find(from-list([1, 2, 3, 4, 5]), fn(x) => x > 3) with
-      | Option.None(_) => false
-      | Option.Some(_) => true) == any(from-list([1, 2, 3, 4, 5]), fn(x) => x > 3)
-  then unit else trap("any(p) == is-Some(find(p))")
+        | Option.None(_) => false
+        | Option.Some(_) => true
+      ) == any(from-list([1, 2, 3, 4, 5]), fn(x) => x > 3) then
+    unit
+  else
+    trap("any(p) == is-Some(find(p))")
 
+@test
 /// contains is any-equal: contains(it, x) == any(it, ==x). Pins that the specialized equality search agrees
 /// with the general predicate search (both short-circuit at the first hit).
-@test
 def law-contains-is-any-eq() =
-  if contains(from-list([10, 20, 30]), 20) == any(from-list([10, 20, 30]), fn(x) => x == 20)
-  then unit else trap("contains(x) == any(==x)")
+  if contains(from-list([10, 20, 30]), 20) == any(from-list([10, 20, 30]), fn(x) => x == 20) then
+    unit
+  else
+    trap("contains(x) == any(==x)")
 
+@test
 /// EDGE-CASE PINS (self-adversarial probing, all verified to hold) — cover corners the single-combinator
 /// tests + the w3 fusion witness don't: a DEEPER (4-stage) fused chain, filter removing ALL elements into a
 /// fold, and negatives threaded through a map chain.
-
 /// A 4-stage fused chain (map|>map|>map|>filter|>sum) — deeper than the w3 fusion witness (3 stages); pins
 /// that stacked const-driver specialization stays correct at greater depth. (1..4)+1 → *2 → -1 → keep >4.
-@test
 def deep-map-map-map-filter-sum() =
-  if sum(filter(map(map(map(from-list([1, 2, 3, 4]), fn(x) => x + 1), fn(x) => x * 2), fn(x) => x - 1), fn(x) => x > 4)) == 21
-  then unit else trap("deep chain: [1,2,3,4] +1|>*2|>-1 = [3,5,7,9], keep>4 = 5+7+9 = 21")
+  if sum(
+        filter(map(map(map(from-list([1, 2, 3, 4]), fn(x) => x + 1), fn(x) => x * 2), fn(x) => x - 1), fn(x) =>
+          x > 4)
+      ) == 21 then
+    unit
+  else
+    trap("deep chain: [1,2,3,4] +1|>*2|>-1 = [3,5,7,9], keep>4 = 5+7+9 = 21")
 
+@test
 /// filter that removes EVERY element, then fold — the empty-result-through-a-consumer corner (distinct from
 /// an empty SOURCE: here the source is non-empty but the filter empties it).
-@test
 def filter-removes-all-then-sum-is-zero() =
-  if sum(filter(from-list([1, 2, 3]), fn(x) => x > 100)) == 0
-  then unit else trap("filter-all-out then sum = 0")
+  if sum(filter(from-list([1, 2, 3]), fn(x) => x > 100)) == 0 then
+    unit
+  else
+    trap("filter-all-out then sum = 0")
 
-/// negatives threaded through a map chain (sign handling in the fused loop).
 @test
+/// negatives threaded through a map chain (sign handling in the fused loop).
 def negatives-through-map-sum() =
-  if sum(map(from-list([0 - 5, 3, 0 - 2]), fn(x) => x * 2)) == 0 - 8
-  then unit else trap("map*2 over [-5,3,-2] |> sum = -10+6-4 = -8")
+  if sum(map(from-list([0 - 5, 3, 0 - 2]), fn(x) => x * 2)) == 0 - 8 then
+    unit
+  else
+    trap("map*2 over [-5,3,-2] |> sum = -10+6-4 = -8")
 
+@test
 /// filter-map (I4 extensibility demo) — transform+select in one pass, unblocked by the const-param-drop +
 /// tail-loop fixes. Keep the doubled value only for even inputs: [1,2,3,4] → evens {2,4} → {4,8} → sum 12.
-@test
 def filter-map-selects-and-transforms() =
-  if sum(filter-map(from-list([1, 2, 3, 4]), fn(x) => if x - (x / 2) * 2 == 0 then Option.Some(x * 2) else Option.None(unit))) == 12
-  then unit else trap("filter-map even|>*2 |> sum = 4+8 = 12")
+  if sum(
+        filter-map(from-list([1, 2, 3, 4]), fn(x) =>
+          if x - x / 2 * 2 == 0 then Option.Some(x * 2) else Option.None(unit))
+      ) == 12 then
+    unit
+  else
+    trap("filter-map even|>*2 |> sum = 4+8 = 12")
 
+@test
 /// filter-map dropping EVERYTHING (f always None) folds to the seed — the empty-result corner.
-@test
 def filter-map-all-none-is-zero() =
-  if sum(filter-map(from-list([1, 2, 3]), fn(_x) => Option.None(unit))) == 0
-  then unit else trap("filter-map all-None then sum = 0")
+  if sum(filter-map(from-list([1, 2, 3]), fn(_x) => Option.None(unit))) == 0 then
+    unit
+  else
+    trap("filter-map all-None then sum = 0")
 
-/// filter-map keeping EVERYTHING (f always Some) equals a plain map — the total-function corner.
 @test
+/// filter-map keeping EVERYTHING (f always Some) equals a plain map — the total-function corner.
 def filter-map-all-some-equals-map() =
   if sum(filter-map(from-list([1, 2, 3]), fn(x) => Option.Some(x + 10)))
-     == sum(map(from-list([1, 2, 3]), fn(x) => x + 10))
-  then unit else trap("filter-map(Some.f) == map(f)")
+      == sum(map(from-list([1, 2, 3]), fn(x) => x + 10)) then
+    unit
+  else
+    trap("filter-map(Some.f) == map(f)")
 
+@test
 /// LAW: filter-map decomposes into map then filter — pins that the fused transform+select is value-preserving.
-@test
 def law-filter-map-is-map-then-filter() =
-  if sum(filter-map(from-list([1, 2, 3, 4, 5]), fn(x) => (if x * 2 > 4 then Option.Some(x * 2) else Option.None(unit))))
-     == sum(filter(map(from-list([1, 2, 3, 4, 5]), fn(x) => x * 2), fn(x) => x > 4))
-  then unit else trap("filter-map == filter . map")
+  if sum(
+        filter-map(from-list([1, 2, 3, 4, 5]), fn(x) =>
+          if x * 2 > 4 then Option.Some(x * 2) else Option.None(unit))
+      ) == sum(filter(map(from-list([1, 2, 3, 4, 5]), fn(x) => x * 2), fn(x) => x > 4)) then
+    unit
+  else
+    trap("filter-map == filter . map")
 
-/// filter-map composes INTO a further consumer over a chain — count the kept elements after a map.
 @test
+/// filter-map composes INTO a further consumer over a chain — count the kept elements after a map.
 def filter-map-then-count() =
-  if count(filter-map(map(from-list([1, 2, 3, 4, 5, 6]), fn(x) => x + 1), fn(x) => if x > 4 then Option.Some(x) else Option.None(unit))) == 3
-  then unit else trap("map+1 |> filter-map(>4) |> count = {5,6,7} = 3")
+  if count(
+        filter-map(map(from-list([1, 2, 3, 4, 5, 6]), fn(x) => x + 1), fn(x) =>
+          if x > 4 then Option.Some(x) else Option.None(unit))
+      ) == 3 then
+    unit
+  else
+    trap("map+1 |> filter-map(>4) |> count = {5,6,7} = 3")
 
 export { Iter.* }

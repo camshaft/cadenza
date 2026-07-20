@@ -866,6 +866,41 @@ def count-if-none-match-is-zero() =
   if count-if(from-list([1, 2, 3]), fn(x) => x > 100) == 0
   then unit else trap("count-if none match")
 
+/// EMPTY-SOURCE EDGE for the predicate/search consumers — the degenerate boundary where vacuous-truth
+/// bugs hide. giter is a materialized cons-cell, so `take(from-list([1]), 0)` is the TYPED empty (a
+/// `GIter.Nil` at a fixed element type — a bare `empty()`/unconstrained `GIter.Nil` at these consumers
+/// declines CDZ0201, correct-to-reject; see the header note). Each consumer's `Nil` arm value IS the
+/// observable result: `all` → true (vacuously), `any` → false, `count`/`count-if` → 0, `find`/`position`
+/// → None. Pinned so a future `Nil`-arm change can't silently flip a vacuous case (the classic `all []`
+/// → false). Mirrors the same pins in adapter.cdz + iter.cdz.
+@test
+def all-of-empty-is-vacuously-true() =
+  if all(take(from-list([1]), 0), fn(x) => x > 0) then unit else trap("all empty must be vacuously true")
+
+@test
+def any-of-empty-is-false() =
+  if any(take(from-list([1]), 0), fn(x) => x > 0) then trap("any empty must be false") else unit
+
+@test
+def count-of-empty-is-zero() =
+  if count(take(from-list([1]), 0)) == 0 then unit else trap("count empty = 0")
+
+@test
+def count-if-of-empty-is-zero() =
+  if count-if(take(from-list([1]), 0), fn(x) => x > 0) == 0 then unit else trap("count-if empty = 0")
+
+@test
+def find-of-empty-is-none() =
+  match find(take(from-list([1]), 0), fn(x) => x > 0) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("find empty must be None")
+
+@test
+def position-of-empty-is-none() =
+  match position(take(from-list([1]), 0), fn(x) => x > 0) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("position empty must be None")
+
 /// SLICE-17: `map-while` — closure-storing, fused map + take-while over an Option-returning closure
 /// (element-changing), pinned at two source element types, the stop-at-None, and the all-Some cases.
 

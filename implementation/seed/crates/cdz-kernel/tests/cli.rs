@@ -571,6 +571,72 @@ fn hosted_performs_via_real_primitives_and_records_prim_events() {
 }
 
 #[test]
+fn replay_re_folds_a_recorded_hosted_turn_with_no_live_effect() {
+    // The `replay` verb is the §2.3 time-travel proof from the CLI: after a `hosted` run RECORDS a turn's
+    // prim-result trail, `replay` RE-FOLDS the same log answering each op from that trail — reproducing the
+    // identical summed result (3) with `missing = 0` (faithful, deterministic) and performing NO live effect.
+    // Same store-gated SKIP as the other verbs (missing runtime → skip).
+    let log = unique("replay-log").with_extension("log");
+    let prog = unique("replay-genesis").with_extension("cdz");
+    let _ = std::fs::remove_file(&log);
+    std::fs::write(&prog, GENESIS).unwrap();
+
+    Command::new(bin())
+        .args(["bootstrap", log.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+    Command::new(bin())
+        .args([
+            "inject-genesis",
+            log.to_str().unwrap(),
+            prog.to_str().unwrap(),
+        ])
+        .output()
+        .expect("inject-genesis");
+
+    // First RECORD the turn via `hosted` (writes the prim-result-* trail replay reads).
+    let hosted = Command::new(bin())
+        .args(["hosted", log.to_str().unwrap(), "1"])
+        .output()
+        .expect("run cdz-agent hosted");
+    if !hosted.status.success() {
+        // No runtime store → skip (same gate as the other verbs); replay has nothing to re-fold.
+        assert!(
+            String::from_utf8_lossy(&hosted.stderr).contains("runtime not found"),
+            "the only acceptable failure is a missing runtime store (skip); got: {}",
+            String::from_utf8_lossy(&hosted.stderr)
+        );
+        eprintln!("[cdz-agent it] value-heap runtime absent; skipped the `replay` assertion");
+        let _ = std::fs::remove_file(&log);
+        let _ = std::fs::remove_file(&prog);
+        return;
+    }
+
+    // Now REPLAY: re-fold the recorded turn — same summed result, missing=0, faithful.
+    let out = Command::new(bin())
+        .args(["replay", log.to_str().unwrap(), "1"])
+        .output()
+        .expect("run cdz-agent replay");
+    assert!(
+        out.status.success(),
+        "replay of a recorded turn succeeds: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("summed per-op result = 3"),
+        "replay reproduces the recorded sum (3) from the prim-result trail; got: {stdout}"
+    );
+    assert!(
+        stdout.contains("0 missing") && stdout.contains("faithful"),
+        "a faithful replay reports 0 missing (deterministic re-fold); got: {stdout}"
+    );
+
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&prog);
+}
+
+#[test]
 fn hosted_with_policies_gates_each_op_on_the_external_cedar_policy() {
     // The capability boundary from the CLI: `hosted --policies <file>` authorizes each op against an EXTERNAL
     // Cedar policy before performing. The policy permits ONLY prim:append → kind=1 [Append, Exec] → append

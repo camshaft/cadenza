@@ -1897,6 +1897,7 @@ pass	a runtime Float quantity comparison against NaN is the IEEE partial order (
 pass	a runtime Float32 addition emits the f32 machine add
 pass	a runtime Float32 division emits f32.div
 pass	a runtime Float32 equality compares by the canonical byte form
+pass	a runtime Float32 indeterminate op yields nan at binary32 width
 pass	a runtime Float32 multiplication emits f32.mul
 pass	a runtime Float32 subtraction emits f32.sub
 pass	a runtime Float64 equality compares by the canonical byte form
@@ -1988,6 +1989,7 @@ pass	a runtime function value is manually eta-wrapped and applied through nested
 pass	a runtime greater-than compares by signed order
 pass	a runtime greater-than-or-equal holds at the equal-operand boundary
 pass	a runtime increment traps exactly at the maximum integer
+pass	a runtime infinity in an indeterminate op yields nan (inf minus inf, inf times zero)
 pass	a runtime integer converts to a float with the machine convert
 pass	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 pass	a runtime left shift by the bit width or more traps
@@ -2133,6 +2135,10 @@ pass	a same-dimension annotation preserves the value's own scale through a conve
 pass	a same-dimension quantity annotation whose inner numeric type differs is still an error
 pass	a same-kind symbol-literal payload sub-pattern still dispatches (nested control)
 pass	a same-kind symbol-literal tuple sub-pattern still dispatches (tuple control)
+pass	a same-name GENERIC constructor via a called helper is rejected — the residual harder case
+pass	a same-name monomorphic constructor in a called helper resolves to the constructor
+pass	a same-name multi-variant constructor in a called helper resolves to the constructor
+pass	a same-name variant of a multi-variant sum constructs bare in a body
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a same-unit quantity join flows and its magnitude reads back
 pass	a scalar BETWEEN two Tuple args with a LIST result

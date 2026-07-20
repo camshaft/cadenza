@@ -629,6 +629,26 @@ impl<'a> Parser<'a> {
         self.leading[to] = merged;
     }
 
+    /// Parse an expression BODY (a def value/function body) that may be preceded by leading `//`
+    /// comment or `///` doc lines on their own line(s) — the interior body-leading-trivia position
+    /// (`def f() =` newline `// note` newline `body`). `expr` itself does NOT drain trivia (only
+    /// `stmt` does, at statement positions), so a comment leading a body expression would otherwise
+    /// be STRANDED at the body's first-token slot and DROPPED entirely (not even a `(comment …)`
+    /// node — a genuine comment LOSS, worse than a downgrade). Capture the trivia at the body's first
+    /// token, parse the body, and wrap it in `(comment "text" body)` nodes (outermost = first) so it
+    /// round-trips like a statement comment. A leftover `///` here downgrades to `//` (there is no
+    /// body-doc concept) — still strictly better than dropping it. Only the body's FIRST-token slot
+    /// is drained (a mid-body comment is a separate, harder position, out of scope here).
+    fn body_expr(&mut self, min_prec: u8) -> StructId {
+        let leading: Vec<Lead> = if self.pos < self.leading.len() {
+            std::mem::take(&mut self.leading[self.pos])
+        } else {
+            Vec::new()
+        };
+        let body = self.expr(min_prec);
+        self.wrap_comments(leading, body)
+    }
+
     /// Parse a statement (a top-level form / module member): capture any leading `//` comments and
     /// wrap the parsed form in `(comment "text" node)`, outermost = first. Leading `///` docs are
     /// left in place for a def/module parser to splice inside; any docs a non-def form leaves behind
@@ -1764,7 +1784,9 @@ impl<'a> Parser<'a> {
             // is itself a sequence parenthesizes: `def x = (a; b)`. (A FUNCTION body, by contrast, IS a
             // sequence position — it collects its `;`-run — since its body is delimited by the next
             // top-level form, with no trailing "rest" to escape into.)
-            let value = self.expr(crate::token::PREC_SEQ + 1);
+            // `body_expr` drains any leading interior `//`/`///` trivia (a comment on its own line
+            // after the `=`) so it isn't stranded + dropped.
+            let value = self.body_expr(crate::token::PREC_SEQ + 1);
             let span = start.merge(self.prev_span());
             // (def name doc… value) — docs precede the value, mirroring the function form.
             let mut items = vec![def_head, name];
@@ -1809,7 +1831,7 @@ impl<'a> Parser<'a> {
         // no dedicated return-type node. The printer recovers the `-> R` from that body shape.
         let ret_ty = self.opt_return_type();
         self.expect(Kind::Eq, "`=`");
-        let body = self.expr(0);
+        let body = self.body_expr(0);
         let body = self.ascribe(body, ret_ty);
         let span = start.merge(self.prev_span());
         // (def signature doc… body) — docs precede the body form, matching the spec's

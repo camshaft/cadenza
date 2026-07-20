@@ -20,6 +20,8 @@
 //!   `cdz-agent run <log> <event-kind>`        — one daemon step: read the log → latest genesis → drive an
 //!                                               interpret turn on the scalar <event-kind>. (The full event-
 //!                                               source loop is a later rung; this runs ONE tick.)
+//!   `cdz-agent replay <log> <event-kind>`     — RE-FOLD a recorded turn from the prim-result trail with NO
+//!                                               live effect (time-travel; reports missing=0 when faithful).
 
 use anyhow::{anyhow, Context, Result};
 use cdz_kernel::{boot, daemon, policy, FileLog, Log};
@@ -352,6 +354,33 @@ fn run() -> Result<()> {
             );
             Ok(())
         }
+        Some("replay") => {
+            // TIME-TRAVEL: RE-FOLD a recorded hosted turn from the log WITHOUT performing any live effect
+            // (`daemon::replay_hosted_turn`, the §2.3 determinism proof). Each Prim.exec/http/append is answered
+            // from the recorded `prim-result-<op>` trail a prior `hosted`/`start` run appended — reproducing the
+            // same summed cognition with the world's non-determinism frozen. A FAITHFUL replay reports
+            // `missing = 0` and appends NOTHING (fork / hand-off / time-travel are all a pure re-fold); a
+            // `missing > 0` means the re-fold diverged from what was recorded (more ops than recorded, or a
+            // corrupt result payload) — a loud signal, never a silent live perform.
+            let (log, kind, runtime) = open_and_resolve(&args, "replay")?;
+            let events = log.tail(0)?;
+            let program = boot::latest_program(&events)
+                .ok_or_else(|| anyhow!("no genesis program in the log — run inject-genesis first"))?;
+            let replay = daemon::replay_hosted_turn(&events, &program, kind, runtime)?;
+            println!(
+                "replay: re-folded event kind {kind} from the recorded prim-result trail (no live effect); \
+                 summed per-op result = {}; {} op(s) replayed, {} missing{}",
+                replay.sum,
+                replay.replayed,
+                replay.missing,
+                if replay.missing == 0 {
+                    " (faithful — deterministic re-fold)"
+                } else {
+                    " (DIVERGED — the re-fold asked for results the recorded trail lacks)"
+                }
+            );
+            Ok(())
+        }
         Some("start") => {
             // START THE DAEMON (the operator entry point): poll the log and PERFORM each new TRIGGER event via
             // the real-primitive hosted path (daemon::run over daemon::run_once → tick_hosted). Bounded by
@@ -435,7 +464,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         _ => Err(anyhow!(
-            "usage: cdz-agent <bootstrap|inject-genesis|emit-policy|authz-grant|authz-revoke|authz-requests|schedule-create|schedule-cancel|schedule-list|emit|run|perform|hosted|start> ...\n\
+            "usage: cdz-agent <bootstrap|inject-genesis|emit-policy|authz-grant|authz-revoke|authz-requests|schedule-create|schedule-cancel|schedule-list|emit|run|perform|hosted|replay|start> ...\n\
              \x20 bootstrap <log>                    — create/open the event log\n\
              \x20 inject-genesis <log> <program.cdz> — append the genesis program\n\
              \x20 emit-policy <log> <policy.cedar>    — append a Cedar capability policy (attenuates each invocation; latest supersedes)\n\
@@ -449,6 +478,7 @@ fn run() -> Result<()> {
              \x20 run <log> <event-kind>             — one daemon tick (COUNT the scheduled host-ops)\n\
              \x20 perform <log> <event-kind>         — one daemon tick that EXECUTES the ops (K1c, in-program mock), summing per-op results\n\
              \x20 hosted <log> <event-kind> [--policies <file>] — one daemon tick that PERFORMS via real host primitives (K1c→host); with --policies, each op is Cedar-authorized against the external policy first\n\
+             \x20 replay <log> <event-kind>          — RE-FOLD a recorded turn from the prim-result trail (time-travel, no live effect); reports missing=0 when faithful\n\
              \x20 start <log> <poll-ms> [--stop-file <path>] [--max-rounds N] [--policies <file>] — START the daemon: poll + perform each new trigger event; with --policies each op is Cedar-authorized"
         )),
     }

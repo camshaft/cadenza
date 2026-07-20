@@ -54133,6 +54133,19 @@ mod stage1 {
             "a far undeclared op lists the effect's declared operations: {}",
             err.message
         );
+        // A far miss (no confident replacement) now carries the FALLBACK mechanical repair: DELETE the
+        // whole undeclared arm — always a valid edit that clears the closed-set violation, so the CDZ0403
+        // is actionable even when the compiler cannot guess a replacement op.
+        assert_eq!(
+            err.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "a far undeclared-op arm carries a delete-the-arm fix: {:?}",
+            err.fix
+        );
+        assert!(
+            err.fix.as_ref().is_some_and(|f| !f.verified),
+            "the delete is heuristic (the author may have meant a different op)"
+        );
         // A CLOSE typo (`picks`→`pick`, edit distance 1) instead gets the confident "did you mean" + a
         // replace fix on the mistyped op key — the tier-1 path.
         let close = "(do (effect Choose (op pick (-> Unit Int64))) \

@@ -189,7 +189,7 @@ export const CHAPTERS: Chapter[] = [
   {
     slug: "rationals",
     title: "Exact fractions",
-    blurb: "Rationals: exact ratios, always in lowest terms — where floats round, these don't.",
+    blurb: "Rationals: exact ratios, always in lowest terms, so where floats round, these don't.",
     section: "Fundamentals",
     exercises: 3,
     Component: lazy(() => import("./chapters/Rationals.tsx")),
@@ -245,7 +245,7 @@ export const CHAPTERS: Chapter[] = [
   {
     slug: "types-as-values",
     title: "Types as values",
-    blurb: "A type is an ordinary value: reflect it, compare it, branch on it — all at compile time.",
+    blurb: "A type is an ordinary value: reflect it, compare it, branch on it, all at compile time.",
     section: "What makes Cadenza different",
     exercises: 2,
     Component: lazy(() => import("./chapters/TypesAsValues.tsx")),
@@ -253,7 +253,7 @@ export const CHAPTERS: Chapter[] = [
   {
     slug: "const-parameters",
     title: "Const parameters",
-    blurb: "Arguments known at compile time: inlined into a specialized copy and erased — a constant, a type, or a dictionary of behaviour.",
+    blurb: "Arguments known at compile time, inlined into a specialized copy and erased: a constant, a type, or a dictionary of behaviour.",
     section: "What makes Cadenza different",
     exercises: 2,
     Component: lazy(() => import("./chapters/ConstParameters.tsx")),
@@ -261,7 +261,7 @@ export const CHAPTERS: Chapter[] = [
   {
     slug: "ad-hoc-polymorphism",
     title: "Ad-hoc polymorphism",
-    blurb: "One name, a per-type meaning: operators dispatch on operand type, generics specialize per type — all at compile time.",
+    blurb: "One name, a per-type meaning: operators dispatch on operand type, generics specialize per type, all at compile time.",
     section: "What makes Cadenza different",
     exercises: 2,
     Component: lazy(() => import("./chapters/AdHocPolymorphism.tsx")),
@@ -285,7 +285,7 @@ export const CHAPTERS: Chapter[] = [
   {
     slug: "example-apps",
     title: "Example applications",
-    blurb: "Full interactive apps built in Cadenza — the differentiators running for real: playground, calculator, CAD, notebook.",
+    blurb: "Full interactive apps built in Cadenza, the differentiators running for real: playground, calculator, CAD, notebook.",
     section: "Example applications",
     Component: lazy(() => import("./chapters/ExampleApps.tsx")),
   },

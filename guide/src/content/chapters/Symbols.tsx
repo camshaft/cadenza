@@ -17,10 +17,7 @@ export default function Symbols() {
         is <em>content</em> you might slice, join, or measure, a symbol is a bare label whose only
         question is "is it this one?". So the operation on symbols is equality:
       </P>
-      <Runnable
-        source={`(def (main)
-  (if (= #"red" #"red") 1 0))`}
-      />
+      <Runnable source={`(= #"red" #"red")`} />
       <P>
         Two symbols are equal exactly when they're spelled the same, and no matter how long the name, the
         comparison is a single identity check, not a character-by-character scan.
@@ -68,10 +65,7 @@ export default function Symbols() {
         interns it into a symbol. The result is the very same value as writing the literal: a symbol
         built from the pieces <C>"ye"</C> and <C>"s"</C> equals <C>#"yes"</C>:
       </P>
-      <Runnable
-        source={`(def (main)
-  (if (= (Symbol.of (String.concat "ye" "s")) #"yes") 1 0))`}
-      />
+      <Runnable source={`(= (Symbol.of (String.concat "ye" "s")) #"yes")`} />
 
       <Note>
         Text-to-symbol is an explicit step (<C>Symbol.of</C>), just like <C>String.to-bytes</C>, so the one
@@ -119,20 +113,20 @@ export default function Symbols() {
             A symbol is an ordinary value, so a function can <em>return</em> one, not just test it.{" "}
             <C>next</C> advances a traffic light around its cycle: red turns to green, green to yellow,
             yellow back to red. The green and yellow cases are written, so fill the hole with the symbol{" "}
-            red becomes, making <C>(next #"red")</C> return <C>#"green"</C> and the check give <C>1</C>.
+            red becomes, making <C>(next #"red")</C> return <C>#"green"</C> and the check give <C>true</C>.
           </>
         }
         starter={`(def (next light)
   (if (= light #"red") ?
     (if (= light #"green") #"yellow"
       #"red")))
-(def (main) (if (= (next #"red") #"green") 1 0))`}
+(def (main) (= (next #"red") #"green"))`}
         solution={`(def (next light)
   (if (= light #"red") #"green"
     (if (= light #"green") #"yellow"
       #"red")))
-(def (main) (if (= (next #"red") #"green") 1 0))`}
-        expected="1"
+(def (main) (= (next #"red") #"green"))`}
+        expected="true"
         hint={
           <>
             The hole is the value the function <em>hands back</em> for red, a symbol literal, <C>#"green"</C>.

@@ -215,21 +215,21 @@ export default function Units() {
       </P>
       <Runnable
         source={`(def (main)
-  (if (= (Unit.in (Unit.of #"millimeter")
-                  (Qty.of (Rational.of 1 4) (Unit.of #"inch")))
-         (Rational.of 127 20))
-    1 0))`}
+  (= (Unit.in (Unit.of #"millimeter")
+              (Qty.of (Rational.of 1 4) (Unit.of #"inch")))
+     (Rational.of 127 20)))`}
       />
       <P>
-        That reads <C>1</C>: the converted value is the exact rational <C>127/20</C>, not a float
+        That reads <C>true</C>: the converted value is the exact rational <C>127/20</C>, not a float
         approximation of 6.35. The exactness comes from the <em>value</em> type: the same conversion with a
         rational never accumulates the drift a float would. Sum a third of a millimetre three times and you
-        land back on exactly <C>1</C>, which floating point can't promise:
+        land back on exactly <C>1</C>, so the comparison against <C>(Rational.of 1 1)</C> is <C>true</C>,
+        which floating point can't promise:
       </P>
       <Runnable
         source={`(def (main)
   (let ((t (Rational.of 1 3)))
-    (if (= (+ (+ t t) t) (Rational.of 1 1)) 1 0)))`}
+    (= (+ (+ t t) t) (Rational.of 1 1))))`}
       />
       <P>
         This is the split that makes the CAD model trustworthy: the <em>model</em> (coordinates,

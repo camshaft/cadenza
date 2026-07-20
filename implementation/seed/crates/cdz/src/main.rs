@@ -562,21 +562,25 @@ fn looks_in_ml_subset(src: &str) -> bool {
     // We DELIBERATELY no longer cap the `(def` count at 1: the reader handles UNTYPED helper defs + calls, and
     // the cadenza-ml conformance step is REPORT-ONLY (differential vs the wasm oracle, never a gate baseline).
     //
-    // BUT we STILL fast-decline a program that carries a TYPE ANNOTATION `(: … …)` OR a `(fn …)` lambda. The
-    // reader has no lambda; and — the load-bearing reason — the ML front-end today READS a typed param
-    // `(: x T)` but DISCARDS `T`, so it does NOT enforce the annotation: an unbound type name (`(: x foo)`,
-    // corpus wants CDZ0101), a mismatched type (`(: x Bool)` fed `5`), or a narrow-int overflow
-    // (`(: a Int8)` fed `200`) all RUN to a bogus value instead of rejecting. That is a real miscompile; the
-    // TRUTHFUL verdict for such a program TODAY is `declined` (coverage-not-yet — the compiler does not yet
-    // support type-annotation semantics), NOT a wrong value. So excluding `(: ` keeps the differential HONEST
-    // (no fabricated agreements/disagreements) until the annotation-enforcement slice lands. (Tracked: filed
-    // to the concierge — "ML ignores param type annotations".)
+    // We STILL fast-decline a `(fn …)` lambda — the reader has no lambda form.
+    //
+    // We NO LONGER exclude a TYPE ANNOTATION `(: … …)`. That exclusion was load-bearing WHILE the ML
+    // front-end read a typed annotation but DISCARDED the type (an overflow like `(: a Int8)` fed `200`, an
+    // unbound type `(: x foo)`, or a mismatch `(: x Bool)` ran to a bogus value instead of rejecting) — so
+    // fast-declining kept the W4 differential honest. That is no longer true: the narrow-int annotation
+    // ENFORCEMENT slice landed — an in-range `(: 100 Int8)` runs to 100, an overflow `(: 200 Int8)` /
+    // `(: 300 UInt8)` and a same-width arith overflow `(+ (: 100 Int8) (: 100 Int8))` all correctly DECLINE
+    // (CDZ0304), matching the reference verbatim. The exclusion was ALSO over-broad: it fired only in the
+    // nullary-main-module BRANCH, so a BARE `(: 100 Int8)` already ran (to 100) while the SAME annotation
+    // inside `(do (def (main) …) (export main))` wrongly fast-declined — a spurious wrapper-vs-bare
+    // asymmetry (v-inference root-caused this; it was NOT a scale-emergent emit bug). Dropping `(: ` lets
+    // both forms run and be correctly checked by the (now-enforcing) pipeline. `(fn` stays excluded.
     let is_nullary_main_module = {
         let no_ws: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
         no_ws.starts_with("(do ") && no_ws.contains("(def (main) ")
     };
     if is_nullary_main_module {
-        if s.contains("(fn") || s.contains("(: ") {
+        if s.contains("(fn") {
             return false;
         }
         return true;

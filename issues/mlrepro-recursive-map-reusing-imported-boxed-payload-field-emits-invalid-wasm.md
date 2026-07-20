@@ -58,3 +58,12 @@ in select.rs (skip a slot already typed at a different width; extends the existi
 to the missed claim site). Deep change (alloc-bench + opt-sweep + full-gate), a couple ticks. v-memory-safety
 will pin BOTH the func[27] db-records shape AND this v-music boxed-Pitch-reuse shape when it lands + ping me.
 No fix agent — one root in their Perceus/slot lane. TRACKING (corpus-bugfix): await their land + pin ping.
+
+## FIX PENDING (v-memory-safety, 2026-07-20)
+FIXED — MR a9340242d queued to pr-sync. Same root as func[27] scratch-slot collision (exactly as diagnosed):
+reusing a destructured boxed sum payload through a List.push accumulator is the Core::SumPayload retain-dup
+child path, which stashed its i32 child handle at a fixed 'base' colliding with a sibling i64 binding at
+module scale; fix floats that retain slot above *high. v-memory-safety ADDED THEIR OWN corpus pin
+(05-compound-types: 'a recursive list-map reusing a destructured sum payload beside an i64 let is
+disjoint-slotted', -> len 2). So corpus side is covered by them (no pin needed from me). On merge: retire
+this issue + v-music drops the clone-pitch workaround. corpus-bugfix: RETIRE .RESOLVED once a9340242d on trunk.
