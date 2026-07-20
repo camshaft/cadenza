@@ -362,11 +362,16 @@ fn plan_for_item(ast: &Arenas, item: StructId, items: &[StructId]) -> Option<Tes
                 }
                 gen_tys.push(gt);
             }
-            // A COMPOUND FORM whose leaf the generator can't produce yet (e.g. `Char` in `(List Char)`):
-            // DECLINE CLEANLY per-test rather than let the compound param abort the whole file. A
-            // non-generatable BARE NAME (a `Char` scalar param) is NOT ours — leave it to the boundary
-            // (layout reports "parameter type is ambiguous"); returning None here keeps that path unchanged.
-            None if is_compound_form => {
+            // A COMPOUND FORM whose leaf the generator can't produce yet (e.g. `Char` in `(List Char)`), OR a
+            // bare-name KNOWN CONCRETE non-generatable scalar (`Char`/`Rational`/`BigInt`/`String`/`Symbol`):
+            // DECLINE CLEANLY per-test rather than let the param abort the WHOLE `cdz test` file (and kill its
+            // sibling tests). A heap/non-boundary scalar has no `<gen:T>` to draw — the correct outcome is a
+            // per-test `FAIL NAME-gen: not property-testable`, exactly as for a non-generatable compound leaf.
+            // (Before this, `Char` aborted at layout and `Rational`/`BigInt`/`String`/`Symbol` aborted at
+            // serialize — all killing the file. The `@param`-of-Rational sidecar path is UNAFFECTED: it desugars
+            // via a `pragma param`, never through `@test`/proptest synthesis. See the spec 26-runtime-params
+            // ruling — a heap Rational has no host boundary form.)
+            None if is_compound_form || is_ungeneratable_concrete_scalar(ast, ty) => {
                 return Some(TestPlan {
                     inner_def: inner,
                     wrapper_name: format!("{def_name}-gen"),
@@ -377,7 +382,11 @@ fn plan_for_item(ast: &Arenas, item: StructId, items: &[StructId]) -> Option<Tes
                     nested_anns,
                 });
             }
-            None => return None, // a non-generatable bare-name (scalar) param — layout's concern, not ours
+            // A non-generatable bare name that is NOT a known concrete scalar (an unresolvable/ambiguous name
+            // like `Nonexistent`, or an inference-typed param) — NOT ours. Returning None leaves the genuine
+            // type error to the boundary/layout (CDZ0101 "unknown type" / "ambiguous — annotate it"), which is
+            // the actionable diagnosis; masking it as a per-test decline would hide a real mistake.
+            None => return None,
         }
     }
     if !any_compound {
@@ -396,6 +405,31 @@ fn plan_for_item(ast: &Arenas, item: StructId, items: &[StructId]) -> Option<Tes
         exhaustive,
         nested_anns,
     })
+}
+
+/// Is `ty` a BARE-NAME reference to a KNOWN CONCRETE scalar type that the generator cannot produce — a
+/// heap/non-boundary scalar (`Char`, `Rational`, `BigInt`, `String`, `Symbol`)? Such a param has no
+/// `<gen:T>` and no host boundary form, so a `@test` over it must DECLINE CLEANLY per-test (a nullary
+/// declining wrapper) rather than abort the whole file at the export boundary. This is deliberately narrow:
+/// it matches ONLY a resolved concrete scalar name, so a genuinely UNKNOWN name (`Nonexistent`) or an
+/// ambiguous inference-typed param is NOT captured here — that stays a real boundary/layout type error
+/// (CDZ0101), which is the actionable diagnosis a user needs, not a masked per-test decline. The
+/// boundary-CROSSING scalars (`Bool`/`Float`/the int widths) never reach here: `classify_ty` returns
+/// `Some` for them, so this is only consulted on the `None` (non-generatable) arm.
+fn is_ungeneratable_concrete_scalar(ast: &Arenas, ty: StructId) -> bool {
+    let Some(n) = ast.as_name(ty) else {
+        return false;
+    };
+    matches!(
+        crate::resolved::Prim::from_name(n),
+        Some(
+            crate::resolved::Prim::CharTy
+                | crate::resolved::Prim::RationalTy
+                | crate::resolved::Prim::BigIntTy
+                | crate::resolved::Prim::StringTy
+                | crate::resolved::Prim::SymbolTy
+        )
+    )
 }
 
 /// Recursively classify a parameter TYPE occurrence into the [`GenTy`] whose `<gen:T>` this pass builds,
@@ -989,8 +1023,9 @@ fn build_wrapper(ast: &mut Arenas, plan: &TestPlan) -> StructId {
             let msg = push_atom(
                 ast,
                 Leaf::Str(format!(
-                    "{}: a compound parameter has a leaf the generator cannot produce yet (e.g. Char) — not \
-                     property-testable; narrow the element type or drop the @test",
+                    "{}: a parameter's type has no generatable form yet — a non-boundary/heap scalar \
+                     (Char/Rational/BigInt/String/Symbol) or a compound with such a leaf — not \
+                     property-testable; use a boundary-representable type or drop the @test",
                     plan.def_name
                 )),
             );
@@ -1984,6 +2019,63 @@ mod tests {
         assert!(
             r_gen.params.is_empty(),
             "the declining wrapper is nullary (neutralizes the compound param → never hits the boundary)"
+        );
+    }
+
+    /// A `@test` over a BARE-NAME non-generatable concrete scalar (`Rational` — a heap scalar with no host
+    /// boundary form, per spec 26-runtime-params) gets the SAME declining wrapper: `p-gen` is synthesized
+    /// (a trapping nullary def), the original `p` neutralized. Before this, such a param fell through to the
+    /// boundary and ABORTED THE WHOLE `cdz test` file (killing sibling tests) — at layout for `Char`
+    /// (valtype None) or at serialize for `Rational`/`BigInt`/`String`/`Symbol` (valtype = a heap handle).
+    /// Now it declines per-test, symmetric with the non-generatable-leaf COMPOUND case above.
+    #[test]
+    fn a_bare_name_nongeneratable_scalar_param_gets_a_declining_wrapper() {
+        let mut ast = crate::testkit::parse(
+            "(do (@ test (def (p (: r Rational)) (if (= r r) unit (trap \"neq\")))) (def (other) 1))",
+        );
+        super::synthesize(&mut ast);
+        let db = Db::load(ast);
+        let test_names: Vec<String> = db
+            .test_defs()
+            .into_iter()
+            .map(|i| db.defs[i].name.clone())
+            .collect();
+        assert!(
+            test_names.iter().any(|n| n == "p-gen") && !test_names.iter().any(|n| n == "p"),
+            "a bare-name non-generatable scalar (Rational) gets a DECLINING wrapper (p-gen), original p \
+             neutralized: {test_names:?}"
+        );
+        let p_gen = db
+            .defs
+            .iter()
+            .find(|d| d.name == "p-gen")
+            .expect("p-gen def exists");
+        assert!(
+            p_gen.params.is_empty(),
+            "the declining wrapper is nullary (neutralizes the scalar param → never hits the boundary)"
+        );
+    }
+
+    /// The declining path is NARROW: a genuinely UNKNOWN bare-name type (`Nonexistent`) must NOT be masked
+    /// as a per-test decline — it stays a real type error (no `-gen` wrapper synthesized), so the boundary/
+    /// layout reports the actionable CDZ0101 "unknown type". `plan_for_item` returns None for it (not our
+    /// concern), leaving the diagnosis intact. Guards against `is_ungeneratable_concrete_scalar` over-matching.
+    #[test]
+    fn an_unknown_bare_name_type_param_is_not_masked_as_a_declining_wrapper() {
+        let mut ast = crate::testkit::parse(
+            "(do (@ test (def (p (: x Nonexistent)) (if (= x x) unit (trap \"neq\")))) (def (other) 1))",
+        );
+        super::synthesize(&mut ast);
+        let db = Db::load(ast);
+        let test_names: Vec<String> = db
+            .test_defs()
+            .into_iter()
+            .map(|i| db.defs[i].name.clone())
+            .collect();
+        assert!(
+            !test_names.iter().any(|n| n == "p-gen"),
+            "an unknown-type param gets NO declining wrapper — the real type error is left to the boundary: \
+             {test_names:?}"
         );
     }
 
