@@ -1023,8 +1023,8 @@ fn build_wrapper(ast: &mut Arenas, plan: &TestPlan) -> StructId {
             let msg = push_atom(
                 ast,
                 Leaf::Str(format!(
-                    "{}: a parameter's type has no generatable form yet — a non-boundary/heap scalar \
-                     (Char/Rational/BigInt/String/Symbol) or a compound with such a leaf — not \
+                    "{}: a parameter's type has no property-test-generatable form yet \
+                     (Char/Rational/BigInt/String/Symbol, or a compound with such a leaf) — not \
                      property-testable; use a boundary-representable type or drop the @test",
                     plan.def_name
                 )),
