@@ -134,24 +134,37 @@ if (!existsSync(runtimePath)) {
   const heap = (await rt.instantiate(rt.getCore, {}))[HEAP_IMPORT];
 
   // (2) The piece-to-events showcase RUNS + yields a non-empty BALANCED event stream (the marquee payoff).
-  const eventsShowcase = EXAMPLES.find((e) => e.slug === "piece-to-events");
-  if (!eventsShowcase) {
-    failures.push("piece-to-events showcase missing from EXAMPLES (the event-stream gate can't run)");
-  } else {
+  // Every EVENT-STREAM showcase RUNS + yields a non-empty BALANCED stream (the no-stuck-keys payoff). Both
+  // R3 piece-to-events and R4 euclidean-pattern render into the same MidiEvent table, so both are gated the
+  // same way; R4 additionally pins its exact event count (the 6-event Euclidean tresillo — 3 onsets across 8
+  // steps, each note-on paired with a note-off). `exactRows` (when set) pins the count so a pattern-lib
+  // regression that changes the rhythm is caught, not just a balance break.
+  const EVENT_SHOWCASES = [
+    { slug: "piece-to-events", label: "the I-V-vi-IV piece" },
+    { slug: "euclidean-pattern", label: "a Euclidean tresillo (3 onsets in 8 steps)", exactRows: 6 },
+  ];
+  for (const es of EVENT_SHOWCASES) {
+    const showcase = EXAMPLES.find((e) => e.slug === es.slug);
+    if (!showcase) {
+      failures.push(`${es.slug} showcase missing from EXAMPLES (the event-stream gate can't run)`);
+      continue;
+    }
     try {
-      const { rendered } = await runShowcase(eventsShowcase, heap);
+      const { rendered } = await runShowcase(showcase, heap);
       const parsed = parseMidiEvents(rendered);
       if (!parsed.ok) {
-        failures.push(`piece-to-events: ran but the value did not parse as a MidiEvent stream — ${parsed.error}`);
+        failures.push(`${es.slug}: ran but the value did not parse as a MidiEvent stream — ${parsed.error}`);
       } else if (parsed.rows.length === 0) {
-        failures.push("piece-to-events: parsed ZERO events (empty schedule?)");
+        failures.push(`${es.slug}: parsed ZERO events (empty schedule?)`);
       } else if (!isBalanced(parsed.rows)) {
-        failures.push(`piece-to-events: the event stream is NOT balanced (a stuck key) — the no-stuck-keys invariant regressed`);
+        failures.push(`${es.slug}: the event stream is NOT balanced (a stuck key) — the no-stuck-keys invariant regressed`);
+      } else if (es.exactRows != null && parsed.rows.length !== es.exactRows) {
+        failures.push(`${es.slug}: expected exactly ${es.exactRows} events (${es.label}), got ${parsed.rows.length} — the pattern rhythm drifted`);
       } else {
-        console.log(`  ✓ piece-to-events: runs → ${parsed.rows.length} MIDI events, BALANCED (every note-on has a matching note-off)`);
+        console.log(`  ✓ ${es.slug}: runs → ${parsed.rows.length} MIDI events, BALANCED (${es.label})`);
       }
     } catch (e) {
-      failures.push(`piece-to-events: run/parse THREW ${String(e && e.message ? e.message : e).slice(0, 100)}`);
+      failures.push(`${es.slug}: run/parse THREW ${String(e && e.message ? e.message : e).slice(0, 100)}`);
     }
   }
 
@@ -184,4 +197,4 @@ if (failures.length) {
   console.error("\n✗ music-preload conformance FAILED — the /music preloaded-library path regressed:\n" + failures.map((f) => "  ✗ " + f).join("\n"));
   process.exit(1);
 }
-console.log("\n✓ music-preload conformance: every /music showcase compiles against the preloaded music libs in both surfaces, the piece schedules to a non-empty BALANCED MIDI event stream, and R1/R2 run to the exact values their descriptions claim (true; the C-major triad 60/64/67) — the /music preload + event-structure path + the showcases' claimed values all stay working.");
+console.log("\n✓ music-preload conformance: every /music showcase compiles against the preloaded music libs in both surfaces, both event-stream showcases (the I-V-vi-IV piece + the Euclidean tresillo, 6 events) schedule to non-empty BALANCED MIDI streams, and R1/R2 run to the exact values their descriptions claim (true; the C-major triad 60/64/67) — the /music preload + event-structure path + the showcases' claimed values all stay working.");

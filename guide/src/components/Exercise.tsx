@@ -185,7 +185,7 @@ function CheckPane({ check, expected }: { check: Check; expected: string }) {
       icon = <StatusIcon kind="ok" />;
       body = (
         <>
-          Correct — it produced <code>{check.text}</code>. Nicely done!
+          Correct: it produced <code>{check.text}</code>. Nicely done!
         </>
       );
       break;

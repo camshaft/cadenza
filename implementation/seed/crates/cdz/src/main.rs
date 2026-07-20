@@ -4565,14 +4565,18 @@ fn param_generators(db: &mut rcdzc::db::Db, def: usize) -> Option<Vec<GenKind>> 
     Some(kinds)
 }
 
-/// An inclusive integer bound `[lo, hi]` a `@requires` precondition imposes on one scalar parameter, so the
-/// generator draws only IN-DOMAIN values and never trips the (D) body-entry precondition trap. `i128` so a
-/// full `i64`/`u64` range plus a `±1` adjustment (turning a strict `<`/`>` into an inclusive bound) never
-/// overflows.
+/// The constraint a `@requires` precondition imposes on one scalar parameter, so the generator draws only
+/// IN-DOMAIN values and never trips the (D) body-entry precondition trap. For an INTEGER param it is an
+/// inclusive range `[lo, hi]` (`i128` so a full `i64`/`u64` range plus a `±1` strict-to-inclusive adjustment
+/// never overflows). For a BOOL param, `bool_force` pins it: a bare-Bool precondition `@requires(b)` requires
+/// `b` true, so the generator must draw `true` (a random `false` would trip the pre-trap). `None` = no Bool
+/// constraint. The two are independent (a param is one or the other kind); an int param never sets
+/// `bool_force`, a bool param never narrows `[lo, hi]`.
 #[derive(Clone, Copy)]
 struct ParamBound {
     lo: i128,
     hi: i128,
+    bool_force: Option<bool>,
 }
 
 impl ParamBound {
@@ -4581,6 +4585,7 @@ impl ParamBound {
         ParamBound {
             lo: i128::MIN,
             hi: i128::MAX,
+            bool_force: None,
         }
     }
     /// Clamp a drawn value into `[lo, hi]`. An empty range (lo > hi, from contradictory requires) leaves the
@@ -4720,6 +4725,17 @@ fn narrow_from_predicate(
             }
             return;
         }
+    }
+    // A BARE PARAM NAME predicate — `@requires(b)` where `b` is a Bool param — requires that param TRUE. A
+    // random `false` draw would trip the (D) pre-trap, so pin the generated value to `true` (the Bool analogue
+    // of pinning an int to a constant). A bare name in a `@requires` can only be a Bool param (the enforcement
+    // wraps `(if PRE BODY (trap))`, which type-checks only for a Bool `PRE`); a name that is not a param
+    // (a prelude/global) simply isn't in `pos_of` and is left unconstrained.
+    if let Some(name) = db.ast.as_name(pred)
+        && let Some(&i) = pos_of.get(name)
+    {
+        bounds[i].bool_force = Some(true);
+        return;
     }
     // A comparison `(OP lhs rhs)`. Identify OP, then the (param, literal) pairing in either order.
     for op in [">=", ">", "<=", "<", "="] {
@@ -5336,10 +5352,17 @@ fn draw_inputs(gens: &[GenKind], bounds: &[ParamBound], seed: u64) -> Vec<String
     gens.iter()
         .enumerate()
         .map(|(i, g)| match g {
-            GenKind::Bool => produce::<bool>()
-                .generate(&mut d)
-                .unwrap_or(false)
-                .to_string(),
+            GenKind::Bool => {
+                // A `@requires(b)` bare-Bool precondition pins this param (`bool_force`); otherwise draw
+                // randomly. Pinning (not re-draw) keeps generation a pure function of the seed.
+                match bounds.get(i).and_then(|b| b.bool_force) {
+                    Some(forced) => forced.to_string(),
+                    None => produce::<bool>()
+                        .generate(&mut d)
+                        .unwrap_or(false)
+                        .to_string(),
+                }
+            }
             GenKind::Char => produce::<char>()
                 .generate(&mut d)
                 .unwrap_or('a')
@@ -5494,6 +5517,14 @@ fn shrink(
                 && b.is_constrained()
                 && let Ok(n) = candidate.parse::<i64>()
                 && b.clamp(n as i128) != n as i128
+            {
+                continue;
+            }
+            // Likewise a BOOL param pinned by `@requires(b)` must not shrink off its forced value — shrinking
+            // `true`→`false` would break the precondition and trip the (D) pre-trap (a spurious "still fails").
+            if let Some(b) = bounds.get(i)
+                && let Some(forced) = b.bool_force
+                && candidate != forced.to_string()
             {
                 continue;
             }

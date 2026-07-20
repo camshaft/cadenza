@@ -723,14 +723,32 @@ impl Server {
         Some(code_lenses_for(&doc.text, doc.is_ml))
     }
 
-    /// Answer a `textDocument/inlayHint`: inline PARAMETER-NAME hints at each call site to a LOCALLY-defined
+    /// Answer a `textDocument/inlayHint`: inline PARAMETER-NAME hints at each call site to a defined
     /// function within the requested range — `add(`a:`1, `b:`2)` renders each positional argument prefixed
     /// with the callee's declared parameter name. Read purely from the parse tree (the callee's `(def
     /// (name param…) …)` signature), so it does NOT depend on the still-blocked inferred-binder type query.
-    /// `None` when the document is not open; an empty list when the range holds no local call — total.
+    /// A `file://` document with imports resolves an IMPORTED callee's params over its package closure
+    /// (increment 2); everything else is single-buffer. `None` when the document is not open; an empty list
+    /// when the range holds no matching call — total.
     fn inlay_hint(&self, params: &InlayHintParams) -> Option<Vec<InlayHint>> {
-        let doc = self.docs.get(&params.text_document.uri)?;
-        Some(inlay_hints_at(&doc.text, doc.is_ml, params.range))
+        let uri = &params.text_document.uri;
+        let doc = self.docs.get(uri)?;
+        let hints =
+            if let Some(entry_path) = uri_to_path(uri).filter(|_| self.doc_declares_import(doc)) {
+                let open = self.open_resolver();
+                package_inlay_hints_at(
+                    &entry_path.to_string_lossy(),
+                    &open,
+                    &doc.text,
+                    doc.is_ml,
+                    params.range,
+                )
+                // A closure-load failure → the single-buffer hints, still total.
+                .unwrap_or_else(|| inlay_hints_at(&doc.text, doc.is_ml, params.range))
+            } else {
+                inlay_hints_at(&doc.text, doc.is_ml, params.range)
+            };
+        Some(hints)
     }
 
     /// Dispatch a client NOTIFICATION — the document-sync lifecycle. Each open/change recomputes and
@@ -2627,24 +2645,15 @@ fn signature_help_at(text: &str, is_ml: bool, pos: Position) -> Option<Signature
     })
 }
 
-/// The PARAMETER-NAME inlay hints for the calls in `text` that fall within `range` — each positional
-/// argument of a call to a LOCALLY-defined function gets an inline `name:` hint (rust-analyzer's default
-/// call hint). Read entirely from the parse tree: the callee's declared parameter names come from its
-/// `(def (name param…) …)` signature list, so this does NOT depend on the still-blocked inferred-binder
-/// TYPE query — a parameter's NAME is written in the source even when its type is not.
-///
-/// Increment 1 (this): a callee that is a top-level `def` in the SAME buffer, positional args only. A
-/// cross-file/imported callee (needs the closure) and a curried/partial call are later increments; an
-/// unknown callee simply contributes no hints (total). TOTAL: a buffer that does not parse, or a range
-/// with no local call, yields the empty list — never a panic.
-fn inlay_hints_at(text: &str, is_ml: bool, range: Range) -> Vec<InlayHint> {
-    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
-        return Vec::new();
-    };
-    // Map each local `def (name param…)` to its DECLARED parameter names, in order. A bare-value `def name
-    // body` (no signature list) contributes no params. This is the callee lookup the hints ride on.
-    let mut params_by_callee: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
+/// Map each top-level `(def (name param…) …)` in `arenas` to its DECLARED parameter names, in order — the
+/// callee→params lookup the parameter-name inlay hints ride on. A bare-value `def name body` (no signature
+/// list) or a param-less `(def (name) …)` contributes nothing. Read purely from the parse tree, so it does
+/// NOT depend on the still-blocked inferred-binder TYPE query — a parameter's NAME is written in the source
+/// even when its type is not.
+fn local_def_params(
+    arenas: &cadenza_syntax::Arenas,
+) -> std::collections::HashMap<String, Vec<String>> {
+    let mut out: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for i in 0..arenas.structure.len() {
         let id = cadenza_syntax::StructId(i as u32);
         let cadenza_syntax::ast::Struct::List(kids) = arenas.get(id) else {
@@ -2666,18 +2675,30 @@ fn inlay_hints_at(text: &str, is_ml: bool, range: Range) -> Vec<InlayHint> {
             .filter_map(|&p| arenas.as_name(p).map(str::to_string))
             .collect();
         if !param_names.is_empty() {
-            params_by_callee.insert(name.to_string(), param_names);
+            out.insert(name.to_string(), param_names);
         }
     }
+    out
+}
+
+/// Emit the parameter-name hints for every call in `arenas` whose head names a callee in `params_by_callee`
+/// and whose argument START falls within `[range]`. Each positional argument gets an inline `name:` hint,
+/// for as many args as the callee has parameters (a mismatched arg count just hints the overlap). Shared by
+/// the single-buffer and package (cross-file) entry points — the difference is only WHICH callees populate
+/// the map (local defs, plus imported defs in the package case).
+fn emit_param_hints(
+    text: &str,
+    arenas: &cadenza_syntax::Arenas,
+    spans: &cadenza_syntax::spans::SpanTable,
+    params_by_callee: &std::collections::HashMap<String, Vec<String>>,
+    range: Range,
+) -> Vec<InlayHint> {
     if params_by_callee.is_empty() {
         return Vec::new();
     }
-
     let range_lo = position_to_byte(text, range.start);
     let range_hi = position_to_byte(text, range.end);
     let mut hints: Vec<InlayHint> = Vec::new();
-    // Every call `(callee arg…)` whose head names a known local def: emit a `name:` hint at each argument's
-    // start, for as many args as the callee has parameters (a mismatched arg count just hints the overlap).
     for i in 0..arenas.structure.len() {
         let id = cadenza_syntax::StructId(i as u32);
         let cadenza_syntax::ast::Struct::List(children) = arenas.get(id) else {
@@ -2714,6 +2735,59 @@ fn inlay_hints_at(text: &str, is_ml: bool, range: Range) -> Vec<InlayHint> {
         }
     }
     hints
+}
+
+/// The PARAMETER-NAME inlay hints for the calls in `text` that fall within `range` — each positional
+/// argument of a call to a LOCALLY-defined function gets an inline `name:` hint (rust-analyzer's default
+/// call hint). Single-buffer: only callees defined in THIS buffer are hinted (a cross-file/imported callee
+/// needs the closure — see [`package_inlay_hints_at`]). TOTAL: a buffer that does not parse, or a range
+/// with no local call, yields the empty list — never a panic.
+fn inlay_hints_at(text: &str, is_ml: bool, range: Range) -> Vec<InlayHint> {
+    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return Vec::new();
+    };
+    let params_by_callee = local_def_params(&arenas);
+    emit_param_hints(text, &arenas, &spans, &params_by_callee, range)
+}
+
+/// Cross-file parameter-name inlay hints: like [`inlay_hints_at`] but a callee IMPORTED from a sibling
+/// library is also hinted, using that library's `(def (name param…) …)` signature. The entry's own local
+/// defs still win a name collision (they're inserted last). `None` when the closure can't load (the caller
+/// falls back to the single-buffer path). Increment 2 of the parameter-name inlay-hint feature.
+fn package_inlay_hints_at(
+    entry_path: &str,
+    open: &dyn Fn(&std::path::Path) -> Option<String>,
+    entry_text: &str,
+    entry_is_ml: bool,
+    range: Range,
+) -> Option<Vec<InlayHint>> {
+    let files = crate::closure::load(entry_path, open).ok()?;
+    let (entry_arenas, entry_spans, _e) = parse_surface(entry_text, entry_is_ml).ok()?;
+    let mut params_by_callee: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    // Imported callees FIRST, then the entry's own local defs OVERWRITE (a local def of the same spelling
+    // wins the hint, matching resolution — same precedence as package completion).
+    for (lib_name, imported) in imported_names(&entry_arenas) {
+        let Some(lib) = files.iter().find(|f| f.name == lib_name) else {
+            continue;
+        };
+        let lib_params = local_def_params(&lib.arenas);
+        for name in imported {
+            if let Some(ps) = lib_params.get(&name) {
+                params_by_callee.insert(name, ps.clone());
+            }
+        }
+    }
+    for (name, ps) in local_def_params(&entry_arenas) {
+        params_by_callee.insert(name, ps);
+    }
+    Some(emit_param_hints(
+        entry_text,
+        &entry_arenas,
+        &entry_spans,
+        &params_by_callee,
+        range,
+    ))
 }
 
 /// Split a rendered arrow type into `[Param1, …, ParamN, Ret]`. The `TypeOf` query renders function types
@@ -4669,6 +4743,46 @@ mod tests {
             labels.contains(&"a:".to_string()) && labels.contains(&"b:".to_string()),
             "ML `add(1, 2)` should get param-name hints `a:`/`b:`, got {labels:?}"
         );
+    }
+
+    #[test]
+    fn inlay_hints_label_an_imported_callee_with_its_library_param_names() {
+        // Increment 2 (cross-file): a callee IMPORTED from a sibling library gets param-name hints read
+        // from the LIBRARY's `(def (name param…) …)` signature. `main.sexp` imports `add` from `lib.sexp`
+        // and calls `(add 1 2)` → hints `a:`/`b:` come from lib's `(def (add a b) …)`, not the entry.
+        let dir = std::env::temp_dir().join(format!("cdz-lsp-inlay-pkg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(
+            dir.join("lib.sexp"),
+            "(module lib (def (add a b) (+ a b)) (export add))",
+        )
+        .expect("write lib");
+        let main_path = dir.join("main.sexp");
+        let main_text = "(do (import \"lib\" (add)) (def (main) (add 1 2)) (export main))";
+        std::fs::write(&main_path, main_text).expect("write main");
+        // A filesystem-reading resolver (the sibling lib lives on disk next to the entry).
+        let open = |p: &std::path::Path| std::fs::read_to_string(p).ok();
+        let hints = package_inlay_hints_at(
+            &main_path.to_string_lossy(),
+            &open,
+            main_text,
+            false,
+            whole_range(),
+        )
+        .expect("the closure loads");
+        let labels: Vec<String> = hints
+            .iter()
+            .map(|h| match &h.label {
+                InlayHintLabel::String(s) => s.clone(),
+                other => panic!("expected a string label, got {other:?}"),
+            })
+            .collect();
+        assert!(
+            labels.contains(&"a:".to_string()) && labels.contains(&"b:".to_string()),
+            "an imported callee's args should be hinted with the LIBRARY's param names `a:`/`b:`, got {labels:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

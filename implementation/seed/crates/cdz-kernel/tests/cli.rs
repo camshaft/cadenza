@@ -53,8 +53,10 @@ fn emit_appends_a_trigger_event_and_refuses_reserved_kinds() {
         "emit reports the appended event"
     );
 
-    // A reserved kind is refused (exit non-zero, loud error) — including `policy` (written via emit-policy).
-    for reserved in ["program", "prim-exec", "policy"] {
+    // A reserved kind is refused (exit non-zero, loud error) — including `policy` (written via emit-policy) and
+    // `daemon-cursor` (the daemon's private resume bookmark: an operator must not forge it via emit, else a
+    // poison cursor could corrupt crash-recovery / auto-resume).
+    for reserved in ["program", "prim-exec", "policy", "daemon-cursor"] {
         let out = Command::new(bin())
             .args(["emit", log.to_str().unwrap(), reserved, "x"])
             .output()

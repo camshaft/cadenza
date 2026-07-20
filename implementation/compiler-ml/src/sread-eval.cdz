@@ -86,6 +86,29 @@ def se-let() =
   (match run-src("(let ((x 10)) x)") with | Option.Some(v) => (if v == 10 then unit else trap("let x=10 → 10")) | Option.None(_) => trap("runs"))
 
 @test
+def se-let-multi-binding() =
+  // MULTI-binding let `(let ((x 5) (y 10)) (+ x y))` → 15. Desugars to nested single-lets
+  // `(let ((x 5)) (let ((y 10)) (+ x y)))`, which resolve/lower/eval already handle. Matches the reference
+  // (which runs an N-binding let); a single-binding let was the only form before. Also a 3-binding form → 6.
+  (match run-src("(let ((x 5) (y 10)) (+ x y))") with
+    | Option.Some(v) => (if v == 15 then
+        (match run-src("(let ((x 1) (y 2) (z 3)) (+ x (+ y z)))") with
+          | Option.Some(w) => (if w == 6 then unit else trap("3-binding let → 6"))
+          | Option.None(_) => trap("3-binding let runs"))
+      else trap("2-binding let → 15"))
+    | Option.None(_) => trap("2-binding let runs"))
+
+@test
+def se-let-multi-binding-is-sequential() =
+  // multi-binding let is SEQUENTIAL (let*): an inner binding SEES an outer one. `(let ((x 5) (y (+ x 1))) y)`
+  // → 6 (y's value uses x). The right-nested desugar preserves this. Matches the reference. (The other
+  // direction — an OUTER binding canNOT see an inner — is enforced by resolve: `(let ((x (+ y 1)) (y 5)) x)`
+  // declines CDZ0101, y unbound in x's value; covered by the reference-parity probe, not asserted here.)
+  (match run-src("(let ((x 5) (y (+ x 1))) y)") with
+    | Option.Some(v) => (if v == 6 then unit else trap("sequential let: y = x+1 = 6"))
+    | Option.None(_) => trap("sequential multi-binding let runs"))
+
+@test
 def se-underscore-led-identifier-runs() =
   // reader-completeness: a `_`-led identifier (`_x`) is a valid name — `(let ((_x 5)) _x)` → 5. Before the
   // is-alpha `_` fix, compiler-ml DECLINED it (the read-form dispatch didn't treat `_` as an atom lead), a

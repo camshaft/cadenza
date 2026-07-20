@@ -1673,6 +1673,63 @@
             (export main)))
   (output (: 3 Int64)))
 
+; The persistence cases above read a shared binding's LENGTH after one destructive-looking op. These
+; push the sharing discipline harder: the same heap spine consumed ELEMENT-WISE twice (each traversal
+; deallocating in a naive linear regime — the second walk needs the dup), and one spine ALIASED into
+; two enclosing heap values (each alias insertion is a consuming use; the spine must survive all of
+; them plus the original binding). A missed dup reads freed/reused memory; the encoded sums witness it
+; as a VALUE.
+
+(case "a shared list is consumed element-wise twice by rest-pattern recursion"
+  (doc    "`sum` walks the list by `(list h .. t)` rest-recursion — a full element-wise consumption. `(+
+           (sum xs) (sum xs))` runs it TWICE over one shared binding (xs = [1,2,3,n]): the second
+           traversal must find the spine intact (Perceus dups the second use; a use-count-1 assumption
+           frees the spine during the first walk) → 10 + 10 = 20 at n = 4. The element-wise companion of
+           the length-read persistence cases above. Expected: 20.")
+  (input  (do
+            (def (sum (: l (List Int64)))
+              (match l ((list) 0) ((list h .. t) (+ h (sum t)))))
+            (def (main (: n Int64))
+              (let ((xs (list 1 2 3 n)))
+                (+ (sum xs) (sum xs))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 20 Int64)))
+
+(case "a runtime list aliased into two record fields is read intact through both"
+  (doc    "One runtime-built spine stored in TWO fields of one record: `(record (a xs) (b xs))` — each
+           field insertion is a consuming use of `xs`, so the spine needs a dup per alias. Both
+           projections then read the SAME live spine: 10·len + len = 33 at n = 3. A missed alias dup
+           frees the spine after the first field's insertion and the second projection reads garbage.
+           Runtime build (List.push recursion) keeps the spine off the fold. Expected: 33.")
+  (input  (do
+            (def (build (: n Int64) (: acc (List Int64)))
+              (if (= n 0) acc (build (- n 1) (List.push acc n))))
+            (def (main (: n Int64))
+              (let ((xs (build n (list))))
+                (let ((r (record (a xs) (b xs))))
+                  (+ (* 10 (List.len (. r a))) (List.len (. r b))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 33 Int64)))
+
+(case "a runtime list aliased into two tuples and its original binding all read consistently"
+  (doc    "The tuple twin, with the ORIGINAL binding read after both aliases: `inner` is stored in t1's
+           slot 0 and t2's slot 1 (two consuming insertions), then all THREE paths — both tuple
+           projections and the bare `inner` — read the length. 100·4 + 10·4 + 4 = 444 at n = 4. This
+           adds the still-live-original face the record case doesn't cover (three live references to one
+           spine at once). Expected: 444.")
+  (input  (do
+            (def (build (: n Int64) (: acc (List Int64)))
+              (if (= n 0) acc (build (- n 1) (List.push acc n))))
+            (def (main (: n Int64))
+              (let ((inner (build n (list))))
+                (let ((t1 (tuple inner 1))
+                      (t2 (tuple 2 inner)))
+                  (+ (* 100 (List.len (. t1 0)))
+                     (+ (* 10 (List.len (. t2 1)))
+                        (List.len inner))))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 444 Int64)))
+
 (case "List.len over a let-bound constant list folds to the arity on both backends"
   (doc    "`(let ((xs (list 1 2 3))) (+ (List.len xs) (List.len xs)))` — a CONSTANT list bound to a
            multi-use `xs`, whose length is read twice. `List.len` = the spine ARITY, fixed at construction,

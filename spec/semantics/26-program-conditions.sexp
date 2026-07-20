@@ -2145,6 +2145,46 @@
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
+(case "an @ensures over a MATCH-bodied def wraps the whole match — the postcondition checks the match's result"
+  (doc    "A cross-seam composition pin (v-patterns seam): the def BODY is a `match`, and @ensures must wrap the
+           WHOLE match expression, not one arm. The injected `(let ((ret (match x …))) (if (>= ret 0) ret
+           (trap …)))` binds `ret` to whichever arm the scrutinee selects, then checks the postcondition over
+           that result. `(f x) = (match x (0 (- 0 1)) (_ x))`: `(f 5)` takes the wildcard arm → `ret = 5`, `(>=
+           5 0)` holds → returns `5`; `(f 0)` takes the `0` arm → `ret = -1`, `(>= -1 0)` is FALSE → the check
+           traps `unreachable`. Pins that the enforcement rewrite composes with a match-bodied def (the `let`
+           binds the match's value, the check sees the selected arm's result) — a future pattern-matching change
+           that mis-scoped the injected `ret` binder around a match would flip this. Runtime scrutinee via
+           `main`'s param so neither arm folds away.")
+  (input  (do
+            (@ (ensures (>= ret 0))
+              (def (f (: x Int64)) (match x (0 (- 0 1)) (_ x))))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64))
+  (call   main (: 0 Int64))
+  (trap   "unreachable"))
+
+(case "a @requires predicate that CALLS a user-defined function resolves and enforces — not only prelude ops"
+  (doc    "A cross-seam composition pin (name-resolution seam): the precondition predicate is not a bare prelude
+           comparison but a CALL to a user-defined function, `(ok x)` where `(def (ok n) (>= n 0))`. The
+           enforcement rewrite `(if (ok x) BODY (trap …))` must RESOLVE `ok` (a top-level def, in scope at body
+           entry alongside the params) and call it — predicate resolution is not restricted to prelude
+           intrinsics. `(f 7)`: `(ok 7)` = true → returns `8`; `(f -3)`: `(ok -3)` = false → the precondition
+           check traps `unreachable`. Runtime arg via `main`'s param so the call isn't const-folded. Pins that
+           an @requires predicate may be an ordinary boolean-returning user function (the predicate is elaborated
+           in the def's scope like any expression) — a resolution change that only bound prelude names in a
+           predicate would break this.")
+  (input  (do
+            (def (ok (: n Int64)) (>= n 0))
+            (@ (requires (ok x)) (def (f (: x Int64)) (+ x 1)))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 8 Int64))
+  (call   main (: -3 Int64))
+  (trap   "unreachable"))
+
 ; ── @requires × @test: constrained GENERATION (breaker pin, keyed on the 71efd45a6 slice) ──────────
 ; A `@requires` precondition on a `@test`-stacked def is a FILTER on the generated input domain, not a
 ; property the test may fail on. The ruling (v-verification + v-property-testing, 2026-07-17): the
