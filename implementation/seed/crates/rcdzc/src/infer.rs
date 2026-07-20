@@ -13370,8 +13370,22 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // reachability-gated (the trap-poison walk in `compile` handles it, skipping untaken branches).
         Resolved::Poison(r) => {
             if r.code == Some(Code::Unbound) {
-                trace!(target: "rcdzc::infer", node = id.0, "fault: unbound name reported (CDZ0101)");
-                out.push(enrich_unbound(db, id, r));
+                // Only a USER node's unbound name is a real source reference. A SYNTHESIZED node (a β-copy /
+                // inlined callee body an application's type computation builds — id ≥ `user_node_count`) that
+                // resolves a name unbound is an INFERENCE ARTIFACT, not a program reference: the copy lost the
+                // enclosing binder scope (e.g. a callee's match-arm binder is bound in the original body but
+                // not in the spliced copy). A genuine unbound name ALSO surfaces at its own USER occurrence,
+                // so skipping the synthesized copy never hides a real fault — but reporting it emits a false
+                // CDZ0101 whose origin `sanitize_origin` can only UN-anchor (it has no source span), and which
+                // (mis-)maps to the enclosing user call site. This is exactly the `sread.cdz` false "unbound
+                // name `tyname`" (a `(match … (tyname a2) …)` binder in `ann-with-value`, unbound in the
+                // inlined copy at the call site) that reddened the whole compiler-ml suite. Gate on
+                // `is_user_node` — the same boundary `sanitize_origin`/`db.rs` use to keep a synthesized id off
+                // the mapped-diagnostic path.
+                if db.is_user_node(id) {
+                    trace!(target: "rcdzc::infer", node = id.0, "fault: unbound name reported (CDZ0101)");
+                    out.push(enrich_unbound(db, id, r));
+                }
             } else if matches!(
                 r.code,
                 // A LEXICAL / FORM well-formedness poison a node resolves WHOLE to — a malformed numeric
