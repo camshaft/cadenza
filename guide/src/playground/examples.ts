@@ -260,6 +260,24 @@ export const EXAMPLES: Example[] = [
     expected: "(: 1/1 Rational)",
   },
   {
+    // Shows off: taking a rational APART — sum exact fractions to a reduced fraction, then read its
+    // numerator and denominator with Rational.numerator / Rational.denominator (each a BigInt).
+    // 1/2 + 1/3 + 1/12 = 11/12 exactly, so this returns (11, 12).
+    id: "rational-parts",
+    name: "Rational numerator & denominator",
+    theme: "numbers",
+    surface: "sexpr",
+    source: `(do
+  (pragma default-fraction Rational)
+  ; Exact sum: 1/2 + 1/3 + 1/12 = 11/12 (already in lowest terms).
+  (def (total) (+ (+ (/ 1 2) (/ 1 3)) (/ 1 12)))
+  ; Pull the reduced fraction apart into its two BigInt components.
+  (def (main)
+    (tuple (Rational.numerator (total)) (Rational.denominator (total))))
+  (export main))`,
+    expected: "(: (tuple 11 12) (Tuple BigInt BigInt))",
+  },
+  {
     // Shows off: Float64 rounding drift — the flip side of the exact-rational example. Adding 0.1 ten
     // times should give 1.0, but IEEE 754 can't represent 0.1 exactly, so the errors accumulate to
     // 0.9999999999999999. Also shows explicit parameter type annotations (n: Int64, acc: Float64) —

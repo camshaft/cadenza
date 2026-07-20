@@ -744,6 +744,26 @@
   (call   main (: -17 Int64) (: 5 Int64))
   (output (: -2 Int64)))
 
+(case "a runtime BigInt divide over negative operands truncates toward zero"
+  (doc    "The DIVIDE companion of the remainder case above: `(/ (BigInt.of a) (BigInt.of b))` truncates
+           toward zero (not floors), so the quotient's sign is the XOR of the operand signs and the
+           magnitude is the floor of the absolute quotient. `bigint-div` and `bigint-rem` share one `divmod`,
+           so this pins the quotient sign the remainder case only implies: a=-17,b=5 → -3 (not the floored
+           -4); a=17,b=-5 → -3; a=-17,b=-5 → 3 (two negatives cancel); a=17,b=5 → 3. Matches fixed-width `/`
+           truncate-toward-zero on both backends.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (Int64.of (/ (BigInt.of a) (BigInt.of b))))
+            (export main)))
+  (call   main (: -17 Int64) (: 5 Int64))
+  (output (: -3 Int64))
+  (call   main (: 17 Int64) (: -5 Int64))
+  (output (: -3 Int64))
+  (call   main (: -17 Int64) (: -5 Int64))
+  (output (: 3 Int64))
+  (call   main (: 17 Int64) (: 5 Int64))
+  (output (: 3 Int64)))
+
 (case "a runtime BigInt intermediate that overflows Int64 does not trap"
   (doc    "`(Int64.of (/ (* big big) big))` with `big = BigInt.of 5000000000`: the product `big*big` =
            2.5e19 OVERFLOWS Int64 (max ~9.2e18), but BigInt's representation grows rather than trapping —
