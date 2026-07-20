@@ -346,6 +346,8 @@ pass	a MULTI-shot arm re-reduces a continuation that reads a captured heap list 
 pass	a MULTI-shot arm whose FIRST resume value is chosen by an if on the state
 pass	a MULTI-shot arm whose each resume CONSUMES a captured heap list dups it per resume
 pass	a MULTI-shot handler arm folds a two-hole body by re-reducing per resume
+pass	a MULTIPLY on an unusual signed width computes in range at the declared width
+pass	a MULTIPLY overflowing an unusual signed width is rejected CDZ0304
 pass	a MUTUALLY-recursive effectful group is specialized under a state handler
 pass	a Map accumulator threaded through a non-tail double tree recursion accumulates both subtrees
 pass	a Map-returning closure alongside a parameterized plain export — the closure
@@ -3890,6 +3892,7 @@ todo	a distinct-signature round-trip alongside a plain export — the plain expo
 todo	a distinct-signature round-trip applies the Int64->Bool closure
 todo	a distinct-signature round-trip applies the Int64->Int64 closure
 todo	a distinct-signature round-trip's Bool closure on a nonzero input
+todo	a genuinely-runtime MULTIPLY on an unusual signed width traps on overflow rather than wrapping to storage
 todo	a host call's response is an ordinary value that feeds a LATER host call
 todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name

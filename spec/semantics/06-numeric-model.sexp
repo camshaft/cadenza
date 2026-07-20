@@ -4623,6 +4623,35 @@
   (input  (+ ((. (Int 4) wrap) 8) ((. (Int 4) wrap) 15)))
   (error  CDZ0304))
 
+(case "a MULTIPLY on an unusual signed width computes in range at the declared width"
+  (doc    "The multiply member of the unusual-width arithmetic family (add/sub/shift/div/negate/comparison
+           are pinned; multiply was the gap). `(Int 4).wrap 2` = 2, `.wrap 3` = 3; `2 * 3` = 6, within the
+           (Int 4) range [-8, 7], so it computes to 6, a value of type (Int 4). Pins that the width-parametric
+           overflow check accepts a product that fits the narrow declared width, exactly as the add in-range
+           case above does.")
+  (input  (* ((. (Int 4) wrap) 2) ((. (Int 4) wrap) 3)))
+  (output (: 6 (Int 4))))
+
+(case "a MULTIPLY overflowing an unusual signed width is rejected CDZ0304"
+  (doc    "`4 * 4` = 16 exceeds the (Int 4) maximum 7, so it is a compile-provable overflow → CDZ0304 at the
+           declared 4-bit range [-8, 7], NOT the i8 storage range (which would keep 16). The multiply
+           companion of the add-overflow case: a left shift is exact multiplication by a power of two, and a
+           general multiply overflows the same declared-width boundary. A check reading the i8 storage range
+           would wrongly accept 16.")
+  (input  (* ((. (Int 4) wrap) 4) ((. (Int 4) wrap) 4)))
+  (error  CDZ0304))
+
+(case "a genuinely-runtime MULTIPLY on an unusual signed width traps on overflow rather than wrapping to storage"
+  (doc    "The runtime-operand companion: `(* ((. (Int 4) wrap) a) ((. (Int 4) wrap) b))` with `a`/`b` true
+           entry parameters (so no fold proves the range). In-range `2 * 3` = 6 computes; `4 * 4` = 16 and
+           `3 * 3` = 9 both exceed the (Int 4) maximum 7 and MUST TRAP on the emitted checked multiply — the
+           emit enforces the DECLARED 4-bit range, not the i8 STORAGE width (which would keep 16 / 9 silently).
+           The runtime multiply twin of the runtime shift/add overflow-trap cases. Both backends.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (* ((. (Int 4) wrap) a) ((. (Int 4) wrap) b))) (export main)))
+  (call   main (: 2 Int64) (: 3 Int64)) (output (: 6 (Int 4)))
+  (call   main (: 4 Int64) (: 4 Int64)) (trap "integer overflow")
+  (call   main (: 3 Int64) (: 3 Int64)) (trap "integer overflow"))
+
 (case "the unusual-width overflow check is width-parametric: a SECOND width (Int 12) also enforces its own range"
   (doc    "The (Int 4) cases above pin one non-machine-boundary width; this pins a SECOND, (Int 12), range
            [-2048, 2047] (stored in i16), to show the overflow-RANGE check is genuinely width-parametric and

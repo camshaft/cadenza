@@ -347,6 +347,8 @@ pass	a MULTI-shot arm re-reduces a continuation that reads a captured heap list 
 pass	a MULTI-shot arm whose FIRST resume value is chosen by an if on the state
 pass	a MULTI-shot arm whose each resume CONSUMES a captured heap list dups it per resume
 pass	a MULTI-shot handler arm folds a two-hole body by re-reducing per resume
+pass	a MULTIPLY on an unusual signed width computes in range at the declared width
+pass	a MULTIPLY overflowing an unusual signed width is rejected CDZ0304
 pass	a MUTUALLY-recursive effectful group is specialized under a state handler
 pass	a Map accumulator threaded through a non-tail double tree recursion accumulates both subtrees
 pass	a Map-returning closure alongside a parameterized plain export — the closure
@@ -990,6 +992,7 @@ pass	a genuinely-escaping continuation (deferred resume-thunk) resumes cross-act
 pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact value
 pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
+pass	a genuinely-runtime MULTIPLY on an unusual signed width traps on overflow rather than wrapping to storage
 pass	a genuinely-runtime addition overflow traps on the emitted operation
 pass	a genuinely-runtime in-range shift count works
 pass	a genuinely-runtime left-shift count beyond the bit width traps rather than masking to a small count
