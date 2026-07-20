@@ -1575,6 +1575,26 @@
             (export main)))
   (output (: 2 Int64)))
 
+(case "a Map.len over a projected field of a fresh record whose producer binds an i64 let is disjoint-slotted"
+  (doc    "The `Core::Proj`-RECLAIM sibling of the retain-child slot case above (the OTHER retain-child arm:
+           a borrowing projection of an owned-temporary aggregate, vs the SumPayload payload-retain). `mk`
+           builds a fresh record `(record (a (Map.insert …)) (b x))` behind a `let x = (+ n 1)` (an Int64,
+           i64); `Map.len (. (mk i) a)` projects field `a` (a nested-compound Map) and reads its length. The
+           Proj-reclaim of the owned-temporary record `dup`s the extracted child Map + drops the record,
+           stashing the child handle (i32) in a scratch slot. That slot used to be a FIXED `base+1` that
+           COLLIDED with `mk`'s i64 `let x` slot at module scale (a wasm local has ONE type function-wide) →
+           `expected i32, found i64`. The child slot must float ABOVE `*high` (past the record producer's
+           own scratch, incl. the let). Driven in a loop so the projection actually emits (a single folded
+           projection would collapse). `sum over i∈{0,1,2} of Map.len({i:i}) = 1+1+1 = 3`. Companion to the
+           SumPayload retain-child pin above; both faces of the `func[27]` slot-width collision fix.")
+  (input  (do
+            (def (mk (: n Int64)) (let ((x (+ n 1))) (record (a (Map.insert (Map.empty) x x)) (b x))))
+            (def (loop (: i Int64) (: acc Int64))
+              (if (< i 3) (loop (+ i 1) (+ acc (Map.len (. (mk i) a)))) acc))
+            (def (main) (loop 0 0))
+            (export main)))
+  (output (: 3 Int64)))
+
 ; --- Runtime RECORD and LIST results (the same positional heap array as a tuple) ----------
 ; A record and a list carrying a runtime element are, at run time, the SAME positional heap
 ; array a tuple is — field names and the tuple/list/record distinction are static type
@@ -2348,6 +2368,28 @@
               (if (< i n) (build (+ i 1) n (List.push out (list i))) out))
             (def (main) (build 0 3 (list))) (export main)))
   (output (: (list (list 0) (list 1) (list 2)) (List (List Int64)))))
+
+(case "a two-level index reads an inner element of a list of lists"
+  (doc    "The READ companion of the escape case above: `(List.at (List.at xss i) j)` indexes a `(List (List
+           Int64))` at two levels — the outer `List.at` yields an inner LIST handle, and that handle must
+           itself be a usable list the inner `List.at` reads. `xss = [[10,11],[20,21,22],[30]]`, runtime i,j:
+           (1,2) → 22 (xss[1]=[20,21,22], its [2]), (0,0) → 10, (2,0) → 30. Both levels are FALLIBLE: an
+           inner out-of-bounds (1,5) → the inner None (→ -1), an outer out-of-bounds (9,0) → the outer None
+           (→ -2), each on its own footing (collections-and-text.md #Indexing And Lookup Are Fallible). Pins
+           the two-level read — distinct from construct/render: the inner list from the outer lookup is a
+           genuine list, not a flattened or borrowed-wrong handle — both backends via the `(call)` form.")
+  (input  (do
+            (def (main (: i Int64) (: j Int64))
+              (let ((xss (list (list 10 11) (list 20 21 22) (list 30))))
+                (match (List.at xss i)
+                  ((Some inner) (match (List.at inner j) ((Some v) v) ((None _u) -1)))
+                  ((None _u) -2))))
+            (export main)))
+  (call   main (: 1 Int64) (: 2 Int64)) (output (: 22 Int64))
+  (call   main (: 0 Int64) (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: 2 Int64) (: 0 Int64)) (output (: 30 Int64))
+  (call   main (: 1 Int64) (: 5 Int64)) (output (: -1 Int64))
+  (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64)))
 
 (case "two lists are concatenated into one flat list"
   (doc    "`(List.concat (list 1 2) (list 3 4))` produces `(list 1 2 3 4)` — the elements of the first

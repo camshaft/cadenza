@@ -14,6 +14,7 @@
 ///      program, call the sole bare function export and return its value directly.
 
 import { transpileBytes } from "@bytecodealliance/jco-transpile";
+import { genArgs, renderArgs, normalizeName, GenPool } from "./genPool.ts";
 
 const HEAP_IMPORT = "cadenza:runtime/heap";
 
@@ -190,13 +191,7 @@ async function instantiateComponent(
 /// in a way that signals an unanswered gen host op (a property `-gen` wrapper that slipped through the
 /// classification into the nullary list), it is reported DEFERRED, not failed — the real property drivers
 /// (scalar `runScalarProperties` / compound `runCompoundProperties`) handle classified property tests.
-/// Normalize an identifier for cross-naming-convention matching: a Cadenza source name (`one_plus_one`)
-/// crosses the component boundary as a kebab WIT name (`one-plus-one`) that jco then binds in JS as
-/// camelCase (`onePlusOne`) — so strip `-`/`_` and lowercase to compare source names to actual exports.
-function normalizeName(n: string): string {
-  return n.replace(/[-_]/g, "").toLowerCase();
-}
-
+/// (`normalizeName` — the kebab/camel boundary-name matcher — is a pure helper in genPool.ts.)
 async function runTests(job: RunJob): Promise<RunResult> {
   const root = await instantiateComponent(job);
   const names = job.testNames ?? [];
@@ -290,72 +285,10 @@ function exportedFunctions(root: Record<string, unknown>): { name: string; fn: (
     .map(([name, v]) => ({ name, fn: v as (...a: unknown[]) => unknown }));
 }
 
-/// A property test's default trial count, mirroring `cdz test`.
+/// A property test's default trial count, mirroring `cdz test`. (The generator core — `intRange`, `genArg`,
+/// `genArgs`, `lcgStep`, `renderArgs`, and the `GenPool` — is a pure, node-tested twin of the native
+/// `proptest_gen.rs` generator, extracted into genPool.ts.)
 const DEFAULT_TRIALS = 100;
-
-/// The inclusive value range for each scalar `paramType` enum (from `param_test_signatures`). Signed widths
-/// are [-2^(n-1), 2^(n-1)-1]; unsigned are [0, 2^n-1]; `bool` is 0/1 (mapped to a boolean); float widths
-/// generate an integer-valued magnitude (never NaN, matching the compiler's `float-of-int` generator). A
-/// type not here (`"other"`, a compound) is never a SCALAR prop — a compound param is driven by the separate
-/// compound driver (a `-gen` wrapper over a `Test.gen-int` pool), not by this call-arg generator.
-function intRange(t: string): { min: bigint; max: bigint } | null {
-  switch (t) {
-    case "int8": return { min: -128n, max: 127n };
-    case "int16": return { min: -32768n, max: 32767n };
-    case "int32": return { min: -2147483648n, max: 2147483647n };
-    case "int64": return { min: -9223372036854775808n, max: 9223372036854775807n };
-    case "uint8": return { min: 0n, max: 255n };
-    case "uint16": return { min: 0n, max: 65535n };
-    case "uint32": return { min: 0n, max: 4294967295n };
-    case "uint64": return { min: 0n, max: 18446744073709551615n };
-    default: return null;
-  }
-}
-
-/// A seeded 64-bit LCG (the same MMIX constants the corpus generators use), stepping a `bigint` state and
-/// yielding the low 64 bits. Deterministic from the seed → a failing trial is replayable, and the whole
-/// driver is reproducible (property-based-testing.md #Generation Is Seeded And Reproducible).
-function lcgStep(state: bigint): bigint {
-  const M = 0xffffffffffffffffn;
-  return (state * 6364136223846793005n + 1442695040888963407n) & M;
-}
-
-/// Generate one JS argument for a scalar `paramType` from the pool state, returning the arg and the advanced
-/// state. jco lowers every Cadenza int width to a JS `bigint` at the boundary, `Bool` to `boolean`, and a
-/// float to `number` — so an int arg is a `bigint` in its width's range, a bool is the state's low bit, and
-/// a float is an integer-valued `number` (never NaN). The generated int is folded into the width range by
-/// modulo (a uniform-enough draw for property sampling; the shrinker drives it toward the minimal failure).
-function genArg(type: string, state: bigint): { arg: unknown; state: bigint } {
-  const next = lcgStep(state);
-  if (type === "bool") return { arg: (next & 1n) === 0n, state: next };
-  if (type === "float32" || type === "float64") {
-    // An integer-valued float in a modest range (matches `Float64.of-int` — total, never NaN).
-    return { arg: Number(next % 2048n) - 1024, state: next };
-  }
-  const range = intRange(type);
-  if (!range) return { arg: 0n, state: next }; // unreachable for a scalar prop (client filters "other")
-  const span = range.max - range.min + 1n;
-  return { arg: range.min + ((next % span) + span) % span, state: next };
-}
-
-/// Build one trial's argument vector for a scalar property test from a base pool state (one arg per param
-/// type, threading the LCG state). Returns the args + the final state (unused per-trial — each trial reseeds).
-function genArgs(paramTypes: string[], seed: bigint): unknown[] {
-  let state = seed;
-  const args: unknown[] = [];
-  for (const t of paramTypes) {
-    const { arg, state: s } = genArg(t, state);
-    args.push(arg);
-    state = s;
-  }
-  return args;
-}
-
-/// Render a trial's args for a counterexample message (a `bigint` prints without the JS `n` suffix so it
-/// reads like a Cadenza literal).
-function renderArgs(name: string, args: unknown[]): string {
-  return `${name}(${args.map((a) => (typeof a === "bigint" ? a.toString() : String(a))).join(", ")})`;
-}
 
 /// Drive one SCALAR-param property test: call the export with generated args over `trials` trials, seeded
 /// from `seed` (each trial reseeds `seed + trialIndex`, mirroring `cdz test`'s per-trial pool). A trial that
@@ -442,36 +375,6 @@ async function runScalarProperties(job: RunJob, preInstantiated?: Record<string,
     results.push(await runScalarProperty(fn, name, paramTypes, trials, seed));
   }
   return results;
-}
-
-/// A seeded int POOL for the compound `Test.gen-int` driver. Two modes, because the wrapper calls `gen-int`
-/// an a-priori-unknown number of times (a `List` gens its length, then each element):
-///   - GENERATIVE (initial trial, no `preset`): lazily EXTENDS from the LCG on each draw, capturing the
-///     concrete sequence in `values` — every draw deterministic from `seed`, and `values` records exactly
-///     what was consumed so the shrinker can replay it.
-///   - REPLAY (a `preset` pool, from the shrinker): serves the preset draws, then pads EXHAUSTED draws with
-///     `0n` — it does NOT LCG-extend. This is what makes truncation a faithful shrink: a shorter pool means
-///     the wrapper genuinely sees fewer/zero draws (→ a shorter collection / zero-valued tail), not a
-///     different LCG-seeded tail. (A `0` gen-int typically drives a length/element toward its minimum.)
-class GenPool {
-  private state: bigint;
-  readonly values: bigint[] = [];
-  private i = 0;
-  private readonly replay: boolean;
-  constructor(seed: bigint, preset?: bigint[]) {
-    this.state = seed;
-    this.replay = preset !== undefined;
-    if (preset) this.values = preset.slice();
-  }
-  /// The `Test.gen-int` host op: yield the next i64 (jco lowers i64 ↔ JS bigint).
-  next = (): bigint => {
-    if (this.i >= this.values.length) {
-      if (this.replay) return 0n; // exhausted a preset pool → pad with 0 (faithful truncation-shrink)
-      this.state = lcgStep(this.state);
-      this.values.push(this.state & 0xffffffffffffffffn);
-    }
-    return this.values[this.i++];
-  };
 }
 
 /// Run ONE compound-param property test: the nullary `-gen` wrapper builds its compound argument from a

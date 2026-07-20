@@ -311,70 +311,82 @@ def read-def-body(s: String, nm: String, k: Int64, tree: Tree) =
   (if (char-at(s, k) == ")")
    then (match read-form(s, k + 1, tree) with | (bodyId, j, t1) => (name-id(nm), bodyId, 0 - 1, 0 - 1, j, t1))
    else (if (char-at(s, k) == "(")
-         then read-typed-param(s, nm, k, tree)                 // `(: p T)` — a typed single param (param2 -1)
+         then read-typed-param(s, nm, k, tree)                 // `(: p T)` — a typed FIRST param
          else (match scan-atom(s, k, "") with | (pnm, k1) =>   // a first UNTYPED param name
                 (match add-node(tree, Node.NVar(name-id(pnm))) with | (paramId, t1) =>
-                  read-2nd-param-or-close(s, nm, paramId, skip-space(s, k1), t1)))))
+                  read-second-param(s, nm, paramId, skip-space(s, k1), t1)))))
 
-/// After the FIRST untyped param (node `paramId`) at `k` (space-skipped): a `)` → a SINGLE-param def (param2
-/// -1), read the body. Otherwise a SECOND untyped param name `b` → read it as an NVar binder (param2Id),
-/// consume the signature `)`, read the body → a TWO-param def (slice-3d). Returns the 6-tuple
-/// `(nameId, bodyId, paramId, param2Id, nextIndex, tree')`. Flat (≤2 nesting) to avoid the paren-cascade trap.
-/// (A 3rd param isn't yet supported — after 2 params a non-`)` would be mis-read; the corpus multi-param cases
-/// are ≤2 args, so this covers them; a >2-arg def is a later slice.)
-def read-2nd-param-or-close(s: String, nm: String, paramId: Int64, k: Int64, tree: Tree) =
+/// After the FIRST param (node `paramId`, typed OR untyped) at `k` (space-skipped): the shared continuation
+/// that reads an OPTIONAL SECOND param and then the body. A `)` → a SINGLE-param def (param2 -1), read the
+/// body. A `(` → a TYPED second param `(: b T)` → `read-typed-second-param`. An ATOM → an UNTYPED second param
+/// name → read it as an NVar binder (param2Id), require the signature `)` to close (a THIRD param declines),
+/// read the body → a TWO-param def. So ANY mix of typed/untyped for the two params composes (the param-type
+/// table already records each typed param independently in read-typed-param-name). Returns the 6-tuple
+/// `(nameId, bodyId, paramId, param2Id, nextIndex, tree')`. FLAT (≤2 nesting) — the paren-cascade trap.
+def read-second-param(s: String, nm: String, paramId: Int64, k: Int64, tree: Tree) =
   (if (char-at(s, k) == ")")
    then (match read-form(s, k + 1, tree) with | (bodyId, j, t1) => (name-id(nm), bodyId, paramId, 0 - 1, j, t1))
-   else (match scan-atom(s, k, "") with | (p2nm, k1) =>       // a SECOND untyped param name
-          (let e = skip-space(s, k1) in
-           (if (char-at(s, e) == ")")                          // exactly 2 params: the signature closes here
-            then (match add-node(tree, Node.NVar(name-id(p2nm))) with | (param2Id, t1) =>
-                   (match read-form(s, e + 1, t1) with | (bodyId, j, t2) => (name-id(nm), bodyId, paramId, param2Id, j, t2)))
-            // a THIRD param is present (the char after param2 is NOT `)`) — >2-param defs aren't supported yet.
-            // DECLINE via the bodyId -1 sentinel (read-do-def declines on -1) rather than mis-reading the 3rd
-            // param as the body (the old close-paren TOLERATED the missing `)`, silently mis-parsing). PR#641.
-            else (name-id(nm), 0 - 1, paramId, 0 - 1, e, tree)))))
+   else (if (char-at(s, k) == "(")
+         then read-typed-second-param(s, nm, paramId, k, tree)    // `(: b T)` — a typed second param
+         else (match scan-atom(s, k, "") with | (p2nm, k1) =>     // a SECOND untyped param name
+                (let e = skip-space(s, k1) in
+                 (if (char-at(s, e) == ")")                        // exactly 2 params: the signature closes here
+                  then (match add-node(tree, Node.NVar(name-id(p2nm))) with | (param2Id, t1) =>
+                         (match read-form(s, e + 1, t1) with | (bodyId, j, t2) => (name-id(nm), bodyId, paramId, param2Id, j, t2)))
+                  // a THIRD param is present (the char after param2 is NOT `)`) — >2-param defs aren't supported
+                  // yet. DECLINE via the bodyId -1 sentinel rather than mis-reading the 3rd param as the body.
+                  else (name-id(nm), 0 - 1, paramId, 0 - 1, e, tree))))))
 
-/// A TYPED single param `(: pname Type)` at `k` (pointing at the opening `(`). Consume `(`, expect `:`; a
-/// missing `:` → bodyId -1 decline. Otherwise hand off to read-typed-param-name. FLAT (≤2 nesting) to avoid
-/// the paren-cascade trap. Returns `(nameId, bodyId, paramId, nextIndex, tree')`.
+/// A TYPED param `(: pname Type)` at `k` (pointing at the opening `(`) as the FIRST param. Consume `(`, expect
+/// `:`; a missing `:` → bodyId -1 decline. Otherwise read the param name + validate its type via
+/// read-typed-param-name, which threads to read-second-param (so a typed first param composes with a second
+/// param). FLAT (≤2 nesting). Returns the 6-tuple.
 def read-typed-param(s: String, nm: String, k: Int64, tree: Tree) =
   (let a = skip-space(s, k + 1) in                              // past `(`
    (match scan-atom(s, a, "") with | (colon, a1) =>
      (if (colon == ":") then read-typed-param-name(s, nm, skip-space(s, a1), tree)
       else (name-id(nm), 0 - 1, 0 - 1, 0 - 1, k, tree))))       // not `(:` → malformed signature, decline (param2 -1)
 
-/// After `(:` at `a1`: read the param NAME as an NVar binder (paramId), VALIDATE the declared Type name, then
-/// (its concrete type flows from the ARGUMENT at the call — infer binds the param node to the arg's type) hand
-/// off to read-typed-param-body. ENFORCEMENT (annotation-slice-1, the miscompile v-compiler-ml surfaced): the
-/// declared type MUST be a recognized integer type (`is-int-type` — structural, `Int<N>`/`UInt<N>` standard
-/// widths). A type name that ISN'T one — an UNBOUND type `(: x foo)` (corpus 07-type-system wants CDZ0101, was
-/// silently ran to the arg), or a non-int ground type like `(: x Bool)` (the compiler can't enforce a Bool
-/// annotation yet) — DECLINES via the bodyId -1 sentinel. Declining is the HONEST verdict (coverage-not-yet /
-/// the reject the corpus wants), never the fabricated value the discard-the-type path produced. A well-formed
-/// `(: n Int64)` (any standard int width) still runs — the arg's type flows as before.
+/// A TYPED SECOND param `(: b T)` at `k` (pointing at `(`): the second-param analogue of read-typed-param.
+/// Consume `(`, expect `:`, read the name + validate the type (recording it in the param-type table via
+/// add-typed-param-node), then require the signature `)` and read the body → a TWO-param def. A malformed
+/// `(: …)` (missing `:` / bad type) declines via bodyId -1. `paramId` is the already-read FIRST param.
+def read-typed-second-param(s: String, nm: String, paramId: Int64, k: Int64, tree: Tree) =
+  (let a = skip-space(s, k + 1) in                              // past `(`
+   (match scan-atom(s, a, "") with | (colon, a1) =>
+     (if (colon == ":")
+      then (match add-typed-param-node(s, skip-space(s, a1), tree) with
+             | (param2Id, a3, t1) =>
+               (if (param2Id == (0 - 1)) then (name-id(nm), 0 - 1, paramId, 0 - 1, a3, t1)   // bad type → decline
+                else (let a4 = close-paren(s, skip-space(s, a3)) in                           // the 2nd param's `)`
+                      (let a5 = close-paren(s, skip-space(s, a4)) in                          // the signature `)`
+                       (match read-form(s, a5, t1) with | (bodyId, j, t2) => (name-id(nm), bodyId, paramId, param2Id, j, t2))))))
+      else (name-id(nm), 0 - 1, paramId, 0 - 1, k, tree))))     // not `(:` → decline
+
+/// After `(:` at `a1`: read the param NAME as an NVar binder (paramId), VALIDATE the declared Type name, record
+/// it, then thread to read-second-param (a typed FIRST param can be followed by a second param — the mixed
+/// typed/untyped case). ENFORCEMENT (annotation-slice-1): the declared type MUST be a recognized integer type
+/// (`is-int-type` — `Int<N>`/`UInt<N>` standard widths). A type that ISN'T one — an UNBOUND type `(: x foo)`
+/// (corpus 07-type-system wants CDZ0101), or a non-int ground type `(: x Bool)` — DECLINES via bodyId -1.
 def read-typed-param-name(s: String, nm: String, a1: Int64, tree: Tree) =
+  (match add-typed-param-node(s, a1, tree) with | (paramId, a3, t1) =>
+    (if (paramId == (0 - 1)) then (name-id(nm), 0 - 1, 0 - 1, 0 - 1, a1, t1)     // bad type → decline
+     // the typed param's `)` is consumed by read-second-param's close path... but the FIRST typed param's own
+     // `)` must be consumed here before we look for a second param: skip it, then continue to read-second-param.
+     else (let a4 = close-paren(s, skip-space(s, a3)) in read-second-param(s, nm, paramId, skip-space(s, a4), t1))))
+
+/// Read a typed param's `pname Type` (the interior of a `(: pname Type)` after `(:`), starting at `a1`:
+/// scan the NAME, scan the Type, validate it is a recognized int type, add the NVar binder node, and RECORD its
+/// declared `(signed, width)` in the param-type table (keyed by node-id, encoded `width*2+signflag`). Returns
+/// `(paramNodeId, indexPastType, tree')`, or `(-1, a1, tree)` on an empty/non-int type (the caller declines).
+/// Shared by the typed FIRST and typed SECOND param readers so the type-recording + validation is identical.
+def add-typed-param-node(s: String, a1: Int64, tree: Tree) =
   (match scan-atom(s, a1, "") with | (pnm, a2) =>              // the param name
     (match scan-atom(s, skip-space(s, a2), "") with | (ty, a3) =>   // the Type name
-      // An EMPTY type (`(: n)` — the 2nd scan sits at `)`) OR a type that is NOT a recognized integer type
-      // (`foo`, `Bool`, …) → DECLINE via the bodyId -1 sentinel (matching read-typed-param's `(:`-fails arm),
-      // rather than mis-parsing the boundary or ignoring a type the compiler can't yet enforce.
-      (if ((ty == "") or (if is-int-type(ty) then false else true)) then (name-id(nm), 0 - 1, 0 - 1, 0 - 1, a1, tree)
+      (if ((ty == "") or (if is-int-type(ty) then false else true)) then (0 - 1, a1, tree)
        else (match add-node(tree, Node.NVar(name-id(pnm))) with | (paramId, t1) =>
-              // FOUNDATION (narrow-int enforcement, slice annotation-2): record the param's declared int type
-              // (recognized above) in the param-type table, keyed by the param NODE-id, ENCODED as
-              // `width*2+signflag`. Behavior-neutral for now — infer's fit-check (DECLINE `(f 200)` to an Int8
-              // param, corpus CDZ0302) reads this next slice; today NOTHING reads it, so the def still runs.
               (let t2 = record-param-type(t1, paramId, encode-param-type(ty-signed(ty), ty-width(ty))) in
-               read-typed-param-body(s, nm, paramId, a3, t2))))))
-
-/// After the typed param's type ended at `a3`: consume the param's `)` and the signature-closing `)`, then
-/// read the body. Returns the 6-tuple `(nameId, bodyId, paramId, param2Id, nextIndex, tree')` — a typed def is
-/// SINGLE-param here (param2 -1; typed multi-param is a later slice).
-def read-typed-param-body(s: String, nm: String, paramId: Int64, a3: Int64, tree: Tree) =
-  (let a4 = close-paren(s, skip-space(s, a3)) in               // consume the param's `)`
-   (let a5 = close-paren(s, skip-space(s, a4)) in              // consume the signature-closing `)`
-    (match read-form(s, a5, tree) with | (bodyId, j, t2) => (name-id(nm), bodyId, paramId, 0 - 1, j, t2))))
+               (paramId, a3, t2))))))
 
 /// After `(do` (index `i`): read a SEQUENCE of `(def (name) body)` — record each HELPER (nameId→bodyId) in the
 /// def-table (so a `(name)` call resolves), until `main` whose body is the module ROOT. A parameterized def or
@@ -808,6 +820,33 @@ def sr-module-two-param-def-reads-and-records-both() =
              | Option.None(_) => trap("add's SECOND param is recorded (param2-of)"))
          | Option.None(_) => trap("add's first param is recorded"))
      else trap("main's body (NLit 5) is the module root — the 2-param def read cleanly")))
+
+@test
+def sr-module-typed-first-mixed-param-def-records-both() =
+  // A 2-param def whose FIRST param is TYPED `(def (f (: a Int8) b) …)` records BOTH params (param-of +
+  // param2-of Some). Before this slice the typed-param reader handled only a SINGLE typed param (it assumed
+  // the signature closed after the first param), so a typed-first 2-param def fast-declined. read-second-param
+  // is now shared after BOTH the typed and untyped first-param paths, so any typed/untyped mix composes.
+  (match read-source("(do (def (f (: a Int8) b) (+ a b)) (def (main) 5) (export main))") with | (root, tree) =>
+    (if (is-lit(tree, root, 5)) then
+       (match param-of(tree, name-id("f")) with
+         | Option.Some(_) =>
+           (match param2-of(tree, name-id("f")) with
+             | Option.Some(_) => unit
+             | Option.None(_) => trap("typed-first mixed def records param2"))
+         | Option.None(_) => trap("typed-first mixed def records param1"))
+     else trap("main body is the root — the typed-first 2-param def read cleanly")))
+
+@test
+def sr-module-typed-second-mixed-param-def-records-both() =
+  // the mirror: an UNTYPED first param + a TYPED second `(def (f a (: b Int8)) …)` also records both. Pins
+  // that read-second-param dispatches a `(` second param to the typed-second reader.
+  (match read-source("(do (def (f a (: b Int8)) (+ a b)) (def (main) 5) (export main))") with | (root, tree) =>
+    (if (is-lit(tree, root, 5)) then
+       (match param2-of(tree, name-id("f")) with
+         | Option.Some(_) => unit
+         | Option.None(_) => trap("typed-second mixed def records param2"))
+     else trap("main body is the root — the typed-second 2-param def read cleanly")))
 
 @test
 def sr-module-three-param-def-declines() =

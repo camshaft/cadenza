@@ -135,7 +135,7 @@ All via environment variables:
 | `SLACK_BOT_TOKEN`       | yes      | —                               | Bot User OAuth Token (`xoxb-…`). |
 | `SLACK_APP_TOKEN`       | yes      | —                               | App-Level Token (`xapp-…`, `connections:write`) — enables Socket Mode. |
 | `SLACK_BRIDGE_CHANNEL`  | for fleet→Slack | —                        | Channel ID the bridge posts agent messages into / listens in. DMs work without it (inbound only). |
-| `FLEET_DIR`             | no       | `<repo>/.claude/fleet`          | The fleet state dir holding `inbox/`. |
+| `FLEET_DIR`             | no       | `<hub>/.claude/fleet`           | The fleet state dir holding `inbox/`. Default is the **hub** `.claude/fleet`, resolved from the common git dir — so `run.sh`/`revive.sh`/`install.sh` point at the shared inbox even when launched from a worktree (a worktree has no `.claude/`). Set explicitly to override. |
 | `FLEET_DEFAULT_TO`      | no       | `concierge`                     | Recipient when you give no `@agent`. |
 | `SLACK_BRIDGE_AGENT`    | no       | `slack-bridge`                  | The bridge's own fleet agent name / inbox. |
 | `SLACK_CHANNEL`         | no       | —                               | Alias for `SLACK_BRIDGE_CHANNEL` (dotenv files often use the shorter name). |

@@ -154,6 +154,21 @@
   (input  (do (def (main) (let ((x (try (Some 10)))) (Some (+ x 5)))) (export main)))
   (output (: (Some 15) (Option Int64))))
 
+(case "a `?` in a GENERIC function monomorphizes correctly at two element types"
+  (doc    "`(def (wrap v) (let ((x (try (Some v)))) (Some x)))` — a POLYMORPHIC function (unannotated `v`,
+           so `wrap : ∀a. a → (Option a)`) whose body wraps `v` in `Some`, `?`s it, and re-wraps. `main`
+           calls it at TWO distinct types — `(wrap 7)` : `(Option Int64)` and `(wrap true)` : `(Option
+           Bool)` — in one tuple. Pins that the `?` success desugar stays correct under MONOMORPHIZATION:
+           each instantiation unwraps + re-wraps its own payload type, giving `(tuple (Some 7) (Some
+           true))`. Every other executing case `?`s a monomorphic operand; this is the only one that
+           witnesses the desugar surviving two instantiations of one generic body (the recursive-generic
+           driver tie is a SEPARATE, parked v-inference concern — this is the plain two-type case).")
+  (input  (do
+            (def (wrap v) (let ((x (try (Some v)))) (Some x)))
+            (def (main) (: (tuple (wrap 7) (wrap true)) (Tuple (Option Int64) (Option Bool))))
+            (export main)))
+  (output (: (tuple (Some 7) (Some true)) (Tuple (Option Int64) (Option Bool)))))
+
 (case "a constant success `?` folds INLINE in a subexpression with no let-binding"
   (doc    "`(Some (+ (try (Some 3)) 10))` — the `?` sits DIRECTLY in an argument subexpression, never bound
            by a `let`. This exercises the try-NODE success fold (BRICK 2a, the `Resolved::Try` arm in

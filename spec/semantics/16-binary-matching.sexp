@@ -1069,6 +1069,24 @@
   (call   main (: 0 Int64))
   (output (: 3 Int64)))
 
+(case "a big-endian runtime construction read back through an le pattern crosses the byte order"
+  (doc    "The CROSS-order witness the le ROUND-TRIP cases cannot provide: every runtime `le` case above
+           uses `le` on BOTH sides, so an implementation that ignored `le` symmetrically (construct AND
+           match both big-endian) would still round-trip correctly. Here the construction `(bin (u16
+           (UInt16.wrap v)))` is DEFAULT big-endian — v = 258 = 0x0102 lays [0x01, 0x02] — and the pattern
+           `(bin (u16 n le))` reads those same two bytes LEAST-significant-first, assembling 0x0201 = 513.
+           The VALUE CHANGES across the order boundary, so either side dropping its byte order is caught:
+           construct-le-ignored reads 258 (wrong), match-le-ignored reads 258 (wrong), both-ignored reads
+           258 (wrong) — only genuine BE-construct + LE-read yields 513. Over a runtime operand so nothing
+           folds. Expected: 513.")
+  (input  (do
+            (def (main (: v Int64))
+              (match (bin (u16 (UInt16.wrap v)))
+                ((bin (u16 n le)) n)
+                (_ 0)))
+            (export main)))
+  (call   main (: 258 Int64)) (output (: 513 Int64)))
+
 (case "a runtime signed little-endian segment round-trips a negative value"
   (doc    "The three orthogonal axes combined over a RUNTIME value: SIGNED (two's complement) + LITTLE-ENDIAN
            (byte reversal) + the width-typed contract. `(i16 n le)` takes a runtime `Int16` n = -2 = 0xFFFE;

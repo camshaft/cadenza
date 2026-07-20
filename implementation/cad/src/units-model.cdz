@@ -160,4 +160,21 @@ def a-translated-units-cylinder-lowers-its-offset-and-dims-to-exact-meters() =
         else trap("translate offset unwraps to (3,0,0) m"))
     | _ => trap("expected a Translate")
 
+@test
+def an-extruded-units-rect-profile-lowers-profile-and-height-to-exact-meters() =
+  // Exercises lower's ExtrudeLinear arm + lower-p's Rect arm — a whole untested code path (the profile
+  // unwrap is distinct from the Solid coord/offset unwraps). Author a Rect profile (4 m x 2 m) extruded by
+  // 3 m, all as Qty[meter]; lower and confirm the profile dims AND the extrude height unwrap to exact meters.
+  let prof = Profile.Rect(Vec2.V2(meters(4/1), meters(2/1))) in
+  let model = Solid.ExtrudeLinear(prof, meters(3/1)) in
+  match lower(model) with
+    | Solid.ExtrudeLinear(p, h) =>
+      (match p with
+        | Profile.Rect(sz) =>
+          (match sz with | Vec2.V2(w, d) =>
+            if w == 4/1 and d == 2/1 and h == 3/1 then unit
+            else trap("extruded Rect profile lowers to 4m x 2m x height 3m"))
+        | _ => trap("expected a Rect profile"))
+    | _ => trap("expected an ExtrudeLinear")
+
 export { meters, v3m, cube-m, sphere-m, cylinder-m, union-m, difference-m, intersection-m, translate-m, lower-v, lower }

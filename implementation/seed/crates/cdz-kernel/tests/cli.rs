@@ -402,6 +402,85 @@ fn schedule_list_shows_active_schedules_and_reflects_supersede_and_cancel() {
 }
 
 #[test]
+fn cursor_reports_the_resume_high_water_mark_and_unprocessed_backlog() {
+    // The `cursor` read verb (companion to crash-recovery): reports the daemon's resume high-water mark and the
+    // unprocessed backlog. Store-independent (a pure latest_cursor fold — no compile). A fresh log has no
+    // recorded cursor → reports "process the whole log"; after a daemon-cursor is recorded, reports the mark +
+    // how many events remain beyond it. We write the daemon-cursor via a bounded `start` run (store-gated) OR
+    // fall back to asserting only the no-cursor branch when the store is absent.
+    let log = unique("cursor-log").with_extension("log");
+    let prog = unique("cursor-genesis").with_extension("cdz");
+    let _ = std::fs::remove_file(&log);
+    std::fs::write(&prog, GENESIS).unwrap();
+
+    Command::new(bin())
+        .args(["bootstrap", log.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+    Command::new(bin())
+        .args([
+            "inject-genesis",
+            log.to_str().unwrap(),
+            prog.to_str().unwrap(),
+        ])
+        .output()
+        .expect("inject-genesis");
+    // A trigger the daemon would process (seq 1).
+    Command::new(bin())
+        .args(["emit", log.to_str().unwrap(), "trigger", "go"])
+        .output()
+        .expect("emit trigger");
+
+    // Before any daemon run: no cursor recorded → the whole-log branch.
+    let out = Command::new(bin())
+        .args(["cursor", log.to_str().unwrap()])
+        .output()
+        .expect("run cdz-agent cursor (fresh)");
+    assert!(
+        out.status.success(),
+        "cursor is read-only + always succeeds: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        so.contains("no daemon-cursor recorded yet") && so.contains("1 pending trigger(s)"),
+        "fresh log → 1 pending trigger (genesis is reserved, the emitted trigger is pending); got: {so}"
+    );
+
+    // Run one bounded daemon round to record a daemon-cursor (store-gated — skip the mark assertion if absent).
+    let started = Command::new(bin())
+        .args(["start", log.to_str().unwrap(), "0", "--max-rounds", "1"])
+        .output()
+        .expect("run cdz-agent start");
+    if !started.status.success() {
+        assert!(
+            String::from_utf8_lossy(&started.stderr).contains("runtime not found"),
+            "only acceptable failure is a missing store (skip); got: {}",
+            String::from_utf8_lossy(&started.stderr)
+        );
+        eprintln!(
+            "[cdz-agent it] value-heap runtime absent; skipped the recorded-cursor assertion"
+        );
+        let _ = std::fs::remove_file(&log);
+        let _ = std::fs::remove_file(&prog);
+        return;
+    }
+    // After the round: cursor reports the recorded high-water mark (past genesis+trigger), backlog 0.
+    let out = Command::new(bin())
+        .args(["cursor", log.to_str().unwrap()])
+        .output()
+        .expect("run cdz-agent cursor (after run)");
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        so.contains("resume high-water mark =") && so.contains("0 pending trigger(s)"),
+        "after a round: reports the mark with 0 pending triggers beyond it; got: {so}"
+    );
+
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&prog);
+}
+
+#[test]
 fn bootstrap_then_inject_then_run_drives_the_genesis() {
     let log = unique("log").with_extension("log");
     let prog = unique("genesis").with_extension("cdz");
