@@ -589,25 +589,35 @@ fn looks_in_ml_subset(src: &str) -> bool {
     true
 }
 
-fn run_run_ml(args: &RunMlArgs) -> ExitCode {
+/// Read a verdict-runner's program SOURCE (`cdz run-ml`/`run-rust`/`run-emitted`) from `file` or stdin.
+/// A missing `file` arg reads stdin (the gate/oracle pipe programs in); an EXPLICIT `-` reads stdin too —
+/// the stdin marker `cdz fmt -`/`convert -`/`compile -`/`run -` already use, so a script that pipes with a
+/// `-` (the shell convention everywhere else) doesn't hit `read_to_string("-")` leaking the raw
+/// `cannot read -: No such file or directory (os error 2)` errno. `cmd` labels the reserved harness-error
+/// message. `Err(())` is the sole non-zero harness exit (a read failure produced no verdict); the caller
+/// maps it to `ExitCode::FAILURE`.
+fn read_verdict_source(file: Option<&str>, cmd: &str) -> Result<String, ()> {
     use std::io::Read;
-    // 1. Read the program source (file or stdin). A read failure is the reserved harness-error path.
-    let source = match &args.file {
-        Some(path) => match std::fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("{PROG} run-ml: cannot read {path}: {e}");
-                return ExitCode::FAILURE;
-            }
-        },
-        None => {
+    match file {
+        Some(path) if path != "-" => std::fs::read_to_string(path).map_err(|e| {
+            eprintln!("{PROG} {cmd}: cannot read {path}: {e}");
+        }),
+        _ => {
             let mut buf = String::new();
-            if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
-                eprintln!("{PROG} run-ml: cannot read stdin: {e}");
-                return ExitCode::FAILURE;
-            }
-            buf
+            std::io::stdin().read_to_string(&mut buf).map_err(|e| {
+                eprintln!("{PROG} {cmd}: cannot read stdin: {e}");
+            })?;
+            Ok(buf)
         }
+    }
+}
+
+fn run_run_ml(args: &RunMlArgs) -> ExitCode {
+    // 1. Read the program source (file or stdin, incl. an explicit `-`). A read failure is the reserved
+    //    harness-error path.
+    let source = match read_verdict_source(args.file.as_deref(), "run-ml") {
+        Ok(s) => s,
+        Err(()) => return ExitCode::FAILURE,
     };
 
     // 1b. FAST-DECLINE out-of-subset programs WITHOUT compiling. Building the driver (which links the whole
@@ -1030,24 +1040,11 @@ struct RunEmittedArgs {
 /// (`cdz_run::run_core_module`): a returned i64 → `value <n>`, a run-time TRAP → `declined` (matches the
 /// eval-db oracle for div0/mod0/`MIN/-1`), an invalid/uninstantiable module → `error <msg>`.
 fn run_run_emitted(args: &RunEmittedArgs) -> ExitCode {
-    use std::io::Read;
-    // 1. Read the program source (file or stdin). A read failure is the reserved harness-error path.
-    let source = match &args.file {
-        Some(path) => match std::fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("{PROG} run-emitted: cannot read {path}: {e}");
-                return ExitCode::FAILURE;
-            }
-        },
-        None => {
-            let mut buf = String::new();
-            if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
-                eprintln!("{PROG} run-emitted: cannot read stdin: {e}");
-                return ExitCode::FAILURE;
-            }
-            buf
-        }
+    // 1. Read the program source (file or stdin, incl. an explicit `-`). A read failure is the reserved
+    //    harness-error path.
+    let source = match read_verdict_source(args.file.as_deref(), "run-emitted") {
+        Ok(s) => s,
+        Err(()) => return ExitCode::FAILURE,
     };
 
     // 2. Generate the driver: embed the source as a Cadenza string literal + call emit-src-bytes. Escape
@@ -1207,24 +1204,11 @@ struct RunRustArgs {
 /// `rustc -O` it, linking the pre-built `cdz-rt`/`cdz-num` rlibs that sit BESIDE the `cdz` binary in
 /// `target/<profile>/` (the same dir `current_exe` lives in); run the binary and map its outcome to a verdict.
 fn run_run_rust(args: &RunRustArgs) -> ExitCode {
-    use std::io::Read;
-    // 1. Read the program source (file or stdin). A read failure is the reserved harness-error path.
-    let source = match &args.file {
-        Some(path) => match std::fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("{PROG} run-rust: cannot read {path}: {e}");
-                return ExitCode::FAILURE;
-            }
-        },
-        None => {
-            let mut buf = String::new();
-            if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
-                eprintln!("{PROG} run-rust: cannot read stdin: {e}");
-                return ExitCode::FAILURE;
-            }
-            buf
-        }
+    // 1. Read the program source (file or stdin, incl. an explicit `-`). A read failure is the reserved
+    //    harness-error path.
+    let source = match read_verdict_source(args.file.as_deref(), "run-rust") {
+        Ok(s) => s,
+        Err(()) => return ExitCode::FAILURE,
     };
 
     // 2. Emit the Rust module: shell `cdz compile - -o - --target rust` to SELF (install-location-independent
@@ -2301,6 +2285,16 @@ fn resolve_project_manifest(
     };
     match load_manifest(&dir) {
         Ok(Some((mpath, m))) => {
+            // A non-string `name` was silently dropped to None; unlike a required field, it has a safe
+            // fallback (the manifest's directory name for the published `cadenza:<name>/api` interface), so
+            // WARN (the declared name is being ignored) and continue rather than fail.
+            if m.name_malformed {
+                eprintln!(
+                    "{PROG}: warning: {}: `name` is not a string (expected `def name = \"my-lib\"`) — \
+                     ignoring it and using the directory name for the project/interface name",
+                    mpath.display()
+                );
+            }
             // A non-string `opt-level` was silently dropped to None; unlike a required field, it has a safe
             // default, so WARN (the declared setting is being ignored) and continue rather than fail.
             if m.opt_level_malformed {
@@ -2649,6 +2643,35 @@ fn run_metadata(args: &MetadataArgs) -> ExitCode {
         .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .collect();
     obj.raw("artifacts", &str_array(&artifacts));
+    // Manifest WARNINGS — the machine-readable twin of the stderr warnings the project COMMANDS
+    // (build/test/tree/…) emit via `resolve_project_manifest`. `cdz metadata` resolves via `load_manifest`
+    // directly (it never builds), so those eprintln warnings don't fire here; a consumer reading ONLY
+    // `cdz metadata` would see `"name":null`/`"opt_level":null` with no way to tell a MALFORMED value (wrong
+    // type, silently dropped) from an ABSENT one. Surface each as a string so an editor/build-tool learns
+    // WHY a field is null, and about a silently-dropped duplicate — without re-parsing the manifest. Empty
+    // `[]` for a clean manifest (the common case).
+    let mut warnings: Vec<String> = Vec::new();
+    if m.name_malformed {
+        warnings.push(
+            "`name` is not a string — ignored; the directory name is used for the project/interface name"
+                .to_string(),
+        );
+    }
+    if m.opt_level_malformed {
+        warnings
+            .push("`opt-level` is not a string (expected one of O0/O1/O2/O3) — ignored, using the default tier".to_string());
+    }
+    if !m.duplicate_keys.is_empty() {
+        warnings.push(format!(
+            "manifest declares {} more than once — the LAST value wins, the earlier one(s) are ignored",
+            m.duplicate_keys
+                .iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    obj.raw("warnings", &str_array(&warnings));
     println!("{}", obj.finish());
     ExitCode::SUCCESS
 }
@@ -3673,6 +3696,46 @@ fn run_test(args: &TestArgs) -> ExitCode {
         }
         vec![target.clone()]
     };
+
+    // GATE ON `cdz check` CLEAN FIRST — before running any `@test`. A source file that fails to PARSE (an
+    // unclosed paren, a truncated form) is RECOVERED by the reader (it prints the errors, then hands back a
+    // truncated arena of `<error>` placeholders), so the defs that DID parse still compile + run and the
+    // suite reports "N passed, 0 failed" while the parse-broken sibling def is SILENTLY ABSENT. That is
+    // precisely how a paren-imbalance regression landed GREEN through the fleet-gate `cdz test` step and then
+    // blocked the pr-sync queue at the fresh full check (v-syntax's 76-min post-mortem, routed by concierge).
+    // `cdz check` already exits non-zero on any error-severity fault (parse OR type), following each file's
+    // import closure; run it over the SAME resolved files here and FAIL RED if any has an error, rather than
+    // run a suite whose green is a lie. Dedup by canonical path (mirror `run_check`): `check_one` checks a
+    // file's whole closure, so a module pulled into an earlier target's closure needn't be re-checked.
+    {
+        let canon = |p: &str| {
+            std::fs::canonicalize(p)
+                .map(|c| c.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| p.to_string())
+        };
+        let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut check_failed = false;
+        for f in &files {
+            let canon_f = canon(f);
+            if covered.contains(&canon_f) {
+                continue;
+            }
+            let (had_error, closure_paths) = check_one(f, false, false);
+            check_failed |= had_error;
+            covered.insert(canon_f);
+            for path in &closure_paths {
+                covered.insert(canon(path));
+            }
+        }
+        if check_failed {
+            eprintln!(
+                "{PROG} test: the project has parse/check errors (above) — NOT running the suite. A def \
+                 that fails to parse is silently absent, so a green summary would be a lie; fix the errors \
+                 (or run `cdz check` to see them) first."
+            );
+            return ExitCode::FAILURE;
+        }
+    }
 
     // The runtime store (shared across files). `cdz` runs each test IN-PROCESS — wasmtime + the runner
     // are linked in via the `cdz-run` LIBRARY, not shelled out to a sibling `cdz-run` BINARY — so the
@@ -7686,6 +7749,12 @@ fn is_ml_source(file: &str) -> bool {
 #[derive(Default, Debug)]
 struct Manifest {
     name: Option<String>,
+    /// Set when the manifest HAS a `def name` but its value is NOT a string (e.g. `def name = 42`) — so
+    /// `name` resolves to `None` (no string extracted) yet the field is PRESENT. Unlike `entry` (required
+    /// → hard error), `name` has a safe fallback (the manifest's directory name, used for the published
+    /// `cadenza:<name>/api` interface segment), so a consumer WARNS (the declared name was silently dropped)
+    /// and continues rather than failing. `false` when `name` is absent OR a valid string.
+    name_malformed: bool,
     entry: Option<String>,
     /// Set when the manifest HAS a `def entry` but its value is NOT a string (e.g. `def entry = 42` or
     /// `def entry = true`) — so `entry` resolves to `None` (no string extracted) yet the field is PRESENT.
@@ -7953,7 +8022,13 @@ fn parse_manifest(arenas: &cadenza_syntax::Arenas) -> Manifest {
             }
         }
         match name {
-            "name" => m.name = manifest_strings(arenas, value_id).into_iter().next(),
+            "name" => {
+                m.name = manifest_strings(arenas, value_id).into_iter().next();
+                // `def name` present but no string extracted → wrong TYPE (a number/bool/other). Record it
+                // so a consumer can WARN the declared name was ignored (it falls back to the directory name
+                // for the published `cadenza:<name>/api` interface) rather than silently dropping it.
+                m.name_malformed = m.name.is_none();
+            }
             "entry" => {
                 m.entry = manifest_strings(arenas, value_id).into_iter().next();
                 // `def entry` is present; if no string came out of it, the value is the wrong TYPE (a
@@ -8079,12 +8154,14 @@ fn load_program_spanned_counted(
     // commands (`type`/`doc`/`check`/`…`) take a named FILE, whose extension picks the surface. Without a
     // guard, `read_to_string("-")` leaks `reading -: No such file or directory (os error 2)` (it looks for
     // a file literally named `-`). Give a clean message pointing at the commands that DO consume stdin
-    // (`cdz fmt -`, `cdz convert -`, `cdz compile -`/`cdz run -`, which take an explicit `--from`/surface).
+    // (`cdz fmt -`/`cdz convert -`/`cdz compile -`/`cdz run -`, which take an explicit `--from`/surface, and
+    // the verdict runners `cdz run-ml -`/`cdz run-rust -`/`cdz run-emitted -`).
     if file == "-" {
         return Err(
             "reading a program from stdin (`-`) is not supported by this command; pass a FILE \
              (its extension picks the surface). The commands that read stdin are `cdz fmt -`, \
-             `cdz convert -`, and the `cdz compile -`/`cdz run -` pipe"
+             `cdz convert -`, the `cdz compile -`/`cdz run -` pipe, and the verdict runners \
+             `cdz run-ml -`/`cdz run-rust -`/`cdz run-emitted -`"
                 .to_string(),
         );
     }

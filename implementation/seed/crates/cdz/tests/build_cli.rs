@@ -245,6 +245,44 @@ fn build_with_a_non_string_opt_level_warns_and_uses_the_default() {
 }
 
 #[test]
+fn build_with_a_non_string_name_warns_and_falls_back_to_the_directory_name() {
+    // A `def name` with a non-string value (`def name = 42`) is silently dropped by the parser
+    // (manifest_strings yields nothing → name None). Unlike `entry` (required → hard error), `name` has a
+    // safe fallback (the manifest's DIRECTORY name, used for the published `cadenza:<name>/api` interface),
+    // so the build must WARN the declared name was ignored (not silently drop it with zero feedback) yet
+    // still SUCCEED. Regression: `name` was the one known manifest key with NO malformed-detection — `entry`
+    // and `opt-level` had it, `name` didn't; the new `name_malformed` flag drives this warning, matching the
+    // opt-level pattern. A standalone build doesn't NEED the name, so this is warn-not-fail.
+    let dir = std::env::temp_dir().join(format!("cdz-build-badname-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Project.cdz"),
+        "def name = 42\ndef entry = \"main.cdz\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.cdz"),
+        "def main() -> Int64 = 1\nexport { main }\n",
+    )
+    .unwrap();
+    let (ok, _o, err) = run(&["build", dir.to_str().unwrap(), "-o", dir.to_str().unwrap()]);
+    assert!(
+        ok,
+        "a non-string name must still BUILD (dir-name fallback): {err}"
+    );
+    assert!(
+        err.contains("warning") && err.contains("`name`") && err.contains("not a string"),
+        "the build WARNS that name was ignored: {err}"
+    );
+    assert!(
+        dir.join("main.wasm").is_file(),
+        "the component is still produced under the fallback name: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn build_with_a_duplicate_manifest_key_warns_last_wins() {
     // A manifest that declares a known key TWICE (`def entry` twice) is last-wins in the parser — the
     // earlier value is silently discarded, which can quietly change WHAT builds. The build must WARN

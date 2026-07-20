@@ -42,6 +42,38 @@ fn run_rust_renders_a_scalar_value_and_exits_zero() {
 }
 
 #[test]
+fn run_rust_an_explicit_dash_reads_stdin_not_a_file_named_dash() {
+    // REGRESSION: `run-rust -` (the stdin MARKER the other pipe commands use) used to fall through to
+    // `read_to_string("-")`, leaking the raw `cannot read -: No such file or directory (os error 2)` errno.
+    // Now `-` reads stdin like a missing arg: a verdict + exit 0, NOT the errno leak.
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let mut child = Command::new(exe)
+        .args(["run-rust", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cdz run-rust -");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"(do (def (main) 42) (export main))")
+        .unwrap();
+    let out = child.wait_with_output().expect("wait");
+    assert!(out.status.success(), "run-rust - exits 0 (a verdict)");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "value 42",
+        "run-rust - reads the program from stdin"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("cannot read -"),
+        "must NOT leak the `cannot read -` errno — `-` is the stdin marker"
+    );
+}
+
+#[test]
 fn run_rust_renders_a_bool_value() {
     let (ok, out, _err) = run_stdin("(do (def (main) (< 3 5)) (export main))");
     assert!(ok);
