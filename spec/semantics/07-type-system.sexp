@@ -1260,6 +1260,25 @@
             (export main)))
   (output (: 7 Int64)))
 
+(case "a same-name generic type at TWO instantiations in one payload each denotes its type"
+  (doc    "Extends the single-field same-name-generic pin above: the SAME generic sum `(type Box (Box a))`
+           applied at TWO DISTINCT instantiations — `(Box Int64)` and `(Box Bool)` — as SIBLING fields of one
+           `(type Pair (Pair (Box Int64) (Box Bool)))` payload. Each applied `(Box T)` sits in a type
+           position where the head `Box` resolves to the VARIANT constructor (same-name prefers the value
+           binding), so the payload type-position reader must recover the owning declaration from the variant
+           head and rebuild the sum type at EACH instantiation independently — `Box Int64` and `Box Bool` are
+           different types built from the same decl. Constructing `(Pair (Box 5) (Box b))`, matching both
+           `Box` payloads in a nested pattern, and using the `Int64` inner (`x`) selected by the `Bool` inner
+           (`b`) pins that the variant-head recovery is per-occurrence — the two instantiations do not collide
+           on the shared decl. The `true`-branch selects the stored `Int64` (5); the `false`-branch twin
+           (a separate program) yields 99.")
+  (input  (do
+            (type Box (Box a))
+            (type Pair (Pair (Box Int64) (Box Bool)))
+            (def (main) (match (Pair (Box 5) (Box true)) ((Pair (Box x) (Box b)) (if b x 99))))
+            (export main)))
+  (output (: 5 Int64)))
+
 (case "Type.of on a bare nullary variant reflects its element as UNDETERMINED"
   (doc    "`Type.of` reflects a value's INFERRED type, so a bare nullary variant — carrying no element —
            reflects an UNDETERMINED element. `(None)` is `Option ?a`, distinct from a concrete `Option

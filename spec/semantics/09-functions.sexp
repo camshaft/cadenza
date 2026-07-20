@@ -3801,6 +3801,26 @@
   (call   main (: 5 Int64)) (output (: 7 Int64))
   (call   main (: 40 Int64)) (output (: 42 Int64)))
 
+(case "a generic newtype instantiated at a FUNCTION type carries a closure through erasure"
+  (doc    "The generic single-variant newtype `(type Box (Wrap a))` above erases its payload (`newtype_inner`
+           decodes `a` at each instantiation). The Int64/String cases pin SCALAR/heap instantiations; this
+           pins `a` bound to a FUNCTION type — `(Box (-> Int64 Int64))`. The parameter must decode to an
+           ARROW at instantiation, and the closure the newtype wraps must survive the erasure (the newtype
+           carries no runtime box, so the closure value IS the erased inner) and remain applyable after the
+           `(Box.Wrap f)` match binder extracts it. `(applyBox (Box.Wrap (fn (x) (+ x 1))) 41)` extracts the
+           wrapped closure and applies it → 42. Distinct from the declared-arrow VARIANT payload
+           `(type T (Mk (-> Int64 Int64)))` above: there the arrow is the variant's own declared payload,
+           whereas here it is a generic type PARAMETER decoded to an arrow through the erasable-newtype
+           instantiation — the newtype-erasure-over-a-function-type path. A generation that read the type
+           param as a nullary/scalar, or that boxed the erased newtype, would mis-apply or invalid-wasm.")
+  (input  (do
+            (type Box (Wrap a))
+            (def (applyBox (: b (Box (-> Int64 Int64))) (: n Int64))
+              (match b ((Box.Wrap f) (f n))))
+            (def (main) (applyBox (Box.Wrap (fn ((: x Int64)) (+ x 1))) 41))
+            (export main)))
+  (output (: 42 Int64)))
+
 (case "a recursive generic function is instantiated at two different types"
   (doc    "`loopn` counts `n` down, threading `x` UNCHANGED — so `x` is generic (the body never fixes its
            type). Called at Int64 (`(loopn 3 40)` → 40, an i64 slot) AND at String (`(loopn 2 \"hi\")` →

@@ -672,15 +672,24 @@ enum PerFileVerdict {
 /// throughput/pressure lever); `=0`/garbage falls back to the default; the result is clamped to
 /// `[1, file_count]` so we never spawn idle workers.
 fn ml_test_jobs(file_count: usize) -> usize {
+    // Split env-reading (impure) from the clamping (pure) so the logic is testable without mutating
+    // process-global env — `#[test]`s run in parallel, so touching env in a test races sibling tests.
+    let override_opt = std::env::var("CDZ_ML_JOBS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0);
+    ml_test_jobs_from(override_opt, file_count)
+}
+
+/// Pure core of [`ml_test_jobs`]: given an already-parsed `CDZ_ML_JOBS` override (`None` = unset /
+/// zero / garbage → use the conservative default) and the file count, compute the worker-pool size.
+/// Kept env-free so it is exercised by a race-free unit test.
+fn ml_test_jobs_from(override_opt: Option<usize>, file_count: usize) -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
     let default = cores.clamp(1, 4);
-    let jobs = std::env::var("CDZ_ML_JOBS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(default);
+    let jobs = override_opt.unwrap_or(default);
     jobs.clamp(1, file_count.max(1))
 }
 
@@ -4274,10 +4283,12 @@ impl Log {
         // under the per-file cap. The suite's wall-clock is a SUM of per-file full-pipeline compiles
         // dominated by one ~480s file, so overlapping them collapses the serial ~45min sum toward that
         // single-file floor. Each worker captures its own file's output + verdict into its own slot;
-        // the main thread then writes them to the log IN FILE ORDER and dump-exits on the FIRST failure
-        // — so the captured log and the "FAILED at <file>" localization are byte-for-byte what the old
-        // serial loop produced, independent of the order workers happened to finish in. No shared
-        // mutable state across workers: each spawns its own child and writes only its own slot.
+        // AFTER all workers join, the main thread writes them to the log IN FILE ORDER and dump-exits on
+        // the FIRST failure during that ordered replay — so the captured log and the "FAILED at <file>"
+        // localization are byte-for-byte what the old serial loop produced, independent of the order
+        // workers happened to finish in. (This is first-failure in the replay, not failure latency: every
+        // file has already run by then.) No shared mutable state across workers: each spawns its own child
+        // and writes only its own slot.
         let n = files.len();
         let slots: Vec<Mutex<Option<PerFileResult>>> = (0..n).map(|_| Mutex::new(None)).collect();
         let cursor = AtomicUsize::new(0);
@@ -4323,8 +4334,9 @@ impl Log {
             }
         });
 
-        // Ordered write-out: replay the workers' captured output/verdicts in FILE ORDER, and dump-exit
-        // on the FIRST failure — identical log + localization to the old serial loop.
+        // Ordered write-out: the scope above has joined every worker, so all files have run. Replay the
+        // captured output/verdicts in FILE ORDER and dump-exit on the FIRST failure in that replay —
+        // identical log + localization to the old serial loop.
         for (i, file) in files.iter().enumerate() {
             let fname = file.display().to_string();
             writeln!(self.file, "\n──── {cdz_bin} test {fname} ────").ok();
@@ -5824,47 +5836,47 @@ mod trap_grading_tests {
 
     #[test]
     fn ml_test_jobs_clamps_default_and_override() {
-        // Env is process-global; set+clear around each assert. SAFETY: single-threaded test.
-        unsafe { std::env::remove_var("CDZ_ML_JOBS") };
+        // Drives the PURE core with an injected override (`None` = unset/zero/garbage) so the test never
+        // touches process-global env — cargo runs #[test]s in parallel, and a sibling test also reads env,
+        // so env mutation here would be a data race (the reason `set_var`/`remove_var` are `unsafe`).
         // Default is conservative (min(cores, 4)) AND clamped to the file count so we never spawn idle
         // workers — with 2 files the pool is at most 2 regardless of cores.
-        assert!(ml_test_jobs(2) <= 2, "default clamped to file count");
         assert!(
-            ml_test_jobs(100) <= 4,
+            ml_test_jobs_from(None, 2) <= 2,
+            "default clamped to file count"
+        );
+        assert!(
+            ml_test_jobs_from(None, 100) <= 4,
             "default never exceeds the conservative cap of 4"
         );
-        assert!(ml_test_jobs(100) >= 1, "always at least one job");
+        assert!(ml_test_jobs_from(None, 100) >= 1, "always at least one job");
 
         // A positive override applies, still clamped to [1, file_count].
-        unsafe { std::env::set_var("CDZ_ML_JOBS", "8") };
         assert_eq!(
-            ml_test_jobs(100),
+            ml_test_jobs_from(Some(8), 100),
             8,
             "override applies below the file count"
         );
         assert_eq!(
-            ml_test_jobs(3),
+            ml_test_jobs_from(Some(8), 3),
             3,
             "override clamped down to the file count"
         );
 
-        // Zero/garbage fall back to the default; the default is itself clamped, so with 1 file it's 1.
-        unsafe { std::env::set_var("CDZ_ML_JOBS", "0") };
+        // Zero/garbage parse to `None` at the env boundary → default; the default is itself clamped, so
+        // with 1 file it's 1.
         assert_eq!(
-            ml_test_jobs(1),
+            ml_test_jobs_from(None, 1),
             1,
-            "zero → default, clamped to a single file"
+            "zero/garbage → default, clamped to a single file"
         );
-        unsafe { std::env::set_var("CDZ_ML_JOBS", "nope") };
-        assert!(ml_test_jobs(10) >= 1, "garbage → default (≥1)");
+        assert!(ml_test_jobs_from(None, 10) >= 1, "garbage → default (≥1)");
 
         // A zero file count never yields a zero (or panicking) job count.
-        unsafe { std::env::remove_var("CDZ_ML_JOBS") };
         assert_eq!(
-            ml_test_jobs(0),
+            ml_test_jobs_from(None, 0),
             1,
             "empty file list still yields at least one worker"
         );
-        unsafe { std::env::remove_var("CDZ_ML_JOBS") };
     }
 }
