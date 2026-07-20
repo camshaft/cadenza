@@ -43,3 +43,11 @@ is a lowering bug on one side. The crash/invalid-wasm oracles are blind to it.
 ; So WASM is correct; the RUST value-renderer is the bug (emit shortest form via Grisu/Ryu, not exact
 ; expansion). NO concierge ask (spec settles it). Routed to v-rust-backend. Pin a top-of-exponent render case
 ; once fixed. Not a fix agent (their run-rust printer lane).
+
+## Cleaner minimal repro (fuzzer, 2026-07-20) — use for the corpus pin
+The fuzzer re-surfaced this (harness under-deduped on the render-string wrapper) and filed a CLEANER minimal
+form, now marked .DUP: `(do (def (main) (tuple 3.4028235e38)) (export main))` — wasm=(tuple 3402823500...0.0)
+vs rust=(tuple 3402823499999999917...640.0). Same spec-settled root (shortest-round-tripping canonical, rust
+emits full binary expansion). corpus-bugfix: when v-rust-backend lands the render fix, PIN this minimal
+top-of-exponent form (a single-float or 1-tuple, both backends -> shortest form) rather than the deep-nested
+original. No re-route (fuzzer confirmed no action needed; original already routed to v-rust-backend).

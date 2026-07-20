@@ -76,6 +76,48 @@ pub enum Cmd {
     Lint(LintArgs),
     /// Find duplicated subtrees (clones) within/across programs — copy-paste to factor out.
     Clones(ClonesArgs),
+    /// Apply a canonicalizing NORMALIZATION codemod (opt-in, distinct from `fmt`). Currently the
+    /// single-clause-irrefutable-`match`→`let` rewrite (`--match-to-let`), an idiom cleanup that
+    /// `fmt` deliberately does NOT do (it would change the AST shape). Reads FILE(s) or stdin; writes
+    /// in place, or to stdout / `--check` / `--diff` like `fmt`.
+    Normalize(NormalizeArgs),
+}
+
+#[derive(Args)]
+pub struct NormalizeArgs {
+    /// Files or directories to normalize (directories are recursed by extension). Omit (or use `-`)
+    /// to read stdin and write the normalized program to stdout.
+    files: Vec<String>,
+
+    /// Apply the single-clause-irrefutable-`match`→`let` rewrite: `match v with | (a,b) => body`
+    /// becomes `let (a, b) = v in body`. ONLY an irrefutable, unguarded, single-clause `match` is
+    /// rewritten (a refutable/multi-clause/guarded one is left alone — rewriting it would erase a
+    /// trap). At least one normalization flag is required (this is the only one today).
+    #[arg(long = "match-to-let")]
+    match_to_let: bool,
+
+    /// Input surface. Inferred from each FILE's extension when omitted; required when reading stdin.
+    /// Same-surface (a `.cdz` reprints as ML): normalization edits the tree, never changes surface.
+    #[arg(short, long, value_enum)]
+    from: Option<Fmt>,
+
+    /// Target line width for the pretty-printer.
+    #[arg(short, long, default_value_t = Options::default().width)]
+    width: usize,
+
+    /// Don't write anything; exit non-zero if any file WOULD be changed by the normalization, listing
+    /// which (the CI/`--check` shape).
+    #[arg(long)]
+    check: bool,
+
+    /// Show a unified diff of what the normalization WOULD change, without writing. Preview mode.
+    #[arg(long)]
+    diff: bool,
+
+    /// Write the normalized program to stdout instead of editing the file in place. (The implicit
+    /// mode when input is stdin.) Mutually exclusive with `--check`/`--diff`.
+    #[arg(long)]
+    stdout: bool,
 }
 
 #[derive(Args)]
@@ -392,13 +434,25 @@ pub fn run(command: Cmd, prog: &str) -> ExitCode {
             }
         };
     }
+    // `normalize --check` has the same third outcome as `fmt --check`: a clean run that must exit
+    // non-zero when some file WOULD be normalized (the CI gate). Returns `Ok(all_normalized)`.
+    if let Cmd::Normalize(args) = &command {
+        return match run_normalize(args) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE, // `--check`: some file would be normalized
+            Err(msg) => {
+                eprintln!("{prog}: {msg}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let result = match command {
         Cmd::Convert(args) => run_convert(&args),
         Cmd::Query(args) => run_query(&args),
         Cmd::Rewrite(args) => run_rewrite(&args),
         Cmd::Diff(args) => run_diff(&args),
         Cmd::Clones(args) => run_clones(&args),
-        Cmd::Lint(_) | Cmd::Fmt(_) => unreachable!("handled above"),
+        Cmd::Lint(_) | Cmd::Fmt(_) | Cmd::Normalize(_) => unreachable!("handled above"),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -535,6 +589,100 @@ fn run_fmt(args: &FmtArgs) -> Result<bool, String> {
     }
 
     Ok(all_formatted)
+}
+
+/// Apply a canonicalizing normalization codemod to each target. Mirrors [`run_fmt`]'s disposition
+/// modes (stdin→stdout, `--stdout`, `--check`, `--diff`, in-place write), but instead of reprinting
+/// the SAME tree it transforms the arena first (the whole point of a normalization). Today the sole
+/// normalization is `--match-to-let`. Because the codemod deliberately CHANGES the AST shape (a match
+/// becomes a let), the output is a canonical reprint of the transformed tree — this is NOT
+/// formatting-preserving and is NOT `fmt` (which is why it is a separate, opt-in command). Returns
+/// `Ok(all_unchanged)` so `--check` can map "some file would change" to a non-zero exit.
+fn run_normalize(args: &NormalizeArgs) -> Result<bool, String> {
+    let modes = [args.check, args.diff, args.stdout];
+    if modes.iter().filter(|m| **m).count() > 1 {
+        return Err("--check, --diff, and --stdout are mutually exclusive".into());
+    }
+    // At least one normalization must be requested — an empty `normalize` would silently no-op every
+    // file, reading like "already normalized" when nothing was even attempted.
+    if !args.match_to_let {
+        return Err("a normalization is required (currently only `--match-to-let`)".into());
+    }
+
+    let targets = collect_targets(&args.files, args.from)?;
+    let multi = targets.len() > 1;
+    let opts = Options {
+        width: args.width,
+        ..Options::default()
+    };
+    let mut all_unchanged = true;
+
+    for spec in &targets {
+        let input = match read_input(spec.path.as_deref()) {
+            Ok(b) => b,
+            Err(e) if multi => {
+                eprintln!("cdz: skipping {}", with_path(&spec.path, &e));
+                continue;
+            }
+            Err(e) => return Err(with_path(&spec.path, &e)),
+        };
+        // Parse to an arena (rejecting a recovered/broken parse, like `fmt`), apply the codemod on the
+        // owned `Tree`, and reprint canonically in the SAME surface.
+        let arenas = match convert::read(&input, spec.format) {
+            Ok(a) => a,
+            Err(e) if multi => {
+                eprintln!("cdz: skipping {}", with_path(&spec.path, &e.to_string()));
+                continue;
+            }
+            Err(e) => return Err(with_path(&spec.path, &e.to_string())),
+        };
+        let tree = crate::query::Tree::of(&arenas);
+        let (rewritten, count) = crate::match_to_let::rewrite(&tree);
+        let mut normalized = match convert::write_with(&rewritten.to_arena(), spec.format, opts) {
+            Ok(b) => b,
+            Err(e) => return Err(with_path(&spec.path, &e.to_string())),
+        };
+        if normalized.last() != Some(&b'\n') {
+            normalized.push(b'\n');
+        }
+
+        // stdout — the explicit `--stdout` mode and the implicit mode for stdin input. Always emits.
+        if args.stdout || spec.path.is_none() {
+            std::io::stdout()
+                .write_all(&normalized)
+                .map_err(|e| format!("writing stdout: {e}"))?;
+            continue;
+        }
+        let path = spec.path.as_deref().expect("a non-stdin target has a path");
+
+        // Nothing rewritten → the file is already normalized. (Guard on the rewrite COUNT, not a byte
+        // compare: a canonical reprint of an untransformed tree can still differ from the original
+        // bytes — that reflow is `fmt`'s job, not `normalize`'s. Only a real match→let counts.)
+        if count == 0 {
+            continue;
+        }
+
+        if args.check {
+            // Only `--check` maps a would-change file to a non-zero exit (the CI gate). Actually
+            // writing/diffing a changed file is SUCCESS — the change is the point.
+            all_unchanged = false;
+            println!("would normalize: {path} ({count} match→let)");
+            continue;
+        }
+        if args.diff {
+            let before = String::from_utf8_lossy(&input);
+            let after = String::from_utf8_lossy(&normalized);
+            print!(
+                "{}",
+                query::diff::unified(&before, &after, &format!("a/{path}"), &format!("b/{path}"))
+            );
+            continue;
+        }
+        std::fs::write(path, &normalized).map_err(|e| format!("writing {path}: {e}"))?;
+        eprintln!("cdz: normalized {path} ({count} match→let)");
+    }
+
+    Ok(all_unchanged)
 }
 
 /// Compile a list of pattern strings into patterns (for the relational flags).

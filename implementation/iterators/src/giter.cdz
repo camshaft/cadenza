@@ -1,86 +1,84 @@
 /// giter.cdz — a GENERIC (`∀a`) STRICT (eager, fully-materialized) pull-iterator, the element-polymorphic
-/// companion to the monomorphic-Int64 `iter.cdz`. This module exists because the recursive-generic PRODUCER element tie
-/// (a `List(a) -> GIter(a)` producer whose result element must tie to its argument) was the long-standing
-/// inference gap that pinned `iter.cdz` to `Int64`; that gap is now RESOLVED upstream (rcdzc "tie a
-/// recursive-generic producer's result element to its argument — Part C, rigid param vars"), verified here
-/// by a producer composed with a consumer at TWO distinct element types in one program (Int64 AND String —
-/// see `from-list-composes-at-two-element-types` / `collect-instantiates-at-two-types`).
-///
-/// ⚠ STRICTNESS — this is EAGER, not lazy. The cons-cell is FULLY MATERIALIZED when a producer runs:
-/// `from-list`/`range-from` build the ENTIRE `GIter(a)` (a deep recursion) up front, so `take(it, 3)` over a
-/// huge source does NOT "pull only 3" — the source is already built (and a source of ≳10⁴ elements overflows
-/// the call stack and TRAPS). `next` just projects an ALREADY-BUILT cell. A genuinely LAZY sequence needs a
-/// thunk tail (`Cons(a, Unit -> GIter(a))` forced on demand), which this encoding does NOT have (Cadenza is
-/// strict). So treat these as EAGER transformers over finite in-memory sequences, NOT lazy streams.
-///
-/// ENCODING — a recursive CONS-CELL sum (`Nil | Cons(a, GIter(a))`), NOT the reified sum-of-step-shapes
-/// `iter.cdz` uses. The two encodings differ on purpose:
-///   - `iter.cdz` (mono-Int64) reifies each transformer as a step-shape variant that STORES A CLOSURE over
-///     the element (`MapI((Int64 -> Int64), Iter)`, …) — its `next` INTERPRETS one step, so it forces nothing
-///     until pulled (that reified form IS lazy without a thunk; the generic cons-cell form here is NOT).
-///   - `giter.cdz` (generic) uses the cons-cell recursion because THAT is the shape the Part C tie
-///     unblocks: the producer `from-list` recurses through `Cons`, threading the element `h : a` into
-///     `Cons(h, from-list(t))`, so the result element ties to the argument element and the whole thing
-///     monomorphizes independently per element type. A `FromList(List(a))` wrapper (no self-recursion in
-///     the producer) does NOT tie the element and still declines CDZ0201 — verified — so the cons-cell
-///     form is the correct generic encoding today.
-/// `next` is the pull interface (`GIter(a) -> Option((a, GIter(a)))`): pure (re-stepping yields the same
-/// element) and total ON AN ALREADY-BUILT iterator (it never traps itself — but BUILDING a huge source can,
-/// per the strictness note above); the cons-cell IS the materialized rest, so `next` just projects it.
-///
-/// SCOPE (slices 1–18, 21–22; 19–20 deferred — see below). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
-/// (`count`, `collect`, `nth`, `last`), transformers (`chain`, `take`, `drop`, `zip`, `enumerate`,
-/// `intersperse`, `step-by`, `zip3`, `windows2`, `interleave`). CLOSURE-STORING (unblocked by the
-/// recursive-generic-transformer closure tie + the rigid-biased if-join): `map`, `filter`, `drop-while`,
-/// `take-while`, `scan`, `find`, `last-where`, `all`, `any`, `count-if`, `map-while`, `span-len`,
-/// `fold`, `zip-with`, `position` — each threads a closure and monomorphizes per element type. Every function
-/// composes at Int64 AND String in one program (the tests pin this).
-///
-/// DEFERRED (recursive-generic-tie family — v-inference's queued deep slices):
-///   - TRANSITIVE-DELEGATE tie: `reduce` (wrapper seeds a 2nd recursive helper with the HEAD element) and
-///     `reverse` (…with a bare-Nil ACCUMULATOR) DECLINE at ≥2 element types — an element-typed accumulator
-///     threaded THROUGH a delegate is not tied across the wrapper's two monomorphizations (single type
-///     compiles+runs; filed + two witnesses routed to v-inference). No annotation workaround for the generic
-///     form.
-///   - MODULE-SCALE saturation: `repeat-n` (chain n times) and `find-map` (map+find fusion) each compose at
-///     ≥2 element types IN ISOLATION, but DECLINE CDZ0201 when added to THIS full module — the accumulated
-///     cross-function instantiations exceed what the monomorphizer currently ties (a whole-module effect, not
-///     a single-def gap; routed to v-inference as the same deep-tie family surfacing at scale).
-/// All land the tick the corresponding tie lands.
-/// ELEMENT-CHANGING
-/// is supported too: `zip`/`enumerate` yield a tuple element, `map` maps `a -> b` at a DIFFERENT result type
-/// (int→Bool, int→String — see the tests), and `zip-with`/`fold` fuse to an inferred result/accumulator type;
-/// no `∀`-annotation is needed because the new type is INFERRED from the (unannotated) closure / tuple, never
-/// WRITTEN — so the "no-∀-binder-in-annotation" surface gap does not bite here.
-///
-/// RESOLVED (was a residual inference gap; fixed upstream by rcdzc `565f6d184` "tie an unannotated closure's
-/// aggregate-result elements to its domain"):
-///   - An UNUSED/identity closure (`fn (s) => s`) at TWO element types now COMPOSES (it previously declined
-///     on the closure-body-result-from-domain multi-instantiation residual). Verified: `gmap` with `fn(x)=>x+1`
-///     at Int AND `fn(s)=>s` at String in one program runs. So the "closures must USE their parameter" caveat
-///     below no longer holds — identity/pass-through closures are fine now.
-///
-/// KNOWN EDGE this module steers around (NOT Part C, NOT a miscompile):
-///   - NULLARY generic producer (`empty : Unit -> GIter(a)`) has NO argument to tie its element to, so a use
-///     that does not otherwise constrain `a` (e.g. `count(empty())`) declines CDZ0201 — correct-to-reject
-///     (the program is genuinely ambiguous in `a`), though the message misleadingly blames the argument-tie
-///     when there is no argument (a diagnostic-wording nit, routed to v-inference). A `from-list([])` whose
-///     element IS fixed by context runs correctly. So this module offers no `empty`/`is-empty` yet; a real
-///     caller fixes the element in context (`chain(empty(), from-list([1]))`), which lands once `empty` has
-///     a determinable element (e.g. an explicit `Type` param) in a follow-up.
-///   - MUTUALLY-recursive generic producer GROUP still declines (no shared substitution across the group —
-///     v-inference's caveat). Every function here is SELF-recursive, the shape Part C fixed. Do not add a
-///     mutually-recursive generic producer pair without re-checking with v-inference.
-
-/// The generic pull-iterator as a recursive cons cell.
-///   - `Nil`         — exhausted (the empty iterator).
-///   - `Cons(h, rest)` — yield `h : a`, then continue with `rest : GIter(a)`.
-type GIter =
+  /// companion to the monomorphic-Int64 `iter.cdz`. This module exists because the recursive-generic PRODUCER element tie
+  /// (a `List(a) -> GIter(a)` producer whose result element must tie to its argument) was the long-standing
+  /// inference gap that pinned `iter.cdz` to `Int64`; that gap is now RESOLVED upstream (rcdzc "tie a
+  /// recursive-generic producer's result element to its argument — Part C, rigid param vars"), verified here
+  /// by a producer composed with a consumer at TWO distinct element types in one program (Int64 AND String —
+  /// see `from-list-composes-at-two-element-types` / `collect-instantiates-at-two-types`).
+  ///
+  /// ⚠ STRICTNESS — this is EAGER, not lazy. The cons-cell is FULLY MATERIALIZED when a producer runs:
+  /// `from-list`/`range-from` build the ENTIRE `GIter(a)` (a deep recursion) up front, so `take(it, 3)` over a
+  /// huge source does NOT "pull only 3" — the source is already built (and a source of ≳10⁴ elements overflows
+  /// the call stack and TRAPS). `next` just projects an ALREADY-BUILT cell. A genuinely LAZY sequence needs a
+  /// thunk tail (`Cons(a, Unit -> GIter(a))` forced on demand), which this encoding does NOT have (Cadenza is
+  /// strict). So treat these as EAGER transformers over finite in-memory sequences, NOT lazy streams.
+  ///
+  /// ENCODING — a recursive CONS-CELL sum (`Nil | Cons(a, GIter(a))`), NOT the reified sum-of-step-shapes
+  /// `iter.cdz` uses. The two encodings differ on purpose:
+  ///   - `iter.cdz` (mono-Int64) reifies each transformer as a step-shape variant that STORES A CLOSURE over
+  ///     the element (`MapI((Int64 -> Int64), Iter)`, …) — its `next` INTERPRETS one step, so it forces nothing
+  ///     until pulled (that reified form IS lazy without a thunk; the generic cons-cell form here is NOT).
+  ///   - `giter.cdz` (generic) uses the cons-cell recursion because THAT is the shape the Part C tie
+  ///     unblocks: the producer `from-list` recurses through `Cons`, threading the element `h : a` into
+  ///     `Cons(h, from-list(t))`, so the result element ties to the argument element and the whole thing
+  ///     monomorphizes independently per element type. A `FromList(List(a))` wrapper (no self-recursion in
+  ///     the producer) does NOT tie the element and still declines CDZ0201 — verified — so the cons-cell
+  ///     form is the correct generic encoding today.
+  /// `next` is the pull interface (`GIter(a) -> Option((a, GIter(a)))`): pure (re-stepping yields the same
+  /// element) and total ON AN ALREADY-BUILT iterator (it never traps itself — but BUILDING a huge source can,
+  /// per the strictness note above); the cons-cell IS the materialized rest, so `next` just projects it.
+  ///
+  /// SCOPE (slices 1–18, 21–22; 19–20 deferred — see below). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
+  /// (`count`, `collect`, `nth`, `last`), transformers (`chain`, `take`, `drop`, `zip`, `enumerate`,
+  /// `intersperse`, `step-by`, `zip3`, `windows2`, `interleave`). CLOSURE-STORING (unblocked by the
+  /// recursive-generic-transformer closure tie + the rigid-biased if-join): `map`, `filter`, `drop-while`,
+  /// `take-while`, `scan`, `find`, `last-where`, `all`, `any`, `count-if`, `map-while`, `span-len`,
+  /// `fold`, `zip-with`, `position` — each threads a closure and monomorphizes per element type. Every function
+  /// composes at Int64 AND String in one program (the tests pin this).
+  ///
+  /// DEFERRED (recursive-generic-tie family — v-inference's queued deep slices):
+  ///   - TRANSITIVE-DELEGATE tie: `reduce` (wrapper seeds a 2nd recursive helper with the HEAD element) and
+  ///     `reverse` (…with a bare-Nil ACCUMULATOR) DECLINE at ≥2 element types — an element-typed accumulator
+  ///     threaded THROUGH a delegate is not tied across the wrapper's two monomorphizations (single type
+  ///     compiles+runs; filed + two witnesses routed to v-inference). No annotation workaround for the generic
+  ///     form.
+  ///   - MODULE-SCALE saturation: `repeat-n` (chain n times) and `find-map` (map+find fusion) each compose at
+  ///     ≥2 element types IN ISOLATION, but DECLINE CDZ0201 when added to THIS full module — the accumulated
+  ///     cross-function instantiations exceed what the monomorphizer currently ties (a whole-module effect, not
+  ///     a single-def gap; routed to v-inference as the same deep-tie family surfacing at scale).
+  /// All land the tick the corresponding tie lands.
+  /// ELEMENT-CHANGING
+  /// is supported too: `zip`/`enumerate` yield a tuple element, `map` maps `a -> b` at a DIFFERENT result type
+  /// (int→Bool, int→String — see the tests), and `zip-with`/`fold` fuse to an inferred result/accumulator type;
+  /// no `∀`-annotation is needed because the new type is INFERRED from the (unannotated) closure / tuple, never
+  /// WRITTEN — so the "no-∀-binder-in-annotation" surface gap does not bite here.
+  ///
+  /// RESOLVED (was a residual inference gap; fixed upstream by rcdzc `565f6d184` "tie an unannotated closure's
+  /// aggregate-result elements to its domain"):
+  ///   - An UNUSED/identity closure (`fn (s) => s`) at TWO element types now COMPOSES (it previously declined
+  ///     on the closure-body-result-from-domain multi-instantiation residual). Verified: `gmap` with `fn(x)=>x+1`
+  ///     at Int AND `fn(s)=>s` at String in one program runs. So the "closures must USE their parameter" caveat
+  ///     below no longer holds — identity/pass-through closures are fine now.
+  ///
+  /// KNOWN EDGE this module steers around (NOT Part C, NOT a miscompile):
+  ///   - NULLARY generic producer (`empty : Unit -> GIter(a)`) has NO argument to tie its element to, so a use
+  ///     that does not otherwise constrain `a` (e.g. `count(empty())`) declines CDZ0201 — correct-to-reject
+  ///     (the program is genuinely ambiguous in `a`), though the message misleadingly blames the argument-tie
+  ///     when there is no argument (a diagnostic-wording nit, routed to v-inference). A `from-list([])` whose
+  ///     element IS fixed by context runs correctly. So this module offers no `empty`/`is-empty` yet; a real
+  ///     caller fixes the element in context (`chain(empty(), from-list([1]))`), which lands once `empty` has
+  ///     a determinable element (e.g. an explicit `Type` param) in a follow-up.
+  ///   - MUTUALLY-recursive generic producer GROUP still declines (no shared substitution across the group —
+  ///     v-inference's caveat). Every function here is SELF-recursive, the shape Part C fixed. Do not add a
+  ///     mutually-recursive generic producer pair without re-checking with v-inference.
+  /// The generic pull-iterator as a recursive cons cell.
+  ///   - `Nil`         — exhausted (the empty iterator).
+  ///   - `Cons(h, rest)` — yield `h : a`, then continue with `rest : GIter(a)`.
+  type GIter =
   | Nil
   | Cons(a, GIter(a))
 
 /// PRODUCERS ------------------------------------------------------------------------------------------
-
 /// `from-list(xs)` — the base generic producer: an iterator over the elements of `xs : List(a)`, in order.
 /// SELF-RECURSIVE through `Cons`, so the result element ties to the argument element (the Part C tie) — it
 /// composes at more than one element type in a single program (the capability this module demonstrates).
@@ -93,7 +91,6 @@ def from-list(xs) = match xs with
 def singleton(x) = GIter.Cons(x, GIter.Nil(unit))
 
 /// THE PULL INTERFACE ---------------------------------------------------------------------------------
-
 /// Step once: yield `Option((element, rest))` — `None` at exhaustion, never a trap. Total and pure; a
 /// re-step of the same `GIter(a)` yields the same element (the cons cell is immutable). The element is `a`;
 /// the rest is a `GIter(a)`, so a consumer drives the pull by threading `rest`. (The cons cell already IS
@@ -103,7 +100,6 @@ def next(it) = match it with
   | GIter.Cons(h, rest) => Option.Some((h, rest))
 
 /// CONSUMERS (closure-free — the shape Part C directly unblocks) ---------------------------------------
-
 /// `count(it)` — the number of elements the iterator yields. Self-recursive generic consumer: drives the
 /// pull to exhaustion, adding one per element. Generic in the element type (it inspects only the shape).
 def count(it) = match it with
@@ -126,16 +122,15 @@ def nth(it, n) = match it with
 /// `last(it)` — the final element, `None` for an empty iterator. Closure-free; recurses to the last cons.
 def last(it) = match it with
   | GIter.Nil(_) => Option.None(unit)
-  | GIter.Cons(h, rest) => (match rest with
+  | GIter.Cons(h, rest) => match rest with
     | GIter.Nil(_) => Option.Some(h)
-    | GIter.Cons(_, _) => last(rest))
+    | GIter.Cons(_, _) => last(rest)
 
 /// CLOSURE-FREE TRANSFORMERS (build a new `GIter(a)`; no closure threaded — the Part C shape) -----------
 /// These need NO closure, so they compose per element type. (Closure-threading transformers — `map`/`filter`
 /// etc. below — once needed a SEPARATE recursive-generic-transformer closure tie; that LANDED, and the
 /// later closure-aggregate-result residual landed too (rcdzc `565f6d184`), so they now compose at ≥2 element
 /// types including identity/aggregate-result closures.)
-
 /// `chain(a, b)` — concatenate two iterators: yield all of `a`, then all of `b`. Self-recursive over `a`;
 /// the `Nil` base returns `b` (same element type), so the result element ties to the inputs'.
 def chain(a, b) = match a with
@@ -144,9 +139,13 @@ def chain(a, b) = match a with
 
 /// `take(it, n)` — an iterator over the first `n` elements (fewer if `it` is shorter). Closure-free; builds
 /// a truncated `GIter(a)`.
-def take(it, n) = if n <= 0 then GIter.Nil(unit) else (match it with
-  | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, n - 1)))
+def take(it, n) =
+  if n <= 0 then
+    GIter.Nil(unit)
+  else
+    match it with
+      | GIter.Nil(_) => GIter.Nil(unit)
+      | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, n - 1))
 
 /// `drop(it, n)` — an iterator with the first `n` elements skipped. Closure-free. Written MATCH-FIRST (not
 /// an early `if n <= 0 then it`): returning the bare argument iterator in a guard interacts badly with the
@@ -162,9 +161,9 @@ def drop(it, n) = match it with
 /// transformer closure-tie lands.
 def zip(a, b) = match a with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(ha, ra) => (match b with
+  | GIter.Cons(ha, ra) => match b with
     | GIter.Nil(_) => GIter.Nil(unit)
-    | GIter.Cons(hb, rb) => GIter.Cons((ha, hb), zip(ra, rb)))
+    | GIter.Cons(hb, rb) => GIter.Cons((ha, hb), zip(ra, rb))
 
 /// `enum-from(it, i)` — the recursive worker for `enumerate`: pair each element with an index counter that
 /// starts at `i` and climbs. Closure-free; the result element is a `(Int64, a)` tuple, so like `zip` it
@@ -185,17 +184,19 @@ def enumerate(it) = enum-from(it, 0)
 /// iterator yields `2n-1` elements (0 stays 0, else `2n-1`).
 def intersperse(it, sep) = match it with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(h, rest) => (match rest with
+  | GIter.Cons(h, rest) => match rest with
     | GIter.Nil(_) => GIter.Cons(h, GIter.Nil(unit))
-    | GIter.Cons(_, _) => GIter.Cons(h, GIter.Cons(sep, intersperse(rest, sep))))
+    | GIter.Cons(_, _) => GIter.Cons(h, GIter.Cons(sep, intersperse(rest, sep)))
 
 /// `step-from(it, n, i)` — the recursive worker for `step-by`: yield the current element when the countdown
 /// `i` hits 0 (then reset to `n-1`), else skip it and decrement. Closure-free; rebuilds the head cell so the
 /// result element ties to the input's, composing at ≥2 element types.
 def step-from(it, n, i) = match it with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(h, rest) =>
-    if i <= 0 then GIter.Cons(h, step-from(rest, n, n - 1)) else step-from(rest, n, i - 1)
+  | GIter.Cons(h, rest) => if i <= 0 then
+    GIter.Cons(h, step-from(rest, n, n - 1))
+  else
+    step-from(rest, n, i - 1)
 
 /// `step-by(it, n)` — keep every `n`-th element starting at index 0 (`0, n, 2n, …`), dropping the rest.
 /// A thin seed of `step-from` at countdown 0 (so the first element is always kept). `step-by(it, 1)` is the
@@ -210,11 +211,11 @@ def step-by(it, n) = step-from(it, n, 0)
 /// tuple is inferred, no `∀`-annotation). The three-way sibling of `zip`.
 def zip3(a, b, c) = match a with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(ha, ra) => (match b with
+  | GIter.Cons(ha, ra) => match b with
     | GIter.Nil(_) => GIter.Nil(unit)
-    | GIter.Cons(hb, rb) => (match c with
+    | GIter.Cons(hb, rb) => match c with
       | GIter.Nil(_) => GIter.Nil(unit)
-      | GIter.Cons(hc, rc) => GIter.Cons((ha, hb, hc), zip3(ra, rb, rc))))
+      | GIter.Cons(hc, rc) => GIter.Cons((ha, hb, hc), zip3(ra, rb, rc))
 
 /// `windows2(it)` — the SLIDING pairs of adjacent elements: `(x0,x1), (x1,x2), …`, yielding a
 /// `GIter((a, a))`. Closure-free; the inner match on `rest` peeks the SECOND element (via `h2`) without
@@ -223,9 +224,9 @@ def zip3(a, b, c) = match a with
 /// of a general `windows(k)`; the tuple element ties both slots to the input element, composing at ≥2 types.
 def windows2(it) = match it with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(h, rest) => (match rest with
+  | GIter.Cons(h, rest) => match rest with
     | GIter.Nil(_) => GIter.Nil(unit)
-    | GIter.Cons(h2, _) => GIter.Cons((h, h2), windows2(rest)))
+    | GIter.Cons(h2, _) => GIter.Cons((h, h2), windows2(rest))
 
 /// `interleave(a, b)` — alternate elements of the two iterators (`a0, b0, a1, b1, …`); when one runs out,
 /// the REMAINDER of the other follows. Closure-free; the `Nil` base returns the other iterator (same element
@@ -241,7 +242,6 @@ def interleave(a, b) = match a with
 /// monomorphizes per element type, so these compose at ≥2 element types. (An unused/identity closure like
 /// `fn (s) => s` USED to decline on a residual gap, now RESOLVED by rcdzc `565f6d184` — identity/pass-through
 /// closures compose fine now.)
-
 /// `map(it, f)` — apply `f : a -> b` to every element, yielding a `GIter(b)`. Threads the closure `f`.
 /// ELEMENT-CHANGING: `b` may differ from `a` (int→Bool, int→String — see the tests); it is INFERRED from
 /// the unannotated closure, so no `∀`-annotation is needed. When `f : a -> a`, this is an in-place map.
@@ -269,9 +269,9 @@ def find(it, p) = match it with
 /// deepest `Some`. Returns `Option(a)`; composes at ≥2 element types.
 def last-where(it, p) = match it with
   | GIter.Nil(_) => Option.None(unit)
-  | GIter.Cons(h, rest) => (match last-where(rest, p) with
+  | GIter.Cons(h, rest) => match last-where(rest, p) with
     | Option.Some(v) => Option.Some(v)
-    | Option.None(_) => if p(h) then Option.Some(h) else Option.None(unit))
+    | Option.None(_) => if p(h) then Option.Some(h) else Option.None(unit)
 
 /// `pos-from(it, p, i)` — the recursive worker for `position`: the 0-based INDEX (not the element) of the
 /// first element satisfying `p`, counting from `i`. Threads `p` and a plain Int64 counter `i` — the counter
@@ -310,9 +310,9 @@ def count-if(it, p) = match it with
 /// instantiations; RESOLVED by rcdzc `565f6d184` — an identity `Some(x)` payload composes fine now too.)
 def map-while(it, f) = match it with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(h, rest) => (match f(h) with
+  | GIter.Cons(h, rest) => match f(h) with
     | Option.None(_) => GIter.Nil(unit)
-    | Option.Some(v) => GIter.Cons(v, map-while(rest, f)))
+    | Option.Some(v) => GIter.Cons(v, map-while(rest, f))
 
 /// `take-while(it, p)` — the longest leading run of elements satisfying `p`, stopping at the first that
 /// fails. Threads `p`. Its stop branch is a bare `GIter.Nil(unit)` whose element used to be untied on that
@@ -356,219 +356,264 @@ def fold(it, acc, f) = match it with
 /// it needed the transformer closure tie; the result element `c` is inferred from `f`.
 def zip-with(a, b, f) = match a with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(ha, ra) => (match b with
+  | GIter.Cons(ha, ra) => match b with
     | GIter.Nil(_) => GIter.Nil(unit)
-    | GIter.Cons(hb, rb) => GIter.Cons(f(ha, hb), zip-with(ra, rb, f)))
+    | GIter.Cons(hb, rb) => GIter.Cons(f(ha, hb), zip-with(ra, rb, f))
 
 /// TESTS ----------------------------------------------------------------------------------------------
-
 /// Local monomorphic list-equalities (one per element type) — kept monomorphic so the tests exercise the
 /// GENERIC producer/consumer composition, not a generic comparison (a generic recursive equality is its own
 /// tie question, out of scope for this slice).
 def int-list-eq(xs, ys) = match xs with
-  | [] => (match ys with | [] => true | _ => false)
-  | [x, .. xr] => (match ys with
+  | [] => (match ys with
+    | [] => true
+    | _ => false
+  )
+  | [x, .. xr] => match ys with
     | [] => false
-    | [y, .. yr] => if x == y then int-list-eq(xr, yr) else false)
+    | [y, .. yr] => if x == y then int-list-eq(xr, yr) else false
 
 def str-list-eq(xs, ys) = match xs with
-  | [] => (match ys with | [] => true | _ => false)
-  | [x, .. xr] => (match ys with
+  | [] => (match ys with
+    | [] => true
+    | _ => false
+  )
+  | [x, .. xr] => match ys with
     | [] => false
-    | [y, .. yr] => if x == y then str-list-eq(xr, yr) else false)
+    | [y, .. yr] => if x == y then str-list-eq(xr, yr) else false
 
 def bool-list-eq(xs, ys) = match xs with
-  | [] => (match ys with | [] => true | _ => false)
-  | [x, .. xr] => (match ys with
+  | [] => (match ys with
+    | [] => true
+    | _ => false
+  )
+  | [x, .. xr] => match ys with
     | [] => false
-    | [y, .. yr] => if x == y then bool-list-eq(xr, yr) else false)
+    | [y, .. yr] => if x == y then bool-list-eq(xr, yr) else false
 
+@test
 /// THE headline test: a recursive-generic PRODUCER composed with a generic CONSUMER at TWO distinct
 /// element types in ONE program. This exact shape declined with CDZ0201 before the Part C fix.
-@test
 def from-list-composes-at-two-element-types() =
-  if count(from-list([1, 2, 3])) + count(from-list(["a", "bb"])) == 5
-  then unit else trap("generic producer must compose at Int64 AND String in one program")
+  if count(from-list([1, 2, 3])) + count(from-list(["a", "bb"])) == 5 then
+    unit
+  else
+    trap("generic producer must compose at Int64 AND String in one program")
 
 @test
 def collect-is-inverse-of-from-list-ints() =
-  if int-list-eq(collect(from-list([10, 20, 30])), [10, 20, 30])
-  then unit else trap("collect . from-list == id (Int64)")
+  if int-list-eq(collect(from-list([10, 20, 30])), [10, 20, 30]) then
+    unit
+  else
+    trap("collect . from-list == id (Int64)")
 
 @test
 def collect-is-inverse-of-from-list-strings() =
-  if str-list-eq(collect(from-list(["x", "y"])), ["x", "y"])
-  then unit else trap("collect . from-list == id (String)")
+  if str-list-eq(collect(from-list(["x", "y"])), ["x", "y"]) then
+    unit
+  else
+    trap("collect . from-list == id (String)")
 
+@test
 /// Pins that the SAME generic consumer (`collect`) instantiates at two element types in one program — the
 /// consumer companion of the producer-tie headline (both stress per-element-type monomorphization).
-@test
 def collect-instantiates-at-two-types() =
-  if int-list-eq(collect(from-list([1, 2])), [1, 2])
-  then (if str-list-eq(collect(from-list(["a"])), ["a"])
-        then unit else trap("generic consumer at String"))
-  else trap("generic consumer at Int64")
+  if int-list-eq(collect(from-list([1, 2])), [1, 2]) then
+    if str-list-eq(collect(from-list(["a"])), ["a"]) then
+      unit
+    else
+      trap("generic consumer at String")
+  else
+    trap("generic consumer at Int64")
 
 @test
-def singleton-yields-one() =
-  if count(singleton("only")) == 1 then unit else trap("singleton count")
+def singleton-yields-one() = if count(singleton("only")) == 1 then unit else trap("singleton count")
 
+@test
 /// An empty SOURCE whose element is fixed by the OTHER branch of the comparison — `from-list([1])` in the
 /// first arm pins `a = Int64`, so `collect(from-list([]))` here is unambiguous (not the nullary gap).
-@test
 def empty-int-source-collects-empty() =
-  if int-list-eq(collect(from-list([1])), [1])
-  then (if count(from-list([2, 3])) == 2 then unit else trap("nonempty count"))
-  else trap("collect singleton int")
+  if int-list-eq(collect(from-list([1])), [1]) then
+    if count(from-list([2, 3])) == 2 then unit else trap("nonempty count")
+  else
+    trap("collect singleton int")
 
 @test
-def next-yields-head-then-rest() =
-  match next(from-list([42, 43])) with
+def next-yields-head-then-rest() = match next(from-list([42, 43])) with
   | Option.None(_) => trap("next of non-empty must be Some")
-  | Option.Some(p) => (match p with | (h, rest) =>
-    if h == 42 then (if count(rest) == 1 then unit else trap("rest length")) else trap("head value"))
-
-/// SLICE-2 closure-free combinators, each pinned at TWO element types in one program.
+  | Option.Some(p) => match p with
+    | (h, rest) => if h == 42 then
+      if count(rest) == 1 then unit else trap("rest length")
+    else
+      trap("head value")
 
 @test
+/// SLICE-2 closure-free combinators, each pinned at TWO element types in one program.
 def chain-concatenates-ints() =
-  if int-list-eq(collect(chain(from-list([1, 2]), from-list([3, 4, 5]))), [1, 2, 3, 4, 5])
-  then unit else trap("chain ints")
+  if int-list-eq(collect(chain(from-list([1, 2]), from-list([3, 4, 5]))), [1, 2, 3, 4, 5]) then
+    unit
+  else
+    trap("chain ints")
 
 @test
 def chain-concatenates-strings() =
-  if str-list-eq(collect(chain(from-list(["a"]), from-list(["b", "c"]))), ["a", "b", "c"])
-  then unit else trap("chain strings")
+  if str-list-eq(collect(chain(from-list(["a"]), from-list(["b", "c"]))), ["a", "b", "c"]) then
+    unit
+  else
+    trap("chain strings")
 
 @test
 def take-prefix-ints() =
-  if int-list-eq(collect(take(from-list([1, 2, 3, 4, 5]), 3)), [1, 2, 3])
-  then unit else trap("take ints")
+  if int-list-eq(collect(take(from-list([1, 2, 3, 4, 5]), 3)), [1, 2, 3]) then
+    unit
+  else
+    trap("take ints")
 
 @test
 def take-prefix-strings-and-over-length() =
-  if str-list-eq(collect(take(from-list(["a", "b"]), 5)), ["a", "b"])
-  then unit else trap("take past end yields all")
+  if str-list-eq(collect(take(from-list(["a", "b"]), 5)), ["a", "b"]) then
+    unit
+  else
+    trap("take past end yields all")
 
 @test
 def drop-suffix-ints() =
-  if int-list-eq(collect(drop(from-list([1, 2, 3, 4, 5]), 2)), [3, 4, 5])
-  then unit else trap("drop ints")
+  if int-list-eq(collect(drop(from-list([1, 2, 3, 4, 5]), 2)), [3, 4, 5]) then
+    unit
+  else
+    trap("drop ints")
 
 @test
 def drop-suffix-strings() =
-  if str-list-eq(collect(drop(from-list(["a", "b", "c"]), 1)), ["b", "c"])
-  then unit else trap("drop strings")
+  if str-list-eq(collect(drop(from-list(["a", "b", "c"]), 1)), ["b", "c"]) then
+    unit
+  else
+    trap("drop strings")
 
 @test
-def nth-ints() =
-  match nth(from-list([10, 20, 30]), 1) with
+def nth-ints() = match nth(from-list([10, 20, 30]), 1) with
   | Option.None(_) => trap("nth in bounds must be Some")
   | Option.Some(v) => if v == 20 then unit else trap("nth value")
 
 @test
-def nth-out-of-bounds-is-none() =
-  match nth(from-list([10, 20]), 5) with
+def nth-out-of-bounds-is-none() = match nth(from-list([10, 20]), 5) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("nth past end must be None")
 
 @test
-def nth-strings() =
-  match nth(from-list(["a", "b", "c"]), 2) with
+def nth-strings() = match nth(from-list(["a", "b", "c"]), 2) with
   | Option.None(_) => trap("nth str in bounds")
   | Option.Some(v) => if v == "c" then unit else trap("nth str value")
 
 @test
-def last-ints() =
-  match last(from-list([1, 2, 3])) with
+def last-ints() = match last(from-list([1, 2, 3])) with
   | Option.None(_) => trap("last of non-empty")
   | Option.Some(v) => if v == 3 then unit else trap("last int value")
 
 @test
-def last-strings() =
-  match last(from-list(["x", "y"])) with
+def last-strings() = match last(from-list(["x", "y"])) with
   | Option.None(_) => trap("last str of non-empty")
   | Option.Some(v) => if v == "y" then unit else trap("last str value")
 
+@test
 /// Compose slice-2 combinators: take + drop + chain in one expression, at Int64.
-@test
 def take-drop-chain-compose() =
-  if int-list-eq(collect(take(drop(chain(from-list([1, 2]), from-list([3, 4, 5, 6])), 1), 3)), [2, 3, 4])
-  then unit else trap("take(drop(chain)) composition")
-
-/// SLICE-3: `zip` — closure-free, element-CHANGING (to a tuple), pinned at two source element types.
+  if int-list-eq(
+      collect(take(drop(chain(from-list([1, 2]), from-list([3, 4, 5, 6])), 1), 3)),
+      [2, 3, 4]
+    ) then
+    unit
+  else
+    trap("take(drop(chain)) composition")
 
 @test
+/// SLICE-3: `zip` — closure-free, element-CHANGING (to a tuple), pinned at two source element types.
 def zip-stops-at-shorter-ints() =
-  if count(zip(from-list([1, 2, 3]), from-list([10, 20]))) == 2
-  then unit else trap("zip stops at shorter (ints)")
+  if count(zip(from-list([1, 2, 3]), from-list([10, 20]))) == 2 then
+    unit
+  else
+    trap("zip stops at shorter (ints)")
 
 @test
 def zip-mixed-element-types() =
-  if count(zip(from-list(["a", "b"]), from-list([1, 2, 3]))) == 2
-  then unit else trap("zip String with Int64")
+  if count(zip(from-list(["a", "b"]), from-list([1, 2, 3]))) == 2 then
+    unit
+  else
+    trap("zip String with Int64")
 
 @test
-def zip-pairs-carry-both-elements() =
-  match next(zip(from-list([7, 8]), from-list(["x", "y"]))) with
+def zip-pairs-carry-both-elements() = match next(zip(from-list([7, 8]), from-list(["x", "y"]))) with
   | Option.None(_) => trap("zip of non-empty must yield")
-  | Option.Some(p) => (match p with | (pair, _rest) =>
-    (match pair with | (l, r) =>
-      if l == 7 then (if r == "x" then unit else trap("zip right elem")) else trap("zip left elem")))
+  | Option.Some(p) => match p with
+    | (pair, _rest) => match pair with
+      | (l, r) => if l == 7 then
+        if r == "x" then unit else trap("zip right elem")
+      else
+        trap("zip left elem")
 
 @test
 def zip-empty-left-is-empty() =
-  if count(zip(take(from-list([1]), 0), from-list([9, 9, 9]))) == 0
-  then unit else trap("zip with empty left is empty")
-
-/// SLICE-4 closure-storing transformers/consumers, each pinned at TWO element types in one program (the
-/// capability the transformer closure-tie fix unblocked). Every closure USES its parameter.
+  if count(zip(take(from-list([1]), 0), from-list([9, 9, 9]))) == 0 then
+    unit
+  else
+    trap("zip with empty left is empty")
 
 @test
+/// SLICE-4 closure-storing transformers/consumers, each pinned at TWO element types in one program (the
+/// capability the transformer closure-tie fix unblocked). Every closure USES its parameter.
 def map-adds-over-ints() =
-  if int-list-eq(collect(map(from-list([1, 2, 3]), fn(x) => x + 10)), [11, 12, 13])
-  then unit else trap("map +10 over ints")
+  if int-list-eq(collect(map(from-list([1, 2, 3]), fn(x) => x + 10)), [11, 12, 13]) then
+    unit
+  else
+    trap("map +10 over ints")
 
 @test
 def map-transforms-strings() =
-  if str-list-eq(collect(map(from-list(["a", "b"]), fn(s) => String.concat(s, s))), ["aa", "bb"])
-  then unit else trap("map concat over strings")
+  if str-list-eq(collect(map(from-list(["a", "b"]), fn(s) => String.concat(s, s))), ["aa", "bb"]) then
+    unit
+  else
+    trap("map concat over strings")
 
 @test
 def filter-keeps-matching-ints() =
-  if int-list-eq(collect(filter(from-list([1, 2, 3, 4]), fn(x) => x > 2)), [3, 4])
-  then unit else trap("filter > 2")
+  if int-list-eq(collect(filter(from-list([1, 2, 3, 4]), fn(x) => x > 2)), [3, 4]) then
+    unit
+  else
+    trap("filter > 2")
 
 @test
 def filter-keeps-matching-strings() =
-  if str-list-eq(collect(filter(from-list(["a", "bb", "c"]), fn(s) => s == "bb")), ["bb"])
-  then unit else trap("filter == bb")
+  if str-list-eq(collect(filter(from-list(["a", "bb", "c"]), fn(s) => s == "bb")), ["bb"]) then
+    unit
+  else
+    trap("filter == bb")
 
 @test
 def drop-while-skips-leading-run-ints() =
-  if int-list-eq(collect(drop-while(from-list([1, 2, 3, 1]), fn(x) => x < 3)), [3, 1])
-  then unit else trap("drop-while < 3")
+  if int-list-eq(collect(drop-while(from-list([1, 2, 3, 1]), fn(x) => x < 3)), [3, 1]) then
+    unit
+  else
+    trap("drop-while < 3")
 
 @test
 def drop-while-strings() =
-  if str-list-eq(collect(drop-while(from-list(["a", "a", "b"]), fn(s) => s == "a")), ["b"])
-  then unit else trap("drop-while == a")
+  if str-list-eq(collect(drop-while(from-list(["a", "a", "b"]), fn(s) => s == "a")), ["b"]) then
+    unit
+  else
+    trap("drop-while == a")
 
 @test
-def find-first-matching-int() =
-  match find(from-list([1, 2, 3]), fn(x) => x > 1) with
+def find-first-matching-int() = match find(from-list([1, 2, 3]), fn(x) => x > 1) with
   | Option.None(_) => trap("find should hit")
   | Option.Some(v) => if v == 2 then unit else trap("find value")
 
 @test
-def find-first-matching-string() =
-  match find(from-list(["a", "bb", "cc"]), fn(s) => s == "cc") with
+def find-first-matching-string() = match find(from-list(["a", "bb", "cc"]), fn(s) => s == "cc") with
   | Option.None(_) => trap("find str should hit")
   | Option.Some(v) => if v == "cc" then unit else trap("find str value")
 
 @test
-def find-miss-is-none() =
-  match find(from-list([1, 2]), fn(x) => x > 9) with
+def find-miss-is-none() = match find(from-list([1, 2]), fn(x) => x > 9) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("find miss must be None")
 
@@ -578,7 +623,10 @@ def all-holds-over-ints() =
 
 @test
 def all-false-when-one-fails() =
-  if all(from-list([2, 4, 5]), fn(x) => x == 2 + 2 - 2 + x - x) then trap("all should be false") else unit
+  if all(from-list([2, 4, 5]), fn(x) => x == 2 + 2 - 2 + x - x) then
+    trap("all should be false")
+  else
+    unit
 
 @test
 def any-finds-a-matching-string() =
@@ -588,284 +636,362 @@ def any-finds-a-matching-string() =
 def any-false-when-none-match() =
   if any(from-list([1, 2, 3]), fn(x) => x > 9) then trap("any should be false") else unit
 
-/// `take-while` — unblocked by the rigid-biased if-join fix; pinned at two element types.
-
 @test
+/// `take-while` — unblocked by the rigid-biased if-join fix; pinned at two element types.
 def take-while-leading-run-ints() =
-  if int-list-eq(collect(take-while(from-list([1, 2, 3, 1]), fn(x) => x < 3)), [1, 2])
-  then unit else trap("take-while < 3")
+  if int-list-eq(collect(take-while(from-list([1, 2, 3, 1]), fn(x) => x < 3)), [1, 2]) then
+    unit
+  else
+    trap("take-while < 3")
 
 @test
 def take-while-strings() =
-  if str-list-eq(collect(take-while(from-list(["a", "a", "b"]), fn(s) => s == "a")), ["a", "a"])
-  then unit else trap("take-while == a")
+  if str-list-eq(collect(take-while(from-list(["a", "a", "b"]), fn(s) => s == "a")), ["a", "a"]) then
+    unit
+  else
+    trap("take-while == a")
 
 @test
 def take-while-stops-at-first-failure() =
-  if int-list-eq(collect(take-while(from-list([5, 1, 6]), fn(x) => x > 3)), [5])
-  then unit else trap("take-while stops at first fail")
+  if int-list-eq(collect(take-while(from-list([5, 1, 6]), fn(x) => x > 3)), [5]) then
+    unit
+  else
+    trap("take-while stops at first fail")
 
-/// Compose closure-storing + closure-free: filter then map then collect, at Int64.
 @test
+/// Compose closure-storing + closure-free: filter then map then collect, at Int64.
 def filter-map-compose() =
-  if int-list-eq(collect(map(filter(from-list([1, 2, 3, 4]), fn(x) => x > 1), fn(x) => x * 2)), [4, 6, 8])
-  then unit else trap("map(filter) composition")
+  if int-list-eq(
+      collect(map(filter(from-list([1, 2, 3, 4]), fn(x) => x > 1), fn(x) => x * 2)),
+      [4, 6, 8]
+    ) then
+    unit
+  else
+    trap("map(filter) composition")
 
+@test
 /// SLICE-5: `map` is ELEMENT-CHANGING (a -> b) — the new element type is inferred from the closure, no
 /// `∀`-annotation needed. Pinned at DIFFERENT result types, and at two source element types in one program.
-
-@test
 def map-int-to-bool() =
-  if bool-list-eq(collect(map(from-list([1, 2, 3]), fn(x) => x > 1)), [false, true, true])
-  then unit else trap("map int -> Bool")
+  if bool-list-eq(collect(map(from-list([1, 2, 3]), fn(x) => x > 1)), [false, true, true]) then
+    unit
+  else
+    trap("map int -> Bool")
 
 @test
 def map-int-to-string() =
-  if str-list-eq(collect(map(from-list([1, 2]), fn(x) => if x > 1 then "big" else "small")), ["small", "big"])
-  then unit else trap("map int -> String")
+  if str-list-eq(
+      collect(map(from-list([1, 2]), fn(x) => if x > 1 then "big" else "small")),
+      ["small", "big"]
+    ) then
+    unit
+  else
+    trap("map int -> String")
 
 @test
 def map-string-to-bool-second-source-type() =
-  if bool-list-eq(collect(map(from-list(["a", "bb"]), fn(s) => s == "bb")), [false, true])
-  then unit else trap("map String -> Bool (2nd source element type)")
-
-/// SLICE-7: `scan` — running fold, threads accumulator + closure; pinned at two element types + a
-/// non-element accumulator type.
+  if bool-list-eq(collect(map(from-list(["a", "bb"]), fn(s) => s == "bb")), [false, true]) then
+    unit
+  else
+    trap("map String -> Bool (2nd source element type)")
 
 @test
+/// SLICE-7: `scan` — running fold, threads accumulator + closure; pinned at two element types + a
+/// non-element accumulator type.
 def scan-running-sum-ints() =
-  if int-list-eq(collect(scan(from-list([1, 2, 3]), 0, fn(a, x) => a + x)), [0, 1, 3, 6])
-  then unit else trap("scan running sum")
+  if int-list-eq(collect(scan(from-list([1, 2, 3]), 0, fn(a, x) => a + x)), [0, 1, 3, 6]) then
+    unit
+  else
+    trap("scan running sum")
 
 @test
 def scan-emits-seed-plus-one-per-element() =
-  if count(scan(from-list([10, 20]), 0, fn(a, x) => a + x)) == 3
-  then unit else trap("scan yields n+1 values")
+  if count(scan(from-list([10, 20]), 0, fn(a, x) => a + x)) == 3 then
+    unit
+  else
+    trap("scan yields n+1 values")
 
 @test
 def scan-over-strings-accumulates-lengths() =
-  if int-list-eq(collect(scan(from-list(["a", "bb"]), 0, fn(a, s) => a + String.byte-len(s))), [0, 1, 3])
-  then unit else trap("scan String source, Int64 accumulator")
+  if int-list-eq(
+      collect(scan(from-list(["a", "bb"]), 0, fn(a, s) => a + String.byte-len(s))),
+      [0, 1, 3]
+    ) then
+    unit
+  else
+    trap("scan String source, Int64 accumulator")
 
 @test
 def scan-string-accumulator() =
-  if str-list-eq(collect(scan(from-list(["a", "b"]), "", fn(a, x) => String.concat(a, x))), ["", "a", "ab"])
-  then unit else trap("scan String source, String accumulator")
-
-/// SLICE-8: `enumerate` — closure-free, element-CHANGING to a `(Int64, a)` tuple (like `zip`), pinned at
-/// two source element types; the index climbs 0,1,2,….
+  if str-list-eq(
+      collect(scan(from-list(["a", "b"]), "", fn(a, x) => String.concat(a, x))),
+      ["", "a", "ab"]
+    ) then
+    unit
+  else
+    trap("scan String source, String accumulator")
 
 @test
-def enumerate-ints-indices-climb() =
-  match next(enumerate(from-list([10, 20, 30]))) with
+/// SLICE-8: `enumerate` — closure-free, element-CHANGING to a `(Int64, a)` tuple (like `zip`), pinned at
+/// two source element types; the index climbs 0,1,2,….
+def enumerate-ints-indices-climb() = match next(enumerate(from-list([10, 20, 30]))) with
   | Option.None(_) => trap("enumerate of non-empty must yield")
-  | Option.Some(p) => (match p with | (pair, _rest) =>
-    (match pair with | (i, v) =>
-      if i == 0 then (if v == 10 then unit else trap("enumerate first elem")) else trap("enumerate first index")))
+  | Option.Some(p) => match p with
+    | (pair, _rest) => match pair with
+      | (i, v) => if i == 0 then
+        if v == 10 then unit else trap("enumerate first elem")
+      else
+        trap("enumerate first index")
 
 @test
 def enumerate-preserves-length-ints() =
-  if count(enumerate(from-list([1, 2, 3, 4]))) == 4
-  then unit else trap("enumerate preserves length (ints)")
+  if count(enumerate(from-list([1, 2, 3, 4]))) == 4 then
+    unit
+  else
+    trap("enumerate preserves length (ints)")
 
 @test
 def enumerate-strings-second-source-type() =
-  if count(enumerate(from-list(["a", "b"]))) == 2
-  then unit else trap("enumerate String source (2nd element type)")
+  if count(enumerate(from-list(["a", "b"]))) == 2 then
+    unit
+  else
+    trap("enumerate String source (2nd element type)")
 
 @test
 def enumerate-empty-is-empty() =
-  if count(enumerate(take(from-list([1]), 0))) == 0
-  then unit else trap("enumerate of empty is empty")
-
-/// SLICE-9: `fold` — left-fold consumer threading accumulator + closure, pinned at two source element types
-/// and a non-element accumulator type. `count`/`collect`'s eager generalization.
+  if count(enumerate(take(from-list([1]), 0))) == 0 then
+    unit
+  else
+    trap("enumerate of empty is empty")
 
 @test
+/// SLICE-9: `fold` — left-fold consumer threading accumulator + closure, pinned at two source element types
+/// and a non-element accumulator type. `count`/`collect`'s eager generalization.
 def fold-sums-ints() =
-  if fold(from-list([1, 2, 3, 4]), 0, fn(a, x) => a + x) == 10
-  then unit else trap("fold sum ints")
+  if fold(from-list([1, 2, 3, 4]), 0, fn(a, x) => a + x) == 10 then unit else trap("fold sum ints")
 
 @test
 def fold-string-lengths-into-int-accumulator() =
-  if fold(from-list(["a", "bb", "ccc"]), 0, fn(a, s) => a + String.byte-len(s)) == 6
-  then unit else trap("fold String source, Int64 accumulator")
+  if fold(from-list(["a", "bb", "ccc"]), 0, fn(a, s) => a + String.byte-len(s)) == 6 then
+    unit
+  else
+    trap("fold String source, Int64 accumulator")
 
 @test
 def fold-empty-returns-seed() =
-  if fold(take(from-list([1]), 0), 42, fn(a, x) => a + x) == 42
-  then unit else trap("fold of empty returns the seed")
+  if fold(take(from-list([1]), 0), 42, fn(a, x) => a + x) == 42 then
+    unit
+  else
+    trap("fold of empty returns the seed")
 
 @test
 def fold-is-order-sensitive-left-to-right() =
-  if fold(from-list([1, 2, 3]), 0, fn(a, x) => a * 10 + x) == 123
-  then unit else trap("fold threads accumulator left-to-right")
-
-/// SLICE-10: `zip-with` — closure-storing zip, fuses each pair through `f`, stops at the shorter; pinned at
-/// two source element types and stopping behavior.
+  if fold(from-list([1, 2, 3]), 0, fn(a, x) => a * 10 + x) == 123 then
+    unit
+  else
+    trap("fold threads accumulator left-to-right")
 
 @test
+/// SLICE-10: `zip-with` — closure-storing zip, fuses each pair through `f`, stops at the shorter; pinned at
+/// two source element types and stopping behavior.
 def zip-with-sums-pairs-ints() =
-  if int-list-eq(collect(zip-with(from-list([1, 2, 3]), from-list([10, 20, 30]), fn(x, y) => x + y)), [11, 22, 33])
-  then unit else trap("zip-with sums pairs")
+  if int-list-eq(
+      collect(zip-with(from-list([1, 2, 3]), from-list([10, 20, 30]), fn(x, y) => x + y)),
+      [11, 22, 33]
+    ) then
+    unit
+  else
+    trap("zip-with sums pairs")
 
 @test
 def zip-with-stops-at-shorter() =
-  if count(zip-with(from-list([1, 2, 3, 4]), from-list([10, 20]), fn(x, y) => x + y)) == 2
-  then unit else trap("zip-with stops at shorter")
+  if count(zip-with(from-list([1, 2, 3, 4]), from-list([10, 20]), fn(x, y) => x + y)) == 2 then
+    unit
+  else
+    trap("zip-with stops at shorter")
 
 @test
 def zip-with-mixed-source-types-into-int() =
-  if int-list-eq(collect(zip-with(from-list(["a", "bb"]), from-list([5, 6]), fn(s, n) => String.byte-len(s) + n)), [6, 8])
-  then unit else trap("zip-with String and Int64 sources fused to Int64")
+  if int-list-eq(
+      collect(
+        zip-with(from-list(["a", "bb"]), from-list([5, 6]), fn(s, n) => String.byte-len(s) + n)
+      ),
+      [6, 8]
+    ) then
+    unit
+  else
+    trap("zip-with String and Int64 sources fused to Int64")
 
 @test
 def zip-with-empty-left-is-empty() =
-  if count(zip-with(take(from-list([1]), 0), from-list([9, 9]), fn(x, y) => x + y)) == 0
-  then unit else trap("zip-with empty left is empty")
-
-/// SLICE-11: `intersperse` — closure-free, inserts a separator between adjacent elements (2n-1 elements out),
-/// pinned at two element types and the singleton/empty edges (no trailing separator).
+  if count(zip-with(take(from-list([1]), 0), from-list([9, 9]), fn(x, y) => x + y)) == 0 then
+    unit
+  else
+    trap("zip-with empty left is empty")
 
 @test
+/// SLICE-11: `intersperse` — closure-free, inserts a separator between adjacent elements (2n-1 elements out),
+/// pinned at two element types and the singleton/empty edges (no trailing separator).
 def intersperse-ints-inserts-between() =
-  if int-list-eq(collect(intersperse(from-list([1, 2, 3]), 0)), [1, 0, 2, 0, 3])
-  then unit else trap("intersperse ints")
+  if int-list-eq(collect(intersperse(from-list([1, 2, 3]), 0)), [1, 0, 2, 0, 3]) then
+    unit
+  else
+    trap("intersperse ints")
 
 @test
 def intersperse-strings-second-source-type() =
-  if str-list-eq(collect(intersperse(from-list(["a", "b"]), "-")), ["a", "-", "b"])
-  then unit else trap("intersperse String source (2nd element type)")
+  if str-list-eq(collect(intersperse(from-list(["a", "b"]), "-")), ["a", "-", "b"]) then
+    unit
+  else
+    trap("intersperse String source (2nd element type)")
 
 @test
 def intersperse-singleton-has-no-separator() =
-  if int-list-eq(collect(intersperse(from-list([7]), 0)), [7])
-  then unit else trap("intersperse singleton unchanged")
+  if int-list-eq(collect(intersperse(from-list([7]), 0)), [7]) then
+    unit
+  else
+    trap("intersperse singleton unchanged")
 
 @test
 def intersperse-empty-is-empty() =
-  if count(intersperse(take(from-list([1]), 0), 0)) == 0
-  then unit else trap("intersperse empty is empty")
-
-/// SLICE-12: `step-by` — closure-free, keeps every n-th element from index 0, pinned at two element types,
-/// the identity (n=1) case, and the `n <= 0` degenerate (which is ALSO the identity — see `step-by`'s doc).
+  if count(intersperse(take(from-list([1]), 0), 0)) == 0 then
+    unit
+  else
+    trap("intersperse empty is empty")
 
 @test
+/// SLICE-12: `step-by` — closure-free, keeps every n-th element from index 0, pinned at two element types,
+/// the identity (n=1) case, and the `n <= 0` degenerate (which is ALSO the identity — see `step-by`'s doc).
 def step-by-keeps-every-second-int() =
-  if int-list-eq(collect(step-by(from-list([1, 2, 3, 4, 5, 6]), 2)), [1, 3, 5])
-  then unit else trap("step-by 2 over ints")
+  if int-list-eq(collect(step-by(from-list([1, 2, 3, 4, 5, 6]), 2)), [1, 3, 5]) then
+    unit
+  else
+    trap("step-by 2 over ints")
 
 @test
 def step-by-one-is-identity-strings() =
-  if str-list-eq(collect(step-by(from-list(["a", "b", "c"]), 1)), ["a", "b", "c"])
-  then unit else trap("step-by 1 is identity (String source)")
+  if str-list-eq(collect(step-by(from-list(["a", "b", "c"]), 1)), ["a", "b", "c"]) then
+    unit
+  else
+    trap("step-by 1 is identity (String source)")
 
 @test
 def step-by-three-keeps-first-and-fourth() =
-  if int-list-eq(collect(step-by(from-list([1, 2, 3, 4, 5, 6, 7]), 3)), [1, 4, 7])
-  then unit else trap("step-by 3 keeps indices 0,3,6")
+  if int-list-eq(collect(step-by(from-list([1, 2, 3, 4, 5, 6, 7]), 3)), [1, 4, 7]) then
+    unit
+  else
+    trap("step-by 3 keeps indices 0,3,6")
 
+@test
 /// `step-by(it, 0)` (and any `n <= 0`) degenerates to the IDENTITY, not "just the first element": the reset
 /// countdown `n - 1` never goes positive, so every element yields. Pins the true behavior the docstring now
 /// describes (a v-iterators review caught the old comment claiming it kept only the first) — benign, no trap.
-@test
 def step-by-zero-degenerates-to-identity() =
-  if int-list-eq(collect(step-by(from-list([1, 2, 3, 4]), 0)), [1, 2, 3, 4])
-  then unit else trap("step-by 0 is the identity (keeps all)")
+  if int-list-eq(collect(step-by(from-list([1, 2, 3, 4]), 0)), [1, 2, 3, 4]) then
+    unit
+  else
+    trap("step-by 0 is the identity (keeps all)")
 
+@test
 /// SLICE-13: `position` — closure-storing, the 0-based index of the first predicate match (the index sibling
 /// of `find`), pinned at two element types, a miss, and the first-element hit.
-
-@test
-def position-finds-first-matching-int-index() =
-  match position(from-list([10, 20, 30]), fn(x) => x == 20) with
+def position-finds-first-matching-int-index() = match position(from-list([10, 20, 30]), fn(x) =>
+    x == 20) with
   | Option.None(_) => trap("position int must find")
   | Option.Some(i) => if i == 1 then unit else trap("position int index")
 
 @test
-def position-finds-first-matching-string-index() =
-  match position(from-list(["a", "bb", "ccc"]), fn(s) => String.byte-len(s) == 3) with
+def position-finds-first-matching-string-index() = match position(from-list(["a", "bb", "ccc"]), fn(s) =>
+    String.byte-len(s) == 3) with
   | Option.None(_) => trap("position str must find")
   | Option.Some(i) => if i == 2 then unit else trap("position str index")
 
 @test
-def position-miss-is-none() =
-  match position(from-list([1, 2, 3]), fn(x) => x > 100) with
+def position-miss-is-none() = match position(from-list([1, 2, 3]), fn(x) => x > 100) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("position miss must be None")
 
 @test
-def position-first-element-hit-is-zero() =
-  match position(from-list([5, 6, 7]), fn(x) => x == 5) with
+def position-first-element-hit-is-zero() = match position(from-list([5, 6, 7]), fn(x) => x == 5) with
   | Option.None(_) => trap("position first hit must find")
   | Option.Some(i) => if i == 0 then unit else trap("position first hit index 0")
 
+@test
 /// SLICE-14: `zip3` — closure-free, three iterators into a 3-tuple, pinned at two element types, three
 /// DIFFERENT element types in one call, and stopping at the shortest.
-
-@test
 def zip3-triples-ints() =
-  if count(zip3(from-list([1, 2, 3]), from-list([4, 5, 6]), from-list([7, 8, 9]))) == 3
-  then unit else trap("zip3 ints")
+  if count(zip3(from-list([1, 2, 3]), from-list([4, 5, 6]), from-list([7, 8, 9]))) == 3 then
+    unit
+  else
+    trap("zip3 ints")
 
 @test
 def zip3-stops-at-shortest() =
-  if count(zip3(from-list([1, 2, 3]), from-list([4, 5]), from-list([7, 8, 9, 10]))) == 2
-  then unit else trap("zip3 stops at shortest")
+  if count(zip3(from-list([1, 2, 3]), from-list([4, 5]), from-list([7, 8, 9, 10]))) == 2 then
+    unit
+  else
+    trap("zip3 stops at shortest")
 
 @test
-def zip3-three-different-element-types() =
-  match next(zip3(from-list(["a", "b"]), from-list([1, 2]), from-list([true, false]))) with
+def zip3-three-different-element-types() = match next(
+    zip3(from-list(["a", "b"]), from-list([1, 2]), from-list([true, false]))
+  ) with
   | Option.None(_) => trap("zip3 mixed must yield")
-  | Option.Some(p) => (match p with | (triple, _rest) =>
-    (match triple with | (s, n, b) =>
-      if s == "a" then (if n == 1 then (if b then unit else trap("zip3 bool")) else trap("zip3 int"))
-      else trap("zip3 str")))
+  | Option.Some(p) => match p with
+    | (triple, _rest) => match triple with
+      | (s, n, b) => if s == "a" then
+        if n == 1 then if b then unit else trap("zip3 bool") else trap("zip3 int")
+      else
+        trap("zip3 str")
 
+@test
 /// SLICE-15: `windows2` — closure-free sliding adjacent pairs (n-1 out), pinned at two element types and the
 /// short-input edges (0/1 element → empty).
-
-@test
 def windows2-adjacent-pairs-ints() =
-  if count(windows2(from-list([1, 2, 3, 4]))) == 3
-  then unit else trap("windows2 ints (n-1 pairs)")
+  if count(windows2(from-list([1, 2, 3, 4]))) == 3 then unit else trap("windows2 ints (n-1 pairs)")
 
 @test
-def windows2-carries-both-neighbors() =
-  match next(windows2(from-list([10, 20, 30]))) with
+def windows2-carries-both-neighbors() = match next(windows2(from-list([10, 20, 30]))) with
   | Option.None(_) => trap("windows2 must yield")
-  | Option.Some(p) => (match p with | (pair, _rest) =>
-    (match pair with | (l, r) =>
-      if l == 10 then (if r == 20 then unit else trap("windows2 right")) else trap("windows2 left")))
+  | Option.Some(p) => match p with
+    | (pair, _rest) => match pair with
+      | (l, r) => if l == 10 then
+        if r == 20 then unit else trap("windows2 right")
+      else
+        trap("windows2 left")
 
 @test
 def windows2-strings-second-source-type() =
-  if count(windows2(from-list(["a", "b", "c"]))) == 2
-  then unit else trap("windows2 String source (2nd element type)")
+  if count(windows2(from-list(["a", "b", "c"]))) == 2 then
+    unit
+  else
+    trap("windows2 String source (2nd element type)")
 
 @test
 def windows2-singleton-is-empty() =
-  if count(windows2(from-list([7]))) == 0
-  then unit else trap("windows2 of a singleton is empty")
-
-/// SLICE-16: `count-if` — closure-storing consumer, counts matches in one pass (Int64 result), pinned at two
-/// element types and the none/all edges.
+  if count(windows2(from-list([7]))) == 0 then unit else trap("windows2 of a singleton is empty")
 
 @test
+/// SLICE-16: `count-if` — closure-storing consumer, counts matches in one pass (Int64 result), pinned at two
+/// element types and the none/all edges.
 def count-if-counts-matching-ints() =
-  if count-if(from-list([1, 2, 3, 4]), fn(x) => x > 2) == 2
-  then unit else trap("count-if ints")
+  if count-if(from-list([1, 2, 3, 4]), fn(x) => x > 2) == 2 then unit else trap("count-if ints")
 
 @test
 def count-if-counts-matching-strings() =
-  if count-if(from-list(["a", "bb", "ccc"]), fn(s) => String.byte-len(s) > 1) == 2
-  then unit else trap("count-if String source (2nd element type)")
+  if count-if(from-list(["a", "bb", "ccc"]), fn(s) => String.byte-len(s) > 1) == 2 then
+    unit
+  else
+    trap("count-if String source (2nd element type)")
 
 @test
 def count-if-none-match-is-zero() =
-  if count-if(from-list([1, 2, 3]), fn(x) => x > 100) == 0
-  then unit else trap("count-if none match")
+  if count-if(from-list([1, 2, 3]), fn(x) => x > 100) == 0 then
+    unit
+  else
+    trap("count-if none match")
 
+@test
 /// EMPTY-SOURCE EDGE for the predicate/search consumers — the degenerate boundary where vacuous-truth
 /// bugs hide. giter is a materialized cons-cell, so `take(from-list([1]), 0)` is the TYPED empty (a
 /// `GIter.Nil` at a fixed element type — a bare `empty()`/unconstrained `GIter.Nil` at these consumers
@@ -873,9 +999,11 @@ def count-if-none-match-is-zero() =
 /// observable result: `all` → true (vacuously), `any` → false, `count`/`count-if` → 0, `find`/`position`
 /// → None. Pinned so a future `Nil`-arm change can't silently flip a vacuous case (the classic `all []`
 /// → false). Mirrors the same pins in adapter.cdz + iter.cdz.
-@test
 def all-of-empty-is-vacuously-true() =
-  if all(take(from-list([1]), 0), fn(x) => x > 0) then unit else trap("all empty must be vacuously true")
+  if all(take(from-list([1]), 0), fn(x) => x > 0) then
+    unit
+  else
+    trap("all empty must be vacuously true")
 
 @test
 def any-of-empty-is-false() =
@@ -887,96 +1015,120 @@ def count-of-empty-is-zero() =
 
 @test
 def count-if-of-empty-is-zero() =
-  if count-if(take(from-list([1]), 0), fn(x) => x > 0) == 0 then unit else trap("count-if empty = 0")
+  if count-if(take(from-list([1]), 0), fn(x) => x > 0) == 0 then
+    unit
+  else
+    trap("count-if empty = 0")
 
 @test
-def find-of-empty-is-none() =
-  match find(take(from-list([1]), 0), fn(x) => x > 0) with
+def find-of-empty-is-none() = match find(take(from-list([1]), 0), fn(x) => x > 0) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("find empty must be None")
 
 @test
-def position-of-empty-is-none() =
-  match position(take(from-list([1]), 0), fn(x) => x > 0) with
+def position-of-empty-is-none() = match position(take(from-list([1]), 0), fn(x) => x > 0) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("position empty must be None")
 
+@test
 /// SLICE-17: `map-while` — closure-storing, fused map + take-while over an Option-returning closure
 /// (element-changing), pinned at two source element types, the stop-at-None, and the all-Some cases.
-
-@test
 def map-while-stops-at-first-none-ints() =
-  if int-list-eq(collect(map-while(from-list([1, 2, 3, 4]),
-    fn(x) => if x < 3 then Option.Some(x * 10) else Option.None(unit))), [10, 20])
-  then unit else trap("map-while stops at first None")
+  if int-list-eq(
+      collect(
+        map-while(from-list([1, 2, 3, 4]), fn(x) =>
+          if x < 3 then Option.Some(x * 10) else Option.None(unit))
+      ),
+      [10, 20]
+    ) then
+    unit
+  else
+    trap("map-while stops at first None")
 
 @test
 def map-while-all-some-maps-every-element-strings() =
-  if int-list-eq(collect(map-while(from-list(["a", "bb", "ccc"]), fn(s) => Option.Some(String.byte-len(s)))), [1, 2, 3])
-  then unit else trap("map-while String source, all Some")
+  if int-list-eq(
+      collect(map-while(from-list(["a", "bb", "ccc"]), fn(s) => Option.Some(String.byte-len(s)))),
+      [1, 2, 3]
+    ) then
+    unit
+  else
+    trap("map-while String source, all Some")
 
 @test
 def map-while-first-none-is-empty() =
   // (The `x * 10` payload is incidental — an identity `Some(x)` also composes now that rcdzc `565f6d184`
   // resolved the former identity-closure residual; kept as-is since it still exercises the first-None stop.)
-  if count(map-while(from-list([5, 1, 2]), fn(x) => if x < 3 then Option.Some(x * 10) else Option.None(unit))) == 0
-  then unit else trap("map-while first element None is empty")
-
-/// SLICE-18: `interleave` — closure-free, alternate two iterators then append the remainder, pinned at two
-/// element types and the uneven-length case.
+  if count(
+        map-while(from-list([5, 1, 2]), fn(x) =>
+          if x < 3 then Option.Some(x * 10) else Option.None(unit))
+      ) == 0 then
+    unit
+  else
+    trap("map-while first element None is empty")
 
 @test
+/// SLICE-18: `interleave` — closure-free, alternate two iterators then append the remainder, pinned at two
+/// element types and the uneven-length case.
 def interleave-alternates-ints() =
-  if int-list-eq(collect(interleave(from-list([1, 3, 5]), from-list([2, 4, 6]))), [1, 2, 3, 4, 5, 6])
-  then unit else trap("interleave alternates ints")
+  if int-list-eq(
+      collect(interleave(from-list([1, 3, 5]), from-list([2, 4, 6]))),
+      [1, 2, 3, 4, 5, 6]
+    ) then
+    unit
+  else
+    trap("interleave alternates ints")
 
 @test
 def interleave-appends-remainder-when-uneven() =
-  if int-list-eq(collect(interleave(from-list([1, 3, 5]), from-list([2]))), [1, 2, 3, 5])
-  then unit else trap("interleave uneven appends remainder")
+  if int-list-eq(collect(interleave(from-list([1, 3, 5]), from-list([2]))), [1, 2, 3, 5]) then
+    unit
+  else
+    trap("interleave uneven appends remainder")
 
 @test
 def interleave-strings-second-source-type() =
-  if str-list-eq(collect(interleave(from-list(["a", "c"]), from-list(["b"]))), ["a", "b", "c"])
-  then unit else trap("interleave String source (2nd element type)")
-
-/// SLICE-21: `last-where` — closure-storing, the last predicate match (the from-the-end `find`), pinned at
-/// two element types and a miss.
+  if str-list-eq(collect(interleave(from-list(["a", "c"]), from-list(["b"]))), ["a", "b", "c"]) then
+    unit
+  else
+    trap("interleave String source (2nd element type)")
 
 @test
-def last-where-finds-last-matching-int() =
-  match last-where(from-list([1, 2, 3, 4]), fn(x) => x < 4) with
+/// SLICE-21: `last-where` — closure-storing, the last predicate match (the from-the-end `find`), pinned at
+/// two element types and a miss.
+def last-where-finds-last-matching-int() = match last-where(from-list([1, 2, 3, 4]), fn(x) => x < 4) with
   | Option.None(_) => trap("last-where int must find")
   | Option.Some(v) => if v == 3 then unit else trap("last-where int value")
 
 @test
-def last-where-finds-last-matching-string() =
-  match last-where(from-list(["a", "bb", "c"]), fn(s) => String.byte-len(s) == 1) with
+def last-where-finds-last-matching-string() = match last-where(from-list(["a", "bb", "c"]), fn(s) =>
+    String.byte-len(s) == 1) with
   | Option.None(_) => trap("last-where str must find")
   | Option.Some(v) => if v == "c" then unit else trap("last-where str value")
 
 @test
-def last-where-miss-is-none() =
-  match last-where(from-list([1, 2, 3]), fn(x) => x > 100) with
+def last-where-miss-is-none() = match last-where(from-list([1, 2, 3]), fn(x) => x > 100) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("last-where miss must be None")
 
+@test
 /// SLICE-22: `span-len` — closure-storing consumer, the leading-run length (Int64 result), pinned at two
 /// element types, all-pass, and first-fail edges.
-
-@test
 def span-len-counts-leading-run-ints() =
-  if span-len(from-list([1, 2, 5, 1]), fn(x) => x < 3) == 2
-  then unit else trap("span-len ints")
+  if span-len(from-list([1, 2, 5, 1]), fn(x) => x < 3) == 2 then unit else trap("span-len ints")
 
 @test
 def span-len-strings-second-source-type() =
-  if span-len(from-list(["a", "b", "cc"]), fn(s) => String.byte-len(s) == 1) == 2
-  then unit else trap("span-len String source (2nd element type)")
+  if span-len(from-list(["a", "b", "cc"]), fn(s) => String.byte-len(s) == 1) == 2 then
+    unit
+  else
+    trap("span-len String source (2nd element type)")
 
 @test
 def span-len-first-fails-is-zero() =
-  if span-len(from-list([9, 1, 2]), fn(x) => x < 3) == 0
-  then unit else trap("span-len first-fail is zero")
+  if span-len(from-list([9, 1, 2]), fn(x) => x < 3) == 0 then
+    unit
+  else
+    trap("span-len first-fail is zero")
 
 export { GIter.* }

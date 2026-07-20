@@ -91,6 +91,9 @@ enum Cmd {
     Lint(syntax_cli::LintArgs),
     /// Find duplicated subtrees (clones) within/across programs.
     Clones(syntax_cli::ClonesArgs),
+    /// Apply a canonicalizing normalization codemod (opt-in, distinct from `fmt`): currently the
+    /// single-clause-irrefutable-`match`→`let` rewrite (`--match-to-let`).
+    Normalize(syntax_cli::NormalizeArgs),
 
     // ── compiler (rcdzc) ────────────────────────────────────────────────────────────────────────
     /// Compile binary-AST artifacts to one or more backend targets (wasm/rust). The `rcdzc` surface.
@@ -361,6 +364,7 @@ fn main() -> ExitCode {
         Cmd::Diff(a) => syntax_cli::run(syntax_cli::Cmd::Diff(a), PROG),
         Cmd::Lint(a) => syntax_cli::run(syntax_cli::Cmd::Lint(a), PROG),
         Cmd::Clones(a) => syntax_cli::run(syntax_cli::Cmd::Clones(a), PROG),
+        Cmd::Normalize(a) => syntax_cli::run(syntax_cli::Cmd::Normalize(a), PROG),
         // The compiler command. `cdz` (unlike bare `rcdzc`) holds the front-end, so it can accept a
         // SOURCE file directly — parsing it in-process to the `ast` artifact, and (for a debug target)
         // the `spans` artifact too — rather than requiring a pre-built binary AST.
@@ -4595,14 +4599,16 @@ impl ParamBound {
     }
 }
 
-/// A recognized ORDER relation between two integer parameters from a `@requires` — e.g. `(< a b)`, where
-/// both sides are param names (not a param-vs-literal, which a `ParamBound` already covers). Unlike a
+/// A recognized relation between two integer parameters from a `@requires` — e.g. `(< a b)` or `(= a b)`,
+/// where both sides are param names (not a param-vs-literal, which a `ParamBound` already covers). Unlike a
 /// per-param range clamp, a relation COUPLES two params, so it cannot be satisfied by clamping one in
-/// isolation. The runner enforces it by REJECTION SAMPLING: re-draw (advancing the seed deterministically)
-/// until every relation holds, bounded by fuel. Only order comparisons `< <= > >=` are recorded — a
-/// two-param `=` is not an order refinement (two independent draws are ~never equal, so it would only
-/// exhaust fuel), and any unrecognized shape stays unconstrained exactly as before. `op` is one of the
-/// recognized operator strings; `left`/`right` are parameter POSITIONS (matching the `GenKind` vec order).
+/// isolation. Two enforcement strategies by operator. An ORDER op (`< <= > >=`) is enforced by REJECTION
+/// SAMPLING: re-draw (advancing the seed deterministically) until every relation holds, bounded by fuel. An
+/// EQUALITY (`=`) is enforced by PROPAGATION: the right param's value is copied FROM the left, so `a = b`
+/// holds by construction with ZERO rejection (two independent draws are ~never equal, so rejection would only
+/// exhaust fuel — propagation is the reject-free analogue of clamping for a range bound). Any unrecognized
+/// shape stays unconstrained exactly as before. `op` is one of the recognized operator strings; `left`/`right`
+/// are parameter POSITIONS (matching the `GenKind` vec order).
 #[derive(Clone, Copy)]
 struct Relation {
     left: usize,
@@ -4610,15 +4616,33 @@ struct Relation {
     right: usize,
 }
 
-/// Whether `l OP r` holds for the recognized order operators (an unrecognized op vacuously holds — it was
-/// never recorded, so this is only reached for `< <= > >=`).
+/// Whether `l OP r` holds for the recognized operators (an unrecognized op vacuously holds — it was never
+/// recorded, so this is only reached for `< <= > >= =`). After `propagate_equalities` runs, an `=` relation
+/// always holds; it is still checked here so the rejection loop's `relations_hold` guard is total.
 fn relation_holds(op: &str, l: i64, r: i64) -> bool {
     match op {
         "<" => l < r,
         "<=" => l <= r,
         ">" => l > r,
         ">=" => l >= r,
+        "=" => l == r,
         _ => true,
+    }
+}
+
+/// Enforce each EQUALITY relation (`(= a b)`) by copying the LEFT param's value onto the RIGHT — so `a = b`
+/// holds BY CONSTRUCTION, no rejection. Iterated to a fixpoint (bounded by the equality count) so a chain
+/// `a = b and b = c` fully propagates (all become `a`) regardless of the order the relations were recorded.
+/// Order relations are untouched here (they go through rejection sampling). Applied after each draw and after
+/// building each shrink trial.
+fn propagate_equalities(relations: &[Relation], inputs: &mut [String]) {
+    let eq_count = relations.iter().filter(|r| r.op == "=").count();
+    for _ in 0..eq_count {
+        for rel in relations {
+            if rel.op == "=" && rel.left < inputs.len() && rel.right < inputs.len() {
+                inputs[rel.right] = inputs[rel.left].clone();
+            }
+        }
     }
 }
 
@@ -4676,10 +4700,11 @@ fn param_bounds(db: &rcdzc::db::Db, def: usize) -> (Vec<ParamBound>, Vec<Relatio
 
 /// Narrow `bounds` (and collect `relations`) from ONE `@requires` predicate AST node. Recognizes a
 /// comparison `(OP a b)` for OP in `>= > <= < =`: a (param, literal) pairing in either order narrows that
-/// param's `ParamBound`; a (param, param) pairing for an ORDER op (`< <= > >=`) records a `Relation` between
-/// the two params (a coupled constraint a single-param clamp cannot express). It also descends a conjunction
+/// param's `ParamBound`; a (param, param) pairing for an ORDER op (`< <= > >=`) or `=` records a `Relation`
+/// between the two params (a coupled constraint a single-param clamp cannot express — an order relation is
+/// satisfied by rejection sampling, an equality by propagation). It also descends a conjunction
 /// `(and p q …)` / `(& p q …)` so `(and (>= x 0) (< x 100))` bounds `x` to `[0, 99]`. Anything else (a call,
-/// a non-linear predicate, a two-param `=`) is left unrecognized — no change, exactly as before.
+/// a non-linear predicate) is left unrecognized — no change, exactly as before.
 fn narrow_from_predicate(
     db: &rcdzc::db::Db,
     pred: rcdzc::ast::StructId,
@@ -4722,14 +4747,14 @@ fn narrow_from_predicate(
             }
             return;
         }
-        // `(OP param param)` — a RELATION between two params (`(< a b)`). Only an ORDER op is a refinement
-        // we can satisfy by rejection sampling; a two-param `=` is dropped (two independent draws are ~never
-        // equal — recording it would only burn fuel). A param compared to itself is skipped (`(< a a)` is
-        // unsatisfiable — leave it to trap, not our job to mask).
+        // `(OP param param)` — a RELATION between two params. An ORDER op (`< <= > >=`) is satisfied by
+        // rejection sampling; an EQUALITY `=` is satisfied by propagation (copy left→right). A param compared
+        // to itself is skipped: `(< a a)` is unsatisfiable (leave it to trap, not our job to mask), and
+        // `(= a a)` is trivially true (no constraint).
         if let (Some(ln), Some(rn)) = (db.ast.as_name(lhs), db.ast.as_name(rhs))
             && let (Some(&li), Some(&ri)) = (pos_of.get(ln), pos_of.get(rn))
             && li != ri
-            && matches!(op, "<" | "<=" | ">" | ">=")
+            && matches!(op, "<" | "<=" | ">" | ">=" | "=")
         {
             relations.push(Relation {
                 left: li,
@@ -5279,15 +5304,21 @@ fn generate_inputs(
     relations: &[Relation],
     seed: u64,
 ) -> Vec<String> {
-    let first = draw_inputs(gens, bounds, seed);
+    // Draw, then PROPAGATE equalities (copy left→right so `(= a b)` holds by construction), then check the
+    // remaining ORDER relations. Propagation is applied to every attempt so the order check sees the
+    // post-propagation values.
+    let mut first = draw_inputs(gens, bounds, seed);
+    propagate_equalities(relations, &mut first);
     if relations.is_empty() || relations_hold(relations, &first) {
         return first;
     }
-    // A relation was violated — re-draw from a distinct derived seed until all hold, bounded by fuel. The
-    // derived seed `seed ^ (k * ODD)` keeps every attempt a deterministic function of the original seed.
+    // An ORDER relation is still violated — re-draw from a distinct derived seed until all hold, bounded by
+    // fuel. The derived seed `seed ^ (k * ODD)` keeps every attempt a deterministic function of the original
+    // seed. (Equalities always hold post-propagation, so only an unsatisfiable order relation exhausts fuel.)
     const RELATION_FUEL: u64 = 256;
     for k in 1..=RELATION_FUEL {
-        let candidate = draw_inputs(gens, bounds, seed ^ k.wrapping_mul(0x9E3779B97F4A7C15));
+        let mut candidate = draw_inputs(gens, bounds, seed ^ k.wrapping_mul(0x9E3779B97F4A7C15));
+        propagate_equalities(relations, &mut candidate);
         if relations_hold(relations, &candidate) {
             return candidate;
         }
@@ -5468,9 +5499,12 @@ fn shrink(
             }
             let mut trial = best.clone();
             trial[i] = candidate;
-            // Likewise a shrink must not break a cross-param RELATION (`(< a b)`) — shrinking `b` toward 0
-            // could make `a < b` false, and the (D) trap would masquerade as "still fails". Skip a trial
-            // that violates any relation (no relations ⇒ admits every candidate).
+            // PROPAGATE equalities first: shrinking the LEFT param of `(= a b)` must carry to the right so the
+            // pair stays equal (a shrink of the right param is a copy, harmlessly overwritten — the right is
+            // slaved to the left). Then a shrink must not break a cross-param ORDER RELATION (`(< a b)`) —
+            // shrinking `b` toward 0 could make `a < b` false, and the (D) trap would masquerade as "still
+            // fails". Skip a trial that violates any relation (no relations ⇒ admits every candidate).
+            propagate_equalities(relations, &mut trial);
             if !relations_hold(relations, &trial) {
                 continue;
             }
@@ -9277,5 +9311,43 @@ mod tests {
         // Unexpected format → first non-empty line, never empty.
         assert_eq!(panic_reason("\n\nboom\n"), "boom");
         assert_eq!(panic_reason(""), "panic");
+    }
+
+    #[test]
+    fn propagate_equalities_copies_left_onto_right_to_a_fixpoint() {
+        let eq = |left, right| Relation {
+            left,
+            op: "=",
+            right,
+        };
+        let strs = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        // A single `(= a b)` copies param 0's value onto param 1.
+        let mut v = strs(&["7", "3"]);
+        propagate_equalities(&[eq(0, 1)], &mut v);
+        assert_eq!(v, strs(&["7", "7"]));
+
+        // A chain `(= a b)`, `(= b c)` propagates to a fixpoint — all take param 0's value — even though `b`
+        // is only set on the first pass; the fixpoint iteration carries it to `c`.
+        let mut v = strs(&["5", "1", "9"]);
+        propagate_equalities(&[eq(0, 1), eq(1, 2)], &mut v);
+        assert_eq!(v, strs(&["5", "5", "5"]));
+
+        // Fixpoint is ORDER-INDEPENDENT: the same chain recorded in reverse still fully propagates.
+        let mut v = strs(&["5", "1", "9"]);
+        propagate_equalities(&[eq(1, 2), eq(0, 1)], &mut v);
+        assert_eq!(v, strs(&["5", "5", "5"]));
+
+        // An ORDER relation is NOT propagated (only `=` is) — the values are left untouched here.
+        let mut v = strs(&["2", "8"]);
+        propagate_equalities(
+            &[Relation {
+                left: 0,
+                op: "<",
+                right: 1,
+            }],
+            &mut v,
+        );
+        assert_eq!(v, strs(&["2", "8"]));
     }
 }

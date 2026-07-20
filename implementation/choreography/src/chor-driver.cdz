@@ -390,6 +390,18 @@ def render-all-projectable-still-emits-sections() =
   else trap("a projectable protocol still shreds into actor sections")
 
 @test
+def render-all-empty-choice-is-benign() =
+  // DEGENERATE-EDGE PIN: a Choice with ZERO branches is vacuously wf + projectable (no non-chooser can be
+  // uninformed), and projects to an empty internal choice → codegen emits a valid but no-op actor module.
+  // Confirm the pipeline handles it BENIGNLY — a real `==== <Role> ==== ` section with a `def main`, no trap,
+  // no garbage. Pins that a future codegen change can't turn this degenerate shape into a crash or malformed
+  // output. (The chooser's empty ichoice body is correct: nothing to choose = a no-op.)
+  let out = render-all(["Buyer"], Chor.Choice("Buyer", [])) in
+  if contains-sub-str(out, "==== Buyer ====") then
+    (if contains-sub-str(out, "def main") then unit else trap("empty-choice actor still has a def main"))
+  else trap("an empty choice renders a benign actor section, not a trap or empty output")
+
+@test
 def compilable-sender-is-exact-golden() =
   // GOLDEN: pin the EXACT emitted module for a single send. Verified (hand-mirrored) to `cdz compile` to a
   // 92-byte wasm that runs → 0, so this exact string is compilable Cadenza. A future emit change that breaks

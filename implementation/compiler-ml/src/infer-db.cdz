@@ -161,7 +161,15 @@ def infer-param2(tree: Tree, id: Int64, calleeId: Int64, rcol: Map(Int64, Resolv
           | Option.Some(param2Id) =>
               (let ta2 = infer-node(tree, arg2Id, rcol, tcol) in
                (match Map.lookup(ta2, arg2Id) with
-                 | Option.Some(arg2Ty) => Option.Some(Map.insert(ta2, param2Id, arg2Ty))   // param2 : arg2's type
+                 // param2 takes its DECLARED narrow type (param-bind-type) if it has one — mirroring param1's
+                 // bind in infer-app-with-arg-ty — so a typed 2nd param `(: b Int8)` makes the body use `b` at
+                 // Int8 (not the arg's default Int64). Without this, `(def (f (: a Int8) (: b Int8)) (+ a b))`
+                 // typed `b` as Int64 → `(+ a b)` was mixed-width Int8+Int64 → spurious TErr/decline. An
+                 // out-of-range constant arg2 to a narrow param2 is also rejected (CDZ0302), matching param1.
+                 | Option.Some(arg2Ty) =>
+                     (if (if param-fit-ok(tree, param2Id, arg2Id) then false else true)
+                      then Option.None(unit)                                                   // arg2 out of param2's range → decline
+                      else Option.Some(Map.insert(ta2, param2Id, param-bind-type(tree, param2Id, arg2Ty))))
                  | Option.None(_) => Option.None(unit)))))
 
 /// Does the CONSTANT argument at node `argId` FIT the declared narrow type of the param `paramId`? — the

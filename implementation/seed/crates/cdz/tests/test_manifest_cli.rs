@@ -2119,6 +2119,109 @@ fn a_chained_requires_with_two_relations_satisfies_the_whole_chain() {
     );
 }
 
+/// An EQUALITY relation between two params — `@requires(a == b)` — is satisfied by PROPAGATION, not rejection
+/// (two independent draws are ~never equal, so rejection would exhaust fuel). The generator copies the LEFT
+/// param's draw onto the RIGHT so `a == b` holds BY CONSTRUCTION. Before this, `=` was dropped by the
+/// recognizer, the two params drew independently, `a != b`, the (D) pre-trap fired, and the runner reported a
+/// spurious `e(0, 1)`. A PASS proves every drawn pair was equal. No store needed (scalar Int params).
+#[test]
+fn an_equality_requires_is_satisfied_by_propagation_not_rejection() {
+    let d = dir("requires-eq");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(a == b)\n\
+         @test def e(a: Int64, b: Int64) = if a == b then unit else trap(\"a != b despite @requires(a == b)\")\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"x\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok,
+        "an equality @requires(a == b) propagates a==b so the property passes (no spurious pre-trap): {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS e (100 trials)"),
+        "the equality-@requires property passes all trials — every drawn pair was equal by propagation: {stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL e"),
+        "the equality @requires'd property must NOT spuriously fail on an unequal draw: {stdout}"
+    );
+}
+
+/// A CHAIN of equalities — `@requires(a == b and b == c)` — propagates to a FIXPOINT: all three params take
+/// the leftmost's value, so the whole chain holds by construction regardless of the order the relations were
+/// recorded. Pins the fixpoint iteration in `propagate_equalities`. No store needed (scalar Int params).
+#[test]
+fn a_chain_of_equality_requires_propagates_to_a_fixpoint() {
+    let d = dir("requires-eq-chain");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(a == b and b == c)\n\
+         @test def c3(a: Int64, b: Int64, c: Int64) = if a == b and b == c then unit else trap(\"chain not equal\")\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"x\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok,
+        "a chained equality @requires(a == b and b == c) propagates to a fixpoint so the property passes: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS c3 (100 trials)"),
+        "the equality-chain @requires property passes all trials — all three params equal by propagation: {stdout}"
+    );
+}
+
+/// A GENUINELY-failing property under an equality `@requires(a == b)` must still FAIL — and its counterexample
+/// must stay IN-DOMAIN (`a == b`), because propagation is re-applied through shrinking (shrinking the left `=`
+/// param carries to the right, so the pair stays equal; the (D) pre-trap can't masquerade as "still fails").
+/// The body traps whenever `a == b` (always true in-domain), so it fails on the first trial; the reported
+/// counterexample must satisfy `a == b`. Pins equality enforcement through generation AND shrinking.
+#[test]
+fn a_failing_equality_requires_property_reports_an_in_domain_counterexample() {
+    let d = dir("requires-eq-fail");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(a == b)\n\
+         @test def f(a: Int64, b: Int64) = if a == b then trap(\"always trips in domain\") else unit\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"x\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        !ok,
+        "a body that traps for every in-domain (a == b) pair must FAIL the property: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("FAIL f"),
+        "the equality property reports a genuine failure: {stdout}"
+    );
+    // The counterexample `f(A, B)` must satisfy A == B — propagation held through shrinking.
+    let cx = stdout
+        .lines()
+        .find(|l| l.contains("counterexample: f("))
+        .unwrap_or_else(|| panic!("no counterexample line: {stdout}"));
+    let inside = cx
+        .split("f(")
+        .nth(1)
+        .and_then(|s| s.split(')').next())
+        .unwrap_or_else(|| panic!("malformed counterexample: {cx}"));
+    let mut parts = inside.split(',').map(|p| p.trim().parse::<i64>());
+    let a = parts
+        .next()
+        .unwrap()
+        .unwrap_or_else(|_| panic!("bad a in {cx}"));
+    let b = parts
+        .next()
+        .unwrap()
+        .unwrap_or_else(|_| panic!("bad b in {cx}"));
+    assert_eq!(
+        a, b,
+        "the reported counterexample f({a}, {b}) must stay IN-DOMAIN (a == b) — propagation held through shrink: {cx}"
+    );
+}
+
 /// TERMINATION under an UNSATISFIABLE relation: `@requires(a < b and b < a)` can NEVER hold (it implies
 /// `a < a`), so rejection sampling can never find an in-domain draw. The generator must NOT loop forever —
 /// it is fuel-bounded (`RELATION_FUEL`), so after exhausting fuel it returns the last draw and lets the (D)

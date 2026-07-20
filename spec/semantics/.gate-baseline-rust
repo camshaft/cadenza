@@ -528,6 +528,7 @@ pass	a bin pattern over a runtime non-Bytes scrutinee is a type error
 pass	a bin pattern over an Int64 scrutinee is a type error
 pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
+pass	a big-endian runtime construction read back through an le pattern crosses the byte order
 pass	a binary literal with digit separators
 pass	a binary set operation leaves BOTH its operands unchanged — set-algebra persistence
 pass	a binary-radix literal carries the N suffix and an underscore group
@@ -2397,6 +2398,7 @@ pass	a two-arm match does not evaluate the unselected arm's trapping body
 pass	a two-arm match whose wildcard binds the scrutinee and applies a trap-free op — selects, binder reads it
 pass	a two-arm match whose wildcard binds the scrutinee — the zero-probe arm
 pass	a two-constructor-element list arm falls through when the second tag differs
+pass	a two-level index reads an inner element of a list of lists
 pass	a two-parameter closure is applied at full arity through a recursive HOF
 pass	a two-parameter sum whose variants use the parameters in different orders instantiates correctly
 pass	a two-payload constructor applied in curried form builds the variant

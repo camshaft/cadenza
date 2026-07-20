@@ -528,6 +528,7 @@ pass	a bit-field width that is not a compile-time constant is ill-formed
 pass	a bits pattern segment reads sub-byte fields back into integers
 pass	a bitwise AND on an unusual signed width clears the sign bit to a non-negative result
 pass	a bitwise OR on an unusual signed width sign-extends a result that sets the sign bit
+pass	a big-endian runtime construction read back through an le pattern crosses the byte order
 pass	a bitwise XOR on an unusual signed width sign-extends a result that sets the sign bit
 pass	a bitwise operator on a boolean operand names the integer requirement
 pass	a bool match missing the false arm is non-exhaustive
@@ -648,7 +649,7 @@ pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
 pass	a closure returning Bytes crosses to the host as list<u8>
 pass	a closure returning Unit is declined — Unit has no machine representation
-todo	a closure-payload sum picked by an if-helper, applied by a match-consumer, with a binding reused as both args
+pass	a closure-payload sum picked by an if-helper, applied by a match-consumer, with a binding reused as both args
 pass	a closure returning a LIST of tuples (direct-call)
 pass	a closure returning a List crosses as the value form
 pass	a closure returning a NESTED List
@@ -2371,6 +2372,7 @@ pass	a two-arm match does not evaluate the unselected arm's trapping body
 pass	a two-arm match whose wildcard binds the scrutinee and applies a trap-free op — selects, binder reads it
 pass	a two-arm match whose wildcard binds the scrutinee — the zero-probe arm
 pass	a two-constructor-element list arm falls through when the second tag differs
+pass	a two-level index reads an inner element of a list of lists
 pass	a two-parameter closure is applied at full arity through a recursive HOF
 pass	a two-parameter sum whose variants use the parameters in different orders instantiates correctly
 pass	a two-payload constructor applied in curried form builds the variant

@@ -17,6 +17,7 @@
 //!                                               — register a one-shot/periodic timer that fires <trigger-kind>.
 //!   `cdz-agent schedule-cancel <log> <id>`     — cancel a schedule by id.
 //!   `cdz-agent schedule-list <log>`            — list the active schedules (read-only).
+//!   `cdz-agent cursor <log>`                   — show the daemon resume high-water mark + unprocessed backlog.
 //!   `cdz-agent run <log> <event-kind>`        — one daemon step: read the log → latest genesis → drive an
 //!                                               interpret turn on the scalar <event-kind>. (The full event-
 //!                                               source loop is a later rung; this runs ONE tick.)
@@ -260,6 +261,34 @@ fn run() -> Result<()> {
                         s.id, s.first_ms, s.trigger_kind
                     );
                 }
+            }
+            Ok(())
+        }
+        Some("cursor") => {
+            // Inspect the daemon's RESUME high-water mark (operator read verb, companion to crash-recovery):
+            // report the latest recorded `daemon-cursor` (the seq a `start` with no --from auto-resumes from) and
+            // the PENDING TRIGGER backlog beyond it — events with seq >= cursor that are NOT the daemon's own
+            // reserved bookkeeping (a next round would PERFORM these). We count non-reserved events specifically:
+            // the daemon appends its own prim-*/daemon-cursor records AFTER the cursor, so a raw event count would
+            // overstate the backlog. Read-only, store-independent (a pure fold). No recorded cursor = the daemon
+            // has done no work yet → a fresh `start` processes every pending trigger.
+            let log_path = args
+                .get(2)
+                .ok_or_else(|| anyhow!("usage: cdz-agent cursor <log>"))?;
+            let log = FileLog::open(log_path).with_context(|| format!("open log {log_path}"))?;
+            let events = log.tail(0)?;
+            let cursor = daemon::latest_cursor(&events).unwrap_or(0);
+            let pending_triggers = events
+                .iter()
+                .filter(|e| e.seq >= cursor && !daemon::is_reserved_kind(&e.kind))
+                .count();
+            match daemon::latest_cursor(&events) {
+                Some(c) => println!(
+                    "cursor: daemon resume high-water mark = {c} ({pending_triggers} pending trigger(s) beyond it)"
+                ),
+                None => println!(
+                    "cursor: no daemon-cursor recorded yet — a `start` would process all {pending_triggers} pending trigger(s) from the log"
+                ),
             }
             Ok(())
         }
@@ -510,7 +539,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         _ => Err(anyhow!(
-            "usage: cdz-agent <bootstrap|inject-genesis|emit-policy|authz-grant|authz-revoke|authz-requests|schedule-create|schedule-cancel|schedule-list|emit|run|perform|hosted|replay|fork|start> ...\n\
+            "usage: cdz-agent <bootstrap|inject-genesis|emit-policy|authz-grant|authz-revoke|authz-requests|schedule-create|schedule-cancel|schedule-list|cursor|emit|run|perform|hosted|replay|fork|start> ...\n\
              \x20 bootstrap <log>                    — create/open the event log\n\
              \x20 inject-genesis <log> <program.cdz> — append the genesis program\n\
              \x20 emit-policy <log> <policy.cedar>    — append a Cedar capability policy (attenuates each invocation; latest supersedes)\n\
@@ -520,6 +549,7 @@ fn run() -> Result<()> {
              \x20 schedule-create <log> <id> <trigger-kind> --first-ms <ms> [--period-ms <ms>] [--payload <t>] — register a one-shot/periodic timer\n\
              \x20 schedule-cancel <log> <id>          — cancel a schedule by id (a later create re-registers)\n\
              \x20 schedule-list <log>                 — list the active schedules (read-only)\n\
+             \x20 cursor <log>                        — show the daemon resume high-water mark + unprocessed backlog (read-only)\n\
              \x20 emit <log> <kind> <payload>        — append an external trigger event (a minimal event source; refuses reserved kinds)\n\
              \x20 run <log> <event-kind>             — one daemon tick (COUNT the scheduled host-ops)\n\
              \x20 perform <log> <event-kind>         — one daemon tick that EXECUTES the ops (K1c, in-program mock), summing per-op results\n\

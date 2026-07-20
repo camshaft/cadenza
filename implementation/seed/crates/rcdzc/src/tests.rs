@@ -58348,6 +58348,17 @@ mod stage1 {
             fix.replacement, "(: a Float64)",
             "the exact repair spelling"
         );
+        // ROUND TRIP backing the VERIFIED marker: splicing the fix's `(: a Float64)` in place of the
+        // colon-less `(a Float64)` binder yields a program that compiles clean — the add-`:` rewrite
+        // clears the CDZ0201 by construction (an annotated binder is exactly what the parameter position
+        // wants). `a` is read in the body so the repaired param draws no consequent unused warning.
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (def (f (: a Float64)) a) (export f))"
+            )))
+            .is_ok(),
+            "applying the verified add-`:` fix must recompile clean"
+        );
 
         // A COMPOUND type (`(List Int64)`) has no single name atom to splice — the message still fires
         // (routing the repair) but carries NO fix.

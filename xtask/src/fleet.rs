@@ -2173,9 +2173,7 @@ fn watchdog(
         // so exempt them. Uses the canonical hub inbox (fleet.inbox), never a relative path.
         // Capture the pane ONCE for the two report-only pane signals below (drain-stall + saturation).
         let pane = capture_pane(&session, &a.name);
-        let pane_working = pane
-            .as_deref()
-            .is_some_and(|s| s.contains("esc to interrupt"));
+        let pane_working = pane.as_deref().is_some_and(pane_shows_working);
 
         let ctx_pct = pane.as_deref().and_then(parse_context_pct);
         // Only ACTIONABLE queued mail counts toward a drain-stall — stale informational notes/merged
@@ -3256,13 +3254,30 @@ fn capture_pane(session: &str, agent: &str) -> Option<String> {
         .and_then(|o| String::from_utf8(o.stdout).ok())
 }
 
+/// Does a captured pane's TEXT indicate Claude is alive + busy (so re-arming or drain-flagging it would
+/// interrupt real work / misread liveness)? Two signals, pure so both watchdog sites share one rule:
+///   * "esc to interrupt" — a turn is in flight (the normal working affordance).
+///   * "Retrying in …" / "attempt N/N" — Claude Code is in API-retry BACKOFF (a 429/5xx transient). The
+///     loop IS alive and will resume when the retry succeeds; the retry status line can momentarily
+///     REPLACE the "esc to interrupt" affordance, so without this an agent riding out a rate-limit reads
+///     as idle-at-prompt and gets falsely flagged as a drain-stall (observed: `breaker` under repeated
+///     429s flagged 2 sweeps running). An API-retry is liveness, not idleness — treat it as working.
+///
+/// Pure + unit-testable (no tmux).
+fn pane_shows_working(pane_text: &str) -> bool {
+    pane_text.contains("esc to interrupt")
+        || pane_text.contains("Retrying in ")
+        || pane_text.contains("Retrying…")
+}
+
 /// Does the agent's tmux pane show Claude actively working? Claude Code prints an "esc to interrupt"
-/// affordance in its status line while a turn is in flight; its presence means the loop is alive and
-/// mid-tick, so a stale heartbeat is just a long tick — don't re-arm (that would inject a `/loop`
-/// into the middle of real work). Captures only the visible pane (no scrollback).
+/// affordance in its status line while a turn is in flight (and a "Retrying …" line during API-retry
+/// backoff); either means the loop is alive and mid-tick, so a stale heartbeat is just a long tick / a
+/// transient rate-limit — don't re-arm (that would inject a `/loop` into the middle of real work).
+/// Captures only the visible pane (no scrollback).
 fn window_is_working(session: &str, agent: &str) -> bool {
     capture_pane(session, agent)
-        .map(|s| s.contains("esc to interrupt"))
+        .map(|s| pane_shows_working(&s))
         .unwrap_or(false)
 }
 
@@ -6663,6 +6678,27 @@ mod tests {
         );
         // Clamp a nonsense over-100 reading to 100 (never trust a status line above the wall).
         assert_eq!(parse_context_pct("140% context"), Some(100));
+    }
+
+    #[test]
+    fn pane_shows_working_counts_both_the_affordance_and_api_retry() {
+        // The normal working affordance → working.
+        assert!(pane_shows_working(
+            "  ⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
+        ));
+        // API-retry backoff → ALSO working (the breaker-class false drain-stall this fixes): a 429
+        // shows a "Retrying in Ns" line that can replace the affordance, but the loop is alive.
+        assert!(pane_shows_working(
+            "✻ 429 Too many tokens, please wait · Retrying in 6s · attempt 5/10\n❯ Press up to edit"
+        ));
+        assert!(pane_shows_working(
+            "✻ API error · Retrying in 1s · attempt 2/10"
+        ));
+        // An idle pane at the bare prompt with NEITHER signal → NOT working (a real idle/stall).
+        assert!(!pane_shows_working(
+            "❯ \n  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+        ));
+        assert!(!pane_shows_working(""));
     }
 
     #[test]

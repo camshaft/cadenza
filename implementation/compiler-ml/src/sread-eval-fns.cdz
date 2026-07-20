@@ -78,6 +78,36 @@ def se-two-param-if-selects-other-param() =
     | Option.None(_) => trap("2-param if then-branch runs"))
 
 @test
+def se-two-typed-narrow-params-run() =
+  // A 2-param def with BOTH params typed narrow (same width): `(def (f (: a Int8) (: b Int8)) (+ a b))`. The
+  // reader now parses a typed param followed by a second typed param (mixed/typed param composition), AND
+  // infer binds param2 to its DECLARED narrow type (not the arg's default Int64) — so `(+ a b)` is same-width
+  // Int8 arith, not a spurious mixed-width Int8+Int64 decline. f(5,20) → 25 (fits Int8). Before this slice a
+  // typed FIRST param made the whole def fast-decline (the reader only read a single typed param), AND the
+  // 2-param infer bound param2 to Int64 → mixed-width. Matches the reference.
+  (match run-src("(do (def (f (: a Int8) (: b Int8)) (+ a b)) (def (main) (f 5 20)) (export main))") with
+    | Option.Some(v) => (if v == 25 then unit else trap("f(5,20) Int8+Int8 = 25"))
+    | Option.None(_) => trap("both-typed-narrow 2-param def runs"))
+
+@test
+def se-two-typed-narrow-params-overflow-declines() =
+  // narrow enforcement composes on the 2nd typed param too: Int8+Int8 with f(100,100) = 200 overflows Int8 →
+  // declines (CDZ0304), NOT a laundered 200. Pins that param2's declared narrow width drives the body's
+  // overflow trap exactly like param1's.
+  (match run-src("(do (def (f (: a Int8) (: b Int8)) (+ a b)) (def (main) (f 100 100)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("Int8 100+100 = 200 overflows → declines"))
+
+@test
+def se-two-typed-params-arg2-out-of-range-declines() =
+  // CDZ0302 on the SECOND typed param: an arg2 out of param2's declared range rejects (like param1's fit-check).
+  // `(f (: a Int8) (: b Int8))` `(f 5 200)` → 200 doesn't fit Int8 → declines (was silently accepted before the
+  // infer-param2 fit-check).
+  (match run-src("(do (def (f (: a Int8) (: b Int8)) (+ a b)) (def (main) (f 5 200)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("arg2 200 out of Int8 range → declines (CDZ0302 on param2)"))
+
+@test
 def se-narrow-param-plus-literal-runs() =
   // ★ LITERAL ADAPTATION (corpus 09-functions:3580 → 110:Int8) ★ — the complement to the CDZ0304 overflow
   // case: `(def (f (: a Int8)) (+ a 10))` `(f 100)` → 110. The body arith is Int8 (the param drives it), and
