@@ -108,10 +108,8 @@ export default function Metaprogramming() {
         <C>(quote (+ 1 2))</C> gives, so the two are equal:
       </P>
       <Runnable
-        source={`(def (main)
-  (if (= (quote (+ 1 2))
-         (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2))))
-    1 0))`}
+        source={`(= (quote (+ 1 2))
+   (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2))))`}
       />
       <P>
         Constructing by hand is what you reach for when the pieces come from <em>values</em> rather than

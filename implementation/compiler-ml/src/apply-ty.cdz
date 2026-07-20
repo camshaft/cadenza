@@ -1,11 +1,11 @@
 /// apply-ty.cdz — the function-application step of a type checker: given a function type `TFun(a, b)`
-/// and an argument type, does the argument match the domain (structurally), and if so what is the result
-/// type? `apply-fun` returns `Option Ty` — `Some b` when `arg` structurally equals `a`, else `None`.
-/// `chain2` applies a curried function to two arguments, threading the `Option` (a `None` at any step
-/// short-circuits). This exercises RECURSIVE STRUCTURAL type equality (`ty-eq` descends both `TFun`
-/// arms) and Option-chained fallible application — the plumbing a real type checker's application rule
-/// uses.
-type Ty =
+  /// and an argument type, does the argument match the domain (structurally), and if so what is the result
+  /// type? `apply-fun` returns `Option Ty` — `Some b` when `arg` structurally equals `a`, else `None`.
+  /// `chain2` applies a curried function to two arguments, threading the `Option` (a `None` at any step
+  /// short-circuits). This exercises RECURSIVE STRUCTURAL type equality (`ty-eq` descends both `TFun`
+  /// arms) and Option-chained fallible application — the plumbing a real type checker's application rule
+  /// uses.
+  type Ty =
   | TInt
   | TBool
   | TFun(Ty, Ty)
@@ -24,18 +24,27 @@ def tag(t: Ty) = match t with
 /// inner match) — the shape the ML reader once mis-parsed. Kept only as a regression guard; `ty-eq` above
 /// (via `tag`) is what the module uses.
 def ty-eq-nested(x: Ty, y: Ty) = match x with
-  | Ty.TInt => (match y with | Ty.TInt => true | Ty.TBool => false | Ty.TFun(_, _) => false)
-  | Ty.TBool => (match y with | Ty.TInt => false | Ty.TBool => true | Ty.TFun(_, _) => false)
-  | Ty.TFun(a, b) => (match y with
+  | Ty.TInt => (match y with
+    | Ty.TInt => true
+    | Ty.TBool => false
+    | Ty.TFun(_, _) => false
+  )
+  | Ty.TBool => (match y with
+    | Ty.TInt => false
+    | Ty.TBool => true
+    | Ty.TFun(_, _) => false
+  )
+  | Ty.TFun(a, b) => match y with
     | Ty.TFun(c, d) => (if ty-eq-nested(a, c) then ty-eq-nested(b, d) else false)
-    | _ => false)
+    | _ => false
 
 /// Structural equality of two types (recursively over `TFun`). Nullary variants compare by `tag`; only
 /// the payload-carrying `TFun` needs a nested match — which is fine because its pattern is non-nullary.
 def ty-eq(x: Ty, y: Ty) = match x with
   | Ty.TFun(a, b) => (match y with
     | Ty.TFun(c, d) => (if ty-eq(a, c) then ty-eq(b, d) else false)
-    | _ => false)
+    | _ => false
+  )
   | _ => tag(x) == tag(y)
 
 /// Apply a function type to an argument type: `Some result` if the argument matches the domain, else `None`.
@@ -72,24 +81,33 @@ def ty-eq-fun-same() =
 @test
 def ty-eq-fun-differ-domain() =
   // (Int -> Bool) != (Bool -> Bool)
-  if ty-eq(Ty.TFun(Ty.TInt, Ty.TBool), Ty.TFun(Ty.TBool, Ty.TBool)) then trap("domains differ") else unit
+  if ty-eq(Ty.TFun(Ty.TInt, Ty.TBool), Ty.TFun(Ty.TBool, Ty.TBool)) then
+    trap("domains differ")
+  else
+    unit
 
 @test
 def ty-eq-nested-fun() =
   // (Int -> (Int -> Bool)) == itself, but != (Int -> (Bool -> Bool))
   let f = Ty.TFun(Ty.TInt, Ty.TFun(Ty.TInt, Ty.TBool)) in
   let g = Ty.TFun(Ty.TInt, Ty.TFun(Ty.TBool, Ty.TBool)) in
-  if ty-eq(f, f) then (if ty-eq(f, g) then trap("nested differ") else unit) else trap("nested equal")
+  if ty-eq(f, f) then if ty-eq(f, g) then trap("nested differ") else unit else trap("nested equal")
 
 @test
 def apply-match() =
   // (Int -> Bool) applied to Int → Some Bool (tag 1)
-  if result-tag(apply-fun(Ty.TFun(Ty.TInt, Ty.TBool), Ty.TInt)) == 1 then unit else trap("apply Int → Bool")
+  if result-tag(apply-fun(Ty.TFun(Ty.TInt, Ty.TBool), Ty.TInt)) == 1 then
+    unit
+  else
+    trap("apply Int → Bool")
 
 @test
 def apply-mismatch() =
   // (Int -> Bool) applied to Bool → None (tag -1)
-  if result-tag(apply-fun(Ty.TFun(Ty.TInt, Ty.TBool), Ty.TBool)) == 0 - 1 then unit else trap("wrong arg → None")
+  if result-tag(apply-fun(Ty.TFun(Ty.TInt, Ty.TBool), Ty.TBool)) == 0 - 1 then
+    unit
+  else
+    trap("wrong arg → None")
 
 @test
 def apply-non-function() =
@@ -120,10 +138,14 @@ def ty-eq-fully-nested-regression() =
   // pattern inside a nested match once mis-parsed. ty-eq-nested must agree with ty-eq on every shape.
   let f = Ty.TFun(Ty.TInt, Ty.TBool) in
   if ty-eq-nested(Ty.TInt, Ty.TInt) then
-    (if ty-eq-nested(Ty.TInt, Ty.TBool) then trap("Int ≠ Bool")
-     else (if ty-eq-nested(f, f) then
-       (if ty-eq-nested(f, Ty.TFun(Ty.TBool, Ty.TBool)) then trap("domains differ") else unit)
-     else trap("fun equals itself")))
-  else trap("Int = Int")
+    if ty-eq-nested(Ty.TInt, Ty.TBool) then
+      trap("Int ≠ Bool")
+    else
+      if ty-eq-nested(f, f) then
+        if ty-eq-nested(f, Ty.TFun(Ty.TBool, Ty.TBool)) then trap("domains differ") else unit
+      else
+        trap("fun equals itself")
+  else
+    trap("Int = Int")
 
 export { ty-eq, apply-fun, chain2 }

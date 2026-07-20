@@ -2208,6 +2208,73 @@
             (export main)))
   (output (: 100 Int8)))
 
+; --- Quantity over a HEAP-NUMERIC inner (BigInt/Rational) in a Set / List -------------------------
+; The Set/List cases above erase to an immediate scalar element. These pin the heap-numeric inner
+; through the SAME collection paths: a `(Qty BigInt u)` / `(Qty Rational u)` element erases to a heap
+; HANDLE, so Set dedup + List decode must compare/copy the pointed-to bignum/rational by CONTENT (and,
+; for Rational, the construction-time canonicalization normalizes the value). Mirrors the heap-numeric
+; Map-key pins on the Set/List side.
+
+(case "a BigInt-inner quantity Set dedups equal elements and keeps distinct ones"
+  (doc    "`(Qty (BigInt.of v) meter)` as a Set element with `v` a runtime Int64. A BigInt inner erases to a
+           heap handle, so Set dedup compares the pointed-to bignum by content: two equal elements collapse
+           to `Set.len` 1, and a distinct magnitude keeps `Set.len` 2. Combined as `dedup + 10*distinct` =
+           1 + 20 = 21. Pins content-address dedup for a heap-numeric quantity element.")
+  (input  (do
+            (def (main (: v Int64))
+              (+ (Set.len (Set.of (list (Qty.of (BigInt.of v) (Unit.base #"meter"))
+                                        (Qty.of (BigInt.of v) (Unit.base #"meter")))))
+                 (* 10 (Set.len (Set.of (list (Qty.of (BigInt.of v) (Unit.base #"meter"))
+                                              (Qty.of (BigInt.of (+ v 1)) (Unit.base #"meter"))))))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 21 Int64)))
+
+(case "a Rational-inner quantity Set dedups equal elements and keeps distinct ones"
+  (doc    "The Rational twin of the BigInt Set case: `(Qty (Rational.of v 2) meter)` elements. A Rational
+           inner erases to a heap handle, so Set dedup compares the pointed-to rational by content: `v/2` and
+           `v/2` collapse to `Set.len` 1, `v/2` and `(v+1)/2` stay `Set.len` 2. Combined `dedup + 10*distinct`
+           = 21. Pins content-address dedup for a Rational-inner quantity element.")
+  (input  (do
+            (def (main (: v Int64))
+              (+ (Set.len (Set.of (list (Qty.of (Rational.of v 2) (Unit.base #"meter"))
+                                        (Qty.of (Rational.of v 2) (Unit.base #"meter")))))
+                 (* 10 (Set.len (Set.of (list (Qty.of (Rational.of v 2) (Unit.base #"meter"))
+                                              (Qty.of (Rational.of (+ v 1) 2) (Unit.base #"meter"))))))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 21 Int64)))
+
+(case "a BigInt-inner quantity stored in a List reads back through List.at"
+  (doc    "`(List.at (list (Qty (BigInt v) m) (Qty (BigInt v+1) m)) 1)` with `v` a runtime Int64: the list
+           holds two BigInt-inner quantities (each a heap handle), `List.at 1` returns `(Some (Qty …))`, and
+           `Qty.value` reads the stored bignum. v=5 → index 1 is `(v+1) m` → BigInt 6. Pins that a
+           heap-numeric quantity List element round-trips through the list decode with its handle intact.")
+  (input  (do
+            (def (main (: v Int64))
+              (match (List.at (list (Qty.of (BigInt.of v) (Unit.base #"meter"))
+                                    (Qty.of (BigInt.of (+ v 1)) (Unit.base #"meter"))) 1)
+                ((Some q) (Qty.value q))
+                ((None) (BigInt.of 0))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 BigInt)))
+
+(case "a Rational-inner quantity stored in a List reads back canonicalized through List.at"
+  (doc    "The Rational twin of the BigInt List case: `(List.at (list (Qty (Rational v 2) m) …) 0)`. A
+           Rational inner erases to a heap handle, so the List element round-trips the rational by content,
+           canonicalized at construction. v=5 → `List.at 0` unwraps to `5/2`. Pins a Rational-inner quantity
+           List element decode (the canonical value survives the round-trip).")
+  (input  (do
+            (def (main (: v Int64))
+              (match (List.at (list (Qty.of (Rational.of v 2) (Unit.base #"meter"))
+                                    (Qty.of (Rational.of (+ v 1) 2) (Unit.base #"meter"))) 0)
+                ((Some q) (Qty.value q))
+                ((None) (Rational.of 0 1))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5/2 Rational)))
+
 ; --- Quantity joins: the same-unit flow and the explicit-conversion repair --------------------------
 ; 806e45ba9 fixed the mixed-unit join DIAGNOSTIC (a scale clash, not a shadowed declaration). These
 ; pin the join semantics around it, promoted from passing breaker probes: a same-unit join is ONE

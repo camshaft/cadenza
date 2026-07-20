@@ -8,6 +8,7 @@
 import { renderValue, renderSyntax, renderSyntaxDisplay, runtimeHash, compileTests, paramTestSignatures, type Surface, type ParamTestSig } from "../compiler/client.ts";
 import runtimeUrl from "../wasm/runtime.wasm?url";
 import { hexDigest, explainIfStaleRuntime } from "./runtimeHashGuard.ts";
+import { classifyParamTests, allTestNames } from "./classifyTests.ts";
 import type { RunJob, RunResult, TestResult } from "./runWorker.ts";
 
 export type { TestResult };
@@ -178,7 +179,7 @@ export async function runTestComponent(
     if (raw.kind === "tests") return raw.results;
     // A timeout / whole-suite error surfaces against every test AND every scalar/compound property (else a
     // driven property that timed out would silently vanish from the report).
-    const allNames = [...testNames, ...scalarProps.map((p) => p.name), ...compoundProps.map((p) => p.name)];
+    const allNames = allTestNames(testNames, scalarProps, compoundProps);
     if (raw.kind === "timeout") return allNames.map((name) => ({ name, pass: false, error: "timed out" }));
     // A whole-suite error (couldn't instantiate the component, etc.) — surface it against every test so the
     // caller shows the failure rather than a silent empty result.
@@ -215,15 +216,11 @@ export async function runTests(source: string, surface: Surface = "sexpr"): Prom
   // → the compound driver instantiates with a seeded gen-int pool + shrinks over it). `param_test_signatures`
   // classifies each: `compound: false` = scalar, `compound: true` = a `-gen` wrapper. BOTH now run live.
   const sigs = await paramTestSignatures(source, surface).catch(() => [] as ParamTestSig[]);
-  const scalarProps = sigs
-    .filter((s) => !s.compound)
-    .map((s) => ({ name: s.name, paramTypes: s.paramTypes }));
-  const compoundProps = sigs.filter((s) => s.compound).map((s) => ({ name: s.name }));
+  // Classify the parameterized @tests: SCALAR (arg-driven) vs COMPOUND (`-gen` pool-driven), with the
+  // DEFERRED remainder = every paramTestName the signatures didn't classify (a param shape with no
+  // synthesized generator yet). Pure + node-tested in classifyTests.test.ts.
+  const { scalarProps, compoundProps, deferredNames } = classifyParamTests(sigs, compiled.paramTestNames);
   const ran = await runTestComponent(compiled.component, compiled.nullaryTestNames, scalarProps, compoundProps);
-  // Defer only what the signatures did NOT classify as scalar OR compound (a defensive union — e.g. a param
-  // shape the compiler couldn't synthesize a generator for, like a not-yet-supported leaf type).
-  const driven = new Set([...scalarProps, ...compoundProps].map((p) => p.name));
-  const deferredNames = compiled.paramTestNames.filter((n) => !driven.has(n));
   const deferred: TestResult[] = deferredNames.map((name) => ({
     name,
     pass: false,

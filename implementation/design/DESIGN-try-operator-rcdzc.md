@@ -23,15 +23,21 @@ plus `v-effects` / `v-inference` / `v-syntax`, who own seams it touches.
 > vs the function). Sections below are being revised to this model; where they still say "`?`/`try`
 > synonyms" read `?` = propagate, `try` = catcher.
 
-**Status (2026-07-17):** **LANDED (as the propagate op, under the old `try` spelling); UNDER REDESIGN (name
+**Status (2026-07-20):** **LANDED (as the propagate op, under the old `try` spelling); UNDER REDESIGN (name
 split).** On trunk today: T0a (the `Try` node through resolve/infer + operand-shape CDZ0203), T0b (boundary
-check `enclosing_boundary_ty` + CDZ0230 + kind-mismatch CDZ0203), BRICK 1 (`Core::Block`/`Break` nodes),
-BRICK 2a (constant-success fold), BRICK 3a (constant-failure short-circuit + §283 elide). These implement
-the **propagate** semantics (the future `?`) at the function boundary. REMAINING: the name split (`?` suffix
-vs `try` catcher, §4.1 forks); the RUNTIME `?` (non-constant operand → `Core::MatchSum`/block-br emit, BRICK
-3b, operator-gated); the ML postfix `?` surface + the `(? e)` s-expr head (v-syntax); the explicit `try { }`
-catcher boundary (v2 / §4); and the T3 conversion-idiom prelude ops (`Result.map-err`/`Option.ok-or`). Line
-numbers are landmarks, not promises.
+check `enclosing_boundary_ty` + CDZ0230 + kind-mismatch CDZ0203, incl. the error-type-agreement CDZ0203),
+BRICK 1 (`Core::Block`/`Break` nodes), BRICK 2a (constant-success fold), BRICK 3a (constant-failure
+short-circuit + §283 elide). These implement the **propagate** semantics (the future `?`) at the function
+boundary. Comprehensively gated (`spec/semantics/23-try-operator.sexp` + the rcdzc `try` unit tests): the
+constant-fold executing paths (success/failure, inline-no-let, let-bound-var operand, compound payload,
+if/match position, anonymous-lambda boundary), the reject family (CDZ0203 operand-shape / kind-mismatch /
+error-type-disagree, CDZ0230 no-boundary), the strict-spine effect ordering, and two rcdzc-lib wasmtime RUN
+tests (a value executes, both paths). The lambda boundary is ruled (§6 v1): a lambda IS a function boundary,
+no auto-wrap. A diagnostic-dedup fix drops the misleading "lowers only a constant operand yet" decline on an
+ill-typed (CDZ0203) operand. REMAINING: the name split (`?` suffix vs `try` catcher, §4.1 forks); the RUNTIME
+`?` (non-constant operand → `Core::MatchSum`/block-br emit, BRICK 3b, operator-gated); the ML postfix `?`
+surface + the `(? e)` s-expr head (v-syntax); the explicit `try { }` catcher boundary (v2 / §4); and the T3
+conversion-idiom prelude ops (`Result.map-err`/`Option.ok-or`). Line numbers are landmarks, not promises.
 
 > **Origin.** The operator asked for "a `?` operator like Rust — there are quite a few nested matches we
 > could clean up" and, crucially, *"is that a monad generally? do we start going down that territory?"*
@@ -220,6 +226,19 @@ block, the lowering wraps the whole body in a `Core::Block` whose `T_B` is the f
 writes (`-> Result(a, b)` / `-> Option(a)`) is the boundary type. Each `?` inside becomes a `Core::Break`
 to that block on the failure arm (§3.2). A `?` in a function whose result type is neither `Result` nor
 `Option` is a reject (§6, CDZ0230).
+
+*"Function" here means any function body, named OR anonymous.* An immediately-applied lambda
+(`((fn () (let ((x (try (Some 7)))) (Some (+ x 1)))))`) is a boundary exactly like a named `def`:
+`enclosing_boundary_ty` walks to the nearest enclosing `(fn params body)` body, not only a `def` body. There
+is **no auto-wrap** (§5.1 fork B, decided): a lambda's result type is NOT promoted to `Option`/`Result` just
+because its body has a top-level `?` — the boundary is the lambda's *actual* result type. So a `?` under a
+FALLIBLE-typed lambda works (success unwraps, failure short-circuits the lambda), and a `?` under a
+NON-fallible lambda result is CDZ0230, the *same* rule as a def body — one rule for every function body, no
+def-vs-lambda divergence. (Ruled by v-try-operator 2026-07-20; the fallible-lambda executing behavior is
+corpus-pinned. The non-fallible-lambda CDZ0230 was initially missed for an *applied* lambda — the `?` was
+checked only on the β-reduced inlined copy, whose parentless boundary-walk hit the inlined-helper
+inconclusive tolerance — and is enforced by descending the original parented applied-lambda body; see the
+`try-op-in-applied-anon-lambda` fix.)
 
 **v2 — an explicit `try { }` block.** `try { body }` is a boundary whose `T_B` is the block's own inferred /
 checked `Result`/`Option` type, and whose *value* (when no `?` fires) is `body`. It lets a `?` be caught

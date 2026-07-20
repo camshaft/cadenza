@@ -1283,6 +1283,33 @@
   (input  (= (String.from-bytes (Bytes.of (list 244 144 128 128))) None))
   (output (: true Bool)))
 
+; The invalid-UTF8 cases above decode CONSTANT `(Bytes.of (list …))` literals, which the fold can validate at
+; compile time. A GENUINELY-runtime byte ROPE — a `Bytes.concat` of chunks chosen by a run-time `if` (a
+; folded-literal concat would collapse back to a literal) — reaches the emitted `str-from-bytes` decode as a
+; multi-chunk deferred concatenation, so the UTF-8 validator must walk the logical bytes ACROSS the leaf seam.
+; The sharpest face: a multi-byte scalar STRADDLING the seam — its lead byte the last of the left chunk, its
+; continuation the first of the right — must decode as one scalar (a validator that assumed a scalar lies
+; within a single leaf would wrongly reject it). Pins the runtime decode over a rope, including the seam-straddle.
+
+(case "String.from-bytes validates a multi-byte scalar straddling a runtime byte-rope's seam"
+  (doc    "Over a rope `(Bytes.concat left right)` assembled at run time (the left chunk chosen by a run-time
+           `if`, so the concat cannot fold): `sel`=0 builds `[99, 195] ++ [169]` — the é lead `C3`(195) ends
+           the left chunk, its continuation `A9`(169) starts the right — a VALID `cé` across the seam →
+           Some (→ 1). `sel`=1 builds `[99, 195] ++ [99]` — the lead `C3` then a NON-continuation `c`(99)
+           across the seam — INVALID (a lead with no continuation) → None (→ 0). Pins that the runtime
+           `str-from-bytes` decode walks the logical bytes across the leaf boundary and validates a scalar
+           that spans the seam, matching the const decode of the same byte sequence. Both backends via the
+           `(call)` form (a nullary rope const-folds; a runtime-selected chunk forces the genuine rope).")
+  (input  (do
+            (def (pickb (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
+            (def (validq (: b Bytes)) (match (String.from-bytes b) ((Some _s) 1) ((None) 0)))
+            (def (main (: sel Int64))
+              (validq (Bytes.concat (Bytes.of (list 99 195))
+                                    (pickb sel (Bytes.of (list 169)) (Bytes.of (list 99))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: 1 Int64)) (output (: 0 Int64)))
+
 (case "encoding a decoded string round-trips to the same bytes"
   (doc    "For well-formed bytes `b`, decoding then re-encoding yields `b`: matching the `(Some s)` arm of
            `(String.from-bytes b)` and taking `(String.to-bytes s)` gives back the original UTF-8 bytes.

@@ -94,18 +94,17 @@ export default function TypesAsValues() {
         id="types-as-values:1"
         prompt={
           <>
-            Branch on a type at compile time. Fill the type to compare against so that{" "}
-            <C>(Type.of true)</C> matches, selecting the <C>1</C> branch, not <C>0</C>.
+            Compare two types at compile time. Fill the type to compare against so that{" "}
+            <C>(Type.of true)</C> matches, making the comparison <C>true</C>, not <C>false</C>.
           </>
         }
-        starter={`(if (Type.eq (Type.of true) ?) 1 0)`}
-        solution={`(if (Type.eq (Type.of true) Bool) 1 0)`}
-        expected="1"
+        starter={`(Type.eq (Type.of true) ?)`}
+        solution={`(Type.eq (Type.of true) Bool)`}
+        expected="true"
         hint={
           <>
             <C>(Type.of true)</C> is the type <C>Bool</C>, so comparing it against <C>Bool</C> is{" "}
-            <C>true</C> and the <C>if</C> folds to <C>1</C>. (Compare against <C>Int64</C> and you'd get{" "}
-            <C>0</C>.)
+            <C>true</C>. (Compare against <C>Int64</C> and you'd get <C>false</C>.)
           </>
         }
       />
@@ -115,17 +114,17 @@ export default function TypesAsValues() {
         prompt={
           <>
             Two type-values are equal only when the types match exactly. Fill the value so its reflected
-            type equals <C>(Type.of 5)</C>, an <C>Int64</C>, making the check <C>1</C>.
+            type equals <C>(Type.of 5)</C>, an <C>Int64</C>, making the check <C>true</C>.
           </>
         }
-        starter={`(if (Type.eq (Type.of 5) (Type.of ?)) 1 0)`}
-        solution={`(if (Type.eq (Type.of 5) (Type.of 99)) 1 0)`}
-        expected="1"
+        starter={`(Type.eq (Type.of 5) (Type.of ?))`}
+        solution={`(Type.eq (Type.of 5) (Type.of 99))`}
+        expected="true"
         hint={
           <>
             <C>(Type.of 5)</C> is <C>Int64</C>, so you need another value whose type is <C>Int64</C>, any
             integer literal, e.g. <C>99</C>. A <C>true</C> or a <C>1.0</C> would be a different type and
-            give <C>0</C>.
+            give <C>false</C>.
           </>
         }
       />

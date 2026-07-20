@@ -1865,6 +1865,36 @@
             (export main)))
   (trap   "unreachable"))
 
+(case "a PLAIN @ensures whose predicate reads ONLY a parameter (not ret) is enforced — the dual of the nullary case"
+  (doc    "Every runtime @ensures case reads the result binder `ret`; this pins the DUAL — a postcondition that
+           references ONLY a PARAMETER and ignores `ret`. `@ensures(> x 0)` on `(f x) = (- x 1)`: the injected
+           `(let ((ret (- x 1))) (if (> x 0) ret (trap …)))` binds `ret` (unused by the predicate) and checks
+           `(> x 0)` over the param `x` — a postcondition constraining the INPUT at exit, a legitimate (if
+           unusual) contract. `(f 5)`: `x = 5 > 0` holds, so the check takes the pass arm and returns `ret` =
+           `4` — its own value. Pins that the enforcement wrap injects + returns `ret` correctly even when the
+           predicate never mentions it (the binder is still introduced, the body value still flows through, the
+           predicate resolves against the param in scope). Complements the nullary case (predicate reads only
+           `ret`, no param): together they pin both extremes of what an @ensures predicate may reference.")
+  (input  (do
+            (@ (ensures (> x 0)) (def (f (: x Int64)) (- x 1)))
+            (def (main) (f 5))
+            (export main)))
+  (output (: 4 Int64)))
+
+(case "a PLAIN @ensures with a constant-FALSE predicate always traps — the postcondition fires unconditionally"
+  (doc    "The degenerate soundness pin: an `@ensures false` (a predicate that is the literal `false`,
+           independent of `ret` or any param) must ALWAYS trap when the def runs — the postcondition can never
+           be satisfied. The injected `(let ((ret x)) (if false ret (trap …)))` binds `ret` then takes the trap
+           arm unconditionally — `unreachable`. `(f 5)` traps despite the body `x` = `5` computing fine. Pins
+           that the enforcement wrap does NOT const-fold away a statically-false postcondition into a silent
+           pass (a `(if false …)` that dropped the trap arm would let a provably-false contract compile to a
+           returning function) — the check is faithful even when the predicate is a compile-time constant.")
+  (input  (do
+            (@ (ensures false) (def (f (: x Int64)) x))
+            (def (main) (f 5))
+            (export main)))
+  (trap   "unreachable"))
+
 (case "TWO stacked @ensures COMPOSE: BOTH postconditions are enforced — value-transparent when both hold"
   (doc    "The `@ensures`-composition pin (analogue of the stacked-`@requires` cases above, for the exit side).
            A def may carry more than one `@ensures` — `(@ (ensures Q1) (@ (ensures Q2) (def …)))` — spelling two

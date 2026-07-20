@@ -1,19 +1,18 @@
 /// ty-eq.cdz — structural type EQUALITY over a recursive `Ty` sum, written the IDIOMATIC way: a SINGLE
-/// `match (a, b)` on the TUPLE of both types, with same-constructor arms and a self-recursive call on the
-/// payload sub-terms. This is the natural HM type-checker dispatch (`unify`/`ty-eq`/`subtype` all take it).
-///
-/// It is a permanent SOURCE-LEVEL regression witness for the tuple-of-sums CSE-key collision fixed on
-/// trunk: the shared-sum-payload-prefix CSE keyed its slot on (scrutinee, prefix LENGTH), so a
-/// `match (a, b)` over two sums produced TWO same-length payload prefixes off the one tuple scrutinee that
-/// COLLIDED — `b`'s payload read `a`'s — and a self-recursive `eq(a2, b2)` silently became `eq(a2, a2)`
-/// (returned equal when it should differ). The fix keys on the full prefix STEPS. This module exercises
-/// exactly that shape, so it stays green only while the fix holds — and the compiler-ml @test suite is now
-/// wired into `cargo xtask check`, so this guards the fix fleet-wide, not just in an rcdzc unit test.
-///
-/// (`unify.cdz` and `apply-ty.cdz` deliberately used NESTED single-sum matches to sidestep the bug while
-/// it was open; now that it's fixed, this module records that the idiomatic `match (a, b)` form is safe.)
-
-type Ty =
+  /// `match (a, b)` on the TUPLE of both types, with same-constructor arms and a self-recursive call on the
+  /// payload sub-terms. This is the natural HM type-checker dispatch (`unify`/`ty-eq`/`subtype` all take it).
+  ///
+  /// It is a permanent SOURCE-LEVEL regression witness for the tuple-of-sums CSE-key collision fixed on
+  /// trunk: the shared-sum-payload-prefix CSE keyed its slot on (scrutinee, prefix LENGTH), so a
+  /// `match (a, b)` over two sums produced TWO same-length payload prefixes off the one tuple scrutinee that
+  /// COLLIDED — `b`'s payload read `a`'s — and a self-recursive `eq(a2, b2)` silently became `eq(a2, a2)`
+  /// (returned equal when it should differ). The fix keys on the full prefix STEPS. This module exercises
+  /// exactly that shape, so it stays green only while the fix holds — and the compiler-ml @test suite is now
+  /// wired into `cargo xtask check`, so this guards the fix fleet-wide, not just in an rcdzc unit test.
+  ///
+  /// (`unify.cdz` and `apply-ty.cdz` deliberately used NESTED single-sum matches to sidestep the bug while
+  /// it was open; now that it's fixed, this module records that the idiomatic `match (a, b)` form is safe.)
+  type Ty =
   | TInt
   | TBool
   | TVar(Int64)
@@ -53,12 +52,18 @@ def te-arrow-equal() =
 def te-arrow-result-differs() =
   // (Int -> Bool) != (Int -> Int) — the RESULT types differ. THE REGRESSION CASE: under the CSE-key
   // collision this wrongly returned true (b2 read a's payload → ty-eq(a2,a2)). Must be false.
-  if ty-eq(arrow(Ty.TInt, Ty.TBool), arrow(Ty.TInt, Ty.TInt)) then trap("Int->Bool != Int->Int (result differs)") else unit
+  if ty-eq(arrow(Ty.TInt, Ty.TBool), arrow(Ty.TInt, Ty.TInt)) then
+    trap("Int->Bool != Int->Int (result differs)")
+  else
+    unit
 
 @test
 def te-arrow-arg-differs() =
   // (Bool -> Int) != (Int -> Int) — the ARGUMENT types differ (the other-side regression). Must be false.
-  if ty-eq(arrow(Ty.TBool, Ty.TInt), arrow(Ty.TInt, Ty.TInt)) then trap("Bool->Int != Int->Int (arg differs)") else unit
+  if ty-eq(arrow(Ty.TBool, Ty.TInt), arrow(Ty.TInt, Ty.TInt)) then
+    trap("Bool->Int != Int->Int (arg differs)")
+  else
+    unit
 
 @test
 def te-nested-arrow-equal() =
@@ -84,6 +89,9 @@ def te-var-inside-arrow() =
   // (a -> a) = (a -> a) with the SAME var, but (a -> a) != (a -> b): the recursion compares TVar numbers.
   let same = arrow(Ty.TVar(0), Ty.TVar(0)) in
   let diff = arrow(Ty.TVar(0), Ty.TVar(1)) in
-  if ty-eq(same, same) then (if ty-eq(same, diff) then trap("a->a != a->b") else unit) else trap("a->a = a->a")
+  if ty-eq(same, same) then
+    if ty-eq(same, diff) then trap("a->a != a->b") else unit
+  else
+    trap("a->a = a->a")
 
 export { ty-eq }

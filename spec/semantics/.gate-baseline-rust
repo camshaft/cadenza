@@ -186,6 +186,7 @@ pass	String.from-bytes does not NFC-normalize — a decomposed form stays distin
 pass	String.from-bytes of an ill-formed RUNTIME byte sequence yields None (never traps)
 pass	String.from-bytes rejects a lone continuation byte
 pass	String.from-bytes rejects an overlong encoding
+pass	String.from-bytes validates a multi-byte scalar straddling a runtime byte-rope's seam
 pass	String.scalar-at over a runtime index declines pending the runtime Char rep
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
@@ -392,6 +393,8 @@ pass	a PLAIN @ensures postcondition is ENFORCED at body-exit: a VIOLATED postcon
 pass	a PLAIN @ensures postcondition is value-transparent when SATISFIED: the def returns its computed value
 pass	a PLAIN @ensures relating ret to a PARAMETER (> ret x) TRAPS when violated — the result-vs-input postcondition is checked
 pass	a PLAIN @ensures relating ret to a PARAMETER (> ret x) is enforced — the param stays in scope alongside ret in the predicate
+pass	a PLAIN @ensures whose predicate reads ONLY a parameter (not ret) is enforced — the dual of the nullary case
+pass	a PLAIN @ensures with a constant-FALSE predicate always traps — the postcondition fires unconditionally
 pass	a PLAIN @requires precondition is ENFORCED at body-entry: a VIOLATED precondition traps when the def is called
 pass	a PLAIN @requires precondition is value-transparent when SATISFIED: the def returns its computed value
 pass	a PLAIN @requires relating TWO parameters (< a b) TRAPS when violated — the two-param precondition is checked
@@ -695,6 +698,7 @@ pass	a closure whose CALL returns a user sum crosses as the value form
 pass	a closure whose CALL returns an Option crosses as the value form
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
 pass	a closure whose body calls a top-level helper function
+pass	a closure-payload sum picked by an if-helper, applied by a match-consumer, with a binding reused as both args
 pass	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 pass	a collection-carrying recursion whose base arm does a fallible indexed read compiles
 pass	a common constructor composes through a hoisted tuple field to build once
@@ -747,6 +751,7 @@ pass	a constant argument out of a narrow parameter's range is rejected, not laun
 pass	a constant float ordering with a NaN operand folds to false, not a decline
 pass	a constant integer widens to BigInt and narrows back through Int64 unchanged
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
+pass	a conditionally-reached trap in a loop body fires exactly when its iteration arrives
 pass	a constant left shift of 1 by 63 overflows and is rejected
 pass	a constant list update at an index that wraps below the length is also rejected
 pass	a constant list update at an out-of-bounds index is rejected at compile time
@@ -2322,6 +2327,7 @@ pass	a trapping condition of a same-constructor if traps before either arm
 pass	a trapping condition preempts the hoisted operator's trap
 pass	a trapping element in the taken arm of a same-length list if still traps
 pass	a trapping element in the untaken arm of a same-arity tuple if does not trap
+pass	a syntactically loop-invariant perform advances per iteration — effectful is not hoistable
 pass	a trapping element in the untaken arm of a same-length list if does not trap
 pass	a trapping field in the untaken arm of a same-shape record if does not trap
 pass	a trapping init observed inside the `?`'s own operand is not elided

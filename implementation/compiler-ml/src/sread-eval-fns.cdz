@@ -60,6 +60,24 @@ def se-nested-two-arg-calls() =
     | Option.None(_) => trap("nested 2-arg calls run"))
 
 @test
+def se-two-param-if-selects-a-param() =
+  // A 2-param helper whose body is an `if` COMPARING both params and RETURNING one of them: `max(a,b) =
+  // (if (< a b) b a)`. The existing 2-param test (`add`) is pure arith; this pins that BOTH params flow
+  // through a conditional AND each branch can be a distinct param reference — max(7,4) takes the else (a=7,
+  // since 7<4 is false) → 7. Matches the reference (max 7 4 → 7).
+  (match run-src("(do (def (max a b) (if (< a b) b a)) (def (main) (max 7 4)) (export main))") with
+    | Option.Some(v) => (if v == 7 then unit else trap("max(7,4) = 7 (else branch, a)"))
+    | Option.None(_) => trap("2-param if-selecting-a-param runs"))
+
+@test
+def se-two-param-if-selects-other-param() =
+  // the THEN direction of the same shape: max(3,9) takes the then-branch (b=9, since 3<9 is true) → 9.
+  // Pins both branches of the param-selecting conditional (guards a branch-swap regression).
+  (match run-src("(do (def (max a b) (if (< a b) b a)) (def (main) (max 3 9)) (export main))") with
+    | Option.Some(v) => (if v == 9 then unit else trap("max(3,9) = 9 (then branch, b)"))
+    | Option.None(_) => trap("2-param if then-branch runs"))
+
+@test
 def se-narrow-param-plus-literal-runs() =
   // ★ LITERAL ADAPTATION (corpus 09-functions:3580 → 110:Int8) ★ — the complement to the CDZ0304 overflow
   // case: `(def (f (: a Int8)) (+ a 10))` `(f 100)` → 110. The body arith is Int8 (the param drives it), and

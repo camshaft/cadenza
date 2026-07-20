@@ -1582,19 +1582,42 @@ fn run_program_rust(
     // gas `Env` + a minimal `block_on` executor and drives `prog::export(&mut env, args)` — the answer
     // must MATCH the sync/wasm oracle (gas metering is invisible to the result), so it grades identically.
     let call_or_await = if async_mode {
-        // Rewrite `export(args…)` → `block_on(prog::export(&mut GATE_ENV_INIT, args…))`; a nullary call
-        // `export()` becomes `block_on(prog::export(&mut …))`.
-        let inner = if call_expr.ends_with("()") {
-            format!("prog::{}(&mut env)", export)
+        // Rewrite the call to thread the gas/yield `env` as the export's FIRST arg and drive its future to
+        // completion. Three call shapes:
+        //  - non-factory nullary `export()`         → `block_on(prog::export(&mut env))`
+        //  - non-factory with args `export(a, b)`   → `block_on(prog::export(&mut env, a, b))`
+        //  - FACTORY `export(caps…)(applied…)`      → `block_on(prog::export(&mut env, caps…))(applied…)`
+        //    A factory's `call_expr` is TWO call groups: the factory call (its OWN params = the captures)
+        //    and the application of the RETURNED closure. `env` threads into the FACTORY call only; the
+        //    returned closure is a plain sync `Rc<dyn Fn>` (an async lifted-closure body declines), so the
+        //    `(applied…)` application stays OUTSIDE `block_on` and is a synchronous call. Splitting on the
+        //    first top-level `)(` separates the two groups; a non-factory call has no such split.
+        if let Some((factory_call, application)) = is_factory
+            .then(|| split_factory_application(&call_expr))
+            .flatten()
+        {
+            // `factory_call` = `export(caps…)` (caps may be empty); `application` = `(applied…)`.
+            let caps = factory_call
+                .strip_prefix(&format!("{export}("))
+                .and_then(|s| s.strip_suffix(')'))
+                .unwrap_or("");
+            let factory = if caps.is_empty() {
+                format!("prog::{export}(&mut env)")
+            } else {
+                format!("prog::{export}(&mut env, {caps})")
+            };
+            // `block_on` awaits the factory's future to obtain the closure handle, then applies it.
+            format!("block_on({factory}){application}")
+        } else if call_expr.ends_with("()") {
+            format!("block_on(prog::{export}(&mut env))")
         } else {
-            // `export(a, b)` → `prog::export(&mut env, a, b)`.
+            // `export(a, b)` → `block_on(prog::export(&mut env, a, b))`.
             let arglist = call_expr
                 .strip_prefix(&format!("{export}("))
                 .and_then(|s| s.strip_suffix(')'))
                 .unwrap_or("");
-            format!("prog::{export}(&mut env, {arglist})")
-        };
-        format!("block_on({inner})")
+            format!("block_on(prog::{export}(&mut env, {arglist}))")
+        }
     } else {
         format!("prog::{call_expr}")
     };
@@ -1903,6 +1926,31 @@ fn cdz_render_bytes_list(ty: &str) -> String {
     )
 }
 
+/// Split a FACTORY call expression `export(caps…)(applied…)` into `("export(caps…)", "(applied…)")` at the
+/// boundary between the factory's own arg group and the returned-closure application. Returns `None` when
+/// there is no top-level application group (a non-factory call `export(args…)`, or a factory whose result
+/// closure is not applied). The split is the FIRST `)` at paren-depth 0 that is immediately followed by a
+/// `(` — a nested `)(` inside a compound argument (`both((tuple 1 2), (record …))`) sits at depth > 0 and is
+/// skipped, so only the real factory/application seam matches.
+fn split_factory_application(call_expr: &str) -> Option<(String, String)> {
+    let bytes = call_expr.as_bytes();
+    let mut depth = 0usize;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                // A depth-0 close directly followed by `(` is the factory→application seam.
+                if depth == 0 && call_expr[i + 1..].starts_with('(') {
+                    return Some((call_expr[..=i].to_string(), call_expr[i + 1..].to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> Option<usize> {
     let marker = if async_mode {
         "pub async fn "
@@ -1954,6 +2002,25 @@ fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> Optio
     }
     // `params` counted the commas; the param count is commas+1 if the list is non-empty, else 0.
     let count = if saw_any { params + 1 } else { 0 };
+    // In ASYNC mode the emitted signature prepends the gas/yield env param (`__cdz_env: &mut __CdzE, …`),
+    // which is backend plumbing, NOT one of the factory's own capture params. Discount it so the split of
+    // the flat `(call …)` args into (captures | closure-application) uses the SAME K on both targets —
+    // otherwise the env param is miscounted as a capture and the closure-application args land in the
+    // factory call (E0061 arg-count mismatch + a lost application). Detect the env param by its LEADING
+    // presence (`__cdz_env`/`&mut __CdzE` as the first param), NOT a blind `-1`: an async signature written
+    // WITHOUT the env prefix (e.g. a hand-authored test string `pub async fn scale<E: CdzEnv>(k)`) has no
+    // env param to discount, so blindly subtracting 1 would undercount its real captures.
+    // The env param's emitted names mirror the rcdzc rust backend's `ENV_PARAM`/`ENV_TYPE_PARAM`
+    // (`backend/rust/mod.rs`): value `__cdz_env`, type `__CdzE`. Kept as literals here (the gate harness
+    // does not depend on rcdzc's internals); if those names ever change, this detection follows.
+    let param_list = &after[1..end];
+    let has_env_param =
+        param_list.trim_start().starts_with("__cdz_env") || param_list.contains("&mut __CdzE");
+    let count = if async_mode && has_env_param && count > 0 {
+        count - 1
+    } else {
+        count
+    };
     // Confirm the return type is a closure (`-> …Rc<dyn Fn(`) — only then is this a factory.
     let ret = &after[end + 1..];
     let ret_head: String = ret.chars().take_while(|&c| c != '{').collect();
@@ -5576,10 +5643,20 @@ mod trap_grading_tests {
                      pub fn both(a: i64, b: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { … }";
         assert_eq!(rust_factory_param_count(multi, "both", false), Some(2));
         assert_eq!(rust_factory_param_count(multi, "both2", false), Some(3));
-        // Async factory: the name is followed by the generic list `<`, still a valid boundary.
+        // Async factory: the name is followed by the generic list `<`, still a valid boundary. This test
+        // string omits the env param, so its ONLY param `k` is a capture → Some(1) (nothing to discount).
         let async_fac =
             "pub async fn scale<E: CdzEnv>(k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { … }";
         assert_eq!(rust_factory_param_count(async_fac, "scale", true), Some(1));
+        // The REAL async emit prepends the gas/yield env param `__cdz_env: &mut __CdzE` — backend plumbing,
+        // NOT a factory capture — so it must be DISCOUNTED: `scale(__cdz_env, k)` still has ONE capture `k`.
+        // (This is why the discount detects the env param by name rather than a blind `-1`: the string above
+        // has no env param and must stay Some(1), while this one has it and must ALSO be Some(1).)
+        let async_real = "pub async fn scale<__CdzE: CdzEnv>(__cdz_env: &mut __CdzE, k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { … }";
+        assert_eq!(rust_factory_param_count(async_real, "scale", true), Some(1));
+        // A NULLARY async factory (env param only, no captures) → Some(0), not an underflow.
+        let async_nullary = "pub async fn mk<__CdzE: CdzEnv>(__cdz_env: &mut __CdzE) -> std::rc::Rc<dyn Fn(i64) -> i64> { … }";
+        assert_eq!(rust_factory_param_count(async_nullary, "mk", true), Some(0));
     }
 
     #[test]

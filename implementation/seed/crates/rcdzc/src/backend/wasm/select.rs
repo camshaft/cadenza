@@ -4529,19 +4529,37 @@ fn collect_cse_candidate_groups(db: &mut Db, body: StructId) -> Vec<Vec<StructId
         }
         cands.push(id);
     }
-    // Partition into value-equivalence classes by `core_eq` (a small O(n²) pairwise scan — a body has few
-    // CSE candidates). A distinct node joins the first class it is `core_eq` to.
+    // Partition into value-equivalence classes by `core_eq`. A distinct node joins the first class it is
+    // `core_eq` to. To avoid an all-pairs O(cands²) `core_eq` scan (each `core_eq` a subtree-cloning
+    // walk — the emit path's dominant cost on a WIDE arithmetic body where the "few CSE candidates"
+    // assumption fails: N distinct scalar subterms → a singleton-heavy partition → N²/2 `core_eq` calls),
+    // BUCKET candidates by a cheap shallow `core_hash_key` FIRST. `core_eq(a,b) ⇒ equal key`, so equal
+    // candidates always land in the same bucket; `core_eq` then runs only WITHIN a bucket (near-always a
+    // singleton or a genuine equal group), so unequal candidates never pairwise-compare. Behaviour-
+    // identical to the old scan (the exact `core_eq` still decides membership within a bucket); the only
+    // change is which pairs it is asked about. Distinct hashes never merge, so class identity is stable.
     let mut classes: Vec<Vec<StructId>> = Vec::new();
+    let mut by_key: crate::fxhash::FxHashMap<u64, Vec<usize>> = crate::fxhash::FxHashMap::default();
     for id in cands {
+        let key = core_hash_key(db, id);
+        let bucket = by_key.entry(key).or_default();
         let mut placed = false;
-        for class in classes.iter_mut() {
-            if core_eq(db, class[0], id) {
-                class.push(id);
+        for &ci in bucket.iter() {
+            // Count each within-bucket `core_eq` — the partition's comparison work. With hash-bucketing
+            // this is O(#candidates) (each candidate compares only against same-hash predecessors, near
+            // always none); the old all-pairs scan made it O(#candidates²). This is the noise-free
+            // regression signal (`a_wide_arithmetic_body_partitions_cse_candidates_in_bounded_time`).
+            #[cfg(test)]
+            crate::db::CSE_PARTITION_CORE_EQ_CALLS
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if core_eq(db, classes[ci][0], id) {
+                classes[ci].push(id);
                 placed = true;
                 break;
             }
         }
         if !placed {
+            bucket.push(classes.len());
             classes.push(vec![id]);
         }
     }
@@ -14133,6 +14151,107 @@ fn m_slot(ot: IntTy) -> ValType {
 /// or a leaf) — so computing it once and reusing the value is observably identical to computing it
 /// twice, INCLUDING its trap behavior (a trapping subexpression traps at the same first-occurrence
 /// point whether shared or not). Effects would break this, but rcdzc has none yet.
+/// A CHEAP, SHALLOW structural hash of the core value at `id` — the O(N²)-partition pre-filter for
+/// [`core_eq`]. It hashes the top kind's discriminant + leaf values + the DISCRIMINANTS of immediate
+/// children (one level; NOT the whole subtree), so it is O(1)-ish per candidate. The soundness contract
+/// is one-directional and exactly what a hash-bucket pre-filter needs: **`core_eq(a,b)` ⇒
+/// `core_hash_key(a) == core_hash_key(b)`** (two values `core_eq` considers equal have the same kind,
+/// same leaf values, and same immediate-child kinds, so they hash identically). The converse need NOT
+/// hold — two different values may collide — because within a bucket the exact `core_eq` still decides.
+/// So bucketing candidates by this key, then running `core_eq` only WITHIN a bucket, is behaviour-
+/// identical to the old all-pairs `core_eq` scan, but turns O(cands²) `core_eq` calls (each a
+/// subtree-cloning walk) into O(cands) key computations + `core_eq` only among genuine collisions — the
+/// fix for a wide arithmetic body (`(+ (calc0 p) (+ (calc1 p) …))`, N distinct scalar candidates) whose
+/// singleton-heavy partition was the emit path's dominant cost (`core_eq` ~88% inclusive at N=2000).
+fn core_hash_key(db: &mut Db, id: StructId) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = crate::fxhash::FxHasher::default();
+    // A one-level child descriptor: the child's kind discriminant + (for a leaf) its value, so two
+    // structurally-equal parents whose children are equal leaves/kinds hash the same, WITHOUT recursing
+    // the whole subtree (which would reintroduce the per-candidate walk cost this fix removes).
+    let child = |db: &mut Db, c: StructId, h: &mut crate::fxhash::FxHasher| {
+        match core_of(db, c) {
+            Core::ConstInt(v) => {
+                1u8.hash(h);
+                v.to_i64().hash(h);
+            }
+            Core::ConstBool(b) => {
+                2u8.hash(h);
+                b.hash(h);
+            }
+            Core::Unit => 3u8.hash(h),
+            Core::Param { binder } => {
+                4u8.hash(h);
+                binder.0.hash(h);
+            }
+            Core::LocalRef { binder } => {
+                5u8.hash(h);
+                binder.0.hash(h);
+            }
+            other => {
+                // A non-leaf child: hash only its KIND tag (a cheap `std::mem::discriminant`), never its
+                // operands — one level keeps the key O(1)-ish while still separating `(+ x y)` from
+                // `(* x y)` from `(- x y)` at the parent level.
+                6u8.hash(h);
+                std::mem::discriminant(&other).hash(h);
+            }
+        }
+    };
+    match core_of(db, id) {
+        Core::ConstInt(v) => {
+            1u8.hash(&mut h);
+            v.to_i64().hash(&mut h);
+        }
+        Core::ConstBool(b) => {
+            2u8.hash(&mut h);
+            b.hash(&mut h);
+        }
+        Core::Unit => 3u8.hash(&mut h),
+        Core::Param { binder } => {
+            4u8.hash(&mut h);
+            binder.0.hash(&mut h);
+        }
+        Core::LocalRef { binder } => {
+            5u8.hash(&mut h);
+            binder.0.hash(&mut h);
+        }
+        Core::Arith { op, lhs, rhs } => {
+            10u8.hash(&mut h);
+            op.hash(&mut h);
+            child(db, lhs, &mut h);
+            child(db, rhs, &mut h);
+        }
+        Core::Compare { op, lhs, rhs } => {
+            11u8.hash(&mut h);
+            op.hash(&mut h);
+            child(db, lhs, &mut h);
+            child(db, rhs, &mut h);
+        }
+        Core::Convert { op, operand } => {
+            12u8.hash(&mut h);
+            op.hash(&mut h);
+            child(db, operand, &mut h);
+        }
+        Core::Not { operand } => {
+            13u8.hash(&mut h);
+            child(db, operand, &mut h);
+        }
+        Core::Proj { operand, index } => {
+            14u8.hash(&mut h);
+            index.hash(&mut h);
+            child(db, operand, &mut h);
+        }
+        // Everything else (float-compare, collection counts, indexed reads, payload reads, `if`, and any
+        // kind `core_eq` treats as UNEQUAL) hashes by its bare kind tag. That is still a SOUND pre-filter
+        // (equal values share a kind), just a coarser bucket — acceptable because these are far rarer as
+        // CSE candidates than the arith/compare/leaf forms above, so their buckets stay small.
+        other => {
+            std::mem::discriminant(&other).hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
 fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {
     if a == b {
         return true; // the SAME occurrence — trivially identical.

@@ -267,6 +267,14 @@ impl Fleet {
     fn stopfile(&self, agent: &str) -> PathBuf {
         self.root.join("stop").join(agent)
     }
+    /// The durable REJECT-LOG (`<hub>/.claude/fleet/reject-log`): one rejected commit sha per line,
+    /// appended by `send` whenever pr-sync delivers a `reject`. `fleet sync` consults it to refuse
+    /// re-replaying a known-bad commit onto a fresh branch (the re-break-the-gate churn: a gate-failing
+    /// commit that rode a discarded test-merge tree gets fleet-synced onto peer branches every tick).
+    /// Machine-local (gitignored, like the rest of the runtime state) — a reject is a runtime event.
+    fn reject_log_path(&self) -> PathBuf {
+        self.root.join("reject-log")
+    }
 
     fn load(&self) -> Registry {
         let p = self.registry_path();
@@ -1449,6 +1457,14 @@ fn send(
     );
     println!("fleet send: {from} → {to} [{kind}] {subject}");
 
+    // Record a rejected commit sha in the durable reject-log so `fleet sync` can refuse to re-replay a
+    // known-bad commit onto a fresh branch (the re-break-the-gate churn a gate-failing commit causes as
+    // it rides discarded test-merge trees onto peer branches). Best-effort; a reject with no ref is a
+    // no-op. Covers a direct `fleet send --kind reject`; the merge-request reply path records via `ack`.
+    if kind == "reject" {
+        append_reject_log(&fleet.reject_log_path(), r#ref);
+    }
+
     // Wake the recipient so it reacts to this message NOW rather than at its next scheduled tick.
     // Delivery == wake. `/loop` stays the safety net for any nudge that doesn't land.
     if !no_wake {
@@ -1546,6 +1562,14 @@ fn ack(fleet: &Fleet, request: &str, outcome: &str, r#ref: &str, body: &str) {
         "fleet ack: pr-sync → {} [{outcome}] {}",
         mr.from, mr.subject
     );
+    // On a REJECT, record the REJECTED COMMIT'S sha (the merge-request's own `ref`, not ack's `--ref`
+    // which may name trunk) in the durable reject-log, so `fleet sync` refuses to re-replay this
+    // known-bad commit onto a fresh branch. Best-effort; empty ref is a no-op. This is the primary
+    // reject path (pr-sync rejects merge-requests via `ack`); the direct `send --kind reject` path
+    // records too.
+    if outcome == "reject" {
+        append_reject_log(&fleet.reject_log_path(), &mr.r#ref);
+    }
 
     // 2) Archive the request into pr-sync's processed/ (create it on demand). Only now that the reply
     // is delivered.
@@ -3603,6 +3627,39 @@ fn sync(fleet: &Fleet, force: bool) {
     let cherry = git_stdout(&["cherry", TRUNK, &old_head]);
     let replay = commits_to_replay(&cherry);
 
+    // REJECT-LIST GUARD (pr-sync's idea, 2026-07-20): a commit pr-sync has REJECTED (gate-failing) can
+    // ride a discarded test-merge tree onto peer branches and get re-replayed every tick — 6 MRs bounced
+    // across 2 ticks for carrying one rejected rust-async commit. Unlike the general "foreign but
+    // maybe-good" problem, a reject is an EXPLICIT authoritative signal, so we can name it with zero
+    // false-positive risk. WARN loudly (not auto-drop — same never-lose-work discipline as the hot path;
+    // resetting is the agent's call) for any to-be-replayed commit whose sha is on the durable
+    // reject-log. Full-sha match, so a FIXED version (new sha) is never wrongly flagged.
+    if !replay.is_empty() {
+        let rejected = read_reject_log(&fleet.reject_log_path());
+        let hits: Vec<&String> = replay
+            .iter()
+            .filter(|s| sha_is_rejected(s, &rejected))
+            .collect();
+        if !hits.is_empty() {
+            eprintln!(
+                "fleet sync: ⚠ {} of your {} unlanded commit(s) are on pr-sync's REJECT-LIST — \
+                 gate-failing commits pr-sync already bounced, riding your base after a discarded \
+                 test-merge. Replaying + resending them just re-breaks the gate:",
+                hits.len(),
+                replay.len()
+            );
+            for sha in &hits {
+                let title = git_stdout(&["show", "-s", "--format=%s", sha]);
+                eprintln!("    {} {title}", &sha[..sha.len().min(9)]);
+            }
+            eprintln!(
+                "  These are NOT yours to land. `git reset --hard {TRUNK}` to shed them (safe with no \
+                 own WIP), or cherry-pick back ONLY your own commits. NEVER `fleet send` a reject-listed \
+                 commit — pr-sync will just reject it again."
+            );
+        }
+    }
+
     // GUARD: refuse if replaying would re-sha a commit a merge-request we already sent still points at.
     // The cherry-pick below gives replayed commits NEW shas, so the `--ref` on a queued MR would go
     // dangling and pr-sync would silently skip it. Derive our agent name from the current branch
@@ -4570,6 +4627,53 @@ fn commit_is_foreign_to_lane(changed_paths: &[String], my_zone: &str) -> bool {
         }
     }
     saw_known
+}
+
+/// Append a rejected commit sha to the durable reject-log (deduped — a sha already logged is not
+/// re-appended, so the file stays small even if pr-sync rejects the same ref repeatedly). Best-effort:
+/// a write failure never blocks the reject delivery (the log is an optimization, not a correctness
+/// dependency). Full 40-char shas are stored; the sync guard matches by full-sha equality so a short
+/// prefix from a message never yields a partial/ambiguous match.
+fn append_reject_log(path: &Path, sha: &str) {
+    let sha = sha.trim();
+    if sha.is_empty() {
+        return;
+    }
+    if read_reject_log(path).iter().any(|s| s == sha) {
+        return; // already recorded
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "{sha}");
+    }
+}
+
+/// Read the reject-log into a set of shas (empty if absent/unreadable — the guard then simply never
+/// fires, failing OPEN so a missing log never blocks a sync).
+fn read_reject_log(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .map(|s| {
+            s.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether `sha` (a replay commit) is on the reject-list. Full-sha equality — the caller passes the
+/// resolved full sha of a to-be-replayed commit. Pure so it's unit-testable.
+fn sha_is_rejected(sha: &str, reject_list: &[String]) -> bool {
+    let sha = sha.trim();
+    !sha.is_empty() && reject_list.iter().any(|r| r == sha)
 }
 
 /// SOFT tier (concierge-approved option 2, 2026-07-20): whether a replay commit is AMBIGUOUS w.r.t.
@@ -6472,6 +6576,36 @@ mod tests {
         // Empty zone / no paths → never ambiguous.
         assert!(!commit_is_ambiguous_to_lane(&[p("guide/x.tsx")], ""));
         assert!(!commit_is_ambiguous_to_lane(&[], "xtask"));
+    }
+
+    #[test]
+    fn reject_log_round_trips_and_sha_is_rejected_matches_full_sha() {
+        let dir = std::env::temp_dir().join(format!("cdz-reject-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let log = dir.join("reject-log");
+        let a = "a5a94a6827c0148d5b4109ff2f88dea70a8cb2e6";
+        let b = "de14d0b9300000000000000000000000000000000";
+        // Empty is a no-op (no file spuriously created with a blank line).
+        append_reject_log(&log, "");
+        append_reject_log(&log, a);
+        append_reject_log(&log, b);
+        // Dedup: re-appending an existing sha does not grow the log.
+        append_reject_log(&log, a);
+        let list = read_reject_log(&log);
+        assert_eq!(list.len(), 2, "deduped to 2 distinct shas");
+        assert!(sha_is_rejected(a, &list));
+        assert!(sha_is_rejected(b, &list));
+        // A different (e.g. FIXED) sha is NOT flagged — full-sha match, no prefix/patch collision.
+        assert!(!sha_is_rejected(
+            "ffffffffffffffffffffffffffffffffffffffff",
+            &list
+        ));
+        // Whitespace-trimmed match; empty never matches.
+        assert!(sha_is_rejected(&format!("  {a}  "), &list));
+        assert!(!sha_is_rejected("", &list));
+        // Missing log → empty list, guard never fires (fail-open).
+        assert!(read_reject_log(&dir.join("nope")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

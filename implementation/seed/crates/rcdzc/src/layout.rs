@@ -990,6 +990,20 @@ fn collect_cont_closure_codes(
     }
 }
 
+/// Whether a body reaches ANY runtime `Core::Call` — a `db.defs` function call — at any sub-position.
+/// The Rust `--target rust-async` backend uses this to decide whether a lambda-lifted closure body can be
+/// emitted as a plain SYNC `fn`: in async mode the ONLY body-emit site that threads the gas/yield `env`
+/// (and produces an `.await`) is the `Core::Call` arm — every runtime collection/heap op and a
+/// `Core::CallClosure` emit identically in sync and async — so a call-free lifted body compiles verbatim as
+/// sync, while a body WITH a call would name an async callee (needs `env`) and stays a clean decline (the
+/// deferred boxed-future closure ABI). Reuses the exhaustive [`collect_call_callees`] walk so it can never
+/// drift from the set of nodes that actually emit a call.
+pub(crate) fn body_has_call(db: &mut Db, id: StructId) -> bool {
+    let mut callees = Vec::new();
+    collect_call_callees(db, id, &mut callees);
+    !callees.is_empty()
+}
+
 /// Collect the `db.defs` indices a body CALLS at runtime — the `Core::Call` callees reached from the
 /// core form at `id`, descending through every sub-position (both `if` branches are reachable code, so
 /// a callee in either counts). Reads the core column on demand. A callee's OWN calls are found when it
