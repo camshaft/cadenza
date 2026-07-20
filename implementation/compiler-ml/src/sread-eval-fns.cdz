@@ -78,3 +78,27 @@ def se-narrow-param-plus-overflowing-literal-declines() =
   (match run-src("(do (def (f (: a Int8)) (+ a 100)) (def (main) (f 100)) (export main))") with
     | Option.None(_) => unit
     | Option.Some(_) => trap("(+ a 100) on Int8 param = 200 OVERFLOWS Int8 → must decline (CDZ0304)"))
+
+@test
+def se-logical-and-of-comparisons() =
+  // LOGICAL `and` over two Bool comparisons: `(and (< 1 2) (< 3 4))` → 1 (both true). Pins the logical-op
+  // subset end-to-end (and-node → Bool operands → Bool result, encoded 0/1). Differential-verified vs rcdzc.
+  (match run-src("(and (< 1 2) (< 3 4))") with
+    | Option.Some(v) => (if v == 1 then unit else trap("(and true true) → 1"))
+    | Option.None(_) => trap("logical and of comparisons runs"))
+
+@test
+def se-logical-and-short-false() =
+  // `and` with a false operand → 0: `(and (< 1 2) (< 5 4))` → 0 (second is false). Pins the false path.
+  (match run-src("(and (< 1 2) (< 5 4))") with
+    | Option.Some(v) => (if v == 0 then unit else trap("(and true false) → 0"))
+    | Option.None(_) => trap("logical and with a false operand runs"))
+
+@test
+def se-logical-and-on-ints-declines() =
+  // `and` REQUIRES Bool operands: `(and 1 2)` (int operands) → DECLINES (ill-typed), matching rcdzc's
+  // `declined`. Pins that a logical op rejects non-Bool operands rather than coercing ints — the type
+  // discipline complement to the running cases above.
+  (match run-src("(and 1 2)") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("(and 1 2) — int operands to a logical op must decline"))
