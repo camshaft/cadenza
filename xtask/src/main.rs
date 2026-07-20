@@ -619,6 +619,27 @@ fn suite_timeout_for(suite: &str) -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+/// Per-FILE wall-clock cap for the compiler-ml sweep when it is run one file at a time (see
+/// `step_cached_per_file`). Distinct from `suite_timeout_for` (a whole-suite ceiling): a single
+/// pathological compile — one def that blows up the compiler and NEVER exits (the runaway-compile
+/// gate-block, pid 456190 @ 18min+@100% never exiting, 2026-07-20) — otherwise burns the ENTIRE
+/// generous 45min suite budget before the step can fail, and pr-sync re-runs `check` several times a
+/// batch, so ONE bad file freezes the whole backlog for ~1h. Bounding each file individually kills
+/// only the offending compile, at a tight cap, NAMED and auto-bisectable, while every innocent file
+/// still runs. The heaviest legitimate file (sread-eval: 40 run-src @tests, each building the whole
+/// pipeline into its own component) measured >300s UNDER LOAD, so the default clears that with margin
+/// — this is a HANG bound, not a throughput throttle. `CDZ_ML_PER_FILE_TIMEOUT_SECS` overrides (an
+/// operator escape hatch for a genuinely-slow-but-passing file); `=0`/garbage falls back to the default.
+fn ml_per_file_timeout() -> std::time::Duration {
+    if let Ok(secs) = std::env::var("CDZ_ML_PER_FILE_TIMEOUT_SECS")
+        && let Ok(secs) = secs.parse::<u64>()
+        && secs > 0
+    {
+        return std::time::Duration::from_secs(secs);
+    }
+    std::time::Duration::from_secs(12 * 60) // 2× the measured ~300s worst-case file, a hang bound
+}
+
 /// Like `Child::wait_with_output`, but with a hard wall-clock `timeout`. Returns `Ok(Some(output))` if
 /// the child exited within the deadline, `Ok(None)` if it was KILLED for exceeding it (a hang), or the
 /// underlying io error. Drains stdout+stderr on reader threads so a child that fills a pipe buffer
@@ -3212,8 +3233,20 @@ fn check(paths: &Paths, profile: &str) {
         // of silently wedging the gate (the "env kill" that looked like a signal was cf-corpus-all-pass
         // hanging with no output). compiler-ml additionally content-caches its green verdict.
         if suite == "implementation/compiler-ml" {
+            // Run the heavy compiler-ml sweep ONE FILE AT A TIME under a tight per-file cap so a single
+            // runaway compile (a def that blows up the compiler and never exits) fails LOUD + NAMED at
+            // the per-file cap instead of burning the whole generous 45min suite budget and freezing the
+            // backlog — the concierge's runaway-compile gate-unblock ask (2026-07-20). Same green cache
+            // key, so an unchanged (compiler, corpus) still skips the whole sweep.
             let cache = CachedStep::new(paths, &name, Path::new(&cdz), &paths.repo.join(suite));
-            log.step_cached(&name, &cmd, repo, cache.as_ref(), suite_timeout_for(suite));
+            log.step_cached_per_file(
+                &name,
+                &cdz,
+                &paths.repo.join(suite),
+                repo,
+                cache.as_ref(),
+                suite_timeout_for(suite),
+            );
         } else {
             log.step_timed(&name, &cmd, repo, suite_timeout_for(suite));
         }
@@ -3354,12 +3387,28 @@ fn report_ml_conformance(paths: &Paths, profile: &str) {
         .map(|w| w.get())
         .unwrap_or(1)
         .max(1);
+    // WALL-CLOCK BUDGET (fleet-safety): this step is REPORT-ONLY (never reds the gate), but each in-subset
+    // case shells `cdz run-ml` (~3s — it builds the whole compiler-ml driver per case), so the aggregate
+    // over the in-subset corpus can run many minutes. It was called UNBOUNDED (no `step_timed` wrap), so a
+    // slow run could stall the entire `cargo xtask check` until pr-sync's OUTER wall-clock killed the run
+    // MID-STEP — flat-lining the merge queue and leaving a log that ends mid-stream in run-ml stderr noise
+    // (the "256 parse errors" from not-yet-supported cases, which are coverage-not-yet, NOT a gate failure;
+    // v-compiler-ml 2026-07-19). A report-only step must NEVER be able to stall the gate: cap the total
+    // wall-clock, and if exceeded stop pulling new cases + report what completed (the rest count as
+    // coverage-not-yet, which is what a not-yet-run case IS). Deadline = the suite budget, ample for the
+    // real in-subset set today while bounding a pathological blow-up.
+    let deadline = std::time::Instant::now() + suite_timeout_for("implementation/compiler-ml");
+    let timed_out = std::sync::atomic::AtomicBool::new(false);
     std::thread::scope(|scope| {
         for _ in 0..workers {
-            let (cursor, slots, records, tools, store) =
-                (&cursor, &slots, &records, &tools, &store);
+            let (cursor, slots, records, tools, store, timed_out) =
+                (&cursor, &slots, &records, &tools, &store, &timed_out);
             scope.spawn(move || {
                 loop {
+                    if std::time::Instant::now() >= deadline {
+                        timed_out.store(true, std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
                     let i = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if i >= records.len() {
                         break;
@@ -3431,6 +3480,13 @@ fn report_ml_conformance(paths: &Paths, profile: &str) {
     println!(
         "cadenza-ml: {agree} agree / {disagree} disagree / {total} total ({not_yet} coverage-not-yet)"
     );
+    if timed_out.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "  ⚠ cadenza-ml conformance hit its wall-clock budget — reported the cases that completed; \
+             the rest counted as coverage-not-yet. Report-only, so this does NOT red the gate (it bounds \
+             a slow report step so it can't stall the whole check)."
+        );
+    }
     if disagree > 0 {
         eprintln!(
             "  ⚠ cadenza-ml DIFFERENTIAL DISAGREEMENT(S) — the ML compiler's verdict differs from the \
@@ -3471,11 +3527,22 @@ fn report_emit_conformance(paths: &Paths, profile: &str) {
         .map(|w| w.get())
         .unwrap_or(1)
         .max(1);
+    // WALL-CLOCK BUDGET — same fleet-safety bound as report_ml_conformance: this report-only step shells
+    // TWO CLIs per in-subset case (run-ml + run-emitted), so it's even slower; it must never be able to
+    // stall the whole `check` when called unbounded. Cap the total; on exceed, stop pulling cases + report
+    // what completed (the rest = coverage-not-yet). Never reds the gate.
+    let deadline = std::time::Instant::now() + suite_timeout_for("implementation/compiler-ml");
+    let timed_out = std::sync::atomic::AtomicBool::new(false);
     std::thread::scope(|scope| {
         for _ in 0..workers {
-            let (cursor, slots, records, tools) = (&cursor, &slots, &records, &tools);
+            let (cursor, slots, records, tools, timed_out) =
+                (&cursor, &slots, &records, &tools, &timed_out);
             scope.spawn(move || {
                 loop {
+                    if std::time::Instant::now() >= deadline {
+                        timed_out.store(true, std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
                     let i = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if i >= records.len() {
                         break;
@@ -3525,6 +3592,13 @@ fn report_emit_conformance(paths: &Paths, profile: &str) {
     println!(
         "emit-conformance: {agree} agree / {disagree} disagree / {total} total ({not_yet} coverage-not-yet)"
     );
+    if timed_out.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "  ⚠ emit-conformance hit its wall-clock budget — reported the cases that completed; the rest \
+             counted as coverage-not-yet. Report-only, so this does NOT red the gate (it bounds a slow \
+             report step so it can't stall the whole check)."
+        );
+    }
     if disagree > 0 {
         eprintln!(
             "  ⚠ emit-conformance DIFFERENTIAL DISAGREEMENT(S) — the EMITTED wasm module's result differs \
@@ -4052,20 +4126,39 @@ impl Log {
         }
     }
 
-    /// Like `step`, but memoized on a content `key`: if a GREEN verdict for this exact key is already
+    /// Run the compiler-ml suite ONE FILE AT A TIME under a tight PER-FILE wall-clock cap, memoizing the
+    /// whole-suite GREEN verdict on a content `key`: if a green verdict for this exact key is already
     /// cached (a prior check this batch ran the identical sweep and it passed), SKIP the re-run and reuse
     /// it. Only GREEN is cached — a RED always re-runs fresh (so the failure log is current and a stale
-    /// cache can never manufacture a false green). On a fresh green run the verdict is recorded for the
-    /// next check in the batch. `cache_dir` is where the verdict marker lives; `None` disables caching
-    /// (always runs). This kills the dominant per-batch waste: pr-sync re-running the ~25-30min
-    /// compiler-ml sweep multiple times per batch even when (compiler, corpus) didn't change between runs.
-    fn step_cached(
+    /// cache can never manufacture a false green). This kills the dominant per-batch waste: pr-sync
+    /// re-running the ~25-30min compiler-ml sweep multiple times per batch even when (compiler, corpus)
+    /// didn't change between runs.
+    ///
+    /// Running per file (vs one whole-suite process under a generous suite ceiling) is the runaway-compile
+    /// unblock (2026-07-20): a single pathological def can blow up the ML compiler and NEVER exit, and
+    /// under a whole-suite step it burns the ENTIRE 45min budget before failing — and pr-sync re-runs
+    /// `check` several times a batch, so ONE bad file froze the whole ~200-MR backlog for ~1h. Running
+    /// `cdz test <file>` per file, each bounded by `ml_per_file_timeout`, means the runaway file (and
+    /// only it) fails LOUD + NAMED at the tight cap while every innocent file still runs to a verdict —
+    /// so the gate COMPLETES and the offending file is auto-bisectable, exactly the concierge's ask.
+    ///
+    /// This is semantically identical to `cdz test <suite_dir>`: dir-mode already loops the runner's
+    /// `run_test_file` over the same file list (each file resolving its own import closure but running
+    /// only its OWN `@test`s), so splitting the loop into the harness changes only WHERE each file's
+    /// wall-clock is bounded, not WHAT runs. Files are the suite's TRACKED `src/*.cdz` (via `git
+    /// ls-files`, path-sorted) — tracked-only so a local untracked scratch file can't diverge the local
+    /// gate from pr-sync's clean worktree. FAIL-OPEN: if enumeration finds no files (a manifest
+    /// restructure that moves tests out of `src/`), fall back to a whole-suite run so a coupling drift
+    /// degrades to today's behavior, never to a false green. The whole-suite GREEN verdict is cached on
+    /// the same (binary ‖ tree) key, so an unchanged (compiler, corpus) skips the whole per-file sweep.
+    fn step_cached_per_file(
         &mut self,
         name: &str,
-        cmd: &str,
-        dir: &Path,
+        cdz_bin: &str,
+        suite_dir: &Path,
+        repo: &Path,
         cache: Option<&CachedStep>,
-        timeout: std::time::Duration,
+        whole_suite_timeout: std::time::Duration,
     ) {
         use std::io::Write;
         if let Some(c) = cache
@@ -4083,10 +4176,111 @@ impl Log {
             );
             return;
         }
-        // Timed so a true hang (e.g. `cf-corpus-all-pass` spinning on a compile-hang) FAILS LOUDLY named
-        // rather than silently wedging the gate; step_timed exits the process on fail/timeout.
-        self.step_timed(name, cmd, dir, timeout);
-        // Reaching here means the run SUCCEEDED (step_timed exits on failure), so record green.
+
+        // Enumerate the suite's TRACKED `src/*.cdz`, path-sorted (git ls-files is already sorted).
+        let src = suite_dir.join("src");
+        let files: Vec<PathBuf> = std::process::Command::new("git")
+            .args(["ls-files", "-z", "--"])
+            .arg(&src)
+            .current_dir(repo)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| {
+                o.stdout
+                    .split(|&b| b == 0)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| PathBuf::from(String::from_utf8_lossy(s).into_owned()))
+                    .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("cdz"))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Fail-open: no tracked src/*.cdz found (unexpected — manifest moved the tests) → run the whole
+        // suite the old way so we never skip coverage or manufacture a false green.
+        if files.is_empty() {
+            writeln!(
+                self.file,
+                "\n==== {name}: per-file enumeration empty — falling back to whole-suite run ===="
+            )
+            .ok();
+            self.file.flush().ok();
+            let cmd = format!("{cdz_bin} test {}", suite_dir.display());
+            self.step_timed(name, &cmd, repo, whole_suite_timeout);
+            if let Some(c) = cache {
+                c.record_green();
+            }
+            return;
+        }
+
+        let per_file = ml_per_file_timeout();
+        writeln!(
+            self.file,
+            "\n==== {name}: {} file(s), per-file cap {}s ====",
+            files.len(),
+            per_file.as_secs()
+        )
+        .ok();
+        self.file.flush().ok();
+
+        for file in &files {
+            let fname = file.display().to_string();
+            // Build the child directly from (binary, "test", file) rather than parsing a command STRING —
+            // a whitespace-split would corrupt any path containing a space. cdz_bin/fname pass through
+            // verbatim as argv.
+            writeln!(self.file, "\n──── {cdz_bin} test {fname} ────").ok();
+            self.file.flush().ok();
+
+            let child = std::process::Command::new(cdz_bin)
+                .arg("test")
+                .arg(file)
+                .current_dir(repo)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap_or_else(|e| {
+                    eprintln!("  ✗ {name} — could not launch ({fname}): {e}");
+                    std::process::exit(1);
+                });
+            let started = std::time::Instant::now();
+            match wait_with_timeout(child, per_file) {
+                Ok(Some(out)) => {
+                    self.file.write_all(&out.stdout).ok();
+                    self.file.write_all(&out.stderr).ok();
+                    self.file.flush().ok();
+                    if !out.status.success() {
+                        eprintln!("  ✗ {name} — FAILED at {fname}");
+                        self.dump_and_exit(name);
+                    }
+                }
+                // The runaway-compile case: this ONE file blew past the per-file cap. Fail loud + named
+                // so it is immediately bisectable, instead of the old whole-suite hang that burned 45min
+                // with no localization.
+                Ok(None) => {
+                    let elapsed = started.elapsed().as_secs();
+                    writeln!(
+                        self.file,
+                        "\n{name}: {fname} TIMED OUT after {elapsed}s (killed) — a single compile ran \
+                         past the per-file cap and never exited (runaway compile), not a slow pass. This \
+                         file is the offending def to bisect/quarantine. Raise \
+                         CDZ_ML_PER_FILE_TIMEOUT_SECS only if it is genuinely slow-but-passing."
+                    )
+                    .ok();
+                    self.file.flush().ok();
+                    eprintln!(
+                        "  ✗ {name} — TIMED OUT at {fname} after {elapsed}s (runaway compile)"
+                    );
+                    self.dump_and_exit(name);
+                }
+                Err(e) => {
+                    eprintln!("  ✗ {name} — wait failed ({fname}): {e}");
+                    self.dump_and_exit(name);
+                }
+            }
+        }
+
+        println!("  ✓ {name} ({} files, per-file capped)", files.len());
+        // Every file passed — record the whole-suite green on the same key the cache-hit path checks.
         if let Some(c) = cache {
             c.record_green();
         }
@@ -5487,5 +5681,44 @@ mod trap_grading_tests {
             "garbage → default"
         );
         unsafe { std::env::remove_var("CDZ_SUITE_TIMEOUT_SECS") };
+    }
+
+    #[test]
+    fn ml_per_file_timeout_reads_env_with_hang_bound_default() {
+        // The per-file cap is a HANG bound (2× the measured ~300s worst-case file), tighter than the
+        // whole-suite ceiling so ONE runaway compile fails fast+named instead of burning the 45min suite
+        // budget; a positive override applies; zero/garbage fall back. (Env is process-global; the
+        // separate env var means this can't collide with `CDZ_SUITE_TIMEOUT_SECS`.)
+        // SAFETY: single-threaded test, no other thread reads the env concurrently.
+        unsafe { std::env::remove_var("CDZ_ML_PER_FILE_TIMEOUT_SECS") };
+        assert_eq!(
+            ml_per_file_timeout(),
+            std::time::Duration::from_secs(12 * 60),
+            "default is the 12min per-file hang bound"
+        );
+        // Tighter than the whole-suite cap — the whole point (a runaway file can't eat the suite budget).
+        assert!(
+            ml_per_file_timeout() < suite_timeout_for("implementation/compiler-ml"),
+            "per-file cap must be tighter than the whole-suite ceiling"
+        );
+        unsafe { std::env::set_var("CDZ_ML_PER_FILE_TIMEOUT_SECS", "300") };
+        assert_eq!(
+            ml_per_file_timeout(),
+            std::time::Duration::from_secs(300),
+            "override parses"
+        );
+        unsafe { std::env::set_var("CDZ_ML_PER_FILE_TIMEOUT_SECS", "0") };
+        assert_eq!(
+            ml_per_file_timeout(),
+            std::time::Duration::from_secs(12 * 60),
+            "zero rejected → default"
+        );
+        unsafe { std::env::set_var("CDZ_ML_PER_FILE_TIMEOUT_SECS", "nope") };
+        assert_eq!(
+            ml_per_file_timeout(),
+            std::time::Duration::from_secs(12 * 60),
+            "garbage → default"
+        );
+        unsafe { std::env::remove_var("CDZ_ML_PER_FILE_TIMEOUT_SECS") };
     }
 }

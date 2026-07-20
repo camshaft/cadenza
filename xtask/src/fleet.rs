@@ -37,9 +37,32 @@ const CTX_SATURATION_THRESHOLD: u8 = 85;
 
 /// Context-% at which an agent is UNRECOVERABLY WEDGED — `/compact` can no longer submit (it needs
 /// headroom the full window lacks), so the agent can't self-heal and only an operator restart clears it.
-/// At/above this the watchdog auto-escalates to the concierge (a `note`; never keystrokes to the victim).
 /// Distinct from the lower `CTX_SATURATION_THRESHOLD` warn level, where the agent can still self-`/compact`.
 const CTX_WEDGE_THRESHOLD: u8 = 100;
+
+/// PRE-WALL escalation threshold: the context-% at which the watchdog escalates to the concierge for a
+/// NON-pr-sync agent — high enough that "it hasn't self-`/compact`ed yet" is a real actionable signal,
+/// but BELOW the 100% wall so a `/compact` can still submit. Escalating only at 100% (the old behavior)
+/// was too late: the agent was already unrecoverable. An agent stuck in a long continuous turn never
+/// returns to a prompt to self-compact, so it walks silently past 85% to the wall — this catches it
+/// while a nudge/restart can still save it. (concierge ruling 2026-07-19: pure safety hardening.)
+const CTX_PREWALL_THRESHOLD: u8 = 95;
+
+/// PRE-WALL threshold for pr-sync SPECIFICALLY — lower (earlier) than the general one because pr-sync is
+/// the SINGLE WRITER of `trunk`: its wedge stalls the ENTIRE merge queue fleet-wide, so it's worth
+/// escalating with more margin to guarantee a `/compact` lands before the wall. (concierge: "escalate
+/// earlier/harder for the single-writer".)
+const CTX_PREWALL_THRESHOLD_PRSYNC: u8 = 92;
+
+/// The pre-wall escalation threshold for `agent` — the lower pr-sync-specific bound for the single-writer,
+/// else the general pre-wall bound. Pure so the per-agent policy is unit-testable.
+fn prewall_threshold_for(agent: &str) -> u8 {
+    if agent == "pr-sync" {
+        CTX_PREWALL_THRESHOLD_PRSYNC
+    } else {
+        CTX_PREWALL_THRESHOLD
+    }
+}
 
 /// Rate-limit (seconds) for the context-wedge concierge escalation, so a wedged agent generates at most
 /// one concierge `note` per this window until the operator acts (the watchdog sweeps every ~4 min).
@@ -550,11 +573,12 @@ pub enum FleetCmd {
         /// Presume a loop stalled once its heartbeat is older than this multiple of its interval.
         #[arg(long, default_value_t = 2)]
         stale_mult: u32,
-        /// Hard CAP (seconds) on the stale window, regardless of interval × mult. The interval is how
-        /// often a HEALTHY agent wants to tick; the stale window is how long we tolerate SILENCE before
-        /// presuming death — they must not scale together unboundedly, or a 30m agent gets a 60min
-        /// dead window (2×30m) and sits stalled for an hour. A heartbeat is stamped at the TOP of every
-        /// tick, so >~10min of silence means stalled no matter the interval. Default 600s (10 min).
+        /// CAP (seconds) on the GRACE portion of the stale window (`stale_window_secs` =
+        /// `interval + min(interval×(mult-1), cap)`). The window always includes one full interval — a
+        /// heartbeat is stamped at the TOP of each tick, so a healthy agent is legitimately silent for up
+        /// to one interval between ticks and must NOT be judged stalled there. This cap bounds only the
+        /// EXTRA patience beyond that one interval, so a dead loop is caught within `interval + cap` (a
+        /// 30m agent within ~40min) rather than the unbounded interval×mult. Default 600s (10 min grace).
         #[arg(long, default_value_t = 600)]
         stale_cap: u64,
         /// Grace window (seconds), used two ways: don't re-arm an agent re-armed this recently (gives
@@ -2148,17 +2172,18 @@ fn watchdog(
             };
             eprintln!("  ⚠ '{}' is at {pct}% context — {tail}.", a.name);
 
-            // At the UNRECOVERABLE wall (100%), the agent can't self-heal and the watchdog can't fix it
-            // with keystrokes (a `/loop`/Esc can't preempt a full window) — only an operator restart
-            // clears it. The saturation warning above only goes to stderr/`watchdog.log`, so a wedge
-            // depended on a human reading watchdog output. Auto-escalate to the concierge (the sole role
-            // that routes an operator action) with a `note` — rate-limited so a persistent wedge doesn't
-            // regenerate a note every sweep. NEVER keystroke the victim (that's the operator's call).
+            // Escalate to the concierge at the PRE-WALL threshold (95% general / 92% pr-sync) — BEFORE the
+            // 100% wall, while a `/compact` can still submit — so the concierge can nudge a proactive
+            // compact (or route a restart) rather than being told only after the agent is already
+            // unrecoverable (the old 100%-only escalation, which was too late). The stderr warning above
+            // fires from 85% but is unread live; the concierge `note` is the actionable signal. Rate-
+            // limited so a climbing agent doesn't regenerate a note every sweep. NEVER keystroke the
+            // victim — the concierge/operator decides nudge-vs-restart.
             let notified_recently =
                 sat_notify_age_secs(fleet, &a.name, now).is_some_and(|s| s < SAT_NOTIFY_GRACE);
-            // A wedged CONCIERGE can't be helped by a note (it lands in the inbox it can't drain) — only
-            // the operator can restart it. Emit a loud, distinct line so a human scanning watchdog output
-            // sees it directly. (The escalation path below is skipped for the concierge by the guard.)
+            // A CONCIERGE at the wall can't be helped by a note (it lands in the inbox it can't drain) —
+            // only the operator can restart it. Emit a loud, distinct stderr line for it. (The escalation
+            // below is skipped for the concierge by the guard in `should_notify_saturation`.)
             if a.name == "concierge" && pct >= CTX_WEDGE_THRESHOLD {
                 eprintln!(
                     "  ‼ CONCIERGE itself is at {pct}% — the human interface is WEDGED and cannot be \
@@ -2166,32 +2191,61 @@ fn watchdog(
                      concierge window."
                 );
             }
-            if should_notify_saturation(&a.name, ctx_pct, CTX_WEDGE_THRESHOLD, notified_recently) {
+            if should_notify_saturation(&a.name, ctx_pct, notified_recently) {
+                // Distinguish PRE-WALL (still compactable — nudge) from AT-WALL (unrecoverable — restart),
+                // and flag pr-sync loudly (its wedge stalls the whole merge queue).
+                let at_wall = pct >= CTX_WEDGE_THRESHOLD;
+                let prsync_tag = if a.name == "pr-sync" {
+                    " [SINGLE-WRITER: a wedge stalls the ENTIRE merge queue]"
+                } else {
+                    ""
+                };
                 if dry_run {
                     println!(
-                        "  DRY-RUN would escalate '{}' context-wedge ({pct}%) to concierge",
-                        a.name
+                        "  DRY-RUN would escalate '{}' context {} ({pct}%) to concierge",
+                        a.name,
+                        if at_wall { "WEDGE" } else { "pre-wall" }
                     );
                 } else {
+                    let (subject, action) = if at_wall {
+                        (
+                            format!(
+                                "context-WEDGE: '{}' at {pct}% — /compact can't submit; needs an operator restart{prsync_tag}",
+                                a.name
+                            ),
+                            format!(
+                                "'{}' is at {pct}% — the UNRECOVERABLE wall. It cannot self-`/compact` (no \
+                                 headroom) and a watchdog nudge can't preempt a full window. Needs an \
+                                 OPERATOR action: interrupt+restart the '{}' window, or Esc its pane to \
+                                 clear a queued-but-unsubmittable `/compact`.",
+                                a.name, a.name
+                            ),
+                        )
+                    } else {
+                        (
+                            format!(
+                                "context PRE-WALL: '{}' at {pct}% — nudge a /compact NOW while it still submits{prsync_tag}",
+                                a.name
+                            ),
+                            format!(
+                                "'{}' is at {pct}% context and has NOT self-`/compact`ed — approaching the \
+                                 100% wall but STILL COMPACTABLE. Nudge it to `/compact` (it fires at the \
+                                 next turn boundary, pre-empting the wall) before it becomes unrecoverable. \
+                                 Escalated pre-wall (not at 100%) precisely so a `/compact` can still land.",
+                                a.name
+                            ),
+                        )
+                    };
                     deliver(
                         fleet,
                         &Message {
                             from: "watchdog".to_string(),
                             to: "concierge".to_string(),
                             kind: "note".to_string(),
-                            subject: format!(
-                                "context-WEDGE: '{}' at {pct}% — /compact can't submit; needs an operator restart",
-                                a.name
-                            ),
+                            subject,
                             body: format!(
-                                "The fleet watchdog detected '{}' at {pct}% context — the unrecoverable \
-                                 wall. It cannot self-`/compact` (no headroom) and a watchdog re-arm/\
-                                 nudge can't preempt a full window. Per the contract this needs an \
-                                 OPERATOR action: interrupt+restart the '{}' window, or Esc its pane to \
-                                 clear a queued-but-unsubmittable `/compact`. Auto-surfaced so a wedge \
-                                 doesn't sit unseen in watchdog stderr; rate-limited to one note per \
-                                 ~30min per agent until it clears.",
-                                a.name, a.name
+                                "{action} Auto-surfaced so it doesn't sit unseen in watchdog stderr; \
+                                 rate-limited to one note per ~30min per agent until it clears."
                             ),
                             seq: next_seq(),
                             r#ref: String::new(),
@@ -2201,8 +2255,9 @@ fn watchdog(
                     stamp_sat_notify(fleet, &a.name);
                     wedge_escalations += 1;
                     println!(
-                        "  + escalated '{}' context-wedge ({pct}%) to concierge (rate-limited)",
-                        a.name
+                        "  + escalated '{}' context {} ({pct}%) to concierge (rate-limited)",
+                        a.name,
+                        if at_wall { "WEDGE" } else { "pre-wall" }
                     );
                 }
             }
@@ -2575,22 +2630,21 @@ fn stamp_sat_notify(fleet: &Fleet, name: &str) {
 
 /// Should the watchdog auto-escalate a context-WEDGED agent to the concierge this sweep? Pure so the
 /// gate is unit-tested. Fires only when ALL hold:
-///   * at/above the UNRECOVERABLE wall (`ctx_pct >= wedge_threshold`, 100%) — NOT the lower 85% warn
-///     level, where the agent can still self-`/compact` (escalation there is premature);
+///   * at/above the PRE-WALL threshold (`ctx_pct >= prewall_threshold_for(agent)`, 95% general / 92%
+///     pr-sync) — NOT the old 100%-only gate (escalation there was TOO LATE: the agent was already
+///     unrecoverable). At the pre-wall level a `/compact` can still submit, so "hasn't self-compacted
+///     yet at 95%" is a real actionable signal for the concierge to nudge/restart before the wall;
 ///   * NOT rate-limited (`!notified_recently`) — one note per grace window, not every sweep;
 ///   * the wedged agent is NOT the concierge itself — a `note` to a wedged concierge lands in the very
 ///     inbox it can't drain, so it's useless. A concierge wedge is the one case only the OPERATOR can
 ///     fix directly; the caller emits a LOUD stderr line for it instead of a self-note.
 ///
-/// The escalation is a `note` only — never keystrokes to the victim (100% needs an operator restart per
-/// the contract; a `/loop`/Esc keystroke can't preempt a full window). The concierge/operator decides.
-fn should_notify_saturation(
-    agent: &str,
-    ctx_pct: Option<u8>,
-    wedge_threshold: u8,
-    notified_recently: bool,
-) -> bool {
-    agent != "concierge" && matches!(ctx_pct, Some(p) if p >= wedge_threshold) && !notified_recently
+/// The escalation is a `note` only — never keystrokes to the victim (the concierge/operator decides
+/// whether to nudge a `/compact` or restart; a `/loop`/Esc keystroke can't preempt a full window).
+fn should_notify_saturation(agent: &str, ctx_pct: Option<u8>, notified_recently: bool) -> bool {
+    agent != "concierge"
+        && matches!(ctx_pct, Some(p) if p >= prewall_threshold_for(agent))
+        && !notified_recently
 }
 
 /// The last auto drain-nudge we sent this agent, as `(flagged-message-id, age-in-secs)`, or `None`
@@ -2910,13 +2964,24 @@ fn parse_interval_secs(s: &str) -> u64 {
     }
 }
 
-/// How long to tolerate heartbeat SILENCE before presuming a loop dead: `interval × mult`, but hard-
-/// capped at `cap`. The cap is the key: the interval is a healthy agent's tick CADENCE, while this is
-/// our patience for silence — they must not scale together, or a 30m agent gets a 60min dead window.
-/// A heartbeat is stamped at the TOP of every tick, so a `cap` of ~10min is a safe "definitely stalled"
-/// bound for any interval, and the mult keeps a short-interval agent from being judged too eagerly.
+/// How long to tolerate heartbeat SILENCE before presuming a loop dead. A heartbeat is stamped at the TOP
+/// of every tick, so a HEALTHY agent's heartbeat age cycles 0 → interval → (tick) → 0; it is only
+/// genuinely overdue once it has been silent for LONGER than one full tick interval. The window is
+/// therefore ONE INTERVAL (so an idle-but-healthy agent between its ticks is NEVER flagged) plus a
+/// CAPPED grace beyond it: `interval + min(interval×(mult-1), cap)`.
+///
+/// This fixes the false-re-arm the old `min(interval×mult, cap)` caused: that capped the window BELOW
+/// the interval for a long-interval agent (a 30m agent got a 600s window), so it read "stale" for ~20 of
+/// every 30 min between legitimate ticks and got re-armed almost every ~4-min sweep — effectively
+/// ticking ~7× faster than its configured interval (concierge ruling 2026-07-19, option (c): preserve
+/// the real cadence). The `cap` now bounds only the GRACE beyond one interval, so a genuinely-dead loop
+/// is still caught within `interval + cap` (e.g. a 30m agent within ~40min; a 10m within ~20min) while a
+/// healthy one is left to tick on its own schedule.
 fn stale_window_secs(interval_secs: u64, mult: u32, cap: u64) -> u64 {
-    interval_secs.saturating_mul(mult as u64).min(cap)
+    let grace = interval_secs
+        .saturating_mul(mult.saturating_sub(1) as u64)
+        .min(cap);
+    interval_secs.saturating_add(grace)
 }
 
 /// Whether a busy-looking pane should be TRUSTED as "genuinely mid-tick, leave alone" for a stale
@@ -5086,28 +5151,34 @@ mod tests {
     }
 
     #[test]
-    fn stale_window_is_capped_for_long_intervals() {
-        // The bug: a 30m agent at mult=2 got a 3600s (60min) dead window. With the 600s cap it's
-        // bounded to 10min — no agent sits dead for an hour regardless of its interval.
+    fn stale_window_is_one_interval_plus_capped_grace() {
+        // The window = interval + min(interval×(mult-1), cap). The interval floor means a long-interval
+        // agent is NEVER flagged BETWEEN its legitimate ticks (the false-re-arm bug): a 30m agent's
+        // heartbeat cycles 0→1800→(tick)→0, so it's overdue only after >1800s + grace, not after 600s.
         let cap = 600;
-        assert_eq!(stale_window_secs(1800, 2, cap), 600); // 30m×2 = 3600 → capped to 600
-        assert_eq!(stale_window_secs(3600, 2, cap), 600); // 60m×2 = 7200 → capped to 600
+        assert_eq!(stale_window_secs(1800, 2, cap), 1800 + 600); // 30m interval + 600 grace = 2400 (40m)
+        assert_eq!(stale_window_secs(3600, 2, cap), 3600 + 600); // 60m + 600 grace = 4200 (70m)
+        // A dead 30m loop is still caught within interval + cap (~40min), bounded — not the old 60min×.
     }
 
     #[test]
-    fn stale_window_uncapped_below_the_cap() {
-        // A short-interval agent still gets the full interval×mult (under the cap), so it isn't
-        // judged stalled too eagerly during a normal-length tick.
+    fn stale_window_short_interval_grace_below_cap() {
+        // A short-interval agent: grace = interval×(mult-1), under the cap, so window = interval×mult
+        // (unchanged from before for these — the fix only matters where interval×(mult-1) exceeds cap).
         let cap = 600;
-        assert_eq!(stale_window_secs(60, 2, cap), 120); // 1m×2 = 120, under cap
-        assert_eq!(stale_window_secs(300, 2, cap), 600); // 5m×2 = 600, exactly at cap
-        assert_eq!(stale_window_secs(299, 2, cap), 598); // just under
+        assert_eq!(stale_window_secs(60, 2, cap), 60 + 60); // 1m + 1m grace = 120 (= old 1m×2)
+        assert_eq!(stale_window_secs(300, 2, cap), 300 + 300); // 5m + 5m grace = 600 (= old 5m×2)
+        // mult=3: grace = interval×2, capped. 5m×2=600 = cap exactly → 300+600 = 900.
+        assert_eq!(stale_window_secs(300, 3, cap), 300 + 600);
     }
 
     #[test]
     fn stale_window_never_overflows() {
-        // A huge interval must saturate, not wrap, before the cap applies.
-        assert_eq!(stale_window_secs(u64::MAX, 2, 600), 600);
+        // A huge interval must saturate, not wrap. interval saturates to u64::MAX; grace caps at 600;
+        // the final add saturates → u64::MAX (never a wrap to a tiny window that would thrash-re-arm).
+        assert_eq!(stale_window_secs(u64::MAX, 2, 600), u64::MAX);
+        // mult=1 → zero grace → window is exactly one interval.
+        assert_eq!(stale_window_secs(600, 1, 600), 600);
     }
 
     #[test]
@@ -5963,50 +6034,37 @@ mod tests {
     }
 
     #[test]
-    fn should_notify_saturation_only_at_the_wedge_wall_and_rate_limited() {
-        // At/above the wedge wall (100), not recently notified, non-concierge → escalate.
-        assert!(should_notify_saturation(
-            "v-inference",
-            Some(100),
-            100,
-            false
-        ));
-        assert!(should_notify_saturation(
-            "v-inference",
-            Some(101),
-            100,
-            false
-        )); // defensive; clamp upstream
-        // Below the wall → NOT yet (the agent can still self-`/compact` at the 85% warn level).
-        assert!(!should_notify_saturation(
-            "v-inference",
-            Some(99),
-            100,
-            false
-        ));
-        assert!(!should_notify_saturation(
-            "v-inference",
-            Some(85),
-            100,
-            false
-        ));
+    fn should_notify_saturation_escalates_pre_wall_and_earlier_for_pr_sync() {
+        // General agent: escalate at/above the PRE-WALL threshold (95), while /compact still submits —
+        // NOT only at 100 (which was too late). Not recently notified, non-concierge.
+        assert!(should_notify_saturation("v-inference", Some(95), false));
+        assert!(should_notify_saturation("v-inference", Some(99), false));
+        assert!(should_notify_saturation("v-inference", Some(100), false)); // at-wall still escalates
+        // Below the general pre-wall bound → not yet (the 85% warn level only logs; self-compact expected).
+        assert!(!should_notify_saturation("v-inference", Some(94), false));
+        assert!(!should_notify_saturation("v-inference", Some(85), false));
+
+        // pr-sync escalates EARLIER (92) — the single writer, whose wedge stalls the whole queue.
+        assert!(
+            should_notify_saturation("pr-sync", Some(92), false),
+            "pr-sync escalates at its lower 92% pre-wall bound"
+        );
+        assert!(
+            should_notify_saturation("pr-sync", Some(94), false),
+            "pr-sync at 94 (below the general 95) still escalates"
+        );
+        assert!(
+            !should_notify_saturation("pr-sync", Some(91), false),
+            "just below pr-sync's 92 bound → not yet"
+        );
+
         // No reading → nothing to escalate.
-        assert!(!should_notify_saturation("v-inference", None, 100, false));
-        // Rate-limited (notified within grace) → suppress, even at 100%.
-        assert!(!should_notify_saturation(
-            "v-inference",
-            Some(100),
-            100,
-            true
-        ));
+        assert!(!should_notify_saturation("v-inference", None, false));
+        // Rate-limited (notified within grace) → suppress, even past the wall.
+        assert!(!should_notify_saturation("v-inference", Some(100), true));
         // The concierge is NEVER auto-notified about its OWN wedge (a note it can't read) — the caller
         // handles a concierge wedge with a loud operator-facing stderr line instead.
-        assert!(!should_notify_saturation(
-            "concierge",
-            Some(100),
-            100,
-            false
-        ));
+        assert!(!should_notify_saturation("concierge", Some(100), false));
     }
 
     #[test]
