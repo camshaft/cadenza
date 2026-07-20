@@ -50,3 +50,11 @@ Set.to-list's "canonical element-value order" definition + the fact that the ele
 - String-element control: wasm computes (len 3).
 
 Not breaker's lane to fix. Filed adv + issue to v-runtime (Set.to-list wasm emit / orderable-descriptor).
+
+## Map.to-list twin — behaviorally CONFIRMED (breaker 2026-07-20 ~11:34)
+The identical divergence exists for `Map.to-list` over a COMPOUND-KEY map (v-runtime's reply flagged it +
+their memory pins the `Ty::Map(key,val)` KEY arm ~13013 as the same bug). Verified:
+`(Map.to-list (Map.insert (Map.insert Map.empty (tuple 3 1) 100) (tuple 1 2) 200))` — wasm: compile error
+"Map.to-list key/value shape has no orderable descriptor"; rust: computes (len 2). Same scalar-only
+orderable-descriptor guard, Map side. v-runtime is fixing BOTH (Set + Map to-list) in the one BRICK-2-batched
+change (reuse value_cmp_shaped). No separate adv — same root cause, same fix.
