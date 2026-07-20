@@ -184,6 +184,10 @@ def c-cx-ne-true() = Case.Case([Tok.TNum(5), Tok.TOp(65), Tok.TNum(3)], Expect.R
 /// `20 - 2 * 3 - 4` → 10 — mul binds tighter than the two left-associative subtractions: `(20 - (2*3)) - 4`
 /// = (20-6)-4 = 10. Combines `*`-precedence with `-` left-assoc in one expression (each pinned separately).
 def c-cx-mul-prec-in-sub-chain() = Case.Case([Tok.TNum(20), Tok.TOp(45), Tok.TNum(2), Tok.TOp(42), Tok.TNum(3), Tok.TOp(45), Tok.TNum(4)], Expect.Runs(10))
+/// `1 < 2 < 3` → Declines. Comparison is NON-associative (parse-cmp), so `1 < 2` parses and `< 3` is leftover;
+/// the trailing-token guard turns an incomplete parse into a poison root → decline (matching rcdzc, which
+/// rejects a chained comparison). Pins the guard: dropping `< 3` and running `1<2`→1 was a fabricated value.
+def c-cx-chained-comparison-declines() = Case.Case([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2), Tok.TOp(60), Tok.TNum(3)], Expect.Declines)
 /// `((5))` → 5 (redundant NESTED parens collapse to the inner literal — the paren-nests-full-grammar recursion).
 /// QUARANTINED-from-corpus repro (see the comment block below): kept as the root-cause reproducer for the
 /// open nested-paren hang (bug #4, v-inference). NOT dead — intentionally retained. Leading `_` marks it
@@ -208,7 +212,8 @@ def corpus() = [
   c-cx-sub-left-assoc(), c-cx-mod-precedence(), c-cx-mod-precedence-distinguishes(),
   c-cx-neg-dividend(), c-cx-mod-by-zero-declines(),
   c-cx-nested-if-in-branch(), c-cx-let-chain-outer-in-value-and-body(),
-  c-cx-ne-true(), c-cx-mul-prec-in-sub-chain()
+  c-cx-ne-true(), c-cx-mul-prec-in-sub-chain(),
+  c-cx-chained-comparison-declines()
 ]
 
 /// THE SCOREBOARD: `(passed, total)` over the corpus — what the `cadenza-ml` gate target prints as `X/N`.
@@ -239,7 +244,7 @@ def cf-declines-mismatch-is-fail() =
 
 @test
 def cf-corpus-size-floor() =
-  // The corpus SIZE floor: exactly 58 cases, so a case can't be silently dropped from `corpus()`.
+  // The corpus SIZE floor: exactly 59 cases, so a case can't be silently dropped from `corpus()`.
   // This does NOT re-run the compiles — each case's pass/decline is already proven by its own
   // `conformance-<case>` @test below, and the `count-passing` fold logic by
   // `cf-count-passing-partial`. The old `cf-corpus-all-pass` re-ran the entire corpus
@@ -248,7 +253,7 @@ def cf-corpus-size-floor() =
   // v-fleet-tooling as the compiler-ml gate-throughput + false-hang source). The conformance FLOOR
   // is now: per-case @tests (each case correct) + this size check (no case dropped), with none of
   // the redundant full-corpus re-run.
-  (if List.len(corpus()) == 58 then unit else trap("corpus has 58 cases"))
+  (if List.len(corpus()) == 59 then unit else trap("corpus has 59 cases"))
 
 @test
 def cf-count-passing-partial() =
@@ -388,5 +393,7 @@ def conformance-cx-let-chain-outer-in-value-and-body() = (if check-case(c-cx-let
 def conformance-cx-ne-true() = (if check-case(c-cx-ne-true()) then unit else trap("5 != 3 → 1"))
 @test
 def conformance-cx-mul-prec-in-sub-chain() = (if check-case(c-cx-mul-prec-in-sub-chain()) then unit else trap("20 - 2*3 - 4 → 10"))
+@test
+def conformance-cx-chained-comparison-declines() = (if check-case(c-cx-chained-comparison-declines()) then unit else trap("1 < 2 < 3 declines (chained comparison / trailing-token guard)"))
 
 export { Expect.*, Case.*, case-passes, check-case, count-passing, corpus, conformance, all-pass }
