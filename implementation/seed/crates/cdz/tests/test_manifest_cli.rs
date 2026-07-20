@@ -150,6 +150,36 @@ fn a_failing_test_fails_the_run() {
     assert!(stdout.contains("1 passed, 1 failed"), "{stdout}");
 }
 
+#[test]
+fn a_parse_broken_sibling_def_fails_the_run_not_a_false_green() {
+    // SYSTEMIC gate fix (v-syntax's 76-min-block post-mortem, routed by concierge): a def that fails to
+    // PARSE is RECOVERED by the reader (errors printed, truncated arena), so the defs that DID parse still
+    // run and the suite reported "N passed, 0 failed" — the parse-broken sibling silently absent, landing
+    // GREEN. `cdz test` now gates on `cdz check` clean FIRST: any parse/check error → FAIL (non-zero), the
+    // suite does NOT run, and its stderr says so (not a green summary). Here a good `@test` sits beside a
+    // def with an unclosed paren; the run must be RED and must NOT print a passed-count.
+    let d = dir("parse-broken");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@test def good() = if 1 == 1 then unit else trap(\"g\")\n\
+         def broken() -> Int64 = (1 + 2\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f]);
+    assert!(
+        !ok,
+        "a parse error in a sibling def must FAIL the run: {stdout}{stderr}"
+    );
+    assert!(
+        stderr.contains("NOT running the suite"),
+        "the run is gated on check-clean and says it didn't run the suite: {stderr}"
+    );
+    assert!(
+        !stdout.contains("passed,"),
+        "must NOT report a green `N passed` summary for a parse-broken project: {stdout}"
+    );
+}
+
 /// A single explicit `cdz test <file>` that contributes ZERO tests must PRINT a "0 tests found" hint, not
 /// exit silently — otherwise a file whose only marker is an UNRECOGNIZED test-ish annotation (`@property`,
 /// which is silently stripped, so its def is NOT a `@test`) is dead + "green" by omission (breaker's

@@ -102,6 +102,44 @@ fn run_ml_from_stdin_also_exits_zero_with_a_verdict() {
 }
 
 #[test]
+fn run_ml_an_explicit_dash_reads_stdin_not_a_file_named_dash() {
+    // REGRESSION: `run-ml -` (the stdin MARKER `cdz fmt -`/`convert -`/`compile -`/`run -` use) used to fall
+    // through to `read_to_string("-")`, leaking the raw `cannot read -: No such file or directory (os error
+    // 2)` errno — the exact errno-leak the query commands' `-` guard prevents. A script piping with a `-`
+    // (the shell convention everywhere else) hit it. Now `-` reads stdin like a missing arg: a verdict + exit
+    // 0, and specifically NOT the "cannot read -" errno leak.
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let mut child = Command::new(exe)
+        .args(["run-ml", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cdz run-ml -");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"(do (def (main) 0) (export main))\n")
+        .unwrap();
+    let out = child.wait_with_output().expect("wait");
+    assert!(
+        out.status.success(),
+        "run-ml - exits 0 (a verdict): {out:?}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("declined") || stdout.starts_with("value ") || stdout.starts_with("error "),
+        "run-ml - prints a verdict from stdin: {stdout:?}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("cannot read -"),
+        "must NOT leak the `cannot read -` errno — `-` is the stdin marker: {stderr}"
+    );
+}
+
+#[test]
 fn run_ml_leaves_no_driver_file_behind() {
     // `cdz run-ml` writes a pid-stamped `zz-run-ml-driver-<pid>.cdz` INTO the compiler-ml src tree (its
     // `import "sread-eval"` resolves entry-dir-relative, so it can't live in a temp dir). An RAII guard

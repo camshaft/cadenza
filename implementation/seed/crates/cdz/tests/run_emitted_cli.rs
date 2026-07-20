@@ -152,6 +152,44 @@ fn run_emitted_out_of_range_literal_declines_not_harness_error() {
 }
 
 #[test]
+fn run_emitted_an_explicit_dash_reads_stdin_not_a_file_named_dash() {
+    // REGRESSION: `run-emitted -` (the stdin MARKER the other pipe commands use) used to fall through to
+    // `read_to_string("-")`, leaking the raw `cannot read -: No such file or directory (os error 2)` errno.
+    // Now `-` reads stdin like a missing arg. run-emitted resolves the runtime for an in-subset program, so
+    // store-guard the verdict assert (storeless CI); the errno-leak assertion holds regardless.
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let mut child = Command::new(exe)
+        .args(["run-emitted", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cdz run-emitted -");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"(do (def (main) 42) (export main))")
+        .unwrap();
+    let out = child.wait_with_output().expect("wait");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // The core fix: `-` is the stdin marker, NOT a file to open — no errno leak, whether or not a store is
+    // present (the read happens before any runtime resolution).
+    assert!(
+        !stderr.contains("cannot read -"),
+        "must NOT leak the `cannot read -` errno — `-` is the stdin marker: {stderr}"
+    );
+    if store_present() {
+        assert!(out.status.success(), "run-emitted - exits 0 (a verdict)");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "value 42",
+            "run-emitted - reads the program from stdin"
+        );
+    }
+}
+
+#[test]
 fn run_emitted_on_an_unreadable_file_exits_non_zero() {
     // The one non-zero exit: a harness READ failure (no verdict).
     let exe = env!("CARGO_BIN_EXE_cdz");

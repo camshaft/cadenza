@@ -110,4 +110,11 @@ fn a_bare_stdin_marker_gives_a_clean_diagnostic_not_a_raw_os_error() {
         !err.contains("os error"),
         "the raw OS error is not surfaced: {err}"
     );
+    // The pointer must stay CURRENT: the verdict runners (`run-ml`/`run-rust`/`run-emitted`) now accept `-`
+    // as the stdin marker too, so the "commands that read stdin" list names them — else it silently drifts
+    // stale (a user is told fmt/convert/compile/run when run-ml would also work).
+    assert!(
+        err.contains("run-ml") && err.contains("cdz fmt"),
+        "the stdin-capable list includes both the pipe commands and the verdict runners: {err}"
+    );
 }
