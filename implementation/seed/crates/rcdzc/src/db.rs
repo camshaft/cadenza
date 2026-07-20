@@ -2472,6 +2472,30 @@ impl Db {
                 db.newtype_inner.insert(decl, inner);
             }
         }
+        // RE-NORMALIZE the stored templates against the NOW-COMPLETE `newtype_inner`. The loop above
+        // decodes each decl's template in `type_decls` order, so a decl that references ANOTHER erasable
+        // newtype declared LATER (in an imported module, `(type Note (Note Pitch ..))` decoded before
+        // `Pitch` is keyed — cross-module linking splices imports in file order) baked a raw `Ty::Sum{that
+        // decl}` into its template: `newtype_underlying(Note)` decoded the `Pitch` field through
+        // `typeval_of`, which `normalize_sum`'d it while `Pitch` was not yet a key → boxed `Sum`, not the
+        // erased `Nominal`. Left raw, a projection of the outer newtype reads a `Ty::Sum` for that field,
+        // and the backend treats it as a heap handle (no unbox) though the value is the erased inner — an
+        // invalid-wasm miscompile (9939). `newtype_inner` exists so EVERY reader agrees on the
+        // representation, so the templates themselves must agree: walk each and replace an embedded
+        // now-keyed `Ty::Sum` with its `normalize_sum` (`Nominal`). One pass suffices — the map is complete,
+        // so a single walk resolves every cross-decl reference. Computed from the originals then written
+        // back together, so each `normalize_sum` reads the pre-rewrite template (a recursive newtype's
+        // self-referential `Sum` back-edge normalizes to the SAME one-level-unfold `Nominal{inner:
+        // template}` shape query-time `normalize_sum` already produces — finite, not re-expanded).
+        let keyed: Vec<StructId> = db.newtype_inner.keys().copied().collect();
+        let mut renorm: Vec<(StructId, Ty)> = Vec::with_capacity(keyed.len());
+        for k in keyed {
+            let template = db.newtype_inner[&k].clone();
+            renorm.push((k, normalize_embedded_sums(&db, &template)));
+        }
+        for (k, t) in renorm {
+            db.newtype_inner.insert(k, t);
+        }
         // ENUM-DISCRIMINANT REPRESENTATION: materialize which sums are C-style enums — MORE than one
         // variant, EVERY variant nullary. Such a value is just its discriminant, so the backend
         // represents it as a bare `i32` (no heap box). A single-variant nullary sum is a nominal Unit
@@ -5544,6 +5568,84 @@ pub const TOP_LEVEL_KEYWORDS: &[&str] = &[
 /// — the type the sum was instantiated at. A `Var(i)` with `i` past `args` (a malformed/under-applied
 /// instantiation) is left as-is (a free var the boundary rejects, not a panic). A template with no vars
 /// (a monomorphic newtype) is cloned unchanged. Descends every structural `Ty` that carries inner types.
+/// Rewrite an embedded `Ty::Sum` (or `Ty::Nominal`) whose `decl` is an erasable NEWTYPE into its
+/// `normalize_sum` form, so a stored `newtype_inner` template agrees with what a query-time reader would
+/// decode. Used ONCE at load to fix a template that referenced a newtype not-yet-keyed when it was decoded
+/// (the cross-module decl-order case — 9939). Recurses into structural children and into a keyed decl's
+/// type-ARGUMENTS, but NOT into a produced `Nominal`'s `inner`: `inner` is the derived one-level unfold
+/// `normalize_sum` computes from that decl's OWN stored template (rewritten as its own map entry), so
+/// descending it would re-expand a RECURSIVE newtype's `Sum` back-edge forever. Stopping at the node
+/// yields exactly the finite shape query-time `normalize_sum` produces. Pure over `&Db` (a map lookup +
+/// structural rebuild).
+fn normalize_embedded_sums(db: &Db, t: &crate::ty::Ty) -> crate::ty::Ty {
+    use crate::ty::Ty;
+    match t {
+        // A keyed newtype reference (as a raw `Sum` baked by the load-order, or an already-erased
+        // `Nominal`) → its canonical `normalize_sum` form, with its args normalized first. `normalize_sum`
+        // re-derives `inner` from the decl's own (separately-rewritten) stored template; we do not walk it.
+        Ty::Sum { decl, name, args }
+        | Ty::Nominal {
+            decl, name, args, ..
+        } if db.newtype_inner.contains_key(decl) => {
+            let new_args: Vec<Ty> = args
+                .iter()
+                .map(|a| normalize_embedded_sums(db, a))
+                .collect();
+            db.normalize_sum(*decl, name.clone(), new_args)
+        }
+        // A non-newtype sum stays boxed; normalize its args (a generic sum's payload template).
+        Ty::Sum { decl, name, args } => Ty::Sum {
+            decl: *decl,
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|a| normalize_embedded_sums(db, a))
+                .collect(),
+        },
+        Ty::Nominal {
+            decl,
+            name,
+            args,
+            inner,
+        } => Ty::Nominal {
+            decl: *decl,
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|a| normalize_embedded_sums(db, a))
+                .collect(),
+            inner: inner.clone(),
+        },
+        Ty::Tuple(elems) => Ty::Tuple(
+            elems
+                .iter()
+                .map(|e| normalize_embedded_sums(db, e))
+                .collect(),
+        ),
+        Ty::List(e) => Ty::List(Box::new(normalize_embedded_sums(db, e))),
+        Ty::Map(k, v) => Ty::Map(
+            Box::new(normalize_embedded_sums(db, k)),
+            Box::new(normalize_embedded_sums(db, v)),
+        ),
+        Ty::Set(e) => Ty::Set(Box::new(normalize_embedded_sums(db, e))),
+        Ty::Fn(p, r) => Ty::Fn(
+            Box::new(normalize_embedded_sums(db, p)),
+            Box::new(normalize_embedded_sums(db, r)),
+        ),
+        Ty::Record(fields) => Ty::Record(std::rc::Rc::new(
+            fields
+                .iter()
+                .map(|(k, t)| (k.clone(), normalize_embedded_sums(db, t)))
+                .collect(),
+        )),
+        Ty::Qty { inner, unit } => Ty::Qty {
+            inner: Box::new(normalize_embedded_sums(db, inner)),
+            unit: unit.clone(),
+        },
+        other => other.clone(),
+    }
+}
+
 fn subst_template_vars(template: &crate::ty::Ty, args: &[crate::ty::Ty]) -> crate::ty::Ty {
     #[cfg(test)]
     SUBST_TEMPLATE_VARS_VISITS.with(|c| c.set(c.get() + 1));
@@ -5658,5 +5760,179 @@ mod tests {
             "an ordinary def is not exhaustive"
         );
         assert!(!is_test("plain"), "an ordinary def is not a test");
+    }
+
+    /// 9939 (cross-module / decl-order newtype-erasure): a newtype whose payload references ANOTHER
+    /// erasable newtype declared LATER must still store an ERASED (`Ty::Nominal`) inner for that field, not
+    /// the pre-erasure boxed `Ty::Sum`. `newtype_underlying` decodes each decl's template in `type_decls`
+    /// order, so a decl processed BEFORE the newtype it references (`Note` before `Pitch` here, exactly the
+    /// order a cross-module link splices an importing file ahead of its import) decoded that field while
+    /// the referenced decl was not yet a `newtype_inner` key, baking a raw `Ty::Sum{Pitch}`. Left raw, a
+    /// projection of `Note`'s `Pitch` field reads a `Ty::Sum` and the backend treats it as a heap handle
+    /// though the value is the erased `Int` — an invalid-wasm miscompile. The post-population re-normalize
+    /// pass fixes the stored template so EVERY reader agrees. Pins that `Note`'s inner tuple carries the
+    /// `Pitch` field as `Nominal { inner: Int }`, never a bare `Sum`.
+    #[test]
+    fn a_newtype_referencing_a_later_declared_newtype_stores_an_erased_inner() {
+        // `Note` is declared BEFORE `Pitch`, so it is decoded first — the decl order that baked the bug.
+        let ast = crate::testkit::parse(
+            "(do \
+               (type Note (Note Pitch Int64)) \
+               (type Pitch (Pitch Int64)) \
+               (def (main) 0) (export main))",
+        );
+        let db = Db::load(ast);
+        let occ_of = |name: &str| {
+            db.type_decls
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("type {name}"))
+                .occ
+        };
+        // Pitch itself erases to a nominal Int.
+        let pitch_inner = db
+            .newtype_inner
+            .get(&occ_of("Pitch"))
+            .expect("Pitch is an erasable newtype");
+        assert!(
+            matches!(pitch_inner, crate::ty::Ty::Int(_)),
+            "Pitch erases to a nominal Int, got {pitch_inner:?}"
+        );
+        // Note's stored inner is a tuple whose FIRST element is the Pitch field — and it must be the
+        // ERASED `Nominal`, not a raw `Sum` (the 9939 miscompile).
+        let note_inner = db
+            .newtype_inner
+            .get(&occ_of("Note"))
+            .expect("Note is an erasable newtype");
+        let crate::ty::Ty::Tuple(elems) = note_inner else {
+            panic!("Note erases to a 2-tuple, got {note_inner:?}");
+        };
+        match &elems[0] {
+            crate::ty::Ty::Nominal { decl, inner, .. } => {
+                assert_eq!(*decl, occ_of("Pitch"), "field 0 is the Pitch nominal");
+                assert!(
+                    matches!(inner.as_ref(), crate::ty::Ty::Int(_)),
+                    "Pitch nominal's inner is Int, got {inner:?}"
+                );
+            }
+            other => panic!(
+                "Note's Pitch field must be an ERASED Nominal, not a raw Sum (9939), got {other:?}"
+            ),
+        }
+    }
+
+    /// Assert no `Ty::Sum` naming a KEYED newtype survives anywhere in a stored template — the 9939
+    /// invariant, generalized: `normalize_embedded_sums` must reach an erasable-newtype reference at ANY
+    /// structural depth (a field that is a `List`/`Tuple`/`Map` of the newtype), not just a top-level
+    /// field. A residual such `Sum` is the miscompile (a projection would read it as a heap handle). Does
+    /// NOT descend a `Nominal.inner` — that hint is derived from the referenced decl's own (separately
+    /// asserted) template, and descending it would loop on a recursive newtype, exactly as the pass does
+    /// not descend it.
+    fn assert_no_keyed_sum(db: &Db, t: &crate::ty::Ty, ctx: &str) {
+        use crate::ty::Ty;
+        match t {
+            Ty::Sum { decl, name, args } => {
+                assert!(
+                    !db.newtype_inner.contains_key(decl),
+                    "a raw Ty::Sum naming the KEYED newtype `{name}` survives in {ctx} — 9939 residual"
+                );
+                for a in args.iter() {
+                    assert_no_keyed_sum(db, a, ctx);
+                }
+            }
+            Ty::Nominal { args, .. } => {
+                // Only the identity args are walked; `inner` is the derived, un-descended hint.
+                for a in args.iter() {
+                    assert_no_keyed_sum(db, a, ctx);
+                }
+            }
+            Ty::Tuple(elems) => elems.iter().for_each(|e| assert_no_keyed_sum(db, e, ctx)),
+            Ty::List(e) | Ty::Set(e) => assert_no_keyed_sum(db, e, ctx),
+            Ty::Map(k, v) => {
+                assert_no_keyed_sum(db, k, ctx);
+                assert_no_keyed_sum(db, v, ctx);
+            }
+            Ty::Fn(p, r) => {
+                assert_no_keyed_sum(db, p, ctx);
+                assert_no_keyed_sum(db, r, ctx);
+            }
+            Ty::Record(fields) => fields
+                .values()
+                .for_each(|f| assert_no_keyed_sum(db, f, ctx)),
+            Ty::Qty { inner, .. } => assert_no_keyed_sum(db, inner, ctx),
+            _ => {}
+        }
+    }
+
+    /// 9939 hardening: the re-normalize must reach a newtype reference NESTED inside a structural field
+    /// (`(type Chord (Chord (List Pitch) Int64))` where `Pitch` is declared LATER), not only a top-level
+    /// field — a `List Pitch` element that stayed a raw `Ty::Sum{Pitch}` would miscompile a projection of
+    /// the list's elements exactly as the flat field did. Pins that NO keyed-newtype `Sum` survives at any
+    /// depth of `Chord`'s stored template.
+    #[test]
+    fn a_newtype_field_nesting_a_later_newtype_erases_at_depth() {
+        let ast = crate::testkit::parse(
+            "(do \
+               (type Chord (Chord (List Pitch) Int64)) \
+               (type Pitch (Pitch Int64)) \
+               (def (main) 0) (export main))",
+        );
+        let db = Db::load(ast);
+        let chord = db
+            .type_decls
+            .iter()
+            .find(|t| t.name == "Chord")
+            .expect("Chord");
+        let inner = db
+            .newtype_inner
+            .get(&chord.occ)
+            .expect("Chord is an erasable newtype");
+        // The whole stored template is free of any raw Sum naming a keyed newtype — including the
+        // `List`-element Pitch reference.
+        assert_no_keyed_sum(&db, inner, "Chord's stored template");
+        // And concretely: element 0 is a `List` whose element is the erased Pitch nominal.
+        let crate::ty::Ty::Tuple(elems) = inner else {
+            panic!("Chord erases to a 2-tuple, got {inner:?}");
+        };
+        let crate::ty::Ty::List(elem) = &elems[0] else {
+            panic!("Chord field 0 is a List, got {:?}", elems[0]);
+        };
+        assert!(
+            matches!(elem.as_ref(), crate::ty::Ty::Nominal { .. }),
+            "the list element is the erased Pitch nominal, got {elem:?}"
+        );
+    }
+
+    /// 9939 hardening: a SINGLE-VARIANT RECURSIVE newtype that also references a LATER newtype
+    /// (`(type Seq (Seq (Option (Tuple Pitch Seq))))` before `Pitch`) must LOAD (the re-normalize
+    /// terminates) and store an erased template with no residual keyed-newtype `Sum`. This is the case the
+    /// pass's "do not descend a produced `Nominal.inner`" rule protects: descending it would re-expand
+    /// `Seq`'s self-referential back-edge forever. `Db::load` returning at all proves termination (a test
+    /// that hangs fails by timeout); the scan proves the `Pitch` reference still erased.
+    #[test]
+    fn a_recursive_single_variant_newtype_referencing_a_later_newtype_loads_and_erases() {
+        let ast = crate::testkit::parse(
+            "(do \
+               (type Seq (Seq (Option (Tuple Pitch Seq)))) \
+               (type Pitch (Pitch Int64)) \
+               (def (main) 0) (export main))",
+        );
+        // Termination: this returns rather than diverging (the `Nominal.inner` no-descend guard).
+        let db = Db::load(ast);
+        let occ_of = |name: &str| {
+            db.type_decls
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("type {name}"))
+                .occ
+        };
+        let seq_inner = db
+            .newtype_inner
+            .get(&occ_of("Seq"))
+            .expect("Seq is an erasable newtype");
+        // No raw keyed-newtype Sum survives — the `Pitch` reference nested under `Option`/`Tuple` erased,
+        // and `Seq`'s own self-reference (a boxed `Sum{Seq}` back-edge — Seq is keyed) is likewise
+        // normalized to its `Nominal` at every occurrence in the stored template.
+        assert_no_keyed_sum(&db, seq_inner, "Seq's stored template");
     }
 }

@@ -11549,3 +11549,22 @@
                   (match mn ((MkV3 a _ _) (match mx ((MkV3 b _ _) (if (= (- b a) (+ m m)) 1 0))))))))
             (export main)))
   (call main (: 5 Int64)) (output (: 1 Int64)))
+
+; A structural-record variant payload written in the ML surface's field spelling — each field a `(: name
+; type)` annotation triple, `(type DbBox (DbBox (Record (: a Int64) (: b Int64))))` — must register the
+; payload so the variant is NON-nullary and its record field is readable. The ML record-type surface `{a:
+; Int64, b: Int64}` lowers each field to a 3-element `(: a Int64)` node (vs the 2-element `(a Int64)` pair
+; the s-expr `(Record (a Int64) …)` spelling uses). `typeval_of`'s RecordCtor decode originally accepted only
+; the 2-element pair, so the ML-surfaced structural-record payload decoded to `None` → the variant read
+; NULLARY (CDZ0201 "the variant DbBox is nullary … carries no payload" at construction, "not a variant of the
+; matched type" at the pattern). Building `(DbBox (record (a 1) (b 2)))`, matching it, and reading field `a`
+; = 1 pins that the RecordCtor decode accepts BOTH the pair and the `(: name type)` annotation-triple field
+; spellings, so a structural record decodes identically in either surface. (Blocked the operator's DB-records
+; conversion: a nominal variant wrapping the Db record is the effect-state carrier.)
+(case "a variant carrying a structural-record payload in the (: name type) field spelling is non-nullary and readable"
+  (input  (do
+            (type DbBox (DbBox (Record (: a Int64) (: b Int64))))
+            (def (unwrap (: x DbBox)) (match x ((DbBox r) (. r a))))
+            (def (main) (unwrap (DbBox (record (a 1) (b 2)))))
+            (export main)))
+  (output (: 1 Int64)))

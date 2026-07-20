@@ -287,14 +287,25 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                     let mut fields: std::collections::BTreeMap<Symbol, Ty> =
                         std::collections::BTreeMap::new();
                     for &a in args.iter() {
-                        let pair = match db.ast.get(a) {
-                            crate::ast::Struct::List(children) if children.len() == 2 => {
-                                [children[0], children[1]]
-                            }
+                        // A field is a `(name type)` pair (the s-expr `(Record (a Int64) …)` spelling) OR a
+                        // `(: name type)` annotation triple — the shape the ML record-type surface `{a:
+                        // Int64, …}` lowers to. Accept BOTH so a structural record decodes in this scheme
+                        // reducer identically to `typeval_of` (the ground twin): without the triple arm the
+                        // ML `{…}` field bailed to `None`, so an effect-op with a structural-record RETURN
+                        // (`get : -> {a, b}`) had NO `(-> Unit result)` scheme → the nullary-perform site
+                        // fell back to the op's meta-record and `St.get()` typed as `(Record (apply …)
+                        // (effect-op …) (t …))` instead of `{a, b}`. The `type_in_env` companion of the
+                        // `typeval_of` RecordCtor fix.
+                        let (name_occ, ty_occ) = match db.ast.get(a) {
+                            crate::ast::Struct::List(children) => match children.as_slice() {
+                                [n, t] => (*n, *t),
+                                [colon, n, t] if db.ast.as_name(*colon) == Some(":") => (*n, *t),
+                                _ => return None,
+                            },
                             _ => return None,
                         };
-                        let name = db.ast.as_name(pair[0])?.to_string();
-                        let t = type_in_env(db, pair[1], env)?;
+                        let name = db.ast.as_name(name_occ)?.to_string();
+                        let t = type_in_env(db, ty_occ, env)?;
                         fields.insert(Symbol::plain(name), t);
                     }
                     Some(Ty::Record(std::rc::Rc::new(fields)))
@@ -2879,6 +2890,29 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
         }
         // A type-constructor application — reduce it, then read the built value's type.
         Resolved::Apply { head, args } => {
+            // A GENERIC type whose declared NAME coincides with its variant's name — `(type Box (Box a))`
+            // — applied in a TYPE position `(Box Int64)`: the head resolves to the VARIANT constructor
+            // (`SumNew`, a `variant_disc_of` node) rather than the type constructor (`SumCtor`), because a
+            // same-name occurrence prefers the value binding. In a type position the applied form can only
+            // mean the TYPE, so recover the owning declaration from the variant head and build the sum type
+            // directly — the same `Ty` `reduce_sum_ctor` produces from a `SumCtor` head. (A bare same-name
+            // type `Pitch` in a type position already reduces via the `Resolved::Record`/`Ref` `(meta t)`
+            // arm; only the APPLIED generic form reached this variant-head gap.) Guarded to a head that
+            // genuinely IS a variant constructor whose owning decl has type PARAMETERS (an applied form of a
+            // monomorphic sum's same-name variant would be a wrong-arity value application, not a type).
+            if variant_disc_of(db, head).is_some()
+                && let Some(decl) = variant_owner_decl(db, head)
+                && db
+                    .type_decl_by_occ(decl)
+                    .is_some_and(|td| !td.params.is_empty())
+            {
+                let name = db.type_decl_by_occ(decl)?.name.clone();
+                let mut arg_tys = Vec::with_capacity(args.len());
+                for &a in args.iter() {
+                    arg_tys.push(typeval_of(db, a)?);
+                }
+                return Some(db.normalize_sum(decl, name, arg_tys));
+            }
             let prim = meta_apply_of(db, head)?;
             if prim.is_arith() {
                 return None;
@@ -2929,15 +2963,23 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
                         crate::ty::Ty,
                     > = std::collections::BTreeMap::new();
                     for &a in args.iter() {
-                        // Each arg is a raw `(name type)` pair; a malformed pair / non-name / non-type falls
-                        // through to `reduce_ctor` (which reports the fault) via `None`.
+                        // A field is a `(name type)` pair (the s-expr spelling `(Record (a Int64) …)`) OR a
+                        // `(: name type)` annotation triple — the shape the ML record-type surface `{a:
+                        // Int64, …}` lowers to (`Record(a : Int64, …)`, each field a 3-element `(: a Int64)`).
+                        // Accept BOTH so a structural record decodes identically in EITHER surface: without
+                        // the triple arm the ML `{…}` field bailed to `None`, so a variant payload / effect-op
+                        // return typed as a bare `{…}` was lost (variant read NULLARY, perform site read the
+                        // op meta-record). A malformed field / non-name / non-type still falls through to
+                        // `reduce_ctor` via `None`.
                         let crate::ast::Struct::List(pair) = db.ast.get(a) else {
                             return None;
                         };
-                        if pair.len() != 2 {
-                            return None;
-                        }
-                        let (name_occ, ty_occ) = (pair[0], pair[1]);
+                        let (name_occ, ty_occ) = match pair.as_slice() {
+                            [n, t] => (*n, *t),
+                            // `(: name type)` — the leading `:` annotation head, then name + type.
+                            [colon, n, t] if db.ast.as_name(*colon) == Some(":") => (*n, *t),
+                            _ => return None,
+                        };
                         let name = db.ast.as_name(name_occ)?.to_string();
                         let t = typeval_of(db, ty_occ)?;
                         fields.insert(crate::resolved::Symbol::plain(name), t);
