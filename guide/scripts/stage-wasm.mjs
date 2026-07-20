@@ -116,10 +116,12 @@ for (const lib of cadLibs) {
 // AUTHORITATIVE list per v-music (feature authority) — keep synced to implementation/music/src/*.cdz; a
 // showcase importing a lib NOT here is a silent preload gap (CDZ0201). v-music pings when adding an
 // importable lib. `synth.cdz` EXCLUDED (Web Audio graph, not a MIDI/event-structure dep — v1 is event
-// structure). `des-piece.cdz` + `pipeline.cdz` are PENDING v-music's queued MR 2303e7e0d — add when it lands.
+// structure). `des-piece.cdz` (DES-composed-piece demo, vendors a minimal Sim) + `pipeline.cdz` (MIDI-pipeline
+// transform) landed with v-music's phase-2 MR 10203 and are staged for future showcases (harmless if unused).
 const musicLibs = [
   "schedule.cdz", "pitch.cdz", "interval-ratio.cdz", "scale-ratio.cdz", "scale.cdz",
   "chord-ratio.cdz", "chord.cdz", "rhythm.cdz", "rhythm-ratio.cdz", "compose.cdz", "piece.cdz",
+  "des-piece.cdz", "pipeline.cdz",
 ];
 await mkdir(join(dest, "music"), { recursive: true });
 for (const lib of musicLibs) {
