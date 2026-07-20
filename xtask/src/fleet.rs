@@ -2023,6 +2023,12 @@ fn watchdog(
     let now = now_unix();
 
     let mut rearmed = 0usize;
+    // Of the re-arms, how many ESCALATED to re-issuing `/loop` (a prior nudge didn't stick → the agent's
+    // recurring cron is presumed DEAD, not merely a missed tick). This split is the loop-liveness signal:
+    // `rearmed` alone can't distinguish a healthy net catching an occasional missed tick from `/loop`
+    // crons systematically dying. A persistently non-zero `reissued` across sweeps is the tell that the
+    // self-reschedule is failing (the root the watchdog only papers over) — worth an operator/tooling fix.
+    let mut reissued = 0usize;
     let mut checked = 0usize;
     let mut drain_stalls = 0usize;
     let mut saturated = 0usize;
@@ -2319,7 +2325,8 @@ fn watchdog(
         }
 
         if dry_run {
-            let how = match rearm_action(rearm_age_secs(fleet, &a.name, now), hb_age) {
+            let action = rearm_action(rearm_age_secs(fleet, &a.name, now), hb_age);
+            let how = match action {
                 RearmAction::NudgeContinue => "nudge `continue`",
                 RearmAction::ReissueLoop => "re-issue `/loop` (prior nudge didn't stick)",
             };
@@ -2328,6 +2335,9 @@ fn watchdog(
                 a.name, a.interval
             );
             rearmed += 1;
+            if matches!(action, RearmAction::ReissueLoop) {
+                reissued += 1;
+            }
             continue;
         }
         // Choose the re-arm action (see `rearm_action`): cheap `continue` for a loop that merely missed
@@ -2351,10 +2361,13 @@ fn watchdog(
                     "  + re-armed '{}' (idle {age}s > {stale_after}s; nudged `continue` to run a tick)",
                     a.name
                 ),
-                RearmAction::ReissueLoop => println!(
-                    "  ++ re-armed '{}' (idle {age}s > {stale_after}s; prior nudge didn't stick → re-issued `/loop {}` to ARM a cron)",
-                    a.name, a.interval
-                ),
+                RearmAction::ReissueLoop => {
+                    reissued += 1;
+                    println!(
+                        "  ++ re-armed '{}' (idle {age}s > {stale_after}s; prior nudge didn't stick → re-issued `/loop {}` to ARM a cron)",
+                        a.name, a.interval
+                    )
+                }
             }
         } else {
             eprintln!("  ! failed to send-keys to '{}'", a.name);
@@ -2480,8 +2493,16 @@ fn watchdog(
     }
 
     println!(
-        "fleet watchdog: checked {checked} active windowed agent(s); {}{rearmed} re-armed, {reaped} stopped window(s) reaped, {leases_reaped} leaked lease(s) reaped, {} queued-but-landed MR(s) surfaced.",
+        "fleet watchdog: checked {checked} active windowed agent(s); {}{rearmed} re-armed{}, {reaped} stopped window(s) reaped, {leases_reaped} leaked lease(s) reaped, {} queued-but-landed MR(s) surfaced.",
         if dry_run { "DRY-RUN: " } else { "" },
+        // Surface the cron-death subset inline only when it fired — `reissued` of the re-arms escalated to
+        // re-issuing `/loop` because a prior nudge didn't stick (the agent's recurring cron was dead, not a
+        // mere missed tick). Persistently >0 = the loop-liveness root, not just the watchdog netting ticks.
+        if reissued > 0 {
+            format!(" ({reissued} via /loop re-issue — dead cron)")
+        } else {
+            String::new()
+        },
         landed_queued.len()
     );
 
@@ -2494,8 +2515,10 @@ fn watchdog(
     if !dry_run {
         let summary = watchdog_log_line(
             now,
+            checked,
             &WatchdogCounts {
                 rearmed,
+                reissued,
                 reaped,
                 drain_stalls,
                 saturated,
@@ -2541,6 +2564,10 @@ fn watchdog(
 #[derive(Default)]
 struct WatchdogCounts {
     rearmed: usize,
+    /// Subset of `rearmed` that ESCALATED to re-issuing `/loop` (a prior nudge didn't stick → the
+    /// agent's recurring cron is presumed dead). The loop-liveness signal: persistently >0 across sweeps
+    /// means the `/loop` self-reschedule is failing, not just an occasional missed tick.
+    reissued: usize,
     reaped: usize,
     drain_stalls: usize,
     saturated: usize,
@@ -2549,8 +2576,20 @@ struct WatchdogCounts {
     leases_reaped: usize,
 }
 
-fn watchdog_log_line(now: u64, c: &WatchdogCounts) -> Option<String> {
+/// `checked` is the sweep's DENOMINATOR (active windowed agents examined) — pure CONTEXT, deliberately
+/// NOT a `WatchdogCounts` anomaly counter and NOT part of the notability gate: it is always >0, so gating
+/// on it would make every sweep write a line and defeat the anomaly-only log. Logging it lets a reader
+/// (and the parked reissued/freeze analysis) tell a fleet-wide freeze (`rearmed=20` of `checked=42`) from
+/// scattered missed-ticks (`rearmed=2` of `checked=42`) — the same `rearmed` count means opposite things
+/// at different denominators, which the count alone can't distinguish.
+fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<String> {
+    // Exhaustive "is this sweep an anomaly?" gate — EVERY anomaly counter must appear here, else a sweep
+    // that only sets an omitted counter writes no line and its anomaly is silently dropped from the log.
+    // `reissued ⊆ rearmed` makes listing it redundant *today* (reissued>0 ⇒ rearmed>0), but the gate
+    // documents the contract: a new counter added without a line here is the latent bug. `checked` is
+    // NOT gated on purpose (see the fn doc) — it is context, not an anomaly.
     if c.rearmed == 0
+        && c.reissued == 0
         && c.reaped == 0
         && c.drain_stalls == 0
         && c.saturated == 0
@@ -2561,8 +2600,9 @@ fn watchdog_log_line(now: u64, c: &WatchdogCounts) -> Option<String> {
         return None;
     }
     Some(format!(
-        "{now}\trearmed={}\treaped={}\tdrain_stalls={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\tleases_reaped={}",
+        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\tleases_reaped={}",
         c.rearmed,
+        c.reissued,
         c.reaped,
         c.drain_stalls,
         c.saturated,
@@ -5966,14 +6006,20 @@ mod tests {
 
     #[test]
     fn watchdog_log_line_writes_only_when_notable() {
-        // A fully clean sweep → None (no log line; the log records anomalies only).
-        assert_eq!(watchdog_log_line(1000, &WatchdogCounts::default()), None);
-        // ANY nonzero counter → a tab-separated summary stamped with `now`.
+        // A fully clean sweep → None (no log line; the log records anomalies only) — even with a nonzero
+        // `checked` denominator, which is CONTEXT, not an anomaly, so it must NOT make a clean sweep notable.
+        assert_eq!(
+            watchdog_log_line(1000, 42, &WatchdogCounts::default()),
+            None
+        );
+        // ANY nonzero counter → a tab-separated summary stamped with `now`, `checked` first after `now`.
         assert_eq!(
             watchdog_log_line(
                 1700000000,
+                42,
                 &WatchdogCounts {
                     rearmed: 2,
+                    reissued: 1,
                     reaped: 1,
                     drain_stalls: 0,
                     saturated: 3,
@@ -5983,7 +6029,7 @@ mod tests {
                 }
             ),
             Some(
-                "1700000000\trearmed=2\treaped=1\tdrain_stalls=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1\tleases_reaped=4"
+                "1700000000\tchecked=42\trearmed=2\treissued=1\treaped=1\tdrain_stalls=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1\tleases_reaped=4"
                     .to_string()
             )
         );
@@ -5991,6 +6037,7 @@ mod tests {
         assert!(
             watchdog_log_line(
                 1,
+                42,
                 &WatchdogCounts {
                     drain_stalls: 1,
                     ..Default::default()
@@ -6002,6 +6049,7 @@ mod tests {
         assert!(
             watchdog_log_line(
                 1,
+                42,
                 &WatchdogCounts {
                     saturated: 1,
                     ..Default::default()
@@ -6013,6 +6061,7 @@ mod tests {
         assert!(
             watchdog_log_line(
                 1,
+                42,
                 &WatchdogCounts {
                     wedge_escalations: 1,
                     ..Default::default()
@@ -6024,8 +6073,22 @@ mod tests {
         assert!(
             watchdog_log_line(
                 1,
+                42,
                 &WatchdogCounts {
                     leases_reaped: 1,
+                    ..Default::default()
+                }
+            )
+            .is_some()
+        );
+        // A `reissued` alone is notable — pins the exhaustive-gate contract so `reissued` (or any counter)
+        // can't be dropped from the notability check while still living in the struct/format.
+        assert!(
+            watchdog_log_line(
+                1,
+                42,
+                &WatchdogCounts {
+                    reissued: 1,
                     ..Default::default()
                 }
             )

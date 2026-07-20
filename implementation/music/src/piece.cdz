@@ -19,11 +19,13 @@ import { arpeggiate, melody-note } from "compose"
 
 /// Ticks per bar in 4/4 at PPQ 960.
 def bar = 3840
-/// A quarter note (one arpeggio step / four per bar).
+/// A quarter note (one arpeggio step). A 4/4 bar holds four of these; the arpeggio emits ONE per chord
+/// tone, so a triad covers 3 of the 4 beats (beat 4 rests) — see accompaniment-bar.
 def step = 960
 
-/// The arpeggiated accompaniment for ONE chord (given its realized note numbers) filling a bar starting at
-/// `start`: notes spread a quarter apart, each a quarter long, on channel 0.
+/// The arpeggiated accompaniment for ONE chord (given its realized note numbers) over a bar starting at
+/// `start`: one note per chord tone, spread a quarter apart, each a quarter long, on channel 0. A triad
+/// (3 tones) therefore sounds beats 1-3 and rests beat 4; it does NOT fill the whole bar.
 def accompaniment-bar(nums: List(Int64), start: Int64) = arpeggiate(nums, 0, 90, start, step, step)
 
 /// The bass note for a bar: the chord root as a whole note on channel 1.

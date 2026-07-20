@@ -1,0 +1,137 @@
+/// des-piece.cdz — PHASE-2 DEMO #1: play a composed piece over a discrete-event-sim clock.
+///
+/// v-music is the forcing consumer of the DES `Sim` effect (spawn/sleep/now over a fast-forward clock).
+/// A piece is lowered to a tick-ordered `List(MidiEvent)` (schedule.cdz `play-order`), and a single task
+/// walks it: for each event it `Sim.sleep`s to that event's absolute tick, then "plays" it. The clock
+/// FAST-FORWARDS to each wake, so the whole piece "plays" instantly in virtual time — the euphony-style
+/// event-over-time model, proven end to end (music model → DES time).
+///
+/// ⚠ VENDORED Sim (provenance: implementation/des/src/sim.cdz @ a9d2cabb2). Effects do NOT cross a wasm
+/// component boundary — a `handle` in a PEER component can't delimit a performer's continuation in another
+/// component (DES's assessment; a definitive v-peer-linking/v-effects ruling is with the concierge). So
+/// `run-sim`'s handler MUST co-locate in the SAME component as the task that performs `Sim.sleep`. A
+/// cross-project `def deps=["../des"]` only peer-binds des as a VALUE API, not a handler — so we vendor a
+/// minimal Sim here (the euphony copy-fresh pattern). Re-sync this if the DES surface changes; switch to a
+/// real import if handler-peer-binding ever lands.
+///
+/// The base `run-sim` returns an `Instant` (the final clock), so this first cut's task returns the end
+/// time (proving the piece played out over Sim time). Returning the played `List(MidiEvent)` waits on the
+/// generic-return `run-sim(t: Type, task) : t` (DES MR abd9c4555, queued).
+
+import { MidiEvent } from "schedule"
+import { ev-tick, schedule, play-order, note-at } from "schedule"
+import { Note } from "schedule"
+import { pitch } from "pitch"
+import { major-triad, chord-notes } from "chord"
+
+// ── vendored Sim (minimal: effect + run-sim + Instant), from implementation/des/src/sim.cdz @ a9d2cabb2 ──
+
+/// A virtual instant — UInt64 nanoseconds (here we use it as an absolute TICK count). Vendored.
+type Instant =
+  | Instant(UInt64)
+
+def inst-ns(t: Instant) = match t with | Instant.Instant(n) => n
+
+/// The DES effect: `sleep` suspends until an absolute instant, `now` reads the fast-forward clock. Vendored.
+effect Sim =
+  | sleep : Instant -> Unit
+  | now : Unit -> Instant
+
+/// Install the single-task fast-forward scheduler and run `task` to completion, returning its final clock
+/// `Instant`. `sleep(wake)` advances the clock straight to `wake` (no real waiting). Vendored.
+def run-sim(task: Unit -> Instant) =
+  handle Sim(Instant.Instant(0)) with
+    | now(u, s) => resume(s, s)
+    | sleep(wake, s) => resume(unit, wake)
+  in
+  task(unit)
+
+// ── the demo: walk a tick-ordered event stream, sleeping to each event's tick ──
+
+/// Wrap a music tick (Int64, always >= 0 in a played piece) as a DES `Instant` (UInt64 ns). The ticks ARE
+/// the ns unit here — no conversion, per the DES seam (ticks map directly onto the UInt64 clock).
+def tick-instant(tick: Int64) = Instant.Instant(UInt64.wrap(tick))
+
+/// The play task: walk the tick-ordered events, sleeping the virtual clock forward to each event's tick.
+/// Returns the FINAL clock instant (the base run-sim's return type). Recursive driver, annotated —
+/// performs `Sim.sleep`, so it lives inside `run-sim` (effects are intra-component; see the header).
+def play-task-go(evs: List(MidiEvent)) =
+  match evs with
+    | [] => Sim.now()
+    | [e, .. t] =>
+      let _slept = Sim.sleep(tick-instant(ev-tick(e))) in
+      play-task-go(t)
+
+/// Play a piece (a list of `Note`s) over the Sim clock: schedule it to paired on/off events, sort into
+/// tick order, then sleep-walk the stream. Returns the final clock instant = the tick of the last event.
+def play-piece(notes: List(Note)) =
+  run-sim(fn(_u) => play-task-go(play-order(schedule(notes))))
+
+/// ============================ @test suite (DES-composed piece) ============================
+
+@test
+def a-single-note-plays-and-the-clock-reaches-its-off() =
+  // One C4 quarter (on@0, off@960): the task sleeps to 0 then 960; the final clock is 960.
+  let piece = [note-at(pitch(60), 0, 100, 0, 960)] in
+  let final = play-piece(piece) in
+  if inst-ns(final) == UInt64.wrap(960) then unit else trap("clock reaches the note's off at tick 960")
+
+@test
+def a-sequence-plays-in-tick-order-ending-at-the-last-off() =
+  // Three notes back to back (0, 960, 1920), each a quarter: the last off is at 1920+960 = 2880. The clock
+  // fast-forwards through every on/off in order and ends at 2880.
+  let piece = [
+    note-at(pitch(60), 0, 100, 0, 960),
+    note-at(pitch(64), 0, 100, 960, 960),
+    note-at(pitch(67), 0, 100, 1920, 960)] in
+  let final = play-piece(piece) in
+  if inst-ns(final) == UInt64.wrap(2880) then unit else trap("clock ends at the last note's off, 2880")
+
+@test
+def a-chord-block-plays-over-sim-time() =
+  // A C-major triad as three simultaneous quarter notes at tick 0: all on@0, all off@960; the clock ends
+  // at 960 having fast-forwarded through the (tick-sorted) block. Built from the chord primitive.
+  let nums = chord-notes(major-triad(pitch(60))) in
+  let piece = [
+    note-at(pitch(60), 0, 100, 0, 960),
+    note-at(pitch(64), 0, 100, 0, 960),
+    note-at(pitch(67), 0, 100, 0, 960)] in
+  let final = play-piece(piece) in
+  if inst-ns(final) == UInt64.wrap(960) then
+    (if List.len(nums) == 3 then unit else trap("triad has three notes")) else trap("chord block ends at 960")
+
+@test
+def an-empty-piece-leaves-the-clock-at-zero() =
+  // Edge: no events → the task never sleeps → the clock stays at its initial 0.
+  let final = play-piece([]) in
+  if inst-ns(final) == UInt64.wrap(0) then unit else trap("empty piece leaves the clock at 0")
+
+@test
+def notes-authored-out-of-order-still-play-in-tick-order() =
+  // The scheduler's play-order sorts by tick, so a piece AUTHORED with a later-starting note FIRST still
+  // plays in ascending tick order. Author a note at start 1920 BEFORE one at start 0; the clock still
+  // fast-forwards monotonically and ends at the true last off (1920 + 480 = 2400), because sleeps only ever
+  // move the clock forward. This pins that the demo respects tick order regardless of authoring order.
+  let piece = [
+    note-at(pitch(67), 0, 100, 1920, 480),   // authored FIRST but starts later
+    note-at(pitch(60), 0, 100, 0, 480)] in    // authored second, starts at 0
+  let final = play-piece(piece) in
+  if inst-ns(final) == UInt64.wrap(2400) then unit else trap("plays in tick order, ends at the true last off 2400")
+
+@test
+def a-composed-arpeggio-plays-to-its-final-offset() =
+  // End-to-end from the composition layer would need compose.cdz imported; here we hand-place a 4-note
+  // ascending run a quarter apart (0,960,1920,2880) each an eighth (480) long — the last off is 2880+480
+  // = 3360. Confirms a longer piece fast-forwards through every event and lands at the final offset.
+  let piece = [
+    note-at(pitch(60), 0, 100, 0, 480),
+    note-at(pitch(62), 0, 100, 960, 480),
+    note-at(pitch(64), 0, 100, 1920, 480),
+    note-at(pitch(65), 0, 100, 2880, 480)] in
+  let final = play-piece(piece) in
+  if inst-ns(final) == UInt64.wrap(3360) then unit else trap("clock ends at the last eighth's off, 3360")
+
+export {
+  Instant.*,
+  run-sim, inst-ns, tick-instant, play-piece,
+}
