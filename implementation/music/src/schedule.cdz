@@ -167,8 +167,9 @@ def prefix-nonneg(seen-rev: List(MidiEvent), evs: List(MidiEvent)) =
 
 /// Every (channel, note) that appears returns to a zero outstanding count at the end. Because `prefix-nonneg`
 /// guarantees no key ever went negative, checking the whole-list per-key net is 0 for each key present is the
-/// "returns to zero" half. We fold over the events and, for each ON we encounter the first time, verify its
-/// key nets to zero across the full list.
+/// "returns to zero" half. We walk EVERY event (on AND off) and verify its (channel, note)'s net over the
+/// full list is 0. This is REDUNDANT — a key is re-checked once per event it appears in — but correct and
+/// simple; no first-occurrence deduplication (the redundant re-checks give the same verdict).
 def all-keys-zero(evs: List(MidiEvent), all: List(MidiEvent)) =
   match evs with
     | [] => true

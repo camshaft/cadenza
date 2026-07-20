@@ -19,7 +19,7 @@
 /// generic-return `run-sim(t: Type, task) : t` (DES MR abd9c4555, queued).
 
 import { MidiEvent } from "schedule"
-import { ev-tick, schedule, play-order, note-at } from "schedule"
+import { ev-tick, schedule, play-order, note-at, balanced } from "schedule"
 import { Note } from "schedule"
 import { pitch } from "pitch"
 import { major-triad, chord-notes } from "chord"
@@ -37,9 +37,12 @@ effect Sim =
   | sleep : Instant -> Unit
   | now : Unit -> Instant
 
-/// Install the single-task fast-forward scheduler and run `task` to completion, returning its final clock
-/// `Instant`. `sleep(wake)` advances the clock straight to `wake` (no real waiting). Vendored.
-def run-sim(task: Unit -> Instant) =
+/// Install the single-task fast-forward scheduler and run `task` to completion, returning the task's OWN
+/// result (generic over the return type `t`). `sleep(wake)` advances the clock straight to `wake` (no real
+/// waiting). Vendored, provenance bumped to the generic-return form @ 90e763dd1 (was the base
+/// `run-sim(task: Unit -> Instant)` @ a9d2cabb2) — now a task can return the played event stream, not just
+/// the final clock.
+def run-sim(t: Type, task: Unit -> t) =
   handle Sim(Instant.Instant(0)) with
     | now(u, s) => resume(s, s)
     | sleep(wake, s) => resume(unit, wake)
@@ -53,8 +56,8 @@ def run-sim(task: Unit -> Instant) =
 def tick-instant(tick: Int64) = Instant.Instant(UInt64.wrap(tick))
 
 /// The play task: walk the tick-ordered events, sleeping the virtual clock forward to each event's tick.
-/// Returns the FINAL clock instant (the base run-sim's return type). Recursive driver, annotated —
-/// performs `Sim.sleep`, so it lives inside `run-sim` (effects are intra-component; see the header).
+/// Returns the FINAL clock instant. Recursive driver, annotated — performs `Sim.sleep`, so it lives inside
+/// `run-sim` (effects are intra-component; see the header).
 def play-task-go(evs: List(MidiEvent)) =
   match evs with
     | [] => Sim.now()
@@ -65,7 +68,23 @@ def play-task-go(evs: List(MidiEvent)) =
 /// Play a piece (a list of `Note`s) over the Sim clock: schedule it to paired on/off events, sort into
 /// tick order, then sleep-walk the stream. Returns the final clock instant = the tick of the last event.
 def play-piece(notes: List(Note)) =
-  run-sim(fn(_u) => play-task-go(play-order(schedule(notes))))
+  run-sim(Instant, fn(_u) => play-task-go(play-order(schedule(notes))))
+
+/// The EVENT-STREAM task: walk the tick-ordered events, sleep to each tick, and ACCUMULATE the events in
+/// the order they actually fired — returning the played `List(MidiEvent)`. This is what a WebMIDI driver
+/// forwards (the on/off messages in play order), and the real deliverable now that generic `run-sim`
+/// returns the task's own type. Recursive, annotated; performs `Sim.sleep` so it runs inside `run-sim`.
+def play-events-go(evs: List(MidiEvent)) =
+  match evs with
+    | [] => []
+    | [e, .. t] =>
+      let _slept = Sim.sleep(tick-instant(ev-tick(e))) in
+      List.prepend(play-events-go(t), e)
+
+/// Play a piece and return the PLAYED event stream (tick-ordered on/off `MidiEvent`s) — the WebMIDI-driver
+/// deliverable. Same fast-forward walk as `play-piece`, but yields the events instead of the final clock.
+def play-events(notes: List(Note)) =
+  run-sim(List(MidiEvent), fn(_u) => play-events-go(play-order(schedule(notes))))
 
 /// ============================ @test suite (DES-composed piece) ============================
 
@@ -131,7 +150,31 @@ def a-composed-arpeggio-plays-to-its-final-offset() =
   let final = play-piece(piece) in
   if inst-ns(final) == UInt64.wrap(3360) then unit else trap("clock ends at the last eighth's off, 3360")
 
+@test
+def play-events-returns-the-played-stream-in-tick-order() =
+  // The WebMIDI deliverable: play-events yields the on/off events in the order they fired (ascending tick).
+  // A single C4 quarter → [on@0, off@960]; the stream is balanced and the ticks are non-decreasing.
+  let piece = [note-at(pitch(60), 0, 100, 0, 960)] in
+  let stream = play-events(piece) in
+  if List.len(stream) == 2 then
+    (if balanced(stream) then
+      (match stream with
+        | [first, second] => if ev-tick(first) == 0 then (if ev-tick(second) == 960 then unit else trap("off at 960")) else trap("on at 0")
+        | _ => trap("two events"))
+     else trap("stream is balanced"))
+  else trap("two events")
+
+@test
+def play-events-of-a-chord-yields-all-six-events-balanced() =
+  // A 3-note chord (all at tick 0, quarter long) → 6 events (3 on + 3 off), balanced, in tick order.
+  let piece = [
+    note-at(pitch(60), 0, 100, 0, 960),
+    note-at(pitch(64), 0, 100, 0, 960),
+    note-at(pitch(67), 0, 100, 0, 960)] in
+  let stream = play-events(piece) in
+  if List.len(stream) == 6 then (if balanced(stream) then unit else trap("balanced")) else trap("six events")
+
 export {
   Instant.*,
-  run-sim, inst-ns, tick-instant, play-piece,
+  run-sim, inst-ns, tick-instant, play-piece, play-events,
 }
