@@ -1234,6 +1234,7 @@ pass	a many-arm match let-bound then consumed yields into the enclosing expressi
 pass	a many-arm scalar match in tail position selects each arm by a runtime scrutinee
 pass	a many-arm string match consumed by concat beside a recursive call keeps both operands
 pass	a map KEYED by a user sum looks up by the variant
+pass	a map as a map value: a nested lookup queries the inner map through the outer lookup
 pass	a map built at run time escapes to the host as its value form
 pass	a map built from a BigInt sum key and a BigInt.of-over-arithmetic key has both entries
 pass	a map can be a key, compared by its value

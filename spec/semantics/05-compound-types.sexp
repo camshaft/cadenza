@@ -5861,6 +5861,27 @@
   (call   main (: 1 Int64) (: 99 Int64)) (output (: 0 Int64))
   (call   main (: 9 Int64) (: 10 Int64)) (output (: -1 Int64)))
 
+(case "a map as a map value: a nested lookup queries the inner map through the outer lookup"
+  (doc    "The Map-of-Maps case — a Map whose VALUE is itself a Map (nested CHAMP-in-CHAMP), the fourth
+           collection kind nested as a map value beside the list-value and set-value cases above. `outer =
+           {1↦{10↦100, 11↦110}, 2↦{20↦200}}`; `(Map.lookup outer k)` returns an inner `(Map Int64 Int64)`
+           value (present) or None, and `(Map.lookup im j)` then queries the returned inner map at run time.
+           k=1,j=11 → 110 (outer hit → inner hit); k=2,j=20 → 200; k=1,j=99 → -1 (outer hit, inner MISS);
+           k=9 → -2 (outer MISS). Pins that a MAP map value round-trips through the outer lookup as a usable
+           map handle whose own lookups work — the inner CHAMP survives as a real handle in the outer's value
+           slot, not an opaque cell.")
+  (input  (do (def (main (: k Int64) (: j Int64))
+                (let ((inner1 (Map.insert (Map.insert Map.empty 10 100) 11 110))
+                      (inner2 (Map.insert Map.empty 20 200)))
+                  (let ((outer (Map.insert (Map.insert Map.empty 1 inner1) 2 inner2)))
+                    (match (Map.lookup outer k)
+                      ((Some im) (match (Map.lookup im j) ((Some v) v) ((None _u) -1)))
+                      ((None _u) -2))))) (export main)))
+  (call   main (: 1 Int64) (: 11 Int64)) (output (: 110 Int64))
+  (call   main (: 2 Int64) (: 20 Int64)) (output (: 200 Int64))
+  (call   main (: 1 Int64) (: 99 Int64)) (output (: -1 Int64))
+  (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64)))
+
 (case "a set nested in a tuple compares equal with a runtime element, order-independent"
   (doc    "`(= (tuple 0 (Set.of (list 1 x))) (tuple 0 (Set.of (list 1 2))))` compares two tuples whose second
            element is a runtime-built set: with `x`=2 the sets are {1,2} = {1,2} so the tuples are equal;
