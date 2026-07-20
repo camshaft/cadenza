@@ -132,6 +132,15 @@
   (input  (Set.contains (Set.of (list)) 1))
   (output (: false Bool)))
 
+(case "the empty set has cardinality zero"
+  (doc    "The degenerate cardinality boundary: `(Set.len (Set.of (list)))` is 0 — the empty set holds no
+           elements. The len companion of the empty-set membership pin above, and the both-backend witness
+           of the unconstrained-empty-`Set.of (list)` emit: wasm defaults the element type in emit, and the
+           rust backend grounds the empty `BTreeSet` to a concrete element type (not a bare `BTreeSet<_>`
+           that fails rustc inference with E0282). Mirrors the empty-list / empty-map degenerate cardinality.")
+  (input  (Set.len (Set.of (list))))
+  (output (: 0 Int64)))
+
 (case "the number of elements counts distinct elements"
   (doc    "`(Set.len (Set.of (list 1 2 2 3)))` is 3 — the count of DISTINCT elements, since the duplicate
            2 is held once (collections-and-text.md #A Set Is A Collection Of Unique Elements). Pins that
@@ -186,19 +195,27 @@
            {(3,4)} — the tuple `(3, 4)` is the only element in both. Its membership is decided by the whole
            tuple's content (the same content-address equality that dedups a set of tuples), NOT by identity,
            so a separately-built `(tuple 3 4)` in each operand intersects. Pins set intersection over the
-           CHAMP compound-element path (a distinct hashing/compare from the scalar cases above): len 1.")
-  (input  (Set.len (Set.intersection (Set.of (list (tuple 1 2) (tuple 3 4)))
-                                     (Set.of (list (tuple 3 4) (tuple 5 6))))))
-  (output (: 1 Int64)))
+           CHAMP compound-element path (a distinct hashing/compare from the scalar cases above). Asserted by
+           STRUCTURAL equality to `(Set.of (list (tuple 3 4)))` — a set-value `=` walking the CHAMP compound
+           elements — so a WRONG surviving tuple (e.g. keeping (1,2) or (5,6)) would fail, not merely a
+           wrong count as a `Set.len`-only check would miss.")
+  (input  (= (Set.intersection (Set.of (list (tuple 1 2) (tuple 3 4)))
+                               (Set.of (list (tuple 3 4) (tuple 5 6))))
+             (Set.of (list (tuple 3 4)))))
+  (output (: true Bool)))
 
 (case "the difference of sets of TUPLES removes elements by their whole-tuple content"
   (doc    "The difference likewise extends to compound elements: `(Set.difference {(1,2),(3,4)} {(1,2)})` =
            {(3,4)} — the tuple `(1, 2)` present in the second operand is removed by content, leaving one
            element. The compound-element companion of the scalar difference case, pinning that a tuple in
-           the subtrahend is matched by its whole content on the CHAMP path: len 1.")
-  (input  (Set.len (Set.difference (Set.of (list (tuple 1 2) (tuple 3 4)))
-                                   (Set.of (list (tuple 1 2))))))
-  (output (: 1 Int64)))
+           the subtrahend is matched by its whole content on the CHAMP path. Asserted by STRUCTURAL equality
+           to `(Set.of (list (tuple 3 4)))` — the set-value `=` compares the whole surviving element, so a
+           difference that removed the wrong tuple (leaving (1,2)) would fail, which a `Set.len`-only check
+           of the count would not catch.")
+  (input  (= (Set.difference (Set.of (list (tuple 1 2) (tuple 3 4)))
+                             (Set.of (list (tuple 1 2))))
+             (Set.of (list (tuple 3 4)))))
+  (output (: true Bool)))
 
 (case "a binary set operation leaves BOTH its operands unchanged — set-algebra persistence"
   (doc    "The persistence face of the binary set algebra, the two-operand twin of the single-element
@@ -248,6 +265,20 @@
            MUST be true.")
   (input  (= (Set.intersection (Set.of (list 1 2 3)) (Set.of (list))) (Set.of (list))))
   (output (: true Bool)))
+
+(case "an empty set in one if-branch unifies with a non-empty set in the other and its length reads correctly"
+  (doc    "A runtime `if` selecting between a non-empty `(Set.of (list 1 2 3))` and an EMPTY `(Set.of (list))`:
+           the two branches must unify to one `(Set Int64)` — the empty branch takes its element type from the
+           non-empty sibling, so the empty set is well-typed (no unconstrained-element-type failure) and its
+           length reads correctly. `Set.len` of the selected set: b>0 → the {1,2,3} branch → 3; b≤0 → the empty
+           branch → 0. Pins that an empty set literal in a branch position is grounded by its sibling's element
+           type and enumerates as a genuine empty set at run time, on both backends.")
+  (input  (do
+            (def (main (: b Int64))
+              (Set.len (if (> b 0) (Set.of (list 1 2 3)) (Set.of (list)))))
+            (export main)))
+  (call   main (: 1 Int64))  (output (: 3 Int64))
+  (call   main (: -1 Int64)) (output (: 0 Int64)))
 
 (case "the intersection of disjoint sets is empty"
   (doc    "`(Set.intersection (Set.of (list 1 2)) (Set.of (list 3 4)))` is {} — two sets sharing no
@@ -831,6 +862,68 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 10 Int64)))
 
+; The Set.to-list order pins above are all over INT elements (and one tuple case). STRING elements take a
+; DIFFERENT comparator arm — the zero-alloc scalar fast-path (`compare_scalar_leaf`) flattens a ROPE string
+; to a leaf, then compares the borrowed UTF-8 byte slices — and that arm was rewritten for the alloc-bench
+; regression (the sort comparator must be allocation-free on the scalar path). These pin the STRING sort
+; order through `Set.to-list` over GENUINELY-RUNTIME ROPES (recursive String.concat defeats the fold), on
+; the three faces the byte-lexicographic spec order (13-strings:53/66/78) distinguishes: smallest-first
+; content, multibyte-after-ascii (UNSIGNED byte order), and prefix-before-extension (the length tiebreak).
+(case "Set.to-list sorts runtime ROPE string elements smallest-first by content byte order"
+  (doc    "`rep` builds each element as a runtime ROPE (`(rep \"b\" 2)` concatenates two \"x\" → \"bxx\"),
+           so the set holds three genuine rope strings {\"bxx\",\"axx\",\"cxx\"}. `Set.to-list` must sort
+           by flattened CONTENT (byte-lexicographic, 13-strings:53), so element 0 is the \"a\" rope; the
+           `=` against the flat literal \"axx\" confirms content (rope==flat, canonicalized), not just
+           position. Pins the sort comparator's Str arm flattens ropes before comparing — a comparator
+           reading only the first leaf of an unflattened rope would compare \"b\"/\"a\"/\"c\" correctly
+           here but break on shared prefixes; the content check guards the flatten. Expected: 1.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main (: n Int64))
+              (match (List.at (Set.to-list (Set.of (list (rep "b" n) (rep "a" n) (rep "c" n)))) 0)
+                ((Some s) (if (= s "axx") 1 0))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 1 Int64)))
+
+(case "Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order"
+  (doc    "String order is UNSIGNED byte-lexicographic (13-strings:78 — a multi-byte scalar's lead byte
+           0xC3 exceeds every ASCII byte), so in `{\"é\",\"z\",\"a\"}` the multibyte \"é\" sorts LAST:
+           `Set.to-list` index 2 is \"é\" → 1. The control (n≤0 picks \"q\" instead of \"é\") reorders to
+           {\"a\",\"q\",\"z\"} where index 2 is \"z\" → 2 — confirming the probe reads a real sort, not a
+           fixed slot. A comparator sorting by SIGNED bytes (0xC3 as -61) or by scalar-count-then-bytes
+           would place \"é\" first, flipping the answer. The runtime `if`-selected element keeps the set
+           construction out of the constant fold. Expected: 1 (n=1), 2 (n=-1).")
+  (input  (do
+            (def (pick (: n Int64))
+              (if (> n 0) "é" "q"))
+            (def (main (: n Int64))
+              (match (List.at (Set.to-list (Set.of (list (pick n) "z" "a"))) 2)
+                ((Some s) (if (= s "é") 1 (if (= s "z") 2 0)))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 1 Int64))  (output (: 1 Int64))
+  (call   main (: -1 Int64)) (output (: 2 Int64)))
+
+(case "Set.to-list sorts a PREFIX string before its extension (length tiebreak on equal prefixes)"
+  (doc    "`{\"axxx\",\"a\"}` — the flat literal \"a\" is a proper PREFIX of the rope `(rep \"a\" 3)` =
+           \"axxx\"; byte-lexicographic order places a prefix BEFORE its extension (13-strings:66), so
+           `Set.to-list` index 0 is \"a\" with byte-len 1. This is the tiebreak face the smallest-first
+           case cannot witness (its elements differ at byte 0): the comparator must compare the COMMON
+           prefix equal and then decide by LENGTH, not read past the shorter string's end or fall back
+           to insertion order. One element is a runtime rope, the other a flat literal — the mixed-rep
+           pair the flatten-then-compare path must canonicalize consistently. Expected: 1.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main (: n Int64))
+              (match (List.at (Set.to-list (Set.of (list (rep "a" n) "a"))) 0)
+                ((Some s) (String.byte-len s))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 1 Int64)))
+
 ; The cases above all enumerate a NON-EMPTY set. The empty boundary matters for a real pass that walks a
 ; possibly-empty symbol table / free-var set: `Set.to-list` of an EMPTY (but element-TYPED) set is the
 ; empty list, length 0. The set is emptied at RUN TIME (`Set.remove` of the sole element) so the element
@@ -1106,3 +1199,40 @@
                                      (BigInt.of (+ n 2)) 2))) (export main)))
   (call   main (: 5 Int64))
   (output (: 2 Int64)))
+
+; The `Set.remove`/`Map.remove` twins of the disjoint-slot guard above. Unlike the constructor/insert arms
+; (fixed by the sibling-scratch pass), the two REMOVE arms laid BOTH operands at a fixed `base + 1` — so a
+; `remove` whose collection operand is a recursive call (an i32 list/set handle in a `dup` slot) and whose
+; key/element is a checked `(+ v 1)` (an i64 overflow-guard temp) re-typed one wasm local to two widths →
+; `expected i32, found i64`, a check-clean/compile-invalid MISCOMPILE (rejected at load at every opt level).
+; The fix floats the key/element operand's scratch past the collection operand's high-water (the owned-drop
+; tee stays at `base`, below both). These pin the fix on the last two compound-op arms with a fixed base.
+
+(case "a Set.remove of a checked-arith element behind a recursive-call set is disjoint-slotted"
+  (doc    "`(Set.remove (g t) (+ v 1))` removes a CHECKED-ARITH element `(+ v 1)` (an i64 overflow-guard
+           scratch temp) from the result of a RECURSIVE call `(g t)` (an i32 set handle in a `dup` slot).
+           The set operand and the element operand need DISJOINT scratch slots — the `SetRemove` emit arm
+           laid both at a fixed `base + 1`, so the i64 arith temp reused the i32 handle's slot number → one
+           wasm local at two widths, an invalid module. `(g (ICons 5 (INil)))` removes 5+1=6 from the empty
+           set (a no-op — 6 was never inserted) → Set.len 0. Companion to the `Set.of` disjoint-slot pin
+           above and the `Map.remove` twin below; the last two fixed-base compound-op arms.")
+  (input  (do
+            (type ILst (INil) (ICons Int64 ILst))
+            (def (g xs) (match xs ((INil) (Set.of (list))) ((ICons v t) (Set.remove (g t) (+ v 1)))))
+            (def (main) (Set.len (g (ICons 5 (INil)))))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "a Map.remove of a checked-arith key behind a recursive-call map is disjoint-slotted"
+  (doc    "The Map twin of the `Set.remove` disjoint-slot pin above: `(Map.remove (g t) (+ v 1))` removes a
+           CHECKED-ARITH key `(+ v 1)` (an i64 overflow-guard scratch temp) from the result of a RECURSIVE
+           call `(g t)` (an i32 map handle in a `dup` slot). The `MapRemove` emit arm laid both operands at
+           a fixed `base + 1`, colliding the i32 handle slot with the i64 arith temp → invalid wasm. `(g
+           (ICons 5 (INil)))` removes key 5+1=6 from the base one-entry map `{0:0}` (a no-op — 6 is absent)
+           → Map.len stays 1. The `remove`-arm companions to the `Set.of`/`Map.insert` disjoint-slot pins.")
+  (input  (do
+            (type ILst (INil) (ICons Int64 ILst))
+            (def (g xs) (match xs ((INil) (Map.insert Map.empty 0 0)) ((ICons v t) (Map.remove (g t) (+ v 1)))))
+            (def (main) (Map.len (g (ICons 5 (INil)))))
+            (export main)))
+  (output (: 1 Int64)))

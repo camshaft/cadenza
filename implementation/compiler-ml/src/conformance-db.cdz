@@ -194,10 +194,10 @@ def c-cx-mul-prec-in-sub-chain() = Case.Case([Tok.TNum(20), Tok.TOp(45), Tok.TNu
 /// rejects a chained comparison). Pins the guard: dropping `< 3` and running `1<2`→1 was a fabricated value.
 def c-cx-chained-comparison-declines() = Case.Case([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2), Tok.TOp(60), Tok.TNum(3)], Expect.Declines)
 /// `((5))` → 5 (redundant NESTED parens collapse to the inner literal — the paren-nests-full-grammar recursion).
-/// QUARANTINED-from-corpus repro (see the comment block below): kept as the root-cause reproducer for the
-/// open nested-paren hang (bug #4, v-inference). NOT dead — intentionally retained. Leading `_` marks it
-/// as deliberately-not-in-`corpus()`.
-def _c-cx-nested-redundant-parens() = Case.Case([Tok.TLParen, Tok.TLParen, Tok.TNum(5), Tok.TRParen, Tok.TRParen], Expect.Runs(5))
+/// FORMERLY QUARANTINED (bug #4, the nested-paren eval hang): un-quarantined 2026-07-20 now that bug #4 is
+/// FIXED (rcdzc 26e3471ac — materialize a recursive-call match scrutinee once, killing the pattern-binder
+/// exponential re-compute that non-terminated on nested parens). Now a permanent regression guard.
+def c-cx-nested-redundant-parens() = Case.Case([Tok.TLParen, Tok.TLParen, Tok.TNum(5), Tok.TRParen, Tok.TRParen], Expect.Runs(5))
 
 /// THE CORPUS: every conformance case. Widening the language = appending here (start-low-and-climb).
 def corpus() = [
@@ -218,7 +218,8 @@ def corpus() = [
   c-cx-neg-dividend(), c-cx-mod-by-zero-declines(),
   c-cx-nested-if-in-branch(), c-cx-let-chain-outer-in-value-and-body(),
   c-cx-ne-true(), c-cx-mul-prec-in-sub-chain(),
-  c-cx-chained-comparison-declines(), c-cx-neg-mod()
+  c-cx-chained-comparison-declines(), c-cx-neg-mod(),
+  c-cx-nested-redundant-parens()
 ]
 
 /// THE SCOREBOARD: `(passed, total)` over the corpus — what the `cadenza-ml` gate target prints as `X/N`.
@@ -249,7 +250,7 @@ def cf-declines-mismatch-is-fail() =
 
 @test
 def cf-corpus-size-floor() =
-  // The corpus SIZE floor: exactly 60 cases, so a case can't be silently dropped from `corpus()`.
+  // The corpus SIZE floor: exactly 61 cases, so a case can't be silently dropped from `corpus()`.
   // This does NOT re-run the compiles — each case's pass/decline is already proven by its own
   // `conformance-<case>` @test below, and the `count-passing` fold logic by
   // `cf-count-passing-partial`. The old `cf-corpus-all-pass` re-ran the entire corpus
@@ -258,7 +259,7 @@ def cf-corpus-size-floor() =
   // v-fleet-tooling as the compiler-ml gate-throughput + false-hang source). The conformance FLOOR
   // is now: per-case @tests (each case correct) + this size check (no case dropped), with none of
   // the redundant full-corpus re-run.
-  (if List.len(corpus()) == 60 then unit else trap("corpus has 60 cases"))
+  (if List.len(corpus()) == 61 then unit else trap("corpus has 61 cases"))
 
 @test
 def cf-count-passing-partial() =
@@ -382,14 +383,13 @@ def conformance-cx-mod-precedence-distinguishes() = (if check-case(c-cx-mod-prec
 def conformance-cx-neg-dividend() = (if check-case(c-cx-neg-dividend()) then unit else trap("-12 / 4 → -3"))
 @test
 def conformance-cx-mod-by-zero-declines() = (if check-case(c-cx-mod-by-zero-declines()) then unit else trap("7 % 0 declines (None)"))
-// QUARANTINED (2026-07-17): conformance-cx-nested-redundant-parens HANGS the compiler — `((5))` (doubly-
-// parenthesised) sends `run` (parse→…→eval) into non-termination, which timed out `cdz test compiler-ml`
-// every batch and blocked ALL fleet integration. Removed from the gated corpus + size-floor (49) so the
-// gate COMPLETES; the case def `c-cx-nested-redundant-parens` is kept below for the root-cause repro. This
-// is the known nested-paren compile/eval hang (parse-db paren-nests-full-grammar via the reader SCC —
-// coordinate with v-inference's SCC/paren-hang class). SINGLE parens are fine (paren-overrides-precedence +
-// paren-right-operand still gated + passing); only NESTED `(( … ))` hangs.
+// UN-QUARANTINED (2026-07-20, v-inference): conformance-cx-nested-redundant-parens `((5))` FORMERLY hung
+// the compiler (bug #4 — the nested-paren eval non-termination). FIXED by rcdzc 26e3471ac (materialize a
+// recursive-call match scrutinee once, killing the pattern-binder exponential recompute). Now a gated
+// regression guard — verified `((5))` → 5 and the paren-if-in-then face → 42 at full conformance-db scale.
 
+@test
+def conformance-cx-nested-redundant-parens() = (if check-case(c-cx-nested-redundant-parens()) then unit else trap("((5)) → 5 (nested redundant parens collapse; bug #4 regression guard)"))
 @test
 def conformance-cx-nested-if-in-branch() = (if check-case(c-cx-nested-if-in-branch()) then unit else trap("if 1<2 then (if 3<4 then 7 else 8) else 9 → 7"))
 @test

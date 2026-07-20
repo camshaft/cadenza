@@ -1909,10 +1909,17 @@ impl<'a> Parser<'a> {
     /// Each op lowers to `(op <name> <type>)`, the shape the s-expr surface uses.
     fn effect_expr(&mut self) -> StructId {
         let start = self.cur_span();
+        // Leading `///` docs attach INSIDE the effect decl, as `(doc "text")` forms before the
+        // operations — mirroring `type_expr`. Without this drain the docs would be left in the
+        // statement's start slot and `stmt` would wrap them as `(comment …)` (printed `//`),
+        // silently downgrading `///` doc-comments before an `effect` to `//` and losing the doc
+        // marker on round-trip.
+        let docs = self.take_docs_here();
         let head = self.keyword_head("effect", start);
         self.bump(); // `effect`
         let name = self.binder();
         let mut items = vec![head, name];
+        items.extend(self.doc_nodes(docs));
         self.expect(Kind::Eq, "`=`");
         // Operations are `|`-led, with an (always-printed) leading `|` before the first — tolerate its
         // absence for robustness. Each `|` introduces an operation signature.

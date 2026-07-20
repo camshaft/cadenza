@@ -78,6 +78,23 @@ test("a widget feeding two independent branches re-runs both, in document order"
   assert.deepEqual(recomputePlan(cells, [slider("k")], "k", "ml"), [1, 2]);
 });
 
+test("a DIAMOND dependency re-runs the re-join cell exactly ONCE (reachable via two dirty paths)", () => {
+  // k feeds two branches (a, b); a fourth cell d = a + b re-joins them. d is dirtied via BOTH a and b, but
+  // must appear in the plan ONCE, not twice — the plan walks cells in document order and pushes each dirty
+  // cell a single time (its produced names then dirty downstream). Pinned so a future refactor of the
+  // dirty-propagation loop can't accidentally double-push a cell reachable by multiple dirty paths.
+  const cells: Cell[] = [
+    code("k : Float64 = slider(0, 1)", { kind: "widget" }),
+    code("def a = k + 1.0"), // branch 1 (consumes k)
+    code("def b = k + 2.0"), // branch 2 (consumes k)
+    code("def d = a + b"), // re-join (consumes BOTH a and b — two dirty paths converge)
+  ];
+  const plan = recomputePlan(cells, [slider("k")], "k", "ml");
+  assert.deepEqual(plan, [1, 2, 3]); // d (index 3) present exactly once, after both branches
+  // Belt-and-suspenders: no duplicate indices in any plan.
+  assert.equal(new Set(plan).size, plan.length, "plan must contain no duplicate cell indices");
+});
+
 test("`main` is NOT a cross-cell dependency — a widget change does not cascade through every cell's `main`", () => {
   // Production reality: EVERY notebook code cell defines its own `main` (its private per-cell entry slot,
   // stripped from downstream scope by assembleCell.stripMainDef, P0 #12). If `main` were treated as a

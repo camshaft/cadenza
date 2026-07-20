@@ -52,6 +52,23 @@ struct Plan {
 pub fn expand(ast: &mut Arenas) {
     // Only ORIGINAL nodes can be a source `(tagged-template …)`; the rewrite APPENDS, so bound the scan.
     let original_len = ast.structure.len() as u32;
+    // FAST BAIL for a program with no `(tagged-template …)` (the overwhelming common case). This pass
+    // runs at EVERY load, scanning every node via `rewrite_of` (an `as_name(items[0]) == "tagged-
+    // template"` probe); the reader only ever emits a `tagged-template`-headed list for the ML surface
+    // `tag"…{expr}…"`, so its head is a `Leaf::Name("tagged-template")` in the leaf pool. If no such
+    // name leaf exists, no tagged-template form exists anywhere and the scan is dead. A single O(leaves)
+    // prescan is the cheap over-approximation (spurious fall-through only for a program that mentions the
+    // identifier — which the reader never produces, so effectively never). Sibling of the
+    // `quote::reify_quotes` / `desugar_eval` fast-bails.
+    if !ast
+        .leaves
+        .iter()
+        .any(|l| matches!(l, Leaf::Name(n) if n == "tagged-template"))
+    {
+        return;
+    }
+    #[cfg(test)]
+    crate::db::TAGGED_TEMPLATE_SCAN_NODES.with(|c| c.set(c.get() + original_len as u64));
     let mut plans: Vec<Plan> = Vec::new();
     for i in 0..original_len {
         let id = StructId(i);

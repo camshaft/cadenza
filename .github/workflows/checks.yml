@@ -199,6 +199,8 @@ jobs:
         run: ./target/release/cdz test implementation/agent-harness
       - name: Run the choreography @test suite
         run: ./target/release/cdz test implementation/choreography
+      - name: Run the iterators @test suite
+        run: ./target/release/cdz test implementation/iterators
 
   cdz-cad:
     # The NATIVE CAD mesh driver crate (implementation/seed/crates/cdz-cad, GH #400 increment G2). It is

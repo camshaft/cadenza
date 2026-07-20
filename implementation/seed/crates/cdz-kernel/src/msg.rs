@@ -67,7 +67,15 @@ impl Message {
         let kind = get_str(bytes, &mut i)?;
         let subject = get_str(bytes, &mut i)?;
         let n = get_u32(bytes, &mut i)? as usize;
-        let mut refs = Vec::with_capacity(n);
+        // Do NOT pre-reserve by the UNTRUSTED count `n`: a corrupt payload declaring n = u32::MAX would make
+        // `Vec::with_capacity(n)` attempt a ~100 GB reservation — which `handle_alloc_error`-ABORTS the whole
+        // process (uncatchable, worse than a panic) on a strict-overcommit host, bricking the inbox projection
+        // that folds messages with `.ok()` expecting a graceful skip. Bound the reservation by what the buffer
+        // could actually hold — each ref costs at least a 4-byte length prefix, so the real count can't exceed
+        // remaining_bytes/4. The loop below still errors loudly (truncated) the moment the bytes run out; this
+        // just keeps the pre-allocation honest, mirroring `get_bytes`'s slice-check-before-allocate discipline.
+        let max_plausible = bytes.len().saturating_sub(i) / 4;
+        let mut refs = Vec::with_capacity(n.min(max_plausible));
         for _ in 0..n {
             refs.push(get_str(bytes, &mut i)?);
         }
@@ -290,6 +298,39 @@ mod tests {
         assert!(
             Ack::decode(&[0u8, 1, 2]).is_err(),
             "a non-8-byte ack payload must not decode"
+        );
+    }
+
+    #[test]
+    fn decode_does_not_pre_allocate_by_an_untrusted_refs_count() {
+        // A can't-brick invariant: a corrupt payload declaring a HUGE refs count (u32::MAX) must decode to a
+        // loud Err (truncated) — NOT attempt a ~100 GB `Vec::with_capacity` that `handle_alloc_error`-ABORTS the
+        // process (uncatchable) and bricks the inbox projection. Build a payload with valid from/to/kind/subject
+        // then a refs-count of u32::MAX and no ref data: decode must Err, not abort.
+        let mut bytes = Vec::new();
+        put_str(&mut bytes, "a");
+        put_str(&mut bytes, "b");
+        put_str(&mut bytes, "note");
+        put_str(&mut bytes, "s");
+        put_u32(&mut bytes, u32::MAX); // claims ~4.29e9 refs follow — but the buffer ends here
+        assert!(
+            Message::decode(&bytes).is_err(),
+            "a bogus huge refs-count decodes to Err (truncated), never a mega-allocation abort"
+        );
+        // And the inbox projection folds such a poison event as a graceful skip, staying readable.
+        let poison = Event {
+            seq: 0,
+            kind: MESSAGE.into(),
+            payload: bytes,
+        };
+        let good = msg_event(1, "me", "note");
+        assert_eq!(
+            inbox_for(&[poison, good], "me")
+                .iter()
+                .map(|(s, _)| *s)
+                .collect::<Vec<_>>(),
+            vec![1],
+            "the poison message is skipped; the well-formed one still projects (inbox not bricked)"
         );
     }
 

@@ -75,6 +75,18 @@ const SAT_NOTIFY_GRACE: u64 = 1800;
 /// short enough that a nudge that landed-but-didn't-act doesn't sit ~8min like v-metaprogramming did.
 const DRAIN_NUDGE_STUCK_GRACE: u64 = 180;
 
+/// Delay (seconds) before the CONFIRMING re-capture of a suspected drain-stalled pane. A single
+/// instantaneous `capture-pane` can catch a busy agent in the sub-second gap BETWEEN its tool-turns —
+/// the prior turn has ended (bare `❯` prompt) but the next model turn hasn't yet re-rendered the "esc to
+/// interrupt" affordance — so it mislabels a mid-tick agent as idle-at-prompt and fires a FALSE
+/// drain-stall (observed on pr-sync mid-batch: it was actively draining a 26-MR queue, just snapshotted
+/// between two Bash turns). A genuinely idle agent sits at the prompt indefinitely, so a working
+/// affordance reappears within a second or two if the agent is alive; a truly idle one never shows it.
+/// 2s is enough for the next turn to render without bloating the ~4-min sweep — and it's only paid for
+/// the rare agent already suspected of a stall, never every idle pane. (Enforces the fleet's own wedge
+/// discipline: a wedge/stall verdict needs a non-instantaneous sample, not one snapshot.)
+const DRAIN_STALL_CONFIRM_DELAY_SECS: u64 = 2;
+
 /// One agent's durable row in the manifest. The registry is the source of truth that survives a
 /// reboot; `fleet up` reconstitutes every `Active` agent's worktree + tmux window from these rows.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2146,7 +2158,25 @@ fn watchdog(
         // acks an agent left un-archived are untidy, not stuck work (see `message_kind_is_actionable`).
         let actionable_depth = actionable_inbox_depth(&fleet.inbox(&a.name));
         let pane_idle = hb_age.is_some() && !pane_working;
-        let drain_stall = is_probable_drain_stall(&a.role, actionable_depth, pane_idle);
+        // The instantaneous snapshot only SUSPECTS a stall — a busy agent shows a bare prompt for a
+        // sub-second gap between tool-turns, so one capture can't distinguish "idle at prompt" from
+        // "between two turns". CONFIRM with a second capture after a short delay: if the pane shows work
+        // in flight on the recheck, it was mid-tick, not stalled — clear the flag (no false alarm, no
+        // spurious nudge). Only the rare already-suspected agent pays the delay, never every idle pane.
+        let suspected_stall = is_probable_drain_stall(&a.role, actionable_depth, pane_idle);
+        // Confirming recapture (read-only, safe in dry-run too): a single snapshot can catch a busy
+        // agent in the sub-second gap between tool-turns, so only SUSPECT from the first capture and
+        // CONFIRM with a second after a short delay. If work is in flight on the recheck it was mid-tick,
+        // not stalled — clear the flag (no false alarm, no spurious nudge).
+        let working_on_recheck = if suspected_stall {
+            std::thread::sleep(std::time::Duration::from_secs(
+                DRAIN_STALL_CONFIRM_DELAY_SECS,
+            ));
+            window_is_working(&session, &a.name)
+        } else {
+            false
+        };
+        let drain_stall = drain_stall_confirmed(suspected_stall, working_on_recheck);
         if drain_stall {
             drain_stalls += 1;
             eprintln!(
@@ -3100,6 +3130,16 @@ fn is_probable_drain_stall(role: &str, actionable_depth: usize, pane_idle: bool)
         return false;
     }
     actionable_depth > 0 && pane_idle
+}
+
+/// Final drain-stall verdict after the CONFIRMING recapture. `is_probable_drain_stall` fires off ONE
+/// instantaneous pane snapshot, which can catch a busy agent in the sub-second gap between its tool-turns
+/// (prompt shown, "esc to interrupt" not yet re-rendered) and mislabel it idle. So the caller takes a
+/// second capture after `DRAIN_STALL_CONFIRM_DELAY_SECS` and passes whether the pane shows work in flight
+/// on that recheck: if it does, the agent was mid-tick, not stalled → NOT confirmed. A genuinely idle
+/// agent still shows no work on the recheck → confirmed. Pure so the two-sample AND is unit-tested.
+fn drain_stall_confirmed(suspected: bool, working_on_recheck: bool) -> bool {
+    suspected && !working_on_recheck
 }
 
 /// What the watchdog should do about a probable drain-stall this sweep. Distinguishes a first/fresh
@@ -4822,6 +4862,10 @@ fn gate_batch_build_store(wt: &Path) -> bool {
     println!("gate-batch: building the runtime store in the scratch worktree (cargo xtask build)…");
     Command::new("cargo")
         .current_dir(wt)
+        // `xtask build` now takes a fleet-wide build/check concurrency lease (host-hang fix); pr-sync's
+        // gate-batch store rebuild is the MERGE QUEUE, so it takes the uncapped PRIORITY slot and never
+        // waits behind one-off agent store rebuilds — same discipline as its gate check.
+        .env("CDZ_CHECK_PRIORITY", "1")
         .args(["xtask", "build"])
         .status()
         .map(|s| s.success())
@@ -6590,6 +6634,19 @@ mod tests {
         // A non-interactive role with actionable mail + idle IS flagged even if it's pr-sync (it should
         // be draining merge-requests; idle-with-queued-MRs is worth surfacing).
         assert!(is_probable_drain_stall("pr-sync", 4, true));
+    }
+
+    #[test]
+    fn drain_stall_confirm_recapture_clears_a_mid_tick_agent() {
+        // Suspected by the first snapshot, but the recheck shows work in flight (it was between two
+        // tool-turns, not stalled) → NOT confirmed. This is the pr-sync-mid-batch false-positive the
+        // confirming recapture exists to kill.
+        assert!(!drain_stall_confirmed(true, true));
+        // Suspected AND still no work on the recheck → a genuine stall, confirmed.
+        assert!(drain_stall_confirmed(true, false));
+        // Never suspected → never confirmed, regardless of the recheck (recheck isn't even taken).
+        assert!(!drain_stall_confirmed(false, false));
+        assert!(!drain_stall_confirmed(false, true));
     }
 
     #[test]

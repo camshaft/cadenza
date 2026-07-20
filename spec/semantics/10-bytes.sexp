@@ -255,6 +255,38 @@
   (call main (: 0 Int64) (: 9223372036854775807 Int64)) (output (: -1 Int64))
   (call main (: 5 Int64) (: 1 Int64))                  (output (: -1 Int64)))
 
+; The seam case at "a slice spanning a concatenation sees the logical bytes" slices across the seam of a
+; concat of CONSTANT chunks, which the fold may materialize before slicing. A GENUINELY-runtime byte
+; rope — a `Bytes.concat` of chunks selected at run time (an `if` the fold cannot decide) — assembles a
+; multi-chunk rope that survives to the emitted `bytes-slice`, so the slice must walk leaf boundaries of
+; a real deferred concatenation, not a flat leaf the fold pre-joined. This pins the seam-crossing walk on
+; the runtime representation the const case cannot exercise: a slice that begins in the left chunk and
+; ends in the right must read the logical bytes in order across the physical leaf boundary.
+
+(case "a slice crosses the seam of a runtime-assembled byte rope"
+  (doc    "`(Bytes.slice rope 1 2)` over a rope built at run time by `(Bytes.concat left right)` whose
+           chunks are chosen by a run-time `if` — spanning index 1 (last byte of the left chunk) through
+           index 2 (first byte of the right chunk) — yields Some `[20, 30]`: the slice reads the logical
+           bytes across the leaf boundary of a genuine deferred concatenation, not a flat leaf a fold
+           pre-joined (#Sharing Is Not Observable, the deferral clause). The grid reads the slice's length
+           (2), its byte at index 0 (20, from the left chunk) and index 1 (30, from the right chunk), and
+           an out-of-bounds slice `(Bytes.slice rope 3 2)` past the 4-byte rope yielding None (0). Because
+           the chunks are runtime-selected the concatenation cannot fold to a constant, so the seam
+           crossing is decided by the emitted `bytes-slice` over the assembled rope.")
+  (input  (do
+            (def (pick (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
+            (def (rope (: s Int64))
+              (Bytes.concat (pick s (Bytes.of (list 10 20)) (Bytes.of (list 99 99)))
+                            (pick s (Bytes.of (list 30 40)) (Bytes.of (list 99 99)))))
+            (def (main (: s Int64))
+              (tuple
+                (match (Bytes.slice (rope s) 1 2) ((Option.Some x) (Bytes.len x))                 ((Option.None) -1))
+                (match (Bytes.slice (rope s) 1 2) ((Option.Some x) (Option.expect (Bytes.at x 0) "0")) ((Option.None) -1))
+                (match (Bytes.slice (rope s) 1 2) ((Option.Some x) (Option.expect (Bytes.at x 1) "1")) ((Option.None) -1))
+                (match (Bytes.slice (rope s) 3 2) ((Option.Some _) 1)                              ((Option.None) 0))))
+            (export main)))
+  (call main (: 0 Int64)) (output (: (tuple 2 20 30 0) (Tuple Int64 Int64 Int64 Int64))))
+
 ; --- Compacting a slice preserves its value while releasing shared storage ---------------
 ; A slice MAY retain its parent's whole storage to represent a small range of it (a view holds the
 ; parent alive). `(Bytes.compact b)` derives a value equal to `b` whose storage is independent of what

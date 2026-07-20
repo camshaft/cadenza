@@ -393,6 +393,19 @@ fn setup(paths: &Paths) {
 }
 
 fn build(paths: &Paths, store: Option<PathBuf>) {
+    // Acquire the fleet-wide build/check concurrency lease FIRST (operator-mandated, 2026-07-20 host
+    // hang). `cargo xtask build` recompiles the wasm runtime + build-std from source — a heavy multi-
+    // core build that EVERY agent runs each `fleet sync` tick to refresh its store. On a synchronized
+    // trunk-advance wake, ~42 agents ran it AT ONCE with nothing capping the count, oversubscribing the
+    // scheduler to thousands of rustc/linker threads and HARD-HANGING the 64-core box (EC2 power-cycle).
+    // `check`/`gate` were already capped by this same lease pool; `build` was the unleased gap. Sharing
+    // ONE pool (not a second independent budget) is deliberate: build and check are both heavy `cargo`
+    // workloads competing for the same cores, so K total is the honest cap. pr-sync's gate-batch build
+    // sets CDZ_CHECK_PRIORITY=1 to take an uncapped priority slot (the merge queue never waits behind
+    // one-off agent store rebuilds). Held for the whole build; released on return (RAII drop). Fail-open.
+    let priority = std::env::var("CDZ_CHECK_PRIORITY").is_ok_and(|v| v == "1" || v == "true");
+    let _lease = fleet::acquire_check_lease(&paths.repo, priority);
+
     let store = store.unwrap_or_else(|| paths.repo.join("target/cadenza-store"));
     std::fs::create_dir_all(&store).expect("create store dir");
 
@@ -5066,6 +5079,30 @@ mod trap_grading_tests {
             &Ran::Value("1".into(), vec![]),
             &Ran::Trap("overflow".into())
         ));
+    }
+
+    #[test]
+    fn emit_values_match_normalizes_bool_render_both_directions() {
+        // The W4 differential compares `run-emitted` (raw i64 `1`/`0` for a Core Bool) against `run-ml`
+        // (`true`/`false` via run-src-typed's isBool tag). This normalization is what keeps every nullary
+        // Bool-returning corpus case (e.g. `(< 1 2)`, `(<= 5 5)`, `(!= 3 3)`) from being a SPURIOUS
+        // disagreement. Pin it directly (it was only exercised transitively via emit_agrees_with_interp).
+        // 1 ≡ true, 0 ≡ false, in BOTH render directions (symmetry guards a future render-side swap).
+        assert!(emit_values_match("1", "true"));
+        assert!(emit_values_match("0", "false"));
+        assert!(emit_values_match("true", "1"));
+        assert!(emit_values_match("false", "0"));
+        // Exact integer matches compare verbatim (a real value equality, not a bool coincidence).
+        assert!(emit_values_match("42", "42"));
+        assert!(emit_values_match("-5", "-5"));
+        // Whitespace around a verdict token is trimmed before comparison.
+        assert!(emit_values_match("  120 ", "120"));
+        // NON-matches must stay non-matches: a different integer, and a value-vs-wrong-bool pairing that
+        // must NOT be laundered by the bool normalization (1≡true but 1≢false, 2≢true).
+        assert!(!emit_values_match("42", "43"));
+        assert!(!emit_values_match("1", "false"));
+        assert!(!emit_values_match("0", "true"));
+        assert!(!emit_values_match("2", "true"));
     }
 
     #[test]

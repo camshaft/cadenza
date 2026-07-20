@@ -887,7 +887,7 @@ pub fn apply_lambda(
             None => Ok(None),
         };
     }
-    let result = apply_lambda_uncached(db, head, args);
+    let result = apply_lambda_uncached(db, head, args, false);
     // Cache only a DEFINITE reduction outcome (a reduced node, or a non-lambda `None`). An `Err`
     // (recursive / partial application) is left uncached — it is cheap to re-derive (a memoized
     // `is_recursive` read / an arity compare) and never triggers the expensive body copy, so caching it
@@ -898,10 +898,27 @@ pub fn apply_lambda(
     result
 }
 
+/// Apply a RECURSIVE lambda ONE level — β-substitute `args` into `head`'s body WITHOUT the recursion
+/// decline, so a caller can inspect whether the concrete arguments select a NON-recursive (base) arm.
+/// This is NOT a general recursive reduction: it substitutes once and returns the (still possibly
+/// self-referential) reduced body. The caller (the deferred-resume fold's recursion-unfold) MUST verify
+/// the result contains no residual self-call before accepting it — an unfold that still recurses would
+/// otherwise unroll unboundedly. Uncached (the recursion guard normally keys the cache-declining path,
+/// and this deliberately bypasses it), so keep callers few and gated. Returns `Ok(None)` for a non-lambda
+/// head, `Err` only for a partial application.
+pub fn apply_lambda_one_level_recursive(
+    db: &mut Db,
+    head: StructId,
+    args: &[StructId],
+) -> Result<Option<StructId>, String> {
+    apply_lambda_uncached(db, head, args, true)
+}
+
 fn apply_lambda_uncached(
     db: &mut Db,
     head: StructId,
     args: &[StructId],
+    allow_recursive: bool,
 ) -> Result<Option<StructId>, String> {
     let (params, body) = match lambda_of(db, head) {
         Some(lam) => lam,
@@ -911,8 +928,11 @@ fn apply_lambda_uncached(
     // inlining (the static check, not the depth backstop, is what stops the exponential node blow-up on
     // a branching recursive body). This is the one place every lambda application funnels through (both
     // `infer` and `lower` reach a lambda head here, and currying recurses through here), so the one
-    // check covers them all.
-    if is_recursive(db, body) {
+    // check covers them all. EXCEPTION (`allow_recursive`): the deferred-resume fold's recursion-unfold
+    // needs ONE substitution level of a recursive callee to peek whether the concrete arg selects a
+    // non-recursive base arm — it verifies no residual self-call survives before accepting, so the
+    // unbounded-unroll risk this guard prevents does not apply to that one gated caller.
+    if !allow_recursive && is_recursive(db, body) {
         trace!(target: "rcdzc::eval", body = body.0, "decline: recursive function (needs runtime specialization)");
         return Err(
             "a recursive function needs runtime specialization (not yet built)".to_string(),
@@ -2335,9 +2355,18 @@ pub fn reduce_to_if_of_tuples(db: &mut Db, id: StructId) -> Option<IfOfTuples> {
 /// The primitive the value at `id` denotes, following a `Ref` — `+` resolves to a `Ref` to its
 /// `(intrinsic +)` node, which resolves to `Prim::Add`. `None` if not a primitive.
 pub fn prim_of(db: &mut Db, id: StructId) -> Option<Prim> {
-    match resolved_of(db, id) {
-        Resolved::Prim(p) => Some(p),
-        Resolved::Ref { value } => prim_of(db, value),
+    // Dispatch through the BORROW companion `resolved_ref`, not `resolved_of`: this reads only the
+    // `Prim` tag (a `Copy` enum) or the `Ref`'s `value` occurrence (a `Copy` `StructId`) — neither needs
+    // the cloned payload, so the by-value `resolved_of` clone of the whole `Resolved` per call was pure
+    // churn. `prim_of` is a hot per-node meta reader (called across lower/infer/eval — a realistic 3000-
+    // def module showed ~7.8% inclusive, ~2.5% in `Resolved::clone`), so borrow-dispatch is the fix-35/36
+    // pattern (a memoized query returning a compound by value cloned per call for a Copy field → borrow).
+    match crate::resolve::resolved_ref(db, id) {
+        Resolved::Prim(p) => Some(*p),
+        Resolved::Ref { value } => {
+            let value = *value;
+            prim_of(db, value)
+        }
         _ => None,
     }
 }
@@ -3375,6 +3404,25 @@ pub fn is_ill_formed_float_width(db: &mut Db, id: StructId) -> bool {
         WidthRead::Fixed(w) => !crate::ty::ADMITTED_FLOAT_WIDTHS.contains(&w),
         WidthRead::Malformed => true,
         WidthRead::NotConst => false,
+    }
+}
+
+/// The CONCRETE natural width of an ill-formed `(Float W)` at `id` — `Some(w)` when `W` reduces to a fixed
+/// natural OUTSIDE the admitted IEEE set `{32, 64}` (a `(Float 8)` / `(Float 16)` / `(Float 128)`), and
+/// `None` for an admitted width, a MALFORMED (negative / non-numeric) width (no width number to name), a
+/// non-constant width, or a non-`(Float _)` type. The companion of [`is_ill_formed_float_width`] that also
+/// hands back the number, so a diagnostic can choose a repair target (snap to the nearest admitted width)
+/// — the float analogue of `IntWidthFault::OverCeiling`'s width. Keyed on the ctor prim + `read_width`.
+pub fn out_of_set_float_width(db: &mut Db, id: StructId) -> Option<u32> {
+    let Resolved::Apply { head, args } = resolved_of(db, id) else {
+        return None;
+    };
+    if meta_apply_of(db, head) != Some(Prim::FloatCtor) || args.len() != 1 {
+        return None;
+    }
+    match read_width(db, args[0]) {
+        WidthRead::Fixed(w) if !crate::ty::ADMITTED_FLOAT_WIDTHS.contains(&w) => Some(w),
+        WidthRead::Fixed(_) | WidthRead::Malformed | WidthRead::NotConst => None,
     }
 }
 

@@ -28,3 +28,10 @@
         tot))
   (def (f (: n Int64)) (loop 0 n 0))
   (export f))
+
+;; ===== PM triage (corpus-bugfix, 2026-07-20, trunk 7a065bbf7) =====
+;; Value-correctness VERIFIED (f(5)=5); the LEAK itself needs the debug-counters/live-objects harness (not
+;; the standard wasm run), so not cheaply witnessed here. ROUTED to v-memory-safety (primary: reclaim/
+;; ownership classification) with v-patterns cc'd (SumExpect/MatchSum emit shared seam) — repro asks them to
+;; coordinate before fixing. NOT a fix agent (deep Perceus+emit shared-seam work in the owners' lane).
+;; corpus-bugfix to add a live-objects pin once fixed. Copy already in both owners' issues/.

@@ -103,6 +103,8 @@ pass	TRANS should match its middle term up to α-equivalence: aconv-TRANS chains
 pass	TRANS unions its operands' hypotheses — an assumption threaded through TRANS survives (soundness)
 pass	TRANS unions the hypotheses of BOTH operands when each carries a distinct assumption
 pass	TWO performs in an if condition both fold on the strict-first spine
+pass	TWO stacked @ensures COMPOSE: BOTH postconditions are enforced — value-transparent when both hold
+pass	TWO stacked @ensures: a violated INNER postcondition traps even when the OUTER holds
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
 pass	Type.eq carries an integer type's full width and signedness
 pass	Type.eq compares a RECORD type-value structurally, by field types
@@ -171,9 +173,12 @@ pass	a BigInt narrowed to the exact UInt8 maximum fits and converts
 pass	a BigInt operation does not silently promote a fixed-width operand
 pass	a BigInt-inner quantity ADDITION past Int64.max stays exact through the wrapper
 pass	a BigInt-inner quantity grows past Int64.max without trapping
+pass	Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order
 pass	a BigInt-inner quantity scales by a bare BigInt on the bigint path
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool generator derived from the seed is reproducible (same seed, same Bool)
+pass	Set.to-list sorts a PREFIX string before its extension (length tiebreak on equal prefixes)
+pass	Set.to-list sorts runtime ROPE string elements smallest-first by content byte order
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
 pass	a Bytes entry argument is marshalled as a Vec<u8>
@@ -197,6 +202,7 @@ pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DEFERRED resume-thunk escaping to another function re-installs the handler at apply, over a re-performing do-continuation
 pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
 pass	a Duration constructor `secs` scales a UInt64 count to nanoseconds
+pass	a Duration constructor scaling a count past the UInt64 nanosecond range traps rather than wrapping
 pass	a FLAT runtime string nested in a tuple is unaffected (control)
 pass	a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator
 pass	a Float KEY inserted into an empty (runtime) map boxes with box-float, not box-int
@@ -244,6 +250,8 @@ pass	a PLAIN @ensures relating ret to a PARAMETER (> ret x) TRAPS when violated 
 pass	a PLAIN @ensures relating ret to a PARAMETER (> ret x) is enforced — the param stays in scope alongside ret in the predicate
 pass	a PLAIN @requires precondition is ENFORCED at body-entry: a VIOLATED precondition traps when the def is called
 pass	a PLAIN @requires precondition is value-transparent when SATISFIED: the def returns its computed value
+pass	a PLAIN @requires relating TWO parameters (< a b) TRAPS when violated — the two-param precondition is checked
+pass	a PLAIN @requires relating TWO parameters (< a b) is enforced — BOTH params stay in scope in the predicate
 pass	a Qty payload with a GENERIC inner type rejects a bare use with no type argument
 pass	a Qty payload's INNER type stays a real type parameter — the unit-arg skip does not over-skip
 pass	a Qty-typed variant payload keeps its type non-generic and matches back
@@ -703,6 +711,7 @@ pass	a function-typed parameter annotation's result type is checked against the 
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
 pass	a general recursive-sum recursion (Nil|Cons count) reads the right payload through the fold
 pass	a generated RECORD value is reproducible from its seed (compound = walks the record fields)
+pass	a generated Rational's equality is INDEPENDENT of sign placement (n/d = -n/-d)
 pass	a generated SUM value is reproducible from its seed (compound = walks the variant tag and its payload)
 pass	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
 pass	a generated value with a FLOAT leaf is reproducible (compound = over the canonical float byte form)
@@ -1669,6 +1678,7 @@ pass	a runtime record nested in a tuple compares component-wise
 pass	a runtime record whose field is a runtime tuple escapes to the host
 pass	a runtime remainder takes the dividend's sign
 pass	a runtime right shift by the bit width or more traps
+pass	a runtime rope slice maps scalar offsets to bytes across the seam for a multi-byte scalar
 pass	a runtime same-dimension quotient is dimensionless and its value joins bare integer arithmetic
 pass	a runtime scrutinee keeps the full switch and nested dispatch
 pass	a runtime scrutinee matching no arm traps
@@ -1700,6 +1710,7 @@ pass	a runtime string rope matches a string-literal arm
 pass	a runtime string rope set element is found by its flat twin
 pass	a runtime string slice addresses scalar values, not bytes
 pass	a runtime string slice out of range yields None
+pass	a runtime string slice spans the seam of a runtime-assembled rope
 pass	a runtime string slice with an empty in-range span is Some of the empty string
 pass	a runtime subtraction that overflows traps
 pass	a runtime sum equality as a match SCRUTINEE drives a tail-recursive loop
@@ -1868,6 +1879,7 @@ pass	a single-variant newtype over a COMPOUND escapes the bare compound under it
 pass	a single-variant open sum with an open-tail arm dispatches its named variant
 pass	a single-variant-sum binding pattern destructures a multi-payload constructor positionally
 pass	a single-variant-sum binding pattern nests inside another
+pass	a slice crosses the seam of a runtime-assembled byte rope
 pass	a slice spanning a concatenation sees the logical bytes
 pass	a slice whose end is beyond the string length yields None
 pass	a slice whose end precedes its start yields None
@@ -2315,6 +2327,7 @@ pass	an empty map is unequal to a non-empty map, not a type error
 pass	an empty quote is rejected, not a crash
 pass	an empty record pattern matches any record of its type
 pass	an empty scrutinee matches an empty bin pattern
+pass	an empty set in one if-branch unifies with a non-empty set in the other and its length reads correctly
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
 pass	an empty-span String.slice at a multi-byte position has scalar-len zero
@@ -2455,6 +2468,7 @@ pass	an unproductive self-recursion is declined, not a compiler crash
 pass	an unquote nested inside a plain quote is a syntax error, not an active unquote
 pass	an unquote of an expression with an unbound name is rejected, not quoted
 pass	an unquoted variable is not captured by a list-rest-pattern binder
+pass	an unquoted variable is not captured by a map-pattern value binder
 pass	an unquoted variable is not captured by a same-named fn param in the template
 pass	an unquoted variable is not captured by a same-named let binder in the template
 pass	an unquoted variable is not captured by a same-named match-pattern binder in the template
@@ -2596,6 +2610,7 @@ pass	compound equality over a runtime Rational leaf compares by the normalized f
 pass	compound equality over a runtime float leaf: different floats compare unequal
 pass	compound equality over a runtime float leaf: equal floats compare equal
 pass	compound equality over a runtime float leaf: negative zero is not equal to positive zero
+pass	computing a span with the Instants reversed (earlier minus later) traps rather than wrapping
 pass	concatenating an empty byte sequence on the left is the identity
 pass	concatenating an empty byte sequence on the right is the identity
 pass	concatenating an empty string on the left is the identity
@@ -3181,11 +3196,13 @@ pass	the difference of a set with itself is empty
 pass	the difference of a set with the empty set is the set (identity)
 pass	the difference of sets of TUPLES removes elements by their whole-tuple content
 pass	the display truncation does not lose the stored magnitude (Qty.value reads it back)
+pass	the element list of an Ast.List escapes as a (List Ast) value and renders its structure
 pass	the element tie survives producer self-composition
 pass	the else-branch of an if threads a performed state to the continuation
 pass	the empty and None arms of a list-payload split dispatch to their own values
 pass	the empty byte sequence has length zero
 pass	the empty reader literal is the empty symbol
+pass	the empty set has cardinality zero
 pass	the empty set is equal to the empty set
 pass	the empty string has length zero
 pass	the empty string is a matchable literal
@@ -3859,6 +3876,7 @@ todo	a two-argument closure exported to the host is called with both arguments
 todo	a two-parameter closure is applied at full arity through a recursive HOF
 todo	a type-valued parameter under a function-arrow annotation dispatches an ad-hoc-polymorphic dict
 todo	an 8-bit-integer closure crosses the host boundary
+pass	an @ensures predicate that itself traps keeps its own trap kind (not the @ensures-failed unreachable)
 todo	an @param of a Bool type generates a Bool-typed accessor
 todo	an @param of a Float64 type generates a Float64-typed accessor
 todo	an @param site generates a Param accessor a host delegation reads at run time

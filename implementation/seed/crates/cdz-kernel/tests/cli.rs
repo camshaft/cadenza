@@ -277,6 +277,31 @@ fn schedule_create_and_cancel_register_and_drop_a_timer() {
         "reports the reserved-trigger refusal"
     );
 
+    // A ZERO --period-ms is refused up front (it would divide-by-zero the daemon's `due` fold every tick — a
+    // can't-brick violation). The error steers the operator to omit --period-ms for a one-shot.
+    let out = Command::new(bin())
+        .args([
+            "schedule-create",
+            log.to_str().unwrap(),
+            "zero",
+            "z-tick",
+            "--first-ms",
+            "0",
+            "--period-ms",
+            "0",
+        ])
+        .output()
+        .expect("run cdz-agent schedule-create zero-period");
+    assert!(
+        !out.status.success(),
+        "a zero --period-ms must be refused (would brick the due fold)"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--period-ms must be a POSITIVE integer"),
+        "reports the positive-period requirement: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
     // emit still refuses schedule-* kinds too.
     for reserved in ["schedule-create", "schedule-cancel", "schedule-fire"] {
         let out = Command::new(bin())

@@ -140,6 +140,25 @@ pub fn reify_quotes(ast: &mut Arenas) -> Vec<StructId> {
     // an outer quote is reified from its body's original structure before its inner quotes are reached
     // (see the ordering note in the module docs).
     let original_len = ast.structure.len() as u32;
+    // FAST BAIL for a quote-FREE program (the overwhelming common case). `reify_quotes` runs at EVERY
+    // load, but everything below — the parent/child-index build + pattern downward-walk
+    // (`pattern_position_nodes`), the binder scan (`binder_position_nodes`), and the reverse per-node
+    // plan loop with its two allocating `as_form(id,"quote"/"quasiquote").map(to_vec)` probes — is pure
+    // dead work when the program contains no `quote`/`quasiquote` FORM at all. A `(quote …)`/
+    // `(quasiquote …)` node is a `List` headed by the NAME `quote`/`quasiquote`, so its head is a
+    // `Leaf::Name("quote")`/`Leaf::Name("quasiquote")` in the leaf pool; if NO such name leaf exists,
+    // there is no quote head anywhere and the whole pass is a no-op. A single O(leaves) scan (leaves are
+    // interned once, far fewer than a structural walk's per-node string compares) is the cheap
+    // over-approximation: it may fire spuriously only for a program that MENTIONS the identifier
+    // `quote`/`quasiquote` without a quote form (e.g. a user def named `quote`), in which case we fall
+    // through to the exact shape-driven logic below — same result, just not skipped.
+    let has_quote_name = ast
+        .leaves
+        .iter()
+        .any(|l| matches!(l, Leaf::Name(n) if n == "quote" || n == "quasiquote"));
+    if !has_quote_name {
+        return Vec::new();
+    }
     // The set of PATTERN-POSITION nodes — a match-arm pattern slot and everything under it. A
     // quote/quasiquote here DESTRUCTURES (desugars to an `Ast.*` PATTERN via `reify_pattern`), it does
     // not construct. Built from a local parent map because this pass runs before `Db`'s `parent_index`.
@@ -161,6 +180,8 @@ pub fn reify_quotes(ast: &mut Arenas) -> Vec<StructId> {
     // un-reified since `reify_pattern` bails on it).
     let mut nonfinal_splice: Vec<StructId> = Vec::new();
     let mut plans: Vec<QuotePlan> = Vec::new();
+    #[cfg(test)]
+    crate::db::REIFY_QUOTES_POSITION_SCAN_NODES.with(|c| c.set(c.get() + original_len as u64));
     for i in (0..original_len).rev() {
         let id = StructId(i);
         // A `(quote x)`/`(quasiquote x)` node that IS a def signature or fn params list is a BINDING

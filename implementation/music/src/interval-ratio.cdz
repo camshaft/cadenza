@@ -52,7 +52,9 @@ def r-major-third = RInterval.RInterval(Rational.of(4, 12))
 def r-perfect-fourth = RInterval.RInterval(Rational.of(5, 12))
 def r-tritone = RInterval.RInterval(Rational.of(6, 12))
 def r-perfect-fifth = RInterval.RInterval(Rational.of(7, 12))
+def r-minor-sixth = RInterval.RInterval(Rational.of(8, 12))
 def r-major-sixth = RInterval.RInterval(Rational.of(9, 12))
+def r-minor-seventh = RInterval.RInterval(Rational.of(10, 12))
 def r-major-seventh = RInterval.RInterval(Rational.of(11, 12))
 
 // ---- rational interval arithmetic (exact; no rounding) ----------------------------------------------
@@ -187,10 +189,42 @@ def in-grid-projects-exactly-off-grid-declines() =
       else trap("2/3 octave = 8 semitones")
     | Option.None(_) => trap("2/3 octave is on-grid (8/12)")
 
+@test
+def minor-sixth-and-minor-seventh-close-the-grid() =
+  // Semitones 8 (minor sixth) and 10 (minor seventh) were the two 12-TET grid points with no rational
+  // counterpart, so the layer-bridge gate silently skipped them. Pin both: each rational named interval
+  // equals its `semitones-r` projection AND projects back to the exact integer semitone count, closing the
+  // 12-TET grid to the true full twelve (reviewer coverage gap on 44bdb682e).
+  if r-eq(r-minor-sixth, semitones-r(8)) then
+    (match to-semitones-exact(r-minor-sixth) with
+      | Option.Some(s) =>
+        if s == 8 then
+          (if r-eq(r-minor-seventh, semitones-r(10)) then
+            (match to-semitones-exact(r-minor-seventh) with
+              | Option.Some(t) => if t == 10 then unit else trap("minor seventh projects to 10")
+              | Option.None(_) => trap("minor seventh is in-grid"))
+           else trap("minor seventh is 10/12"))
+        else trap("minor sixth projects to 8")
+      | Option.None(_) => trap("minor sixth is in-grid"))
+  else trap("minor sixth is 8/12")
+
+@test
+def minor-sixth-complements-a-major-third() =
+  // The new named intervals participate in rational arithmetic: a minor sixth (8/12) is the octave
+  // complement of a major third (4/12), and a minor seventh (10/12) complements a wholetone (2/12). Also
+  // a minor third (3/12) stacked on a minor sixth (8/12) is a major seventh (11/12) — exact, no drift.
+  if r-eq(r-complement(r-major-third), r-minor-sixth) then
+    (if r-eq(r-complement(r-wholetone), r-minor-seventh) then
+      (if r-eq(r-add(r-minor-third, r-minor-sixth), r-major-seventh) then unit
+       else trap("minor third + minor sixth = major seventh"))
+     else trap("wholetone complements to minor seventh"))
+  else trap("major third complements to minor sixth")
+
 export {
   RInterval.*,
   rinterval, octaves, edo-step, semitones-r, degree-r,
   r-unison, r-octave, r-double-octave, r-semitone, r-wholetone, r-minor-third, r-major-third,
-  r-perfect-fourth, r-tritone, r-perfect-fifth, r-major-sixth, r-major-seventh,
+  r-perfect-fourth, r-tritone, r-perfect-fifth, r-minor-sixth, r-major-sixth,
+  r-minor-seventh, r-major-seventh,
   r-add, r-sub, r-negate, r-eq, r-complement, to-semitones-exact,
 }

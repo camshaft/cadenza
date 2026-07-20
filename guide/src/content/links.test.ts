@@ -87,6 +87,31 @@ test("every internal to=\"/…\" link points at a real route (chapter slug or ap
   );
 });
 
+// A cross-chapter link is a "see X" promise: it should carry the reader to a DIFFERENT chapter. A chapter
+// whose prose links to its OWN slug (`Effects.tsx` containing `<Ch to="/effects">`) passes the "real route"
+// check above — the route exists — but it reads to the reader as a cross-reference that goes nowhere new, a
+// dead-end pointer at the page they're already on. It's the kind of drift a copy-paste of a link block, or a
+// chapter rename that lands a link on its own new slug, introduces silently. The "real route" test can't
+// catch it (a self-slug IS a real route); this pins that a chapter's chapter-links always point elsewhere.
+test("no chapter's prose links to its OWN slug (a self-link is a dead-end cross-reference)", () => {
+  const registrySrc = readFileSync(join(here, "chapters.ts"), "utf8");
+  const entryRe = /slug:\s*"([^"]+)"[\s\S]*?import\("\.\/chapters\/([^"]+)"\)/g;
+  const fileForSlug = new Map<string, string>();
+  for (let m = entryRe.exec(registrySrc); m; m = entryRe.exec(registrySrc)) fileForSlug.set(m[1], m[2]);
+  const selfLinks: string[] = [];
+  for (const [slug, file] of fileForSlug) {
+    // A chapter-slug link back to `/${slug}` is a self-reference; an app-route link (/cad) never is.
+    for (const { href, line } of internalLinks(readFileSync(join(chaptersDir, file), "utf8"))) {
+      if (href === `/${slug}`) selfLinks.push(`${file}:${line} → /${slug} (its own chapter)`);
+    }
+  }
+  assert.equal(
+    selfLinks.length,
+    0,
+    `self-link(s) — a chapter cross-links to its own slug, pointing the reader nowhere new:\n  ${selfLinks.join("\n  ")}`,
+  );
+});
+
 test("the link scan actually found links (guards against a broken regex silently passing)", () => {
   // A no-op scan would pass the integrity test vacuously. Assert we see a healthy number of links so
   // a future refactor that breaks the extraction (or moves the files) trips this instead of hiding.

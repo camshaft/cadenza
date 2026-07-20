@@ -44,13 +44,30 @@ const files = [
   join(guideRoot, "src/components/HomePage.tsx"),
 ];
 
+// Vacuous-pass floor: if the chapter glob breaks, `files` could shrink to nothing and the lint would
+// print "checked N files" and exit 0 — a silent false green that lets an invented @annotation ship.
+// The guide has 37 chapters + HomePage; assert a sane minimum so a broken discovery path FAILS instead
+// of passing on nothing. (Mirrors the floors in check-examples.mjs + proseEmDash.test.ts.)
+if (files.length < 30) {
+  console.error(
+    `check:prose: expected ≥30 content files (37 chapters + HomePage), found ${files.length} — ` +
+      `the chapter glob likely broke; refusing a vacuous pass.`,
+  );
+  process.exit(1);
+}
+
 const failures = [];
+let annotationsSeen = 0; // machinery witness: a scan that sees ZERO @annotations across the whole guide
+// is suspect (the guide demonstrably uses @test/@exhaustive/@tag), so a broken read/scan can't pass vacuously.
 for (const file of files) {
   let src;
   try {
     src = readFileSync(file, "utf8");
-  } catch {
-    continue;
+  } catch (e) {
+    // Do NOT silently skip a file on a read error — a swallowed failure shrinks the checked set and
+    // could hide an invented annotation behind a green gate. Fail loud.
+    console.error(`check:prose: could not read ${file} — ${String(e && e.message ? e.message : e)}`);
+    process.exit(1);
   }
   const rel = file.replace(guideRoot + "/", "");
   // Every `@word` occurrence (annotation-shaped: `@` + a kebab identifier). This catches prose in
@@ -58,6 +75,7 @@ for (const file of files) {
   // `@tag` (the annotation) and NOT `slow` (its string argument), which is correct.
   for (const m of src.matchAll(/@([a-z][a-z0-9-]*)/g)) {
     const name = m[1];
+    annotationsSeen++;
     if (!KNOWN_ANNOTATIONS.has(name)) {
       // Report with a little context so the author can find it.
       const at = m.index ?? 0;
@@ -76,7 +94,18 @@ if (failures.length) {
   );
   process.exit(1);
 }
+// Machinery witness: the guide demonstrably references annotations (@test/@exhaustive/@tag live in the
+// PropertyTesting + Verification chapters), so a scan finding ZERO means the read/scan silently broke —
+// a vacuous pass that would let an invented annotation slip. Assert the scan actually saw some.
+if (annotationsSeen === 0) {
+  console.error(
+    `check:prose: scanned ${files.length} files but matched ZERO @annotations — the scan likely broke ` +
+      `(the guide uses @test/@exhaustive/@tag); refusing a vacuous pass.`,
+  );
+  process.exit(1);
+}
 console.log(
   `✓ prose-annotation lint: every @annotation in the guide prose is a real compiler annotation ` +
-    `(checked ${files.length} files against {${[...KNOWN_ANNOTATIONS].join(", ")}}).`,
+    `(checked ${annotationsSeen} @annotation(s) across ${files.length} files against ` +
+    `{${[...KNOWN_ANNOTATIONS].join(", ")}}).`,
 );

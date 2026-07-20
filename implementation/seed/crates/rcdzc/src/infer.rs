@@ -827,6 +827,28 @@ pub(crate) fn ill_formed_int_width_message(fault: &crate::eval::IntWidthFault) -
     }
 }
 
+/// The CDZ0302 REPAIR for an ill-formed integer width at `pos` — the actionable half of
+/// [`ill_formed_int_width_message`] (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
+/// A Fix). Only the OVER-CEILING case (`(UInt 65)`, `(Int 128)` — a fixed width strictly greater than 64)
+/// has a single confident target: the message itself says such a width is "reserved to the big-integer
+/// layer", so the repair is the unbounded `BigInt`, which holds any magnitude — the type-level twin of the
+/// literal-range fix's `BigInt` continuation (`int_out_of_range_reject`). Every other ill-formed width has
+/// NO single correct target — a `0` width or a `Malformed` (negative/non-numeric) width could mean the
+/// author dropped or mistyped the number, so guessing one would be a false suggestion (worse than none, per
+/// the `suggest` module) — those carry the message alone. Heuristic: the author may instead have meant a
+/// specific in-range width, but `BigInt` clears the fault in one shot and always type-checks.
+pub(crate) fn ill_formed_int_width_fix(
+    fault: &crate::eval::IntWidthFault,
+    pos: StructId,
+) -> Option<Fix> {
+    match *fault {
+        crate::eval::IntWidthFault::OverCeiling { width, .. } if width > 64 => {
+            Some(Fix::replace_heuristic(pos, "BigInt"))
+        }
+        _ => None,
+    }
+}
+
 /// The FIRST ill-formed integer width ANYWHERE in the type-expression `ty_expr` — the top-level type OR a
 /// NESTED type-argument position (`(Option (UInt 65))`, `(List (Int -8))`, `(Tuple Int8 (Int -8))`,
 /// `(Map (Int -8) v)`). A top-level `int_width_fault` catches `(: 5 (Int -8))`, but a width nested in a
@@ -882,6 +904,28 @@ fn nested_ill_formed_float_width(db: &mut Db, ty_expr: StructId) -> Option<Struc
 
 pub(crate) const FLOAT_WIDTH_MESSAGE: &str =
     "a floating-point width must be one of the admitted IEEE widths (32 or 64)";
+
+/// The CDZ0302 REPAIR for an ill-formed FLOAT width at `pos` — the actionable half of
+/// [`FLOAT_WIDTH_MESSAGE`] (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix),
+/// the float twin of [`ill_formed_int_width_fix`]. A CONCRETE natural width outside the admitted IEEE set
+/// `{32, 64}` snaps to the nearest admitted width: a below-32 width (`(Float 8)`, `(Float 16)`) retypes to
+/// `Float32`, and any wider non-admitted width (`(Float 48)`, `(Float 128)`) retypes to `Float64` — the
+/// widest admitted precision (32 itself is admitted, so it never reaches here). A MALFORMED (negative /
+/// non-numeric) width has NO width
+/// number and no single confident target, so it carries the message alone (a false suggestion is worse
+/// than none). Heuristic: the author may have meant a specific admitted width, but the snap clears the
+/// fault in one shot and type-checks. `db` reads the concrete width off the annotation via
+/// `eval::out_of_set_float_width`.
+pub(crate) fn ill_formed_float_width_fix(db: &mut Db, pos: StructId) -> Option<Fix> {
+    let w = crate::eval::out_of_set_float_width(db, pos)?;
+    // A ZERO width (`(Float 0)`) reads as a dropped/mistyped number with no confident target — like the
+    // integer twin, it stays message-only (a false suggestion is worse than none).
+    if w == 0 {
+        return None;
+    }
+    let target = if w < 32 { "Float32" } else { "Float64" };
+    Some(Fix::replace_heuristic(pos, target))
+}
 
 /// The RUNTIME-WIDTH companion of [`nested_ill_formed_int_width`]/[`nested_ill_formed_float_width`]: the
 /// position of a width-indexed numeric type `(Int n)`/`(UInt n)`/`(Float n)` whose width is RUNTIME DATA
@@ -1945,7 +1989,12 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
     // reduces to a clamped-sentinel `Ty` that `typeval_of` would otherwise wave through).
     if let Some((pos, fault)) = nested_ill_formed_int_width(db, ty_expr) {
         trace!(target: "rcdzc::infer", param = param.0, "fault: ill-formed integer width in a parameter annotation (CDZ0302)");
-        out.push(Reject::coded(Code::IntOutOfRange, ill_formed_int_width_message(&fault)).at(pos));
+        let mut reject =
+            Reject::coded(Code::IntOutOfRange, ill_formed_int_width_message(&fault)).at(pos);
+        if let Some(fix) = ill_formed_int_width_fix(&fault, pos) {
+            reject = reject.with_fix(fix);
+        }
+        out.push(reject);
         return;
     }
     // The `(Float W)` companion: an ill-formed float width (outside the admitted IEEE set {32,64}), bare
@@ -1955,7 +2004,11 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
     // appears, reachable or not).
     if let Some(pos) = nested_ill_formed_float_width(db, ty_expr) {
         trace!(target: "rcdzc::infer", param = param.0, "fault: ill-formed float width in a parameter annotation (CDZ0302)");
-        out.push(Reject::coded(Code::IntOutOfRange, FLOAT_WIDTH_MESSAGE).at(pos));
+        let mut reject = Reject::coded(Code::IntOutOfRange, FLOAT_WIDTH_MESSAGE).at(pos);
+        if let Some(fix) = ill_formed_float_width_fix(db, pos) {
+            reject = reject.with_fix(fix);
+        }
+        out.push(reject);
         return;
     }
     // A TYPE CONSTRUCTOR applied to the WRONG number of arguments — a prelude `(List Int64 Int64)` (fails
@@ -12644,7 +12697,12 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // gap. Descend the annotation type expression and reject CDZ0302 at the offending position.
                 if let Some(pos) = nested_ill_formed_float_width(db, ty_expr) {
                     trace!(target: "rcdzc::infer", node = id.0, "fault: float width not in the admitted set (CDZ0302)");
-                    out.push(Reject::coded(Code::IntOutOfRange, FLOAT_WIDTH_MESSAGE).at(pos));
+                    let mut reject =
+                        Reject::coded(Code::IntOutOfRange, FLOAT_WIDTH_MESSAGE).at(pos);
+                    if let Some(fix) = ill_formed_float_width_fix(db, pos) {
+                        reject = reject.with_fix(fix);
+                    }
+                    out.push(reject);
                 }
                 // An OUT-OF-CEILING / zero INTEGER width `(: e (UInt 65))` is ill-formed at the annotation
                 // regardless of what `e` is — the integer analogue of the float admitted-set check just
@@ -12655,10 +12713,13 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // CDZ0302 + wording as the parameter-annotation path (`param_annotation_faults`).
                 if let Some((pos, fault)) = nested_ill_formed_int_width(db, ty_expr) {
                     trace!(target: "rcdzc::infer", node = id.0, "fault: ill-formed integer width in a value annotation (CDZ0302)");
-                    out.push(
+                    let mut reject =
                         Reject::coded(Code::IntOutOfRange, ill_formed_int_width_message(&fault))
-                            .at(pos),
-                    );
+                            .at(pos);
+                    if let Some(fix) = ill_formed_int_width_fix(&fault, pos) {
+                        reject = reject.with_fix(fix);
+                    }
+                    out.push(reject);
                 }
                 // A bare integer LITERAL annotated with an integer type is a GROUNDING, not a
                 // unification: the literal has no intrinsic signedness/width to conflict, so the

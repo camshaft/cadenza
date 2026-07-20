@@ -2020,6 +2020,97 @@
             (export main)))
   (output (: 1 Int64)))
 
+; --- Quantity as a Map KEY: content-address equality over the erased magnitude + unit --------------
+; The map cases above store a quantity as a map VALUE (the decode/read-back path). These pin the
+; complementary KEY path: a runtime quantity used as a Map key must hash + compare by its CONTENT
+; (the erased magnitude in its slot, plus the scaled unit), so a key rebuilt independently from the
+; SAME runtime magnitude HITS, and one built from a DIFFERENT magnitude MISSES. This exercises the
+; value comparator/hasher on a quantity key — a distinct runtime path from the value-decode cases.
+
+(case "a runtime quantity used as a Map key hits when a separately-built equal key is looked up"
+  (doc    "Insert under key `(Qty.of v kilometer)` with `v` a runtime Int64, then look up a key built
+           INDEPENDENTLY from the same `v` (`(Qty.of v kilometer)` again). Content-address equality over
+           the quantity key — same erased magnitude in the same unit slot — so the lookup HITS and returns
+           the stored value 42. Pins that a quantity is a first-class heap key, not only a heap value:
+           the key hasher/comparator sees the erased magnitude and matches a separately-constructed equal
+           quantity (mirrors the compound-key content-equality the Map corpus pins for tuples/lists).")
+  (input  (do
+            (def (main (: v Int64))
+              (let ((k (Qty.of v (Unit.prefix kilo (Unit.base #"meter"))))
+                    (m (Map.insert (Map.empty) k 42)))
+                (match (Map.lookup m (Qty.of v (Unit.prefix kilo (Unit.base #"meter"))))
+                  ((Some found) found)
+                  ((None) 0))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 42 Int64)))
+
+(case "a runtime quantity Map key MISSES when the looked-up magnitude differs"
+  (doc    "The negative twin of the quantity-key hit: insert under `(Qty.of v kilometer)`, then look up
+           `(Qty.of (+ v 1) kilometer)` — a DIFFERENT magnitude, hence a distinct key by content — so the
+           lookup MISSES and the `None` arm returns 0. Pins that the quantity key comparator discriminates
+           on the erased magnitude (a different number is a different key), so equality is real content
+           equality, not a spurious always-hit.")
+  (input  (do
+            (def (main (: v Int64))
+              (let ((k (Qty.of v (Unit.prefix kilo (Unit.base #"meter"))))
+                    (m (Map.insert (Map.empty) k 42)))
+                (match (Map.lookup m (Qty.of (+ v 1) (Unit.prefix kilo (Unit.base #"meter"))))
+                  ((Some found) found)
+                  ((None) 0))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 0 Int64)))
+
+; --- Quantity as a Set element: content-address dedup + membership --------------------------------
+; The Map-key cases above pin a quantity on the key side of a Map. These pin the Set analogue: a
+; quantity as a SET element is deduplicated + tested for membership by CONTENT (the erased magnitude
+; in its unit slot), so two equal runtime quantities collapse to one element, distinct magnitudes
+; stay separate, and `Set.contains` finds a separately-built equal quantity but not a non-member.
+; Exercises the same value comparator/hasher on a quantity through the Set dedup + membership path.
+
+(case "two equal runtime quantities in a Set dedup to one element"
+  (doc    "`(Set.of (list (Qty.of v kilometer) (Qty.of v kilometer)))` with `v` a runtime Int64: both
+           elements are the SAME quantity by content (same erased magnitude, same unit), so the Set
+           deduplicates them to a single element and `Set.len` is 1. Pins a quantity as a first-class Set
+           element whose identity is content, not object identity — the same content-address equality the
+           Map-key cases pin, exercised through Set construction/dedup.")
+  (input  (do
+            (def (main (: v Int64))
+              (Set.len (Set.of (list (Qty.of v (Unit.prefix kilo (Unit.base #"meter")))
+                                     (Qty.of v (Unit.prefix kilo (Unit.base #"meter")))))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64)))
+
+(case "distinct-magnitude runtime quantities in a Set stay separate"
+  (doc    "The negative twin of the dedup case: `(Set.of (list (Qty.of v kilometer) (Qty.of (+ v 1)
+           kilometer)))` holds two quantities with DIFFERENT magnitudes, hence distinct by content, so the
+           Set keeps both and `Set.len` is 2. Pins that the element comparator discriminates on the erased
+           magnitude (a different number is a different element), so dedup is real content equality.")
+  (input  (do
+            (def (main (: v Int64))
+              (Set.len (Set.of (list (Qty.of v (Unit.prefix kilo (Unit.base #"meter")))
+                                     (Qty.of (+ v 1) (Unit.prefix kilo (Unit.base #"meter")))))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 2 Int64)))
+
+(case "Set.contains finds a separately-built equal quantity but not a non-member"
+  (doc    "`Set.contains` over a Set of runtime quantities: a query quantity built INDEPENDENTLY from the
+           same magnitude as a member HITS (content equality), while one built from a magnitude not in the
+           Set MISSES. Here the Set holds `v km` and `(v+1) km`; querying `v km` (a separately-constructed
+           equal quantity) returns 1, and `(v+2) km` (absent) returns 0. Pins the membership side of the
+           quantity content-address comparator, complementing the dedup case above.")
+  (input  (do
+            (def (main (: v Int64))
+              (let ((s (Set.of (list (Qty.of v (Unit.prefix kilo (Unit.base #"meter")))
+                                     (Qty.of (+ v 1) (Unit.prefix kilo (Unit.base #"meter")))))))
+                (if (Set.contains s (Qty.of v (Unit.prefix kilo (Unit.base #"meter")))) 1 0)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64)))
+
 ; --- Quantity joins: the same-unit flow and the explicit-conversion repair --------------------------
 ; 806e45ba9 fixed the mixed-unit join DIAGNOSTIC (a scale clash, not a shadowed declaration). These
 ; pin the join semantics around it, promoted from passing breaker probes: a same-unit join is ONE

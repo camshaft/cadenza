@@ -1478,12 +1478,47 @@
            scratch temp) onto the result of a RECURSIVE call `(h t)` (an i32 list handle in a `dup` slot).
            The two operands must take DISJOINT scratch slots — a fixed base shared the i64 guard slot with
            the i32 handle slot → invalid wasm. `(h (ICons 5 (INil)))` pushes 5+1 onto the empty tail → a
-           one-element list whose sole element reads 6. Guards the same disjoint-slot fix on the
-           `ListPush`/`ListConcat`/`ListUpdate` emit arms (they had a fixed base like the sum-payload arm).")
+           one-element list whose sole element reads 6. Guards the disjoint-slot fix on the `ListPush`
+           emit arm (it had a fixed base like the sum-payload arm); the sibling `ListConcat`/`ListUpdate`
+           arms are pinned by the two cases below.")
   (input  (do
             (type ILst (INil) (ICons Int64 ILst))
             (def (h xs) (match xs ((INil) (list)) ((ICons v t) (List.push (h t) (+ v 1)))))
             (def (main) (match (h (ICons 5 (INil))) ((list x) x) (_ 0)))
+            (export main)))
+  (output (: 6 Int64)))
+
+(case "a List.concat of a checked-arith list with a recursive-call list is disjoint-slotted"
+  (doc    "The `List.concat` sibling of the `List.push` scratch-slot case above: `(List.concat (list (+ v
+           1)) (g t))` joins a singleton list whose element is a CHECKED-ARITH `(+ v 1)` (an i64 overflow-
+           guard scratch temp) with the result of a RECURSIVE call `(g t)` (an i32 list handle in a `dup`
+           slot). The two list operands must take DISJOINT scratch slots — a fixed base shared the i64 guard
+           slot the first operand's element tees with the i32 handle slot the recursive-call operand uses →
+           `expected i32, found i64`, a check-clean/compile-invalid MISCOMPILE. Each operand must emit its
+           scratch ABOVE the running high-water (the disjoint-slot discipline). The checked-arith operand is
+           FIRST here (not the recursive call) so the collision falls on the `ListConcat` arm's second sub-
+           emit specifically. `(g (ICons 5 (INil)))` prepends 5+1 onto the empty tail → the head reads 6.
+           Companion to the `ListPush`/`ListUpdate` disjoint-slot pins.")
+  (input  (do
+            (type ILst (INil) (ICons Int64 ILst))
+            (def (g xs) (match xs ((INil) (list)) ((ICons v t) (List.concat (list (+ v 1)) (g t)))))
+            (def (main) (match (g (ICons 5 (INil))) ((list x) x) (_ 0)))
+            (export main)))
+  (output (: 6 Int64)))
+
+(case "a List.update at a checked-arith element behind a recursive-call list is disjoint-slotted"
+  (doc    "The `List.update` sibling of the `List.push`/`List.concat` scratch-slot cases above: `(List.update
+           (u t) 0 (+ v 1))` updates index 0 of the RECURSIVE call `(u t)`'s list (an i32 handle in a `dup`
+           slot) to a CHECKED-ARITH element `(+ v 1)` (an i64 overflow-guard scratch temp). The list handle,
+           the i64 index temp, and the checked-arith element each need DISJOINT scratch slots — a fixed base
+           shared the i32 handle slot with an i64 temp → `expected i32, found i64`, a check-clean/compile-
+           invalid MISCOMPILE. Each of the three operands must emit its scratch ABOVE the running high-water.
+           `(u (ICons 5 (INil)))` updates the base `(list 0)`'s sole slot to 5+1 → element 0 reads 6.
+           Companion to the `ListPush`/`ListConcat` disjoint-slot pins.")
+  (input  (do
+            (type ILst (INil) (ICons Int64 ILst))
+            (def (u xs) (match xs ((INil) (list 0)) ((ICons v t) (List.update (u t) 0 (+ v 1)))))
+            (def (main) (match (u (ICons 5 (INil))) ((list x) x) (_ 99)))
             (export main)))
   (output (: 6 Int64)))
 
@@ -8804,7 +8839,7 @@
 (case "prepend leaves the original list binding unchanged (persistent, copy-on-write)"
   (doc    "`List.prepend` is persistent: prepending onto a bound list does NOT mutate the binding — the
            original still reads its own length while the prepended result is one longer. `(let ((xs (list 2 3)))
-           …)` : `List.len (List.prepend xs 1)` = 3 AND the original `List.len xs)` = 2, both live. Encoded
+           …)` : `List.len (List.prepend xs 1)` = 3 AND the original `List.len xs` = 2, both live. Encoded
            `100·3 + 2` = 302 so a mutate-in-place bug (which would make xs length 3 too → 303) diverges. The
            front-insertion twin of the List.push persistence case (`a list consumed by List.push in one operand
            is unchanged for a later read`).")

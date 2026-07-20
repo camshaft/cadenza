@@ -96,7 +96,15 @@ impl Schedule {
         let period_ms = if period_line.is_empty() {
             None
         } else {
-            Some(period_line.parse().ok()?)
+            // A ZERO period is malformed, not a one-shot: it would make `occurrences_due` divide by zero and
+            // panic the pure `due` fold on EVERY daemon tick (a can't-brick violation, since a poison
+            // `SCHEDULE_CREATE` — from a corrupt log or a bad writer — would then wedge scheduling forever).
+            // Fail-SAFE per this module's contract: an un-decodable create never fires, so drop it to `None`.
+            let p: u64 = period_line.parse().ok()?;
+            if p == 0 {
+                return None;
+            }
+            Some(p)
         };
         let trigger_kind = String::from_utf8(lines[3].to_vec()).ok()?;
         Some(Schedule {
@@ -295,6 +303,36 @@ mod tests {
             None,
             "non-decimal first_ms → None"
         );
+        assert_eq!(
+            Schedule::decode(b"id\n100\n0\nkind\n"),
+            None,
+            "a ZERO period is malformed (would divide-by-zero `due`), not a one-shot → None"
+        );
+    }
+
+    #[test]
+    fn due_never_divides_by_zero_on_a_poison_zero_period_create() {
+        // A can't-brick invariant: a SCHEDULE_CREATE carrying period_ms=0 (a corrupt log or a bad writer) must
+        // NOT panic the pure `due` fold on divide-by-zero. Schedule::decode drops it to None, so `active_schedules`
+        // never surfaces it and `due` skips it entirely — scheduling keeps working instead of wedging forever.
+        let (path, mut log) = temp_log();
+        // Append a raw poison create (bypassing append_create, which encodes a valid Schedule) so we exercise the
+        // decode path on a period-0 payload exactly as it would appear from a hand-rolled/corrupt writer.
+        log.append(SCHEDULE_CREATE, b"poison\n100\n0\ntick\nbody")
+            .unwrap();
+        // A legit periodic alongside it, to prove the poison entry is skipped without taking the good one down.
+        append_create(&mut log, &sched("ok", 100, Some(50))).unwrap();
+        let events = log.tail(0).unwrap();
+        assert!(
+            active_schedules(&events).iter().all(|s| s.id != "poison"),
+            "the period-0 create never becomes active"
+        );
+        // The load-bearing assertion: this call would PANIC (divide by zero) if the poison period-0 reached
+        // `occurrences_due`. It must return only the good schedule.
+        let d = due(&events, 10_000);
+        assert_eq!(d.len(), 1, "only the well-formed periodic is due: {d:?}");
+        assert_eq!(d[0].schedule.id, "ok");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

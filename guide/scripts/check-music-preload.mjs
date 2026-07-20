@@ -67,8 +67,12 @@ for (const ex of EXAMPLES) {
   }
 }
 
-// (2) The piece-to-events showcase RUNS + yields a non-empty BALANCED event stream (the marquee correctness
-// payoff). Headless via jco (like check-cad-preload's mesh stage), heap wired (the event list is a heap value).
+// (2)/(3) The showcases RUN and yield the exact values their prose descriptions claim — headless via jco (like
+// check-cad-preload's mesh stage), heap wired (a compound result is a heap value). One shared heap serves all
+// three. This closes the gap where the gate only COMPILED R1/R2: their claimed values ("true", "60, 64, 67")
+// were never run, so a music-lib semantic regression OR a description that drifts from the runtime would slip
+// past. Each showcase runs via the SAME two shapes the guide's runWorker uses: a compound result via the
+// resource-escape `cadenza:run/run` make()/encode() path, a scalar result via a nullary function export.
 async function loadComp(bytes, name) {
   const { files } = await transpileBytes(new Uint8Array(bytes), { name, instantiation: "async", wasiShim: false, minify: false });
   const dir = mkdtempSync(join(tmpdir(), "musicp-"));
@@ -77,42 +81,84 @@ async function loadComp(bytes, name) {
   return { instantiate: mod.instantiate, getCore: async (p) => WebAssembly.compile(readFileSync(join(dir, p))) };
 }
 
-const eventsShowcase = EXAMPLES.find((e) => e.slug === "piece-to-events");
-if (!eventsShowcase) {
-  failures.push("piece-to-events showcase missing from EXAMPLES (the event-stream gate can't run)");
-} else if (existsSync(runtimePath)) {
-  try {
-    const rt = await loadComp(readFileSync(runtimePath), "heap");
-    const heap = (await rt.instantiate(rt.getCore, {}))[HEAP_IMPORT];
-    const program = injectImport(eventsShowcase.source.sexpr, "sexpr");
-    const cr = wasm.compile_with_preloaded(program, "sexpr", names, sources, formats);
-    if (!cr.component) throw new Error("no component");
-    const prog = await loadComp(new Uint8Array(cr.component), "prog");
-    const root = await prog.instantiate(prog.getCore, { [HEAP_IMPORT]: heap });
-    const iface = root["cadenza:run/run"] ?? root["run"];
+/// Compile a showcase buffer against the preloaded libs, run it, and return its RENDERED value string — the
+/// exact text /music shows the reader. Mirrors runWorker.runComponent: a compound (List/record) result comes
+/// out via the resource-escape `run` make()/encode() path (render_value stringifies the encoded bytes); a
+/// scalar (Bool/Int) result is a bare nullary export we call directly. Throws on a compile/run failure.
+async function runShowcase(ex, heap) {
+  const program = injectImport(ex.source.sexpr, "sexpr");
+  const cr = wasm.compile_with_preloaded(program, "sexpr", names, sources, formats);
+  if (!cr.component) throw new Error("no component");
+  const prog = await loadComp(new Uint8Array(cr.component), "prog");
+  const root = await prog.instantiate(prog.getCore, { [HEAP_IMPORT]: heap });
+  const iface = root["cadenza:run/run"] ?? root["run"];
+  if (iface && typeof iface.make === "function") {
     const handle = iface.make();
     const rendered = wasm.render_value(iface.encode(handle));
     // Guarded dispose (jco resource-drop-glue OOB on a large heap value; see check-cad-preload) — harmless here.
     try { handle?.[Symbol.dispose]?.(); } catch { /* known jco resource-drop OOB — consumed */ }
-    const parsed = parseMidiEvents(rendered);
-    if (!parsed.ok) {
-      failures.push(`piece-to-events: ran but the value did not parse as a MidiEvent stream — ${parsed.error}`);
-    } else if (parsed.rows.length === 0) {
-      failures.push("piece-to-events: parsed ZERO events (empty schedule?)");
-    } else if (!isBalanced(parsed.rows)) {
-      failures.push(`piece-to-events: the event stream is NOT balanced (a stuck key) — the no-stuck-keys invariant regressed`);
-    } else {
-      console.log(`  ✓ piece-to-events: runs → ${parsed.rows.length} MIDI events, BALANCED (every note-on has a matching note-off)`);
-    }
-  } catch (e) {
-    failures.push(`piece-to-events: run/parse THREW ${String(e && e.message ? e.message : e).slice(0, 100)}`);
+    return { kind: "compound", rendered };
   }
-} else {
+  const nullary = Object.entries(root).find(([, v]) => typeof v === "function" && v.length === 0);
+  if (!nullary) throw new Error("no runnable entry (no compound run iface, no nullary export)");
+  return { kind: "scalar", rendered: String(nullary[1]()) };
+}
+
+if (!existsSync(runtimePath)) {
   failures.push(`music-preload: runtime.wasm missing at ${runtimePath} (run \`cargo xtask guide-wasm\`)`);
+} else {
+  const rt = await loadComp(readFileSync(runtimePath), "heap");
+  const heap = (await rt.instantiate(rt.getCore, {}))[HEAP_IMPORT];
+
+  // (2) The piece-to-events showcase RUNS + yields a non-empty BALANCED event stream (the marquee payoff).
+  const eventsShowcase = EXAMPLES.find((e) => e.slug === "piece-to-events");
+  if (!eventsShowcase) {
+    failures.push("piece-to-events showcase missing from EXAMPLES (the event-stream gate can't run)");
+  } else {
+    try {
+      const { rendered } = await runShowcase(eventsShowcase, heap);
+      const parsed = parseMidiEvents(rendered);
+      if (!parsed.ok) {
+        failures.push(`piece-to-events: ran but the value did not parse as a MidiEvent stream — ${parsed.error}`);
+      } else if (parsed.rows.length === 0) {
+        failures.push("piece-to-events: parsed ZERO events (empty schedule?)");
+      } else if (!isBalanced(parsed.rows)) {
+        failures.push(`piece-to-events: the event stream is NOT balanced (a stuck key) — the no-stuck-keys invariant regressed`);
+      } else {
+        console.log(`  ✓ piece-to-events: runs → ${parsed.rows.length} MIDI events, BALANCED (every note-on has a matching note-off)`);
+      }
+    } catch (e) {
+      failures.push(`piece-to-events: run/parse THREW ${String(e && e.message ? e.message : e).slice(0, 100)}`);
+    }
+  }
+
+  // (3) R1/R2 VALUE-PIN: run each and assert the exact value its description claims. R1 (rational-intervals)
+  // is the Bool identity "a fifth + a fourth = an octave" → "true"; R2 (chord-to-midi) is the C-major triad's
+  // note numbers → the (list 60 64 67) render (the "60, 64, 67 (C, E, G)" the description states). A drift in
+  // either the music lib OR the description trips this. `rendered` for a scalar is the bare "true"; for the
+  // list it's the compiler's canonical value render, so we match on the note numbers being present in order.
+  const VALUE_PINS = [
+    { slug: "rational-intervals", check: (r) => r.trim() === "true", want: `the Bool "true" (a fifth + a fourth is exactly an octave)` },
+    { slug: "chord-to-midi", check: (r) => /\b60\b[^0-9]+64\b[^0-9]+67\b/.test(r), want: `a note-number list containing 60, 64, 67 in order (a C-major triad: C, E, G)` },
+  ];
+  for (const pin of VALUE_PINS) {
+    const ex = EXAMPLES.find((e) => e.slug === pin.slug);
+    if (!ex) { failures.push(`${pin.slug}: showcase missing from EXAMPLES (value-pin can't run)`); continue; }
+    try {
+      const { rendered } = await runShowcase(ex, heap);
+      if (!pin.check(rendered)) {
+        failures.push(`${pin.slug}: ran but the value drifted — expected ${pin.want}, got \`${rendered.trim().slice(0, 80)}\` (music lib regressed OR the description no longer matches the runtime)`);
+      } else {
+        console.log(`  ✓ ${pin.slug}: runs → ${rendered.trim().slice(0, 40)} (${pin.want})`);
+      }
+    } catch (e) {
+      failures.push(`${pin.slug}: run THREW ${String(e && e.message ? e.message : e).slice(0, 100)}`);
+    }
+  }
 }
 
 if (failures.length) {
   console.error("\n✗ music-preload conformance FAILED — the /music preloaded-library path regressed:\n" + failures.map((f) => "  ✗ " + f).join("\n"));
   process.exit(1);
 }
-console.log("\n✓ music-preload conformance: every /music showcase compiles against the preloaded music libs in both surfaces, and the piece schedules to a non-empty BALANCED MIDI event stream — the /music preload + event-structure path stays working.");
+console.log("\n✓ music-preload conformance: every /music showcase compiles against the preloaded music libs in both surfaces, the piece schedules to a non-empty BALANCED MIDI event stream, and R1/R2 run to the exact values their descriptions claim (true; the C-major triad 60/64/67) — the /music preload + event-structure path + the showcases' claimed values all stay working.");

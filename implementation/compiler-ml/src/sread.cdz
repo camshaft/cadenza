@@ -119,6 +119,18 @@ def read-form(s: String, i: Int64, tree: Tree) =
          (if ends-token(s, k)
           then (match add-node(tree, Node.NLit(v)) with | (id, t1) => (id, k, t1))
           else (match scan-atom(s, k, "") with | (_junk, k2) => (match unsupported(tree) with | (id, t1) => (id, k2, t1)))))
+     else (if ((c == "-") and is-digit(char-at(s, j + 1))) then
+       // a NEGATIVE literal operand `-N`: a `-` IMMEDIATELY followed by a digit, negated → `NLit(0 - mag)`.
+       // Unambiguous HERE: `read-form` reads an operand/expression position, so a leading `-<digit>` is
+       // always a negative literal — the SUBTRACTION operator only appears as a paren HEAD atom (scanned by
+       // `read-paren-form`, never reaching this arm), so `(- 0 5)` is unaffected. Matches the reference,
+       // which runs `(+ -5 3)` → -2 and `(< -5 0)` → true; compiler-ml previously DECLINED these (a bare `-`
+       // fell through to the unsupported arm). Mirrors `read-ann-form`'s existing `-N` handling. Must still
+       // END at a token boundary (`-5x`/`-1_0` → decline, never a partial value).
+       (match scan-number(s, j + 1, 0) with | (mag, k) =>
+         (if ends-token(s, k)
+          then (match add-node(tree, Node.NLit(0 - mag)) with | (id, t1) => (id, k, t1))
+          else (match scan-atom(s, k, "") with | (_junk, k2) => (match unsupported(tree) with | (id, t1) => (id, k2, t1)))))
      else (if (c == "(") then read-paren-form(s, j + 1, tree)
      else (if (is-alpha(c)) then
         (match scan-atom(s, j, "") with | (atom, k) =>
@@ -127,7 +139,7 @@ def read-form(s: String, i: Int64, tree: Tree) =
            else
              // a bare identifier is a VARIABLE reference → NVar keyed by the name's deterministic id.
              (match add-node(tree, Node.NVar(name-id(atom))) with | (id, t1) => (id, k, t1)))))
-     else (match unsupported(tree) with | (id, t1) => (id, j + 1, t1)))))))
+     else (match unsupported(tree) with | (id, t1) => (id, j + 1, t1))))))))
 
 /// Consume a `)` at/after index `i` (skipping space); tolerate a missing one. Returns the next index.
 def close-paren(s: String, i: Int64) =
@@ -484,6 +496,31 @@ def sr-multidigit() =
   // "100" → NLit(100) (scan-number accumulates).
   (match read-source("100") with | (root, tree) =>
     (if is-lit(tree, root, 100) then unit else trap("root is NLit 100")))
+
+@test
+def sr-negative-literal() =
+  // "-5" → NLit(-5): a `-` immediately followed by digits is a negative literal (the reference runs `-5`
+  // and `(+ -5 3)`→-2; compiler-ml previously DECLINED a bare `-` operand). read-form's new `-N` arm.
+  (match read-source("-5") with | (root, tree) =>
+    (if is-lit(tree, root, 0 - 5) then unit else trap("root is NLit -5")))
+
+@test
+def sr-negative-literal-operand() =
+  // "(+ -5 3)" → NBin(+, NLit -5, NLit 3): a negative literal reads as an arithmetic OPERAND (not a bare
+  // `-` that falls through to decline). The left operand is NLit(-5).
+  (match read-source("(+ -5 3)") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NBin(op, l, r)) =>
+        (if op == 43 then (if is-lit(tree, l, 0 - 5) then (if is-lit(tree, r, 3) then unit else trap("right NLit 3")) else trap("left NLit -5")) else trap("op is +"))
+      | _ => trap("root is a + Bin over a negative literal")))
+
+@test
+def sr-subtraction-still-binop() =
+  // GUARD the disambiguation: `(- 0 5)` is still the SUBTRACTION operator (op 45), NOT mis-read as a
+  // negative literal — the `-N` arm only fires in read-form (operand position); a `-` HEAD atom is scanned
+  // by read-paren-form → read-app-or-bin. So subtraction is unaffected by the negative-literal arm.
+  (match read-source("(- 0 5)") with | (root, tree) =>
+    (if is-bin-op(tree, root, 45) then unit else trap("(- 0 5) is a subtraction Bin (op 45), not a negative literal")))
 
 @test
 def sr-true() =

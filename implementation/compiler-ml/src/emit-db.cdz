@@ -23,6 +23,7 @@
 
 import { Core, lower-tree, cnum64 } from "lower-db"
 import { read-source } from "sread"
+import { eval-core } from "eval-db"
 
 /// A one-byte `Bytes` holding the low 8 bits of `x` (mirrors `encode.cdz`'s `b1`).
 def b1(x: Int64) = Bytes.of([UInt8.wrap(x)])
@@ -203,14 +204,32 @@ def target-emit(target: Target, c: Core) = match target with
 /// than emitting a wrong module. The value of a nullary `main` module IS its body's value. `can-emit` gates
 /// (scalar); `emit-instrs` builds the bytes total, threading the pre-order binder list for local indices.
 /// This is the WASM ARM behind the `target-emit` seam (rcdzc's `wasm::emit`).
+///
+/// DECLINE ON A PROVABLE-OVERFLOW NARROW ARITH (correct-by-construction emit≡interpret): `emit-instrs`
+/// emits WIDTH-AGNOSTIC i64 arithmetic, so a NARROW (width<64) op whose result overflows its type would
+/// emit the un-narrowed value (e.g. `(: 100 Int8) + (: 100 Int8)` → the module would run to 200) while the
+/// interpreter oracle `eval-core` DECLINES it (→ `None`, matching the reference's compile-time CDZ0304: the
+/// unqualified `+/-/*` TRAPS on overflow, wrapping is the opt-in `.wrapping-*` form). The nullary emit subset
+/// is ENTIRELY compile-time constant, so `eval-core c {}` is exactly "does this program have a defined value"
+/// — gate emit on it and the emit≡interpret decline decision holds BY CONSTRUCTION (no duplicated overflow
+/// logic in the emitter): a program the interpreter declines does not emit a wrong module. An in-range
+/// program is unaffected (a fitting result equals its i64 computation, so it still emits the full instrs).
 def emit-wasm-module(c: Core) =
-  (if can-emit(c)
+  (if can-emit(c) and has-value(c)
    then (let binders = collect-binders(c) in
          Option.Some(Bytes.concat(preamble(),
            Bytes.concat(type-section(),
              Bytes.concat(func-section(),
                Bytes.concat(export-section(), code-section(body-of(emit-instrs(c, binders), List.len(binders)))))))))
    else Option.None(unit))
+
+/// Does the (nullary, compile-time-constant) subset program `c` have a DEFINED interpreted value? A scalar
+/// `Bool` off the heap-`Bytes` path (mirrors `can-emit`) — `eval-core` under the empty env is the oracle's
+/// own decline decision (overflow / divide-by-zero / mod-by-zero → `None`), so gating emit on it makes emit
+/// decline EXACTLY the programs the interpreter declines.
+def has-value(c: Core) = match eval-core(c, (Map.empty : Map(Int64, Int64))) with
+  | Option.Some(_) => true
+  | Option.None(_) => false
 
 /// `emit-src(s)` — the SOURCE → wasm entry (the W4 host harness's single call point, mirroring
 /// `sread-eval.run-src`): read the program source `s` into a tree (`read-source`), lower it to Core
@@ -355,6 +374,68 @@ def em-cbin-postfix-order() =
              (if (byte-of(m, n - 3) == 6) then           // 6
                (if (byte-of(m, n - 2) == 126) then unit else trap("i64.mul 0x7e")) else trap("right operand 6")) else trap("right i64.const")) else trap("left operand 5")) else trap("left i64.const")))
     | Option.None(_) => trap("CBin mul emits a module"))
+
+@test
+def em-narrow-overflow-declines() =
+  // corrected-2b emit≡interpret: `(: 100 Int8) + (: 100 Int8)` = 200 OVERFLOWS Int8 (max 127). The
+  // interpreter oracle declines it (eval-db ev-narrow-cbin-overflow-is-none); emit must ALSO decline (not
+  // emit a module that runs to 200) — otherwise run-emitted (200) would DISAGREE with run-ml (declined).
+  // has-value gates it off. (This pins the fix for the emit-side width-agnostic-arith miscompile.)
+  (match emit-module(Core.CBin(43, true, 8, Core.CNum(100, true, 8), Core.CNum(100, true, 8))) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("Int8 100+100 = 200 overflows → declines emit (not a wrong module)"))
+
+@test
+def em-narrow-unsigned-overflow-declines() =
+  // unsigned twin: `(: 200 UInt8) + (: 100 UInt8)` = 300 overflows UInt8 (max 255) → declines emit.
+  (match emit-module(Core.CBin(43, false, 8, Core.CNum(200, false, 8), Core.CNum(100, false, 8))) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("UInt8 200+100 = 300 overflows → declines emit"))
+
+@test
+def em-narrow-in-range-still-emits() =
+  // the no-regression guard: an IN-RANGE narrow op still emits the full instruction tree. `(: 100 Int8) +
+  // (: 20 Int8)` = 120 fits Int8 → emits (tail … 42 <100> 42 <20> 7c 0b, an i64.add — a fitting result
+  // equals its i64 computation, so run-emitted 120 == run-ml 120). has-value(c) is Some 120 here.
+  (match emit-module(Core.CBin(43, true, 8, Core.CNum(100, true, 8), Core.CNum(20, true, 8))) with
+    | Option.Some(m) =>
+      (let n = Bytes.len(m) in
+       (if (byte-of(m, n - 2) == 124) then           // i64.add 0x7c before end
+         (if (byte-of(m, n - 1) == 11) then unit else trap("ends with end")) else trap("i64.add 0x7c")))
+    | Option.None(_) => trap("in-range Int8 120 still emits a module"))
+
+@test
+def em-int64-overflow-not-declined() =
+  // width-64 arith is NOT overflow-checked (only narrow width<64 is) — Int64 100+100 = 200 fits Int64 and
+  // emits, matching eval-db ev-int64-overflow-is-some. Guards has-value from over-declining the wide subset.
+  (match emit-module(Core.CBin(43, true, 64, cnum64(100), cnum64(100))) with
+    | Option.Some(_) => unit
+    | Option.None(_) => trap("Int64 100+100 fits → emits (width 64 not overflow-checked)"))
+
+@test
+def em-narrow-mul-overflow-declines() =
+  // the has-value decline generalizes past ADD to any op: `(* (: 20 Int8) (: 10 Int8))` = 200 overflows Int8
+  // → eval-core None → emit declines (matching eval-db ev-narrow-cbin-mul-overflow-is-none + the CLI probe).
+  (match emit-module(Core.CBin(42, true, 8, Core.CNum(20, true, 8), Core.CNum(10, true, 8))) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("Int8 20*10 = 200 overflows → declines emit"))
+
+@test
+def em-narrow-nested-overflow-declines() =
+  // and past a single level: a nested narrow arith whose OUTER result overflows declines even when both
+  // leaves fit. `(+ (: 100 Int8) (+ (: 100 Int8) (: 0 Int8)))` = 100 + 100 = 200 overflows Int8 → declines
+  // (the inner `100+0` fits, the outer sum doesn't — has-value walks the whole tree via eval-core).
+  (match emit-module(Core.CBin(43, true, 8, Core.CNum(100, true, 8), Core.CBin(43, true, 8, Core.CNum(100, true, 8), Core.CNum(0, true, 8)))) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("nested Int8 100+(100+0) = 200 overflows → declines emit"))
+
+@test
+def em-narrow-in-let-overflow-declines() =
+  // and through a CLet binding: `let x = (: 100 Int8) in x + (: 100 Int8)` = 200 overflows Int8 → declines
+  // (has-value evaluates the let body under the bound env, so a narrow overflow in the body still declines).
+  (match emit-module(Core.CLet(7, Core.CNum(100, true, 8), Core.CBin(43, true, 8, Core.CVar(7), Core.CNum(100, true, 8)))) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("let-bound Int8 100+100 = 200 overflows → declines emit"))
 
 /// The op-byte of an emitted `CBin op 1 1` module — the byte right before the trailing `0x0b` end — or -1
 /// if it declined to emit. A test helper so the op-mapping check stays flat (no deep nested matches).

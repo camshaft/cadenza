@@ -67,12 +67,27 @@ else
 fi
 
 # --- verify ------------------------------------------------------------------------------------
+# BOTH daemons must be verified — a bridge-only check reports apparent success when the watchdog
+# silently fails to come up (bad tokens, crash loop). Exit non-zero if EITHER is down so a caller /
+# cron can detect an incomplete revival instead of trusting a partial one.
 sleep 6
 echo "revive.sh: post-launch liveness —"
-echo "  bridge:   $(pgrep -f '[b]ridge.js' | tr '\n' ' ' || true)${_:+}"
+echo "  bridge:   $(pgrep -f '[b]ridge.js' | tr '\n' ' ' || true)"
 echo "  watchdog: $(pgrep -f 'target/release/[c]adenza-slack-bridge' | tr '\n' ' ' || true)"
+rc=0
 if pgrep -f "[b]ridge.js" >/dev/null 2>&1; then
   echo "revive.sh: bridge UP ✓"
 else
   echo "revive.sh: bridge STILL DOWN ✗ — check $log_dir/slack-bridge.log (tokens? node on PATH?)" >&2
+  rc=1
 fi
+if pgrep -f "target/release/[c]adenza-slack-bridge" >/dev/null 2>&1; then
+  echo "revive.sh: watchdog UP ✓"
+elif [[ ! -x "$bin" ]]; then
+  echo "revive.sh: watchdog SKIPPED — binary missing ($bin); build it: (cd $here && cargo build --release)." >&2
+  rc=1
+else
+  echo "revive.sh: watchdog STILL DOWN ✗ — check $log_dir/watchdog-daemon.log (tokens? bin crash?)" >&2
+  rc=1
+fi
+exit $rc

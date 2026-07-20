@@ -3158,6 +3158,66 @@ mod tests {
     }
 
     #[test]
+    fn hover_on_a_use_of_a_let_local_reports_its_inferred_type() {
+        // A `let`-bound local has NO written annotation, yet a USE of it hovers to its INFERRED type: the
+        // `TypeAt` query resolves a use-site name to the solved type of what it refers to. This is the one
+        // inferred-type read that works today, and it's the near edge of the inlayHint frontier — inlayHint
+        // needs the BINDER's inferred type (still `unknown`, tracked in the query-typeat-on-unannotated-binder
+        // issue), but a use already resolves. Pin it so a change to the type-query can't silently drop it.
+        let text = "def main() =\n  let n = 5\n  n + 1";
+        // Cursor on the `n` USE in `n + 1` (line 2, col 2).
+        let h = hover_at(text, true, Position::new(2, 2)).expect("a hover on the let-local use");
+        let rendered = match &h.contents {
+            HoverContents::Scalar(MarkedString::String(s)) => s.clone(),
+            other => panic!("unexpected hover contents: {other:?}"),
+        };
+        assert!(
+            rendered.contains("Int"),
+            "hover on a let-local use should report its inferred Int type, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn hover_on_a_use_of_a_let_local_reports_a_compound_inferred_type() {
+        // The near-edge inferred read resolves for a COMPOUND type, not just a scalar: a `let`-bound local
+        // whose RHS is a list literal hovers to its full inferred `(List Int64)` at a use site. This pins
+        // that the inferred-type render survives structure (the type string is the compound form, not a
+        // flattened scalar or "unknown") — the shape inlayHint will ultimately surface for a let binder.
+        let text = "def main() =\n  let xs = [1, 2, 3]\n  xs";
+        // Cursor on the `xs` USE on the last line (line 2, col 2).
+        let h = hover_at(text, true, Position::new(2, 2))
+            .expect("a hover on the compound let-local use");
+        let rendered = match &h.contents {
+            HoverContents::Scalar(MarkedString::String(s)) => s.clone(),
+            other => panic!("unexpected hover contents: {other:?}"),
+        };
+        assert!(
+            rendered.contains("List") && rendered.contains("Int"),
+            "hover on a compound let-local use should report its inferred (List Int) type, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn hover_on_an_unannotated_parameter_is_none_not_a_misleading_type() {
+        // The far edge of the inlayHint frontier: an UN-ANNOTATED function parameter's type is not yet
+        // recoverable from the `TypeAt` query (it answers "unknown" at both the binder and a use of it —
+        // see the query-typeat-on-unannotated-binder issue). The hover contract is that "unknown" yields
+        // NO popup (total, never a panic, never a misleading concrete type). Pin BOTH cursor positions so
+        // that when v-inference lands the inferred-binder query, THIS test is the tripwire that tells us
+        // hover (and then inlayHint) can start surfacing the param type — its flip is the unblock signal.
+        let text = "def f(x) = x + 1";
+        // Binder `x` in `f(x)` (col 6) and its use in `x + 1` (col 11).
+        assert!(
+            hover_at(text, true, Position::new(0, 6)).is_none(),
+            "an unannotated param binder is not yet typeable → no hover (not a misleading type)"
+        );
+        assert!(
+            hover_at(text, true, Position::new(0, 11)).is_none(),
+            "a use of an unannotated param is not yet typeable → no hover (not a misleading type)"
+        );
+    }
+
+    #[test]
     fn highlight_kind_map_covers_the_whole_query_vocabulary() {
         // Every `HighlightKind` the query can emit must map to a legend index whose value is in range of
         // the published legend — otherwise that kind renders unclassified. Iterate the PRODUCER's canonical

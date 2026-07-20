@@ -244,11 +244,13 @@ def arith-result-type(tree: Tree, tcol: Map(Int64, Typed), a: Int64, b: Int64) =
           | Option.Some(Typed.TIntW(sb, wb)) =>
               (match unify-ty(ty-fixed-int(sa, wa), ty-fixed-int(sb, wb)) with
                 | Option.Some(rty) => Option.Some(ty-to-typed-int(rty))
-                // MIXED width/sign that doesn't unify: a bare integer LITERAL is width-POLYMORPHIC — it adapts
-                // to a narrow sibling if its value fits (corpus 09-functions:3577 "the check does NOT
-                // over-reject": `(def (f (: a Int8)) (+ a 10))` `(f 100)` → 110:Int8, the literal 10 becomes
-                // Int8). infer types every NLit as the default Int64, so `Int8 + 10` looks mixed; recover by
-                // letting a plain-literal operand take the OTHER operand's narrow type when the literal fits.
+                // MIXED width/sign that doesn't unify: a bare integer LITERAL is width-AND-SIGN-polymorphic —
+                // it grounds to the sibling's WIDTH AND SIGN if its value fits (corpus 09-functions:3577 "the
+                // check does NOT over-reject": `(def (f (: a Int8)) (+ a 10))` `(f 100)` → 110:Int8, the
+                // literal 10 becomes Int8; and a signed-default literal adapting to a UInt8 sibling takes
+                // (unsigned,8) when it fits — arith-lit-adapt→lit-fits-narrow grounds the full (ts,tw), sign
+                // included). infer types every NLit as the default Int64, so `Int8 + 10` looks mixed; recover
+                // by letting a plain-literal operand take the OTHER operand's narrow type when the literal fits.
                 // (Only a genuine NLit adapts — a computed/annotated Int64 keeps its width, so a real mixed-
                 // width op like `(: 5 Int8) + (: 5 Int16)` still declines CDZ0301.)
                 | Option.None(_) => arith-lit-adapt(tree, a, sa, wa, b, sb, wb))

@@ -20,3 +20,16 @@ produce identical strict leaves, so it PASSES correctly BUT its title claims the
 invariant, which THIS bug proves FALSE at n>=33. Flagged to breaker to scope the pin doc to n<=32 / caveat
 the n>=33 gap, so the passing pin doesn't read as "list keys are shape-independent generally" + de-prioritize
 this fix. The pin is a valid small-n property; just don't let it mask the n>=33 unsoundness.
+
+---
+## Triage (corpus-bugfix, 2026-07-20, trunk base 2ad489cc4, store ae568bf4)
+RESOLVED — the n>=33 list-key false-miss unsoundness is FIXED and comprehensively pinned. Verified GREEN:
+- "a MULTI-LEVEL concat-built list map key (n>=33) is found by a push-built equal key" -> PASS (value 42):
+  a concat-built [0..40) key IS found by a push-built equal key (was the false-MISS -> -1 before the fix).
+- "a concat-built list = a push-built list with the same elements (element-wise, shape-independent, n>=33)"
+  -> PASS (value 1): the two 40-element lists compare EQUAL.
+v-runtime landed the fix (route list-key compare / list `=` through the descriptor-guided value-cmp
+element-wise walk instead of the physical champ byte walk — RRB is element-canonical not shape-canonical).
+CAVEAT already handled: the small-n pin (05-compound:2472) is scoped to "SMALL list (single-leaf, n<=32)"
+and no longer overclaims general shape-independence; the n>=33 companions carry the load-bearing invariant.
+Corpus side COMPLETE. No fix agent needed.

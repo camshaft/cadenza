@@ -430,6 +430,55 @@ test("insert / move / remove all round-trip through serializeDocument (structure
   );
 });
 
+// ── Adjacent-prose COALESCE: markdown has no prose-cell boundary, so a structure edit (insert / move) that
+// puts two PROSE cells side-by-side is a legal cell list that DOES NOT round-trip cell-for-cell — serialize
+// joins them with a blank line and parseDocument re-reads that one prose run as ONE cell (mirrors the
+// flushProse coalescing that parseDocument does on any authored doc). The invariant that MUST hold is the
+// weaker but critical one: NO PROSE TEXT IS LOST across the round-trip. These pin that (a future serialize/
+// parse change that started dropping the merged text would fail here), and document the collapse so a caller
+// relying on cell identity across a save knows adjacent prose merges. (Code cells DON'T merge — each has its
+// own fence — so the general structure-edit test above still round-trips code cells cell-for-cell.)
+test("two adjacent PROSE cells coalesce into one on round-trip, joining their text (no content lost)", () => {
+  // The "+ insert below" flow when the neighbour is prose: intro prose, then a new prose section below it.
+  let cells: Cell[] = parseDocument("intro prose");
+  cells = insertCell(cells, 1, { kind: "prose", markdown: "## Added section" }); // model: [prose, prose]
+  assert.deepEqual(cells.map((c) => c.kind), ["prose", "prose"]);
+  const reparsed = parseDocument(serializeDocument(cells));
+  // The two prose cells re-read as ONE (markdown has no prose separator) — cell identity collapses...
+  assert.deepEqual(reparsed.map((c) => c.kind), ["prose"]);
+  // ...but every character of prose survives, joined by the blank-line separator serializeDocument inserts.
+  assert.equal((reparsed[0] as Extract<Cell, { kind: "prose" }>).markdown, "intro prose\n\n## Added section");
+});
+
+test("a moveCell that brings two prose cells adjacent coalesces them but preserves both texts + the fenced code", () => {
+  // [code, proseA, code, proseB]; drag proseB up next to proseA → [code, proseA, proseB, code]. The two prose
+  // cells merge on round-trip, but the code cells (each fenced) stay distinct and no prose text is dropped.
+  let cells: Cell[] = parseDocument(
+    "```cadenza value\n(def (main) 1)\n```\n\nprose A\n\n```cadenza value\n(def (main) 2)\n```\n\nprose B",
+  );
+  assert.deepEqual(cells.map((c) => c.kind), ["code", "prose", "code", "prose"]);
+  cells = moveCell(cells, 3, 2); // proseB up between proseA and the second code cell → [code, proseA, proseB, code]
+  const reparsed = parseDocument(serializeDocument(cells));
+  assert.deepEqual(reparsed.map((c) => c.kind), ["code", "prose", "code"]); // proseA + proseB coalesced
+  assert.equal((reparsed[1] as Extract<Cell, { kind: "prose" }>).markdown, "prose A\n\nprose B"); // both texts survive
+  // Both code cells are intact + distinct (fences are real boundaries; only prose coalesces).
+  assert.deepEqual(
+    reparsed.filter((c) => c.kind === "code").map((c) => (c as Extract<Cell, { kind: "code" }>).source),
+    ["(def (main) 1)", "(def (main) 2)"],
+  );
+});
+
+test("a BLANK prose cell inserted next to prose is dropped on round-trip (leaves the neighbour's text intact)", () => {
+  // The "+ insert below" default cell is empty; inserted next to prose it contributes no text, so the
+  // round-trip re-reads just the neighbour's prose. Pinned so a change can't silently start emitting an
+  // empty prose gap (or, worse, corrupt the neighbour) for a content-free add.
+  let cells: Cell[] = parseDocument("intro prose");
+  cells = insertCell(cells, 1, { kind: "prose", markdown: "" });
+  const reparsed = parseDocument(serializeDocument(cells));
+  assert.deepEqual(reparsed.map((c) => c.kind), ["prose"]);
+  assert.equal((reparsed[0] as Extract<Cell, { kind: "prose" }>).markdown, "intro prose");
+});
+
 // ── renderDocToSurface: re-render CADENZA code cells to the selected surface (operator UX #2, my half) ──
 // A fake `render` tags the source with its target; it receives the GATHERED cell (a `(do …)` wrap for
 // s-expr multi-form) and the helper ungathers the result. These stay pure/node-only (no wasm).

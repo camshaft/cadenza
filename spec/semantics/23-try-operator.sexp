@@ -154,6 +154,27 @@
   (input  (do (def (main) (let ((x (try (Some 10)))) (Some (+ x 5)))) (export main)))
   (output (: (Some 15) (Option Int64))))
 
+(case "a constant success `?` folds INLINE in a subexpression with no let-binding"
+  (doc    "`(Some (+ (try (Some 3)) 10))` — the `?` sits DIRECTLY in an argument subexpression, never bound
+           by a `let`. This exercises the try-NODE success fold (BRICK 2a, the `Resolved::Try` arm in
+           `core_of`) rather than the `lower_let` `try_let_desugar` path every other executing case above
+           routes through (each binds `(let ((x (try …))) …)` first). The constant `Some 3` folds to its
+           payload `3` in place, so `(+ 3 10)` = 13 and `main` = `(Some 13)`. Pins that a constant success
+           `?` unwraps in ANY expression position, not only as a let initializer — the two lowering paths
+           agree on the happy path.")
+  (input  (do (def (main) (Some (+ (try (Some 3)) 10))) (export main)))
+  (output (: (Some 13) (Option Int64))))
+
+(case "a success `?` on a LET-BOUND variable operand unwraps through the binding"
+  (doc    "`(let ((o (Some 9))) (let ((x (try o))) (Some x)))` — the `?`'s operand is a VARIABLE `o`, not a
+           literal `(Some …)` written in place. Every other executing case `?`s a syntactic `SumNew`
+           literal (or a call that folds to one); here the constant `Some 9` reaches the `?` only after the
+           binding `o` is copy-propagated into the operand, so this pins that the success fold reads the
+           disc/payload off the RESOLVED operand core (post-substitution), not off a syntactic literal at
+           the `?` site. `o` folds to `(Some 9)`, the `?` unwraps `x` = 9, and `main` = `(Some 9)`.")
+  (input  (do (def (main) (let ((o (Some 9))) (let ((x (try o))) (Some x)))) (export main)))
+  (output (: (Some 9) (Option Int64))))
+
 (case "a constant-failure `?` short-circuit ELIDES an earlier trapping let-init whose value it discards"
   (doc    "OPERATOR §283 RULING (2026-07-16): `we don't emit the trap unless it's reachable; a detected
            unreachable trap is a WARNING.` `(let ((a (/ 1 0)) (x (try (None unit)))) (Some (+ a x)))` — `a`

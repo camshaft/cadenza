@@ -2676,6 +2676,66 @@
             (export main)))
   (output (: 3 Int64)))
 
+; The GUARD companion of the Option-returning mixed-match tail case above. The prior cases that combine a
+; `(guard …)` arm with a tail-recursive fall-through (03-equality: guarded-wildcard / literal-probe /
+; sum-match arms driving a loop) all yield a SCALAR — and the Option-returning mixed-match tail case above
+; uses a plain `if`, not a guard, to select its heap-typed result. This pins their INTERSECTION: a `match`
+; whose KEPT arm is a `(guard (list h .. t) <cond>)` returning an OPTION-typed value (`(Some (tuple …))`)
+; while its fall-through arm TAIL-RECURSES. The guard adds its own `if (result i32)` block nesting on top of
+; the tail-loop conversion, so both the guard `if`'s fall-through and the recursive arm's `br` must leave
+; the enclosing heap-result block stack-balanced — the same stack-balance discipline as the plain-`if`
+; case, now under a guarded list-splat arm. Built from a RUNTIME `lim` so the guard cannot fold.
+
+(case "a guarded list-splat arm returning an Option beside a tail-recursive arm compiles to valid wasm"
+  (doc    "`find` walks a list: its FIRST non-empty arm is a GUARDED splat `(guard (list h .. t) (> h lim))`
+           that RETURNS `(Some (tuple h t))` when the head clears a RUNTIME threshold `lim`; otherwise the
+           unguarded splat arm TAIL-RECURSES on the tail. This is the guard companion of the plain-`if`
+           Option-returning mixed-match tail case above — the guard's `if (result i32)` block wraps a
+           heap-typed (Option) result, so both the guard fall-through and the recursive tail `br` must keep
+           the enclosing block stack-balanced or wasm rejects the module. Over `[1,2,3,4]` with `lim`
+           runtime: `lim=0` keeps head 1 → 1; `lim=2` skips 1,2 keeps 3 → 3; `lim=3` skips to 4 → 4;
+           `lim=9` keeps nothing → `(None)` → 0. Pins the guard×heap-return×tail-loop intersection.")
+  (input  (do
+            (def (find (: xs (List Int64)) (: lim Int64))
+              (match xs
+                ((list) (None))
+                ((guard (list h .. t) (> h lim)) (Some (tuple h t)))
+                ((list _ .. t) (find t lim))))
+            (def (main (: lim Int64))
+              (match (find (list 1 2 3 4) lim) ((Some (tuple y r)) y) ((None) 0)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 3 Int64)))
+
+; A CONTROL-FLOW companion of the guarded-tail cases: the guard EXPRESSION itself calls a (non-tail)
+; RECURSIVE helper. Every other guard×tail-loop pin uses a flat guard condition (a comparison or a
+; `value-eq`); here the first arm's guard is `(= (sumto x) target)` where `sumto` is a self-recursive
+; sum-to-`k`. This exercises the recursion machinery on BOTH axes at once: the guard subexpression drives
+; `apply_lambda`'s recursion-decline → runtime-specialization for `sumto`, WHILE the enclosing `scan` match
+; is itself a self-tail loop (fall-through arm tail-recurses). A miscompile in either — a guard evaluated
+; against a stale loop-carried local, or the guard's own recursive call corrupting the driver's tail-loop
+; slots — would surface here. Runtime `target` so nothing folds. `scan 0 target` climbs `x` until
+; `sumto(x)` hits `target`: target=6 → sumto(3)=6 → x=3; target=10 → sumto(4)=10 → x=4; target=0 → x=0.
+
+(case "a guard expression calling a recursive helper inside a self-tail-loop match compiles"
+  (doc    "`scan` is a self-tail-recursive driver whose FIRST arm is `(guard x (= (sumto x) target))` — the
+           guard CONDITION calls a self-recursive helper `sumto` (sum 1..x) — and whose fall-through arm
+           TAIL-RECURSES `(scan (+ n 1) target)`. This pins the guard×recursion×tail-loop corner distinct
+           from the flat-condition guarded-tail pins: the guard subexpression exercises the recursive-lambda
+           decline/runtime-specialization path while the enclosing match runs as a tail loop, and the two
+           must not corrupt each other's slots. Built from a RUNTIME `target` so neither the guard call nor
+           the loop folds. `scan 0 target` returns the least `x` with `sumto(x) == target`: target=6 → 3
+           (1+2+3); target=10 → 4 (1+2+3+4); target=0 → 0. Expected (target=6): 3.")
+  (input  (do
+            (def (sumto (: k Int64))
+              (if (<= k 0) 0 (+ k (sumto (- k 1)))))
+            (def (scan (: n Int64) (: target Int64))
+              (match n
+                ((guard x (= (sumto x) target)) x)
+                (_ (scan (+ n 1) target))))
+            (def (main (: target Int64)) (scan 0 target))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 3 Int64)))
+
 ; The same i32/i64 scratch-slot-aliasing family at a HIGHER local count, in a decode-loop shape the
 ; self-hosted compiler's reader is written in: a self-tail loop whose position advance projects BOTH
 ; fields of a tuple returned by a recursive helper, accumulating compound-payload sum nodes into a list.

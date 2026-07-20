@@ -8176,6 +8176,142 @@ fn a_state_destructuring_arm_under_a_multi_perform_body_folds_or_declines_never_
     }
 }
 
+/// The DES inc-4 recursive-insert reach (`des-inc4-recursive-insert-opacifies-stored-continuation-fold`):
+/// a boxed continuation `(KBox (fn (_u) (resume unit wake)))` filed into a pqueue via a RECURSIVE sorted-
+/// insert `pins` and then popped+applied by `sched-step`. The DIRECT-entry companion — `(sched-step (PQCons
+/// (tuple wake (KBox k) PQNil)))` — already FOLDS to 5e9 (corpus 14-effects "a deferred resume-thunk stored
+/// in a MULTI-PAYLOAD pqueue entry …"); this variant differs ONLY in that the entry flows through `pins`'s
+/// recursion before the pop. Here the concrete argument `(PQ.PQNil ())` selects `pins`'s NON-recursive base
+/// arm (it terminates in one step, no self-call), so the stored `KBox` survives to the pop — its oracle is
+/// therefore the SAME verified 5e9 as the direct form.
+///
+/// Today this DECLINES cleanly: the deferred-resume fold refuses to symbolically-evaluate a recursive helper
+/// (`reduce_arm_deferred_resume`'s `!is_recursive` guard), and the WIP recursion-unfold reaches the pop but
+/// the inner `(match kb …)` scrutinee is left un-substituted pending a `rewrite_sum_payload` Ref-peel fix
+/// (v-inference's lane). This pin is a FOLDS-OR-DECLINES-NEVER-MISCOMPILES guard for that reach: until the
+/// unfold lands the program must decline CLEANLY (no wrong value, no leaked internal `#eff`/`$s` state-param
+/// name, no trap on a real run); when the base-arm unfold DOES land, the value MUST be exactly 5e9 — never a
+/// miscompile. Its complement, a genuinely-recursive insert (recursion actually taken, `pins` into a
+/// NON-empty queue), stays OUT of scope and continues to decline (a later increment). Regression pin for the
+/// recursion-unfold flip-target — guards the repro against any future change (mine or a peer's) that would
+/// silently fold it to a wrong value.
+#[test]
+fn a_continuation_filed_through_a_recursive_pqueue_insert_folds_or_declines_never_miscompiles() {
+    use crate::testkit::parse;
+    // `pins (PQ.PQNil ()) wake kb` selects the non-recursive PQNil base arm; `sched-step` pops the sole
+    // entry and applies the boxed continuation `(fn (_u) (resume unit wake))`, resuming the wake-seeded
+    // clock. The `now` arm reads it back → 5e9. Identical oracle to the direct-entry corpus case.
+    let src = "(do \
+        (type Instant (Instant UInt64)) \
+        (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n))) \
+        (def (before? (: a Instant) (: b Instant)) (< (inst-ns a) (inst-ns b))) \
+        (type KBox (KBox (-> Unit Unit))) \
+        (type PQ PQNil (PQCons (Tuple Instant KBox PQ))) \
+        (def (pins (: q PQ) (: t Instant) (: kb KBox)) \
+          (match q \
+            ((PQ.PQNil _) (PQ.PQCons (tuple t kb (PQ.PQNil ())))) \
+            ((PQ.PQCons (tuple ht hk r)) \
+              (if (before? t ht) \
+                  (PQ.PQCons (tuple t kb (PQ.PQCons (tuple ht hk r)))) \
+                  (PQ.PQCons (tuple ht hk (pins r t kb))))))) \
+        (def (sched-step (: q PQ)) \
+          (match q \
+            ((PQ.PQNil _) unit) \
+            ((PQ.PQCons (tuple wake kb rest)) (match kb ((KBox.KBox k) (k unit)))))) \
+        (effect Sim (op sleep (-> Instant Unit)) (op now (-> Unit Instant))) \
+        (def (main) \
+          (handle Sim (Instant.Instant 0) \
+            ( (now (u) s (resume s s)) \
+              (sleep (wake) s \
+                (sched-step (pins (PQ.PQNil ()) wake (KBox.KBox (fn (_u) (resume unit wake))))))) \
+            (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) \
+        (export main))";
+    match compile_component(&crate::codec::encode(&parse(src))) {
+        // Not yet folded — the decline must be CLEAN (no leaked internal state-param name).
+        Err(e) => assert!(
+            !e.message.contains("#eff") && !e.message.contains("$s"),
+            "the recursive-insert deferred-resume decline must not leak an internal state-param name, \
+             got: {}",
+            e.message
+        ),
+        // If the base-arm recursion-unfold folds it, the value MUST be the direct-form oracle 5e9.
+        Ok(bytes) => {
+            if let Some(v) = run_linked(&bytes, "main") {
+                assert_eq!(
+                    v, "5000000000",
+                    "if the continuation filed through a recursive pqueue insert folds, it must be the \
+                     same 5e9 as the direct-entry form — never a miscompile"
+                );
+            }
+        }
+    }
+}
+
+/// The COMPLEMENT of `a_continuation_filed_through_a_recursive_pqueue_insert…` (the base-arm pin above): a
+/// GENUINELY-RECURSIVE insert, where the recursion is actually TAKEN. `pins` is handed a NON-empty queue
+/// whose head has an EARLIER waketime (`(Instant 1)`) than the inserted continuation's (`wake` = 5e9), so
+/// `before? wake 1` is false and the `(pins r t kb)` self-call fires — the entry is placed AFTER the head to
+/// keep the queue ascending. This is exactly the case the recursion-unfold's accept guard
+/// (`rewrite_recursive_base_arm_call`, effects.rs — `!body_calls_def(folded, callee)`) must REFUSE: the
+/// base-arm unfold peels ONE level, but the folded body still contains the residual `(pins r t kb)` self-call,
+/// so the unfold is DISCARDED and the fold declines cleanly ("not yet reducible"). It must NEVER fold — a
+/// one-level unfold of a genuinely-recursive insert would drop the remaining insertions and pop the WRONG
+/// entry (a miscompile). This pin guards that accept guard: if it ever weakened to accept a recursion-taken
+/// unfold, this flips red. Complements the base-arm pin (which folds/declines→5e9); together they pin BOTH
+/// sides of the `body_calls_def` accept/discard decision. (v-DES's case (b): recursion-taken is a later
+/// increment — needs the full escaping-k continuation machinery, out of scope for the base-arm unfold.)
+#[test]
+fn a_genuinely_recursive_pqueue_insert_declines_cleanly_never_folds_the_wrong_entry() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (type Instant (Instant UInt64)) \
+        (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n))) \
+        (def (before? (: a Instant) (: b Instant)) (< (inst-ns a) (inst-ns b))) \
+        (type KBox (KBox (-> Unit Unit))) \
+        (type PQ PQNil (PQCons (Tuple Instant KBox PQ))) \
+        (def (pins (: q PQ) (: t Instant) (: kb KBox)) \
+          (match q \
+            ((PQ.PQNil _) (PQ.PQCons (tuple t kb (PQ.PQNil ())))) \
+            ((PQ.PQCons (tuple ht hk r)) \
+              (if (before? t ht) \
+                  (PQ.PQCons (tuple t kb (PQ.PQCons (tuple ht hk r)))) \
+                  (PQ.PQCons (tuple ht hk (pins r t kb))))))) \
+        (def (sched-step (: q PQ)) \
+          (match q \
+            ((PQ.PQNil _) unit) \
+            ((PQ.PQCons (tuple wake kb rest)) (match kb ((KBox.KBox k) (k unit)))))) \
+        (effect Sim (op sleep (-> Instant Unit)) (op now (-> Unit Instant))) \
+        (def (main) \
+          (handle Sim (Instant.Instant 0) \
+            ( (now (u) s (resume s s)) \
+              (sleep (wake) s \
+                (sched-step (pins (PQ.PQCons (tuple (Instant.Instant 1) (KBox.KBox (fn (_z) (resume unit (Instant.Instant 1)))) (PQ.PQNil ()))) wake (KBox.KBox (fn (_u) (resume unit wake))))))) \
+            (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) \
+        (export main))";
+    match compile_component(&crate::codec::encode(&parse(src))) {
+        // Recursion taken → the accept guard discards the one-level unfold → clean decline (no leaked
+        // internal state-param name). This is the REQUIRED behavior until the full recursion machinery lands.
+        Err(e) => assert!(
+            !e.message.contains("#eff") && !e.message.contains("$s"),
+            "the genuinely-recursive insert decline must be clean (no leaked internal state-param name), \
+             got: {}",
+            e.message
+        ),
+        // If a FUTURE increment folds a genuinely-recursive insert, it must pop the HEAD (waketime 1) whose
+        // continuation resumes `(Instant 1)`, so `now` reads 1 — NEVER the inserted 5e9 entry (which sorts
+        // after the head and is not popped). Anything else — especially 5e9 — is a miscompile.
+        Ok(bytes) => {
+            if let Some(v) = run_linked(&bytes, "main") {
+                assert_eq!(
+                    v, "1",
+                    "if a genuinely-recursive insert folds, sched-step pops the earlier head (waketime 1), \
+                     so now reads 1 — never the later inserted 5e9 entry"
+                );
+            }
+        }
+    }
+}
+
 /// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
 /// compiler DECLINES asking for an annotation rather than inventing a width.
 #[test]
@@ -18170,6 +18306,26 @@ mod match_engine {
     }
 
     #[test]
+    fn a_same_name_variant_of_a_multi_variant_sum_constructs_by_the_type_name() {
+        // `(type N (N Int64) (J Int64))` — the FIRST variant shares the type's name, but the sum has
+        // MORE than one variant. The same-name head-position rule must fire regardless of variant COUNT:
+        // bare `(N a)` in head position resolves to the CONSTRUCTOR (as a single-variant same-name newtype
+        // does), NOT be hijacked by the type binding into a spurious CDZ0203 "takes no type parameters".
+        // (Breaker finding adv-same-name-ctor-hijacked-by-type case-2: the ctor index was wrongly
+        // restricted to one-variant sums, so a multi-variant same-name variant fell through to the type.)
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type N (N Int64) (J Int64)) \
+                       (def (main) (match (N 4) ((N v) (+ v 1)) ((J w) w))) (export main))"
+                ),
+                "main"
+            ),
+            5
+        );
+    }
+
+    #[test]
     fn a_same_name_newtype_name_is_still_a_type_in_annotation_position() {
         // The same name in a NON-head position stays the TYPE: `(: (UserId 5) UserId)` uses `UserId` as
         // the constructor (head of `(UserId 5)`) AND as the type annotation (non-head) — both resolve
@@ -23913,13 +24069,29 @@ mod match_engine {
         // (`Int64`/`Float64`) fails the rational-domain predicate → CDZ0303 (the fraction twin of the
         // integer domain reject).
         for bad in ["Int64", "Float64"] {
+            let d = reject_full(&format!(
+                "(module top (def (main) (do (module m (pragma default-fraction {bad}) (def (x) 5)) ((. m x) unit))) (export main))"
+            ))
+            .expect("default-fraction naming a non-rational type must reject");
             assert_eq!(
-                reject_code(&format!(
-                    "(module top (def (main) (do (module m (pragma default-fraction {bad}) (def (x) 5)) ((. m x) unit))) (export main))"
-                ))
-                .as_deref(),
+                d.code.as_deref(),
                 Some("CDZ0303"),
                 "default-fraction {bad} must be the rational-domain reject"
+            );
+            // The exact-fraction domain has EXACTLY ONE admitted type (`Rational`), so — unlike
+            // `default-integer` (many valid targets → no fix) — the reject carries a VERIFIED replace of
+            // the named type with `Rational`, which clears the diagnostic by construction.
+            let fix = d
+                .fix
+                .expect("default-fraction's sole valid target carries a verified Rational fix");
+            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+            assert_eq!(
+                fix.replacement, "Rational",
+                "the fix retypes the named type to the sole rational type: {bad}"
+            );
+            assert!(
+                fix.verified,
+                "Rational is the ONLY admitted rational type, so the retype is verified, not a guess"
             );
         }
         // `Rational` names the exact rational type — ACCEPTED (the module registers, `x` returns 5/1 via
@@ -51200,6 +51372,51 @@ mod stage1 {
     }
 
     #[test]
+    fn an_over_ceiling_integer_width_carries_a_bigint_retype_fix() {
+        // The ACTIONABLE half of the over-ceiling CDZ0302 (`diagnostics.md` §A Diagnostic Carries A Route
+        // To A Fix): a fixed width strictly greater than 64 (`(UInt 65)`, `(Int 128)`) is "reserved to the
+        // big-integer layer" — the message says so — so the reject now carries a REPLACE fix retyping the
+        // whole `(Int W)`/`(UInt W)` compound to the unbounded `BigInt`, which holds any magnitude. This
+        // is the type-level twin of the literal-range fix's `BigInt` continuation. Heuristic (the author
+        // may instead have meant a specific in-range width), but it clears the fault in one shot.
+        for src in ["(: 5 (UInt 65))", "(: 5 (Int 128))", "(: 5 (Int 200))"] {
+            let body = format!("(module m (def (main) {src}) (export main))");
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(&body)))
+                .into_iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .expect("an over-ceiling width is rejected");
+            assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
+            let fix = d
+                .fix
+                .expect("an over-ceiling width carries a BigInt retype fix");
+            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+            assert_eq!(
+                fix.replacement, "BigInt",
+                "retypes the over-ceiling width to the unbounded BigInt: {src}"
+            );
+            assert!(
+                !fix.verified,
+                "the author may have meant a specific in-range width → heuristic"
+            );
+        }
+        // NO FIX for a ZERO or MALFORMED width — there is no single correct target (the author may have
+        // dropped or mistyped the number), and a false suggestion is worse than none. The reject still
+        // fires; it just carries the message alone.
+        for src in ["(: 5 (UInt 0))", "(: 5 (Int -8))"] {
+            let body = format!("(module m (def (main) {src}) (export main))");
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(&body)))
+                .into_iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .expect("a zero/malformed width is still rejected");
+            assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
+            assert!(
+                d.fix.is_none(),
+                "a zero/malformed width has no single confident repair → no fix: {src}"
+            );
+        }
+    }
+
+    #[test]
     fn an_over_ceiling_width_in_an_unused_parameter_is_rejected_cdz0302() {
         // 06-numeric-model "an over-ceiling integer width in an unused parameter is rejected, like a used
         // one". Well-formedness is TOTAL — it holds over every def, reachable or not — so an ill-formed
@@ -51453,6 +51670,53 @@ mod stage1 {
         // WELL-TYPED, no CDZ0302; that decline is covered where the emit path is exercised.)
         assert_eq!(run_main_as::<f64>("(: 1.5 (Float 64))"), 1.5);
         assert_eq!(run_main_as::<f64>("(: 1.5 Float64)"), 1.5);
+    }
+
+    #[test]
+    fn a_non_admitted_float_width_carries_a_nearest_admitted_retype_fix() {
+        // The ACTIONABLE half of the non-admitted float-width CDZ0302 (`diagnostics.md` §A Diagnostic
+        // Carries A Route To A Fix), the float twin of the over-ceiling-integer BigInt fix. A concrete
+        // width outside {32,64} SNAPS to the nearest admitted precision: a below-32 width (`(Float 8)`,
+        // `(Float 16)`) → `Float32`; any wider non-admitted width (`(Float 48)`, `(Float 128)`) →
+        // `Float64`, the widest admitted precision. Heuristic (the author may have meant a specific
+        // admitted width), but the snap clears the fault in one shot.
+        for (src, target) in [
+            ("(: 1.5 (Float 8))", "Float32"),
+            ("(: 1.5 (Float 16))", "Float32"),
+            ("(: 1.5 (Float 48))", "Float64"),
+            ("(: 1.5 (Float 128))", "Float64"),
+        ] {
+            let body = format!("(module m (def (main) {src}) (export main))");
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(&body)))
+                .into_iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .expect("a non-admitted float width is rejected");
+            assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
+            let fix = d
+                .fix
+                .expect("a non-admitted float width carries a nearest-admitted retype fix");
+            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+            assert_eq!(
+                fix.replacement, target,
+                "snaps `{src}` to the nearest admitted float width"
+            );
+            assert!(
+                !fix.verified,
+                "the author may have meant a specific admitted width → heuristic"
+            );
+        }
+        // NO FIX for a ZERO width — `(Float 0)` reads as a dropped/mistyped number, no confident target
+        // (the integer-twin discipline). The reject still fires; it just carries the message alone.
+        let body = "(module m (def (main) (: 1.5 (Float 0))) (export main))";
+        let d = crate::diagnostics(&mut crate::db::Db::load(parse(body)))
+            .into_iter()
+            .find(|d| d.severity == crate::abi::Severity::Error)
+            .expect("a zero float width is still rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
+        assert!(
+            d.fix.is_none(),
+            "a zero float width has no single confident repair → no fix"
+        );
     }
 
     #[test]
@@ -58893,6 +59157,132 @@ mod stage1 {
              `binder_in` calls, not O(arms²) (the desugar's O(depth)-nested `if`/`match` chain needs \
              scope-skip coverage — `extend_scope_skip_pass_through`): arms 200→400 grew binder_in calls \
              {ratio:.1}× (n200={n200}, n400={n400}); linear is ~2×, the deep-walk was ~4×"
+        );
+    }
+
+    #[test]
+    fn a_quote_free_program_skips_the_reify_quotes_position_scan() {
+        // REGRESSION (perf): `quote::reify_quotes` runs at EVERY load, but for a program with NO
+        // `quote`/`quasiquote` FORM (the overwhelming common case) all of its work is dead —
+        // `pattern_position_nodes` builds an O(N) parent/child-index map + a downward BitSet walk,
+        // `binder_position_nodes` scans every node, and the reverse per-node plan loop does two
+        // allocating `as_form(id,"quote"/"quasiquote").map(to_vec)` shape probes per node. On a large
+        // quote-free module (`reify_quotes` was ~3-4% of `as_form`'s self-time via those passes), that is
+        // pure churn. FIX: a single O(leaves) prescan for a `quote`/`quasiquote` NAME leaf; absent one, no
+        // quote head exists anywhere, so `reify_quotes` returns immediately WITHOUT touching the O(N)
+        // position passes or the plan loop.
+        //
+        // The NOISE-FREE signal is `REIFY_QUOTES_POSITION_SCAN_NODES` (the plan-loop node count, a pure
+        // function of the program): 0 for a quote-free program (the fast-bail fired), > 0 and O(N) for a
+        // genuine quote program. Correctness (a quote still reifies, a def named `quote` still binds) is
+        // pinned by the `quote::` unit tests.
+        fn position_scan_nodes(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::REIFY_QUOTES_POSITION_SCAN_NODES.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::REIFY_QUOTES_POSITION_SCAN_NODES.with(|c| c.get())
+            })
+        }
+        // A wide quote-FREE module: N newtype decls, no quote form anywhere.
+        let quote_free: String = {
+            let decls: String = (0..200)
+                .map(|i| format!("(type T{i} (Mk{i} Int64))"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("(module m {decls} (def (main) 0) (export main))")
+        };
+        assert_eq!(
+            position_scan_nodes(&quote_free),
+            0,
+            "a quote-free program must fast-bail `reify_quotes` before its O(N) position passes / plan \
+             loop (the single O(leaves) name prescan found no `quote`/`quasiquote` head), so the plan-loop \
+             node count is 0"
+        );
+        // A program that genuinely contains a `quote` form DOES run the plan loop (the counter is > 0) —
+        // the prescan is an over-approximation only in the harmless direction (a spurious fall-through for
+        // a program that merely mentions the identifier), never a false skip of a real quote.
+        let with_quote = "(module m (def (main) (quote (+ 1 2))) (export main))";
+        assert!(
+            position_scan_nodes(with_quote) > 0,
+            "a program containing a `quote` form must run the reify plan loop (the counter is > 0) — the \
+             fast-bail must NOT skip a genuine quote"
+        );
+    }
+
+    #[test]
+    fn an_eval_free_program_skips_the_desugar_eval_node_scan() {
+        // REGRESSION (perf): `eval_ast::desugar_eval` runs at EVERY load, scanning every node with an
+        // `as_form(id,"eval")` probe — dead for a program with no `(eval …)` form (the common case). FIX:
+        // a single O(leaves) prescan for an `eval` NAME leaf fast-bails before the per-node scan. The
+        // noise-free signal is `DESUGAR_EVAL_SCAN_NODES`: 0 for an eval-free program, > 0 for a genuine
+        // eval program. Correctness (an `(eval (quote …))` still reconstructs + folds) is pinned by the
+        // `eval`/metaprogramming unit + corpus tests.
+        fn scan_nodes(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::DESUGAR_EVAL_SCAN_NODES.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::DESUGAR_EVAL_SCAN_NODES.with(|c| c.get())
+            })
+        }
+        let eval_free: String = {
+            let decls: String = (0..50)
+                .map(|i| format!("(type T{i} (Mk{i} Int64))"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("(module m {decls} (def (main) 0) (export main))")
+        };
+        assert_eq!(
+            scan_nodes(&eval_free),
+            0,
+            "an eval-free program must fast-bail `desugar_eval` before its per-node scan (the O(leaves) \
+             name prescan found no `eval` head), so the scan node count is 0"
+        );
+        // A genuine `(eval …)` program DOES run the scan (counter > 0) — the fast-bail must not skip it.
+        let with_eval = "(module m (def (main) (eval (quote (+ 1 2)))) (export main))";
+        assert!(
+            scan_nodes(with_eval) > 0,
+            "a program containing an `(eval …)` form must run the desugar scan (the counter is > 0) — \
+             the fast-bail must NOT skip a genuine eval"
+        );
+    }
+
+    #[test]
+    fn a_tagged_template_free_program_skips_the_expand_node_scan() {
+        // REGRESSION (perf): `tagged_template::expand` runs at EVERY load, scanning every node with a
+        // `rewrite_of` (`as_name(items[0]) == "tagged-template"`) probe — dead for a program with no
+        // tagged template (the common case). FIX: a single O(leaves) prescan for a `tagged-template` NAME
+        // leaf fast-bails before the per-node scan. The noise-free signal is `TAGGED_TEMPLATE_SCAN_NODES`:
+        // 0 for a tagged-template-free program, > 0 for a genuine one. Correctness (a `tag"…{e}…"` still
+        // expands to the dispatched call) is pinned by the tagged-template unit + corpus tests.
+        fn scan_nodes(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::TAGGED_TEMPLATE_SCAN_NODES.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::TAGGED_TEMPLATE_SCAN_NODES.with(|c| c.get())
+            })
+        }
+        let tt_free: String = {
+            let decls: String = (0..50)
+                .map(|i| format!("(type T{i} (Mk{i} Int64))"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("(module m {decls} (def (main) 0) (export main))")
+        };
+        assert_eq!(
+            scan_nodes(&tt_free),
+            0,
+            "a tagged-template-free program must fast-bail `tagged_template::expand` before its per-node \
+             scan (the O(leaves) name prescan found no `tagged-template` head), so the scan node count is 0"
+        );
+        // A genuine `(tagged-template …)` node DOES run the scan (counter > 0) — the reader's canonical
+        // form for the ML surface `tag"…{expr}…"`. The head resolves to an unbound `tag` (no such def
+        // here), but the load-time expand pass still fires and the counter proves it.
+        let with_tt =
+            "(module m (def (main) (tagged-template tag (chunks \"a\") (holes))) (export main))";
+        assert!(
+            scan_nodes(with_tt) > 0,
+            "a program containing a `(tagged-template …)` form must run the expand scan (the counter is \
+             > 0) — the fast-bail must NOT skip a genuine tagged template"
         );
     }
 

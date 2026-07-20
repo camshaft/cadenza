@@ -43,3 +43,12 @@ def constructs-and-steps() =
   | Iter.Mk(s0, step) => (match step(s0) with
     | Option.None(_) => trap("empty")
     | Option.Some(p) => (match p with | (h, _rest) => if h == 1 then unit else trap("head")))
+
+// ===== TRIAGE (corpus-bugfix, 2026-07-20, trunk base >= finding era 265496869) =====
+// RESOLVED — the 2-field variant Mk(s, s -> Option((a, s))) (state + arrow-over-BOTH-typarams) now
+// CONSTRUCTS + STEPS correctly; no CDZ0201 "nullary variant takes the unit value". Verified BOTH forms:
+//   - named top-level fn arg (Iter.Mk(xs, popper))               -> compiles, run -> 1 (head of [1,2,3])
+//   - inline closure arg (Iter.Mk(xs, fn(s) => match s ...))     -> compiles, run -> 1
+// The variant-payload-arity / arrow-slot resolution at construction was fixed between the finding era and
+// now. This was v-iterators' I1-SPIKE BLOCKER: the fused-iterator adapter-record IS exactly this
+// Mk(state, step: state -> Option(elem, state)) shape — now buildable. Marked RESOLVED (v-inference lane).

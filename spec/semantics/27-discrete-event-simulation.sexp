@@ -736,3 +736,53 @@
   (trap   "integer overflow")
   (call   main (: 1000000000 UInt64) (: 2000000000 UInt64))
   (output (: 3000000000 UInt64)))
+
+(case "computing a span with the Instants reversed (earlier minus later) traps rather than wrapping"
+  (doc    "The span-boundary safety property, dual to the clock-overflow case above and pinning the
+           `sleep-until` arg-order discipline. `(since later earlier)` = `later − earlier` over `UInt64`
+           ns (§3.2), so calling it with the arguments REVERSED — `(since earlier later)` where the
+           second Instant is the LATER one — is `earlier − later` < 0, a `UInt64` UNDERFLOW that TRAPS
+           'integer overflow'; it does NOT silently wrap to a near-`UInt64.max` `Duration`. This is
+           load-bearing: `sleep-until` is `(sleep (since t (now)))` = `t − now` for a future target `t`,
+           and the WRONG order `(since (now) t)` = `now − t` underflows for any `t > now`. A silent wrap
+           would hand the scheduler an astronomically-large bogus span (~584 years), filing the event so
+           far in the future it never fires (or, post-`at`, wrapping the wake-time to misorder the queue).
+           Trapping turns an arg-order bug into a clean failure instead of a silent misschedule. Graded
+           via runtime `(call …)` so the subtract is a real instruction: reversed `since(1s, 5s)` = 1s−5s
+           underflows and traps; correct-order `since(5s, 1s)` = 4s returns normally.")
+  (input  (do
+            (type Duration (Duration UInt64))
+            (type Instant  (Instant  UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (def (dur-ns  (: d Duration)) (match d ((Duration.Duration n) n)))
+            (def (since (: later Instant) (: earlier Instant))
+              (Duration.Duration (- (inst-ns later) (inst-ns earlier))))
+            (def (main (: later UInt64) (: earlier UInt64))
+              (dur-ns (since (Instant.Instant later) (Instant.Instant earlier))))
+            (export main)))
+  (call   main (: 1000000000 UInt64) (: 5000000000 UInt64))
+  (trap   "integer overflow")
+  (call   main (: 5000000000 UInt64) (: 1000000000 UInt64))
+  (output (: 4000000000 UInt64)))
+
+(case "a Duration constructor scaling a count past the UInt64 nanosecond range traps rather than wrapping"
+  (doc    "The constructor-boundary safety property, completing the time-arithmetic overflow family with
+           the clock-overflow (`at`) and span-underflow (`since`) cases. `secs` scales its `UInt64` count
+           by 1e9 (§3.2), so a count large enough that `n * 1_000_000_000` exceeds `UInt64.max` (~1.8e10
+           seconds ≈ 584 years) OVERFLOWS the multiply and TRAPS 'integer overflow' — it does NOT silently
+           wrap to a tiny `Duration`. This is load-bearing for the same reason as the clock/span cases: a
+           silent wrap would hand the scheduler a `Duration` far smaller than intended, firing a
+           long-delay event almost immediately and misordering the event queue. Trapping turns an
+           over-long duration into a clean failure. Graded via a runtime `(call …)` arg so the multiply is
+           a real instruction: `secs(18446744074)` (just past `UInt64.max / 1e9`) traps; the control
+           `secs(5)` = 5_000_000_000 returns normally.")
+  (input  (do
+            (type Duration (Duration UInt64))
+            (def (secs (: n UInt64)) (Duration.Duration (* n 1000000000)))
+            (def (dur-ns (: d Duration)) (match d ((Duration.Duration v) v)))
+            (def (main (: n UInt64)) (dur-ns (secs n)))
+            (export main)))
+  (call   main (: 18446744074 UInt64))
+  (trap   "integer overflow")
+  (call   main (: 5 UInt64))
+  (output (: 5000000000 UInt64)))

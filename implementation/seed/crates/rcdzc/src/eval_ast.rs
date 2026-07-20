@@ -74,6 +74,23 @@ fn reachable(ast: &Arenas, root: StructId) -> std::collections::HashSet<u32> {
 pub fn desugar_eval(ast: &mut Arenas) {
     // Only ORIGINAL nodes can be a source `(eval …)`; reconstruction APPENDS, so bound the scan.
     let original_len = ast.structure.len() as u32;
+    // FAST BAIL for a program with no `(eval …)` (the overwhelming common case). This pass runs at
+    // EVERY load, scanning every node with an `as_form(id,"eval")` probe; an `(eval ARG)` node is a
+    // `List` headed by the NAME `eval`, so its head is a `Leaf::Name("eval")` in the leaf pool. If no
+    // such name leaf exists, no `(eval …)` form exists anywhere and the whole scan is dead. A single
+    // O(leaves) prescan (leaves interned once, far fewer than a per-node structural probe) is the cheap
+    // over-approximation: it may fall through spuriously only for a program that MENTIONS the identifier
+    // `eval` without an eval form (a user def named `eval`), which then runs the exact scan below —
+    // same result, just not skipped. (Sibling of the `quote::reify_quotes` quote-free fast-bail.)
+    if !ast
+        .leaves
+        .iter()
+        .any(|l| matches!(l, Leaf::Name(n) if n == "eval"))
+    {
+        return;
+    }
+    #[cfg(test)]
+    crate::db::DESUGAR_EVAL_SCAN_NODES.with(|c| c.set(c.get() + original_len as u64));
     let mut plans: Vec<EvalPlan> = Vec::new();
     for i in 0..original_len {
         let id = StructId(i);

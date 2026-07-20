@@ -227,6 +227,27 @@
   (call   main (: 1 Int64)) (output (: false Bool))
   (call   main (: 0 Int64)) (output (: true Bool)))
 
+(case "a generated Rational's equality is INDEPENDENT of sign placement (n/d = -n/-d)"
+  (doc    "A property over runtime-constructed rationals: `Rational.of` normalizes the sign onto the
+           NUMERATOR (denominator forced strictly positive), so where a caller writes the sign does not
+           matter — `n/d` and `-n/-d` are the SAME rational for any seed-drawn `n`, `d` (d≠0). This is
+           the sign-placement analogue of the canonical-form (lowest-terms) property above: equality is
+           by the normalized form, not the stored operands. `(= (Rational.of n d) (Rational.of -n -d))`
+           = true for every nonzero-denominator draw. Both operand pairs are true entry parameters (no
+           fold folds them), so it exercises the runtime construction+normalize path (widen→BigInt, gcd,
+           sign-onto-numerator) that landed as the runtime-operand sign-normalize case — a property, not a
+           fixed pair. The `d=0` seed is discarded (a zero denominator has no rational value / traps),
+           mirroring the rejection-sampling guard used elsewhere in this file.")
+  (input  (do (def (main (: n Int64) (: d Int64))
+                (if (= d 0)
+                  true
+                  (= ((. Rational of) n d)
+                     ((. Rational of) (Int64.wrapping-sub 0 n) (Int64.wrapping-sub 0 d)))))
+              (export main)))
+  (call   main (: 3 Int64) (: -7 Int64)) (output (: true Bool))
+  (call   main (: 5 Int64) (: 8 Int64)) (output (: true Bool))
+  (call   main (: -9 Int64) (: 4 Int64)) (output (: true Bool)))
+
 (case "generated FLOAT values are totally ordered (a trichotomy property over two generated floats)"
   (doc    "A property over GENERATED floats using the runtime float ordering: `of` draws a float from the
            seed (an integer-valued float via `Float64.of-int`, which never produces NaN), so for any two

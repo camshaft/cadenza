@@ -183,7 +183,18 @@ fn run() -> Result<()> {
                 .parse()
                 .context("--first-ms must be a non-negative integer")?;
             let period_ms: Option<u64> = match flag_value(&args, "--period-ms") {
-                Some(ms) => Some(ms.parse().context("--period-ms must be a non-negative integer")?),
+                Some(ms) => {
+                    let p: u64 = ms.parse().context("--period-ms must be a non-negative integer")?;
+                    if p == 0 {
+                        // A zero period would divide-by-zero the daemon's `due` fold every tick — reject it up
+                        // front (an actionable error, not a poison event Schedule::decode silently drops). Omit
+                        // --period-ms for a one-shot.
+                        return Err(anyhow!(
+                            "--period-ms must be a POSITIVE integer (0 is invalid; omit --period-ms for a one-shot)"
+                        ));
+                    }
+                    Some(p)
+                }
                 None => None,
             };
             let payload = flag_value(&args, "--payload").unwrap_or_default();
