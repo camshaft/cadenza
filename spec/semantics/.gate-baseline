@@ -1237,6 +1237,7 @@ pass	a map can be a key, compared by its value
 pass	a map can hold a map as a value
 pass	a map chosen by a runtime if is size-measured with valid wasm
 pass	a map consumed by Map.insert in one operand is unchanged for a later read of the same binding
+pass	a map consumed by Map.remove in one operand is unchanged for a later read of the same binding
 pass	a map consumed by Map.swap in one operand is unchanged for a later read of the same binding
 pass	a map entry with no value expression is rejected, not a crash
 pass	a map grown by a recursive accumulator is looked up by a runtime key
@@ -2139,6 +2140,7 @@ pass	a set chosen by a runtime if is membership-tested with valid wasm
 pass	a set chosen by a runtime if is size-measured with valid wasm
 pass	a set collapses a duplicate element
 pass	a set consumed by Set.insert in one operand is unchanged for a later read of the same binding
+pass	a set consumed by Set.remove in one operand is unchanged for a later read of the same binding
 pass	a set dedups NaN elements and keeps zero signs distinct
 pass	a set is constructed from a list of its elements
 pass	a set nested in a tuple compares equal with a runtime element, order-independent

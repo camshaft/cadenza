@@ -9146,6 +9146,29 @@
   (input  (do (def (main) (Map.len (Map.remove (Map.insert Map.empty 1 10) 2))) (export main)))
   (output (: 1 Int64)))
 
+(case "a map consumed by Map.remove in one operand is unchanged for a later read of the same binding"
+  (doc    "The persistence companion of the remove cases above and the twin of the Map.swap persistence case
+           below: `Map.remove` produces a NEW map without the key and MUST leave its operand unchanged
+           (collections-and-text.md §A Map Is Built By Functional Construction — a value must not be
+           observably mutated through one reference while read through another). `m = {1↦10, 2↦20}` is read
+           TWICE — once consumed by `(Map.remove m 1)` bound to `m2`, once read as the ORIGINAL `m`. Encodes a
+           4-tuple: the original `(Map.lookup m 1)` still reports `10` (the removed key survives in the shared
+           binding), `(Map.lookup m2 1)` is absent (`-1` — genuinely gone from the new map), `(Map.len m)` is
+           still `2` and `(Map.len m2)` is `1`. If the remove FBIP-mutated the shared CHAMP trie in place (a
+           retain missing on the multi-use binding), the original read would see the key gone → `-1` and
+           `(Map.len m)` → `1`. Completes the copy-on-write persistence family (Map.insert/Map.swap now
+           Map.remove). Both backends.")
+  (input  (do
+            (def (main)
+              (let ((m (Map.insert (Map.insert Map.empty 1 10) 2 20)))
+                (let ((m2 (Map.remove m 1)))
+                  (tuple (match (Map.lookup m 1) ((Some v) v) ((None _u) -1))
+                         (match (Map.lookup m2 1) ((Some v) v) ((None _u) -1))
+                         (Map.len m)
+                         (Map.len m2)))))
+            (export main)))
+  (output (: (tuple 10 -1 2 1) (Tuple Int64 Int64 Int64 Int64))))
+
 (case "the value-yielding insert reports the value it replaced"
   (doc    "`Map.swap` is the value-yielding add: it produces `(tuple <prior-value-optional> <new-map>)`
            (collections-and-text.md §A Map Is Built By Functional Construction — the two-form rule).
