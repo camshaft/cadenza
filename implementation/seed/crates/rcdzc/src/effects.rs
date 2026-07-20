@@ -2533,6 +2533,51 @@ fn desugar_performing_guard_match(
 /// repeating until a tail `resume` surfaces or no progress. Unchanged body ⇒ returned as-is (byte-identical),
 /// so tail/abortive/already-foldable arms are untouched. Bounded iteration. Conservative: any shape it
 /// cannot cleanly reduce is left as-is (the arm then declines exactly as before — never a mis-fold).
+/// A ONE-SHOT non-recursive helper call reducible by the deferred-resume fold: `head` is a non-recursive
+/// lambda/def, arity matches, EACH param is used at most once in the body (so β-reduction never DUPLICATES a
+/// deferred resume-closure — the one-shot continuation contract), and every arg is either strongly pure or a
+/// lambda (a deferred resume-closure). Returns the β-reduced body (NOT yet re-resolved — the caller
+/// `forget_subtree`s it), or `None` if `node` is not such a call. Shared by the deferred-resume fold's arm
+/// (a) (the call is the whole term) and arm (a′) (the call is a match SCRUTINEE) so the two gates cannot
+/// drift.
+fn reduce_one_shot_helper_call(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId> {
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && is_perform(db, head, ctx).is_none()
+        && let Some((params, hbody)) = crate::eval::lambda_params_and_body(db, head)
+        && !crate::eval::is_recursive(db, hbody)
+        && params.len() == args.len()
+        && params
+            .iter()
+            .all(|&p| count_param_refs(db, hbody, crate::eval::param_name_occ(db, p)) <= 1)
+        && args.iter().all(|&a| {
+            strongly_pure(db, a, ctx) || matches!(resolved_of(db, a), Resolved::Lambda { .. })
+        })
+    {
+        return crate::eval::apply_lambda(db, head, &args).ok().flatten();
+    }
+    None
+}
+
+/// Rebuild a `(match SCRUTINEE arm…)` node with a NEW scrutinee, preserving the arms. The match AST is
+/// `(match <scrutinee> <arm>…)` — child 0 is the `match` head, child 1 is the scrutinee, the rest are arms
+/// — so this replaces child 1. `arms` is passed for a shape assertion only (the arm children are copied from
+/// the original node verbatim). Falls back to the original node if it is not a well-formed match list.
+fn rebuild_match_scrutinee(
+    db: &mut Db,
+    node: StructId,
+    _arms: &[(StructId, StructId)],
+    new_scrutinee: StructId,
+) -> StructId {
+    if let Struct::List(children) = db.ast.get(node).clone()
+        && children.len() >= 2
+    {
+        let mut new_children = children;
+        new_children[1] = new_scrutinee;
+        return db.push_list(new_children);
+    }
+    node
+}
+
 fn reduce_arm_deferred_resume(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> StructId {
     let mut cur = node;
     for _ in 0..32 {
@@ -2545,19 +2590,7 @@ fn reduce_arm_deferred_resume(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> 
             continue;
         }
         // (a) a one-shot non-recursive helper call whose args are pure or deferred resume-closures.
-        if let Resolved::Apply { head, args } = resolved_of(db, cur)
-            && is_perform(db, head, ctx).is_none()
-            && let Some((params, hbody)) = crate::eval::lambda_params_and_body(db, head)
-            && !crate::eval::is_recursive(db, hbody)
-            && params.len() == args.len()
-            && params
-                .iter()
-                .all(|&p| count_param_refs(db, hbody, crate::eval::param_name_occ(db, p)) <= 1)
-            && args.iter().all(|&a| {
-                strongly_pure(db, a, ctx) || matches!(resolved_of(db, a), Resolved::Lambda { .. })
-            })
-            && let Some(reduced) = crate::eval::apply_lambda(db, head, &args).ok().flatten()
-        {
+        if let Some(reduced) = reduce_one_shot_helper_call(db, cur, ctx) {
             // RE-RESOLVE the β-reduced body: `apply_lambda` COPIES the callee's arm bodies, and a copied
             // `(Ctor v)` binder ref keeps its memoized `SumPayload { scrutinee }` pointing at the callee's
             // ORIGINAL match scrutinee — so a following `fold_ctor_match` (whose gate is `s == scrutinee`,
@@ -2569,6 +2602,30 @@ fn reduce_arm_deferred_resume(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> 
             crate::resolve::forget_subtree(db, reduced);
             cur = reduced;
             continue;
+        }
+        // (a′) the one-shot helper call sits in the SCRUTINEE of a `(match (helper …) arms…)` — the pop of a
+        //      DIRECTLY-built entry constructed by a helper: `(sched-step (mk1 wake kb))` first reduces the
+        //      outer `sched-step` (arm a) to `(match (mk1 wake kb) …)`, whose scrutinee is still the
+        //      UNREDUCED `(mk1 …)` call, so `fold_ctor_match` (which needs a VISIBLE ctor) can't fire and the
+        //      arm binders never surface (they resolve Poison). Reduce that nested scrutinee call in place —
+        //      same one-shot predicate + re-resolve hygiene as arm (a) — turning the scrutinee into the
+        //      helper's `(PQCons …)` body so the next iteration's `fold_ctor_match` pops it. Distinct from
+        //      arm (c) (a RECURSIVE callee in the scrutinee, one-level-unfolded); this is the non-recursive
+        //      direct-helper analogue, the shape v-inference isolated (a NON-recursive `mk1` reproduces the
+        //      same decline the recursive `pins` does — the blocker is a nested-scrutinee call not reduced
+        //      before the pop, NOT the recursion).
+        if let Resolved::Match { scrutinee, arms } = resolved_of(db, cur) {
+            // The scrutinee may carry a leading annotation `(: (helper …) T)` (the handler-arm value is
+            // annotated at its declared type) — peel it to reach the call before testing/reducing.
+            let call = match resolved_of(db, scrutinee) {
+                Resolved::Annot { expr, .. } => expr,
+                _ => scrutinee,
+            };
+            if let Some(reduced_scrut) = reduce_one_shot_helper_call(db, call, ctx) {
+                crate::resolve::forget_subtree(db, reduced_scrut);
+                cur = rebuild_match_scrutinee(db, cur, &arms, reduced_scrut);
+                continue;
+            }
         }
         // (c) a RECURSIVE helper call whose concrete argument selects a NON-recursive (base) arm — the
         //     time-ordered pqueue's `pins` (sorted-insert): `(pins PQNil t kb)` matches `q` = the visible

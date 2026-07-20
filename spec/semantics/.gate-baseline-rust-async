@@ -219,6 +219,7 @@ pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
 pass	a List entry argument is marshalled as a vec!
 pass	a MAP built from generated pairs is equal regardless of insertion order (the Map analogue of set convergence)
 pass	a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds
+pass	a MULTI-LEVEL concat-built list SET element (n>=33) is found by a push-built equal element
 pass	a MULTI-LEVEL concat-built list map key (n>=33) is found by a push-built equal key
 pass	a MULTI-PAYLOAD variant with a nested same-sum variant reads the right payload depth (known outer disc)
 pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
@@ -1342,6 +1343,7 @@ pass	a private sibling defined after its exported caller still resolves
 pass	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 pass	a product type of three Qty fields with concrete units constructs and projects
 pass	a program declares its own family unit and converts with it
+pass	a mixed-match tail loop whose Option payload is a heap String finds and reads the element
 pass	a program that delegates no effect is pure and never suspends
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
@@ -1809,6 +1811,7 @@ pass	a self-recursive Bool-returning function whose recursive call is the then-b
 pass	a self-recursive effectful loop sums a fresh-id draw per step — the gensym idiom
 pass	a self-tail call passing a heap-match argument compiles to valid wasm
 pass	a self-tail loop advancing by a tuple projection while accumulating compound-sum nodes compiles
+pass	a self-tail-recursive fn with a MIXED Option-returning innermost match emits valid wasm
 pass	a sequencing block discards a pure compound intermediate
 pass	a sequencing block discards a pure list intermediate
 pass	a sequencing block whose last form is unit yields unit
@@ -2704,6 +2707,7 @@ pass	draining the event queue yields entries in time-order with FIFO same-time t
 pass	dropping an absent field from a record is rejected
 pass	dropping fields from a record leaves the remaining fields
 pass	each definition in a module registers a reachable export field
+pass	each literal kind quotes to its own single Ast leaf that escapes and renders
 pass	effect state threads across a successful `?`
 pass	encoding a decoded string round-trips to the same bytes
 pass	encoding and decoding a constructor-built AST round-trips to an equal value
@@ -3319,6 +3323,7 @@ pass	the sequent-shaped kernel Thm is unforgeable — building Thm.Seq outside t
 pass	the shift-by-zero identities preserve a runtime narrow UInt8 (x << 0 = x, x >> 0 = x)
 pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
 pass	the slice overflow guard holds on a chained slice-of-a-slice
+pass	the span between two equal Instants is zero — the inclusive lower boundary of `since`
 pass	the taken arm's checked add still overflows under the operator hoist
 pass	the three-way comparison is deconstructed by an exhaustive match
 pass	the three-way comparison orders Bool with false below true
@@ -3385,6 +3390,7 @@ pass	two chars with different scalar values are unequal
 pass	two closures from one factory capture distinct values
 pass	two constant records with the same fields in different written order are equal
 pass	two constant sums with the same payload but different variants are not equal
+pass	nested mixed-match tail loops compose — an outer accumulator loop driving an inner seeking loop
 pass	two definitions imported under the same name are rejected
 pass	two dependent utf8 bin segments each sized by its own preceding length byte
 pass	two dependent-size segments each bind the count a preceding segment named
@@ -3876,6 +3882,7 @@ todo	a two-argument closure exported to the host is called with both arguments
 todo	a two-parameter closure is applied at full arity through a recursive HOF
 todo	a type-valued parameter under a function-arrow annotation dispatches an ad-hoc-polymorphic dict
 todo	an 8-bit-integer closure crosses the host boundary
+pass	an @ensures on a recursive def is re-checked at every EXIT including self-call returns (not only the outermost)
 pass	an @ensures predicate that itself traps keeps its own trap kind (not the @ensures-failed unreachable)
 todo	an @param of a Bool type generates a Bool-typed accessor
 todo	an @param of a Float64 type generates a Float64-typed accessor

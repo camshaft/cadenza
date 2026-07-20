@@ -35,3 +35,12 @@
 ;; ownership classification) with v-patterns cc'd (SumExpect/MatchSum emit shared seam) — repro asks them to
 ;; coordinate before fixing. NOT a fix agent (deep Perceus+emit shared-seam work in the owners' lane).
 ;; corpus-bugfix to add a live-objects pin once fixed. Copy already in both owners' issues/.
+
+;; ===== RESOLVED (corpus-bugfix, 2026-07-20, trunk 995fa4134) =====
+;; ALREADY FIXED + MERGED — my route last tick was STALE (fix landed after the 2026-07-18 filing).
+;; SumExpect fix: d4b77be35 'reclaim the owned Some-shell in Option.expect (SumExpect)' — stashes an Owned
+;; scrutinee + drops the Some shell after payload extract+dup, gated to owned-temporaries (borrowed left alone).
+;; Verified: d4b77be35 is-ancestor-of-trunk = true; select.rs carries the shell-reclaim. MatchSum twin
+;; cbd1b35ab also landed (same all-scalar-payload shell drop; compound-payload shells left un-dropped =
+;; residual leak, never UAF). Regression-guarded by the direct-live-objects rc-leak gate (core-4 + nightly).
+;; Retired from queue; the v-memory-safety/v-patterns route I sent is moot.

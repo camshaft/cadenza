@@ -2203,6 +2203,42 @@
             (def (main) (classify -1)) (export main)))
   (output (: 100 Int64)))
 
+(case "a WIDE integer literal pattern (beyond ±2^31) matches a runtime scrutinee by equality"
+  (doc    "The wide-magnitude companion of the negative-literal case above: a `match` arm probes a
+           literal whose magnitude EXCEEDS ±2^31, so the emitted `i64.const` it compares against needs a
+           MULTI-BYTE sleb128 encoding — the exact place a sign-extension miscompile hides (a truncated /
+           wrongly sign-extended constant would compare against the wrong 64-bit value and mis-dispatch).
+           `classify` probes `5000000000` and `-5000000000` (both past the i32 range) against a runtime
+           `n`. Built from a runtime arg so the match cannot fold: n=5000000000 hits the positive-wide arm
+           → 111; n=-5000000000 hits the negative-wide arm → 222; n=0 (and any near-miss like
+           5000000001) falls through → 0. Pins that a wide/negative i64 literal in PATTERN position
+           encodes its comparison constant with correct sleb128 sign-extension. Expected (n=5000000000):
+           111.")
+  (input  (do
+            (def (classify (: n Int64))
+              (match n
+                (5000000000 111)
+                (-5000000000 222)
+                (_ 0)))
+            (def (main (: n Int64)) (classify n))
+            (export main)))
+  (call   main (: 5000000000 Int64)) (output (: 111 Int64)))
+
+(case "a wide NEGATIVE integer literal pattern matches its runtime scrutinee"
+  (doc    "The negative-arm companion of the wide-literal case above, selecting the OTHER wide arm to pin
+           the negative multi-byte sleb128 path independently: the same `classify` called with
+           `-5000000000` hits the `-5000000000` arm → 222. A sign-extension bug in the negative wide
+           `i64.const` would compare against a wrong value and fall through to 0. Expected: 222.")
+  (input  (do
+            (def (classify (: n Int64))
+              (match n
+                (5000000000 111)
+                (-5000000000 222)
+                (_ 0)))
+            (def (main (: n Int64)) (classify n))
+            (export main)))
+  (call   main (: -5000000000 Int64)) (output (: 222 Int64)))
+
 (case "an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee"
   (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected + #Bindings Introduced By A
            Pattern Are Scoped To Its Branch: a bare name pattern `k` matches anything and binds

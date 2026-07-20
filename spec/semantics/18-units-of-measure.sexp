@@ -2111,6 +2111,46 @@
   (call   main (: 5 Int64))
   (output (: 1 Int64)))
 
+; --- Quantity as a List element: heap round-trip through List.at ----------------------------------
+; The Map-value cases pin a quantity read back from a Map; these pin the List analogue — a quantity
+; stored in a runtime List and read back via `List.at` (→ Option), then unwrapped. A quantity erases
+; to its inner scalar, so a List of quantities boxes/reads each element through the heap list cells,
+; and the retrieved quantity must decode back to the stored magnitude. Covers the general runtime
+; path (a runtime-parameter magnitude) and the narrow-Int inner (the i32↔i64 box extend/narrow).
+
+(case "a runtime quantity stored in a List reads back through List.at and unwraps"
+  (doc    "`(List.at (list (Qty.of v km) (Qty.of (+ v 1) km)) 1)` with `v` a runtime Int64: the list holds
+           two runtime quantities, `List.at 1` returns `(Some (Qty …))`, and `Qty.value` on the bound
+           quantity reads the stored magnitude. v=5 → index 1 is `(v+1) km` → 6. Pins a quantity as a
+           first-class List element that heap-round-trips (contrast the CONSTANT single-element list above,
+           which folds); the magnitude is a runtime parameter so the list decode runs, not a constant fold.")
+  (input  (do
+            (def (main (: v Int64))
+              (match (List.at (list (Qty.of v (Unit.prefix kilo (Unit.base #"meter")))
+                                    (Qty.of (+ v 1) (Unit.prefix kilo (Unit.base #"meter")))) 1)
+                ((Some q) (Qty.value q))
+                ((None) 0)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "a narrow-Int quantity stored in a List reads back through List.at and unwraps"
+  (doc    "The narrow-inner twin of the List round-trip: a `(Qty Int8 meter)` List element, read back via
+           `List.at 0` and unwrapped. A quantity over a narrow int erases to its inner i32 machine slot, but
+           the heap list boxes/reads an integer through an i64 cell, so a narrow value needs an i32→i64
+           EXTEND before the box and an i64→i32 NARROW after the read — the same peel-`Ty::Qty` the map-value
+           narrow case pins, exercised through the List element decode. The stored `100 meter` reads back and
+           unwraps to 100.")
+  (input  (do
+            (def (main)
+              (Qty.value
+                (match (List.at (list (Qty.of (Int8.of 100) (Unit.base #"meter"))
+                                      (Qty.of (Int8.of 50) (Unit.base #"meter"))) 0)
+                  ((Some q) q)
+                  ((None) (Qty.of (Int8.of 0) (Unit.base #"meter"))))))
+            (export main)))
+  (output (: 100 Int8)))
+
 ; --- Quantity joins: the same-unit flow and the explicit-conversion repair --------------------------
 ; 806e45ba9 fixed the mixed-unit join DIAGNOSTIC (a scale clash, not a shadowed declaration). These
 ; pin the join semantics around it, promoted from passing breaker probes: a same-unit join is ONE

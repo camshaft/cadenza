@@ -90,8 +90,6 @@ def purchase-linear() =
     Chor.Seq(Chor.Comm("Seller", "Buyer", "Quote"),
       Chor.Comm("Seller", "Shipper", "Ship")))
 
-def parties() = ["Buyer", "Seller", "Shipper"]
-
 @test
 def buyer-run-agrees-with-projection() =
   if consistent-role(purchase-linear(), "Buyer") then unit

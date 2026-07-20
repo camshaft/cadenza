@@ -5184,6 +5184,65 @@ fn a_concat_built_list_map_key_is_found_by_a_push_built_equal_key() {
     );
 }
 
+/// The SET twin of the list-key false-miss fix, at the EMPTY-collection element type. A concat-built list
+/// element inserted into a set (via an empty `Set.of (list)`, whose element type is an undetermined `Var`
+/// in the `SetInsert`/`SetContains` node field) must be FOUND by a push-built equal element at n≥33 — the
+/// same RRB shape-independence the Map-key case pins, on the Set element path. Before the fix here the Set
+/// path DECLINED to compile ("list-key canonicalization: key type has no bakeable shape descriptor"): the
+/// `key_needs_canonicalize` guard said YES from the element NODE's resolved `type_of` (`List Int64`), but
+/// `emit_key_canonicalize` baked the descriptor from the `Var` `elem_ty` FIELD and found no shape — the
+/// `box_op_for`-vs-`box_op_ty` node-aware family. The fix falls back to the node's resolved `type_of` in
+/// `emit_key_canonicalize` before declining, so the empty-`Set.of (list)` element canonicalizes exactly
+/// like a Map key or a pinned-type set element (the Map path already worked because `Map.empty`'s key type
+/// resolves through inference). `#[ignore]` — needs the debug-counters store (`cargo xtask build`/`codegen`).
+#[test]
+#[ignore]
+fn a_concat_built_list_set_element_is_found_by_a_push_built_equal_element() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[set-list-key] debug-counters runtime not in the store; skipping");
+        return;
+    };
+    // ELEMENT = concat(mk 1..20, mk 21..40) (RELAXED RRB, n=40); QUERY = mk 1..40 (STRICT). Inserted into an
+    // EMPTY `Set.of (list)` (Var-typed element field), queried by `Set.contains` → 42 when found, -1 when not.
+    let src = "(module m \
+                 (def (mk (: lo Int64) (: hi Int64) (: acc (List Int64))) \
+                    (if (< hi lo) acc (mk lo (- hi 1) (List.concat (list hi) acc)))) \
+                 (def (elem) (List.concat (mk 1 20 (list)) (mk 21 40 (list)))) \
+                 (def (query) (mk 1 40 (list))) \
+                 (def (main) \
+                    (if (Set.contains (Set.insert (Set.of (list)) (elem)) (query)) 42 (- 0 1))) \
+                 (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(42),
+        "a concat-built (relaxed RRB) list SET element must be found by a push-built equal element at n=40, \
+         even into an empty Set.of(list) (Var elem_ty) — the emit falls back to the node's resolved type to \
+         bake the descriptor (was a compile DECLINE: no bakeable shape for the Var elem field)"
+    );
+    // NEGATIVE control: a genuinely DIFFERENT list ([2..41] vs [1..40]) must be ABSENT — the fallback
+    // canonicalizes by ELEMENTS-in-order, it does not collapse distinct lists.
+    let neg_src = "(module m \
+                 (def (mk (: lo Int64) (: hi Int64) (: acc (List Int64))) \
+                    (if (< hi lo) acc (mk lo (- hi 1) (List.concat (list hi) acc)))) \
+                 (def (elem) (List.concat (mk 1 20 (list)) (mk 21 40 (list)))) \
+                 (def (other) (mk 2 41 (list))) \
+                 (def (main) \
+                    (if (Set.contains (Set.insert (Set.of (list)) (elem)) (other)) 42 (- 0 1))) \
+                 (export main))";
+    let neg = compile_component(&crate::codec::encode(&parse(neg_src))).expect("compile");
+    let mut rt_neg = ComposedRuntime::new(&neg, &runtime_bytes);
+    assert_eq!(
+        rt_neg.call("main", &[]),
+        Val::S64(-1),
+        "a different list element must NOT be found — canonicalize compares by elements, not over-match"
+    );
+}
+
 /// A rope String NESTED IN A COMPOUND compares EQUAL to its flat twin — the nested-leaf face of the
 /// rope-eq miscompile. The value heap is TAGLESS, so `champ_eq`'s structural walk compares a nested leaf
 /// by its PHYSICAL raw bytes and cannot know a child is a rope (vs a compound); without a fix a rope
@@ -8309,6 +8368,47 @@ fn a_genuinely_recursive_pqueue_insert_declines_cleanly_never_folds_the_wrong_en
                 );
             }
         }
+    }
+}
+
+/// A deferred resume-thunk filed into a pqueue entry by a NON-RECURSIVE helper `mk1`, then popped+applied by
+/// `sched-step` — the direct-helper (non-recursive) companion of the recursive-`pins` reach. `main` performs
+/// `(sched-step (mk1 wake (KBox (fn (_u) (resume unit wake)))))`: the fold reduces the outer `sched-step`
+/// (arm a) to `(match (mk1 wake kb) …)`, then arm (a′) reduces the nested `(mk1 …)` scrutinee to its
+/// `(PQCons (tuple wake kb PQNil))` body so `fold_ctor_match` pops it, exposing the boxed continuation that
+/// resumes the wake-seeded clock → 5e9. Regression pin for arm (a′): before it, the nested helper call in the
+/// scrutinee stayed unreduced so the pop's binders resolved Poison and the fold declined "not yet reducible"
+/// (v-inference isolated this on trunk 4a08a8a48 — a NON-recursive helper reproduces the same decline the
+/// recursive `pins` did, proving the first blocker was a nested-scrutinee call left unreduced before the pop,
+/// NOT the recursion or the inner-match Ref-peel). Both backends agree (a compile-time fold to a constant).
+#[test]
+fn a_deferred_resume_thunk_filed_by_a_nonrecursive_helper_and_popped_folds() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (type Instant (Instant UInt64)) \
+        (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n))) \
+        (type KBox (KBox (-> Unit Unit))) \
+        (type PQ PQNil (PQCons (Tuple Instant KBox PQ))) \
+        (def (mk1 (: t Instant) (: kb KBox)) (PQ.PQCons (tuple t kb (PQ.PQNil ())))) \
+        (def (sched-step (: q PQ)) \
+          (match q \
+            ((PQ.PQNil _) unit) \
+            ((PQ.PQCons (tuple wake kb rest)) (match kb ((KBox.KBox k) (k unit)))))) \
+        (effect Sim (op sleep (-> Instant Unit)) (op now (-> Unit Instant))) \
+        (def (main) \
+          (handle Sim (Instant.Instant 0) \
+            ( (now (u) s (resume s s)) \
+              (sleep (wake) s (sched-step (mk1 wake (KBox.KBox (fn (_u) (resume unit wake))))))) \
+            (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "a deferred resume-thunk filed by a non-recursive helper then popped must fold (arm a′)",
+    );
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(
+            v, "5000000000",
+            "the boxed continuation filed by mk1 resumes the wake-seeded clock (5e9) after the pop"
+        );
     }
 }
 
@@ -18326,6 +18426,48 @@ mod match_engine {
     }
 
     #[test]
+    fn a_same_name_ctor_in_a_called_helper_resolves_to_the_constructor() {
+        // FACE B of the breaker's `adv-same-name-ctor-hijacked-by-type`: a smart-constructor helper
+        // `(def (mk a) (Meters a))` that main CALLS. When `mk` is inlined/β-copied at the call site its
+        // body `(Meters a)` becomes a SYNTH node (id ≥ user_node_count) in value head position, so the
+        // `is_user_node` gate wrongly left `Meters` the TYPE → spurious CDZ0203. A MONOMORPHIC same-name
+        // sum has no `sum_applied` synth type-expr to confuse, so `resolve_name` now also fires the ctor
+        // rule on a synth node when the sum is monomorphic (`same_name_monomorphic_ctor` + not a type-expr
+        // subtree). Must construct + run — `mk(4)` builds `(Meters 4)`, popped `+ 1` → 5.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Meters (Meters Int64)) \
+                       (def (mk a) (Meters a)) \
+                       (def (main) (match (mk 4) ((Meters v) (+ v 1)))) (export main))"
+                ),
+                "main"
+            ),
+            5
+        );
+    }
+
+    #[test]
+    fn a_generic_same_name_ctor_is_still_a_type_constructor_in_type_position() {
+        // GUARD the monomorphic-only scope: a GENERIC same-name sum `(type Box (Box a))` must NOT have its
+        // synth `sum_applied` type-expr `(Box a)` flipped to the ctor by the FACE-B relaxation (that synth
+        // heads a list in TYPE position and must stay the type record — else the ctor arrow corrupts and the
+        // variant reads nullary). A DIRECT generic construct still works via the `is_user_node` arm; here we
+        // pin that the generic construct + match composes (the relaxation is monomorphic-gated, so `Box` is
+        // untouched by `same_name_monomorphic_ctor`).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Box (Box a)) \
+                       (def (main) (match (Box 7) ((Box v) (+ v 1)))) (export main))"
+                ),
+                "main"
+            ),
+            8
+        );
+    }
+
+    #[test]
     fn a_same_name_newtype_name_is_still_a_type_in_annotation_position() {
         // The same name in a NON-head position stays the TYPE: `(: (UserId 5) UserId)` uses `UserId` as
         // the constructor (head of `(UserId 5)`) AND as the type annotation (non-head) — both resolve
@@ -23447,17 +23589,29 @@ mod match_engine {
             "main"
         ));
         // A Symbol compared to the plain String it wraps is a nominal-boundary type error (CDZ0202), on
-        // either operand order — NOT the generic CDZ0203, and NOT silently `false`.
-        assert_eq!(
-            reject_code("(module m (def (main) (= \"x\" (Symbol.of \"x\"))) (export main))")
-                .as_deref(),
-            Some("CDZ0202")
-        );
-        assert_eq!(
-            reject_code("(module m (def (main) (= (Symbol.of \"x\") \"x\")) (export main))")
-                .as_deref(),
-            Some("CDZ0202")
-        );
+        // either operand order — NOT the generic CDZ0203, and NOT silently `false`. The reject now carries
+        // a WRAP fix that interns the STRING operand into a Symbol via the total `Symbol.of` (bringing both
+        // sides to Symbol) — the Symbol twin of the newtype-unwrap fix, so the diagnostic is actionable.
+        for src in [
+            "(module m (def (main) (= \"x\" (Symbol.of \"x\"))) (export main))",
+            "(module m (def (main) (= (Symbol.of \"x\") \"x\")) (export main))",
+        ] {
+            let d = reject_full(src).expect("Symbol-vs-String must reject");
+            assert_eq!(d.code.as_deref(), Some("CDZ0202"), "src: {src}");
+            let fix = d
+                .fix
+                .expect("the Symbol-vs-String reject carries a `Symbol.of` wrap fix");
+            assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+            assert_eq!(
+                fix.replacement,
+                format!("(Symbol.of {})", crate::abi::WRAP_HOLE),
+                "wraps the String operand in `Symbol.of`: {src}"
+            );
+            assert!(
+                !fix.verified,
+                "the author may have meant to compare as strings instead → heuristic"
+            );
+        }
     }
 
     /// `Symbol.of` on a GENUINELY-RUNTIME string interns by CANONICALIZING its bytes — a Symbol is a String
@@ -28457,6 +28611,49 @@ mod match_engine {
                 .iter()
                 .any(|d| d.message == crate::diag::NOT_APPLYABLE_DECLINE),
             "the 'value is not applyable' decline must not accompany the coded reject"
+        );
+    }
+
+    #[test]
+    fn an_ill_typed_try_operand_reports_one_error_not_a_shadowing_constant_decline() {
+        // A `?` on a non-fallible operand (`(try 3.14)`) must be ONE primary `error:` — the coded CDZ0203
+        // `?` operand must be a fallible `Result`/`Option`, found Float64 — NOT that reject PLUS the emit
+        // path's uncoded "the ?/try operator lowers only a constant operand yet" decline. The ill-typed
+        // operand's non-sum CONSTANT core misses the `Resolved::Try` `SumNew` fold arm in `lower`, so the
+        // decline fired alongside the CDZ0203 — and misleadingly, since the operand IS constant (its problem
+        // is the TYPE). `dedup_faults`'s `has_try_non_fallible_reject` gate drops the decline when the CDZ0203
+        // is present. (A genuinely-RUNTIME fallible operand — no CDZ0203 — keeps its honest BRICK-3b decline;
+        // that path is covered by the runtime-`?`-declines corpus/behavior, not suppressed here.)
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse("(module m (def (main) (try 3.14)) (export main))")),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "an ill-typed `?` operand = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(
+            errors[0].code.as_deref(),
+            Some("CDZ0203"),
+            "the surviving error is the coded non-fallible-operand reject: {}",
+            errors[0].message
+        );
+        assert!(
+            !out.diagnostics.iter().any(|d| d
+                .message
+                .starts_with(crate::diag::TRY_RUNTIME_OPERAND_DECLINE_PREFIX)),
+            "the misleading 'lowers only a constant operand yet' decline must not accompany the CDZ0203"
         );
     }
 

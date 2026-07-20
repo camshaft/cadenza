@@ -202,11 +202,22 @@ def read-2nd-arg(s: String, k: Int64, bodyId: Int64, argId: Int64, tree: Tree) =
        (id, a3, record-arg2(t2, id, arg2Id)))))
 
 /// A prefix binary op `(sym a b)`: read two operands + emit `NBin(op-code-of(sym), a, b)`.
+///
+/// UNARY MINUS `(- x)`: a `-` head with EXACTLY ONE operand is prefix negation → desugar to `NBin(45, NLit 0,
+/// x)` = `0 - x` (mirroring parse-db's token-level `TNeg` desugar — same Core shape, no new node). The
+/// reference runs `(- 5)`→-5, `(- (+ 2 3))`→-5, `(- (- 5))`→5; the s-expr reader previously DECLINED these
+/// (read-bin-form unconditionally read a 2nd operand, so a 1-operand `-` mis-read the `)` / ran off). Only `-`
+/// (op 45) desugars — any OTHER op with one operand keeps reading a 2nd operand (an arity error, unchanged);
+/// binary `(- a b)` is unaffected (a 2nd operand is present, so the unary arm doesn't fire).
 def read-bin-form(s: String, sym: String, a0: Int64, tree: Tree) =
   (match read-form(s, a0, tree) with | (leftId, a1, t1) =>
-    (match read-form(s, a1, t1) with | (rightId, a2, t2) =>
-      (let a3 = close-paren(s, a2) in
-       (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a3, t3)))))
+    (if ((op-code-of(sym) == 45) and (char-at(s, skip-space(s, a1)) == ")"))
+     then (let a3 = close-paren(s, a1) in                          // unary minus: `(- x)` → `0 - x`
+           (match add-node(t1, Node.NLit(0)) with | (zeroId, t2) =>
+             (match add-node(t2, Node.NBin(45, zeroId, leftId)) with | (id, t3) => (id, a3, t3))))
+     else (match read-form(s, a1, t1) with | (rightId, a2, t2) =>
+            (let a3 = close-paren(s, a2) in
+             (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a3, t3))))))
 
 /// After `(:` (index `i` past the `:` head): a TYPE ANNOTATION `(: <literal> TypeName)` — the range-check
 /// an integer annotation performs. This slice (2a-ii) handles a LITERAL operand at a fixed-width integer
@@ -521,6 +532,27 @@ def sr-subtraction-still-binop() =
   // by read-paren-form → read-app-or-bin. So subtraction is unaffected by the negative-literal arm.
   (match read-source("(- 0 5)") with | (root, tree) =>
     (if is-bin-op(tree, root, 45) then unit else trap("(- 0 5) is a subtraction Bin (op 45), not a negative literal")))
+
+@test
+def sr-unary-minus-desugars-to-sub() =
+  // "(- 5)" → NBin(45, NLit 0, NLit 5): unary minus (a `-` head with ONE operand) desugars to `0 - 5`
+  // (mirroring parse-db's TNeg desugar). The reference runs `(- 5)`→-5; the reader previously declined it.
+  (match read-source("(- 5)") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NBin(op, l, r)) =>
+        (if op == 45 then (if is-lit(tree, l, 0) then (if is-lit(tree, r, 5) then unit else trap("right operand NLit 5")) else trap("left operand NLit 0")) else trap("op is - (45)"))
+      | _ => trap("(- 5) is a subtraction Bin `0 - 5`")))
+
+@test
+def sr-binary-sub-not-treated-as-unary() =
+  // GUARD the other direction: `(- 10 3)` has TWO operands → stays binary subtraction NBin(45, NLit 10,
+  // NLit 3), NOT the unary `0 - 10` desugar (the unary arm only fires when a `)` immediately follows the
+  // first operand).
+  (match read-source("(- 10 3)") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NBin(op, l, r)) =>
+        (if op == 45 then (if is-lit(tree, l, 10) then (if is-lit(tree, r, 3) then unit else trap("right NLit 3")) else trap("left NLit 10")) else trap("op is - (45)"))
+      | _ => trap("(- 10 3) is binary subtraction")))
 
 @test
 def sr-true() =

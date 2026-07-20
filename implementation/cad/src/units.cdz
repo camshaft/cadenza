@@ -105,4 +105,16 @@ def v3-mm-builds-a-millimetre-vector() =
   match v with | Vec3.V3(x, y, z) =>
     if x == ri(10) then (if y == ri(20) then (if z == ri(30) then unit else trap("z")) else trap("y")) else trap("x")
 
+@test
+def display-in-cm-and-foot-is-exact() =
+  // display-in was only pinned for inch (a_length_round_trips_mm_to_inch) and mm (as-mm-wraps...); pin the
+  // cm + foot OUTPUT edge too, so a display-direction conversion-factor regression on those units can't slip.
+  // 30 mm displays as exactly 3 cm; 1524/5 mm (= 1 foot) displays as exactly 1 foot. Dual of cm/foot-converts.
+  let thirty-mm = cm(ri(3)) in                    // 30 mm, stored bare
+  let a-foot-in-mm = foot(ri(1)) in               // 1524/5 mm, stored bare
+  if (display-in(thirty-mm, Unit.of(#"centimeter")) : Rational) == ri(3) then
+    (if (display-in(a-foot-in-mm, Unit.of(#"foot")) : Rational) == ri(1) then unit
+     else trap("1524/5 mm displays as exactly 1 foot"))
+  else trap("30 mm displays as exactly 3 cm")
+
 export { ri, mm, cm, m, inch, foot, v3-mm, as-mm }

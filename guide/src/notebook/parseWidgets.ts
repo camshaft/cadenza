@@ -152,7 +152,13 @@ function parseLine(raw: string): Widget | string {
       // fall back to the sensible default (1 for Int64, 1/100 of the range for Float64).
       const declaredStep = num(named.get("step"));
       const step = declaredStep !== undefined && declaredStep > 0 ? declaredStep : type === "Int64" ? 1 : (max - min) / 100;
-      const def = num(named.get("default")) ?? min;
+      // A declared `default` OUTSIDE [min, max] is a footgun: the <input type=range> pins its thumb to the
+      // nearest edge, but React state (and the initial spliced `def name = <value>` literal + the shown
+      // value) would keep the out-of-range number — so the FIRST render runs a value the slider can never
+      // reproduce, and the first drag jumps. CLAMP it into range (mirrors the dropdown analog, where a
+      // default not in `options` falls back to a valid option). An omitted default is `min`, as before.
+      const declaredDef = num(named.get("default"));
+      const def = declaredDef === undefined ? min : Math.min(max, Math.max(min, declaredDef));
       return { name, type, control: "slider", min, max, step, default: def };
     }
     case "number": {

@@ -605,6 +605,30 @@ impl<'a> Parser<'a> {
         docs
     }
 
+    /// Move the `///` DOC leads at leading slot `from` to the FRONT of slot `to` (leaving `//`
+    /// comments at `from` untouched). Used by the `@` annotation arm to carry a doc that preceded
+    /// the annotation down to the annotated FORM's slot, so a documentable inner form
+    /// (`def`/`type`/`effect`/`module`) drains it as a `(doc …)` — matching a doc written directly
+    /// before an UNannotated def. Without this the docs sit at the `@` slot, never seen by the inner
+    /// def parser (which runs after `@name`), and `stmt` downgrades them to a `(comment …)` (`//`).
+    /// A no-op when `from`/`to` are out of range or equal. Composes through stacked `@a @b def …`:
+    /// each arm carries the docs one slot inward until the def drains them.
+    fn carry_docs(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.leading.len() || to >= self.leading.len() {
+            return;
+        }
+        let (docs, comments): (Vec<Lead>, Vec<Lead>) = std::mem::take(&mut self.leading[from])
+            .into_iter()
+            .partition(|l| l.doc);
+        self.leading[from] = comments;
+        if docs.is_empty() {
+            return;
+        }
+        let mut merged = docs;
+        merged.append(&mut self.leading[to]);
+        self.leading[to] = merged;
+    }
+
     /// Parse a statement (a top-level form / module member): capture any leading `//` comments and
     /// wrap the parsed form in `(comment "text" node)`, outermost = first. Leading `///` docs are
     /// left in place for a def/module parser to splice inside; any docs a non-def form leaves behind
@@ -1047,6 +1071,7 @@ impl<'a> Parser<'a> {
             // the rest. Stacked annotations nest, since the wrapped form is itself parsed in prefix
             // position: `@a @b def …` -> `(@ a (@ b (def …)))`.
             Kind::At => {
+                let at_pos = self.pos; // slot holding any `///` docs that preceded the annotation
                 self.bump(); // `@`
                 let head = self.name("@", span);
                 let name = if self.at(Kind::Ident) {
@@ -1077,10 +1102,24 @@ impl<'a> Parser<'a> {
                     self.error("expected an annotation name after `@`");
                     self.error_node(self.cur_span())
                 };
+                // A `///` doc that preceded the annotation belongs to the item BELOW it (the def), not
+                // the `@` sigil. Carry those docs onto the annotated form's slot so the inner
+                // def/type/effect/module drains them as `(doc …)` — matching a doc before an
+                // unannotated def. Without this they sit at the `@` slot, unseen by the inner def
+                // parser, and `stmt` downgrades them to a `(comment …)` (`//`) — the annotated-def
+                // doc-loss bug. Composes through stacked `@a @b def …`: the inner `@`'s recursion
+                // carries them one more slot to the def.
+                let form_pos = self.pos;
+                self.carry_docs(at_pos, form_pos);
                 // The annotated form parses in PREFIX position (no postfix): a following juxtaposed
                 // top-level form that begins with `(` must not be swallowed as a call of the def. A
                 // `def`/other keyword dispatches to its full form; a nested `@` recurses here.
                 let form = self.prefix();
+                // If the form was NOT documentable (no def/type/effect/module drained the carried
+                // docs), they still sit at `form_pos` and would be silently DROPPED. Move them back to
+                // the `@` slot so `stmt`'s leftover-drain re-wraps them as `(comment …)` — preserving
+                // the pre-fix behavior (a downgrade, not a loss) for `@ann (expr)` with no def below.
+                self.carry_docs(form_pos, at_pos);
                 let full = span.merge(self.prev_span());
                 self.list(vec![head, name, form], full)
             }

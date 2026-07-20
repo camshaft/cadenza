@@ -2546,6 +2546,28 @@
             (export main)))
   (call main (: 40 Int64)) (output (: 42 Int64)))
 
+(case "a MULTI-LEVEL concat-built list SET element (n>=33) is found by a push-built equal element"
+  (doc    "The SET-element twin of the map-KEY case above, at the EMPTY-collection element type. A
+           concat-built list element (RELAXED interior RRB nodes at n>=33) inserted into an empty
+           `(Set.of (list))` — whose SetInsert/SetContains element-type field is an undetermined Var — must
+           be FOUND by a push-built equal element (a strict trie): `(Set.contains (Set.insert (Set.of (list))
+           concat-elem) push-elem)` → 42, requiring the set key path to canonicalize the element by its
+           elements-in-order, not its physical RRB shape (spec collections-and-text §a key's identity is
+           construction-independent). Was a compile DECLINE on the Set path (the canonicalize guard fired
+           from the element node's resolved List type, but the emit baked the descriptor from the empty
+           set's Var element-type field and found no shape); the emit now falls back to the node's resolved
+           type, so the empty-`Set.of (list)` element canonicalizes like the Map key. n=40 (>32).")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (main (: n Int64))
+              (let ((half (/ n 2))
+                    (concat-elem (List.concat (build 0 half (list)) (build half n (list))))
+                    (push-elem (build 0 n (list))))
+                (if (Set.contains (Set.insert (Set.of (list)) concat-elem) push-elem) 42 (- 0 1))))
+            (export main)))
+  (call main (: 40 Int64)) (output (: 42 Int64)))
+
 (case "a concat-built list = a push-built list with the same elements (element-wise, shape-independent, n>=33)"
   (doc    "The standalone `=` companion of the list-KEY case above. Two lists with the SAME elements built two
            ways — `concat-list = List.concat(build 0..half, build half..n)` (RELAXED interior RRB nodes at

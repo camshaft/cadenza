@@ -1962,6 +1962,28 @@
   (call   main (: -1 Int64))
   (trap   "unreachable"))
 
+(case "an @ensures on a recursive def is re-checked at every EXIT including self-call returns (not only the outermost)"
+  (doc    "The @ensures twin of the recursive-@requires case above — the exit-side per-entry pin, with a
+           DISCRIMINATING shape. `@ensures` wraps the body as `(let ((ret BODY)) (if Q ret (trap …)))` INSIDE
+           the def, so a recursive def re-checks the postcondition on EVERY exit, including each self-call
+           return — not only the outermost. `f` with `@ensures (>= ret 0)`: `f 0 = 5` (ok, the control); `f 1
+           = (- (f 0) 10) = -5` (VIOLATES); `f 2 = (+ (f 1) 10) = 5` — the OUTERMOST result 5 satisfies, but
+           reaching it recurses through `f 1` whose exit value `-5` fails `(>= ret 0)`, so the per-exit check
+           traps at that inner return BEFORE `f 2` ever returns. A postcondition read only at the outermost
+           call would wrongly return 5; the per-exit check traps `unreachable`. Pins that the rewrite composes
+           with recursion on the exit side (a tail/accumulator transform must keep the per-exit check).")
+  (input  (do
+            (@ (ensures (>= ret 0))
+              (def (f (: n Int64))
+                (if (<= n 0) 5
+                  (if (= n 1) (- (f 0) 10) (+ (f (- n 1)) 10)))))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 5 Int64))
+  (call   main (: 2 Int64))
+  (trap   "unreachable"))
+
 (case "an EFFECTFUL @requires predicate performs under the caller's handler and advances its state before the body"
   (doc    "The predicate `(> (Counter.bump) 0)` PERFORMS an operation, so the injected body-entry check is
            itself effectful: it must route to the dynamically-enclosing handler and its state advance must

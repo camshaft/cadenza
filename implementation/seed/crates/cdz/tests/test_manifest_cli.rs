@@ -1985,6 +1985,88 @@ fn a_mirrored_spelling_requires_constrains_generation_to_the_window() {
     );
 }
 
+/// A RELATIONAL two-parameter `@requires (< a b)` constrains generation by REJECTION SAMPLING, not a
+/// per-param clamp: a relation between two params cannot be satisfied by clamping either in isolation, so the
+/// generator re-draws until `a < b` holds. Before this, the two params were drawn independently, `a >= b`
+/// occurred, the (D) body-entry precondition trap fired, and the runner reported a spurious `f(0, 0)`. The
+/// body always returns, so the ONLY way it can fail is a pre-trap on an out-of-domain draw — a PASS proves
+/// every drawn pair satisfied `a < b`. No store needed (scalar Int params). Pins the relational analogue of
+/// the single-param constrained-gen fix.
+#[test]
+fn a_relational_two_param_requires_constrains_generation_by_rejection_sampling() {
+    let d = dir("requires-relational");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(a < b)\n\
+         @test def rel(a: Int64, b: Int64) = if a < b then unit else trap(\"generated a >= b despite @requires(a < b)\")\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok,
+        "a relational @requires(a < b) generates only in-domain pairs so the property passes (no spurious pre-trap): {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS rel (100 trials)"),
+        "the relational-@requires property passes all trials — every drawn pair satisfied a < b: {stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL rel"),
+        "the relational @requires'd property must NOT spuriously fail on an out-of-domain (a >= b) draw: {stdout}"
+    );
+}
+
+/// A GENUINELY-failing property over a relational `@requires (< a b)` def must still FAIL — and its
+/// counterexample must stay IN-DOMAIN (`a < b`), because the shrink step preserves the relation (it must not
+/// shrink `b` toward 0 in a way that makes `a >= b`, which would masquerade the pre-trap as "still fails").
+/// The body traps whenever `a < b` (always true in-domain), so it fails on the first trial; the reported
+/// counterexample must satisfy `a < b`. Pins that the relation is enforced through generation AND shrinking.
+#[test]
+fn a_failing_relational_requires_property_reports_an_in_domain_counterexample() {
+    let d = dir("requires-relational-fail");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(a < b)\n\
+         @test def rel(a: Int64, b: Int64) = if a < b then trap(\"always trips in domain\") else unit\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        !ok,
+        "a body that traps for every in-domain (a < b) pair must FAIL the property: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("FAIL rel"),
+        "the relational property reports a genuine failure: {stdout}"
+    );
+    // The counterexample line is `rel(A, B)` — parse A and B and assert A < B (the relation held through
+    // shrinking, so the reported witness is in-domain, not a spurious out-of-domain pre-trap).
+    let cx = stdout
+        .lines()
+        .find(|l| l.contains("counterexample: rel("))
+        .unwrap_or_else(|| panic!("no counterexample line: {stdout}"));
+    let inside = cx
+        .split("rel(")
+        .nth(1)
+        .and_then(|s| s.split(')').next())
+        .unwrap_or_else(|| panic!("malformed counterexample: {cx}"));
+    let mut parts = inside.split(',').map(|p| p.trim().parse::<i64>());
+    let a = parts
+        .next()
+        .unwrap()
+        .unwrap_or_else(|_| panic!("bad a in {cx}"));
+    let b = parts
+        .next()
+        .unwrap()
+        .unwrap_or_else(|_| panic!("bad b in {cx}"));
+    assert!(
+        a < b,
+        "the reported counterexample rel({a}, {b}) must stay IN-DOMAIN (a < b) — shrink preserved the relation: {cx}"
+    );
+}
+
 #[test]
 fn cdz_test_on_a_compiled_wasm_gives_an_actionable_diagnostic_not_zero_tests_found() {
     // `cdz test foo.wasm` (a COMPILED component passed by mistake) must NOT surface the misleading

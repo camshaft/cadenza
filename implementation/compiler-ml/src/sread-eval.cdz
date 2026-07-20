@@ -57,6 +57,20 @@ def se-negative-literal-in-let-and-cmp() =
     | Option.None(_) => trap("negative literal in let runs"))
 
 @test
+def se-unary-minus() =
+  // (- 5) → -5: unary minus (a `-` head with one operand) desugars to `0 - 5` and evaluates. The reference
+  // runs this to -5; the s-expr reader previously DECLINED it (read-bin-form required two operands).
+  (match run-src("(- 5)") with | Option.Some(v) => (if v == (0 - 5) then unit else trap("(- 5) = -5")) | Option.None(_) => trap("unary minus runs"))
+
+@test
+def se-double-negation-and-unary-of-expr() =
+  // (- (- 5)) → 5 (double negation) and (- (+ 2 3)) → -5 (unary minus of a sub-expression) — both match
+  // the reference, both compose through the desugar.
+  (match run-src("(- (- 5))") with
+    | Option.Some(v) => (if v == 5 then unit else trap("(- (- 5)) = 5"))
+    | Option.None(_) => trap("double negation runs"))
+
+@test
 def se-comparison() =
   // (< 1 2) → 1 (Bool true encoded 0/1).
   (match run-src("(< 1 2)") with | Option.Some(v) => (if v == 1 then unit else trap("1<2=1")) | Option.None(_) => trap("runs"))

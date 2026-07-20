@@ -4453,6 +4453,37 @@ mod tests {
     }
 
     #[test]
+    fn completion_on_a_mid_edit_ml_buffer_recovers_a_partial_set() {
+        // The `completions_at` doc distinguishes the two totality branches: on the ML surface the reader
+        // RECOVERS, so a mid-edit buffer (a complete def followed by a half-typed reference) still yields a
+        // PARTIAL candidate set from the recovered tree — the earlier `helper` def is offered even though
+        // the last line `def main() = hel` is unfinished. Pin the non-empty recovery so the "partial set"
+        // claim can't silently degrade to the empty s-expr-hard-fail branch (the pr397 doc/code contract).
+        let text = "def helper(n: Int64) -> Int64 = n + 1\ndef main() = hel";
+        // Cursor at the end of the half-typed `hel` on line 1 (col 16).
+        let items = completions_at(text, true, Position::new(1, 16));
+        assert!(
+            items.iter().any(|i| i.label == "helper"),
+            "ML recovery should still offer the earlier `helper` def as a candidate, got: {:?}",
+            items.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn completion_on_a_hard_failing_sexpr_buffer_is_empty_not_a_panic() {
+        // The other totality branch: an s-expr buffer that HARD-fails to parse has no recovered tree to
+        // read `Symbols`/`ScopeAt` from, so completions are EMPTY (never a panic). This is the exact
+        // behavior the `completions_at` doc promises for the s-expr surface — pinned so a future reader
+        // change can't turn an empty answer into a crash or a stale-tree candidate set.
+        let items = completions_at("(def (f x", false, Position::new(0, 6));
+        assert!(
+            items.is_empty(),
+            "a hard-failing s-expr buffer yields no candidates, got: {:?}",
+            items.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn imported_names_reads_the_named_list_clauses() {
         // `imported_names` returns each `(import "path" (name…))` clause's package + bound names — the
         // source of the imported completion candidates. A `(do …)` root with two imports.

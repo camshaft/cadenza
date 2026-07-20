@@ -5517,6 +5517,62 @@ mod tests {
     }
 
     #[test]
+    fn doc_before_annotated_def_stays_a_doc_not_downgraded_to_comment() {
+        // A `///` doc before an `@`-ANNOTATED def belongs to the def below the annotation, so the
+        // reader CARRIES it across the `@name` onto the def's slot, where def_expr drains it into a
+        // `(doc …)`. Without the carry the docs sat at the `@` slot (unseen by def_expr, which runs
+        // after `@name`) and `stmt` downgraded them to a `(comment …)` — the annotated-def doc-loss
+        // bug (dense `/// section-divider` files before `@test` defs lost most of their docs on fmt).
+        // Verified against a plain-def control (already worked) + a STACKED-annotation case.
+        for (src, label) in [
+            (
+                "/// Doc before annotated def.\n@test\ndef b() -> Bool = true",
+                "single annotation",
+            ),
+            (
+                "/// Stacked doc.\n@inline-always\n@test\ndef c() -> Bool = true",
+                "stacked annotations",
+            ),
+            (
+                "/// Tagged.\n@tag(\"slow\")\ndef d() -> Int64 = 5",
+                "call-style annotation",
+            ),
+        ] {
+            let a = parser::read_ml(src);
+            assert!(a.ok(), "[{label}] parse: {:?}", a.errors);
+            let sexpr = crate::sexpr::print(&a.arenas);
+            assert_eq!(
+                sexpr.matches("(doc ").count(),
+                1,
+                "[{label}] the `///` should be a `(doc …)` node: {sexpr}"
+            );
+            assert_eq!(
+                sexpr.matches("(comment ").count(),
+                0,
+                "[{label}] no `///` downgraded to `(comment …)`: {sexpr}"
+            );
+            let printed = print(&a.arenas, 100);
+            let doc_lines = printed
+                .lines()
+                .filter(|l| l.trim_start().starts_with("///"))
+                .count();
+            let comment_lines = printed
+                .lines()
+                .filter(|l| {
+                    let t = l.trim_start();
+                    t.starts_with("//") && !t.starts_with("///")
+                })
+                .count();
+            assert_eq!(doc_lines, 1, "[{label}] doc re-prints as `///`: {printed}");
+            assert_eq!(comment_lines, 0, "[{label}] no `//` downgrade: {printed}");
+            // Idempotent across a second fmt pass.
+            let b = parser::read_ml(&printed);
+            assert!(b.ok(), "[{label}] reparse: {:?}", b.errors);
+            assert_eq!(print(&b.arenas, 100), printed, "[{label}] not idempotent");
+        }
+    }
+
+    #[test]
     fn minimal_parens() {
         // precedence: * binds tighter than +, so no parens; but (1 + 2) * 3 needs them
         assert_eq!(assert_roundtrip("(1 + 2) * 3", 80), "(1 + 2) * 3");

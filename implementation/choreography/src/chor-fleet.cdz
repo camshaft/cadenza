@@ -103,7 +103,7 @@ def fleet-is-projectable() =
 
 @test
 def fleet-no-unprojectable-role() = match unprojectable-role(fleet-roles(), fleet-integrate()) with
-  | Option.Some(q) => trap("no role should be un-projectable in FleetIntegrate")
+  | Option.Some(_q) => trap("no role should be un-projectable in FleetIntegrate")
   | Option.None(_) => unit
 
 @test

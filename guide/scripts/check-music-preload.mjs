@@ -36,6 +36,29 @@ const { injectImport, MUSIC_PRELOAD_NAMES, MUSIC_LIB_FORMAT } = await import(pat
 const { parseMidiEvents, isBalanced } = await import(pathToFileURL(join(guideRoot, "src/music/midiEvents.ts")).href);
 const { EXAMPLES } = await import(pathToFileURL(join(guideRoot, "src/music/examples.ts")).href);
 
+// Vacuous-pass floors: `EXAMPLES` and `MUSIC_PRELOAD_NAMES` are IMPORTED, so a rename/empty-export/bad
+// filter could resolve either to `[]` — then the per-showcase compile loop below never runs and this
+// gate reports success on nothing (a false green shipping an unverified /music). The specific-slug guards
+// (piece-to-events, value-pins) catch some of that, but a floor on the input sets makes an empty import
+// FAIL outright. /music ships 3 showcases preloaded against ≥1 music lib. (Mirrors the floors in
+// check-examples.mjs / check-prose-annotations.mjs.)
+if (!Array.isArray(EXAMPLES) || EXAMPLES.length < 3) {
+  console.error(
+    `\n✗ music-preload conformance FAILED — expected ≥3 /music showcases in src/music/examples.ts, ` +
+      `found ${Array.isArray(EXAMPLES) ? EXAMPLES.length : typeof EXAMPLES}; the EXAMPLES import likely broke. ` +
+      `Refusing a vacuous pass.`,
+  );
+  process.exit(1);
+}
+if (!Array.isArray(MUSIC_PRELOAD_NAMES) || MUSIC_PRELOAD_NAMES.length < 1) {
+  console.error(
+    `\n✗ music-preload conformance FAILED — MUSIC_PRELOAD_NAMES is empty (found ` +
+      `${Array.isArray(MUSIC_PRELOAD_NAMES) ? MUSIC_PRELOAD_NAMES.length : typeof MUSIC_PRELOAD_NAMES}); ` +
+      `nothing would be preloaded, so the conformance is vacuous. Refusing.`,
+  );
+  process.exit(1);
+}
+
 const names = [...MUSIC_PRELOAD_NAMES];
 let sources;
 try {

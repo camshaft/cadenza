@@ -33,6 +33,20 @@ test("a slider with an inverted or zero-width range is rejected (needs max > min
   assert.match(zero.errors[0].message, /greater than min/);
 });
 
+test("a slider's declared default is CLAMPED into [min, max] (an out-of-range default is a footgun)", () => {
+  // A default below min or above max would make the FIRST render run a value the <input type=range> can't
+  // reproduce (the thumb pins to an edge, but the spliced literal + shown value keep the out-of-range
+  // number) → the first drag jumps. Clamp it, mirroring the dropdown default-not-in-options fallback.
+  const below = parseWidgets("x : Int64 = slider(5, 10, default: 2)").widgets[0] as Extract<Widget, { control: "slider" }>;
+  assert.equal(below.default, 5); // clamped up to min
+  const above = parseWidgets("x : Int64 = slider(5, 10, default: 99)").widgets[0] as Extract<Widget, { control: "slider" }>;
+  assert.equal(above.default, 10); // clamped down to max
+  const inRange = parseWidgets("x : Int64 = slider(5, 10, default: 7)").widgets[0] as Extract<Widget, { control: "slider" }>;
+  assert.equal(inRange.default, 7); // an in-range default is untouched
+  const atEdge = parseWidgets("x : Float64 = slider(0, 1, default: 1)").widgets[0] as Extract<Widget, { control: "slider" }>;
+  assert.equal(atEdge.default, 1); // the boundary is in range (inclusive)
+});
+
 test("a slider's step is forced positive — a declared step <= 0 falls back to the default", () => {
   const neg = parseWidgets("x : Float64 = slider(0, 10, step: -1)").widgets[0] as Extract<Widget, { control: "slider" }>;
   assert.equal(neg.step, 0.1); // (10-0)/100, not the negative
