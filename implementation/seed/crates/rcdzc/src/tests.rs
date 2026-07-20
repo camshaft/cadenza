@@ -57776,6 +57776,54 @@ mod stage1 {
     }
 
     #[test]
+    fn const_params_re_passed_on_a_mixed_match_recursive_arm_do_not_drop() {
+        // REGRESSION (v-iterators' filter-map, the const-param-drop bug): a `const` param re-passed on a
+        // SELF-RECURSIVE call that sits on a MIXED innermost match arm — a recursive arm BESIDE a
+        // value-returning sibling — used to DECLINE CDZ0101 "unbound name step" during const-specialization.
+        // Root cause: the recursive arm's re-passed `const` arg is UNBOUND in the specialized copy (a
+        // Poison), so the closure-identity `|clos` fingerprint DIVERGED from the enclosing spec's key → a
+        // divergent SECOND spec whose body carried the unbound arg. Fixed two ways: (1) a Poison self-repass
+        // INHERITS the enclosing spec's recorded const fingerprint (`db.const_repass_fp`) so the recursion
+        // closes on ONE spec; (2) the `|clos` augmentation fires ONLY for a BARE-NAME arg (a lambda-literal
+        // arg's AST already self-identifies and its lift `code` is unstable per copy). This is the filter-map
+        // shape (keep = return a value, drop = recurse). BOTH a single `const step` and TWO const params
+        // (step + f) must compile + run. The scrutinees return a SCALAR (not an Option) to avoid the
+        // SEPARATE, pre-existing mixed-match Option-returning tail-loop invalid-wasm bug (routed to
+        // v-wasm-opt), which is orthogonal to the const-param-drop this pins. `twostep` over 0.. keeping the
+        // first `>2` yields 3. (`Option` is a nullary-declared sum here, so annotations write `Option`.)
+        use crate::testkit::parse;
+        // (a) SINGLE const param `step`, mixed-match recursive arm.
+        let single = "(module m (type Option (Some Int64) None) \
+             (def (mk (: n Int64)) (Option.Some n)) \
+             (def (twostep (const (: step (-> Int64 Option))) (: s Int64)) \
+               (match (step s) ((Option.None) 0) \
+                 ((Option.Some x) (if (> x 2) x (twostep step (+ s 1)))))) \
+             (def (main) (twostep (fn ((: n Int64)) (mk n)) 0)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(single)))
+            .expect("single const param re-passed on a mixed-match recursive arm must compile");
+        if let Some(v) = run_linked(&bytes, "main") {
+            assert_eq!(v, "3", "twostep skips 0,1,2 and keeps 3");
+        }
+        // (b) TWO const params (`step` + `f`) both re-passed on the mixed-match recursive arm — the both-const
+        // case (a lambda-literal `f` whose per-copy lift code must NOT force a divergent key).
+        let both = "(module m (type Option (Some Int64) None) \
+             (def (mk (: n Int64)) (Option.Some n)) \
+             (def (twostep (const (: step (-> Int64 Option))) (: s Int64) \
+                           (const (: f (-> Int64 Bool)))) \
+               (match (step s) ((Option.None) 0) \
+                 ((Option.Some x) (if (f x) x (twostep step (+ s 1) f))))) \
+             (def (main) (twostep (fn ((: n Int64)) (mk n)) 0 (fn ((: x Int64)) (> x 2)))) (export main))";
+        let bytes2 = compile_component(&crate::codec::encode(&parse(both)))
+            .expect("two const params re-passed on a mixed-match recursive arm must compile");
+        if let Some(v) = run_linked(&bytes2, "main") {
+            assert_eq!(
+                v, "3",
+                "twostep with a const predicate keeps the first x>2 = 3"
+            );
+        }
+    }
+
+    #[test]
     fn a_derived_const_closure_re_pass_still_rejects_not_an_identity_repass() {
         // The UNSOUND-TWIN guard (v-inference ACK): the identity-re-pass exemption must be NARROW — it
         // rescues ONLY a bare re-pass of the callee's own const param, NOT a DERIVED const arg. Here the
@@ -57836,6 +57884,39 @@ mod stage1 {
             assert_eq!(
                 v, "12",
                 "nested const-closure drivers fuse + compute 3+4+5 = 12"
+            );
+        }
+    }
+
+    #[test]
+    fn a_compound_returning_export_dispatching_a_runtime_closure_emits_valid_wasm() {
+        // Regression (v-core-opt issue, 2026-07-20): an export whose RESULT is a COMPOUND (`Option (Tuple
+        // Int64 (List Int64))`) escapes through the runtime-resource ESCAPE module, and whose body dispatches
+        // a FIRST-CLASS (non-const, non-devirtualizable) closure via `call_indirect` — the filter-map
+        // keep=return / drop=recurse shape. The escape-module assembler emitted NEITHER the lifted closure
+        // body NOR the funcref table/elem (only `core_module_impl` did), so `call_indirect` referenced a
+        // non-existent table 0 → invalid wasm; and once the lifted body was appended, an op used ONLY inside
+        // the closure was absent from the escape module's import set → its `CallImport` resolved to `u32::MAX`
+        // ("unknown function 4294967295"). Fixed by `append_lifted_bodies` + `collect_module_used_ops` +
+        // `form_ex2` table/elem emission at every escape site. `step` is a PLAIN param (not `const`), so it
+        // stays a runtime `call_indirect` — the decisive trigger (a scalar-returning twin already compiled).
+        // `twostep` over [1,2,3,4] keeps the first `classify x = x>2`: x=1,2 recurse, x=3 kept → Some((3,[4])).
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (type It (Mk (List Int64) (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) \
+               (def (from-list (: xs (List Int64))) (It.Mk xs (fn ((: s (List Int64))) (match s ((list) (Option.None)) ((list h .. t) (Option.Some (tuple h t))))))) \
+               (def (classify (: x Int64)) (if (> x 2) (Option.Some x) (Option.None))) \
+               (def (twostep (: step (-> (List Int64) (Option (Tuple Int64 (List Int64))))) (: s (List Int64))) \
+                 (match (step s) ((Option.None) (Option.None)) ((Option.Some pair) (match pair ((tuple x s2) (match (classify x) ((Option.None) (twostep step s2)) ((Option.Some y) (Option.Some (tuple y s2))))))))) \
+               (def (run2 (: it It)) (match it ((It.Mk s0 step) (twostep step s0)))) \
+               (def (main) (run2 (from-list (list 1 2 3 4)))) (export main))",
+        )))
+        .expect("a compound-returning export dispatching a runtime closure compiles + validates");
+        // Instantiating proves the emitted component is VALID wasm (invalid table/func indices fail to load).
+        if let Some(v) = run_linked(&bytes, "main") {
+            assert_eq!(
+                v, "(: (Some (tuple 3 (list 4))) (Option (Tuple Int64 (List Int64))))",
+                "twostep keeps the first x>2 (=3) → Some((3, [4]))"
             );
         }
     }

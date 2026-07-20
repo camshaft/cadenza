@@ -2810,12 +2810,14 @@ fn collect_used_ops_into(
         }
         // `Rational.numerator`/`denominator` — `rational-num`/`rational-den` BORROW the operand (import
         // `drop` to reclaim an owned-temporary Rational after the borrowing read), returning a BigInt.
-        Core::RationalNum { operand } | Core::RationalDen { operand } => {
-            out.insert(if matches!(core_of(db, id), Core::RationalNum { .. }) {
-                OP_RATIONAL_NUM
-            } else {
-                OP_RATIONAL_DEN
-            });
+        // Split per-variant so the op is chosen by the arm that already knows it — no `core_of` re-lookup.
+        Core::RationalNum { operand } => {
+            out.insert(OP_RATIONAL_NUM);
+            out.insert(OP_DROP);
+            collect_used_ops_into(db, operand, out);
+        }
+        Core::RationalDen { operand } => {
+            out.insert(OP_RATIONAL_DEN);
             out.insert(OP_DROP);
             collect_used_ops_into(db, operand, out);
         }
