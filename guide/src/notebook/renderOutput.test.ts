@@ -6,7 +6,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { renderOutput, type RunOutcome } from "./renderOutput.ts";
+import type { RunOutcome as ClientRunOutcome } from "../runner/client.ts";
 import type { CellDirective } from "./parseDocument.ts";
+
+// COMPILE-TIME GUARD: renderOutput's `RunOutcome` is a hand MIRROR of runner/client.ts's (mirrored, not
+// imported, so this module stays worker-free + node-testable — see renderOutput.ts). The route passes the
+// REAL client outcome into renderOutput, so the real type MUST stay structurally assignable to the mirror.
+// If the runner adds a variant (e.g. a new `{ kind: "cancelled" }`) the mirror lacks, the route would hand
+// renderOutput a kind its dispatch never handles — silently. This assignment fails `tsc -b` the moment the
+// source gains a variant the mirror doesn't, forcing the mirror (and renderOutput's dispatch) to catch up.
+// (One-directional on purpose: the real outcome must fit the mirror; the mirror may be a superset.)
+const _mirrorCoversClient: (o: ClientRunOutcome) => RunOutcome = (o) => o;
+void _mirrorCoversClient;
 
 const value = (text: string): RunOutcome => ({ kind: "value", text });
 

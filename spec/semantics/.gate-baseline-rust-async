@@ -139,6 +139,7 @@ pass	Map.to-list length is the map's entry count
 pass	Map.to-list of a runtime-empty but key/value-typed map is the empty list
 pass	Map.to-list of an empty map through an inlined helper is the empty list
 pass	Map.to-list of an undetermined-type empty map literal is the empty list
+pass	Map.to-list over Float64 KEYS enumerates by canonical byte key order
 pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key order (first key is min)
 pass	N-suffixed literals compose under BigInt arithmetic
 pass	NaN equality survives the hoisted float compare by canonical byte form
@@ -172,6 +173,7 @@ pass	Set.to-list length is the set's cardinality (deduped)
 pass	Set.to-list of a runtime-empty but element-typed set is the empty list
 pass	Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order
 pass	Set.to-list orders a set of COMPOUND (tuple) elements lexicographically
+pass	Set.to-list over Float64 elements enumerates by canonical byte order
 pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
 pass	Set.to-list over a runtime set sums its distinct elements
 pass	Set.to-list sorts a PREFIX string before its extension (length tiebreak on equal prefixes)
@@ -263,6 +265,7 @@ pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
 pass	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
 pass	a 32-bit-float closure crosses the host boundary
+pass	a 100-key runtime map resolves every key through the trie
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
@@ -2833,6 +2836,7 @@ pass	annotating a quantity at a same-dimension DIFFERENT unit is accepted (dimen
 pass	applying a boolean is a type error
 pass	applying a float is a type error
 pass	applying a non-function is a type error
+pass	an interleaved insert-remove build leaves exactly the surviving keys
 pass	applying the result of a match whose arms return payload-capturing closures
 pass	arithmetic between a char and a BigInt is rejected with a working two-step conversion fix
 pass	arithmetic between a char and a FLOAT is rejected with a working two-step conversion fix
@@ -2854,6 +2858,7 @@ pass	b4b denotation: a predicate Ast (<= x 100) denotes to the bounds obligation
 pass	b4c(conjunctive) NEG-1: precondition covers only {le x 100} (missing ge x 0) — the 2-hyp proof is NOT licensed
 pass	b4c(conjunctive) NEG-2 (reverse): precondition covers only {ge x 0} (missing le x 100) — NOT licensed though discharged via le
 pass	b4c(conjunctive): two stacked @requires give a 2-hyp proof; licenses requires BOTH hyps covered by the precondition
+pass	an overwrite-churn runtime map holds one entry with the last value winning
 pass	b4c(proven): @requires(<= x 100)/@ensures(<= ret MAXINT) on (f x)=x+1 discharges — P denoted as hyp, Q[ret:=body] as goal
 pass	b4c(unprovable): @ensures(<= ret MAXINT) on unbounded (f x)=x+1 is NOT dischargeable — the proof tier correctly MISSES (CDZ-VERIFY)
 pass	binding the same effect to a peer twice is rejected

@@ -87,3 +87,12 @@
 ; PIN PLAN: land the 3 FINITE cases first (len + finite order-face [0.5,2.5,-1.0] incl signed-zero-distinct +
 ;     Map-key twin — all solid), NaN-position as a FOLLOW-UP pin once a runtime-NaN construction path is settled.
 ;     v-runtime builds the finite (frozen-hash) fix on a clean runway, then pings me to pin.
+
+; ===== RESOLVED (corpus-bugfix, 2026-07-20, trunk 5a08db2c5) =====
+; v-runtime's frozen-hash fix d768d3625 (ae568bf4->b020075f) LANDED. Float Set.to-list + Map.to-list now
+; COMPUTE by canonical byte order (to_bits unsigned = rust __CdzF64) on all 3 backends. v-runtime pinned 2
+; witnesses (19-sets "Set.to-list over Float64 elements enumerates by canonical byte order" incl the
+; negatives-after-positives order-face; 05-compound "Map.to-list over Float64 KEYS") — both PASS. RESOLVED.
+; REMAINING (corpus-bugfix follow-up, NOT this finding): the NaN-POSITION in float to-list order is not yet
+; pinned — see the NaN-order pin I'm authoring (runtime NaN source, sorts after-positives/before-negatives
+; per to_bits, pinned to rust's actual output).

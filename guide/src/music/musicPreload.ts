@@ -23,6 +23,9 @@ export const MUSIC_CHORD_NAME = "chord";
 export const MUSIC_PITCH_NAME = "pitch";
 export const MUSIC_PIECE_NAME = "piece";
 export const MUSIC_SCHEDULE_NAME = "schedule";
+/// R4 (Strudel/Tidal live-coding): the buffer imports `render-pattern`/`euclid` from `pattern` (the page
+/// climax — `schedule(render-pattern(euclid(3,8,60),0,100,0,3840))` → a euclidean tresillo event stream).
+export const MUSIC_PATTERN_NAME = "pattern";
 export const MUSIC_LIB_FORMAT: Surface = "ml";
 
 /// The full set of music modules PRELOADED for every showcase (names + their staged `.cdz` — the compiler
@@ -33,6 +36,9 @@ export const MUSIC_LIB_FORMAT: Surface = "ml";
 export const MUSIC_PRELOAD_NAMES = [
   "schedule", "pitch", "interval-ratio", "scale-ratio", "scale",
   "chord-ratio", "chord", "rhythm", "rhythm-ratio", "compose", "piece",
+  // R4's live-coding showcase imports from `pattern` (deps schedule/compose/pitch, all above). Staged in
+  // stage-wasm.mjs musicLibs; preloaded here so the R4 buffer links against it.
+  "pattern",
 ] as const;
 
 /// The names a /music showcase buffer imports, per authoritative module (v-music via v-guide-editor). These
@@ -49,6 +55,9 @@ export const MUSIC_CHORD_IMPORTS = ["major-triad", "chord-notes", "chord-stack"]
 export const MUSIC_PITCH_IMPORTS = ["pitch", "note"] as const;
 export const MUSIC_PIECE_IMPORTS = ["progression"] as const;
 export const MUSIC_SCHEDULE_IMPORTS = ["schedule", "balanced", "play-order"] as const;
+///   - R4 (live-coding), `pattern`: `render-pattern` (a pattern → schedulable notes) + `euclid` (the
+///     euclidean rhythm generator) — `schedule(render-pattern(euclid(3,8,60),…))` → a tresillo event stream.
+export const MUSIC_PATTERN_IMPORTS = ["render-pattern", "euclid"] as const;
 
 /// Auto-inject the music `import` clauses + a trailing `export main` around the reader's showcase buffer
 /// before compiling — so the buffer shows ONLY the model (mirrors /cad's ruling: no import boilerplate).
@@ -66,6 +75,7 @@ export function injectImport(editorText: string, surface: Surface): string {
     [MUSIC_PITCH_NAME, MUSIC_PITCH_IMPORTS],
     [MUSIC_PIECE_NAME, MUSIC_PIECE_IMPORTS],
     [MUSIC_SCHEDULE_NAME, MUSIC_SCHEDULE_IMPORTS],
+    [MUSIC_PATTERN_NAME, MUSIC_PATTERN_IMPORTS],
   ];
   if (surface === "sexpr") {
     // s-expr import spec is a bare name LIST (no commas): `(import "chord" (major-triad chord-notes …))`.

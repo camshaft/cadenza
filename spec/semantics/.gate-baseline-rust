@@ -140,6 +140,7 @@ pass	Map.to-list length is the map's entry count
 pass	Map.to-list of a runtime-empty but key/value-typed map is the empty list
 pass	Map.to-list of an empty map through an inlined helper is the empty list
 pass	Map.to-list of an undetermined-type empty map literal is the empty list
+pass	Map.to-list over Float64 KEYS enumerates by canonical byte key order
 pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key order (first key is min)
 pass	N-suffixed literals compose under BigInt arithmetic
 pass	NaN equality survives the hoisted float compare by canonical byte form
@@ -173,6 +174,7 @@ pass	Set.to-list length is the set's cardinality (deduped)
 pass	Set.to-list of a runtime-empty but element-typed set is the empty list
 pass	Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order
 pass	Set.to-list orders a set of COMPOUND (tuple) elements lexicographically
+pass	Set.to-list over Float64 elements enumerates by canonical byte order
 pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
 pass	Set.to-list over a runtime set sums its distinct elements
 pass	Set.to-list sorts a PREFIX string before its extension (length tiebreak on equal prefixes)
@@ -263,6 +265,7 @@ pass	`sleep-until` sleeps to an absolute Instant — the span is target minus no
 pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
+pass	a 100-key runtime map resolves every key through the trie
 pass	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
 pass	a 32-bit-float closure crosses the host boundary
 pass	a 32-bit-integer closure crosses the host boundary
@@ -2833,6 +2836,7 @@ pass	an unsigned pattern segment reads the same byte as a non-negative integer
 pass	an unsigned right shift fills with zeros, not the sign bit
 pass	an unsigned runtime value is not accepted by a signed segment of the same width
 pass	an unsigned segment reads the same sign-bit-only byte as 128
+pass	an interleaved insert-remove build leaves exactly the surviving keys
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	an untaken arm's overflowing operand does not trap under the operator hoist
 pass	an unused let binding whose init would divide by zero is elided, so its trap does not occur
@@ -2854,6 +2858,7 @@ pass	annotating a quantity at a dimension the expression does not derive is an e
 pass	annotating a quantity at a same-dimension DIFFERENT unit is accepted (dimension checked, not scale)
 pass	applying a boolean is a type error
 pass	applying a float is a type error
+pass	an overwrite-churn runtime map holds one entry with the last value winning
 pass	applying a non-function is a type error
 pass	applying the result of a match whose arms return payload-capturing closures
 pass	arithmetic between a char and a BigInt is rejected with a working two-step conversion fix

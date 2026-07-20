@@ -13025,7 +13025,7 @@ impl ShapeTableBuilder {
             // erased to its inner value). A float/bytes/set/map leaf has no blessed total order → decline
             // (matching `<`'s carve-outs and the const escape).
             Ty::Set(elem)
-                if orderable_leaf_or_compound(db, elem.strip_nominal(), &mut Vec::new()) =>
+                if orderable_leaf_or_compound(db, elem.strip_nominal(), true, &mut Vec::new()) =>
             {
                 let e = self.shape_of(db, elem)?;
                 self.push(ShapeNode::Set(e))
@@ -13036,7 +13036,7 @@ impl ShapeTableBuilder {
             // sum of orderable leaves); the VALUE may be any encodable shape (the walk recurses on it). A
             // float/bytes/set/map key leaf has no blessed total order → decline.
             Ty::Map(key, val)
-                if orderable_leaf_or_compound(db, key.strip_nominal(), &mut Vec::new()) =>
+                if orderable_leaf_or_compound(db, key.strip_nominal(), true, &mut Vec::new()) =>
             {
                 let k = self.shape_of(db, key)?;
                 let v = self.shape_of(db, val)?;
@@ -23396,15 +23396,26 @@ fn is_orderable_compound(db: &mut Db, ty: &crate::ty::Ty) -> bool {
     matches!(
         ty,
         Ty::Tuple(_) | Ty::Record(_) | Ty::List(_) | Ty::Sum { .. }
-    ) && orderable_leaf_or_compound(db, ty, &mut Vec::new())
+    ) && orderable_leaf_or_compound(db, ty, false, &mut Vec::new())
 }
 
 /// The recursive orderability predicate: a leaf offers a blessed total order, or a compound whose every
 /// component is itself orderable. A recursive sum closes on `seen` (a self-referential type is orderable iff
 /// its payloads are — the cycle doesn't change that).
+///
+/// `float_ok` selects WHICH order is being asked for. A FLOAT has NO blessed NUMERIC total order (IEEE `<`
+/// is partial — NaN is unordered), but it DOES have a canonical-BYTE total order (its bit pattern as an
+/// unsigned int: NaN collapsed on construction, ±0.0 distinct) — the order `value_cmp_shaped` uses for a
+/// float Set.to-list / Map.to-list key. So:
+///  - `float_ok = false` (the `<` / `Core::ValueCmp` numeric path): a float leaf is NOT orderable — decline,
+///    matching the IEEE partial-order carve-out.
+///  - `float_ok = true` (the Set/Map `shape_of` to-list-enumeration path): a float leaf IS orderable by its
+///    canonical bytes, so a float element/key admits the deterministic enumeration order (collections-and-
+///    text.md #Set Iteration Is Deterministic). Bytes/Char/Set/Map stay non-orderable in BOTH modes.
 fn orderable_leaf_or_compound(
     db: &mut Db,
     ty: &crate::ty::Ty,
+    float_ok: bool,
     seen: &mut Vec<crate::ast::StructId>,
 ) -> bool {
     use crate::ty::Ty;
@@ -23413,15 +23424,18 @@ fn orderable_leaf_or_compound(
         Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Symbol | Ty::BigInt | Ty::Rational => {
             true
         }
-        // Non-orderable leaves — float (IEEE partial), Bytes/Char/Set/Map (no blessed order).
-        Ty::Float(_) | Ty::Bytes | Ty::Char | Ty::Set(_) | Ty::Map(..) => false,
+        // A float is orderable ONLY by canonical bytes (to-list), never by numeric `<` — see `float_ok`.
+        Ty::Float(_) => float_ok,
+        // Non-orderable leaves in EITHER mode — Bytes/Char/Set/Map (no blessed order at all).
+        Ty::Bytes | Ty::Char | Ty::Set(_) | Ty::Map(..) => false,
         Ty::Tuple(elems) => elems
             .iter()
-            .all(|e| orderable_leaf_or_compound(db, e, seen)),
-        Ty::List(elem) => orderable_leaf_or_compound(db, elem, seen),
+            .all(|e| orderable_leaf_or_compound(db, e, float_ok, seen)),
+        Ty::List(elem) => orderable_leaf_or_compound(db, elem, float_ok, seen),
         Ty::Record(fields) => {
             let vals: Vec<Ty> = fields.values().cloned().collect();
-            vals.iter().all(|v| orderable_leaf_or_compound(db, v, seen))
+            vals.iter()
+                .all(|v| orderable_leaf_or_compound(db, v, float_ok, seen))
         }
         // A sum — orderable iff every variant's payload type is. Recursive sum broken by `seen`. Mirrors
         // `ty_heap_walkable`'s Sum arm: walk each variant's ctor, resolve its payload at this instantiation.
@@ -23443,7 +23457,7 @@ fn orderable_leaf_or_compound(
                     if let Some(ctor) = ctor
                         && let Some(payload_ty) =
                             crate::infer::payload_ty_at_instantiation(db, ctor, ty)
-                        && !orderable_leaf_or_compound(db, &payload_ty, seen)
+                        && !orderable_leaf_or_compound(db, &payload_ty, float_ok, seen)
                     {
                         ok = false;
                         break;

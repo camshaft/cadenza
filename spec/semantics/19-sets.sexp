@@ -813,6 +813,29 @@
                           ((None u) -1))) (export main)))
   (output (: 1 Int64)))
 
+(case "Set.to-list over Float64 elements enumerates by canonical byte order"
+  (doc    "The FLOAT sibling of the compound-element to-list case: a set of Float64 elements enumerates by
+           CANONICAL BYTE order — the element's bit pattern as an UNSIGNED integer, NOT numeric order. A float
+           has no blessed NUMERIC total order (IEEE `<` is partial, NaN unordered), so `<` declines a float; but
+           collections-and-text.md #Set Iteration Is Deterministic requires an element-derived order agreeing
+           with the canonical byte form, which DOES totally order floats (NaN collapsed on construction, ±0.0
+           distinct). By that order a NEGATIVE float (sign bit = high bit) sorts AFTER every positive: over a
+           runtime `x` the set `{x, 0.5, 2.5}` at x=-1.0 enumerates `[0.5, 2.5, -1.0]`, so index 0 is 0.5 (→ 1),
+           NOT -1.0 as numeric order would give. The length is the cardinality (3). Regression witness for a
+           wasm↔rust divergence where wasm FALSE-DECLINED a float-element set ('no orderable descriptor') while
+           rust computed the byte order; the fix gives `compare_scalar_leaf` a Float arm (`to_bits().cmp`)
+           matching rust's `__CdzF64` wrapper, so both backends enumerate the same order.")
+  (input  (do
+            (def (main (: x Float64))
+              (tuple
+                (List.len (Set.to-list (Set.of (list x 2.5 1.5))))
+                (match (List.at (Set.to-list (Set.of (list x 0.5 2.5))) 0)
+                  ((Some f) (if (= f 0.5) 1 0))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 3.5 Float64))  (output (: (tuple 3 1) (Tuple Int64 Int64)))
+  (call   main (: -1.0 Float64)) (output (: (tuple 3 1) (Tuple Int64 Int64))))
+
 ; The Set.to-list cases above enumerate a CONSTANT `Set.of` literal. A set built AT RUN TIME by a
 ; recursive `Set.insert` loop over a boundary parameter is a genuine runtime CHAMP the `set-to-list`
 ; runtime op (index 83) walks live — its canonical (sorted) order emerges from the cursor walk + the

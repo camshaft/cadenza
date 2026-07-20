@@ -68,6 +68,19 @@
   (input  (do (def (main) (+ 1 (try (Some 2)))) (export main)))
   (error  CDZ0230))
 
+(case "a `?` in an anonymous LAMBDA with a non-fallible result is rejected (CDZ0230)"
+  (doc    "The reject twin of the anonymous-lambda-boundary EXECUTING cases below: `((fn () (try (Some 1))))`
+           — the immediately-applied lambda's body IS the `?`, whose type is the UNWRAPPED `Int64`, so the
+           lambda's result type is `Int64`, neither `Result` nor `Option`. A lambda IS a function boundary
+           exactly like a `def` (§6 v1), with NO auto-wrap (§5.1 fork B — the lambda's result is NOT promoted
+           to `Option` just because its body has a top-level `?`), so this is CDZ0230, the SAME rule as the
+           `?`-is-the-whole-def-body case above. Pins that the boundary check reaches an APPLIED anonymous
+           lambda's body (it was once silently missed — the `?` was checked only on the β-reduced inlined
+           copy, whose parentless walk hit the inlined-called-helper inconclusive tolerance; the fix descends
+           the original parented applied-lambda body). One rule for every function body, named or anonymous.")
+  (input  (do (def (main) ((fn () (try (Some 1))))) (export main)))
+  (error  CDZ0230))
+
 (case "a Result-valued `?` under an Option boundary is a type error"
   (doc    "`(def (main) (let ((x (try (Ok 1)))) (Some x)))` — the body's tail `(Some x)` makes main's
            result type `Option`, but the `?`'s operand `(Ok 1)` is a `Result`. A `Result`-`?` cannot

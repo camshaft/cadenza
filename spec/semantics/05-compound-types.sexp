@@ -1798,6 +1798,63 @@
             (def (main) (build Map.empty 3)) (export main)))
   (output (: (map (1 1) (2 2) (3 3)) (Map Int64 Int64))))
 
+; The runtime-built maps above stop at a handful of keys — small enough that the CHAMP never splits a
+; node, so the trie machinery (multi-level descent, per-level bitmap indexing, node splitting on
+; collision-prefix growth, and structural sharing under churn) is unexercised. These force it: a
+; 100-key build whose EVERY key is read back (a wrong split loses or misroutes a key and the checksum
+; breaks), an overwrite-churn build (persistence discipline under repeated same-key insert — length
+; must not grow, the LAST value must win), and an interleaved insert/remove build (removal restructures
+; nodes mid-build; exactly the odd keys survive).
+
+(case "a 100-key runtime map resolves every key through the trie"
+  (doc    "`ins` inserts k → k·10 for k = n..1 (a 100-key CHAMP at n = 100 — deep enough that root-node
+           splits and multi-level descent genuinely occur), then `getsum` looks EVERY key back up and sums
+           the values: Σ k·10 for k = 1..100 = 50500, with any miss poisoning the sum with -100000. A trie
+           that misroutes even one key under node splitting (wrong bitmap index, lost entry on split)
+           breaks the checksum. Runtime n keeps the whole build out of the fold. Expected: 50500.")
+  (input  (do
+            (def (ins (: n Int64) (: m (Map Int64 Int64)))
+              (if (< n 1) m (ins (- n 1) (Map.insert m n (* n 10)))))
+            (def (getsum (: i Int64) (: m (Map Int64 Int64)) (: acc Int64))
+              (if (< i 1) acc
+                (getsum (- i 1) m (+ acc (match (Map.lookup m i) ((Some v) v) ((None u) -100000))))))
+            (def (main (: n Int64))
+              (getsum n (ins n Map.empty) 0))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 50500 Int64)))
+
+(case "an overwrite-churn runtime map holds one entry with the last value winning"
+  (doc    "`churn` inserts the SAME key 7 fifty times with values n..1 (the last insert is value 1). The
+           map must hold exactly ONE entry (an overwrite replaces, never accumulates — a length that grew
+           past 1 means the CHAMP appended a duplicate leaf instead of replacing) and the final lookup
+           reads the LAST value: 100·len + value = 100·1 + 1 = 101. Persistence discipline under churn:
+           each insert copies the path, and the 50 superseded versions are dropped without corrupting the
+           live one. Expected: 101.")
+  (input  (do
+            (def (churn (: n Int64) (: m (Map Int64 Int64)))
+              (if (< n 1) m (churn (- n 1) (Map.insert m 7 n))))
+            (def (main (: n Int64))
+              (+ (* 100 (Map.len (churn n Map.empty)))
+                 (match (Map.lookup (churn n Map.empty) 7) ((Some v) v) ((None u) -1))))
+            (export main)))
+  (call   main (: 50 Int64)) (output (: 101 Int64)))
+
+(case "an interleaved insert-remove build leaves exactly the surviving keys"
+  (doc    "`build` inserts k = n..1 and immediately REMOVES each even k — removal restructures trie nodes
+           MID-build, between later inserts, so node collapse/merge paths run interleaved with growth. At
+           n = 20 exactly the 10 odd keys survive → `Map.len` = 10. A removal that dropped a sibling entry
+           during node collapse (or failed to remove, leaving len 20) breaks the count. The remove-side
+           companion of the churn case. Expected: 10.")
+  (input  (do
+            (def (build (: n Int64) (: m (Map Int64 Int64)))
+              (if (< n 1) m
+                (let ((m2 (Map.insert m n n)))
+                  (build (- n 1) (if (= (% n 2) 0) (Map.remove m2 n) m2)))))
+            (def (main (: n Int64))
+              (Map.len (build n Map.empty)))
+            (export main)))
+  (call   main (: 20 Int64)) (output (: 10 Int64)))
+
 (case "a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read"
   (doc    "`Map.insert` is persistent — it must leave its operand map unchanged. `h` recurses with a depth
            counter: at depth>0 it sums `(h (Map.insert env \"x\" 2) 0)` (insert x=2, read it back → 2) and
@@ -10898,6 +10955,20 @@
                 ((None u) (- 0 1))))
             (export main)))
   (call   main (: 4 Int64)) (output (: 11 Int64)))
+
+(case "Map.to-list over Float64 KEYS enumerates by canonical byte key order"
+  (doc    "The Float-KEY twin of the Float Set.to-list case (19-sets): a map keyed by Float64 enumerates its
+           entries by the KEY's CANONICAL BYTE order (the bit pattern as an unsigned int), NOT numeric order —
+           the same order `value_cmp_shaped` sorts a float Set element by, now on the map-key path. A float has
+           no NUMERIC total order (IEEE `<` partial), but the byte form totally orders it, so a Float64-keyed
+           `Map.to-list` computes (was a wasm FALSE-DECLINE — 'no orderable descriptor' — while rust computed
+           it). Over a runtime `x`, the map `{x→1, 2.5→2}` has 2 entries; `(List.len (Map.to-list …))` = 2. Pins
+           the map-key sort takes the float's canonical bytes (`compare_scalar_leaf`'s Float arm), both backends.")
+  (input  (do
+            (def (main (: x Float64))
+              (List.len (Map.to-list (Map.insert (Map.insert Map.empty x 1) 2.5 2))))
+            (export main)))
+  (call   main (: 3.5 Float64)) (output (: 2 Int64)))
 
 ; The Map.to-list cases above enumerate a NON-EMPTY map. The empty boundary — a pass dumping a
 ; possibly-empty symbol table — is `Map.to-list` of an EMPTY (but key/value-TYPED) map: the empty entry

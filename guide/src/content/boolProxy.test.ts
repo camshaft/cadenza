@@ -30,6 +30,10 @@ import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url)); // src/content
 const chaptersDir = join(here, "chapters");
+/// The playground's Examples-dropdown programs live here (a sibling package dir). They're the same
+/// "every example is a test" surface as the chapters, so the no-Bool-swallowing invariant must hold for
+/// them too — the palindrome example was swept from `(if … 1 0)` to a bare Bool alongside the chapter sweep.
+const playgroundExamples = join(here, "..", "playground", "examples.ts");
 
 /// From index `i` (at a `(`), return the index just past the matching `)`, respecting nesting.
 function endOfSexpr(s: string, i: number): number {
@@ -120,8 +124,23 @@ function boolProxies(): string[] {
   return found;
 }
 
+/// Every boolean-proxy `(if … 1 0)` in the playground's examples.ts, with line. Read as TEXT (like the
+/// chapter scan) — the file is a single TS module of s-expr source strings, so the same detector applies to
+/// the whole file without importing it (import needs Node ≥ 22 type-stripping; this stays runner-agnostic).
+function playgroundBoolProxies(): string[] {
+  const found: string[] = [];
+  const src = readFileSync(playgroundExamples, "utf8");
+  for (let i = src.indexOf("(if"); i >= 0; i = src.indexOf("(if", i + 3)) {
+    const ifText = src.slice(i, endOfSexpr(src, i));
+    if (!isBoolProxy(ifText)) continue;
+    const line = src.slice(0, i).split("\n").length;
+    found.push(`examples.ts:${line} — ${ifText.replace(/\s+/g, " ").slice(0, 70)}`);
+  }
+  return found;
+}
+
 test("no example swallows a Bool as a coded 1/0 (no (if <cond> 1 0) proxy)", () => {
-  const proxies = boolProxies();
+  const proxies = [...boolProxies(), ...playgroundBoolProxies()];
   assert.equal(
     proxies.length,
     0,
@@ -145,4 +164,7 @@ test("the bool-proxy detector is precise (guards false-positives and a vacuous p
   // The allowlist entry still names a real, present converter (else it silently waives nothing / drifts).
   const ahp = readFileSync(join(chaptersDir, "AdHocPolymorphism.tsx"), "utf8").replace(/\s+/g, " ");
   assert.ok(ahp.includes("(def (describe-bool b) (if b 1 0))"), "the allowlisted describe-bool converter must exist");
+  // The playground scan reads a real file with real `(if …)` forms (not a vacuous pass on a moved/renamed file).
+  const pg = readFileSync(playgroundExamples, "utf8");
+  assert.ok(/export const EXAMPLES/.test(pg) && pg.includes("(if"), "playground examples.ts must be present and contain (if forms");
 });

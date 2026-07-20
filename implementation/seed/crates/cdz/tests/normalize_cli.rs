@@ -114,6 +114,35 @@ fn check_exits_nonzero_when_a_file_would_be_normalized() {
 }
 
 #[test]
+fn single_variant_sum_ctor_lowers_but_multi_variant_stays() {
+    // Type-aware: a ctor pattern on a SINGLE-variant sum is irrefutable → lowers; a multi-variant
+    // one stays a match (would-fall-through → refutable).
+    let (dir, path) = temp_src(
+        "single",
+        "type Wrapper = | Wrap(Int64)\ndef f(w) = match w with | Wrap(x) => x\n",
+    );
+    let (ok, out, _) = normalize(&["--match-to-let", &path, "--stdout"]);
+    assert!(ok);
+    assert!(
+        out.contains("let Wrap(x) = w in"),
+        "single-variant ctor lowers:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let (dir2, path2) = temp_src(
+        "multi",
+        "type Opt = | Some(Int64) | None\ndef f(o) = match o with | Some(x) => x\n",
+    );
+    let (ok2, out2, _) = normalize(&["--match-to-let", &path2, "--stdout"]);
+    assert!(ok2);
+    assert!(
+        out2.contains("match o with"),
+        "multi-variant ctor stays a match:\n{out2}"
+    );
+    let _ = std::fs::remove_dir_all(&dir2);
+}
+
+#[test]
 fn requires_a_normalization_flag() {
     let (dir, path) = temp_src("noflag", "def f(p) = match p with | x => x\n");
     let (ok, _, err) = normalize(&[&path, "--stdout"]);
