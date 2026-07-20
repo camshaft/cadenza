@@ -204,6 +204,19 @@ thread_local! {
         const { std::cell::Cell::new(0) };
 }
 
+/// Test-only: within-bucket `core_eq` comparisons the wasm CSE class-partition
+/// (`select::collect_cse_candidate_groups`) made since the last reset. This is an `AtomicU64` (NOT a
+/// `thread_local`) DELIBERATELY: the emit path runs on a SCOPED WORKER THREAD (`host::
+/// run_with_compiler_stack`), so a `thread_local` incremented there is invisible to a test thread that
+/// resets/reads it — the counter would always read 0. An atomic is shared across threads, so the test
+/// observes the worker's increments. The partition buckets candidates by a cheap shallow `core_hash_key`
+/// and compares only WITHIN a bucket, so a WIDE all-distinct arithmetic body makes ~O(#candidates)
+/// compares (each its own bucket → 0 compares), NOT the ~cands²/2 the old all-pairs scan made. See
+/// `a_wide_arithmetic_body_partitions_cse_candidates_in_bounded_time`.
+#[cfg(test)]
+pub(crate) static CSE_PARTITION_CORE_EQ_CALLS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
 /// occurrences (empty = nullary), and its body occurrence (absent = malformed). The body is LOCATED,
 /// never entered by the scan — entering it is a later per-node demand.

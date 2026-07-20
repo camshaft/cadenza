@@ -50057,6 +50057,16 @@ mod stage1 {
                 fix.verified,
                 "a mechanical rename to a known canonical name is VERIFIED, not a guess"
             );
+            // ROUND TRIP backing the VERIFIED marker: applying the fix (rewrite the retired key `old` to
+            // the canonical `new`) yields a program that compiles clean — no residual CDZ0603, no cascade.
+            // Unlike the `?`→`try` case (whose applied form needs a fallible context), a renamed collection
+            // op is well-formed in place, so the applied body compiles directly. This is what "verified"
+            // promises: an agent applies it without review and the diagnostic is gone.
+            let applied = body.replacen(&format!("{module}.{old}"), &format!("{module}.{new}"), 1);
+            assert!(
+                compiles_ok(&applied),
+                "applying the verified rename must recompile clean: {applied}"
+            );
         }
     }
 
@@ -59534,6 +59544,54 @@ mod stage1 {
             scan_nodes(with_tt) > 0,
             "a program containing a `(tagged-template …)` form must run the expand scan (the counter is \
              > 0) — the fast-bail must NOT skip a genuine tagged template"
+        );
+    }
+
+    #[test]
+    fn a_wide_arithmetic_body_partitions_cse_candidates_in_bounded_time() {
+        // REGRESSION (perf): the wasm CSE class-partition (`collect_cse_candidate_groups`) grouped
+        // candidates into value-equivalence classes by an ALL-PAIRS `core_eq` scan ("a body has few CSE
+        // candidates" — false for a WIDE body). A `(def (main p) (+ (calcN p) (+ … )))` balanced `+`-tree
+        // yields THOUSANDS of DISTINCT scalar candidates (~5842 at N=2000) → a singleton-heavy partition
+        // → ~cands²/2 `core_eq` calls, EACH a subtree-cloning `core_of` walk → the emit path was O(N²)
+        // (compile 1913ms vs 621ms after, a controlled same-source A/B on N=2000, byte-identical output).
+        // FIX: bucket candidates by a cheap shallow `core_hash_key` (`core_eq(a,b) ⇒ equal key`) and run
+        // `core_eq` only WITHIN a bucket → distinct candidates never pairwise-compare → O(N) compares.
+        //
+        // The NOISE-FREE signal is `CSE_PARTITION_CORE_EQ_CALLS` (within-bucket compares, a pure function
+        // of the program). With hash-bucketing a wide all-distinct body makes ~0 compares (each candidate
+        // its own bucket); the all-pairs scan made ~cands²/2. Assert a LINEAR bound (≤ 4·cands_upper):
+        // the fixed partition stays far under it, the O(N²) scan blows past it.
+        fn wide_arith_src(n: usize) -> String {
+            let defs: String = (0..n)
+                .map(|i| format!("(def (calc{i} (: x Int64)) (+ (* x {i}) {}))", i % 13))
+                .collect::<Vec<_>>()
+                .join(" ");
+            fn tree(lo: usize, hi: usize) -> String {
+                if hi - lo == 1 {
+                    return format!("(calc{lo} p)");
+                }
+                let m = (lo + hi) / 2;
+                format!("(+ {} {})", tree(lo, m), tree(m, hi))
+            }
+            format!(
+                "(module m {defs} (def (main (: p Int64)) {}) (export main))",
+                tree(0, n)
+            )
+        }
+        fn compares(src: &str) -> u64 {
+            use std::sync::atomic::Ordering;
+            crate::db::CSE_PARTITION_CORE_EQ_CALLS.store(0, Ordering::Relaxed);
+            let _ = crate::compile::compile_component(&crate::codec::encode(&parse(src)));
+            crate::db::CSE_PARTITION_CORE_EQ_CALLS.load(Ordering::Relaxed)
+        }
+        // N=400: candidate count is a few thousand (each arith subterm + call is a candidate). A LINEAR
+        // partition makes O(cands) compares; the O(N²) all-pairs scan makes ~cands²/2 = millions. A bound
+        // of 200_000 sits far above linear-at-this-width yet far below the quadratic scan.
+        let c400 = compares(&wide_arith_src(400));
+        assert!(
+            c400 < 200_000,
+            "a wide arithmetic body must partition its CSE candidates in ~O(N) `core_eq` compares, not              O(N²) (the all-pairs scan needs shallow-hash bucketing — `core_hash_key`): N=400 made              {c400} within-bucket compares (linear is a few thousand; the all-pairs scan was millions)"
         );
     }
 

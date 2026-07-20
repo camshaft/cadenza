@@ -481,6 +481,32 @@
   (call   main (: 100 Int64))
   (output (: 105 Int64)))
 
+; A regression guard for a THIRD β-copy path (the closure-payload analogue of the same-name-ctor β-copy
+; fix): when the sum scrutinee is produced by a helper that reduces to an `if` — `mk k` → `(if … (Fn …)
+; (Const …))` — the consuming `(match (mk k) …)` triggers the match-into-if fusion, which deep-copies each
+; arm body into BOTH if-branches. That copy (`clone_subtree_db`) once re-copied EVERY name FRESH, including
+; a β-substituted CAPTURE — here the caller's own `k` reused as the apply argument `(run (mk k) k)` — so
+; the fresh `k` re-resolved lexically against the grafted branch and came back UNBOUND, a spurious CDZ0101
+; at COMPILE time (front-end `check` was clean — the name IS bound). The fix shares a pinned non-`SumPayload`
+; capture across the copy (payload binders still copy + re-resolve against the branch scrutinee). Trigger
+; needs all of: a closure-typed payload (a heap `(List …)` payload compiles), a 2nd variant, the `if`-helper,
+; and the reused arg. Found by v-patterns, fixed by v-inference (the emit/specialization lane).
+
+(case "a closure-payload sum from an if-helper, consumed with the caller's arg reused, compiles and applies"
+  (doc    "See the comment above — the β-copy regression guard. `mk k` returns `(Fn (fn (x) (* x 3)))` for
+           k>0 else `(Const 77)`; since `mk` reduces to an `if`, `(run (mk k) k)` fuses the match into the
+           if and deep-copies the `(Fn f) → (f arg)` arm into both branches, with `arg` = the reused caller
+           param `k`. Previously emitted a spurious CDZ0101 `unbound name k` from the compile backend (while
+           `check` was clean); now compiles and applies the extracted closure: k=4 selects `Fn`, `(* 4 3)` =
+           12. (k=-1 selects `Const` → 77.) Pins the closure-payload β-copy capture-share. Expected: 12.")
+  (input  (do
+            (type Box (Fn (-> Int64 Int64)) (Const Int64))
+            (def (mk (: k Int64)) (if (> k 0) (Fn (fn ((: x Int64)) (* x 3))) (Const 77)))
+            (def (run (: b Box) (: arg Int64)) (match b ((Fn f) (f arg)) ((Const c) c)))
+            (def (main (: k Int64)) (run (mk k) k))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 12 Int64)))
+
 (case "a closure carried in a USER-declared sum's payload is extracted and applied"
   (doc    "The USER-SUM companion of the built-in-payload closure case: `(type T (Mk (-> Int64 Int64)))`
            declares a variant carrying a FUNCTION, and `(T.Mk (fn (n) (* n 2)))` stores a closure in it.
@@ -496,6 +522,27 @@
             (def (main) (match (T.Mk (fn ((: n Int64)) (* n 2))) ((T.Mk f) (f 5))))
             (export main)))
   (output (: 10 Int64)))
+
+(case "a closure-payload sum picked by an if-helper, applied by a match-consumer, with a binding reused as both args"
+  (doc    "The β-copy face of the closure-in-sum idiom: a helper `mk` PICKS a closure-carrying variant via
+           `if` (`(if true (Box.Fn g) (Box.Const 0))`), a consumer `run` MATCHES the sum and APPLIES the
+           extracted closure `(f arg)`, and the caller reuses ONE binding `k` in BOTH the closure-producing
+           `(mk (fn (x) (+ x k)))` AND the apply-arg `k`. This exact shape emitted a spurious CDZ0101 `unbound
+           name k` FROM THE COMPILE BACKEND (`cdz check` passed — inference bound `k` fine — but `cdz compile`
+           failed with no source location) because the closure-specialization β-copy of `mk`'s body inlined at
+           the call site dropped `k` from scope; the fix preserves the reused binding through the β-copy.
+           Drop any one leg (single-variant sum, a scalar `(V Int64)` payload, a direct `(Box.Fn (fn …))` with
+           no `mk`/`if`, a literal 2nd arg, or a non-closure `(+ (dbl k) k)`) and it always compiled — the
+           load-bearing combination is a closure-payload variant picked by an if-helper whose result is
+           match-applied while the caller's binding flows into BOTH the helper and the apply. `mk` picks
+           `Box.Fn(fn (x) (+ x 3))`, `run` applies it to 3 → 6.")
+  (input  (do
+            (type Box (Fn (-> Int64 Int64)) (Const Int64))
+            (def (mk (: g (-> Int64 Int64))) (if true (Box.Fn g) (Box.Const 0)))
+            (def (run (: b Box) (: arg Int64)) (match b ((Box.Fn f) (f arg)) ((Box.Const c) c)))
+            (def (main) (let ((k 3)) (run (mk (fn ((: x Int64)) (+ x k))) k)))
+            (export main)))
+  (output (: 6 Int64)))
 
 ; Two variants of ONE sum each box a closure of a DIFFERENT function type — a BINARY `(-> Int64 Int64
 ; Int64)` (`Bin`) and a UNARY `(-> Int64 Int64)` (`Un`). `run` matches the sum and, in EACH arm, applies

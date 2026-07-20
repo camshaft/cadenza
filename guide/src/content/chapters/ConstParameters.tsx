@@ -75,13 +75,13 @@ export default function ConstParameters() {
       </P>
       <Runnable
         source={`(def (is-int (const (: t Type)) (: x Int64))
-  (if (Type.eq t Int64) 1 0))
+  (Type.eq t Int64))
 (def (main) (is-int Int64 5))`}
       />
       <P>
-        Called with <C>Int64</C> it folds to <C>1</C>, and calling it with <C>Bool</C> folds the same code
-        to <C>0</C>, because each call site is specialized for the type it named so the comparison is
-        settled at compile time rather than run time. The caller hands the type in as an argument and the
+        Called with <C>Int64</C> it folds to <C>true</C>, and calling it with <C>Bool</C> folds the same
+        code to <C>false</C>, because each call site is specialized for the type it named so the comparison
+        is settled at compile time rather than run time. The caller hands the type in as an argument and the
         compiler bakes a dedicated copy for it.
       </P>
 

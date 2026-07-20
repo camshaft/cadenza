@@ -1,0 +1,137 @@
+/// interval-name.cdz — NAME an interval by its quality + number (the human label).
+///
+/// pitch.cdz's `Interval` is a bare signed semitone count; `interval-class` folds it to 0..6. This module
+/// puts the conventional NAME on the simple interval (the size within one octave): unison, minor/major
+/// second, minor/major third, perfect fourth, tritone, perfect fifth, minor/major sixth, minor/major
+/// seventh, octave. That's what an analysis/notation tool prints ("a perfect fifth", "a major third").
+///
+/// The name is by SIZE only (semitone distance folded into an octave) — enharmonic spelling (aug 4th vs
+/// dim 5th) is spelling.cdz's concern, not this. Direction is dropped: a descending fifth and an ascending
+/// fifth are both "perfect fifth" (the class), matching how `interval-class` already folds. Grounds only on
+/// pitch.cdz (landed): `semitones`, `interval-between`, `mod-floor`.
+
+import { Interval, Pitch } from "pitch"
+import { semitones, interval-between, mod-floor } from "pitch"
+
+// ---- the named simple intervals ----------------------------------------------------------------------
+
+/// A named simple interval (within one octave), plus `Compound` for anything a full octave or more that
+/// isn't an exact octave multiple. Nullary variants — the naming result.
+type IntervalName =
+  | PerfectUnison | MinorSecond | MajorSecond | MinorThird | MajorThird | PerfectFourth
+  | Tritone | PerfectFifth | MinorSixth | MajorSixth | MinorSeventh | MajorSeventh
+  | PerfectOctave | Compound
+
+// ---- naming an interval ------------------------------------------------------------------------------
+
+/// The simple-interval name of a semitone count, folded into one octave (0..11) by absolute size, with an
+/// exact octave (a nonzero multiple of 12) named `PerfectOctave` and everything else in-octave. Direction
+/// is dropped (a descending m3 and ascending m3 are both `MinorThird`).
+def name-of-semitones(s: Int64) =
+  let a = if s < 0 then 0 - s else s in
+  let folded = mod-floor(a, 12) in
+  if folded == 0 then
+    (if a == 0 then IntervalName.PerfectUnison else IntervalName.PerfectOctave)
+  else name-of-folded(folded)
+
+/// Name a folded semitone count `1..11` (an in-octave, nonzero simple interval).
+def name-of-folded(f: Int64) = match f with
+  | 1 => IntervalName.MinorSecond
+  | 2 => IntervalName.MajorSecond
+  | 3 => IntervalName.MinorThird
+  | 4 => IntervalName.MajorThird
+  | 5 => IntervalName.PerfectFourth
+  | 6 => IntervalName.Tritone
+  | 7 => IntervalName.PerfectFifth
+  | 8 => IntervalName.MinorSixth
+  | 9 => IntervalName.MajorSixth
+  | 10 => IntervalName.MinorSeventh
+  | _ => IntervalName.MajorSeventh
+
+/// The name of an `Interval` (by its semitone count).
+def interval-name(i: Interval) = name-of-semitones(semitones(i))
+
+/// The name of the interval between two pitches (direction-independent).
+def interval-name-between(a: Pitch, b: Pitch) = name-of-semitones(semitones(interval-between(a, b)))
+
+/// Is a named interval a PERFECT consonance (unison, fourth, fifth, octave)? A small classifier the
+/// analysis layer can use for consonance/dissonance reasoning.
+def is-perfect(n: IntervalName) = match n with
+  | IntervalName.PerfectUnison => true
+  | IntervalName.PerfectFourth => true
+  | IntervalName.PerfectFifth => true
+  | IntervalName.PerfectOctave => true
+  | _ => false
+
+/// ============================ @test suite (interval-naming laws) ============================
+
+@test
+def names-the-common-intervals-by-size() =
+  // 0=unison, 4=major third, 7=perfect fifth, 12=octave.
+  match name-of-semitones(0) with
+    | IntervalName.PerfectUnison =>
+      (match name-of-semitones(4) with
+        | IntervalName.MajorThird =>
+          (match name-of-semitones(7) with
+            | IntervalName.PerfectFifth =>
+              (match name-of-semitones(12) with
+                | IntervalName.PerfectOctave => unit
+                | _ => trap("12 is an octave"))
+            | _ => trap("7 is a perfect fifth"))
+        | _ => trap("4 is a major third"))
+    | _ => trap("0 is a unison")
+
+@test
+def naming-is-direction-independent() =
+  // A descending perfect fifth (-7) names the same as an ascending one (+7).
+  match name-of-semitones(0 - 7) with
+    | IntervalName.PerfectFifth =>
+      (match name-of-semitones(7) with
+        | IntervalName.PerfectFifth => unit
+        | _ => trap("ascending fifth"))
+    | _ => trap("a descending fifth is still a perfect fifth")
+
+@test
+def the-tritone-is-six-semitones() =
+  match name-of-semitones(6) with
+    | IntervalName.Tritone => unit
+    | _ => trap("6 semitones is a tritone")
+
+@test
+def a-compound-interval-folds-to-its-simple-name() =
+  // A major tenth (16 semitones = octave + major third) folds to MajorThird by size (this module names the
+  // SIMPLE interval; a full octave multiple is PerfectOctave, everything else folds in).
+  match name-of-semitones(16) with
+    | IntervalName.MajorThird => unit
+    | _ => trap("a major tenth folds to a major third")
+
+@test
+def a-double-octave-is-named-an-octave() =
+  // 24 semitones (two octaves) is a nonzero multiple of 12 → PerfectOctave (the octave class), not unison.
+  match name-of-semitones(24) with
+    | IntervalName.PerfectOctave => unit
+    | _ => trap("24 semitones is an octave class, not a unison")
+
+@test
+def interval-name-between-two-pitches() =
+  // C4 (60) to G4 (67) is a perfect fifth; C4 to E4 (64) is a major third.
+  match interval-name-between(Pitch.Pitch(60), Pitch.Pitch(67)) with
+    | IntervalName.PerfectFifth =>
+      (match interval-name-between(Pitch.Pitch(60), Pitch.Pitch(64)) with
+        | IntervalName.MajorThird => unit
+        | _ => trap("C to E is a major third"))
+    | _ => trap("C to G is a perfect fifth")
+
+@test
+def perfect-consonances-are-classified() =
+  // is-perfect: fifth/fourth/octave/unison true; a third is false.
+  if is-perfect(IntervalName.PerfectFifth) then
+    (if is-perfect(IntervalName.PerfectFourth) then
+      (if is-perfect(IntervalName.MajorThird) then trap("a third is not perfect") else unit)
+     else trap("fourth is perfect"))
+  else trap("fifth is perfect")
+
+export {
+  IntervalName.*,
+  name-of-semitones, interval-name, interval-name-between, is-perfect,
+}

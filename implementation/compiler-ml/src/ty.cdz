@@ -1,40 +1,39 @@
 /// ty.cdz — Tier-1 of the rcdzc port: the SOLVED-TYPE UNIVERSE, ported from rcdzc `ty.rs`. rcdzc has ONE
-/// `Ty` (Int/Bool/Unit/Record/Tuple/List/Sum/Fn/Var/…) that every phase shares; compiler-ml had TWO
-/// divergent type representations — infer-db's monomorphic `Typed = TIntW|TBool|TErr` and unify.cdz's HM
-/// `Ty = Var|Con|Arrow|IntW`. This module is the single universe they CONVERGE onto (the operator's
-/// divergence #3), scoped to the int/bool subset the pipeline covers (rcdzc's Record/Tuple/List/Sum/Fn are
-/// breadth, hard-blocked). It mirrors rcdzc's `IntType { sign, width }` with the 3-state Sign/Width axes (the
-/// orthogonal-unification model already ported into unify.cdz) as first-class data, not a hard-coded case.
-///
-/// This is the "tested foundation, wired later" shape (like db.cdz/unify.cdz): infer + unify converge onto
-/// `Ty` in a later slice; here it is the standalone, tested type universe + its constructors/predicates.
-
-/// SIGN — a 3-state axis (rcdzc `Sign {Fixed(bool)|Deferred|Var}`, minus Var for the literal-polymorphism
-/// subset): `Signed`/`Unsigned` are the fixed signs; `SignDef` is a bare literal's sign before a constraint
-/// fixes it (grounds to signed). (A unification `Var` sign — for an intrinsic generic `+:(Int w)->(Int w)`
-/// — is a later slice, as in unify.cdz.)
-type Sign =
+  /// `Ty` (Int/Bool/Unit/Record/Tuple/List/Sum/Fn/Var/…) that every phase shares; compiler-ml had TWO
+  /// divergent type representations — infer-db's monomorphic `Typed = TIntW|TBool|TErr` and unify.cdz's HM
+  /// `Ty = Var|Con|Arrow|IntW`. This module is the single universe they CONVERGE onto (the operator's
+  /// divergence #3), scoped to the int/bool subset the pipeline covers (rcdzc's Record/Tuple/List/Sum/Fn are
+  /// breadth, hard-blocked). It mirrors rcdzc's `IntType { sign, width }` with the 3-state Sign/Width axes (the
+  /// orthogonal-unification model already ported into unify.cdz) as first-class data, not a hard-coded case.
+  ///
+  /// This is the "tested foundation, wired later" shape (like db.cdz/unify.cdz): infer + unify converge onto
+  /// `Ty` in a later slice; here it is the standalone, tested type universe + its constructors/predicates.
+  /// SIGN — a 3-state axis (rcdzc `Sign {Fixed(bool)|Deferred|Var}`, minus Var for the literal-polymorphism
+  /// subset): `Signed`/`Unsigned` are the fixed signs; `SignDef` is a bare literal's sign before a constraint
+  /// fixes it (grounds to signed). (A unification `Var` sign — for an intrinsic generic `+:(Int w)->(Int w)`
+  /// — is a later slice, as in unify.cdz.)
+  type Sign =
   | Signed
   | Unsigned
   | SignDef
 
 /// WIDTH — the same 3-state shape: `WFixed(n)` a concrete bit width (8/16/32/64), `WidthDef` a bare
-/// literal's deferred width (grounds to the default 64). (A `Var` width is the later intrinsic-generic slice.)
-type Width =
+  /// literal's deferred width (grounds to the default 64). (A `Var` width is the later intrinsic-generic slice.)
+  type Width =
   | WFixed(Int64)
   | WidthDef
 
 /// An integer type: a `(Sign, Width)` pair (rcdzc `IntType { sign, width }`). Both axes unify INDEPENDENTLY
-/// (see unify.cdz's orthogonal sign-agrees/width-agrees) and both can be deferred (a bare literal) — so a
-/// width AND a signedness are DATA the compiler unifies, never a hard-coded case.
-type IntType =
+  /// (see unify.cdz's orthogonal sign-agrees/width-agrees) and both can be deferred (a bare literal) — so a
+  /// width AND a signedness are DATA the compiler unifies, never a hard-coded case.
+  type IntType =
   | IntType(Sign, Width)
 
 /// The solved-type universe (int/bool subset of rcdzc `ty.rs` `Ty`). `TyInt(IntType)` = a fixed/deferred
-/// integer; `TyBool` = the boolean; `TyErr` = the type-level poison (a decline carried as a filled value —
-/// the poison-as-filled-value discipline, distinct from "unanswered"). Breadth constructors (Record/Tuple/
-/// List/Sum/Fn) are deferred — hard-blocked until the subset is rock-solid.
-type Ty =
+  /// integer; `TyBool` = the boolean; `TyErr` = the type-level poison (a decline carried as a filled value —
+  /// the poison-as-filled-value discipline, distinct from "unanswered"). Breadth constructors (Record/Tuple/
+  /// List/Sum/Fn) are deferred — hard-blocked until the subset is rock-solid.
+  type Ty =
   | TyInt(IntType)
   | TyBool
   | TyErr
@@ -50,44 +49,70 @@ def ty-int64() = Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(64)))
 /// A concrete `(signed, width)` integer (rcdzc `IntType::fixed`) — the ordinary fixed integer type an
 /// annotation names. `signed` as a Bool; width as the bit count.
 def ty-fixed-int(signed: Bool, width: Int64) =
-  Ty.TyInt(IntType.IntType((if signed then Sign.Signed else Sign.Unsigned), Width.WFixed(width)))
+  Ty.TyInt(IntType.IntType(if signed then Sign.Signed else Sign.Unsigned, Width.WFixed(width)))
 
 /// Is this an integer type (any sign/width state)?
-def is-int-ty(t: Ty) = match t with | Ty.TyInt(_) => true | _ => false
+def is-int-ty(t: Ty) = match t with
+  | Ty.TyInt(_) => true
+  | _ => false
 
 /// Whether a Sign is deferred / a Width is deferred — flat one-level matches (the compiler rejects a
 /// constructor pattern nested ≥2 deep with a nullary variant in a payload position: "compound match switch
 /// path has no solved type", so bind-then-match per level instead of deep-nesting the pattern).
-def sign-deferred(s: Sign) = match s with | Sign.SignDef => true | _ => false
-def width-deferred(w: Width) = match w with | Width.WidthDef => true | _ => false
+def sign-deferred(s: Sign) = match s with
+  | Sign.SignDef => true
+  | _ => false
+
+def width-deferred(w: Width) = match w with
+  | Width.WidthDef => true
+  | _ => false
 
 /// Is this integer type fully GROUND (both axes Fixed — no deferred)? A ground type is what emit needs; a
 /// still-deferred type must be defaulted at the root first. Binds sign/width one level, then tests each
 /// (avoids the deep-nested-pattern compiler limitation).
 def is-ground-int(t: Ty) = match t with
-  | Ty.TyInt(it) => (match it with | IntType.IntType(s, w) => (if sign-deferred(s) then false else (if width-deferred(w) then false else true)))
+  | Ty.TyInt(it) => (match it with
+    | IntType.IntType(s, w) => if sign-deferred(s) then
+      false
+    else
+      if width-deferred(w) then false else true
+  )
   | _ => false
 
 /// GROUND a (possibly-deferred) type to its default (rcdzc's backend grounding of an unresolved sign/width):
 /// a deferred sign → Signed, a deferred width → 64. A fixed axis is unchanged; a non-int type is unchanged.
 def ground-default(t: Ty) = match t with
-  | Ty.TyInt(it) => (match it with | IntType.IntType(s, w) =>
-      (let s2 = (if sign-deferred(s) then Sign.Signed else s) in
-       (let w2 = (if width-deferred(w) then Width.WFixed(64) else w) in
-        Ty.TyInt(IntType.IntType(s2, w2)))))
+  | Ty.TyInt(it) => (match it with
+    | IntType.IntType(s, w) => let s2 = if sign-deferred(s) then Sign.Signed else s in
+    let w2 = if width-deferred(w) then Width.WFixed(64) else w in
+    Ty.TyInt(IntType.IntType(s2, w2))
+  )
   | _ => t
 
 /// SIGN equality — two signs are equal iff the SAME state (Signed=Signed, Unsigned=Unsigned,
 /// SignDef=SignDef). A one-level match (flat, avoids the deep-nested-pattern limitation).
 def sign-eq(a: Sign, b: Sign) = match a with
-  | Sign.Signed => (match b with | Sign.Signed => true | _ => false)
-  | Sign.Unsigned => (match b with | Sign.Unsigned => true | _ => false)
-  | Sign.SignDef => (match b with | Sign.SignDef => true | _ => false)
+  | Sign.Signed => (match b with
+    | Sign.Signed => true
+    | _ => false
+  )
+  | Sign.Unsigned => (match b with
+    | Sign.Unsigned => true
+    | _ => false
+  )
+  | Sign.SignDef => match b with
+    | Sign.SignDef => true
+    | _ => false
 
 /// WIDTH equality — WFixed(n)=WFixed(n) iff same n; WidthDef=WidthDef; else unequal.
 def width-eq(a: Width, b: Width) = match a with
-  | Width.WFixed(n) => (match b with | Width.WFixed(m) => n == m | Width.WidthDef => false)
-  | Width.WidthDef => (match b with | Width.WidthDef => true | Width.WFixed(_) => false)
+  | Width.WFixed(n) => (match b with
+    | Width.WFixed(m) => n == m
+    | Width.WidthDef => false
+  )
+  | Width.WidthDef => match b with
+    | Width.WidthDef => true
+    | Width.WFixed(_) => false
 
 /// STRUCTURAL type EQUALITY over `Ty` (rcdzc ty.rs PartialEq, int/bool subset): two `TyInt` are equal iff
 /// SAME sign AND width (both axes — an int type's identity is its (sign, width)); TyBool=TyBool; TyErr is
@@ -96,93 +121,137 @@ def width-eq(a: Width, b: Width) = match a with
 /// `Ty` (replacing infer-db's monomorphic `type-eq`). Bind-per-level (deep-nested-match limitation).
 def ty-eq(a: Ty, b: Ty) = match a with
   | Ty.TyInt(ita) => (match b with
-      | Ty.TyInt(itb) => (match ita with | IntType.IntType(sa, wa) => (match itb with | IntType.IntType(sb, wb) => (if sign-eq(sa, sb) then width-eq(wa, wb) else false)))
-      | _ => false)
-  | Ty.TyBool => (match b with | Ty.TyBool => true | _ => false)
+    | Ty.TyInt(itb) => (match ita with
+      | IntType.IntType(sa, wa) => match itb with
+        | IntType.IntType(sb, wb) => if sign-eq(sa, sb) then width-eq(wa, wb) else false
+    )
+    | _ => false
+  )
+  | Ty.TyBool => (match b with
+    | Ty.TyBool => true
+    | _ => false
+  )
   | Ty.TyErr => false
 
 // ---- TESTS -----------------------------------------------------------------------------------------
-
 @test
 def ty-deferred-is-int-not-ground() =
   // a bare literal's type is an integer but NOT ground (both axes deferred).
-  (if is-int-ty(ty-deferred-int()) then (if is-ground-int(ty-deferred-int()) then trap("deferred is not ground") else unit) else trap("deferred is an int"))
+  if is-int-ty(ty-deferred-int()) then
+    if is-ground-int(ty-deferred-int()) then trap("deferred is not ground") else unit
+  else
+    trap("deferred is an int")
 
 @test
 def ty-int64-is-ground() =
   // Int64 is a ground integer.
-  (if is-ground-int(ty-int64()) then unit else trap("Int64 is ground"))
+  if is-ground-int(ty-int64()) then unit else trap("Int64 is ground")
 
 @test
 def ty-fixed-is-ground() =
   // a concrete narrow type is ground; UInt8 = (unsigned, 8).
-  (if is-ground-int(ty-fixed-int(false, 8)) then unit else trap("UInt8 is ground"))
+  if is-ground-int(ty-fixed-int(false, 8)) then unit else trap("UInt8 is ground")
 
 @test
 def ty-bool-not-int() =
   // TyBool is not an integer type, not ground-int.
-  (if is-int-ty(Ty.TyBool) then trap("Bool is not an int") else (if is-ground-int(Ty.TyBool) then trap("Bool not ground-int") else unit))
+  if is-int-ty(Ty.TyBool) then
+    trap("Bool is not an int")
+  else
+    if is-ground-int(Ty.TyBool) then trap("Bool not ground-int") else unit
 
 /// Test helper: extract a ground int type's `(signed?, width)` — bind-then-match per level (flat), returning
 /// `(is-signed 1|0, width)`; `(−1, −1)` for a non-int or non-fixed axis. Avoids deep-nested patterns.
 def int-parts(t: Ty) = match t with
-  | Ty.TyInt(it) => (match it with | IntType.IntType(s, w) =>
-      (match w with
-        | Width.WFixed(n) => ((match s with | Sign.Signed => 1 | Sign.Unsigned => 0 | Sign.SignDef => (0 - 1)), n)
-        | Width.WidthDef => (0 - 1, 0 - 1)))
+  | Ty.TyInt(it) => (match it with
+    | IntType.IntType(s, w) => match w with
+      | Width.WFixed(n) => (
+        match s with
+          | Sign.Signed => 1
+          | Sign.Unsigned => 0
+          | Sign.SignDef => 0 - 1,
+        n
+      )
+      | Width.WidthDef => (0 - 1, 0 - 1)
+  )
   | _ => (0 - 1, 0 - 1)
 
 @test
 def ty-ground-default-deferred-to-int64() =
   // grounding a fully-deferred literal → Int64 (signed, 64) — the default.
-  (match int-parts(ground-default(ty-deferred-int())) with | (sg, w) => (if (sg == 1) and (w == 64) then unit else trap("deferred grounds to Int64")))
+  match int-parts(ground-default(ty-deferred-int())) with
+    | (sg, w) => if sg == 1 and w == 64 then unit else trap("deferred grounds to Int64")
 
 @test
 def ty-ground-default-keeps-fixed() =
   // grounding a fixed type is the identity: UInt8 stays (unsigned, 8).
-  (match int-parts(ground-default(ty-fixed-int(false, 8))) with | (sg, w) => (if (sg == 0) and (w == 8) then unit else trap("fixed UInt8 unchanged")))
+  match int-parts(ground-default(ty-fixed-int(false, 8))) with
+    | (sg, w) => if sg == 0 and w == 8 then unit else trap("fixed UInt8 unchanged")
 
 @test
 def ty-ground-default-partial-deferred-sign() =
   // a deferred SIGN with a fixed width grounds the sign to Signed, keeps the width (orthogonal axes).
-  (match int-parts(ground-default(Ty.TyInt(IntType.IntType(Sign.SignDef, Width.WFixed(16))))) with | (sg, w) => (if (sg == 1) and (w == 16) then unit else trap("deferred-sign→Signed, width 16 kept")))
+  match int-parts(ground-default(Ty.TyInt(IntType.IntType(Sign.SignDef, Width.WFixed(16))))) with
+    | (sg, w) => if sg == 1 and w == 16 then unit else trap("deferred-sign→Signed, width 16 kept")
 
 // ---- ty-eq tests (structural type equality — the convergence primitive) ----
-
 @test
 def ty-eq-same-int() =
   // Int64 == Int64; UInt8 == UInt8.
-  (if ty-eq(ty-int64(), ty-int64()) then (if ty-eq(ty-fixed-int(false, 8), ty-fixed-int(false, 8)) then unit else trap("UInt8==UInt8")) else trap("Int64==Int64"))
+  if ty-eq(ty-int64(), ty-int64()) then
+    if ty-eq(ty-fixed-int(false, 8), ty-fixed-int(false, 8)) then unit else trap("UInt8==UInt8")
+  else
+    trap("Int64==Int64")
 
 @test
 def ty-eq-width-differs() =
   // Int8 != Int16 (different width).
-  (if ty-eq(ty-fixed-int(true, 8), ty-fixed-int(true, 16)) then trap("Int8 != Int16") else unit)
+  if ty-eq(ty-fixed-int(true, 8), ty-fixed-int(true, 16)) then trap("Int8 != Int16") else unit
 
 @test
 def ty-eq-sign-differs() =
   // Int8 != UInt8 (same width, different sign — the orthogonal-axis identity).
-  (if ty-eq(ty-fixed-int(true, 8), ty-fixed-int(false, 8)) then trap("Int8 != UInt8") else unit)
+  if ty-eq(ty-fixed-int(true, 8), ty-fixed-int(false, 8)) then trap("Int8 != UInt8") else unit
 
 @test
 def ty-eq-int-not-bool() =
   // an integer type is never equal to Bool (cross-kind).
-  (if ty-eq(ty-int64(), Ty.TyBool) then trap("Int64 != Bool") else unit)
+  if ty-eq(ty-int64(), Ty.TyBool) then trap("Int64 != Bool") else unit
 
 @test
 def ty-eq-bool-bool() =
   // TyBool == TyBool.
-  (if ty-eq(Ty.TyBool, Ty.TyBool) then unit else trap("Bool==Bool"))
+  if ty-eq(Ty.TyBool, Ty.TyBool) then unit else trap("Bool==Bool")
 
 @test
 def ty-eq-err-never-equal() =
   // TyErr is never equal to anything, including itself (poison never makes an if well-typed).
-  (if ty-eq(Ty.TyErr, Ty.TyErr) then trap("TyErr != TyErr (poison never equal)") else (if ty-eq(Ty.TyErr, ty-int64()) then trap("TyErr != Int64") else unit))
+  if ty-eq(Ty.TyErr, Ty.TyErr) then
+    trap("TyErr != TyErr (poison never equal)")
+  else
+    if ty-eq(Ty.TyErr, ty-int64()) then trap("TyErr != Int64") else unit
 
 @test
 def ty-eq-deferred-matches-deferred() =
   // two fully-deferred int literals are equal AS TYPES (same SignDef+WidthDef state) — distinct from ground
   // equality; unify handles grounding, ty-eq is structural state-equality.
-  (if ty-eq(ty-deferred-int(), ty-deferred-int()) then unit else trap("deferred == deferred (same state)"))
+  if ty-eq(ty-deferred-int(), ty-deferred-int()) then
+    unit
+  else
+    trap("deferred == deferred (same state)")
 
-export { Sign.*, Width.*, IntType.*, Ty.*, ty-deferred-int, ty-int64, ty-fixed-int, is-int-ty, is-ground-int, ground-default, sign-eq, width-eq, ty-eq }
+export {
+  Sign.*,
+  Width.*,
+  IntType.*,
+  Ty.*,
+  ty-deferred-int,
+  ty-int64,
+  ty-fixed-int,
+  is-int-ty,
+  is-ground-int,
+  ground-default,
+  sign-eq,
+  width-eq,
+  ty-eq
+}

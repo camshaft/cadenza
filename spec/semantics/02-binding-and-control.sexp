@@ -3374,6 +3374,57 @@
   (call   main (: 0 Int64))
   (output (: 5 Int64)))
 
+; ── LICM invariance is PURITY-scoped, and a conditional trap keeps its per-iteration gate ─────────────
+; Two more hoist-legality boundaries the zero-iteration case above cannot witness. FIRST: a
+; syntactically loop-invariant PERFORM — `(Fresh.next)` names no loop variable, so a lexical
+; invariance test calls it hoistable, but each iteration's perform reads a DIFFERENT handler state.
+; Hoisting it to one pre-loop perform (or batching the reads) changes the VALUE, not just a trace.
+; SECOND: a trapping expression inside the loop body gated by an ITERATION-dependent condition — the
+; trap is reached only at sufficient depth, so a hoist may neither lift the trap above its `(= i 2)`
+; gate (a shallow run must complete) nor drop it (a deep run must trap). Together with the
+; zero-iteration case these pin the three hoist-legality axes: iteration count, effectfulness, and
+; the iteration-indexed guard.
+
+(case "a syntactically loop-invariant perform advances per iteration — effectful is not hoistable"
+  (doc    "`go` adds `(Fresh.next)` per iteration over a RUNTIME count n. The perform is syntactically
+           invariant (it names neither `i` nor `n`), but each iteration reads an advancing handler state:
+           seeded 10 at n = 3 the reads are 10, 11, 12 → 33. A LICM that hoisted the perform to one
+           pre-loop read (3×10 = 30) or evaluated it speculatively at n = 0 (advancing state that must
+           stay 0 → the n=0 call must yield 0) changes observable VALUES. Loop-invariance licences
+           motion only for PURE computations — the effect-side companion of the zero-iteration
+           trap-freedom case above, and the loop face of the unreferenced-effectful-binding pin
+           (§dead-binding cluster). Expected: 33 (n=3), 0 (n=0).")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (def (go (: i Int64) (: n Int64) (: acc Int64))
+              (if (< i n) (go (+ i 1) n (+ acc (Fresh.next))) acc))
+            (def (main (: n Int64))
+              (handle Fresh 10 ((next (u) s (resume s (+ s 1))))
+                (go 0 n 0)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 33 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+(case "a conditionally-reached trap in a loop body fires exactly when its iteration arrives"
+  (doc    "The loop body adds `(if (= i 2) (/ 100 x) 1)` — the division is reachable only at iteration
+           i = 2. At n = 2 (iterations 0,1) the trap site is never reached: the program must complete
+           and yield 2, even at x = 0. At n = 4 iteration 2 arrives and `(/ 100 0)` must trap. A hoist
+           that lifts the division above its `(= i 2)` gate traps the n = 2 run (wrong); one that
+           replaces the guarded division with a pre-computed value drops the n = 4 trap (also wrong).
+           The iteration-indexed companion of the zero-iteration case: there the guard is the loop
+           bound itself, here it is a condition INSIDE the body that only some iterations satisfy.
+           Expected: 2 (n=2, x=0); trap (n=4, x=0).")
+  (input  (do
+            (def (go (: i Int64) (: n Int64) (: x Int64) (: acc Int64))
+              (if (< i n)
+                (go (+ i 1) n x (+ acc (if (= i 2) (/ 100 x) 1)))
+                acc))
+            (def (main (: n Int64) (: x Int64))
+              (go 0 n x 0))
+            (export main)))
+  (call   main (: 2 Int64) (: 0 Int64)) (output (: 2 Int64))
+  (call   main (: 4 Int64) (: 0 Int64)) (trap "integer divide by zero"))
+
 ; --- The common-constructor if-arm hoist preserves arm guarding (adversarial pins) ----------------
 ; `(if c (K …p) (K …q))` with the SAME constructor K both arms is rewritten to build K ONCE with
 ; per-payload `(if c pᵢ qᵢ)` selections (one heap build instead of two). The rewrite is sound only if

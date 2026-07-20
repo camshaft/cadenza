@@ -1,14 +1,13 @@
 /// type-env.cdz — a TYPED SYMBOL TABLE: a `Map String Ty` binding names to a recursive `Ty` sum, the
-/// data structure a type-checker threads through inference (Γ ⊢ e : τ). It combines a compound-VALUED map
-/// (values are recursive sums, not scalars), the canonical-order enumeration surface (`Map.to-list`), and
-/// a recursive walk over the bound types. Operations a real checker needs: bind (immutable extend),
-/// lookup, membership, cardinality, the bound names in a canonical order, and folds over the bound types
-/// (here: total arrow depth, and the count of function-typed bindings).
-///
-/// Complements `unify.cdz`/`apply-ty.cdz` (the type-relation logic) with the ENVIRONMENT that carries the
-/// types around; complements `symtab.cdz` (a scalar-valued table) with a compound-valued one.
-
-type Ty =
+  /// data structure a type-checker threads through inference (Γ ⊢ e : τ). It combines a compound-VALUED map
+  /// (values are recursive sums, not scalars), the canonical-order enumeration surface (`Map.to-list`), and
+  /// a recursive walk over the bound types. Operations a real checker needs: bind (immutable extend),
+  /// lookup, membership, cardinality, the bound names in a canonical order, and folds over the bound types
+  /// (here: total arrow depth, and the count of function-typed bindings).
+  ///
+  /// Complements `unify.cdz`/`apply-ty.cdz` (the type-relation logic) with the ENVIRONMENT that carries the
+  /// types around; complements `symtab.cdz` (a scalar-valued table) with a compound-valued one.
+  type Ty =
   | TInt
   | TBool
   | TVar(Int64)
@@ -48,29 +47,35 @@ def names(env: Map(String, Ty)) = keys-of(Map.to-list(env), [])
 
 def keys-of(es: List(Tuple(String, Ty)), acc: List(String)) = match es with
   | [] => acc
-  | [e, .. rest] => (match e with | (k, _) => keys-of(rest, List.push(acc, k)))
+  | [e, .. rest] => match e with
+    | (k, _) => keys-of(rest, List.push(acc, k))
 
 /// The total arrow depth summed over every bound type (a size/complexity metric a checker might report).
 def total-depth(env: Map(String, Ty)) = sum-depth(Map.to-list(env), 0)
 
 def sum-depth(es: List(Tuple(String, Ty)), acc: Int64) = match es with
   | [] => acc
-  | [e, .. rest] => (match e with | (_, v) => sum-depth(rest, acc + depth(v)))
+  | [e, .. rest] => match e with
+    | (_, v) => sum-depth(rest, acc + depth(v))
 
 /// How many bindings have a function type.
 def arrow-count(env: Map(String, Ty)) = count-arrows(Map.to-list(env), 0)
 
 def count-arrows(es: List(Tuple(String, Ty)), acc: Int64) = match es with
   | [] => acc
-  | [e, .. rest] => (match e with | (_, v) => count-arrows(rest, acc + (if is-arrow(v) then 1 else 0)))
+  | [e, .. rest] => match e with
+    | (_, v) => count-arrows(rest, acc + (if is-arrow(v) then 1 else 0))
 
 /// Builders.
 def arrow(from: Ty, to: Ty) = Ty.TArrow(from, to)
 
 /// A sample env: {zed: Int->Int, abe: Bool, mid: Int->(Bool->Int)}.
 def env3() =
-  bind(bind(bind(empty(), "zed", arrow(Ty.TInt, Ty.TInt)), "abe", Ty.TBool),
-       "mid", arrow(Ty.TInt, arrow(Ty.TBool, Ty.TInt)))
+  bind(
+    bind(bind(empty(), "zed", arrow(Ty.TInt, Ty.TInt)), "abe", Ty.TBool),
+    "mid",
+    arrow(Ty.TInt, arrow(Ty.TBool, Ty.TInt))
+  )
 
 @test
 def env-empty-size() = if size(empty()) == 0 then unit else trap("empty env has 0 bindings")
@@ -79,27 +84,34 @@ def env-empty-size() = if size(empty()) == 0 then unit else trap("empty env has 
 def env-bind-size() = if size(env3()) == 3 then unit else trap("three bindings")
 
 @test
-def env-lookup-hit() =
-  match lookup(env3(), "abe") with
-    | Option.Some(t) => (match t with | Ty.TBool => unit | _ => trap("abe : Bool"))
-    | Option.None(_) => trap("abe is bound")
+def env-lookup-hit() = match lookup(env3(), "abe") with
+  | Option.Some(t) => (match t with
+    | Ty.TBool => unit
+    | _ => trap("abe : Bool")
+  )
+  | Option.None(_) => trap("abe is bound")
 
 @test
-def env-lookup-miss() =
-  match lookup(env3(), "nope") with
-    | Option.Some(_) => trap("nope is unbound")
-    | Option.None(_) => unit
+def env-lookup-miss() = match lookup(env3(), "nope") with
+  | Option.Some(_) => trap("nope is unbound")
+  | Option.None(_) => unit
 
 @test
 def env-has() =
-  if has(env3(), "zed") then (if has(env3(), "nope") then trap("nope unbound") else unit) else trap("zed bound")
+  if has(env3(), "zed") then
+    if has(env3(), "nope") then trap("nope unbound") else unit
+  else
+    trap("zed bound")
 
 @test
 def env-names-canonical-order() =
   // Bound in order zed, abe, mid; Map.to-list enumerates canonical (sorted): abe, mid, zed.
   match names(env3()) with
     | [] => trap("names non-empty")
-    | [first, .. _] => (if String.byte-len(first) == 3 then unit else trap("abe (len 3) is canonical-first, not insertion-first zed"))
+    | [first, .. _] => if String.byte-len(first) == 3 then
+      unit
+    else
+      trap("abe (len 3) is canonical-first, not insertion-first zed")
 
 @test
 def env-total-depth() =
@@ -117,7 +129,9 @@ def env-rebind-overwrites() =
   // and abe now looks up as Int.
   let e = bind(env3(), "abe", Ty.TInt) in
   if size(e) == 3 then
-    (match lookup(e, "abe") with | Option.Some(Ty.TInt) => unit | _ => trap("abe rebound to Int"))
+    match lookup(e, "abe") with
+      | Option.Some(Ty.TInt) => unit
+      | _ => trap("abe rebound to Int")
   else
     trap("rebinding does not add a duplicate")
 
@@ -125,7 +139,10 @@ def env-rebind-overwrites() =
 def env-empty-enumerations() =
   // The empty env enumerates to nothing: no names, zero total depth, zero arrows.
   if List.len(names(empty())) == 0 then
-    (if total-depth(empty()) == 0 then (if arrow-count(empty()) == 0 then unit else trap("0 arrows")) else trap("0 depth"))
+    if total-depth(empty()) == 0 then
+      if arrow-count(empty()) == 0 then unit else trap("0 arrows")
+    else
+      trap("0 depth")
   else
     trap("empty env has no names")
 

@@ -1095,6 +1095,82 @@ fn start_from_a_resume_cursor_does_not_re_perform_processed_history() {
 }
 
 #[test]
+fn start_auto_resumes_from_the_recorded_cursor_without_an_explicit_from() {
+    // Crash-recovery WITHOUT --from: after a round processes a trigger, the daemon durably records a
+    // `daemon-cursor` high-water mark in the log. A RESTART with NO --from AUTO-RESUMES from that mark (so
+    // recovery is automatic even after a crash that printed no cursor) and re-performs NOTHING. Store-gated skip.
+    let log = unique("autoresume-log").with_extension("log");
+    let prog = unique("autoresume-genesis").with_extension("cdz");
+    let _ = std::fs::remove_file(&log);
+    std::fs::write(&prog, GENESIS).unwrap();
+
+    Command::new(bin())
+        .args(["bootstrap", log.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+    Command::new(bin())
+        .args([
+            "inject-genesis",
+            log.to_str().unwrap(),
+            prog.to_str().unwrap(),
+        ])
+        .output()
+        .expect("inject-genesis");
+    Command::new(bin())
+        .args(["emit", log.to_str().unwrap(), "trigger", "go"])
+        .output()
+        .expect("emit trigger");
+
+    // First run performs the trigger AND records a daemon-cursor mark.
+    let out = Command::new(bin())
+        .args(["start", log.to_str().unwrap(), "0", "--max-rounds", "1"])
+        .output()
+        .expect("run cdz-agent start (first)");
+    if !out.status.success() {
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("runtime not found"),
+            "the only acceptable failure is a missing runtime store (skip); got: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        eprintln!("[cdz-agent it] value-heap runtime absent; skipped the auto-resume assertion");
+        let _ = std::fs::remove_file(&log);
+        let _ = std::fs::remove_file(&prog);
+        return;
+    }
+    let raw = std::fs::read(&log).expect("read log");
+    let text = String::from_utf8_lossy(&raw);
+    assert!(
+        text.contains("daemon-cursor"),
+        "the first run recorded a daemon-cursor high-water mark"
+    );
+    let count_prim = || {
+        let raw = std::fs::read(&log).expect("read log");
+        String::from_utf8_lossy(&raw).matches("prim-").count()
+    };
+    let after_first = count_prim();
+    assert!(after_first > 0, "the first run performed the trigger");
+
+    // RESTART with NO --from: must auto-resume from the recorded cursor and re-perform nothing.
+    let out = Command::new(bin())
+        .args(["start", log.to_str().unwrap(), "0", "--max-rounds", "1"])
+        .output()
+        .expect("run cdz-agent start (auto-resume)");
+    assert!(
+        out.status.success(),
+        "the auto-resumed daemon runs: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        count_prim(),
+        after_first,
+        "auto-resume (no --from) re-performed NO history — the recorded daemon-cursor was honored"
+    );
+
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&prog);
+}
+
+#[test]
 fn unknown_subcommand_prints_usage_and_fails() {
     let out = Command::new(bin())
         .arg("frobnicate")

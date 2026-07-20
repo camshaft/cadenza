@@ -351,4 +351,32 @@ def wf-accepts-bound-var() =
     unit
   else trap("a guarded rec with a bound var is well-formed")
 
+@test
+def nested-rec-round-trips() =
+  // PIN: a rec nested inside another rec's body round-trips through to-ast/from-ast. Only single-level rec
+  // was witnessed before. rec Outer . (A->B:M ; rec Inner . (B->A:N ; var Inner)).
+  let g = Chor.Rec("Outer", Chor.Seq(Chor.Comm("A", "B", "M"),
+    Chor.Rec("Inner", Chor.Seq(Chor.Comm("B", "A", "N"), Chor.Var("Inner"))))) in
+  (match from-ast(to-ast(g)) with
+    | Option.Some(g2) => (if chor-eq(g, g2) then unit else trap("nested rec must round-trip"))
+    | Option.None(_) => trap("from-ast(to-ast) of a nested rec"))
+
+@test
+def wf-accepts-inner-var-bound-by-inner-rec() =
+  // A var bound by an INNER rec is in scope inside that inner body — wf accepts.
+  let g = Chor.Rec("Outer", Chor.Seq(Chor.Comm("A", "B", "M"),
+    Chor.Rec("Inner", Chor.Seq(Chor.Comm("B", "A", "N"), Chor.Var("Inner"))))) in
+  if wf(["A", "B"], g) then unit else trap("a var bound by the inner rec is well-formed")
+
+@test
+def wf-rejects-rec-var-referenced-out-of-its-scope() =
+  // SCOPING PIN (the unsound direction): `var Inner` referenced in the OUTER body — AFTER the inner rec
+  // closes — is UNBOUND, so wf must REJECT. `wf-in` threads `bound` lexically (adds `v` only for that Rec's
+  // body), so the inner var is out of scope once its rec returns. A naive "collect every rec-var anywhere"
+  // would false-accept this; pin the correct lexical behaviour.
+  let g = Chor.Rec("Outer", Chor.Seq(
+    Chor.Rec("Inner", Chor.Comm("B", "A", "N")),
+    Chor.Var("Inner"))) in
+  if wf(["A", "B"], g) then trap("Inner is out of scope in the outer body — must be rejected") else unit
+
 export { Chor.*, chor-eq, to-ast, from-ast, wf, purchase, purchase-roles }

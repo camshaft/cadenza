@@ -3737,6 +3737,24 @@ fn compile_rust_async(src: &str) -> String {
     }
 }
 
+/// Try to compile a program to the async Rust backend, returning the emitted source or the diagnostics
+/// (for asserting a DECLINE). The async twin of [`compile_rust_result`].
+fn compile_rust_async_result(src: &str) -> Result<String, Vec<String>> {
+    let ast_bytes = crate::codec::encode(&parse(src));
+    let out = compile(
+        &[Artifact::new(Artifact::KIND_AST, "main", ast_bytes)],
+        &[Target::RustAsync],
+    );
+    match out.artifact(Target::RustAsync.artifact_kind()) {
+        Some(bytes) => Ok(String::from_utf8(bytes.to_vec()).expect("emitted Rust is utf-8")),
+        None => Err(out
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()),
+    }
+}
+
 #[test]
 fn async_mode_emits_env_threaded_gas_metered_fns() {
     let rs = compile_rust_async(
@@ -4956,6 +4974,67 @@ fn rustc_roundtrip_host_closure_factory_compound_result_s3() {
         strr.contains("-> std::rc::Rc<dyn Fn(i64) -> String>"),
         "the String-result factory emits `Rc<dyn Fn(..)->String>` (rendered as list<u8> by the gate):\n{strr}"
     );
+}
+
+#[test]
+fn async_lifted_closure_with_a_call_free_body_emits_a_sync_fn() {
+    // HOST-CLOSURE on `--target rust-async`: a lambda-lifted closure whose body makes NO runtime call
+    // (pure arithmetic / branches / runtime ops — the bulk of the host-closure corpus) emits as an
+    // ORDINARY SYNC `fn __lifted_k` even under async mode. The only body-emit site that threads the
+    // gas/yield `env` (and awaits) is the `Core::Call` arm, so a call-free body compiles byte-identically
+    // to sync; the ENCLOSING factory is the `async fn` that awaits the closure VALUE, not its call.
+    let both = compile_rust_async(
+        "(module m (def (both (: a Int64) (: b Int64)) (fn ((: x Int64)) (+ (+ a b) x))) (export both))",
+    );
+    // The factory is an async fn returning the Rc<dyn Fn> handle (its captures leading its own params).
+    assert!(
+        both.contains(
+            "pub async fn both<__CdzE: CdzEnv>(__cdz_env: &mut __CdzE, a: i64, b: i64) -> std::rc::Rc<dyn Fn(i64) -> i64>"
+        ),
+        "the factory is an async fn returning the closure handle:\n{both}"
+    );
+    // The lifted closure body itself is a plain SYNC `fn` — NOT `async fn __lifted`, NO env param.
+    assert!(
+        both.contains("fn __lifted_0(__cap0: i64, __cap1: i64, x: i64) -> i64")
+            && !both.contains("async fn __lifted_0"),
+        "the call-free lifted closure body is a sync fn (no env/await):\n{both}"
+    );
+    // A no-capture closure (`(fn (x) (+ x 1))`) likewise: async factory, sync lifted body.
+    let inc =
+        compile_rust_async("(module m (def (main) (fn ((: x Int64)) (+ x 1))) (export main))");
+    assert!(
+        inc.contains("pub async fn main<__CdzE: CdzEnv>(__cdz_env: &mut __CdzE) -> std::rc::Rc<dyn Fn(i64) -> i64>")
+            && inc.contains("fn __lifted_0(x: i64) -> i64")
+            && !inc.contains("async fn __lifted_0"),
+        "a no-capture closure crosses on rust-async as a sync lifted fn under an async factory:\n{inc}"
+    );
+}
+
+#[test]
+fn async_lifted_closure_whose_body_makes_a_call_still_declines() {
+    // The BOUNDARY of the option-C slice: a lifted closure whose body reaches a runtime `Core::Call` would
+    // name an async callee (needing `env` threaded in) and cannot be a plain `Fn(A) -> R` — that boxed-
+    // future closure ABI is the deferred slice. Such a body must DECLINE cleanly on rust-async (not emit
+    // an uncompilable sync call to an async fn). A closure that captures a recursive helper it calls is the
+    // shape: the closure body's `(rec …)` is a `Core::Call`. (The SAME program compiles on sync `rust`.)
+    let src = "(module m \
+       (def (rec (: n Int64)) (if (= n 0) 0 (+ n (rec (+ n -1))))) \
+       (def (mk (: base Int64)) (fn ((: x Int64)) (+ base (rec x)))) (export mk))";
+    // Sync rust emits it (the lifted body's call is a plain sync call).
+    assert!(
+        compile_rust_result(src).is_ok(),
+        "the call-in-closure-body program compiles on SYNC rust"
+    );
+    // Async rust declines it cleanly (the deferred boxed-future closure ABI), with the specific message.
+    match compile_rust_async_result(src) {
+        Ok(s) => panic!("expected a clean async decline, but it emitted:\n{s}"),
+        Err(diags) => assert!(
+            diags
+                .iter()
+                .any(|d| d.contains("async lambda-lifted closure whose body makes a call")),
+            "declines with the call-in-body message, got: {diags:?}"
+        ),
+    }
 }
 
 #[test]

@@ -432,12 +432,14 @@ fn run() -> Result<()> {
             };
             // CRASH-RECOVERY cursor: `--from <seq>` resumes the daemon at a known cursor instead of re-draining
             // the WHOLE log from 0 (which would re-perform every historical trigger — an at-most-once violation
-            // on restart). An operator restarting the daemon passes the cursor a prior run reported (the daemon
-            // prints its final cursor on a clean stop). Defaults to 0 (behavior-preserving: a fresh log or a
-            // full re-fold). NOT past the log tail — a `from` beyond the current length simply drains nothing.
+            // on restart). With NO `--from`, AUTO-RESUME from the last cursor the daemon durably recorded in the
+            // log (`daemon-cursor` high-water mark) — so recovery is automatic even after a CRASH (which printed
+            // no cursor); a fresh log with no recorded cursor resumes at 0. An explicit `--from` overrides the
+            // recorded mark (an operator can force a full/partial re-fold). NOT past the tail — a `from` beyond
+            // the log length simply drains nothing.
             let from: u64 = match flag_value(&args, "--from") {
                 Some(s) => s.parse().context("--from must be a non-negative seq cursor")?,
-                None => 0,
+                None => daemon::latest_cursor(&log.tail(0)?).unwrap_or(0),
             };
             // Optional external Cedar trust-anchor: with --policies, every op the live daemon performs is
             // authorized against it first (the agent can't widen it); without it, the ungated record-only path.

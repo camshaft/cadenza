@@ -143,4 +143,21 @@ def a-component-authored-in-inches-lowers-to-exact-meters() =
       (match v with | Vec3.V3(x, _, _) => if x == 127/5000 then unit else trap("1 inch = 127/5000 m"))
     | _ => trap("expected a Cube")
 
+@test
+def a-translated-units-cylinder-lowers-its-offset-and-dims-to-exact-meters() =
+  // Exercises three arms untouched by the tests above: cylinder-m (Cylinder), translate-m, and lower's
+  // Translate arm (which unwraps the OFFSET Vec3's Qty[meter] via lower-v — a distinct path from the
+  // primitive coord unwrap). Author a cylinder (height 6 m, radius 2 m) translated by (3, 0, 0) m; lower it
+  // and confirm the offset AND the dims all unwrap to their exact meter magnitudes.
+  let model = translate-m(v3m(meters(3/1), meters(0/1), meters(0/1)), cylinder-m(meters(6/1), meters(2/1))) in
+  match lower(model) with
+    | Solid.Translate(by, of) =>
+      (match by with | Vec3.V3(bx, by2, bz) =>
+        if bx == 3/1 and by2 == 0/1 and bz == 0/1 then
+          (match of with
+            | Solid.Cylinder(h, r) => if h == 6/1 and r == 2/1 then unit else trap("cylinder dims unwrap to 6 m x 2 m")
+            | _ => trap("expected a Cylinder under the Translate"))
+        else trap("translate offset unwraps to (3,0,0) m"))
+    | _ => trap("expected a Translate")
+
 export { meters, v3m, cube-m, sphere-m, cylinder-m, union-m, difference-m, intersection-m, translate-m, lower-v, lower }

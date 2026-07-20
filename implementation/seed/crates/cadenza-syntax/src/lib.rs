@@ -38,6 +38,9 @@ pub mod literal;
 /// code surfaces use, and an embedded `cdz`/`ml`/`sexp` code block carries its program as a real
 /// arena SUBTREE — homoiconic markdown.
 pub mod markdown;
+/// The `match`→`let` normalization codemod (opt-in, NOT `cdz fmt`): lowers a single-clause
+/// irrefutable-unguarded `match` to the equivalent `let`.
+pub mod match_to_let;
 pub mod parser;
 pub mod printer;
 pub mod query;

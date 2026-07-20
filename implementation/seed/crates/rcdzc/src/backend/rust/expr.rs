@@ -231,13 +231,22 @@ pub(super) fn emit_lifted_lambda(
 ) -> Result<String, Reject> {
     // Clone the lifted lambda's shape out of the layout so `db` can be borrowed mutably while emitting.
     let lam = layout.lifted[k].clone();
-    // Async lifted lambdas would need the `env: &mut CdzEnv` prefix + `.await` threading; defer that to a
-    // later slice (sync closures first). Decline an async lifted lambda cleanly.
-    if mode.is_async() {
+    // Async lifted lambdas: a closure body that reaches a runtime `Core::Call` would name an async callee
+    // (which needs the gas/yield `env` threaded in) and cannot be a plain `Fn(A) -> R` — that boxed-future
+    // ABI is the deferred slice. But a CALL-FREE body (pure arithmetic / branches / runtime ops — the bulk
+    // of the host-closure corpus, e.g. `(fn (x) (+ x 1))`) emits BYTE-IDENTICALLY in sync and async mode:
+    // the only body-emit site that threads `env`/awaits is the `Core::Call` arm (`emit`'s async branch),
+    // and a call-free body never hits it. So such a body is emitted as an ORDINARY SYNC `fn` even under
+    // `--target rust-async`; the enclosing `async fn` awaits the closure's value, not its (sync) call. A
+    // body WITH a call stays a clean decline until the boxed-future closure ABI lands.
+    if mode.is_async() && crate::layout::body_has_call(db, lam.body) {
         return Err(Reject::decline(
-            "an async lambda-lifted closure is not yet emitted by the Rust backend",
+            "an async lambda-lifted closure whose body makes a call is not yet emitted by the Rust backend",
         ));
     }
+    // Emit the body in SYNC mode: a lifted lambda becomes a sync `fn` on both targets (an async body would
+    // have declined just above), so its inner emit must not thread `env` — force the sync path.
+    let mode = Mode::Sync;
     let mut params_src = String::new();
     let mut env: Env = HashMap::new();
     let mut first = true;

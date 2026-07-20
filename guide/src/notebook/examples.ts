@@ -221,6 +221,47 @@ is exact (3 / 4 = 3/4, not integer division's 0):
 (def (main) (/ num den))
 ~~~`;
 
+/// A CONTROLS showcase: the four widget kinds beyond the slider — a checkbox (Bool), a dropdown and a radio
+/// (String single-choice), and a text field (String). Each drives its own cell so every control is a live,
+/// referenced input (checkbox → `(if on …)`; the String pickers/text return their value, which renders as a
+/// String cell). Closes the widget-family showcase gap: the shipped examples demonstrated only slider +
+/// number, leaving checkbox/dropdown/radio/text implemented-but-invisible. Rational-by-default (no floats —
+/// the checkbox cell's branches are whole Int64 that ground to Rational).
+const CONTROLS_DEMO = `# Controls
+
+Beyond sliders, a widget cell offers a **checkbox** (a Bool), a **dropdown** and a **radio** (pick one
+String), and a **text** field. Each control below drives its own cell — flip, pick, and type to see them
+recompute.
+
+~~~cadenza widget
+on : Bool = checkbox(default: true)
+mode : String = dropdown("balance", "schedule", default: "balance")
+scale : String = radio("linear", "log", default: "linear")
+label : String = text(default: "Demo")
+~~~
+
+A **checkbox** is a Bool — branch on it with \`if\`:
+
+~~~cadenza
+(def (main) (if on 100 0))
+~~~
+
+A **dropdown** and a **radio** each pick one String; a cell reads the chosen value:
+
+~~~cadenza
+(def (main) mode)
+~~~
+
+~~~cadenza
+(def (main) scale)
+~~~
+
+A **text** field is free String input:
+
+~~~cadenza
+(def (main) label)
+~~~`;
+
 export const EXAMPLES: ExampleNotebook[] = [
   { slug: "compound-interest", title: "Compound interest", markdown: COMPOUND_INTEREST },
   { slug: "loan", title: "Loan repayment", markdown: LOAN },
@@ -231,6 +272,7 @@ export const EXAMPLES: ExampleNotebook[] = [
   { slug: "chart-types", title: "Chart types", markdown: CHART_TYPES_DEMO },
   { slug: "records", title: "Records", markdown: RECORDS_DEMO },
   { slug: "formulas", title: "Formulas", markdown: FORMULA_DEMO },
+  { slug: "controls", title: "Controls", markdown: CONTROLS_DEMO },
   { slug: "values", title: "Values", markdown: VALUE_DEMO },
 ];
 

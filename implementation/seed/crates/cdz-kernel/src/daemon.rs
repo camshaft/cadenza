@@ -67,6 +67,27 @@ pub const PRIM_RECORD_PREFIX: &str = "prim-";
 /// already exclude [`PRIM_DENIED_PREFIX`].
 pub const PRIM_RESULT_PREFIX: &str = "prim-result-";
 
+/// The event `kind` the daemon appends to record its PROCESSED CURSOR (the resume high-water mark) — payload is
+/// the cursor as decimal text. Written by [`run`] AFTER a round that processed ≥1 trigger (log-as-state, like
+/// [`crate::schedule::SCHEDULE_FIRE`] records scheduler progress), so a daemon RESTARTED after a CRASH (which
+/// printed no cursor) auto-resumes from the latest one via [`latest_cursor`] instead of re-draining the whole
+/// log and re-performing history. A RESERVED kind ([`is_reserved_kind`]) — the daemon skips its own cursor
+/// records as non-triggers, so recording the cursor never itself re-triggers or churns (an idle round processes
+/// 0 triggers → writes no cursor → the mark is stable).
+pub const DAEMON_CURSOR: &str = "daemon-cursor";
+
+/// The latest recorded daemon PROCESSED CURSOR in `events` — the resume high-water mark ([`DAEMON_CURSOR`]'s
+/// payload as a decimal [`crate::Seq`]), or `None` if the daemon has recorded none yet (a fresh log → resume at
+/// 0). Fold for the newest `daemon-cursor` event, newest-wins (same shape as [`crate::boot::latest_program`]).
+/// A malformed payload is skipped (scan older) so one corrupt record can't strand the resume point.
+pub fn latest_cursor(events: &[crate::Event]) -> Option<crate::Seq> {
+    events
+        .iter()
+        .rev()
+        .filter(|e| e.kind == DAEMON_CURSOR)
+        .find_map(|e| std::str::from_utf8(&e.payload).ok()?.trim().parse().ok())
+}
+
 /// Run ONE daemon step that PERFORMS the ops via a REAL host primitive and RECORDS each perform in the log
 /// (the K1c→host-primitive rung). Same genesis lookup as [`tick`], but drives the HOSTED executor
 /// ([`crate::kernel::run_interpret_hosted`]): each scheduled `Prim.exec`/`Prim.http`/`Prim.append` is answered
@@ -494,6 +515,7 @@ pub fn is_reserved_kind(kind: &str) -> bool {
         || kind == crate::schedule::SCHEDULE_CREATE
         || kind == crate::schedule::SCHEDULE_CANCEL
         || kind == crate::schedule::SCHEDULE_FIRE
+        || kind == DAEMON_CURSOR
         || kind.starts_with(PRIM_RECORD_PREFIX)
 }
 
@@ -526,7 +548,15 @@ where
     while !should_stop() {
         // Fire due schedules FIRST — each appends its trigger event, which run_once then drains this same round.
         fire_due_schedules(&log)?;
-        let (next, _processed) = run_once(&log, from, runtime.clone(), policies.clone(), &kind_of)?;
+        let (next, processed) = run_once(&log, from, runtime.clone(), policies.clone(), &kind_of)?;
+        // Record the PROCESSED CURSOR as a durable high-water mark — but ONLY when this round actually processed
+        // a trigger (else an idle poll loop would churn a `daemon-cursor` event every round). A crash after this
+        // append leaves the mark in the log, so a restart WITHOUT `--from` auto-resumes here via `latest_cursor`
+        // instead of re-draining history. `daemon-cursor` is reserved → the daemon never re-triggers on it.
+        if processed > 0 {
+            let mut l = log.lock().map_err(|_| anyhow!("log mutex poisoned"))?;
+            l.append(DAEMON_CURSOR, next.to_string().as_bytes())?;
+        }
         from = next;
         std::thread::sleep(poll);
     }
@@ -563,6 +593,48 @@ mod tests {
         (def (interpret (: kind Int64) (: turn Int64)) \
           (if (= kind 1) (list (Append \"ack\") (Exec \"handle\")) (list (Noop 0)))) \
         (export interpret))";
+
+    #[test]
+    fn latest_cursor_reads_the_newest_recorded_daemon_cursor() {
+        // The crash-recovery resume mark (store-independent — a pure fold): latest_cursor returns the newest
+        // `daemon-cursor` payload as a Seq; None on a log with none; newest wins; a malformed record is skipped
+        // (scan older) so one corrupt payload can't strand the resume point. Also: daemon-cursor is reserved.
+        assert_eq!(
+            latest_cursor(&[]),
+            None,
+            "no cursor recorded → None (resume at 0)"
+        );
+        let ev = |seq: crate::Seq, kind: &str, p: &[u8]| crate::Event {
+            seq,
+            kind: kind.into(),
+            payload: p.to_vec(),
+        };
+        let log = vec![
+            ev(0, crate::boot::PROGRAM, b"(do)"),
+            ev(1, DAEMON_CURSOR, b"3"),
+            ev(2, "trigger", b"x"),
+            ev(3, DAEMON_CURSOR, b"7"), // newest cursor wins
+        ];
+        assert_eq!(
+            latest_cursor(&log),
+            Some(7),
+            "the newest daemon-cursor wins"
+        );
+        // A malformed newest record is skipped → falls back to the older valid one (never strands recovery).
+        let log2 = vec![
+            ev(0, DAEMON_CURSOR, b"5"),
+            ev(1, DAEMON_CURSOR, b"not-a-seq"),
+        ];
+        assert_eq!(
+            latest_cursor(&log2),
+            Some(5),
+            "a corrupt newest cursor is skipped; the last valid one is used"
+        );
+        assert!(
+            is_reserved_kind(DAEMON_CURSOR),
+            "daemon-cursor is reserved (never a trigger)"
+        );
+    }
 
     #[test]
     fn a_tick_with_no_genesis_is_a_loud_error() {

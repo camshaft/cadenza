@@ -23,3 +23,13 @@ def w2() = sum(map(from-list([1,2,3,4,5]), fn(x) => x + 10))
 // W3: from-list |> map |> filter |> sum   (3 closures, the showcase) -> 24 (*2 then >4: 6+8+10)
 def w3() = sum(filter(map(from-list([1,2,3,4,5]), fn(x) => x * 2), fn(x) => x > 4))
 export { w1, w2, w3 }
+
+// ===== PM triage (corpus-bugfix, 2026-07-20, trunk dda8ea41e) =====
+// NOT a corpus item + NOT a bug. Per the header, these are S2 FUSION witnesses for v-core-opt: "the bar is
+// the EMIT shape (call_indirect -> 0), not correctness. All RUN correct today." The corpus gate grades VALUES,
+// not wasm opcode counts — a fusion (call_indirect->0) assertion belongs in v-core-opt's rcdzc opcode-count
+// unit tests (like the existing 09-functions:245 filter-under-fold pin whose 0-call_indirect is asserted in a
+// rcdzc test, value in corpus). Verified it compiles (w1/w2/w3 exports; values run correct per the witness).
+// This is v-core-opt's S2 recursive-drive-specialization optimization work, not a queue bug. Renamed
+// .OPCODE-PROBE-v-core-opt so it stops surfacing as untriaged. No route needed (v-core-opt filed it for
+// their own fusion pass); no corpus pin (value coverage already exists via the adapter cases).

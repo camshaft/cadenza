@@ -64,3 +64,14 @@ def gmap(it, f) = match it with
   | GIter.Cons(h, rest) => GIter.Cons(f(h), gmap(rest, f))
 @test
 def t() = if count(gmap(from-list([1,2]), fn(x) => from-list([x]))) == 2 then unit else trap("t")
+
+;; ===== PM triage (corpus-bugfix, 2026-07-20, trunk d35ed5416) — CONFIRMED live, PARKED at v-inference =====
+;; Still reproduces: gmap(from-list([1,2]), fn(x) => from-list([x])) -> CDZ0203 "arg for gmap's f is a
+;; (-> Int64 (GIter Int64)) but (-> Int64 (GIter (GIter Int64))) expected — over-nested by one GIter". cdz
+;; check passes, cdz compile declines (check≡compile discrepancy), exactly as the _w55 diagnosis states. This
+;; is v-inference's deeply-root-caused, OWNED, DEFERRED residual of the _w44 closure-aggregate tie — localized
+;; to apply_scheme_to_args / freshen_arg (b binds one level too deep when the closure body is a recursive-
+;; generic producer call); flagged "deep, hot, 3 ticks investigated, NOT safe to rush". NOT actionable by me
+;; (their infer/unify lane, already diagnosed). Renamed .PARKED-v-inference so it stops surfacing as untriaged;
+;; pin as PASS once v-inference lands the apply_scheme_to_args fix. Exotic shape (v-iterators' real giter
+;; closures are direct producers _w44 covers), low priority per the filer.
