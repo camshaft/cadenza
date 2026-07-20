@@ -2318,6 +2318,55 @@
   (call   main (: 5 Int64))
   (output (: 21 Int64)))
 
+(case "a NESTED list-of-lists-of-quantities used as a Map key canonicalizes and hits"
+  (doc    "The quantity-element shape peel recurses through nesting: a `(list (list (Qty …)))` Map key — a
+           quantity two list levels deep — canonicalizes and hashes by content. A separately-built equal
+           nested key HITS (42); one differing in the inner quantity MISSES (0). Combined = 42. Pins that the
+           `shape_of` `Ty::Qty` peel composes with the recursive List shape builder (not just a one-level
+           list-of-Qty key).")
+  (input  (do
+            (def (main (: v Int64))
+              (let ((k (list (list (Qty.of v (Unit.base #"meter")))))
+                    (m (Map.insert (Map.empty) k 42)))
+                (+ (match (Map.lookup m (list (list (Qty.of v (Unit.base #"meter")))))
+                     ((Some x) x) ((None) 0))
+                   (match (Map.lookup m (list (list (Qty.of (+ v 1) (Unit.base #"meter")))))
+                     ((Some x) x) ((None) 0)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 42 Int64)))
+
+(case "a Set of tuples-containing-a-quantity dedups equal members and keeps distinct ones"
+  (doc    "The tuple analogue of the list-of-Qty Set case: `Set.of` over `(tuple (Qty …) v)` members. The
+           tuple shape builder recurses into the quantity element (peeled to its inner), so two equal
+           tuples-with-a-quantity dedup to `Set.len` 1 and tuples differing in the quantity stay 2. Combined
+           `dedup + 10*distinct` = 21. Pins the quantity-element peel through a TUPLE (not list) compound key.")
+  (input  (do
+            (def (main (: v Int64))
+              (+ (Set.len (Set.of (list (tuple (Qty.of v (Unit.base #"meter")) v)
+                                        (tuple (Qty.of v (Unit.base #"meter")) v))))
+                 (* 10 (Set.len (Set.of (list (tuple (Qty.of v (Unit.base #"meter")) v)
+                                              (tuple (Qty.of (+ v 1) (Unit.base #"meter")) v)))))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 21 Int64)))
+
+(case "a Map VALUE that is a list-of-quantities round-trips through Map.lookup and List.at"
+  (doc    "A quantity nested in a compound Map VALUE (not key): the map holds `1 → (list (Qty v m) (Qty (v+1)
+           m))`, and `Map.lookup 1` returns the list, `List.at 1` its second quantity, `Qty.value` its
+           magnitude. v=5 → 6. Pins that a list-of-quantities survives as a Map value through the decode +
+           list-index path (the value-side complement of the compound-KEY cases above).")
+  (input  (do
+            (def (main (: v Int64))
+              (let ((m (Map.insert (Map.empty) 1 (list (Qty.of v (Unit.base #"meter"))
+                                                       (Qty.of (+ v 1) (Unit.base #"meter"))))))
+                (match (Map.lookup m 1)
+                  ((Some xs) (match (List.at xs 1) ((Some q) (Qty.value q)) ((None) 0)))
+                  ((None) 0))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
 ; --- Quantity joins: the same-unit flow and the explicit-conversion repair --------------------------
 ; 806e45ba9 fixed the mixed-unit join DIAGNOSTIC (a scale clash, not a shadowed declaration). These
 ; pin the join semantics around it, promoted from passing breaker probes: a same-unit join is ONE

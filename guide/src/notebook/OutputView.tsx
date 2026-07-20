@@ -37,6 +37,12 @@ function FormulaView({ formula }: { formula: Formula }) {
           <p className="mt-1 text-xs text-amber-400/80">{formula.reason}</p>
         </div>
       );
+    default: {
+      // Exhaustiveness: every `Formula.kind` must have a case above. If `formula.ts` adds a variant, this
+      // assignment fails `tsc -b` — forcing a rendering case rather than silently rendering nothing.
+      const _exhaustive: never = formula;
+      return _exhaustive;
+    }
   }
 }
 
@@ -261,5 +267,12 @@ export function OutputView({ output }: { output: CellOutput }) {
       return <p className="font-mono text-sm text-rose-400">timed out (possible infinite loop)</p>;
     case "error":
       return <p className="font-mono text-sm text-rose-400">error: {output.message}</p>;
+    default: {
+      // Exhaustiveness: every `CellOutput.render` kind must have a case above. If `renderOutput.ts` adds a
+      // render kind (paired with the RunOutcome mirror guard in renderOutput.test.ts), this fails `tsc -b`
+      // — so a new output kind can't slip through to a silently-blank cell.
+      const _exhaustive: never = output;
+      return _exhaustive;
+    }
   }
 }

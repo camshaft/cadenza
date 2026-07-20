@@ -813,6 +813,21 @@
                           ((None u) -1))) (export main)))
   (output (: 1 Int64)))
 
+(case "Set.to-list orders a set of RECORD elements canonically"
+  (doc    "The record companion of the tuple-element case: records order by comparing field values in the
+           record's canonical (sorted) field order, so `{⟨x3,y a⟩, ⟨x1,y2⟩, ⟨x2,y0⟩}` enumerates with
+           ⟨x1,y2⟩ first — index 0's `x` is 1. A record's runtime rep is a field-ordered tuple, but the
+           SORT must consult the descriptor's canonical field order (not insertion or declaration
+           accident) — the third compound-element kind (tuple/list/record) through the same
+           `value_cmp_shaped` sort, over a runtime `a` so nothing folds. Expected: 1.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (List.at (Set.to-list (Set.of (list (record (x 3) (y a)) (record (x 1) (y 2)) (record (x 2) (y 0))))) 0)
+                ((Some r) (. r x))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64)))
+
 (case "Set.to-list over Float64 elements enumerates by canonical byte order"
   (doc    "The FLOAT sibling of the compound-element to-list case: a set of Float64 elements enumerates by
            CANONICAL BYTE order — the element's bit pattern as an UNSIGNED integer, NOT numeric order. A float
@@ -835,6 +850,26 @@
             (export main)))
   (call   main (: 3.5 Float64))  (output (: (tuple 3 1) (Tuple Int64 Int64)))
   (call   main (: -1.0 Float64)) (output (: (tuple 3 1) (Tuple Int64 Int64))))
+
+(case "Set.to-list places a NaN element after the positives but before the negatives, by canonical byte order"
+  (doc    "The NaN-POSITION companion of the float byte-order case above: canonical (quiet) NaN's bits are
+           `0x7ff8000000000000`, which as an UNSIGNED integer sorts AFTER every positive finite (whose sign
+           bit is 0, so bits < `0x7ff8…`) but BEFORE every negative (sign bit = high bit → bits ≥ `0x8000…`).
+           So a NaN is NOT ordered 'last' — it lands between the positives and the negatives. Over a set
+           `{1.5, NaN, -2.0}` with a RUNTIME NaN (`(/ x x)` at x=0.0 — a const NaN has no value form and is
+           compile-rejected, so the NaN must be produced at run time) the canonical order is `[1.5, NaN, -2.0]`,
+           so index 1 is the NaN: `List.at … 1` equals the runtime NaN under the canonical byte form
+           (`(= e nan)` is true — all NaNs share one canonical form, unlike IEEE `nan ≠ nan`). Pins the NaN
+           slot in the `compare_scalar_leaf` `to_bits().cmp` order (matching rust's `__CdzF64`), the boundary
+           the finite-only order-face above doesn't reach.")
+  (input  (do
+            (def (main (: x Float64))
+              (let ((nan (/ x x)))
+                (match (List.at (Set.to-list (Set.of (list 1.5 nan -2.0))) 1)
+                  ((Some e) (if (= e nan) 1 0))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 0.0 Float64)) (output (: 1 Int64)))
 
 ; The Set.to-list cases above enumerate a CONSTANT `Set.of` literal. A set built AT RUN TIME by a
 ; recursive `Set.insert` loop over a boundary parameter is a genuine runtime CHAMP the `set-to-list`

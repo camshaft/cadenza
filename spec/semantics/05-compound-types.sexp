@@ -10970,6 +10970,42 @@
             (export main)))
   (call   main (: 3.5 Float64)) (output (: 2 Int64)))
 
+; The key-order pins above are all SCALAR keys. A COMPOUND key (tuple/record — the shapes a compiler's
+; memo tables key on) sorts by the descriptor-guided lexicographic order (`value_cmp_shaped`), the same
+; total order the compound-element Set.to-list case (19-sets) pins for elements — but the MAP-KEY path
+; is a distinct sort site (the key column of the entry walk), fixed by the same change and previously
+; false-declining on wasm identically. These pin the tuple-KEY enumeration order end to end: index 0 is
+; the lexicographic minimum, and index 1 the middle key (a real sort, not a min-pick).
+
+(case "Map.to-list over TUPLE keys enumerates in lexicographic key order (the minimum first)"
+  (doc    "`{(3,a)→30, (1,2)→10, (2,0)→20}` over a runtime `a`: tuple keys order lexicographically —
+           first component decisive — so the canonical entry order is (1,2), (2,0), (3,a) and index 0's
+           VALUE is 10. Reading the value (not the key) confirms the k→v pairing survives the sort. Pins
+           the compound-KEY sort on the map-entry walk, the Map twin of the compound-element Set.to-list
+           order pin. Expected: 10.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((m (Map.insert (Map.insert (Map.insert Map.empty (tuple 3 a) 30) (tuple 1 2) 10) (tuple 2 0) 20)))
+                (match (List.at (Map.to-list m) 0)
+                  ((Some p) (match p ((tuple k v) v)))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 10 Int64)))
+
+(case "Map.to-list over TUPLE keys places the middle key second (a full sort, not a min-pick)"
+  (doc    "The same three-entry tuple-keyed map read at index 1: the middle key (2,0) → value 20. Together
+           with the index-0 case above this witnesses a genuine full ordering of the key column — an
+           implementation that only tracked the minimum (or enumerated interior order beyond slot 0)
+           would pass index 0 and fail here. Expected: 20.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((m (Map.insert (Map.insert (Map.insert Map.empty (tuple 3 a) 30) (tuple 1 2) 10) (tuple 2 0) 20)))
+                (match (List.at (Map.to-list m) 1)
+                  ((Some p) (match p ((tuple k v) v)))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 20 Int64)))
+
 ; The Map.to-list cases above enumerate a NON-EMPTY map. The empty boundary — a pass dumping a
 ; possibly-empty symbol table — is `Map.to-list` of an EMPTY (but key/value-TYPED) map: the empty entry
 ; list, length 0. The map is emptied at RUN TIME (`Map.remove` of its only key) so the key/value types are

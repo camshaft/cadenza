@@ -8,6 +8,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import {
   injectImport,
   MUSIC_INTERVAL_NAME,
@@ -82,4 +85,29 @@ test("the preloaded-library constants match what MusicPage passes the compiler",
   // R4 (live-coding) imports render-pattern + euclid from `pattern`.
   assert.equal(MUSIC_PATTERN_NAME, "pattern");
   assert.ok(MUSIC_PATTERN_IMPORTS.includes("render-pattern") && MUSIC_PATTERN_IMPORTS.includes("euclid"), "pattern imports include render-pattern + euclid");
+});
+
+// The silent-failure trap (v-music, relayed by v-guide 2026-07-20): a module in MUSIC_PRELOAD_NAMES that is
+// NOT staged by stage-wasm.mjs's `musicLibs` → check-music-preload throws "staged music lib missing", and in
+// the browser the preload-import fails silently. The two lists live in different files (musicPreload.ts here,
+// stage-wasm.mjs the staging script) so they can drift. Pin the containment invariant — every preloaded name
+// must be staged — by parsing musicLibs out of the script and asserting MUSIC_PRELOAD_NAMES ⊆ musicLibs. This
+// makes an unstaged preload name FAIL test:unit (in CI) instead of only surfacing at runtime. (We DON'T assert
+// the reverse — musicLibs MAY stage extra libs a showcase doesn't preload yet, which is the intended
+// lazy-per-showcase staging: staged-but-not-preloaded is benign; preloaded-but-not-staged is the bug.)
+function stagedMusicLibs(): string[] {
+  const here = dirname(fileURLToPath(import.meta.url)); // src/music
+  const script = readFileSync(join(here, "../../scripts/stage-wasm.mjs"), "utf8");
+  const m = script.match(/const musicLibs\s*=\s*\[([\s\S]*?)\]/);
+  assert.ok(m, "could not find `const musicLibs = [...]` in stage-wasm.mjs (did the seam move?)");
+  // Extract each "<name>.cdz" string literal, strip the .cdz to match MUSIC_PRELOAD_NAMES' bare names.
+  return [...m![1].matchAll(/"([a-z0-9-]+)\.cdz"/g)].map((x) => x[1]);
+}
+
+test("every MUSIC_PRELOAD_NAMES entry is staged by stage-wasm.mjs musicLibs (no silent preload-import failure)", () => {
+  const staged = stagedMusicLibs();
+  assert.ok(staged.length >= 10, `expected the musicLibs parse to find many libs, got ${staged.length} — the regex may be stale`);
+  for (const name of MUSIC_PRELOAD_NAMES) {
+    assert.ok(staged.includes(name), `MUSIC_PRELOAD_NAMES has "${name}" but stage-wasm.mjs musicLibs does not stage "${name}.cdz" — it would fail to preload (add it to musicLibs)`);
+  }
 });

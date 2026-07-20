@@ -8056,8 +8056,13 @@ fn collect_pattern_binders(
     // is a nullary variant constructor (`None`, `Sign.Neg`) — a ctor is not a binder. `variant_disc_of`
     // recognizes a ctor value; a name that is not one is a binder.
     if let crate::ast::Struct::Atom(_) = db.ast.get(pat) {
+        // A pure TAG test — is this atom an Int/Bool literal? Dispatch through the BORROW companion
+        // `resolved_ref`, not `resolved_of`: the latter CLONES the whole `Resolved` per call just to read
+        // the variant tag, and `collect_pattern_binders` is on the hot match-lowering path (a match-heavy
+        // program — a parser like `sread.cdz` — checks it per pattern atom; it was ~3% of that real check
+        // workload via `Resolved::clone`). The fix-35/36/`prim_of` borrow pattern.
         if matches!(
-            crate::resolve::resolved_of(db, pat),
+            crate::resolve::resolved_ref(db, pat),
             crate::resolved::Resolved::Int(_) | crate::resolved::Resolved::Bool(_)
         ) {
             return Ok(()); // a literal is not a binder

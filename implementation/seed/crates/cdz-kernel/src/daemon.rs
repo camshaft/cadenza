@@ -924,6 +924,61 @@ mod tests {
     }
 
     #[test]
+    fn replay_over_a_fork_reproduces_the_parent_cognition() {
+        // The load-bearing §3 COMPOSITION invariant (fork × replay): a fork carries the recorded-effect trail
+        // (prim-result-*) but DROPS the parent's daemon-cursor, so replaying the FORK re-folds the branched
+        // history and reproduces the parent's summed cognition — with missing==0 (faithful) — exactly as
+        // replaying the parent would. This pins that time-travel (fork) + deterministic re-execution (replay)
+        // compose: a forked timeline is replay-faithful. Store-gated (replay needs the runtime).
+        use std::sync::{Arc, Mutex};
+        let (ppath, mut parent0) = temp_log();
+        crate::boot::inject_genesis(&mut parent0, GENESIS).unwrap();
+        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let provider = match crate::kernel::compile_interpret_provider(GENESIS) {
+            Ok(p) => p,
+            Err(e) => panic!("genesis compiles: {e}"),
+        };
+        let Some(runtime) = crate::kernel::find_runtime_for(&provider, store_root) else {
+            eprintln!("[cdz-kernel::daemon] runtime absent/stale; skipping replay-over-fork");
+            let _ = std::fs::remove_file(&ppath);
+            return;
+        };
+        let parent = Arc::new(Mutex::new(parent0));
+        // Record a hosted turn on the parent (prim-result-* trail) + a daemon-cursor bookmark.
+        let parent_sum = tick_hosted(Arc::clone(&parent), 1, runtime.clone())
+            .expect("the parent hosted turn records its trail");
+        assert_eq!(parent_sum, 3, "the parent turn sums to 3");
+        {
+            let mut l = parent.lock().unwrap();
+            l.append(DAEMON_CURSOR, b"99").unwrap(); // the parent daemon's resume bookmark
+        }
+
+        // FORK the full parent history into a fresh timeline (drops the cursor, keeps the effect trail).
+        let (fpath, mut fork) = temp_log();
+        crate::boot::fork_log(&*parent.lock().unwrap(), &mut fork, None).unwrap();
+        let fork_events = fork.tail(0).unwrap();
+        assert_eq!(
+            latest_cursor(&fork_events),
+            None,
+            "the fork inherits NO resume bookmark (it re-folds from the start)"
+        );
+
+        // REPLAY over the FORK reproduces the parent's cognition faithfully from the carried effect trail.
+        let replay = replay_hosted_turn(&fork_events, GENESIS, 1, runtime)
+            .expect("the forked timeline replays");
+        assert_eq!(
+            replay.sum, parent_sum,
+            "replaying the fork reproduces the parent's summed cognition"
+        );
+        assert_eq!(
+            replay.missing, 0,
+            "the fork carried the recorded-effect trail → a faithful replay (no missing results)"
+        );
+        let _ = std::fs::remove_file(&ppath);
+        let _ = std::fs::remove_file(&fpath);
+    }
+
+    #[test]
     fn perform_op_body_is_record_only_by_default_for_exec() {
         // The safe DEFAULT (no `live-exec` feature): exec does NOT spawn a process — it returns the record-only
         // tag (2), identical to the mock. Defense-in-depth: a default build simply cannot run a subprocess.

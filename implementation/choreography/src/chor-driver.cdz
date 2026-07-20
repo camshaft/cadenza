@@ -321,6 +321,21 @@ def compilable-receiver-performs-recv() =
   if contains-sub-str(m, "Comm.recv(\"Buyer\")") then unit
   else trap("the receiver's compilable body performs Comm.recv(\"Buyer\")")
 
+@test
+def compilable-rec-degrades-to-a-clear-marker() =
+  // KNOWN-LIMITATION PIN: recursion (LRecT/LVarT) can't sit in a single `def main` back-jump, so the first-cut
+  // render-compilable emits a clear "-- rec: unsupported" marker INSIDE an otherwise-valid module rather than
+  // crashing or emitting garbage (a rec-emitting slice — a named recursive helper — is future work, held
+  // pending a forcing fixture). Pin the graceful degradation: a recursive protocol's Buyer module still opens
+  // with the Comm effect + def main and carries the rec-unsupported marker. Guards that a future change can't
+  // silently drop the marker or turn the documented limitation into a trap.
+  let g = Chor.Rec("Loop", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ping"), Chor.Var("Loop"))) in
+  let m = render-compilable(g, "Buyer") in
+  if contains-sub-str(m, "def main") then
+    (if contains-sub-str(m, "rec: unsupported") then unit
+     else trap("a recursive protocol emits the rec-unsupported marker in its module"))
+  else trap("a recursive protocol still emits a well-formed module shell (effect + def main)")
+
 def purchase-linear() =
   Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"),
     Chor.Seq(Chor.Comm("Seller", "Buyer", "Quote"),
