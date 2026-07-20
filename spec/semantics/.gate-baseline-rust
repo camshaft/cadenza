@@ -659,7 +659,9 @@ pass	a closure driving control flow off a captured boolean
 pass	a closure export alongside a plain scalar export — the closure runs
 pass	a closure export alongside a plain scalar export — the plain export runs
 pass	a closure exported to the host is called by the host
+pass	a closure capturing a RUNTIME-BUILT list indexes the captured spine at call time
 pass	a closure factory's returned capturing closure is applied at the call site
+pass	a closure capturing a runtime String ROPE reads its byte length at call time
 pass	a closure returned from a recursive function is applied through a recursive HOF
 pass	a closure returning Bytes crosses to the host as list<u8>
 pass	a closure returning Unit is declined — Unit has no machine representation
@@ -2384,6 +2386,7 @@ pass	a twenty-deep push chain retains the still-live source binding
 pass	a two-argument built-in applied to three arguments names its arity
 pass	a two-argument closure exported to the host is called with both arguments
 pass	a two-argument list operation applied to a non-list names the expected argument type
+pass	a trap raised inside a host-called closure body reaches the host as a trap
 pass	a two-arm Bool match selects its second (false) arm
 pass	a two-arm if selecting between two runtime FLOAT values computes the chosen one (float select-ification)
 pass	a two-arm if selecting between two runtime NARROW UInt8 values computes the chosen one at the payload width

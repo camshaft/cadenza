@@ -659,7 +659,9 @@ pass	a closure returning a constant String crosses as its UTF-8 bytes
 pass	a closure returning a nominal-over-Bool erases to bool at the boundary
 pass	a closure returning a nominal-over-scalar crosses as the underlying scalar
 pass	a closure returning a runtime String (concat) crosses as its bytes
+pass	a closure capturing a RUNTIME-BUILT list indexes the captured spine at call time
 pass	a closure returning a tuple crosses as the typed value form
+pass	a closure capturing a runtime String ROPE reads its byte length at call time
 pass	a closure returning a tuple whose element is a LIST (compound-with-collection)
 pass	a closure returning a tuple with a Bool leaf
 pass	a closure returning a tuple with a negative int leaf
@@ -2384,6 +2386,7 @@ pass	a type-value in integer-width position is rejected
 pass	a type-valued parameter threaded through a second call reaches Type.eq with its type intact
 pass	a type-valued parameter under a function-arrow annotation dispatches an ad-hoc-polymorphic dict
 pass	a u16 segment encodes an integer big-endian by default
+pass	a trap raised inside a host-called closure body reaches the host as a trap
 pass	a u16 segment round-trips at its maximum value
 pass	a u32 segment encodes four big-endian bytes
 pass	a u32 segment round-trips at its maximum value

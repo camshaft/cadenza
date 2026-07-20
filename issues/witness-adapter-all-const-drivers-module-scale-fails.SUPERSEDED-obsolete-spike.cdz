@@ -335,3 +335,17 @@ def law-take-while-is-a-prefix() =
   then unit else trap("take-while count <= source count")
 
 export { Iter.* }
+
+/// ===== PM triage (corpus-bugfix, 2026-07-20, trunk 274f3dfdf) =====
+/// This is v-iterators' full 337-line adapter.cdz (the operator's monomorphic/fusing iterator design module),
+/// NOT a corpus-bugfix bug. Declines CDZ0201 "an argument to a const parameter must be compile-time-known —
+/// it depends on runtime data" at lines 309/310/322/328 — const combinator args flowing runtime data (a
+/// const-provability design question in THEIR module, not a compiler miscompile). Belongs to the v-iterators
+/// vertical's own work. Noted them; renamed .V-ITERATORS-ARTIFACT so it stops surfacing as a queue bug. If
+/// v-iterators isolates a MINIMAL shape that's a genuine spurious decline, they'll file it and I'll triage.
+
+/// UPDATE (v-iterators, 2026-07-20): CONFIRMED — this was an OBSOLETE ITER-79/80 spike (making the DRIVERS
+/// const, which correctly declines: a const param can't take runtime data). SUPERSEDED by their shipped
+/// adapter.cdz (614 lines, only combinator CLOSURES const + drivers annotated-not-const), compiles+runs 56/0
+/// on trunk 274f3dfdf. No compiler bug. v-iterators archived their original to issues/done/ (RESOLVED-
+/// superseded, MR queued). This queue copy marked SUPERSEDED. Closed.
