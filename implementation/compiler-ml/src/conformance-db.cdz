@@ -167,6 +167,11 @@ def c-cx-neg-dividend() = Case.Case([Tok.TNeg, Tok.TNum(12), Tok.TOp(47), Tok.TN
 /// `7 % 0` → Declines (modulo-by-zero yields None, like div-by-zero — the trap-free absent outcome). The
 /// `c-div-by-zero` companion for `%`, which the corpus didn't pin.
 def c-cx-mod-by-zero-declines() = Case.Case([Tok.TNum(7), Tok.TOp(37), Tok.TNum(0)], Expect.Declines)
+/// `-7 % 3` → -1 (SIGN-FOLLOWING / truncated modulo: the result takes the DIVIDEND's sign — `-7 = 3*(-2) + (-1)`,
+/// NOT floored `2`). Prefix minus binds as a factor, so `-7 % 3` = `(-7) % 3`. Differential-verified vs rcdzc
+/// (`value -1`). The negative-DIVIDEND `%` twin of `c-cx-neg-dividend` (which pinned `/`) — pins the exact
+/// numeric semantic (`match-spec-never-invent`: sign-following, not floored) against a future regression.
+def c-cx-neg-mod() = Case.Case([Tok.TNeg, Tok.TNum(7), Tok.TOp(37), Tok.TNum(3)], Expect.Runs(0 - 1))
 
 // ---- Compositional integer-subset shapes: currently PASS but were UN-WITNESSED. Pinned so a future change
 //      to the reader/infer/lower/eval can't silently break them (the loop-doc "add a case even if it passes"
@@ -213,7 +218,7 @@ def corpus() = [
   c-cx-neg-dividend(), c-cx-mod-by-zero-declines(),
   c-cx-nested-if-in-branch(), c-cx-let-chain-outer-in-value-and-body(),
   c-cx-ne-true(), c-cx-mul-prec-in-sub-chain(),
-  c-cx-chained-comparison-declines()
+  c-cx-chained-comparison-declines(), c-cx-neg-mod()
 ]
 
 /// THE SCOREBOARD: `(passed, total)` over the corpus — what the `cadenza-ml` gate target prints as `X/N`.
@@ -244,7 +249,7 @@ def cf-declines-mismatch-is-fail() =
 
 @test
 def cf-corpus-size-floor() =
-  // The corpus SIZE floor: exactly 59 cases, so a case can't be silently dropped from `corpus()`.
+  // The corpus SIZE floor: exactly 60 cases, so a case can't be silently dropped from `corpus()`.
   // This does NOT re-run the compiles — each case's pass/decline is already proven by its own
   // `conformance-<case>` @test below, and the `count-passing` fold logic by
   // `cf-count-passing-partial`. The old `cf-corpus-all-pass` re-ran the entire corpus
@@ -253,7 +258,7 @@ def cf-corpus-size-floor() =
   // v-fleet-tooling as the compiler-ml gate-throughput + false-hang source). The conformance FLOOR
   // is now: per-case @tests (each case correct) + this size check (no case dropped), with none of
   // the redundant full-corpus re-run.
-  (if List.len(corpus()) == 59 then unit else trap("corpus has 59 cases"))
+  (if List.len(corpus()) == 60 then unit else trap("corpus has 60 cases"))
 
 @test
 def cf-count-passing-partial() =
@@ -395,5 +400,7 @@ def conformance-cx-ne-true() = (if check-case(c-cx-ne-true()) then unit else tra
 def conformance-cx-mul-prec-in-sub-chain() = (if check-case(c-cx-mul-prec-in-sub-chain()) then unit else trap("20 - 2*3 - 4 → 10"))
 @test
 def conformance-cx-chained-comparison-declines() = (if check-case(c-cx-chained-comparison-declines()) then unit else trap("1 < 2 < 3 declines (chained comparison / trailing-token guard)"))
+@test
+def conformance-cx-neg-mod() = (if check-case(c-cx-neg-mod()) then unit else trap("-7 % 3 → -1 (sign-following modulo, matches rcdzc)"))
 
 export { Expect.*, Case.*, case-passes, check-case, count-passing, corpus, conformance, all-pass }
