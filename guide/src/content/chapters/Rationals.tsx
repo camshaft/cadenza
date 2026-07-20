@@ -89,6 +89,30 @@ export default function Rationals() {
         by <em>value</em>: <C>2/4</C> and <C>1/2</C> are equal, however you wrote them.
       </P>
 
+      <H2>Taking a rational apart</H2>
+      <P>
+        Sometimes you want the two integers back out, to display a fraction or to feed its parts on
+        somewhere. <C>Rational.numerator</C> and <C>Rational.denominator</C> hand them over, and because a
+        rational is always stored in lowest terms, they give you the <em>reduced</em> pair, not whatever you
+        happened to type. Ask <C>2/4</C> for its numerator and it's <C>1</C>, since the value is really{" "}
+        <C>1/2</C>:
+      </P>
+      <Runnable source={`(Rational.numerator (Rational.of 2 4))`} />
+      <P>
+        The denominator of that same <C>2/4</C> is <C>2</C>, completing the reduced <C>1/2</C>. Both come
+        back as a <C>BigInt</C>, so a numerator or denominator that outgrows 64 bits is carried exactly like
+        any other exact integer:
+      </P>
+      <Runnable source={`(Rational.denominator (Rational.of 2 4))`} />
+      <P>
+        This is a clean way to <em>see</em> that arithmetic really did stay exact. Add a third three times
+        and ask the result for its denominator: it's <C>1</C>, because the sum is exactly <C>1/1</C>, not a
+        fraction a hair away from one.
+      </P>
+      <Runnable
+        source={`(Rational.denominator (+ (+ (Rational.of 1 3) (Rational.of 1 3)) (Rational.of 1 3)))`}
+      />
+
       <H2>Arithmetic stays exact</H2>
       <P>
         <C>+</C>, <C>-</C>, <C>*</C>, and <C>/</C> over rationals compute the exact result and renormalize.
@@ -166,6 +190,28 @@ export default function Rationals() {
           <>
             A quarter is <C>(Rational.of 1 4)</C>. Dividing by it multiplies by its reciprocal <C>4/1</C>,
             so <C>1/2</C> becomes <C>4/2 = 2/1</C>, exactly two with no rounding.
+          </>
+        }
+      />
+
+      <Exercise
+        id="rationals:3"
+        prompt={
+          <>
+            A rational is stored in lowest terms, so its parts come back <em>reduced</em>: <C>6/8</C> is
+            really <C>3/4</C>, so its numerator is <C>3</C>. Which accessor reads the top of the fraction,{" "}
+            <C>numerator</C> or <C>denominator</C>? Fill in the blank so the check confirms the numerator is{" "}
+            <C>3</C> and gives <C>1</C>.
+          </>
+        }
+        starter={`(if (= (Rational.? (Rational.of 6 8)) (BigInt.of 3)) 1 0)`}
+        solution={`(if (= (Rational.numerator (Rational.of 6 8)) (BigInt.of 3)) 1 0)`}
+        expected="1"
+        hint={
+          <>
+            <C>6/8</C> reduces to <C>3/4</C>, whose numerator is <C>3</C>. <C>Rational.numerator</C> reads
+            the top; <C>Rational.denominator</C> would give <C>4</C>. The accessor returns a <C>BigInt</C>, so
+            it's compared against <C>(BigInt.of 3)</C>.
           </>
         }
       />

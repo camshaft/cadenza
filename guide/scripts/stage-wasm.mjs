@@ -113,9 +113,13 @@ for (const lib of cadLibs) {
 // benign (CAD proved this), and it avoids a missing-lib break if a showcase imports one not anticipated here.
 // NOTE: the exact per-buffer IMPORT SURFACE (which symbols a showcase buffer imports) is v-music's authority
 // and not yet frozen — this stages the LIBS; the import clauses live in the MusicPreload module (pending).
+// AUTHORITATIVE list per v-music (feature authority) — keep synced to implementation/music/src/*.cdz; a
+// showcase importing a lib NOT here is a silent preload gap (CDZ0201). v-music pings when adding an
+// importable lib. `synth.cdz` EXCLUDED (Web Audio graph, not a MIDI/event-structure dep — v1 is event
+// structure). `des-piece.cdz` + `pipeline.cdz` are PENDING v-music's queued MR 2303e7e0d — add when it lands.
 const musicLibs = [
   "schedule.cdz", "pitch.cdz", "interval-ratio.cdz", "scale-ratio.cdz", "scale.cdz",
-  "chord-ratio.cdz", "chord.cdz", "rhythm.cdz", "compose.cdz", "piece.cdz",
+  "chord-ratio.cdz", "chord.cdz", "rhythm.cdz", "rhythm-ratio.cdz", "compose.cdz", "piece.cdz",
 ];
 await mkdir(join(dest, "music"), { recursive: true });
 for (const lib of musicLibs) {

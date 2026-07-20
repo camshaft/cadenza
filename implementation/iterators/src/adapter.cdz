@@ -111,6 +111,16 @@ def find-drive(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(
   | Option.Some(pr) => (match pr with | (x, s2) => if p(x) then Option.Some(x) else find-drive(step, s2, p))
 def find(it, p: Int64 -> Bool) = match it with | Iter.Mk(s, step) => find-drive(step, s, p)
 
+/// `position(it, p)` — the 0-based INDEX of the first element satisfying `p`, or `None` (Rust's
+/// `Iterator::position`; the index dual of `find`, which returns the element). Short-circuits at the first
+/// match. Threads a running index `i` alongside the state; recurses via if/else (like `find`), so it dodges
+/// the mixed-match Option-tail-loop wasm bug (v-wasm-opt) that the `match f(x)` form of filter-map hits.
+def position-drive(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), i: Int64, const p: Int64 -> Bool) =
+  match step(s) with
+  | Option.None(_) => Option.None(unit)
+  | Option.Some(pr) => (match pr with | (x, s2) => if p(x) then Option.Some(i) else position-drive(step, s2, i + 1, p))
+def position(it, p: Int64 -> Bool) = match it with | Iter.Mk(s, step) => position-drive(step, s, 0, p)
+
 /// `sum(it)` — total of the elements (fold with +, seeded 0). The canonical fused-pipeline consumer.
 def sum(it) = fold(it, 0, fn(a, x) => a + x)
 
@@ -237,6 +247,43 @@ def find-after-map-filter() =
   match find(filter(map(from-list([1, 2, 3, 4]), fn(x) => x * 3), fn(x) => x > 5), fn(x) => x > 0) with
   | Option.None(_) => trap("find should hit 6")
   | Option.Some(v) => if v == 6 then unit else trap("first >5 of *3 is 6")
+
+/// position — the index dual of find.
+@test
+def position-finds-index() =
+  match position(from-list([5, 6, 7, 8]), fn(x) => x > 6) with
+  | Option.None(_) => trap("position should hit index 2")
+  | Option.Some(i) => if i == 2 then unit else trap("first >6 is at index 2")
+
+@test
+def position-first-is-zero() =
+  match position(from-list([9, 1, 2]), fn(x) => x > 5) with
+  | Option.None(_) => trap("position should hit index 0")
+  | Option.Some(i) => if i == 0 then unit else trap("first >5 is at index 0")
+
+@test
+def position-miss-is-none() =
+  match position(from-list([1, 2, 3]), fn(x) => x > 9) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("position miss must be None")
+
+/// position over a mapped source — composed short-circuit index consumer.
+@test
+def position-after-map() =
+  match position(map(from-list([1, 2, 3, 4]), fn(x) => x * 10), fn(x) => x > 25) with
+  | Option.None(_) => trap("position should hit index 2 (30 > 25)")
+  | Option.Some(i) => if i == 2 then unit else trap("first *10 >25 is at index 2")
+
+/// LAW: find and position agree — when position finds index i, nth(it, i) is the element find returns.
+@test
+def law-position-agrees-with-find-via-nth() =
+  match position(from-list([3, 5, 8, 9]), fn(x) => x > 4) with
+  | Option.None(_) => trap("position should hit")
+  | Option.Some(i) => (match nth(from-list([3, 5, 8, 9]), i) with
+    | Option.None(_) => trap("nth at found index must be Some")
+    | Option.Some(v) => (match find(from-list([3, 5, 8, 9]), fn(x) => x > 4) with
+      | Option.None(_) => trap("find should hit")
+      | Option.Some(fv) => if v == fv then unit else trap("nth(position) == find")))
 
 /// scalar consumers: product / nth / contains / last (all same-state).
 @test
