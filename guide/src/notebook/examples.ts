@@ -72,7 +72,7 @@ An **area** chart fills the region under the curve:
 (def (main) (list (tuple 1 (+ 10 boost)) (tuple 2 (+ 20 boost)) (tuple 3 (+ 15 boost)) (tuple 4 (+ 25 boost))))
 ~~~
 
-A **stacked** chart accumulates each series per x — the column total is the sum. Each row is \`(x y0 y1)\`, so
+A **stacked** chart accumulates each series per x, so the column total is the sum. Each row is \`(x y0 y1)\`, so
 two series stack:
 
 ~~~cadenza chart:stacked
@@ -133,7 +133,7 @@ is exact), minus the payment:
 (def (main) year1)
 ~~~
 
-The balance over three years — drag a control and the curve moves:
+The balance over three years, drag a control and the curve moves:
 
 ~~~cadenza chart:line
 (def (main) (list (tuple 0 principal) (tuple 1 year1) (tuple 2 year2) (tuple 3 year3)))
@@ -145,7 +145,7 @@ The balance over three years — drag a control and the curve moves:
 /// traces the arc; drag either slider and the parabola reshapes.
 const PROJECTILE = `# Projectile motion
 
-Launch straight up with a **velocity**, pulled down by **gravity** — the height traces a parabola.
+Launch straight up with a **velocity**, pulled down by **gravity**, so the height traces a parabola.
 
 ~~~cadenza widget
 velocity : Int64 = slider(0, 50, default: 30)
@@ -162,7 +162,7 @@ Height at a few times \`t\` (height = velocity·t − ½·gravity·t·t; ½ is t
 (def (main) h2)
 ~~~
 
-The trajectory over time — drag velocity or gravity and the arc moves:
+The trajectory over time, drag velocity or gravity and the arc moves:
 
 ~~~cadenza chart:line
 (def (main) (list (tuple 0 0) (tuple 1 h1) (tuple 2 h2) (tuple 3 h3) (tuple 4 h4)))
@@ -174,7 +174,7 @@ The trajectory over time — drag velocity or gravity and the arc moves:
 /// coefficients; +/* on the rational-grounded integers. Drag a/b/c and the curve bends.
 const QUADRATIC = `# Quadratic explorer
 
-Shape the parabola **y = a·x² + b·x + c** — drag the coefficients and watch it bend.
+Shape the parabola **y = a·x² + b·x + c**: drag the coefficients and watch it bend.
 
 ~~~cadenza widget
 a : Int64 = slider(-5, 5, default: 1)
@@ -190,7 +190,7 @@ rational-by-default coefficients:
 (def (main) (y-at 0))
 ~~~
 
-The parabola from x = −3 to 3 — drag a, b, or c to reshape it:
+The parabola from x = −3 to 3, drag a, b, or c to reshape it:
 
 ~~~cadenza chart:line
 (def (main) (list
@@ -214,7 +214,7 @@ num : Int64 = slider(1, 9, default: 3)
 den : Int64 = slider(1, 9, default: 4)
 ~~~
 
-The ratio as an **exact fraction** — the notebook uses rational-by-default literals, so plain \`num / den\`
+The ratio as an **exact fraction**, since the notebook uses rational-by-default literals, so plain \`num / den\`
 is exact (3 / 4 = 3/4, not integer division's 0):
 
 ~~~cadenza formula
@@ -230,7 +230,7 @@ is exact (3 / 4 = 3/4, not integer division's 0):
 const CONTROLS_DEMO = `# Controls
 
 Beyond sliders, a widget cell offers a **checkbox** (a Bool), a **dropdown** and a **radio** (pick one
-String), and a **text** field. Each control below drives its own cell — flip, pick, and type to see them
+String), and a **text** field. Each control below drives its own cell, so flip, pick, and type to see them
 recompute.
 
 ~~~cadenza widget
@@ -240,7 +240,7 @@ scale : String = radio("linear", "log", default: "linear")
 label : String = text(default: "Demo")
 ~~~
 
-A **checkbox** is a Bool — branch on it with \`if\`:
+A **checkbox** is a Bool, so branch on it with \`if\`:
 
 ~~~cadenza
 (def (main) (if on 100 0))

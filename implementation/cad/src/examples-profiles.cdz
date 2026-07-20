@@ -13,7 +13,7 @@
 @!default-fraction Rational
 
 import { Solid, Profile, Path } from "exact"
-import { path-start, line-to, line-by, cubic-to, v2, bounding-box, aabbr-size, v3, v3-eq } from "exact"
+import { path-start, line-to, line-by, cubic-to, cubic-by, v2, bounding-box, aabbr-size, v3, v3-eq } from "exact"
 
 /// ---- ergonomic profile/lift helpers (thin wrappers, matching the helpers.cdz style) ------------------
 
@@ -49,6 +49,16 @@ def arch-fin() =
   let profile = cubic-to(line-to(path-start(), v2(8 / 1, 0 / 1)), v2(0 / 1, 0 / 1), v2(8 / 1, 10 / 1), v2(0 / 1, 10 / 1)) in
   extrude(outline(profile), 2 / 1)
 
+/// A WAVE-TOP fin drawn with RELATIVE segments (`cubic-by`) — the same spline layer as `arch-fin`, but authored
+/// as deltas from the cursor so you don't recompute absolute coordinates as the pen moves. Base: line-by (10,0)
+/// puts the cursor at (10,0); then cubic-by rises with end delta (0,6) → absolute (10,6) and control deltas
+/// (-2,4)/(2,4) → absolute (8,4)/(12,4). The rightmost control reaches absolute x=12 (the cursor threaded
+/// through, not the raw delta). Extruded 3 thick.
+def wave-fin() =
+  let profile = cubic-by(line-by(path-start(), v2(10 / 1, 0 / 1)),
+                         v2(0 / 1, 6 / 1), v2(0 / 1 - 2 / 1, 4 / 1), v2(2 / 1, 4 / 1)) in
+  extrude(outline(profile), 3 / 1)
+
 /// ---- @test suite: pin the extents (the meshable geometry is exercised by the native cdz-cad driver) ----
 
 @test
@@ -80,4 +90,14 @@ def arch-fin-spline-box-spans-the-control-hull() =
   if v3-eq(aabbr-size(bounding-box(arch-fin())), v3(16 / 1, 20 / 1, 2 / 1)) then unit
   else trap("arch-fin spline box is the symmetric control-hull envelope (16, 20, 2)")
 
-export { extrude, revolve, rect, disc, outline, plinth, disc-stock, bead, arch-fin }
+@test
+def wave-fin-relative-spline-threads-the-cursor() =
+  // wave-fin authors its curve with cubic-by (RELATIVE deltas). The rightmost control resolves to absolute
+  // x=12 (cursor 10 + delta 2), and the top control-hull reaches y=6 → path-half-extent (12, 6) → symmetric
+  // box (24, 12), extruded 3 → (24, 12, 3). If the relative segment did NOT thread the cursor (the raw-delta
+  // bug), the reach would be far smaller — so this pins cubic-by's cursor-threading through the example surface
+  // (not just the exact.cdz unit test), demonstrating the builder end-to-end via outline → extrude → bbox.
+  if v3-eq(aabbr-size(bounding-box(wave-fin())), v3(24 / 1, 12 / 1, 3 / 1)) then unit
+  else trap("wave-fin relative-spline box is the cursor-threaded control-hull envelope (24, 12, 3)")
+
+export { extrude, revolve, rect, disc, outline, plinth, disc-stock, bead, arch-fin, wave-fin }

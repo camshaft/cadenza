@@ -105,9 +105,11 @@ pub fn is_irrefutable_with(pat: &Tree, single_ctors: &SingleVariantCtors) -> boo
 /// Scan `program` (a whole-program tree) for its top-level `(type Name variant…)` declarations and
 /// return the set of constructor names that are the SOLE variant of their type. A `(type …)` form's
 /// tail is `Name` then the variants; a variant is either a bare `Name` atom (nullary) or a
-/// `(Ctor payload…)` list. A type is single-variant iff it has EXACTLY ONE variant (ignoring a trailing
-/// `.. r` open-sum row marker, which does not add a namable ctor). Only same-program decls are scanned;
-/// an imported type is invisible here, so its ctors stay out of the set (conservatively refutable).
+/// `(Ctor payload…)` list. A type contributes its ctor iff it is CLOSED and has EXACTLY ONE variant. An
+/// OPEN sum (a trailing `.. r` row marker) contributes NOTHING even with one listed variant — the row
+/// var stands for unnamed variants, so no listed ctor is statically the sole one (its pattern stays
+/// refutable). Only same-program decls are scanned; an imported type is invisible here, so its ctors
+/// stay out of the set (conservatively refutable).
 pub fn single_variant_ctors(program: &Tree) -> SingleVariantCtors {
     let mut out = SingleVariantCtors::new();
     collect_type_decls(program, &mut out);
@@ -120,15 +122,20 @@ fn collect_type_decls(tree: &Tree, out: &mut SingleVariantCtors) {
             && h == "type"
             && items.len() >= 3
         {
-            // items = [type, Name, variant…]. Peel a trailing `.. r` open-sum marker (a `Name("..")`
-            // then a lowercase row var) so it doesn't count as variants.
-            let mut variants = &items[2..];
-            if variants.len() >= 2
-                && matches!(&variants[variants.len() - 2], Tree::Atom(Leaf::Name(d), _) if d == "..")
-            {
-                variants = &variants[..variants.len() - 2];
-            }
-            if variants.len() == 1
+            // items = [type, Name, variant…]. A trailing `.. r` open-sum marker (a `Name("..")` then a
+            // lowercase row var) means the sum is OPEN: the row variable stands for variants NOT named
+            // here, so NO listed ctor is ever the SOLE variant — a value may be an unnamed variant, so
+            // even a single-listed-ctor open sum has a REFUTABLE ctor pattern (a match needs an open-tail
+            // `_` arm; §206). This mirrors the compiler's `newtype_underlying`, which refuses to treat an
+            // open single-variant sum as a newtype for exactly this reason. So: only harvest a sole ctor
+            // as single-variant when the sum is CLOSED (no `..` marker). (Peeling the marker and then
+            // inserting the sole ctor — the pre-fix behavior — wrongly marked an open sum's ctor
+            // irrefutable, which would let the codemod erase a non-exhaustive match's refutability.)
+            let variants = &items[2..];
+            let is_open = variants.len() >= 2
+                && matches!(&variants[variants.len() - 2], Tree::Atom(Leaf::Name(d), _) if d == "..");
+            if !is_open
+                && variants.len() == 1
                 && let Some(name) = ctor_name_of(&variants[0])
             {
                 out.insert(name);
@@ -346,18 +353,44 @@ mod tests {
     }
 
     #[test]
+    fn open_sum_sole_ctor_stays_refutable() {
+        // An OPEN sum `(type O (Wrap Int64) .. r)` has ONE listed variant but the `.. r` row var stands
+        // for unnamed variants — so `Wrap` is NOT the sole variant and its pattern is REFUTABLE (a match
+        // needs an open-tail `_`). The codemod must NOT lower `match o with | Wrap(x) => x` here (that
+        // would erase the refutability the compiler's `newtype_underlying` explicitly refuses to erase).
+        // (reviewer catch on 1254f4aa8: the peel-then-insert path wrongly marked the open sum's ctor
+        // single-variant.) Contrast with the CLOSED single-variant type, which DOES lower.
+        assert_eq!(
+            count_rewrites("type O = | Wrap(Int64) .. r\ndef f(o) = match o with | Wrap(x) => x"),
+            0,
+            "an OPEN sum's sole listed ctor is refutable — must NOT lower"
+        );
+        // The closed twin still lowers (sanity: the fix didn't over-restrict).
+        assert_eq!(
+            count_rewrites("type C = | Wrap(Int64)\ndef f(o) = match o with | Wrap(x) => x"),
+            1,
+            "the CLOSED single-variant twin still lowers"
+        );
+    }
+
+    #[test]
     fn single_variant_ctors_scan_direct() {
-        // The scan finds exactly the sole-variant ctors, ignoring multi-variant types + row-var tails.
+        // The scan finds exactly the CLOSED sole-variant ctors, ignoring multi-variant types AND open
+        // sums (a `.. r` row-var tail means no listed ctor is statically the sole variant).
         let a = parser::read_ml(
-            "type A = | Only(Int64)\ntype B = | X | Y\ntype C = | Solo\ndef m() = 0",
+            "type A = | Only(Int64)\ntype B = | X | Y\ntype C = | Solo\ntype D = | Lone(Int64) .. r\ndef m() = 0",
         );
         assert!(a.ok());
         let set = single_variant_ctors(&Tree::of(&a.arenas));
-        assert!(set.contains("Only"), "single-variant payload ctor");
-        assert!(set.contains("Solo"), "single-variant nullary ctor");
+        assert!(set.contains("Only"), "closed single-variant payload ctor");
+        assert!(set.contains("Solo"), "closed single-variant nullary ctor");
         assert!(
             !set.contains("X") && !set.contains("Y"),
             "multi-variant ctors excluded"
+        );
+        assert!(
+            !set.contains("Lone"),
+            "an OPEN sum's sole ctor is excluded (row var → not statically sole)"
         );
     }
 

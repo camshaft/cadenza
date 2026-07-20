@@ -1730,6 +1730,23 @@ pub struct Db {
     /// lowering is demand-driven and not lexically nested inside the spec's construction.
     pub(crate) const_repass_fp: crate::fxhash::FxHashMap<(StructId, String), String>,
 
+    /// The fingerprint of the MOST RECENT `const`-CLOSURE specialization synthesized for each recursive
+    /// def, keyed by `orig_body`. A TERMINATION BACKSTOP for the derived-closure divergence: a
+    /// self-recursive def that re-passes a closure DERIVED FROM its own const param (`(def (bad (const
+    /// step) …) (bad (fn (x) (+ (step x) 1)) …))`) builds, at each recursion depth, a closure that NESTS
+    /// the previous depth's closure — so its fingerprint STRICTLY EXTENDS the immediately-preceding spec's
+    /// (contains it as a substring AND is longer): 22→46→70→… unbounded → a non-terminating spec unroll
+    /// that HANGS the compile. A GENUINE const-closure consumer — even a whole `map().filter().fold()`
+    /// fusion pipeline — passes DISTINCT, unrelated closures to a driver (probed: `drive`'s successive fps
+    /// `nstep;|clos1`, `(nfn;…)`, an annotated form — NONE extends its predecessor across the entire
+    /// iterators suite). So declining a re-pass whose fp strictly EXTENDS the last spec's, keyed per
+    /// `orig_body`, catches ONLY the divergence — at the const-arg gate, before the divergent (malformed)
+    /// spec is built, so the reject is the coded CDZ0201. Per-compile-scoped (a fresh `Db` per `compile`
+    /// starts this empty), so it never conflates specs across files/@tests. Keys on the IMMEDIATELY-
+    /// preceding spec of the SAME def (a single fp per orig_body), NOT any-pair containment (which
+    /// false-fires on independent adapter specs where a later `nstep;|clos1` contains an earlier `nstep;`).
+    pub(crate) last_const_closure_fp: crate::fxhash::FxHashMap<StructId, String>,
+
     /// A HUMAN-READABLE record of each concrete instantiation `type_specialize` synthesized, in
     /// synthesis order — one [`Instantiation`] per DISTINCT specialization (appended at the memo miss,
     /// beside the `type_specializations` insert). The memo answers "have I already built this instance?";
@@ -2557,6 +2574,7 @@ impl Db {
             reduced_callable_walked: crate::fxhash::FxHashSet::default(),
             type_specializations: crate::fxhash::FxHashMap::default(),
             const_repass_fp: crate::fxhash::FxHashMap::default(),
+            last_const_closure_fp: crate::fxhash::FxHashMap::default(),
             instantiations: Vec::new(),
             inlined: crate::fxhash::FxHashSet::default(),
             called: crate::fxhash::FxHashSet::default(),

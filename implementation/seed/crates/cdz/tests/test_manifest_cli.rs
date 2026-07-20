@@ -2329,6 +2329,34 @@ fn a_failing_bare_bool_requires_keeps_the_forced_true_in_the_counterexample() {
     );
 }
 
+/// The conjunction recognizer PARTIALLY constrains: in `@requires(a >= 0 and ok(a))` the `a >= 0` conjunct is
+/// recognized (clamp a to [0, ..]) while `ok(a)` — a USER-FUNCTION predicate — is UNRECOGNIZABLE (the harness
+/// cannot invert an arbitrary boolean function to generate its domain) and falls back to unconstrained. Per
+/// per-conjunct independence, the recognizable conjunct STILL narrows generation. Here `ok(n) = n >= 0`
+/// coincides with the recognized bound, so clamping `a >= 0` also satisfies `ok(a)` and the property passes —
+/// demonstrating that a recognizable conjunct alongside an opaque one still reduces (here eliminates) spurious
+/// pre-trap failures. Pins that an unrecognizable conjunct does NOT disable the recognizable ones (a
+/// regression would drop the whole predicate to unconstrained, re-introducing the a<0 spurious failure). No
+/// store needed (scalar Int param). NB: a user-fn predicate whose domain does NOT coincide with a recognizable
+/// bound remains a documented limitation (unconstrained fallback may spuriously fail) — use a recognizable
+/// comparison/bare-Bool form, or a manual generator, when the domain matters.
+#[test]
+fn a_recognizable_conjunct_still_constrains_alongside_an_opaque_user_fn_predicate() {
+    let d = dir("requires-partial");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(a >= 0 and ok(a))\n\
+         @test def f(a: Int64) = if a >= 0 and ok(a) then unit else trap(\"violated\")\n\
+         def ok(n: Int64) = n >= 0\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok && stdout.contains("PASS f (100 trials)"),
+        "the recognizable conjunct (a >= 0) clamps generation even beside an opaque ok(a), so the property passes: {stdout}{stderr}"
+    );
+}
+
 /// TERMINATION under an UNSATISFIABLE relation: `@requires(a < b and b < a)` can NEVER hold (it implies
 /// `a < a`), so rejection sampling can never find an in-domain draw. The generator must NOT loop forever —
 /// it is fuel-bounded (`RELATION_FUEL`), so after exhausting fuel it returns the last draw and lets the (D)
