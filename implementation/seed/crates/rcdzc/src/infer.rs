@@ -13662,8 +13662,57 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // avoiding a double report and a spurious fault over an uninstantiated generic body.
             if db.def_index_by_body(id).is_some() {
                 collect(db, body, out);
+            } else if lambda_heads_an_application(db, id) && subtree_contains_try_form(db, body) {
+                // An IMMEDIATELY-APPLIED lambda `((fn (…) body) args)`. Its body is normally checked at the
+                // β-reduction call site — but that runs on the INLINED (β-copied) body, whose `?` node is a
+                // PARENTLESS synth copy, so `enclosing_boundary_ty`'s parent-walk falls off → `None` →
+                // `collect`'s `?` arm treats it as INCONCLUSIVE (the inlined-called-helper tolerance) and
+                // never fires the CDZ0230. An anon applied-lambda has no separate named-def body walk to
+                // catch it, so a `?` in a NON-fallible-result lambda body silently compiled + unwrapped
+                // instead of rejecting (v-try-operator ruling: a lambda is a function boundary EXACTLY like
+                // a def — fallible result ⇒ `?` works, non-fallible ⇒ CDZ0230, no auto-wrap). Check the
+                // ORIGINAL parented body here so the `?`'s boundary walk reaches THIS `(fn …)` body (parents
+                // intact) and the genuine CDZ0230 fires. Scoped to a lambda that HEADS an application (the
+                // immediately-applied shape) — a let-bound / HOF-argument lambda stays call-site-checked (its
+                // body may be generic/uninstantiated; double-checking it here risks a spurious fault, the
+                // hazard the def-only gate above guards). `dedup_faults` collapses any overlap with the
+                // inlined copy (which itself raises nothing for the `?`, being inconclusive).
+                collect(db, body, out);
             }
         }
+    }
+}
+
+/// Whether the lambda `id` is the HEAD of an enclosing application — the immediately-applied form `((fn
+/// (…) …) args)`, where the `fn` node is child 0 of an application list. Used by `collect`'s `Resolved::
+/// Lambda` arm to check such a lambda's ORIGINAL parented body (so a `?` inside reaches its boundary via
+/// the parent walk) rather than relying on the inlined-copy call-site check, whose `?` node is parentless.
+fn lambda_heads_an_application(db: &Db, id: StructId) -> bool {
+    let Some(parent) = db.parent_of(id) else {
+        return false;
+    };
+    // The parent must be a plain application list (not a `(fn …)`/binder form) with `id` as its head child.
+    db.child_ix_of(id) == 0
+        && matches!(db.ast.get(parent), crate::ast::Struct::List(_))
+        && db.ast.head_name(parent).is_none()
+}
+
+/// Whether `id`'s subtree SYNTACTICALLY contains a `(try …)` form — a cheap AST scan (no reduction). Gates
+/// the application-heading-lambda body check in `collect`'s `Resolved::Lambda` arm to the ONLY case that
+/// needs it (a `?` whose boundary is this lambda): descending into EVERY immediately-applied lambda body
+/// re-introduced the O(2^depth) re-reduce a deep capturing-lambda chain (`((fn (a) …((fn (b) …) 1)) 0)`)
+/// the `collect` baseline-skip guards against — that chain has no `try`, so this scan skips it. The scan is
+/// O(body size) once per applied lambda (linear, not exponential — it walks the AST, never re-reduces).
+fn subtree_contains_try_form(db: &Db, id: StructId) -> bool {
+    if db.ast.head_name(id) == Some("try") {
+        return true;
+    }
+    match db.ast.get(id) {
+        crate::ast::Struct::List(children) => children
+            .clone()
+            .iter()
+            .any(|&c| subtree_contains_try_form(db, c)),
+        crate::ast::Struct::Atom(_) => false,
     }
 }
 

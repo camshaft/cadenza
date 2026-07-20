@@ -9,3 +9,11 @@ def gfold(it, acc, g) = match it with | GIter.Mk(s, step) => gdrive(step, s, acc
 def gf-int() = if gfold(gfrom-list([1,2,3]), 0, fn(a,x)=>a+x) == 6 then unit else trap("i")
 @test
 def gf-str() = if gfold(gfrom-list(["a","bb"]), 0, fn(a,s)=>a + String.byte-len(s)) == 3 then unit else trap("s")
+
+// ===== PM triage (corpus-bugfix, 2026-07-20, trunk 4ac69c7af) — CONFIRMED live, PARKED at v-inference =====
+// Declines even int-only: gdrive's step/g params can't be inferred through the generic GIter fold. The
+// diagnostic EXPLICITLY names it: "the recursive-generic monomorphization tie, a known inference limitation
+// ... until it lands." A CLEAN honest decline (not a miscompile), with an actionable message. This is the
+// known recursive-generic DRIVER tie (closure-acc threaded through a generic-Iter fold), v-inference-owned +
+// DEFERRED (the frontier my memory tracks: recursive-generic/compound-state driver tie). NOT actionable by
+// me. Renamed .PARKED-v-inference; pin as PASS once v-inference lands the recursive-generic driver tie fix.

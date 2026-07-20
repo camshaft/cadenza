@@ -593,4 +593,22 @@ def filter-map-then-count() =
   else
     trap("map+1 |> filter-map(>4) |> count = {5,6,7} = 3")
 
+@test
+/// A 4-stage chain that composes BOTH recursive-worker combinators (filter-map + take-while) with two
+/// non-recursive ones (map + filter) in one fused pipeline — the corner the single-combinator + map-heavy
+/// deep-chain tests don't hit (they stack map/filter but never filter-map ALONGSIDE take-while). Pins that
+/// the two recursive step-drivers (filter-map-step skips None, take-while ends on the predicate) fuse
+/// correctly when stacked: map*3 |> filter>4 |> filter-map(even->/2, drop odd) |> take-while<20 |> sum.
+/// [1..8] -> *3=[3,6,9,12,15,18,21,24] -> >4=[6,9,12,15,18,21,24] -> even/2=[3,6,9,12] (drops odd 9,15,21)
+/// -> take-while<20=[3,6,9,12] -> sum=30.
+def deep-filter-map-take-while-chain-fuses() =
+  if sum(
+        take-while(filter-map(filter(map(from-list([1, 2, 3, 4, 5, 6, 7, 8]), fn(x) => x * 3), fn(x) =>
+          x > 4), fn(x) => if x - x / 2 * 2 == 0 then Option.Some(x / 2) else Option.None(unit)), fn(x) =>
+          x < 20)
+      ) == 30 then
+    unit
+  else
+    trap("map*3|>filter>4|>filter-map(even/2)|>take-while<20|>sum = 3+6+9+12 = 30")
+
 export { Iter.* }

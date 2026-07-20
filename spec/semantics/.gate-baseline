@@ -659,7 +659,9 @@ pass	a closure capturing a value computed under a handler may escape the handle 
 pass	a closure capturing an inner-handled perform result is applied under an OUTER handler of the same effect
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
 pass	a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF
+pass	a closure capturing a RUNTIME-BUILT list indexes the captured spine at call time
 pass	a closure capturing two values is made and called by the host
+pass	a closure capturing a runtime String ROPE reads its byte length at call time
 pass	a closure capturing values of DIFFERENT types (Float64 + Int64)
 pass	a closure carried in a USER-declared sum's payload is extracted and applied
 pass	a closure carried in a sum payload is extracted by a match and applied
@@ -2384,6 +2386,7 @@ pass	a trapping condition preempts the hoisted operator's trap
 pass	a trapping element in the taken arm of a same-length list if still traps
 pass	a trapping element in the untaken arm of a same-arity tuple if does not trap
 pass	a trapping element in the untaken arm of a same-length list if does not trap
+pass	a trap raised inside a host-called closure body reaches the host as a trap
 pass	a trapping field in the untaken arm of a same-shape record if does not trap
 pass	a trapping init observed inside the `?`'s own operand is not elided
 pass	a trapping payload in a non-taken arm of a same-constructor match does not trap

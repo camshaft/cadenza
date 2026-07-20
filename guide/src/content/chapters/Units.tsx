@@ -348,20 +348,18 @@ export default function Units() {
         prompt={
           <>
             Exact conversion, no rounding. A <C>1/4</C>-inch length is exactly <C>127/20</C> mm. Fill the
-            numerator of the rational quarter-inch so the exactness check passes. The answer is <C>1</C>.
+            numerator of the rational quarter-inch so the exactness check gives <C>true</C>.
           </>
         }
         starter={`(def (main)
-  (if (= (Unit.in (Unit.of #"millimeter")
-                  (Qty.of (Rational.of ? 4) (Unit.of #"inch")))
-         (Rational.of 127 20))
-    1 0))`}
+  (= (Unit.in (Unit.of #"millimeter")
+              (Qty.of (Rational.of ? 4) (Unit.of #"inch")))
+     (Rational.of 127 20)))`}
         solution={`(def (main)
-  (if (= (Unit.in (Unit.of #"millimeter")
-                  (Qty.of (Rational.of 1 4) (Unit.of #"inch")))
-         (Rational.of 127 20))
-    1 0))`}
-        expected="1"
+  (= (Unit.in (Unit.of #"millimeter")
+              (Qty.of (Rational.of 1 4) (Unit.of #"inch")))
+     (Rational.of 127 20)))`}
+        expected="true"
         hint={
           <>
             A quarter inch is <C>(Rational.of 1 4)</C>, numerator <C>1</C>. One inch is <C>25.4</C> mm, so a

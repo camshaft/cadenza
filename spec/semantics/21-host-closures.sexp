@@ -2120,6 +2120,59 @@
   (call   mk (: 0 Int64))
   (output (: (list) (List Int64))))
 
+; The capture cases above hold SCALARS (a captured k flowing into a heap RESULT); the host-supplied
+; compound capture is a pinned DECLINE (host→guest decode, above). The unpinned middle: a closure
+; capturing a GUEST-BUILT heap value — the capture cell holds a live heap HANDLE across the host
+; boundary. `mk` builds the value by RECURSION (nothing folds), returns the closure, and the host
+; calls it later: the captured spine must stay alive past mk's return (the capture-cell dup) and the
+; boxed handle must be readable at call dispatch. Two shapes — an RRB list indexed per call, and a
+; rope String measured per call. And a body-semantics face: a TRAP raised inside a host-called
+; closure body (the file otherwise never traps a closure body).
+
+(case "a closure capturing a RUNTIME-BUILT list indexes the captured spine at call time"
+  (doc    "`mk(3)` builds `[3,2,1]` by List.push recursion, captures it, and returns `(fn (i) (List.at
+           xs i))`-with-expect. The host then calls the closure twice — `call(handle, 0)` → 3 and
+           `call(handle, 2)` → 1 — so the captured spine is walked per call, not snapshot at make.
+           Pins the capture-cell dup (the list outlives mk's activation) and the boxed-handle read at
+           the shared call dispatch. Expected: 3 (i=0), 1 (i=2).")
+  (input  (do
+            (def (build (: n Int64) (: acc (List Int64)))
+              (if (= n 0) acc (build (- n 1) (List.push acc n))))
+            (def (mk (: n Int64))
+              (let ((xs (build n (list))))
+                (fn ((: i Int64)) (Option.expect (List.at xs i) "oob"))))
+            (export mk)))
+  (call   mk (: 3 Int64) (: 0 Int64))
+  (output (: 3 Int64)))
+
+(case "a closure capturing a runtime String ROPE reads its byte length at call time"
+  (doc    "The rope twin: `mk(3)` builds \"abxxx\" by String.concat recursion (a genuine rope), captures
+           it, and the closure returns `byte-len(s) + extra`. `call(handle, 100)` → 5 + 100 = 105. The
+           captured heap value here is TEXT with a compactable rope rep — the capture must preserve the
+           logical content across the boundary regardless of representation. Expected: 105.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (mk (: n Int64))
+              (let ((s (rep "ab" n)))
+                (fn ((: extra Int64)) (+ (String.byte-len s) extra))))
+            (export mk)))
+  (call   mk (: 3 Int64) (: 100 Int64))
+  (output (: 105 Int64)))
+
+(case "a trap raised inside a host-called closure body reaches the host as a trap"
+  (doc    "`mk(100)` captures k=100 and returns `(fn (d) (/ k d))`; the host calls it with d = 0 and the
+           division traps INSIDE the closure body — behind the resource `call` dispatch, not in a plain
+           export body. The trap must surface to the host as a trap (not a wrong value, not a swallowed
+           error). The file's other cases all return values; this pins the trap path through the closure
+           call ABI. Expected: trap (integer divide by zero).")
+  (input  (do
+            (def (mk (: k Int64))
+              (fn ((: d Int64)) (/ k d)))
+            (export mk)))
+  (call   mk (: 100 Int64) (: 0 Int64))
+  (trap   "integer divide by zero"))
+
 ; A VARIABLE-LENGTH collection (List/Map/Set) closure RESULT on the MULTI-EXPORT path — N same-signature
 ; closures each returning a List/Map/Set share ONE `call` that value-encodes the returned handle against the
 ; ONE shared shape descriptor (all exports share the result type). The shared `call` recovers each closure's

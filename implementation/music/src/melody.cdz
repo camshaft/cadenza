@@ -1,0 +1,136 @@
+/// melody.cdz — MELODIC analysis: the shape of a line of notes.
+///
+/// A melody is a sequence of note numbers; its character lives in the INTERVALS between successive notes
+/// (the contour) and its overall span. This module derives those from a plain note-number list: the step
+/// intervals (signed semitones note-to-note), the total range (highest minus lowest), whether the line
+/// moves mostly by STEP (conjunct) or by LEAP (disjunct), and its net direction. That's the raw material a
+/// melodic analyzer / generator uses. Grounds only on pitch.cdz idioms (signed differences, abs); pure
+/// integer arithmetic, total.
+
+// (No imports: a melody here is a plain list of MIDI note numbers — Int64 — so this module needs no
+// pitch.cdz surface; it composes with it at the note-number boundary.)
+
+// ---- step intervals: the note-to-note motion ---------------------------------------------------------
+
+/// Absolute value of an Int64 (local; no prelude Int64 abs).
+def iabs(x: Int64) = if x < 0 then 0 - x else x
+
+/// The signed step intervals of a melody (each note minus the previous), one fewer than the note count.
+/// A rising step is positive, a falling step negative. Recursive driver over adjacent pairs; annotated.
+def steps-go(prev: Int64, rest: List(Int64), out: List(Int64)) =
+  match rest with
+    | [] => out
+    | [h, .. t] => steps-go(h, t, List.push(out, h - prev))
+
+/// The signed step intervals of a note-number melody. Empty / single-note melodies have no steps.
+def steps(notes: List(Int64)) =
+  match notes with
+    | [] => []
+    | [h, .. t] => steps-go(h, t, [])
+
+// ---- range: lowest and highest -----------------------------------------------------------------------
+
+/// The minimum note in a non-empty list (recursive, annotated); 0 for empty (guarded by `range` below).
+def min-note-go(best: Int64, rest: List(Int64)) =
+  match rest with
+    | [] => best
+    | [h, .. t] => min-note-go(if h < best then h else best, t)
+
+/// The maximum note in a list (recursive, annotated).
+def max-note-go(best: Int64, rest: List(Int64)) =
+  match rest with
+    | [] => best
+    | [h, .. t] => max-note-go(if h > best then h else best, t)
+
+/// The RANGE (ambitus) of a melody: highest note minus lowest. 0 for an empty or single-note melody.
+def range(notes: List(Int64)) =
+  match notes with
+    | [] => 0
+    | [h, .. t] => max-note-go(h, t) - min-note-go(h, t)
+
+// ---- contour: step vs leap, and direction ------------------------------------------------------------
+
+/// Count how many step intervals are LEAPS (absolute size strictly greater than `max-step`, conventionally
+/// 2 semitones = a whole tone: anything bigger than a second is a leap). Recursive over the step list.
+def leap-count-go(steps-list: List(Int64), max-step: Int64, acc: Int64) =
+  match steps-list with
+    | [] => acc
+    | [h, .. t] => leap-count-go(t, max-step, if iabs(h) > max-step then acc + 1 else acc)
+
+/// How many of a melody's motions are leaps (interval bigger than a whole tone).
+def leap-count(notes: List(Int64)) = leap-count-go(steps(notes), 2, 0)
+
+/// Is the melody CONJUNCT (mostly stepwise) — i.e. no leaps at all? A strict, easy-to-reason definition:
+/// every motion is a step of a second or smaller.
+def is-conjunct(notes: List(Int64)) = leap-count(notes) == 0
+
+/// The NET direction of a melody: the sign of (last note - first note): +1 rising, -1 falling, 0 level.
+/// Empty / single-note melodies are level (0).
+def net-direction(notes: List(Int64)) =
+  match notes with
+    | [] => 0
+    | [h, .. t] =>
+      let last = last-note(h, t) in
+      if last > h then 1 else (if last < h then 0 - 1 else 0)
+
+/// The last note of a non-empty melody (head + tail form). Recursive, annotated.
+def last-note(h: Int64, t: List(Int64)) =
+  match t with
+    | [] => h
+    | [h2, .. t2] => last-note(h2, t2)
+
+/// ============================ @test suite (melodic-analysis laws) ============================
+
+@test
+def steps-are-the-signed-note-to-note-motion() =
+  // C D E [60,62,64] steps up by +2, +2.
+  match steps([60, 62, 64]) with
+    | [a, b] => (if a == 2 then (if b == 2 then unit else trap("second step")) else trap("first step"))
+    | _ => trap("two steps for three notes")
+
+@test
+def a-descending-line-has-negative-steps() =
+  // [67,64,60] (G E C) steps -3, -4.
+  match steps([67, 64, 60]) with
+    | [a, b] => (if a == (0 - 3) then (if b == (0 - 4) then unit else trap("second")) else trap("first"))
+    | _ => trap("two steps")
+
+@test
+def a-single-note-has-no-steps() =
+  match steps([60]) with | [] => unit | _ => trap("one note has no steps")
+
+@test
+def range-is-highest-minus-lowest() =
+  // [60,64,67,62]: lowest 60, highest 67 → range 7.
+  if range([60, 64, 67, 62]) == 7 then
+    (if range([60]) == 0 then unit else trap("single note has range 0"))
+  else trap("range is 7")
+
+@test
+def a-scale-is-conjunct-and-an-arpeggio-is-not() =
+  // A stepwise scale [60,62,64,65] is conjunct (no leaps); a triad arpeggio [60,64,67] leaps (4,3 > 2).
+  if is-conjunct([60, 62, 64, 65]) then
+    (if is-conjunct([60, 64, 67]) then trap("an arpeggio leaps") else
+      (if leap-count([60, 64, 67]) == 2 then unit else trap("two leaps in the arpeggio")))
+  else trap("a scale is conjunct")
+
+@test
+def net-direction-is-the-sign-of-first-to-last() =
+  // rising [60,59,64] nets +1 (60→64); falling [67,68,60] nets -1; level [60,64,60] nets 0.
+  if net-direction([60, 59, 64]) == 1 then
+    (if net-direction([67, 68, 60]) == (0 - 1) then
+      (if net-direction([60, 64, 60]) == 0 then unit else trap("level"))
+     else trap("falling"))
+  else trap("rising")
+
+@test
+def a-chromatic-run-is-conjunct() =
+  // Twelve chromatic semitones [60..71] move entirely by minor seconds → conjunct, range 11.
+  let run = [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71] in
+  if is-conjunct(run) then
+    (if range(run) == 11 then unit else trap("chromatic run spans 11"))
+  else trap("a chromatic run is stepwise")
+
+export {
+  iabs, steps, range, leap-count, is-conjunct, net-direction,
+}

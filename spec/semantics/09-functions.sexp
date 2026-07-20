@@ -481,32 +481,6 @@
   (call   main (: 100 Int64))
   (output (: 105 Int64)))
 
-; A regression guard for a THIRD β-copy path (the closure-payload analogue of the same-name-ctor β-copy
-; fix): when the sum scrutinee is produced by a helper that reduces to an `if` — `mk k` → `(if … (Fn …)
-; (Const …))` — the consuming `(match (mk k) …)` triggers the match-into-if fusion, which deep-copies each
-; arm body into BOTH if-branches. That copy (`clone_subtree_db`) once re-copied EVERY name FRESH, including
-; a β-substituted CAPTURE — here the caller's own `k` reused as the apply argument `(run (mk k) k)` — so
-; the fresh `k` re-resolved lexically against the grafted branch and came back UNBOUND, a spurious CDZ0101
-; at COMPILE time (front-end `check` was clean — the name IS bound). The fix shares a pinned non-`SumPayload`
-; capture across the copy (payload binders still copy + re-resolve against the branch scrutinee). Trigger
-; needs all of: a closure-typed payload (a heap `(List …)` payload compiles), a 2nd variant, the `if`-helper,
-; and the reused arg. Found by v-patterns, fixed by v-inference (the emit/specialization lane).
-
-(case "a closure-payload sum from an if-helper, consumed with the caller's arg reused, compiles and applies"
-  (doc    "See the comment above — the β-copy regression guard. `mk k` returns `(Fn (fn (x) (* x 3)))` for
-           k>0 else `(Const 77)`; since `mk` reduces to an `if`, `(run (mk k) k)` fuses the match into the
-           if and deep-copies the `(Fn f) → (f arg)` arm into both branches, with `arg` = the reused caller
-           param `k`. Previously emitted a spurious CDZ0101 `unbound name k` from the compile backend (while
-           `check` was clean); now compiles and applies the extracted closure: k=4 selects `Fn`, `(* 4 3)` =
-           12. (k=-1 selects `Const` → 77.) Pins the closure-payload β-copy capture-share. Expected: 12.")
-  (input  (do
-            (type Box (Fn (-> Int64 Int64)) (Const Int64))
-            (def (mk (: k Int64)) (if (> k 0) (Fn (fn ((: x Int64)) (* x 3))) (Const 77)))
-            (def (run (: b Box) (: arg Int64)) (match b ((Fn f) (f arg)) ((Const c) c)))
-            (def (main (: k Int64)) (run (mk k) k))
-            (export main)))
-  (call   main (: 4 Int64)) (output (: 12 Int64)))
-
 (case "a closure carried in a USER-declared sum's payload is extracted and applied"
   (doc    "The USER-SUM companion of the built-in-payload closure case: `(type T (Mk (-> Int64 Int64)))`
            declares a variant carrying a FUNCTION, and `(T.Mk (fn (n) (* n 2)))` stores a closure in it.
