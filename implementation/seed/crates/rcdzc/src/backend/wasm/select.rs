@@ -7001,16 +7001,23 @@ fn emit(
         // compound elements are already handles (`box_op` → None), pushed directly.
         Core::ListPush { list, elem } => {
             emit(db, list, slots, base, high, scratch_ty, layout, out)?; // [list]
-            emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [list, elem]
+            // The element emits its scratch ABOVE `list`'s high-water so the two operands never share a
+            // scratch slot at conflicting valtypes — the disjoint-slot discipline `Core::Tuple`/`Core::
+            // ListNew` apply. E.g. `(List.push (rec t) (+ v 1))`: `list` = a recursive-call handle stashed
+            // in an i32 dup slot, `elem` = a checked `(+ v 1)` teeing its sum into an i64 overflow-guard
+            // slot — a shared `base` would force one slot to two types (validate: "expected i32, found i64").
+            emit(db, elem, slots, *high, high, scratch_ty, layout, out)?; // [list, elem]
             let boxed = box_op(db, elem)?;
             emit_heap_store_tail(db, elem, boxed, out); // [list, handle]
             out.push(Lir::CallImport(OP_VEC_PUSH)); // → [list']
             Ok(())
         }
-        // `List.concat(a, b)` — emit both list handles, then `vec-concat` (→ the joined list handle).
+        // `List.concat(a, b)` — emit both list handles, then `vec-concat` (→ the joined list handle). The
+        // second operand emits ABOVE the first's high-water (disjoint-slot discipline — a recursive-call
+        // handle and a checked-arith guard temp must not share a scratch slot at conflicting valtypes).
         Core::ListConcat { lhs, rhs } => {
             emit(db, lhs, slots, base, high, scratch_ty, layout, out)?; // [a]
-            emit(db, rhs, slots, base, high, scratch_ty, layout, out)?; // [a, b]
+            emit(db, rhs, slots, *high, high, scratch_ty, layout, out)?; // [a, b]
             out.push(Lir::CallImport(OP_VEC_CONCAT)); // → [a++b]
             Ok(())
         }
@@ -7020,7 +7027,11 @@ fn emit(
         // handle; an out-of-bounds index traps). Order matches `vec-update(v, index, elem)`.
         Core::ListUpdate { list, index, elem } => {
             emit(db, list, slots, base, high, scratch_ty, layout, out)?; // [list]
-            emit(db, index, slots, base, high, scratch_ty, layout, out)?; // [list, index:i64]
+            // Each operand emits ABOVE the running high-water so the three never share a scratch slot at
+            // conflicting valtypes (disjoint-slot discipline — see `Core::ListPush`). `list` may be a
+            // recursive-call handle (i32 dup slot), `index`/`elem` may be checked-arith i64 guard temps.
+            let idx_base = *high;
+            emit(db, index, slots, idx_base, high, scratch_ty, layout, out)?; // [list, index:i64]
             // HIGH-BITS BOUNDS GUARD before the i64→i32 wrap. `vec-update` takes a u32 index and checks it
             // against the length, but `i32.wrap_i64` discards the high 32 bits FIRST — so a huge index
             // `>= 2^32` that truncates BELOW the length would silently update the wrong slot instead of
@@ -7029,8 +7040,10 @@ fn emit(
             // runtime's own length check catches a real OOB. A NEGATIVE index is a huge u64 (≥ 2^32) so it
             // is caught here too (and is ≥ length regardless). Mirrors the `br_if` wrap-alias guard the
             // scalar `br_table` dispatch emits for an i64 scrutinee, but traps (`IfUnreachableEnd`) rather
-            // than routing to a default. The index sub-value is kept in a scratch local across the test.
-            let idx_slot = base;
+            // than routing to a default. The index sub-value is kept in a scratch local across the test —
+            // claimed at `idx_base` (above `list`'s scratch) so it can't alias a scratch slot `list`'s emit
+            // typed differently.
+            let idx_slot = idx_base;
             if idx_slot + 1 > *high {
                 *high = idx_slot + 1;
             }
@@ -7041,7 +7054,7 @@ fn emit(
             out.push(Lir::IfUnreachableEnd); // out of u32 range → trap (index out of bounds)
             out.push(Lir::LocalGet(idx_slot)); // [list, index:i64]
             out.push(Lir::I32WrapI64); // [list, index:i32] — now known to fit u32
-            emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [list, index, elem]
+            emit(db, elem, slots, *high, high, scratch_ty, layout, out)?; // [list, index, elem] — above index scratch
             let boxed = box_op(db, elem)?;
             emit_heap_store_tail(db, elem, boxed, out); // [list, index, handle]
             out.push(Lir::CallImport(OP_VEC_UPDATE)); // → [list']
@@ -7117,9 +7130,21 @@ fn emit(
                         Some(crate::ty::Ty::Tuple(ts)) => Some(ts.clone()),
                         _ => None,
                     };
+                    // Each payload sub-emit starts its scratch ABOVE the running high-water
+                    // (`payload_base = *high`), so sibling payloads never SHARE a scratch slot — the same
+                    // discipline `emit_loop_iteration` applies to sibling tail-call args. A wasm local has ONE
+                    // type: a later payload's i32 handle temp (e.g. a recursive-call payload's Perceus `dup`
+                    // temp) reusing an earlier payload's i64 arith-overflow-guard slot (`(ICons (+ h 1) (rec
+                    // t))` — the checked `(+ h 1)` tees its sum into an i64 guard slot; `(rec t)` tees its
+                    // handle into a dup slot) would force one slot to two types and the module fails
+                    // validation ("expected i32, found i64"). Advancing to `*high` hands each payload
+                    // fresh, never-typed scratch slots. (Was a fixed `base` for all payloads — the sibling
+                    // scratch-slot i32/i64 collision bug.)
+                    let mut payload_base = base;
                     for (i, &p) in payloads.iter().enumerate() {
                         out.push(Lir::ConstI32(i as i32)); // [disc, arr, i]
-                        emit(db, p, slots, base, high, scratch_ty, layout, out)?; // [disc, arr, i, value]
+                        emit(db, p, slots, payload_base, high, scratch_ty, layout, out)?; // [disc, arr, i, value]
+                        payload_base = *high;
                         let boxed = match payload_elem_tys.as_ref().and_then(|ts| ts.get(i)) {
                             Some(declared) => box_op_for(db, p, declared)?,
                             None => box_op(db, p)?,

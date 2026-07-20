@@ -959,6 +959,7 @@ pass	a map chosen by a runtime if is size-measured with valid wasm
 pass	a map consumed by Map.insert in one operand is unchanged for a later read of the same binding
 pass	a map consumed by Map.remove in one operand is unchanged for a later read of the same binding
 pass	a map consumed by Map.swap in one operand is unchanged for a later read of the same binding
+pass	a map consumed by Map.take in one operand is unchanged for a later read of the same binding
 pass	a map entry with no value expression is rejected, not a crash
 pass	a map grown by a recursive accumulator is looked up by a runtime key
 pass	a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read
