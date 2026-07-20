@@ -259,8 +259,19 @@ def parse-let(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
           (match add-node(t2, Node.NLet(nm, valId, bodyId)) with | (id, t3) => (id, p, t3))))))
   | _ => parse-expr(ts, i, tree)   // recovery: `let` with no name → parse as expression
 
-/// The parse COLUMN entry: tokens → `(rootId, Tree)` — the root node id and the arena.
-def parse-tokens(ts: List(Tok)) = match parse-any(ts, 0, empty-tree()) with | (root, _, tree) => (root, tree)
+/// The parse COLUMN entry: tokens → `(rootId, Tree)` — the root node id and the arena. TRAILING-TOKEN GUARD:
+/// `parse-any` returns the index it stopped at; if that is NOT the end of the token list, the input had
+/// LEFTOVER tokens the grammar couldn't consume (e.g. a CHAINED comparison `1 < 2 < 3` — `parse-cmp` is
+/// non-associative, so it parses `1 < 2` and leaves `< 3` dangling). Silently dropping them and running the
+/// PREFIX (`1 < 2` → 1) is a wrong outcome — the reference REJECTS `1 < 2 < 3` (bool `<` int), and dropping
+/// input fabricates a value that disagrees. So an incomplete parse DECLINES: return an `NVar(0)` poison root
+/// (unbound → resolve RPoison → infer TErr → eval None), the same "unsupported → decline, never a partial
+/// value" discipline the s-expr reader uses for trailing junk (`se-trailing-junk-declines`). A fully-consumed
+/// parse returns its real root unchanged.
+def parse-tokens(ts: List(Tok)) =
+  (match parse-any(ts, 0, empty-tree()) with | (root, endIdx, tree) =>
+    (if (endIdx == List.len(ts)) then (root, tree)
+     else (match add-node(tree, Node.NVar(0)) with | (poison, t1) => (poison, t1))))
 
 /// A structural probe: is the node at `id` a `Bin` with op `op`?
 def is-bin-op(tree: Tree, id: Int64, op: Int64) = match node-at(tree, id) with
@@ -691,5 +702,24 @@ def pd-encode-param-type-unsigned-and-widths() =
            then (if (u32 == i64) then trap("distinct (signed,width) must encode distinctly") else unit)
            else trap("Int64 decodes to signed width 64"))
      else trap("UInt32 decodes to unsigned width 32"))))
+
+@test
+def pd-trailing-tokens-decline() =
+  // TRAILING-TOKEN GUARD: an incomplete parse (leftover tokens the grammar couldn't consume) DECLINES rather
+  // than silently dropping the tail + running the prefix. `1 < 2 < 3` — parse-cmp is non-associative, so it
+  // parses `1 < 2` and leaves `< 3` dangling; the guard turns the leftover into an NVar(0) poison root (→
+  // resolve RPoison → infer TErr → eval None), matching rcdzc's reject (dropping `< 3` + running `1<2`→1 was a
+  // fabricated value). Pins the root is the poison Var(0), NOT the `1<2` comparison Bin.
+  (match parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2), Tok.TOp(60), Tok.TNum(3)]) with | (root, tree) =>
+    (if is-var(tree, root, 0) then unit
+     else trap("`1 < 2 < 3` has leftover `< 3` → the root must be the NVar(0) poison (decline), not `1<2`")))
+
+@test
+def pd-fully-consumed-parse-keeps-its-root() =
+  // the guard fires ONLY on leftover tokens: a fully-consumed parse returns its REAL root. `1 < 2` consumes
+  // every token → the root is the comparison Bin (op 60), NOT a poison. Pins the guard doesn't over-decline.
+  (match parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2)]) with | (root, tree) =>
+    (if is-bin-op(tree, root, 60) then unit
+     else trap("`1 < 2` consumes all tokens → root is the `<` Bin, not a poison")))
 
 export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param-type, param-type-of, encode-param-type, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
