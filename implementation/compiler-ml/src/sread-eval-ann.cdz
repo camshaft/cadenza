@@ -26,11 +26,14 @@ def se-ann-out-of-range-declines() =
   (match run-src("(: 300 UInt8)") with | Option.None(_) => unit | Option.Some(_) => trap("(: 300 UInt8) must decline"))
 
 @test
-def se-ann-narrow-plus-bare-int64-declines() =
-  // `(+ (: 100 Int8) 20)` — the bare `20` is default Int64; Int8 + Int64 is a MIXED type → declines (no
-  // silent promotion, the reference's CDZ0301). (A bare literal does NOT yet width-unify to the annotated
-  // operand — that's the deferred-literal slice; today a bare literal is concrete Int64.)
-  (match run-src("(+ (: 100 Int8) 20)") with | Option.None(_) => unit | Option.Some(_) => trap("Int8 + bare-Int64 declines (mixed type)"))
+def se-ann-narrow-plus-bare-literal-adapts() =
+  // `(+ (: 100 Int8) 20)` — the annotated operand is Int8 and the bare `20` is a plain literal (infer's
+  // default Int64) that FITS Int8, so it ADAPTS to the narrow sibling's width (corpus 09-functions:3577 "the
+  // check does NOT over-reject" — the width-polymorphic integer literal grounds to Int8). 100+20 = 120 fits
+  // Int8 → RUNS to 120. (This is the literal-adaptation slice: a bare literal width-unifies to a fitting
+  // annotated operand. A NON-fitting literal, or two annotated narrows of different widths, still declines —
+  // see se-ann-mixed-width-arith-declines / the overflow cases.)
+  (match run-src("(+ (: 100 Int8) 20)") with | Option.Some(v) => (if v == 120 then unit else trap("Int8 + fitting bare literal adapts → 120")) | Option.None(_) => trap("bare literal that fits ADAPTS to Int8 (does not decline)"))
 
 @test
 def se-ann-same-width-narrow-arith-runs() =

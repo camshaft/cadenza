@@ -58,3 +58,23 @@ def se-nested-two-arg-calls() =
   (match run-src("(do (def (add a b) (+ a b)) (def (main) (add (add 1 2) (add 3 4))) (export main))") with
     | Option.Some(v) => (if v == 10 then unit else trap("add(add(1,2), add(3,4)) = add(3,7) = 10"))
     | Option.None(_) => trap("nested 2-arg calls run"))
+
+@test
+def se-narrow-param-plus-literal-runs() =
+  // ★ LITERAL ADAPTATION (corpus 09-functions:3580 → 110:Int8) ★ — the complement to the CDZ0304 overflow
+  // case: `(def (f (: a Int8)) (+ a 10))` `(f 100)` → 110. The body arith is Int8 (the param drives it), and
+  // the bare literal `10` ADAPTS to Int8 (it fits) rather than forcing a spurious mixed-width Int8+Int64
+  // decline. The corpus doc: "the check does NOT over-reject." Before this the ML compiler wrongly DECLINED
+  // (a declined-when-should-run miscompile). Differential-verified vs rcdzc (110, in Int8 range).
+  (match run-src("(do (def (f (: a Int8)) (+ a 10)) (def (main) (f 100)) (export main))") with
+    | Option.Some(v) => (if v == 110 then unit else trap("(+ a 10) on Int8 param (f 100) → 110"))
+    | Option.None(_) => trap("(+ a 10) must RUN (110 fits Int8) — literal adapts, not spurious mixed-width decline"))
+
+@test
+def se-narrow-param-plus-overflowing-literal-declines() =
+  // the sharp companion: a literal that pushes the body OVER the narrow width still declines. `(+ a 100)` on
+  // an Int8 param `(f 100)` = 200 OVERFLOWS Int8 → declines (CDZ0304). Pins that literal adaptation composes
+  // with the overflow trap — the literal adapts to Int8, then the Int8 arith overflows.
+  (match run-src("(do (def (f (: a Int8)) (+ a 100)) (def (main) (f 100)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("(+ a 100) on Int8 param = 200 OVERFLOWS Int8 → must decline (CDZ0304)"))

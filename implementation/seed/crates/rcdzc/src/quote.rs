@@ -379,7 +379,7 @@ impl BitSet {
 /// quote body; it starts false at the quote body and turns true at the first `quasiquote` head.
 ///
 /// Two reasons a reification bails (`None`):
-///  - a leaf the `Ast` sum cannot yet carry (a Str/Float/Bool/Char/Sym/Bytes literal — only `Int`/`Name`/`List`);
+///  - a leaf the `Ast` sum cannot carry (a Char/Sym/Bytes literal — the realized set is `Int`/`Float`/`Bool`/`Str`/`Name`/`List`);
 ///  - a STRAY `unquote`/`unquote-splicing` (`under_qq` still false): an escape outside any quasiquote is
 ///    a syntax error (`metaprogramming.md` §Quasiquote Constructs AST With Selective Evaluation), and a
 ///    plain `(quote …)` body is inert data — NOT a template — so `(quote (g ,x))` must reject CDZ0003,
@@ -457,10 +457,10 @@ fn reify(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<StructId> {
 /// module docs §Quasiquote):
 ///  - `(unquote e)` at depth 1 → ACTIVE: reuse `e` LIVE, wrap in the `Ast.*` ctor matching its VALUE —
 ///    `e` is evaluated as ordinary code (unbound name → CDZ0101). A value LITERAL dispatches by kind (Int
-///    → `Ast.Int`, Bool → `Ast.Bool`, String → `Ast.Str`; a Float/Char literal bails — no value variant
-///    yet). A runtime operand (a NAME or a call) wraps `Ast.Int` — its type is unknown pre-typecheck, so a
-///    non-Int runtime operand still hits `Ast.Int`'s payload type-error (the general inferred-type lift is
-///    a later increment).
+///    → `Ast.Int`, Float → `Ast.Float`, Bool → `Ast.Bool`, String → `Ast.Str`; a Char/Sym/Bytes literal
+///    bails — no value variant). A runtime operand (a NAME or a call) is wrapped in the `ast-lift`
+///    intrinsic and resolved by its INFERRED type at `lower` (identity when already an `Ast`, else the
+///    matching leaf ctor).
 ///  - `(unquote-splicing e)` at depth 1 → ACTIVE splice: BAIL (deferred — leave for resolve).
 ///  - `(unquote e)` at depth>1 → inert `(Ast.List (list (Ast.Name "unquote") <reify e @ depth-1>))`.
 ///  - `(quasiquote t)` at any depth → inert `(Ast.List (list (Ast.Name "quasiquote") <reify t @ depth+1>))`.
@@ -487,8 +487,9 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
             // evaluated code, not reified) so an unbound name in it is still the ordinary CDZ0101.
             //
             // A VALUE LITERAL's kind is known structurally HERE, so dispatch directly to the matching leaf
-            // ctor (Int → `Ast.Int`, Bool → `Ast.Bool`, String → `Ast.Str`) — no runtime type needed. A
-            // literal the `Ast` sum has no value variant for (a Float/Char) BAILS (declines honestly).
+            // ctor (Int → `Ast.Int`, Float → `Ast.Float`, Bool → `Ast.Bool`, String → `Ast.Str`) — no
+            // runtime type needed. A literal the `Ast` sum has no value variant for (a Char/Sym/Bytes)
+            // BAILS (declines honestly).
             //
             // 🔑 A RUNTIME operand — a `Leaf::Name` (a let-bound var `,n` / a param) or a non-leaf computed
             // expression (`,(f x)`) — has an unknown type at reify time (this runs pre-typecheck). Wrap it
