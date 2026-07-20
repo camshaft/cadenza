@@ -169,6 +169,35 @@ fn fmt_preserves_a_doc_comment_on_an_annotated_def() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Count plain `//` line-comments (NOT `///` docs) in a blob. Splits on `//` but excludes the `///`
+/// doc form so the two comment kinds are counted independently (a `///` contains `//` as a substring).
+fn line_comment_count(s: &str) -> usize {
+    s.matches("//").count() - s.matches("///").count()
+}
+
+#[test]
+fn fmt_preserves_a_plain_line_comment_leading_a_def_body() {
+    // Comment fidelity for the OTHER comment kind: a plain `//` line-comment that LEADS a def BODY (the
+    // first thing inside the `=`, before the body expression) must survive a format pass. An earlier
+    // reader gap dropped it (the leading-token side-table had no place to attach a comment that leads an
+    // expression body, so it was stranded + discarded) — the same doc/comment-attachment family as the
+    // `///`-before-`effect`/`@`-annotated-def bugs. FIXED by v-syntax (rcdzc `418bc6349`, "preserve a //
+    // comment leading a def body"). This pins it: `fmt` is a faithful reprint, and a silently-eaten `//`
+    // is data loss. (This gap was the bulk of what blocked the fleet-wide `cdz fmt` apply — worth a guard.)
+    let (dir, file) = temp_cdz(
+        "bodycomment",
+        "def f () -> Int64 =\n  // interior body comment\n  1\n",
+    );
+    let (ok, out, err) = run_in(&dir, &["fmt", &file, "--stdout"]);
+    assert!(ok, "cdz fmt --stdout should succeed: {err}");
+    assert_eq!(
+        line_comment_count(&out),
+        1,
+        "the `//` comment leading the def body survives the format pass: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn fmt_a_manifest_with_no_source_errors() {
     // A `Project.cdz` declaring no entry/modules/tests has no source to format — a clear error.

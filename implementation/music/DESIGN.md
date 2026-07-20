@@ -21,11 +21,15 @@ Concierge-confirmed (tick 18): rational is the CORE; integer note numbers surviv
 driver-edge projection (euphony keeps `frequency.rs` separate from `interval.rs`; matches the
 maximal-logic-in-Cadenza mandate — theory in Cadenza, wire-integers only where the boundary forces them).
 
-**Known gap (reported):** projecting a rational interval to an integer semitone count needs a
-`Rational → Int64` conversion (floor/round/numerator/denominator), and the prelude has none
-(`Rational.value` is identity). So the general rational→MIDI projection is deferred to the driver edge;
-`interval-ratio.to-semitones-exact : Option(Int64)` covers the on-12-TET-grid case via equality search.
-Filed for the prelude/runtime owners.
+**Known gap (reported → in progress):** projecting a general rational interval to an integer semitone
+count needs a `Rational → Int64` conversion (floor/ceil/round/truncate). `Rational.numerator`/`denominator`
+now exist in the prelude but return **BigInt** (no BigInt→Int64 narrowing yet), so the general projection
+is still not expressible in pure Cadenza. The full conversion surface (floor/ceil/round/truncate +
+Int64 numerator/denominator, `round` = half-away-from-zero) is operator-approved and being built by
+v-runtime/v-inference; v-music is the consumer and will wire the projection when it lands. Meanwhile the
+on-12-TET-grid case works via `interval-ratio.to-semitones-exact : Option(Int64)` (equality search over the
+grid), and `layer-bridge` gates that the rational core and the Int64 projection agree across the full
+12-TET grid (0..12 semitones).
 
 ## Modules
 
@@ -50,9 +54,36 @@ Filed for the prelude/runtime owners.
 - **compose / piece** — `chord-block`/`arpeggiate`/`sequence` place realized notes in time; `piece` is a
   I–V–vi–IV showcase (accompaniment + bass) built from the primitives, an end-to-end gate.
 
+### Live-coding (pattern layer)
+- **pattern** — a Strudel/Tidal-style cycle-based pattern as a recursive DATA tree
+  (`Silence | Atom | Seq | Stack | Fast`) rendered to timed `Note`s over a cycle (which `schedule` lowers
+  to balanced MIDI). Combinators: `silence`/`note-pat`/`seq`/`stack`/`fast`, `euclid` (Bjorklund/Euclidean
+  rhythms, E(3,8)=tresillo), `rev` (reverse-in-time), `render-cycles`/`render-every` (Tidal `every n f p`,
+  a higher-order per-cycle transform). Seq tiles on exact cumulative integer boundaries (no drift).
+
+### Analysis & derived layers (Int64 pitch-class space)
+- **interval-name** — name an interval by size: `IntervalName` (unison/m2..M7/P4/P5/tritone/octave/Compound)
+  + `is-perfect` classifier; direction- and octave-independent.
+- **consonance** — common-practice `is-consonant`/`is-dissonant`/`is-perfect-consonance` over interval size.
+- **analysis** — chord IDENTIFICATION (inverse of `chord` construction): `identify(notes, root) : Quality`
+  names a note set (triads + sevenths, else `Unknown`) via a root-relative pitch-class signature;
+  octave/inversion/order/duplicate-invariant. (`analysis-roundtrip` is a gate pinning the construct↔identify
+  inverse.)
+- **key** — key DETECTION: `candidate-keys(pcs)` = the major keys whose scale contains all input pitch
+  classes (a C triad → C/F/G; G7 → C uniquely); `fits-key`/`candidate-count`.
+- **progression** — diatonic (Roman-numeral) harmony: `diatonic-triad`/`diatonic-seventh` stack scale
+  thirds so qualities fall out of the scale (I/IV/V major, ii/iii/vi minor, vii° dim); `progression` maps a
+  degree list to chords (a I-IV-V).
+- **voicing** — voice-leading: `nearest-voicing`/`nearest-inversion` pick the inversion minimizing total
+  per-voice semitone motion from a reference; `voice-distance` metric.
+- **melody** — melodic contour: `steps` (note-to-note intervals), `range` (ambitus), `leap-count`/
+  `is-conjunct`, `net-direction`.
+
 ### Synthesis
 - **synth** — the synth graph as DATA (CSG-for-CAD idiom): a recursive `Synth` sum (osc/gain/envelope/mix)
   + folds; a build-your-own-synth surface for a thin WebAudio driver.
+- **adsr** — a full ADSR amplitude envelope: `Adsr` data + `sample(env, held, t)` (exact integer-lerp
+  per-mille amplitude at a tick), `is-active` (voice-freeing), `total-span`. Extends synth's linear `Env`.
 
 ## Phase 2 — demos (in progress)
 1. **DES-composed piece** — a piece played over the discrete-event-sim clock. v-music is the forcing

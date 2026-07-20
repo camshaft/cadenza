@@ -4144,6 +4144,82 @@ fn a_recursive_match_binder_over_a_heap_scrutinee_leaves_no_live_objects() {
 /// the value is unchanged, but not that the drop actually nets the heap to zero) — it reads the runtime's
 /// `live-objects` counter against the SAME store, so a missing/off-by-one reclaim (a leaked concat/push/
 /// update vector) shows as a nonzero live count even though the value is correct. Each op builds a RUNTIME
+/// DIRECT leak witness + double-free guard for the DUP-AWARE `let`-binding reclaim: a heap binding whose
+/// only consuming occurrences are Perceus retains (`dup_sites`) has its surviving slot reference reclaimed
+/// at scope end. Cases: (1) the captured-then-inlined leak (`mk-adder xs` inlines to `List.push xs` beside
+/// `List.len xs` → xs dup'd for the push, surviving ref must drop → live 0); (2) a MULTI-CONSUME control
+/// (xs consumed TWICE — the LAST consume is not a dup_site → the slot ref is consumed there → must NOT
+/// drop → NO double-free/UAF, value correct); (3) a NESTED-IF consume (xs consumed in an inner-then,
+/// borrowed in inner-else, all inside an outer-then, unused outer-else — v-effects' propagation stress:
+/// the innermost consume's dup decision must be right → valid module + reclaimed). All value-correct, so
+/// value/drop-import gates miss them; the live-objects counter is the witness. `#[ignore]` — needs the
+/// debug-counters store (`cargo xtask build`), run with `-- --ignored`.
+#[test]
+#[ignore]
+fn dup_aware_let_binding_reclaim_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "debug-counters runtime not in the store (run `cargo xtask build`); skipping dup-aware reclaim probe"
+        );
+        return;
+    };
+    let build = "(def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
+                   (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))";
+    // (1) captured-then-inlined: f = mk-adder xs; (f 9) + List.len xs. main(5)=6+5=11, live 0 (was 2).
+    let leak = format!(
+        "(module m {build} \
+           (def (mk-adder (: base (List Int64))) (fn ((: x Int64)) ((. List len) ((. List push) base x)))) \
+           (def (main (: n Int64)) \
+             (let ((xs (build 0 n (list))) (f (mk-adder xs))) (+ (f 9) ((. List len) xs)))) \
+           (export main))"
+    );
+    // (2) MULTI-CONSUME: xs pushed into TWO fresh lists (both consume), lengths summed. The LAST consume
+    // is not a dup_site → the slot ref is consumed → NOT dropped → no double-free. main(3)= (3+1)+(3+1)=8.
+    let multi = format!(
+        "(module m {build} \
+           (def (main (: n Int64)) \
+             (let ((xs (build 0 n (list)))) \
+               (+ ((. List len) ((. List push) xs 9)) ((. List len) ((. List push) xs 8))))) \
+           (export main))"
+    );
+    // (3) NESTED-IF consume (v-effects' propagation stress): xs consumed in inner-then, borrowed in
+    // inner-else, inside outer-then, unused outer-else. main(3, ...) must be valid + reclaimed.
+    let nested = format!(
+        "(module m {build} \
+           (def (main (: n Int64) (: a Bool) (: b Bool)) \
+             (let ((xs (build 0 n (list)))) \
+               (if a (if b ((. List len) ((. List push) xs 9)) ((. List len) xs)) 0))) \
+           (export main))"
+    );
+    for (label, src, args, want) in [
+        ("captured-inlined", leak, vec![Val::S64(5)], 11i64),
+        ("multi-consume", multi, vec![Val::S64(3)], 8),
+        (
+            "nested-if",
+            nested,
+            vec![Val::S64(3), Val::Bool(true), Val::Bool(true)],
+            4,
+        ),
+    ] {
+        let program = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+        let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+        assert_eq!(
+            rt.call("main", &args),
+            Val::S64(want),
+            "dup-aware reclaim value: {label}"
+        );
+        assert_eq!(
+            rt.live_objects(),
+            0,
+            "dup-aware reclaim leak/double-free: {label} left live heap objects (expected 0 — a dup'd \
+             consuming binding's surviving slot ref must be reclaimed, a multi-consume last-ref must NOT \
+             be double-dropped)"
+        );
+    }
+}
+
 /// list (a recursive `build` over `List.push` — a constant would fold away with no heap alloc / no runtime
 /// import), so the producer's result is a genuine owned temporary the `List.len` borrow must reclaim.
 /// `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
@@ -8464,6 +8540,48 @@ fn a_multiarg_nonrecursive_helper_filing_a_resume_thunk_folds_through_arm_a_prim
             v, "5000000000",
             "arm a′ substitutes all of mk2's args (incl. the unused pure `base`); the popped continuation \
              resumes the wake-seeded clock → 5e9"
+        );
+    }
+}
+
+/// A DIRECTLY-constructed TWO-entry pqueue (depth-2 `PQCons`, NO recursion, NO helper), popped at the HEAD:
+/// `(sched-step (PQCons (tuple wake kb0) (PQCons (tuple 9 kb1) PQNil)))`. The multi-payload pop fold must
+/// select the HEAD entry's continuation `kb0` (which resumes `wake`) and IGNORE the tail entry `kb1` (which
+/// would resume 9), so the `now` arm reads the wake-seeded clock → 5e9, NOT 9. Pins that the 2-level pop
+/// `(match kb ((KBox k) (k unit)))` binds the HEAD tuple's `kb`, discarding the `rest` sub-queue — a real
+/// multi-task DES pop shape (the queue holds >1 entry) that the SINGLE-entry corpus cases and the
+/// helper-built (`mk1`/`mk2`) pins do not cover. Distinct from the parked recursive-`pins` reach: here the
+/// queue is built inline (fold-visible), so no recursion-unfold is needed — it exercises the pop's
+/// tuple-binder selection at depth-2. A regression that folded the WRONG entry (bound `rest`'s head, or
+/// leaked the tail's `kb`) would return 9; a fold that declined would todo→fail. Both backends agree.
+#[test]
+fn a_two_entry_directly_built_pqueue_pops_the_head_continuation_not_the_tail() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (type Instant (Instant UInt64)) \
+        (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n))) \
+        (type KBox (KBox (-> Unit Unit))) \
+        (type PQ PQNil (PQCons (Tuple Instant KBox PQ))) \
+        (def (sched-step (: q PQ)) \
+          (match q \
+            ((PQ.PQNil _) unit) \
+            ((PQ.PQCons (tuple wake kb rest)) (match kb ((KBox.KBox k) (k unit)))))) \
+        (effect Sim (op sleep (-> Instant Unit)) (op now (-> Unit Instant))) \
+        (def (main) \
+          (handle Sim (Instant.Instant 0) \
+            ( (now (u) s (resume s s)) \
+              (sleep (wake) s \
+                (sched-step (PQ.PQCons (tuple wake (KBox.KBox (fn (_u) (resume unit wake))) \
+                  (PQ.PQCons (tuple (Instant.Instant 9) (KBox.KBox (fn (_v) (resume unit (Instant.Instant 9)))) (PQ.PQNil ())))))))) \
+            (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("a directly-built 2-entry pqueue pop must fold (multi-payload head selection)");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(
+            v, "5000000000",
+            "the pop binds the HEAD entry's kb (resumes wake=5e9), ignoring the tail entry (would be 9) — \
+             the multi-task DES pop-min shape"
         );
     }
 }
@@ -44410,6 +44528,25 @@ mod diagnostics {
             "wraps the operand in the expected int type's `.of`"
         );
         assert!(!fix.verified, "`.of` is checked (can trap) → heuristic");
+        // ROUND TRIP (type-level): applying the wrap yields `(+ a (Int32.of b))`, whose operands are both
+        // Int32 — the CDZ0301 width mismatch the fix targets is GONE. (The checked integer `.of` narrowing
+        // of a RUNTIME operand still DECLINES at emit today — a documented later increment, see the runtime
+        // `Int8.of` narrowing tests — so the applied form is well-TYPED but not yet emit-clean; that is a
+        // separate emit gap, not a failure of the coercion fix, which correctly clears the type error. So
+        // we assert the CDZ0301 specifically is cleared, not a full compile.)
+        let applied_errs = all_errors(
+            "(module m (def (f (: a Int32) (: b Int64)) (+ a (Int32.of b))) (export f))",
+        );
+        assert!(
+            !applied_errs
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0301")),
+            "applying the `(Int32.of …)` coercion clears the CDZ0301 width mismatch: {:?}",
+            applied_errs
+                .iter()
+                .map(|d| (&d.code, &d.message))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -44449,6 +44586,23 @@ mod diagnostics {
             Some(format!("(Float64.of {})", crate::abi::WRAP_HOLE)).as_deref(),
             "annotation-position float coercion: {}",
             a.message
+        );
+        // ROUND TRIP: applying the wrap on each site recompiles clean. The operator site becomes
+        // `(+ a (Float32.of b))` (both Float32); the annotation site becomes `(: (Float64.of n) Float64)`
+        // (the demoted-then-widened value now matches). Float `.of` is total, so no residual fault.
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (def (f (: a Float32) (: b Float64)) (+ a (Float32.of b))) (export f))"
+            )))
+            .is_ok(),
+            "applying the `(Float32.of …)` operator coercion must recompile clean"
+        );
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (def (f (: n Float32)) (: (Float64.of n) Float64)) (export f))"
+            )))
+            .is_ok(),
+            "applying the `(Float64.of …)` annotation coercion must recompile clean"
         );
     }
 
