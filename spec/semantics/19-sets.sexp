@@ -572,6 +572,28 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 5 Int64)) (output (: 11 Int64)))
 
+(case "a set consumed by Set.remove in one operand is unchanged for a later read of the same binding"
+  (doc    "The removal-side twin of the Set.insert persistence case above: `Set.remove` is PERSISTENT too —
+           it produces a new set without the element and MUST leave its operand unchanged. `s = build 0 n` is
+           a genuine runtime set (no const-fold), read TWICE: `(Set.remove s 1)` bound to `s2`, and `s` read
+           as the original. Encodes `100*(Set.len s) + 10*(Set.len s2) + (Set.contains s 1 ? 1 : 0)`. At n=3
+           the original `s` = {0,1,2} keeps len 3 AND still contains 1 (→ 100*3 + 10*2 + 1 = 321) while `s2` =
+           {0,2} dropped it (len 2). If the remove FBIP-mutated the shared CHAMP trie in place (a retain
+           missing on the multi-use binding), the original read would see {0,2} → len 2 and contains-1 = 0 →
+           220. At n=1 the set is {0}, removing the absent 1 leaves both unchanged (len 1, contains-1 = 0 →
+           100*1 + 10*1 + 0 = 110), pinning that a remove of an absent element is also persistent. Completes
+           the removal-side persistence family (Map.remove + Set.remove). Both backends.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Set Int64)))
+              (if (< i n) (build (+ i 1) n (Set.insert acc i)) acc))
+            (def (main (: n Int64))
+              (let ((s (build 0 n (Set.of (list)))))
+                (let ((s2 (Set.remove s 1)))
+                  (+ (* 100 (Set.len s)) (+ (* 10 (Set.len s2)) (if (Set.contains s 1) 1 0))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 321 Int64))
+  (call   main (: 1 Int64)) (output (: 110 Int64)))
+
 ; --- Set.contains / Set.remove / Set.insert must NOT fold against a set holding a RUNTIME element -------
 ; `Set.of (list …)` folds a CONSTANT list to a canonical constant `Core::SetOf`, and `Set.contains`/
 ; `Set.remove`/`Set.insert` fold against such a constant set by comparing elements at COMPILE TIME
