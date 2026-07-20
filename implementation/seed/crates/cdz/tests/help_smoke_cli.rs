@@ -99,8 +99,24 @@ fn top_level_help_and_version_succeed() {
         help_out.contains("Commands:"),
         "help lists a Commands section: {help_out}"
     );
-    let (v_ok, _v_out, _) = run(&["--version"]);
+    // `--version` must not just exit 0 — it must actually PRINT the program name and the crate version
+    // (a regression that printed an empty string, or dropped the version, would slip an exit-code-only
+    // check). clap renders `<bin> <version>`; pin both halves against the compiled crate version.
+    let (v_ok, v_out, _) = run(&["--version"]);
     assert!(v_ok, "cdz --version failed");
+    let want_version = env!("CARGO_PKG_VERSION");
+    assert!(
+        v_out.contains("cdz") && v_out.contains(want_version),
+        "`cdz --version` prints the name and crate version `{want_version}`: {v_out:?}"
+    );
+    // `-V` is the short alias and must report the same version string as `--version`.
+    let (short_ok, short_out, _) = run(&["-V"]);
+    assert!(short_ok, "cdz -V failed");
+    assert_eq!(
+        short_out.trim(),
+        v_out.trim(),
+        "`cdz -V` reports the same version line as `cdz --version`"
+    );
 }
 
 #[test]

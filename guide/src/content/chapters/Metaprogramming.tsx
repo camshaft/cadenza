@@ -41,29 +41,29 @@ export default function Metaprogramming() {
       />
       <P>
         The <C>Ast.Int</C> arm binds <C>n = 42</C>. A quoted <em>compound</em> form is an <C>Ast.List</C>,
-        so you can reach into its elements. Here, count them:
+        so you can reach into its elements. Here we hand the element list straight back, so you see the
+        operator name and both arguments as <C>Ast</C> nodes:
       </P>
       <Runnable
         source={`(match (quote (+ 1 2))
-  ((Ast.List elems) (List.len elems))
-  (_                0))`}
+  ((Ast.List elems) (Ast.List elems))
+  (_                (quote nil)))`}
       />
       <P>
-        Three elements: the operator name and its two arguments. And since <C>Ast</C> is an ordinary sum,
-        its match obeys the same exhaustiveness rule as any other: a match that inspects one form carries
-        a catch-all <C>_</C> for the rest.
+        The result reads <C>{`Ast.List([Ast.Name("+"), Ast.Int(1), Ast.Int(2)])`}</C>: the operator name
+        and its two arguments, each still an <C>Ast</C> node. And since <C>Ast</C> is an ordinary sum, its
+        match obeys the same exhaustiveness rule as any other: a match that inspects one form carries a
+        catch-all <C>_</C> for the rest (here it hands back a harmless <C>(quote nil)</C>).
       </P>
 
       <Note>
         You can build an AST directly with its constructors, too, and the two routes agree. A quoted
-        literal equals the same node written by hand, so <C>(= (quote 42) (Ast.Int 42))</C> is <C>true</C>.
-        Quote is just a convenient way to write down a tree you could also assemble constructor by
-        constructor.
+        literal produces the same node written by hand, so <C>(quote 42)</C> and <C>(Ast.Int 42)</C> both
+        read <C>{`Ast.Int(42)`}</C>. Quote is just a convenient way to write down a tree you could also
+        assemble constructor by constructor.
       </Note>
-      <Runnable
-        source={`(def (main)
-  (if (= (quote 42) (Ast.Int 42)) 1 0))`}
-      />
+      <Runnable source={`(quote 42)`} />
+      <Runnable source={`(Ast.Int 42)`} />
 
       <H2>Every literal has its variant</H2>
       <P>
@@ -82,17 +82,17 @@ export default function Metaprogramming() {
       </P>
       <Runnable
         source={`(match (quote "hi")
-  ((Ast.Str s) 1)
-  (_           0))`}
+  ((Ast.Str s) (Ast.Str s))
+  (_           (quote nil)))`}
       />
       <P>
         A float has its own variant too, <C>Ast.Float</C>, distinct from <C>Ast.Int</C>, so <C>(quote 2.5)</C>{" "}
-        matches the float arm and binds its <C>Float64</C> payload:
+        matches the float arm and hands its node back as <C>{`Ast.Float(2.5)`}</C>:
       </P>
       <Runnable
         source={`(match (quote 2.5)
-  ((Ast.Float f) (if (= f 2.5) 1 0))
-  (_             0))`}
+  ((Ast.Float f) (Ast.Float f))
+  (_             (quote nil)))`}
       />
       <P>
         That completes the literal set: integers, floats, strings, booleans, and names each reify to their
@@ -155,8 +155,8 @@ export default function Metaprogramming() {
       </Note>
       <Runnable
         source={`(match (Ast.decode (Ast.encode (Ast.Int 7)))
-  ((Ok a)  (if (= a (Ast.Int 7)) 1 0))
-  ((Err _) 0))`}
+  ((Ok a)  a)
+  ((Err _) (quote nil)))`}
       />
 
       <H2>Interpolating a computed subtree</H2>

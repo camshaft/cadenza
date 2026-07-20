@@ -578,6 +578,11 @@ fn non_rational_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) ->
     if matches!(ty, crate::ty::Ty::Rational) {
         return None;
     }
+    // Unlike `default-integer` (which declines a fix — many integer types are valid, so which one the
+    // author meant is a guess), the exact-fraction domain has EXACTLY ONE admitted type: `Rational`. So
+    // the repair is not a guess but the sole valid target — a VERIFIED replace of the named type with
+    // `Rational` clears the diagnostic by construction (`diagnostics.md` §A Confirmed Fix Is Marked
+    // Verified). Anchored at the type-name node `ty_expr` (what the author wrote), not the whole `form`.
     Some(
         Reject::coded(
             Code::NonIntegerDefault,
@@ -587,7 +592,12 @@ fn non_rational_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) ->
                 ty.render_name()
             ),
         )
-        .at(form),
+        .at(form)
+        .with_fix(crate::diag::Fix::replace_verified(
+            ty_expr,
+            "Rational",
+            "replace with `Rational` (the only exact rational type)",
+        )),
     )
 }
 
@@ -784,13 +794,15 @@ pub(crate) fn validate_type_position(
     // outside the admitted range MUST be rejected at compile time), so reject it here, with the SAME coded
     // CDZ0302 + message the annotation sites give, so every position agrees.
     if let Some(fault) = crate::eval::int_width_fault(db, pos) {
-        out.push(
-            Reject::coded(
-                Code::IntOutOfRange,
-                crate::infer::ill_formed_int_width_message(&fault),
-            )
-            .at(pos),
-        );
+        let mut reject = Reject::coded(
+            Code::IntOutOfRange,
+            crate::infer::ill_formed_int_width_message(&fault),
+        )
+        .at(pos);
+        if let Some(fix) = crate::infer::ill_formed_int_width_fix(&fault, pos) {
+            reject = reject.with_fix(fix);
+        }
+        out.push(reject);
         return;
     }
     // The `(Float W)` companion — an ill-formed float width (outside the admitted IEEE set {32,64}) in a
@@ -799,7 +811,12 @@ pub(crate) fn validate_type_position(
     // `typeval_of` would wave it through; reject it here with the same coded CDZ0302 the annotation sites
     // give.
     if crate::eval::is_ill_formed_float_width(db, pos) {
-        out.push(Reject::coded(Code::IntOutOfRange, crate::infer::FLOAT_WIDTH_MESSAGE).at(pos));
+        let mut reject =
+            Reject::coded(Code::IntOutOfRange, crate::infer::FLOAT_WIDTH_MESSAGE).at(pos);
+        if let Some(fix) = crate::infer::ill_formed_float_width_fix(db, pos) {
+            reject = reject.with_fix(fix);
+        }
+        out.push(reject);
         return;
     }
     // A RUNTIME WIDTH `(Int n)`/`(Float n)` (n a parameter/ref) anywhere in this type position — a runtime

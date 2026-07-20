@@ -173,6 +173,35 @@ thread_local! {
     /// `many_typod_field_accesses_of_one_wide_record_suggest_in_bounded_time`.
     pub(crate) static NO_FIELD_SUGGESTION_MISSES: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
+
+    /// Test-only: total nodes the `quote::reify_quotes` POSITION passes enumerated since the last reset —
+    /// the O(N) work (`pattern_position_nodes`' parent-map build + downward walk, plus the reverse
+    /// per-node plan loop's shape probes) that runs ONLY when the program actually contains a
+    /// `quote`/`quasiquote` FORM. `reify_quotes` runs at EVERY load, but a quote-FREE program (the
+    /// overwhelming common case) fast-bails on a single O(leaves) name scan before touching any of it, so
+    /// this counter stays 0 for such a program and grows O(N) only for a genuine quote program. The
+    /// noise-free regression signal that the fast-bail holds — see
+    /// `a_quote_free_program_skips_the_reify_quotes_position_scan`.
+    pub(crate) static REIFY_QUOTES_POSITION_SCAN_NODES: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+
+    /// Test-only: total nodes the `eval_ast::desugar_eval` per-node scan enumerated since the last reset —
+    /// the O(N) `as_form(id,"eval")` probe over every node, which runs ONLY when the program actually
+    /// contains an `(eval …)` form. `desugar_eval` runs at EVERY load but a program with no `(eval …)`
+    /// (the overwhelming common case) fast-bails on a single O(leaves) name prescan before the scan, so
+    /// this counter stays 0 for such a program and grows O(N) only for a genuine eval program. See
+    /// `an_eval_free_program_skips_the_desugar_eval_node_scan`.
+    pub(crate) static DESUGAR_EVAL_SCAN_NODES: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+
+    /// Test-only: total nodes the `tagged_template::expand` per-node scan enumerated since the last reset
+    /// — the O(N) `rewrite_of` probe over every node, which runs ONLY when the program actually contains
+    /// a `(tagged-template …)` form (the reader emits one for the ML surface `tag"…{expr}…"`). `expand`
+    /// runs at EVERY load but a program with no tagged template (the common case) fast-bails on a single
+    /// O(leaves) name prescan, so this counter stays 0 for such a program. See
+    /// `a_tagged_template_free_program_skips_the_expand_node_scan`.
+    pub(crate) static TAGGED_TEMPLATE_SCAN_NODES: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
@@ -2166,15 +2195,23 @@ impl Db {
             if let Some(synth) = decl.synth {
                 type_decl_index.entry(decl.name.clone()).or_insert(synth);
             }
-            // A SAME-NAME NEWTYPE — a single-variant sum whose ONE variant shares the type's name
-            // (`(type UserId (UserId Int64))`) — indexed name → its ctor occurrence, for
-            // `same_name_newtype_ctor`'s O(1) lookup. That was a linear `type_decls.iter().find(name ==
-            // && one-variant && variant.name == name)` per type-name resolution → O(N²) in a package of N
-            // types (the file-scoped resolve path probes it per type-name reference). First-declared wins,
-            // matching `find`'s first-hit.
-            if decl.variants.len() == 1
-                && decl.variants[0].name == decl.name
-                && let Some(ctor) = decl.variants[0].ctor
+            // A SAME-NAME CONSTRUCTOR — a sum with a VARIANT whose name shares the type's name
+            // (`(type UserId (UserId Int64))`, or the first variant of a multi-variant `(type N (N Int64)
+            // (J Int64))`) — indexed name → its ctor occurrence, for `same_name_newtype_ctor`'s O(1)
+            // lookup. The ONE name `N`/`UserId` must mean the CONSTRUCTOR in application/pattern-HEAD
+            // position (`(N a)`, `(N v)`) while `type_decl_by_name` keeps it the TYPE everywhere else
+            // (`(: x N)`): resolve picks by POSITION, never by variant COUNT — a multi-variant sum whose
+            // first variant shares the type name is the same head-position collision as a single-variant
+            // newtype (the breaker's `adv-same-name-ctor-hijacked-by-type` case-2). NOT restricted to
+            // one-variant sums: the extra variants (`J`) are irrelevant to whether the SAME-NAME variant's
+            // bare application resolves to the ctor. First matching variant wins (a sum has at most one
+            // variant named exactly its own type name — variant names are unique within a decl). First-
+            // declared type wins across sums, matching the prior `find`'s first-hit.
+            if let Some(ctor) = decl
+                .variants
+                .iter()
+                .find(|v| v.name == decl.name)
+                .and_then(|v| v.ctor)
             {
                 same_name_newtype_ctor_index
                     .entry(decl.name.clone())

@@ -42,6 +42,21 @@ def se-prefix-arith() =
   (match run-src("(+ 1 (* 2 3))") with | Option.Some(v) => (if v == 7 then unit else trap("1+2*3=7")) | Option.None(_) => trap("runs"))
 
 @test
+def se-negative-literal-arith() =
+  // (+ -5 3) → -2: a negative literal reads as an arithmetic operand and evaluates (the reference runs this
+  // to -2; compiler-ml previously DECLINED it — the read-form negative-literal arm closes that gap).
+  (match run-src("(+ -5 3)") with | Option.Some(v) => (if v == (0 - 2) then unit else trap("(+ -5 3) = -2")) | Option.None(_) => trap("negative literal operand runs"))
+
+@test
+def se-negative-literal-in-let-and-cmp() =
+  // a negative literal flows through a let binding and a comparison: (let ((x -5)) x) → -5, (< -5 0) → 1.
+  (match run-src("(let ((x -5)) x)") with
+    | Option.Some(v) => (if v == (0 - 5) then
+        (match run-src("(< -5 0)") with | Option.Some(w) => (if w == 1 then unit else trap("(< -5 0) = 1")) | Option.None(_) => trap("negative in comparison runs"))
+      else trap("let x=-5 → -5"))
+    | Option.None(_) => trap("negative literal in let runs"))
+
+@test
 def se-comparison() =
   // (< 1 2) → 1 (Bool true encoded 0/1).
   (match run-src("(< 1 2)") with | Option.Some(v) => (if v == 1 then unit else trap("1<2=1")) | Option.None(_) => trap("runs"))
@@ -259,7 +274,9 @@ def se-trailing-junk-declines() =
 // NOTE: the "a CLEAN int literal still runs" boundary-guard regression (the guard rejects only non-clean
 // endings) is covered by `se-int-literal` above (same `run-src("42")` → 42) — the former `se-plain-int-still-
 // runs` was a byte-identical duplicate compile, removed to cut the suite's run-src compile cost (each run-src
-// @test is a full-pipeline wasm build; the suite time was head-of-line-blocking the fleet gate).
+// @test re-runs the full in-guest compile pipeline — read-source→resolve→infer→lower→eval — at test time;
+// the test FILE is compiled to a component once, so the repeated cost is the in-guest pipeline, not a
+// separate per-@test wasm build. The suite time was head-of-line-blocking the fleet gate).
 
 @test
 def se-typed-int-flag() =

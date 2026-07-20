@@ -1404,6 +1404,43 @@ fn rustc_roundtrip_unconstrained_empty_set_grounds_and_compiles_not_e0282() {
 }
 
 #[test]
+fn rustc_roundtrip_unconstrained_empty_set_grounds_through_a_control_flow_join() {
+    // REGRESSION (v-rust-backend, extends the direct-`Set.len (Set.of (list))` pin above): an
+    // UNANNOTATED empty set whose element type is fixed by NOTHING downstream must still ground to the
+    // default `BTreeSet<i64>` when it reaches its len-use THROUGH A CONTROL-FLOW JOIN — an `if` whose
+    // BOTH branches are `(Set.of (list))`, and a `match` likewise. The direct case grounds the sole
+    // construction site; these pin that the grounding survives when the empty set is produced on two
+    // arms that join (each arm must independently spell `BTreeSet<i64>`, not a bare `_` that E0282s).
+    for (shape, src) in [
+        (
+            "if-both-branches-empty",
+            "(module m (def (g) (Set.len (if false (Set.of (list)) (Set.of (list))))) (export g))",
+        ),
+        (
+            "match-both-arms-empty",
+            "(module m (def (g) (Set.len (match 0 (0 (Set.of (list))) (_ (Set.of (list)))))) (export g))",
+        ),
+    ] {
+        let s = compile_rust(src);
+        assert!(
+            s.contains("BTreeSet<i64> = std::collections::BTreeSet::new()"),
+            "{shape}: an empty set grounds its element to i64 on each joining arm (not a bare \
+             `BTreeSet::new()` that E0282s):\n{s}"
+        );
+        assert!(
+            compile_rust_result(src).is_ok(),
+            "{shape}: the emitted set program compiles on rustc (was the E0282 class)"
+        );
+        if let Some(out) = rustc_run(&s, "g()") {
+            assert_eq!(
+                out, "0",
+                "{shape}: an empty set has cardinality 0 — same as wasm"
+            );
+        }
+    }
+}
+
+#[test]
 fn bytes_slice_is_total_on_a_usize_overflowing_range() {
     // REGRESSION (Copilot PR#435): the `Bytes.slice` bounds guard summed `(start as usize)+(len as usize)`,
     // which OVERFLOWS usize for two near-i64::MAX operands (wraps to a small sum in release) → the guard

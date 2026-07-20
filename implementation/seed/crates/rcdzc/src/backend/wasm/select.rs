@@ -7347,8 +7347,14 @@ fn emit(
                 *high = key_slot + 1;
             }
             scratch_ty.insert(key_slot, ValType::I32);
+            // `key` floats its scratch ABOVE `map`'s high-water (disjoint-slot discipline, as
+            // `Core::MapInsert`/`Core::Tuple`): `map` may be a recursive-call handle stashed in an i32
+            // `dup` slot, `key` a checked `(+ v 1)` teeing into an i64 overflow-guard slot — a shared
+            // fixed `base + 1` would re-type one wasm local to two widths (invalid module,
+            // `expected i32, found i64`). `key_slot` (= `base`, the owned-drop tee) is below both.
             emit(db, map, slots, base + 1, high, scratch_ty, layout, out)?; // [map]
-            emit(db, key, slots, base + 1, high, scratch_ty, layout, out)?; // [map, key]
+            let key_base = (base + 1).max(*high);
+            emit(db, key, slots, key_base, high, scratch_ty, layout, out)?; // [map, key]
             let key_boxed = box_op_for(db, key, &key_ty)?;
             emit_heap_store_tail(db, key, key_boxed, out); // [map, key-handle]
             if key_needs_compaction(db, key) {
@@ -7460,8 +7466,14 @@ fn emit(
                 *high = elem_slot + 1;
             }
             scratch_ty.insert(elem_slot, ValType::I32);
+            // `elem` floats its scratch ABOVE `set`'s high-water (disjoint-slot discipline, as
+            // `Core::SetInsert`/`Core::Tuple`): `set` may be a recursive-call handle in an i32 `dup`
+            // slot, `elem` a checked `(+ v 1)` teeing into an i64 overflow-guard slot — a shared fixed
+            // `base + 1` would re-type one wasm local to two widths (invalid module, `expected i32,
+            // found i64`). `elem_slot` (= `base`, the owned-drop tee) is below both.
             emit(db, set, slots, base + 1, high, scratch_ty, layout, out)?; // [set]
-            emit(db, elem, slots, base + 1, high, scratch_ty, layout, out)?; // [set, elem]
+            let elem_base = (base + 1).max(*high);
+            emit(db, elem, slots, elem_base, high, scratch_ty, layout, out)?; // [set, elem]
             let elem_boxed = box_op_for(db, elem, &elem_ty)?;
             emit_heap_store_tail(db, elem, elem_boxed, out); // [set, elem-handle]
             if key_needs_compaction(db, elem) {

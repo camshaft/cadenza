@@ -2558,12 +2558,110 @@ fn reduce_arm_deferred_resume(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> 
             })
             && let Some(reduced) = crate::eval::apply_lambda(db, head, &args).ok().flatten()
         {
+            // RE-RESOLVE the β-reduced body: `apply_lambda` COPIES the callee's arm bodies, and a copied
+            // `(Ctor v)` binder ref keeps its memoized `SumPayload { scrutinee }` pointing at the callee's
+            // ORIGINAL match scrutinee — so a following `fold_ctor_match` (whose gate is `s == scrutinee`,
+            // node-identity) would skip the binder, leaving it unsubstituted (the stale-scrutinee skip
+            // v-inference diagnosed for the recursion-unfold — the SAME hazard applies here when a helper
+            // whose body matches its arg is inlined, e.g. `sched-step` popping the pqueue). Forgetting the
+            // memoized resolution makes `resolved_of` recompute each binder ref against the copy's own
+            // scrutinee occurrence — the `fuse_match_into_if` clone+re-resolve hygiene.
+            crate::resolve::forget_subtree(db, reduced);
             cur = reduced;
+            continue;
+        }
+        // (c) a RECURSIVE helper call whose concrete argument selects a NON-recursive (base) arm — the
+        //     time-ordered pqueue's `pins` (sorted-insert): `(pins PQNil t kb)` matches `q` = the visible
+        //     `PQNil` ctor, takes the base arm `(PQCons (tuple t kb PQNil))`, and never recurses. Such a call
+        //     is typically NESTED in an argument (`(sched-step (pins PQNil …))`) — the pop applies to the
+        //     insert's result — so rewrite the FIRST such nested call in place: unfold `pins` ONE level (the
+        //     recursion-permitting variant, since `apply_lambda` refuses a recursive callee up front), let
+        //     `fold_ctor_match` resolve its internal `(match q …)` on the now-visible ctor, and splice the
+        //     base-arm result back. Turning the `pins` arg into a directly-constructed `PQCons` lets the
+        //     existing arm (a) reduce the surrounding `sched-step` on the next iteration. ACCEPT the unfold
+        //     only if the folded body has NO residual self-call to the callee (base arm taken); a non-base
+        //     concrete arg (recursion actually needed) leaves the self-call and is DISCARDED — a clean
+        //     decline. "Peek one level, accept only if base-arm" is the loop's recursion budget;
+        //     `fold_ctor_match` stays a pure one-step fold (v-inference's co-owned split).
+        if let Some(rewritten) = rewrite_recursive_base_arm_call(db, cur, ctx) {
+            cur = rewritten;
             continue;
         }
         break; // no further reduction applies
     }
     cur
+}
+
+/// Find the FIRST call to a recursive helper whose concrete argument selects a NON-recursive base arm and
+/// rewrite it to that arm's (folded) body in place, rebuilding the surrounding structure. Returns `Some`
+/// with the rewritten `node` if such a call was found + folded, else `None` (no progress). The call is
+/// usually nested in an argument — `(sched-step (pins PQNil t kb))` — so this walks structurally and
+/// rewrites the innermost-first match. See the (c) block in [`reduce_arm_deferred_resume`] for the policy;
+/// the accept gate is `!body_calls_def(folded, callee)` (base arm taken → no residual self-call).
+fn rewrite_recursive_base_arm_call(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+) -> Option<StructId> {
+    // Try to rewrite THIS node if it is the recursive-base-arm call.
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && is_perform(db, head, ctx).is_none()
+        && let Some(callee) = callee_def_index_of(db, head)
+        && let Some((params, hbody)) = crate::eval::lambda_params_and_body(db, head)
+        && crate::eval::is_recursive(db, hbody)
+        && params.len() == args.len()
+        // ONE-SHOT guard, scoped to the params whose ARGUMENT is a resume-closure (a lambda). Such an arg
+        // must not be DUPLICATED (a deferred continuation applies exactly once — pop removes before apply),
+        // so its param may appear at most once in the callee body. A PURE arg (`PQNil`, `wake`) is freely
+        // duplicable — a sorted-insert references its queue/element params multiply while rebuilding the
+        // order, harmless for pure values; enforcing ≤1 on those would reject every real recursive insert.
+        && params.iter().zip(args.iter()).all(|(&p, &a)| {
+            if matches!(resolved_of(db, a), Resolved::Lambda { .. }) {
+                count_param_refs(db, hbody, crate::eval::param_name_occ(db, p)) <= 1
+            } else {
+                true
+            }
+        })
+        && args.iter().all(|&a| {
+            strongly_pure(db, a, ctx) || matches!(resolved_of(db, a), Resolved::Lambda { .. })
+        })
+        && let Some(unfolded) = crate::eval::apply_lambda_one_level_recursive(db, head, &args)
+            .ok()
+            .flatten()
+        // RE-RESOLVE the unfolded node before folding. `apply_lambda`'s β-reduce COPIES the callee's arm
+        // bodies, but a copied `(Ctor v)` binder ref keeps its memoized `SumPayload { scrutinee }` pointing
+        // at the callee's ORIGINAL match-scrutinee occurrence — not the fresh one in the unfolded copy. So
+        // `fold_ctor_match`/`rewrite_sum_payload` (whose substitution gate is `s == scrutinee`, node-identity)
+        // would silently skip those refs, leaving the binder (`kb`) unsubstituted and the inner `(match kb …)`
+        // pointing at a stale scrutinee → the continuation never surfaces. Forgetting the memoized resolution
+        // (both the `resolved` column and the `resolved_subtrees` walk-guard) makes `resolved_of` recompute
+        // each binder ref against the copy's OWN scrutinee occurrence — the same clone+re-resolve hygiene
+        // `fuse_match_into_if` (lower.rs) applies when it clones match arms into `if` branches.
+        && {
+            crate::resolve::forget_subtree(db, unfolded);
+            true
+        }
+        // Unfolding a callee whose param carries a resume-closure LET-BINDS that arg once (eval-once), so
+        // the unfolded body is `(let ((kb …)) (match q …))` — fold the match THROUGH the leading `let`
+        // wrappers (kept around the folded arm, preserving the one-shot binding).
+        && let Some(folded) = fold_ctor_match_through_lets(db, unfolded)
+        // ACCEPT only if the base arm was taken — no residual self-call to the callee. A non-base concrete
+        // arg (recursion actually needed) leaves the self-call in the folded body → DISCARD (clean decline).
+        && !body_calls_def(db, folded, callee)
+    {
+        return Some(folded);
+    }
+    // Otherwise recurse into children, rebuilding the first branch that rewrites.
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for (i, &c) in children.iter().enumerate() {
+            if let Some(rc) = rewrite_recursive_base_arm_call(db, c, ctx) {
+                let mut new_children = children.clone();
+                new_children[i] = rc;
+                return Some(db.push_list(new_children));
+            }
+        }
+    }
+    None
 }
 
 fn reduce_applied_lambdas(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> StructId {
@@ -4719,6 +4817,74 @@ fn callee_def_index_of(db: &mut Db, head: StructId) -> Option<usize> {
             .def_index_by_body(value)
             .or_else(|| callee_def_index_of(db, value)),
         _ => None,
+    }
+}
+
+/// Whether `node` contains an APPLICATION whose head resolves to `def` (a call to that def) — a residual
+/// self-call check for the deferred-resume fold's one-level recursion-unfold: after unfolding a recursive
+/// callee once and folding its internal ctor-match, the base arm has no self-call (accept) while a
+/// recursive arm still calls back into the callee (discard). Walks the arena structurally; an application's
+/// HEAD is classified via `callee_def_index_of` (following Ref chains to the named def).
+/// Fold a case-of-known-ctor match that may sit under one or more leading `let` wrappers, KEEPING the
+/// `let`s around the folded arm. `apply_lambda`'s eval-once path let-binds a resume-closure argument
+/// (`(let ((kb …)) (match q …))`), so the unfolded recursive-callee body is a `let`-wrapped match rather
+/// than a bare match — `eval::fold_ctor_match` only folds a bare match. Peel the leading `let`s, fold the
+/// inner match, then re-wrap the same `let`s around the folded result. Returns `None` if there is no
+/// case-of-known-ctor match under the lets (i.e. `fold_ctor_match` on the innermost body declines).
+fn fold_ctor_match_through_lets(db: &mut Db, node: StructId) -> Option<StructId> {
+    // A leading `(let (bindings…) body)` — recurse into `body`, then re-wrap. The `let` is the eval-once
+    // binding `apply_lambda` synthesized for a resume-closure argument used across MULTIPLE callee arms; but
+    // only the folded BASE arm survives, where the bound name is now used AT MOST ONCE. In that case INLINE
+    // the binding (β-substitute it into the folded body) so the result is the bare directly-constructed form
+    // the surrounding reduction expects (`(sched-step (PQCons …))`, not `(sched-step (let … (PQCons …)))`) —
+    // and so a single-use resume-closure is not left behind a `let` the downstream pop-fold cannot see
+    // through. A binding still used ≥2× in the folded arm is KEPT (re-wrapped) — inlining would duplicate it.
+    if let Some(parts) = db.ast.as_form(node, "let").map(<[_]>::to_vec)
+        && parts.len() == 2
+    {
+        let bindings = parts[0];
+        let body = parts[1];
+        let folded_body = fold_ctor_match_through_lets(db, body)?;
+        // Try to inline each single-use binding into the folded body.
+        if let Struct::List(pairs) = db.ast.get(bindings).clone() {
+            let mut subst: HashMap<StructId, StructId> = HashMap::default();
+            let mut kept: Vec<StructId> = Vec::new();
+            for &pair in &pairs {
+                if let Struct::List(kv) = db.ast.get(pair).clone()
+                    && kv.len() == 2
+                    && count_param_refs(db, folded_body, kv[0]) <= 1
+                {
+                    subst.insert(kv[0], kv[1]);
+                } else {
+                    kept.push(pair);
+                }
+            }
+            if !subst.is_empty() {
+                let inlined = crate::eval::beta_reduce(db, folded_body, &subst);
+                if kept.is_empty() {
+                    return Some(inlined);
+                }
+                let let_head = db.push_name("let");
+                let kept_list = db.push_list(kept);
+                return Some(db.push_list(vec![let_head, kept_list, inlined]));
+            }
+        }
+        let let_head = db.push_name("let");
+        return Some(db.push_list(vec![let_head, bindings, folded_body]));
+    }
+    // Otherwise fold the (bare) match directly.
+    crate::eval::fold_ctor_match(db, node)
+}
+
+fn body_calls_def(db: &mut Db, node: StructId, def: usize) -> bool {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && callee_def_index_of(db, head) == Some(def)
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children.iter().any(|&c| body_calls_def(db, c, def)),
+        Struct::Atom(_) => false,
     }
 }
 

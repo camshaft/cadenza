@@ -89,3 +89,34 @@ def se-ann-narrow-comparison-runs() =
   (match run-src-typed("(< (: 5 Int8) (: 10 Int8))") with
    | Option.Some((v, b)) => (if (v == 1 and b == 1) then unit else trap("narrow < → bool true"))
    | Option.None(_) => trap("narrow comparison runs"))
+
+// ---- narrow annotations in the CANONICAL MODULE-WRAPPER form `(do (def (main) <body>) (export main))` ----
+// The above cases all use the BARE annotation surface; the corpus + the W4 differential feed every program
+// as this nullary-main module wrapper (`read-source` peels it to the body). These pin that the wrapper-peel
+// composes with the narrow-annotation path in-guest — the exact shape a W4 corpus case would exercise, and
+// the correct behavior the CLI `cdz run-ml` currently mis-declines at full-pipeline scale (a scale-emergent
+// backend emit bug, filed queue/mlrepro-run-ml-cli-declines-narrow-annotation-in-main-wrapper-scale-emergent;
+// the in-guest LOGIC these guard is correct, so a regression in the wrapper-peel/annotation composition would
+// flip these RED here even before the backend bug is fixed).
+
+@test
+def se-ann-wrapper-bare-runs() =
+  // `(do (def (main) (: 100 Int8)) (export main))` → 100 (the wrapper-peeled body is a bare narrow annotation).
+  (match run-src("(do (def (main) (: 100 Int8)) (export main))") with
+   | Option.Some(v) => (if v == 100 then unit else trap("wrapper (: 100 Int8) → 100"))
+   | Option.None(_) => trap("module-wrapper narrow annotation runs in-guest"))
+
+@test
+def se-ann-wrapper-same-width-arith-runs() =
+  // `(do (def (main) (+ (: 100 Int8) (: 20 Int8))) (export main))` → 120 (same-width narrow arith, in range).
+  (match run-src("(do (def (main) (+ (: 100 Int8) (: 20 Int8))) (export main))") with
+   | Option.Some(v) => (if v == 120 then unit else trap("wrapper Int8 100+20 → 120"))
+   | Option.None(_) => trap("module-wrapper narrow arith runs in-guest"))
+
+@test
+def se-ann-wrapper-overflow-declines() =
+  // the overflow decline composes through the wrapper too: `(+ (: 100 Int8) (: 100 Int8))` = 200 overflows
+  // Int8 → declines (matching the bare se-ann-narrow-arith-overflow-declines, and the reference CDZ0304).
+  (match run-src("(do (def (main) (+ (: 100 Int8) (: 100 Int8))) (export main))") with
+   | Option.None(_) => unit
+   | Option.Some(_) => trap("wrapper Int8 100+100 overflows → declines"))

@@ -1694,6 +1694,33 @@
             (export main)))
   (output (: 6 Int64)))
 
+(case "a PLAIN @requires relating TWO parameters (< a b) is enforced — BOTH params stay in scope in the predicate"
+  (doc    "Every runtime @requires case so far constrains a SINGLE parameter (`>= x 0`, `<= x 100`). This pins a
+           precondition relating TWO distinct parameters — the ordering contract `(< a b)` on a two-arg def —
+           so the injected `(if (< a b) BODY (trap …))` must keep BOTH `a` AND `b` in scope at body-entry (the
+           predicate reads both, exactly as a hand-written guard would). `(f 3 5)` satisfies `(< 3 5)`, so the
+           `if` takes the pass arm and the def returns its own value `(- b a)` = `2`. Pins that a multi-parameter
+           precondition resolves + enforces (the entry-side twin of the result-vs-parameter @ensures case, which
+           reads `ret` alongside a param).")
+  (input  (do
+            (@ (requires (< a b)) (def (f (: a Int64) (: b Int64)) (- b a)))
+            (def (main) (f 3 5))
+            (export main)))
+  (output (: 2 Int64)))
+
+(case "a PLAIN @requires relating TWO parameters (< a b) TRAPS when violated — the two-param precondition is checked"
+  (doc    "The trap half of the two-parameter precondition above. `@requires(< a b)` on `(f a b) = (- b a)`
+           with `(f 5 3)` violates the ordering (`5 < 3` is FALSE), so the injected `(if (< a b) (- b a)
+           (trap …))` takes the trap arm — `unreachable` — even though the body `(- b a)` = `-2` would itself
+           compute fine. Pins that a precondition over two parameters enforces in both directions, not only the
+           satisfied one, and that the check fires on the RELATIONSHIP between the args, not a single arg's
+           range.")
+  (input  (do
+            (@ (requires (< a b)) (def (f (: a Int64) (: b Int64)) (- b a)))
+            (def (main) (f 5 3))
+            (export main)))
+  (trap   "unreachable"))
+
 (case "STACKED @requires: EVERY precondition is enforced — a violated OUTER @requires traps (not only the innermost)"
   (doc    "Soundness pin for stacked preconditions. A def may carry several `@requires`, which desugar to
            NESTED annotation wrappers: `(@ (requires (>= x 0)) (@ (requires (<= x 100)) (def (f x) (+ x 1))))`.
@@ -1838,6 +1865,43 @@
             (export main)))
   (trap   "unreachable"))
 
+(case "TWO stacked @ensures COMPOSE: BOTH postconditions are enforced — value-transparent when both hold"
+  (doc    "The `@ensures`-composition pin (analogue of the stacked-`@requires` cases above, for the exit side).
+           A def may carry more than one `@ensures` — `(@ (ensures Q1) (@ (ensures Q2) (def …)))` — spelling two
+           independent postconditions. `verify_enforce::enforce` processes each annotation at its OWN index and
+           re-wraps the def's CURRENT body, so the inner `@ensures(Q2)` wraps first — body becomes
+           `(let ((ret BODY)) (if Q2 ret (trap …)))` — and the outer `@ensures(Q1)` then wraps THAT — the def
+           body becomes `(let ((ret (let ((ret BODY)) (if Q2 ret (trap))))) (if Q1 ret (trap)))`. The two `ret`
+           binders NEST (each scopes its own predicate over the value flowing out of the layer below); both
+           checks fire. `(f 5)` computes `6`; the inner `@ensures(< ret 1000)` holds (`6 < 1000`) so `ret = 6`
+           flows out, then the outer `@ensures(>= ret 0)` holds (`6 >= 0`), so the def returns `6` — its own
+           value, no trap. Pins that stacked postconditions COMPOSE and stay value-transparent when both hold
+           (the exit-side twin of the stacked-@requires value-transparent case).")
+  (input  (do
+            (@ (ensures (>= ret 0))
+            (@ (ensures (< ret 1000))
+               (def (f (: x Int64)) (+ x 1))))
+            (def (main) (f 5))
+            (export main)))
+  (output (: 6 Int64)))
+
+(case "TWO stacked @ensures: a violated INNER postcondition traps even when the OUTER holds"
+  (doc    "The trap half of the stacked-@ensures composition above — and the discriminating case: it fails only
+           the INNER postcondition, so a naive implementation that enforced only the outermost `@ensures` (or
+           only the innermost) would let it slip. `(@ (ensures (>= ret 0)) (@ (ensures (< ret 1000)) (def (f x)
+           (+ x 2000))))` on `(f 5)` computes `2005`. The INNER `@ensures(< ret 1000)` is checked first on the
+           raw body value (`2005 < 1000` is FALSE) → its `if` takes the trap arm — `unreachable` — BEFORE the
+           outer `@ensures(>= ret 0)` (which WOULD hold, `2005 >= 0`) ever runs. Pins that EVERY stacked
+           postcondition is enforced, not just one: an inner violation traps regardless of the outer verdict
+           (the exit-side twin of the stacked-@requires \"violated OUTER traps\" case).")
+  (input  (do
+            (@ (ensures (>= ret 0))
+            (@ (ensures (< ret 1000))
+               (def (f (: x Int64)) (+ x 2000))))
+            (def (main) (f 5))
+            (export main)))
+  (trap   "unreachable"))
+
 (case "@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)"
   (doc    "The result-binder-capture guard, as a REJECT (breaker 2026-07-17). `@ensures(Q)` enforcement binds
            the def's RESULT to `ret` (`(let ((ret BODY)) (if Q ret (trap)))`). If a PARAMETER is
@@ -1931,6 +1995,26 @@
             (export main)))
   (call   main (: 2 Int64))
   (output (: 2 Int64))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "an @ensures predicate that itself traps keeps its own trap kind (not the @ensures-failed unreachable)"
+  (doc    "The @ensures twin of the @requires-predicate-traps case above — the exit-side trap-kind-observability
+           pin. The postcondition `(> (/ 100 ret) 0)` divides by the RESULT binder, so when `ret = 0` evaluating
+           the PREDICATE traps `integer divide by zero` — a DIFFERENT kind from the postcondition-violation
+           `unreachable`. The enforcement rewrite is `(let ((ret BODY)) (if (> (/ 100 ret) 0) ret (trap …)))`:
+           it binds `ret` then evaluates the predicate in the `if` test, adding NO guard around the predicate's
+           own evaluation — so the predicate's trap fires first and keeps its kind. `(f 5)` computes `ret = 5`,
+           `(/ 100 5) = 20 > 0` holds → returns `5` (the control). `(f 0)` computes `ret = 0`, and the
+           predicate's `(/ 100 0)` traps `divide by zero` BEFORE the postcondition verdict is reached —
+           reordering or re-classifying it to `unreachable` would be a miscompile (the postcondition-failure
+           trap only fires when the predicate EVALUATES to false, not when it traps).")
+  (input  (do
+            (@ (ensures (> (/ 100 ret) 0)) (def (f (: n Int64)) n))
+            (def (main (: n Int64)) (f n))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64))
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 

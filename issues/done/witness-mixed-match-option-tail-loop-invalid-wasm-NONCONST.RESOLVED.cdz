@@ -35,3 +35,7 @@ export { main }
 // unbalanced under the tail-loop conversion (select.rs / emit_tail). This is the NON-CONST twin of the
 // const-fn-param-drop repro (also RESOLVED this tick) — together they were v-iterators' filter-map
 // blocker; both fixed. Marked RESOLVED.
+// PINNED 2026-07-20 (corpus-bugfix): 09-functions.sexp "a self-tail-recursive fn with a MIXED
+// Option-returning innermost match emits valid wasm" (value 3, all backends) — committed ec478ea34,
+// per v-core-opt's request. Locks the emit_tail/tail-loop conversion so a future select.rs change
+// can't silently re-break this shape.

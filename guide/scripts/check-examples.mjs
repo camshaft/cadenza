@@ -414,10 +414,27 @@ const files = [
 const examples = files.flatMap((f) => {
   try {
     return extractExamples(readFileSync(f, "utf8"), f.replace(guideRoot + "/", ""));
-  } catch {
-    return [];
+  } catch (e) {
+    // Do NOT silently drop a file's examples on an extraction error — a swallowed throw here would
+    // quietly shrink the checked set (a broken read/parse becomes "0 examples, 0 failed" = false green).
+    // Fail loud so a regression in extraction can't hide behind a green gate.
+    console.error(`check-examples: could not extract examples from ${f} — ${String(e && e.message ? e.message : e)}`);
+    process.exit(1);
   }
 });
+
+// Vacuous-pass floor: if the glob/extraction breaks, `examples` could be empty and the gate would print
+// "checked 0 examples … 0 failed" and exit 0 — a silent false green. The guide has 37 chapters + HomePage
+// and hundreds of examples; assert a sane minimum so a broken discovery path FAILS instead of passing on
+// nothing. (Mirrors proseEmDash.test.ts's "guards a vacuous pass" assertion.)
+if (files.length < 30) {
+  console.error(`check-examples: expected ≥30 content files (37 chapters + HomePage), found ${files.length} — the chapter glob likely broke.`);
+  process.exit(1);
+}
+if (examples.length < 100) {
+  console.error(`check-examples: expected ≥100 examples across the guide, found ${examples.length} — extraction likely broke (a vacuous pass would ship an unchecked guide).`);
+  process.exit(1);
+}
 
 // ---- the playground's Examples-dropdown programs (src/playground/examples.ts) ----
 // These are FULL modules (the playground compiles its buffer verbatim, no wrapping) authored in the
@@ -500,7 +517,13 @@ async function checkProgram(program, surface, ex, where) {
       return `${ex.file} [${ex.kind}] (${where}): ${label} compiled but FAILED TO RUN — ${String(e.message || e).slice(0, 100)}\n    ${brief}`;
     }
     // A graded exercise additionally asserts the rendered scalar equals its stated `expected`.
-    if (ex.expected != null && String(got).trim() !== ex.expected.trim())
+    // Normalize LAYOUT before comparing: the renderer pretty-prints a large nested COMPOUND value with
+    // newlines + indentation, but the token structure — not the line wrapping — is the contract. Collapse
+    // any whitespace run that contains a newline to a single space so a pinned compound can be authored on
+    // one line regardless of how the renderer chooses to wrap it. This is a no-op for a scalar (no
+    // newlines), so it never weakens a bare-number/bool exercise pin.
+    const normLayout = (s) => String(s).replace(/\s*\n\s*/g, " ").trim();
+    if (ex.expected != null && normLayout(got) !== normLayout(ex.expected))
       return `${ex.file} [Exercise] (${where}): solution ran to ${JSON.stringify(String(got))}, expected ${JSON.stringify(ex.expected)}\n    ${brief}`;
   }
   return null;

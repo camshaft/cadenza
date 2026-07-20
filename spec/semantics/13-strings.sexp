@@ -755,6 +755,46 @@
               (export main)))
   (call   main (: 1 Int64) (: 2 Int64))
   (output (: 4 Int64)))
+
+; --- String.slice across the SEAM of a genuinely-runtime string ROPE ------------------------------
+; The runtime-index cases above slice a FLAT literal ("hello", "café") — the string is a single leaf and
+; only the bounds are runtime. A genuine multi-chunk ROPE — a `String.concat` whose left chunk is chosen
+; by a run-time `if` (a folded literal concat β-reduces back to a literal, 13-strings §... at ~:661, so a
+; runtime-selected chunk is required to defeat the fold) — reaches the slice as a deferred concatenation,
+; so the byte-walk must cross the leaf boundary between chunks. These pin the seam-crossing slice: a span
+; that begins in the left chunk and ends in the right must read the logical scalars in order across the
+; physical seam, including the scalar→byte mapping when a chunk carries a multi-byte scalar.
+
+(case "a runtime string slice spans the seam of a runtime-assembled rope"
+  (doc    "`(String.slice (String.concat (pick b \"abc\" \"xyz\") \"def\") lo hi)` over a rope built at run time
+           (the left chunk chosen by a run-time `if`, so the concat cannot fold to a literal), with runtime
+           bounds spanning the seam: b=true lo=2 hi=4 selects scalars 2..3 = \"cd\" — 'c' the last scalar of
+           the left chunk, 'd' the first of the right — reading across the physical leaf boundary of a
+           deferred concatenation (#Sharing Is Not Observable). The b=false branch slices the other rope
+           (\"xyzdef\") at the same span → \"zd\", pinning that either runtime chunk assembles a real rope the
+           slice crosses, not a pre-folded flat leaf. Both backends.")
+  (input  (do
+            (def (pick (: b Bool) (: t String) (: f String)) (if b t f))
+            (def (main (: b Bool) (: lo Int64) (: hi Int64))
+              (Option.expect (String.slice (String.concat (pick b "abc" "xyz") "def") lo hi) "in range"))
+            (export main)))
+  (call   main (: true Bool) (: 2 Int64) (: 4 Int64))  (output (: "cd" String))
+  (call   main (: false Bool) (: 2 Int64) (: 4 Int64)) (output (: "zd" String)))
+
+(case "a runtime rope slice maps scalar offsets to bytes across the seam for a multi-byte scalar"
+  (doc    "The multi-byte companion of the rope-seam slice: over a runtime rope `(String.concat (pick b \"aé\"
+           \"aX\") \"bc\")`, b=true lo=1 hi=3 selects scalars 1..2 = \"éb\" — é (scalar 1, TWO UTF-8 bytes) is the
+           last scalar of the left chunk and b (scalar 2) the first of the right, so the slice crosses the
+           seam AND maps a multi-byte scalar's offset to its byte span. A byte-indexing walk would split é or
+           miscount across the seam; the scalar walk isolates \"éb\" (byte-len 3). Pins the across-seam
+           scalar→byte mapping on a genuine rope, both backends.")
+  (input  (do
+            (def (pick (: b Bool) (: t String) (: f String)) (if b t f))
+            (def (main (: b Bool) (: lo Int64) (: hi Int64))
+              (String.byte-len (Option.expect (String.slice (String.concat (pick b "aé" "aX") "bc") lo hi) "in range")))
+            (export main)))
+  (call   main (: true Bool) (: 1 Int64) (: 3 Int64)) (output (: 3 Int64)))
+
 ; --- `String.at i` and `String.slice i (i+1)` are the SAME single-scalar addressing — they must agree ---
 ; `String.at` and `String.slice` are the two runtime scalar-addressing String ops (both byte-walk the UTF-8
 ; leaf, mapping scalar offsets to byte offsets). A single-scalar slice `[i, i+1)` selects exactly the one

@@ -1032,6 +1032,40 @@ def mirror-across-x-bounds-exactly() =
         else trap("mirror-x of [9,11] should be [-11,-9]")))
 
 @test
+def mirror-across-y-and-z-bounds-exactly() =
+  // The x arm above pins nx; pin ny/nz too so an axis-index copy-paste in `v3-mirror` (flip the wrong
+  // coordinate) can't slip through. Translate a cube to +y, mirror across y (normal [0,1,0]) → y-extent
+  // reflects; the x/z extents are untouched. Same for z with normal [0,0,1].
+  let shifted-y = Solid.Translate(v3(rzero(), 10 / 1, rzero()), Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1))) in
+  // shifted-y box: y in [9, 11], x/z in [-1, 1]. Mirror across y → y in [-11, -9]; x/z unchanged.
+  (match bounding-box(Solid.Mirror(v3(rzero(), 1 / 1, rzero()), shifted-y)) with
+    | Aabb.Box(lo, hi) =>
+      (match lo with | Vec3.V3(lx, ly, _) => (match hi with | Vec3.V3(hx, hy, _) =>
+        if ly == (rzero() - (11 / 1)) and hy == (rzero() - (9 / 1))
+           and lx == (rzero() - (1 / 1)) and hx == (1 / 1)
+        then (let shifted-z = Solid.Translate(v3(rzero(), rzero(), 10 / 1), Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1))) in
+              (match bounding-box(Solid.Mirror(v3(rzero(), rzero(), 1 / 1), shifted-z)) with
+                | Aabb.Box(lo2, hi2) =>
+                  (match lo2 with | Vec3.V3(_, _, lz) => (match hi2 with | Vec3.V3(_, _, hz) =>
+                    if lz == (rzero() - (11 / 1)) and hz == (rzero() - (9 / 1)) then unit
+                    else trap("mirror-z of [9,11] should be [-11,-9]")))))
+        else trap("mirror-y of [9,11] should be [-11,-9] with x untouched"))))
+
+@test
+def mirror-is-an-involution() =
+  // Mirroring twice across the same plane is the identity (two sign flips cancel) — the exactness guarantee
+  // that makes bilateral symmetry compose. Mirror a translated cube across x twice; the bbox must return to
+  // the original [9,11] extent, not stay reflected at [-11,-9].
+  let shifted = Solid.Translate(v3(10 / 1, rzero(), rzero()), Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1))) in
+  let twice = Solid.Mirror(v3(1 / 1, rzero(), rzero()),
+                Solid.Mirror(v3(1 / 1, rzero(), rzero()), shifted)) in
+  (match bounding-box(twice) with
+    | Aabb.Box(lo, hi) =>
+      (match lo with | Vec3.V3(lx, _, _) => (match hi with | Vec3.V3(hx, _, _) =>
+        if lx == (9 / 1) and hx == (11 / 1) then unit
+        else trap("mirror-x applied twice must restore [9,11]"))))
+
+@test
 def rotate-bounds-soundly-encloses() =
   // A rotation about the origin is bounded by the symmetric box of the child's L1 corner-radius. A 2×2×2 cube
   // spans [-1,1]^3 → per-axis max |coord| = 1 each → R = 1+1+1 = 3 → the rotate box is [-3,3]^3 (size 6 each
@@ -1049,6 +1083,32 @@ def rotate-and-mirror-of-empty-simplify-to-empty() =
   then (if solidr-is-empty(simplify-r(Solid.Mirror(v3(1 / 1, rzero(), rzero()), Solid.Empty))) then unit
         else trap("mirror of empty is empty"))
   else trap("rotate of empty is empty")
+
+@test
+def simplify-r-preserves-a-real-rotate-and-mirror() =
+  // The COMPLEMENT of the empty-prune test above: a Rotate/Mirror of REAL geometry must SURVIVE simplify-r
+  // (child kept, node rebuilt), not collapse to Empty. A regression flipping those arms to always-Empty (or
+  // dropping the child) would pass the empty-case test but silently erase real transformed geometry — this
+  // pins that. Rotate a translated cube 90° about z; mirror a translated cube across x. Both stay non-empty,
+  // keep their transform node, and preserve extent (rotate → the sound symmetric box; mirror → the reflected box).
+  let one = 1 / 1 in
+  let cube = Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1)) in
+  let shifted = Solid.Translate(v3(10 / 1, rzero(), rzero()), cube) in
+  let rot = simplify-r(Solid.Rotate(v3(rzero(), rzero(), 90 / 1), shifted)) in
+  let mir = simplify-r(Solid.Mirror(v3(one, rzero(), rzero()), shifted)) in
+  if (solidr-is-empty(rot) == false) and (solidr-is-empty(mir) == false)
+  then
+    // the surviving nodes are still a Rotate / Mirror (not simplified away to the bare child or a different node)
+    (match rot with
+      | Solid.Rotate(_, _) =>
+        (match mir with
+          | Solid.Mirror(_, _) =>
+            // extent preserved: mirror of a cube at x∈[9,11] → x∈[-11,-9], size stays 2×2×2.
+            (if v3-eq(aabbr-size(bounding-box(mir)), v3(2 / 1, 2 / 1, 2 / 1)) then unit
+             else trap("simplify-r must preserve the mirrored cube's 2×2×2 extent"))
+          | _ => trap("simplify-r dropped the Mirror node on a real child"))
+      | _ => trap("simplify-r dropped the Rotate node on a real child"))
+  else trap("simplify-r must NOT prune a rotate/mirror of real geometry")
 
 export { Vec3.*, Vec2.*, Profile.*, PathSeg.*, Path.*, Solid.*, Aabb.*, SolidR.*, Vec3R.*, Vec2R.*, ProfileR.*,
          PathSegR.*, PathR.*, rmin, rmax, rabs, rzero, v3, v2, v3-x, v3-y, v3-z, v3-add, v3-mul, v3-min, v3-max,

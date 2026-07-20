@@ -160,6 +160,17 @@
   (input  (let ((x 10)) (eval (quasiquote (match (list 1 2) ((list x .. rest) (unquote x)) (_ 0))))))
   (output (: 10 Int64)))
 
+(case "an unquoted variable is not captured by a map-pattern value binder"
+  (doc    "`(let ((x 10)) (eval `(match (map (1 2)) ((map (1 x)) ,x) (_ 0))))` = 10: a `(map (k p)…)` element
+           is a KEY-DIRECTED lookup pattern (05-compound-types), so its value sub-pattern `x` is a binder
+           (here it binds the value 2 stored at key 1). The spliced `,x` must keep its enclosing value 10, so
+           the template's map-pattern value binder must NOT capture it → 10, not the captured 2. Pins that
+           `collect_pattern_binders` recurses through a `(map (k p))` element's VALUE sub-pattern — the map
+           face of the variant/tuple/list-rest binder-kind family above (the key `1` is a literal, not a
+           binder, so only the value sub-pattern is renamed).")
+  (input  (let ((x 10)) (eval (quasiquote (match (map (1 2)) ((map (1 x)) (unquote x)) (_ 0))))))
+  (output (: 10 Int64)))
+
 (case "the hygiene rename recurses into a NESTED compound match pattern"
   (doc    "Depth companion: `(match (Some (tuple 1 2)) ((Some (tuple x y)) (+ ,x y)))` with enclosing x=10 →
            12. The `x` binder is TWO compound levels deep (`Some` payload, then `tuple` element), and the
@@ -1422,6 +1433,21 @@
            re-wrapped in another leaf. Pins the `(List Ast)` identity arm of the splice-lift.")
   (input  (let ((xs (list (Ast.Int 7) (Ast.Int 8)))) `(f ,@xs)))
   (output (: (Ast.List (list (Ast.Name "f") (Ast.Int 7) (Ast.Int 8))) Ast)))
+
+(case "the element list of an Ast.List escapes as a (List Ast) value and renders its structure"
+  (doc    "Reaching into a compound and handing back its element LIST yields a `(List Ast)` value that
+           ESCAPES the boundary in its canonical rendered form — not a length count, not a bool. Matching
+           `(quote (+ 1 2))` on `((Ast.List elems) elems)` returns `elems`, a `(List Ast)` whose elements
+           are the operator name and both argument nodes: `(list (Ast.Name \"+\") (Ast.Int 1) (Ast.Int
+           2))`. Pins the ESCAPING/render boundary form for a `(List Ast)` collection value (distinct from
+           the `Ast.List` sum-value cases above, which escape a single `Ast`): the element list itself
+           crosses the boundary and reads back structurally. This is the value-face the surface examples
+           rely on — showing the real child nodes rather than `(List.len elems)` = 3. The `(_ (list))`
+           wildcard makes the match exhaustive over the `Ast` sum (a non-`List` head returns the empty
+           `(List Ast)`); a match returning an `Ast`/`(List Ast)` value MUST cover Int/Float/Bool/Str/Name
+           or it is CDZ0210 non-exhaustive.")
+  (input  (match (quote (+ 1 2)) ((Ast.List elems) elems) (_ (list))))
+  (output (: (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)) (List Ast))))
 
 (case "unquote-splicing a list with a RUNTIME Ast element splices it by identity at runtime"
   (doc    "The identity splice arm works at RUNTIME, not only for constants: a fixed-length list whose

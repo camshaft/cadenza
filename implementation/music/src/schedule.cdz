@@ -210,7 +210,7 @@ def a-note-lowers-to-a-balanced-on-off-pair() =
   match note-events(n) with
     | [on, off] =>
       if ev-on(on) then
-        (if ev-on(off) then trap("second event is the off") else
+        (if ev-on(off) then trap("second event is NOT the off (still an on)") else
           (if ev-tick(on) == 0 then
             (if ev-tick(off) == 960 then
               (if ev-note(on) == 60 then unit else trap("note number")) else trap("off tick"))

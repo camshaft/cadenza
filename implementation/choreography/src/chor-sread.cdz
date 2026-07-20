@@ -159,11 +159,113 @@ def roles-of-choice-includes-chooser() =
     | _ => trap("chooser + participant = 2 roles"))
 
 @test
+def roles-of-collects-across-branches() =
+  // PIN: roles-of must gather roles buried in DIFFERENT choice branches, not just the chooser + first
+  // branch. This is what makes a `.sexp` protocol self-describing — if a branch-local role were missed,
+  // `cdz chor`'s emitted bundle would be SHORT an actor. Buyer chooses; branch A involves Seller+Shipper,
+  // branch B involves Carrier → all four, first-seen order.
+  let g = Chor.Choice("Buyer", [
+    Chor.Branch("A", Chor.Seq(Chor.Comm("Buyer", "Seller", "Sa"), Chor.Comm("Seller", "Shipper", "Go"))),
+    Chor.Branch("B", Chor.Comm("Buyer", "Carrier", "Cb"))]) in
+  (match roles-of(g) with
+    | [a, b, c, d] => (if a == "Buyer" then (if b == "Seller" then (if c == "Shipper" then
+        (if d == "Carrier" then unit else trap("d=Carrier")) else trap("c=Shipper")) else trap("b=Seller"))
+      else trap("a=Buyer"))
+    | _ => trap("a two-branch choice yields all four participating roles"))
+
+@test
 def roles-of-dedups() =
   // A role appearing twice is counted once.
   let g = Chor.Seq(Chor.Comm("A", "B", "M"), Chor.Comm("B", "A", "N")) in
   (match roles-of(g) with
     | [a, b] => (if a == "A" then (if b == "B" then unit else trap("B")) else trap("A"))
     | _ => trap("two roles, deduplicated"))
+
+@test
+def read-a-choice-then-from-ast() =
+  // PIN: the reader round-trips a CHOICE protocol (a chooser name + a nested list of `branch` nodes) through
+  // read → from-ast. The reader is generic over Name/List, so nested branch children work; pin it so a future
+  // reader/grammar change can't silently break the `.sexp` surface for choice protocols (only seq/comm was
+  // pinned before, leaving choice/rec — both supported by from-ast — un-witnessed).
+  let src = "(choice Buyer (branch Yes (comm Buyer Seller Y)) (branch No (comm Buyer Seller N)))" in
+  let expect = Chor.Choice("Buyer", [
+    Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Y")),
+    Chor.Branch("No", Chor.Comm("Buyer", "Seller", "N"))]) in
+  (match read(src) with
+    | Option.Some(a) => (match from-ast(a) with
+      | Option.Some(g) => (if chor-eq(g, expect) then unit else trap("parsed choice must equal the expected"))
+      | Option.None(_) => trap("from-ast must parse the read choice Ast"))
+    | Option.None(_) => trap("read must parse a choice s-expr"))
+
+@test
+def read-a-rec-then-from-ast() =
+  // PIN: the reader round-trips a RECURSIVE protocol `(rec v (… (var v)))` through read → from-ast. Pins the
+  // rec/var surface so the guarded-loop protocols (e.g. FleetIntegrate's) stay readable from `.sexp`.
+  let src = "(rec Loop (seq (comm Buyer Seller Ping) (var Loop)))" in
+  let expect = Chor.Rec("Loop", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ping"), Chor.Var("Loop"))) in
+  (match read(src) with
+    | Option.Some(a) => (match from-ast(a) with
+      | Option.Some(g) => (if chor-eq(g, expect) then unit else trap("parsed rec must equal the expected"))
+      | Option.None(_) => trap("from-ast must parse the read rec Ast"))
+    | Option.None(_) => trap("read must parse a rec s-expr"))
+
+@test
+def roles-of-rec-skips-var() =
+  // PIN: roles-of descends a Rec body but a bare Var contributes no role (it's a loop back-edge, not a
+  // participant). The rec Ping loop's only roles are Buyer + Seller.
+  let g = Chor.Rec("Loop", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ping"), Chor.Var("Loop"))) in
+  (match roles-of(g) with
+    | [a, b] => (if a == "Buyer" then (if b == "Seller" then unit else trap("Seller")) else trap("Buyer"))
+    | _ => trap("the rec Ping loop has exactly Buyer + Seller (Var adds none)"))
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// TOTALITY pins: the `cdz chor` `.sexp` surface hands user input straight to `read`, so `read` must be
+// TOTAL — never trap or loop on malformed input, only return None. Pin the degenerate/malformed inputs so
+// a future reader change can't turn a graceful None into a panic or non-termination.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+@test
+def read-empty-is-none() = match read("") with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("the empty string is not a protocol s-expr")
+
+@test
+def read-whitespace-only-is-none() = match read("   \n\t ") with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("a whitespace-only string reads to None, not a node")
+
+@test
+def read-lone-close-paren-is-none() = match read(")") with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("an unexpected close paren reads to None")
+
+@test
+def read-tolerates-trailing-garbage() =
+  // Documented behavior: `read` returns the FIRST node and ignores trailing text (parse-node discards
+  // its next-index). A well-formed leading node still parses even with junk after it.
+  match read("(done) trailing junk") with
+  | Option.Some(_) => unit
+  | Option.None(_) => trap("read takes the first node; trailing text is tolerated")
+
+@test
+def read-empty-list-is-not-a-protocol() =
+  // `()` reads to Ast.List([]) (well-formed s-expr) but from-ast rejects it (no op head) → None.
+  match read("()") with
+  | Option.Some(a) => (match from-ast(a) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("an empty list is not a protocol"))
+  | Option.None(_) => trap("() reads to an empty Ast.List")
+
+@test
+def read-deeply-nested-seq() =
+  // A 5-deep seq nest reads + from-asts + roles-of without issue (recursive descent terminates).
+  let src = "(seq (comm A B M1) (seq (comm B C M2) (seq (comm C D M3) (seq (comm D E M4) (comm E F M5)))))" in
+  (match read(src) with
+    | Option.Some(a) => (match from-ast(a) with
+      | Option.Some(g) => (match roles-of(g) with
+        | [_a, _b, _c, _d, _e, _f] => unit
+        | _ => trap("the 5-deep chain has exactly 6 roles"))
+      | Option.None(_) => trap("from-ast on the deep nest"))
+    | Option.None(_) => trap("read on the deep nest"))
 
 export { read, roles-of }

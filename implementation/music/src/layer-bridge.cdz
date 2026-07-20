@@ -10,9 +10,9 @@
 
 import { Interval, semitones } from "pitch"
 import { unison, major-second, minor-third, major-third, perfect-fourth, tritone, perfect-fifth, major-sixth, major-seventh, octave-interval } from "pitch"
-import { minor-second } from "pitch"
+import { minor-second, minor-sixth, minor-seventh } from "pitch"
 import { RInterval, to-semitones-exact } from "interval-ratio"
-import { r-unison, r-semitone, r-wholetone, r-minor-third, r-major-third, r-perfect-fourth, r-tritone, r-perfect-fifth, r-major-sixth, r-major-seventh, r-octave } from "interval-ratio"
+import { r-unison, r-semitone, r-wholetone, r-minor-third, r-major-third, r-perfect-fourth, r-tritone, r-perfect-fifth, r-minor-sixth, r-major-sixth, r-minor-seventh, r-major-seventh, r-octave } from "interval-ratio"
 
 /// Assert the rational interval `ri` projects (exactly, on the 12-TET grid) to the same semitone count the
 /// Int64 interval `ii` carries. Returns unit on agreement, traps on mismatch or an off-grid rational.
@@ -48,7 +48,13 @@ def tritone-agrees() = agree(r-tritone, tritone)
 def perfect-fifth-agrees() = agree(r-perfect-fifth, perfect-fifth)
 
 @test
+def minor-sixth-agrees() = agree(r-minor-sixth, minor-sixth)
+
+@test
 def major-sixth-agrees() = agree(r-major-sixth, major-sixth)
+
+@test
+def minor-seventh-agrees() = agree(r-minor-seventh, minor-seventh)
 
 @test
 def major-seventh-agrees() = agree(r-major-seventh, major-seventh)
@@ -59,7 +65,8 @@ def octave-agrees() = agree(r-octave, octave-interval)
 @test
 def the-whole-twelve-tet-grid-round-trips() =
   // Every one of the named intervals bridges: this is the batch witness that the two layers agree across
-  // the full 12-TET set (0,1,2,3,4,5,6,7,9,11,12 semitones), so a drift in either representation is caught.
+  // the FULL 12-TET set — all thirteen grid points 0..12 semitones, with no gap — so a drift in either
+  // representation is caught anywhere on the grid.
   let _u0 = agree(r-unison, unison) in
   let _u1 = agree(r-semitone, minor-second) in
   let _u2 = agree(r-wholetone, major-second) in
@@ -68,7 +75,9 @@ def the-whole-twelve-tet-grid-round-trips() =
   let _u5 = agree(r-perfect-fourth, perfect-fourth) in
   let _u6 = agree(r-tritone, tritone) in
   let _u7 = agree(r-perfect-fifth, perfect-fifth) in
+  let _u8 = agree(r-minor-sixth, minor-sixth) in
   let _u9 = agree(r-major-sixth, major-sixth) in
+  let _u10 = agree(r-minor-seventh, minor-seventh) in
   let _u11 = agree(r-major-seventh, major-seventh) in
   agree(r-octave, octave-interval)
 

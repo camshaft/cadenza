@@ -352,6 +352,40 @@ def contains-finds-element() =
 def contains-missing-is-false() =
   if contains(from-list([1, 2, 3]), 9) then trap("should not contain 9") else unit
 
+/// EMPTY-SOURCE EDGE for the predicate/search consumers — the degenerate boundary where vacuous-truth
+/// bugs hide. Each drives its recursive `*-drive` worker with a step that returns `None` on the FIRST
+/// call, so the base arm's seed value IS the observable result: `any` → false (no witness), `all` →
+/// true (vacuously — no counterexample), `count` → 0, `find`/`position` → None, `contains` → false.
+/// Pinned so a future change to a consumer's base arm (or the coming fusion rewrite) can't silently
+/// flip a vacuous case (e.g. `all []` → false, the classic off-by-one on the empty fold).
+@test
+def any-of-empty-is-false() =
+  if any(from-list([]), fn(x) => x > 0) then trap("any [] must be false (no witness)") else unit
+
+@test
+def all-of-empty-is-vacuously-true() =
+  if all(from-list([]), fn(x) => x > 0) then unit else trap("all [] must be vacuously true")
+
+@test
+def count-of-empty-is-zero() =
+  if count(from-list([])) == 0 then unit else trap("count [] = 0")
+
+@test
+def find-of-empty-is-none() =
+  match find(from-list([]), fn(x) => x > 0) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("find [] must be None")
+
+@test
+def position-of-empty-is-none() =
+  match position(from-list([]), fn(x) => x > 0) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("position [] must be None")
+
+@test
+def contains-in-empty-is-false() =
+  if contains(from-list([]), 1) then trap("contains [] must be false") else unit
+
 @test
 def last-of-nonempty() =
   match last(from-list([5, 6, 7])) with

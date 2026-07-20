@@ -32,3 +32,20 @@ Add a Rational→Int64 conversion to the prelude — minimally `Rational.floor :
 toward -inf) or `Rational.round`; ideally also `numerator`/`denominator : Rational → Int64` so exact
 rational decomposition is possible. Then the rational→MIDI projection (and the operator's rational-
 everywhere model reaching any integer boundary) is expressible in pure Cadenza.
+
+---
+## PM triage (corpus-bugfix, 2026-07-20)
+Confirmed a genuine FEATURE GAP (missing prelude op), not a bug — needs a HUMAN/design call (prelude API
+addition + rounding-policy choice). Sent the concierge an `ask` with 5 concrete options (A floor / B round /
+C numerator+denominator / D full surface / E decline), recommending C+B. NOT spawning a fix agent (no
+implementable spec until the operator picks the surface). v-music unblocked via the bounded-equality-search
+workaround. Awaiting an `answer` — then route the chosen surface to the prelude owner (v-runtime/v-inference).
+
+## OPERATOR DECISION (via concierge/pr-sync answer, 2026-07-20) — OPTION D (full surface)
+Operator: "Let's add all of the conversion functions while we're thinking about it." → ADD the FULL Rational
+prelude conversion surface: floor (toward -inf), ceil (toward +inf), round (nearest), truncate (toward zero),
+numerator, denominator — all : Rational→Int64. Semantics MUST match spec+corpus+ref-backend (probe rcdzc
+first, do NOT invent rounding); each needs a fold unit + wasmtime run + corpus pin.
+ROUTED (corpus-bugfix): runtime OP → v-runtime (primary); prelude SIGNATURE → v-inference; they coordinate.
+No fix agent (owner verticals hold the context). corpus-bugfix to PIN acceptance cases (floor/ceil/round/
+truncate/num/den incl negative + half-way-tie inputs) once landed. Item now proceeds as 'add full surface'.

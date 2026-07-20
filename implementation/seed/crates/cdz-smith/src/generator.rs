@@ -102,6 +102,74 @@ const OPS: &[Op] = &[
     Op::Logic("or"),
 ];
 
+/// Exact fixed-width integer-type boundaries (and their immediate neighbours) rendered as decimal
+/// literals. Emitted verbatim so a program's numeric operand lands ON a min/max/overflow edge — the
+/// dense cluster for the overflow-detect (CDZ0304) and width-fit (CDZ0301) diagnostics and for a
+/// Wasm-vs-Rust const-fold-vs-runtime disagreement. Values past i64/u64 range are intentional: the
+/// front end reads integer literals as arbitrary-precision `BigInt`, so an out-of-range literal is a
+/// clean width DECLINE (still exercising the checker), never a lexer failure.
+const INT_BOUNDARIES: &[&str] = &[
+    // Int8 / UInt8
+    "127",
+    "128",
+    "-128",
+    "-129",
+    "255",
+    "256",
+    // Int16 / UInt16
+    "32767",
+    "32768",
+    "-32768",
+    "-32769",
+    "65535",
+    "65536",
+    // Int32 / UInt32
+    "2147483647",
+    "2147483648",
+    "-2147483648",
+    "-2147483649",
+    "4294967295",
+    "4294967296",
+    // Int64 / UInt64
+    "9223372036854775807",
+    "9223372036854775808",
+    "-9223372036854775808",
+    "-9223372036854775809",
+    "18446744073709551615",
+    "18446744073709551616",
+];
+
+/// Exact float boundaries, each a well-formed float token (starts with a digit, has a `.`/`e`, valid
+/// chars) so `cadenza-syntax::parse_float` accepts it. Covers signed zero, the f32/f64 magnitude
+/// extremes, tiny subnormal-scale values, and out-of-f64-range magnitudes (a clean range/const-fold
+/// DECLINE — floats parse as an EXACT `Decimal`, so a huge exponent never fails the lexer). These are
+/// the operands where a float compare/round/const-fold Wasm-vs-Rust disagreement would surface. No
+/// NaN/inf entries: there is no such literal syntax (they would classify as a `Name` and reject).
+const FLOAT_BOUNDARIES: &[&str] = &[
+    "0.0",
+    "-0.0",
+    "1.0",
+    "-1.0",
+    // f32 extremes
+    "3.4028235e38",  // ~f32::MAX
+    "-3.4028235e38", // ~f32::MIN
+    "1.1754944e-38", // ~f32::MIN_POSITIVE (smallest normal)
+    "1.0e-45",       // ~f32 smallest subnormal
+    // f64 extremes
+    "1.7976931348623157e308",  // ~f64::MAX
+    "-1.7976931348623157e308", // ~f64::MIN
+    "2.2250738585072014e-308", // ~f64::MIN_POSITIVE
+    "5.0e-324",                // ~f64 smallest subnormal
+    // out-of-f64-range magnitudes (clean range/const-fold edge)
+    "1.0e309",
+    "-1.0e309",
+    "1.0e-400",
+    // rounding / representability hazards
+    "0.1",
+    "0.2",
+    "0.3",
+];
+
 /// A crude value-kind lattice used only to bias operand generation toward well-typedness. It is a
 /// hint, never a guarantee — the compiler is the real type authority.
 #[derive(Clone, Copy, PartialEq)]
@@ -257,7 +325,18 @@ impl Gen<'_> {
     }
 
     fn num_lit(&mut self) {
-        // A spread of magnitudes incl. boundary-ish values, occasionally negated.
+        // A spread of magnitudes incl. boundary-ish values, occasionally negated. About a quarter
+        // of the time emit an EXACT type-width boundary instead — the min/max of each fixed-width
+        // int type and its ±1 neighbours (up to u64::MAX and beyond, safe because integer literals
+        // are arbitrary-precision `BigInt` at parse time). These are the operands where the
+        // overflow-detect (CDZ0304) and width-fit (CDZ0301) checks flip, and where a Wasm-vs-Rust
+        // const-fold-vs-runtime disagreement would surface, so feeding them densely aims the
+        // differential oracle straight at that seam rather than random mid-range magnitudes.
+        if self.cur.choice(4) == 0 {
+            self.out
+                .push_str(INT_BOUNDARIES[self.cur.choice(INT_BOUNDARIES.len())]);
+            return;
+        }
         let n = self.cur.range(0, 200) as i64;
         let v = match self.cur.choice(4) {
             0 => n,
@@ -269,6 +348,17 @@ impl Gen<'_> {
     }
 
     fn float_lit(&mut self) {
+        // About a third of the time emit an EXACT float boundary (see FLOAT_BOUNDARIES) instead of a
+        // random mid-range decimal — signed zero, f32/f64 magnitude extremes, tiny subnormal-scale
+        // values, and out-of-f64-range magnitudes. Floats are parsed as an EXACT `Decimal`
+        // (significand·10^exp), so a huge exponent is a clean range/const-fold edge, not a lexer
+        // failure; there is no NaN/inf literal syntax to emit. These are where a float compare/
+        // round/const-fold Wasm-vs-Rust disagreement would surface.
+        if self.cur.choice(3) == 0 {
+            self.out
+                .push_str(FLOAT_BOUNDARIES[self.cur.choice(FLOAT_BOUNDARIES.len())]);
+            return;
+        }
         let whole = self.cur.range(0, 200);
         let frac = self.cur.range(0, 99);
         let _ = write!(self.out, "{whole}.{frac:02}");
@@ -474,6 +564,61 @@ mod tests {
                 p.source
             );
         }
+    }
+
+    /// Every width-boundary literal we feed the generator lexes as a standalone program — an
+    /// out-of-range magnitude (past i64/u64) must still PARSE (arbitrary-precision literal), so the
+    /// checker gets to width-decline it rather than the reader choking upstream.
+    #[test]
+    fn int_boundaries_all_parse() {
+        for lit in INT_BOUNDARIES {
+            let src = format!("(do (def (main) {lit}) (export main))");
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "boundary literal did not parse: {lit}"
+            );
+        }
+    }
+
+    /// The boundary arm is actually reachable: some seed makes `num_lit` emit an exact boundary.
+    /// Guards against a future refactor silently dropping the boundary bias.
+    #[test]
+    fn some_seed_emits_a_boundary() {
+        let hit = (0u16..=255).any(|b| {
+            let seed = [b as u8; 32];
+            let src = generate(&seed).source;
+            INT_BOUNDARIES.iter().any(|lit| src.contains(*lit))
+        });
+        assert!(
+            hit,
+            "no seed in the sweep emitted an int-width boundary literal"
+        );
+    }
+
+    /// Every float boundary is a GENUINE float literal — it classifies as a `Float` leaf, not a
+    /// `Name` (which would silently reject upstream and never exercise the float path we're aiming
+    /// at). Uses the same classifier the front end uses so an out-of-f64-range magnitude still
+    /// classifies as a float (exact `Decimal`) rather than falling through.
+    #[test]
+    fn float_boundaries_are_float_literals() {
+        use cadenza_syntax::ast::Leaf;
+        for lit in FLOAT_BOUNDARIES {
+            assert!(
+                matches!(cadenza_syntax::literal::classify_word(lit), Leaf::Float(_)),
+                "float boundary did not classify as a Float literal: {lit}"
+            );
+        }
+    }
+
+    /// The float-boundary arm is reachable: some seed makes `float_lit` emit an exact boundary.
+    #[test]
+    fn some_seed_emits_a_float_boundary() {
+        let hit = (0u16..=255).any(|b| {
+            let seed = [b as u8; 48];
+            let src = generate(&seed).source;
+            FLOAT_BOUNDARIES.iter().any(|lit| src.contains(*lit))
+        });
+        assert!(hit, "no seed in the sweep emitted a float boundary literal");
     }
 
     /// Generation is deterministic in the seed (required for reproducing + shrinking a finding).

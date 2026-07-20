@@ -220,6 +220,31 @@ test("two inline math spans on one line both parse", () => {
   ]);
 });
 
+test("inline `code` OUTRANKS math — $…$ inside backticks stays literal code, not a math span", () => {
+  // A programming notebook's prose routinely puts `$` inside inline code: a shell var `$HOME`, a template
+  // literal `` `${x}` ``, a currency literal in a code snippet. `code` is scanned before math (higher
+  // precedence, its content literal), so the `$…$` inside never becomes a math span. Pinned so a future
+  // reorder of the inline scan can't silently start typesetting the innards of a code span.
+  assert.deepEqual(parseInline("run `echo $x$y` now"), [
+    { t: "text", text: "run " },
+    { t: "code", text: "echo $x$y" },
+    { t: "text", text: " now" },
+  ]);
+  // And the reverse ordering (math before code) still keeps each in its own span — no cross-swallow.
+  assert.deepEqual(parseInline("$a$ then `b`"), [
+    { t: "math", tex: "a" },
+    { t: "text", text: " then " },
+    { t: "code", text: "b" },
+  ]);
+});
+
+test("math inside **strong** stays LITERAL — strong content is not re-parsed for math", () => {
+  // Strong (like code) takes its content literally — a `$…$` inside `**…**` is part of the bold text, not a
+  // nested math span (parseInline does not recurse into a strong run). Pinned so bold prose containing a `$`
+  // (bold currency, a bolded formula the author wants shown as-typed) never spuriously typesets.
+  assert.deepEqual(parseInline("**cost is $5 flat**"), [{ t: "strong", text: "cost is $5 flat" }]);
+});
+
 test("a single-line display-math block $$…$$ parses to a mathblock", () => {
   const b = parseProse("$$\\int_0^1 x\\,dx$$");
   assert.equal(b.length, 1);

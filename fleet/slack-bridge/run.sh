@@ -19,7 +19,17 @@
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$here/../.." && pwd)"
+# The default FLEET_DIR must be the SHARED HUB state dir. `.claude/` exists ONLY at the main checkout
+# and is shared across worktrees via the common git dir, so a plain "$here/../.." (the WORKTREE root
+# when run.sh is launched from a worktree) points at a nonexistent worktree-relative .claude/fleet —
+# a silent empty-inbox failure. Derive the hub from the common git dir (…/cadenza/.git → …/cadenza),
+# same as install.sh + revive.sh. An explicit FLEET_DIR env still wins (set below).
+common_git="$(cd "$here" && git rev-parse --git-common-dir 2>/dev/null || true)"
+if [[ -n "$common_git" ]]; then
+  repo_root="$(cd "$(dirname "$common_git")" && pwd)"
+else
+  repo_root="$(cd "$here/../.." && pwd)"
+fi
 
 env_file="${CADENZA_ENV_FILE:-$HOME/.cadenza-env}"
 if [[ -f "$env_file" ]]; then

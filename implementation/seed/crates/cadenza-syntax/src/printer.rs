@@ -1660,8 +1660,17 @@ impl<'a> Printer<'a> {
     /// operation renders as `op : ty` on its own line, led by `| ` (mirroring a `type Name = | A | B`
     /// sum-type declaration — the operations are the effect's "variants"). Never parenthesized.
     fn print_effect(&mut self, args: &[StructId]) {
-        let ops = &args[1..];
+        // args = name, then optional `(doc …)` forms, then the operations.
+        let docs_end = 1 + args[1..].iter().take_while(|&&a| self.is_doc(a)).count();
+        let docs = &args[1..docs_end];
+        let ops = &args[docs_end..];
         self.doc.cbox(INDENT);
+        for &d in docs {
+            if let Some(a) = self.a.as_form(d, "doc") {
+                self.print_doc(a[0]);
+            }
+            self.doc.hardbreak();
+        }
         self.doc.word("effect ");
         self.expr(args[0], 0); // effect name
         self.doc.word(" =");
@@ -1851,10 +1860,15 @@ impl<'a> Printer<'a> {
         if args.len() < 2 || self.head_name(args[0]).is_none() {
             return false;
         }
-        args[1..].iter().all(|&op| match self.a.as_form(op, "op") {
-            Some(o) => o.len() == 2 && self.head_name(o[0]).is_some(),
-            None => false,
-        })
+        // A name head, then optional leading `(doc …)` forms, then AT LEAST ONE `(op …)`. The docs
+        // splice inside the effect decl exactly as they do for a `type` decl.
+        let docs_end = 1 + args[1..].iter().take_while(|&&a| self.is_doc(a)).count();
+        let ops = &args[docs_end..];
+        !ops.is_empty()
+            && ops.iter().all(|&op| match self.a.as_form(op, "op") {
+                Some(o) => o.len() == 2 && self.head_name(o[0]).is_some(),
+                None => false,
+            })
     }
 
     /// A `(handle E seed (arm…) body)` the `handle E(seed) with … in body` surface handles: an effect
@@ -5451,6 +5465,55 @@ mod tests {
             assert_roundtrip("// note\ndef main() = 42", 80),
             "// note\ndef main() = 42"
         );
+    }
+
+    #[test]
+    fn doc_before_effect_stays_a_doc_not_downgraded_to_comment() {
+        // A `///` doc before an `effect` decl attaches INSIDE the decl as a `(doc …)` node (mirroring
+        // `def`/`type`/`module`), so it re-prints as `///` — NOT downgraded to `//`. The reader used
+        // to leave the docs in the statement slot, where `stmt` wrapped them as `(comment …)` and the
+        // printer faithfully rendered them `//`, silently losing the doc marker on `cdz fmt`. A
+        // structural round-trip does NOT catch this (a `(comment …)` still round-trips structurally);
+        // the count-based assert below is the witness that pins the doc-vs-comment distinction.
+        let src = "/// Diagnostics.\n/// Two lines.\neffect Diag = | emit : Int64 -> Unit | collect : -> List(Int64)";
+        let a = parser::read_ml(src);
+        assert!(a.ok(), "parse: {:?}", a.errors);
+        // Reader promotes both `///` runs to `(doc …)`, not `(comment …)`.
+        let sexpr = crate::sexpr::print(&a.arenas);
+        assert_eq!(
+            sexpr.matches("(doc ").count(),
+            2,
+            "both `///` lines should be `(doc …)` nodes: {sexpr}"
+        );
+        assert_eq!(
+            sexpr.matches("(comment ").count(),
+            0,
+            "no `///` should be downgraded to a `(comment …)`: {sexpr}"
+        );
+        // And they re-print as `///`, preserved across fmt — count-preserving is the invariant a
+        // structural round-trip misses. Check per-line (a `///` line contains a `//` substring, so
+        // count LINES whose trimmed start is a doc `///` vs a plain `//` comment).
+        let printed = print(&a.arenas, 100);
+        let doc_lines = printed
+            .lines()
+            .filter(|l| l.trim_start().starts_with("///"))
+            .count();
+        let comment_lines = printed
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                t.starts_with("//") && !t.starts_with("///")
+            })
+            .count();
+        assert_eq!(doc_lines, 2, "both doc lines re-print as `///`: {printed}");
+        assert_eq!(
+            comment_lines, 0,
+            "no doc line downgraded to `//`: {printed}"
+        );
+        // Idempotent: re-reading the printed form and re-printing is byte-identical.
+        let b = parser::read_ml(&printed);
+        assert!(b.ok(), "reparse: {:?}", b.errors);
+        assert_eq!(print(&b.arenas, 100), printed, "not idempotent");
     }
 
     #[test]

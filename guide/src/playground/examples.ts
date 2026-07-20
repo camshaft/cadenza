@@ -560,9 +560,9 @@ export const EXAMPLES: Example[] = [
         (if (= (at bs i) (at bs j)) (pal bs (+ i 1) (- j 1)) false)))
   (def (main)
     (let ((bs (String.to-bytes "racecar")))
-      (if (pal bs 0 (- (Bytes.len bs) 1)) 1 0)))
+      (pal bs 0 (- (Bytes.len bs) 1))))
   (export main))`,
-    expected: "1",
+    expected: "true",
   },
   {
     // Shows off: scanning a string's UTF-8 bytes in a loop — walk each byte and count the ASCII vowels.
@@ -706,20 +706,26 @@ export const EXAMPLES: Example[] = [
   },
   {
     // Shows off: metaprogramming — code is DATA. `quasiquote` builds an AST value without running it,
-    // `unquote` splices a computed value into that AST, and `eval` runs the constructed code. Here we
-    // generate the expression (base*base + offset) for base=6, offset=5 and evaluate it -> 41.
+    // `unquote` splices a computed value into that AST, and `eval` runs a constructed program. The
+    // result SHOWS both halves: the generated syntax tree for (base*base + offset), and the value
+    // `eval` computes from it — (Ast, 41) — so you can see the code-as-data, not just trust the number.
     id: "metaprogramming-quote-eval",
     name: "Metaprogramming (quote & eval)",
     theme: "basics",
     surface: "sexpr",
     source: `(do
-  ; quasiquote builds code as data; unquote splices a value in; eval runs it.
-  ; This generates and evaluates  (base * base) + offset.
-  (def (gen base offset)
-    (eval (quasiquote (+ (* (unquote base) (unquote base)) (unquote offset)))))
-  (def (main) (gen 6 5))
+  ; \`build\` constructs the expression (base*base + offset) as DATA — a syntax
+  ; tree, without running it. \`unquote\` splices live values into that tree.
+  (def (build base offset)
+    (quasiquote (+ (* (unquote base) (unquote base)) (unquote offset))))
+  (def (main)
+    ; Show BOTH: the generated syntax tree, AND the value eval computes from it.
+    ; (eval runs a compile-time-visible quasiquote, so the runnable copy is inline.)
+    (tuple
+      (build 6 5)
+      (eval (quasiquote (+ (* (unquote 6) (unquote 6)) (unquote 5))))))
   (export main))`,
-    expected: "41",
+    expected: "(: (tuple ((. Ast List) (list ((. Ast Name) \"+\") ((. Ast List) (list ((. Ast Name) \"*\") ((. Ast Int) 6) ((. Ast Int) 6))) ((. Ast Int) 5))) 41) (Tuple Ast Int64))",
   },
   {
     // Shows off: algebraic effects & handlers — a signature Cadenza feature — discharged entirely

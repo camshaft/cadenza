@@ -35,3 +35,6 @@ such a leaf)". User-facing message clarity. → v-property-testing (owns @proper
   A git mv into gitignored queue/ would show as a deletion + break their in-flight references. Relocate only
   once v-core-opt closes the divergence (then it's correctly RESOLVED-in-issues/). Housekeeping nit CLOSED
   as won't-relocate-now-by-consensus. #2 (proptest decline msg) routed to v-property-testing earlier.
+- #2 (proptest decline msg 'scalar' mislabel): RESOLVED on trunk 8615b1f16 via v-property-testing MR
+  11635e085 — reworded to 'a parameter type has no property-test-generatable form yet (Char/Rational/
+  BigInt/String/Symbol, or a compound with such a leaf)'. No mislabel remains. BOTH PR#665 items now closed.

@@ -9,7 +9,9 @@
 ///   - inline `<C>…</C>` code spans (e.g. OpaqueTypes' `// … — the handle only` in-source comments),
 ///   - template literals (`source=`/`starter=`/`solution=` Cadenza code, `<Note>` code, trap-string
 ///     messages like `"5 is not under 5 — this test is meant to fail"`),
-///   - JSX block comments `{/* … */}`.
+///   - JSX block comments `{/* … */}`,
+///   - full-line `//`/`///` source comments (the module doc-comment header follows the same
+///     `/// … — …` convention every page-shell uses; that em-dash is source commentary, not prose).
 /// So we strip those regions first, then scan what remains (the human-readable prose) for U+2014.
 /// EN-dashes (U+2013, e.g. numeric ranges "0–255", "0–10") are correct typography and NOT flagged;
 /// only the em-dash (—, U+2014) is the tone-overhaul target. Run with `npm run test:unit`.
@@ -26,11 +28,17 @@ const chaptersDir = join(here, "chapters");
 const EM_DASH = "—"; // — ; the prose-tone target. NOT the en-dash – (numeric ranges are fine).
 
 /// Remove the regions where an em-dash is legitimate (code), leaving human-readable prose. Order matters:
-/// strip JSX block comments, then inline `<C>…</C>` spans (which can themselves contain stray backticks,
-/// e.g. Metaprogramming's quasiquote `` `{ ,x } ``), then template literals. The guide uses no `${}`
-/// interpolation in chapter template literals (verified), so a non-greedy backtick pair is a safe strip.
+/// strip full-line `//`/`///` comments FIRST (a chapter's module doc-comment header follows the same
+/// `/// … — …` convention every page-shell uses; that em-dash is NOT reader-facing prose, and stripping
+/// the comment line before the template-literal pass also avoids a stray backtick inside a comment
+/// opening a spurious template strip). Then strip JSX block comments, then inline `<C>…</C>` spans (which
+/// can themselves contain stray backticks, e.g. Metaprogramming's quasiquote `` `{ ,x } ``), then
+/// template literals. The guide uses no `${}` interpolation in chapter template literals (verified), so a
+/// non-greedy backtick pair is a safe strip. A full-line comment is matched only when `//` begins the line
+/// (after optional whitespace), so a `//` inside a string/URL/JSX prose line is left untouched.
 function proseOnly(src: string): string {
   return src
+    .replace(/^[ \t]*\/\/.*$/gm, "") // full-line // or /// comments (doc-comment headers, standalone notes)
     .replace(/\{\/\*[\s\S]*?\*\/\}/g, "") // JSX block comments
     .replace(/<C>[\s\S]*?<\/C>/g, "") // inline code spans
     .replace(/`[\s\S]*?`/g, ""); // template literals (Runnable/Exercise source, Note code, trap strings)
@@ -78,5 +86,22 @@ test("the em-dash prose scan reads chapters + strips code (guards a vacuous pass
   assert.ok(
     !proseOnly("source={`(trap \"x " + EM_DASH + " y\")`}").includes(EM_DASH),
     "an em-dash inside a template literal (trap string / code) must be stripped",
+  );
+  // …and an em-dash in a full-line `//`/`///` comment (a chapter doc-comment header) is stripped,
+  // while a `//` mid-line (e.g. a protocol-relative URL in prose) does NOT eat the rest of the line.
+  assert.ok(
+    !proseOnly("/// The chapter " + EM_DASH + " an overview").includes(EM_DASH),
+    "an em-dash in a full-line /// comment must be stripped (doc-comment header, not prose)",
+  );
+  assert.ok(
+    proseOnly("<P>see //example.com " + EM_DASH + " the ref</P>").includes(EM_DASH),
+    "a mid-line // (URL in prose) must NOT strip the rest of the line",
+  );
+  // Stripping a comment line preserves line numbering (blanked in place, newline kept) so violation
+  // line numbers stay accurate.
+  assert.equal(
+    proseOnly("/// header\n<P>body</P>").split("\n").length,
+    2,
+    "comment-line strip must preserve line count for accurate violation line numbers",
   );
 });

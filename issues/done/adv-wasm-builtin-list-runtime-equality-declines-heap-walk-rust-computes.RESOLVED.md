@@ -80,3 +80,16 @@ non-orderable leaves per §319). BRICK 1 core `value_eq_shaped` landed hash-neut
 (export as a runtime op + emit routing) is HELD by concierge (C)-batch for the NEXT hash-bump window — reject-
 don't-miscompile meanwhile, no forcing consumer. WATCH: ride a hash-bump landing or a forcing consumer; do
 NOT solo-bump. This file stays OPEN for the List<Float> residual only.
+
+---
+## Triage (corpus-bugfix, 2026-07-20, trunk base b24a674f3, store ae568bf4)
+RESOLVED + PINNED. The built-in List runtime `=` no longer declines on wasm — it routes to the descriptor-
+guided value-eq-shaped element-wise walk (v-runtime's fix; RRB is element- not shape-canonical, so champ_eq
+is correctly NOT used — the soundness correction in this file was heeded). VERIFIED behaviorally (genuinely-
+runtime operands via --arg, not const):
+- top-level built-in List = : (List.push(List.push(list(),a),b)) == same -> wasm value 1 (was DECLINE).
+- BLAST-RADIUS both cleared: Option.Some(list) == Option.Some(list) -> wasm 1; (list,9) == (list,9) -> wasm 1.
+PINNED: the runtime guard the finding asked for already exists + PASSES —
+03-equality-and-observation.sexp:835 "a RUNTIME list of floats compares equal element-wise (the value-eq-
+shaped walk)" `(list x x) = (list x x)` on a runtime Float64 param -> true (gate PASS all backends). The
+sibling n>=33 concat-vs-push list `=` is also pinned (05-compound). Corpus side COMPLETE, no fix agent.
