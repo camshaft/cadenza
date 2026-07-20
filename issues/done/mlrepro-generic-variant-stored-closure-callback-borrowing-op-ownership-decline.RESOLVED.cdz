@@ -61,3 +61,28 @@ def generic-variant-closure-callback-runs() =
     | [h, .. t] => Option.Some((h, t)))) with
   | Option.None(_) => trap("empty")
   | Option.Some(p) => (match p with | (h, _rest) => if h == 1 then unit else trap("head"))
+
+// ===== TRIAGE (corpus-bugfix, 2026-07-20, trunk ff38db305) =====
+// RESOLVED on WASM — both parts of v-memory-safety's root-cause landed. The generic-variant stored-closure
+// callback with the erased-value `if h == 1` equality now COMPILES + RUNS correctly:
+//   step-once(Iter.Mk([1,2], popper)) -> Some(1,[2]) -> h==1 -> 100.  no-eq control -> 1 (head).
+// Part 1 (Core::ConstInt => Owned in heap_operand_ownership) + Part 2 (ValueEq emit boxes a scalar operand
+// at heap/erased type + width coercion) both applied — no more "borrowing op operand ownership" decline and
+// no "expected i32 found i64" invalid wasm. This was the SECOND critical-path I2 blocker for v-iterators'
+// fused adapter-record iterator (step(s) on a generic iterator); combined with the fixed construction bug
+// (bca5da9e0) + const-drop + tail-loop, the generic adapter-record now RUNS on wasm end-to-end.
+// NOTE: run-rust still gracefully DECLINES (separate known stored-fn-typed-closure class, parked v-inference)
+// — not this bug; wasm is the subject backend and is green. Marked RESOLVED.
+
+// ===== SCOPE CORRECTION (corpus-bugfix, 2026-07-20, per v-iterators re-verify on ff38db305) =====
+// My "unblocked end-to-end" was OVER-BROAD — it's SCALAR-ELEMENT ONLY. v-iterators re-ran the full matrix:
+//   - p1 (Int64 elem, fully generic step-once): PASS  <- what THIS repro's == 1 case tests; genuinely fixed.
+//   - p6 (STRING/heap elem, fully generic): STILL INVALID WASM ('expected i32 found i64', function[18]).
+// The heap-element failure is a DISTINCT residual, root-caused by v-inference: the closure-RESULT element Var
+// strands — get_op_ty grounds the Option((a,s)) payload's element Var to get-int i64, but a String handle is
+// i32. That is v-inference's QUEUED deep slice (queue/mlrepro-generic-variant-closure-result-element-strands-
+// var-heap-unbox-invalid-wasm.cdz), NOT yet landed. v-iterators' witness: 57296d72b
+// issues/mlrepro-generic-state-var-adapter-erased-scalar-heap-abi.cdz.
+// NET: THIS repro (scalar erased-value == callback) is correctly RESOLVED; the generic adapter is NOT fully
+// unblocked — ANY-element (heap) waits on the v-inference element-Var-strand fix. Mono (Int64) adapter is
+// complete+fused per v-iterators. Do NOT claim generic adapter fully green until the heap slice lands.

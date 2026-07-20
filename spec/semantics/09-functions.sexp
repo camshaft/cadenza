@@ -714,6 +714,33 @@
             (export main)))
   (output (: 5 Int64)))
 
+(case "a self-tail-recursive fn with a MIXED Option-returning innermost match emits valid wasm"
+  (doc    "A self-tail-recursive `drive` whose INNERMOST match is MIXED — one arm RECURSES (the tail call
+           `(drive s2)`) beside a sibling arm that RETURNS a value (`(Option.Some (tuple x s2))`) — and
+           whose recursive arm returns an `Option`-typed value. This is the idiomatic filter-map worker:
+           step the iterator, keep the first element passing the predicate, else recurse to skip. Under the
+           tail-loop conversion (emit_tail) the `br` (loop-continue) from the recursive arm used to leave the
+           enclosing `if (result i32)` block stack-UNBALANCED → invalid wasm (`func N failed to validate,
+           values remaining on stack at end of block`). Non-const (plain `step`/recursion), so distinct from
+           the const-closure driver cases above. Pins that a mixed-match Option-returning recursive tail arm
+           lowers to VALID wasm and computes: `drive [1,2,3,4]` keeps the first x>2 → `Some (3, [4])`, and
+           `main` reads its head → 3. Gate coverage for the emit_tail/tail-loop conversion so a future
+           select.rs/lower change cannot silently re-break it.")
+  (input  (do
+            (def (step (: s (List Int64)))
+              (match s ((list) (Option.None)) ((list h .. t) (Option.Some (tuple h t)))))
+            (def (drive (: s (List Int64)))
+              (match (step s)
+                ((Option.None) (Option.None))
+                ((Option.Some p)
+                 (match p ((tuple x s2) (if (> x 2) (Option.Some (tuple x s2)) (drive s2)))))))
+            (def (main)
+              (match (drive (list 1 2 3 4))
+                ((Option.None) (- 0 1))
+                ((Option.Some p) (match p ((tuple x s2) x)))))
+            (export main)))
+  (output (: 3 Int64)))
+
 (case "a HOF callback matching a tuple argument computes through the nested reduction"
   (doc    "The same shape with a TUPLE-destructuring callback — `(fn (p) (match p ((tuple a b) (+ a b))))`
            — passed to a HOF. The tuple-pattern binders `a`/`b` read the substituted scrutinee just as a
@@ -2735,6 +2762,63 @@
             (def (main (: target Int64)) (scan 0 target))
             (export main)))
   (call   main (: 6 Int64)) (output (: 3 Int64)))
+
+; Two more faces of the Option-returning mixed-match tail loop the scalar-tuple pin above cannot witness.
+; FIRST: the Option payload is a HEAP STRING (not a scalar tuple) — the loop-continue `br` and the
+; value-returning arm must balance a block whose result is a boxed heap handle, and the found element is
+; then consumed by a String op after the loop exits (the payload must be a live, readable heap value, not
+; a stale slot). SECOND: TWO such loops NESTED — an outer accumulator loop whose per-iteration work calls
+; the inner seeking loop; both convert to wasm loops independently, and the inner loop's Option result
+; feeds the outer loop's mixed match (its None ends the outer loop, its Some both accumulates and advances
+; the outer state). A tail-loop conversion that leaked stack values across either boundary would fail to
+; validate or misread the composed state.
+(case "a mixed-match tail loop whose Option payload is a heap String finds and reads the element"
+  (doc    "`firstlong` walks a `(List String)` via `step`: the keep-arm returns `(Some x)` where `x` is a
+           heap STRING pulled from the list, the drop-arm tail-recurses. Over `(list \"ab\" \"c\" \"abcd\"
+           \"zz\")` the first element with byte-len > 2 is \"abcd\"; reading `String.byte-len` of the found
+           element after the loop = 4. The heap-payload companion of the scalar `(Some (tuple x s2))` pin
+           above: the mixed match's value arm carries a BOXED heap handle through the tail-loop conversion's
+           result block, and the handle must still address the live string after the loop exits. Expected: 4.")
+  (input  (do
+            (def (step (: xs (List String)))
+              (match xs ((list) (None)) ((list h .. t) (Some (tuple h t)))))
+            (def (firstlong (: s (List String)))
+              (match (step s)
+                ((None) (None))
+                ((Some pair) (match pair ((tuple x s2)
+                  (if (> (String.byte-len x) 2) (Some x) (firstlong s2)))))))
+            (def (main (: n Int64))
+              (match (firstlong (list "ab" "c" "abcd" "zz"))
+                ((Some s) (String.byte-len s))
+                ((None) (- 0 1))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 4 Int64)))
+
+(case "nested mixed-match tail loops compose — an outer accumulator loop driving an inner seeking loop"
+  (doc    "`inner` is the Option-returning mixed-match tail loop of the pin above (skip elements ≤ 2, return
+           `(Some (tuple x s2))` at the first match); `outer` is a SECOND such loop whose per-iteration work
+           CALLS `inner`: a `None` ends the outer loop (yielding the accumulator), a `Some` adds the found
+           element and tail-recurses on the advanced state. Over `(list 1 3 2 4 5)` the inner loop finds
+           3, then 4, then 5 (skipping 1 and 2) → 12. Both functions convert to wasm loops; the inner
+           loop's Option result must arrive intact as the outer loop's scrutinee each iteration (no stack
+           leakage across the composed loop boundaries), and the outer loop's accumulator threads through
+           its own recursive arm. Expected: 12.")
+  (input  (do
+            (def (step (: xs (List Int64)))
+              (match xs ((list) (None)) ((list h .. t) (Some (tuple h t)))))
+            (def (inner (: s (List Int64)))
+              (match (step s)
+                ((None) (None))
+                ((Some pair) (match pair ((tuple x s2)
+                  (if (> x 2) (Some (tuple x s2)) (inner s2)))))))
+            (def (outer (: s (List Int64)) (: acc Int64))
+              (match (inner s)
+                ((None) acc)
+                ((Some pair) (match pair ((tuple x s2) (outer s2 (+ acc x)))))))
+            (def (main (: n Int64))
+              (outer (list 1 3 2 4 5) 0))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 12 Int64)))
 
 ; The same i32/i64 scratch-slot-aliasing family at a HIGHER local count, in a decode-loop shape the
 ; self-hosted compiler's reader is written in: a self-tail loop whose position advance projects BOTH

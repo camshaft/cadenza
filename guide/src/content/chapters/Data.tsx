@@ -53,13 +53,13 @@ export default function Data() {
         identity. A tuple matches position by position, so <C>(tuple 1 2)</C> equals another{" "}
         <C>(tuple 1 2)</C>:
       </P>
-      <Runnable source={`(if (= (tuple 1 2) (tuple 1 2)) 1 0)`} />
+      <Runnable source={`(= (tuple 1 2) (tuple 1 2))`} />
       <P>
         A record matches by <em>field name</em>, not field order, so the same fields written in a
         different order are still the same record. That's the by-name nature showing through: a record is
         its set of named fields, however you list them.
       </P>
-      <Runnable source={`(if (= (record (x 1) (y 2)) (record (y 2) (x 1))) 1 0)`} />
+      <Runnable source={`(= (record (x 1) (y 2)) (record (y 2) (x 1)))`} />
 
       <H2>Taking one apart in a match</H2>
       <P>

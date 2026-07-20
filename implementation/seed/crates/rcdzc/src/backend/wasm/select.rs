@@ -11234,10 +11234,26 @@ fn emit_key_canonicalize(
     scratch_ty: &mut HashMap<u32, ValType>,
     out: &mut Emit,
 ) -> Result<(), Reject> {
-    let Some(desc) = crate::lower::value_cmp_shape_descriptor(db, key_ty) else {
-        return Err(Reject::decline(
-            "list-key canonicalization: key type has no bakeable shape descriptor",
-        ));
+    // Bake the descriptor from the passed `key_ty`; but that field can be an undetermined `Var` (a list
+    // element/key of an EMPTY collection — `Set.of (list)` / `Map.empty` — carries a `Var` `elem_ty`/`key_ty`
+    // field, so `value_cmp_shape_descriptor` finds no shape). `key_needs_canonicalize` already decided YES
+    // from the NODE's resolved `type_of` (`List Int64`), so the field/node type disagree exactly like the
+    // `box_op_for`-vs-`box_op_ty` node-aware family. Prefer the field type, but fall back to the node's
+    // resolved type before declining — so an empty-collection list key canonicalizes like a pinned one,
+    // instead of a false-miss-vs-decline asymmetry between the Set-of-empty and Map-of-empty paths.
+    let desc = match crate::lower::value_cmp_shape_descriptor(db, key_ty) {
+        Some(d) => d,
+        None => {
+            let resolved = type_of(db, key);
+            match crate::lower::value_cmp_shape_descriptor(db, &resolved) {
+                Some(d) => d,
+                None => {
+                    return Err(Reject::decline(
+                        "list-key canonicalization: key type has no bakeable shape descriptor",
+                    ));
+                }
+            }
+        }
     };
     // `value-canonicalize` BORROWS its input and returns a FRESH owned canonical value — so the RAW key on
     // the stack must be reclaimed HERE iff it was an OWNED TEMPORARY (a fresh `List.concat`/build result),

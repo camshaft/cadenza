@@ -3932,7 +3932,7 @@ fn run_test_file(
         // `@requires` bounds for constrained generation — captured before `param_generators` re-borrows `db`
         // mutably. Only meaningful when the test is a boundary-arg (scalar-param) property; the -gen wrapper
         // path (compound params) draws internally and isn't clamped here (a later increment).
-        let bounds = param_bounds(&db, i);
+        let (bounds, relations) = param_bounds(&db, i);
         let gens = param_generators(&mut db, i);
         // For a `-gen` wrapper, capture its parameter `GenTy` now (db is in scope here, not in the run loop).
         // Only meaningful for the exhaustive-newtype enumeration below; a non-wrapper test yields `None`.
@@ -3945,6 +3945,7 @@ fn run_test_file(
             gens,
             exhaustive,
             bounds,
+            relations,
             gen_ty,
         });
     }
@@ -4029,6 +4030,7 @@ fn run_test_file(
         gens,
         exhaustive,
         bounds,
+        relations,
         gen_ty,
     } in &tests
     {
@@ -4243,7 +4245,7 @@ fn run_test_file(
                 }
             },
             // A sampled PROPERTY test: run `trials` trials with generated inputs.
-            Some(gens) => match run_property(gens, bounds, trials, seed, &run_one) {
+            Some(gens) => match run_property(gens, bounds, relations, trials, seed, &run_one) {
                 None => {
                     passed += 1;
                     println!("PASS {name} ({trials} trials)");
@@ -4515,6 +4517,9 @@ struct TestSpec {
     gens: Option<Vec<GenKind>>,
     exhaustive: bool,
     bounds: Vec<ParamBound>,
+    /// Recognized ORDER relations between two integer params from `@requires` (e.g. `(< a b)`), enforced by
+    /// rejection sampling in the generator. Empty for the common single-param / unconstrained case.
+    relations: Vec<Relation>,
     /// The synthesized `-gen` wrapper's parameter `GenTy` (via `gen_ty_of_wrapper_param`), captured at BUILD
     /// time because `db` is not in scope in the run loop. `Some` only for a `-gen` wrapper; `None` for a plain
     /// or scalar test. Used by the `@exhaustive` path to ENUMERATE a bounded newtype domain (a single-variant
@@ -4586,6 +4591,48 @@ impl ParamBound {
     }
 }
 
+/// A recognized ORDER relation between two integer parameters from a `@requires` — e.g. `(< a b)`, where
+/// both sides are param names (not a param-vs-literal, which a `ParamBound` already covers). Unlike a
+/// per-param range clamp, a relation COUPLES two params, so it cannot be satisfied by clamping one in
+/// isolation. The runner enforces it by REJECTION SAMPLING: re-draw (advancing the seed deterministically)
+/// until every relation holds, bounded by fuel. Only order comparisons `< <= > >=` are recorded — a
+/// two-param `=` is not an order refinement (two independent draws are ~never equal, so it would only
+/// exhaust fuel), and any unrecognized shape stays unconstrained exactly as before. `op` is one of the
+/// recognized operator strings; `left`/`right` are parameter POSITIONS (matching the `GenKind` vec order).
+#[derive(Clone, Copy)]
+struct Relation {
+    left: usize,
+    op: &'static str,
+    right: usize,
+}
+
+/// Whether `l OP r` holds for the recognized order operators (an unrecognized op vacuously holds — it was
+/// never recorded, so this is only reached for `< <= > >=`).
+fn relation_holds(op: &str, l: i64, r: i64) -> bool {
+    match op {
+        "<" => l < r,
+        "<=" => l <= r,
+        ">" => l > r,
+        ">=" => l >= r,
+        _ => true,
+    }
+}
+
+/// Whether EVERY recorded relation holds over the rendered `inputs`. A param whose rendered value does not
+/// parse as an `i64` (e.g. a Bool `"true"`) makes its relation vacuously hold — relations are only recorded
+/// between integer params, so this is a defensive skip, never the common path.
+fn relations_hold(relations: &[Relation], inputs: &[String]) -> bool {
+    relations.iter().all(|rel| {
+        let (Some(l), Some(r)) = (inputs.get(rel.left), inputs.get(rel.right)) else {
+            return true;
+        };
+        match (l.parse::<i64>(), r.parse::<i64>()) {
+            (Ok(l), Ok(r)) => relation_holds(rel.op, l, r),
+            _ => true,
+        }
+    })
+}
+
 /// Per-parameter integer bounds distilled from a def's `@requires` preconditions (empty ⇒ no bound). The
 /// generator applies these so a `@test` over a `@requires`-constrained def draws only inputs SATISFYING the
 /// precondition — the (D) enforcement traps a violated precondition at body entry (a HARD contract for every
@@ -4599,7 +4646,7 @@ impl ParamBound {
 /// Only INTEGER params are bounded here (the boundary-arg route generates Int/Bool/Float/Char; a comparison
 /// bound is meaningful for integers — Bool/Float/Char preconditions fall through unrecognized). Keyed by
 /// parameter POSITION (matching the `GenKind` vec order).
-fn param_bounds(db: &rcdzc::db::Db, def: usize) -> Vec<ParamBound> {
+fn param_bounds(db: &rcdzc::db::Db, def: usize) -> (Vec<ParamBound>, Vec<Relation>) {
     let params = &db.defs[def].params;
     // Map each param NAME to its position, so a `(>= name lit)` predicate targets the right slot.
     let pos_of: std::collections::HashMap<&str, usize> = params
@@ -4616,27 +4663,31 @@ fn param_bounds(db: &rcdzc::db::Db, def: usize) -> Vec<ParamBound> {
         })
         .collect();
     let mut bounds = vec![ParamBound::unbounded(); params.len()];
+    let mut relations = Vec::new();
     for &pred in db.requires_of(def) {
-        narrow_from_predicate(db, pred, &pos_of, &mut bounds);
+        narrow_from_predicate(db, pred, &pos_of, &mut bounds, &mut relations);
     }
-    bounds
+    (bounds, relations)
 }
 
-/// Narrow `bounds` from ONE `@requires` predicate AST node. Recognizes a comparison `(OP a b)` where one
-/// side is a bare param name and the other an integer literal, for OP in `>= > <= < =`; and descends a
-/// conjunction `(and p q …)` / `(& p q …)` so `(and (>= x 0) (< x 100))` bounds `x` to `[0, 99]`. Anything
-/// else (a call, a non-linear predicate, a comparison between two params) is left unrecognized — no change.
+/// Narrow `bounds` (and collect `relations`) from ONE `@requires` predicate AST node. Recognizes a
+/// comparison `(OP a b)` for OP in `>= > <= < =`: a (param, literal) pairing in either order narrows that
+/// param's `ParamBound`; a (param, param) pairing for an ORDER op (`< <= > >=`) records a `Relation` between
+/// the two params (a coupled constraint a single-param clamp cannot express). It also descends a conjunction
+/// `(and p q …)` / `(& p q …)` so `(and (>= x 0) (< x 100))` bounds `x` to `[0, 99]`. Anything else (a call,
+/// a non-linear predicate, a two-param `=`) is left unrecognized — no change, exactly as before.
 fn narrow_from_predicate(
     db: &rcdzc::db::Db,
     pred: rcdzc::ast::StructId,
     pos_of: &std::collections::HashMap<&str, usize>,
     bounds: &mut [ParamBound],
+    relations: &mut Vec<Relation>,
 ) {
     // Descend a conjunction: every conjunct constrains independently.
     for head in ["and", "&"] {
         if let Some(tail) = db.ast.as_form(pred, head) {
             for &conj in tail {
-                narrow_from_predicate(db, conj, pos_of, bounds);
+                narrow_from_predicate(db, conj, pos_of, bounds, relations);
             }
             return;
         }
@@ -4667,7 +4718,22 @@ fn narrow_from_predicate(
             }
             return;
         }
-        return; // recognized OP but not a (param, literal) shape — leave unbounded
+        // `(OP param param)` — a RELATION between two params (`(< a b)`). Only an ORDER op is a refinement
+        // we can satisfy by rejection sampling; a two-param `=` is dropped (two independent draws are ~never
+        // equal — recording it would only burn fuel). A param compared to itself is skipped (`(< a a)` is
+        // unsatisfiable — leave it to trap, not our job to mask).
+        if let (Some(ln), Some(rn)) = (db.ast.as_name(lhs), db.ast.as_name(rhs))
+            && let (Some(&li), Some(&ri)) = (pos_of.get(ln), pos_of.get(rn))
+            && li != ri
+            && matches!(op, "<" | "<=" | ">" | ">=")
+        {
+            relations.push(Relation {
+                left: li,
+                op,
+                right: ri,
+            });
+        }
+        return; // recognized OP; a (param, param) relation was recorded above if applicable
     }
 }
 
@@ -5006,14 +5072,15 @@ fn resolve_test_runtime(
 fn run_property(
     gens: &[GenKind],
     bounds: &[ParamBound],
+    relations: &[Relation],
     trials: u64,
     seed: u64,
     run_one: &dyn Fn(&[String]) -> TrialOutcome,
 ) -> Option<PropertyFailure> {
     for trial in 0..trials {
-        let inputs = generate_inputs(gens, bounds, seed.wrapping_add(trial));
+        let inputs = generate_inputs(gens, bounds, relations, seed.wrapping_add(trial));
         if let TrialOutcome::Fail(message) = run_one(&inputs) {
-            let (inputs, message) = shrink(gens, bounds, &inputs, message, run_one);
+            let (inputs, message) = shrink(gens, bounds, relations, &inputs, message, run_one);
             return Some(PropertyFailure { inputs, message });
         }
     }
@@ -5194,7 +5261,39 @@ fn shrink_pool(
 /// `--seed` replays the exact pool). This is what lets a reported failure be replayed deterministically.
 //= spec/capabilities/property-based-testing.md#generation-is-seeded-and-reproducible
 //# A property run MUST be reproducible from its recorded seed, producing the same inputs on every conforming run.
-fn generate_inputs(gens: &[GenKind], bounds: &[ParamBound], seed: u64) -> Vec<String> {
+/// Generate one input tuple, SATISFYING the `@requires` constraints: per-param `bounds` are applied by
+/// clamping in `draw_inputs`, and cross-param `relations` (e.g. `(< a b)`) are satisfied by REJECTION
+/// SAMPLING — re-draw from a fresh derived seed until every relation holds, bounded by `RELATION_FUEL`
+/// re-draws. Clamping keeps generation a pure function of the seed for the common (no-relation) case, so
+/// reproducibility is unchanged; when relations ARE present, the returned tuple is still a deterministic
+/// function of `seed` (the same seed re-derives the same accepted draw). If fuel is exhausted (a relation
+/// too tight to hit by sampling), the last draw is returned unchanged — the (D) precondition trap then
+/// fires and the property reports honestly rather than looping forever.
+fn generate_inputs(
+    gens: &[GenKind],
+    bounds: &[ParamBound],
+    relations: &[Relation],
+    seed: u64,
+) -> Vec<String> {
+    let first = draw_inputs(gens, bounds, seed);
+    if relations.is_empty() || relations_hold(relations, &first) {
+        return first;
+    }
+    // A relation was violated — re-draw from a distinct derived seed until all hold, bounded by fuel. The
+    // derived seed `seed ^ (k * ODD)` keeps every attempt a deterministic function of the original seed.
+    const RELATION_FUEL: u64 = 256;
+    for k in 1..=RELATION_FUEL {
+        let candidate = draw_inputs(gens, bounds, seed ^ k.wrapping_mul(0x9E3779B97F4A7C15));
+        if relations_hold(relations, &candidate) {
+            return candidate;
+        }
+    }
+    first // fuel exhausted: return the first draw; the precondition trap reports honestly
+}
+
+/// Draw one input tuple from `seed`, applying only the per-param `bounds` clamps (no relation handling —
+/// that is `generate_inputs`'s rejection loop). Split out so the rejection loop can re-draw cheaply.
+fn draw_inputs(gens: &[GenKind], bounds: &[ParamBound], seed: u64) -> Vec<String> {
     use bolero_generator::driver::{self, Rng};
     use bolero_generator::{ValueGenerator, produce};
     let rng = rand_from_seed(seed);
@@ -5343,6 +5442,7 @@ fn rand_from_seed(seed: u64) -> rand_xoshiro::Xoshiro256PlusPlus {
 fn shrink(
     gens: &[GenKind],
     bounds: &[ParamBound],
+    relations: &[Relation],
     inputs: &[String],
     message: Option<String>,
     run_one: &dyn Fn(&[String]) -> TrialOutcome,
@@ -5364,6 +5464,12 @@ fn shrink(
             }
             let mut trial = best.clone();
             trial[i] = candidate;
+            // Likewise a shrink must not break a cross-param RELATION (`(< a b)`) — shrinking `b` toward 0
+            // could make `a < b` false, and the (D) trap would masquerade as "still fails". Skip a trial
+            // that violates any relation (no relations ⇒ admits every candidate).
+            if !relations_hold(relations, &trial) {
+                continue;
+            }
             if let TrialOutcome::Fail(m) = run_one(&trial) {
                 best = trial;
                 best_msg = m;

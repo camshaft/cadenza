@@ -76,3 +76,14 @@
 ; NOT the "NaN last" phrasing — both backends use the identical u64 to_bits cmp so rust's output IS the target.
 ; TIMING: hash-bump, so v-runtime builds on a clean runway (after their queued strings MR + pr-sync healthy),
 ; then pings me to pin the 3 cases. Scheduled, not dropped.
+
+; ===== NaN-PIN GOTCHAS (v-runtime, 2026-07-20) — refine the pin plan =====
+; (1) a CONST NaN element is REJECTED at compile time ('(/ 0.0 0.0)' + NaN literals -> 'a floating-point
+;     operation whose result is not finite has no value form yet'). The NaN set-element case MUST source NaN
+;     at RUNTIME (a Float64 param passed as NaN, or a runtime float op yielding NaN into the set).
+; (2) canonical NaN bits 0x7ff8000000000000 sort BETWEEN positive finites and negatives in u64-to_bits order
+;     -> NaN is NOT strictly 'last', it's after-positives/before-negatives. Pin NaN position to rust's ACTUAL
+;     to-list output (gate --target rust), not the phrasing.
+; PIN PLAN: land the 3 FINITE cases first (len + finite order-face [0.5,2.5,-1.0] incl signed-zero-distinct +
+;     Map-key twin — all solid), NaN-position as a FOLLOW-UP pin once a runtime-NaN construction path is settled.
+;     v-runtime builds the finite (frozen-hash) fix on a clean runway, then pings me to pin.

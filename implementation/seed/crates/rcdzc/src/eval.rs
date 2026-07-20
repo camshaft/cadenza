@@ -1633,7 +1633,13 @@ pub fn meta_apply_of(db: &mut Db, id: StructId) -> Option<Prim> {
 /// `(meta variant)`).
 pub fn variant_disc_of(db: &mut Db, id: StructId) -> Option<u32> {
     let field = project_meta(db, id, "variant")?;
-    match resolved_of(db, field) {
+    // Read the discriminant through the BORROW companion `resolved_ref`: `IntValue::to_i64` takes
+    // `&self`, so the by-value `resolved_of` clone of the whole `Resolved` (whose `Int` payload is a
+    // heap `IntValue` magnitude) per call was pure churn. `variant_disc_of` is a HOT meta reader (~45
+    // call sites across lower/infer/compile/eval — every variant construction / disc-switch reads it),
+    // so borrow-dispatch is the fix-35/36 pattern (a memoized query returning a compound by value cloned
+    // per call, read only for a borrowed field → borrow). Sibling of the `prim_of` borrow.
+    match crate::resolve::resolved_ref(db, field) {
         Resolved::Int(v) => v.to_i64().and_then(|n| u32::try_from(n).ok()),
         _ => None,
     }
@@ -1651,11 +1657,13 @@ pub fn effect_op_of(db: &mut Db, id: StructId) -> Option<(crate::ast::StructId, 
     let tail = db.ast.as_form(field, "effect-op")?;
     let decl_occ = tail.first().copied()?;
     let index_occ = tail.get(1).copied()?;
-    let decl = match resolved_of(db, decl_occ) {
+    // Borrow-dispatch (as in `variant_disc_of`): `to_i64` borrows, so `resolved_ref` avoids cloning the
+    // `Int` payload's heap `IntValue` for each of the two literals read here.
+    let decl = match crate::resolve::resolved_ref(db, decl_occ) {
         Resolved::Int(v) => v.to_i64().and_then(|n| u32::try_from(n).ok())?,
         _ => return None,
     };
-    let index = match resolved_of(db, index_occ) {
+    let index = match crate::resolve::resolved_ref(db, index_occ) {
         Resolved::Int(v) => v.to_i64().and_then(|n| u32::try_from(n).ok())?,
         _ => return None,
     };

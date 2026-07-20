@@ -8142,10 +8142,29 @@ fn check_application(
             (Ty::Symbol, Ty::String) | (Ty::String, Ty::Symbol)
         ) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: comparing a Symbol to a String across the nominal boundary (CDZ0202)");
-            out.push(Reject::coded(
-                Code::NominalMismatch,
-                "a Symbol and a String are not comparable across the nominal boundary",
-            ));
+            // The MECHANICAL repair: intern the STRING operand into a Symbol with the total `Symbol.of`
+            // (`String → Symbol`), bringing both sides to `Symbol` so the comparison type-checks — the
+            // Symbol twin of the newtype-unwrap fix just below (a nominal-boundary clash whose bridge is a
+            // total conversion). Wrap whichever operand is the plain String (`a` is String → `args[0]`,
+            // else `args[1]`). Heuristic: the author might instead have meant to compare as strings
+            // (`Symbol.to-string` on the other side), so an agent confirms the direction before applying.
+            let string_operand = if matches!(a, Ty::String) {
+                args[0]
+            } else {
+                args[1]
+            };
+            out.push(
+                Reject::coded(
+                    Code::NominalMismatch,
+                    "a Symbol and a String are not comparable across the nominal boundary",
+                )
+                .with_fix(Fix::wrap_heuristic(
+                    string_operand,
+                    "(Symbol.of ",
+                    ")",
+                    "intern the String into a Symbol with `(Symbol.of …)`",
+                )),
+            );
             return;
         }
         // Comparing a NEWTYPE (a nominal single-field sum, erased at runtime) to its UNDERLYING type —

@@ -49,9 +49,23 @@ pub fn tick_performing(log: &impl Log, event_kind: i64, runtime: Vec<u8>) -> Res
 }
 
 /// The event kind prefix a performed host-op is RECORDED under in the log (`prim-exec`/`prim-http`/
-/// `prim-append`). Each perform appends one such event carrying the op's String payload — the §2.3
-/// recorded-effect trail (like `fold`'s `model-request`/`model-response`), so a re-fold replays the plan.
+/// `prim-append`). Each perform appends one such event carrying the op's String payload — the REQUEST half
+/// of the §2.3 recorded-effect trail (like `fold`'s `model-request`); its RESULT is recorded under
+/// [`PRIM_RESULT_PREFIX`] (the `model-response` counterpart), so a re-fold replays the plan faithfully.
+/// NOTE both `prim-result-` and `prim-denied-` also begin with this prefix — a filter counting REQUESTS must
+/// exclude those (see [`PRIM_RESULT_PREFIX`]/[`PRIM_DENIED_PREFIX`]).
 pub const PRIM_RECORD_PREFIX: &str = "prim-";
+
+/// The event kind prefix a performed host-op's RESULT is recorded under (`prim-result-exec`/…), the RESPONSE
+/// half of the §2.3 recorded-effect trail — the counterpart of `fold`'s `model-response` to the `prim-<op>`
+/// REQUEST. Each perform appends one carrying the op's scalar result as decimal text, AFTER performing (so a
+/// crash between request and result re-performs rather than trusting a half-record — at-least-once, matching
+/// `drive_one_turn`). Without this, the `exec` exit code (non-deterministic under the `live-exec` feature) is
+/// summed but never logged, so a hosted log could NOT be replayed faithfully. `prim-result-` begins with
+/// [`PRIM_RECORD_PREFIX`], so [`is_reserved_kind`] already skips it (the daemon never re-triggers on its own
+/// result records) — but request-counting filters must exclude it to keep counting REQUESTS, exactly as they
+/// already exclude [`PRIM_DENIED_PREFIX`].
+pub const PRIM_RESULT_PREFIX: &str = "prim-result-";
 
 /// Run ONE daemon step that PERFORMS the ops via a REAL host primitive and RECORDS each perform in the log
 /// (the K1c→host-primitive rung). Same genesis lookup as [`tick`], but drives the HOSTED executor
@@ -89,7 +103,17 @@ where
             if let Ok(mut l) = log.lock() {
                 let _ = l.append(&format!("{PRIM_RECORD_PREFIX}{op}"), payload.as_bytes());
             }
-            perform_op_body(op, &payload)
+            // Perform, THEN record the RESULT (the §2.3 response half): the op's scalar as decimal text, so a
+            // hosted log replays faithfully (the `exec` exit code is non-deterministic under `live-exec`).
+            // Result-after-perform mirrors `drive_one_turn`'s request→call→response order.
+            let result = perform_op_body(op, &payload);
+            if let Ok(mut l) = log.lock() {
+                let _ = l.append(
+                    &format!("{PRIM_RESULT_PREFIX}{op}"),
+                    result.to_string().as_bytes(),
+                );
+            }
+            result
         }
     };
     crate::kernel::run_interpret_hosted(&program, event_kind, runtime, prim)
@@ -213,7 +237,16 @@ where
             if let Ok(mut l) = log.lock() {
                 let _ = l.append(&format!("{PRIM_RECORD_PREFIX}{op}"), payload.as_bytes());
             }
-            perform_op_body(op, &payload)
+            // Perform, THEN record the RESULT (the §2.3 response half) — same faithful-trail discipline as
+            // `tick_hosted`, so an authorized hosted log replays the performed exit codes without live calls.
+            let result = perform_op_body(op, &payload);
+            if let Ok(mut l) = log.lock() {
+                let _ = l.append(
+                    &format!("{PRIM_RESULT_PREFIX}{op}"),
+                    result.to_string().as_bytes(),
+                );
+            }
+            result
         }
     };
     crate::kernel::run_interpret_hosted(&program, event_kind, runtime, prim)
@@ -592,12 +625,15 @@ mod tests {
             performed, 3,
             "kind=1 → append(\"ack\")→1 + exec(\"handle\")→2 → summed by the fold = 3"
         );
-        // The recorded-effect trail: the log gained a `prim-append`/`prim-exec` event per performed op, in
-        // list order, each carrying the op's String payload.
+        // The recorded-effect trail (REQUEST half): a `prim-append`/`prim-exec` event per performed op, in
+        // list order, each carrying the op's String payload. Exclude the `prim-result-*` RESPONSE records so
+        // this counts REQUESTS (as the denied-prefix filters already do).
         let events = log.lock().unwrap().tail(0).unwrap();
         let prim_events: Vec<(String, String)> = events
             .iter()
-            .filter(|e| e.kind.starts_with(PRIM_RECORD_PREFIX))
+            .filter(|e| {
+                e.kind.starts_with(PRIM_RECORD_PREFIX) && !e.kind.starts_with(PRIM_RESULT_PREFIX)
+            })
             .map(|e| {
                 (
                     e.kind.clone(),
@@ -612,6 +648,26 @@ mod tests {
                 ("prim-exec".to_string(), "handle".to_string()),
             ],
             "each performed op was recorded in the log as prim-<op> with its payload, in order"
+        );
+        // The RESPONSE half (the §2.3 faithful-replay record): a `prim-result-<op>` per performed op, carrying
+        // the op's scalar result as decimal text, in the same order (append→1, exec→2 record-only).
+        let result_events: Vec<(String, String)> = events
+            .iter()
+            .filter(|e| e.kind.starts_with(PRIM_RESULT_PREFIX))
+            .map(|e| {
+                (
+                    e.kind.clone(),
+                    String::from_utf8_lossy(&e.payload).into_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            result_events,
+            vec![
+                ("prim-result-append".to_string(), "1".to_string()),
+                ("prim-result-exec".to_string(), "2".to_string()),
+            ],
+            "each performed op recorded its scalar result as prim-result-<op>, in order (the §2.3 response half)"
         );
         let _ = std::fs::remove_file(&path);
     }
@@ -792,7 +848,9 @@ mod tests {
         let performed = events
             .iter()
             .filter(|e| {
-                e.kind.starts_with(PRIM_RECORD_PREFIX) && !e.kind.starts_with(PRIM_DENIED_PREFIX)
+                e.kind.starts_with(PRIM_RECORD_PREFIX)
+                    && !e.kind.starts_with(PRIM_DENIED_PREFIX)
+                    && !e.kind.starts_with(PRIM_RESULT_PREFIX)
             })
             .count();
         assert_eq!(performed, 0, "no op performed under an empty policy");
@@ -1108,11 +1166,13 @@ mod tests {
             .tail(0)
             .unwrap()
             .iter()
-            .filter(|e| e.kind.starts_with(PRIM_RECORD_PREFIX))
+            .filter(|e| {
+                e.kind.starts_with(PRIM_RECORD_PREFIX) && !e.kind.starts_with(PRIM_RESULT_PREFIX)
+            })
             .count();
         assert_eq!(
             prim_count, 4,
-            "2 trigger events × [Append, Exec] = 4 prim events recorded"
+            "2 trigger events × [Append, Exec] = 4 prim events recorded (request/denial records, not results)"
         );
 
         // A second round from the cursor: it drains the recorded prim events but SKIPS them (not triggers) →

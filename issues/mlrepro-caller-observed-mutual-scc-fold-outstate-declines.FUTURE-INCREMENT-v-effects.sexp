@@ -27,3 +27,11 @@
     (handle Counter 0 ((bump () s (resume s (+ s 1))))
       (+ (* 1000 (ea 3)) (Counter.bump))))
   (export main))
+
+; ===== PM triage (corpus-bugfix, 2026-07-20, trunk 7a065bbf7/995fa4134) =====
+; NOT A BUG — CONFIRMED clean intentional decline on trunk: the exact repro program declines with the honest
+; "this handler is not yet reducible by the tail-resumptive fold (cross-function or non-tail resume arrives in
+; a later increment)" — NO $s0/$t0 leak, NO confusing CDZ0101. Severity NONE. This is a v-effects FUTURE
+; INCREMENT (group-wide multi-value specialization over a mutual-recursive SCC), to build only when a consumer
+; forces it (none today). Owned + tracked in v-effects memory (queued-branch-outstate-lost-to-later-perform).
+; Renamed .FUTURE-INCREMENT-v-effects so it stops surfacing as untriaged. No route/agent needed.

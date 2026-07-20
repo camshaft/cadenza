@@ -665,8 +665,23 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
         // (re-applied in type position via `(meta apply)` = `sum-ctor`). Firing there resolved `Box` to
         // the ctor and corrupted the arrow → the variant looked nullary. The value-vs-type-position
         // distinction the head-position rule alone can't see is supplied by the user/synth boundary.
+        // SAME-NAME CTOR in head position → the CONSTRUCTOR (see the block above for the position rule).
+        // The `is_user_node` gate distinguishes a real program construct `(Meters a)` from a SYNTHESIZED
+        // `sum_applied` type-expr `(Box a)` (a GENERIC same-name sum's ctor-result type, which MUST stay
+        // the type record). But a β-COPY of a user construct — `mk`'s body `(Meters a)` inlined at a call
+        // site during specialization — is ALSO a synth node (id ≥ user_node_count) in VALUE head position,
+        // and the plain `is_user_node` gate wrongly left it the TYPE → spurious CDZ0203 (the breaker's
+        // `adv-same-name-ctor-hijacked-by-type` FACE B, a smart-constructor helper). Discriminator: the
+        // confusable `sum_applied` synth only exists for a GENERIC (parameterized) same-name sum — a
+        // MONOMORPHIC one (`Meters`, `N` with concrete payloads; no type params) has NO such synth, so a
+        // synth head-position occurrence of a monomorphic same-name ctor is ALWAYS a value-construct copy.
+        // So ALSO fire on a synth node when the same-name sum is monomorphic AND the node is not inside a
+        // type-expression subtree (a monomorphic type takes no args, so `(Meters T)` in type position is
+        // itself the CDZ0203 error — never a legitimate type-expr — but the `!is_type_expr_node` guard keeps
+        // the value-vs-type split honest for a load-time type-expr occurrence).
         if db.child_ix_of(id) == 0
-            && db.is_user_node(id)
+            && (db.is_user_node(id)
+                || (db.same_name_monomorphic_ctor(name) && !db.is_type_expr_node(id)))
             && let Some(ctor) = db.same_name_newtype_ctor(name)
         {
             trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = ctor.0, "name → same-name newtype ctor (head position)");

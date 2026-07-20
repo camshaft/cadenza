@@ -47,3 +47,12 @@ a phase trace), it would confirm/deny a real miscompile. If confirmed, it is the
 `parse-if`→`parse-bool` hang I filed (`mlrepro-parse-if-cond-via-parse-bool-mutrec-hangs-compiler.md`) —
 both are "adding a small function to the parse-db SCC misbehaves." Low urgency (workaround is clean), but the
 "pure helper silently corrupts an unrelated result" shape is worth a look.
+
+## PM triage (corpus-bugfix, 2026-07-20, trunk 995fa4134)
+Does NOT reproduce STANDALONE (minimal is-cmp-op nested-if + tuple result computes correctly, 70/71) —
+confirms it's module-scale-emergent in the full parse-db SCC, as reported. Its SIBLING (same neighborhood:
+mlrepro-parse-if-cond-via-parse-bool-mutrec-hangs) is RESOLVED on trunk (parse-bool cluster + emit fix,
+f813f5cd0-era; marked .RESOLVED earlier). So this MAY already be healed by that fix. ASKED v-compiler-ml to
+un-inline the is-cmp-op helper (formulation A) + re-run pd-deep-nesting/parse-db on current trunk: green ->
+mark RESOLVED + pin a helper-in-SCC case; still red -> route to v-inference as a confirmed scale-emergent
+miscompile. Low urgency (clean workaround). Awaiting v-compiler-ml re-verify.

@@ -3298,6 +3298,18 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
     let has_member_op_arg_type_reject = faults.iter().any(|r| {
         r.code == Some(Code::TypeMismatch) && r.message.contains("expects an argument of type")
     });
+    // A `?` on a non-fallible operand (`(try 3.14)`, `(try "hi")`) is reported by `infer` as the coded
+    // CDZ0203 `TRY_NON_FALLIBLE_PREFIX` naming the real defect (the operand's type). Its non-sum CONSTANT
+    // core also misses the `Resolved::Try` `SumNew` fold arm in `lower`, so the emit path ALSO returns the
+    // uncoded `TRY_RUNTIME_OPERAND_DECLINE_PREFIX` "lowers only a constant operand yet" — the same fault
+    // reported more weakly AND misleadingly (it blames constness, but the operand IS constant; its problem
+    // is the TYPE). Drop that decline whenever the CDZ0203 is present so an ill-typed `?` is ONE primary
+    // `error:`. Gated on the reject existing — a genuinely-RUNTIME fallible operand (no CDZ0203) keeps its
+    // honest BRICK-3b decline (it is the only report of the not-yet-lowered runtime `?`).
+    let has_try_non_fallible_reject = faults.iter().any(|r| {
+        r.code == Some(Code::TypeMismatch)
+            && r.message.starts_with(crate::diag::TRY_NON_FALLIBLE_PREFIX)
+    });
     // A TYPE VALUE used where a runtime value is wanted — `(+ Color 1)`, a first-class type in an
     // arithmetic/operand position — is reported by `infer` as the coded CDZ0201 kind-boundary ("a Type and
     // an Int64 are different types …"). Lowering that same operand ALSO hits the SPANLESS uncoded "a type
@@ -3657,6 +3669,17 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             if has_not_a_function_reject
                 && r.is_decline()
                 && r.message == crate::diag::NOT_APPLYABLE_DECLINE
+            {
+                return false;
+            }
+            // Drop the "`?`/`try` lowers only a constant operand yet" decline when a `?`-non-fallible-operand
+            // CDZ0203 is present — the ill-typed operand's non-sum constant core missed the `SumNew` fold arm,
+            // so the decline is the same defect at emit, and misleading (it blames constness, not the type).
+            // A runtime fallible operand (no CDZ0203) keeps its honest BRICK-3b decline.
+            if has_try_non_fallible_reject
+                && r.is_decline()
+                && r.message
+                    .starts_with(crate::diag::TRY_RUNTIME_OPERAND_DECLINE_PREFIX)
             {
                 return false;
             }

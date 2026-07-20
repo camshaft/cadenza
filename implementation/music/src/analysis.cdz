@@ -1,0 +1,182 @@
+/// analysis.cdz — chord IDENTIFICATION: the inverse of chord.cdz's construction.
+///
+/// chord.cdz builds note numbers FROM a root + a named quality (major-triad, dominant-seventh, …). This
+/// module goes the other way: given a set of sounding note numbers, name the QUALITY. That's what a
+/// live-coding / analysis / notation tool needs — "what chord is this?" — and it's a clean testable
+/// inverse that pins chord.cdz's stacks from the other side (a construct-then-identify round-trip).
+///
+/// Identification is done in PITCH-CLASS space, relative to a given root: fold every note to its pitch
+/// class, subtract the root's pitch class (mod 12), dedupe + sort, and compare the resulting signature to
+/// each named quality's stack (already a sorted root-relative pitch-class set). This makes identification
+/// OCTAVE- and INVERSION-invariant (a C-major triad is major whether it is [C,E,G] or [E,G,C'] or spread
+/// across octaves) and order-independent. Grounds on chord.cdz's exported stacks so the two layers can
+/// never disagree on what "major-triad" means.
+
+import { Pitch } from "pitch"
+import { note } from "pitch"
+import { major-triad-stack, minor-triad-stack, diminished-triad-stack, augmented-triad-stack } from "chord"
+import { major-seventh-stack, dominant-seventh-stack, minor-seventh-stack, half-diminished-stack, diminished-seventh-stack } from "chord"
+
+// ---- the quality a note set identifies as ------------------------------------------------------------
+
+/// A recognized chord quality, or `Unknown` when a note set matches no named stack. Nullary variants — the
+/// identification result.
+type Quality =
+  | MajorTriad | MinorTriad | DiminishedTriad | AugmentedTriad
+  | MajorSeventh | DominantSeventh | MinorSeventh | HalfDiminished | DiminishedSeventh
+  | Unknown
+
+// ---- pitch-class signature of a note set relative to a root ------------------------------------------
+
+/// Floored pitch class `0..11` of a note number (matches chord.cdz's `pc-of`).
+def pc-of(n: Int64) = let r = n % 12 in (if r < 0 then r + 12 else r)
+
+/// Insert `x` into a sorted (ascending) list, keeping it sorted and DEDUPED (a duplicate is dropped). The
+/// signature must be a canonical sorted set for the stack comparison to work. Recursive, annotated params.
+def insert-sorted(xs: List(Int64), x: Int64) =
+  match xs with
+    | [] => [x]
+    | [h, .. t] =>
+      if x == h then xs
+      else if x < h then List.prepend(xs, x)
+      else List.prepend(insert-sorted(t, x), h)
+
+/// Fold a note list into its sorted, deduped set of root-RELATIVE pitch classes (each note's pitch class
+/// minus the root pitch class, mod 12). Recursive driver threading the accumulating sorted set.
+def signature-go(notes: List(Int64), root-pc: Int64, acc: List(Int64)) =
+  match notes with
+    | [] => acc
+    | [h, .. t] => signature-go(t, root-pc, insert-sorted(acc, pc-of(h - root-pc)))
+
+/// The root-relative pitch-class SIGNATURE of a note list: sorted, deduped, octave-folded, relative to the
+/// root pitch class. This is the canonical form we match against each quality's stack.
+def signature(notes: List(Int64), root: Pitch) = signature-go(notes, pc-of(note(root)), [])
+
+// ---- comparing two sorted int lists ------------------------------------------------------------------
+
+/// Exact equality of two Int64 lists (element-wise). Recursive, annotated. Used to compare a signature to
+/// a known stack — both are sorted deduped pitch-class sets, so `==` on the lists is set equality.
+def list-eq(a: List(Int64), b: List(Int64)) =
+  match a with
+    | [] => (match b with | [] => true | [_, .. _] => false)
+    | [ha, .. ta] =>
+      (match b with
+        | [] => false
+        | [hb, .. tb] => if ha == hb then list-eq(ta, tb) else false)
+
+// ---- identification ----------------------------------------------------------------------------------
+
+/// Identify the QUALITY of a set of note numbers, given the intended root. Folds the notes to their
+/// sorted root-relative pitch-class signature and matches it against each named stack (which are already
+/// sorted root-relative pitch-class sets: major-triad = [0,4,7], etc.). Octave- and inversion-invariant.
+/// Returns `Unknown` if nothing matches.
+def identify(notes: List(Int64), root: Pitch) =
+  let sig = signature(notes, root) in
+  if list-eq(sig, major-triad-stack) then Quality.MajorTriad
+  else if list-eq(sig, minor-triad-stack) then Quality.MinorTriad
+  else if list-eq(sig, diminished-triad-stack) then Quality.DiminishedTriad
+  else if list-eq(sig, augmented-triad-stack) then Quality.AugmentedTriad
+  else if list-eq(sig, major-seventh-stack) then Quality.MajorSeventh
+  else if list-eq(sig, dominant-seventh-stack) then Quality.DominantSeventh
+  else if list-eq(sig, minor-seventh-stack) then Quality.MinorSeventh
+  else if list-eq(sig, half-diminished-stack) then Quality.HalfDiminished
+  else if list-eq(sig, diminished-seventh-stack) then Quality.DiminishedSeventh
+  else Quality.Unknown
+
+/// Is a quality one of the recognized named chords (not `Unknown`)?
+def is-known(q: Quality) = match q with | Quality.Unknown => false | _ => true
+
+/// ============================ @test suite (chord identification laws) ============================
+
+@test
+def identifies-a-c-major-triad() =
+  // [C, E, G] = [60, 64, 67] rooted at C is a major triad.
+  match identify([60, 64, 67], Pitch.Pitch(60)) with
+    | Quality.MajorTriad => unit
+    | _ => trap("C E G should identify as a major triad")
+
+@test
+def identifies-a-minor-triad() =
+  // [A, C, E] = [69, 72, 76] rooted at A is a minor triad (root-relative [0,3,7]).
+  match identify([69, 72, 76], Pitch.Pitch(69)) with
+    | Quality.MinorTriad => unit
+    | _ => trap("A C E should identify as a minor triad")
+
+@test
+def identification-is-inversion-invariant() =
+  // First inversion of C major [E, G, C'] = [64, 67, 72] still identifies as a major triad rooted at C:
+  // the signature is octave-folded + sorted, so the inversion is erased.
+  match identify([64, 67, 72], Pitch.Pitch(60)) with
+    | Quality.MajorTriad => unit
+    | _ => trap("an inversion of C major is still a major triad")
+
+@test
+def identification-is-octave-and-order-invariant() =
+  // A C-major triad spread across octaves AND given out of order — G5(79), C4(60), E5(76) — still folds to
+  // the signature [0,4,7] and identifies as a major triad. Pins octave- and order-independence together.
+  match identify([79, 60, 76], Pitch.Pitch(60)) with
+    | Quality.MajorTriad => unit
+    | _ => trap("an out-of-order, octave-spread C major is still a major triad")
+
+@test
+def identifies-the-four-seventh-chords() =
+  // Root-position sevenths off C (60): maj7 [0,4,7,11], dom7 [0,4,7,10], min7 [0,3,7,10], dim7 [0,3,6,9].
+  let c = Pitch.Pitch(60) in
+  match identify([60, 64, 67, 71], c) with
+    | Quality.MajorSeventh =>
+      (match identify([60, 64, 67, 70], c) with
+        | Quality.DominantSeventh =>
+          (match identify([60, 63, 67, 70], c) with
+            | Quality.MinorSeventh =>
+              (match identify([60, 63, 66, 69], c) with
+                | Quality.DiminishedSeventh => unit
+                | _ => trap("dim7"))
+            | _ => trap("min7"))
+        | _ => trap("dom7"))
+    | _ => trap("maj7")
+
+@test
+def distinguishes-diminished-and-augmented-triads() =
+  // dim triad [0,3,6] vs aug triad [0,4,8] — the two symmetric triads must not be confused.
+  let c = Pitch.Pitch(60) in
+  match identify([60, 63, 66], c) with
+    | Quality.DiminishedTriad =>
+      (match identify([60, 64, 68], c) with
+        | Quality.AugmentedTriad => unit
+        | _ => trap("aug triad"))
+    | _ => trap("dim triad")
+
+@test
+def a-random-cluster-is-unknown() =
+  // A chromatic cluster [C, C#, D] matches no named quality → Unknown (non-vacuous negative).
+  match identify([60, 61, 62], Pitch.Pitch(60)) with
+    | Quality.Unknown => unit
+    | _ => trap("a chromatic cluster is not a named chord")
+
+@test
+def wrong-root-does-not-identify-a-major-triad() =
+  // [60,64,67] IS a C-major triad, but analyzed with the WRONG root (E=64) its signature is [0,3,8] (a
+  // first-inversion shape), which is not a named root-position quality → not MajorTriad. Pins that
+  // identification is ROOT-RELATIVE, not just a pitch-class-set lookup.
+  match identify([60, 64, 67], Pitch.Pitch(64)) with
+    | Quality.MajorTriad => trap("with root E the signature is not a root-position major triad")
+    | _ => unit
+
+@test
+def duplicate-notes-collapse-in-the-signature() =
+  // Doubling the root/fifth (a common voicing) does not change the identified quality: [C,E,G,C',G'].
+  match identify([60, 64, 67, 72, 79], Pitch.Pitch(60)) with
+    | Quality.MajorTriad => unit
+    | _ => trap("doubled voices still identify as a major triad")
+
+@test
+def is-known-rejects-unknown() =
+  // is-known is true for a named quality, false for Unknown.
+  if is-known(Quality.MajorTriad) then
+    (if is-known(Quality.Unknown) then trap("Unknown is not known") else unit)
+  else trap("MajorTriad is known")
+
+export {
+  Quality.*,
+  pc-of, signature, identify, is-known,
+}

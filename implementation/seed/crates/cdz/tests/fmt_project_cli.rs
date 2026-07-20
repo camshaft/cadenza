@@ -109,6 +109,66 @@ fn fmt_an_explicit_file_list_is_not_project_mode() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Write `src` to a fresh temp `.cdz` file and return (dir, path) — for the comment-fidelity checks
+/// (which need a specific comment shape, not the `ugly_project` spacing fixture).
+fn temp_cdz(tag: &str, src: &str) -> (std::path::PathBuf, String) {
+    let dir = std::env::temp_dir().join(format!("cdz-fmtdoc-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("m.cdz");
+    std::fs::write(&path, src).unwrap();
+    (dir, path.to_str().unwrap().to_string())
+}
+
+/// Count `///` doc-comment markers in a blob (the fidelity metric: fmt must never DROP or DOWNGRADE a
+/// doc-comment to a plain `//`, so the `///` count must survive a format pass).
+fn triple_slash_count(s: &str) -> usize {
+    s.matches("///").count()
+}
+
+#[test]
+fn fmt_preserves_a_doc_comment_on_a_plain_def() {
+    // Comment fidelity: `cdz fmt` must NOT drop or downgrade a `///` doc-comment. The common case — a
+    // `///` before a plain `def` — round-trips its doc through a format pass with the `///` count intact.
+    // (This pins the invariant against a future reader/printer regression; the whole point of `fmt` is a
+    // faithful reprint, and a silently-eaten doc-comment is a data-loss bug, not a formatting choice.)
+    let (dir, file) = temp_cdz(
+        "plaindef",
+        "/// A documented function.\n/// Second doc line.\ndef answer () -> Int64 = 42\n",
+    );
+    let (ok, out, err) = run_in(&dir, &["fmt", &file, "--stdout"]);
+    assert!(ok, "cdz fmt --stdout should succeed: {err}");
+    assert_eq!(
+        triple_slash_count(&out),
+        2,
+        "both `///` doc lines survive the format pass (not downgraded to `//`): {out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// KNOWN GAP (routed to v-syntax 2026-07-20, reader doc-attachment lane): a `///` before an `@`-annotated
+// def (e.g. `@test`) is DOWNGRADED to `//` — the annotation between the doc and the def breaks the drain,
+// the same bug class as the (now-fixed) `///`-before-`effect` case. `#[ignore]`d until the reader fix
+// lands (un-ignore + it should pass, pinning the fix). This is why the fleet-wide `cdz fmt` apply (the
+// operator cdz-fmt directive items 1+3) stays HELD: applying now would eat `///` section-dividers before
+// the many `@test` defs in iterators/compiler-ml (measured: giter.cdz 251→205 `///`).
+#[test]
+#[ignore = "v-syntax reader doc-attachment: /// before an @-annotated def downgrades to // (fmt-apply blocker)"]
+fn fmt_preserves_a_doc_comment_on_an_annotated_def() {
+    let (dir, file) = temp_cdz(
+        "annotdef",
+        "def a () -> Int64 = 1\n\n/// Doc before an annotated def.\n@test\ndef b () -> Bool = Int64.eq(a(), 1)\n",
+    );
+    let (ok, out, err) = run_in(&dir, &["fmt", &file, "--stdout"]);
+    assert!(ok, "cdz fmt --stdout should succeed: {err}");
+    assert_eq!(
+        triple_slash_count(&out),
+        1,
+        "the `///` before the @test def survives (not downgraded to `//`): {out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn fmt_a_manifest_with_no_source_errors() {
     // A `Project.cdz` declaring no entry/modules/tests has no source to format — a clear error.

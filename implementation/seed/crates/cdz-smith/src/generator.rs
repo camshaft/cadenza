@@ -139,6 +139,12 @@ const INT_BOUNDARIES: &[&str] = &[
     "18446744073709551616",
 ];
 
+/// The fixed-width integer type names, for a boundary-literal ascription (`(: 256 Int8)`). Pairing an
+/// `INT_BOUNDARIES` magnitude with a possibly-narrower declared width drives the width-fit (CDZ0301) /
+/// const-fold-overflow (CDZ0304) decision at a KNOWN operand — and where the value DOES fit, both
+/// backends must agree, so it also feeds the differential oracle.
+const INT_FIXED_TYPES: &[&str] = &["Int8", "Int32", "Int64", "UInt8", "UInt64"];
+
 /// Exact float boundaries, each a well-formed float token (starts with a digit, has a `.`/`e`, valid
 /// chars) so `cadenza-syntax::parse_float` accepts it. Covers signed zero, the f32/f64 magnitude
 /// extremes, tiny subnormal-scale values, and out-of-f64-range magnitudes (a clean range/const-fold
@@ -499,6 +505,22 @@ impl Gen<'_> {
     }
 
     fn ascribe_expr(&mut self, depth: u32, want: Kind) {
+        // About a third of the time, ascribe an exact int-width BOUNDARY directly to a fixed-width
+        // int type (`(: 256 Int8)`). This deliberately pairs a boundary magnitude with a possibly-
+        // NARROWER declared width, hitting the width-fit (CDZ0301) / const-fold-overflow (CDZ0304)
+        // decision at a known operand — and where the value fits, both backends must agree (a
+        // differential check). Independent of `want`: an ascription's own type governs its result,
+        // so a mismatch with `want` is just a clean outer decline, not a lost input.
+        if self.cur.choice(3) == 0 {
+            self.out.push_str("(: ");
+            self.out
+                .push_str(INT_BOUNDARIES[self.cur.choice(INT_BOUNDARIES.len())]);
+            self.out.push(' ');
+            self.out
+                .push_str(INT_FIXED_TYPES[self.cur.choice(INT_FIXED_TYPES.len())]);
+            self.out.push(')');
+            return;
+        }
         let ty = if want == Kind::Num {
             TYPES[self.cur.choice(6)] // the numeric-ish subset (Int*/UInt*)
         } else {
@@ -619,6 +641,32 @@ mod tests {
             FLOAT_BOUNDARIES.iter().any(|lit| src.contains(*lit))
         });
         assert!(hit, "no seed in the sweep emitted a float boundary literal");
+    }
+
+    /// The boundary-ascription arm is reachable and every program it can emit still parses (a
+    /// `(: <boundary> <IntType>)` node is a width-fit/overflow probe — it must reach the checker,
+    /// not choke the reader).
+    #[test]
+    fn some_seed_emits_a_boundary_ascription() {
+        let mut hit = false;
+        for b0 in 0u16..=255 {
+            for b1 in 0u16..=255 {
+                let seed = [b0 as u8, b1 as u8, b0 as u8, b1 as u8, 0, 0, 0, 0];
+                let src = generate(&seed).source;
+                assert!(
+                    cadenza_syntax::sexpr::read(&src).is_ok(),
+                    "generated program did not parse:\n{src}"
+                );
+                if INT_FIXED_TYPES
+                    .iter()
+                    .any(|t| src.contains(&format!(" {t})")))
+                    && INT_BOUNDARIES.iter().any(|lit| src.contains(*lit))
+                {
+                    hit = true;
+                }
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted a boundary ascription");
     }
 
     /// Generation is deterministic in the seed (required for reproducing + shrinking a finding).

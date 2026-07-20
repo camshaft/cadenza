@@ -997,6 +997,13 @@ pub struct Db {
     /// scan's first-hit. A pure accelerator over `type_decls`.
     same_name_newtype_ctor_index: crate::fxhash::FxHashMap<String, StructId>,
 
+    /// The subset of same-name-ctor names whose owning sum is MONOMORPHIC (no type params). `resolve_name`
+    /// consults this to fire the head-position ctor rule on a SYNTH node too (a β-copied `(Meters a)`
+    /// inlined at a call site), which the `is_user_node` gate alone wrongly left the TYPE — safe only for a
+    /// monomorphic sum (a generic one has a `sum_applied` synth type-expr that must stay the type). See
+    /// [`Db::same_name_monomorphic_ctor`].
+    same_name_monomorphic_ctor_index: crate::fxhash::FxHashSet<String>,
+
     /// For each sum's DECLARATION OCCURRENCE, its index in [`type_decls`] — the O(1) reverse of the nominal
     /// identity a `Ty::Sum { decl }` carries, backing [`type_decl_by_occ`]. That was a linear
     /// `type_decls.iter().find(|t| t.occ == occ)`; the Rust backend's recursive-sum boxing walk calls it
@@ -2153,6 +2160,8 @@ impl Db {
         // `same_name_newtype_ctor`, replacing an O(types) `find` per type-name resolution.
         let mut same_name_newtype_ctor_index: crate::fxhash::FxHashMap<String, StructId> =
             crate::fxhash::FxHashMap::default();
+        let mut same_name_monomorphic_ctor_index: crate::fxhash::FxHashSet<String> =
+            crate::fxhash::FxHashSet::default();
         // The boundary between USER `(type …)` declarations and the appended BUILT-IN prelude sums (the
         // last `prelude_sum_count`, e.g. `Ast`/`Option`/`Result`). Only a USER declaration's colliding
         // variant shadows the prelude in construct position (the operator ruling is about a program-defined
@@ -2216,6 +2225,15 @@ impl Db {
                 same_name_newtype_ctor_index
                     .entry(decl.name.clone())
                     .or_insert(ctor);
+                // MONOMORPHIC same-name sum (no type params) — record the name so `resolve_name` may fire
+                // the head-position ctor rule on a SYNTH node too (a β-copied `(Meters a)` inlined at a call
+                // site). Safe only for a monomorphic sum: a GENERIC one has a `sum_applied` synth type-expr
+                // `(Box a)` in head position that MUST stay the type, and only `is_user_node` tells that
+                // synth from a value-construct copy — but a monomorphic sum has NO such synth. (FACE B of the
+                // breaker's `adv-same-name-ctor-hijacked-by-type`.)
+                if decl.params.is_empty() {
+                    same_name_monomorphic_ctor_index.insert(decl.name.clone());
+                }
             }
         }
         // Sum DECLARATION OCCURRENCE → its index in `type_decls` — `type_decl_by_occ`'s O(1) reverse (was
@@ -2444,6 +2462,7 @@ impl Db {
             type_expr_nodes,
             type_decl_index,
             same_name_newtype_ctor_index,
+            same_name_monomorphic_ctor_index,
             type_decl_by_occ_index,
             effect_decl_index,
             scope_binders,
@@ -3727,6 +3746,14 @@ impl Db {
         // O(1) via the load-time index (was a linear `type_decls.iter().find` → O(N²) when the linked
         // resolve path probes it per type-name reference in an N-type package).
         self.same_name_newtype_ctor_index.get(name).copied()
+    }
+
+    /// Whether `name` is a same-name ctor of a MONOMORPHIC sum (no type params). `resolve_name` uses this
+    /// to fire the head-position ctor rule on a SYNTH node (a β-copied `(Meters a)` inlined at a call site)
+    /// — safe only for a monomorphic sum, which (unlike a generic one) has no `sum_applied` synth type-expr
+    /// that must stay the type. See the FACE-B block in `resolve_name`.
+    pub fn same_name_monomorphic_ctor(&self, name: &str) -> bool {
+        self.same_name_monomorphic_ctor_index.contains(name)
     }
 
     /// The `(index, TypeDecl)` of the sum whose DECLARATION OCCURRENCE is `occ` — the reverse of the

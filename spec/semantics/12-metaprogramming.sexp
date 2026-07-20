@@ -11,6 +11,22 @@
   (input  (quote (+ 1 2)))
   (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2))) Ast)))
 
+(case "each literal kind quotes to its own single Ast leaf that escapes and renders"
+  (doc    "The leaf-level companion of the compound case above: quoting a BARE name/string/boolean/float
+           produces the matching single `Ast` variant, and each escapes the boundary rendering its
+           canonical constructor form. A tuple gathers all four so one case pins the whole scalar-leaf
+           set: `(tuple (quote foo) (quote \"hi\") (quote true) (quote 2.5))` = `(tuple (Ast.Name \"foo\")
+           (Ast.Str \"hi\") (Ast.Bool true) (Ast.Float 2.5))`. Pins that a NAME quotes to `Ast.Name` (not
+           evaluated — the identifier is data), a STRING to `Ast.Str` (distinct from `Ast.Name`), a
+           BOOLEAN to `Ast.Bool`, a FLOAT to `Ast.Float` (distinct from `Ast.Int`), and that each single
+           leaf VALUE crosses the boundary and reads back structurally — the value-face of the guide's
+           opening `(quote 42)` / `(quote false)` examples (`Ast.Int` is already pinned standalone
+           elsewhere). A compiler that folded a quote or mis-tagged a leaf variant would render a wrong
+           node here.")
+  (input  (tuple (quote foo) (quote "hi") (quote true) (quote 2.5)))
+  (output (: (tuple (Ast.Name "foo") (Ast.Str "hi") (Ast.Bool true) (Ast.Float 2.5))
+             (Tuple Ast Ast Ast Ast))))
+
 ; --- A plain quote does not evaluate a nested unquote --------------------------------------------
 ; metaprogramming.md #Quote Produces An AST Value: `(quote <expr>)` produces the AST of <expr>
 ; "WITHOUT evaluating <expr> itself" — UNCONDITIONALLY, whatever <expr> contains. A quasiquote

@@ -99,6 +99,27 @@
             (export main)))
   (output (: 3000000000 Duration)))
 
+(case "the span between two equal Instants is zero — the inclusive lower boundary of `since`"
+  (doc    "The zero-span boundary, the exact edge BELOW the `since`-underflow trap. `(since t t)` =
+           `t − t` = 0: two equal Instants yield the SMALLEST valid `Duration` (a zero span), NOT a trap.
+           This pins that the span domain is inclusive at 0 — `since` traps only when the second (earlier)
+           argument is strictly LATER (the underflow case pinned above), and a same-instant span is a
+           legitimate zero, not an off-by-one into the trap. Load-bearing for the scheduler: a task that
+           computes `sleep(since (now) (now))` or two events filed at the same instant produce a zero-delay
+           span (which files at the current clock, §3.4 tie-break), not a spurious trap or a wrap. Graded
+           via a runtime `(call …)` arg so the subtract is a real instruction rather than a const fold.")
+  (input  (do
+            (type Duration (Duration UInt64))
+            (type Instant  (Instant  UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (def (dur-ns  (: d Duration)) (match d ((Duration.Duration v) v)))
+            (def (since (: later Instant) (: earlier Instant))
+              (Duration.Duration (- (inst-ns later) (inst-ns earlier))))
+            (def (main (: a UInt64)) (dur-ns (since (Instant.Instant a) (Instant.Instant a))))
+            (export main)))
+  (call   main (: 3000000000 UInt64))
+  (output (: 0 UInt64)))
+
 (case "`before?` orders two Instants (the event-queue comparison)"
   (doc    "`(before? a b)` = the underlying `UInt64` `<` — the ONLY comparison the time-ordered event
            queue uses to sort wake-times (design §3.2, §4.1). `1 ns` is before `3 ns` (true); the strict
