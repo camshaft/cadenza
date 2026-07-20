@@ -13331,6 +13331,24 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     // Supersedes the did-you-mean + suppresses the typo-replace fix (the op is real, just on
                     // another declaration).
                     let shadow = crate::effects::arm_op_shadow_hint(db, arm.op);
+                    // The fallback MECHANICAL repair when there is no confident "did you mean" replacement:
+                    // DELETE the whole `(op (params…) state body)` arm. The arm names an operation the
+                    // effect does not declare, so removing it is always a valid edit that clears the
+                    // closed-set violation (the handler-arm twin of the duplicate-arm delete fix above and
+                    // the over-application delete). Located like the duplicate case: the op-key occurrence's
+                    // projection parent is the arm form. Heuristic (the author may instead have meant a
+                    // different op — hence a replace fix, when confident, is preferred over this delete).
+                    let arm_form = crate::effects::arm_op_key_occ(db, arm.op)
+                        .and_then(|key_occ| db.parent_of(key_occ))
+                        .and_then(|proj| db.parent_of(proj))
+                        .filter(|&f| matches!(db.ast.get(f), crate::ast::Struct::List(_)));
+                    let delete_arm_fix = |reject: Reject| match arm_form {
+                        Some(form) => reject.with_fix(crate::diag::Fix::delete_heuristic(
+                            form,
+                            "remove this handler arm (its operation is not declared by the effect)",
+                        )),
+                        None => reject,
+                    };
                     match crate::effects::declared_op_hint(db, arm.op) {
                         Some((key_occ, hint, single)) => {
                             let suffix = shadow.clone().unwrap_or(hint);
@@ -13344,18 +13362,24 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             if shadow.is_none()
                                 && let Some(candidate) = single
                             {
+                                // A confident typo → offer the RETYPE to the real op name (better than a
+                                // blunt delete when we know what they meant).
                                 reject =
                                     reject.with_fix(Fix::replace_heuristic(key_occ, candidate));
+                            } else {
+                                // No confident replacement (far miss, or a shadowed op the author must
+                                // rewire by hand) → the delete is the actionable fallback.
+                                reject = delete_arm_fix(reject);
                             }
                             out.push(reject);
                         }
-                        None => out.push(
+                        None => out.push(delete_arm_fix(
                             Reject::coded(
                                 Code::HandlerUndeclaredOp,
                                 "this handler arm names an operation its effect does not declare",
                             )
                             .at(anchor),
-                        ),
+                        )),
                     }
                 } else {
                     collect(db, arm.op, out);

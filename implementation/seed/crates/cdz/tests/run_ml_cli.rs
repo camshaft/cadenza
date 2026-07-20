@@ -214,22 +214,47 @@ fn run_ml_runs_a_multi_def_nullary_main_module() {
 }
 
 #[test]
-fn run_ml_declines_a_type_annotated_module() {
-    // The widened shape gate must STILL fast-decline any module carrying a TYPE ANNOTATION `(: … …)`. The
-    // ML front-end reads a typed param `(: x T)` but DISCARDS `T` (no annotation enforcement yet), so an
-    // unbound type name `(: x foo)` — which the corpus requires to reject CDZ0101 — would otherwise RUN to a
-    // bogus value instead of declining. Excluding `(: ` keeps the differential HONEST: the truthful verdict
-    // for an annotation-bearing program today is `declined` (coverage-not-yet), not a fabricated value.
+fn run_ml_declines_an_unbound_type_annotation_via_the_real_pipeline() {
+    // A type annotation with an UNBOUND type name `(: x foo)` must DECLINE — matching the reference's
+    // CDZ0101. This USED to be fast-declined by an over-broad `(: ` substring gate in `looks_in_ml_subset`
+    // (a coverage-not-yet stopgap, back when the ML front-end read but DISCARDED annotation types). That
+    // gate is now DROPPED (annotation enforcement landed), so this reaches the real pipeline — and the
+    // reader still declines an unrecognized type name (the bodyId -1 sentinel). Same `declined` verdict,
+    // now for the RIGHT reason (a real rejection, not a shape-gate skip).
     let (dir, path) = temp_src(
-        "annotated",
+        "unbound-type",
         "(do (def (f (: x foo)) x) (def (main) (f 7)) (export main))",
     );
     let (ok, out, err) = run(&[&path]);
-    assert!(ok, "a type-annotated module exits 0: {err}{out}");
+    assert!(ok, "an unbound-type-annotated module exits 0: {err}{out}");
     assert!(
         out.trim() == "declined",
-        "a type-annotated module fast-declines (annotations not yet enforced): got {out:?}"
+        "an unbound type name `(: x foo)` declines (matches reference CDZ0101): got {out:?}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_ml_runs_a_narrow_annotation_in_the_main_wrapper() {
+    // REGRESSION GUARD (the `looks_in_ml_subset` over-broad `(: ` fix): a valid narrow-int annotation inside
+    // the `(do (def (main) …) (export main))` wrapper must now RUN, not fast-decline. The `(: ` exclusion
+    // formerly fired ONLY in the nullary-main-module branch, so a BARE `(: 100 Int8)` already ran while the
+    // SAME annotation in the wrapper wrongly fast-declined (a spurious wrapper-vs-bare asymmetry — NOT a
+    // scale-emergent emit bug, as first misdiagnosed). With enforcement landed, both forms run and are
+    // checked: `(: 100 Int8)` → 100. (An overflow like `(: 200 Int8)` still declines via the real pipeline,
+    // matching run-emitted + the reference — covered by the compiler-ml @tests + the W4 differential.)
+    let (dir, path) = temp_src(
+        "narrow-ann-wrapper",
+        "(do (def (main) (: 100 Int8)) (export main))",
+    );
+    let (ok, out, err) = run(&[&path]);
+    assert!(ok, "a narrow-annotation module exits 0: {err}{out}");
+    if store_present() {
+        assert!(
+            out.trim() == "value 100",
+            "a narrow annotation `(: 100 Int8)` in the main wrapper RUNS to 100 (no longer fast-declined): got {out:?}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

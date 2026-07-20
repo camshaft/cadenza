@@ -271,6 +271,26 @@
   (input  (do (def (main) (match 0 (0 (let ((x (try (Some 9)))) (Some x))) (_ (None unit)))) (export main)))
   (output (: (Some 9) (Option Int64))))
 
+(case "a `?` in an anonymous LAMBDA body resolves the lambda as its boundary (happy path)"
+  (doc    "`((fn () (let ((x (try (Some 7)))) (Some (+ x 1)))))` — the `?` sits inside an IMMEDIATELY-APPLIED
+           anonymous `(fn () …)`, not a named `def`. A `?` short-circuits the enclosing FUNCTION's fallible
+           result, and a lambda IS a function (`enclosing_boundary_ty` walks to a `(fn params body)` body,
+           not only a `def` body — DESIGN-try-operator-rcdzc.md §4). The lambda's result infers `(Option
+           Int64)`, so the `?` unwraps `x` = 7 and the lambda (hence `main`) returns `(Some 8)`. Pins that
+           the boundary walk resolves an ANONYMOUS-lambda boundary, the executing companion of the
+           def-boundary cases above.")
+  (input  (do (def (main) ((fn () (let ((x (try (Some 7)))) (Some (+ x 1)))))) (export main)))
+  (output (: (Some 8) (Option Int64))))
+
+(case "a failure `?` short-circuits the enclosing LAMBDA, not the outer function"
+  (doc    "The short-circuit companion of the lambda-boundary case: `((fn () (let ((x (try (None unit))))
+           (Some x))))` — the `?` sees a constant `None`, so it BREAKS the enclosing `(fn () …)` boundary
+           (the NEAREST enclosing function body), making the lambda's value `(None unit)`; `main` returns
+           that. Pins that a `?`'s short-circuit targets the innermost enclosing lambda boundary, exactly as
+           it targets a def boundary — the abortive path of the anonymous-lambda boundary.")
+  (input  (do (def (main) (: ((fn () (let ((x (try (None unit)))) (Some x)))) (Option Int64))) (export main)))
+  (output (: (None unit) (Option Int64))))
+
 ; --- The strict spine around a short-circuiting `?`: effects, ordering, and the cut point ----------
 ; The trapping-earlier-init pin above grades the compile-provable face (CDZ0304). These grade the
 ; RUNTIME spine: an effectful init BEFORE a failing `?` is observed (performs exactly once), a

@@ -160,16 +160,16 @@ export default function Rationals() {
           <>
             A rational is compared by value, so equal fractions are <C>=</C> however they're written.
             Write the fraction <C>3/6</C> in lowest terms so it equals <C>(Rational.of 1 2)</C> and the
-            comparison gives <C>1</C>.
+            comparison gives <C>true</C>.
           </>
         }
-        starter={`(if (= (Rational.of 3 6) (Rational.of 1 ?)) 1 0)`}
-        solution={`(if (= (Rational.of 3 6) (Rational.of 1 2)) 1 0)`}
-        expected="1"
+        starter={`(= (Rational.of 3 6) (Rational.of 1 ?))`}
+        solution={`(= (Rational.of 3 6) (Rational.of 1 2))`}
+        expected="true"
         hint={
           <>
             <C>3/6</C> reduces to <C>1/2</C>, so the denominator is <C>2</C>. Equal rationals compare
-            <C>=</C>, giving <C>1</C>.
+            <C>=</C>, giving <C>true</C>.
           </>
         }
       />
@@ -180,12 +180,12 @@ export default function Rationals() {
           <>
             Division is exact, so ask how many quarters are in a half. Divide <C>1/2</C> by a quarter so
             the result is <C>2/1</C>, filling in the divisor's denominator, and when it's right the check
-            gives <C>1</C>.
+            gives <C>true</C>.
           </>
         }
-        starter={`(if (= (/ (Rational.of 1 2) (Rational.of 1 ?)) (Rational.of 2 1)) 1 0)`}
-        solution={`(if (= (/ (Rational.of 1 2) (Rational.of 1 4)) (Rational.of 2 1)) 1 0)`}
-        expected="1"
+        starter={`(= (/ (Rational.of 1 2) (Rational.of 1 ?)) (Rational.of 2 1))`}
+        solution={`(= (/ (Rational.of 1 2) (Rational.of 1 4)) (Rational.of 2 1))`}
+        expected="true"
         hint={
           <>
             A quarter is <C>(Rational.of 1 4)</C>. Dividing by it multiplies by its reciprocal <C>4/1</C>,
@@ -201,12 +201,12 @@ export default function Rationals() {
             A rational is stored in lowest terms, so its parts come back <em>reduced</em>: <C>6/8</C> is
             really <C>3/4</C>, so its numerator is <C>3</C>. Which accessor reads the top of the fraction,{" "}
             <C>numerator</C> or <C>denominator</C>? Fill in the blank so the check confirms the numerator is{" "}
-            <C>3</C> and gives <C>1</C>.
+            <C>3</C> and gives <C>true</C>.
           </>
         }
-        starter={`(if (= (Rational.? (Rational.of 6 8)) (BigInt.of 3)) 1 0)`}
-        solution={`(if (= (Rational.numerator (Rational.of 6 8)) (BigInt.of 3)) 1 0)`}
-        expected="1"
+        starter={`(= (Rational.? (Rational.of 6 8)) (BigInt.of 3))`}
+        solution={`(= (Rational.numerator (Rational.of 6 8)) (BigInt.of 3))`}
+        expected="true"
         hint={
           <>
             <C>6/8</C> reduces to <C>3/4</C>, whose numerator is <C>3</C>. <C>Rational.numerator</C> reads

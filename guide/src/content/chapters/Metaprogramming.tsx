@@ -211,11 +211,12 @@ export default function Metaprogramming() {
         source={`(def (main)
   (match (quote (+ 1 2))
     ((Ast.List (list (Ast.Name op) .. rest))
-      (if (= op "+") 1 0))
-    (_ 0)))`}
+      (= op "+"))
+    (_ false)))`}
       />
       <P>
-        The pattern binds <C>op</C> to the head's name (<C>"+"</C>) and <C>rest</C> to the arguments, so a
+        The head's name is <C>"+"</C>, so the check reads <C>true</C>. The pattern binds <C>op</C> to that
+        name and <C>rest</C> to the arguments, so a
         macro can dispatch on what a form <em>is</em> before rewriting it. There's also a quasiquote{" "}
         <em>pattern</em> for the common shapes: a <C>quasiquote</C> form with <C>unquote</C> holes as a
         match arm binds the operands directly, the mirror image of building with a quasiquote template.

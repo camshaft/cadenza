@@ -1279,6 +1279,75 @@
             (export main)))
   (output (: 5 Int64)))
 
+; ---- Same-name MONOMORPHIC constructor in a VALUE position: the ctor wins, in a helper AND multi-variant.
+; The cases above are the TYPE-position complement (an applied same-name generic denotes the TYPE). These pin
+; the VALUE-position rule for a MONOMORPHIC same-name sum: `(N a)` builds the VARIANT, not the type — direct
+; in a body, in a CALLED helper (whose body is β-copied to a synth node at instantiation), and for a
+; multi-variant sum whose FIRST variant shares the type name. All three used to falsely reject CDZ0203 ("`N`
+; is a type that takes no type parameters") because the same-name ctor index was gated to single-variant OR
+; the head-position rule skipped the synth β-copy node; the monomorphic-sum fix fires the ctor rule for a
+; same-name variant regardless of variant count and through the β-copy. A GENERIC same-name ctor via a helper
+; is a distinct harder case that STILL declines (pinned below).
+
+(case "a same-name variant of a multi-variant sum constructs bare in a body"
+  (doc    "`(type N (N Int64) (J Int64))` — the FIRST variant shares the type's name. Bare `(N a)` DIRECT in
+           main builds the VARIANT (not the type): `f(4)` matches the `N` arm → 4 + 1 = 5. The single-variant
+           twin `(type Meters (Meters Int64))` already worked in this position; this pins that variant COUNT
+           does not change whether the same-name constructor is visible bare (the ctor index is not gated to
+           `variants.len()==1`). The qualified `N.N` works either way.")
+  (input  (do
+            (type N (N Int64) (J Int64))
+            (def (main (: a Int64)) (match (N a) ((N v) (+ v 1)) ((J w) w)))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 5 Int64)))
+
+(case "a same-name monomorphic constructor in a called helper resolves to the constructor"
+  (doc    "`(type Meters (Meters Int64))` gives the constructor the type's name; `(def (mk a) (Meters a))`
+           uses the bare constructor in a helper `main` CALLS. At mk's instantiation its body is β-copied to a
+           synth node, and the head-position ctor rule must still fire there (a monomorphic same-name sum has
+           no `sum_applied` synth type-expr to confuse) — so `(Meters a)` builds the VARIANT, exactly as it
+           does written directly in main. `mk(4)` → matches `Meters` → 4 + 1 = 5. Used to reject CDZ0203 at
+           mk's call site (the β-copied `(Meters a)` synth node fell to the type binding) while a NEVER-CALLED
+           helper compiled — the lazy-resolution tell. The qualified `Meters.Meters` in the helper always
+           worked.")
+  (input  (do
+            (type Meters (Meters Int64))
+            (def (mk a) (Meters a))
+            (def (main (: a Int64)) (match (mk a) ((Meters v) (+ v 1))))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 5 Int64)))
+
+(case "a same-name multi-variant constructor in a called helper resolves to the constructor"
+  (doc    "The multi-variant twin of the helper case above: `(type N (N Int64) (J Int64))` with `(def (mk a)
+           (N a))` called from main. The β-copied `(N a)` in mk's body resolves to the VARIANT for a
+           monomorphic multi-variant sum too — `mk(4)` matches the `N` arm → 5. Pins that the synth-node
+           head-position ctor rule is independent of variant count, closing the {single, multi} × {direct,
+           helper} matrix for a monomorphic same-name sum.")
+  (input  (do
+            (type N (N Int64) (J Int64))
+            (def (mk a) (N a))
+            (def (main (: a Int64)) (match (mk a) ((N v) (+ v 1)) ((J w) w)))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 5 Int64)))
+
+(case "a same-name GENERIC constructor via a called helper is rejected — the residual harder case"
+  (doc    "The residual discriminator: a GENERIC same-name sum `(type Box (Box a))` constructed via a called
+           helper `(def (mk x) (Box x))` STILL declines CDZ0203 — for a generic same-name sum the β-copied
+           `(Box x)` head cannot be disambiguated from the `sum_applied` synth type-expr the way a monomorphic
+           one can, so it is (correctly, conservatively) rejected rather than risk corrupting the generic
+           type-expr path. NOT a miscompile — a clean compile-time reject; the DIRECT generic construct works,
+           and the monomorphic helper forms (above) resolve. Pins the boundary of the same-name-in-helper fix
+           so a future generalization to the generic case is a deliberate corpus flip, not a silent one.")
+  (input  (do
+            (type Box (Box a))
+            (def (mk x) (Box x))
+            (def (main (: a Int64)) (match (mk a) ((Box v) (+ v 1))))
+            (export main)))
+  (error CDZ0203))
+
 (case "Type.of on a bare nullary variant reflects its element as UNDETERMINED"
   (doc    "`Type.of` reflects a value's INFERRED type, so a bare nullary variant — carrying no element —
            reflects an UNDETERMINED element. `(None)` is `Option ?a`, distinct from a concrete `Option

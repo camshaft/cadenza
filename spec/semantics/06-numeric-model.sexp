@@ -1338,6 +1338,52 @@
   (call   run (: -5 Int64))
   (output (: 0 Int64)))
 
+; The cases above pin nan-propagation and float `/0 → ±inf`. The IEEE INDETERMINATE forms — an operation on
+; an actual INFINITY whose result IEEE leaves undefined — are the companion: `inf − inf` and `inf × 0.0` are
+; both NaN (not 0, not inf). A genuine +inf is produced at RUN TIME by dividing a runtime finite by 0.0 (a
+; const inf would hit the "not finite has no value form yet" decline; the runtime `x` keeps `x/0.0` off the
+; fold), then fed to the indeterminate op. Pins that the runtime float ops compute the IEEE indeterminate
+; result rather than trapping or folding, both backends — the inf-operand companion of the existing
+; `0.0 * nan = nan` case (which tests a NaN operand, never an inf one) and of `inf` being nowhere subtracted.
+
+(case "a runtime infinity in an indeterminate op yields nan (inf minus inf, inf times zero)"
+  (doc    "With a genuine runtime +inf `posinf = (/ x 0.0)` (x a runtime finite, so the divide is not
+           folded): `inf − inf` = NaN and `inf × 0.0` = NaN — the IEEE indeterminate forms, distinct from
+           the finite/±inf outcomes. `(= (- posinf posinf) Float64.nan)` → 1 (NOT 0.0), `(= (* posinf 0.0)
+           Float64.nan)` → 1 (0.0 is NOT an annihilator when the other operand is inf), and the control
+           `(= posinf posinf)` → 1 (inf equals itself). Encodes the three as a tuple (1 1 1). Pins the
+           inf-operand indeterminate arithmetic — untested before (the `0.0 *` case tested a NaN operand,
+           and `inf − inf` was nowhere). Both backends via the runtime `(call)` form.")
+  (input  (do
+            (def (run (: c Int64))
+              (let ((x (if (> c 0) 1.0 2.0)))
+                (let ((posinf (/ x 0.0)))
+                  (tuple
+                    (if (= (- posinf posinf) Float64.nan) 1 0)
+                    (if (= (* posinf 0.0) Float64.nan) 1 0)
+                    (if (= posinf posinf) 1 0)))))
+            (export run)))
+  (call   run (: 5 Int64))  (output (: (tuple 1 1 1) (Tuple Int64 Int64 Int64)))
+  (call   run (: -5 Int64)) (output (: (tuple 1 1 1) (Tuple Int64 Int64 Int64))))
+
+(case "a runtime Float32 indeterminate op yields nan at binary32 width"
+  (doc    "The Float32 twin: the special-value ARITHMETIC faces at binary32 — nan propagates through a
+           Float32 `+`, a Float32 `/0` is inf (self-equal), and Float32 `inf − inf` = nan. A genuine f32
+           +inf is `(/ x (: 0.0 Float32))` over a runtime Float32 `x`. `(= (+ x Float32.nan) Float32.nan)`
+           → 1, `(= posinf posinf)` → 1, `(= (- posinf posinf) Float32.nan)` → 1 → tuple (1 1 1). Pins that
+           the narrow-width float ops compute the same IEEE special-value results as Float64 (the corpus
+           pins Float32 special-value EQUALITY but not its ARITHMETIC), both backends.")
+  (input  (do
+            (def (run (: x Float32))
+              (let ((posinf (/ x (: 0.0 Float32))))
+                (tuple
+                  (if (= (+ x Float32.nan) Float32.nan) 1 0)
+                  (if (= posinf posinf) 1 0)
+                  (if (= (- posinf posinf) Float32.nan) 1 0))))
+            (export run)))
+  (call   run (: 1.5 Float32))  (output (: (tuple 1 1 1) (Tuple Int64 Int64 Int64)))
+  (call   run (: 3.0 Float32))  (output (: (tuple 1 1 1) (Tuple Int64 Int64 Int64))))
+
 (case "a runtime integer converts to a float with the machine convert"
   (doc    "`(Float64.of-int n)` over a runtime Int64 `n` emits `f64.convert_i64_s`; `(of-int 42)` = 42.0.
            The explicit int→float conversion (numeric-model.md #A Conversion Involving A Floating-Point

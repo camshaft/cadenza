@@ -68,6 +68,46 @@ test("no chapter has an em-dash in PROSE (tone overhaul: subordinate with since/
   );
 });
 
+// The chapter blurbs (`blurb: "…"` in chapters.ts) are user-facing prose too — they're the one-line
+// descriptions shown in the sidebar and on the chapter cards, so they belong to the same zero-em-dash tone
+// as the chapter bodies. The scan above only reads the chapter .tsx files, so the blurbs were an unguarded
+// gap: the tone overhaul that cleared the chapters left several blurbs with em-dashes, and nothing here
+// would notice. Pin them too — they're plain string literals in the registry (no `${}` interpolation), so
+// each `blurb: "…"` value is scanned directly.
+function registryBlurbs(): { blurb: string; line: number }[] {
+  const src = readFileSync(join(here, "chapters.ts"), "utf8").split("\n");
+  const out: { blurb: string; line: number }[] = [];
+  for (let i = 0; i < src.length; i++) {
+    const m = src[i].match(/blurb:\s*"((?:[^"\\]|\\.)*)"/);
+    if (m) out.push({ blurb: m[1], line: i + 1 });
+  }
+  return out;
+}
+
+test("no chapter blurb has an em-dash (sidebar/card prose holds the same zero-em-dash tone)", () => {
+  const violations: string[] = [];
+  for (const { blurb, line } of registryBlurbs()) {
+    if (blurb.includes(EM_DASH)) violations.push(`chapters.ts:${line} — blurb em-dash: …${blurb.slice(0, 80)}…`);
+  }
+  assert.equal(
+    violations.length,
+    0,
+    `blurb em-dash(es) found — rewrite the sidebar/card one-liner as a flowing clause (", so …" / ` +
+      `", which …" / ": …"):\n  ${violations.join("\n  ")}`,
+  );
+});
+
+test("the blurb scan actually reads blurbs (guards a vacuous pass)", () => {
+  // A broken regex or moved file would make the blurb invariant pass on nothing. Assert we see one blurb
+  // per chapter (every registry entry has a blurb, so the counts match) and that a known blurb is captured.
+  const blurbs = registryBlurbs();
+  assert.ok(blurbs.length >= 30, `expected a blurb per chapter (30+), found ${blurbs.length}`);
+  assert.ok(
+    blurbs.some((b) => b.blurb.includes("interactive guide works")),
+    "expected to capture the Welcome blurb; the scan may be broken",
+  );
+});
+
 test("the em-dash prose scan reads chapters + strips code (guards a vacuous pass)", () => {
   // A broken strip or empty dir would make the invariant pass on nothing. Assert the machinery works.
   const files = chapterFiles();

@@ -64,3 +64,12 @@ the W4 run-ml oracle runs a valid narrow annotation in the (def main) wrapper an
 PIN PLAN (corpus-bugfix, once 7def6cdbc on trunk): pin an in-range case (do (def (main) (+ (: 100 Int8)
 (: 20 Int8))) (export main))->120 + an overflow->declined twin. VERIFIED still pending on trunk 213415220
 (run-ml still declines). Await 7def6cdbc land, then author the pin (all 3 baselines).
+
+## RESOLVED (corpus-bugfix, 2026-07-20, trunk 0e1dbae71)
+v-compiler-ml's harness gate fix 7def6cdbc LANDED — verified: run-ml now runs the narrow annotation in the
+(def main) wrapper -> 120 (was spurious decline). NO CORPUS PIN authored, by design: xtask gate has only
+wasm/rust/rust-async targets — there is NO cadenza-ml/run-ml gate target/baseline, and the wasm/rust path
+always compiled+ran narrow annotations fine (the bug was the run-ml HARNESS looks_in_ml_subset gate ONLY).
+A corpus case would pass via wasm/rust regardless of the fix -> false comfort, not a guard. The correct
+regression guard is a run-ml/W4-harness test in v-compiler-ml's lane (cdz-kernel / compiler-ml @test suite);
+asked them to add it there. Corpus side: nothing to pin. RESOLVED.

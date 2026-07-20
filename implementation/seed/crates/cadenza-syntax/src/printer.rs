@@ -5468,6 +5468,55 @@ mod tests {
     }
 
     #[test]
+    fn comment_leading_a_def_body_is_preserved_not_dropped() {
+        // A `//` line-comment on its own line at the START of a def body (the interior
+        // body-leading position, `def f() =` \n `// note` \n `body`) is captured + wrapped as a
+        // `(comment …)`, not DROPPED. `expr` doesn't drain trivia (only `stmt` does), so before the
+        // `body_expr` fix the comment was stranded at the body's first-token slot and vanished
+        // entirely — a genuine comment LOSS (worse than a downgrade). A structural round-trip can't
+        // witness a dropped comment; the count-based assert pins it. Covers function + value defs.
+        for (src, label) in [
+            (
+                "def f() -> Int64 =\n  // interior body comment\n  1",
+                "function body",
+            ),
+            ("def x =\n  // value body note\n  42", "value body"),
+        ] {
+            let a = parser::read_ml(src);
+            assert!(a.ok(), "[{label}] parse: {:?}", a.errors);
+            let sexpr = crate::sexpr::print(&a.arenas);
+            assert_eq!(
+                sexpr.matches("(comment ").count(),
+                1,
+                "[{label}] the body `//` must be a `(comment …)` node, not dropped: {sexpr}"
+            );
+            let printed = print(&a.arenas, 100);
+            let comment_lines = printed
+                .lines()
+                .filter(|l| l.trim_start().starts_with("//"))
+                .count();
+            assert_eq!(
+                comment_lines, 1,
+                "[{label}] the body comment re-prints as one `//` line: {printed}"
+            );
+            // Idempotent across a second pass.
+            let b = parser::read_ml(&printed);
+            assert!(b.ok(), "[{label}] reparse: {:?}", b.errors);
+            assert_eq!(print(&b.arenas, 100), printed, "[{label}] not idempotent");
+        }
+        // CONTROL: a `//` between two top-level defs still round-trips (the statement-leading position
+        // `stmt` already handled — the fix must not disturb it).
+        let ctrl = "def a() -> Int64 = 1\n// between defs\ndef b() -> Int64 = 2";
+        let a = parser::read_ml(ctrl);
+        assert!(a.ok(), "[control] parse: {:?}", a.errors);
+        assert_eq!(
+            crate::sexpr::print(&a.arenas).matches("(comment ").count(),
+            1,
+            "[control] the between-defs comment survives"
+        );
+    }
+
+    #[test]
     fn doc_before_effect_stays_a_doc_not_downgraded_to_comment() {
         // A `///` doc before an `effect` decl attaches INSIDE the decl as a `(doc …)` node (mirroring
         // `def`/`type`/`module`), so it re-prints as `///` — NOT downgraded to `//`. The reader used

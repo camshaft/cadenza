@@ -182,6 +182,33 @@ def roles-of-dedups() =
     | _ => trap("two roles, deduplicated"))
 
 @test
+def roles-of-descends-nested-choice() =
+  // PIN: roles-of must surface roles buried in a choice INSIDE a branch (2 levels of nesting), not just a
+  // flat two-branch choice. Buyer chooses; branch Go → Seller chooses (branch Ship → Seller→Carrier) →
+  // Carrier is 2 choices deep. All three roles must appear (first-seen order). Deeper recursion than the
+  // flat roles-of-collects-across-branches pin.
+  let g = Chor.Choice("Buyer", [
+    Chor.Branch("Go", Chor.Choice("Seller", [
+      Chor.Branch("Ship", Chor.Comm("Seller", "Carrier", "Deliver"))])),
+    Chor.Branch("Stop", Chor.Comm("Buyer", "Seller", "Halt"))]) in
+  (match roles-of(g) with
+    | [a, b, c] => (if a == "Buyer" then (if b == "Seller" then (if c == "Carrier" then unit
+        else trap("c=Carrier")) else trap("b=Seller")) else trap("a=Buyer"))
+    | _ => trap("a choice nested inside a branch surfaces all three roles"))
+
+@test
+def read-a-nested-choice-roundtrips() =
+  // PIN: the `.sexp` reader round-trips a choice-in-a-branch through read → from-ast (a well-formed
+  // recursive-descent parse of doubly-nested lists). Pairs with the roles-of nested pin so the whole
+  // `.sexp` surface is witnessed on nested choices, not just flat ones.
+  let src = "(choice Buyer (branch Go (choice Seller (branch Ship (comm Seller Carrier Deliver)))) (branch Stop (comm Buyer Seller Halt)))" in
+  (match read(src) with
+    | Option.Some(a) => (match from-ast(a) with
+      | Option.Some(_g) => unit
+      | Option.None(_) => trap("from-ast must parse the read nested-choice Ast"))
+    | Option.None(_) => trap("read must parse a nested-choice s-expr"))
+
+@test
 def read-a-choice-then-from-ast() =
   // PIN: the reader round-trips a CHOICE protocol (a chooser name + a nested list of `branch` nodes) through
   // read → from-ast. The reader is generic over Name/List, so nested branch children work; pin it so a future

@@ -2067,6 +2067,58 @@ fn a_failing_relational_requires_property_reports_an_in_domain_counterexample() 
     );
 }
 
+/// A CONJUNCTION mixing a single-param RANGE bound with a two-param RELATION — `@requires(x >= 0 and x < y)`
+/// — must satisfy BOTH: the range clamps `x >= 0` (per-param `ParamBound`) AND rejection sampling ensures
+/// `x < y` (a `Relation`). The two mechanisms compose through the conjunction descent (the range test and the
+/// relation test each exercise ONE mechanism; this pins them TOGETHER). A body that traps outside the joint
+/// domain never fires, so a PASS proves every drawn pair satisfied both. No store needed (scalar Int params).
+#[test]
+fn a_requires_mixing_a_range_bound_and_a_relation_satisfies_both() {
+    let d = dir("requires-mixed");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(x >= 0 and x < y)\n\
+         @test def m(x: Int64, y: Int64) = if x >= 0 and x < y then unit else trap(\"out of the joint domain\")\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok,
+        "a @requires mixing a range bound (x >= 0) and a relation (x < y) satisfies both so the property passes: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS m (100 trials)"),
+        "the mixed range+relation @requires property passes all trials — generation stayed in the joint domain: {stdout}"
+    );
+}
+
+/// A CHAINED @requires with TWO coupled relations — `@requires(a < b and b < c)` — must satisfy the whole
+/// chain at once: rejection sampling re-draws until `a < b` AND `b < c` hold simultaneously (a single relation
+/// is easy; two coupled ones are the tighter joint domain, ~1/6 of draws). A body trapping outside the chain
+/// never fires, so a PASS proves every drawn triple was strictly increasing. Pins that multiple relations
+/// compose (the fuel budget is sufficient for a realistic chain). No store needed (scalar Int params).
+#[test]
+fn a_chained_requires_with_two_relations_satisfies_the_whole_chain() {
+    let d = dir("requires-chain");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(a < b and b < c)\n\
+         @test def ch(a: Int64, b: Int64, c: Int64) = if a < b and b < c then unit else trap(\"chain violated\")\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok,
+        "a chained @requires(a < b and b < c) satisfies both relations by rejection sampling so the property passes: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS ch (100 trials)"),
+        "the chained-relation @requires property passes all trials — every drawn triple was strictly increasing: {stdout}"
+    );
+}
+
 #[test]
 fn cdz_test_on_a_compiled_wasm_gives_an_actionable_diagnostic_not_zero_tests_found() {
     // `cdz test foo.wasm` (a COMPILED component passed by mistake) must NOT surface the misleading

@@ -33,6 +33,29 @@ test("unquoteAtom strips quotes + resolves escapes; leaves non-strings alone", (
   assert.equal(unquoteAtom("127/20"), "127/20");
 });
 
+test("unquoteAtom escape-ordering: an escaped backslash ADJACENT to an escaped quote resolves both, in order", () => {
+  // unquoteAtom does `.replace(/\\"/, '"').replace(/\\\\/, '\\')` — two passes. The corner a naive re-order
+  // (or a single combined regex) breaks is `\\` immediately followed by `\"`: the atom body `\\\"` is an
+  // escaped-backslash THEN an escaped-quote and must resolve to `\"` (backslash + quote), not mis-pair the
+  // middle backslashes. The tokenizer guarantees any interior quote is backslash-escaped, so the `\"`-first
+  // pass only ever matches a genuine escaped quote. Pin the adjacency so the two-pass order can't regress.
+  assert.equal(unquoteAtom('"\\\\\\""'), '\\"'); // body \\\"  → backslash + quote
+  assert.equal(unquoteAtom('"a\\\\\\\\b"'), "a\\\\b"); // body a\\\\b → a + two backslashes + b
+  assert.equal(unquoteAtom('"x\\\\\\"y"'), 'x\\"y'); // body x\\\"y → x + backslash + quote + y
+});
+
+test("a String value survives the tokenize → unquote round trip (quotes + backslashes intact)", () => {
+  // The full display path for a String cell: the run worker renders `"<escaped>"`, the reader tokenizes it
+  // as one atom, and unquoteAtom recovers the original text. Pin that a value with embedded quotes AND
+  // backslashes (a path, a JSON snippet) round-trips exactly — a corruption here shows a wrong String cell.
+  for (const raw of ['a"b', "a\\b", 'a\\"b', 'C:\\dir\\"file"', '{"k": "v"}']) {
+    const escaped = raw.replace(/\\/g, "\\\\").replace(/"/g, '\\"'); // == literalFor's String escaping
+    const atom = parseSexpr(`"${escaped}"`);
+    assert.ok(isAtom(atom));
+    assert.equal(unquoteAtom((atom as { atom: string }).atom), raw, `round-trip failed for ${JSON.stringify(raw)}`);
+  }
+});
+
 test("stripAscription unwraps `(: value type)` to the value; passes a bare value through", () => {
   const wrapped = parseSexpr("(: (list 1 2) (List Int64))");
   assert.deepEqual(stripAscription(wrapped), { list: [{ atom: "list" }, { atom: "1" }, { atom: "2" }] });
