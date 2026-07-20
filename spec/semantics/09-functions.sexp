@@ -2652,6 +2652,30 @@
   (call   main)
   (output (: 15 Int64)))
 
+(case "a self-tail-recursive mixed match whose recursive arm returns an Option compiles to valid wasm"
+  (doc    "A DISTINCT tail-loop invalid-wasm shape from the accumulator/argument scratch cases above: a
+           self-tail-recursive function whose innermost match is MIXED — a value-returning arm beside a
+           recursive-tail arm — and whose recursive arm returns an OPTION-typed value (not a scalar
+           accumulator). `twostep` pulls `(x, s2)` from `step(s)`; if `x > 2` it RETURNS `(Some (x, s2))`,
+           else it TAIL-RECURSES `(twostep s2)`. Under the tail-loop conversion the recursive arm's `br`
+           (loop-continue) left the enclosing `if (result i32)` block stack-unbalanced → `func N failed to
+           validate: values remaining on stack at end of block`. A SCALAR-returning variant (arms yield
+           bare Int64) compiled fine, so the trigger is the Option-typed result of a mixed-match tail arm,
+           not the recursion. This is exactly v-iterators' filter-map shape (keep = return Some, drop =
+           recurse). `(twostep [1,2,3,4])` skips 1,2 and returns `(Some (3, [4]))`; reading the first
+           element of the pair = 3. Expected: 3.")
+  (input  (do
+            (def (step (: xs (List Int64)))
+              (match xs ((list) (None)) ((list h .. t) (Some (tuple h t)))))
+            (def (twostep (: s (List Int64)))
+              (match (step s)
+                ((None) (None))
+                ((Some pair) (match pair ((tuple x s2)
+                  (if (> x 2) (Some (tuple x s2)) (twostep s2)))))))
+            (def (main) (match (twostep (list 1 2 3 4)) ((Some (tuple y r)) y) ((None) 0)))
+            (export main)))
+  (output (: 3 Int64)))
+
 ; The same i32/i64 scratch-slot-aliasing family at a HIGHER local count, in a decode-loop shape the
 ; self-hosted compiler's reader is written in: a self-tail loop whose position advance projects BOTH
 ; fields of a tuple returned by a recursive helper, accumulating compound-payload sum nodes into a list.

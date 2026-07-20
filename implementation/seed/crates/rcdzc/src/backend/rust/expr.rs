@@ -84,6 +84,15 @@ pub struct Ctx<'a> {
     /// (an empty map used get-only / passed through — e.g. an empty-Map HANDLER STATE), the annotation is
     /// needed (nothing else fixes K/V) and `MapNew` grounds it. `false` in every other context.
     pub map_typed_by_enclosing_insert: bool,
+    /// The `Set` twin of `map_typed_by_enclosing_insert`: set true ONLY while emitting the base-set operand
+    /// of an enclosing `Set.insert`/`Set.remove`. An empty `Set.of (list)` in that position has its
+    /// `BTreeSet<T>` element type INFERRED by the enclosing `.insert(e)`/`.remove(&e)`, so a bare
+    /// `BTreeSet::new()` compiles and any grounded annotation would OVER-CONSTRAIN it (grounding to `Int64`
+    /// clashes with a String/Bytes/BigInt element the insert uses → E0308). When NOT set (an empty set used
+    /// len-only / passed through — the `(Set.len (Set.of (list)))` E0282 breaker found), `SetOf` grounds the
+    /// open element var so the annotation is spellable. A SEPARATE flag from the map one so a map-insert
+    /// value that CONTAINS an empty set still grounds the set. `false` in every other context.
+    pub set_typed_by_enclosing_insert: bool,
     /// A MATCH SCRUTINEE pre-bound to a Rust `let` local — `(scrutinee StructId, local name)`. A sum match
     /// over a NON-TRIVIAL scrutinee (a `Core::Call`/compound, not a pure param/local read) binds it ONCE
     /// (`{ let __ms = <scrutinee>; <body> }`) and records the mapping here; every `emit_sum_payload` read of
@@ -173,6 +182,7 @@ pub fn emit_body(
         sum_binds: Vec::new(),
         sum_path_types: Vec::new(),
         map_typed_by_enclosing_insert: false,
+        set_typed_by_enclosing_insert: false,
         scrut_locals: Vec::new(),
     };
     let expr = emit(db, body, &env, &ctx)?;
@@ -278,6 +288,7 @@ pub(super) fn emit_lifted_lambda(
         sum_binds: Vec::new(),
         sum_path_types: Vec::new(),
         map_typed_by_enclosing_insert: false,
+        set_typed_by_enclosing_insert: false,
         scrut_locals: Vec::new(),
     };
     let body = emit(db, lam.body, &env, &ctx)?;
@@ -316,6 +327,7 @@ fn emit_loop_body(
         sum_binds: Vec::new(),
         sum_path_types: Vec::new(),
         map_typed_by_enclosing_insert: false,
+        set_typed_by_enclosing_insert: false,
         scrut_locals: Vec::new(),
     };
     // Initialize the shared locals from THIS member's params (its param name → `__pi`), then the body.
@@ -1608,13 +1620,26 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 let ee = wrap_ord_key(ee, &type_of(db, *e));
                 lines.push_str(&format!("__s.insert({ee}); "));
             }
-            // ANNOTATE `__s` with the node's solved `BTreeSet<T>` type when it maps concretely; when the
-            // element type is still an unsolved VAR at this node (fixed only by downstream use), emit a
-            // BARE `BTreeSet::new()` and let Rust infer it from that use — the twin of the empty-map case
-            // (was a FALSE DECLINE for a context-typed empty set — the set-accumulator seed).
-            let ann = match types::rust_type(&type_of(db, id)) {
-                Some(t) => format!(": {t}"),
-                None => String::new(),
+            // ANNOTATE `__s` with the node's solved `BTreeSet<T>` type. When it maps concretely, spell it
+            // directly. When the element type is still an unsolved VAR at this node (an empty `Set.of (list)`
+            // whose element is fixed only by DOWNSTREAM use): if an enclosing `Set.insert`/`Set.remove` will
+            // fix it, leave a bare `BTreeSet::new()` (rustc infers, and a grounded annotation would
+            // OVER-CONSTRAIN — clashing with a String/Bytes/BigInt element the insert uses → E0308); else
+            // (len-only / pass-through, the `(Set.len (Set.of (list)))` E0282 breaker found) GROUND the open
+            // var to the default so the annotation is spellable — a bare `new()` there is uninferrable → rustc
+            // E0282. A wrong ground → a LOUD rustc error at `new()` (a build failure graded todo), never a
+            // silent miscompile — strictly safer than the bare `new()`. The exact twin of the empty-Map fix.
+            let set_ty = type_of(db, id);
+            let ann = if ctx.set_typed_by_enclosing_insert {
+                match types::rust_type(&set_ty) {
+                    Some(t) => format!(": {t}"),
+                    None => String::new(),
+                }
+            } else {
+                match types::rust_type(&types::ground_open_vars(&set_ty)) {
+                    Some(t) => format!(": {t}"),
+                    None => String::new(),
+                }
             };
             Ok(format!(
                 "{{ let mut __s{ann} = std::collections::BTreeSet::new(); {lines}__s }}"
@@ -1642,14 +1667,23 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     "a Set with a non-Ord (float-carrying) element has no BTreeSet rep on the Rust backend",
                 ));
             }
-            let s = emit(db, set, env, ctx)?;
+            // The base set's element type is fixed by THIS `.insert(e)` — flag it so an empty `Set.of (list)`
+            // base emits a bare inferred `new()` rather than a grounded annotation that could over-constrain
+            // the element (a String/Bytes/BigInt element → E0308). The `Map.insert` twin.
+            let mut set_ctx = ctx.clone();
+            set_ctx.set_typed_by_enclosing_insert = true;
+            let s = emit(db, set, env, &set_ctx)?;
             let e = emit(db, elem, env, ctx)?;
             let e = wrap_ord_key(e, &et);
             Ok(format!("{{ let mut __s = {s}; __s.insert({e}); __s }}"))
         }
         Core::SetRemove { set, elem, .. } => {
             let et = type_of(db, elem);
-            let s = emit(db, set, env, ctx)?;
+            // The base set's element type is fixed by THIS `.remove(&e)` — flag it so an empty base emits a
+            // bare inferred `new()` rather than an over-constraining grounded annotation (see `SetInsert`).
+            let mut set_ctx = ctx.clone();
+            set_ctx.set_typed_by_enclosing_insert = true;
+            let s = emit(db, set, env, &set_ctx)?;
             let e = emit(db, elem, env, ctx)?;
             let e = wrap_ord_key(e, &et);
             Ok(format!("{{ let mut __s = {s}; __s.remove(&({e})); __s }}"))
