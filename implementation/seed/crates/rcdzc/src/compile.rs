@@ -688,12 +688,19 @@ pub(crate) fn push_payload_type_positions(
     if db.ast.head_name(occ) == Some("Record")
         && let crate::ast::Struct::List(children) = db.ast.get(occ)
     {
-        // Descend into each `(name Type)` field pair's TYPE (the second element), skipping the name.
+        // Descend into each field's TYPE, skipping the name label. A field is a 2-element `(name Type)`
+        // pair (s-expr) OR a 3-element `(: name Type)` annotation triple (the ML `{name: Type}` lowering) —
+        // handle both so an ML-surfaced record field's type is validated (the `(: name type)` companion of
+        // the same field-spelling fix in `db::collect_type_params` + the RecordCtor reducers).
         for &pair in children.iter().skip(1) {
-            if let crate::ast::Struct::List(items) = db.ast.get(pair)
-                && items.len() == 2
-            {
-                push_payload_type_positions(db, items[1], params, out);
+            if let crate::ast::Struct::List(items) = db.ast.get(pair) {
+                match items.as_slice() {
+                    [_name, ty] => push_payload_type_positions(db, *ty, params, out),
+                    [colon, _name, ty] if db.ast.as_name(*colon) == Some(":") => {
+                        push_payload_type_positions(db, *ty, params, out);
+                    }
+                    _ => {}
+                }
             }
         }
         return;

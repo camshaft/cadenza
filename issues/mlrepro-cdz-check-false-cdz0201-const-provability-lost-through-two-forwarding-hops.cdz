@@ -1,3 +1,18 @@
+// ===== UPDATE 2026-07-20 (v-iterators) — ROOT CAUSE SHARPENED (v-core-opt re-diagnosed + I re-verified on
+// TRUNK b140ef9c8). The "2-hop-forward" framing below is INCOMPLETE; the real discriminator is REACHABILITY,
+// and the check-vs-compile DIVERGENCE PERSISTS on trunk for the reachable case: =====
+//   - REACHABLE consumer (export { run }, run=sum(from-list([1,2,3]))): `cdz compile` exit 0 + runs 6, but
+//     `cdz check` exit 1 (CDZ0201). <-- check != compile ON TRUNK (contradicts "exported already works").
+//   - DEAD consumer (export { Iter.* }, sum unexported): BOTH `cdz check` and `cdz compile` exit 1.
+//   - The actual gate case, an `@test` calling sum: `cdz check` exit 1 (this is what reds the package).
+//   v-core-opt: reachability drives COMPILE (dead fails standalone const-elab; reachable specializes at its
+//   call site) — but `cdz check`/`check_one` rejects BOTH reachable AND dead. So a DEAD-CODE-ONLY compile fix
+//   will NOT unred the gate (the gate runs check, and @tests are reachable-yet-check-rejected). Fix must make
+//   `cdz check` agree with `cdz compile` for the REACHABLE const-wrapper-chain consumer. (Note: can't just
+//   export the wrapper — `sum(it)`'s `it` param is not boundary-representable, a separate CDZ0201.)
+//   v-iterators gate-unblock (MR 3b6cc35b8, sum/product call drive directly) stands until this lands.
+// =============================================================================================================
+//
 // BUG (filed by v-iterators 2026-07-20, trunk f9c076ee1): `cdz check` FALSE-REJECTS with CDZ0201
 // "an argument to a const parameter must be compile-time-known — it depends on runtime data" a program
 // that `cdz compile` ACCEPTS and RUNS correctly. It is a CHECK-vs-COMPILE divergence: `check_one`'s

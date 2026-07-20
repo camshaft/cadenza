@@ -11591,3 +11591,22 @@
             (def (main) (unwrap (DbBox (record (a 1) (b 2)))))
             (export main)))
   (output (: 1 Int64)))
+
+; A TRANSITIVE chain of single-variant (erasable) newtypes declared in REVERSED dependency order — `A`
+; wraps `B`, `B` wraps `C`, `C` wraps `Int64`, declared A-FIRST — must construct + read through all three
+; erasure layers. Each newtype's stored inner template embeds the next as a `Ty::Nominal`; the
+; re-normalize that erases an embedded keyed `Ty::Sum` must reach a FIXPOINT (not one pass), or `A`'s
+; template bakes `Nominal{decl=B, inner=<raw Sum{C}>}` (B's own template still raw when A was rewritten) —
+; and the wasm backend recurses into `inner` (`valtype_of`/`is_heap_type`), reading the erased C as a boxed
+; handle → INVALID WASM at transitive depth (PR#659). Building `(A (B (C 60) 2) 3)` and summing the erased
+; leaf + both tags = 65 pins that the erasure composes transitively regardless of declaration order.
+(case "a transitive chain of erasable newtypes in reversed declaration order composes"
+  (input  (do
+            (type A (A B Int64))
+            (type B (B C Int64))
+            (type C (C Int64))
+            (def (rc (: a A))
+              (match a ((A b n1) (match b ((B c n2) (match c ((C v) (+ (+ v n1) n2))))))))
+            (def (main) (rc (A (B (C 60) 2) 3)))
+            (export main)))
+  (output (: 65 Int64)))
