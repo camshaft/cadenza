@@ -353,6 +353,7 @@ pass	a bin pattern over an Int64 scrutinee is a type error
 pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
 pass	a binary literal with digit separators
+pass	a binary set operation leaves BOTH its operands unchanged — set-algebra persistence
 pass	a binary-radix literal carries the N suffix and an underscore group
 pass	a bind directive naming a value definition rather than an effect is rejected
 pass	a bind directive to a package name with no interface projection is rejected
@@ -1383,6 +1384,7 @@ pass	a radix literal carries the R (Rational) suffix
 pass	a radix literal with a bad digit is a malformed literal, not an unbound name
 pass	a radix literal with an empty body is a malformed literal, not an unbound name
 pass	a rate derived by division mixes with a named rate unit of the same dimension
+pass	a rational built from RUNTIME operands normalizes its sign onto the numerator
 pass	a rational is normalized to lowest terms on construction
 pass	a rational of Int64 minimum over Int64 minimum normalizes to one
 pass	a rational operation does not silently promote an integer operand
@@ -3810,6 +3812,7 @@ todo	a predicate closure returning Bool drives an early-exit recursive HOF
 todo	a produced closure is handed back into a consumer export (the round trip)
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
+todo	a rational built from a RUNTIME zero denominator traps rather than being a value
 todo	a record-returning closure alongside a parameterized plain export — the closure
 todo	a record-returning closure alongside a parameterized plain export — the plain
 todo	a recursive HOF infers a callback whose RESULT is a sum matched in the body

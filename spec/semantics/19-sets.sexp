@@ -200,6 +200,32 @@
                                    (Set.of (list (tuple 1 2))))))
   (output (: 1 Int64)))
 
+(case "a binary set operation leaves BOTH its operands unchanged — set-algebra persistence"
+  (doc    "The persistence face of the binary set algebra, the two-operand twin of the single-element
+           Set.insert/Set.remove persistence pins: `Set.difference` (like union/intersection) produces a NEW
+           set and MUST leave BOTH operands unchanged (a value must not be observably mutated through one
+           reference while read through another). `a = {0,1,2}` and `b = {1,2}` are genuine runtime sets, each
+           read AFTER the difference. `d = (Set.difference a b)` = {0}. Encodes `1000·len(d) + 100·len(a) +
+           10·len(b) + (a contains 2 ? 1 : 0)`: d is {0} (len 1); the original `a` is STILL {0,1,2} — len 3
+           AND `Set.contains a 2` is true (the 2 that the difference removed FROM THE RESULT is untouched in
+           `a`); the original `b` is still {1,2} (len 2). → 1321. If the difference FBIP-mutated a shared
+           operand in place (a retain missing on a multi-use binding), a's later len/membership read would
+           see the mutation. Both backends. Completes the persistence family across binary ops, beside the
+           single-element insert/remove/take cases.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: s (Set Int64)))
+              (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
+            (def (main)
+              (let ((a (build 0 3 (Set.of (list))))
+                    (b (build 1 3 (Set.of (list)))))
+                (let ((d (Set.difference a b)))
+                  (+ (* 1000 (Set.len d))
+                     (+ (* 100 (Set.len a))
+                        (+ (* 10 (Set.len b))
+                           (if (Set.contains a 2) 1 0)))))))
+            (export main)))
+  (output (: 1321 Int64)))
+
 ; --- The algebraic laws the three operations satisfy: the empty set as identity/annihilator, and ----
 ; --- the union laws (commutative, idempotent). These pin the operations' DEFINING identities, which
 ; --- the overlapping-operand cases above (which give a nontrivial result) do not exercise — a

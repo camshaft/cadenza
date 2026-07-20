@@ -440,6 +440,17 @@
   (input  (Rational.of 1 -2))
   (output (: -1/2 Rational)))
 
+(case "a rational built from RUNTIME operands normalizes its sign onto the numerator"
+  (doc    "The runtime-operand companion of the const sign-normalize case above: `(Rational.of n d)` with `n`
+           and `d` true entry parameters (so no fold folds the pair) still puts the sign on the numerator and
+           forces the denominator strictly positive. `(= (Rational.of n d) (Rational.of -1 2))` is TRUE at
+           n=1,d=-2 (1/-2 normalizes to -1/2, the canonical negative form), and FALSE at n=1,d=2 (1/2 ≠ -1/2)
+           — the control. Pins that the runtime rational-construction path (widen to BigInt, gcd-normalize,
+           sign-onto-numerator) matches the const fold, on both backends.")
+  (input  (do (def (main (: n Int64) (: d Int64)) (= (Rational.of n d) (Rational.of -1 2))) (export main)))
+  (call   main (: 1 Int64) (: -2 Int64)) (output (: true Bool))
+  (call   main (: 1 Int64) (: 2 Int64))  (output (: false Bool)))
+
 (case "a rational with numerator and denominator both negative normalizes to positive"
   (doc    "`(Rational.of -1 -2)` = 1/2: the two negatives cancel under the sign convention (denominator
            forced strictly positive), so a both-negative pair is a positive rational. Companion of the
@@ -502,6 +513,18 @@
            increment when a rational is constructed from runtime operands.)")
   (input  (Rational.of 1 0))
   (error  CDZ0304))
+
+(case "a rational built from a RUNTIME zero denominator traps rather than being a value"
+  (doc    "The runtime companion the const zero-denominator case above names as 'a later increment': with the
+           denominator supplied as an entry PARAMETER, the compiler cannot prove it zero, so instead of the
+           compile-time CDZ0304 it emits the runtime guard — `(Rational.of n d)` at d=0 has no rational value
+           and TRAPS at run time (numeric-model.md #A Rational With A Zero Denominator Is Not A Value), the
+           rational analogue of a runtime integer divide-by-zero. d=2 (n=1) is the in-range control: 1/2
+           normalizes and its numerator reads back as 1. Pins that the runtime rational construction guards a
+           zero denominator on both backends, not only the constant-foldable case.")
+  (input  (do (def (main (: n Int64) (: d Int64)) (Int64.of (Rational.numerator (Rational.of n d)))) (export main)))
+  (call   main (: 1 Int64) (: 2 Int64)) (output (: 1 Int64))
+  (call   main (: 1 Int64) (: 0 Int64)) (trap "unreachable"))
 
 (case "a rational operation does not silently promote an integer operand"
   (doc    "`(+ (Rational.of 1 2) 1)` mixes a Rational and an Int64 — two distinct numeric types — so it
