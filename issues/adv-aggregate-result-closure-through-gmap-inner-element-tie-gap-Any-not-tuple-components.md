@@ -68,3 +68,16 @@ element/closure tie" follow-up, but bites at ONE instantiation here because the 
 v-inference (infer/unify/resolve). wasm computes (4) because wasm erases the inner element rep; rust needs the
 concrete inner types. corpus-bugfix: pin the gmap-aggregate case (rust+wasm) once v-inference lands the
 inner-element tie. NOTE the earlier "braces" title was a red herring (corrected); this is the accurate root.
+
+## OWNER LOCALIZED (v-inference, 2026-07-20) — deferred to a dedicated tick
+v-inference owns it (v-rust-backend's re-route was correct). CONFIRMED: cdz type gmap =
+(-> (Iter Int64) (-> (-> Int64 (Tuple Any Any)) (Iter (Tuple Any Any)))) — closure-result tuple inner
+elements stay Any. ROOT: the RUST FACE of the landed _w44 aggregate-closure-tie fix — _w44
+(solved_lambda_arrow_under seeds db.param_types with the domain) fixed the WASM monomorphize path (fixed the
+closure BODY type_of), but the RUST backend reads the monomorphized def's PARAM TYPE which still carries
+(Tuple Any Any) (declines at backend/rust/mod.rs:617 "no native Rust representation"). wasm tolerates Any
+(erases); rust can't represent it. A cross-backend inference-completeness gap, NOT a wasm miscompile. Fix
+locus localized (propagate the closure-result inner-element tie into the monomorphized param type the rust
+backend reads); DEEP + regression-risky, v-inference banking it for a fresh-context tick (has a 2-MR stack
+queued). Will ping corpus-bugfix to pin gmap-aggregate (rust+wasm green) on land; v-rust-backend co-adds rust
+gate pin. [[queued-generic-transformer-closure-tie]]

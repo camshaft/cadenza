@@ -340,6 +340,31 @@
   (input  (do (def (main) (match 5 ((map (1 v)) v) (_ 0))) (export main)))
   (error  CDZ0203))
 
+; A `(map (k v)…)` pattern tests only that the NAMED keys are PRESENT (it is refutable on key-presence, not
+; an exact key-set match — see the list-arm map-element cases below). With ZERO named keys, `(map)` is that
+; presence test made VACUOUS, so it matches ANY map — empty OR non-empty. This is the opposite of `(list)`,
+; which matches EXACTLY the empty list. The witness distinguishes the two readings: a `(map)` first arm over
+; a genuinely-runtime NON-empty map (built via an `if` so it cannot const-fold) takes the `(map)` arm (111),
+; not the `_` fall-through (222) — proving `(map)` is a matches-any pattern, not an exact-empty one. (Note
+; the exhaustiveness checker still conservatively REJECTS `(map)` as a match's terminal catch-all — CDZ0210,
+; "a map's key set is unbounded" — so a total map match ends in `_`/a whole-map binder, NOT a bare `(map)`;
+; `(map)` matches any map WHEN REACHED but is not accepted AS the exhaustiveness witness. This case pins the
+; runtime matches-any behavior; that checker rule is pinned separately.)
+
+(case "a bare (map) pattern with no keys matches a non-empty map, not just the empty one"
+  (doc    "Unlike `(list)` (which matches EXACTLY the empty list), a `(map)` pattern names zero required keys,
+           so its key-presence test is vacuous and it matches ANY map. `probe` matches `(map)` then `_`; over
+           a NON-empty runtime map `(map (1 5))` (built by `mk` via an `if`, so no const-fold) it takes the
+           `(map)` arm → 111, not the `_` arm (222). A reading where `(map)` meant exactly-empty would return
+           222 here. Pins that a no-key map pattern is matches-any. Expected (n=1): 111.")
+  (input  (do
+            (def (probe (: m (Map Int64 Int64)))
+              (match m ((map) 111) (_ 222)))
+            (def (mk (: n Int64)) (if (> n 0) (Map.insert (Map.empty) 1 5) (Map.empty)))
+            (def (main (: n Int64)) (probe (mk n)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 111 Int64)))
+
 (case "a tuple pattern over a non-tuple scrutinee is a type error"
   (doc    "`(match 5 ((tuple a b) a) (_ 0))` — a `(tuple …)` pattern matches a Tuple value, and the Int64
            `5` is not a Tuple, rejected CDZ0203. The pattern-position companion of `(. 5 0)` (positional
@@ -8979,6 +9004,21 @@
   (input  (do (def (main (: i Int64)) (match (List.at (list 10 20 30) i) ((Some v) v) (None -1))) (export main)))
   (call   main (: 3 Int64)) (output (: -1 Int64))
   (call   main (: 99 Int64)) (output (: -1 Int64)))
+
+(case "a runtime-index list read at a NEGATIVE index is None, not an unsigned wrap"
+  (doc    "`(List.at (list 10 20 30) i)` at a NEGATIVE runtime index is `None` — the distinct SIGNEDNESS
+           boundary the positive out-of-range case above does not cover. The bounds check is a SIGNED
+           `0 <= i < len` compare: a lowering that compared the index UNSIGNED (or masked it) would turn
+           -1 into a huge offset (u64::MAX) and read out of range or wrap. Pins that `i`=-1 → None (→ -1),
+           and the extreme `i`=Int64.min (-9223372036854775808, where a naive negate/abs would overflow) →
+           None too — never a spurious in-bounds hit or a trap. The read companion of the Bytes.slice
+           negative-length signedness pin (10-bytes: a start+len computed in unsigned space must not appear
+           to fit). In-bounds controls (0 → 10, 2 → 30) confirm the signed compare still admits valid indices.")
+  (input  (do (def (main (: i Int64)) (match (List.at (list 10 20 30) i) ((Some v) v) (None -1))) (export main)))
+  (call   main (: -1 Int64)) (output (: -1 Int64))
+  (call   main (: -9223372036854775808 Int64)) (output (: -1 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: 2 Int64)) (output (: 30 Int64)))
 
 (case "a runtime-index read of a runtime-built list"
   (doc    "The fully-runtime idiom: a list built by a run-time loop (`build` pushes `0,10,20,30,40`), then

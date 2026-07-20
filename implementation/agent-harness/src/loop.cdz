@@ -1,38 +1,37 @@
 /// loop.cdz — the native agent-harness LOOP SPINE, authored in Cadenza (Increment 2).
-///
-/// This is the control structure that replaces the headless `claude` CLI's read-inbox → call-model →
-/// dispatch-tools → accumulate cycle (implementation/design/DESIGN-agent-harness.md §3). The two
-/// external interactions are EFFECTS:
-///   - `Model.converse` — the model call (Bedrock). Here a MOCK handled in-program; once the
-///     `cadenza:bedrock/api` peer shim lands (Inc-1b) the SAME `Model.converse` performs route to the
-///     real peer (a nearer in-program `handle` wins over the peer binding — the free test-override,
-///     v-effects §A-Handler-May-Interpose). The `String -> String` boundary is proven + gated (rcdzc
-///     tests u7/u8: a String crosses a peer as a runtime rope handle, both directions).
-///   - `Tools.dispatch` / `Tools.done` — tool routing + loop termination, again in-program here.
-///
-/// The loop is a single-shot TAIL-RESUMPTIVE recursion (v-effects: a reified/multi-shot continuation
-/// that escapes the handler still declines, so the loop never captures/replays a continuation — it
-/// performs, gets one result, and continues). The running accumulator (the transcript/score stand-in)
-/// is threaded through `run`'s own `acc` PARAMETER, not the handler state — a real loop likewise carries
-/// its conversation forward in an explicit fold argument. (The mock handlers resume with a constant
-/// state: the tail-resumptive fold currently reduces a `resume(v, <fresh>)` but declines a
-/// `resume(v, s)` that re-threads the old state across this cross-function recursive shape — an
-/// upstream v-effects limit reported REPORT/FIX-style, not needed here since the fold lives in `acc`.)
-///
-/// Modeled scalar-only here (turn ids as Int64) so the SPINE is gate-protected independent of the
-/// String-crossing ABI; the String model-call boundary is separately proven in rcdzc's u7/u8. When the
-/// peer shims land, `Model.converse` takes a `String` prompt and returns a `String` completion, and
-/// `dispatch` parses the completion (equality-match a tool name — `String` `==` over a runtime rope
-/// works today) instead of the scalar stand-in below.
-
-/// The model effect: given a turn's prompt (a scalar stand-in for the built context), return the
-/// model's response (a scalar stand-in for the completion the loop dispatches on).
-effect Model =
+  ///
+  /// This is the control structure that replaces the headless `claude` CLI's read-inbox → call-model →
+  /// dispatch-tools → accumulate cycle (implementation/design/DESIGN-agent-harness.md §3). The two
+  /// external interactions are EFFECTS:
+  ///   - `Model.converse` — the model call (Bedrock). Here a MOCK handled in-program; once the
+  ///     `cadenza:bedrock/api` peer shim lands (Inc-1b) the SAME `Model.converse` performs route to the
+  ///     real peer (a nearer in-program `handle` wins over the peer binding — the free test-override,
+  ///     v-effects §A-Handler-May-Interpose). The `String -> String` boundary is proven + gated (rcdzc
+  ///     tests u7/u8: a String crosses a peer as a runtime rope handle, both directions).
+  ///   - `Tools.dispatch` / `Tools.done` — tool routing + loop termination, again in-program here.
+  ///
+  /// The loop is a single-shot TAIL-RESUMPTIVE recursion (v-effects: a reified/multi-shot continuation
+  /// that escapes the handler still declines, so the loop never captures/replays a continuation — it
+  /// performs, gets one result, and continues). The running accumulator (the transcript/score stand-in)
+  /// is threaded through `run`'s own `acc` PARAMETER, not the handler state — a real loop likewise carries
+  /// its conversation forward in an explicit fold argument. (The mock handlers resume with a constant
+  /// state: the tail-resumptive fold currently reduces a `resume(v, <fresh>)` but declines a
+  /// `resume(v, s)` that re-threads the old state across this cross-function recursive shape — an
+  /// upstream v-effects limit reported REPORT/FIX-style, not needed here since the fold lives in `acc`.)
+  ///
+  /// Modeled scalar-only here (turn ids as Int64) so the SPINE is gate-protected independent of the
+  /// String-crossing ABI; the String model-call boundary is separately proven in rcdzc's u7/u8. When the
+  /// peer shims land, `Model.converse` takes a `String` prompt and returns a `String` completion, and
+  /// `dispatch` parses the completion (equality-match a tool name — `String` `==` over a runtime rope
+  /// works today) instead of the scalar stand-in below.
+  /// The model effect: given a turn's prompt (a scalar stand-in for the built context), return the
+  /// model's response (a scalar stand-in for the completion the loop dispatches on).
+  effect Model =
   | converse : Int64 -> Int64
 
 /// The tools effect: `dispatch` runs the tool the model chose (returns a result the loop folds); `done`
-/// signals the loop should stop and hands back the final accumulator.
-effect Tools =
+  /// signals the loop should stop and hands back the final accumulator.
+  effect Tools =
   | dispatch : Int64 -> Int64
   | done : Int64 -> Int64
 
@@ -44,10 +43,8 @@ effect Tools =
 def run(fuel: Int64, acc: Int64) =
   if fuel == 0 then
     Tools.done(acc)
-  else if Model.converse(fuel) == 0 then
-    Tools.done(acc)
   else
-    run(fuel - 1, acc + Tools.dispatch(fuel))
+    if Model.converse(fuel) == 0 then Tools.done(acc) else run(fuel - 1, acc + Tools.dispatch(fuel))
 
 /// Run the loop under a MOCK model + tools handled in-program. The mock model echoes the turn id (so
 /// turn `fuel` "responds" `fuel`, never 0 until fuel runs out — the loop runs to exhaustion); the mock
@@ -92,14 +89,12 @@ def loop-terminates-on-model-zero() =
   // A handler whose model answers 0 IMMEDIATELY makes the loop finish on turn one with the seed acc,
   // proving the `Model.converse == 0` terminal-dispatch branch (the "model emitted a stop" path). Here
   // an override model always answers 0, so run(5,0) → done(0) → 0 with NO tool dispatch.
-  let stopped =
-    handle Model(0) with
+  let stopped = handle Model(0) with
       | converse(q, s) => resume(0, 0)
     in
     handle Tools(0) with
       | dispatch(a, s) => resume(a, a)
       | done(a, s) => resume(a, a)
     in
-    run(5, 0)
-  in
+    run(5, 0) in
   if stopped == 0 then unit else trap("a model that answers 0 stops the loop immediately")

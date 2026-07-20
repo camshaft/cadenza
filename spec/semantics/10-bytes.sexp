@@ -603,6 +603,22 @@
             (def (main)   (at (Bytes.of (list 10 20 30)) 9)) (export main)))
   (output (: -1 Int64)))
 
+(case "a runtime-index Bytes.at at a NEGATIVE index is None, not an unsigned wrap"
+  (doc    "The signedness boundary for `Bytes.at`, the byte twin of the `List.at` negative-index case: at a
+           NEGATIVE RUNTIME index `Bytes.at` is `None`, because the bounds check is a SIGNED `0 <= i < len`
+           compare — a lowering that compared the index UNSIGNED would turn -1 into a huge offset and read
+           out of range. The index is a `main` parameter (not a constant, so nothing folds): `i`=-1 → None
+           (→ -1), and the extreme `i`=Int64.min (where a naive negate would overflow) → None too; the
+           in-bounds control `i`=1 → 20. Companion of the const-negative `Bytes.at … -1` fold and the
+           runtime positive-past-end case — this pins the RUNTIME negative index, the byte analogue of the
+           Bytes.slice negative-start signedness pin.")
+  (input  (do
+            (def (main (: i Int64)) (match (Bytes.at (Bytes.of (list 10 20 30)) i) ((Some x) x) (None -1)))
+            (export main)))
+  (call   main (: -1 Int64)) (output (: -1 Int64))
+  (call   main (: -9223372036854775808 Int64)) (output (: -1 Int64))
+  (call   main (: 1 Int64)) (output (: 20 Int64)))
+
 (case "reading a byte from a sequence built with a RUNTIME element widens it to the Option payload"
   (doc    "`(Bytes.of (list n))` with `n : UInt8` a parameter builds a one-byte sequence from a RUNTIME
            value; `(Bytes.at … 0)` reads that byte back as `Some x`, `x = 5` for n = 5. The read must

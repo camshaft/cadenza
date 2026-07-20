@@ -8371,6 +8371,47 @@ fn a_genuinely_recursive_pqueue_insert_declines_cleanly_never_folds_the_wrong_en
     }
 }
 
+/// Arm a′ (the deferred-resume fold reducing a non-recursive helper call in a match SCRUTINEE) with a
+/// MULTI-ARGUMENT helper: `mk2` takes an extra PURE arg (`base : Instant`) ALONGSIDE the wake instant and the
+/// KBox continuation, and builds the pqueue entry from a SUBSET of them. `main` performs `(sched-step (mk2
+/// (Instant 7) wake (KBox (fn (_u) (resume unit wake)))))`: arm a′ reduces the nested `(mk2 …)` scrutinee,
+/// substituting ALL THREE args (the unused `base`, the used `wake`, the KBox lambda), then `fold_ctor_match`
+/// pops the entry and applies the continuation → 5e9. Pins that arm a′'s one-shot/purity gate + the shared
+/// `reduce_one_shot_helper_call` handle a helper of arity > 2 with a mix of pure and lambda args (the KBox
+/// closure is the only ≤1-use-guarded lambda; the pure `base`/`wake` are freely substituted), and that an
+/// UNUSED pure param does not disrupt the fold. Complements the single-arg `mk1` pin above — guards arm a′'s
+/// argument-substitution against a regression that only reducing the last/first arg would introduce.
+#[test]
+fn a_multiarg_nonrecursive_helper_filing_a_resume_thunk_folds_through_arm_a_prime() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (type Instant (Instant UInt64)) \
+        (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n))) \
+        (type KBox (KBox (-> Unit Unit))) \
+        (type PQ PQNil (PQCons (Tuple Instant KBox PQ))) \
+        (def (mk2 (: base Instant) (: t Instant) (: kb KBox)) (PQ.PQCons (tuple t kb (PQ.PQNil ())))) \
+        (def (sched-step (: q PQ)) \
+          (match q \
+            ((PQ.PQNil _) unit) \
+            ((PQ.PQCons (tuple wake kb rest)) (match kb ((KBox.KBox k) (k unit)))))) \
+        (effect Sim (op sleep (-> Instant Unit)) (op now (-> Unit Instant))) \
+        (def (main) \
+          (handle Sim (Instant.Instant 0) \
+            ( (now (u) s (resume s s)) \
+              (sleep (wake) s (sched-step (mk2 (Instant.Instant 7) wake (KBox.KBox (fn (_u) (resume unit wake))))))) \
+            (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("a multi-arg non-recursive helper filing a resume-thunk must fold through arm a′");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(
+            v, "5000000000",
+            "arm a′ substitutes all of mk2's args (incl. the unused pure `base`); the popped continuation \
+             resumes the wake-seeded clock → 5e9"
+        );
+    }
+}
+
 /// A deferred resume-thunk filed into a pqueue entry by a NON-RECURSIVE helper `mk1`, then popped+applied by
 /// `sched-step` — the direct-helper (non-recursive) companion of the recursive-`pins` reach. `main` performs
 /// `(sched-step (mk1 wake (KBox (fn (_u) (resume unit wake)))))`: the fold reduces the outer `sched-step`
@@ -63149,6 +63190,38 @@ mod stage1 {
     }
 
     #[test]
+    fn a_closure_payload_sum_from_an_if_helper_with_a_reused_arg_compiles_not_cdz0101() {
+        // REGRESSION (v-patterns adv-closure-payload-sum-picked-by-if-helper): a closure-payload 2-variant
+        // sum built by an `if`-helper `mk`, matched + applied by `run`, with the caller reusing its param
+        // `k` in BOTH arg positions `(run (mk k) k)`. `mk k` reduces to an `if`, so `run`'s `(match (mk k)
+        // …)` triggers `fuse_match_into_if`, which DEEP-COPIES the arm bodies into both branches via
+        // `clone_subtree_db` — and the arm body `(f arg)` carries `arg`=`k`, a free capture bound by
+        // β-SUBSTITUTION (not lexically). `clone_subtree_db` copied `k` FRESH → it re-resolved LEXICALLY
+        // against the grafted branch position (where `k` is invisible) → a spurious `CDZ0101 unbound name
+        // k` at COMPILE while `cdz check` was clean. Fix: `clone_subtree_db` SHARES a pinned non-payload
+        // capture (mirroring `beta_reduce`'s pinned-name share). k=4 → Fn arm → 4*3=12; k=-1 → Const → 77.
+        // Two NULLARY mains (the reused arg `k` is a `let`-bound constant so the whole shape — reused in
+        // both `(run (mk k) k)` arg positions — is preserved) exercising both arms: k=4 → Fn, k=-1 → Const.
+        let prelude = "(type Box (Fn (-> Int64 Int64)) (Const Int64)) \
+            (def (mk (: k Int64)) (if (> k 0) (Fn (fn ((: x Int64)) (* x 3))) (Const 77))) \
+            (def (run (: b Box) (: arg Int64)) (match b ((Fn f) (f arg)) ((Const c) c)))";
+        for (kexpr, want) in [("4", "12"), ("(- 0 1)", "77")] {
+            let src = format!(
+                "(module m {prelude} (def (main) (let ((k {kexpr})) (run (mk k) k))) (export main))"
+            );
+            // PRIMARY: this must COMPILE (the spurious CDZ0101 was a compile-time reject; check was clean).
+            let bytes = compile_component(&crate::codec::encode(&crate::testkit::parse(&src)))
+                .unwrap_or_else(|e| {
+                    panic!("closure-payload-sum if-helper reused-arg (k={kexpr}) must COMPILE, not CDZ0101: {e:?}")
+                });
+            // Value check needs the runtime store (a closure builds a heap value); storeless CI skips.
+            if let Some(v) = run_linked(&bytes, "main") {
+                assert_eq!(v, want, "k={kexpr} (4→Fn arm (* 4 3)=12; -1→Const=77)");
+            }
+        }
+    }
+
+    #[test]
     fn a_closure_applied_through_an_unbuilt_sibling_variant_gets_its_call_type() {
         // A sum boxes TWO distinctly-typed closures — `Unary (Int64->Int64)` and `Binary
         // (Int64->Int64->Int64)`. `apply-it` matches BOTH arms and applies each arm's closure (`(f x)` /
@@ -64010,6 +64083,40 @@ mod stage1 {
     }
 
     #[test]
+    fn applying_the_question_mark_to_try_fix_recompiles_clean_in_a_fallible_context() {
+        // The `?`→`try` fix is marked VERIFIED — the head rewrite is deterministic and clears the CDZ0101
+        // by construction (`diagnostics.md` §A Confirmed Fix Is Marked Verified). Pin the ROUND TRIP that
+        // backs that claim: a program written with the `?` sigil in head position, IN A VALID FALLIBLE
+        // CONTEXT, carries the `?`→`try` fix; applying it (rewriting the head to `try`) yields a program
+        // that compiles clean — proving the verified fix actually recompiles, not just that it clears the
+        // one diagnostic. The context is the 23-try-operator.sexp T1 happy-path shape (a `let`-chain whose
+        // tail `(Some …)` gives the `?` an Option boundary), which is a proven-passing corpus case, so its
+        // all-`try` form is guaranteed clean.
+        //
+        // BEFORE (the `?` head is unbound — CDZ0101 — but everything else is well-formed):
+        let with_sigil = "(let ((x (? (Int64.checked-add 20 22)))) \
+              (let ((y (try (Int64.checked-add 40 2)))) (Some (+ x y))))";
+        let d = expect_error(with_sigil);
+        assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
+        let fix = d.fix.expect("the `?`-head reject carries a fix");
+        assert!(fix.verified, "the head rewrite is deterministic → verified");
+        assert_eq!(
+            (fix.kind, fix.replacement.as_str()),
+            (crate::abi::FixKind::Replace, "try"),
+            "the fix replaces the `?` head with `try`: {:?}",
+            fix
+        );
+        // AFTER (apply the fix = rewrite the `?` head to `try`): the SAME program now compiles clean — no
+        // residual CDZ0101, no cascade. This is the applied-fix form (the corpus T1 happy path).
+        let applied = "(let ((x (try (Int64.checked-add 20 22)))) \
+              (let ((y (try (Int64.checked-add 40 2)))) (Some (+ x y))))";
+        assert!(
+            compiles_ok(applied),
+            "applying the verified `?`→`try` fix must recompile clean"
+        );
+    }
+
+    #[test]
     fn the_rest_marker_dotdot_used_as_a_value_names_the_pattern_only_role() {
         // `..` is the REST/SPREAD marker of a collection PATTERN (`(list a .. rest)` / `(map (k v) .. r)`).
         // Used as a VALUE or form HEAD — `(.. xs)`, `(g ..)` — it previously drew "unbound name `..`" (and,
@@ -64175,6 +64282,45 @@ mod stage1 {
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "a constant-`Some` `?` under a matching Option boundary folds to the payload, not declines"
         );
+    }
+
+    #[test]
+    fn a_success_try_executes_to_its_unwrapped_payload_through_wasmtime() {
+        // The EXECUTING companion of `a_constant_success_try_folds_to_the_payload`: every try unit test
+        // above asserts only compile/reject; NONE runs the `?` VALUE through wasmtime. This closes that
+        // gate-coverage gap (the contract's "a wasmtime run where a value executes") at the rcdzc-lib level,
+        // not only in the corpus. `(try (Int64.checked-add 20 22))` unwraps to 42, and the body's tail
+        // `(Some x)` re-wraps it, so `main` returns `(Some 42)`. Store-guarded (`if let Some` skips a
+        // storeless CI where the runtime wasm is absent) per the heap-test convention.
+        let src = "(module m (def (main) (let ((x (try (Int64.checked-add 20 22)))) (Some x))) \
+                   (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a constant-success `?` compiles");
+        if let Some(v) = run_linked(&bytes, "main") {
+            assert_eq!(
+                v, "(: (Some 42) (Option Int64))",
+                "a success `?` executes to its unwrapped payload re-wrapped by the tail"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failure_try_executes_to_the_short_circuited_boundary_value_through_wasmtime() {
+        // The EXECUTING companion of `a_constant_failure_try_short_circuits_the_boundary_to_the_failure`:
+        // the failure `?` must actually RUN to `(None unit)` through wasmtime, not merely compile. The
+        // first `?` sees `(Int64.checked-add Int64.max 1)` = `None` (overflow), so it short-circuits the
+        // enclosing function boundary — `main` returns `(None unit)` and the body's `(Some x)` never runs.
+        // Store-guarded like its success twin.
+        let src = "(module m (def (main) (let ((x (try (Int64.checked-add Int64.max 1)))) (Some x))) \
+                   (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a constant-failure `?` compiles");
+        if let Some(v) = run_linked(&bytes, "main") {
+            assert_eq!(
+                v, "(: (None unit) (Option Int64))",
+                "a failure `?` executes to the short-circuited boundary value `None`"
+            );
+        }
     }
 
     #[test]

@@ -4694,7 +4694,30 @@ fn clone_literal_atom(db: &mut Db, e: StructId) -> StructId {
 fn clone_subtree_db(db: &mut Db, id: StructId) -> StructId {
     match db.ast.get(id).clone() {
         crate::ast::Struct::Atom(lid) => match db.ast.leaf(lid).clone() {
-            crate::ast::Leaf::Name(n) => db.push_name(&n),
+            crate::ast::Leaf::Name(_) => {
+                // A pinned free-var CAPTURE — a name whose resolution was recorded (`resolved_subtrees`) by
+                // a β-SUBSTITUTION, not lexically — must be SHARED, not copied fresh: a fresh `push_name`
+                // node re-resolves LEXICALLY against the cloned arm's grafted position, where the
+                // substituted binding is invisible → a spurious CDZ0101 unbound (the `run (mk k) k` case,
+                // where the scrutinee reduces to an `if` so `fuse_match_into_if` clones the arm body `(f
+                // arg)` with `arg`=`k`, `k` being `main`'s param bound by β-substitution). Mirrors
+                // `beta_reduce`'s pinned-name capture-share (eval.rs ~574): share a pinned name UNLESS it is a
+                // `SumPayload` — a payload BINDER of the ORIGINAL match must still copy + re-resolve against
+                // THIS branch's scrutinee (the whole point of the clone), so only a non-payload pinned
+                // capture (a `Ref`/`Member` to an enclosing binder) is shared.
+                if db.resolved_subtrees.contains(&id)
+                    && !matches!(
+                        crate::resolve::resolved_of(db, id),
+                        crate::resolved::Resolved::SumPayload { .. }
+                    )
+                {
+                    return id;
+                }
+                let crate::ast::Leaf::Name(n) = db.ast.leaf(lid).clone() else {
+                    unreachable!()
+                };
+                db.push_name(&n)
+            }
             // A constant leaf resolves to its own value regardless of scope — share it.
             _ => id,
         },

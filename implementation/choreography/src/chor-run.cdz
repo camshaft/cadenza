@@ -294,4 +294,20 @@ def run-buyer-receives-only-quote() =
   if strs-eq(deliver(sends-of(seller), "Buyer"), ["Quote"]) then unit
   else trap("routing delivers exactly [Quote] to Buyer")
 
+@test
+def deliver-partitions-a-mixed-wire-in-order() =
+  // PIN: `deliver` is the transport-routing CORE — the "a message meant for Buyer never reaches Shipper"
+  // guarantee. It was only exercised COMPOSITIONALLY (through the Purchase run). Pin it DIRECTLY on a mixed
+  // wire (to A, B, A, C): each role must get exactly its addressed subsequence IN ORDER, and a non-recipient
+  // gets the empty inbox. If deliver ever mis-routed (dropped, reordered, or cross-delivered a label), this
+  // fires — the property the destination-aware three-party proof silently depends on.
+  let wire = [Msg.M("A", "m1"), Msg.M("B", "m2"), Msg.M("A", "m3"), Msg.M("C", "m4")] in
+  if strs-eq(deliver(wire, "A"), ["m1", "m3"]) then          // A's two labels, in wire order
+    (if strs-eq(deliver(wire, "B"), ["m2"]) then
+       (if strs-eq(deliver(wire, "C"), ["m4"]) then
+          (if strs-eq(deliver(wire, "Nobody"), []) then unit  // a non-recipient gets nothing
+           else trap("a role addressed by no message gets an empty inbox"))
+        else trap("C gets exactly [m4]")) else trap("B gets exactly [m2]"))
+  else trap("A gets exactly its addressed labels [m1, m3] in wire order")
+
 export { Trace.*, Msg.*, run, deliver, sends-of, inbox-of, strs-eq, msgs-eq }

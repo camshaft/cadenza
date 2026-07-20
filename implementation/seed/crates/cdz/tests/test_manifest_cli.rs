@@ -2119,6 +2119,40 @@ fn a_chained_requires_with_two_relations_satisfies_the_whole_chain() {
     );
 }
 
+/// TERMINATION under an UNSATISFIABLE relation: `@requires(a < b and b < a)` can NEVER hold (it implies
+/// `a < a`), so rejection sampling can never find an in-domain draw. The generator must NOT loop forever —
+/// it is fuel-bounded (`RELATION_FUEL`), so after exhausting fuel it returns the last draw and lets the (D)
+/// body-entry precondition trap report honestly. The property under test FAILS (the pre trap fires on the
+/// out-of-domain draw), but crucially: (a) the run TERMINATES, and (b) a SIBLING `@test` in the same file
+/// still RUNS (the unsatisfiable one does not hang or abort the suite). Pins that fuel exhaustion degrades
+/// gracefully rather than wedging the runner. No store needed (scalar Int params).
+#[test]
+fn an_unsatisfiable_relational_requires_terminates_by_fuel_and_spares_siblings() {
+    let d = dir("requires-unsat");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(a < b and b < a)\n\
+         @test def u(a: Int64, b: Int64) = unit\n\
+         @test def sibling() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    // If the generator looped on the unsatisfiable relation, this would hang; the harness `run` wrapper
+    // returns, proving termination. The unsatisfiable property FAILs (pre-trap), the sibling PASSes.
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "20"]);
+    assert!(
+        !ok,
+        "an unsatisfiable @requires makes its property FAIL via the honest pre-trap: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS sibling"),
+        "a sibling @test still RUNS — the unsatisfiable relation did not hang or abort the suite: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("FAIL u"),
+        "the unsatisfiable-relation property reports its (honest) failure: {stdout}"
+    );
+}
+
 #[test]
 fn cdz_test_on_a_compiled_wasm_gives_an_actionable_diagnostic_not_zero_tests_found() {
     // `cdz test foo.wasm` (a COMPILED component passed by mistake) must NOT surface the misleading

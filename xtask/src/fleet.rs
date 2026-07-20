@@ -3701,6 +3701,54 @@ fn sync(fleet: &Fleet, force: bool) {
                      no own WIP), or cherry-pick back ONLY your own commits before sending."
                 );
             }
+
+            // SOFT tier (option 2): commits the loud test left silent because they touch an
+            // UNATTRIBUTABLE path (e.g. `implementation/seed/crates/rcdzc/…`) yet have NO path in my
+            // lane and at least one provably-other-zone path. This is the systemic case that slipped
+            // through unwarned (a rejected rust-async resend replayed onto ≥6 branches, all touching
+            // rcdzc/… + xtask/…). Flag it as "ambiguous — verify" so the agent lane-checks before it
+            // bites, without the false-positive risk of dropping a genuinely-shared edit. Exclude any
+            // already reported LOUD above.
+            let loud: std::collections::HashSet<&str> =
+                foreign.iter().map(|(s, _)| s.as_str()).collect();
+            let ambiguous: Vec<(String, Vec<String>)> = replay
+                .iter()
+                .filter(|sha| !loud.contains(sha.as_str()))
+                .filter_map(|sha| {
+                    let paths: Vec<String> = git_stdout(&["show", "--name-only", "--format=", sha])
+                        .lines()
+                        .map(|l| l.trim().to_string())
+                        .filter(|l| !l.is_empty())
+                        .collect();
+                    commit_is_ambiguous_to_lane(&paths, &my_zone).then_some((sha.clone(), paths))
+                })
+                .collect();
+            if !ambiguous.is_empty() {
+                eprintln!(
+                    "fleet sync: ⚠ {} of your {} unlanded commit(s) touch NO file in your lane (zone \
+                     '{my_zone}') but mix a peer's zone with shared/unattributable paths — AMBIGUOUS, \
+                     possibly a peer's work your base carried. VERIFY before trusting them as yours:",
+                    ambiguous.len(),
+                    replay.len()
+                );
+                for (sha, paths) in &ambiguous {
+                    let shown: Vec<&str> = paths.iter().take(3).map(String::as_str).collect();
+                    let more = if paths.len() > 3 {
+                        format!(" (+{} more)", paths.len() - 3)
+                    } else {
+                        String::new()
+                    };
+                    eprintln!(
+                        "    {} → {}{more}",
+                        &sha[..sha.len().min(9)],
+                        shown.join(", ")
+                    );
+                }
+                eprintln!(
+                    "  Eyeball each title/diff: if it isn't yours, `git reset --hard {TRUNK}` (safe with \
+                     no own WIP) and never `fleet send` it. (Replayed regardless — nothing lost.)"
+                );
+            }
         }
     }
 
@@ -3736,6 +3784,22 @@ fn sync(fleet: &Fleet, force: bool) {
         "fleet sync: reset onto trunk ({trunk_sha}) and replayed {} unlanded commit(s) → {new_head}. \
          (Dropped any already-landed commit by patch-id, incl. re-parented merges.)",
         replay.len()
+    );
+    // ALWAYS itemize WHAT was replayed (sha + title), so the agent can eyeball each for a foreign title
+    // WITHOUT a manual `git log --stat`. The zone-based foreign-commit WARNING above only fires on an
+    // unambiguous whole-commit cross-zone mismatch and stays SILENT when any path is unattributable
+    // (e.g. a peer's rcdzc/seed commit riding a shared base — the recurring contamination this session
+    // hit on ≥6 branches). This unconditional listing closes that visibility gap: a title like
+    // "rcdzc: emit … on the rust-async backend" on a v-syntax branch is instantly recognizable as not
+    // mine → `git reset --hard trunk`. Purely informational (no drop, no false-positive risk).
+    for sha in &replay {
+        let title = git_stdout(&["show", "-s", "--format=%s", sha]);
+        println!("    replayed {} {title}", &sha[..sha.len().min(9)]);
+    }
+    eprintln!(
+        "  ↳ eyeball each replayed title above: any NOT in your lane's voice is a peer commit your base \
+         transiently carried — if it's foreign and you have no own unlanded work, `git reset --hard \
+         {TRUNK}` to shed it, and never `fleet send` it."
     );
 }
 
@@ -4506,6 +4570,32 @@ fn commit_is_foreign_to_lane(changed_paths: &[String], my_zone: &str) -> bool {
         }
     }
     saw_known
+}
+
+/// SOFT tier (concierge-approved option 2, 2026-07-20): whether a replay commit is AMBIGUOUS w.r.t.
+/// `my_zone` — worth a heads-up even though the loud [`commit_is_foreign_to_lane`] stays silent. The
+/// loud test bails the instant ANY path is unattributable, which means a peer's commit touching an
+/// `implementation/seed/crates/rcdzc/…` path (unmapped) rides in UNWARNED — the exact systemic
+/// contamination that hit ≥6 branches (a rejected rust-async resend spread by `fleet sync`). This
+/// softer signal fires when NO changed path is in my lane AND at least one maps to a known OTHER zone,
+/// EVEN IF other paths are unattributable — i.e. "nothing here is provably mine, and some of it is
+/// provably a peer's". Still conservative: silent if ANY path is in my lane (`Some(z==my_zone)`), or if
+/// the commit is entirely unattributable (all `None` — a pure shared-crate edit that could be mine), or
+/// if the loud test already flags it (caller checks loud first). Pure + unit-testable.
+fn commit_is_ambiguous_to_lane(changed_paths: &[String], my_zone: &str) -> bool {
+    if my_zone.is_empty() || changed_paths.is_empty() {
+        return false;
+    }
+    let mut saw_other_zone = false;
+    for path in changed_paths {
+        match path_to_zone(path) {
+            Some(z) if z == my_zone => return false, // provably touches my lane → not ambiguous
+            Some(_) => saw_other_zone = true,        // a known OTHER zone
+            None => {}                               // unattributable → neither confirms nor clears
+        }
+    }
+    // No in-lane path, and at least one path is provably another zone's → ambiguous heads-up.
+    saw_other_zone
 }
 
 /// The subset of `commits` (each a `(sha, changed_paths)` pair, e.g. the `trunk..<ref>` range a
@@ -6348,6 +6438,40 @@ mod tests {
             &[p("guide/x.tsx")],
             "compiler-ml"
         ));
+    }
+
+    #[test]
+    fn commit_is_ambiguous_to_lane_flags_the_shared_path_case_the_loud_test_misses() {
+        let p = |s: &str| s.to_string();
+        // THE SYSTEMIC CASE: a peer's rust-async resend touching rcdzc/… (unattributable) + xtask/… ,
+        // replayed onto a NON-xtask branch. Loud test is SILENT (unattributable path bails); ambiguous
+        // fires because no path is in the syncing agent's lane and one is provably another zone's.
+        let rust_async = [
+            p("implementation/seed/crates/rcdzc/src/backend/rust/expr.rs"),
+            p("xtask/src/main.rs"),
+        ];
+        assert!(commit_is_ambiguous_to_lane(&rust_async, "music")); // v-music syncing → ambiguous
+        assert!(commit_is_ambiguous_to_lane(&rust_async, "guide")); // v-guide syncing → ambiguous
+        // But for the agent whose lane IS xtask, that same commit touches its lane → NOT ambiguous
+        // (it could legitimately be theirs — stay silent, don't false-flag an own cross-cut).
+        assert!(!commit_is_ambiguous_to_lane(&rust_async, "xtask"));
+        // Entirely unattributable (a pure shared-crate edit) → NOT ambiguous (could be anyone's; no
+        // provably-other-zone path to justify a heads-up).
+        assert!(!commit_is_ambiguous_to_lane(
+            &[p("implementation/seed/crates/cdz/src/main.rs")],
+            "xtask"
+        ));
+        // A path in my lane anywhere → not ambiguous (provably touches mine).
+        assert!(!commit_is_ambiguous_to_lane(
+            &[p("guide/x.tsx"), p("xtask/src/fleet.rs")],
+            "xtask"
+        ));
+        // All-in-another-single-zone (the LOUD case) is also ambiguous-true, but the caller reports it
+        // under the loud tier first and excludes it here — the helper itself still returns true.
+        assert!(commit_is_ambiguous_to_lane(&[p("guide/x.tsx")], "xtask"));
+        // Empty zone / no paths → never ambiguous.
+        assert!(!commit_is_ambiguous_to_lane(&[p("guide/x.tsx")], ""));
+        assert!(!commit_is_ambiguous_to_lane(&[], "xtask"));
     }
 
     #[test]
