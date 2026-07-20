@@ -360,7 +360,7 @@ def play-order-keeps-a-zero-length-notes-on-before-its-off() =
   let piece = [note-at(pitch-c4, 0, 100, 100, 0)] in
   let stream = play-order(schedule(piece)) in
   match stream with
-    | [first, second] => if ev-on(first) then (if ev-on(second) then trap("second is the off") else unit) else trap("on before off")
+    | [first, second] => if ev-on(first) then (if ev-on(second) then trap("second is NOT the off (still an on)") else unit) else trap("on before off")
     | _ => trap("two events")
 
 @test

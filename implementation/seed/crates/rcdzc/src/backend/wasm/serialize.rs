@@ -1055,6 +1055,7 @@ pub fn runtime_resource_core_module(
     template: &crate::lower::ValueFormTemplate,
     make_param_vts: &[ValType],
     make_core_slots: &[MakeCoreSlot],
+    lifted_table: &[u32],
 ) -> Result<Vec<u8>, String> {
     runtime_resource_core_module_form(
         funcs,
@@ -1063,6 +1064,7 @@ pub fn runtime_resource_core_module(
         EscapeForm::Flat(template),
         make_param_vts,
         make_core_slots,
+        lifted_table,
     )
 }
 
@@ -1109,6 +1111,7 @@ pub fn runtime_resource_core_module_form(
     form: EscapeForm,
     make_param_vts: &[ValType],
     make_core_slots: &[MakeCoreSlot],
+    lifted_table: &[u32],
 ) -> Result<Vec<u8>, String> {
     runtime_resource_core_module_form_ex(
         funcs,
@@ -1118,6 +1121,7 @@ pub fn runtime_resource_core_module_form(
         &[],
         make_param_vts,
         make_core_slots,
+        lifted_table,
     )
 }
 
@@ -1145,6 +1149,7 @@ pub enum CoreMethod {
 /// AFTER make/t-encode/cabi_realloc in list order so its core func index (k+6+i) matches the envelope's
 /// alias order. Empty `methods` = byte-identical to `runtime_resource_core_module_form`. Only the
 /// RuntimeBytes form uses these today (`bytes-len`/`bytes-get`; a List would use `vec-*`, later).
+#[allow(clippy::too_many_arguments)]
 pub fn runtime_resource_core_module_form_ex(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
@@ -1153,6 +1158,7 @@ pub fn runtime_resource_core_module_form_ex(
     methods: &[CoreMethod],
     make_param_vts: &[ValType],
     make_core_slots: &[MakeCoreSlot],
+    lifted_table: &[u32],
 ) -> Result<Vec<u8>, String> {
     runtime_resource_core_module_form_ex2(
         funcs,
@@ -1164,6 +1170,7 @@ pub fn runtime_resource_core_module_form_ex(
         methods,
         make_param_vts,
         make_core_slots,
+        lifted_table,
     )
 }
 
@@ -1192,6 +1199,12 @@ pub fn runtime_resource_core_module_form_ex2(
     methods: &[CoreMethod],
     make_param_vts: &[ValType],
     make_core_slots: &[MakeCoreSlot],
+    // The lambda-lifted closures' ABSOLUTE core-func indices, in table-slot order (empty for a closure-free
+    // program). When non-empty, this module dispatches a first-class closure via `call_indirect (table 0)`,
+    // so lay a funcref table (min=max=len) + an active element segment at offset 0 filling slot `k` with
+    // `lifted_table[k]`. WITHOUT this the `call_indirect` referenced a non-existent table 0 → invalid wasm.
+    // The caller appends the lifted bodies to `funcs` (so these indices exist) via `append_lifted_bodies`.
+    lifted_table: &[u32],
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let e = extern_fns.len();
@@ -1544,13 +1557,45 @@ pub fn runtime_resource_core_module_form_ex2(
     }
     let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + n_synth, &code_items));
 
+    // ── Table + Element sections ── one funcref table holding the lambda-lifted closures, so a first-class
+    // closure's `call_indirect (table 0)` resolves (mirrors `core_module_impl` ~749). Empty for a
+    // closure-free program → no sections (byte-identical to before). The element segment fills slot `k`
+    // with `lifted_table[k]` (the lifted body's absolute func index, computed by the caller from
+    // `layout.lifted_abs`), the same slot a `Core::Closure { code: k }` selects.
+    let (table_sec, elem_sec) = if lifted_table.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        let n_lifted = lifted_table.len();
+        let mut table_entry = vec![0x70u8]; // funcref element type
+        table_entry.push(0x01); // limits flag: has-max
+        uleb128(n_lifted as u64, &mut table_entry); // min
+        uleb128(n_lifted as u64, &mut table_entry); // max
+        let table_sec = section(wasm_abi::CORE_SEC_TABLE, &wasm_vec(1, &table_entry));
+        let mut seg = Vec::new();
+        seg.push(0x00); // active, table 0, funcref, func-index list
+        seg.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut seg); // offset 0
+        seg.push(op::END);
+        let mut idxs = Vec::new();
+        for &abs in lifted_table {
+            uleb128(abs as u64, &mut idxs);
+        }
+        seg.extend_from_slice(&wasm_vec(n_lifted, &idxs));
+        let elem_sec = section(wasm_abi::CORE_SEC_ELEMENT, &wasm_vec(1, &seg));
+        (table_sec, elem_sec)
+    };
+
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);
     core.extend_from_slice(&type_sec);
     core.extend_from_slice(&import_sec);
     core.extend_from_slice(&func_sec);
+    // Table (id 4) after func (id 3), before memory (id 5) — the canonical core section order.
+    core.extend_from_slice(&table_sec);
     core.extend_from_slice(&mem_sec);
     core.extend_from_slice(&export_sec);
+    // Element (id 9) after export (id 7), before code (id 10).
+    core.extend_from_slice(&elem_sec);
     core.extend_from_slice(&code_sec);
     core.extend_from_slice(&data_sec);
     Ok(core)

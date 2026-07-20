@@ -100,6 +100,34 @@ pub(crate) fn crosses_as_resource_escape(ty: &crate::ty::Ty) -> bool {
     )
 }
 
+/// Append the lambda-lifted closure bodies to `funcs`, AFTER the `layout.order` defs, in table-slot
+/// order — the shared step both the main emit path and the runtime-resource ESCAPE path need so a
+/// first-class closure's `call_indirect` has a body to dispatch (at func idx `import_base + order.len() +
+/// slot`) and the funcref table/elem (laid by the module assembler from `layout.lifted`) resolves. Each
+/// lifted lambda is UNIFORMLY an `(env, params…) -> ret` function: local slot 0 is the closure CELL (the
+/// env, read by `Core::Captured` as `arr-get(local 0, 1+index)`), read via a FRESH `$closure-env` key that
+/// nothing in the body resolves to (so it claims slot 0 without shadowing the lambda's own params). An
+/// UNREACHED lambda (demanded during type-checking but built by no reachable `Core::Closure`) emits an
+/// inert stub with the same signature — never called (its table entry is laid but never selected), keeping
+/// the function-index space + type section consistent. Mirrors the loop inlined at the main-path sites.
+fn append_lifted_bodies(
+    db: &mut Db,
+    funcs: &mut Vec<SelectedFunc>,
+    layout: &Layout,
+) -> Result<(), Reject> {
+    for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
+        let env_key = db.push_name("$closure-env");
+        let mut params = vec![(env_key, crate::ty::Ty::Bytes)];
+        params.extend(lifted.params.iter().cloned());
+        if layout.lifted_reached.get(code).copied().unwrap_or(true) {
+            funcs.push(select_function_of(db, lifted.body, &params, layout, None)?);
+        } else {
+            funcs.push(select::stub_function(&params, &lifted.ret_ty));
+        }
+    }
+    Ok(())
+}
+
 pub fn emit(
     db: &mut Db,
     layout: &Layout,
@@ -1546,6 +1574,7 @@ fn resource_escape_dwarf(
             serialize::EscapeForm::Sum(&tpl),
             &[],
             &[],
+            &escape_lifted_table(&layout),
         )
         .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
@@ -1587,6 +1616,7 @@ fn resource_escape_dwarf(
             ],
             &[], // nullary sidecar — `make` forwards no params
             &[], // …and no compound-param rebuild
+            &escape_lifted_table(&layout),
         )
         .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
@@ -1608,9 +1638,16 @@ fn resource_escape_dwarf(
         let export_abs = layout
             .abs(export_def)
             .ok_or_else(|| Reject::decline("the escaping export is not in the emission order"))?;
-        let main_core =
-            serialize::runtime_resource_core_module(&funcs, &imports, export_abs, &tpl, &[], &[])
-                .map_err(Reject::decline)?;
+        let main_core = serialize::runtime_resource_core_module(
+            &funcs,
+            &imports,
+            export_abs,
+            &tpl,
+            &[],
+            &[],
+            &escape_lifted_table(&layout),
+        )
+        .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
             db, &layout, &funcs, &imports, &main_core, span_data,
         )?));
@@ -1652,10 +1689,10 @@ fn resource_escape_build_n(
     extra: impl FnOnce(&mut std::collections::BTreeSet<&'static str>),
 ) -> Result<(Vec<&'static runtime_abi::RtOp>, Vec<SelectedFunc>, Layout), Reject> {
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
-    for &def in &layout.order {
-        let body = def_body(db, def)?;
-        select::collect_used_ops(db, body, &mut used);
-    }
+    // Scan BOTH the top-level defs AND the lambda-lifted closure bodies — a lifted body is emitted as its
+    // own function (see `append_lifted_bodies`), so an op used ONLY inside a closure must be imported too,
+    // or its `CallImport` resolves to `u32::MAX` → invalid wasm (the escape-module closure-table bug).
+    collect_module_used_ops(db, layout, &mut used)?;
     extra(&mut used);
     let imports: Vec<&runtime_abi::RtOp> = used
         .iter()
@@ -1676,7 +1713,21 @@ fn resource_escape_build_n(
         };
         funcs.push(select_function_of(db, body, &params, &layout, Some(def))?);
     }
+    // Append the lambda-lifted closure bodies after the `order` defs (same as the main emit path + the
+    // escape emitters) — a compound-returning program whose body dispatches a first-class closure via
+    // `call_indirect` needs the lifted body present + the funcref table laid (the caller passes
+    // `lifted_table` to the module assembler). Without this the escape module is missing both.
+    append_lifted_bodies(db, &mut funcs, &layout)?;
     Ok((imports, funcs, layout))
+}
+
+/// The lambda-lifted closures' ABSOLUTE core-func indices, in table-slot order, for a resource-escape
+/// module built over `layout` (whose `import_base` was fixed by `resource_escape_build_n`). Empty for a
+/// closure-free program → the assembler lays no table. Passed as `form_ex2`'s `lifted_table`.
+fn escape_lifted_table(layout: &Layout) -> Vec<u32> {
+    (0..layout.lifted.len())
+        .map(|slot| layout.lifted_abs(slot))
+        .collect()
 }
 
 /// Derive the per-function DWARF descriptors from a resource-escape `main_core` — its code-section base
@@ -1925,6 +1976,7 @@ fn emit_runtime_resource(
                 Some(def),
             )?);
         }
+        append_lifted_bodies(db, &mut funcs, host_layout)?;
         let export_abs = host_layout
             .abs(export_def)
             .ok_or_else(|| Reject::decline("the escaping export is not in the emission order"))?;
@@ -1949,6 +2001,7 @@ fn emit_runtime_resource(
             &[],
             &make_params.leaf_vts,
             &make_params.core_slots(),
+            &escape_lifted_table(host_layout),
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -2000,6 +2053,13 @@ fn emit_runtime_resource(
         };
         funcs.push(select_function_of(db, body, &params, layout, Some(def))?);
     }
+    // Append the lambda-lifted closure bodies AFTER the `order` defs (mirror the main emit path,
+    // `emit`'s ~553 loop): the escape module dispatches a first-class closure via `call_indirect`, so its
+    // lifted body must be emitted here (at func idx `import_base + order.len() + slot`) AND the funcref
+    // table/elem must be laid (in `form_ex2`, from `layout.lifted`). WITHOUT this the escape module had
+    // neither → `func N: unknown table 0` at the `call_indirect` (v-core-opt's mixed-match-Option tail-loop
+    // / filter-map bug).
+    append_lifted_bodies(db, &mut funcs, layout)?;
 
     // The escaping export's absolute core-func index — `make` calls it to build the compound.
     let export_abs = layout
@@ -2023,6 +2083,7 @@ fn emit_runtime_resource(
         &[],
         &make_params.leaf_vts,
         &make_params.core_slots(),
+        &escape_lifted_table(layout),
     )
     .map_err(Reject::decline)?;
     // DEBUG: a compound-returning program is debuggable too. The user function bodies lead the escape
@@ -3776,10 +3837,10 @@ fn resource_escape_build_host(
     extra: impl FnOnce(&mut std::collections::BTreeSet<&'static str>),
 ) -> Result<(Vec<&'static runtime_abi::RtOp>, Vec<SelectedFunc>, Layout), Reject> {
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
-    for &def in &layout.order {
-        let body = def_body(db, def)?;
-        select::collect_used_ops(db, body, &mut used);
-    }
+    // Scan BOTH the top-level defs AND the lambda-lifted closure bodies — a lifted body is emitted as its
+    // own function (see `append_lifted_bodies`), so an op used ONLY inside a closure must be imported too,
+    // or its `CallImport` resolves to `u32::MAX` → invalid wasm (the escape-module closure-table bug).
+    collect_module_used_ops(db, layout, &mut used)?;
     extra(&mut used);
     let imports: Vec<&runtime_abi::RtOp> = used
         .iter()
@@ -6737,10 +6798,9 @@ fn emit_runtime_bytes_resource(
     spans: Option<&crate::spans::SpanData>,
 ) -> Result<Vec<u8>, Reject> {
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
-    for &def in &layout.order {
-        let body = def_body(db, def)?;
-        select::collect_used_ops(db, body, &mut used);
-    }
+    // Scan the top-level defs AND the lambda-lifted closure bodies (see `append_lifted_bodies`) so an op
+    // used only inside a closure is imported too — else its `CallImport` resolves to `u32::MAX` (invalid).
+    collect_module_used_ops(db, layout, &mut used)?;
     // The looping walker's ops: read the length and each byte, and release the handle.
     used.insert("bytes-len");
     used.insert("bytes-get");
@@ -6810,6 +6870,7 @@ fn emit_runtime_bytes_resource(
         };
         funcs.push(select_function_of(db, body, &params, layout, Some(def))?);
     }
+    append_lifted_bodies(db, &mut funcs, layout)?;
     let export_abs = layout
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the escaping bytes export is not in the emission order"))?;
@@ -6840,6 +6901,7 @@ fn emit_runtime_bytes_resource(
         &core_methods,
         &make_param_vts,
         &make_core_slots,
+        &escape_lifted_table(layout),
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat/sum resource paths — the user bodies lead the escape core's code section,
@@ -6919,10 +6981,9 @@ fn emit_runtime_sum_resource(
     // calls: `sum-disc` (always), `sum-payload` (to reach a variant's payload), `arr-get` (a
     // multi-payload tuple index), and per leaf its `get-*`; and `drop` (the dtor + encode release).
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
-    for &def in &layout.order {
-        let body = def_body(db, def)?;
-        select::collect_used_ops(db, body, &mut used);
-    }
+    // Scan the top-level defs AND the lambda-lifted closure bodies (see `append_lifted_bodies`) so an op
+    // used only inside a closure is imported too — else its `CallImport` resolves to `u32::MAX` (invalid).
+    collect_module_used_ops(db, layout, &mut used)?;
     used.insert("sum-disc");
     let mut any_payload_leaf = false;
     let mut any_nested_path = false;
@@ -7032,6 +7093,7 @@ fn emit_runtime_sum_resource(
                 Some(def),
             )?);
         }
+        append_lifted_bodies(db, &mut funcs, host_layout)?;
         let export_abs = host_layout.abs(export_def).ok_or_else(|| {
             Reject::decline("the escaping sum export is not in the emission order")
         })?;
@@ -7052,6 +7114,7 @@ fn emit_runtime_sum_resource(
             &[],
             &make_param_vts,
             &make_core_slots,
+            &escape_lifted_table(host_layout),
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -7102,6 +7165,7 @@ fn emit_runtime_sum_resource(
         };
         funcs.push(select_function_of(db, body, &params, layout, Some(def))?);
     }
+    append_lifted_bodies(db, &mut funcs, layout)?;
     let export_abs = layout
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the escaping sum export is not in the emission order"))?;
@@ -7123,6 +7187,7 @@ fn emit_runtime_sum_resource(
         &[],
         &make_param_vts,
         &make_core_slots,
+        &escape_lifted_table(layout),
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat resource path — the user bodies lead the code section, so the D2/D3
@@ -7187,10 +7252,9 @@ fn emit_recursive_sum_resource(
     let make_params = export_make_params(db, layout, export_def)?;
 
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
-    for &def in &layout.order {
-        let body = def_body(db, def)?;
-        select::collect_used_ops(db, body, &mut used);
-    }
+    // Scan the top-level defs AND the lambda-lifted closure bodies (see `append_lifted_bodies`) so an op
+    // used only inside a closure is imported too — else its `CallImport` resolves to `u32::MAX` (invalid).
+    collect_module_used_ops(db, layout, &mut used)?;
     // The recursive-sum walker's ops: render via `value-encode`, build the descriptor Bytes
     // (`bytes-alloc`/`bytes-set`), copy the document out (`bytes-len`/`bytes-get`), release the handles.
     for op in [
@@ -7292,6 +7356,7 @@ fn emit_recursive_sum_resource(
                 Some(def),
             )?);
         }
+        append_lifted_bodies(db, &mut funcs, host_layout)?;
         let export_abs = host_layout.abs(export_def).ok_or_else(|| {
             Reject::decline("the escaping recursive-sum export is not in the emission order")
         })?;
@@ -7305,6 +7370,7 @@ fn emit_recursive_sum_resource(
             &[],
             &make_params.leaf_vts,
             &make_params.core_slots(),
+            &escape_lifted_table(host_layout),
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -7350,6 +7416,7 @@ fn emit_recursive_sum_resource(
         };
         funcs.push(select_function_of(db, body, &params, layout, Some(def))?);
     }
+    append_lifted_bodies(db, &mut funcs, layout)?;
     let export_abs = layout.abs(export_def).ok_or_else(|| {
         Reject::decline("the escaping recursive-sum export is not in the emission order")
     })?;
@@ -7364,6 +7431,7 @@ fn emit_recursive_sum_resource(
         &[],
         &make_params.leaf_vts,
         &make_params.core_slots(),
+        &escape_lifted_table(layout),
     )
     .map_err(Reject::decline)?;
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
