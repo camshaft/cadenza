@@ -11680,13 +11680,67 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
             // different captures — e.g. `(fn (x) (+ x k))` at k=1 vs k=2 — must also differ). This keys the
             // memo on WHICH closure is passed, not the syntactic name, so `map`'s and `filter`'s driver
             // specializations are distinct.
-            // ONLY probe `core_of` when the arg is FUNCTION-TYPED — calling `core_of` on a compound that
-            // CONTAINS a lambda (a `const` dictionary `(record (op (fn …)))`) would SPECULATIVELY LIFT that
-            // lambda (`lower_lambda_value`) and pollute `db.captured_ref`, corrupting the dictionary's own
-            // lowering (the same hazard `should_keep_binding` guards against). A dictionary's fields are
-            // already distinguished by `subtree_fingerprint`'s AST walk, so it needs no closure-identity
-            // augmentation; only a directly-function-typed arg (the driver-`step` collision case) does.
-            if matches!(crate::infer::type_of(db, a), crate::ty::Ty::Fn(_, _))
+            // SELF-RECURSIVE const re-pass INSIDE a specialized copy: if the arg is a bare re-pass of this
+            // callee's OWN const param (by name) and a spec of THIS def has recorded that param's fingerprint
+            // (`db.const_repass_fp`, keyed by `(orig_body, name)`), INHERIT the recorded fingerprint verbatim
+            // rather than probing `core_of`. On a MIXED-match recursive arm (a recursive arm beside a
+            // value-returning sibling) the re-passed `step` is UNBOUND in the orphan copy, so `core_of(step)`
+            // is a Poison → no `|clos` suffix → a DIFFERENT memo key from the enclosing spec → a divergent
+            // second spec whose body carries the unbound `step` (the const-param-drop / CDZ0101 bug
+            // v-iterators' filter-map hit — a recursive const re-pass on a mixed-match arm). Inheriting the
+            // recorded fingerprint makes this recursive call's key MATCH the enclosing spec's, so the
+            // recursion closes on ONE spec (re-enters the working instance) and the orphaned body is never
+            // lowered. Keyed by NAME (the copy preserves the source name); only fires for a genuine self-repass
+            // of one of THIS def's const params for which a fingerprint was recorded.
+            // Inherit the recorded fingerprint ONLY when this arg is a self-recursive const re-pass that
+            // RESOLVES TO POISON — the orphan-copy case (a mixed-match recursive arm where the erased const
+            // param is unbound, so `core_of` would yield a divergent key). A CLEANLY-RESOLVING recursive
+            // re-pass (the module-scale `drive(step,…)` where `step` still resolves to its distinct wrapped
+            // closure) must NOT inherit: it computes its OWN correct `|clos<code>`, and inheriting from the
+            // `(orig_body,name)`-keyed record would cross-pollute between two specs of the SAME driver at
+            // DIFFERENT closures (em's map-step vs ef's filter-step → the collision `5dee1c97f` fixed). So
+            // the record is a FALLBACK only for the unbound orphan, never an override of a good resolution.
+            let arg_name = db.ast.as_name(a).map(|s| s.to_string());
+            let arg_is_poison = matches!(resolved_of(db, a), Resolved::Poison(_));
+            let inherited = if arg_is_poison {
+                arg_name.as_ref().and_then(|n| {
+                    let is_own_const_param = orig_params.iter().any(|&pp| {
+                        let occ = crate::eval::param_name_occ(db, pp);
+                        db.const_params.contains(&occ) && db.ast.as_name(occ) == Some(n.as_str())
+                    });
+                    if is_own_const_param {
+                        db.const_repass_fp.get(&(orig_body, n.clone())).cloned()
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
+            // Whether `subtree_fingerprint` produced a BARE NAME (`nstep;`) rather than a compound AST (a
+            // lambda literal `(nfn;…)`, an application, a record). A bare name is the AMBIGUOUS case the
+            // `|clos` closure-identity augmentation exists for: two call sites passing DIFFERENT closures via
+            // the SAME parameter name (`drive(step,…)` from a map chain vs a filter chain) fingerprint
+            // identically as `nstep;` and would collide (`5dee1c97f`). A COMPOUND fp (a lambda literal) is
+            // ALREADY self-identifying — its full AST distinguishes distinct lambdas — AND appending `|clos`
+            // there is HARMFUL: `core_of` lifts a FRESH `code` per copy, so a const-lambda arg re-passed on a
+            // recursive edge gets `|clos2` in the copy vs `|clos1` at the main call → key divergence → the
+            // divergent-second-spec CDZ0101 (the both-const `f` case of the const-param-drop bug). So append
+            // `|clos` ONLY for a bare-name fp; a compound fp needs no augmentation and is stable across copies.
+            let fp_is_bare_name = db.ast.as_name(a).is_some();
+            if let Some(inh) = inherited {
+                fp = inh;
+            } else if fp_is_bare_name
+                && matches!(crate::infer::type_of(db, a), crate::ty::Ty::Fn(_, _))
+                // ONLY probe `core_of` when the arg is FUNCTION-TYPED — calling `core_of` on a compound that
+                // CONTAINS a lambda (a `const` dictionary `(record (op (fn …)))`) would SPECULATIVELY LIFT
+                // that lambda (`lower_lambda_value`) and pollute `db.captured_ref`, corrupting the
+                // dictionary's own lowering (the same hazard `should_keep_binding` guards against). Combined
+                // with the bare-name gate above, this fires only for a directly-function-typed BARE-NAME arg
+                // (the driver-`step` module-scale collision case): its `subtree_fingerprint` is the ambiguous
+                // `nstep;`, so disambiguate by the arg's RESOLVED closure identity — append the lifted `code`
+                // (distinct per lambda) + a fingerprint of each capture, keying the memo on WHICH closure is
+                // passed (`5dee1c97f`).
                 && let Core::Closure { code, captures } = core_of(db, a)
             {
                 fp.push_str("|clos");
@@ -11884,6 +11938,20 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
         .iter()
         .map(|&p| crate::eval::param_name_occ(db, p))
         .collect();
+    // RECORD this spec's const-param fingerprints, keyed by `(orig_body, param NAME)`, so a SELF-RECURSIVE
+    // const re-pass of THIS def's const param — lowered later, demand-driven — inherits the identical
+    // fingerprint (see `const_repass_fp`), keeping the recursive call's memo key equal to this spec's so the
+    // recursion closes on ONE spec. Recorded before the body copy (the recursive call may re-enter
+    // `type_specialize` during the copy OR during a later demand-driven lower of the spec body). A second
+    // spec of the same def at a DIFFERENT instantiation overwrites its own `(orig_body,name)` entry with the
+    // matching fingerprint — correct, since a recursive re-pass belongs to whichever spec is currently being
+    // lowered and every spec threads the SAME const closure through its own recursion.
+    for (name, kind) in param_names.iter().zip(kinds.iter()) {
+        if let ArgKind::ConstArg(_, fp) = kind {
+            db.const_repass_fp
+                .insert((orig_body, name.clone()), fp.clone());
+        }
+    }
     let spec_body = crate::eval::copy_structural_pub(db, orig_body, &own_params, &arg_of);
 
     // Wrap in a real `(def (spec params…) body)` arena node so the parent index links param → sig → def

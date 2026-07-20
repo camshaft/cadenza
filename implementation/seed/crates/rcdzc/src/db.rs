@@ -1638,6 +1638,19 @@ pub struct Db {
     /// with no recursive-generic call — byte-identical to before.
     pub(crate) type_specializations: crate::fxhash::FxHashMap<(StructId, String), usize>,
 
+    /// The `const`-parameter fingerprint recorded for each specialization, keyed by `(orig_body, param
+    /// NAME)`. Set when `type_specialize` synthesizes a spec for a def with a const param; read when a
+    /// SELF-RECURSIVE const re-pass of THAT def's const param is later lowered (demand-driven, possibly
+    /// long after the enclosing spec was built). A re-pass on a MIXED-match recursive arm has an UNBOUND
+    /// `step` in the orphan copy, so probing `core_of` yields a Poison → no `|clos` suffix → a DIFFERENT
+    /// memo key → a divergent second spec whose body carries the unbound `step` (the const-param-drop /
+    /// CDZ0101 bug v-iterators' filter-map hit). Inheriting the recorded fingerprint makes the recursive
+    /// call's key MATCH the enclosing spec's, so the recursion closes on ONE spec (re-enters the working
+    /// instance) and the orphaned body never lowers. Empty for a program with no recursive-const spec —
+    /// byte-identical to before. Keyed by `(orig_body, name)` (not a stack) because the recursive call's
+    /// lowering is demand-driven and not lexically nested inside the spec's construction.
+    pub(crate) const_repass_fp: crate::fxhash::FxHashMap<(StructId, String), String>,
+
     /// A HUMAN-READABLE record of each concrete instantiation `type_specialize` synthesized, in
     /// synthesis order — one [`Instantiation`] per DISTINCT specialization (appended at the memo miss,
     /// beside the `type_specializations` insert). The memo answers "have I already built this instance?";
@@ -2442,6 +2455,7 @@ impl Db {
             subtree_performs_cache: crate::fxhash::FxHashMap::default(),
             reduced_callable_walked: crate::fxhash::FxHashSet::default(),
             type_specializations: crate::fxhash::FxHashMap::default(),
+            const_repass_fp: crate::fxhash::FxHashMap::default(),
             instantiations: Vec::new(),
             inlined: crate::fxhash::FxHashSet::default(),
             called: crate::fxhash::FxHashSet::default(),

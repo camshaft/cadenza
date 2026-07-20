@@ -1295,11 +1295,13 @@ fn a_nongeneratable_leaf_compound_test_declines_cleanly_and_siblings_run() {
         "a sibling test still runs despite the un-generatable compound test: {stdout}"
     );
     // The un-generatable test is reported as a clean per-test FAIL (not a silent drop, not a file abort),
-    // and NAMES its cause — the declining wrapper performs `Test.fail("… a leaf the generator cannot
-    // produce yet (e.g. Char) …")`, so the author gets an actionable reason, not a bare `body trapped`.
+    // and NAMES its cause — the declining wrapper performs `Test.fail("… has no generatable form yet — a
+    // non-boundary/heap scalar (Char/…) or a compound with such a leaf — not property-testable …")`, so the
+    // author gets an actionable reason, not a bare `body trapped`. (The message covers BOTH the compound-leaf
+    // case here and the bare-name-scalar case; it names `Char` in the non-generatable-type list.)
     assert!(
         stdout.contains("FAIL charlist-gen")
-            && stdout.contains("cannot produce yet")
+            && stdout.contains("not property-testable")
             && stdout.contains("Char"),
         "the non-generatable-leaf compound test declines with an ACTIONABLE per-test FAIL (names the \
          Char-leaf cause): {stdout}"
@@ -2164,5 +2166,48 @@ fn a_property_parameter_at_an_unrecognized_type_declines_rather_than_fabricating
     assert!(
         ok2 && stdout2.contains("PASS prop_ok"),
         "a property at a recognized type still runs after the annotation-enforcement change: {stdout2}{stderr2}"
+    );
+}
+
+/// A `@test` over a BARE-NAME non-generatable concrete scalar (`Rational`/`Char`/`BigInt`/`String`/`Symbol`
+/// — a heap/non-boundary scalar with no host boundary form) DECLINES CLEANLY PER-TEST rather than aborting
+/// the whole `cdz test` file. Before this, such a param fell through to the export boundary — `Char` at
+/// layout, the others at serialize — and the hard `cdz: error: … has no component boundary representation`
+/// KILLED THE SIBLING TESTS in the file. Now the runner reports a per-test `FAIL <name>-gen: … not
+/// property-testable` and the sibling `anchor` still PASSES. This is the bare-name-scalar twin of the
+/// compound-leaf declining path (`a_nongeneratable_leaf_compound_gets_a_declining_wrapper` in proptest_gen).
+#[test]
+fn a_property_over_a_bare_name_nongeneratable_scalar_declines_per_test_not_a_file_abort() {
+    // This RUNS properties (the declining wrapper + the anchor both resolve the runtime via `cdz test`),
+    // so it must skip storeless: CI's `cargo test --workspace` has no store → the run declines → the
+    // PASS/FAIL verdict asserts would red. The store-having gate + `@test suites` jobs exercise it fully.
+    if !store_present() {
+        eprintln!("skipping: no cadenza-store (storeless test job) — this test runs properties");
+        return;
+    }
+    let d = dir("proptest-bare-nongeneratable-scalar");
+    // `anchor` FIRST so a file-abort (the pre-fix behavior) would visibly prevent its PASS from appearing.
+    let src = "@test def anchor() = if 1 == 1 then unit else trap(\"a\")\n\
+               @test def prop_rat(r: Rational) = if r == r then unit else trap(\"neq\")\n";
+    let f = write(&d, "m.cdz", src);
+    let (ok, stdout, stderr) = run(&["test", &f]);
+    let out = format!("{stdout}{stderr}");
+    // The run is non-zero (the declining property is reported as a FAIL), but it did NOT hard-abort: the
+    // sibling ran and the decline is a per-test FAIL naming its cause, not a `cdz: error:` boundary abort.
+    assert!(
+        !ok,
+        "the declining property is reported as a per-test FAIL (non-zero run): {out}"
+    );
+    assert!(
+        stdout.contains("PASS anchor"),
+        "the SIBLING test still runs — the non-generatable scalar did NOT abort the whole file: {out}"
+    );
+    assert!(
+        stdout.contains("FAIL prop_rat-gen") && stdout.contains("not property-testable"),
+        "the non-generatable scalar param declines per-test with a named reason, not a boundary abort: {out}"
+    );
+    assert!(
+        !out.contains("has no component boundary representation"),
+        "the hard boundary-abort error must NOT surface — it is replaced by the per-test decline: {out}"
     );
 }
