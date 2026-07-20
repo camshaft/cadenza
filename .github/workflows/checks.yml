@@ -86,8 +86,9 @@ jobs:
       - name: Launcher + systemd units
         working-directory: fleet/slack-bridge
         run: |
-          # The launcher/installer must parse, and the systemd unit templates must be valid units.
+          # The launcher/installer/revive scripts must parse, and the systemd unit templates must be valid units.
           bash -n run.sh
+          bash -n revive.sh
           bash -n systemd/install.sh
           # Render the templates against a fake @REPO_ROOT@ populated with stub executables at the
           # ExecStart paths (run.sh + the watchdog binary), so systemd-analyze verifies unit

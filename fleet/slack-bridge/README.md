@@ -108,6 +108,24 @@ placeholders) — never commit a resolved absolute host path. Re-run `install.sh
 or rebuilding the watchdog binary (`cargo build --release` here, then `systemctl --user restart
 cadenza-watchdog`).
 
+#### Fallback when systemd isn't available (`revive.sh`)
+
+systemd `--user` boot-survival only works when the user's systemd **manager** is running — on some
+hosts it isn't (a dead session bus after a reboot/OOM; restarting it needs root). When `systemctl
+--user` errors with "Failed to connect to bus", bring both daemons back without systemd:
+
+```
+fleet/slack-bridge/revive.sh       # idempotent — starts whichever daemon is DOWN, leaves live ones alone
+```
+
+It hosts each daemon's own auto-restart loop detached (`setsid`): the bridge via `run.sh`, and the
+`WATCHDOG_ONLY=1` daemon wrapped in a restart loop. It resolves the **hub** `FLEET_DIR` (via
+git-common-dir) and the channel from `~/.cadenza-env` (`SLACK_BRIDGE_CHANNEL` / `SLACK_CHANNEL`), then
+verifies liveness. Check daemon health anytime with `pgrep -af bridge.js` +
+`pgrep -af target/release/cadenza-slack-bridge` (not `systemctl --user`, which errors when the bus is
+down). Put `SLACK_BRIDGE_CHANNEL=<dm-or-channel-id>` in `~/.cadenza-env` so both `revive.sh` and
+`install.sh` pick it up (a channel id is not a secret, but the env file is the right config home).
+
 ## Configuration
 
 All via environment variables:

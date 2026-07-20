@@ -28,7 +28,7 @@ export interface ExampleModel {
 const RATIONAL_INTERVALS: ExampleModel = {
   slug: "rational-intervals",
   title: "Rational intervals (a fifth + a fourth = an octave)",
-  description: "Intervals as exact octave-fractions — a perfect fifth (7/12) plus a perfect fourth (5/12) is exactly one octave.",
+  description: "Intervals as exact octave-fractions, so a perfect fifth (7/12) plus a perfect fourth (5/12) is exactly one octave.",
   source: {
     ml: `def main() = r-eq(r-add(r-perfect-fifth, r-perfect-fourth), r-octave)`,
     sexpr: `(def (main) (r-eq (r-add r-perfect-fifth r-perfect-fourth) r-octave))`,
@@ -40,7 +40,7 @@ const RATIONAL_INTERVALS: ExampleModel = {
 const CHORD_TO_MIDI: ExampleModel = {
   slug: "chord-to-midi",
   title: "Chord to MIDI (a C-major triad)",
-  description: "Stack a major triad on middle C (MIDI 60) and read its note numbers — 60, 64, 67 (C, E, G).",
+  description: "Stack a major triad on middle C (MIDI 60) and read its note numbers, giving 60, 64, 67 (C, E, G).",
   source: {
     ml: `def main() = chord-notes(major-triad(pitch(60)))`,
     sexpr: `(def (main) (chord-notes (major-triad (pitch 60))))`,
@@ -53,7 +53,7 @@ const CHORD_TO_MIDI: ExampleModel = {
 const PIECE_TO_EVENTS: ExampleModel = {
   slug: "piece-to-events",
   title: "A piece as a MIDI event stream (no stuck keys)",
-  description: "Schedule the I-V-vi-IV progression into timed MIDI events — every note-on has a matching note-off (balanced).",
+  description: "Schedule the I-V-vi-IV progression into timed MIDI events, where every note-on has a matching note-off (balanced).",
   source: {
     ml: `def main() = schedule(progression)`,
     sexpr: `(def (main) (schedule progression))`,

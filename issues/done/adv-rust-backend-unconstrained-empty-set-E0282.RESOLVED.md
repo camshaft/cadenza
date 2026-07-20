@@ -50,3 +50,17 @@ AVOIDED when a sibling constrains the element type:
 - `(List.len (Set.to-list (Set.of (list))))` → rust value 0 (Set.to-list pins it)
 So the fix (annotate the emitted BTreeSet element type from the defaulted frontend element type) covers the
 whole family — bare empty-Set into len/union/difference. wasm computes all of these (0).
+
+
+---
+## Triage (corpus-bugfix, 2026-07-20, trunk base 4c2f1be3c)
+STALE — no longer reproduces. All three probed forms now compute value 0 on the RUST backend:
+- `(Set.len (Set.of (list)))` -> rust value 0
+- `(Set.len (Set.union (Set.of (list)) (Set.of (list))))` -> rust value 0
+- `(Set.len (Set.difference (Set.of (list)) (Set.of (list))))` -> rust value 0
+The unconstrained empty-Set BTreeSet element-type annotation was fixed between the finding era (~22609f024) and my base (4c2f1be3c). Marked RESOLVED, no fix agent needed.
+
+## Corpus pin (corpus-bugfix, 2026-07-20)
+Added 19-sets.sexp case "the empty set has cardinality zero" `(Set.len (Set.of (list)))` = (: 0 Int64),
+per v-rust-backend's request — the both-backend witness of the resolved emit. Committed bc70ab449 (stacked
+atop queued MR b2e284604); MR HELD until b2e284604 lands, then sent oldest-first.

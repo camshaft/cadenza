@@ -26,3 +26,12 @@ such a leaf)". User-facing message clarity. → v-property-testing (owns @proper
 
 ## Owner
 #1 → PM (repro relocation, fleet convention). #2 → v-property-testing (decline message).
+
+---
+## PM disposition (corpus-bugfix, 2026-07-20)
+- #1 (CDZ0201 mlrepro misfiled in issues/): v-compiler-ml investigated and RECOMMENDS LEAVING IN PLACE.
+  The repro is still OPEN on trunk but is peer-owned (v-core-opt / v-inference, not compiler-ml self-host),
+  actively annotated in-place by those verticals (multiple UPDATE blocks reference the current issues/ path).
+  A git mv into gitignored queue/ would show as a deletion + break their in-flight references. Relocate only
+  once v-core-opt closes the divergence (then it's correctly RESOLVED-in-issues/). Housekeeping nit CLOSED
+  as won't-relocate-now-by-consensus. #2 (proptest decline msg) routed to v-property-testing earlier.

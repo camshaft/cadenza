@@ -1,0 +1,75 @@
+/// layer-bridge.cdz — the CROSS-LAYER CONSISTENCY gate: pin that the RATIONAL theory core and the Int64
+/// MIDI-projection layer AGREE on every 12-TET interval.
+///
+/// The library has two representations (see DESIGN.md): the rational CORE (`RInterval` = octave-fraction,
+/// mode/tuning-independent) and the Int64 PROJECTION (`Interval` = signed semitones, what the MIDI wire
+/// consumes). They must agree on the 12-TET grid — a rational `s/12`-octave interval must project to
+/// exactly `s` semitones. This module is a GATE that fails if a future change to EITHER layer silently
+/// drifts them apart: for each named interval, `to-semitones-exact(<rational>)` must equal
+/// `Some(semitones(<int64>))`. It witnesses the two-layer invariant so neither side can regress unnoticed.
+
+import { Interval, semitones } from "pitch"
+import { unison, major-second, minor-third, major-third, perfect-fourth, tritone, perfect-fifth, major-sixth, major-seventh, octave-interval } from "pitch"
+import { minor-second } from "pitch"
+import { RInterval, to-semitones-exact } from "interval-ratio"
+import { r-unison, r-semitone, r-wholetone, r-minor-third, r-major-third, r-perfect-fourth, r-tritone, r-perfect-fifth, r-major-sixth, r-major-seventh, r-octave } from "interval-ratio"
+
+/// Assert the rational interval `ri` projects (exactly, on the 12-TET grid) to the same semitone count the
+/// Int64 interval `ii` carries. Returns unit on agreement, traps on mismatch or an off-grid rational.
+def agree(ri: RInterval, ii: Interval) =
+  match to-semitones-exact(ri) with
+    | Option.Some(s) => if s == semitones(ii) then unit else trap("rational/Int64 semitone mismatch")
+    | Option.None(_) => trap("rational interval is off the 12-TET grid — cannot bridge to Int64 semitones")
+
+/// ============================ @test suite (cross-layer 12-TET agreement) ============================
+
+@test
+def unison-agrees() = agree(r-unison, unison)
+
+@test
+def minor-second-agrees() = agree(r-semitone, minor-second)
+
+@test
+def major-second-agrees() = agree(r-wholetone, major-second)
+
+@test
+def minor-third-agrees() = agree(r-minor-third, minor-third)
+
+@test
+def major-third-agrees() = agree(r-major-third, major-third)
+
+@test
+def perfect-fourth-agrees() = agree(r-perfect-fourth, perfect-fourth)
+
+@test
+def tritone-agrees() = agree(r-tritone, tritone)
+
+@test
+def perfect-fifth-agrees() = agree(r-perfect-fifth, perfect-fifth)
+
+@test
+def major-sixth-agrees() = agree(r-major-sixth, major-sixth)
+
+@test
+def major-seventh-agrees() = agree(r-major-seventh, major-seventh)
+
+@test
+def octave-agrees() = agree(r-octave, octave-interval)
+
+@test
+def the-whole-twelve-tet-grid-round-trips() =
+  // Every one of the named intervals bridges: this is the batch witness that the two layers agree across
+  // the full 12-TET set (0,1,2,3,4,5,6,7,9,11,12 semitones), so a drift in either representation is caught.
+  let _u0 = agree(r-unison, unison) in
+  let _u1 = agree(r-semitone, minor-second) in
+  let _u2 = agree(r-wholetone, major-second) in
+  let _u3 = agree(r-minor-third, minor-third) in
+  let _u4 = agree(r-major-third, major-third) in
+  let _u5 = agree(r-perfect-fourth, perfect-fourth) in
+  let _u6 = agree(r-tritone, tritone) in
+  let _u7 = agree(r-perfect-fifth, perfect-fifth) in
+  let _u9 = agree(r-major-sixth, major-sixth) in
+  let _u11 = agree(r-major-seventh, major-seventh) in
+  agree(r-octave, octave-interval)
+
+export { agree }

@@ -3546,6 +3546,7 @@ pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime
 pass	runtime Bytes ordering declines uniformly — the spec blesses no Bytes order
 pass	runtime Bytes value-equality distinguishes different content
+pass	runtime Rational MULTIPLICATION of two parameter-built fractions reduces to lowest terms
 pass	runtime Rational arithmetic adds two parameter-built fractions exactly
 pass	runtime String.concat is associative — (a·b)·c equals a·(b·c), both equal the flat concatenation
 pass	runtime float equality compares by canonical byte form

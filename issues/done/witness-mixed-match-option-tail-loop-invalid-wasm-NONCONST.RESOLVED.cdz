@@ -26,3 +26,12 @@ def twostep(step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64)) =
 def run2(it) = match it with | Iter.Mk(s0, step) => twostep(step, s0)
 def main() = run2(from-list([1,2,3,4]))
 export { main }
+
+// ===== TRIAGE (corpus-bugfix, 2026-07-20) =====
+// RESOLVED — no longer reproduces on current trunk base. `cdz compile` now succeeds (wrote 3204 bytes,
+// no "func N failed to validate") and `cdz run` computes the correct value:
+//   (Some (tuple 3 (list 4))) : Option((Int64, List(Int64)))  — filters x>2 from [1,2,3,4].
+// The mixed-match Option-typed recursive tail arm no longer leaves the enclosing if(result i32) stack
+// unbalanced under the tail-loop conversion (select.rs / emit_tail). This is the NON-CONST twin of the
+// const-fn-param-drop repro (also RESOLVED this tick) — together they were v-iterators' filter-map
+// blocker; both fixed. Marked RESOLVED.
