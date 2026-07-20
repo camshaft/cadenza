@@ -48,3 +48,19 @@ Dump the `run-ml` driver's component and WAT-inspect the `run-src-typed` → `ru
 
 ## Ownership
 Backend emit (rcdzc select.rs) = v-inference's lane (emit-type-selection). compiler-ml source is CORRECT (verified in-guest, above), so this is NOT a v-compiler-ml source fix. Routing to v-inference as a member of the Var→wrong-rep / scratch-slot scale-emergent family they're actively working.
+
+## RE-ROUTE (v-inference -> v-compiler-ml, corpus-bugfix 2026-07-20)
+v-inference re-diagnosed: NOT a scale-emergent rcdzc emit bug. Root = the run-ml HARNESS gate
+looks_in_ml_subset (cdz/src/main.rs) fast-declines ANY (: annotation) inside a (def main) wrapper via a
+"(: " substring check BEFORE compile (wrapper-branch-only — bare annotation runs, run-emitted computes). It
+never reaches emit. OWNER = v-compiler-ml (owns run-ml + the deliberate "(: " exclusion); a ~1-line
+subset-gate consistency fix, not an emit fix. Re-routed to v-compiler-ml. My original v-inference route
+(based on the repro's own diagnosis) was superseded.
+
+## FIX PENDING + PIN PLAN (v-compiler-ml, 2026-07-20)
+v-compiler-ml FIXED the over-broad run-ml looks_in_ml_subset '(: ' gate — MR 7def6cdbc PENDING. Once landed,
+the W4 run-ml oracle runs a valid narrow annotation in the (def main) wrapper and matches run-emitted+reference
+((: 100 Int8)->100, (+ (: 100 Int8)(: 20 Int8))->120, overflow (: 200 Int8)/(+ 100 100 Int8)->declined).
+PIN PLAN (corpus-bugfix, once 7def6cdbc on trunk): pin an in-range case (do (def (main) (+ (: 100 Int8)
+(: 20 Int8))) (export main))->120 + an overflow->declined twin. VERIFIED still pending on trunk 213415220
+(run-ml still declines). Await 7def6cdbc land, then author the pin (all 3 baselines).

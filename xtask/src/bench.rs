@@ -32,6 +32,13 @@ fn baseline_path(paths: &Paths) -> PathBuf {
 /// it and a REGRESSION (any op allocating more than baseline + tolerance) exits non-zero — the same
 /// shape as `gate --check`. An op that IMPROVED (allocates fewer) is reported but never fails.
 pub(crate) fn run(paths: &Paths, save: bool) {
+    // Take the fleet-wide build/check concurrency lease (host-hang fix, 2026-07-20): `measure` runs
+    // `cargo test --release` on the runtime — a heavy compile competing for the same cores as `build`/
+    // `check`, which already share this pool. Counting it here keeps the fleet-wide cap honest. Held for
+    // the whole run (RAII drop). Fail-open. Not spawned by any lease-holder, so no deadlock.
+    let priority = std::env::var("CDZ_CHECK_PRIORITY").is_ok_and(|v| v == "1" || v == "true");
+    let _lease = crate::fleet::acquire_check_lease(&paths.repo, priority);
+
     let measured = measure(paths);
     if measured.is_empty() {
         eprintln!("xtask bench: no ALLOC lines captured — did the benchmark test change?");

@@ -461,6 +461,14 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
 ///
 /// Run `cargo xtask build` first so the store holds the runtime whose hash the compiler pins.
 fn guide_wasm(paths: &Paths, store: Option<PathBuf>) {
+    // Take the fleet-wide build/check concurrency lease (host-hang fix, 2026-07-20): `wasm-pack build
+    // --release` is a heavy compile competing for the same cores as `build`/`check`/`bench`, which share
+    // this pool. Held for the whole build (RAII drop). Fail-open. Not spawned by any lease-holder, so no
+    // deadlock. (`gate` deliberately stays UNLEASED — `check` spawns it as a child while holding a lease,
+    // so leasing it would self-deadlock; `check` already caps that path.)
+    let priority = std::env::var("CDZ_CHECK_PRIORITY").is_ok_and(|v| v == "1" || v == "true");
+    let _lease = fleet::acquire_check_lease(&paths.repo, priority);
+
     let sh = Shell::new().expect("open a shell for the guide wasm build");
     let crate_dir = paths.seed.join("crates/cdz-wasm");
     let guide = paths.repo.join("guide");

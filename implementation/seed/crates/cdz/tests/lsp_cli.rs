@@ -1100,3 +1100,39 @@ fn lsp_diagnostics_surface_a_colliding_import() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn lsp_diagnostics_surface_a_missing_imported_sibling() {
+    // A buffer imports a sibling library that does NOT exist on disk — `link()` rejects it up front
+    // (CDZ0201 "unknown package file"), before any Diagnostics artifact is produced, exactly like the
+    // cyclic/self/colliding cases. The server must surface that link fault (matching `cdz check`), not
+    // fall back to the misleading single-buffer diagnostics. Completes the up-front-link-rejection class:
+    // cyclic + self + colliding + MISSING-sibling all reach the LSP surface faithfully.
+    let dir = std::env::temp_dir().join(format!("cdz-lsp-missing-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    // Only the importer exists — `nonexistent_lib.sexp` is deliberately never written.
+    let path = dir.join("importer.sexp");
+    let text = "(do (import \"nonexistent_lib\" (helper)) (def (main) (helper 41)) (export main))";
+    std::fs::write(&path, text).expect("write");
+    let uri = format!("file://{}", path.display());
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"cadenza","version":1,"text":text}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let pushes = diagnostic_pushes(&msgs);
+    let opened = pushes
+        .last()
+        .expect("a diagnostics push for the missing-sibling importer");
+    assert!(
+        opened.iter().any(|d| d
+            .get("message")
+            .and_then(|m| m.as_str())
+            .is_some_and(|m| m.contains("unknown package file"))),
+        "a missing imported sibling should surface the unknown-package-file link fault, not the single-buffer fallback: {opened:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -56,3 +56,15 @@ f813f5cd0-era; marked .RESOLVED earlier). So this MAY already be healed by that 
 un-inline the is-cmp-op helper (formulation A) + re-run pd-deep-nesting/parse-db on current trunk: green ->
 mark RESOLVED + pin a helper-in-SCC case; still red -> route to v-inference as a confirmed scale-emergent
 miscompile. Low urgency (clean workaround). Awaiting v-compiler-ml re-verify.
+
+## RESOLVED (corpus-bugfix, 2026-07-20, trunk ff38db305)
+v-compiler-ml re-verified as asked: reverted parse-cmp to formulation A (the standalone is-cmp-op nested-if
+helper that formerly corrupted the UNRELATED pd-deep-nesting ((1)) parse) and re-ran — parse-db per-file
+40/0 (pd-deep-nesting PASSES, was the failing assertion) AND full compiler-ml suite 612/0 across 31 files
+(passes at module scale too). HEALED by the sibling parse-bool/SCC emit fix (materialize-recursive-call-
+match-scrutinee, which resolved bug#4 + the parse-if-via-parse-bool hang) — same "small fn added to the
+parse-db SCC misbehaves" neighborhood, as hypothesized. v-compiler-ml left the inline range-check (B) on
+trunk (no churn; A now equivalent but un-landed). A dedicated corpus regression pin of the helper-in-SCC
+shape would need the full parse-db module context (module-scale-emergent) — not expressible as a plain
+do-wrapped corpus case; the parse-db per-file suite (40/0 incl pd-deep-nesting) already regression-guards it.
+So NO corpus pin needed. Marked RESOLVED.

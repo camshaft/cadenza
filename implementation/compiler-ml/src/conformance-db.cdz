@@ -198,6 +198,16 @@ def c-cx-chained-comparison-declines() = Case.Case([Tok.TNum(1), Tok.TOp(60), To
 /// FIXED (rcdzc 26e3471ac — materialize a recursive-call match scrutinee once, killing the pattern-binder
 /// exponential re-compute that non-terminated on nested parens). Now a permanent regression guard.
 def c-cx-nested-redundant-parens() = Case.Case([Tok.TLParen, Tok.TLParen, Tok.TNum(5), Tok.TRParen, Tok.TRParen], Expect.Runs(5))
+/// `(1 < 2) < 3` → Declines. The outer `<`'s LEFT operand is a Bool (the parenthesized comparison), and a
+/// relational op needs Int operands → ill-typed (CDZ0203). Distinct from c-bool-rel-declines (a bool LITERAL
+/// operand) and c-cx-chained-comparison-declines (a trailing-token PARSE failure): here the sub-comparison
+/// PARSES fine and the decline is a genuine TYPE error on a computed-Bool operand. Pins the type gate on a
+/// nested relational.
+def c-cx-bool-cmp-operand-declines() = Case.Case([Tok.TLParen, Tok.TNum(1), Tok.TOp(60), Tok.TNum(2), Tok.TRParen, Tok.TOp(60), Tok.TNum(3)], Expect.Declines)
+/// `let x = (1 < 2) in x + 1` → Declines. `x` binds a Bool, then `x + 1` uses it in arithmetic → ill-typed
+/// (CDZ0203). Pins that a let-bound Bool cannot launder into an arithmetic operand — the type flows through
+/// the binding (distinct from c-bool-in-arith-declines, where the bool is a direct literal operand).
+def c-cx-let-bool-in-arith-declines() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TLParen, Tok.TNum(1), Tok.TOp(60), Tok.TNum(2), Tok.TRParen, Tok.TIn, Tok.TName(1), Tok.TOp(43), Tok.TNum(1)], Expect.Declines)
 
 /// THE CORPUS: every conformance case. Widening the language = appending here (start-low-and-climb).
 def corpus() = [
@@ -219,7 +229,8 @@ def corpus() = [
   c-cx-nested-if-in-branch(), c-cx-let-chain-outer-in-value-and-body(),
   c-cx-ne-true(), c-cx-mul-prec-in-sub-chain(),
   c-cx-chained-comparison-declines(), c-cx-neg-mod(),
-  c-cx-nested-redundant-parens()
+  c-cx-nested-redundant-parens(),
+  c-cx-bool-cmp-operand-declines(), c-cx-let-bool-in-arith-declines()
 ]
 
 /// THE SCOREBOARD: `(passed, total)` over the corpus — what the `cadenza-ml` gate target prints as `X/N`.
@@ -250,7 +261,7 @@ def cf-declines-mismatch-is-fail() =
 
 @test
 def cf-corpus-size-floor() =
-  // The corpus SIZE floor: exactly 61 cases, so a case can't be silently dropped from `corpus()`.
+  // The corpus SIZE floor: exactly 63 cases, so a case can't be silently dropped from `corpus()`.
   // This does NOT re-run the compiles — each case's pass/decline is already proven by its own
   // `conformance-<case>` @test below, and the `count-passing` fold logic by
   // `cf-count-passing-partial`. The old `cf-corpus-all-pass` re-ran the entire corpus
@@ -259,7 +270,7 @@ def cf-corpus-size-floor() =
   // v-fleet-tooling as the compiler-ml gate-throughput + false-hang source). The conformance FLOOR
   // is now: per-case @tests (each case correct) + this size check (no case dropped), with none of
   // the redundant full-corpus re-run.
-  (if List.len(corpus()) == 61 then unit else trap("corpus has 61 cases"))
+  (if List.len(corpus()) == 63 then unit else trap("corpus has 63 cases"))
 
 @test
 def cf-count-passing-partial() =
@@ -402,5 +413,9 @@ def conformance-cx-mul-prec-in-sub-chain() = (if check-case(c-cx-mul-prec-in-sub
 def conformance-cx-chained-comparison-declines() = (if check-case(c-cx-chained-comparison-declines()) then unit else trap("1 < 2 < 3 declines (chained comparison / trailing-token guard)"))
 @test
 def conformance-cx-neg-mod() = (if check-case(c-cx-neg-mod()) then unit else trap("-7 % 3 → -1 (sign-following modulo, matches rcdzc)"))
+@test
+def conformance-cx-bool-cmp-operand-declines() = (if check-case(c-cx-bool-cmp-operand-declines()) then unit else trap("(1 < 2) < 3 declines (Bool operand to a relational op — CDZ0203)"))
+@test
+def conformance-cx-let-bool-in-arith-declines() = (if check-case(c-cx-let-bool-in-arith-declines()) then unit else trap("let x=(1<2) in x+1 declines (let-bound Bool used in arithmetic — CDZ0203)"))
 
 export { Expect.*, Case.*, case-passes, check-case, count-passing, corpus, conformance, all-pass }

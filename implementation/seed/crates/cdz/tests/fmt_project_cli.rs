@@ -146,14 +146,14 @@ fn fmt_preserves_a_doc_comment_on_a_plain_def() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// KNOWN GAP (routed to v-syntax 2026-07-20, reader doc-attachment lane): a `///` before an `@`-annotated
-// def (e.g. `@test`) is DOWNGRADED to `//` — the annotation between the doc and the def breaks the drain,
-// the same bug class as the (now-fixed) `///`-before-`effect` case. `#[ignore]`d until the reader fix
-// lands (un-ignore + it should pass, pinning the fix). This is why the fleet-wide `cdz fmt` apply (the
-// operator cdz-fmt directive items 1+3) stays HELD: applying now would eat `///` section-dividers before
-// the many `@test` defs in iterators/compiler-ml (measured: giter.cdz 251→205 `///`).
+// A `///` before an `@`-annotated def (e.g. `@test`) must survive a format pass — the annotation sits
+// between the doc and the def, and an earlier reader doc-attachment bug (same class as the `///`-before-
+// `effect` one) dropped the doc to a `//` because `def_expr` ran after the `@name` slot never carried the
+// docs across. FIXED by v-syntax (rcdzc `aa1d8a75b`, "carry docs across the annotation"); this pins it as
+// a green regression guard (was `#[ignore]`d while the fix was in flight). NOTE: a `///` file-HEADER
+// before the FIRST `import` is a SEPARATE, still-open gap (v-syntax's import doc-drain slice) — the
+// fleet-wide `cdz fmt` apply phases around it per-file (apply iff the file's `///` count round-trips).
 #[test]
-#[ignore = "v-syntax reader doc-attachment: /// before an @-annotated def downgrades to // (fmt-apply blocker)"]
 fn fmt_preserves_a_doc_comment_on_an_annotated_def() {
     let (dir, file) = temp_cdz(
         "annotdef",

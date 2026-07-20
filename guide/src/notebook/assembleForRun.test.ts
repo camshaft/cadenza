@@ -59,6 +59,24 @@ test("an absent widget value falls back to the widget's declared default", () =>
   assert.equal(r.entry, "main()");
 });
 
+test("a FALSY-but-present widget value (0 / false / \"\") is KEPT, not treated as absent (nullish, not truthy, fallback)", () => {
+  // The fallback is `values[name] ?? default` (nullish) — NOT `||` (truthy). A `||` bug here would silently
+  // revert a widget dragged to 0 (or a checkbox unchecked to false, or an emptied text field) back to its
+  // DEFAULT, breaking reactivity for every zero/false/empty value — a subtle, high-impact regression. Pin
+  // all three falsy-but-valid values so a refactor of the fallback can't quietly swap `??` for `||`.
+  const intCells: Cell[] = [code("(def (main) n)")];
+  const intW: Widget = { name: "n", type: "Int64", control: "slider", min: 0, max: 10, step: 1, default: 5 };
+  assert.match(assembleForRun(intCells, 0, [intW], { n: 0 }, "sexpr").buffer, /\(def \(n\) 0\)/); // 0 kept, not 5
+
+  const boolCells: Cell[] = [code("(def (main) flag)")];
+  const boolW: Widget = { name: "flag", type: "Bool", control: "checkbox", default: true };
+  assert.match(assembleForRun(boolCells, 0, [boolW], { flag: false }, "sexpr").buffer, /\(def \(flag\) false\)/); // false kept, not true
+
+  const strCells: Cell[] = [code("(def (main) s)")];
+  const strW: Widget = { name: "s", type: "String", control: "text", default: "hi" };
+  assert.match(assembleForRun(strCells, 0, [strW], { s: "" }, "sexpr").buffer, /\(def \(s\) ""\)/); // "" kept, not "hi"
+});
+
 test("buffer order: widget bindings → prior-cell scope → this cell's own def", () => {
   const cells: Cell[] = [
     code("rate : Float64 = slider(0, 1)", { kind: "widget" }),

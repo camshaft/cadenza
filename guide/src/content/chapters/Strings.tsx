@@ -73,7 +73,7 @@ export default function Strings() {
         <C>(String.concat "ab" "c")</C>{" "}
         equals <C>"abc"</C>, however each was made.
       </P>
-      <Runnable source={`(if (= (String.concat "ab" "c") "abc") 1 0)`} />
+      <Runnable source={`(= (String.concat "ab" "c") "abc")`} />
 
       <H2>Crossing to bytes and back</H2>
       <P>
