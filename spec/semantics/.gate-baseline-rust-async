@@ -277,6 +277,7 @@ pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
 pass	a @requires precondition is enforced for a genuinely-runtime argument
 pass	a @requires predicate that CALLS a user-defined function resolves and enforces — not only prelude ops
+pass	a @requires predicate that MATCHES on a sum-typed parameter dispatches and enforces (v-patterns seam)
 pass	a @requires predicate that itself traps keeps its own trap kind
 pass	a @requires predicate that references `ret` is REJECTED CDZ0101 — only @ensures binds the result
 pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call
@@ -447,6 +448,7 @@ pass	a SYMBOL compound = has DISCRIMINATING power (two runtime-selected interned
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
+pass	a Symbol map key looks up by content and an overwrite does not grow the map
 pass	a String compound export under a non-main name crosses to the host
 pass	a String match with a BOUND default arm equals its (= s literal) if-chain with a bound else
 pass	a String match with disjoint literal arms is order-independent (reordering the arms preserves the result)
@@ -2135,6 +2137,7 @@ pass	a set nested in a tuple compares equal with a runtime element, order-indepe
 pass	a set of lists deduplicates by the whole list, distinguishing element order
 pass	a set of negative zero and positive zero keeps both (distinct sign bits)
 pass	a set of records deduplicates by the whole record and its membership is field-order-INDEPENDENT
+pass	a set of symbols deduplicates by content — Set.len materializes the symbol set
 pass	a set of tuples deduplicates by the whole tuple and its membership is component-order-sensitive
 pass	a set of two NaN floats dedups to one (canonical quiet-NaN)
 pass	a set of two identical positive floats dedups to one
@@ -3919,6 +3922,7 @@ pass	wrapping-sub of the minimum integer from zero wraps back to the minimum
 pass	wrapping-sub on a runtime Int8 wraps at its signed min boundary
 pass	wrapping-sub on a runtime UInt8 wraps modulo 256
 pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
+pass	the union of sets of TUPLES holds a shared tuple once and preserves component order
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
 todo	COMPOUND SUM PAYLOAD: (Option (Record (x Int64) (y Int64))) — a RECORD payload

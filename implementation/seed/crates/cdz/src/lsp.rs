@@ -2714,6 +2714,12 @@ fn emit_param_hints(
             continue;
         };
         for (arg, name) in children[1..].iter().zip(param_names.iter()) {
+            // NOISE SUPPRESSION (rust-analyzer's rule): when the argument is itself a bare name IDENTICAL
+            // to the parameter, the `name:` hint is pure redundancy (`add(a: a, b: b)`) — skip it. Only a
+            // name atom triggers this; a literal / compound arg still gets its hint.
+            if arenas.as_name(*arg) == Some(name.as_str()) {
+                continue;
+            }
             let Some(arg_span) = spans.get(*arg) else {
                 continue;
             };
@@ -4817,6 +4823,65 @@ mod tests {
         assert!(
             hints.is_empty(),
             "an empty range at offset 0 covers no argument → no hints, got {hints:?}"
+        );
+    }
+
+    #[test]
+    fn inlay_hints_suppress_a_hint_when_the_arg_name_matches_the_param() {
+        // Increment 3 (noise suppression, rust-analyzer's rule): when the argument is a bare name IDENTICAL
+        // to the parameter, the `name:` hint is pure redundancy — skip it. Here `(add a b)` inside a
+        // `passthrough` whose OWN params are `a`/`b`: the args are the names `a`/`b`, matching `add`'s
+        // params, so NO hints. But a differently-named arg still gets its hint (see the mixed case below).
+        let text = "(module m (def (add a b) (+ a b)) (def (passthrough a b) (add a b)) (export passthrough))";
+        let hints = inlay_hints_at(text, false, whole_range());
+        assert!(
+            hints.is_empty(),
+            "args that are the same names as the params should be suppressed, got {:?}",
+            hints
+                .iter()
+                .map(|h| match &h.label {
+                    InlayHintLabel::String(s) => s.clone(),
+                    _ => "?".into(),
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn inlay_hints_suppress_only_the_matching_arg_not_the_others() {
+        // Suppression is PER-ARGUMENT: in `(add a 2)` the first arg is the name `a` (matches param `a` →
+        // suppressed) but the second arg `2` is a literal (≠ param `b` → still hinted `b:`). Pins that the
+        // rule hides only the redundant hint, not the whole call's hints.
+        let text = "(module m (def (add a b) (+ a b)) (def (g a) (add a 2)) (export g))";
+        let labels: Vec<String> = inlay_hints_at(text, false, whole_range())
+            .iter()
+            .map(|h| match &h.label {
+                InlayHintLabel::String(s) => s.clone(),
+                other => panic!("expected a string label, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["b:".to_string()],
+            "only the literal arg `2` should be hinted (`b:`); the name arg `a` matching param `a` is suppressed"
+        );
+    }
+
+    #[test]
+    fn inlay_hints_are_total_on_a_partial_unclosed_call() {
+        // A mid-edit UNCLOSED call `(add 1 ` (the as-you-type state) must not panic and must not produce a
+        // spurious hint from a broken tree — total, like the other read handlers on incomplete source. The
+        // s-expr surface hard-fails to parse an unclosed form → no arenas → empty (never a panic).
+        let _ = inlay_hints_at(
+            "(module m (def (add a b) (+ a b)) (def (main) (add 1 ",
+            false,
+            whole_range(),
+        );
+        // ML surface recovers; either way the call is total (no panic, defined result).
+        let _ = inlay_hints_at(
+            "def add(a, b) = a + b\ndef main() = add(1, ",
+            true,
+            whole_range(),
         );
     }
 

@@ -348,6 +348,12 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
             if ast.as_form(item, "import").is_some() {
                 continue;
             }
+            // A `(module-doc …)` is a file/module-level doc-comment (a `///` header) — inert, declares
+            // nothing. Skip it so it never lands in the merged `(do …)` as an expression to compile
+            // (it would fault as an unbound `module-doc` call). Mirrors the `import` skip above.
+            if ast.as_form(item, "module-doc").is_some() {
+                continue;
+            }
             if ast.as_form(item, "export").is_some() && !is_entry {
                 continue;
             }

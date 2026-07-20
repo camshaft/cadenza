@@ -39,3 +39,23 @@
 ; Blocks @ensures/@requires over handle bodies (verify_enforce injects (let ((ret BODY)) …)). Routed v-effects
 ; (effects-lowering) primary, v-inference cc (resolution/β-copy angle). corpus-bugfix pins it (compiles+runs 5)
 ; once fixed — likely all-3-backend green like the other β-copy caller-arg-drop pin.
+
+; SHARPENED (v-effects, 2026-07-20 investigation — corrects the locus):
+; - The CDZ0101 fires BEFORE handle-lowering: a VEFF trace at lower.rs's Resolved::Handle arm shows
+;   reduce_handle is NEVER REACHED for this repro. So it is NOT a reduce_handle fold bug — the `k` is
+;   dropped EARLIER, during the (f k) call's processing (the inline/β-reduce of f's let-over-handle body).
+; - ISOLATION (all confirmed):
+;     no-let, handle-seed = runtime arg (f k)        → COMPILES + runs 5   (handle alone is fine)
+;     let-bound value = (+ x 1), NO handle, (f k)     → COMPILES + runs 6   (let-in-inlined-callee alone is fine)
+;     let-bound handle whose SEED = x, (f k)          → CDZ0101 unbound k   ← the bug (let + handle-runtime-seed)
+;     let-bound handle, x in BODY (not seed), (f k)   → COMPILES           (only the SEED position drops)
+;     f called TWICE (+ (f k) (f (+ k 1)))            → still CDZ0101       (not simple single-inline)
+; - So the TRIGGER is precisely: [a `let` binding a handle whose SEED references a caller runtime arg] in a
+;   callee body, processed at the call site. A handle-in-body without the let, or a let without a handle,
+;   both work — only the conjunction drops the seed's caller-arg binding, and it happens in the f-inline /
+;   effects-pre-reduction (reduce_applied_lambdas or the general apply β-reduce), NOT reduce_handle.
+; - A single deep_fresh_copy of `init` inside reduce_handle did NOT fix it (consistent — reduce_handle isn't
+;   even reached). The fix is at the f-body-inline site that copies a let-over-handle and loses the seed's
+;   free var. LIKELY the effects-pre-reduction copies f's body (handle present → effects path) with a
+;   copy that doesn't pin/preserve the seed's caller-arg. NEXT: trace reduce_applied_lambdas / the apply
+;   β-reduce of a callee whose body is (let ((r (handle …seed=arg…))) r).

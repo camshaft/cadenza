@@ -652,20 +652,44 @@ impl<'a> Parser<'a> {
     /// Parse a statement (a top-level form / module member): capture any leading `//` comments and
     /// wrap the parsed form in `(comment "text" node)`, outermost = first. Leading `///` docs are
     /// left in place for a def/module parser to splice inside; any docs a non-def form leaves behind
-    /// are then wrapped as comments too, so no doc/comment is ever dropped.
+    /// become `(module-doc "text")` SIBLING nodes before the form (preserving the `///` marker) rather
+    /// than being downgraded to `(comment …)` (`//`). The module-doc siblings are returned spliced into
+    /// a bare `(do …)` — which `push_root_form` flattens into top-level siblings (the file-header case:
+    /// `/// header` before the first `import`), and which a `module { … }` body accepts as a member
+    /// sequence — so a leading `///` on a NON-documentable form is preserved AS documentation.
     fn stmt(&mut self) -> StructId {
         let start = self.pos;
         let comments = self.take_comments_here();
         let node = self.expr(0);
         // Docs still sitting at the statement's start slot were NOT consumed (the form was not a
-        // def/module), so they'd otherwise be dropped — preserve them as comments.
+        // def/type/effect/module, which drain their own docs) — so they document the FILE/MODULE, not a
+        // definition. Emit them as `(module-doc …)` siblings so they re-print as `///` (a
+        // `wrap_comments` here would downgrade them to `//` — the file-header doc-loss bug).
         let leftover: Vec<Lead> = if start < self.leading.len() {
             std::mem::take(&mut self.leading[start])
         } else {
             Vec::new()
         };
-        let node = self.wrap_comments(leftover, node);
-        self.wrap_comments(comments, node)
+        let (docs, comments_left): (Vec<Lead>, Vec<Lead>) =
+            leftover.into_iter().partition(|l| l.doc);
+        // Any stray `//` still here (shouldn't normally happen — `take_comments_here` took them — but be
+        // total) stays a comment wrapper, as before.
+        let node = self.wrap_comments(comments_left, node);
+        let node = self.wrap_comments(comments, node);
+        if docs.is_empty() {
+            return node;
+        }
+        // Prepend `(module-doc "text")` siblings, then the form, spliced into a `(do …)`.
+        let mut items = Vec::with_capacity(docs.len() + 2);
+        let do_span = docs[0].span;
+        items.push(self.name("do", do_span));
+        for lead in docs {
+            let head = self.name("module-doc", lead.span);
+            let text = self.atom(Leaf::Str(lead.text), lead.span);
+            items.push(self.list(vec![head, text], lead.span));
+        }
+        items.push(node);
+        self.list(items, do_span)
     }
 
     /// Fold a run of comment leads around `node`: `[c0, c1]` -> `(comment c0 (comment c1 node))`.
