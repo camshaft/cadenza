@@ -3952,6 +3952,46 @@
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
 
+; ── The elision ruling is PURE-only: an unused binding whose init PERFORMS is NOT elidable ───────────
+; The cases above establish that an unreferenced binding's init MAY be elided — for PURE inits, whose
+; only observable is the value (and the trap observation would force). An init that PERFORMS an effect
+; is different in kind: its VALUE may be dead, but its handler-state advance is observed by every later
+; perform under the same handler. Eliding it would change those later values — so the boundary of the
+; dead-binding rule is effectfulness, not referencedness alone. These pin that boundary with a counter
+; arm whose state a second perform reads back: the unused binding's perform MUST still advance the
+; state. This is exactly the edge a dead-code-elimination pass over bindings could get wrong (elide by
+; use-count without an effect check), witnessed as a VALUE, not a trace.
+
+(case "an unused let binding whose init performs still advances the handler state"
+  (doc    "`(let ((y (Fresh.next))) (Fresh.next))` under the counter arm seeded 0: the binding `y` is
+           never referenced, but its init PERFORMS — the first `Fresh.next` reads 0 and advances the
+           state to 1, so the SECOND perform (the body) reads 1. An implementation that elided the unused
+           binding — applying the pure dead-binding rule above without an effect check — would return 0.
+           Pins that the §A Trap Occurs Only Where Its Computation Is Observed elision licence is
+           PURE-only: an effectful init is observed THROUGH THE HANDLER STATE even when its value is
+           dead. Expected: 1.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (let ((y (Fresh.next)))
+                  (Fresh.next))))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a discarded do-statement that performs still advances the handler state"
+  (doc    "The sequencing twin: `(do (Fresh.next) (Fresh.next))` seeded 0 — the non-final statement's
+           value is discarded, but its perform advances the state, so the tail perform reads 1. Contrast
+           the discarded PURE do-statement above (`(do (+ x 1) x)`), which need not run at all: a
+           discarded statement is elidable exactly when it is pure. Expected: 1.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (do (Fresh.next) (Fresh.next))))
+            (export main)))
+  (output (: 1 Int64)))
+
 ; --- The common-OPERATOR if-arm hoist preserves trap and order semantics ---------------------------
 ; ba26196c9 hoists a common operator out of both if arms — `(if c (+ a 1) (+ b 1))` → `(+ (if c a b)
 ; 1)` — one checked op + one guard instead of two. Unlike the constructor hoist (payloads stay

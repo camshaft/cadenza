@@ -325,6 +325,28 @@ mod wrap_prefix_suffix_tests {
     }
 
     #[test]
+    fn a_dotted_member_ctor_wrap_reshapes_to_ml_call_syntax() {
+        // A wrap whose "ctor" is a DOTTED MEMBER op — `(Symbol.of …)` (the Symbol-vs-String CDZ0202 fix),
+        // `(Int64.of …)` / `(Float64.of …)` (the numeric-coercion CDZ0301 fixes) — is still a single-token
+        // constructor-application shape (the `.` is part of the name, not a separator), so ML reshapes it
+        // to call syntax `Symbol.of(…)` and both surfaces split cleanly on the hole. Pins that the
+        // reshape guard (`!ctor.contains(['(', ')', ' '])`) admits a dotted op name rather than mangling
+        // it — the rendering these member-op wrap fixes rely on to present a valid ML quick-fix.
+        assert_eq!(
+            wrap_prefix_suffix("(Symbol.of …)", false),
+            ("(Symbol.of ".to_string(), ")".to_string())
+        );
+        assert_eq!(
+            wrap_prefix_suffix("(Symbol.of …)", true),
+            ("Symbol.of(".to_string(), ")".to_string())
+        );
+        assert_eq!(
+            wrap_prefix_suffix("(Int64.of …)", true),
+            ("Int64.of(".to_string(), ")".to_string())
+        );
+    }
+
+    #[test]
     fn a_multi_token_wrap_keeps_its_shape() {
         // A wrap whose prefix carries more than a bare ctor (`(host (E) …)`) is not the ML reshape shape,
         // so ML leaves it as-is and both surfaces split on the hole identically.

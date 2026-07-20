@@ -162,6 +162,7 @@ pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
 pass	a @requires precondition is enforced for a genuinely-runtime argument
 pass	a @requires predicate that itself traps keeps its own trap kind
+pass	a @requires predicate that references `ret` is REJECTED CDZ0101 — only @ensures binds the result
 pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call
 pass	a BOOL-result effect op threads state across two performs on a boolean connective's operands
 pass	a BigInt entry argument is marshalled through the value's own constructor
@@ -243,6 +244,7 @@ pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
+pass	a PLAIN @ensures on a NULLARY def (no parameters) enforces — ret binds the body, predicate reads only ret
 pass	a PLAIN @ensures over a HEAP result (List) TRAPS when violated — the postcondition checks the heap value
 pass	a PLAIN @ensures over a HEAP result (List) is enforced — ret binds a heap value, value-transparent when satisfied
 pass	a PLAIN @ensures postcondition is ENFORCED at body-exit: a VIOLATED postcondition traps when the def is called
@@ -876,6 +878,7 @@ pass	a let-bound runtime-if map is looked up with valid wasm
 pass	a let-bound tuple produced by an if is projected at both indices
 pass	a let-bound tuple produced by an if, projected at two indices, compiles and runs
 pass	a let-bound variable derived from a runtime parameter passed as a call argument
+pass	a discarded do-statement that performs still advances the handler state
 pass	a let-bound variable is in scope inside a boolean connective operand
 pass	a let-bound variable passed as a function-call argument resolves at the call site
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
@@ -2888,6 +2891,7 @@ pass	member access on a non-record is a type error
 pass	member access on a record chosen by a conditional projects the field
 pass	member access on a string is a type error
 pass	member access on a tuple is a type error
+pass	an unused let binding whose init performs still advances the handler state
 pass	membership of a present element is true
 pass	membership of a runtime element in a runtime-element set
 pass	membership of a runtime symbol is by content, not derivation

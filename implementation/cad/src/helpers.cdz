@@ -104,10 +104,31 @@ def single-axis-moves-shift-the-box-centre() =
           (if (ly + hy) / (2 / 1) == 0 / 1 then unit else trap("y stays centred")) else trap("x centre = 10")))
 
 @test
+def move-y-and-move-z-shift-their-own-axis() =
+  // The x arm above pins move-x; pin move-y/move-z too so a per-axis copy-paste (a builder writing the delta
+  // to the wrong coordinate slot) can't slip. move-y(10, cube(2)) → centre y=10, x/z stay 0; move-z likewise.
+  match bounding-box(move-y(10 / 1, cube(2 / 1))) with | Aabb.Box(ylo, yhi) =>
+    (match ylo with | Vec3.V3(ylx, yly, ylz) => (match yhi with | Vec3.V3(yhx, yhy, yhz) =>
+      if (yly + yhy) / (2 / 1) == 10 / 1 and (ylx + yhx) / (2 / 1) == 0 / 1 and (ylz + yhz) / (2 / 1) == 0 / 1
+      then
+        (match bounding-box(move-z(10 / 1, cube(2 / 1))) with | Aabb.Box(zlo, zhi) =>
+          (match zlo with | Vec3.V3(zlx, zly, zlz) => (match zhi with | Vec3.V3(zhx, zhy, zhz) =>
+            if (zlz + zhz) / (2 / 1) == 10 / 1 and (zlx + zhx) / (2 / 1) == 0 / 1 and (zly + zhy) / (2 / 1) == 0 / 1
+            then unit else trap("move-z shifts z only (x/y stay centred)"))))
+      else trap("move-y shifts y only (x/z stay centred)")))
+
+@test
 def scale-uniform-multiplies-the-box() =
   // scale(2, box(1,1,1)) → a 2×2×2 box.
   if v3-eq(aabbr-size(bounding-box(scale(2 / 1, box(1 / 1, 1 / 1, 1 / 1)))), v3(2 / 1, 2 / 1, 2 / 1)) then unit
   else trap("scale(2, unit box) is a 2×2×2 box")
+
+@test
+def scale-xyz-multiplies-each-axis-independently() =
+  // The uniform-scale test can't catch a per-axis mixup (all factors equal); scale-xyz with DISTINCT factors
+  // pins that each axis gets its own factor. scale-xyz(2,3,4, unit box) → a 2×3×4 box (distinct → axis-correct).
+  if v3-eq(aabbr-size(bounding-box(scale-xyz(2 / 1, 3 / 1, 4 / 1, box(1 / 1, 1 / 1, 1 / 1)))), v3(2 / 1, 3 / 1, 4 / 1))
+  then unit else trap("scale-xyz(2,3,4, unit box) is a 2×3×4 box (each axis its own factor)")
 
 @test
 def hole-through-does-not-grow-the-box() =

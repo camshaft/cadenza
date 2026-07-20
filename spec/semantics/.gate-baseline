@@ -272,6 +272,7 @@ pass	a @param of type Rational desugars to two scalar num/den accessors the gues
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
 pass	a @requires precondition is enforced for a genuinely-runtime argument
 pass	a @requires predicate that itself traps keeps its own trap kind
+pass	a @requires predicate that references `ret` is REJECTED CDZ0101 — only @ensures binds the result
 pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
@@ -385,6 +386,7 @@ pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
+pass	a PLAIN @ensures on a NULLARY def (no parameters) enforces — ret binds the body, predicate reads only ret
 pass	a PLAIN @ensures over a HEAP result (List) TRAPS when violated — the postcondition checks the heap value
 pass	a PLAIN @ensures over a HEAP result (List) is enforced — ret binds a heap value, value-transparent when satisfied
 pass	a PLAIN @ensures postcondition is ENFORCED at body-exit: a VIOLATED postcondition traps when the def is called
@@ -876,6 +878,7 @@ pass	a distinct-signature per-group call-g is a repeatable (borrow<t>) callback
 pass	a distinct-signature round-trip alongside a plain export — the Int64->Bool side runs
 pass	a distinct-signature round-trip alongside a plain export — the Int64->Int64 side runs
 pass	a distinct-signature round-trip alongside a plain export — the plain export runs
+pass	a discarded do-statement that performs still advances the handler state
 pass	a distinct-signature round-trip applies the Int64->Bool closure
 pass	a distinct-signature round-trip applies the Int64->Int64 closure
 pass	a distinct-signature round-trip's Bool closure on a nonzero input
@@ -2888,6 +2891,7 @@ pass	an unusual in-range width is a first-class type
 pass	an unusual signed width overflows its own maximum and is rejected CDZ0304
 pass	an unusual signed width underflows its own minimum and is rejected CDZ0304
 pass	an unusual unsigned width overflows its own maximum and is rejected CDZ0304
+pass	an unused let binding whose init performs still advances the handler state
 pass	an unusual unsigned width underflows below zero and is rejected CDZ0304
 pass	an unusual-width minimum modulo -1 is zero and does not overflow
 pass	an unusual-width value that overflows its computed range is rejected at compile time

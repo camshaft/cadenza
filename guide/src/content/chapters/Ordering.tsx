@@ -12,15 +12,16 @@ export default function Ordering() {
       <H2>The comparison operators</H2>
       <P>
         The six comparisons, <C>=</C>, <C>&lt;</C>, <C>&lt;=</C>, <C>&gt;</C>, <C>&gt;=</C>, and{" "}
-        <C>not</C> for negation, each produce a <C>Bool</C>. They're most at home as the condition of
-        an <C>if</C>:
+        <C>not</C> for negation, each produce a <C>Bool</C>, so evaluating one gives you <C>true</C> or{" "}
+        <C>false</C> directly:
       </P>
-      <Runnable source={`(if (<= 5 5) 1 0)`} />
+      <Runnable source={`(<= 5 5)`} />
 
       <P>
-        Combine them with <C>and</C> / <C>or</C> to express a range check, as in "is 5 between 1 and 10?":
+        Combine them with <C>and</C> / <C>or</C> to express a range check, as in "is 5 between 1 and 10?",
+        which is again just a <C>Bool</C>:
       </P>
-      <Runnable source={`(if (and (>= 5 1) (<= 5 10)) 1 0)`} />
+      <Runnable source={`(and (>= 5 1) (<= 5 10))`} />
 
       <H2>Building on comparison</H2>
       <P>
@@ -120,21 +121,22 @@ export default function Ordering() {
         id="ordering:1"
         prompt={
           <>
-            Finish <C>outside</C> so it returns <C>1</C> when <C>x</C> is <em>below 0 or above 10</em>,
-            and <C>0</C> in between. With <C>(outside 15)</C> the answer is <C>1</C>.
+            Finish the predicate <C>outside</C> so it returns <C>true</C> when <C>x</C> is{" "}
+            <em>below 0 or above 10</em>, and <C>false</C> in between. With <C>(outside 15)</C> the answer
+            is <C>true</C>.
           </>
         }
         starter={`(def (outside x)
-  (if (or (< x 0) ?) 1 0))
+  (or (< x 0) ?))
 (def (main) (outside 15))`}
         solution={`(def (outside x)
-  (if (or (< x 0) (> x 10)) 1 0))
+  (or (< x 0) (> x 10)))
 (def (main) (outside 15))`}
-        expected="1"
+        expected="true"
         hint={
           <>
             The two ways to be outside are joined with <C>or</C>; the second is "above 10", namely{" "}
-            <C>(&gt; x 10)</C>. <C>15</C> is above 10, so the result is <C>1</C>.
+            <C>(&gt; x 10)</C>. <C>15</C> is above 10, so the result is <C>true</C>.
           </>
         }
       />

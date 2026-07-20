@@ -63,11 +63,11 @@ export default function ControlFlow() {
       <Runnable
         source={`(def (safe n)
   (and (not (= n 0)) (> (/ 100 n) 5)))
-(def (main) (if (safe 0) 1 0))`}
+(def (main) (safe 0))`}
       />
       <P>
         With <C>n = 0</C> the first test is false, so <C>(/ 100 0)</C> is skipped entirely and the whole
-        thing is <C>false</C>, giving <C>0</C>. Were <C>and</C> not short-circuiting, that division would trap.
+        thing renders <C>false</C>. Were <C>and</C> not short-circuiting, that division would trap.
       </P>
 
       <H2>Recursion</H2>

@@ -637,6 +637,95 @@ fn replay_re_folds_a_recorded_hosted_turn_with_no_live_effect() {
 }
 
 #[test]
+fn fork_copies_a_history_into_a_new_timeline_with_and_without_a_cutoff() {
+    // The `fork` verb branches a recorded history into a NEW log (vision §3 fork/hand-off/time-travel). Fully
+    // store-independent (no compile) — it just copies events. Build a src log (genesis + 2 triggers), fork the
+    // FULL history into one dst, and fork with --upto 2 (exclusive) into another → the cutoff branch holds only
+    // the genesis + first trigger. The genesis survives the fork (the branch is a valid log the daemon runs).
+    let src = unique("fork-src").with_extension("log");
+    let full = unique("fork-full").with_extension("log");
+    let cut = unique("fork-cut").with_extension("log");
+    let prog = unique("fork-genesis").with_extension("cdz");
+    for p in [&src, &full, &cut] {
+        let _ = std::fs::remove_file(p);
+    }
+    std::fs::write(&prog, GENESIS).unwrap();
+
+    Command::new(bin())
+        .args(["bootstrap", src.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+    Command::new(bin())
+        .args([
+            "inject-genesis",
+            src.to_str().unwrap(),
+            prog.to_str().unwrap(),
+        ])
+        .output()
+        .expect("inject-genesis"); // seq 0
+    Command::new(bin())
+        .args(["emit", src.to_str().unwrap(), "trigger", "a"])
+        .output()
+        .expect("emit a"); // seq 1
+    Command::new(bin())
+        .args(["emit", src.to_str().unwrap(), "trigger", "b"])
+        .output()
+        .expect("emit b"); // seq 2
+
+    // FULL fork → all 3 events copied.
+    let out = Command::new(bin())
+        .args(["fork", src.to_str().unwrap(), full.to_str().unwrap()])
+        .output()
+        .expect("run cdz-agent fork full");
+    assert!(
+        out.status.success(),
+        "fork (full) succeeds: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("copied 3 event(s)"),
+        "the full fork copies all 3 events; got: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // CUTOFF fork --upto 2 (exclusive) → only seq 0 + 1 copied.
+    let out = Command::new(bin())
+        .args([
+            "fork",
+            src.to_str().unwrap(),
+            cut.to_str().unwrap(),
+            "--upto",
+            "2",
+        ])
+        .output()
+        .expect("run cdz-agent fork cutoff");
+    assert!(
+        out.status.success(),
+        "fork (cutoff) succeeds: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        so.contains("copied 2 event(s)") && so.contains("up to seq 2, exclusive"),
+        "the cutoff fork copies only the 2 pre-cutoff events; got: {so}"
+    );
+    // The cutoff branch still carries the genesis → `run` finds a program (store-gated like the run verbs).
+    let out = Command::new(bin())
+        .args(["run", cut.to_str().unwrap(), "1"])
+        .output()
+        .expect("run on the forked branch");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() || stderr.contains("runtime not found"),
+        "the forked branch is a valid log: run succeeds or only skips on a missing store; got: {stderr}"
+    );
+
+    for p in [&src, &full, &cut, &prog] {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+#[test]
 fn hosted_with_policies_gates_each_op_on_the_external_cedar_policy() {
     // The capability boundary from the CLI: `hosted --policies <file>` authorizes each op against an EXTERNAL
     // Cedar policy before performing. The policy permits ONLY prim:append → kind=1 [Append, Exec] → append

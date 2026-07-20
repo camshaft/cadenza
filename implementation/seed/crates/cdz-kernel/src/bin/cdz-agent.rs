@@ -22,6 +22,8 @@
 //!                                               source loop is a later rung; this runs ONE tick.)
 //!   `cdz-agent replay <log> <event-kind>`     — RE-FOLD a recorded turn from the prim-result trail with NO
 //!                                               live effect (time-travel; reports missing=0 when faithful).
+//!   `cdz-agent fork <src-log> <new-log> [--upto <seq>]` — FORK a history into a new timeline (copy events,
+//!                                               optionally up to a seq cutoff); the branch re-folds + extends.
 
 use anyhow::{anyhow, Context, Result};
 use cdz_kernel::{boot, daemon, policy, FileLog, Log};
@@ -335,7 +337,9 @@ fn run() -> Result<()> {
                 }
                 None => daemon::tick_hosted(std::sync::Arc::clone(&log), kind, runtime)?,
             };
-            // Count performed (`prim-<op>`, excluding `prim-denied-<op>`) vs denied events for the report.
+            // Count performed (`prim-<op>` REQUEST records) vs denied events for the report. Exclude BOTH
+            // `prim-denied-<op>` (a denial, not a perform) AND `prim-result-<op>` (the §2.3 RESPONSE half —
+            // one per perform, else each performed op would be counted twice).
             let events = log.lock().map_err(|_| anyhow!("log mutex poisoned"))?.tail(0)?;
             let denied = events
                 .iter()
@@ -346,6 +350,7 @@ fn run() -> Result<()> {
                 .filter(|e| {
                     e.kind.starts_with(daemon::PRIM_RECORD_PREFIX)
                         && !e.kind.starts_with(daemon::PRIM_DENIED_PREFIX)
+                        && !e.kind.starts_with(daemon::PRIM_RESULT_PREFIX)
                 })
                 .count();
             println!(
@@ -378,6 +383,33 @@ fn run() -> Result<()> {
                 } else {
                     " (DIVERGED — the re-fold asked for results the recorded trail lacks)"
                 }
+            );
+            Ok(())
+        }
+        Some("fork") => {
+            // FORK a recorded history into a NEW timeline (vision §3: fork / hand-off / time-travel). Copy the
+            // source log's events into a fresh destination log (`boot::fork_log`), optionally only up to a seq
+            // CUTOFF (`--upto <seq>`, EXCLUSIVE — branch the world "as of just before event <seq>"; omit to
+            // mirror the whole log). The destination is a valid log the daemon runs unchanged — it re-folds the
+            // copied prefix and EXTENDS the branch independently of the source. Read-only on the source.
+            let src_path = args
+                .get(2)
+                .ok_or_else(|| anyhow!("usage: cdz-agent fork <src-log> <new-log> [--upto <seq>]"))?;
+            let dst_path = args
+                .get(3)
+                .ok_or_else(|| anyhow!("usage: cdz-agent fork <src-log> <new-log> [--upto <seq>]"))?;
+            let upto: Option<u64> = match flag_value(&args, "--upto") {
+                Some(s) => Some(s.parse().context("--upto must be a non-negative seq")?),
+                None => None,
+            };
+            let src = FileLog::open(src_path).with_context(|| format!("open src log {src_path}"))?;
+            let mut dst =
+                FileLog::open(dst_path).with_context(|| format!("open new log {dst_path}"))?;
+            let copied = boot::fork_log(&src, &mut dst, upto)?;
+            println!(
+                "fork: copied {copied} event(s) from {src_path} into {dst_path}{} — a new timeline the daemon can re-fold + extend",
+                upto.map(|k| format!(" (up to seq {k}, exclusive)"))
+                    .unwrap_or_else(|| " (full history)".to_string())
             );
             Ok(())
         }
@@ -464,7 +496,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         _ => Err(anyhow!(
-            "usage: cdz-agent <bootstrap|inject-genesis|emit-policy|authz-grant|authz-revoke|authz-requests|schedule-create|schedule-cancel|schedule-list|emit|run|perform|hosted|replay|start> ...\n\
+            "usage: cdz-agent <bootstrap|inject-genesis|emit-policy|authz-grant|authz-revoke|authz-requests|schedule-create|schedule-cancel|schedule-list|emit|run|perform|hosted|replay|fork|start> ...\n\
              \x20 bootstrap <log>                    — create/open the event log\n\
              \x20 inject-genesis <log> <program.cdz> — append the genesis program\n\
              \x20 emit-policy <log> <policy.cedar>    — append a Cedar capability policy (attenuates each invocation; latest supersedes)\n\
@@ -479,6 +511,7 @@ fn run() -> Result<()> {
              \x20 perform <log> <event-kind>         — one daemon tick that EXECUTES the ops (K1c, in-program mock), summing per-op results\n\
              \x20 hosted <log> <event-kind> [--policies <file>] — one daemon tick that PERFORMS via real host primitives (K1c→host); with --policies, each op is Cedar-authorized against the external policy first\n\
              \x20 replay <log> <event-kind>          — RE-FOLD a recorded turn from the prim-result trail (time-travel, no live effect); reports missing=0 when faithful\n\
+             \x20 fork <src-log> <new-log> [--upto <seq>] — FORK a recorded history into a new timeline (copy events, optionally up to a seq cutoff); the branch re-folds + extends independently\n\
              \x20 start <log> <poll-ms> [--stop-file <path>] [--max-rounds N] [--policies <file>] — START the daemon: poll + perform each new trigger event; with --policies each op is Cedar-authorized"
         )),
     }

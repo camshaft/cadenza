@@ -1522,6 +1522,34 @@
             (export main)))
   (output (: 6 Int64)))
 
+(case "a recursive list-map reusing a destructured sum payload beside an i64 let is disjoint-slotted"
+  (doc    "The RETAIN-CHILD-SLOT sibling of the disjoint-slot family above (the `Core::Proj`/`Core::SumPayload`
+           retain-dup path, NOT a compound-constructor sub-emit). A recursive list-map destructures each
+           `Note(p, v)` element and REBUILDS a new `Note` REUSING the destructured payload `p` DIRECTLY (a
+           `dup`'d compound child — the FBIP-retain path so the still-live scrutinee's payload is not FBIP-
+           mutated by the `List.push`), while a SIBLING `let w = (+ v c)` binds an Int64 (i64) in the same
+           arm. The retain-dup stashed its i32 child handle at a FIXED `base`/`base+1` that COLLIDED with the
+           i64 `let`'s slot — a wasm local has ONE type function-wide, so the i32 child tee re-typed the i64
+           `let` slot → `expected i32, found i64`, a check-clean/compile-invalid MISCOMPILE that only
+           surfaced at MODULE SCALE (the standalone shape happened not to collide). The retain-child slot
+           must float ABOVE `*high` (past the operand/scrutinee walk's own scratch, incl. the let), the
+           disjoint-slot discipline the constructor arms already use. Found via the compiler-ml `run-src`
+           func[27] emit + a v-music recursive MIDI-note remap. `remap [Note(1,10), Note(2,20)] c=1` keeps
+           both notes (reusing each `p`), so the result list has length 2.")
+  (input  (do
+            (type Note (Note Int64 Int64))
+            (def (remap (: xs (List Note)) (: c Int64) (: out (List Note)))
+              (match xs
+                ((list h .. t)
+                 (match h ((Note p v)
+                   (let ((w (+ v c)))
+                     (remap t c (List.push out (Note p w)))))))
+                (_ out)))
+            (def (main)
+              (List.len (remap (List.push (List.push (list) (Note 1 10)) (Note 2 20)) 1 (list))))
+            (export main)))
+  (output (: 2 Int64)))
+
 ; --- Runtime RECORD and LIST results (the same positional heap array as a tuple) ----------
 ; A record and a list carrying a runtime element are, at run time, the SAME positional heap
 ; array a tuple is — field names and the tuple/list/record distinction are static type

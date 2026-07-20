@@ -131,4 +131,27 @@ def choice-free-single-comm-consistent() =
   let g = Chor.Comm("Buyer", "Seller", "Title") in
   if consistent-role(g, "Buyer") then (if consistent-role(g, "Seller") then unit else trap("Seller")) else trap("Buyer")
 
+/// A role that receives from TWO senders then replies — Hub has a 2-label inbox to drain.
+def two-senders() =
+  Chor.Seq(Chor.Comm("A", "Hub", "M1"),
+    Chor.Seq(Chor.Comm("C", "Hub", "M2"),
+      Chor.Comm("Hub", "A", "Ack")))
+
+@test
+def hub-with-two-recvs-is-consistent() =
+  // PIN: cross-pass consistency for a role with MULTIPLE recv obligations — Hub recvs M1 (from A) and M2
+  // (from C), then sends Ack. Every consistency test before this had roles with ≤1 recv (Purchase), so the
+  // multi-`let`-recv codegen sequencing + multi-label inbox DRAIN in `run` was un-witnessed. If run
+  // mis-counted a 2-message drain (consumed too few/many), consistent-role would return false here.
+  if consistent-role(two-senders(), "Hub") then unit
+  else trap("Hub with 2 recvs + 1 send is consistent — its 2-label inbox fully drains")
+
+@test
+def all-roles-consistent-with-a-multi-recv-hub() =
+  // The whole 3-role protocol composes: senders A/C each 1 send, Hub 2 recvs + 1 send, A also recvs Ack.
+  if consistent-role(two-senders(), "A") then
+    (if consistent-role(two-senders(), "C") then
+       (if consistent-role(two-senders(), "Hub") then unit else trap("Hub")) else trap("C"))
+  else trap("A")
+
 export { recv-labels, send-labels, consistent-role }

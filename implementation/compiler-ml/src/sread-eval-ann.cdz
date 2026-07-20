@@ -25,6 +25,40 @@ def se-ann-out-of-range-declines() =
   // `(: 300 UInt8)` → out of range → sread emits unsupported → resolve poison → eval None (declines).
   (match run-src("(: 300 UInt8)") with | Option.None(_) => unit | Option.Some(_) => trap("(: 300 UInt8) must decline"))
 
+// ---- EXACT TYPE BOUNDARIES: the max-fits / first-overflow edges (the off-by-one `fits-width` guards) ----
+// The existing cases use round values (100/200/300); these pin the precise range endpoints, where an
+// off-by-one in fits-width would slip a wrong verdict past the round-value tests. All match the reference.
+
+@test
+def se-ann-int8-max-fits() =
+  // `(: 127 Int8)` → 127: Int8's MAX (2^7 - 1) fits exactly (matches reference).
+  (match run-src("(: 127 Int8)") with | Option.Some(v) => (if v == 127 then unit else trap("(: 127 Int8) → 127")) | Option.None(_) => trap("Int8 max 127 fits"))
+
+@test
+def se-ann-int8-just-over-declines() =
+  // `(: 128 Int8)` → declines: 128 = Int8 max + 1, first overflow (reference REJECTS).
+  (match run-src("(: 128 Int8)") with | Option.None(_) => unit | Option.Some(_) => trap("(: 128 Int8) must decline (Int8 max is 127)"))
+
+@test
+def se-ann-int8-min-fits() =
+  // `(: -128 Int8)` → -128: Int8's MIN (-2^7) fits exactly (signed lower bound — matches reference).
+  (match run-src("(: -128 Int8)") with | Option.Some(v) => (if v == (0 - 128) then unit else trap("(: -128 Int8) → -128")) | Option.None(_) => trap("Int8 min -128 fits"))
+
+@test
+def se-ann-int8-just-under-declines() =
+  // `(: -129 Int8)` → declines: -129 = Int8 min - 1, first underflow (reference REJECTS).
+  (match run-src("(: -129 Int8)") with | Option.None(_) => unit | Option.Some(_) => trap("(: -129 Int8) must decline (Int8 min is -128)"))
+
+@test
+def se-ann-uint8-max-fits() =
+  // `(: 255 UInt8)` → 255: UInt8's MAX (2^8 - 1) fits exactly (matches reference).
+  (match run-src("(: 255 UInt8)") with | Option.Some(v) => (if v == 255 then unit else trap("(: 255 UInt8) → 255")) | Option.None(_) => trap("UInt8 max 255 fits"))
+
+@test
+def se-ann-uint8-just-over-declines() =
+  // `(: 256 UInt8)` → declines: 256 = UInt8 max + 1, first overflow (reference REJECTS).
+  (match run-src("(: 256 UInt8)") with | Option.None(_) => unit | Option.Some(_) => trap("(: 256 UInt8) must decline (UInt8 max is 255)"))
+
 @test
 def se-ann-narrow-plus-bare-literal-adapts() =
   // `(+ (: 100 Int8) 20)` — the annotated operand is Int8 and the bare `20` is a plain literal (infer's

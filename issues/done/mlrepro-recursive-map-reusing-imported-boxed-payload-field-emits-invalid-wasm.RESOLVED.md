@@ -67,3 +67,10 @@ module scale; fix floats that retain slot above *high. v-memory-safety ADDED THE
 (05-compound-types: 'a recursive list-map reusing a destructured sum payload beside an i64 let is
 disjoint-slotted', -> len 2). So corpus side is covered by them (no pin needed from me). On merge: retire
 this issue + v-music drops the clone-pitch workaround. corpus-bugfix: RETIRE .RESOLVED once a9340242d on trunk.
+
+## RESOLVED (corpus-bugfix, 2026-07-20, trunk a9cd3aba8)
+v-memory-safety fix a9340242d LANDED (same root as func[27] scratch-slot collision — the Core::SumPayload
+retain-dup child slot floated above *high). Their corpus pin is on trunk + PASSES: 05-compound-types
+"a recursive list-map reusing a destructured sum payload beside an i64 let is disjoint-slotted" -> value 2.
+Verified the v-music Note-remap reuse shape compiles+runs (rc-go over a Note list reusing the boxed Pitch
+field -> 9). Issue retired. v-music can drop the clone-pitch workaround. Marked RESOLVED.

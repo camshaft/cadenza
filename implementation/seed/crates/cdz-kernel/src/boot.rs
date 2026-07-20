@@ -42,6 +42,32 @@ pub fn latest_program(events: &[crate::Event]) -> Option<String> {
         .and_then(|e| String::from_utf8(e.payload.clone()).ok())
 }
 
+/// FORK a recorded history into a NEW timeline (vision §3: fork / hand-off / time-travel are all re-fold over
+/// the log). Copy every event of `src` with `seq < upto` — or the WHOLE log when `upto` is `None` — into `dst`
+/// in order, preserving each event's `kind` + `payload` (the daemon re-derives the same cognition by re-folding
+/// the copied prefix, then EXTENDS the branch independently of `src`). Returns how many events were copied.
+///
+/// The copy re-appends through the [`Log`] trait, so `dst` assigns its own gap-free seqs by append position
+/// (0-based) — identical to how `src` was built and how the daemon reads, so a fork is itself a valid log the
+/// daemon runs unchanged. `dst` SHOULD be fresh/empty (a fork creates a new timeline); if it already holds
+/// events the copy appends AFTER them (the caller owns that choice). Pure over the trait — testable with two
+/// `FileLog`s, no daemon. `upto` is a seq CUTOFF (exclusive): `Some(k)` branches the history "as of just
+/// before event k" (time-travel to a point), `None` mirrors the full log (a plain branch/hand-off).
+pub fn fork_log(src: &impl Log, dst: &mut impl Log, upto: Option<Seq>) -> Result<usize> {
+    let events = src.tail(0)?;
+    let mut copied = 0usize;
+    for e in &events {
+        if let Some(cut) = upto {
+            if e.seq >= cut {
+                break; // exclusive cutoff — events at/after `cut` are NOT in the forked timeline
+            }
+        }
+        dst.append(&e.kind, &e.payload)?;
+        copied += 1;
+    }
+    Ok(copied)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +117,85 @@ mod tests {
             "the latest program event wins — a self-modification supersedes the genesis"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fork_log_full_copy_mirrors_the_whole_history_into_a_new_timeline() {
+        // A plain branch/hand-off (upto=None): every event of src is copied into a fresh dst, in order, with
+        // kind+payload preserved and dst's seqs re-assigned gap-free — so the fork is a valid log the daemon
+        // runs unchanged (its genesis is still findable).
+        let (spath, mut src) = temp_log();
+        inject_genesis(&mut src, GENESIS).unwrap(); // seq 0
+        src.append("trigger", b"one").unwrap(); // seq 1
+        src.append("prim-result-exec", b"2").unwrap(); // seq 2
+
+        let (dpath, mut dst) = temp_log();
+        let copied = fork_log(&src, &mut dst, None).unwrap();
+        assert_eq!(copied, 3, "the whole 3-event history is mirrored");
+
+        let de = dst.tail(0).unwrap();
+        assert_eq!(de.len(), 3, "dst holds all 3 events");
+        // Seqs are re-assigned by append position (0,1,2) — a valid gap-free log.
+        assert_eq!(
+            de.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "the fork re-assigns gap-free seqs by append position"
+        );
+        // kind+payload preserved verbatim; the genesis is still findable in the branch.
+        assert_eq!(de[1].kind, "trigger");
+        assert_eq!(de[1].payload, b"one");
+        assert_eq!(
+            latest_program(&de).as_deref(),
+            Some(GENESIS),
+            "the forked timeline carries the genesis — the daemon runs it unchanged"
+        );
+        let _ = std::fs::remove_file(&spath);
+        let _ = std::fs::remove_file(&dpath);
+    }
+
+    #[test]
+    fn fork_log_cutoff_branches_the_history_as_of_a_point_time_travel() {
+        // Time-travel (upto=Some(k), EXCLUSIVE): only events with seq < k are copied — the branch is the world
+        // "as of just before event k", which the daemon can then re-fold + extend on a divergent path.
+        let (spath, mut src) = temp_log();
+        inject_genesis(&mut src, GENESIS).unwrap(); // seq 0
+        src.append("trigger", b"a").unwrap(); // seq 1
+        src.append("trigger", b"b").unwrap(); // seq 2
+        src.append("trigger", b"c").unwrap(); // seq 3
+
+        let (dpath, mut dst) = temp_log();
+        // Branch as of just before seq 2 → copies seq 0 (genesis) + seq 1 only.
+        let copied = fork_log(&src, &mut dst, Some(2)).unwrap();
+        assert_eq!(copied, 2, "cutoff excludes seq >= 2 → only 0 and 1 copied");
+        let de = dst.tail(0).unwrap();
+        assert_eq!(
+            de.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![0, 1],
+            "the branch holds the prefix before the cutoff, re-sequenced"
+        );
+        assert_eq!(
+            de[1].payload, b"a",
+            "the last kept event is the pre-cutoff one"
+        );
+        // A cutoff of 0 forks an EMPTY timeline (nothing before seq 0); the src is untouched by the fork.
+        let (epath, mut empty) = temp_log();
+        assert_eq!(
+            fork_log(&src, &mut empty, Some(0)).unwrap(),
+            0,
+            "cutoff 0 → empty"
+        );
+        assert!(
+            empty.tail(0).unwrap().is_empty(),
+            "the empty fork has no events"
+        );
+        assert_eq!(
+            src.tail(0).unwrap().len(),
+            4,
+            "the source log is unchanged by a fork"
+        );
+        let _ = std::fs::remove_file(&spath);
+        let _ = std::fs::remove_file(&dpath);
+        let _ = std::fs::remove_file(&epath);
     }
 
     #[test]

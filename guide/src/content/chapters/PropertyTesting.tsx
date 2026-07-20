@@ -174,14 +174,14 @@ export default function PropertyTesting() {
         prompt={
           <>
             Doubling then halving should return the original, the property a round-trip test asserts. Fill
-            the value so the check holds for <C>21</C>, giving <C>1</C>.
+            the value so the check holds for <C>21</C>, giving <C>true</C>.
           </>
         }
         starter={`(def (round-trips n) (= (/ (* n 2) 2) ?))
-(def (main) (if (round-trips 21) 1 0))`}
+(def (main) (round-trips 21))`}
         solution={`(def (round-trips n) (= (/ (* n 2) 2) n))
-(def (main) (if (round-trips 21) 1 0))`}
-        expected="1"
+(def (main) (round-trips 21))`}
+        expected="true"
         hint={
           <>
             Doubling then halving gets you back where you started, so <C>(/ (* n 2) 2)</C> equals <C>n</C>.
@@ -195,14 +195,14 @@ export default function PropertyTesting() {
         prompt={
           <>
             The length of a three-element list is exactly <C>3</C>, the property a length test asserts.
-            Fill the comparison value so the check gives <C>1</C>.
+            Fill the comparison value so the check gives <C>true</C>.
           </>
         }
         starter={`(def (len-is xs n) (= (List.len xs) n))
-(def (main) (if (len-is (list 10 20 30) ?) 1 0))`}
+(def (main) (len-is (list 10 20 30) ?))`}
         solution={`(def (len-is xs n) (= (List.len xs) n))
-(def (main) (if (len-is (list 10 20 30) 3) 1 0))`}
-        expected="1"
+(def (main) (len-is (list 10 20 30) 3))`}
+        expected="true"
         hint={
           <>
             The list has three elements, so its length is <C>3</C>. Fill <C>3</C> and the check holds, the

@@ -4416,6 +4416,32 @@ mod tests {
     }
 
     #[test]
+    fn completion_offers_a_let_bound_local_with_its_inferred_type() {
+        // A `let`-bound local (not a parameter) in scope at the cursor is a completion candidate, shown as
+        // a VARIABLE with its INFERRED type as the detail — the `ScopeAt` query walks `let` binders, not
+        // just params. Every prior local-completion test uses a function param; this pins the distinct
+        // let-binder scope path (and that the detail carries the inferred type, since a `let` has no
+        // written annotation). Complements the hover let-local coverage on the completion surface.
+        let text = "def main() =\n  let total = 5\n  total";
+        // Cursor INSIDE the `total` use in the trailing expression, where it is in scope (line 2, col 5).
+        let items = completions_at(text, true, Position::new(2, 5));
+        let total = items
+            .iter()
+            .find(|i| i.label == "total")
+            .unwrap_or_else(|| panic!("let-local `total` should be a candidate: {items:?}"));
+        assert_eq!(
+            total.kind,
+            Some(CompletionItemKind::VARIABLE),
+            "a let-local is a Variable candidate: {total:?}"
+        );
+        assert!(
+            total.detail.as_deref().is_some_and(|d| d.contains("Int")),
+            "the let-local's detail should show its inferred Int type, got {:?}",
+            total.detail
+        );
+    }
+
+    #[test]
     fn completion_local_shadows_a_top_level_of_the_same_name() {
         // A local binding SHADOWS a top-level of the same spelling: `x` is BOTH a top-level `def` (a
         // value/Constant) AND a parameter of `g` (a Variable). Inside g's body, completion must offer `x`
