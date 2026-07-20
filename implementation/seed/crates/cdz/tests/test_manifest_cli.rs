@@ -1295,10 +1295,10 @@ fn a_nongeneratable_leaf_compound_test_declines_cleanly_and_siblings_run() {
         "a sibling test still runs despite the un-generatable compound test: {stdout}"
     );
     // The un-generatable test is reported as a clean per-test FAIL (not a silent drop, not a file abort),
-    // and NAMES its cause — the declining wrapper performs `Test.fail("… has no generatable form yet — a
-    // non-boundary/heap scalar (Char/…) or a compound with such a leaf — not property-testable …")`, so the
-    // author gets an actionable reason, not a bare `body trapped`. (The message covers BOTH the compound-leaf
-    // case here and the bare-name-scalar case; it names `Char` in the non-generatable-type list.)
+    // and NAMES its cause — the declining wrapper performs `Test.fail("… has no property-test-generatable
+    // form yet (Char/…, or a compound with such a leaf) — not property-testable …")`, so the author gets an
+    // actionable reason, not a bare `body trapped`. (The message covers BOTH the compound-leaf case here and
+    // the bare-name-scalar case; it names `Char` in the non-generatable-type list.)
     assert!(
         stdout.contains("FAIL charlist-gen")
             && stdout.contains("not property-testable")
