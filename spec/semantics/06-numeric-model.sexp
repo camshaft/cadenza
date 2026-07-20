@@ -1976,6 +1976,30 @@
   (call   main (: 3 UInt64) (: 5 UInt64))
   (trap   "integer overflow"))
 
+(case "a runtime full-width UInt64 addition that overflows traps rather than wrapping"
+  (doc    "The addition companion of the UInt64 subtraction-underflow pin: `(+ a b)` over UInt64 with
+           a=UInt64.max, b=1 has no unsigned value in range (the sum is 2^64), so it traps 'integer
+           overflow' — never the wrap to 0. wasm's `i64.add` wraps silently, so the emitted overflow guard
+           is load-bearing, and at 64 bits it must be a full-width UNSIGNED carry check (a signed check, or
+           one reusing a narrow mask, could pass UInt8 yet mishandle the widest unsigned type). a=5, b=3 = 8
+           is the in-range control.")
+  (input  (do (def (main (: a UInt64) (: b UInt64)) (+ a b)) (export main)))
+  (call   main (: 5 UInt64) (: 3 UInt64))
+  (output (: 8 UInt64))
+  (call   main (: 18446744073709551615 UInt64) (: 1 UInt64))
+  (trap   "integer overflow"))
+
+(case "a runtime full-width UInt64 multiplication that overflows traps rather than wrapping"
+  (doc    "The multiply companion: `(* a b)` over UInt64 with a=UInt64.max, b=2 overflows (2·(2^64-1) far
+           exceeds 2^64), so it traps 'integer overflow' rather than wrapping to the low 64 bits. The
+           unsigned multiply overflow check is a full-width UNSIGNED high-word test (distinct from the signed
+           multiply's MIN/-1-and-sign reasoning). a=6, b=7 = 42 is the in-range control.")
+  (input  (do (def (main (: a UInt64) (: b UInt64)) (* a b)) (export main)))
+  (call   main (: 6 UInt64) (: 7 UInt64))
+  (output (: 42 UInt64))
+  (call   main (: 18446744073709551615 UInt64) (: 2 UInt64))
+  (trap   "integer overflow"))
+
 (case "a runtime unsigned division at the maximum by 1 does not trap"
   (doc    "An UNSIGNED type has no MIN/-1 overflow (no negative divisor, no signed minimum), so its `/`
            emits ONLY the zero guard — `(/ UInt64.max 1)` = UInt64.max must run normally, never spuriously

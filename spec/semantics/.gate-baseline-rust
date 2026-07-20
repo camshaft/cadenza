@@ -1904,6 +1904,8 @@ pass	a runtime float leaf in a tuple compares by the canonical byte form
 pass	a runtime float multiplication emits the machine mul
 pass	a runtime float promotes to a wider width with the machine promote
 pass	a runtime float subtraction emits the machine sub
+pass	a runtime full-width UInt64 addition that overflows traps rather than wrapping
+pass	a runtime full-width UInt64 multiplication that overflows traps rather than wrapping
 pass	a runtime full-width UInt64 subtraction that underflows traps rather than wrapping
 pass	a runtime function value is manually eta-wrapped and applied through nested recursive HOFs
 pass	a runtime greater-than compares by signed order
