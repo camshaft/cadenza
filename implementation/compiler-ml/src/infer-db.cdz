@@ -60,7 +60,7 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         // is Int; comparison (60/61) needs Int operands and is Bool. A non-Int operand → TErr (propagates up).
         (let t1 = infer-node(tree, l, rcol, tcol) in
          (let t2 = infer-node(tree, r, rcol, t1) in
-          (match bin-type(op, t2, l, r) with | ty => Map.insert(t2, id, ty))))
+          (match bin-type(tree, op, t2, l, r) with | ty => Map.insert(t2, id, ty))))
     | Option.Some(Node.NLet(_, valId, bodyId)) =>
         // infer value + body; the let's type is the BODY's type — but only if both value and body are
         // well-typed (neither is TErr). The value need not be Int (a let could bind a Bool), so gate on
@@ -196,7 +196,7 @@ def param-fit-ok(tree: Tree, paramId: Int64, argId: Int64) =
 /// width/sign → `TErr` (no silent promotion, the CDZ0301 reject). RELATIONAL (60..65) accepts any two integer
 /// widths (comparison doesn't wrap — comparing in-range integers is width-agnostic) and → `TBool`. Non-Int
 /// operand / unknown op → `TErr`.
-def bin-type(op: Int64, tcol: Map(Int64, Typed), a: Int64, b: Int64) =
+def bin-type(tree: Tree, op: Int64, tcol: Map(Int64, Typed), a: Int64, b: Int64) =
   (if (op >= 60) then
      // relational (60..65): rcdzc types EVERY integer binop — arith AND comparison alike — as relating two
      // operands of ONE type (`∀a. Int a → Int a → Bool`); a MIXED width OR sign is CDZ0301 (no implicit
@@ -209,7 +209,7 @@ def bin-type(op: Int64, tcol: Map(Int64, Typed), a: Int64, b: Int64) =
         // Bool — rcdzc's relational ops are `∀a. a → a → Bool` for an orderable `a` (Int OR Bool: `false <
         // true`, `(= true false)`, all defined; Bool encodes 0/1 so eval's 0/1 comparison already matches).
         // A mixed Int~Bool (or mixed int width/sign) → TErr (CDZ0301). Bool-Bool was declining before.
-        (match arith-result-type(tcol, a, b) with
+        (match arith-result-type(tree, tcol, a, b) with
           | Option.Some(_) => Typed.TBool
           | Option.None(_) => (if both-bool(tcol, a, b) then Typed.TBool else Typed.TErr))
       else Typed.TErr)
@@ -219,7 +219,7 @@ def bin-type(op: Int64, tcol: Map(Int64, Typed), a: Int64, b: Int64) =
      // eval/lower TRAP a narrow result's overflow per CDZ0304). A MIXED width/sign → TErr (no promotion). MATCH
      // on the op-code (idiomatic dispatch, not an `if op == N` ladder): the five arith ops (43 + / 45 - / 42 *
      // / 47 / / 37 %) all take arith-result-type's type; any other op here is TErr.
-     (match arith-result-type(tcol, a, b) with
+     (match arith-result-type(tree, tcol, a, b) with
        | Option.Some(rty) =>
            (match op with
              | 43 => rty | 45 => rty | 42 => rty | 47 => rty | 37 => rty | _ => Typed.TErr)
@@ -237,16 +237,46 @@ def ty-to-typed-int(t: Ty) = match ground-default(t) with
 /// their `Ty` (via the bridge + unify-ty's orthogonal sign/width). `Some(shared TIntW)` when they unify to an
 /// integer (Int64+Int64→Int64, UInt8+UInt8→UInt8); `None` when they conflict (mixed width/sign → CDZ0301) or
 /// either isn't an integer. eval/lower TRAP a narrow result's overflow (int-width.checked-*).
-def arith-result-type(tcol: Map(Int64, Typed), a: Int64, b: Int64) =
+def arith-result-type(tree: Tree, tcol: Map(Int64, Typed), a: Int64, b: Int64) =
   (match Map.lookup(tcol, a) with
     | Option.Some(Typed.TIntW(sa, wa)) =>
         (match Map.lookup(tcol, b) with
           | Option.Some(Typed.TIntW(sb, wb)) =>
               (match unify-ty(ty-fixed-int(sa, wa), ty-fixed-int(sb, wb)) with
                 | Option.Some(rty) => Option.Some(ty-to-typed-int(rty))
-                | Option.None(_) => Option.None(unit))
+                // MIXED width/sign that doesn't unify: a bare integer LITERAL is width-POLYMORPHIC — it adapts
+                // to a narrow sibling if its value fits (corpus 09-functions:3577 "the check does NOT
+                // over-reject": `(def (f (: a Int8)) (+ a 10))` `(f 100)` → 110:Int8, the literal 10 becomes
+                // Int8). infer types every NLit as the default Int64, so `Int8 + 10` looks mixed; recover by
+                // letting a plain-literal operand take the OTHER operand's narrow type when the literal fits.
+                // (Only a genuine NLit adapts — a computed/annotated Int64 keeps its width, so a real mixed-
+                // width op like `(: 5 Int8) + (: 5 Int16)` still declines CDZ0301.)
+                | Option.None(_) => arith-lit-adapt(tree, a, sa, wa, b, sb, wb))
           | _ => Option.None(unit))
     | _ => Option.None(unit))
+
+/// Literal-width adaptation for a mixed-width arith pair that didn't unify. If ONE operand is a plain `NLit(v)`
+/// (which infer typed as the default Int64) and the OTHER is a FIXED NARROW width (< 64) that `v` FITS, the
+/// result is that narrow type — the bare literal grounds to the sibling's width (corpus: the check doesn't
+/// over-reject). Checks both orders. Returns `None` (keep the mixed-width decline) when neither operand is a
+/// fitting literal — so a real mixed-width/sign op (two annotated narrows of different widths) still declines.
+def arith-lit-adapt(tree: Tree, a: Int64, sa: Bool, wa: Int64, b: Int64, sb: Bool, wb: Int64) =
+  // `a` is the literal, `b` the narrow target: a defaulted Int64 (signed,64) whose node is NLit(v) fitting (sb,wb<64).
+  (if (lit-fits-narrow(tree, a, sa, wa, sb, wb)) then Option.Some(Typed.TIntW(sb, wb))
+   else (if (lit-fits-narrow(tree, b, sb, wb, sa, wa)) then Option.Some(Typed.TIntW(sa, wa))
+         else Option.None(unit)))
+
+/// Is operand `x` a plain `NLit(v)` typed as the DEFAULT Int64 (signed,64) whose value fits the sibling's
+/// narrow `(ts, tw)` (tw < 64)? Only then does the literal adapt. Guards on `(sx,wx)==(signed,64)` so an
+/// already-narrow or annotated operand never silently re-widths.
+def lit-fits-narrow(tree: Tree, x: Int64, sx: Bool, wx: Int64, ts: Bool, tw: Int64) =
+  (if (sx and (wx == 64)) then
+     (if (tw < 64) then
+        (match node-at(tree, x) with
+          | Option.Some(Node.NLit(v)) => fits-width(v, ts, tw)
+          | _ => false)
+      else false)
+   else false)
 
 /// Bool iff BOTH operands are `TBool` — the second accepted shape for a RELATIONAL op (the first being two
 /// unifying integers). rcdzc's comparison/equality is `∀a. a → a → Bool` for an orderable `a`, and Bool IS
@@ -569,6 +599,30 @@ def id-same-narrow-arith-preserves-width() =
         (match type-at(tree, root, root) with
           | Option.Some(Typed.TIntW(_, w)) => (if w == 8 then unit else trap("Int8 + Int8 preserves width 8, not widened"))
           | _ => trap("Int8 + Int8 is a narrow TIntW")))))
+
+@test
+def id-narrow-plus-plain-literal-adapts() =
+  // LITERAL ADAPTATION (corpus 09-functions:3577 "the check does NOT over-reject"): a NARROW operand `+` a
+  // PLAIN literal — `Int8 + NLit(10)` — types as Int8, NOT TErr. infer types the bare NLit as the default
+  // Int64, so it LOOKS mixed-width; arith-lit-adapt recovers by letting the fitting literal take the narrow
+  // width. Here NAnnLit(100,Int8) + NLit(10): 10 fits Int8 → result TIntW(_,8). Pins `(+ a 10)` on an Int8
+  // param runs (it was declining as spurious mixed-width). Hand-arena.
+  (match add-node(empty-tree(), Node.NAnnLit(100, 1, 8)) with | (lId, t1) =>
+    (match add-node(t1, Node.NLit(10)) with | (rId, t2) =>            // a PLAIN literal (defaults Int64)
+      (match add-node(t2, Node.NBin(43, lId, rId)) with | (root, tree) =>
+        (match type-at(tree, root, root) with
+          | Option.Some(Typed.TIntW(_, w)) => (if w == 8 then unit else trap("Int8 + plain-literal adapts to Int8, not mixed-width TErr"))
+          | _ => trap("Int8 + fitting plain literal is a narrow TIntW, not TErr")))))
+
+@test
+def id-narrow-plus-non-fitting-literal-still-err() =
+  // the adaptation is GATED on the literal FITTING: `Int8 + NLit(200)` — 200 does NOT fit Int8 → the literal
+  // can't adapt → the pair stays mixed-width → TErr (declines). Pins arith-lit-adapt doesn't launder an
+  // out-of-range literal into a narrow op. (rcdzc: `(: 100 Int8) + 200` is not a valid Int8 addition.)
+  (match add-node(empty-tree(), Node.NAnnLit(100, 1, 8)) with | (lId, t1) =>
+    (match add-node(t1, Node.NLit(200)) with | (rId, t2) =>            // 200 does NOT fit Int8
+      (match add-node(t2, Node.NBin(43, lId, rId)) with | (root, tree) =>
+        (if type-err-at(tree, root, root) then unit else trap("Int8 + NLit(200) — 200 can't adapt to Int8 → TErr")))))
 
 @test
 def id-mixed-width-arith-is-err() =
