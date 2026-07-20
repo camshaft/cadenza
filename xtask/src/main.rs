@@ -1994,11 +1994,25 @@ fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> Optio
                     break;
                 }
             }
-            b'>' => depth = depth.saturating_sub(1),
+            // A `>` closes an angle group — EXCEPT the `>` of a `->` return arrow, which can appear
+            // INSIDE the param list when a parameter's type is itself a closure (e.g.
+            // `g: Rc<dyn Fn(i64) -> i64>`). Counting that arrow's `>` as an angle-close underflows
+            // depth (saturating to 0), so the param-list's own `)` never returns to depth 0, `end` stays
+            // 0, and the `&after[1..end]` slice below PANICS `begin > end` — aborting the whole gate run
+            // (v-rust-backend hit this probing the closure-PARAM emit). Guard: a `>` immediately preceded
+            // by `-` is an arrow, not a bracket close. (`- >` with a space isn't valid Rust, so the
+            // adjacent-byte check is sufficient.)
+            b'>' if i == 0 || bytes[i - 1] != b'-' => depth = depth.saturating_sub(1),
             b',' if depth == 1 => params += 1,
             b if depth == 1 && !b.is_ascii_whitespace() => saw_any = true,
             _ => {}
         }
+    }
+    // If the walk never found the param-list close (`end` still 0 — a malformed or unexpected signature
+    // shape), this is not a factory we can analyze: return None rather than slicing `&after[1..0]` (which
+    // panics `begin > end`). Defensive belt-and-suspenders alongside the arrow guard above.
+    if end == 0 {
+        return None;
     }
     // `params` counted the commas; the param count is commas+1 if the list is non-empty, else 0.
     let count = if saw_any { params + 1 } else { 0 };
@@ -5657,6 +5671,23 @@ mod trap_grading_tests {
         // A NULLARY async factory (env param only, no captures) → Some(0), not an underflow.
         let async_nullary = "pub async fn mk<__CdzE: CdzEnv>(__cdz_env: &mut __CdzE) -> std::rc::Rc<dyn Fn(i64) -> i64> { … }";
         assert_eq!(rust_factory_param_count(async_nullary, "mk", true), Some(0));
+        // REGRESSION (v-rust-backend, latent panic): a `->` return arrow INSIDE the param list — from a
+        // parameter whose type is itself a closure — must not be miscounted as an angle-bracket close
+        // (which underflowed depth → `end` stayed 0 → `&after[1..0]` PANIC). A closure-PARAM consumer
+        // that returns a scalar is NOT a factory → None (cleanly, no panic).
+        let closure_param_consumer =
+            "pub fn twice_plus(g: std::rc::Rc<dyn Fn(i64) -> i64>, x: i64) -> i64 { … }";
+        assert_eq!(
+            rust_factory_param_count(closure_param_consumer, "twice_plus", false),
+            None
+        );
+        // A FACTORY whose own first param is a closure (arrow inside the param list) AND whose return is
+        // a closure → still a factory; both params counted (the inner `->` no longer corrupts the walk).
+        let factory_with_closure_param = "pub fn compose(g: std::rc::Rc<dyn Fn(i64) -> i64>, k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { … }";
+        assert_eq!(
+            rust_factory_param_count(factory_with_closure_param, "compose", false),
+            Some(2)
+        );
     }
 
     #[test]

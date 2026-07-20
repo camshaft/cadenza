@@ -5799,8 +5799,21 @@ fn compare_scalar_leaf(
             let bs = bv.map_or(&[][..], |n| n.raw.as_slice());
             Some(as_.cmp(bs))
         }
-        // A scalar-position leaf with no blessed total order — the unordered verdict (the op's sentinel).
-        Shape::Float | Shape::Float32 | Shape::Bytes => None,
+        // A FLOAT orders by its CANONICAL BIT PATTERN as an UNSIGNED integer — NOT numeric order. This is the
+        // element-derived deterministic order collections-and-text.md #Set Iteration Is Deterministic requires
+        // (agreeing with the canonical byte form, which totally orders floats): every NaN is collapsed to the
+        // one quiet NaN by `op_box_float` on construction, and +0.0/-0.0 keep their distinct bits, so the bit
+        // pattern is a TOTAL order (no unordered pairs). Read the canonical bits via the width's getter and
+        // compare as `u64`/`u32` — exactly the Rust backend's `__CdzF64`/`__CdzF32` wrapper order (`self.0`,
+        // where `self.0 = to_bits()`), so a float Set.to-list / Map.to-list key enumerates identically on both
+        // backends. By this order a NEGATIVE float (sign bit set = high bit) sorts AFTER every positive, and
+        // -0.0 (0x8000…) after +0.0 (0x0). This is the ORDERING used ONLY where an order is offered (to-list
+        // enumeration, a float Set/Map key sort); float `<` remains the IEEE partial order (NaN unordered),
+        // decided at compile time — the compiler routes numeric `<` away from this walk.
+        Shape::Float => Some(op_get_float(a).to_bits().cmp(&op_get_float(b).to_bits())),
+        Shape::Float32 => Some(op_get_float32(a).to_bits().cmp(&op_get_float32(b).to_bits())),
+        // Bytes still offers no blessed total order (spec is silent; symmetric with the compile-time carve-out).
+        Shape::Bytes => None,
         // Not a scalar leaf — a compound / set / map / framed root: the caller falls through to the walk.
         Shape::Tuple(_)
         | Shape::List(_)
@@ -13400,13 +13413,35 @@ mod tests {
             Some(Ordering::Less),
             "[] < [1]: empty is less than non-empty"
         );
-        // Non-orderable: a Float leaf → None (the #319 partial-order carve-out; the compiler declines
-        // ordering for it before ever calling this — a defensive not-reached).
+        // A Float leaf orders by its CANONICAL BIT PATTERN as an UNSIGNED integer (NOT numeric order) — the
+        // element-derived deterministic order to-list enumeration uses, matching the Rust `__CdzF64` wrapper.
+        // (Numeric float `<` stays the IEEE partial order, declined at compile time — a different path.)
         let desc_float = Descriptor { table: vec![Shape::Float], root: 0 };
         assert_eq!(
             value_cmp_shaped(&desc_float, op_box_float(1.0), op_box_float(2.0), 0),
-            None,
-            "a Float leaf offers no total order → None (decline)"
+            Some(Ordering::Less),
+            "1.0 < 2.0 by unsigned bit pattern (both positive)"
+        );
+        // A NEGATIVE float sorts AFTER every positive: the sign bit is the high bit, so -1.0 (0xBFF0…) as a
+        // u64 exceeds 2.5 (0x4004…). This is the ruling's blessed order ({-1.0,0.5,2.5} → [0.5,2.5,-1.0]).
+        assert_eq!(
+            value_cmp_shaped(&desc_float, op_box_float(-1.0), op_box_float(2.5), 0),
+            Some(Ordering::Greater),
+            "-1.0 sorts AFTER 2.5 (sign bit = high bit; negatives last in unsigned-bits order)"
+        );
+        // +0.0 and -0.0 are DISTINCT and ordered (+0.0 = 0x0 before -0.0 = 0x8000…), consistent with their
+        // distinct canonical byte forms (op_box_float keeps their bits).
+        assert_eq!(
+            value_cmp_shaped(&desc_float, op_box_float(0.0), op_box_float(-0.0), 0),
+            Some(Ordering::Less),
+            "+0.0 < -0.0 by bit pattern (distinct canonical forms)"
+        );
+        // Every NaN collapses to one canonical quiet NaN on construction → two NaNs compare Equal (a total
+        // order has no unordered pair; the to-list sort treats them as one position).
+        assert_eq!(
+            value_cmp_shaped(&desc_float, op_box_float(f64::NAN), op_box_float(f64::NAN), 0),
+            Some(Ordering::Equal),
+            "canonical NaN == canonical NaN (NaN collapsed on box; a total order)"
         );
         // Consistency with equality: cmp == Equal exactly when champ_eq.
         let p = mk_pair(5, 6);

@@ -6188,18 +6188,21 @@ fn a_site_a_closure_cell_leak_probe_tracks_the_owned_temp_env_cell() {
         Val::S64(15),
         "the eta-closure completes to 15"
     );
-    // KNOWN GAP (observed 2026-07-20): 4 live cells leak after the eta-closure application — the env cell
-    // (arr-alloc: boxed code slot + captured `10`) + the partial-ctor `(T.Mk 10)` shell + its boxed payload,
-    // none reclaimed (the CallClosure env-cell owned-temp is never dropped after the borrowing call, and the
-    // matched `(T.Mk a b)` shell is the pervasive match-reclaim gap). This PINS the count so it cannot
-    // silently WORSEN (a count > 4 is a per-call allocation regression in the CallClosure path,
-    // select.rs ~10248); flip to the reduced count when the owned-temp closure-cell drop (SITE-A fix) lands.
+    // KNOWN GAP (observed 2026-07-20): 4 live cells leak after the eta-closure application. ATTRIBUTION
+    // (isolated via a no-closure control of the SAME tuple/match shape, which leaked 2): the CLOSURE
+    // contributes exactly 2 — the env cell (arr-alloc) + its boxed captured `10` — never reclaimed because
+    // the CallClosure env-cell owned-temp is not dropped after the borrowing call (select.rs ~10248). The
+    // OTHER 2 are the pervasive tuple + match-shell reclaim gap (the `(T.Mk a b)` shell), shared with the
+    // control and NOT closure-specific. So the SITE-A fix target is 4→2 (reclaim the closure's 2 cells),
+    // NOT 4→0 (the remaining 2 are the general Perceus match/tuple-drop workstream). This PINS the total so
+    // it cannot silently WORSEN (> 4 = a per-call allocation regression in the CallClosure path).
     assert_eq!(
         rt.live_objects(),
         4,
-        "SITE-A KNOWN GAP: an eta-closure applied via CallClosure leaks its owned-temp env cell (+ the \
-         partial-ctor shell/payload) = 4 cells; value is correct (15). A count > 4 is a regression. Flip \
-         to the reduced count when the owned-temp closure-cell drop after the borrowing call lands."
+        "SITE-A KNOWN GAP: 4 cells leak = 2 CLOSURE-specific (env cell + boxed capture, the SITE-A target, \
+         flip to 2 when the CallClosure owned-temp cell drop lands) + 2 tuple/match-shell (the general \
+         Perceus match-reclaim gap, isolated via a no-closure control). Value correct (15); > 4 is a \
+         regression."
     );
 }
 
@@ -23233,6 +23236,18 @@ mod match_engine {
             "the compound (Float 32) spelling also retypes to Float64: {}",
             compound.message
         );
+        // ROUND TRIP: applying the widen (retype the annotation to `Float64`) recompiles clean — `Float64`
+        // is the literal's own default width, so it holds the value that overflowed `Float32`. Both the
+        // bare `Float32` and the compound `(Float 32)` cases repair to the same clean `Float64` form.
+        for applied in [
+            "(module m (def (main) (: 1.0e300 Float64)) (export main))",
+            "(module m (def (main) (: 1.0e40 Float64)) (export main))",
+        ] {
+            assert!(
+                reject_full(applied).is_none(),
+                "applying the Float64 widen must recompile clean: {applied}"
+            );
+        }
         // NO false positive: a value that FITS Float32, and the SAME magnitude annotated Float64 (its
         // finite range holds it), both compile clean.
         assert!(reject_full("(module m (def (main) (: 3.0e38 Float32)) (export main))").is_none());

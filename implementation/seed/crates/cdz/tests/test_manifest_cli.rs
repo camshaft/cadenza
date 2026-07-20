@@ -2222,6 +2222,44 @@ fn a_failing_equality_requires_property_reports_an_in_domain_counterexample() {
     );
 }
 
+/// The two relation-enforcement strategies COMPOSE in one predicate: `@requires(a == b and b < c)` needs
+/// EQUALITY propagation (b := a) AND an ORDER relation (b < c, i.e. a < c after propagation). The generator
+/// propagates equalities on every draw BEFORE the order-relation rejection check, so the order test sees the
+/// post-propagation values and rejection re-draws until `b < c` also holds. A PASS proves every drawn triple
+/// satisfied both. Also checks conjunction-order-independence (the equality recorded after the order relation
+/// still propagates first). No store needed (scalar Int params).
+#[test]
+fn an_equality_and_an_order_relation_compose_in_one_requires() {
+    let d = dir("requires-eq-order");
+    // Equality first, then order.
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(a == b and b < c)\n\
+         @test def m(a: Int64, b: Int64, c: Int64) = if a == b and b < c then unit else trap(\"eq+order violated\")\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"x\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok && stdout.contains("PASS m (100 trials)"),
+        "equality propagation (b := a) composes with order rejection (b < c) so the property passes: {stdout}{stderr}"
+    );
+    // Order first, then equality — the conjunction order must not matter (propagation always runs first).
+    let d2 = dir("requires-order-eq");
+    let f2 = write(
+        &d2,
+        "m.cdz",
+        "@requires(b < c and a == b)\n\
+         @test def m2(a: Int64, b: Int64, c: Int64) = if a == b and b < c then unit else trap(\"order+eq violated\")\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"x\")\n",
+    );
+    let (ok2, stdout2, stderr2) = run(&["test", &f2, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok2 && stdout2.contains("PASS m2 (100 trials)"),
+        "the same eq+order constraint recorded in reverse conjunction order still passes (propagation runs first): {stdout2}{stderr2}"
+    );
+}
+
 /// TERMINATION under an UNSATISFIABLE relation: `@requires(a < b and b < a)` can NEVER hold (it implies
 /// `a < a`), so rejection sampling can never find an in-domain draw. The generator must NOT loop forever —
 /// it is fuel-bounded (`RELATION_FUEL`), so after exhausting fuel it returns the last draw and lets the (D)

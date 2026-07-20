@@ -57,7 +57,7 @@ const CUBE_WITH_DENT: ExampleModel = {
 const HOLLOW_TUBE: ExampleModel = {
   slug: "hollow-tube",
   title: "Hollow tube",
-  description: "An outer cylinder minus a concentric bore — a pipe, via Difference of two cylinders.",
+  description: "An outer cylinder minus a concentric bore, making a pipe, via Difference of two cylinders.",
   source: {
     ml: `def main() =
   lower(
@@ -76,7 +76,7 @@ const HOLLOW_TUBE: ExampleModel = {
 const ROUNDED_CUBE: ExampleModel = {
   slug: "rounded-cube",
   title: "Rounded cube",
-  description: "A cube intersected with a sphere — the sphere rounds off every corner (CSG intersection).",
+  description: "A cube intersected with a sphere, so the sphere rounds off every corner (CSG intersection).",
   source: {
     ml: `def main() =
   lower(
@@ -95,7 +95,7 @@ const ROUNDED_CUBE: ExampleModel = {
 const STEPPED_PEDESTAL: ExampleModel = {
   slug: "stepped-pedestal",
   title: "Stepped pedestal",
-  description: "A wide base with a narrower block stacked on top — Union + Translate compose two slabs.",
+  description: "A wide base with a narrower block stacked on top, where Union + Translate compose two slabs.",
   source: {
     ml: `def main() =
   lower(
@@ -121,7 +121,7 @@ const STEPPED_PEDESTAL: ExampleModel = {
 const ARCH_FIN: ExampleModel = {
   slug: "arch-fin",
   title: "Arch (cubic-Bézier spline)",
-  description: "A straight base + a cubic-Bézier curved top, extruded — a genuinely-curved part via a 2-D path.",
+  description: "A straight base + a cubic-Bézier curved top, extruded into a genuinely-curved part via a 2-D path.",
   source: {
     ml: `def main() =
   let arch = cubic-to(line-to(path-start(), v2(8, 0)), v2(0, 0), v2(8, 10), v2(0, 10)) in
@@ -144,7 +144,7 @@ const ARCH_FIN: ExampleModel = {
 const PARAMETRIC_PLATE: ExampleModel = {
   slug: "parametric-plate",
   title: "Parametric mounting plate (sliders)",
-  description: "A width×depth×thickness plate with a central bolt hole — every dimension a live @!param slider, exact.",
+  description: "A width×depth×thickness plate with a central bolt hole, every dimension a live @!param slider, exact.",
   source: {
     ml: `@!param(widget: slider, range: [20, 200], default: 50) width : Rational
 @!param(widget: slider, range: [20, 150], default: 30) depth : Rational
@@ -178,7 +178,7 @@ def main() = host Param in
 const UNITS_BRACKET: ExampleModel = {
   slug: "units-bracket",
   title: "Imperial bracket (inch sliders)",
-  description: "A plate + bolt hole authored in INCHES, converted exactly to model mm — unit-aware sliders, zero float drift.",
+  description: "A plate + bolt hole authored in INCHES, converted exactly to model mm, with unit-aware sliders and zero float drift.",
   source: {
     ml: `@!param(widget: slider, range: [1, 8], default: 3) bwidth : Rational
 @!param(widget: slider, range: [1, 6], default: 2) bdepth : Rational
@@ -213,7 +213,7 @@ def main() = host Param in
 const ASSEMBLY_L_BRACKET: ExampleModel = {
   slug: "assembly-l-bracket",
   title: "L-bracket (assembly-as-code)",
-  description: "A base plate + a vertical arm mated at 90 degrees — multiple parts combined in code.",
+  description: "A base plate + a vertical arm mated at 90 degrees, multiple parts combined in code.",
   source: {
     ml: `def base() = cut(move-z(2, box(40, 30, 4)), move-x(10, move-z(2, cyl(8, 3))))
 def arm() = move-z(4, rotate-x(90, move-z(2, box(30, 25, 4))))

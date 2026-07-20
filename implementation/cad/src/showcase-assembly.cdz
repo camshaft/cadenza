@@ -11,7 +11,7 @@
 /// dimensions, so changing a dimension re-mates everything by construction. Uses the landed Rotate/Mirror.
 @!default-fraction Rational
 
-import { Solid, Vec3, Aabb, lower, v3, v3-eq, bounding-box, aabbr-size, solidr-is-empty } from "exact"
+import { Solid, SolidR, Vec3, Aabb, lower, v3, v3-eq, bounding-box, aabbr-size, solidr-is-empty } from "exact"
 import { box, cyl, fuse, cut, move-x, move-y, move-z, rotate-x, rotate-z, mirror-y, hole-through } from "helpers"
 
 /// ---- shared dimensions (the single source of truth every part + mate reads) -------------------------
@@ -73,6 +73,17 @@ def l-bracket() =
 def the-assembly-is-non-empty() =
   // The full assembly is real geometry (a top-node test, not a full heap-walk — miscompile-safe).
   if solidr-is-empty(l-bracket()) == false then unit else trap("the L-bracket assembly has geometry")
+
+@test
+def the-lowered-render-form-is-non-empty() =
+  // THE render-edge pin: main = lower(l-bracket()) is the exact SolidR tree handed to the mesh driver. The
+  // model being non-empty (above) is NOT enough — a `lower` regression that dropped/emptied a branch would
+  // still leave the MODEL non-empty while the RENDER goes blank (exactly the empty-Solid-mesh class the
+  // snowflake hit: "meshes" ≠ "renders"). Pin that the LOWERED output is not SolidR.Empty. (l-bracket's top
+  // node is a fuse → the lowered top is a SolidR.Union — a real, meshable render node.)
+  match lower(l-bracket()) with
+    | SolidR.Empty => trap("the lowered render form (what the driver meshes) must NOT be empty")
+    | _ => unit
 
 @test
 def the-standing-arm-rises-above-the-base() =

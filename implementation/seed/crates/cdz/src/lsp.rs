@@ -40,9 +40,9 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{
     CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest,
-    DocumentSymbolRequest, FoldingRangeRequest, GotoDefinition, HoverRequest, References, Rename,
-    Request as _, SelectionRangeRequest, SemanticTokensFullRequest, Shutdown, SignatureHelpRequest,
-    WorkspaceSymbolRequest,
+    DocumentSymbolRequest, FoldingRangeRequest, GotoDefinition, HoverRequest, InlayHintRequest,
+    References, Rename, Request as _, SelectionRangeRequest, SemanticTokensFullRequest, Shutdown,
+    SignatureHelpRequest, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
@@ -52,9 +52,10 @@ use lsp_types::{
     DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbolParams,
     DocumentSymbolResponse, FoldingRange, FoldingRangeParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, Location, MarkedString, ParameterInformation,
-    ParameterLabel, Position, PublishDiagnosticsParams, Range, ReferenceParams, RenameParams,
-    SelectionRange, SelectionRangeParams, SemanticToken, SemanticTokenType, SemanticTokens,
+    InitializeParams, InitializeResult, InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams,
+    Location, MarkedString, ParameterInformation, ParameterLabel, Position,
+    PublishDiagnosticsParams, Range, ReferenceParams, RenameParams, SelectionRange,
+    SelectionRangeParams, SemanticToken, SemanticTokenType, SemanticTokens,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
     SignatureHelp, SignatureHelpOptions, SignatureHelpParams, SignatureInformation,
@@ -155,6 +156,11 @@ fn capabilities() -> ServerCapabilities {
         code_lens_provider: Some(CodeLensOptions {
             resolve_provider: Some(false),
         }),
+        // Inlay hints — inline PARAMETER-NAME hints at a call site (`add(`a:`1, `b:`2)`), read from the
+        // callee's DECLARED parameter names in the parse tree (not the inferred-binder type query, which is
+        // still blocked). Increment 1 covers a LOCALLY-defined callee; a cross-file callee + noise
+        // suppression are later increments. No resolve step (labels are computed up front).
+        inlay_hint_provider: Some(lsp_types::OneOf::Left(true)),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
                 work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -365,6 +371,11 @@ impl Server {
             CodeLensRequest::METHOD => {
                 let (id, params) = cast_request::<CodeLensRequest>(req)?;
                 let result = self.code_lens(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
+            InlayHintRequest::METHOD => {
+                let (id, params) = cast_request::<InlayHintRequest>(req)?;
+                let result = self.inlay_hint(&params);
                 self.send_response(Response::new_ok(id, result))
             }
             _ => {
@@ -710,6 +721,16 @@ impl Server {
     fn code_lens(&self, params: &CodeLensParams) -> Option<Vec<CodeLens>> {
         let doc = self.docs.get(&params.text_document.uri)?;
         Some(code_lenses_for(&doc.text, doc.is_ml))
+    }
+
+    /// Answer a `textDocument/inlayHint`: inline PARAMETER-NAME hints at each call site to a LOCALLY-defined
+    /// function within the requested range — `add(`a:`1, `b:`2)` renders each positional argument prefixed
+    /// with the callee's declared parameter name. Read purely from the parse tree (the callee's `(def
+    /// (name param…) …)` signature), so it does NOT depend on the still-blocked inferred-binder type query.
+    /// `None` when the document is not open; an empty list when the range holds no local call — total.
+    fn inlay_hint(&self, params: &InlayHintParams) -> Option<Vec<InlayHint>> {
+        let doc = self.docs.get(&params.text_document.uri)?;
+        Some(inlay_hints_at(&doc.text, doc.is_ml, params.range))
     }
 
     /// Dispatch a client NOTIFICATION — the document-sync lifecycle. Each open/change recomputes and
@@ -2604,6 +2625,95 @@ fn signature_help_at(text: &str, is_ml: bool, pos: Position) -> Option<Signature
         active_signature: Some(0),
         active_parameter: Some(active),
     })
+}
+
+/// The PARAMETER-NAME inlay hints for the calls in `text` that fall within `range` — each positional
+/// argument of a call to a LOCALLY-defined function gets an inline `name:` hint (rust-analyzer's default
+/// call hint). Read entirely from the parse tree: the callee's declared parameter names come from its
+/// `(def (name param…) …)` signature list, so this does NOT depend on the still-blocked inferred-binder
+/// TYPE query — a parameter's NAME is written in the source even when its type is not.
+///
+/// Increment 1 (this): a callee that is a top-level `def` in the SAME buffer, positional args only. A
+/// cross-file/imported callee (needs the closure) and a curried/partial call are later increments; an
+/// unknown callee simply contributes no hints (total). TOTAL: a buffer that does not parse, or a range
+/// with no local call, yields the empty list — never a panic.
+fn inlay_hints_at(text: &str, is_ml: bool, range: Range) -> Vec<InlayHint> {
+    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return Vec::new();
+    };
+    // Map each local `def (name param…)` to its DECLARED parameter names, in order. A bare-value `def name
+    // body` (no signature list) contributes no params. This is the callee lookup the hints ride on.
+    let mut params_by_callee: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for i in 0..arenas.structure.len() {
+        let id = cadenza_syntax::StructId(i as u32);
+        let cadenza_syntax::ast::Struct::List(kids) = arenas.get(id) else {
+            continue;
+        };
+        // `(def (name p1 p2 …) body)` — head is `def`, second child is the signature list.
+        if kids.first().and_then(|&h| arenas.as_name(h)) != Some("def") {
+            continue;
+        }
+        let Some(&sig) = kids.get(1) else { continue };
+        let cadenza_syntax::ast::Struct::List(sig_kids) = arenas.get(sig) else {
+            continue;
+        };
+        let Some(name) = sig_kids.first().and_then(|&h| arenas.as_name(h)) else {
+            continue;
+        };
+        let param_names: Vec<String> = sig_kids[1..]
+            .iter()
+            .filter_map(|&p| arenas.as_name(p).map(str::to_string))
+            .collect();
+        if !param_names.is_empty() {
+            params_by_callee.insert(name.to_string(), param_names);
+        }
+    }
+    if params_by_callee.is_empty() {
+        return Vec::new();
+    }
+
+    let range_lo = position_to_byte(text, range.start);
+    let range_hi = position_to_byte(text, range.end);
+    let mut hints: Vec<InlayHint> = Vec::new();
+    // Every call `(callee arg…)` whose head names a known local def: emit a `name:` hint at each argument's
+    // start, for as many args as the callee has parameters (a mismatched arg count just hints the overlap).
+    for i in 0..arenas.structure.len() {
+        let id = cadenza_syntax::StructId(i as u32);
+        let cadenza_syntax::ast::Struct::List(children) = arenas.get(id) else {
+            continue;
+        };
+        let Some(&head) = children.first() else {
+            continue;
+        };
+        let Some(callee) = arenas.as_name(head) else {
+            continue;
+        };
+        let Some(param_names) = params_by_callee.get(callee) else {
+            continue;
+        };
+        for (arg, name) in children[1..].iter().zip(param_names.iter()) {
+            let Some(arg_span) = spans.get(*arg) else {
+                continue;
+            };
+            // Only hint arguments whose START is inside the requested range (the visible viewport).
+            if arg_span.start < range_lo || arg_span.start >= range_hi {
+                continue;
+            }
+            hints.push(InlayHint {
+                position: byte_to_position(text, arg_span.start),
+                label: InlayHintLabel::String(format!("{name}:")),
+                kind: Some(InlayHintKind::PARAMETER),
+                text_edits: None,
+                tooltip: None,
+                // Pad the right so the hint reads `name: arg`, not `name:arg`, against the argument.
+                padding_left: None,
+                padding_right: Some(true),
+                data: None,
+            });
+        }
+    }
+    hints
 }
 
 /// Split a rendered arrow type into `[Param1, …, ParamN, Ret]`. The `TypeOf` query renders function types
@@ -4506,6 +4616,93 @@ mod tests {
             items.is_empty(),
             "a hard-failing s-expr buffer yields no candidates, got: {:?}",
             items.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
+    }
+
+    // A range covering the whole buffer — inlay hints for the entire document.
+    fn whole_range() -> Range {
+        Range::new(Position::new(0, 0), Position::new(u32::MAX, 0))
+    }
+
+    #[test]
+    fn inlay_hints_label_positional_args_with_the_local_callees_param_names() {
+        // At a call to a LOCALLY-defined function, each positional argument gets an inline `name:` hint
+        // read from the callee's `(def (add a b) …)` signature — the rust-analyzer parameter-name hint.
+        // This uses the callee's declared param NAMES (in the parse tree), NOT the blocked inferred-binder
+        // type query. `(add 1 2)` → hints `a:` before `1` and `b:` before `2`.
+        let text = "(module m (def (add a b) (+ a b)) (def (main) (add 1 2)) (export main))";
+        let hints = inlay_hints_at(text, false, whole_range());
+        let labels: Vec<String> = hints
+            .iter()
+            .map(|h| match &h.label {
+                InlayHintLabel::String(s) => s.clone(),
+                other => panic!("expected a string label, got {other:?}"),
+            })
+            .collect();
+        assert!(
+            labels.contains(&"a:".to_string()) && labels.contains(&"b:".to_string()),
+            "the two positional args should be hinted with the callee's param names `a:`/`b:`, got {labels:?}"
+        );
+        assert!(
+            hints
+                .iter()
+                .all(|h| h.kind == Some(InlayHintKind::PARAMETER)),
+            "every hint is a PARAMETER-kind hint: {hints:?}"
+        );
+    }
+
+    #[test]
+    fn inlay_hints_work_on_the_ml_surface() {
+        // The ML surface (what editor users actually write) desugars `add(1, 2)` into the same
+        // name-headed call list the s-expr surface produces, so the parameter-name hints apply there too —
+        // the real-world path. `def add(a, b) = a + b` then `add(1, 2)` → `a:`/`b:` hints.
+        let text = "def add(a, b) = a + b\ndef main() = add(1, 2)";
+        let hints = inlay_hints_at(text, true, whole_range());
+        let labels: Vec<String> = hints
+            .iter()
+            .map(|h| match &h.label {
+                InlayHintLabel::String(s) => s.clone(),
+                other => panic!("expected a string label, got {other:?}"),
+            })
+            .collect();
+        assert!(
+            labels.contains(&"a:".to_string()) && labels.contains(&"b:".to_string()),
+            "ML `add(1, 2)` should get param-name hints `a:`/`b:`, got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn inlay_hints_are_empty_for_a_call_to_an_unknown_or_builtin_callee() {
+        // Increment 1 only hints LOCAL defs. A call whose head is not a locally-defined function — here the
+        // built-in `+` (no `(def (+ …) …)` in the buffer) — contributes no hints. (Cross-file/imported
+        // callees are a later increment; until then an unknown callee is silently un-hinted, never wrong.)
+        let text = "(module m (def (main) (+ 1 2)) (export main))";
+        let hints = inlay_hints_at(text, false, whole_range());
+        assert!(
+            hints.is_empty(),
+            "a call to a non-local callee (`+`) should produce no hints, got {hints:?}"
+        );
+    }
+
+    #[test]
+    fn inlay_hints_are_total_on_malformed_source() {
+        // A buffer that does not parse yields no hints, never a panic (queries over incomplete source are
+        // TOTAL — the same contract the other read handlers hold).
+        let _ = inlay_hints_at("(def (add a b", false, whole_range());
+        let _ = inlay_hints_at("", true, whole_range());
+    }
+
+    #[test]
+    fn inlay_hints_outside_the_requested_range_are_excluded() {
+        // The request carries the visible viewport; only arguments whose START falls in the range are
+        // hinted. A zero-width range at the very start of the buffer covers no argument, so no hints —
+        // pins that the range filter actually gates (not every call in the file every request).
+        let text = "(module m (def (add a b) (+ a b)) (def (main) (add 1 2)) (export main))";
+        let empty_range = Range::new(Position::new(0, 0), Position::new(0, 0));
+        let hints = inlay_hints_at(text, false, empty_range);
+        assert!(
+            hints.is_empty(),
+            "an empty range at offset 0 covers no argument → no hints, got {hints:?}"
         );
     }
 

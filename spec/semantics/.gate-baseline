@@ -140,6 +140,7 @@ pass	Map.to-list length is the map's entry count
 pass	Map.to-list of a runtime-empty but key/value-typed map is the empty list
 pass	Map.to-list of an empty map through an inlined helper is the empty list
 pass	Map.to-list of an undetermined-type empty map literal is the empty list
+pass	Map.to-list over Float64 KEYS enumerates by canonical byte key order
 pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key order (first key is min)
 pass	N-suffixed literals compose under BigInt arithmetic
 pass	NaN equality survives the hoisted float compare by canonical byte form
@@ -172,6 +173,7 @@ pass	Set.to-list length is the set's cardinality (deduped)
 pass	Set.to-list of a runtime-empty but element-typed set is the empty list
 pass	Set.to-list orders a set of COMPOUND (tuple) elements lexicographically
 pass	Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order
+pass	Set.to-list over Float64 elements enumerates by canonical byte order
 pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
 pass	Set.to-list over a runtime set sums its distinct elements
 pass	Sim.now reads the scheduler clock — a tail-resumptive handler arm that works today
@@ -263,6 +265,7 @@ pass	`sleep-until` sleeps to an absolute Instant — the span is target minus no
 pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
+pass	a 100-key runtime map resolves every key through the trie
 pass	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
 pass	a 32-bit-float closure crosses the host boundary
 pass	a 32-bit-integer closure crosses the host boundary
@@ -2833,6 +2836,7 @@ pass	an offered ordering is total and deterministic
 pass	an open sum nested as another sum's payload matches with an inner wildcard
 pass	an open sum payload that does not match its schema yields a typed failure, not a trap
 pass	an open sum with a guarded named arm plus an open-tail arm is exhaustive
+pass	an interleaved insert-remove build leaves exactly the surviving keys
 pass	an open sum's open-tail arm dispatches a NAMED-but-uncovered variant, not only unnamed ones
 pass	an open sum's open-tail arm dispatches a variant the specific arms do not name
 pass	an open sum's payload decodes against a schema to a typed result
@@ -2854,6 +2858,7 @@ pass	an unannotated closure in a Some payload is typed from the Option's element
 pass	an unannotated closure in a user variant payload is typed from the declared arrow
 pass	an unannotated closure is inferred through an unannotated recursive HOF parameter
 pass	an unannotated closure parameter is grounded from its body and applied at runtime
+pass	an overwrite-churn runtime map holds one entry with the last value winning
 pass	an unannotated closure typed Int8 from context computes an in-range constant
 pass	an unannotated closure typed Int8 from context overflows a constant like an explicit Int8 param
 pass	an unannotated closure with an unused parameter in a payload takes the declared parameter type

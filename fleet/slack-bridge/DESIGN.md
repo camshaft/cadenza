@@ -1,7 +1,9 @@
 # Slack bridge — design & staging
 
 This captures the architecture the operator + concierge locked for the Slack bridge, so the seam is
-legible regardless of implementation language. It is the reference for the Stage-2 routing work.
+legible regardless of implementation language. **Status: all staged work is DELIVERED and live** (see
+[Staging](#staging-smallest-useful-first) below) — this doc is now the reference for how the running
+bridge is wired, not a forward plan.
 
 ## Goal
 
@@ -49,9 +51,10 @@ The bridge subscribes (Socket Mode) to channel message events.
 - A **top-level** (non-thread) message → a `backlog` add, or a free-form instruction to the concierge.
 - A `status` command → the bridge runs `cargo xtask fleet status` and replies with the board.
 
-A Slack-injected `answer` must ALSO **nudge the asker's tmux window** (v-fleet-tooling's `rearm_window` /
-send-keys primitive) so the asker acts on it immediately rather than waiting for its next `/loop` tick —
-coordinate with v-fleet-tooling on whether `fleet send` already nudges or the nudge is a separate call.
+A Slack-injected `answer` ALSO **nudges the asker's tmux window** so the asker acts on it immediately
+rather than waiting for its next `/loop` tick. This is FREE: `cargo xtask fleet send` itself send-keys
+the recipient's window after delivering (v-fleet-tooling's built-in nudge; skipped for stopped/no-window/
+mid-tick/interactive recipients), so the bridge needs no separate nudge call.
 
 ## Staging (smallest-useful first)
 
@@ -59,17 +62,26 @@ coordinate with v-fleet-tooling on whether `fleet send` already nudges or the nu
   `deliver`/`drain` (`inbox.js`), Slack↔fleet message shaping (`format.js`), and a generic
   operator→any-agent bridge (`bridge.js`) with `smoke.test.js` gate coverage. This is the substrate the
   sidecar is built on.
-- **Stage 1 — OUTBOUND-ONLY:** watch the concierge inbox, post asks/backlog to the channel as threads,
-  persist the thread map. The operator SEES the fleet talking to them.
-- **Stage 2 — INBOUND routing:** thread-reply → `answer` to the asker (+ window nudge); top-level → backlog /
-  concierge instruction; `status` command.
+- **Stage 1 — OUTBOUND-ONLY (landed):** watch the concierge inbox, post asks/backlog to the channel as
+  threads, persist the thread map. The operator SEES the fleet talking to them.
+- **Stage 2 — INBOUND routing (landed):** thread-reply → `answer` to the asker (+ automatic window nudge);
+  top-level → backlog / concierge instruction; `status` command.
+- **Stage 3 — deployment + reliability backbone (landed):** the daemon also runs the fleet **watchdog**
+  out-of-band (`WATCHDOG_ONLY=1`, no Socket Mode → no competing Slack connection) so a stalled agent's
+  `/loop` is re-armed even when session-cron can't heal it. Launchers: `run.sh` (auto-restart loop, node|rust
+  via `BRIDGE_IMPL`), `systemd/` `--user` units (boot-survival via `loginctl enable-linger`), and `revive.sh`
+  (idempotent no-systemd fallback). All three resolve the shared HUB `FLEET_DIR` via the common git dir so
+  they work from any worktree. A Rust rewrite (`src/`, slack-morphism, isolated `[workspace]`) reached parity
+  with the original Node bridge; the live implementation is selectable with `BRIDGE_IMPL`.
 
-## Open decisions (asked concierge; blocking Stage 2)
+## Decisions (resolved — kept here for the rationale)
 
-1. **Language.** The kickoff assign specified a Rust crate (slack-morphism); Stage 0 landed as zero-Rust
-   Node/`@slack/bolt` (accepted by the operator live). Confirm keep-Node vs rewrite-Rust before Stage 2.
-2. **Placement.** Assign said `integrations/slack/`; the operator called it internal fleet tooling →
-   `fleet/slack-bridge/`. Confirm.
-3. **Thread "resolved" marker.** Optional: when the concierge answers an ask via tmux (not Slack), should the
-   bridge post a "resolved" note into the Slack thread so the operator sees it's handled? Adds coupling
-   (the bridge must also watch the answer flow) — concierge's call.
+1. **Language.** Kickoff specified a Rust crate (slack-morphism); Stage 0 landed zero-Rust Node/`@slack/bolt`
+   for speed. RESOLVED: rewrite to Rust for toolchain consistency, keep Node live until proven at parity
+   (`BRIDGE_IMPL` is the cutover switch). Both implementations now exist and share the gate.
+2. **Placement.** Assign said `integrations/slack/`; the operator reclassified it as internal fleet tooling.
+   RESOLVED: `fleet/slack-bridge/` (a standalone crate with its own `[workspace]` so slack-morphism's async
+   tree stays out of the seed lockfile + `xtask check`).
+3. **Thread "resolved" marker.** Whether a tmux-answered ask should get a "resolved" note posted into its
+   Slack thread. Deferred — the dual-channel idempotency (whichever answers first wins, the other is
+   ignored) already keeps correctness; the marker is a nice-to-have, not built.

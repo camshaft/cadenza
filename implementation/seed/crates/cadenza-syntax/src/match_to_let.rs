@@ -26,10 +26,14 @@
 //!   a PARTIAL record (fewer fields than the type has) is still irrefutable — a missing field just
 //!   is not bound.
 //!
+//! A `(Ctor p…)` sum-constructor pattern (CAPITALIZED head, `Some`/`Wrap`) is irrefutable ONLY when
+//! its type has exactly ONE variant (there is no other variant to fall through to) AND its
+//! sub-patterns are irrefutable. [`single_variant_ctors`] scans the program's own `(type …)` decls to
+//! find such ctors; [`rewrite`] threads that set into the predicate. A MULTI-variant ctor, or one
+//! whose type is not declared in this program (e.g. imported — its variant count is invisible), stays
+//! conservatively REFUTABLE. [`is_irrefutable`] (no context) treats every ctor as refutable.
+//!
 //! Everything else is REFUTABLE and left untouched:
-//! - a `(Ctor p…)` whose head is CAPITALIZED (a sum constructor like `Some`/`Cons`) — a multi-variant
-//!   sum ctor can fail. A single-variant sum's ctor IS irrefutable, but proving that needs a type-decl
-//!   scan (no type info here), so it is deferred to a later type-aware slice.
 //! - a literal pattern (`0`, `"x"`, `true`, …) — matches only that value.
 //! - a `(guard pat cond)` — the guard is a run-time condition that can fail.
 //! - a nested REFUTABLE sub-pattern makes the whole pattern refutable: `(tuple a (Some x))` is
@@ -38,11 +42,28 @@
 
 use crate::ast::Leaf;
 use crate::query::Tree;
+use std::collections::BTreeSet;
 
-/// True if `pat` is SHAPE-irrefutable — it matches every value of its type, decidable without type
-/// information. See the module docs for the exact set. Recurses into `tuple`/`record` sub-patterns so a
-/// refutable sub-pattern (`(tuple a (Some x))`) makes the whole pattern refutable.
+/// The set of constructor names that are the SOLE variant of their (same-program) sum type — so a
+/// `(Ctor …)` pattern using one of them CANNOT fail (there is no other variant to miss), making it
+/// irrefutable given its sub-patterns are. Built by [`single_variant_ctors`] from the program's own
+/// `(type …)` declarations; a ctor from an IMPORT (whose decl this program can't see) is never in the
+/// set, so it stays conservatively refutable.
+pub type SingleVariantCtors = BTreeSet<String>;
+
+/// True if `pat` is SHAPE-irrefutable, decidable WITHOUT type information (empty single-variant-ctor
+/// context). The shape-only entry point: `_`/var/tuple/record (recursive) → irrefutable; a `(Ctor …)`
+/// sum-constructor pattern is REFUTABLE here (no type info to prove it single-variant). Use
+/// [`is_irrefutable_with`] to also accept single-variant-sum ctors.
 pub fn is_irrefutable(pat: &Tree) -> bool {
+    is_irrefutable_with(pat, &SingleVariantCtors::new())
+}
+
+/// True if `pat` is irrefutable GIVEN `single_ctors` — the shape rules of [`is_irrefutable`] PLUS: a
+/// `(Ctor sub…)` pattern is irrefutable iff `Ctor` is in `single_ctors` (its type has exactly one
+/// variant, so the match can't fall through) AND every sub-pattern is irrefutable (recurse). See the
+/// module docs for the full set; recursion makes a refutable sub-pattern poison the whole pattern.
+pub fn is_irrefutable_with(pat: &Tree, single_ctors: &SingleVariantCtors) -> bool {
     match pat {
         // A bare atom: a variable binder or `_` is irrefutable; a literal is refutable.
         Tree::Atom(Leaf::Name(n), _) => is_var_name(n),
@@ -52,22 +73,91 @@ pub fn is_irrefutable(pat: &Tree) -> bool {
                 return false; // an empty list is not a pattern shape we rewrite
             };
             match head {
-                Tree::Atom(Leaf::Name(h), _) if h == "tuple" => rest.iter().all(is_irrefutable),
+                Tree::Atom(Leaf::Name(h), _) if h == "tuple" => {
+                    rest.iter().all(|p| is_irrefutable_with(p, single_ctors))
+                }
                 Tree::Atom(Leaf::Name(h), _) if h == "record" => {
                     // Each field is `(fieldname subpat)`; the sub-pattern is the 2nd element.
                     rest.iter().all(|field| match field {
-                        Tree::List(fitems, _) if fitems.len() == 2 => is_irrefutable(&fitems[1]),
+                        Tree::List(fitems, _) if fitems.len() == 2 => {
+                            is_irrefutable_with(&fitems[1], single_ctors)
+                        }
                         // A bare field name `(record x)` shorthand binds `x` irrefutably.
                         Tree::Atom(Leaf::Name(n), _) => is_var_name(n),
                         _ => false,
                     })
                 }
-                // `(Ctor …)` (capitalized head) = sum ctor → refutable; `(guard …)` → refutable;
-                // anything else → refutable.
+                // A `(Ctor sub…)` sum-constructor pattern: irrefutable ONLY when `Ctor` is the sole
+                // variant of its (same-program) type AND every sub-pattern is irrefutable. A `guard`
+                // head (`(guard …)`) is never capitalized so it falls through to refutable here.
+                Tree::Atom(Leaf::Name(h), _)
+                    if is_ctor_name(h) && single_ctors.contains(h.as_str()) =>
+                {
+                    rest.iter().all(|p| is_irrefutable_with(p, single_ctors))
+                }
+                // `(Ctor …)` not known-single-variant → refutable; `(guard …)` → refutable; else refutable.
                 _ => false,
             }
         }
     }
+}
+
+/// Scan `program` (a whole-program tree) for its top-level `(type Name variant…)` declarations and
+/// return the set of constructor names that are the SOLE variant of their type. A `(type …)` form's
+/// tail is `Name` then the variants; a variant is either a bare `Name` atom (nullary) or a
+/// `(Ctor payload…)` list. A type is single-variant iff it has EXACTLY ONE variant (ignoring a trailing
+/// `.. r` open-sum row marker, which does not add a namable ctor). Only same-program decls are scanned;
+/// an imported type is invisible here, so its ctors stay out of the set (conservatively refutable).
+pub fn single_variant_ctors(program: &Tree) -> SingleVariantCtors {
+    let mut out = SingleVariantCtors::new();
+    collect_type_decls(program, &mut out);
+    out
+}
+
+fn collect_type_decls(tree: &Tree, out: &mut SingleVariantCtors) {
+    if let Tree::List(items, _) = tree {
+        if let Some(Tree::Atom(Leaf::Name(h), _)) = items.first()
+            && h == "type"
+            && items.len() >= 3
+        {
+            // items = [type, Name, variant…]. Peel a trailing `.. r` open-sum marker (a `Name("..")`
+            // then a lowercase row var) so it doesn't count as variants.
+            let mut variants = &items[2..];
+            if variants.len() >= 2
+                && matches!(&variants[variants.len() - 2], Tree::Atom(Leaf::Name(d), _) if d == "..")
+            {
+                variants = &variants[..variants.len() - 2];
+            }
+            if variants.len() == 1
+                && let Some(name) = ctor_name_of(&variants[0])
+            {
+                out.insert(name);
+            }
+        }
+        for c in items {
+            collect_type_decls(c, out);
+        }
+    }
+}
+
+/// The constructor name of a single variant entry: a bare `Name` atom (`Wrap`) or a `(Ctor payload…)`
+/// list's head (`Wrap` in `(Wrap Int64)`). `None` for a malformed variant. Only a Capitalized name is a
+/// real ctor (a lowercase row-var/type-param is not), matching the surface convention.
+fn ctor_name_of(variant: &Tree) -> Option<String> {
+    let name = match variant {
+        Tree::Atom(Leaf::Name(n), _) => n,
+        Tree::List(items, _) => match items.first() {
+            Some(Tree::Atom(Leaf::Name(n), _)) => n,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    is_ctor_name(name).then(|| name.clone())
+}
+
+/// A Capitalized name is a constructor (`Wrap`, `Some`); a lowercase one is a var/type-param.
+fn is_ctor_name(n: &str) -> bool {
+    n.chars().next().is_some_and(char::is_uppercase)
 }
 
 /// A lowercase-led name is a variable/wildcard binder (irrefutable); a Capitalized name is a nullary
@@ -89,31 +179,38 @@ fn is_var_name(n: &str) -> bool {
 /// `(match SCRUT (PAT BODY))` — exactly ONE clause, that clause a 2-element `(PAT BODY)` list, and PAT
 /// [`is_irrefutable`] — producing `(let ((PAT SCRUT)) BODY)`. All other `match` forms are left as-is.
 pub fn rewrite(tree: &Tree) -> (Tree, usize) {
+    // Scan the WHOLE program first for single-variant sum types, so a `(Ctor …)` pattern on a
+    // single-variant type is accepted as irrefutable (type-aware). The scan is over the same tree we
+    // rewrite, so a type declared anywhere in the program (before or after the match) is seen.
+    let single_ctors = single_variant_ctors(tree);
     let mut count = 0;
-    let out = rewrite_rec(tree, &mut count);
+    let out = rewrite_rec(tree, &single_ctors, &mut count);
     (out, count)
 }
 
-fn rewrite_rec(tree: &Tree, count: &mut usize) -> Tree {
+fn rewrite_rec(tree: &Tree, single_ctors: &SingleVariantCtors, count: &mut usize) -> Tree {
     // Bottom-up: rewrite children first, then attempt this node. Uses native recursion; arena depth is
     // bounded by the reader's `MAX_NESTING_DEPTH` for parsed input (a codemod runs on parsed trees).
     let rewritten = match tree {
         Tree::Atom(_, _) => tree.clone(),
         Tree::List(items, origin) => {
-            let kids: Vec<Tree> = items.iter().map(|c| rewrite_rec(c, count)).collect();
+            let kids: Vec<Tree> = items
+                .iter()
+                .map(|c| rewrite_rec(c, single_ctors, count))
+                .collect();
             Tree::List(kids, *origin)
         }
     };
-    if let Some(lowered) = try_match_to_let(&rewritten) {
+    if let Some(lowered) = try_match_to_let(&rewritten, single_ctors) {
         *count += 1;
         return lowered;
     }
     rewritten
 }
 
-/// If `tree` is `(match SCRUT (PAT BODY))` with exactly one clause whose PAT is irrefutable and
-/// unguarded, return `(let ((PAT SCRUT)) BODY)`; else `None`.
-fn try_match_to_let(tree: &Tree) -> Option<Tree> {
+/// If `tree` is `(match SCRUT (PAT BODY))` with exactly one clause whose PAT is irrefutable (given
+/// `single_ctors`) and unguarded, return `(let ((PAT SCRUT)) BODY)`; else `None`.
+fn try_match_to_let(tree: &Tree, single_ctors: &SingleVariantCtors) -> Option<Tree> {
     let Tree::List(items, _) = tree else {
         return None;
     };
@@ -134,7 +231,7 @@ fn try_match_to_let(tree: &Tree) -> Option<Tree> {
         return None;
     }
     let (pat, body) = (&clause[0], &clause[1]);
-    if !is_irrefutable(pat) {
+    if !is_irrefutable_with(pat, single_ctors) {
         return None;
     }
     // Build `(let ((PAT SCRUT)) BODY)`: a let-head, a binding-list holding one `(PAT SCRUT)` pair, body.
@@ -203,6 +300,65 @@ mod tests {
         ] {
             assert_eq!(count_rewrites(src), 0, "must NOT rewrite: {src}");
         }
+    }
+
+    #[test]
+    fn single_variant_sum_ctor_is_irrefutable_and_rewrites() {
+        // A ctor pattern on a SINGLE-variant sum can't fail → the type-aware scan accepts it. Payload
+        // variant and nullary-payload forms both.
+        assert!(
+            normalize_sexpr("type Wrapper = | Wrap(Int64)\ndef f(w) = match w with | Wrap(x) => x")
+                .contains("(let (((Wrap x) w)) x)"),
+            "single-variant Wrap(x) should lower to a let"
+        );
+        // A ctor pattern nested inside an irrefutable tuple, on a single-variant type, also lowers.
+        assert_eq!(
+            count_rewrites(
+                "type Box = | Box(Int64)\ndef f(p) = match p with | (a, Box(x)) => a + x"
+            ),
+            1,
+            "single-variant ctor nested in a tuple is irrefutable"
+        );
+    }
+
+    #[test]
+    fn multi_variant_or_imported_ctor_stays_refutable() {
+        // A MULTI-variant sum's ctor can fall through → must NOT rewrite even single-clause.
+        assert_eq!(
+            count_rewrites(
+                "type Opt = | Some(Int64) | None\ndef f(o) = match o with | Some(x) => x"
+            ),
+            0,
+            "multi-variant Some(x) is refutable"
+        );
+        // A ctor with NO visible type decl (as if imported) — can't prove single-variant → refutable.
+        assert_eq!(
+            count_rewrites("def f(w) = match w with | Wrap(x) => x"),
+            0,
+            "a ctor with no same-program type decl stays refutable (conservative)"
+        );
+        // A single-variant type declared, but a DIFFERENT ctor matched → not in the set → refutable.
+        assert_eq!(
+            count_rewrites("type Wrapper = | Wrap(Int64)\ndef f(o) = match o with | Other(x) => x"),
+            0,
+            "an unrelated ctor is not single-variant"
+        );
+    }
+
+    #[test]
+    fn single_variant_ctors_scan_direct() {
+        // The scan finds exactly the sole-variant ctors, ignoring multi-variant types + row-var tails.
+        let a = parser::read_ml(
+            "type A = | Only(Int64)\ntype B = | X | Y\ntype C = | Solo\ndef m() = 0",
+        );
+        assert!(a.ok());
+        let set = single_variant_ctors(&Tree::of(&a.arenas));
+        assert!(set.contains("Only"), "single-variant payload ctor");
+        assert!(set.contains("Solo"), "single-variant nullary ctor");
+        assert!(
+            !set.contains("X") && !set.contains("Y"),
+            "multi-variant ctors excluded"
+        );
     }
 
     #[test]
