@@ -14,7 +14,7 @@
 // NOTE: doc comments kept before the pragma (a comment amid a @!param block can perturb the desugar).
 @!default-fraction Rational
 
-import { Solid, lower } from "exact"
+import { Solid, SolidR, lower } from "exact"
 import { box, ball, fuse, move-x, rotate-z, mirror-x } from "helpers"
 
 @!param(widget: slider, range: [1, 200], default: 42) seed : Int64
@@ -84,6 +84,17 @@ def main() = host Param in
 def a-snowflake-is-non-empty() =
   match snowflake((42 : Int64), 20 / 1, (2 : Int64)) with
     | Solid.Empty => trap("a snowflake has geometry")
+    | _ => unit
+
+@test
+def the-lowered-snowflake-render-form-is-non-empty() =
+  // THE render-edge pin (the bug this showcase actually shipped once): the model being non-empty above is NOT
+  // enough — the snowflake originally rendered BLANK because the LOWERED/meshed form folded to empty (the
+  // empty-Solid-mesh-annihilation class). main lowers snowflake(...) to the SolidR the driver meshes; pin
+  // that the lowered form is not SolidR.Empty so a "renders blank while the model looks fine" regression can't
+  // recur silently. (The snowflake folds from an Empty base via Union, so the lowered top is a SolidR.Union.)
+  match lower(snowflake((42 : Int64), 20 / 1, (2 : Int64))) with
+    | SolidR.Empty => trap("the lowered snowflake (what the driver meshes) must NOT be empty — it shipped blank once")
     | _ => unit
 
 @test

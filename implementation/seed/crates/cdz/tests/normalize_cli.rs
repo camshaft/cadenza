@@ -174,3 +174,29 @@ fn normalization_preserves_runtime_semantics() {
     assert_eq!(before, "7", "sanity: (3,4) → 3+4 = 7 (before={before})");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn normalization_preserves_semantics_when_the_pattern_shadows_a_scrutinee_name() {
+    // The subtle correctness case: the pattern binds a name the SCRUTINEE also uses. A `match e with
+    // | x => body` evaluates `e` (seeing the OUTER `x`) before rebinding `x`; the lowered
+    // `let x = e in body` must be NON-RECURSIVE so `e` also sees the outer `x` — not the being-bound
+    // one. `let x=10 in match x+5 with | x => x` = 15; the lowered `let x=10 in let x=x+5 in x` must
+    // ALSO be 15 (the inner `x+5` reads the outer 10). Pins that the emitted let-binding shape is
+    // non-recursive — a subtle property a future change could silently break.
+    if !store_present() {
+        return;
+    }
+    let src =
+        "def main() -> Int64 =\n  let x = 10 in\n  match x + 5 with | x => x\nexport { main }\n";
+    let (dir, path) = temp_src("shadow", src);
+    let before = compile_and_run(&path, dir.join("before.wasm").to_str().unwrap());
+    let (ok, _, err) = normalize(&["--match-to-let", &path]);
+    assert!(ok, "in-place normalize; stderr={err}");
+    let after = compile_and_run(&path, dir.join("after.wasm").to_str().unwrap());
+    assert_eq!(before, after, "shadowing match→let must preserve the value");
+    assert_eq!(
+        before, "15",
+        "outer x=10, scrutinee x+5=15, rebind x=15 (before={before})"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

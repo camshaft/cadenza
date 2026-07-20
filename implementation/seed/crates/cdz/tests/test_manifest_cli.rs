@@ -2260,6 +2260,75 @@ fn an_equality_and_an_order_relation_compose_in_one_requires() {
     );
 }
 
+/// A BARE-BOOL precondition — `@requires(b)` where `b` is a Bool param — pins that param to `true` in
+/// generation (the Bool analogue of pinning an int to a constant). Before this, a bare-Bool predicate was
+/// unrecognized, `b` drew randomly, a `false` draw tripped the (D) pre-trap, and the runner reported a
+/// spurious `g(0, false)`. A PASS proves `b` was `true` on every trial. Also checks composition with an int
+/// bound (`b and a >= 0`). No store needed (scalar params).
+#[test]
+fn a_bare_bool_requires_forces_the_param_true() {
+    let d = dir("requires-bool");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(b)\n\
+         @test def g(a: Int64, b: Bool) = if b then unit else trap(\"b false despite @requires(b)\")\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"x\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok && stdout.contains("PASS g (100 trials)"),
+        "a bare-Bool @requires(b) forces b true so the property passes (no spurious false-draw pre-trap): {stdout}{stderr}"
+    );
+    assert!(
+        !stdout.contains("FAIL g"),
+        "the bare-Bool @requires'd property must NOT spuriously fail on a random false draw: {stdout}"
+    );
+    // Composition with an int bound in a conjunction: `b and a >= 0` forces b true AND clamps a >= 0.
+    let d2 = dir("requires-bool-int");
+    let f2 = write(
+        &d2,
+        "m.cdz",
+        "@requires(b and a >= 0)\n\
+         @test def m(a: Int64, b: Bool) = if b and a >= 0 then unit else trap(\"bad\")\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"x\")\n",
+    );
+    let (ok2, stdout2, stderr2) = run(&["test", &f2, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok2 && stdout2.contains("PASS m (100 trials)"),
+        "a bare-Bool force composes with an int clamp in a conjunction: {stdout2}{stderr2}"
+    );
+}
+
+/// A GENUINELY-failing property under a bare-Bool `@requires(b)` must still FAIL — and its counterexample must
+/// keep `b == true` (in-domain), because the forced value is preserved through shrinking (a shrink `true` →
+/// `false` would break the precondition and trip the (D) pre-trap, masquerading as "still fails"). The body
+/// traps whenever `b` (always true in-domain), so it fails on the first trial with a `b=true` witness.
+#[test]
+fn a_failing_bare_bool_requires_keeps_the_forced_true_in_the_counterexample() {
+    let d = dir("requires-bool-fail");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@requires(b)\n\
+         @test def f(a: Int64, b: Bool) = if b then trap(\"always trips in domain\") else unit\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"x\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        !ok && stdout.contains("FAIL f"),
+        "a body that traps for every in-domain (b == true) input must FAIL the property: {stdout}{stderr}"
+    );
+    let cx = stdout
+        .lines()
+        .find(|l| l.contains("counterexample: f("))
+        .unwrap_or_else(|| panic!("no counterexample line: {stdout}"));
+    assert!(
+        cx.contains("true"),
+        "the counterexample must keep b == true (in-domain) — the forced value held through shrink: {cx}"
+    );
+}
+
 /// TERMINATION under an UNSATISFIABLE relation: `@requires(a < b and b < a)` can NEVER hold (it implies
 /// `a < a`), so rejection sampling can never find an in-domain draw. The generator must NOT loop forever —
 /// it is fuel-bounded (`RELATION_FUEL`), so after exhausting fuel it returns the last draw and lets the (D)

@@ -18425,7 +18425,7 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 }
             } else if matches!(op, Prim::Eq) && {
                 let opnd_ty = crate::infer::type_of(db, args[0]);
-                is_value_eq_shaped_compound(&opnd_ty)
+                is_value_eq_shaped_compound(db, &opnd_ty)
             } {
                 // RUNTIME LIST(-CONTAINING) EQUALITY WITH A FLOAT/BYTES LEAF — reached ONLY after BOTH the
                 // `compound_eq_heap_walkable` `ValueEq` arm (a List is not `champ_eq`-sound — an RRB spine is
@@ -23495,34 +23495,83 @@ fn orderable_leaf_or_compound(
 ///      render the SAME set of `Core::ValueEqShaped` types.
 ///= spec/capabilities/collections-and-text.md#a-list-is-an-ordered-homogeneous-sequence
 ///# Two lists MUST be equal exactly when they have equal elements in the same order.
-fn is_value_eq_shaped_compound(ty: &crate::ty::Ty) -> bool {
+fn is_value_eq_shaped_compound(db: &mut Db, ty: &crate::ty::Ty) -> bool {
     // (1) must contain a List, and (3) every leaf equality-walkable. `is_orderable_compound` false (2) is
     // checked at the call site (this arm is reached only after the orderable-Eq arm declined).
-    ty_contains_list(ty) && eq_shaped_walkable(ty)
+    ty_contains_list(db, ty, &mut Vec::new()) && eq_shaped_walkable(db, ty, &mut Vec::new())
 }
 
 /// Whether `ty` mentions a `List` anywhere in its structure (the trigger for the shaped equality walk — a
-/// bare list, or a list nested in a tuple/record/nominal/qty). A Sum/Map/Set is not descended (out of this
-/// slice's domain).
-fn ty_contains_list(ty: &crate::ty::Ty) -> bool {
+/// bare list, or a list nested in a tuple/record/nominal/qty/SUM). A SUM is descended (each variant's payload
+/// via `payload_ty_at_instantiation`, recursion-guarded on `seen`) so an `Ast`-shaped sum whose `List`
+/// variant carries `(List Ast)` triggers the walk. Map/Set are not descended (a runtime Map/Set is
+/// canonical-by-construction and takes `value-eq`).
+fn ty_contains_list(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<crate::ast::StructId>) -> bool {
     use crate::ty::Ty;
     match ty {
         Ty::List(_) => true,
-        Ty::Tuple(elems) => elems.iter().any(ty_contains_list),
-        Ty::Record(fields) => fields.values().any(ty_contains_list),
-        Ty::Nominal { inner, .. } => ty_contains_list(inner),
-        Ty::Qty { inner, .. } => ty_contains_list(inner),
+        Ty::Tuple(elems) => {
+            let elems = elems.to_vec();
+            elems.iter().any(|e| ty_contains_list(db, e, seen))
+        }
+        Ty::Record(fields) => {
+            let vals: Vec<Ty> = fields.values().cloned().collect();
+            vals.iter().any(|v| ty_contains_list(db, v, seen))
+        }
+        Ty::Nominal { inner, .. } => {
+            let inner = (**inner).clone();
+            ty_contains_list(db, &inner, seen)
+        }
+        Ty::Qty { inner, .. } => {
+            let inner = (**inner).clone();
+            ty_contains_list(db, &inner, seen)
+        }
+        // A SUM contains a List iff any variant's payload does. Recursive sum broken by `seen` (a
+        // self-referential sum whose ONLY list is its own recursive payload — e.g. `Ast.List (List Ast)` —
+        // is reached via the List arm before the back-edge, so the guard returning false here is correct:
+        // the back-edge itself adds no new list). Mirrors `orderable_leaf_or_compound`'s Sum descent.
+        Ty::Sum { decl, .. } => {
+            if seen.contains(decl) {
+                return false;
+            }
+            seen.push(*decl);
+            let mut found = false;
+            if let Some(vc) = db.type_decl_by_occ(*decl).map(|t| t.variants.len()) {
+                for disc in 0..vc {
+                    let ctor = db
+                        .type_decl_by_occ(*decl)
+                        .and_then(|t| t.variants.get(disc))
+                        .and_then(|v| v.ctor);
+                    if let Some(ctor) = ctor
+                        && let Some(payload_ty) =
+                            crate::infer::payload_ty_at_instantiation(db, ctor, ty)
+                        && ty_contains_list(db, &payload_ty, seen)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            seen.pop();
+            found
+        }
         _ => false,
     }
 }
 
 /// The recursive equality-walkability predicate for `Core::ValueEqShaped` — a leaf is a blessed-Eq scalar OR
-/// a FLOAT/BYTES leaf (byte-canonical equality), and a compound (tuple/record/list/nominal/qty) is walkable
-/// iff every component is. A Sum/Map/Set/Char/Fn leaf is NOT (out of this slice — see [`is_value_eq_shaped_
-/// compound`]). Mirrors the rust `ty_float_walkable` domain so the two backends agree on which types route
-/// here. A pure structural predicate — no `Db` / recursion-guard needed since a Sum (the only cyclic shape)
-/// is not descended.
-fn eq_shaped_walkable(ty: &crate::ty::Ty) -> bool {
+/// a FLOAT/BYTES leaf (byte-canonical equality), and a compound (tuple/record/list/nominal/qty/SUM) is
+/// walkable iff every component is. A SUM is descended (each variant's payload, recursion-guarded on `seen`)
+/// so an `Ast`-shaped sum whose payloads carry a `List` and/or a `Float` routes here — the runtime
+/// `value_eq_shaped` walk already has a `Shape::Sum` arm (disc-compare then payload descend), and the rust
+/// `emit_value_eq_walk` gains a matching `Ty::Sum` arm. Map/Set/Char/Fn leaves are NOT walked (a Map/Set is
+/// canonical-by-construction and takes `value-eq`). Mirrors the rust `ty_float_walkable` domain so both
+/// backends agree on which types route here.
+fn eq_shaped_walkable(
+    db: &mut Db,
+    ty: &crate::ty::Ty,
+    seen: &mut Vec<crate::ast::StructId>,
+) -> bool {
     use crate::ty::Ty;
     match ty {
         // Blessed-Eq scalar leaves + FLOAT/BYTES (byte-canonical equality — nan==nan, -0.0≠+0.0; a Bytes
@@ -23531,12 +23580,58 @@ fn eq_shaped_walkable(ty: &crate::ty::Ty) -> bool {
             true
         }
         Ty::Float(_) | Ty::Bytes => true,
-        Ty::Tuple(elems) => elems.iter().all(eq_shaped_walkable),
-        Ty::List(elem) => eq_shaped_walkable(elem),
-        Ty::Record(fields) => fields.values().all(eq_shaped_walkable),
-        Ty::Nominal { inner, .. } => eq_shaped_walkable(inner),
-        Ty::Qty { inner, .. } => eq_shaped_walkable(inner),
-        // A Sum/Map/Set/Char/Fn/var — not walked by this slice.
+        Ty::Tuple(elems) => {
+            let elems = elems.to_vec();
+            elems.iter().all(|e| eq_shaped_walkable(db, e, seen))
+        }
+        Ty::List(elem) => {
+            let elem = (**elem).clone();
+            eq_shaped_walkable(db, &elem, seen)
+        }
+        Ty::Record(fields) => {
+            let vals: Vec<Ty> = fields.values().cloned().collect();
+            vals.iter().all(|v| eq_shaped_walkable(db, v, seen))
+        }
+        Ty::Nominal { inner, .. } => {
+            let inner = (**inner).clone();
+            eq_shaped_walkable(db, &inner, seen)
+        }
+        Ty::Qty { inner, .. } => {
+            let inner = (**inner).clone();
+            eq_shaped_walkable(db, &inner, seen)
+        }
+        // A SUM — walkable iff every variant's payload type is. Recursive sum broken by `seen` (a
+        // self-referential payload is walkable iff its non-recursive leaves are). Mirrors
+        // `orderable_leaf_or_compound`'s Sum arm.
+        Ty::Sum { decl, .. } => {
+            if seen.contains(decl) {
+                return true; // recursive back-edge — already being checked
+            }
+            seen.push(*decl);
+            let variant_count = db.type_decl_by_occ(*decl).map(|t| t.variants.len());
+            let mut ok = variant_count.is_some();
+            if let Some(vc) = variant_count {
+                for disc in 0..vc {
+                    let ctor = db
+                        .type_decl_by_occ(*decl)
+                        .and_then(|t| t.variants.get(disc))
+                        .and_then(|v| v.ctor);
+                    // A nullary variant (no ctor / no payload) is a bare discriminant — walkable. A
+                    // payload-carrying variant's payload type must itself be walkable.
+                    if let Some(ctor) = ctor
+                        && let Some(payload_ty) =
+                            crate::infer::payload_ty_at_instantiation(db, ctor, ty)
+                        && !eq_shaped_walkable(db, &payload_ty, seen)
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            seen.pop();
+            ok
+        }
+        // A Map/Set/Char/Fn/var — not walked by this slice.
         _ => false,
     }
 }

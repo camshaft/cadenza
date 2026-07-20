@@ -60,9 +60,25 @@ const PIECE_TO_EVENTS: ExampleModel = {
   },
 };
 
-/// The showcases the /music example-switcher offers, in display order. The page opens with `DEFAULT_EXAMPLE`
-/// (the event-stream piece — the marquee "no stuck keys" correctness story).
-export const EXAMPLES: ExampleModel[] = [PIECE_TO_EVENTS, RATIONAL_INTERVALS, CHORD_TO_MIDI];
+/// R4 — LIVE-CODED PATTERN: write a rhythm the way a live-coder does, as a Euclidean pattern (3 onsets spread
+/// evenly across 8 steps — a tresillo) over a cycle, then render it to timed MIDI events. Returns the
+/// List(MidiEvent) — the page renders it in the same event-stream TABLE + balanced() badge as R3, so the reader
+/// reuses the mental model. This is where "Music theory, live" means live-coding (the Strudel/Tidal idiom).
+const EUCLIDEAN_PATTERN: ExampleModel = {
+  slug: "euclidean-pattern",
+  title: "A Euclidean rhythm, live-coded (a tresillo)",
+  description: "Write a tresillo as a Euclidean pattern (3 onsets across 8 steps) and render it to timed MIDI events, the way a live-coder builds rhythm from combinators.",
+  source: {
+    ml: `def main() = schedule(render-pattern(euclid(3, 8, 60), 0, 100, 0, 3840))`,
+    sexpr: `(def (main) (schedule (render-pattern (euclid 3 8 60) 0 100 0 3840)))`,
+  },
+};
 
-/// The model the /music route opens with.
-export const DEFAULT_EXAMPLE = EXAMPLES[0];
+/// The showcases the /music example-switcher offers, in display order. The switcher BUILDS to live-coding as
+/// the climax — foundations first (exact rational intervals), then structure (a chord), then a fixed composed
+/// piece, then improvising rhythm live: R1 → R2 → R3 → R4, a crescendo. The page still OPENS on `DEFAULT_EXAMPLE`
+/// (the piece-to-events marquee — the strongest "no stuck keys" first impression), then the reader can climb.
+export const EXAMPLES: ExampleModel[] = [RATIONAL_INTERVALS, CHORD_TO_MIDI, PIECE_TO_EVENTS, EUCLIDEAN_PATTERN];
+
+/// The model the /music route opens with (the balanced-events marquee, R3 — proven strongest first impression).
+export const DEFAULT_EXAMPLE = PIECE_TO_EVENTS;

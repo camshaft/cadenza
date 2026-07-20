@@ -18663,6 +18663,25 @@ mod match_engine {
     }
 
     #[test]
+    fn a_same_name_ctor_in_a_called_helper_with_a_compound_payload_constructs() {
+        // FACE B with a COMPOUND (tuple) payload, not just a scalar — the same-name-ctor β-copy fix
+        // (`same_name_monomorphic_ctor`) must reach a helper building `(Pair (tuple a a))` (a monomorphic
+        // same-name sum over a Tuple payload), not only the scalar `(Meters a)`. `mk 5` builds `(Pair (5 5))`
+        // via the called helper; the pop destructures the tuple → 5+5 = 10. Uses the value heap (a boxed
+        // tuple payload), so SKIP if the store is absent (storeless CI).
+        let src = "(module m (type Pair (Pair (Tuple Int64 Int64))) \
+               (def (mk (: a Int64)) (Pair (tuple a a))) \
+               (def (main) (match (mk 5) ((Pair t) (match t ((tuple x y) (+ x y)))))) (export main))";
+        // COMPILE must succeed (the FACE-B β-copy fix reaches a compound-payload same-name ctor too).
+        compile_component(&crate::codec::encode(&crate::testkit::parse(src)))
+            .expect("a same-name ctor with a compound payload in a called helper must COMPILE");
+        // Value check needs the runtime store (a boxed tuple payload); storeless CI skips.
+        if let Some(v) = run_heap_value(src, Vec::new()) {
+            assert_eq!(v, "10", "mk 5 builds (Pair (5 5)); pop → 5 + 5");
+        }
+    }
+
+    #[test]
     fn a_generic_same_name_ctor_is_still_a_type_constructor_in_type_position() {
         // GUARD the monomorphic-only scope: a GENERIC same-name sum `(type Box (Box a))` must NOT have its
         // synth `sum_applied` type-expr `(Box a)` flipped to the ctor by the FACE-B relaxation (that synth
@@ -24067,6 +24086,19 @@ mod match_engine {
             Some(crate::abi::FixKind::Replace),
             "compile carries the replace fix: {:?}",
             compiled.fix
+        );
+        assert_eq!(
+            compiled.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("main"),
+            "the fix rewrites the misspelled export to the nearest def: {:?}",
+            compiled.fix
+        );
+        // ROUND TRIP: applying the fix (rewrite the export `mian` → the nearest def `main`) recompiles
+        // clean — the corrected export names a real definition, so the CDZ0101 is gone. The "did you mean"
+        // export fix's promised repair actually lands.
+        assert!(
+            reject_full("(module m (def (main) 1) (export main))").is_none(),
+            "applying the export-typo fix must recompile clean"
         );
         // A layout decline with NO `collect_faults` fault still falls back to the layout message — a
         // program with no export at all is not a `collect_faults` fault, so its decline is preserved.
@@ -59948,6 +59980,60 @@ mod stage1 {
              compares, not O(N²) (a shallow one-level hash collides every same-shaped node into one \
              bucket — needs the FULL-DEPTH memoized `core_hash_key`): N=400 made {c400} within-bucket \
              compares (full-depth is ~0; a shallow/all-pairs scan was hundreds of thousands)"
+        );
+    }
+
+    #[test]
+    fn a_wide_match_resolves_in_a_bounded_number_of_clones() {
+        // REGRESSION (perf): `resolve::resolved_of` returns the resolved form BY VALUE — it CLONES the
+        // whole `Resolved` per call (a memo-hit `r.clone()`). A dispatch/tag-test caller that only READS
+        // the form should use the borrow companion `resolved_ref` instead (the fix-35/36/`prim_of`/
+        // `collect_pattern_binders` borrow family). This pins the clone count on a match-heavy program
+        // (the shape that drove `collect_pattern_binders` — a parser like `sread.cdz` — where a per-
+        // pattern-atom `resolved_of` tag test was a top `Resolved::clone` caller) to grow ~LINEARLY with
+        // the program, so a regression that reintroduces a per-node `resolved_of` where a borrow would do
+        // is caught deterministically (a wall-clock A/B of a borrow change is swamped by fleet-load noise;
+        // this `RESOLVED_OF_CALLS` count is a pure function of the program).
+        fn wide_match_src(n: usize) -> String {
+            // N functions each matching a runtime sum over literal + binder arms — heavy pattern lowering.
+            let defs: String = (0..n)
+                .map(|i| {
+                    format!(
+                        "(def (f{i} (: x Int64)) (match x (0 {i}) (1 {}) (k (+ k {i}))))",
+                        i + 1
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("(module m {defs} (def (main) (f0 0)) (export main))")
+        }
+        // A small instance compiles clean.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_match_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide match program compiles with no error diagnostics: {diags:?}"
+        );
+        fn clone_calls(src: &str) -> u64 {
+            use std::sync::atomic::Ordering;
+            crate::db::RESOLVED_OF_CALLS.store(0, Ordering::Relaxed);
+            let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            crate::db::RESOLVED_OF_CALLS.load(Ordering::Relaxed)
+        }
+        // Width 100→200 is 2×; a per-node clone count that grows LINEARLY with the program ⇒ ~2×. Require
+        // < 3× (between linear and any O(N²) resolve-clone regression, with constant-term margin). `> 0`
+        // proves resolution ran. This does NOT assert a specific count (that drifts as passes evolve) —
+        // only that `resolved_of` clones scale linearly, so a quadratic-clone regression trips it.
+        let c100 = clone_calls(&wide_match_src(100));
+        let c200 = clone_calls(&wide_match_src(200));
+        let ratio = c200 as f64 / (c100.max(1)) as f64;
+        assert!(
+            c100 > 0 && ratio < 3.0,
+            "a match-heavy program must resolve in a LINEARLY-growing number of `resolved_of` clones, not \
+             O(N²) (a per-node dispatch/tag-test site should borrow via `resolved_ref`, not clone via \
+             `resolved_of`): width 100→200 grew clones {ratio:.1}× (c100={c100}, c200={c200}); linear is \
+             ~2×"
         );
     }
 

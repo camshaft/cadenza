@@ -45,14 +45,14 @@ export default function HomePage() {
             properties, and compiled to sandboxed WebAssembly components.
           </p>
           <p className="mx-auto max-w-2xl text-sm text-slate-500">
-            Everything on this site runs in your browser — the compiler itself is WebAssembly, so there's
-            no server. Edit any example and press Run.
+            Everything on this site runs in your browser, since the compiler itself is WebAssembly, so
+            there's no server. Edit any example and press Run.
           </p>
         </section>
 
         {/* Live example */}
         <section className="pb-4">
-          <Runnable title="Try it — edit and Run" source={`(+ 2 3)`} />
+          <Runnable title="Try it: edit and Run" source={`(+ 2 3)`} />
         </section>
 
         {/* CTAs */}
@@ -87,7 +87,7 @@ export default function HomePage() {
         <section className="border-t border-slate-800 py-10">
           <div className="grid gap-6 sm:grid-cols-3">
             <Tenet title="Two syntaxes, one program">
-              Code is data. Read it as a conventional ML/Rust-family surface or as s-expressions — flip
+              Code is data. Read it as a conventional ML/Rust-family surface or as s-expressions, then flip
               the toggle and every example re-renders. It's the same program either way.
             </Tenet>
             <Tenet title="Trust by construction">
@@ -95,8 +95,8 @@ export default function HomePage() {
               the outside world through capabilities it declares.
             </Tenet>
             <Tenet title="Decline, don't miscompile">
-              When the compiler can't be sure it would compile your program correctly, it refuses —
-              with a diagnostic — rather than emitting something that quietly misbehaves.
+              When the compiler can't be sure it would compile your program correctly, it refuses, with a
+              diagnostic, rather than emitting something that quietly misbehaves.
             </Tenet>
           </div>
           <p className="mt-8 text-center text-sm text-slate-500">
@@ -110,7 +110,7 @@ export default function HomePage() {
       </main>
 
       <footer className="border-t border-slate-800 py-6 text-center text-xs text-slate-600">
-        Cadenza — the interactive guide &amp; playground
+        Cadenza: the interactive guide &amp; playground
       </footer>
     </div>
   );

@@ -276,6 +276,7 @@ pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
 pass	a @requires precondition is enforced for a genuinely-runtime argument
+pass	a @requires predicate that CALLS a user-defined function resolves and enforces — not only prelude ops
 pass	a @requires predicate that itself traps keeps its own trap kind
 pass	a @requires predicate that references `ret` is REJECTED CDZ0101 — only @ensures binds the result
 pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call
@@ -2005,6 +2006,7 @@ pass	a runtime signed little-endian segment lays the low byte first
 pass	a runtime signed little-endian segment round-trips a negative value
 pass	a runtime signed modulo by zero traps as divide-by-zero, the companion of runtime divide-by-zero
 pass	a runtime square multiply traps exactly past the Int64 square-root boundary
+todo	a runtime structural = on a sum with List and Float payloads walks it (value-eq-shaped over a Sum)
 pass	a runtime string bound from a sum payload compares equal to a string parameter
 pass	a runtime string compared against a literal folds against the literal side
 pass	a runtime string equality selects a branch by comparing a parameter to a literal
@@ -2024,6 +2026,8 @@ pass	a runtime string rope set element is found by its flat twin
 pass	a runtime string slice addresses scalar values, not bytes
 pass	a runtime string slice out of range yields None
 pass	a runtime string slice spans the seam of a runtime-assembled rope
+pass	a runtime list aliased into two record fields is read intact through both
+pass	a runtime list aliased into two tuples and its original binding all read consistently
 pass	a runtime string slice with an empty in-range span is Some of the empty string
 pass	a runtime subtraction that overflows traps
 pass	a runtime sum equality as a match SCRUTINEE drives a tail-recursive loop
@@ -2223,6 +2227,7 @@ pass	a stateful handler threads its counter across a function boundary
 pass	a stored continuation is popped from a time-ordered pqueue (tuple-payload match) and resumed
 pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strength-reduced multiply nested as an operand computes in place
+pass	a shared list is consumed element-wise twice by rest-pattern recursion
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
 pass	a string carried as a sum-variant payload is bound and measured at run time
@@ -4001,6 +4006,7 @@ todo	a round-trip consumer takes the non-applying match arm
 todo	a round-trip consumer that does NOT apply the closure on the taken branch
 todo	a run's result is a deterministic function of a host call's recorded response
 pass	an @ensures on a recursive def is re-checked at every EXIT including self-call returns (not only the outermost)
+pass	an @ensures over a MATCH-bodied def wraps the whole match — the postcondition checks the match's result
 pass	an @ensures predicate that itself traps keeps its own trap kind (not the @ensures-failed unreachable)
 todo	an @param of a Bool type generates a Bool-typed accessor
 todo	an @param of a Float64 type generates a Float64-typed accessor

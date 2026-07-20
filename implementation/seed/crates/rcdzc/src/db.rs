@@ -217,6 +217,19 @@ thread_local! {
 pub(crate) static CSE_PARTITION_CORE_EQ_CALLS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// Test-only: total `resolve::resolved_of` calls since the last reset — each one CLONES the whole
+/// `Resolved` (the memo-hit `r.clone()` on every call, plus the fill clone on a miss). This is the
+/// deterministic, NOISE-FREE metric for the borrow-family cleanups (a `resolved_of`→`resolved_ref`
+/// conversion at a dispatch/tag-test site removes one clone per call): a wall-clock A/B of a borrow
+/// change is swamped by fleet-load noise, but this count is a pure function of the program + which sites
+/// borrow vs clone, so a batch conversion's effect is measurable and a regression (a new hot `resolved_of`
+/// where a borrow would do) is catchable. `AtomicU64` (not `thread_local`) because resolution runs on the
+/// scoped compiler worker thread (`host::run_with_compiler_stack`), invisible to a `thread_local` the test
+/// thread reads. See `resolved_of_clone_count_is_bounded_on_a_match_heavy_program`.
+#[cfg(test)]
+pub(crate) static RESOLVED_OF_CALLS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
 /// occurrences (empty = nullary), and its body occurrence (absent = malformed). The body is LOCATED,
 /// never entered by the scan — entering it is a later per-node demand.

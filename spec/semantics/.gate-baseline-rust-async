@@ -274,6 +274,7 @@ pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
 pass	a @requires precondition is enforced for a genuinely-runtime argument
+pass	a @requires predicate that CALLS a user-defined function resolves and enforces — not only prelude ops
 pass	a @requires predicate that itself traps keeps its own trap kind
 pass	a @requires predicate that references `ret` is REJECTED CDZ0101 — only @ensures binds the result
 pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call
@@ -1980,6 +1981,7 @@ pass	a runtime signed little-endian segment lays the low byte first
 pass	a runtime signed little-endian segment round-trips a negative value
 pass	a runtime signed modulo by zero traps as divide-by-zero, the companion of runtime divide-by-zero
 pass	a runtime square multiply traps exactly past the Int64 square-root boundary
+todo	a runtime structural = on a sum with List and Float payloads walks it (value-eq-shaped over a Sum)
 pass	a runtime string bound from a sum payload compares equal to a string parameter
 pass	a runtime string compared against a literal folds against the literal side
 pass	a runtime string equality selects a branch by comparing a parameter to a literal
@@ -2024,6 +2026,8 @@ pass	a runtime tuple built behind a recursive call escapes to the host
 pass	a runtime tuple orders lexicographically by field
 pass	a runtime tuple with a boolean element is returned as a result
 pass	a runtime unsigned division at the maximum by 1 does not trap
+pass	a runtime list aliased into two record fields is read intact through both
+pass	a runtime list aliased into two tuples and its original binding all read consistently
 pass	a runtime unsigned division by zero traps as divide-by-zero
 pass	a runtime unsigned-byte addition traps exactly past its width maximum
 pass	a runtime unsigned-byte addition traps on overflow of its width
@@ -2223,6 +2227,7 @@ pass	a sum TYPE and its constructors are imported by a wildcard and constructed 
 pass	a sum chosen by a runtime if is matched with valid wasm
 pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
+pass	a shared list is consumed element-wise twice by rest-pattern recursion
 pass	a sum type NAMED after a primitive scalar does not collide with the primitive
 pass	a sum type can mix nullary and payload-carrying variants
 pass	a sum type is declared with named variants
@@ -2487,6 +2492,7 @@ pass	all four leaf kinds in one quoted form dispatch their own tags
 pass	all-nullary enum equality compares discriminants
 pass	an 8-bit-integer closure crosses the host boundary
 pass	an @ensures on a recursive def is re-checked at every EXIT including self-call returns (not only the outermost)
+pass	an @ensures over a MATCH-bodied def wraps the whole match — the postcondition checks the match's result
 pass	an @ensures predicate that itself traps keeps its own trap kind (not the @ensures-failed unreachable)
 pass	an ABORTIVE arm whose value is a COMPOUND matches the handle body type and folds
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote

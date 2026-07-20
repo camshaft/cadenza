@@ -152,6 +152,10 @@ fn is_grammar_form_head_occurrence(db: &Db, id: StructId) -> bool {
 /// The resolved form of the node at `id`, filling the column on demand (memoized). The query the
 /// resolved-form request answers, and the upstream read `infer`/`lower` perform.
 pub fn resolved_of(db: &mut Db, id: StructId) -> Resolved {
+    // Test-only: count every clone-returning call — the noise-free metric for borrow-family cleanups
+    // (`resolved_of`→`resolved_ref`), which a fleet-load-swamped wall-clock A/B cannot measure.
+    #[cfg(test)]
+    crate::db::RESOLVED_OF_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if let Slot::Filled(r) = db.resolved.get(id) {
         trace!(target: "rcdzc::resolve", node = id.0, "memo hit");
         return r.clone();

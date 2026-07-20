@@ -862,6 +862,31 @@
   (call   main (: 3.5 Float64) (: 2.5 Float64))
   (output (: false Bool)))
 
+; A SUM whose variants carry a non-byte-canonical `List` AND a non-orderable `Float` (the `Ast` shape:
+; `Ast.List (List Ast)` + `Ast.Float Float64`) falls between the two cheaper runtime-= paths — `value-eq`
+; (champ_eq) is unsound for its List payload (an RRB spine is element- not shape-canonical), and `value-cmp`
+; declines its Float payload (no total ORDER). So a runtime `=` on it routes to the descriptor-guided
+; `value-eq-shaped` walk, which descends a Sum (discriminant then payload) and compares a float leaf by
+; canonical byte form. The `value-eq-shaped` classification now descends a Sum (both `ty_contains_list` and
+; `eq_shaped_walkable`), so an Ast-shaped value admits the walk the runtime already implements.
+(case "a runtime structural = on a sum with List and Float payloads walks it (value-eq-shaped over a Sum)"
+  (doc    "`(= (Ast.Int n) (Ast.Int 3))` over a runtime `n` — the `Ast` sum has an `Ast.List (List Ast)`
+           variant (so `value-eq`/champ_eq is unsound — a list spine is not byte-canonical) AND an `Ast.Float`
+           variant (so `value-cmp` declines — a float has no total order), so it takes the `value-eq-shaped`
+           element-wise walk, which descends the Sum by discriminant-then-payload. Same variant + equal payload
+           → true (n=3 → 1), a differing payload → false (n=5 → 0). Regression witness for the runtime `=` on a
+           sum falling between both cheaper paths (declined 'needs a heap walk (not yet built)'); the fix
+           descends a Sum in the value-eq-shaped classification, routing to the runtime walk's existing
+           Shape::Sum arm. (Wasm computes; the Rust backend's structural-eq walk does not yet render a Sum arm
+           — a graded follow-up, reject-don't-miscompile, so it declines cleanly there.)")
+  (input  (do
+            (type Ast (Int Int64) (Float Float64) (List (List Ast)))
+            (def (mk (: n Int64)) (Ast.Int n))
+            (def (main (: n Int64)) (if (= (mk n) (Ast.Int 3)) 1 0))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64)) (output (: 0 Int64)))
+
 (case "a negative zero in a record field is distinct from positive zero"
   (doc    "The record companion of the nested -0.0 case: `(= (record (x -0.0)) (record (x 0.0)))` =
            false — the field `x` holds -0.0 in one record and 0.0 in the other, distinct canonical byte

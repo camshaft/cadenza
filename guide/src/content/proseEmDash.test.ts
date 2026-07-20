@@ -40,6 +40,7 @@ function proseOnly(src: string): string {
   return src
     .replace(/^[ \t]*\/\/.*$/gm, "") // full-line // or /// comments (doc-comment headers, standalone notes)
     .replace(/\{\/\*[\s\S]*?\*\/\}/g, "") // JSX block comments
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, "")) // JSDoc/block comments, newlines kept for line#s
     .replace(/<C>[\s\S]*?<\/C>/g, "") // inline code spans
     .replace(/`[\s\S]*?`/g, ""); // template literals (Runnable/Exercise source, Note code, trap strings)
 }
@@ -47,6 +48,45 @@ function proseOnly(src: string): string {
 function chapterFiles(): string[] {
   return readdirSync(chaptersDir).filter((f) => f.endsWith(".tsx"));
 }
+
+/// The site-SHELL components that render user-facing PROSE outside the chapter dir: the front-door
+/// HomePage (the first thing every reader sees), and the Exercise result banner. Their JSX prose belongs
+/// to the same zero-em-dash tone as the chapters, but they live under src/components and so are never
+/// walked by the chapter scan above — an unguarded gap that let front-door em-dashes ship (HomePage's
+/// hero, tenet cards, footer; the Exercise "Correct — …" banner). Paths are relative to this dir
+/// (src/content). Extend this list as new prose-bearing shells appear; a pure-logic component with no
+/// rendered prose needs no entry (an em-dash in its code is stripped by proseOnly anyway).
+const SHELL_PROSE_FILES = ["../components/HomePage.tsx", "../components/Exercise.tsx"];
+
+test("no site-shell component has an em-dash in rendered PROSE (front door holds the tone too)", () => {
+  const violations: string[] = [];
+  for (const rel of SHELL_PROSE_FILES) {
+    const prose = proseOnly(readFileSync(join(here, rel), "utf8")).split("\n");
+    for (let i = 0; i < prose.length; i++) {
+      if (prose[i].includes(EM_DASH)) {
+        violations.push(`${rel}:${i + 1} — prose em-dash: …${prose[i].trim().slice(0, 80)}…`);
+      }
+    }
+  }
+  assert.equal(
+    violations.length,
+    0,
+    `prose em-dash(es) in a site-shell component — rewrite as a flowing subordinated clause ` +
+      `(", since …" / ", so …" / ": …"). Em-dashes inside <C>…</C>, template literals, and comments are ` +
+      `fine; this flags rendered prose:\n  ${violations.join("\n  ")}`,
+  );
+});
+
+test("the shell-prose scan reads the shell files (guards a vacuous pass)", () => {
+  // A moved/renamed shell file would make the invariant pass on nothing. Assert each listed file exists
+  // and carries recognizable rendered prose (so a silent read-failure trips here instead of hiding).
+  for (const rel of SHELL_PROSE_FILES) {
+    const src = readFileSync(join(here, rel), "utf8");
+    assert.ok(src.length > 200, `shell prose file ${rel} looks empty/missing`);
+  }
+  const home = readFileSync(join(here, "../components/HomePage.tsx"), "utf8");
+  assert.ok(home.includes("runs in your browser"), "expected HomePage's hero copy; the path may have drifted");
+});
 
 test("no chapter has an em-dash in PROSE (tone overhaul: subordinate with since/so/which instead)", () => {
   const violations: string[] = [];
@@ -144,4 +184,9 @@ test("the em-dash prose scan reads chapters + strips code (guards a vacuous pass
     2,
     "comment-line strip must preserve line count for accurate violation line numbers",
   );
+  // A multi-line /* … */ block comment is blanked but keeps its newlines, so a violation AFTER it still
+  // reports the right line number, and an em-dash INSIDE it is stripped.
+  const jsdoc = proseOnly("/** doc " + EM_DASH + " note\n  more */\n<P>body</P>");
+  assert.equal(jsdoc.split("\n").length, 3, "block-comment strip must preserve line count");
+  assert.ok(!jsdoc.includes(EM_DASH), "an em-dash inside a /* … */ block comment must be stripped");
 });

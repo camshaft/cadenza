@@ -466,21 +466,38 @@ def read-not-form(s: String, i: Int64, tree: Tree) =
 def open-paren(s: String, i: Int64) =
   (let k = skip-space(s, i) in (if (char-at(s, k) == "(") then k + 1 else k))
 
-/// After `(let` (index `i` past the `let` atom): parse `((x v)) body` → `NLet(nameId, valueId, bodyId)`.
-/// SUBSET: a SINGLE binding `((name value))` then the body. Grammar: `(` `(` name value `)` `)` body — then
-/// the caller-form's own `)`. All parens tolerated-if-missing (total). `let` is NON-recursive: value read
-/// before the binding is in scope (resolve-db enforces the scoping; the reader just builds the node).
+/// After `(let` (index `i` past the `let` atom): parse `(<bindings>) body` → right-nested `NLet`s.
+/// Grammar: `(` `(name value)…` `)` body — ONE OR MORE bindings. A MULTI-binding let
+/// `(let ((x 1) (y 2)) body)` DESUGARS to nested single-lets `(let ((x 1)) (let ((y 2)) body))` = right-nested
+/// `NLet(x, 1, NLet(y, 2, body))` — no new node/rep, and resolve/infer/lower/eval already handle nested lets
+/// (matching the reference, which runs an N-binding let). `let` is NON-recursive: each value is read (+ later
+/// resolved) in the scope OUTSIDE its own binding — the desugar's right-nesting preserves that (an inner
+/// binding's value CAN see an outer binding, an outer's value canNOT see an inner — the sequential-let rule).
+/// All parens tolerated-if-missing (total). Delegates to read-let-bindings after opening the bindings-list.
 def read-let-form(s: String, i: Int64, tree: Tree) =
   (let b0 = open-paren(s, i) in            // outer bindings-list `(`
-   (let b1 = open-paren(s, b0) in          // first binding `(`
-    (let h = skip-space(s, b1) in
-     (match scan-atom(s, h, "") with | (nm, v0) =>
-       (match read-form(s, v0, tree) with | (valId, v1, t1) =>
-         (let c1 = close-paren(s, v1) in    // close the binding `)`
-          (let c2 = close-paren(s, c1) in   // close the bindings-list `)`
-           (match read-form(s, c2, t1) with | (bodyId, e0, t2) =>
-             (let e1 = close-paren(s, e0) in // close the `let` `)`
-              (match add-node(t2, Node.NLet(name-id(nm), valId, bodyId)) with | (id, t3) => (id, e1, t3)))))))))))
+   read-let-bindings(s, b0, tree))
+
+/// At `k` = inside the bindings-list, positioned at the next binding's `(` OR the list-closing `)`. Reads ONE
+/// binding `(name value)`, then RECURSES for the rest of the bindings; the recursion returns the fully-built
+/// inner tree (all remaining bindings wrapped around the body), which THIS binding wraps in its own `NLet`.
+/// When the list closes (a `)` where a binding's `(` would be), reads the BODY + the `let`'s closing `)`. So
+/// `((x 1) (y 2)) body` folds to `NLet(x, 1, NLet(y, 2, body))`, and a single binding `((x 1)) body` to the
+/// original `NLet(x, 1, body)` (behavior-identical to the pre-multi-binding reader). A malformed/empty
+/// bindings-list (`)` immediately) reads the body directly (no NLet) — total, tolerant.
+def read-let-bindings(s: String, k: Int64, tree: Tree) =
+  (let p = skip-space(s, k) in
+   (if (char-at(s, p) == "(")
+    then (let b1 = p + 1 in                  // this binding's `(`
+          (match scan-atom(s, skip-space(s, b1), "") with | (nm, v0) =>
+            (match read-form(s, v0, tree) with | (valId, v1, t1) =>
+              (let c1 = close-paren(s, v1) in                          // close this binding `)`
+               (match read-let-bindings(s, c1, t1) with | (innerId, e0, t2) =>   // the rest (bindings→body)
+                 (match add-node(t2, Node.NLet(name-id(nm), valId, innerId)) with | (id, t3) => (id, e0, t3)))))))
+    // no more bindings: the list-closing `)` is here — consume it, read the body, then the `let`'s own `)`.
+    else (let c2 = close-paren(s, p) in
+          (match read-form(s, c2, tree) with | (bodyId, e0, t1) =>
+            (let e1 = close-paren(s, e0) in (bodyId, e1, t1))))))
 
 /// Does `s` (from index `j`, space already skipped) open a `(do …)` module? A `(` followed by the atom
 /// `do`. Used by `read-source` to peel the corpus MODULE wrapper at the ENTRY (not mid-expression) — so
@@ -710,6 +727,24 @@ def sr-let-shape() =
            (if is-lit(tree, valId, 10) then (if is-var(tree, bodyId, name-id("x")) then unit else trap("body is NVar x")) else trap("value NLit 10"))
          else trap("let binds x"))
       | _ => trap("root is an NLet")))
+
+@test
+def sr-let-multi-binding-desugars-to-nested-nlet() =
+  // "(let ((x 1) (y 2)) (+ x y))" → NLet(x, 1, NLet(y, 2, (+ x y))): a MULTI-binding let desugars to
+  // right-nested single-lets (no new node). The OUTER NLet binds x; its body is the INNER NLet binding y.
+  // Pins the desugar SHAPE — a single-binding let stays a flat NLet (sr-let-shape), 2+ bindings nest.
+  (match read-source("(let ((x 1) (y 2)) (+ x y))") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(nm1, v1, inner)) =>
+        (if nm1 == name-id("x") then
+           (if is-lit(tree, v1, 1) then
+              (match node-at(tree, inner) with
+                | Option.Some(Node.NLet(nm2, v2, _)) =>
+                    (if nm2 == name-id("y") then (if is-lit(tree, v2, 2) then unit else trap("inner value NLit 2")) else trap("inner let binds y"))
+                | _ => trap("outer let's body is the inner NLet (nested desugar)"))
+            else trap("outer value NLit 1"))
+         else trap("outer let binds x"))
+      | _ => trap("root is the outer NLet")))
 
 @test
 def sr-let-binder-use-share-id() =

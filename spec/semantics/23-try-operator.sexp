@@ -403,6 +403,21 @@
             (export main)))
   (output (: 7 Int64)))
 
+(case "a failure `?` preserves a USER-SUM error value (a ctor + payload) through the short-circuit"
+  (doc    "The compound-Err case above carries a built-in `tuple`; this carries a USER-DECLARED SUM error
+           type: `(type MyErr (Code Int64) (Bad))`, and `(try (Err (Code 404)))` under a `(Result Int64
+           MyErr)` boundary short-circuits, flowing the `Err (Code 404)` out as the boundary value UNCHANGED
+           — the `Code 404` ctor + its `Int64` payload survive the abortive break intact. Pins that the `?`
+           failure short-circuit is transparent to a user-declared sum error carrying a payload (not only a
+           built-in tuple/scalar Err), witnessing that the boundary value is the operand's `Err` verbatim
+           regardless of the error type's shape (DESIGN-try-operator-rcdzc.md §5 — `?` passes its `Err` out
+           unchanged, no coercion).")
+  (input  (do
+            (type MyErr (Code Int64) (Bad))
+            (def (main) (: (let ((x (try (Err (Code 404))))) (Ok x)) (Result Int64 MyErr)))
+            (export main)))
+  (output (: (Err (Code 404)) (Result Int64 MyErr))))
+
 (case "a failure `?` propagates through TWO nested fallible boundaries"
   (doc    "An Err bubbles up MORE than one `?` boundary: `inner` returns `Err 9`; `outer`'s `(try (inner))`
            short-circuits and re-propagates the Err to its OWN boundary; `main` reads 9. Pins that the
