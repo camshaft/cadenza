@@ -997,6 +997,104 @@ fn start_fires_a_due_schedule_end_to_end_through_the_live_daemon() {
 }
 
 #[test]
+fn start_from_a_resume_cursor_does_not_re_perform_processed_history() {
+    // Crash-recovery: a restarted daemon must NOT re-drain the whole log from 0 and re-perform every historical
+    // trigger (an at-most-once violation). `start` reports its final cursor; restarting with `--from <cursor>`
+    // resumes past the processed events. Here: emit a trigger, run once (performs it → records prim events),
+    // capture the reported cursor, then restart with --from <cursor> and assert NO new prim-record events were
+    // appended (the already-processed trigger is not re-performed). Store-gated skip like the sibling verbs.
+    let log = unique("resume-log").with_extension("log");
+    let prog = unique("resume-genesis").with_extension("cdz");
+    let _ = std::fs::remove_file(&log);
+    std::fs::write(&prog, GENESIS).unwrap();
+
+    Command::new(bin())
+        .args(["bootstrap", log.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+    Command::new(bin())
+        .args([
+            "inject-genesis",
+            log.to_str().unwrap(),
+            prog.to_str().unwrap(),
+        ])
+        .output()
+        .expect("inject-genesis");
+    // A trigger the daemon will PERFORM (kind=1 → [Append, Exec]).
+    Command::new(bin())
+        .args(["emit", log.to_str().unwrap(), "trigger", "go"])
+        .output()
+        .expect("emit trigger");
+
+    // First run: one bounded round performs the trigger and reports a final cursor.
+    let out = Command::new(bin())
+        .args(["start", log.to_str().unwrap(), "0", "--max-rounds", "1"])
+        .output()
+        .expect("run cdz-agent start (first)");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() {
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("runtime not found"),
+            "the only acceptable failure is a missing runtime store (skip); got: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        eprintln!("[cdz-agent it] value-heap runtime absent; skipped the resume-cursor assertion");
+        let _ = std::fs::remove_file(&log);
+        let _ = std::fs::remove_file(&prog);
+        return;
+    }
+    // Parse the reported resume cursor from "stopped cleanly at cursor N".
+    let cursor: u64 = stdout
+        .split("at cursor ")
+        .nth(1)
+        .and_then(|s| s.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("start must report its final cursor; got: {stdout}"));
+    assert!(
+        cursor >= 2,
+        "cursor advanced past genesis(0) + trigger(1); got {cursor}"
+    );
+
+    // Count prim-record events after the first run (the performed trigger's effect trail).
+    let count_prim = || {
+        let raw = std::fs::read(&log).expect("read log");
+        String::from_utf8_lossy(&raw).matches("prim-").count()
+    };
+    let after_first = count_prim();
+    assert!(
+        after_first > 0,
+        "the first run performed the trigger (recorded prim events)"
+    );
+
+    // RESTART with --from <cursor>: the already-processed trigger must NOT be re-performed.
+    let out = Command::new(bin())
+        .args([
+            "start",
+            log.to_str().unwrap(),
+            "0",
+            "--from",
+            &cursor.to_string(),
+            "--max-rounds",
+            "1",
+        ])
+        .output()
+        .expect("run cdz-agent start (resume)");
+    assert!(
+        out.status.success(),
+        "the resumed daemon runs: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let after_resume = count_prim();
+    assert_eq!(
+        after_resume, after_first,
+        "resuming with --from {cursor} re-performed NO history (prim-record count unchanged: {after_first} → {after_resume})"
+    );
+
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&prog);
+}
+
+#[test]
 fn unknown_subcommand_prints_usage_and_fails() {
     let out = Command::new(bin())
         .arg("frobnicate")

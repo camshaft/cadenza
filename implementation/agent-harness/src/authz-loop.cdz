@@ -1,27 +1,26 @@
 /// authz-loop.cdz — the agent loop with a CEDAR AUTHORIZATION GATE before every tool dispatch (Inc-3).
-///
-/// Extends the base loop (`loop.cdz`) with the "no ambient authority" property the whole harness rests
-/// on (DESIGN-agent-harness.md §4): before the loop dispatches a tool it PERFORMS `Cedar.authorize` on
-/// that tool's action, and only proceeds when the decision is ALLOW — a DENY skips the dispatch (the
-/// tool never runs). The authorization decision is an EFFECT, exactly like the model call: here handled
-/// in-program by a MOCK policy, but the SAME loop swaps to the real Cedar evaluator (the cdz-agent
-/// embedder's `cedar::authorize` host closure, backed by the `cedar-policy` crate) with no code change —
-/// a nearer in-program handler wins over the peer/host binding (v-effects §A-Handler-May-Interpose).
-///
-/// The authorize op crosses as `(action: Int64) -> Int64` (an action id → 1 allow / 0 deny) so the SPINE
-/// is gate-protected independent of the String-crossing ABI; the real embedder binding takes a `String`
-/// action and returns the scalar decision (probed e2e — a String arg + scalar result both cross a peer).
-/// A run TALLIES the actions it was allowed to dispatch, so the test can distinguish "gate honored"
-/// (denied actions contribute nothing) from "gate ignored" (everything dispatched).
-
-/// The authorization effect: given a tool's action id, return 1 (allow) or 0 (deny). Performed before
-/// every dispatch — the single choke point through which all tool authority flows.
-effect Cedar =
+  ///
+  /// Extends the base loop (`loop.cdz`) with the "no ambient authority" property the whole harness rests
+  /// on (DESIGN-agent-harness.md §4): before the loop dispatches a tool it PERFORMS `Cedar.authorize` on
+  /// that tool's action, and only proceeds when the decision is ALLOW — a DENY skips the dispatch (the
+  /// tool never runs). The authorization decision is an EFFECT, exactly like the model call: here handled
+  /// in-program by a MOCK policy, but the SAME loop swaps to the real Cedar evaluator (the cdz-agent
+  /// embedder's `cedar::authorize` host closure, backed by the `cedar-policy` crate) with no code change —
+  /// a nearer in-program handler wins over the peer/host binding (v-effects §A-Handler-May-Interpose).
+  ///
+  /// The authorize op crosses as `(action: Int64) -> Int64` (an action id → 1 allow / 0 deny) so the SPINE
+  /// is gate-protected independent of the String-crossing ABI; the real embedder binding takes a `String`
+  /// action and returns the scalar decision (probed e2e — a String arg + scalar result both cross a peer).
+  /// A run TALLIES the actions it was allowed to dispatch, so the test can distinguish "gate honored"
+  /// (denied actions contribute nothing) from "gate ignored" (everything dispatched).
+  /// The authorization effect: given a tool's action id, return 1 (allow) or 0 (deny). Performed before
+  /// every dispatch — the single choke point through which all tool authority flows.
+  effect Cedar =
   | authorize : Int64 -> Int64
 
 /// The tools effect: `dispatch` runs the authorized tool (returns a result the loop folds); `done` ends
-/// the loop with the accumulator.
-effect Tools =
+  /// the loop with the accumulator.
+  effect Tools =
   | dispatch : Int64 -> Int64
   | done : Int64 -> Int64
 
@@ -37,10 +36,11 @@ effect Tools =
 def run(fuel: Int64, acc: Int64) =
   if fuel == 0 then
     Tools.done(acc)
-  else if Cedar.authorize(fuel) == 1 then
-    run(fuel - 1, acc + Tools.dispatch(fuel))
   else
-    run(fuel - 1, acc)
+    if Cedar.authorize(fuel) == 1 then
+      run(fuel - 1, acc + Tools.dispatch(fuel))
+    else
+      run(fuel - 1, acc)
 
 /// Run the loop under a MOCK Cedar policy + mock tools, all in-program. The mock policy ALLOWS even
 /// action ids and DENIES odd ones (`a % 2 == 0`) — a stand-in for a real permit/forbid set; the real
@@ -88,14 +88,12 @@ def authz-gate-actually-blocks() =
   // Prove the gate is LOAD-BEARING: an ALLOW-EVERYTHING policy dispatches every action (sum 1..fuel),
   // strictly MORE than the even-only run — so the deny path in run-mock genuinely suppresses dispatches
   // (not a coincidence of the numbers). fuel 4: allow-all → 4+3+2+1 = 10 > 6.
-  let allow-all =
-    handle Cedar(0) with
+  let allow-all = handle Cedar(0) with
       | authorize(a, s) => resume(1, s)
     in
     handle Tools(0) with
       | dispatch(a, s) => resume(a, a)
       | done(a, s) => resume(a, a)
     in
-    run(4, 0)
-  in
+    run(4, 0) in
   if allow-all == 10 then unit else trap("allow-all dispatches every action: 4+3+2+1 = 10")

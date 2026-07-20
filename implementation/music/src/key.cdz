@@ -1,0 +1,145 @@
+/// key.cdz — KEY DETECTION: which major keys contain a set of pitch classes?
+///
+/// analysis.cdz names a CHORD's quality; this is the melodic complement: given a set of sounding pitch
+/// classes (a melody, a riff, a chord), which major keys are consistent with them — i.e. which keys have
+/// ALL of those pitch classes in their scale? That's the core of "what key is this in?" — a tool narrows
+/// the 12 major keys to the candidates a passage fits, then a human (or a weighting heuristic) picks.
+///
+/// Pure and total: for each of the 12 major keys (roots 0..11) we test whether every input pitch class is
+/// in that key's scale (scale.cdz `in-scale` by pitch class). A fully diatonic passage returns several
+/// candidate keys (a C-major triad fits C, F and G major); a chromatic passage that uses a note foreign to
+/// every key returns none. Grounds entirely on scale.cdz (`major`, `in-scale`) + pitch.cdz — no new theory.
+
+import { Pitch } from "pitch"
+import { pitch-of, mod-floor } from "pitch"
+import { Scale } from "scale"
+import { major, in-scale } from "scale"
+
+// ---- does a key contain every one of a set of pitch classes? -----------------------------------------
+
+/// Is pitch class `pc` (0..11) a member of the scale `s`? We build a `Pitch` at a fixed octave from the
+/// pitch class and defer to scale.cdz's `in-scale` (which tests by pitch class, octave-independent).
+def pc-in-scale(s: Scale, pc: Int64) = in-scale(s, pitch-of(4, mod-floor(pc, 12)))
+
+/// Does scale `s` contain EVERY pitch class in `pcs`? Recursive over the input set; annotated params
+/// (CDZ0201). Empty set is vacuously contained (every key fits no constraints).
+def scale-contains-all(s: Scale, pcs: List(Int64)) =
+  match pcs with
+    | [] => true
+    | [h, .. t] => if pc-in-scale(s, h) then scale-contains-all(s, t) else false
+
+// ---- scanning the 12 major keys ----------------------------------------------------------------------
+
+/// Collect the ROOTS (0..11) of every major key whose scale contains all of `pcs`. Recursive scan over the
+/// 12 chromatic roots from `k` up to 11; annotated params. Roots accumulate in ascending order.
+def candidate-keys-go(pcs: List(Int64), k: Int64, out: List(Int64)) =
+  if k > 11 then out
+  else
+    let next = if scale-contains-all(major(k), pcs) then List.push(out, k) else out in
+    candidate-keys-go(pcs, k + 1, next)
+
+/// The list of major-key ROOTS (pitch classes 0..11) whose scale contains every pitch class in `pcs`.
+/// e.g. the C-major triad {0,4,7} returns [0, 5, 7] (C, F and G major all contain C-E-G).
+def candidate-keys(pcs: List(Int64)) = candidate-keys-go(pcs, 0, [])
+
+/// How many major keys are consistent with `pcs` (the length of `candidate-keys`).
+def candidate-count(pcs: List(Int64)) = list-len(candidate-keys(pcs))
+
+/// Is major key rooted at `root` consistent with `pcs` (contains all of them)?
+def fits-key(root: Int64, pcs: List(Int64)) = scale-contains-all(major(mod-floor(root, 12)), pcs)
+
+/// Length of an Int64 list (local, annotated).
+def list-len(xs: List(Int64)) = match xs with
+  | [] => 0
+  | [_, .. t] => 1 + list-len(t)
+
+/// Is `x` in the list? (membership; recursive, annotated.)
+def has(xs: List(Int64), x: Int64) =
+  match xs with
+    | [] => false
+    | [h, .. t] => if h == x then true else has(t, x)
+
+/// ============================ @test suite (key-detection laws) ============================
+
+@test
+def a-c-major-triad-fits-c-f-and-g-major() =
+  // {C, E, G} = {0,4,7} is diatonic to C major (obviously), and also to F major (F G A Bb C D E — has
+  // C,E,G) and G major (G A B C D E F# — has C,E,G). Those are exactly the three keys.
+  let cands = candidate-keys([0, 4, 7]) in
+  if has(cands, 0) then
+    (if has(cands, 5) then
+      (if has(cands, 7) then
+        (if candidate-count([0, 4, 7]) == 3 then unit else trap("exactly three keys"))
+       else trap("G major fits"))
+     else trap("F major fits"))
+  else trap("C major fits")
+
+@test
+def the-full-c-major-scale-fits-only-c-major() =
+  // All seven pitch classes of C major {0,2,4,5,7,9,11} fit ONLY C major — the complete scale pins the key
+  // uniquely (a maximal diatonic constraint).
+  let c-scale = [0, 2, 4, 5, 7, 9, 11] in
+  let cands = candidate-keys(c-scale) in
+  if candidate-count(c-scale) == 1 then
+    (if has(cands, 0) then unit else trap("the one key is C major"))
+  else trap("the full scale fits exactly one key")
+
+@test
+def a-chromatic-note-foreign-to-every-key-fits-nothing() =
+  // No major key contains BOTH C and C# and D and D# (a chromatic cluster) — some key would need two
+  // adjacent semitones plus more, which the diatonic pattern never has four-in-a-row of. Returns none.
+  if candidate-count([0, 1, 2, 3]) == 0 then unit else trap("a 4-semitone cluster fits no major key")
+
+@test
+def the-empty-set-fits-every-key() =
+  // Vacuous: no pitch classes to constrain → all 12 keys are candidates.
+  if candidate-count([]) == 12 then unit else trap("the empty set fits all twelve keys")
+
+@test
+def fits-key-agrees-with-the-scan() =
+  // fits-key(root, pcs) is true exactly when root is among candidate-keys(pcs).
+  let pcs = [0, 4, 7] in
+  if fits-key(0, pcs) then
+    (if fits-key(5, pcs) then
+      (if fits-key(1, pcs) then trap("Db major does NOT contain a C-E-G triad") else unit)
+     else trap("F fits"))
+  else trap("C fits")
+
+@test
+def a-single-note-fits-the-seven-keys-containing-it() =
+  // A single pitch class C (0) is diatonic to exactly the seven major keys whose scale includes C:
+  // C, Db, Eb, F, G, Ab, Bb (roots 0,1,3,5,7,8,10). (Every pitch class sits in exactly 7 of the 12 keys.)
+  if candidate-count([0]) == 7 then unit else trap("a single note is in seven major keys")
+
+@test
+def fits-key-wraps-a-high-root() =
+  // fits-key folds its root mod 12, so root 12 == root 0 (C).
+  let pcs = [0, 4, 7] in
+  if fits-key(12, pcs) then unit else trap("root 12 folds to C major")
+
+@test
+def a-relative-minor-scale-pins-its-relative-major-key() =
+  // A natural minor (A B C D E F G) is the SAME set of pitch classes {9,11,0,2,4,5,7} as C major — the
+  // relative-major/minor identity. So candidate-keys narrows to exactly C major (root 0): key detection
+  // over major scales reports the relative MAJOR of a minor passage, as expected (no separate minor scan).
+  let a-minor-pcs = [9, 11, 0, 2, 4, 5, 7] in
+  if candidate-count(a-minor-pcs) == 1 then
+    (match candidate-keys(a-minor-pcs) with
+      | [0] => unit
+      | _ => trap("the one key is C major (the relative major of A minor)"))
+  else trap("a full relative-minor scale pins exactly one major key")
+
+@test
+def a-dominant-seventh-pins-its-key-uniquely() =
+  // G7 = {G, B, D, F} = {7, 11, 2, 5}. Only ONE major key contains both B natural AND F natural: C major
+  // (the tritone B-F is what makes a dominant seventh function). So candidate-keys narrows to exactly C —
+  // the strongest "the seventh chord names the key" fact, a real tonal-harmony invariant.
+  let g7 = [7, 11, 2, 5] in
+  if candidate-count(g7) == 1 then
+    (if fits-key(0, g7) then unit else trap("the one key is C major"))
+  else trap("a dominant seventh fits exactly one major key")
+
+export {
+  pc-in-scale, scale-contains-all,
+  candidate-keys, candidate-count, fits-key,
+}

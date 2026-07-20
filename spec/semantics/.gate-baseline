@@ -2108,6 +2108,8 @@ pass	a runtime-computed Rational crosses the host boundary as its exact value
 pass	a runtime-element set compares equal to the constant set of the same elements
 pass	a runtime-element set equals itself
 pass	a runtime-element set's equality is independent of written order
+pass	a runtime-index Bytes.at at a NEGATIVE index is None, not an unsigned wrap
+pass	a runtime-index list read at a NEGATIVE index is None, not an unsigned wrap
 pass	a runtime-index list read out of bounds is None, not a trap
 pass	a runtime-index list read yields the element at that index
 pass	a runtime-index read of a runtime-built list

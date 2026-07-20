@@ -505,6 +505,10 @@ pub fn is_reserved_kind(kind: &str) -> bool {
 /// carries no logic. `should_stop` lets a caller (a stop-file poll, a signal flag) end the loop cleanly between
 /// rounds. `policies` is the OPTIONAL external Cedar trust-anchor forwarded to each [`run_once`] round (`Some`
 /// gates every op via [`tick_hosted_authorized`]; `None` runs ungated) — the operator's `--policies` flag.
+///
+/// Returns the FINAL cursor (the `from` to resume at) when the loop stops cleanly — so an operator can restart
+/// the daemon with `--from <cursor>` and NOT re-drain the whole log (re-performing every historical trigger, an
+/// at-most-once violation). The cursor is `last-drained-seq + 1`, or the starting `from` if nothing was drained.
 pub fn run<L, K, S>(
     log: std::sync::Arc<std::sync::Mutex<L>>,
     mut from: crate::Seq,
@@ -513,7 +517,7 @@ pub fn run<L, K, S>(
     policies: Option<String>,
     kind_of: K,
     mut should_stop: S,
-) -> Result<()>
+) -> Result<crate::Seq>
 where
     L: Log + Send + 'static,
     K: Fn(&crate::Event) -> Option<i64>,
@@ -526,7 +530,7 @@ where
         from = next;
         std::thread::sleep(poll);
     }
-    Ok(())
+    Ok(from)
 }
 
 /// The latest genesis `program` source in `log`, or a loud error if none (the CLI must inject one first).

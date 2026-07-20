@@ -422,13 +422,22 @@ fn run() -> Result<()> {
             let (log, _kind0, runtime) = open_and_resolve(&args, "start")?;
             let poll_ms: u64 = args
                 .get(3)
-                .ok_or_else(|| anyhow!("usage: cdz-agent start <log> <poll-ms> [--stop-file <path>] [--max-rounds N] [--policies <file>]"))?
+                .ok_or_else(|| anyhow!("usage: cdz-agent start <log> <poll-ms> [--from <seq>] [--stop-file <path>] [--max-rounds N] [--policies <file>]"))?
                 .parse()
                 .context("poll-ms must be a non-negative integer")?;
             let stop_file = flag_value(&args, "--stop-file");
             let max_rounds: Option<u64> = match flag_value(&args, "--max-rounds") {
                 Some(n) => Some(n.parse().context("--max-rounds must be an integer")?),
                 None => None,
+            };
+            // CRASH-RECOVERY cursor: `--from <seq>` resumes the daemon at a known cursor instead of re-draining
+            // the WHOLE log from 0 (which would re-perform every historical trigger — an at-most-once violation
+            // on restart). An operator restarting the daemon passes the cursor a prior run reported (the daemon
+            // prints its final cursor on a clean stop). Defaults to 0 (behavior-preserving: a fresh log or a
+            // full re-fold). NOT past the log tail — a `from` beyond the current length simply drains nothing.
+            let from: u64 = match flag_value(&args, "--from") {
+                Some(s) => s.parse().context("--from must be a non-negative seq cursor")?,
+                None => 0,
             };
             // Optional external Cedar trust-anchor: with --policies, every op the live daemon performs is
             // authorized against it first (the agent can't widen it); without it, the ungated record-only path.
@@ -483,16 +492,19 @@ fn run() -> Result<()> {
                     ""
                 },
             );
-            daemon::run(
+            let final_cursor = daemon::run(
                 log,
-                0,
+                from,
                 runtime,
                 std::time::Duration::from_millis(poll_ms),
                 policies,
                 kind_of,
                 should_stop,
             )?;
-            println!("start: daemon stopped cleanly");
+            // Report the resume cursor so a restart can pass `--from <cursor>` and NOT re-perform history.
+            println!(
+                "start: daemon stopped cleanly at cursor {final_cursor} (restart with --from {final_cursor} to resume without re-performing processed events)"
+            );
             Ok(())
         }
         _ => Err(anyhow!(
@@ -512,7 +524,7 @@ fn run() -> Result<()> {
              \x20 hosted <log> <event-kind> [--policies <file>] — one daemon tick that PERFORMS via real host primitives (K1c→host); with --policies, each op is Cedar-authorized against the external policy first\n\
              \x20 replay <log> <event-kind>          — RE-FOLD a recorded turn from the prim-result trail (time-travel, no live effect); reports missing=0 when faithful\n\
              \x20 fork <src-log> <new-log> [--upto <seq>] — FORK a recorded history into a new timeline (copy events, optionally up to a seq cutoff); the branch re-folds + extends independently\n\
-             \x20 start <log> <poll-ms> [--stop-file <path>] [--max-rounds N] [--policies <file>] — START the daemon: poll + perform each new trigger event; with --policies each op is Cedar-authorized"
+             \x20 start <log> <poll-ms> [--from <seq>] [--stop-file <path>] [--max-rounds N] [--policies <file>] — START the daemon: poll + perform each new trigger event (--from resumes at a cursor without re-performing history); with --policies each op is Cedar-authorized"
         )),
     }
 }

@@ -1,4 +1,0 @@
-def loop(const step: List(Int64) -> Option((Int64, List(Int64))), s: List(Int64), acc: Int64) =
-  match step(s) with | Option.None(_) => acc | Option.Some(p) => (match p with | (x, s2) => loop(step, s2, acc + x))
-def run() = loop(fn(s) => (match s with | [] => Option.None(unit) | [h, .. t] => Option.Some((h, t))), [1,2,3], 0)
-export { run }

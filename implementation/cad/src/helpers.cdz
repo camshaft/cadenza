@@ -150,6 +150,18 @@ def cut-fuse-common-are-the-boolean-wrappers() =
          else trap("cut never grows the base")) else trap("fuse encloses both (width 12)")))
 
 @test
+def common-is-the-intersection-wrapper() =
+  // The cut/fuse test names `common` but only exercises cut + fuse; pin `common` (→ Solid.Intersection)
+  // directly so a wrapper regression (wrong CSG op / swapped operand) can't slip. Two OVERLAPPING size-2
+  // cubes: a = [-1,1]^3, b = move-x(1, a) = [0,2]×[-1,1]×[-1,1]. Their intersection is the overlap box
+  // [0,1]×[-1,1]×[-1,1] → size (1, 2, 2) — strictly SMALLER on x than either input (proves it's an
+  // intersection, not a union/difference).
+  let a = cube(2 / 1) in
+  let b = move-x(1 / 1, cube(2 / 1)) in
+  if v3-eq(aabbr-size(bounding-box(common(a, b))), v3(1 / 1, 2 / 1, 2 / 1)) then unit
+  else trap("common(a,b) is the overlap box (1,2,2), smaller on x than either input")
+
+@test
 def rotate-array-and-mirror-build-symmetric-solids() =
   // rotate-z(90) of a translated cube spins it about the origin; the conservative rotate bbox stays symmetric.
   // And mirror-x of a right-shifted cube reflects it to the left (bilateral pair via fuse).
