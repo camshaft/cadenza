@@ -130,6 +130,48 @@
   (call   main (: false Bool))
   (output (: 3 Int64)))
 
+(case "a redundant relational check inside its own truthy branch is known-true and its dead branch is eliminated"
+  (doc    "The FLAGSHIP value-facts demonstrator (operator directive, DESIGN-flow-sensitive-value-facts.md
+           §3.1a): a flow-sensitive INTERVAL fact — not a boolean const-propagation — decides a nested
+           relational comparison. Inside the truthy branch of `(if (> x 0) …)`, `x` is refined to `[1, MAX]`,
+           so a nested `(if (> x 0) T F)` is KNOWN TRUE and folds to `T` with the dead branch `F` eliminated.
+           Distinct from the boolean `(if c 1 (if c 2 3))` collapse above (which propagates a Bool VALUE): here
+           the inner comparison is re-decided by the refined RANGE of `x`, the mechanism the value-facts work
+           generalizes. Three shapes the analysis proves, each pinned by observable value:
+             (a) SAME test:    `(if (> x 0) (if (> x 0) 1 2) 3)` — inner known true → never yields 2.
+             (b) IMPLIED test: `(if (>= x 5) (if (> x 0) 1 2) 3)` — `x >= 5 ⇒ x > 0`, inner true → never 2.
+             (c) MADE-FALSE:   `(if (< x 0) (if (> x 10) 1 2) 3)` — `x < 0 ⇒ x > 10` false → inner yields 2.
+           The Lir-level elimination (inner compare gone, dead-branch constant gone) is unit-pinned in
+           rcdzc `a_branch_refinement_folds_a_redundant_nested_comparison_and_eliminates_its_dead_branch`;
+           this corpus case pins the OBSERVABLE-VALUE parity fleet-wide on both backends, so a future change
+           that drops the refinement can't silently regress the fold.")
+  (input  (do
+            (def (same    (: x Int64)) (if (> x 0)  (if (> x 0)  1 2) 3))
+            (def (implied (: x Int64)) (if (>= x 5) (if (> x 0)  1 2) 3))
+            (def (made-false (: x Int64)) (if (< x 0) (if (> x 10) 1 2) 3))
+            (export same)
+            (export implied)
+            (export made-false)))
+  ; (a) same test: positive x takes both truthy branches → 1; x <= 0 → outer else → 3 (inner `2` unreachable)
+  (call   same (: 5 Int64))
+  (output (: 1 Int64))
+  (call   same (: 0 Int64))
+  (output (: 3 Int64))
+  ; (b) implied: x >= 5 makes the inner `x > 0` known true → 1; x < 5 → 3 (inner `2` unreachable)
+  (call   implied (: 10 Int64))
+  (output (: 1 Int64))
+  (call   implied (: 5 Int64))
+  (output (: 1 Int64))
+  (call   implied (: 3 Int64))
+  (output (: 3 Int64))
+  ; (c) made-false: x < 0 makes the inner `x > 10` known false → 2; x >= 0 → outer else → 3
+  (call   made-false (: -1 Int64))
+  (output (: 2 Int64))
+  (call   made-false (: 0 Int64))
+  (output (: 3 Int64))
+  (call   made-false (: 20 Int64))
+  (output (: 3 Int64)))
+
 (case "conditional propagation respects a shadowing rebind of the condition variable"
   (doc    "The propagation must track the condition's VALUE in scope, not match its text: `(let ((c (< n
            5))) (if c 1 (let ((c true)) (if c 2 3))))` with n = 10 has the OUTER `c` = false (10 < 5 is

@@ -813,6 +813,34 @@
   (call   main (: true Bool) (: 2 Int64) (: 4 Int64))  (output (: "cd" String))
   (call   main (: false Bool) (: 2 Int64) (: 4 Int64)) (output (: "zd" String)))
 
+(case "a slice OF a slice composes the offsets at runtime bounds"
+  (doc    "Slicing a SLICED string re-bases the indices against the inner slice, not the original: the outer
+           `(String.slice \"abcdefgh\" a 6)` at `a = 2` is `\"cdef\"`, and the inner `slice … 1 b` at `b = 3`
+           reads ITS scalars 1..2 = `\"de\"` — offset `a + 1` into the original. At `(a,b) = (0,2)` the
+           outer is `\"abcdef\"` and the inner scalar 1 is `\"b\"`. A slice that leaked the ORIGINAL string's
+           indexing (reading scalars 1..b of \"abcdefgh\" regardless of a) would return \"b\" for both calls.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (Option.expect (String.slice (Option.expect (String.slice "abcdefgh" a 6) "outer") 1 b) "inner"))
+            (export main)))
+  (call   main (: 2 Int64) (: 3 Int64)) (output (: "de" String))
+  (call   main (: 0 Int64) (: 2 Int64)) (output (: "b" String)))
+
+(case "a concat of two runtime SLICES joins the sliced views, not the originals"
+  (doc    "The build-from-parts idiom: both concat operands are SLICES (of different strings, split at the
+           same runtime `a`) — `hello[0..a] ++ world[a..5]`. At `a = 2`: `\"he\" ++ \"rld\"` = `\"herld\"`;
+           at `a = 5`: the left slice is the whole `\"hello\"` and the right is EMPTY → `\"hello\"`. Pins
+           that concat consumes the sliced VIEWS (a concat reading the operands' original strings would give
+           `\"helloworld\"` in both regimes) and that an empty right slice is the concat identity.")
+  (input  (do
+            (def (main (: a Int64))
+              (String.concat
+                (Option.expect (String.slice "hello" 0 a) "l")
+                (Option.expect (String.slice "world" a 5) "r")))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: "herld" String))
+  (call   main (: 5 Int64)) (output (: "hello" String)))
+
 (case "a runtime rope slice maps scalar offsets to bytes across the seam for a multi-byte scalar"
   (doc    "The multi-byte companion of the rope-seam slice: over a runtime rope `(String.concat (pick b \"aé\"
            \"aX\") \"bc\")`, b=true lo=1 hi=3 selects scalars 1..2 = \"éb\" — é (scalar 1, TWO UTF-8 bytes) is the
