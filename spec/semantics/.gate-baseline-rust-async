@@ -4354,8 +4354,6 @@ pass	a combined left shift that overflows Int64 traps like the single shift it f
 pass	a scalar-result match over an owned compound-payload sum reclaims the shell AFTER its borrowed reads
 pass	nested same-direction shifts by constants combine into one shift by the sum, keeping the left-shift overflow trap
 pass	a MIXED-shape compound scales its quantity leaf beside a non-quantity element
-todo	a prefixed quantity displays scaled to its reference over BigInt (exact, no truncation)
-pass	a USER-DEFINED multi-variant sum payload quantity renders scaled to its reference
 pass	a data-rate quantity converts a binary-prefix composite unit to its byte/second reference
 pass	adding two data-rate quantities of the same composite dimension is exact
 pass	adding a data-rate to a length is a compile-time dimension error over a composite dimension
