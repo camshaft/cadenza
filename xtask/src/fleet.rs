@@ -7616,6 +7616,18 @@ mod tests {
             600,
             Some(9999)
         ));
+        // Trunk-age EXACTLY at the window is still fresh (exemption is `<=`, mirroring the heartbeat
+        // side's inclusive boundary), so pr-sync is exempt. Pins the `<=`/`<` mutation on the trunk
+        // arm — without this the `commit_age == window_secs` edge (a commit that landed precisely one
+        // window ago) is untested, and flipping to `<` would silently start flagging a live batch.
+        assert!(!agent_reads_stale(
+            "pr-sync",
+            "active",
+            true,
+            1500,
+            600,
+            Some(600)
+        ));
     }
 
     #[test]

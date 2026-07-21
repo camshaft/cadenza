@@ -494,6 +494,53 @@
              (Set.intersection (Set.of (list 1 2 3 4)) (Set.intersection (Set.of (list 2 3 4 5)) (Set.of (list 3 4 5 6))))))
   (output (: true Bool)))
 
+; The lattice laws that COMPOSE the operations, over RUNTIME-element sets so the nested CHAMP union/intersection
+; actually runs (a const-set shape could fold the algebra away at compile time — the runtime operand is what
+; exercises the heap path). Intersection commutativity is the meet companion of union-is-commutative above;
+; distributivity and absorption are the two-operation laws a bounded-lattice set algebra must satisfy — a
+; mis-slotting or a dropped element on the nested compose path would break them where a single-op law would not.
+(case "intersection is commutative over runtime-element sets"
+  (doc    "The meet companion of union-is-commutative: `(Set.intersection A B) = (Set.intersection B A)` over
+           RUNTIME elements. A={a,b,c}, B={b,c,d} with a,b,c,d runtime → both {b,c}. A runtime operand so the
+           CHAMP intersection genuinely runs (a const shape could fold). Encoded as a Bool→Int (1 true). MUST
+           be 1.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64) (: c Int64) (: d Int64))
+              (let ((sa (Set.of (list a b c)))
+                    (sb (Set.of (list b c d))))
+                (if (= (Set.intersection sa sb) (Set.intersection sb sa)) 1 0)))
+            (export main)))
+  (call main (: 1 Int64) (: 2 Int64) (: 3 Int64) (: 4 Int64)) (output (: 1 Int64)))
+
+(case "intersection distributes over union on runtime-element sets"
+  (doc    "The lattice distributive law `A ∩ (B ∪ C) = (A ∩ B) ∪ (A ∩ C)`, over RUNTIME elements so the nested
+           CHAMP union/intersection composition runs live. A={a,b,c}, B={b,d}, C={c,e} → both sides {b,c}.
+           Pins that composing union INSIDE intersection agrees with distributing it out; an implementation
+           that mis-slotted or dropped an element on the nested compose path would diverge here while the
+           single-operation laws still passed. MUST be 1.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64) (: c Int64) (: d Int64) (: e Int64))
+              (let ((sa (Set.of (list a b c)))
+                    (sb (Set.of (list b d)))
+                    (sc (Set.of (list c e))))
+                (if (= (Set.intersection sa (Set.union sb sc))
+                       (Set.union (Set.intersection sa sb) (Set.intersection sa sc))) 1 0)))
+            (export main)))
+  (call main (: 1 Int64) (: 2 Int64) (: 3 Int64) (: 4 Int64) (: 5 Int64)) (output (: 1 Int64)))
+
+(case "the absorption law holds on runtime-element sets"
+  (doc    "The lattice absorption law `A ∪ (A ∩ B) = A`, over RUNTIME elements. A={a,b}, B={b,c} → A ∩ B = {b},
+           A ∪ {b} = {a,b} = A. Pins that intersecting-then-unioning-back absorbs to A — the union adds nothing
+           not already in A (the meet is a subset of A). A join that duplicated or a meet that leaked would
+           break this. MUST be 1.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64) (: c Int64))
+              (let ((sa (Set.of (list a b)))
+                    (sb (Set.of (list b c))))
+                (if (= (Set.union sa (Set.intersection sa sb)) sa) 1 0)))
+            (export main)))
+  (call main (: 1 Int64) (: 2 Int64) (: 3 Int64)) (output (: 1 Int64)))
+
 (case "difference is NOT commutative"
   (doc    "`{1,2,3} \\ {2,3,4}` = {1} but `{2,3,4} \\ {1,2,3}` = {4} — set difference is directional, so
            `A \\ B` and `B \\ A` are DIFFERENT sets (unequal). The contrast to union/intersection

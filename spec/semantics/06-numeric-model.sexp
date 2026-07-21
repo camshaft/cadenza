@@ -592,6 +592,13 @@
   (input  (: (Some 1.0e300) (Option Float32)))
   (error  CDZ0302))
 
+(case "a Float32-overflowing literal in a record field is rejected"
+  (doc    "The float twin of the record-field arm: `(: (record (x 1.0e300)) (Record (: x Float32)))` — the
+           field's Float32 grounds the literal, which overflows binary32 → CDZ0302. Pins that the record
+           descent covers float widths as the Option/Result payload arms do.")
+  (input  (: (record (x 1.0e300)) (Record (: x Float32))))
+  (error  CDZ0302))
+
 (case "a Float32-overflowing literal in a compound payload inside a runtime conditional branch is rejected"
   (doc    "The COMPOSITION of the two float width descents: the overflowing literal sits in a compound
            payload (`(Some 1.0e300)`) which itself sits in a RUNTIME if branch — `(if c (: (Some 1.0e300)
@@ -693,14 +700,62 @@
   (doc    "The BOUNDARY face: `3.5e38` sits between Float32's finite max (~3.4028235e38) and the f64 values
            that round DOWN into binary32 range — it rounds to +inf in binary32, so it must reject exactly as
            `1.0e300` does. Pins that the fit predicate is the precise binary32 boundary (round-to-nearest
-           overflow), not a loose magnitude test that admits near-boundary literals. (The exact-max fitting
-           twin `3.4028235e38` currently trips the FITTING-branch emit bug in this position — its compute pin
-           joins when that fix reaches the corpus base.)")
+           overflow), not a loose magnitude test that admits near-boundary literals. The exact-max fitting
+           twin below computes — together they bracket the boundary from both sides.")
   (input  (do
             (def (main (: c Bool))
               (: (if c 3.5e38 0.5) Float32))
             (export main)))
   (error  CDZ0302))
+
+(case "the exact Float32 finite max fits in a runtime branch"
+  (doc    "The fitting side of the boundary bracket: `3.4028235e38` — Float32's finite max, exactly
+           representable in binary32 — computes in the branch position where `3.5e38` rejects. Witnessed by
+           equality against `(Float32.of 3.4028235e38)` (the runtime demote of the same literal), so the pin
+           holds regardless of render form. With the reject twin above, the fit predicate is bracketed to
+           the exact binary32 max.")
+  (input  (do
+            (def (main (: c Bool))
+              (= (: (if c 3.4028235e38 0.5) Float32) (Float32.of 3.4028235e38)))
+            (export main)))
+  (call   main (: true Bool)) (output (: true Bool)))
+
+(case "a subnormal-range tiny literal under Float32 computes in a runtime branch"
+  (doc    "The UNDERFLOW edge: `1.0e-40` is below Float32's smallest NORMAL magnitude (~1.18e-38) but within
+           subnormal range — it must NOT trip the overflow fit-check (which guards magnitude overflow, not
+           precision loss) and computes as the binary32 subnormal. Witnessed by equality against
+           `(Float32.of 1.0e-40)`. Guards the fit predicate against a symmetric-range test that wrongly
+           rejects tiny literals.")
+  (input  (do
+            (def (main (: c Bool))
+              (= (: (if c 1.0e-40 0.5) Float32) (Float32.of 1.0e-40)))
+            (export main)))
+  (call   main (: true Bool)) (output (: true Bool)))
+
+(case "a fitting Float32 literal in a runtime if branch computes"
+  (doc    "The no-over-reject witness of the branch fit-check AND the emit-grounding fix: `(: (if c 1.5
+           0.25) Float32)` over runtime `c` — both branch literals fit binary32 and the emit grounds each
+           bare float literal to the if's Float32 RESULT width (an ungrounded branch pushed f64.const
+           against the f32 block type — an INVALID module, not a wrong value; f32/f64 are distinct machine
+           types). Computes 1.5/0.25 per branch on every backend.")
+  (input  (do
+            (def (main (: c Bool))
+              (: (if c 1.5 0.25) Float32))
+            (export main)))
+  (call   main (: true Bool))  (output (: 1.5 Float32))
+  (call   main (: false Bool)) (output (: 0.25 Float32)))
+
+(case "mixed param-and-literal Float32 branches compute"
+  (doc    "The mixed face: one branch is a Float32 PARAM (already f32), the other a bare literal that must
+           ground to f32 — `(: (if c a 0.25) Float32)`. Pins that the emit grounding fires per-branch (the
+           param branch needs no conversion; the literal branch does), not only when every branch is a
+           literal.")
+  (input  (do
+            (def (main (: c Bool) (: a Float32))
+              (: (if c a 0.25) Float32))
+            (export main)))
+  (call   main (: true Bool) (: 1.5 Float32))  (output (: 1.5 Float32))
+  (call   main (: false Bool) (: 1.5 Float32)) (output (: 0.25 Float32)))
 
 (case "the inclusive Int8 boundaries fit in a runtime branch and one-past rejects"
   (doc    "The INTEGER boundary faces of the branch fit-check, at the annotated-conditional position (the
@@ -772,6 +827,41 @@
               (: (match (if c (Some 10000) (None)) ((Some v) v) ((None) 0)) UInt8))
             (export main)))
   (error  CDZ0302))
+
+(case "a narrow-width overflow projected through Option.expect over a runtime branch is rejected"
+  (doc    "The BUILT-IN-projector face: `(: (Option.expect (if c (Some 10000) (None)) \"x\") UInt8)` —
+           `expect` projects the sum payload, so the UInt8 result width propagates into the `Some` payload
+           where `10000` overflows → CDZ0302. Before the SumExpect descent arm, this shape PASSED check and
+           compiled while the emit truncated 10000 → 16 (a wrong value with NO error on check OR emit — the
+           top-severity class); the constant `(Some 10000)` folds and the direct annotation already rejected,
+           so only the RUNTIME sum slipped. The expect companion of the match-projection case above.")
+  (input  (do
+            (def (main (: c Bool))
+              (: (Option.expect (if c (Some 10000) (None)) "x") UInt8))
+            (export main)))
+  (error  CDZ0302))
+
+(case "a narrow-width overflow projected through Result.expect over a runtime branch is rejected"
+  (doc    "The Result twin: `(: (Result.expect (if c (Ok 10000) (Err 1)) \"x\") UInt8)` — Result.expect
+           projects the Ok payload (arg 0, same slot as Option's Some), so the width descent reaches the
+           branch literal through the same SumExpect arm → CDZ0302. Pins that the arm covers BOTH expect
+           projectors, not only Option.")
+  (input  (do
+            (def (main (: c Bool))
+              (: (Result.expect (if c (Ok 10000) (Err 1)) "x") UInt8))
+            (export main)))
+  (error  CDZ0302))
+
+(case "a fitting payload projected through Option.expect computes"
+  (doc    "The no-over-reject control for the expect descent: `(Option.expect (if c (Some 100) (Some 7))
+           \"x\")` under UInt8 — both payload literals fit, so the projection computes 100/7 per branch at
+           UInt8. Guards the SumExpect arm against rejecting every narrow-annotated expect.")
+  (input  (do
+            (def (main (: c Bool))
+              (: (Option.expect (if c (Some 100) (Some 7)) "x") UInt8))
+            (export main)))
+  (call   main (: true Bool)) (output (: 100 UInt8))
+  (call   main (: false Bool)) (output (: 7 UInt8)))
 
 (case "a narrow-width overflow reached through a TUPLE-field projection of a runtime branch is rejected"
   (doc    "The tuple-projection twin: `(: (. (if c (tuple 10000 1) (tuple 5 2)) 0) UInt8)` — the narrow

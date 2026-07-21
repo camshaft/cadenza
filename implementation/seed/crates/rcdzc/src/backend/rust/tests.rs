@@ -3928,6 +3928,69 @@ fn rustc_roundtrip_runtime_equality_over_a_generic_sum() {
 }
 
 #[test]
+fn runtime_equality_over_a_recursive_sum_emits_a_recursive_helper_fn() {
+    // Runtime `(= a b)` over a RECURSIVE user sum whose payloads carry a Float/List (so NOT native-Eq — it
+    // reaches the structural walk). Was a DECLINE: the walk expanded a `match` per payload INLINE, so a
+    // self-referential sum would expand unboundedly at compile time (a codegen stack overflow), guarded by
+    // a `seen` set that declined the recursive back-edge. Now the walk routes a user sum through a generated
+    // recursive helper `fn __eq_<Ident>(l, r) -> bool` (call-indirection, mirroring the render crate's
+    // `__render_<Ident>`), so the recursion runs at RUNTIME over the finite value and terminates — matching
+    // the wasm value-eq-shaped walk. Unblocks a program that compares two `Ast` reflection values (=).
+
+    // (a) LIST-recursive: `Ast = (Int Int64)|…|(List (List Ast))`. The self-reference is through a `List`
+    // element, which `variant_is_recursive` (a Box-only check) does NOT catch — so it MUST route through the
+    // helper via the `seen`/List path, not a Box deref. A runtime scrutinee so the match isn't folded away.
+    let ast = compile_rust(
+        "(module m (def (run (: k Int64)) \
+           (if (= (Ast.List (list (Ast.Int k) (Ast.Bool true))) \
+                  (Ast.List (list (Ast.Int 5) (Ast.Bool true)))) 1 0)) (export run))",
+    );
+    assert!(
+        ast.contains("fn __eq_Ast(") && ast.contains("__eq_Ast(&"),
+        "a recursive Ast eq emits + calls a recursive helper fn:\n{ast}"
+    );
+    if let Some(out) = rustc_run(&ast, "run(5)") {
+        assert_eq!(out, "1", "equal recursive Ast values compare equal");
+    }
+    if let Some(out) = rustc_run(&ast, "run(9)") {
+        assert_eq!(
+            out, "0",
+            "a differing nested Int makes the Ast values unequal"
+        );
+    }
+
+    // (b) BOX-recursive with a FLOAT leaf: `Tree = (Leaf Float64)|(Node Tree Tree)`. Directly self-recursive
+    // via a boxed 2-payload variant — the helper derefs the `Box` (`(**__lp).0`) and compares each float
+    // leaf by the canonical byte form. Confirms the double-deref + tuple-projection composes, and that a
+    // NaN leaf compares equal to itself yet distinct from a real number (canonical-byte float compare).
+    let tree = compile_rust(
+        "(module m (type Tree (Leaf Float64) (Node Tree Tree)) \
+           (def (run (: x Float64)) \
+             (if (= (Tree.Node (Tree.Leaf x) (Tree.Leaf 2.0)) \
+                    (Tree.Node (Tree.Leaf 1.0) (Tree.Leaf 2.0))) 1 0)) (export run))",
+    );
+    assert!(
+        tree.contains("fn __eq_Tree(") && tree.contains("is_nan()"),
+        "a Box-recursive float-carrying Tree eq emits a helper comparing floats by canonical bytes:\n{tree}"
+    );
+    if let Some(out) = rustc_run(&tree, "run(1.0)") {
+        assert_eq!(out, "1", "structurally equal trees compare equal");
+    }
+    if let Some(out) = rustc_run(&tree, "run(3.0)") {
+        assert_eq!(
+            out, "0",
+            "a differing float leaf deep in the tree -> unequal"
+        );
+    }
+    if let Some(out) = rustc_run(&tree, "run(f64::NAN)") {
+        assert_eq!(
+            out, "0",
+            "a NaN leaf is distinct from the real 1.0 it's compared against"
+        );
+    }
+}
+
+#[test]
 fn ast_float_reify_traps_a_runtime_non_canonical_float_matching_wasm() {
     // The reify `Ast` sum's `Float` variant must carry a CANONICAL float — a non-canonical NaN/±inf has no
     // canonical value form, so wasm's value-encode boundary TRAPS on it. A RUNTIME-produced non-canonical

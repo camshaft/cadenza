@@ -2620,8 +2620,14 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 // a sum/list/map at runtime is NOT reached here (it folds, or declines at `lower`).
                 let l = emit(db, lhs, env, ctx)?;
                 let r = emit(db, rhs, env, ctx)?;
-                let cmp = emit_value_eq_walk(db, &ty, "__eq_l", "__eq_r")?;
-                Ok(format!("{{ let __eq_l = {l}; let __eq_r = {r}; {cmp} }}"))
+                let mut helpers = Vec::new();
+                let cmp = emit_value_eq_walk(db, &ty, "__eq_l", "__eq_r", &mut helpers)?;
+                // Hoist any generated recursive-sum eq helper `fn`s INTO the block so they are in scope where
+                // `cmp` (which may call them) runs. A `fn` defined in a block works for self/mutual recursion.
+                Ok(format!(
+                    "{{ {} let __eq_l = {l}; let __eq_r = {r}; {cmp} }}",
+                    helpers.join(" ")
+                ))
             } else {
                 Err(Reject::decline(
                     "runtime structural equality over this compound is not yet rendered by the Rust backend",
@@ -2688,8 +2694,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::ValueEqShaped { lhs, rhs, ty } => {
             let l = emit(db, lhs, env, ctx)?;
             let r = emit(db, rhs, env, ctx)?;
-            let cmp = emit_value_eq_walk(db, &ty, "__eq_l", "__eq_r")?;
-            Ok(format!("{{ let __eq_l = {l}; let __eq_r = {r}; {cmp} }}"))
+            let mut helpers = Vec::new();
+            let cmp = emit_value_eq_walk(db, &ty, "__eq_l", "__eq_r", &mut helpers)?;
+            Ok(format!(
+                "{{ {} let __eq_l = {l}; let __eq_r = {r}; {cmp} }}",
+                helpers.join(" ")
+            ))
         }
     }
 }
@@ -2740,18 +2750,17 @@ fn ty_float_walkable_seen(db: &mut Db, ty: &Ty, seen: &mut Vec<crate::ast::Struc
             ty_float_walkable_seen(db, &elem, seen)
         }
         // A SUM whose payloads carry a Float and/or a List (so it is NOT already native-Eq — that path was
-        // taken above) — walkable iff every variant's payload is AND the sum is NON-RECURSIVE. `emit_value_
-        // eq_walk` renders a Sum by INLINE-EXPANDING a `match (l,r)` over the variants + recursively walking
-        // each payload; a self-referential sum (e.g. `Ast` via `Ast.List (List Ast)`) would expand the walk
-        // UNBOUNDEDLY (a compile-time stack overflow — the emit has no fn-call indirection to break the
-        // cycle). So a recursive back-edge returns FALSE here → the whole recursive sum DECLINES on rust
-        // (a clean todo, reject-don't-miscompile). This is where the rust predicate legitimately DIFFERS from
-        // the wasm `eq_shaped_walkable` (whose runtime walk is ITERATIVE — a work-stack — so it handles a
-        // recursive sum, returning true on the back-edge). A recursive float/list-carrying sum's rust eq is a
-        // follow-up (emit a named helper fn instead of inline expansion); a NON-recursive one emits fine.
+        // taken above) — walkable iff every variant's payload is. `emit_value_eq_walk` renders a Sum through
+        // a generated recursive helper `fn __eq_<Ident>` (call-indirection), so a self-referential sum (e.g.
+        // `Ast` via `Ast.List (List Ast)`, or a `Box`ed `Tree.Node Tree Tree`) is fine: a recursive back-edge
+        // returns TRUE (the helper's runtime recursion terminates over the finite value), matching the wasm
+        // `eq_shaped_walkable` (whose runtime walk is likewise iterative/recursive). A GENERIC recursive sum
+        // is the one exception the emit still declines (a generic helper signature is a follow-up), but the
+        // back-edge here can't see the args cheaply and a false-positive just yields a clean emit-time decline
+        // downstream (reject-don't-miscompile), so admit it and let `emit_value_eq_walk` draw that line.
         Ty::Sum { decl, .. } => {
             if seen.contains(decl) {
-                return false; // recursive back-edge — the inline emit walk can't expand it; decline on rust
+                return true; // recursive back-edge — the helper `fn` breaks the cycle at runtime (see emit)
             }
             seen.push(*decl);
             let variant_count = db.type_decl_by_occ(*decl).map(|t| t.variants.len());
@@ -2783,22 +2792,32 @@ fn ty_float_walkable_seen(db: &mut Db, ty: &Ty, seen: &mut Vec<crate::ast::Struc
 /// rust_type's element order, which for a record is sorted-key order); a NOMINAL → its inner (the newtype is
 /// transparent). `l`/`r` are already-bound identifiers (or field projections built on them), so re-reading
 /// them per leaf is sound (a projection of a bound value; the enclosing bind is done once by the caller).
-fn emit_value_eq_walk(db: &mut Db, ty: &Ty, l: &str, r: &str) -> Result<String, Reject> {
-    emit_value_eq_walk_seen(db, ty, l, r, &mut Vec::new())
+fn emit_value_eq_walk(
+    db: &mut Db,
+    ty: &Ty,
+    l: &str,
+    r: &str,
+    helpers: &mut Vec<String>,
+) -> Result<String, Reject> {
+    emit_value_eq_walk_seen(db, ty, l, r, &mut Vec::new(), helpers)
 }
 
-/// [`emit_value_eq_walk`] with a `seen` set of sum decls currently being expanded — the recursion guard for
-/// the INLINE Sum-eq walk. A self-referential sum (via ANY path: a `Box`ed variant, or through a `List`/
-/// tuple element as in `Ast.List (List Ast)`) would expand the emit UNBOUNDEDLY, so re-entering a sum
-/// already in `seen` DECLINES (a compile-time stack overflow otherwise). A recursive sum's rust eq needs a
-/// named helper fn (call-indirection) — a follow-up; a NON-recursive sum expands fine. `variant_is_recursive`
-/// alone is insufficient (it catches only `Box`ed DIRECT self-reference, not recursion through a `List`).
+/// [`emit_value_eq_walk`] with a `seen` set of sum decls currently being expanded (the recursion guard that
+/// routes a self-referential sum through its helper `fn` instead of expanding inline) and a `helpers` sink
+/// that collects the generated recursive `fn __eq_<Ident>(l, r) -> bool` definitions. A user SUM is compared
+/// through such a helper (call-indirection), mirroring the render crate's `__render_<Ident>`: this is what
+/// makes a RECURSIVE sum (via a `Box`ed variant OR through a `List`/tuple element as in `Ast.List (List
+/// Ast)`) terminate — inlining a `match` per payload would expand UNBOUNDEDLY at compile time (a codegen
+/// stack overflow), but the helper moves the recursion to Rust RUNTIME over the finite value. A self-
+/// referential payload position, reached while the sum is on `seen`, emits a CALL to the same helper. The
+/// caller hoists `helpers` into the enclosing block so the `fn`s are in scope where the returned `cmp` runs.
 fn emit_value_eq_walk_seen(
     db: &mut Db,
     ty: &Ty,
     l: &str,
     r: &str,
     seen: &mut Vec<crate::ast::StructId>,
+    helpers: &mut Vec<String>,
 ) -> Result<String, Reject> {
     // A native-Eq leaf (Int/Bool/Bytes/String/BigInt/… and any all-Eq compound) — a plain `==`. Checked
     // FIRST so an Eq sub-tree compares in one `==` rather than being walked field-by-field (identical
@@ -2833,6 +2852,7 @@ fn emit_value_eq_walk_seen(
                     &format!("{l}.{i}"),
                     &format!("{r}.{i}"),
                     seen,
+                    helpers,
                 )?);
             }
             Ok(join_and(parts))
@@ -2848,6 +2868,7 @@ fn emit_value_eq_walk_seen(
                     &format!("{l}.{i}"),
                     &format!("{r}.{i}"),
                     seen,
+                    helpers,
                 )?);
             }
             Ok(join_and(parts))
@@ -2861,7 +2882,7 @@ fn emit_value_eq_walk_seen(
         // canonical byte form (NOT `Vec`'s derived `PartialEq`, which would give the wrong NaN/-0.0 answer).
         Ty::List(elem) => {
             let elem = (**elem).clone();
-            let elem_cmp = emit_value_eq_walk_seen(db, &elem, "__le", "__re", seen)?;
+            let elem_cmp = emit_value_eq_walk_seen(db, &elem, "__le", "__re", seen, helpers)?;
             Ok(format!(
                 "({l}.len() == {r}.len() && {l}.iter().zip({r}.iter()).all(|(__le, __re)| {elem_cmp}))"
             ))
@@ -2870,33 +2891,42 @@ fn emit_value_eq_walk_seen(
         // operands (no projection; the newtype adds no Rust wrapper).
         Ty::Nominal { inner, .. } => {
             let inner = (**inner).clone();
-            emit_value_eq_walk_seen(db, &inner, l, r, seen)
+            emit_value_eq_walk_seen(db, &inner, l, r, seen, helpers)
         }
         // A Qty erases to its inner magnitude — walk the inner (same operands).
         Ty::Qty { inner, .. } => {
             let inner = (**inner).clone();
-            emit_value_eq_walk_seen(db, &inner, l, r, seen)
+            emit_value_eq_walk_seen(db, &inner, l, r, seen, helpers)
         }
-        // A SUM whose payloads carry a Float/List (so it is NOT native-Eq — that path was taken first): a
-        // `match (l, r)` over the emitted enum's variants. Each variant arm binds its payload on BOTH sides
-        // and recursively walks the payload (a float leaf by canonical byte form, a list element-wise); a
-        // nullary variant → `true`; a mismatched variant pair → the `_ => false` catch-all. Mirrors the wasm
-        // `value-eq-shaped` Shape::Sum arm (disc-compare then payload walk) — the same domain `ty_float_
-        // walkable`'s Sum arm admits (the two-backend routing invariant). A RECURSIVE variant's field is a
-        // `Box<…>` (`variant_is_recursive`), so its bound ref is `&Box<T>` — deref with `**` before the walk,
-        // the read twin of the construct site's `Box::new`.
-        Ty::Sum { decl, .. } => {
-            // DECLINE a RECURSIVE sum via the `seen` guard: this emit expands the walk INLINE (a `match`
-            // literal per payload), so re-entering a sum already being expanded (self-reference via a `Box`ed
-            // variant OR through a `List`/tuple element, e.g. `Ast.List (List Ast)`) would expand UNBOUNDEDLY
-            // at compile time (a compiler stack overflow). `variant_is_recursive` alone is insufficient (it
-            // catches only `Box`ed direct self-reference, not recursion through a `List`). A recursive sum's
-            // rust eq needs a named helper fn (call-indirection) — a follow-up; decline cleanly here (todo,
-            // not a miscompile). Wasm still computes it (the runtime value-eq-shaped walk is iterative).
+        // A SUM whose payloads carry a Float/List (so it is NOT native-Eq — that path was taken first). It is
+        // compared through a generated recursive helper `fn __eq_<Ident>(l: &Enum, r: &Enum) -> bool` that
+        // `match`es `(l, r)` over the emitted enum's variants: each variant arm binds its payload on BOTH
+        // sides and walks the payload (a float leaf by canonical byte form, a list element-wise); a nullary
+        // variant → `true`; a mismatched variant pair → the `_ => false` catch-all. This EXACTLY mirrors the
+        // render crate's `__render_<Ident>` helper (cdz-rust-render) and the wasm `value-eq-shaped` Shape::Sum
+        // walk. Routing through a helper (call-indirection) is what makes a RECURSIVE sum TERMINATE: a
+        // self-referential payload (via a `Box`ed variant OR through a `List`/tuple element, `Ast.List (List
+        // Ast)`) would expand the emit UNBOUNDEDLY if inlined (a codegen stack overflow), but the helper moves
+        // the recursion to Rust RUNTIME over the finite value — a self-reference reached while the decl is on
+        // `seen` emits a CALL to the same helper, and a nullary leaf terminates the runtime walk.
+        //
+        // GENERIC instantiations (args non-empty) still DECLINE on re-entry: a helper for `Box<T0>` would need
+        // a spelled generic signature (`fn __eq_Box<T0: ?>(…)`) with the right payload bound — a follow-up.
+        // A non-recursive generic sum is native-Eq (took the `==` path); only a recursive generic one reaches
+        // here, and it declines cleanly (todo, not a miscompile — wasm computes it).
+        Ty::Sum { decl, args, name } => {
+            let enum_ty = super::types::rust_type(ty)
+                .ok_or_else(|| Reject::decline("sum eq: no rust type for the enum"))?;
+            let fn_name = format!("__eq_{}", super::types::sum_ident(name));
+            // On re-entry of a sum already being expanded, emit a CALL to its helper (the recursion base).
+            // For a GENERIC instantiation the helper isn't generated (see above) → decline, as before.
             if seen.contains(decl) {
-                return Err(Reject::decline(
-                    "runtime structural equality over a RECURSIVE sum is not yet rendered by the Rust backend (needs a helper fn, not inline expansion)",
-                ));
+                if !args.is_empty() {
+                    return Err(Reject::decline(
+                        "runtime structural equality over a RECURSIVE GENERIC sum is not yet rendered by the Rust backend (needs a generic helper fn)",
+                    ));
+                }
+                return Ok(format!("{fn_name}(&{l}, &{r})"));
             }
             seen.push(*decl);
             let variant_count = match db.type_decl_by_occ(*decl).map(|t| t.variants.len()) {
@@ -2929,9 +2959,14 @@ fn emit_value_eq_walk_seen(
                         } else {
                             "*"
                         };
-                        let lp = format!("{deref}__lp");
-                        let rp = format!("{deref}__rp");
-                        match emit_value_eq_walk_seen(db, &payload_ty, &lp, &rp, seen) {
+                        // PARENTHESIZE the deref: the payload walk may append a method call (a `List` payload
+                        // emits `{l}.len()`/`{l}.iter()`), and `.` binds tighter than prefix `*`, so a bare
+                        // `*__lp.len()` parses as `*(__lp.len())` (deref of the `usize`, E0614). `(*__lp)` /
+                        // `(**__lp)` binds the deref first. (Not hit before: a `List`-carrying sum payload was
+                        // always declined as recursive; the helper now renders it, exercising this path.)
+                        let lp = format!("({deref}__lp)");
+                        let rp = format!("({deref}__rp)");
+                        match emit_value_eq_walk_seen(db, &payload_ty, &lp, &rp, seen, helpers) {
                             Ok(cmp) => arms.push(format!("({path}(__lp), {path}(__rp)) => {cmp},")),
                             Err(e) => {
                                 arm_err = Some(e);
@@ -2948,7 +2983,26 @@ fn emit_value_eq_walk_seen(
             // Mismatched-variant pair → not equal. (Only reached when the two discriminants differ; a matched
             // pair took its arm above.)
             arms.push("_ => false,".to_string());
-            Ok(format!("(match (&{l}, &{r}) {{ {} }})", arms.join(" ")))
+            // A GENERIC instantiation is NOT routed through a helper (no generic signature to spell) — emit
+            // the inline `match` as before (a non-recursive generic sum works; a recursive one already
+            // declined above on re-entry). Only a MONOMORPHIC user sum generates + calls a helper `fn`.
+            if !args.is_empty() {
+                return Ok(format!("(match (&{l}, &{r}) {{ {} }})", arms.join(" ")));
+            }
+            // Emit the helper `fn` once (a re-entry on the same decl returned a call above, so a given decl's
+            // helper is pushed exactly once per top-level walk). `#[allow(unused)]` — a mutually-referenced
+            // helper may be defined but only reached via another. The helper takes `&Enum` refs (the caller
+            // passes `&value`, and a boxed self-reference deref-then-re-borrows via the call `&{l}`).
+            if !helpers
+                .iter()
+                .any(|h| h.contains(&format!("fn {fn_name}(")))
+            {
+                helpers.push(format!(
+                    "#[allow(unused)] fn {fn_name}(l: &{enum_ty}, r: &{enum_ty}) -> bool {{ match (l, r) {{ {} }} }}",
+                    arms.join(" ")
+                ));
+            }
+            Ok(format!("{fn_name}(&{l}, &{r})"))
         }
         // Any other shape should have been excluded by `ty_float_walkable` before we got here.
         _ => Err(Reject::decline(
