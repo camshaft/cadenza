@@ -616,6 +616,32 @@
             (export main)))
   (error  CDZ0302))
 
+; The VALID (in-range) companion of the overflow-reject above: a bare `ConstFloat` if-branch whose value FITS
+; Float32 must EMIT correctly, not just avoid rejection. The annotation `(: (if c 1.5 0.25) Float32)` sits on
+; the CONDITIONAL, so each branch literal solves to the if's Float32 RESULT width — but `Core::ConstFloat`'s
+; emit reads the NODE's own solved width, and a bare branch literal used to keep its default Float64, pushing
+; an `f64.const` into an `f32` block type → an INVALID module (`expected f32, found f64`; unlike a narrow INT
+; masked into the shared i32 slot, f32/f64 are DISTINCT machine types = a hard validation error). The emit now
+; grounds the bare-ConstFloat branch to the if's result float width. This pins that fix at the VALUE level
+; (the fix's own guard is `--lib`-only, and `xtask gate` skips `--lib`): c=true → 1.5 (not < 1.0) → 0; c=false
+; → 0.25 (< 1.0) → 1. A regression that re-emitted `f64.const` in the `f32` branch would fail to load, caught
+; here fleet-visibly.
+(case "a bare in-range ConstFloat if-branch under a Float32 annotation emits valid f32 and runs"
+  (doc    "The valid twin of the Float32-overflow reject above: `(: (if c 1.5 0.25) Float32)` — both branch
+           literals fit binary32, so this must EMIT a valid module and run (it was an invalid module: the bare
+           branch literal kept its default Float64 and pushed `f64.const` into the `f32` if-block). Compared
+           against `(: 1.0 Float32)`: c=true → 1.5, not < 1.0 → 0; c=false → 0.25 < 1.0 → 1. Pins the
+           bare-ConstFloat-branch-grounds-to-if-result-width emit fix at the value level (its guard is
+           `--lib`-only; the gate skips `--lib`). Both backends.")
+  (input  (do
+            (def (main (: c Bool))
+              (if (< (: (if c 1.5 0.25) Float32) (: 1.0 Float32)) 1 0))
+            (export main)))
+  (call   main (: true Bool))
+  (output (: 0 Int64))
+  (call   main (: false Bool))
+  (output (: 1 Int64)))
+
 (case "a Float32-overflowing literal in a runtime match arm is rejected at check"
   (doc    "The match face of the Float32 branch descent: `(: (match n (0 0.5) (_ 1.0e300)) Float32)` over
            runtime `n` — the wildcard arm's `1.0e300` overflows Float32. The annotation grounds the whole
@@ -648,6 +674,49 @@
   (input  (do
             (def (main (: c Bool))
               (: (if c 3.5e38 0.5) Float32))
+            (export main)))
+  (error  CDZ0302))
+
+(case "the inclusive Int8 boundaries fit in a runtime branch and one-past rejects"
+  (doc    "The INTEGER boundary faces of the branch fit-check, at the annotated-conditional position (the
+           conversion pins cover `Int8.of` at these values; this pins branch-literal GROUNDING): `-128` and
+           `127` — Int8's inclusive min/max — both fit in `(: (if c <v> 5) Int8)` and compute; the check is
+           inclusive (`<=`/`>=`), not off-by-one. Two calls witness the min case per branch; the max case is
+           its own pin below via the same shape.")
+  (input  (do
+            (def (main (: c Bool))
+              (: (if c -128 5) Int8))
+            (export main)))
+  (call   main (: true Bool)) (output (: -128 Int8))
+  (call   main (: false Bool)) (output (: 5 Int8)))
+
+(case "the Int8 max boundary literal fits in a runtime branch"
+  (doc    "The max twin: `(: (if c 127 5) Int8)` computes 127 — the inclusive upper boundary of the branch
+           fit-check.")
+  (input  (do
+            (def (main (: c Bool))
+              (: (if c 127 5) Int8))
+            (export main)))
+  (call   main (: true Bool)) (output (: 127 Int8)))
+
+(case "a literal one past the Int8 min rejects in a runtime branch"
+  (doc    "`-129` — one past Int8's min — overflows in branch position → CDZ0302. With the -128 fitting case
+           above, brackets the LOWER boundary exactly (the negative-side precision the Float32 sign face pins
+           for floats).")
+  (input  (do
+            (def (main (: c Bool))
+              (: (if c -129 5) Int8))
+            (export main)))
+  (error  CDZ0302))
+
+(case "a negative literal under an UNSIGNED width rejects in a runtime branch"
+  (doc    "`(: (if c -1 5) UInt8)` — any negative literal is out of an unsigned range (0..=255) → CDZ0302.
+           Pins that the branch fit-check respects SIGNEDNESS, not only magnitude: -1 has small magnitude
+           but no unsigned representation (a magnitude-only check would admit it and the emit would wrap it
+           to 255).")
+  (input  (do
+            (def (main (: c Bool))
+              (: (if c -1 5) UInt8))
             (export main)))
   (error  CDZ0302))
 

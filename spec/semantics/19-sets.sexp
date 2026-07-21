@@ -1350,6 +1350,51 @@
   (call   main (: 0.0 Float32))
   (output (: 1 Int64)))
 
+; The tuple-float-key cases above cover a float leaf in a TUPLE key; a float leaf in a RECORD key is the
+; structural-record twin. It ALSO declined on rust until v-rust-backend threaded the ord-wrapper through
+; record keys in sorted-field order (94ea8c58b); now a `(record (f Float) (n Int64))` Map key / Set element
+; keys by content on all three. These pin the record-float-key path — hit-by-content, a MISS on a different
+; float field, and Set dedup — the record companion of the tuple-float-key cases. (A float in a SUM PAYLOAD
+; key still declines on rust — per-variant threading is a later increment — so those are kept out.)
+(case "a structural record with a Float64 field is a Map key found by a separately-built equal key"
+  (doc    "A structural-record Map key `(record (f Float64) (n Int64))`: insert under `(record (f (+ x 1.25))
+           (n 3))` at x=1.25 (a RUNTIME float field) and look up with `(record (f 2.5) (n 3))` → 42. The
+           CHAMP key hash/eq descends into the record's fields (sorted-field order) and compares the float
+           field by its canonical byte form. Pins the float-leaf-in-record-key path (rust emits it via the
+           record-threaded ord-wrapper, 94ea8c58b), the record twin of the tuple-float-key case.")
+  (input  (do
+            (def (main (: x Float64))
+              (match (Map.lookup (Map.insert Map.empty (record (f (+ x 1.25)) (n 3)) 42) (record (f 2.5) (n 3)))
+                ((Some v) v) ((None _) -1)))
+            (export main)))
+  (call   main (: 1.25 Float64))
+  (output (: 42 Int64)))
+
+(case "a structural record with a Float64 field MISSES a Map key with a different float field"
+  (doc    "The negative control: the records share the Int64 field (n=3) but differ in the float field —
+           look up `(record (f 9.5) (n 3))` against a map keyed by `(record (f 2.5) (n 3))` → None (-1).
+           Confirms the record-key compare is genuinely by the float field's content, not over-matching on
+           the shared Int field or the record shape.")
+  (input  (do
+            (def (main (: x Float64))
+              (match (Map.lookup (Map.insert Map.empty (record (f (+ x 1.25)) (n 3)) 42) (record (f 9.5) (n 3)))
+                ((Some v) v) ((None _) -1)))
+            (export main)))
+  (call   main (: 1.25 Float64))
+  (output (: -1 Int64)))
+
+(case "a Set of structural records with a Float64 field dedups equal members by content"
+  (doc    "The Set companion: insert `(record (f (+ x 1.25)) (n 3))` (runtime float field) then `(record (f
+           2.5) (n 3))` into a set → ONE element (`Set.len` 1), the two records sharing one canonical form.
+           Pins that the CHAMP set dedup descends into the record's float field, the record companion of the
+           tuple-float set-dedup case.")
+  (input  (do
+            (def (main (: x Float64))
+              (Set.len (Set.insert (Set.insert (Set.of (list)) (record (f (+ x 1.25)) (n 3))) (record (f 2.5) (n 3)))))
+            (export main)))
+  (call   main (: 1.25 Float64))
+  (output (: 1 Int64)))
+
 ; --- CHAMP Set DEDUP follows the canonical FLOAT byte form (float-form × dedup intersection) ----------
 ; A Set dedups by hash+eq, and both must follow the SAME canonical byte form that scalar/compound `=`
 ; pins (03-equality NaN==NaN, -0.0 != +0.0). If the Set hashed/compared floats by IEEE == instead

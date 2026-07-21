@@ -5509,6 +5509,17 @@ fn blocking_combined_check(repo: &Path) -> bool {
         // Skip the two trailing REPORT-ONLY conformance sweeps — they never change the merge verdict but
         // can add ~90min after it's decided (matches the detached-check path in `spawn_detached_check`).
         .env("CDZ_GATE_ONLY", "1")
+        // Match CI's `CARGO_INCREMENTAL=0` (see .github/workflows/checks.yml). CI runs clippy as a
+        // dedicated COLD job; the gate runs `check` in a REUSED, warm-`target/` worktree (kept warm on
+        // purpose — see scrub_gate_batch_worktree's `clean -e target`) that is cycled through
+        // reset→merge→re-check across partition_batch's binary search over the SAME files in the SAME
+        // target dir. Incremental compilation caches at a finer grain than clippy's own fingerprint, and
+        // this reset/re-merge cycling is exactly the shape where an incremental unit can be reused with a
+        // stale lint verdict — a `#[cfg(test)]`/doc lint the gate reports green yet CI's cold clippy
+        // reds (observed: PR#739 assertions_on_constants, PR#741 doc-bullet). Disabling incremental costs
+        // nothing here (the gate is not an edit-recompile loop; crate-level warm reuse still applies) and
+        // makes the gate's clippy verdict identical to CI's — a lint-red can't slip past the gate.
+        .env("CARGO_INCREMENTAL", "0")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -5602,9 +5613,14 @@ fn spawn_detached_check(
         // emit≡interpret). They never affect the gate verdict but can add ~90min AFTER it's decided,
         // freezing the merge queue on already-green work (pr-sync's ">1h trailing-native-step" stall).
         // The merge gate only needs the green/red verdict, so it returns the moment that's known.
+        // `CARGO_INCREMENTAL=0` matches CI (.github/workflows/checks.yml) — see the same env on
+        // `blocking_combined_check` for why: this detached check runs in the REUSED warm-`target/`
+        // worktree that partition_batch cycles reset→merge→re-check over the same files, the shape where
+        // incremental can replay a STALE clippy lint verdict a cold CI clippy reds. Keeps the gate's
+        // clippy identical to CI so a `#[cfg(test)]`/doc lint can't land green.
         "#!/bin/sh\n\
          echo $$ > '{pidf}'\n\
-         CDZ_GATE_ONLY=1 CDZ_CHECK_PRIORITY=1 cargo xtask check > '{log}' 2>&1\n\
+         CDZ_GATE_ONLY=1 CDZ_CHECK_PRIORITY=1 CARGO_INCREMENTAL=0 cargo xtask check > '{log}' 2>&1\n\
          code=$?\n\
          printf '%s' \"$code\" > '{marker}.tmp' && mv '{marker}.tmp' '{marker}'\n\
          rm -f '{pidf}'\n",

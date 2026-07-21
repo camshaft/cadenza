@@ -1007,12 +1007,14 @@ pass	a fitting recursive annotated result computes at the narrow width
 pass	a float literal compared against a Float32 param computes at the narrow width
 pass	a large value in a NON-projected tuple slot does not trip the projection width check
 pass	a literal just past the Float32 finite max overflows in a runtime branch
+pass	a literal one past the Int8 min rejects in a runtime branch
 pass	a magnitude literal that overflows the annotated Qty INNER width is rejected
 pass	a narrow-width overflow in a RECURSIVE function's annotated result is rejected
 pass	a narrow-width overflow in a handler arm resume value under a narrow annotation is rejected
 pass	a narrow-width overflow reached ACROSS a function boundary through a match projection is rejected
 pass	a narrow-width overflow reached through a MATCH projection of a runtime sum is rejected
 pass	a narrow-width overflow reached through a TUPLE-field projection of a runtime branch is rejected
+pass	a negative literal under an UNSIGNED width rejects in a runtime branch
 pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string
 pass	a constant-size utf8 segment over ill-formed UTF-8 is a non-match, not a trap
 pass	a bytes segment sized by a CONSTANT LITERAL binds a fixed number of bytes then composes
@@ -2018,6 +2020,7 @@ pass	a runtime Int32 division of the minimum by -1 overflows and traps
 pass	a runtime Int32 division of the minimum by -2 is a normal division
 pass	a runtime Int8 division of the minimum by -1 overflows and traps
 pass	a runtime List built past 32 elements reads correctly by index across the RRB leaf-to-trie boundary
+pass	a runtime List of Option-BigInt round-trips each Some/None payload through List.at
 pass	a runtime List.update at exactly the length index is the first out-of-bounds and traps
 pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing
 pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
@@ -2396,6 +2399,8 @@ pass	a string-literal pattern in a Symbol sum payload is a type error
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
 pass	a string-literal pattern over a symbol scrutinee is a type error
 pass	a string-literal sub-pattern in a Symbol tuple element is a type error
+pass	a structural record with a Float64 field MISSES a Map key with a different float field
+pass	a structural record with a Float64 field is a Map key found by a separately-built equal key
 pass	a subtract that can underflow int8 keeps its trap — elision is opt-in on a proof
 pass	a success `?` observes an earlier trapping let-init so the trap is not elided
 pass	a success `?` then a failure `?` short-circuits at the second
@@ -3886,6 +3891,7 @@ pass	the Float codec round-trips a negative value
 pass	the INFINITY axiom is minted via new_axiom (an infinite type exists)
 pass	the Int codec round-trips i64::MIN — the two's-complement boundary
 pass	the Int64 total order holds at its extremes
+pass	the Int8 max boundary literal fits in a runtime branch
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
@@ -3960,6 +3966,7 @@ pass	the hygiene rename recurses into a NESTED compound match pattern
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
 pass	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214
+pass	the inclusive Int8 boundaries fit in a runtime branch and one-past rejects
 pass	the int-to-float generator is order-preserving (a < b implies of a <= of b — NON-decreasing)
 pass	the intersection contains the elements in both sets
 pass	the intersection of disjoint sets is empty
@@ -4319,6 +4326,7 @@ pass	a Rational-inner quantity Set dedups equal elements and keeps distinct ones
 pass	a Rational-inner quantity stored in a List reads back canonicalized through List.at
 pass	a Set of lists-of-quantities dedups equal members and keeps distinct ones
 pass	a Set of nominal-over-quantity newtypes dedups equal members
+pass	a Set of structural records with a Float64 field dedups equal members by content
 pass	a Set of tuples with a Float64 element dedups equal members by content
 pass	a Set of tuples with an f32 NaN element dedups by the canonical quiet NaN
 pass	a Set of tuples-containing-a-quantity dedups equal members and keeps distinct ones

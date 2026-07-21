@@ -14706,6 +14706,47 @@ mod runtime_ops {
     }
 
     #[test]
+    fn cdz_check_rejects_a_narrow_width_overflow_in_a_record_field_or_map_position() {
+        // Width-fit descent coverage audit (operator/pr-sync-directed): the descent covered Option/Result/
+        // Tuple/List but MISSED record fields and BOTH map positions (key + value) — a bare over-range
+        // literal escaped the fit-check → wasm SILENTLY TRUNCATED it (999 → -25, a backend-divergent
+        // miscompile; rust E0308). Now `nested_literal_width_faults` has Ty::Record + Ty::Map arms that
+        // descend each field value / entry key+value against its declared narrow type, rejecting CDZ0302 as
+        // the Option/Tuple arms already do.
+        let check_rejects = |src: &str| {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            let d = diags
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .unwrap_or_else(|| panic!("expected a check-level reject for: {src}"));
+            assert_eq!(
+                d.code.as_deref(),
+                Some("CDZ0302"),
+                "expected CDZ0302 for {src}, got: {}",
+                d.message
+            );
+        };
+        // Record field, map value, map key — each an over-range literal at a narrow declared type.
+        check_rejects("(module m (def (f) (: (record (x 999)) (Record (: x Int8)))) (export f))");
+        check_rejects("(module m (def (f) (: (map (1 999)) (Map Int64 Int8))) (export f))");
+        check_rejects("(module m (def (f) (: (map (999 1)) (Map Int8 Int64))) (export f))");
+
+        // NO OVER-REJECTION: fitting values at the narrow type pass.
+        let check_clean = |src: &str| {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                diags
+                    .iter()
+                    .all(|d| d.severity != crate::abi::Severity::Error),
+                "expected NO check reject for: {src}\ngot: {diags:?}"
+            );
+        };
+        check_clean("(module m (def (f) (: (record (x 100)) (Record (: x Int8)))) (export f))");
+        check_clean("(module m (def (f) (: (map (1 100)) (Map Int64 Int8))) (export f))");
+        check_clean("(module m (def (f) (: (map (100 1)) (Map Int8 Int64))) (export f))");
+    }
+
+    #[test]
     fn runtime_if_branch_bare_literal_grounds_to_the_narrow_result_width() {
         // An `if` whose branches MIX a narrow value and a bare literal: the literal branch (Int64 on its
         // own = i64 slot) must take the `if`'s narrow result width, so both branches leave the same i32
