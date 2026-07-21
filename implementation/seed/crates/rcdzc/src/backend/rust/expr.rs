@@ -750,6 +750,21 @@ fn emit_elem_grounding_empty_list(
     env: &Env,
     ctx: &Ctx,
 ) -> Result<String, Reject> {
+    // GROUND a bare deferred-width literal ELEMENT/FIELD to the compound's DECLARED slot type. A tuple/
+    // record element that is a `Core::ConstInt`/`Core::ConstFloat` has its OWN solved type default to
+    // Int64/Float64 when the checker didn't pin it from context — so a `(record (x 100))` at field type
+    // Int8 would emit `100u64 as i64` into an `(i8,)` slot (rustc E0308), the compound twin of the match-
+    // arm/if-branch literal grounding (`emit_grounded`/`emit_branch`). When the slot type is a concrete
+    // narrow Int/Float, ground the literal to it here (the checker guarantees a fitting literal — a
+    // non-fitting one is a CDZ fault that aborts before emit). A non-literal / non-narrow element falls
+    // through to the empty-list grounding and the plain emit below.
+    if let Some(t) = target {
+        match t.strip_nominal() {
+            Ty::Int(it) => return emit_grounded(db, id, *it, env, ctx),
+            Ty::Float(ft) => return emit_grounded_float(db, id, ft.ground_width(), env, ctx),
+            _ => {}
+        }
+    }
     let a = emit(db, id, env, ctx)?;
     if a == "vec![]"
         && let Some(t) = target

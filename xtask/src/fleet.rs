@@ -2161,13 +2161,13 @@ fn watchdog(
                 // marker is older than that and there's STILL no heartbeat, the cold start failed →
                 // fall through and re-arm it (below), rather than skipping it forever.
                 let coldstart_window = stale_after.saturating_mul(2);
-                match firstseen_age_secs(fleet, &a.name, now) {
-                    None => {
+                match coldstart_verdict(firstseen_age_secs(fleet, &a.name, now), coldstart_window) {
+                    ColdStartVerdict::MarkAndWait => {
                         stamp_firstseen(fleet, &a.name);
                         continue; // just noticed it booting — give it the cold-start window.
                     }
-                    Some(seen) if seen <= coldstart_window => continue, // still within cold-start grace.
-                    Some(seen) => {
+                    ColdStartVerdict::StillWaiting => continue, // still within cold-start grace.
+                    ColdStartVerdict::Failed(seen) => {
                         // Cold start failed: live window, no heartbeat, past the window. Treat as stale.
                         println!(
                             "  ! {} never stamped a heartbeat in {seen}s (> {coldstart_window}s cold-start window) — FAILED cold start, re-arming",
@@ -3232,6 +3232,31 @@ fn drain_stall_confirmed(suspected: bool, working_on_recheck: bool) -> bool {
 /// monotonicity is unit-tested; the caller supplies the persisted prior depth.
 fn queue_is_draining(prev_depth: Option<usize>, current_depth: usize) -> bool {
     prev_depth.is_some_and(|prev| current_depth < prev)
+}
+
+/// What to do about a windowed agent that has NEVER stamped a heartbeat, given how long ago we first
+/// saw it (`firstseen_age`, `None` = never marked) and its cold-start grace window. Pure so the
+/// `seen <= window` grace boundary is unit-tested (mirroring `agent_reads_stale`/`queue_is_draining`):
+/// a first tick may legitimately spend the whole window building before it ever stamps, so the grace is
+/// INCLUSIVE — `seen == window` is still booting, not yet a failed start. The caller performs the I/O
+/// (stamping first-seen, printing, re-arming); this only classifies.
+#[derive(Debug, PartialEq, Eq)]
+enum ColdStartVerdict {
+    /// Never marked first-seen before — stamp it now and give it the cold-start window.
+    MarkAndWait,
+    /// Marked, still within the grace window — keep waiting (no re-arm).
+    StillWaiting,
+    /// Marked, past the window, still no heartbeat — cold start failed; re-arm. Carries the first-seen
+    /// age to reuse as the staleness measure downstream.
+    Failed(u64),
+}
+
+fn coldstart_verdict(firstseen_age: Option<u64>, coldstart_window: u64) -> ColdStartVerdict {
+    match firstseen_age {
+        None => ColdStartVerdict::MarkAndWait,
+        Some(seen) if seen <= coldstart_window => ColdStartVerdict::StillWaiting,
+        Some(seen) => ColdStartVerdict::Failed(seen),
+    }
 }
 
 /// What the watchdog should do about a probable drain-stall this sweep. Distinguishes a first/fresh
@@ -7290,6 +7315,30 @@ mod tests {
         assert!(
             drain_stall_confirmed(true, queue_is_draining(Some(12), 12)),
             "suspected + idle-recheck + flat queue → still a confirmed stall"
+        );
+    }
+
+    #[test]
+    fn coldstart_verdict_grace_boundary_is_inclusive() {
+        // Window = 1200s (2× a 600s stale window) throughout.
+        // Never marked first-seen → mark it now and start the clock (no re-arm yet).
+        assert_eq!(coldstart_verdict(None, 1200), ColdStartVerdict::MarkAndWait);
+        // Well within the grace → still booting, keep waiting.
+        assert_eq!(
+            coldstart_verdict(Some(300), 1200),
+            ColdStartVerdict::StillWaiting
+        );
+        // EXACTLY at the window is still booting (grace is inclusive, `<=`) — a first tick may spend the
+        // whole window building before it ever stamps. Pins the `<=`/`<` mutation on the grace edge.
+        assert_eq!(
+            coldstart_verdict(Some(1200), 1200),
+            ColdStartVerdict::StillWaiting
+        );
+        // One second past the window with still no heartbeat → cold start FAILED, re-arm; the verdict
+        // carries the first-seen age forward as the staleness measure.
+        assert_eq!(
+            coldstart_verdict(Some(1201), 1200),
+            ColdStartVerdict::Failed(1201)
         );
     }
 
