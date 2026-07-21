@@ -2425,6 +2425,21 @@
   (call   main (: 3 Int64)) (output (: 42 Int64))
   (call   main (: 2 Int64)) (output (: -1 Int64)))
 
+(case "a SET as a Map key hits by ORDER-INDEPENDENT inner-set content"
+  (doc    "The set-KEY face of the exotic-key family (the fresh Set-of-Sets pin covers a set as a SET
+           element; this keys a MAP by one): a map keyed by `(Set.of (list 1 n))` at `n = 2` is found by
+           the lookup key `(Set.of (list 2 1))` — the SAME two elements written in the OPPOSITE order — 42.
+           The CHAMP key hash/eq must read the inner set's canonical (order-independent) content, not its
+           construction order. At `n = 9` the sets differ → -1. A key path hashing the insertion sequence
+           (or the inner root handle) would miss the reordered twin.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((m (Map.insert Map.empty (Set.of (list 1 n)) 42)))
+                (match (Map.lookup m (Set.of (list 2 1))) ((Some v) v) ((None u) -1))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 42 Int64))
+  (call   main (: 9 Int64)) (output (: -1 Int64)))
+
 (case "a deep NESTED-VARIANT pattern selects a runtime recursive sum by spine depth"
   (doc    "Nested constructor patterns to depth 3 over a runtime-built Peano spine: `((S (S (S _))) 3)` /
            `((S (S _)) 2)` / `((S _) 1)` / `((Z u) 0)` — the match must UNWRAP the spine level by level and
@@ -4070,6 +4085,38 @@
               (def (f (: xs (List W))) (match xs ((list (Wrap x) .. r) x) (_ -1)))
               (def (main) (f (list (Wrap 7)))) (export main)))
   (output (: 7 Int64)))
+
+(case "an unwrap-transform-rewrap helper round-trips a newtype at runtime"
+  (doc    "The domain-modeling idiom: `bump` unwraps a `UserId`, increments the inner scalar, and REWRAPS —
+           `(UserId (+ n 1))` — so the newtype identity survives a transform round-trip. `main` wraps a
+           runtime `n`, bumps, unwraps: 41 → 42. Pins that the wrap/unwrap pair composes through a helper
+           call at runtime with the erasure fully transparent (the wrapped value is the erased scalar at
+           every step; no residual boxing changes the arithmetic).")
+  (input  (do
+            (type UserId (UserId Int64))
+            (def (bump (: u UserId))
+              (match u ((UserId n) (UserId (+ n 1)))))
+            (def (main (: n Int64))
+              (match (bump (UserId n)) ((UserId v) v)))
+            (export main)))
+  (call   main (: 41 Int64)) (output (: 42 Int64)))
+
+(case "two newtypes over the SAME inner type do not cross-assign"
+  (doc    "The type-distinctness half of the newtype contract (the erasure pins above are the runtime
+           half): `UserId` and `OrderId` both wrap Int64, but passing an `(OrderId n)` where a `UserId`
+           parameter is declared is a TYPE ERROR (CDZ0203) — nominal distinctness survives the identical
+           erasure. This is the whole point of the newtype pattern: erased representation, unerased
+           identity; an implementation that compared newtypes structurally (both are one-Int64-payload
+           sums) would wrongly accept the call.")
+  (input  (do
+            (type UserId (UserId Int64))
+            (type OrderId (OrderId Int64))
+            (def (get-user (: u UserId))
+              (match u ((UserId n) n)))
+            (def (main (: n Int64))
+              (get-user (OrderId n)))
+            (export main)))
+  (error  CDZ0203))
 
 ; A newtype ERASES to its inner value but stays type-distinct — and the erasure must be transparent to
 ; the COLLECTION machinery: a newtype-wrapped scalar used as a Set ELEMENT or Map KEY must hash, compare,
@@ -6476,6 +6523,24 @@
   (call   main (: 1 Int64) (: 2 Int64)) (output (: 200 Int64))
   (call   main (: 0 Int64) (: 2 Int64)) (output (: -1 Int64))
   (call   main (: 5 Int64) (: 1 Int64)) (output (: -2 Int64)))
+
+(case "re-inserting a LIST row into a map replaces that row and leaves the original map's row intact"
+  (doc    "The overwrite+persistence face of the map-of-lists (the query pins read; this WRITES a row):
+           `m = {1↦[10], 2↦[20,21]}`, then `m2 = (Map.insert m 1 [10,11,12])` REPLACES row 1 with a longer
+           list. Reads encode `10·len(m2[k]) + len(m[k])`: at `k = 1` → 10·3 + 1 = 31 (the new map holds the
+           3-element row AND the original map still holds the 1-element row — the overwrite did not mutate
+           the shared heap row or the original CHAMP); at `k = 2` → 10·2 + 2 = 22 (the untouched row is
+           shared by both maps). Pins whole-row replacement with persistence when the VALUE is itself a
+           heap collection.")
+  (input  (do
+            (def (main (: k Int64))
+              (let ((m (Map.insert (Map.insert Map.empty 1 (list 10)) 2 (list 20 21))))
+                (let ((m2 (Map.insert m 1 (list 10 11 12))))
+                  (+ (* 10 (match (Map.lookup m2 k) ((Some xs) (List.len xs)) ((None u) -1)))
+                     (match (Map.lookup m k) ((Some xs) (List.len xs)) ((None u) -1))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 31 Int64))
+  (call   main (: 2 Int64)) (output (: 22 Int64)))
 
 (case "a list of records: a runtime index then reads a field of the found record"
   (doc    "`(List.at [{v↦10,tag↦1}, {v↦20,tag↦2}] i)` returns a RECORD value (present) or None; the returned
@@ -11756,6 +11821,33 @@
                 ((None u) (- 0 1))))
             (export main)))
   (call   main (: 4 Int64)) (output (: 11 Int64)))
+
+; The cases above enumerate/index/count a Map.to-list; this closes the ROUND-TRIP that the "map→list-of-
+; pairs→fold" idiom relies on — rebuilding a map by folding Map.insert over its OWN Map.to-list recovers an
+; EQUAL map. It exercises enumeration (to-list) + the fold-rebuild + map value-equality together, the Map
+; twin of the Set.of(Set.to-list s)=s closure. If to-list dropped/reordered an entry, or the rebuild lost
+; one, the rebuilt map would differ from the original.
+(case "a Map rebuilt by folding Map.insert over its own Map.to-list equals the original"
+  (doc    "The enumeration round-trip closure: `Map.to-list m` yields `(list (k v) …)` entry tuples in
+           canonical key order; folding `Map.insert` over them from the empty map rebuilds an EQUAL map. Over
+           a RUNTIME map `m = {a↦10, b↦20}` (a,b parameters): `(= (rebuild (Map.to-list m) …) m)` is true (maps
+           compare by canonical value). Pins that `Map.to-list` loses/adds/reorders no entry AND that the
+           list-driven `Map.insert` fold reconstructs the same CHAMP — the Map twin of the runtime-`Set.of`
+           round-trip. A to-list that dropped an entry, or a rebuild that mis-slotted a key, would make the
+           rebuilt map unequal → 0. MUST be 1.")
+  (input  (do
+            (def (rebuild (: es (List (Tuple Int64 Int64))) (: i Int64) (: acc (Map Int64 Int64)))
+              (if (< i (List.len es))
+                  (match (List.at es i)
+                    ((Some kv) (rebuild es (+ i 1) (Map.insert acc (. kv 0) (. kv 1))))
+                    ((None _u) acc))
+                  acc))
+            (def (main (: a Int64) (: b Int64))
+              (let ((m (Map.insert (Map.insert Map.empty a 10) b 20)))
+                (if (= (rebuild (Map.to-list m) 0 Map.empty) m) 1 0)))
+            (export main)))
+  (call   main (: 3 Int64) (: 7 Int64))
+  (output (: 1 Int64)))
 
 (case "Map.to-list over Float64 KEYS enumerates by canonical byte key order"
   (doc    "The Float-KEY twin of the Float Set.to-list case (19-sets): a map keyed by Float64 enumerates its

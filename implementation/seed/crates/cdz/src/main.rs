@@ -122,6 +122,7 @@ enum Cmd {
     /// hook). Variables accumulate and `ans` recalls the last result; `--plain` prints the bare value,
     /// `--sexpr` reads the s-expression surface, `--no-exact` turns off forced rationals. Folded in from
     /// the `cdz-calc` bin so a single `cdz` on the PATH also gives the calculator.
+    #[command(alias = "repl")]
     Calc(cdz_calc::cli::CalcArgs),
 
     // ── project build ───────────────────────────────────────────────────────────────────────────

@@ -7924,6 +7924,35 @@ fn a_performing_lambda_homed_transitively_through_a_pass_through_function() {
     );
 }
 
+/// A recursive function whose self-call is HIDDEN inside a nested fold closure — `(count node)` matching
+/// `(Ast.List es) → (List.fold es 1 (fn (acc e) (+ acc (count e))))` — must DECLINE, never overflow the
+/// compile stack. `param_apply_extra_handled`'s transitive apply-site homing follows a known non-recursive
+/// sub-callee by re-entering itself; `is_recursive` cannot see this cycle because `collect_callees` stops at
+/// the nested-`fn` boundary, so `count` reads as non-recursive and was chased forever — the inner `walk`'s
+/// `depth` was never threaded across the re-entry (it re-seeded at 0 every level), so the `depth < 32`
+/// follow-gate never fired and the mutual recursion `walk → param_apply_extra_handled → walk` SIGABRT'd at
+/// check (found by v-metaprogramming, sharpened by corpus-bugfix). The fix threads the inter-procedural
+/// `depth` through `param_apply_extra_handled` so the gate terminates the chase. A COMPILER MUST NEVER
+/// OVERFLOW ITS STACK (`self-hosting-and-bootstrap.md`) — reaching a coded decline at all IS the guard.
+/// NOTE: this MUST run under the full DEBUG lib suite (`cargo test -p rcdzc --lib`); `xtask gate` uses a 64M
+/// worker stack that MASKS the overflow.
+#[test]
+fn a_selfcall_hidden_in_a_nested_fold_closure_declines_not_a_stack_overflow() {
+    use crate::testkit::parse;
+    let src = "(do \
+               (def (count node) \
+                 (match node \
+                   ((Ast.List es) (List.fold es 1 (fn (acc e) (+ acc (count e))))) \
+                   (_ 1))) \
+               (def (main) (count (quote (f 1)))) (export main))";
+    // The point is that compilation TERMINATES (bounded effects walk) rather than SIGABRT'ing — it declines
+    // cleanly (here at the `List.fold` member, once the effects pass no longer overflows).
+    assert!(
+        compile_component(&crate::codec::encode(&parse(src))).is_err(),
+        "a recursive self-call hidden in a nested fold closure must decline, not overflow the compile stack"
+    );
+}
+
 /// A recursive effectful walk whose self-call and a following perform sit in a `do`-SEQUENCE — `(do (walk
 /// (- n 1)) (Ctr.tick))` — is the SAME out-state-observing shape: the `do` runs the self-call for effect,
 /// then the perform reads the recursion's OUT-state. This used to DECLINE (single-return did not carry the
@@ -9089,6 +9118,114 @@ fn a_re_performing_escaping_continuation_declines_cleanly_until_reentry_at_apply
 /// it), so `5 + (6 + 7)` = 18. This USED to decline ("deeper match-valued-state re-threading not yet served");
 /// it now folds soundly. Pinned as a HARD fold-to-18 (was folds-or-declines) so a regression to a WRONG value
 /// — the state-threading ledger's wrong-branch hazard — is caught, not silently accepted as a re-decline.
+/// A DO-SEQUENCED perform of an OUTER effect, DISCARDED (its value thrown away in a `do`) and crossing an
+/// INNER handler of a DIFFERENT effect, must thread its state advance out to the outer handler — it MUST
+/// NOT be silently dropped (the do-sequenced-outer-perform-under-inner-handle miscompile, corpus-bugfix
+/// 2026-07-21). The inner handler folds its body `(do (A.bump) (A.get))` inside-out; `A.bump`/`A.get` are
+/// FOREIGN to the inner `B` handler (it discharges only `noop`), so it threads them into no slot — and the
+/// `do` fold used to collapse to only the last item, ERASING the non-final `(A.bump)`. The outer `A` then
+/// never saw the advance and `(A.get)` read the stale seed `0`. Fix: the `do` fold PRESERVES a non-final
+/// item that still reaches a foreign perform. Oracle: `bump` advances `0→1`, `get` reads `1`.
+#[test]
+fn a_do_sequenced_outer_perform_under_an_inner_handle_threads_its_state_advance() {
+    use crate::testkit::parse;
+    // REPRO: `(A.bump)` is do-discarded under an inner `B` handle; `(A.get)` must read the advanced state.
+    let repro = "(do \
+        (effect A (op bump (-> Unit Int64)) (op get (-> Unit Int64))) \
+        (effect B (op noop (-> Unit Int64))) \
+        (def (main) \
+          (handle A 0 \
+            ((bump (u) s (resume 0 (+ s 1))) \
+             (get (u) s (resume s s))) \
+            (handle B 100 \
+              ((noop (u) t (resume t t))) \
+              (do (A.bump unit) (A.get unit))))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(repro)))
+        .expect("the do-discarded outer perform under an inner handle folds");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(
+            v, "1",
+            "(A.bump) advances 0→1, so the following (A.get) reads 1 — not the stale 0"
+        );
+    }
+    // CONTROL: the SAME do-sequence at ONE handler depth (no inner B) still threads correctly.
+    let ctrl = "(do \
+        (effect A (op bump (-> Unit Int64)) (op get (-> Unit Int64))) \
+        (def (main) \
+          (handle A 0 \
+            ((bump (u) s (resume 0 (+ s 1))) \
+             (get (u) s (resume s s))) \
+            (do (A.bump unit) (A.get unit)))) \
+        (export main))";
+    let cb = compile_component(&crate::codec::encode(&parse(ctrl)))
+        .expect("the single-depth do-sequence folds");
+    if let Some(v) = run_linked(&cb, "main") {
+        assert_eq!(v, "1", "single-depth control: bump 0→1 then get reads 1");
+    }
+    // HELPER-CALL variant: the do-discarded outer performs are INSIDE a helper called in the inner body —
+    // two bumps then a get → 2. (Exercises the same drop through a cross-fn inline.)
+    let helper = "(do \
+        (effect A (op bump (-> Unit Int64)) (op get (-> Unit Int64))) \
+        (effect B (op noop (-> Unit Int64))) \
+        (def (step (: u Unit)) (do (A.bump unit) (A.bump unit) (A.get unit))) \
+        (def (main) \
+          (handle A 0 \
+            ((bump (u) s (resume 0 (+ s 1))) \
+             (get (u) s (resume s s))) \
+            (handle B 100 \
+              ((noop (u) t (resume t t))) \
+              (step unit)))) \
+        (export main))";
+    if let Ok(hb) = compile_component(&crate::codec::encode(&parse(helper)))
+        && let Some(v) = run_linked(&hb, "main")
+    {
+        assert_eq!(
+            v, "2",
+            "two do-discarded bumps under an inner handle advance 0→1→2, then get reads 2"
+        );
+    }
+    // CONTROL (breaker's isolation): LET-BINDING the discarded value threads correctly even before the
+    // fix — the `let` arm keeps the item, only the `do`-discard path dropped it. Pins that the fix leaves
+    // this already-correct shape intact.
+    let letbound = "(do \
+        (effect A (op bump (-> Unit Int64)) (op get (-> Unit Int64))) \
+        (effect B (op noop (-> Unit Int64))) \
+        (def (main) \
+          (handle A 0 \
+            ((bump (u) s (resume 0 (+ s 1))) \
+             (get (u) s (resume s s))) \
+            (handle B 100 \
+              ((noop (u) t (resume t t))) \
+              (let ((x (A.bump unit))) (A.get unit))))) \
+        (export main))";
+    let lb = compile_component(&crate::codec::encode(&parse(letbound)))
+        .expect("the let-bound discarded outer perform under an inner handle folds");
+    if let Some(v) = run_linked(&lb, "main") {
+        assert_eq!(
+            v, "1",
+            "let-bound discarded (A.bump) advances 0→1, then (A.get) reads 1"
+        );
+    }
+    // REGRESSION GUARD (v-rust-backend, 2026-07-21): a do-sequenced NON-FINAL item that is an ABORTIVE
+    // perform whose arm builds a value from the perform's RUNTIME ARG must still COMPILE — the keep-a-
+    // foreign-perform check above must NOT inspect an abort value before it is reparented. `(Halt.stop n)`
+    // aborts with `(list n n n)` (an orphan copy carrying the runtime arg `n`); running the residual-
+    // foreign-perform check over it resolve-pinned `n` unbound → a spurious CDZ0101 (the abortive-heap-list
+    // regression from the do-fold MR). The abort-cell guard skips the check once an abort has fired.
+    let abortive = "(do \
+        (effect Halt (op stop (-> Int64 (List Int64)))) \
+        (def (main (: n Int64)) \
+          (List.len (handle Halt 0 \
+            ((stop (v) s (list v v v))) \
+            (do (Halt.stop n) (list 1))))) \
+        (export main))";
+    compile_component(&crate::codec::encode(&parse(abortive))).expect(
+        "an abortive non-final do item building a value from its runtime arg must still compile (no \
+         spurious CDZ0101 from the residual-foreign-perform keep-check)",
+    );
+}
+
 #[test]
 fn a_state_destructuring_arm_under_a_multi_perform_body_folds_or_declines_never_miscompiles() {
     use crate::testkit::parse;

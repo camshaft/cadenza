@@ -88,6 +88,15 @@ impl Doc {
         });
     }
 
+    /// A hard newline (always fires) with an explicit firing indent offset — e.g. `-INDENT` to dedent a
+    /// closing delimiter back to its opener's column. `hardbreak()` is the `offset == 0` case.
+    pub fn hardbreak_with(&mut self, offset: isize) {
+        self.tokens.push(Token::Break {
+            blank_space: HARDBREAK_WIDTH,
+            offset,
+        });
+    }
+
     /// A break with an explicit flat width and firing indent offset.
     pub fn break_with(&mut self, blank_space: usize, offset: isize) {
         self.tokens.push(Token::Break {

@@ -957,6 +957,27 @@
   (call   main (: 7 UInt8))
   (output (: 0 Int64)))
 
+(case "a runtime bin match feeds its decoded segment binders into a sum+tuple constructor, then projects back"
+  (doc    "The decode-then-BUILD idiom: a `(bin (u8 a) (u8 b))` match over a RUNTIME scrutinee binds two
+           integer segments, then the arm body uses those binders as CONSTRUCTOR ARGUMENTS to assemble a
+           structured value `(Some (P a b))` (an `(Option Pair)`) and projects a field back out — the shape a
+           real parser takes: read fields, package them into a domain type, then read the packaged value. Against
+           a two-byte frame `[h, 7]` from a runtime `h` (so the bin cannot fold): h=9 builds `Some (P 9 7)`,
+           then the outer match unwraps `P a2 b2` and returns `a2*256 + b2` = 9*256+7 = 2311. Pins that a
+           bin-decode binder composes as a constructor argument into a sum-of-tuple built at run time (the
+           decoded `a`/`b` flow through `BinField` reads into the `SumNew`/tuple payload) AND is read back
+           out — a full decode→construct→destructure round-trip, projected to a scalar so both backends agree.")
+  (input  (do (type Pair (P Int64 Int64))
+              (def (main (: h Int64))
+                (match (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7)))
+                         ((bin (u8 a) (u8 b)) (Some (P a b)))
+                         (_ (None)))
+                  ((Some (P a2 b2)) (+ (* a2 256) b2))
+                  ((None) -1)))
+              (export main)))
+  (call   main (: 9 Int64))
+  (output (: 2311 Int64)))
+
 (case "a runtime bin match binds a dependent-size bytes segment over a runtime scrutinee"
   (doc    "The length-prefixed-frame parse (the dependent-size crown jewel) over a RUNTIME scrutinee: a
            `(bin (u8 n) (bytes payload n))` pattern reads a one-byte header `n` then binds EXACTLY `n`

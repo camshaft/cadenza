@@ -2957,6 +2957,34 @@ fn runtime_arithmetic_on_an_unusual_width_range_checks_at_its_own_width_not_the_
         TrapRun::RanOk(out) => panic!("`50·90 : UInt12` must TRAP (4500 > 4095), but ran → {out}"),
         TrapRun::NoRustc => {}
     }
+    // (c) MUL past the STORAGE width — the Copilot/github-liaison PR#756 miscompile: `UInt48` `2^32 · 2^32`
+    // = 2^64 exceeds BOTH the type's 2^48 AND the storage `u64`'s 2^64, so a `wrapping_mul` on u64 wrapped
+    // to 0 and FALSELY passed the `[0, 2^48-1]` check → silent wrong value. Mul now computes in a WIDER
+    // `i128` intermediate (exact — the product can't wrap), so it TRAPS. Emit must use the i128 widening,
+    // NOT a `wrapping_mul` on the storage type.
+    let u48 = compile_rust(
+        "(module m (def (run (: a Int64) (: b Int64)) \
+           (* ((. (UInt 48) wrap) a) ((. (UInt 48) wrap) b))) (export run))",
+    );
+    assert!(
+        u48.contains("as i128) * (") && !u48.contains("wrapping_mul"),
+        "unusual-width Mul widens to i128 (not wrapping_mul on storage), so a product past 2^storage can't silently wrap:\n{u48}"
+    );
+    // 2^32 = 4294967296; 2^32 · 2^32 = 2^64 must TRAP (was silently 0 pre-fix).
+    match rustc_run_traps(&u48, "run(4294967296, 4294967296)") {
+        TrapRun::Trapped(msg) => assert!(
+            msg.contains("overflow"),
+            "2^32·2^32 overflows UInt48 (and past the u64 storage) → traps overflow, got:\n{msg}"
+        ),
+        TrapRun::RanOk(out) => panic!(
+            "`2^32·2^32 : UInt48` must TRAP (2^64 > 2^48, and mustn't wrap the u64 storage to 0), but ran → {out}"
+        ),
+        TrapRun::NoRustc => {}
+    }
+    // in-range control: 1000·1000 = 1_000_000 < 2^48 computes.
+    if let Some(out) = rustc_run(&u48, "run(1000, 1000)") {
+        assert_eq!(out, "1000000", "1000·1000 fits UInt48 and computes");
+    }
 }
 
 #[test]

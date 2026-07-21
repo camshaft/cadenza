@@ -25,6 +25,28 @@ fn cdz_calc_once_evaluates_an_expression() {
 }
 
 #[test]
+fn cdz_repl_is_an_alias_for_calc() {
+    // `cdz repl` is a discoverability alias for `cdz calc` (which its own docs call "the REPL over the
+    // real language") — the near-universal `repl` verb should land on the language REPL, not error as an
+    // unknown subcommand. It mounts the SAME calc path: same eval, same flags.
+    let (ok, out, err) = run(&["repl", "--once", "2 + 3"]);
+    assert!(
+        ok,
+        "`cdz repl` is a valid alias of `cdz calc`, not an unknown subcommand: {err}"
+    );
+    assert!(
+        out.trim().ends_with("5"),
+        "the alias evaluates like calc: {out}"
+    );
+    // Exactness (a calc behavior) carries through the alias — confirms it's the same engine, not a stub.
+    let (eok, eout, _e) = run(&["repl", "--once", "1/3 + 1/3 + 1/3"]);
+    assert!(
+        eok && eout.trim().ends_with("1"),
+        "exact mode via the alias: {eout}"
+    );
+}
+
+#[test]
 fn cdz_calc_once_exact_mode_keeps_a_fraction_exact() {
     // Exact mode is on by default (the mounted path forwards `--no-exact` correctly): 1/3×3 = 1 exactly.
     let (ok, out, err) = run(&["calc", "--once", "1/3 + 1/3 + 1/3"]);

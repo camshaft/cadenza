@@ -723,6 +723,26 @@
   (host-calls)
   (output (: 7 Int64)))
 
+(case "a host-delegated result SEEDS an in-program handler's initial state"
+  (doc    "The host-to-handler data flow: the handle's SEED expression is itself a host-delegated perform —
+           `(handle Ctr (Env.seed unit) …)` — so the host response (5) becomes the in-program handler's
+           initial state, evaluated once before the handle's region runs. The two in-program ticks then
+           read 5 and 6 (the seeded state advancing normally) → 56. Pins that the seed position accepts a
+           performing expression whose own effect discharges at the ENCLOSING (here host) level — the
+           config-fetch-then-run idiom (read a setting from the host, seed a counter/limiter with it).")
+  (input  (do
+            (effect Env (op seed (-> Unit Int64)))
+            (effect Ctr (op next (-> Unit Int64)))
+            (def (main)
+              (host (Env)
+                (handle Ctr (Env.seed unit)
+                  ((next (u) s (resume s (+ s 1))))
+                  (+ (* 10 (Ctr.next unit)) (Ctr.next unit)))))
+            (export main)))
+  (call   main)
+  (host-responses (respond Env.seed (: 5 Int64)))
+  (output (: 56 Int64)))
+
 (case "a delegated host effect composes with the value-heap runtime"
   (doc    "Witnesses that a program may BOTH delegate an effect to the host AND use the value-heap runtime
            in one component (capabilities-and-effects.md #A Run Is A Deterministic Function Of Its Input And
@@ -1874,6 +1894,24 @@
   (call   main (: true Bool)) (output (: 100 UInt8))
   (call   main (: false Bool)) (output (: 5 UInt8)))
 
+(case "a NARROW-width effect op parameter grounds a fitting perform argument"
+  (doc    "An op declared over a NARROW parameter — `Send.put : UInt8 -> Int64` — performed with a fitting
+           literal `(Send.put 100)`: the op's declared parameter type grounds the argument (the effect-op
+           analogue of the narrow function parameter), the perform crosses to the arm, and the arm resumes
+           7 → 7. Pins the narrow-width op-argument path on its FITTING side. (The overflowing twin
+           `(Send.put 999)` — expected CDZ0302 like every other narrow-parameter position — currently
+           DECLINES rather than rejecting, and an arm that READS the binder `v` also declines: the
+           effect-op width descent and the narrow-binder arm read are coverage-not-yet; their pins join
+           this one when those land.)")
+  (input  (do
+            (effect Send (op put (-> UInt8 Int64)))
+            (def (main (: n Int64))
+              (handle Send 0
+                ((put (v) s (resume 7 s)))
+                (Send.put 100)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64)))
+
 (case "a RECURSIVE-sum value of runtime depth rides a handler resume"
   (doc    "An op whose declared result is a RECURSIVE sum (`Give.get : Unit -> Nat`) resumed with a
            runtime-depth spine `(mk a)`: the resume value is an unbounded heap structure, not a scalar or
@@ -1955,6 +1993,29 @@
                   (do (B.bump unit) (B.get unit)))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 101 Int64)))
+
+(case "a do-discarded OUTER perform under an inner handle threads its state advance across the level"
+  (doc    "The FIXED cross-level case the two cases above bracket: a do-sequenced perform of an OUTER-handled
+           effect, its value DISCARDED in a `(do …)` and crossing an INNER handler of a DIFFERENT effect,
+           threads its state advance out to the outer handler. `A.bump` (0→1) is do-discarded under the
+           inner `B` handle, then `A.get` reads 1 — NOT the stale seed 0. This was a silent wrong-value
+           miscompile on all backends (`thread_bounded`'s `do` fold collapsed the sequence to only the last
+           item, erasing the non-final FOREIGN perform the inner handler does not discharge); the fix
+           preserves a non-final item still reaching a foreign perform. Completes the bracket: sequencing one
+           level down works (train case), crossing with a let works (let-bound case), and NOW do + crossing
+           works too — the discarded-value form is no longer a state-drop.")
+  (input  (do
+            (effect A (op bump (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op noop (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle A 0
+                ((bump (u) s (resume 0 (+ s 1)))
+                 (get (u) s (resume s s)))
+                (handle B 100
+                  ((noop (u) t (resume t t)))
+                  (do (A.bump unit) (A.get unit)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
 
 (case "a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom"
   (doc    "The `Result` companion of the Option-result case: an operation whose declared result is a

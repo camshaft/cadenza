@@ -60,6 +60,28 @@
   (call   main (: 0 Int64))
   (output (: 42 Int64)))
 
+(case "a Thm rides a MAP value through outside code and comes back to the kernel accessor"
+  (doc    "The CHAMP companion of the list-transport case: the abstract Thm — built with a RUNTIME payload
+           via the kernel's `axiom` — is stored as a MAP VALUE by untrusted code, looked up, and handed
+           back to the kernel's accessor → 42. The proof STORE idiom at its real shape: an LCF orchestrator
+           keys theorems in a map (by goal id, by hash) without destructure rights; the abstract value must
+           survive the CHAMP insert/lookup round-trip exactly as a scalar would. Runtime payload keeps the
+           whole path live (no fold).")
+  (module "kernel"
+    (do
+      (type Thm (Proved Int64))
+      (def (axiom (: n Int64)) (Thm.Proved n))
+      (def (thm-val (: t Thm)) (match t ((Thm.Proved v) v)))
+      (export Thm axiom thm-val)))
+  (input  (do
+            (import "kernel" (Thm axiom thm-val))
+            (def (main (: n Int64))
+              (match (Map.lookup (Map.insert Map.empty 1 (axiom n)) 1)
+                ((Some t) (thm-val t))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 42 Int64)) (output (: 42 Int64)))
+
 ; --- The subst soundness edges: shadow blocking, selective substitution, and the documented hazard --
 ; Inc 4's subst is the kernel's soundness-critical mechanism (an unsound subst mints false theorems
 ; through BETA). These pin its edges directly, promoted from passing breaker probes; the third case

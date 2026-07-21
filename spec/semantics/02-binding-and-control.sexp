@@ -3023,6 +3023,21 @@
   (input  (let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c))))
   (output (: 6 Int64)))
 
+(case "a let tuple pattern destructures a helper CALL's runtime tuple result"
+  (doc    "The multi-return idiom: `divmod` returns `(tuple (/ a b) (% a b))` — a RUNTIME tuple, not a
+           literal — and the caller destructures it at the binder: `(let (((tuple q r) (divmod a b))) …)`.
+           47/10 → q=4, r=7 → 407. The const-tuple binder cases above fold; here the RHS is a live call
+           whose compound result must materialize and destructure at run time — the two-values-out shape
+           every quotient/remainder, min/max, or split-pair helper takes.")
+  (input  (do
+            (def (divmod (: a Int64) (: b Int64))
+              (tuple (/ a b) (% a b)))
+            (def (main (: a Int64) (: b Int64))
+              (let (((tuple q r) (divmod a b)))
+                (+ (* 100 q) r)))
+            (export main)))
+  (call   main (: 47 Int64) (: 10 Int64)) (output (: 407 Int64)))
+
 ; A RECORD binding pattern. A record is a fixed-shape product like a tuple, so `(record (x a) (y b))` in a
 ; binder position destructures the value BY FIELD — binding `a`/`b` to the `x`/`y` fields — with NO
 ; discriminant test, hence IRREFUTABLE iff each named field's sub-pattern is (core-semantics.md #A Binding

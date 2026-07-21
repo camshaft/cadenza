@@ -1336,6 +1336,30 @@
 ; visibility rule composes transitively). These are TODO on the rust backend like every multi-module case
 ; (a known rust gap — the wasm path pins the linking semantics).
 
+(case "an effect declared in a MODULE is performed by its helper and handled by the IMPORTER"
+  (doc    "The cross-module effect lifecycle: the `logging` module DECLARES `Log`, exports it alongside a
+           helper `emit-twice` whose body PERFORMS it twice; the importer installs the HANDLER around a
+           call to the imported helper. The two performs cross the module boundary to discharge at the
+           importer's handle — the first notes `n` (3 → 30, state 0→1), the second notes `n+1` (4 → 40)
+           → 70. Pins that an effect is an exportable module member whose contract travels with the import
+           (the declaration is routing-agnostic — the importer decides the handler), and that a module
+           helper's performs home correctly against a handler the module never sees.")
+  (module "logging"
+    (do
+      (effect Log (op note (-> Int64 Int64)))
+      (def (emit-twice (: n Int64))
+        (+ (Log.note n) (Log.note (+ n 1))))
+      (export Log)
+      (export emit-twice)))
+  (input  (do
+            (import "logging" (Log emit-twice))
+            (def (main (: n Int64))
+              (handle Log 0
+                ((note (v) s (resume (* v 10) (+ s 1))))
+                (emit-twice n)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 70 Int64)))
+
 (case "a transitive re-export reaches the base module's function through the middle module"
   (doc    "`mid` imports `f` from `base` and re-exports it (`f` in mid's export clause); the entry imports
            `f` from `mid` and calls it. The re-exported binding resolves through the chain to base's `f`:

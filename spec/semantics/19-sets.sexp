@@ -1287,6 +1287,24 @@
   (call   main (: 5 Int64) (: 7 Int64))
   (output (: 1 Int64)))
 
+(case "Set.of over a runtime list of TUPLE elements reconstructs the same set through the synthesized fold"
+  (doc    "The round-trip above uses SCALAR elements; this runs the same runtime-`Set.of` fold over COMPOUND
+           elements — a set of TUPLES round-tripped through its own `Set.to-list`. `s = {(a,1), (b,2)}` (the
+           repeated `(a,1)` collapses by whole-tuple value), then `(Set.of (Set.to-list s))` rebuilds by
+           folding `Set.insert` over the enumerated tuple list. The rebuilt set has `Set.len` 2 AND `= s`
+           (maps/sets of compounds compare by canonical value). Exercises the synthesized `Set.insert` fold
+           over COMPOUND elements — the CHAMP compound-element hash/eq walk on the runtime-construction path,
+           not just the scalar path the round-trip case above pins. Encodes 10·len + (= s) = 10·2 + 1 = 21.
+           A fold that mis-hashed a tuple element or dropped one would flip a component. MUST be 21.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (let ((s (Set.of (list (tuple a 1) (tuple b 2) (tuple a 1)))))
+                (let ((r (Set.of (Set.to-list s))))
+                  (+ (* 10 (Set.len r)) (if (= r s) 1 0)))))
+            (export main)))
+  (call   main (: 5 Int64) (: 7 Int64))
+  (output (: 21 Int64)))
+
 (case "Set.of of a computed (concatenated) runtime list dedups by value"
   (doc    "`Set.of` over a `List.concat` result — a runtime list the compiler has no element-list to fold at
            compile time. `(List.concat (list a b) (list b a))` = [a, b, b, a]; `Set.of` of it dedups to

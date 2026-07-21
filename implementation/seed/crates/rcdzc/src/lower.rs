@@ -17587,10 +17587,7 @@ pub(crate) fn is_trap_free(db: &mut Db, id: StructId) -> bool {
         // fire — e.g. the `List.len` constant-arity fold drops the element VALUES, sound only when every
         // element construction is trap-free; a `(list _ (Rational.of 3 d))` with a runtime denominator is
         // NOT trap-free, so the fold declines and the runtime op preserves the element's trap.)
-        Core::Record { fields } => {
-            let vals: Vec<StructId> = fields.values().copied().collect();
-            vals.into_iter().all(|v| is_trap_free(db, v))
-        }
+        Core::Record { fields } => fields.values().copied().all(|v| is_trap_free(db, v)),
         Core::Tuple { elems } | Core::ListNew { elems } => {
             elems.into_iter().all(|e| is_trap_free(db, e))
         }
