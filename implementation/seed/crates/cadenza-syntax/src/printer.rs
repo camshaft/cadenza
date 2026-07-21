@@ -4286,6 +4286,23 @@ mod tests {
             "3 meter + 2 meter"
         );
         assert_eq!(assert_roundtrip("dist(5 feet)", 80), "dist(5 feet)");
+        // COMPOUND / RATE units (BUG #51): a glued `/`/`*`/`^` on the unit builds a composite (bare
+        // `/`/`*`/`^` between `Unit.of` operands). The canonical printer renders the composite VERBOSE
+        // (`Qty.of(…, Unit.of(#a) / Unit.of(#b))`, since the concise `<num> a/b` sugar is DISPLAY-only),
+        // but that form is idempotent + structurally round-trips — which `assert_roundtrip` pins. (Pairs
+        // with the parser's `compound_unit_desugars_on_glued_operators`; here we pin the print side.)
+        assert_eq!(
+            assert_roundtrip("59 GiB/s", 80),
+            "Qty.of(59, Unit.of(#GiB) / Unit.of(#s))"
+        );
+        assert_eq!(
+            assert_roundtrip("9 m/s^2", 80),
+            "Qty.of(9, Unit.of(#m) / (Unit.of(#s) ^ 2))"
+        );
+        assert_eq!(
+            assert_roundtrip("3 kg*m/s^2", 80),
+            "Qty.of(3, Unit.of(#kg) * Unit.of(#m) / (Unit.of(#s) ^ 2))"
+        );
         // The independent s-expr reader is the oracle: the canonical `(Qty.of …)` form prints concise.
         let a = sexpr::read(r#"(Qty.of 5 (Unit.of #"meter"))"#).unwrap();
         assert_eq!(print(&a, 80), "5 meter");

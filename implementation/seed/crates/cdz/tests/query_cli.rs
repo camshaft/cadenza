@@ -2638,5 +2638,24 @@ fn doc_at_offset_reads_the_doc_at_a_use_and_at_the_definition() {
         stdout.contains("no documentation"),
         "empty hover message: {stdout}"
     );
+    // ERROR PATHS (the doc companion of `cdz type-at` must share its discipline): an offset past EOF is a
+    // clear error naming the tool + "no node at byte offset", NOT a panic or a silent empty success.
+    let (ok, _o, err) = run(&["doc-at", path, "999999"], "");
+    assert!(!ok, "an offset past EOF fails");
+    assert!(
+        err.contains("cdz:") && err.contains("no node at byte offset"),
+        "clear no-node error naming the tool: {err}"
+    );
+    // A missing FILE is an I/O error naming the tool.
+    let (ok, _o, err) = run(&["doc-at", "/no/such/file.sexp", "0"], "");
+    assert!(!ok, "a missing file fails");
+    assert!(err.contains("cdz:"), "the error names the tool: {err}");
+    // A missing OFFSET argument is a clap usage error.
+    let (ok, _o, err) = run(&["doc-at", path], "");
+    assert!(!ok, "a missing offset is a usage error");
+    assert!(
+        err.contains("error") || err.contains("Usage") || err.contains("required"),
+        "clap usage error on stderr: {err}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
