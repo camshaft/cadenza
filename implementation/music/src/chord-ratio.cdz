@@ -122,6 +122,38 @@ def membership-is-exact-rational() =
     (if rchord-has(c, semitones-r(6)) then trap("no tritone in a major triad") else unit)
   else trap("fifth is present")
 
+@test
+def a-diminished-triad-stacks-two-minor-thirds() =
+  // dim triad on 0 = 0, 3/12, 6/12 (two stacked minor thirds); has its 6/12 diminished fifth, not a 7/12.
+  let c = diminished-triad-r(rinterval(Rational.of(0, 1))) in
+  match rchord-intervals(c) with
+    | [_, b, d] =>
+      if r-eq(b, semitones-r(3)) then
+        (if r-eq(d, semitones-r(6)) then
+          (if rchord-has(c, semitones-r(7)) then trap("no perfect fifth in a dim triad") else unit)
+         else trap("diminished fifth is 6/12"))
+      else trap("minor third is 3/12")
+    | _ => trap("three notes")
+
+@test
+def an-augmented-triad-splits-the-octave-into-three-equal-thirds() =
+  // The exact-rational beauty of the augmented triad: 0, 4/12, 8/12 — three stacked MAJOR thirds (4/12
+  // each) that sum to exactly 12/12 = one octave, with zero drift. Pins that stacking the third above the
+  // top note (8/12 + 4/12) lands on the octave EXACTLY in rational space (a property a float would smear).
+  let c = augmented-triad-r(rinterval(Rational.of(0, 1))) in
+  match rchord-intervals(c) with
+    | [a, b, d] =>
+      if r-eq(a, semitones-r(0)) then
+        (if r-eq(b, semitones-r(4)) then
+          (if r-eq(d, semitones-r(8)) then
+            // top (8/12) + one more major third (4/12) == exactly the octave (12/12 = 1/1).
+            (if r-eq(rinterval(octaves(d) + octaves(semitones-r(4))), r-octave) then unit
+             else trap("8/12 + 4/12 = the octave exactly"))
+           else trap("augmented fifth is 8/12"))
+         else trap("major third is 4/12"))
+      else trap("root is 0")
+    | _ => trap("three notes")
+
 export {
   RChord.*,
   rchord, rchord-root, rchord-stack, rchord-intervals, rchord-size, rchord-has,

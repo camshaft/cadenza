@@ -590,6 +590,12 @@ fn resolve_import_clause(
             //    export to that file), the "private item" case (rustc's "consider making it public").
             //  - `{path}` does not define it at all → the plain "does not export", enriched with a "did
             //    you mean?" over what the file DOES export (a typoed import name).
+            // A near-miss export name also carries the STRUCTURAL fix (rewrite the mistyped import name
+            // to the near export), so the "did you mean?" is applyable, not just prose — anchored at the
+            // NAME token `name_id`, not the enclosing clause `occ`. Heuristic: the near name is a guess at
+            // intent. The private-item case has no single-node rewrite (the fix is to edit the OTHER file's
+            // export list), so it stays message-only.
+            let mut fix = None;
             let msg = if defined_of[from_file].iter().any(|d| d == name) {
                 format!(
                     "`(import …)`: `{path}` defines `{name}` but does not export it — add `export \
@@ -597,13 +603,21 @@ fn resolve_import_clause(
                 )
             } else {
                 match crate::diag::suggest::nearest(name, &exports_of[from_file]) {
-                    Some(near) => format!(
-                        "`(import …)`: `{path}` does not export `{name}` — did you mean `{near}`?"
-                    ),
+                    Some(near) => {
+                        let m = format!(
+                            "`(import …)`: `{path}` does not export `{name}` — did you mean `{near}`?"
+                        );
+                        fix = Some(crate::diag::Fix::replace_heuristic(name_id, near));
+                        m
+                    }
                     None => format!("`(import …)`: `{path}` does not export `{name}`"),
                 }
             };
-            return Err(Reject::coded(Code::Malformed, msg).at(occ));
+            let mut reject = Reject::coded(Code::Malformed, msg).at(occ);
+            if let Some(fix) = fix {
+                reject = reject.with_fix(fix);
+            }
+            return Err(reject);
         }
         // COLLIDING IMPORTED NAMES: two imports binding the SAME local name into one file's scope is a
         // compile-time error (CDZ0201), never resolved by an implicit precedence. This is a
@@ -954,14 +968,32 @@ mod tests {
             "(do (import \"lib\" (helpr)) (def (main) (helpr)) (export main))",
         );
         assert!(out.has_error(), "a typoed import name must be rejected");
-        assert!(
-            out.diagnostics
-                .iter()
-                .any(|d| d.message.contains("does not export `helpr`")
-                    && d.message.contains("did you mean `helper`?")),
-            "expected a did-you-mean suggestion; got {:?}",
-            out.diagnostics
+        let d = out
+            .diagnostics
+            .iter()
+            .find(|d| {
+                d.message.contains("does not export `helpr`")
+                    && d.message.contains("did you mean `helper`?")
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a did-you-mean suggestion; got {:?}",
+                    out.diagnostics
+                )
+            });
+        // The "did you mean?" is now APPLYABLE: it carries a heuristic Replace fix rewriting the mistyped
+        // import name `helpr` to the near export `helper` — not just prose (the import analogue of the
+        // unbound-name / export-typo replace fixes).
+        let fix = d
+            .fix
+            .as_ref()
+            .expect("the typoed-import did-you-mean carries a replace fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fix.replacement, "helper",
+            "rewrites the typo to the near export"
         );
+        assert!(!fix.verified, "a nearest-name guess is heuristic");
     }
 
     /// An import naming an unknown package file declines.

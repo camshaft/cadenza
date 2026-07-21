@@ -71,11 +71,13 @@ type Node =
 /// binder; infer's NApp arm has it via `param-of`). ADDITIVE + behavior-neutral: only a recognized int-typed
 /// param records an entry, and NOTHING reads it yet (the infer fit-check that DECLINES an out-of-range constant
 /// arg — `(f 200)` to an `Int8` param, corpus CDZ0302 — is the next slice). A nullary/untyped param records none.
-/// The 8th + 9th tables (`p3`, `a3`) are the THIRD param-table + THIRD arg-table (3-param-function foundation,
-/// slice-3e) — `param3-of(nameId)` = a def's 3rd param node, `arg3-of(nAppId)` = a 3-arg call's 3rd arg node,
-/// mirroring `p2`/`a2`. ADDITIVE + behavior-neutral: a def/call with ≤2 params/args records neither, so
-/// `param3-of`/`arg3-of` return `None` (the reader still declines a >2-param signature until the reader +
-/// resolve/infer/lower wiring slices populate + consume these). Foundation only, exactly like `p2`/`a2` were.
+/// The 8th + 9th tables (`p3`, `a3`) are the THIRD param-table + THIRD arg-table (3-param functions, slice-3e)
+/// — `param3-of(nameId)` = a def's 3rd param node, `arg3-of(nAppId)` = a 3-arg call's 3rd arg node, mirroring
+/// `p2`/`a2`. A def/call with ≤2 params/args records neither, so `param3-of`/`arg3-of` return `None` (which
+/// distinguishes a 2-param/2-arg def/call from a 3-param/3-arg one). The full 3-param pipeline is WIRED (sread
+/// `read-third-param` records these; resolve binds param3 in the body scope; `infer-param3` types it; lower
+/// nests a 3rd CLet) — so `(def (f a b c) …)` + `(f x y z)` runs. A >3-param signature still declines
+/// (`read-third-param` reads exactly one 3rd param then requires `)`); 4+-param is a later slice.
 type Tree =
   | Arena(Map(Int64, Node), Int64, Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64))
 

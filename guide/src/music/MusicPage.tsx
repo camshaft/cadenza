@@ -45,15 +45,30 @@ import RHYTHM_CDZ from "../wasm/music/rhythm.cdz?raw";
 import RHYTHM_RATIO_CDZ from "../wasm/music/rhythm-ratio.cdz?raw";
 import COMPOSE_CDZ from "../wasm/music/compose.cdz?raw";
 import PIECE_CDZ from "../wasm/music/piece.cdz?raw";
+import PATTERN_CDZ from "../wasm/music/pattern.cdz?raw";
 
 // The preloaded sources, aligned 1:1 with MUSIC_PRELOAD_NAMES (schedule, pitch, interval-ratio, scale-ratio,
-// scale, chord-ratio, chord, rhythm, rhythm-ratio, compose, piece).
+// scale, chord-ratio, chord, rhythm, rhythm-ratio, compose, piece, pattern).
 const PRELOAD_SOURCES = [
   SCHEDULE_CDZ, PITCH_CDZ, INTERVAL_RATIO_CDZ, SCALE_RATIO_CDZ, SCALE_CDZ,
-  CHORD_RATIO_CDZ, CHORD_CDZ, RHYTHM_CDZ, RHYTHM_RATIO_CDZ, COMPOSE_CDZ, PIECE_CDZ,
+  CHORD_RATIO_CDZ, CHORD_CDZ, RHYTHM_CDZ, RHYTHM_RATIO_CDZ, COMPOSE_CDZ, PIECE_CDZ, PATTERN_CDZ,
 ];
 const PRELOAD_NAMES = [...MUSIC_PRELOAD_NAMES];
 const PRELOAD_FORMATS = PRELOAD_NAMES.map(() => MUSIC_LIB_FORMAT);
+
+// Equal-length invariant: compile_with_preloaded requires names/sources/formats to be the SAME length, but
+// PRELOAD_SOURCES is a HAND-maintained `?raw` import list (Vite-only, so not covered by the node preload gate)
+// while PRELOAD_NAMES derives from MUSIC_PRELOAD_NAMES — so adding a module to MUSIC_PRELOAD_NAMES without a
+// matching ?raw import here silently breaks the whole page ("names/sources/formats must be equal length"). This
+// was exactly the R4 `pattern` regression. Fail LOUD at module load with the concrete drift, not deep in a
+// compile call, so the fix is obvious. (FORMATS is derived from NAMES so it can't drift; the risk is SOURCES.)
+if (PRELOAD_SOURCES.length !== PRELOAD_NAMES.length) {
+  throw new Error(
+    `MusicPage preload arity mismatch: PRELOAD_NAMES has ${PRELOAD_NAMES.length} (${PRELOAD_NAMES.join(", ")}) ` +
+      `but PRELOAD_SOURCES has ${PRELOAD_SOURCES.length} — add the missing "../wasm/music/<name>.cdz?raw" import ` +
+      `+ its PRELOAD_SOURCES entry (kept 1:1 with MUSIC_PRELOAD_NAMES).`,
+  );
+}
 
 /// The page's run outcome. `events` = a MidiEvent stream (render the table + badge); `scalar` = any other
 /// value (a Bool verdict, an Int64 list — render the raw text); `error` = a compile/run failure.

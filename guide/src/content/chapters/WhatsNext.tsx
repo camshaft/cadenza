@@ -55,7 +55,9 @@ export default function WhatsNext() {
         program is an ordinary AST value you can quote, take apart, build, and eval; and{" "}
         <Ch to="/property-testing">testing</Ch>, where <C>@test</C> marks a function as a test and
         parameters make it generative, so the runner synthesizes the inputs and shrinks any failure, no
-        testing DSL required.
+        testing DSL required; and <Ch to="/recorded-log">history as a value</Ch>, where an agent's whole
+        past is an event log and running it is a fold, so replay, fork, and recovery are just re-folding
+        that value.
       </P>
       <P>
         More importantly, you've seen the ideas underneath, the{" "}

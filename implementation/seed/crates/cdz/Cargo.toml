@@ -67,3 +67,10 @@ serde_json = "1"
 # (inotify/FSEvents/kqueue), the same choice cargo-watch makes. DEV-CLI ONLY — it lives on the `cdz`
 # binary, NEVER in the frozen `cdz-runtime` dep set (whose hash determinism a new crate would break).
 notify = "6"
+# The trace SINK for the one-binary CLI: rcdzc's lib emits rich `trace!` events (lower/eval/resolve
+# decisions) but a bin must INSTALL a subscriber for them to fire. `cdz` is the user-facing entry (NOT
+# an internal `cargo xtask` pipeline stage), so it gates on the shared `RUST_LOG` — the standard knob a
+# user/agent reaches for (`RUST_LOG=rcdzc=trace cdz compile …`). With `RUST_LOG` unset, nothing is
+# installed and every `trace!` compiles to a runtime no-op — a normal run pays nothing. (rcdzc's OWN bin
+# uses the tool-private `CDZ_LOG` to avoid fan-out inside the piped pipeline; `cdz` isn't in that pipe.)
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

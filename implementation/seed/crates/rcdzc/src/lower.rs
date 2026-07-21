@@ -1063,6 +1063,38 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         "a runtime closure applied to no arguments",
                     ));
                 }
+                // A genuine PARTIAL application of a runtime closure — the gathered arg count is FEWER than
+                // the closure's curried arity — has no runtime form yet: it would need a residual closure
+                // (capturing the supplied args + awaiting the rest), which the emit does NOT build. Left to
+                // emit an under-arity `Core::CallClosure`, it produced an INVALID module (the residual's
+                // machine rep disagrees with a later `call_indirect` — v-effects' `(let ((g (f 3))) (g 4))`
+                // over a boxed 2-param closure: `(f 3)` is a 1-of-2 partial that mis-emitted, func-N wasm
+                // 'expected i64 found i32'). DECLINE cleanly instead of emitting an invalid module (a
+                // miscompile). The closure's ARITY is the number of arrows its type peels — `(-> a (-> b c))`
+                // is arity 2; `all_args.len()` short of that is a partial. A FULL application (args == arity)
+                // and an OVER-application (a curried spine gathering ≥ arity, handled by the flatten) keep
+                // building the `CallClosure`. This is the clean-decline stopgap (v-effects co-owned); the
+                // genuine chained-residual-closure lift is a later capability. `type_of(fn_head)` is the
+                // closure's curried arrow (`check` grounds it — `check` is clean on this repro, so the arity
+                // read is sound); a non-arrow / unresolved head has arrow-count 0 and is not treated as a
+                // partial (unchanged).
+                let closure_arity = {
+                    let mut ty = crate::infer::type_of(db, fn_head);
+                    let mut n = 0usize;
+                    while let crate::ty::Ty::Fn(_, r) = ty {
+                        n += 1;
+                        ty = *r;
+                    }
+                    n
+                };
+                if closure_arity > 0 && all_args.len() < closure_arity {
+                    trace!(target: "rcdzc::lower", node = id.0, head = fn_head.0, n_args = all_args.len(), arity = closure_arity, "apply: PARTIAL application of a runtime closure → decline (no residual-closure emit yet)");
+                    return Core::Poison(Reject::decline(
+                        "a partial application of a runtime closure (fewer arguments than its arity) \
+                         is not yet emittable — apply it to all its arguments, or wrap the remaining \
+                         ones in an explicit lambda",
+                    ));
+                }
                 trace!(target: "rcdzc::lower", node = id.0, head = fn_head.0, n_args = all_args.len(), "apply: runtime closure application (spine-flattened) → Core::CallClosure");
                 return Core::CallClosure {
                     closure: fn_head,

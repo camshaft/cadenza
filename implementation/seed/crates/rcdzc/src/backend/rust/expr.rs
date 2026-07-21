@@ -2585,6 +2585,13 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
 /// them here would emit an unhandled shape). Returns false when the type is ALREADY native-Eq (that path is
 /// taken before this) or carries a non-Eq-non-float leaf (a function, an unknown var).
 fn ty_float_walkable(db: &mut Db, ty: &Ty) -> bool {
+    ty_float_walkable_seen(db, ty, &mut Vec::new())
+}
+
+/// `ty_float_walkable` with a recursion guard for the SUM descent — a self-referential sum (e.g. `Ast` via
+/// `Ast.List (List Ast)`) closes on `seen` so the walk terminates. `emit_value_eq_walk`'s `Ty::Sum` arm
+/// renders EXACTLY this domain (the doc invariant that both backends route the same types).
+fn ty_float_walkable_seen(db: &mut Db, ty: &Ty, seen: &mut Vec<crate::ast::StructId>) -> bool {
     match ty {
         // A bare float leaf — walkable (canonical-byte compare).
         Ty::Float(_) => true,
@@ -2594,20 +2601,60 @@ fn ty_float_walkable(db: &mut Db, ty: &Ty) -> bool {
         // A tuple/record is walkable iff every element/field is. A nominal newtype walks its inner.
         Ty::Tuple(elems) => {
             let elems: Vec<Ty> = elems.to_vec();
-            elems.iter().all(|e| ty_float_walkable(db, e))
+            elems.iter().all(|e| ty_float_walkable_seen(db, e, seen))
         }
         Ty::Record(fields) => {
             let vals: Vec<Ty> = fields.values().cloned().collect();
-            vals.iter().all(|v| ty_float_walkable(db, v))
+            vals.iter().all(|v| ty_float_walkable_seen(db, v, seen))
         }
-        Ty::Nominal { inner, .. } => ty_float_walkable(db, inner),
+        Ty::Nominal { inner, .. } => {
+            let inner = (**inner).clone();
+            ty_float_walkable_seen(db, &inner, seen)
+        }
         // A Qty erases to its inner magnitude (unit is compile-time); walk the inner.
-        Ty::Qty { inner, .. } => ty_float_walkable(db, inner),
+        Ty::Qty { inner, .. } => {
+            let inner = (**inner).clone();
+            ty_float_walkable_seen(db, &inner, seen)
+        }
         // A LIST — walkable iff its element is (a `List<Float>` compares element-wise via the `.iter().zip()`
         // walk, each float element by canonical byte form). This is what `Core::ValueEqShaped` routes here:
         // a list spine that native `==` (`Vec: PartialEq`) would compare with the wrong NaN/-0.0 answer.
-        Ty::List(elem) => ty_float_walkable(db, elem),
-        // A sum, map, function, or unknown var — not walked by this slice.
+        Ty::List(elem) => {
+            let elem = (**elem).clone();
+            ty_float_walkable_seen(db, &elem, seen)
+        }
+        // A SUM whose payloads carry a Float and/or a List (so it is NOT already native-Eq — that path was
+        // taken above) — walkable iff every variant's payload is AND the sum is NON-RECURSIVE. `emit_value_
+        // eq_walk` renders a Sum by INLINE-EXPANDING a `match (l,r)` over the variants + recursively walking
+        // each payload; a self-referential sum (e.g. `Ast` via `Ast.List (List Ast)`) would expand the walk
+        // UNBOUNDEDLY (a compile-time stack overflow — the emit has no fn-call indirection to break the
+        // cycle). So a recursive back-edge returns FALSE here → the whole recursive sum DECLINES on rust
+        // (a clean todo, reject-don't-miscompile). This is where the rust predicate legitimately DIFFERS from
+        // the wasm `eq_shaped_walkable` (whose runtime walk is ITERATIVE — a work-stack — so it handles a
+        // recursive sum, returning true on the back-edge). A recursive float/list-carrying sum's rust eq is a
+        // follow-up (emit a named helper fn instead of inline expansion); a NON-recursive one emits fine.
+        Ty::Sum { decl, .. } => {
+            if seen.contains(decl) {
+                return false; // recursive back-edge — the inline emit walk can't expand it; decline on rust
+            }
+            seen.push(*decl);
+            let variant_count = db.type_decl_by_occ(*decl).map(|t| t.variants.len());
+            let mut ok = variant_count.is_some();
+            if let Some(vc) = variant_count {
+                for disc in 0..vc as u32 {
+                    // A nullary variant (no payload) is walkable; a payload variant's payload must be.
+                    if let Some(payload_ty) = variant_payload_ty(db, ty, disc)
+                        && !ty_float_walkable_seen(db, &payload_ty, seen)
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            seen.pop();
+            ok
+        }
+        // A map, function, or unknown var — not walked by this slice.
         _ => false,
     }
 }
@@ -2621,6 +2668,22 @@ fn ty_float_walkable(db: &mut Db, ty: &Ty) -> bool {
 /// transparent). `l`/`r` are already-bound identifiers (or field projections built on them), so re-reading
 /// them per leaf is sound (a projection of a bound value; the enclosing bind is done once by the caller).
 fn emit_value_eq_walk(db: &mut Db, ty: &Ty, l: &str, r: &str) -> Result<String, Reject> {
+    emit_value_eq_walk_seen(db, ty, l, r, &mut Vec::new())
+}
+
+/// [`emit_value_eq_walk`] with a `seen` set of sum decls currently being expanded — the recursion guard for
+/// the INLINE Sum-eq walk. A self-referential sum (via ANY path: a `Box`ed variant, or through a `List`/
+/// tuple element as in `Ast.List (List Ast)`) would expand the emit UNBOUNDEDLY, so re-entering a sum
+/// already in `seen` DECLINES (a compile-time stack overflow otherwise). A recursive sum's rust eq needs a
+/// named helper fn (call-indirection) — a follow-up; a NON-recursive sum expands fine. `variant_is_recursive`
+/// alone is insufficient (it catches only `Box`ed DIRECT self-reference, not recursion through a `List`).
+fn emit_value_eq_walk_seen(
+    db: &mut Db,
+    ty: &Ty,
+    l: &str,
+    r: &str,
+    seen: &mut Vec<crate::ast::StructId>,
+) -> Result<String, Reject> {
     // A native-Eq leaf (Int/Bool/Bytes/String/BigInt/… and any all-Eq compound) — a plain `==`. Checked
     // FIRST so an Eq sub-tree compares in one `==` rather than being walked field-by-field (identical
     // result, smaller emit; and it is the ONLY path for a sum/list/map leaf, which the walk does not spell).
@@ -2648,11 +2711,12 @@ fn emit_value_eq_walk(db: &mut Db, ty: &Ty, l: &str, r: &str) -> Result<String, 
             let elems = elems.clone();
             let mut parts = Vec::with_capacity(elems.len());
             for (i, e) in elems.iter().enumerate() {
-                parts.push(emit_value_eq_walk(
+                parts.push(emit_value_eq_walk_seen(
                     db,
                     e,
                     &format!("{l}.{i}"),
                     &format!("{r}.{i}"),
+                    seen,
                 )?);
             }
             Ok(join_and(parts))
@@ -2662,11 +2726,12 @@ fn emit_value_eq_walk(db: &mut Db, ty: &Ty, l: &str, r: &str) -> Result<String, 
             let tys: Vec<Ty> = fields.values().cloned().collect();
             let mut parts = Vec::with_capacity(tys.len());
             for (i, e) in tys.iter().enumerate() {
-                parts.push(emit_value_eq_walk(
+                parts.push(emit_value_eq_walk_seen(
                     db,
                     e,
                     &format!("{l}.{i}"),
                     &format!("{r}.{i}"),
+                    seen,
                 )?);
             }
             Ok(join_and(parts))
@@ -2680,16 +2745,95 @@ fn emit_value_eq_walk(db: &mut Db, ty: &Ty, l: &str, r: &str) -> Result<String, 
         // canonical byte form (NOT `Vec`'s derived `PartialEq`, which would give the wrong NaN/-0.0 answer).
         Ty::List(elem) => {
             let elem = (**elem).clone();
-            let elem_cmp = emit_value_eq_walk(db, &elem, "__le", "__re")?;
+            let elem_cmp = emit_value_eq_walk_seen(db, &elem, "__le", "__re", seen)?;
             Ok(format!(
                 "({l}.len() == {r}.len() && {l}.iter().zip({r}.iter()).all(|(__le, __re)| {elem_cmp}))"
             ))
         }
         // A NOMINAL newtype is transparent — its Rust value IS the inner, so walk the inner over the same
         // operands (no projection; the newtype adds no Rust wrapper).
-        Ty::Nominal { inner, .. } => emit_value_eq_walk(db, inner, l, r),
+        Ty::Nominal { inner, .. } => {
+            let inner = (**inner).clone();
+            emit_value_eq_walk_seen(db, &inner, l, r, seen)
+        }
         // A Qty erases to its inner magnitude — walk the inner (same operands).
-        Ty::Qty { inner, .. } => emit_value_eq_walk(db, inner, l, r),
+        Ty::Qty { inner, .. } => {
+            let inner = (**inner).clone();
+            emit_value_eq_walk_seen(db, &inner, l, r, seen)
+        }
+        // A SUM whose payloads carry a Float/List (so it is NOT native-Eq — that path was taken first): a
+        // `match (l, r)` over the emitted enum's variants. Each variant arm binds its payload on BOTH sides
+        // and recursively walks the payload (a float leaf by canonical byte form, a list element-wise); a
+        // nullary variant → `true`; a mismatched variant pair → the `_ => false` catch-all. Mirrors the wasm
+        // `value-eq-shaped` Shape::Sum arm (disc-compare then payload walk) — the same domain `ty_float_
+        // walkable`'s Sum arm admits (the two-backend routing invariant). A RECURSIVE variant's field is a
+        // `Box<…>` (`variant_is_recursive`), so its bound ref is `&Box<T>` — deref with `**` before the walk,
+        // the read twin of the construct site's `Box::new`.
+        Ty::Sum { decl, .. } => {
+            // DECLINE a RECURSIVE sum via the `seen` guard: this emit expands the walk INLINE (a `match`
+            // literal per payload), so re-entering a sum already being expanded (self-reference via a `Box`ed
+            // variant OR through a `List`/tuple element, e.g. `Ast.List (List Ast)`) would expand UNBOUNDEDLY
+            // at compile time (a compiler stack overflow). `variant_is_recursive` alone is insufficient (it
+            // catches only `Box`ed direct self-reference, not recursion through a `List`). A recursive sum's
+            // rust eq needs a named helper fn (call-indirection) — a follow-up; decline cleanly here (todo,
+            // not a miscompile). Wasm still computes it (the runtime value-eq-shaped walk is iterative).
+            if seen.contains(decl) {
+                return Err(Reject::decline(
+                    "runtime structural equality over a RECURSIVE sum is not yet rendered by the Rust backend (needs a helper fn, not inline expansion)",
+                ));
+            }
+            seen.push(*decl);
+            let variant_count = match db.type_decl_by_occ(*decl).map(|t| t.variants.len()) {
+                Some(n) => n,
+                None => {
+                    seen.pop();
+                    return Err(Reject::decline("sum eq: no variant count"));
+                }
+            };
+            let mut arms = Vec::with_capacity(variant_count + 1);
+            let mut arm_err: Option<Reject> = None;
+            for disc in 0..variant_count as u32 {
+                let path = match sum_variant_path_of_ty(db, ty, disc) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        arm_err = Some(e);
+                        break;
+                    }
+                };
+                match variant_payload_ty(db, ty, disc) {
+                    None => {
+                        // Nullary variant — a bare `Enum::V` on both sides is equal (the discriminant matched).
+                        arms.push(format!("({path}, {path}) => true,"));
+                    }
+                    Some(payload_ty) => {
+                        // One payload field (a single type OR a tuple type — the walk handles both). A
+                        // recursive variant boxes the field, so the bound ref derefs one extra level.
+                        let deref = if super::enums::variant_is_recursive(db, ty, disc) {
+                            "**"
+                        } else {
+                            "*"
+                        };
+                        let lp = format!("{deref}__lp");
+                        let rp = format!("{deref}__rp");
+                        match emit_value_eq_walk_seen(db, &payload_ty, &lp, &rp, seen) {
+                            Ok(cmp) => arms.push(format!("({path}(__lp), {path}(__rp)) => {cmp},")),
+                            Err(e) => {
+                                arm_err = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            seen.pop();
+            if let Some(e) = arm_err {
+                return Err(e);
+            }
+            // Mismatched-variant pair → not equal. (Only reached when the two discriminants differ; a matched
+            // pair took its arm above.)
+            arms.push("_ => false,".to_string());
+            Ok(format!("(match (&{l}, &{r}) {{ {} }})", arms.join(" ")))
+        }
         // Any other shape should have been excluded by `ty_float_walkable` before we got here.
         _ => Err(Reject::decline(
             "runtime structural equality over this compound is not yet rendered by the Rust backend",

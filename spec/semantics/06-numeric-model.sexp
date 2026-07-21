@@ -411,6 +411,39 @@
   (input  (: (Some 999) (Option Int8)))
   (error  CDZ0302))
 
+; The width fit-check must reach a literal whose narrow width is fixed CONTEXTUALLY + TRANSITIVELY through an
+; integer-arith spine — not just its immediate binop sibling. `(+ (* 10000 …) (% a b))` over UInt8 params:
+; the `+` unifies its two operands to one width, so the `%`'s UInt8 propagates up to the `*`, and the `*`
+; unifies ITS operands, grounding the bare `10000` to UInt8 — where it is out of range (0..=255). The literal's
+; immediate sibling is the deferred `(if …)` (an Int64), so a check that inspected only the immediate sibling
+; MISSED it (the check passed, wasm rejected at emit, and the RUST backend SILENTLY TRUNCATED `10000 as u8` →
+; 16 → wrong arithmetic — a backend-divergent miscompile). The fix climbs the arith spine (an arith op unifies
+; operand widths; a comparison like `<` breaks the chain), so the reject fires at the shared reconciliation
+; layer and ALL backends agree. Contextual (no annotation to blame) → CDZ0201 "out of range", not the annotated
+; CDZ0302. The FITTING twin below (100 in the same shape) computes — the check must not over-reject.
+(case "a bare literal grounded to a narrow width THROUGH an arith spine is range-checked (contextual, transitive)"
+  (doc    "`(+ (* 10000 (if (< a b) 1 0)) (% a b))` over `(: a UInt8) (: b UInt8)`: the `+` unifies the `*`
+           result with the UInt8 `(% a b)`, so the `*` grounds to UInt8 and its bare literal `10000` is out of
+           range for UInt8 (0..=255) → CDZ0201 (contextual out-of-range: a bare literal fixed by an integer-
+           operand CONTEXT, no annotation to blame — distinct from the annotated CDZ0302 path above). The width
+           is fixed TRANSITIVELY (10000's immediate sibling is the deferred `if`; the width arrives through the
+           `+`→`*` arith spine), the exact path a check inspecting only the immediate binop sibling missed —
+           it slipped through, wasm rejected at emit, and rust silently TRUNCATED `10000 as u8` to 16 (a
+           backend-divergent wrong-value miscompile). Pins the shared-layer arith-spine fit-check so all
+           backends agree on the reject.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (+ (* 10000 (if (< a b) 1 0)) (% a b))) (export main)))
+  (error  CDZ0201))
+
+(case "a bare literal that FITS its contextually-grounded narrow width through an arith spine computes"
+  (doc    "The no-over-rejection twin of the case above: the SAME shape with a FITTING literal — `(+ (* 100 (if
+           (< a b) 1 0)) (% a b))` over UInt8 — grounds `100` to UInt8 (in range 0..=255) and computes. At
+           a=3,b=5: `100·(3<5→1) + (3%5)` = 100 + 3 = 103. Pins that the arith-spine width fit-check REJECTS only
+           an out-of-range literal (10000 above) and does NOT over-reject a fitting one — the guard the shared
+           reconciliation fix must preserve.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (+ (* 100 (if (< a b) 1 0)) (% a b))) (export main)))
+  (call   main (: 3 UInt8) (: 5 UInt8))
+  (output (: 103 UInt8)))
+
 (case "an R-suffixed literal composes with exact rational arithmetic"
   (doc    "`(+ 0.5R (Rational.of 1 3))` = 1/2 + 1/3 = 5/6 exactly — the suffixed literal flows into the
            exact `+` just like the explicit constructor, so both spellings denote one kind of value.")

@@ -7,6 +7,7 @@ pass	@invariant ESTABLISH Part 1: a bare-scalar invariant on a newtype auto-unwr
 pass	@invariant ESTABLISH Part 2 (divert): a plain `(Percent.Pct v)` construction auto-establishes — a satisfying value constructs, a violating value traps at the call site (design §10.2, (D))
 pass	@invariant ESTABLISH Part 2: the synthesized checked constructor enforces the invariant at run time — a satisfying value constructs, a violating value traps (design §10.2, (D))
 pass	@invariant ESTABLISH divert reaches indirect construction sites: a lambda body, a reconstruct-after-update, and a list element all establish
+pass	@invariant ESTABLISH fires when the constructor is directly a MATCH ARM's selected result (v-patterns divert site)
 pass	@invariant ESTABLISH over a multi-variant sum: each variant's construction auto-establishes — a satisfying value constructs, a violating one traps (design §10.2, (D))
 pass	@invariant ESTABLISH over a nullary variant: a rejected nullary variant traps at construction, an accepted payload variant constructs (design §10.2, (D))
 pass	@invariant ESTABLISH over a single-variant multi-payload newtype: an ordered Range constructs, a misordered one traps (design §10.2, (D))
@@ -156,6 +157,8 @@ pass	Qty.unit recovers a quantity's unit to build another quantity of the same u
 pass	Qty.unit recovers the unit of a quantity whose magnitude is a runtime value
 pass	Qty.value of a conversion result is a compile-time error — the conversion already unwrapped
 pass	Qty.value recovers the underlying numeric value, discarding the unit
+pass	Record.project over runtime field values keeps the named fields and their live values
+pass	Record.without over runtime field values drops the named field and keeps the rest live
 pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	STACKED @requires: EVERY precondition is enforced — a violated OUTER @requires traps (not only the innermost)
@@ -349,6 +352,7 @@ pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
 pass	a HEAP element pushed across the RRB 32→33 boundary reads back intact at every index
 pass	a HOF callback matching a tuple argument computes through the nested reduction
 pass	a HOF callback matching its sum argument reaches the nullary arm
+todo	a Float64-inner Qty host result crosses as its float magnitude
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
 pass	a List entry argument is marshalled as a vec!
@@ -522,6 +526,8 @@ pass	a bare data-constructor-colliding variant's OTHER arm fires on the other di
 pass	a bare empty list reflects an undetermined element, distinct from a concrete list type
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare literal exceeding the default-integer pragma's narrow type is rejected
+pass	a bare literal grounded to a narrow width THROUGH an arith spine is range-checked (contextual, transitive)
+pass	a bare literal that FITS its contextually-grounded narrow width through an arith spine computes
 pass	a bare literal that overflows the annotated width does not fit it
 pass	a bare nullary constructor is the nullary sum value
 pass	a bare number on the left scales the quantity and keeps its dimension
@@ -808,6 +814,7 @@ pass	a correctly-annotated function parameter is accepted
 pass	a cross-function recursive fold's out-state threads to a later perform in the caller's continuation
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a crossing text-literal arm is rejected even beside a same-kind sibling arm
+todo	a consumed closure is applied once per iteration of a recursive loop
 pass	a ctl-style arm applying its continuation inside a match scrutinee resolves and folds
 pass	a ctl-style arm that applies its continuation lexically folds through the delimited context
 pass	a ctl-style arm whose continuation ESCAPES to another function reifies it as a closure and applies it there
@@ -1846,6 +1853,7 @@ pass	a run-sim scheduler fast-forwards the clock through two sequential sleeps i
 pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
 pass	a runtime -0.0 float leaf two levels deep stays distinct from positive zero
+pass	a runtime = on a NON-recursive sum with a Float payload walks it on both backends
 pass	a runtime BigInt absent from a Set is not found
 pass	a runtime BigInt accumulator threaded through recursion grows past Int64
 pass	a runtime BigInt comparison sees an intermediate that overflows Int64
@@ -2411,6 +2419,7 @@ pass	a two-argument built-in applied to three arguments names its arity
 pass	a two-argument closure exported to the host is called with both arguments
 pass	a two-argument list operation applied to a non-list names the expected argument type
 pass	a trap raised inside a host-called closure body reaches the host as a trap
+todo	a trap raised on a consumed closure's result surfaces through the consumer as a trap
 pass	a two-arm Bool match selects its second (false) arm
 pass	a two-arm if selecting between two runtime FLOAT values computes the chosen one (float select-ification)
 pass	a two-arm if selecting between two runtime NARROW UInt8 values computes the chosen one at the payload width
@@ -3109,6 +3118,7 @@ pass	encoding and decoding a constructor-built AST round-trips to an equal value
 pass	encoding and decoding a constructor-built compound AST round-trips
 pass	encoding and decoding an Ast.Bool round-trips to an equal value
 pass	encoding and decoding an Ast.Float round-trips to an equal value
+pass	cross-unit Qty host results reject at the guest-side add
 pass	encoding and decoding an Ast.Str round-trips to an equal value
 pass	end-to-end: a property run finds a failing input, then the shrinker converges to the minimal failing value
 pass	equality across incompatible dimensions is a compile-time error
@@ -3234,6 +3244,7 @@ pass	interning the same string twice yields equal symbols
 pass	intersection cardinality with a runtime-element operand
 pass	intersection is associative
 pass	intersection of a set with itself is the set (idempotent)
+pass	eval of a constructor-built Ast.List with a valid operator head computes its value
 pass	intersection with the empty set is the empty set
 pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
 pass	keyed lookups at different keys are not shared
@@ -4031,6 +4042,7 @@ todo	an entrypoint delegation reaches an effect performed in a recursive callee
 todo	an exact RATIONAL host value crosses as two scalar num/den ops the guest recombines (#13)
 todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
 todo	and performs the right operand's effect when the left is true
+todo	two same-unit Qty host results combine guest-side as a same-dimension add
 todo	and short-circuit does not perform the right operand's effect
 todo	binary operator operands are evaluated left to right
 todo	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one

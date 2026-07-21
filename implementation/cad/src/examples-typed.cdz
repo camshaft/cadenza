@@ -12,7 +12,9 @@
 @!default-fraction Rational
 
 import { Solid, Vec3, Aabb } from "exact"
+
 import { bounding-box, aabbr-size, v3-x, v3-y, v3-z } from "exact"
+
 import { Vec3m, v3-len, len-m, meters, to-vec3 } from "units-typed"
 
 /// A length in inches, converted to an exact Rational-METER quantity at the boundary (the language's exact
@@ -21,16 +23,17 @@ import { Vec3m, v3-len, len-m, meters, to-vec3 } from "units-typed"
 /// Int64 count; the `1` denominator is annotated `(1 : Int64)` so `Rational.of` stays Int64-typed under the
 /// module's `default-fraction Rational`.
 def inches(n: Int64) =
-  Qty.of(Unit.in(Unit.of(#"meter"), Qty.of(Rational.of(n, (1 : Int64)), Unit.of(#"inch"))), Unit.of(#"meter"))
+  Qty.of(Qty.of(Rational.of(n, 1 : Int64), Unit.of(#inch)) as meter, Unit.of(#meter))
 
 /// A meter-model axis-aligned box: width/depth/height given as LENGTHS (type-checked), stored as exact
 /// meters, built into the exact `Solid(Rational)` CSG the drivers consume. Mixing a length with a bare number here
 /// is a CDZ0301 type error — the strong unit typing the operator wants, at the point of authoring.
-def box-len(w: Qty(Rational, Unit.base(#"meter")), d: Qty(Rational, Unit.base(#"meter")), h: Qty(Rational, Unit.base(#"meter"))) =
-  Solid.Cube(to-vec3(v3-len(w, d, h)))
+def box-len(w: Qty(Rational, Unit.base(#meter)), d: Qty(Rational, Unit.base(#meter)), h: Qty(
+  Rational,
+  Unit.base(#meter)
+)) = Solid.Cube(to-vec3(v3-len(w, d, h)))
 
 /// ---- worked models: author in real units, exact meters underneath ----
-
 /// A 2m × 1m × 1m plinth, authored in meters. Exact.
 def plinth() = box-len(meters(2), meters(1), meters(1))
 
@@ -39,16 +42,16 @@ def plinth() = box-len(meters(2), meters(1), meters(1))
 /// showcase: units mix EXACTLY in one model.
 def mixed-block() = box-len(meters(1), inches(12), inches(6))
 
-/// ============================ @test suite (S3 — units-typed worked models, exact meters) ============================
-
 @test
+/// ============================ @test suite (S3 — units-typed worked models, exact meters) ============================
 def plinth-bbox-is-exact-meters() =
   // The plinth is a full-size 2×1×1 m box centred at origin; its bounding-box size is exactly 2×1×1 m
   // (bare Rational meters — the stored model unit). Exact, via the existing exact bbox fold.
   let sz = aabbr-size(bounding-box(plinth())) in
   if v3-x(sz) == 2 / 1 then
-    (if v3-y(sz) == 1 / 1 then (if v3-z(sz) == 1 / 1 then unit else trap("z")) else trap("y"))
-  else trap("x")
+    if v3-y(sz) == 1 / 1 then if v3-z(sz) == 1 / 1 then unit else trap("z") else trap("y")
+  else
+    trap("x")
 
 @test
 def mixed-units-block-is-exact() =
@@ -56,10 +59,12 @@ def mixed-units-block-is-exact() =
   // 762/5000 m, EXACTLY (no float). The bbox reports these exact meter magnitudes.
   let sz = aabbr-size(bounding-box(mixed-block())) in
   if v3-x(sz) == 1 / 1 then
-    (if v3-y(sz) == 1524 / 5000 then
-       (if v3-z(sz) == 762 / 5000 then unit else trap("z = 6 inch in m"))
-     else trap("y = 12 inch in m"))
-  else trap("x = 1 m")
+    if v3-y(sz) == 1524 / 5000 then
+      if v3-z(sz) == 762 / 5000 then unit else trap("z = 6 inch in m")
+    else
+      trap("y = 12 inch in m")
+  else
+    trap("x = 1 m")
 
 @test
 def a-length-authored-in-inches-stores-exact-meters() =

@@ -71,6 +71,56 @@
   (host-calls (call env.width))
   (output (: 42 Int64)))
 
+; The Int64-inner case above pins the magnitude crossing. These pin the SOUNDNESS half of the unit
+; erasure: the unit is erased at the BOUNDARY but preserved GUEST-SIDE by the op's declared type — so
+; two same-unit host results combine as a valid same-dimension add, a cross-unit combine REJECTS at
+; compile time (a wrong-dimension host value is inexpressible: the host has no unit channel), and a
+; Float64-inner Qty rides the same erased-scalar path as Int64.
+
+(case "two same-unit Qty host results combine guest-side as a same-dimension add"
+  (doc    "`(+ (Env.width) (Env.width))` where both results are `(Qty Int64 meter)`: each host call crosses
+           as a bare Int64 magnitude (42 + 42), but the guest's static types carry `meter` on BOTH operands,
+           so the `+` is a valid same-dimension combine → `Qty.value` reads 84. Pins that the boundary
+           erasure does not LOSE the unit guest-side — the add type-checks as Qty+Qty, not as bare ints that
+           happen to work. Two calls consume two responses in order. Expected: 84.")
+  (input  (do
+            (effect Env (op width (-> Unit (Qty Int64 (Unit.base #"meter")))))
+            (def (main)
+              (host (Env)
+                (Qty.value (+ (Env.width) (Env.width))))) (export main)))
+  (host-responses (respond env.width (: 42 Int64)) (respond env.width (: 42 Int64)))
+  (host-calls (call env.width) (call env.width))
+  (output (: 84 Int64)))
+
+(case "cross-unit Qty host results reject at the guest-side add"
+  (doc    "The load-bearing soundness face: `(+ (Env.w) (Env.t))` where w yields `(Qty Int64 meter)` and t
+           `(Qty Int64 second)` — the units are erased at the boundary, but the guest-side static types
+           still carry the dimensions, so the add is a dimension MISMATCH and rejects CDZ0501 at compile
+           time. This is exactly the fix's soundness claim: a wrong-dimension host value is INEXPRESSIBLE
+           (the host supplies only magnitudes; units are fixed guest-side by each op's declared type), so
+           erasure cannot smuggle a meter into a second. Rejects on every backend (frontend-shared).")
+  (input  (do
+            (effect Env (op w (-> Unit (Qty Int64 (Unit.base #"meter")))) (op t (-> Unit (Qty Int64 (Unit.base #"second")))))
+            (def (main)
+              (host (Env)
+                (Qty.value (+ (Env.w) (Env.t))))) (export main)))
+  (error  CDZ0501))
+
+(case "a Float64-inner Qty host result crosses as its float magnitude"
+  (doc    "The float-inner axis of the Qty host ABI: `Env.w : Unit -> (Qty Float64 meter)` crosses as a bare
+           Float64 (3.5), the guest's static type carrying the unit — `Qty.value` reads 3.5 back. Pins that
+           `abi_val_type` resolves a Qty to its INNER's ABI type for a float inner exactly as for Int64 (the
+           landed case above); a heap-inner (Rational) Qty rides the num/den pair instead (#13 cases at the
+           file top). Expected: 3.5.")
+  (input  (do
+            (effect Env (op w (-> Unit (Qty Float64 (Unit.base #"meter")))))
+            (def (main)
+              (host (Env)
+                (Qty.value (Env.w)))) (export main)))
+  (host-responses (respond env.w (: 3.5 Float64)))
+  (host-calls (call env.w))
+  (output (: 3.5 Float64)))
+
 (case "an exact RATIONAL host value crosses as two scalar num/den ops the guest recombines (#13)"
   (doc    "The num/den Qty ABI (#13): a host cannot supply a heap `Rational` directly (a compound has no host
            boundary form), so an exact-rational runtime value crosses as TWO SCALAR host ops — `rate-num :

@@ -158,18 +158,17 @@ def position(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s, step) => position-drive(step, s, 0, p)
 
 /// `sum(it)` — total of the elements (fold with +, seeded 0). The canonical fused-pipeline consumer.
-/// Drives `drive` DIRECTLY (rather than via `fold`) so the literal `+` combiner reaches `drive`'s `const g`
-/// in one hop: const-provability does not survive a literal closure forwarded through TWO wrapper levels
-/// (`sum` → `fold` → `drive`), so the `sum(from-list(…))` call site would be rejected because an argument to
-/// a `const` parameter must be compile-time-known (it would trace back through runtime data). Inlining the
-/// `fold` layer keeps the const chain one-hop and preserves fusion.
-def sum(it) = match it with
-  | Iter.Mk(s, step) => drive(step, s, 0, fn(a, x) => a + x)
+/// Routes through `fold` (the idiomatic one-liner). This USED to require driving `drive` directly to keep
+/// the const chain one-hop — a literal `+` closure forwarded through TWO wrapper levels (`sum` → `fold` →
+/// `drive`'s `const g`) was falsely rejected CDZ0201 ("const arg must be compile-time-known"). That
+/// const-forwarding false-reject is FIXED upstream (v-core-opt `e62dfb2ed`: theft-immune lexical
+/// free-name closedness cross-check), so a closed literal closure now forwards through const wrapper hops
+/// correctly — `sum`/`product` are back to the idiomatic `fold`-delegating form, fusion preserved.
+def sum(it) = fold(it, 0, fn(a, x) => a + x)
 
-/// `product(it)` — product of the elements (fold with *, seeded 1; empty → 1). Drives `drive` directly for
-/// the same one-hop-const reason as `sum` (see above).
-def product(it) = match it with
-  | Iter.Mk(s, step) => drive(step, s, 1, fn(a, x) => a * x)
+/// `product(it)` — product of the elements (fold with *, seeded 1; empty → 1). Routes through `fold`, same
+/// as `sum` — the const-forward-through-fold form, unblocked by v-core-opt `e62dfb2ed`.
+def product(it) = fold(it, 1, fn(a, x) => a * x)
 
 /// `nth(it, n)` — the `n`-th element (0-based), or `None` if the iterator is shorter OR `n` is negative.
 /// Matches the prelude's `List.at` fallible-indexing contract (both `n < 0` and `n >= len` → `None`); the

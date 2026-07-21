@@ -4817,6 +4817,28 @@ mod tests {
     }
 
     #[test]
+    fn inlay_hints_work_on_an_ml_annotated_param_def() {
+        // The real-world ML path: an ANNOTATED-param def `def scale(factor: Int64) -> Int64 = …`. The ML
+        // parser desugars the typed param into the same `(: factor Int64)` binder the s-expr surface uses,
+        // so `param_binder_name` recovers `factor` and a call `scale(3)` is hinted `factor:`. Pins that the
+        // annotated-param fix reaches the ML surface (the un-annotated ML case is covered above; this is
+        // the typed form editor users most often write).
+        let text = "def scale(factor: Int64) -> Int64 = factor * 2\ndef main() -> Int64 = scale(3)";
+        let labels: Vec<String> = inlay_hints_at(text, true, whole_range())
+            .iter()
+            .map(|h| match &h.label {
+                InlayHintLabel::String(s) => s.clone(),
+                other => panic!("expected a string label, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["factor:".to_string()],
+            "ML annotated-param def `scale(factor: Int64)` → call `scale(3)` hinted `factor:` (no leak onto the def); got {labels:?}"
+        );
+    }
+
+    #[test]
     fn inlay_hints_label_an_imported_callee_with_its_library_param_names() {
         // Increment 2 (cross-file): a callee IMPORTED from a sibling library gets param-name hints read
         // from the LIBRARY's `(def (name param…) …)` signature. `main.sexp` imports `add` from `lib.sexp`
@@ -4947,6 +4969,50 @@ mod tests {
             "def add(a, b) = a + b\ndef main() = add(1, ",
             true,
             whole_range(),
+        );
+    }
+
+    #[test]
+    fn inlay_hints_cover_a_nested_call_argument() {
+        // A call passed AS an argument gets hints at BOTH levels: the outer call `(add (id 5) 9)` hints
+        // its two args (`a:` on `(id 5)`, `b:` on `9`), and the inner call `(id 5)` independently hints
+        // its own arg (`n:` on `5`). Pins that the whole-tree walk finds calls at every depth, not just
+        // top-level statements.
+        let text = "(module m (def (id n) n) (def (add a b) (+ a b)) (def (main) (add (id 5) 9)) (export main))";
+        let labels: std::collections::HashSet<String> = inlay_hints_at(text, false, whole_range())
+            .iter()
+            .map(|h| match &h.label {
+                InlayHintLabel::String(s) => s.clone(),
+                other => panic!("expected a string label, got {other:?}"),
+            })
+            .collect();
+        // `a:` (outer arg is the nested call), `b:` (outer literal 9), `n:` (inner arg 5).
+        for want in ["a:", "b:", "n:"] {
+            assert!(
+                labels.contains(want),
+                "nested call should hint `{want}` at its level, got {labels:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inlay_hints_over_application_hints_only_up_to_the_param_count() {
+        // A call with MORE args than the callee has params (over-application) hints only the args that
+        // line up with a parameter — the extra args are silently un-hinted (zip stops at the param count),
+        // never a panic or an out-of-bounds param name. `(one 1 2 3)` where `one` has a single param `x`
+        // → exactly one hint `x:` on `1`.
+        let text = "(module m (def (one x) x) (def (main) (one 1 2 3)) (export main))";
+        let labels: Vec<String> = inlay_hints_at(text, false, whole_range())
+            .iter()
+            .map(|h| match &h.label {
+                InlayHintLabel::String(s) => s.clone(),
+                other => panic!("expected a string label, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["x:".to_string()],
+            "over-application hints only the single param `x:`, extra args un-hinted; got {labels:?}"
         );
     }
 

@@ -7,6 +7,7 @@ pass	@invariant ESTABLISH Part 1: a bare-scalar invariant on a newtype auto-unwr
 pass	@invariant ESTABLISH Part 2 (divert): a plain `(Percent.Pct v)` construction auto-establishes — a satisfying value constructs, a violating value traps at the call site (design §10.2, (D))
 pass	@invariant ESTABLISH Part 2: the synthesized checked constructor enforces the invariant at run time — a satisfying value constructs, a violating value traps (design §10.2, (D))
 pass	@invariant ESTABLISH divert reaches indirect construction sites: a lambda body, a reconstruct-after-update, and a list element all establish
+pass	@invariant ESTABLISH fires when the constructor is directly a MATCH ARM's selected result (v-patterns divert site)
 pass	@invariant ESTABLISH over a multi-variant sum: each variant's construction auto-establishes — a satisfying value constructs, a violating one traps (design §10.2, (D))
 pass	@invariant ESTABLISH over a nullary variant: a rejected nullary variant traps at construction, an accepted payload variant constructs (design §10.2, (D))
 pass	@invariant ESTABLISH over a single-variant multi-payload newtype: an ordered Range constructs, a misordered one traps (design §10.2, (D))
@@ -156,6 +157,8 @@ pass	Qty.unit recovers the unit of a quantity whose magnitude is a runtime value
 pass	Qty.value of a conversion result is a compile-time error — the conversion already unwrapped
 pass	Qty.value recovers the underlying numeric value, discarding the unit
 pass	Result propagates errors without trapping
+pass	Record.project over runtime field values keeps the named fields and their live values
+pass	Record.without over runtime field values drops the named field and keeps the rest live
 pass	Result type for fallible operations
 pass	STACKED @requires: EVERY precondition is enforced — a violated OUTER @requires traps (not only the innermost)
 pass	STACKED @requires: value-transparent when ALL preconditions are satisfied
@@ -349,6 +352,7 @@ pass	a HOF callback matching a tuple argument computes through the nested reduct
 pass	a HOF callback matching its sum argument reaches the nullary arm
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
+todo	a Float64-inner Qty host result crosses as its float magnitude
 pass	a List entry argument is marshalled as a vec!
 pass	a List-returning closure alongside a plain export — the closure
 pass	a List-returning closure alongside a plain export — the plain
@@ -507,6 +511,8 @@ pass	a bare data-constructor-colliding variant's OTHER arm fires on the other di
 pass	a bare empty list reflects an undetermined element, distinct from a concrete list type
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare literal exceeding the default-integer pragma's narrow type is rejected
+pass	a bare literal grounded to a narrow width THROUGH an arith spine is range-checked (contextual, transitive)
+pass	a bare literal that FITS its contextually-grounded narrow width through an arith spine computes
 pass	a bare literal that overflows the annotated width does not fit it
 pass	a bare nullary constructor is the nullary sum value
 pass	a bare number on the left scales the quantity and keeps its dimension
@@ -808,6 +814,7 @@ pass	a decimal literal annotated Rational grounds to its exact fraction
 pass	a decimal literal annotated Rational is exact for a value no float rounds cleanly
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
 pass	a declaration in a do block shadows an outer binding
+todo	a consumed closure is applied once per iteration of a recursive loop
 pass	a decoded field re-encodes into the same-width segment without an explicit narrow
 pass	a decoded length field re-encodes a length-prefixed frame end to end
 pass	a decoded payload feeds ordinary arithmetic
@@ -1822,6 +1829,7 @@ pass	a run-sim scheduler fast-forwards the clock through two sequential sleeps i
 pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
 pass	a runtime -0.0 float leaf two levels deep stays distinct from positive zero
+pass	a runtime = on a NON-recursive sum with a Float payload walks it on both backends
 pass	a runtime BigInt absent from a Set is not found
 pass	a runtime BigInt accumulator threaded through recursion grows past Int64
 pass	a runtime BigInt comparison sees an intermediate that overflows Int64
@@ -2411,6 +2419,7 @@ pass	a type-value in integer-width position is rejected
 pass	a type-valued parameter threaded through a second call reaches Type.eq with its type intact
 pass	a type-valued parameter under a function-arrow annotation dispatches an ad-hoc-polymorphic dict
 pass	a u16 segment encodes an integer big-endian by default
+todo	a trap raised on a consumed closure's result surfaces through the consumer as a trap
 pass	a trap raised inside a host-called closure body reaches the host as a trap
 pass	a u16 segment round-trips at its maximum value
 pass	a u32 segment encodes four big-endian bytes
@@ -3109,6 +3118,7 @@ pass	equality over a partly-un-built sum with a free Err type compiles on every 
 pass	equality over a runtime float in a SUM payload compares by the float leaf
 pass	eval does not execute the result of a nested eval — no runtime AST interpreter
 pass	eval does not forge a private constructor NESTED in a compound
+pass	cross-unit Qty host results reject at the guest-side add
 pass	eval does not see through a splice whose operand is itself an Ast value
 pass	eval is optional for macros and interactive use
 pass	eval of a bare Ast.Name for an unbound name is the ordinary unbound-name error
@@ -3234,6 +3244,7 @@ pass	match on a sum value returned by a function selects the runtime variant
 pass	matching a lookup from a computed-key map literal selects the present-value arm
 pass	matching a runtime Bytes.at Option binds the byte in the Some arm
 pass	matching a runtime Bytes.at Option takes the None arm past the end
+pass	eval of a constructor-built Ast.List with a valid operator head computes its value
 pass	matching against zero probes the normalized narrow value, not the raw wide slot
 pass	matching falls through to else when no literal matches
 pass	matching on a function value is a type error
@@ -4031,6 +4042,7 @@ todo	distinct-sig round-trip: TWO byte-rope consumers of different signatures �
 todo	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Int64 one
 todo	distinct-sig round-trip: TWO collection consumers of different sigs — the List
 todo	distinct-sig round-trip: TWO collection consumers of different sigs — the Map
+todo	two same-unit Qty host results combine guest-side as a same-dimension add
 todo	distinct-sig round-trip: TWO compound consumers of different sigs — the record one
 todo	distinct-sig round-trip: TWO compound consumers of different sigs — the tuple one
 todo	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Record-arg one

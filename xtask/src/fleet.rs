@@ -3579,6 +3579,24 @@ fn archive(fleet: &Fleet, no_commit: bool) {
 /// generous; it flags only a base that has drifted well behind a fast-moving trunk.
 const SYNC_BASE_LAG_WARN: usize = 20;
 
+/// Decide whether `sync` should emit the RE-PARENT warning, given whether the pre-sync base is still
+/// an ancestor of `trunk` and how many commits `git cherry` marked unlanded.
+///
+/// Trunk should only ever move FORWARD — pr-sync cherry-picks integrated MRs onto it. But a batch tip
+/// is sometimes REBUILT/republished under a fresh sha (or rewound to `origin/main`), and then the
+/// agent's PRIOR base (`old_head`, last tick's trunk) DIVERGES from the new trunk: neither is an
+/// ancestor of the other. `git cherry trunk old_head` then marks the old batch's now-divergent
+/// `integrate MR:` commits as "unlanded" (`+`), so sync is about to replay a stack of FOREIGN
+/// re-baked history as if it were the agent's own work — the recurring contamination 5 peers
+/// (v-effects/fuzzer/breaker/v-compiler-perf/v-diagnostics) hit every tick, each shedding it by hand
+/// with exactly this `git merge-base --is-ancestor <old-base> trunk` check. We warn (never auto-drop —
+/// same never-lose-work discipline as the rest of the hot path) iff the base diverged AND there is a
+/// non-empty replay set. A clean fast-forward of trunk (old base still an ancestor) is the normal case
+/// and stays silent. Pure so the trigger is unit-testable without a git fixture.
+fn base_reparent_should_warn(base_is_ancestor_of_trunk: bool, replay_len: usize) -> bool {
+    !base_is_ancestor_of_trunk && replay_len > 0
+}
+
 fn sync(fleet: &Fleet, force: bool) {
     let cwd = std::env::current_dir().expect("cwd");
     let git = |args: &[&str]| -> std::process::Output {
@@ -3641,6 +3659,29 @@ fn sync(fleet: &Fleet, force: bool) {
     // Which local commits are genuinely unlanded (patch-id not upstream)? `git cherry trunk <head>`.
     let cherry = git_stdout(&["cherry", TRUNK, &old_head]);
     let replay = commits_to_replay(&cherry);
+
+    // RE-PARENT WARNING (breaker's angle b; the trunk-rewind contamination 5 peers hit every tick).
+    // If the pre-sync base (`old_head`) is NO LONGER an ancestor of `trunk`, trunk was rebuilt/rewound
+    // under a fresh sha — the base DIVERGED, so `git cherry` marks the old batch's now-orphaned
+    // `integrate MR:` commits as "unlanded" and we are about to replay a stack of FOREIGN re-baked
+    // history as the agent's own work. This is the ROOT signal that explains a large foreign replay set
+    // (the per-commit zone warnings below catch individual commits; this names the CAUSE up front). We
+    // don't drop anything (never-lose-work), but tell the agent the divergence is real so it lane-checks
+    // + `reset --hard trunk` instead of trusting/`fleet send`ing the stack. `--is-ancestor` exits 0 iff
+    // old_head is an ancestor of trunk; a spawn failure is treated as "still ancestor" (no false alarm).
+    let base_still_ancestor = git_ok(&["merge-base", "--is-ancestor", &old_head, TRUNK]);
+    if base_reparent_should_warn(base_still_ancestor, replay.len()) {
+        eprintln!(
+            "fleet sync: ⚠ trunk was RE-PARENTED — your pre-sync base ({}) is no longer an ancestor of \
+             trunk (a batch tip was rebuilt/rewound under a fresh sha). That divergence is why `git \
+             cherry` now marks {} commit(s) as 'unlanded': they are almost certainly FOREIGN re-baked \
+             `integrate MR:` history from the old batch, NOT your work. Eyeball the replayed titles \
+             below; if you have no own unlanded commits, `git reset --hard {TRUNK}` to shed the whole \
+             stack (safe with no WIP), and NEVER `fleet send` any of them.",
+            &old_head[..old_head.len().min(9)],
+            replay.len()
+        );
+    }
 
     // REJECT-LIST GUARD (pr-sync's idea, 2026-07-20): a commit pr-sync has REJECTED (gate-failing) can
     // ride a discarded test-merge tree onto peer branches and get re-replayed every tick — 6 MRs bounced
@@ -6594,6 +6635,23 @@ mod tests {
         // Empty zone / no paths → never ambiguous.
         assert!(!commit_is_ambiguous_to_lane(&[p("guide/x.tsx")], ""));
         assert!(!commit_is_ambiguous_to_lane(&[], "xtask"));
+    }
+
+    #[test]
+    fn base_reparent_warns_only_on_divergence_with_a_replay_set() {
+        // The contamination case 5 peers hit: trunk was rebuilt/rewound → the pre-sync base is NO
+        // LONGER an ancestor of trunk (base_is_ancestor=false) AND `git cherry` produced a non-empty
+        // replay set (the old batch's now-orphaned integrate commits). WARN.
+        assert!(base_reparent_should_warn(false, 16));
+        assert!(base_reparent_should_warn(false, 1));
+        // Diverged but NOTHING to replay (cherry found no unlanded commits) → the reset is clean and
+        // there is no foreign stack to warn about. Silent.
+        assert!(!base_reparent_should_warn(false, 0));
+        // Normal fast-forward: the base is still an ancestor of trunk (trunk only moved forward). Any
+        // replay set here is the agent's own genuinely-unlanded work — NOT a re-parent. Silent
+        // regardless of how many commits replay (the per-commit zone warnings handle those).
+        assert!(!base_reparent_should_warn(true, 5));
+        assert!(!base_reparent_should_warn(true, 0));
     }
 
     #[test]

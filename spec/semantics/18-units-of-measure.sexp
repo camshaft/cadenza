@@ -416,6 +416,26 @@
   (output (: (Qty.of 0.25 (Unit./ Unit.one (Unit.base #"second")))
              (Qty Float64 (Unit./ Unit.one (Unit.base #"second"))))))
 
+(case "a cube dimension renders as Unit.^ with exponent 3"
+  (doc    "`(* (* (Qty.of 2.0 meter) (Qty.of 3.0 meter)) (Qty.of 4.0 meter))` derives meter³ — a volume —
+           value 24.0. Beyond the meter² area pin, this pins a HIGHER power: three meter factors compose to a
+           single `(Unit.^ (Unit.base meter) 3)` (the exponent accumulates, not a nested `Unit.* (Unit.^ … 2)
+           meter`). Pins the cube value-form render + exponent accumulation across a chained product.")
+  (input  (* (* (Qty.of 2.0 (Unit.base #"meter")) (Qty.of 3.0 (Unit.base #"meter")))
+             (Qty.of 4.0 (Unit.base #"meter"))))
+  (output (: (Qty.of 24.0 (Unit.^ (Unit.base #"meter") 3))
+             (Qty Float64 (Unit.^ (Unit.base #"meter") 3)))))
+
+(case "a product of two DIFFERENT base dimensions renders as Unit.*"
+  (doc    "`(* (Qty.of 3.0 meter) (Qty.of 2.0 second))` composes two DIFFERENT base dimensions — meter and
+           second — into a product dimension `(Unit.* (Unit.base meter) (Unit.base second))`, value 6.0. The
+           multiply rule never requires equal dimensions; two distinct bases stay a `Unit.*` product (unlike
+           two equal bases, which accumulate into a `Unit.^`). Pins the `Unit.*` product value-form render
+           for distinct bases.")
+  (input  (* (Qty.of 3.0 (Unit.base #"meter")) (Qty.of 2.0 (Unit.base #"second"))))
+  (output (: (Qty.of 6.0 (Unit.* (Unit.base #"meter") (Unit.base #"second")))
+             (Qty Float64 (Unit.* (Unit.base #"meter") (Unit.base #"second"))))))
+
 (case "a velocity multiplied by a time recovers the distance dimension"
   (doc    "The multiply-direction inverse of the velocity quotient: `(* (Qty.of 6.0 (meter/second))
            (Qty.of 2.0 second))` composes `(meter·second⁻¹)·second` = meter — the `second` cancels in the

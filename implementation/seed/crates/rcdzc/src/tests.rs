@@ -23201,6 +23201,44 @@ mod match_engine {
     }
 
     #[test]
+    fn a_literal_whose_width_is_fixed_transitively_through_arith_ops_rejects_at_check() {
+        // A bare literal takes its width from an integer binary-op CONTEXT (numeric-model.md §"An Explicit …
+        // Or Other Constraint On An Integer Literal MUST Take Precedence"). When the literal's IMMEDIATE
+        // binop sibling is deferred but the width is fixed TRANSITIVELY by an ANCESTOR arith op, the shared
+        // well-formedness check must still catch an out-of-range literal — else `cdz check` passed while the
+        // wasm backend rejected CDZ0302 and the RUST backend silently emitted a truncating `as u8` cast
+        // (10000 → 16, a wrong-VALUE miscompile). `(+ (* 10000 (if (< a b) 1 0)) (% a b))` over UInt8 a/b:
+        // the literal's own sibling is the deferred `if`, but the enclosing `*`'s sibling under the `+` is
+        // the `UInt8` `(% a b)` — an arith op unifies its two operands to ONE width, so UInt8 flows down
+        // through the `*` to the literal. All three (check + both backends) now give ONE verdict. This is the
+        // shared-layer home the width-fit check belongs in (corpus-bugfix's routed divergence, 2026-07-20).
+        let transitive = "(module m (def (main (: a UInt8) (: b UInt8)) (+ (* 10000 (if (< a b) 1 0)) (% a b))) (export main))";
+        assert_eq!(
+            reject_code(transitive).as_deref(),
+            Some("CDZ0201"),
+            "a literal whose UInt8 width is fixed transitively through the * under the + must reject at check"
+        );
+        // A DEEPER climb (two arith levels between the literal and the fixed-width sibling) is caught too.
+        let deep = "(module m (def (main (: a UInt8) (: b UInt8)) (+ (+ (* 10000 (if (< a b) 1 0)) b) b)) (export main))";
+        assert_eq!(reject_code(deep).as_deref(), Some("CDZ0201"));
+        // NO OVER-REJECTION: the SAME shape with an IN-RANGE literal (100 fits UInt8) compiles fine.
+        let fits = "(module m (def (main (: a UInt8) (: b UInt8)) (+ (* 100 (if (< a b) 1 0)) (% a b))) (export main))";
+        assert_eq!(
+            reject_code(fits),
+            None,
+            "an in-range literal in the transitive-width position must still compile"
+        );
+        // NO OVER-REJECTION: the multiply ISOLATED (no UInt8-fixed ancestor) leaves the literal at its Int64
+        // default — 10000 fits Int64, so it must NOT be rejected.
+        let isolated = "(module m (def (main (: a UInt8) (: b UInt8)) (* 10000 (if (< a b) 1 0))) (export main))";
+        assert_eq!(
+            reject_code(isolated),
+            None,
+            "a multiply with no narrow-width ancestor leaves the literal at Int64 (10000 fits) — no reject"
+        );
+    }
+
+    #[test]
     fn an_out_of_range_literal_names_the_valid_range() {
         // CDZ0302 states the concrete VALID RANGE the literal missed (rustc's "the range is `-128..=127`"),
         // not only the type name — a signed N-bit is `-(2^(N-1))..=2^(N-1)-1`, an unsigned N-bit
@@ -63117,6 +63155,43 @@ mod stage1 {
             (def (run (: b Box) (: x Int64) (: y Int64)) (match b ((Box.C f) ((f x) y)))) \
             (def (main) (run (Box.C (fn ((: a Int64) (: b Int64)) (* a b))) 3 4)) (export main))";
         assert_eq!(run_closure_nullary(src_sugar).unwrap(), "12"); // (* 3 4)
+    }
+
+    #[test]
+    fn a_partial_application_of_a_runtime_closure_declines_not_invalid_wasm() {
+        // MISCOMPILE→DECLINE (v-effects-surfaced): a boxed 2-param curried closure applied at PARTIAL arity
+        // (1 of 2 args) with the surviving intermediate let-bound then applied — `(let ((g (f 3))) (g 4))` —
+        // emitted an INVALID module (the residual 1-param closure's rep disagreed with the later apply's
+        // `call_indirect`; wasm-tools 'func N: expected i64 found i32'). The DIRECT `((f 3) 4)` works (the
+        // curried spine flattens to ONE `CallClosure{args:[3,4]}` = full arity), but a `let` breaks the
+        // flatten so `(f 3)` surfaces as a genuine 1-of-2 partial. `runtime_fn_spine` gathered 1 arg for a
+        // 2-arity closure and lowered an under-arity `CallClosure`; the emit has no residual-closure build,
+        // so it produced invalid wasm. FIX (lower.rs apply arm): a gathered arg count SHORT of the closure's
+        // curried arity (arrow-peel count) now DECLINES cleanly ('a partial application of a runtime closure
+        // … is not yet emittable'), never an invalid module. The residual-closure lift is a later capability.
+        let partial = "(module m \
+            (type Box (C (-> Int64 (-> Int64 Int64)))) \
+            (def (mk) (Box.C (fn ((: a Int64)) (fn ((: b Int64)) (+ a b))))) \
+            (def (main) (let ((p (mk))) (match p ((Box.C f) (let ((g (f 3))) (g 4)))))) (export main))";
+        let err = compile_component(&crate::codec::encode(&crate::testkit::parse(partial)))
+            .expect_err("a let-bound partial application of a runtime closure must DECLINE, not emit invalid wasm");
+        assert!(
+            err.message
+                .contains("partial application of a runtime closure"),
+            "the decline names the partial-application limitation, got: {}",
+            err.message
+        );
+        // GUARD: the DIRECT full-arity curried apply `((f 3) 4)` (spine-flattens to 2 args = arity) still
+        // COMPILES + runs → 7 — the arity check must NOT reject a full application.
+        let full = "(module m \
+            (type Box (C (-> Int64 (-> Int64 Int64)))) \
+            (def (mk) (Box.C (fn ((: a Int64)) (fn ((: b Int64)) (+ a b))))) \
+            (def (main) (match (mk) ((Box.C f) ((f 3) 4)))) (export main))";
+        compile_component(&crate::codec::encode(&crate::testkit::parse(full)))
+            .expect("the DIRECT full-arity curried apply must still compile (2 args == arity)");
+        if let Some(r) = run_closure_nullary(full) {
+            assert_eq!(r, "7", "((f 3) 4) = 3 + 4");
+        }
     }
 
     #[test]

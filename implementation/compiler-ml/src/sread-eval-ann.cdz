@@ -59,6 +59,45 @@ def se-ann-uint8-just-over-declines() =
   // `(: 256 UInt8)` → declines: 256 = UInt8 max + 1, first overflow (reference REJECTS).
   (match run-src("(: 256 UInt8)") with | Option.None(_) => unit | Option.Some(_) => trap("(: 256 UInt8) must decline (UInt8 max is 255)"))
 
+// ---- WIDER type boundaries (Int16/UInt16/Int32) — the Int8/UInt8 edges above only cover 8-bit; these pin the
+// 16-/32-bit fits-width endpoints (an off-by-one in the wider ranges would slip past the 8-bit tests). ----
+
+@test
+def se-ann-int16-max-and-just-over() =
+  // Int16 max 2^15-1 = 32767 fits; 32768 = max+1 declines. (reference: 32767 runs / 32768 rejects.)
+  (match run-src("(: 32767 Int16)") with
+    | Option.Some(v) => (if v == 32767 then
+        (match run-src("(: 32768 Int16)") with | Option.None(_) => unit | Option.Some(_) => trap("(: 32768 Int16) declines"))
+      else trap("(: 32767 Int16) → 32767"))
+    | Option.None(_) => trap("Int16 max 32767 fits"))
+
+@test
+def se-ann-int16-min-and-just-under() =
+  // Int16 min -2^15 = -32768 fits; -32769 = min-1 declines (signed lower bound).
+  (match run-src("(: -32768 Int16)") with
+    | Option.Some(v) => (if v == (0 - 32768) then
+        (match run-src("(: -32769 Int16)") with | Option.None(_) => unit | Option.Some(_) => trap("(: -32769 Int16) declines"))
+      else trap("(: -32768 Int16) → -32768"))
+    | Option.None(_) => trap("Int16 min -32768 fits"))
+
+@test
+def se-ann-uint16-max-and-just-over() =
+  // UInt16 max 2^16-1 = 65535 fits; 65536 = max+1 declines.
+  (match run-src("(: 65535 UInt16)") with
+    | Option.Some(v) => (if v == 65535 then
+        (match run-src("(: 65536 UInt16)") with | Option.None(_) => unit | Option.Some(_) => trap("(: 65536 UInt16) declines"))
+      else trap("(: 65535 UInt16) → 65535"))
+    | Option.None(_) => trap("UInt16 max 65535 fits"))
+
+@test
+def se-ann-int32-max-and-just-over() =
+  // Int32 max 2^31-1 = 2147483647 fits; 2147483648 = max+1 declines.
+  (match run-src("(: 2147483647 Int32)") with
+    | Option.Some(v) => (if v == 2147483647 then
+        (match run-src("(: 2147483648 Int32)") with | Option.None(_) => unit | Option.Some(_) => trap("(: 2147483648 Int32) declines"))
+      else trap("(: 2147483647 Int32) → 2147483647"))
+    | Option.None(_) => trap("Int32 max 2147483647 fits"))
+
 @test
 def se-ann-narrow-plus-bare-literal-adapts() =
   // `(+ (: 100 Int8) 20)` — the annotated operand is Int8 and the bare `20` is a plain literal (infer's

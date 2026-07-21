@@ -877,8 +877,11 @@
            → true (n=3 → 1), a differing payload → false (n=5 → 0). Regression witness for the runtime `=` on a
            sum falling between both cheaper paths (declined 'needs a heap walk (not yet built)'); the fix
            descends a Sum in the value-eq-shaped classification, routing to the runtime walk's existing
-           Shape::Sum arm. (Wasm computes; the Rust backend's structural-eq walk does not yet render a Sum arm
-           — a graded follow-up, reject-don't-miscompile, so it declines cleanly there.)")
+           Shape::Sum arm. (Wasm computes; the Rust backend's structural-eq walk renders a NON-recursive
+           float/list-carrying sum, but `Ast` is RECURSIVE (`Ast.List (List Ast)`) and the rust emit expands
+           the walk inline — which would loop on a recursive sum — so it declines cleanly there: a graded
+           todo, reject-don't-miscompile, pending a named-helper-fn emit. The non-recursive sum companion just
+           below DOES compute on rust.)")
   (input  (do
             (type Ast (Int Int64) (Float Float64) (List (List Ast)))
             (def (mk (: n Int64)) (Ast.Int n))
@@ -886,6 +889,24 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 1 Int64))
   (call   main (: 5 Int64)) (output (: 0 Int64)))
+
+(case "a runtime = on a NON-recursive sum with a Float payload walks it on both backends"
+  (doc    "The non-recursive companion of the Ast case: a sum `FV` with an `FV.F Float64` variant (so NOT
+           native-Eq, and `value-cmp` declines the float) but NO recursive/List variant — so BOTH backends
+           compute it via the value-eq-shaped Sum walk (wasm's iterative runtime walk; the rust emit expands
+           a `match (l, r)` over the two variants, comparing the float payload by canonical byte form). Same
+           variant + equal payload → true; a different variant → false. `(FV.I n) = (FV.I 3)` → true at n=3
+           (→ 1); `(FV.F 2.5) = (FV.F 2.5)` → true (→ 1, the float leaf by canonical bytes); `(FV.I n) =
+           (FV.F 2.5)` → false (→ 0, discriminant differs). Pins that a NON-recursive float-carrying sum's
+           runtime `=` computes on all three backends (distinct from the recursive Ast, which is rust-todo).")
+  (input  (do
+            (type FV (I Int64) (F Float64))
+            (def (main (: n Int64))
+              (tuple (if (= (FV.I n) (FV.I 3)) 1 0)
+                     (if (= (FV.F 2.5) (FV.F 2.5)) 1 0)
+                     (if (= (FV.I n) (FV.F 2.5)) 1 0)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: (tuple 1 1 0) (Tuple Int64 Int64 Int64))))
 
 (case "a negative zero in a record field is distinct from positive zero"
   (doc    "The record companion of the nested -0.0 case: `(= (record (x -0.0)) (record (x 0.0)))` =

@@ -481,6 +481,23 @@ special case per type — the spec's explicit intent (`16-binary-matching.sexp:2
    well-formedness → literal/magic segments (the trie shines) → bit-fields (static masks) → dependent-size
    `(bytes b n)` + final `(bytes rest)` (`bytes-slice`) → runtime-fit traps on construction. 39 corpus cases
    ungate as coverage climbs.
+   - **4a. Runtime NON-FINAL dependent-size segment (deferred sub-slice).** The runtime lowering
+     (`lower.rs` `runtime_fn_spine`/the bin-arm walk ~7222) today admits fixed-width int segments plus
+     exactly ONE final bytes segment — either unsized `(bytes rest)` OR dependent-size `(bytes payload n)`.
+     A **non-final** variable-length segment (e.g. `(bin (u8 n) (bytes body n) (bytes rest))` — a
+     dependent-size `body` FOLLOWED by more segments) still `decline`s cleanly at runtime ("a runtime bin
+     match with a bit-field or non-final variable-length segment is not yet lowered", lower.rs:7239); the
+     SAME shape compiles const-folded (corpus 16-binary §§322/372/1055 use a const `Bytes.of` scrutinee, so
+     the const evaluator does the slicing). This is a valid, well-formed form (§6.4: the offset after a
+     dependent-size segment is "constant + a bound local"), NOT the ill-formed non-final UNSIZED `(bytes b)`
+     that is a permanent CDZ0220. **Implementation:** `Core::BinRestRead`/`BinSizedRead` read
+     `bytes-slice(scrutinee, off, …)` with a STATIC `off`; extend them to a DYNAMIC offset expression
+     (`static_base + BinIntRead(n)`), and thread the running offset through the segment walk once a
+     dependent-size segment appears (§6.4). This is a Core-op signature change across the 5-arm borrow
+     discipline (`is_heap_type`/`heap_operand_ownership`/`binding_escapes`/`mark_binder_dups` + BOTH backend
+     `expr.rs` arms + `select.rs`) — a focused multi-file slice, hence deferred behind the const path.
+     (Characterized by v-patterns during a runtime-vs-const bin-match probe; declines cleanly today so it is
+     correct-for-now, a feature gap not a bug.)
 5. **Map patterns** (map-lookup+remove, spec-first done in step 0). **Set patterns** only if step 0 took the
    spec decision.
 
