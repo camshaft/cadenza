@@ -8761,9 +8761,14 @@ fn a_re_performing_escaping_continuation_declines_cleanly_until_reentry_at_apply
 /// `(do (St.get) (+ 1 (St.get)))` over a `(Some 5)` seed: both gets read `(Some 5)` → 5 (both branches
 /// thread `s` unchanged), so `(+ 1 5)` = 6. (Previously this DECLINED "not yet reducible"; the match-shaped
 /// arm-body fix — v-compiler-ml's memoized-DB dogfood — folds it.) A genuinely BRANCH-DIVERGENT next-state
-/// (each branch threads a DIFFERENT advanced state, `(resume n (Some (+ n 1)))`) still DECLINES cleanly —
-/// the deeper match-valued-state re-threading is not yet served — never a MISCOMPILE (the state-threading
-/// ledger's wrong-branch hazard is avoided by declining, not folding to a wrong value).
+/// (each branch threads a DIFFERENT advanced state, `(resume n (Some (+ n 1)))`) NOW ALSO FOLDS, and to the
+/// CORRECT value: the match-valued next-state threads forward as a `(match arg (pat s)…)` expression whose
+/// branches carry each branch's own advanced state, so a subsequent perform reading the state re-evaluates
+/// the match against the (pure) arg and sees the right per-branch state. `(+ (St.get) (+ (St.get) (St.get)))`
+/// over `(Some 5)`: L→R the seed advances 5→6→7 (each `get` reads then the `(Some (+ n 1))` next-state bumps
+/// it), so `5 + (6 + 7)` = 18. This USED to decline ("deeper match-valued-state re-threading not yet served");
+/// it now folds soundly. Pinned as a HARD fold-to-18 (was folds-or-declines) so a regression to a WRONG value
+/// — the state-threading ledger's wrong-branch hazard — is caught, not silently accepted as a re-decline.
 #[test]
 fn a_state_destructuring_arm_under_a_multi_perform_body_folds_or_declines_never_miscompiles() {
     use crate::testkit::parse;
@@ -8788,26 +8793,23 @@ fn a_state_destructuring_arm_under_a_multi_perform_body_folds_or_declines_never_
         "a single-perform body over a state-destructuring arm must still fold"
     );
     // A BRANCH-DIVERGENT next-state (each branch advances the state differently) under a multi-perform body
-    // still DECLINES cleanly — never a miscompile (no wrong value, no leaked internal state-param name).
+    // NOW FOLDS — and MUST fold to the correct value. Pinned as a HARD fold-to-18 (tightened from the earlier
+    // folds-or-declines guard, since the match-valued-state re-threading now serves this shape): a regression
+    // that either re-declines OR folds to a wrong value fails here. L→R the (Some 5) seed advances 5→6→7 via
+    // each branch's `(resume n (Some (+ n 1)))` next-state, so `5 + (6 + 7)` = 18.
     let divergent = "(do (effect St (op get (-> Unit Int64))) \
                      (def (main) \
                        (handle St (Some 5) ((get (u) s (match s ((Some n) (resume n (Some (+ n 1)))) (None (resume 0 s))))) \
                          (+ (St.get) (+ (St.get) (St.get))))) (export main))";
-    match compile_component(&crate::codec::encode(&parse(divergent))) {
-        Ok(bytes) => {
-            // If a future increment folds it, the value MUST be correct (L→R: 5 + (6 + 7) = 18), never wrong.
-            if let Some(v) = run_linked(&bytes, "main") {
-                assert_eq!(
-                    v, "18",
-                    "if the divergent case folds, it must be 5 + (6 + 7) = 18, not a miscompile"
-                );
-            }
-        }
-        Err(e) => assert!(
-            !e.message.contains("#eff") && !e.message.contains("$s"),
-            "the divergent-branch decline must be clean (no leaked internal state-param name), got: {}",
-            e.message
-        ),
+    let bytes = compile_component(&crate::codec::encode(&parse(divergent))).expect(
+        "the branch-divergent next-state under a multi-perform body now folds (match-valued-state threading)",
+    );
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(
+            v, "18",
+            "the divergent case folds to 5 + (6 + 7) = 18 (per-branch advanced state threaded correctly), \
+             not a wrong value"
+        );
     }
 }
 

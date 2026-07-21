@@ -1,5 +1,10 @@
 ; LIVE wasm float-render inconsistency (corpus-bugfix, trunk 0eb020e6d, 2026-07-21; fuzzer-isolated scalar-vs-compound).
 ; ROUTED to v-runtime (KIND_FLOAT heap-node encoding is their lane).
+; RULING (pr-sync/concierge, 2026-07-21): (a) FULL-EXPANSION is canonical (converging the deviating
+; wasm compound float_leaf path TO the established canon = bugfix, no operator needed). v-runtime owns the
+; convergence + the large-significand KIND_FLOAT doc-codec fix (u128 significand overflow >16 bytes). corpus-
+; bugfix HOLDS the compound pins until that codec fix lands, then pins compound top-of-exponent (tuple/list/
+; Option) + a large-significand (f64::MAX-ish) round-trip case across all 3 backends.
 ;
 ; BLAST RADIUS (sharpened 2026-07-21, trunk 0eb020e6d): the divergence hits EVERY compound element
 ; position — (tuple x 1.0), (list x), nested (tuple (tuple x)), (Some x) sum payload — anything boxed as a

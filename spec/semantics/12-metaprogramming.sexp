@@ -2304,6 +2304,28 @@
   (input  (eval (quote ((fn (x) (* x x)) 5))))
   (output (: 25 Int64)))
 
+; The eval-fold family above covers CONTROL forms (if/let/match/lambda); these cover DATA-CONSTRUCTION
+; forms — a quoted `(list …)` / `(tuple …)` eval'd folds to the runtime COLLECTION it builds, not just a
+; scalar. Pins that eval reconstructs a collection constructor (the `list`/`tuple` head + its element
+; forms) and produces a first-class runtime value observable by `List.len` / a tuple pattern — the
+; companion of the arithmetic/control eval cases for the compound-VALUE construction path.
+
+(case "eval of a quoted list-construction form folds to the runtime list"
+  (doc    "`(eval (quote (list 1 2 3)))` reconstructs the `list` constructor form and folds it to the
+           runtime three-element list, so `List.len` reads 3. Pins that eval handles a COLLECTION
+           construction form (not only scalars/control) — the reconstructed `(list …)` produces a
+           first-class runtime list, the data-construction companion of the arithmetic/control cases.")
+  (input  (List.len (eval (quote (list 1 2 3)))))
+  (output (: 3 Int64)))
+
+(case "eval of a quoted tuple-construction form folds to the runtime tuple"
+  (doc    "`(eval (quote (tuple 7 5)))` reconstructs the `tuple` constructor and folds it to the runtime
+           2-tuple, destructured by `(tuple a b)` to `7 + 5 = 12`. Pins that eval builds a runtime tuple
+           from a quoted tuple form — the fixed-arity-product companion of the list-construction case.")
+  (input  (match (eval (quote (tuple 7 5)))
+            ((tuple a b) (+ a b))))
+  (output (: 12 Int64)))
+
 (case "a constructed Ast.Bool leaf drives an evaluated conditional"
   (doc    "`(if (eval (Ast.Bool true)) 5 6)` = 5: the Bool leaf is CONSTRUCTED (not quoted), evaluated
            to its payload, and the resulting runtime boolean drives an ORDINARY (non-reified) `if`.

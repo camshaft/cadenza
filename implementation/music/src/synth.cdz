@@ -1,103 +1,105 @@
 /// synth.cdz — the SYNTHESIS graph as DATA (operator extension: "define synths, audio effects, and
-/// synthesizers IN Cadenza — an audio graph / DSP description as ordinary Cadenza data, like CSG is for
-/// CAD, consumed by a thin WebAudio/native driver"). This is the pure-Cadenza MODEL: a recursive `Synth`
-/// node tree describing HOW to make a sound. A driver (phase 2, WebAudio) walks the tree and instantiates
-/// the actual audio nodes; nothing here produces samples — it produces a DESCRIPTION.
-///
-/// Mirrors CAD's `Solid` operation-tree idiom (a recursive sum whose composite variants hold sub-trees),
-/// but MONOMORPHIC over Int64 parameters — frequency in Hz, amplitude/gain in PER-MILLE (0..1000 = 0.0..1.0),
-/// duration in the rhythm module's ticks — so it grounds cleanly with no Float (dodges the Float-list-elem
-/// traps) and folds with plain integer arithmetic. A driver scales per-mille → the [0,1] gain WebAudio wants.
-///
-/// The leaves are OSCILLATORS (a waveform + frequency); the composite nodes are EFFECTS/COMBINATORS (gain,
-/// an ADSR-ish envelope described by its tick segments, and a mix of two sub-graphs). "Build-your-own
-/// synthesizer" = compose these nodes; the driver is dumb.
-
-/// A waveform, by tag (the driver maps each to a WebAudio oscillator type). Nullary variants.
-type Wave =
+  /// synthesizers IN Cadenza — an audio graph / DSP description as ordinary Cadenza data, like CSG is for
+  /// CAD, consumed by a thin WebAudio/native driver"). This is the pure-Cadenza MODEL: a recursive `Synth`
+  /// node tree describing HOW to make a sound. A driver (phase 2, WebAudio) walks the tree and instantiates
+  /// the actual audio nodes; nothing here produces samples — it produces a DESCRIPTION.
+  ///
+  /// Mirrors CAD's `Solid` operation-tree idiom (a recursive sum whose composite variants hold sub-trees),
+  /// but MONOMORPHIC over Int64 parameters — frequency in Hz, amplitude/gain in PER-MILLE (0..1000 = 0.0..1.0),
+  /// duration in the rhythm module's ticks — so it grounds cleanly with no Float (dodges the Float-list-elem
+  /// traps) and folds with plain integer arithmetic. A driver scales per-mille → the [0,1] gain WebAudio wants.
+  ///
+  /// The leaves are OSCILLATORS (a waveform + frequency); the composite nodes are EFFECTS/COMBINATORS (gain,
+  /// an ADSR-ish envelope described by its tick segments, and a mix of two sub-graphs). "Build-your-own
+  /// synthesizer" = compose these nodes; the driver is dumb.
+  /// A waveform, by tag (the driver maps each to a WebAudio oscillator type). Nullary variants.
+  type Wave =
   | Sine
   | Square
   | Sawtooth
   | Triangle
 
 /// The synth graph: a recursive sum. Leaves are oscillators; composite nodes wrap sub-graphs.
-type Synth =
-  | Silence                              // the identity of `mix` — emits nothing
-  | Osc(Wave, Int64)                     // an oscillator: a waveform at a frequency in Hz
-  | Gain(Int64, Synth)                   // scale amplitude by a per-mille factor (1000 = unity), over a sub-graph
-  | Env(Int64, Int64, Synth)             // a simple linear attack/release envelope: attack ticks, release ticks, sub-graph
-  | Mix(Synth, Synth)                    // sum two sub-graphs (a chord of timbres, a layered patch)
+  type Synth =
+  | Silence // the identity of `mix` — emits nothing
+  | Osc(Wave, Int64) // an oscillator: a waveform at a frequency in Hz
+  | Gain(Int64, Synth) // scale amplitude by a per-mille factor (1000 = unity), over a sub-graph
+  | Env(Int64, Int64, Synth) // a simple linear attack/release envelope: attack ticks, release ticks, sub-graph
+  | Mix(Synth, Synth) // sum two sub-graphs (a chord of timbres, a layered patch)
 
 // ---- constructors (the build-your-own-synth surface) ------------------------------------------------
-
 def silence = Synth.Silence
+
 def osc(w: Wave, hz: Int64) = Synth.Osc(w, hz)
+
 def sine(hz: Int64) = Synth.Osc(Wave.Sine, hz)
+
 def square(hz: Int64) = Synth.Osc(Wave.Square, hz)
+
 def saw(hz: Int64) = Synth.Osc(Wave.Sawtooth, hz)
+
 def gain(per-mille: Int64, s: Synth) = Synth.Gain(per-mille, s)
+
 def envelope(attack: Int64, release: Int64, s: Synth) = Synth.Env(attack, release, s)
+
 def mix(a: Synth, b: Synth) = Synth.Mix(a, b)
 
 // ---- folds over the graph (the recursive stress test) -----------------------------------------------
-
 /// The number of OSCILLATOR (sound-producing) leaves in a graph — a recursive fold over the tree. This is
 /// the DSP analog of CAD's recursive bounding-box fold: it proves a self-referential monomorphic sum folds.
-def voice-count(s: Synth) =
-  match s with
-    | Synth.Silence => 0
-    | Synth.Osc(_, _) => 1
-    | Synth.Gain(_, inner) => voice-count(inner)
-    | Synth.Env(_, _, inner) => voice-count(inner)
-    | Synth.Mix(a, b) => voice-count(a) + voice-count(b)
+def voice-count(s: Synth) = match s with
+  | Synth.Silence => 0
+  | Synth.Osc(_, _) => 1
+  | Synth.Gain(_, inner) => voice-count(inner)
+  | Synth.Env(_, _, inner) => voice-count(inner)
+  | Synth.Mix(a, b) => voice-count(a) + voice-count(b)
 
 /// The maximum GAIN depth (number of nested Gain nodes on the deepest path) — another recursive fold,
 /// exercising the `max` combine at the `Mix` node.
-def gain-depth(s: Synth) =
-  match s with
-    | Synth.Silence => 0
-    | Synth.Osc(_, _) => 0
-    | Synth.Gain(_, inner) => 1 + gain-depth(inner)
-    | Synth.Env(_, _, inner) => gain-depth(inner)
-    | Synth.Mix(a, b) => max-int(gain-depth(a), gain-depth(b))
+def gain-depth(s: Synth) = match s with
+  | Synth.Silence => 0
+  | Synth.Osc(_, _) => 0
+  | Synth.Gain(_, inner) => 1 + gain-depth(inner)
+  | Synth.Env(_, _, inner) => gain-depth(inner)
+  | Synth.Mix(a, b) => max-int(gain-depth(a), gain-depth(b))
 
 /// The EFFECTIVE per-mille amplitude of the loudest single oscillator path (product of the Gain factors
 /// along it, normalized by 1000 per level). A fold that MULTIPLIES down a path and MAXes across a Mix —
 /// the sort of numeric fold a driver uses to pre-scale voices. `acc` threads the running per-mille product.
-def peak-gain-go(s: Synth, acc: Int64) =
-  match s with
-    | Synth.Silence => 0
-    | Synth.Osc(_, _) => acc
-    | Synth.Gain(f, inner) => peak-gain-go(inner, acc * f / 1000)
-    | Synth.Env(_, _, inner) => peak-gain-go(inner, acc)
-    | Synth.Mix(a, b) => max-int(peak-gain-go(a, acc), peak-gain-go(b, acc))
+def peak-gain-go(s: Synth, acc: Int64) = match s with
+  | Synth.Silence => 0
+  | Synth.Osc(_, _) => acc
+  | Synth.Gain(f, inner) => peak-gain-go(inner, acc * f / 1000)
+  | Synth.Env(_, _, inner) => peak-gain-go(inner, acc)
+  | Synth.Mix(a, b) => max-int(peak-gain-go(a, acc), peak-gain-go(b, acc))
 
 /// The peak per-mille amplitude across the whole graph, starting from unity (1000).
 def peak-gain(s: Synth) = peak-gain-go(s, 1000)
 
 /// The total ENVELOPE length (attack + release) summed over the graph — the time budget a driver needs.
-def env-span(s: Synth) =
-  match s with
-    | Synth.Silence => 0
-    | Synth.Osc(_, _) => 0
-    | Synth.Gain(_, inner) => env-span(inner)
-    | Synth.Env(a, r, inner) => a + r + env-span(inner)
-    | Synth.Mix(x, y) => env-span(x) + env-span(y)
+def env-span(s: Synth) = match s with
+  | Synth.Silence => 0
+  | Synth.Osc(_, _) => 0
+  | Synth.Gain(_, inner) => env-span(inner)
+  | Synth.Env(a, r, inner) => a + r + env-span(inner)
+  | Synth.Mix(x, y) => env-span(x) + env-span(y)
 
 // ---- helper ------------------------------------------------------------------------------------------
-
 /// Integer max.
 def max-int(a: Int64, b: Int64) = if a >= b then a else b
 
 /// ============================ @test suite (synth graph model + folds) ============================
-
 @test
 def a-single-oscillator-is-one-voice() =
   // A bare sine is one voice, no gain nesting, peak gain unity (1000).
   let s = sine(440) in
   if voice-count(s) == 1 then
-    (if gain-depth(s) == 0 then (if peak-gain(s) == 1000 then unit else trap("unity gain")) else trap("no gain"))
-  else trap("one voice")
+    if gain-depth(s) == 0 then
+      if peak-gain(s) == 1000 then unit else trap("unity gain")
+    else
+      trap("no gain")
+  else
+    trap("one voice")
 
 @test
 def a-mix-sums-the-voices() =
@@ -110,8 +112,9 @@ def gain-scales-the-peak-amplitude() =
   // A sine at half gain (500 per-mille) then half again (250 total after two 500s) — peak folds the product.
   let s = gain(500, gain(500, sine(440))) in
   if peak-gain(s) == 250 then
-    (if gain-depth(s) == 2 then unit else trap("two gain levels"))
-  else trap("500*500/1000 = 250 per-mille")
+    if gain-depth(s) == 2 then unit else trap("two gain levels")
+  else
+    trap("500*500/1000 = 250 per-mille")
 
 @test
 def mix-takes-the-louder-branch-for-peak() =
@@ -124,17 +127,32 @@ def envelope-span-sums-attack-and-release() =
   // An envelope of attack 480, release 960 over a sine has span 1440; nesting adds.
   let s = envelope(480, 960, sine(440)) in
   if env-span(s) == 1440 then
-    (if env-span(mix(s, envelope(240, 240, saw(220)))) == 1920 then unit else trap("mixed span"))
-  else trap("1440 span")
+    if env-span(mix(s, envelope(240, 240, saw(220)))) == 1920 then unit else trap("mixed span")
+  else
+    trap("1440 span")
 
 @test
 def silence-is-the-identity-of-mix() =
   // Mixing silence in changes nothing: same voice count as the other branch alone.
   let s = mix(Synth.Silence, sine(440)) in
-  if voice-count(s) == 1 then (if peak-gain(s) == 1000 then unit else trap("gain")) else trap("silence adds no voice")
+  if voice-count(s) == 1 then
+    if peak-gain(s) == 1000 then unit else trap("gain")
+  else
+    trap("silence adds no voice")
 
 export {
-  Wave.*, Synth.*,
-  silence, osc, sine, square, saw, gain, envelope, mix,
-  voice-count, gain-depth, peak-gain, env-span,
+  Wave.*,
+  Synth.*,
+  silence,
+  osc,
+  sine,
+  square,
+  saw,
+  gain,
+  envelope,
+  mix,
+  voice-count,
+  gain-depth,
+  peak-gain,
+  env-span
 }

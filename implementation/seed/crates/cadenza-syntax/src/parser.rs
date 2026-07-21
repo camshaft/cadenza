@@ -876,6 +876,25 @@ impl<'a> Parser<'a> {
 
     // ---- expression grammar (Pratt) ----
 
+    /// Shared DEPTH GUARD for a recursion that re-enters `prefix` WITHOUT going through `expr` (the
+    /// unary-minus operand, the bare-form unquote operand) — those paths bypass `expr`'s own guard, so a
+    /// pathologically deep `-----…1` / `,,,,,x` would overflow the native stack (SIGABRT). If the depth
+    /// limit is hit, poison the parse (one error, `depth_exceeded` so all loops stop) and return an
+    /// `<error>` node for the caller to graft; otherwise bump `self.depth` and return `None`. The caller
+    /// MUST `self.depth -= 1` after its recursion (mirroring `expr`'s decrement) to keep the budget
+    /// balanced. Shares `MAX_NESTING_DEPTH` with `expr` and the s-expr reader.
+    fn guard_prefix(&mut self, start: Span) -> Option<StructId> {
+        if self.depth >= crate::sexpr::MAX_NESTING_DEPTH {
+            if !self.depth_exceeded {
+                self.error("expression nests too deeply to parse");
+                self.depth_exceeded = true;
+            }
+            return Some(self.error_node(start));
+        }
+        self.depth += 1;
+        None
+    }
+
     /// Parse an expression whose infix operators bind at least `min_prec`.
     fn expr(&mut self, min_prec: u8) -> StructId {
         let start = self.cur_span();
@@ -1334,9 +1353,17 @@ impl<'a> Parser<'a> {
             // back to `-e`.
             Kind::Minus => {
                 self.bump(); // `-`
+                // DEPTH GUARD: a run of unary minus (`- - - … x`) recurses `prefix` → `prefix` DIRECTLY,
+                // not back through `expr`, so `expr`'s depth guard never fires — a pathologically deep
+                // `-----…1` overflowed the native stack (SIGABRT). Each unary layer builds one arena-tree
+                // level, so count it against the SAME depth budget via `guard_prefix` (clean diagnostic).
+                if let Some(err) = self.guard_prefix(span) {
+                    return err;
+                }
                 let operand_start = self.cur_span();
                 let operand_prefix = self.prefix();
                 let operand = self.postfix(operand_prefix, operand_start);
+                self.depth -= 1;
                 let full = span.merge(self.prev_span());
                 let head = self.name("-", span);
                 self.list(vec![head, operand], full)
@@ -2761,10 +2788,18 @@ impl<'a> Parser<'a> {
             self.expect(Kind::RBrace, "`}`");
             e
         } else {
-            // a tight prefix (member/call chain), no trailing infix
+            // A tight prefix (member/call chain), no trailing infix. DEPTH GUARD: the bare form recurses
+            // `prefix` → `unquote` → `prefix` directly (`,,,,,x`), bypassing `expr`'s guard — a deep run
+            // overflowed the stack (SIGABRT). Count each layer against the shared depth budget via
+            // `guard_prefix`, exactly like the unary-minus arm.
+            if let Some(err) = self.guard_prefix(start) {
+                return self.list(vec![head, err], start.merge(self.prev_span()));
+            }
             let s = self.cur_span();
             let p = self.prefix();
-            self.postfix(p, s)
+            let inner = self.postfix(p, s);
+            self.depth -= 1;
+            inner
         };
         let span = start.merge(self.prev_span());
         self.list(vec![head, inner], span)
@@ -3570,6 +3605,43 @@ mod tests {
                 "a nest just under the limit must parse: {:?}",
                 ps.errors
             );
+        });
+    }
+
+    #[test]
+    fn deep_prefix_operator_runs_are_diagnosed_not_crashed() {
+        // A run of a PREFIX operator that recurses `prefix` DIRECTLY — unary minus (`- - - … x`) and the
+        // bare-form unquote (`, , , … x`) — bypassed `expr`'s depth guard (they call `self.prefix()`, not
+        // `self.expr()`), so a pathologically deep run overflowed the native stack (SIGABRT). `guard_prefix`
+        // now counts each layer against the same `MAX_NESTING_DEPTH` budget at those two recursion sites, so
+        // a deep run is a clean depth-limit diagnostic. Needs a large stack (like the nested-`(` test — the
+        // recursion DESCENDS to the 1024 guard, more than a default test worker's stack). (Regression for
+        // the prefix-recursion stack-overflow class.)
+        run_deep(|| {
+            let over = (crate::sexpr::MAX_NESTING_DEPTH as usize) + 50;
+            let cases = [
+                format!("{}1", "-".repeat(over)),  // unary-minus run `----…1`
+                format!("{}x", ",".repeat(over)),  // unquote run `,,,,…x`
+                format!("{}x", ",@".repeat(over)), // unquote-splicing run `,@,@…x`
+            ];
+            for src in cases {
+                let p = read_ml(&src);
+                assert!(
+                    !p.ok()
+                        && p.errors
+                            .iter()
+                            .any(|e| e.message.contains("nests too deeply")),
+                    "a deep prefix-operator run must be a clean depth-limit error, not a crash; \
+                     src head {:?}, got {:?}",
+                    &src[..src.len().min(8)],
+                    p.errors
+                );
+            }
+            // A moderate run well under the limit still parses cleanly (no over-rejection).
+            let ok = read_ml("- - - 5");
+            assert!(ok.ok(), "shallow negation must parse: {:?}", ok.errors);
+            let okq = read_ml("`{ ,x + ,y }");
+            assert!(okq.ok(), "shallow unquote must parse: {:?}", okq.errors);
         });
     }
 

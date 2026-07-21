@@ -418,14 +418,15 @@
   (input  (do (def (main (: x Float64)) x) (export main)))
   (call   main (: 1e19 Float64)) (output (: 10000000000000000000.0 Float64)))
 
-(case "a float at the top of the binary64 exponent range renders its full decimal expansion"
-  (doc    "`(def (main (: x Float64)) x)` called with 3.4028235e38 — a value at the top of the finite
-           Float64 exponent range (near the f32 max, well inside binary64's ~1.8e308 ceiling) — returns
+(case "a large-magnitude float whose shortest form differs from its exact value renders the full decimal expansion"
+  (doc    "`(def (main (: x Float64)) x)` called with 3.4028235e38 — a large-magnitude Float64 near the
+           f32 max, well inside binary64's ~1.8e308 finite ceiling, chosen because its shortest
+           round-tripping decimal (`3402823500...0.0`) DIFFERS from its exact binary64 value — returns
            340282349999999991754788743781432688640.0, the FULL decimal expansion of the exact binary64
            the source `3.4028235e38` denotes. This is the exact value form, NOT the shortest re-reading
-           decimal `3402823500...0.0`: both re-parse to the same double, and the value renderer emits the
-           exact expansion (the large-magnitude companion of the `1e19` full-value case above), whereas the
+           decimal: both re-parse to the same double, and the value renderer emits the exact expansion
+           (the large-magnitude companion of the `1e19` full-value case above), whereas the
            shortest-round-tripping rule governs the `Ast.Float` print/read metaprogramming path. Both
-           backends agree — pins the top-of-exponent value render against a renderer regression.")
+           backends agree — pins the exact-expansion value render against a renderer regression.")
   (input  (do (def (main (: x Float64)) x) (export main)))
   (call   main (: 3.4028235e38 Float64)) (output (: 340282349999999991754788743781432688640.0 Float64)))
