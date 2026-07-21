@@ -156,6 +156,7 @@ pass	Map.to-list over TUPLE keys enumerates in lexicographic key order (the mini
 pass	Map.to-list over TUPLE keys places the middle key second (a full sort, not a min-pick)
 pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key order (first key is min)
 pass	N-suffixed literals compose under BigInt arithmetic
+pass	NESTED CONTRACT: an @ensures predicate that CALLS a @requires-guarded helper enforces the HELPER's precondition during postcondition eval
 pass	NaN equality survives the hoisted float compare by canonical byte form
 pass	OR-saturation to a full-width mask on an unsigned runtime value
 pass	OR-then-mask absorption does not discard a trapping runtime operand
@@ -359,7 +360,9 @@ pass	a FLOAT-result effect op threads a float state and its resume folds under a
 pass	a Float KEY inserted into an empty (runtime) map boxes with box-float, not box-int
 pass	a Float VALUE inserted into an empty (runtime) map boxes with box-float, not box-int
 pass	a Float element inserted into an empty (runtime) set boxes with box-float, not box-int
+pass	a Float32 NaN map key is found by a differently-produced NaN
 pass	a Float32 quantity stored as a map value round-trips through Map.lookup
+pass	a Float32 set dedups NaN elements and keeps zero signs distinct
 pass	a Float64 closure captures a Float64 build-time host effect result
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
@@ -762,6 +765,7 @@ pass	a compound map key containing a Bytes rope is found by its flat-twin key
 pass	a compound map key containing a rope is found by its flat-twin key
 pass	a compound map key whose Bytes element is a rope is found by its flat twin
 pass	a compound map key whose LIST element is a rope is found by its flat-twin key
+pass	a computed Float32 map key is found by its literal twin
 pass	a computed float map key is found by its literal twin
 pass	a concat-built and a push-built SMALL list (single-leaf, n<=32) with the same elements are the same map key
 pass	a concat-built list = a push-built list with the same elements (element-wise, shape-independent, n>=33)
@@ -3311,6 +3315,7 @@ pass	eval of a quoted boolean connective short-circuits
 pass	eval of a quoted boolean executes it to the boolean value
 pass	eval of a quoted conditional reduces its comparison condition first
 pass	eval of a quoted conditional takes the branch its boolean literal selects
+pass	eval of a quoted equality yields the boolean value directly
 pass	eval of a quoted float executes it to the float value
 pass	eval of a quoted float feeds ordinary float arithmetic
 pass	eval of a quoted lambda application folds
@@ -3318,6 +3323,7 @@ pass	eval of a quoted let-binding form folds
 pass	eval of a quoted list-construction form folds to the runtime list
 pass	eval of a quoted match form folds to the selected arm
 pass	eval of a quoted ordering comparison drives the branch
+pass	eval of a quoted ordering comparison yields the boolean value directly
 pass	eval of a quoted private constructor is withheld exactly as a direct reference — no forge
 pass	eval of a quoted proof-variant match cannot destructure an abstract proof outside the kernel
 pass	eval of a quoted string executes it to the string value
@@ -3623,6 +3629,7 @@ pass	quote-vs-constructor AST equality holds regardless of operand order
 pass	quoting an empty compound produces an empty Ast.List
 pass	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
 pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and dimension
+pass	nested MIXED-direction shifts do not combine — left-then-right is two operations
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	raising a runtime computed quantity to a power squares the runtime magnitude
 pass	re-wrapping the intermediate with Qty.of makes a two-step conversion well-formed
@@ -4248,6 +4255,7 @@ pass	a BigInt-inner quantity stored in a List reads back through List.at
 pass	a List.concat of a checked-arith list with a recursive-call list is disjoint-slotted
 pass	a List.push of a checked-arith element behind a recursive-call list is disjoint-slotted
 pass	a List.update at a checked-arith element behind a recursive-call list is disjoint-slotted
+pass	a List.update at a second-RRB-node index on a large runtime list lands there and preserves the rest
 pass	a Map VALUE that is a list-of-quantities round-trips through Map.lookup and List.at
 pass	a Map.len over a projected field of a fresh record whose producer binds an i64 let is disjoint-slotted
 pass	a Map.remove of a checked-arith key behind a recursive-call map is disjoint-slotted
@@ -4344,3 +4352,7 @@ pass	a complementary comparison pair nested past a third operand still folds via
 pass	a combined left shift that overflows Int64 traps like the single shift it folds to
 pass	a scalar-result match over an owned compound-payload sum reclaims the shell AFTER its borrowed reads
 pass	nested same-direction shifts by constants combine into one shift by the sum, keeping the left-shift overflow trap
+pass	a MIXED-shape compound scales its quantity leaf beside a non-quantity element
+pass	a data-rate quantity converts a binary-prefix composite unit to its byte/second reference
+pass	adding two data-rate quantities of the same composite dimension is exact
+pass	adding a data-rate to a length is a compile-time dimension error over a composite dimension

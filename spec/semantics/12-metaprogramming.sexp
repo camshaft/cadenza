@@ -2381,6 +2381,25 @@
   (input  (eval (quote (if (< 3 5) 1 0))))
   (output (: 1 Int64)))
 
+; The comparison cases above embed the relop as an `if` CONDITION (its boolean drives a branch); these pin
+; that eval of a BARE comparison yields the boolean VALUE directly — the relop is a first-class boolean-
+; producing form, not only a branch selector. `=` (equality) → true and `<` (ordering) → false give a
+; discriminating pair (both relop families, both truth values). A folder that only reduced a comparison in
+; condition position would pass the branch cases yet leave a bare `(= 3 3)` unreduced here.
+
+(case "eval of a quoted equality yields the boolean value directly"
+  (doc    "`(eval (quote (= 3 3)))` = true: eval reduces a BARE equality to the boolean value, not only
+           when it heads an `if` condition. The direct-value companion of the `=`-drives-a-branch case.")
+  (input  (eval (quote (= 3 3))))
+  (output (: true Bool)))
+
+(case "eval of a quoted ordering comparison yields the boolean value directly"
+  (doc    "`(eval (quote (< 5 2)))` = false: eval reduces a BARE ordering relop to its boolean value (here
+           FALSE — 5 is not < 2). The ordering + false-valued companion of the equality case above; together
+           they pin both relop families and both truth values as first-class eval results.")
+  (input  (eval (quote (< 5 2))))
+  (output (: false Bool)))
+
 (case "eval of a quoted boolean connective short-circuits"
   (doc    "`(eval (quote (and true false)))` = false: the quoted `and` connective reduces over its operands.
            Pins that eval reconstructs + folds a logical connective (distinct from a comparison or arithmetic

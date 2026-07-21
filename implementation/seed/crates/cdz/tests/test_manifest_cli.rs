@@ -1585,6 +1585,47 @@ fn a_failing_property_over_a_nested_refined_newtype_renders_the_counterexample_i
     );
 }
 
+/// A refined newtype nested in a RECORD FIELD (`(Record (pct Pct) (flag Bool))`, `Pct = P(Int64) @invariant
+/// [0,100]`) decodes its counterexample IN-DOMAIN. This guards the RECORD-FIELD recursion arm of
+/// `reapply_recorded_invariant` (it recurses into each field) — the sibling of the nested-Tuple and
+/// sum-payload pins, which exercise the Tuple-slot / Sum-payload arms but NOT the record-field one. The
+/// property traps for x >= 50, so a failing draw is an in-range `P(50..100)` inside the record.
+#[test]
+fn a_failing_property_over_a_record_field_refined_newtype_renders_the_counterexample_in_domain() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — building a nominal value needs the store"
+        );
+        return;
+    }
+    let d = dir("invariant-record-field-counterexample");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do (@ (invariant (and (>= self 0) (<= self 100))) (type Pct (P Int64))) \
+           (@ test (def (p (: r (Record (pct Pct) (flag Bool)))) \
+             (match r ((record (pct pc) (flag b)) (match pc (((. Pct P) x) (if (< x 50) unit (trap \"big\")))))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, _) = run(&["test", &f, "--seed", "3", "--trials", "50"]);
+    assert!(
+        !ok,
+        "the property fails (a draw >= 50 exists in [0,100]): {stdout}"
+    );
+    // Extract `P(N)` from the record counterexample `p({pct: P(N), flag: …})` and assert N is in [0,100].
+    let n: i64 = stdout
+        .lines()
+        .find(|l| l.contains("counterexample: p({pct: P("))
+        .and_then(|l| l.split("P(").nth(1))
+        .and_then(|s| s.split(')').next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(-1);
+    assert!(
+        (0..=100).contains(&n),
+        "a RECORD-FIELD @invariant newtype counterexample decodes IN-DOMAIN (0..=100), not a raw driver int: {stdout}"
+    );
+}
+
 /// A refined newtype nested as ANOTHER SUM's PAYLOAD (`type Box (B Pct)`, `Pct = P(Int64) @invariant
 /// [0,100]`) decodes its counterexample IN-DOMAIN. This guards the SUM-PAYLOAD recursion arm of
 /// `reapply_recorded_invariant` (it recurses into each variant's payload) — a face breaker verified on

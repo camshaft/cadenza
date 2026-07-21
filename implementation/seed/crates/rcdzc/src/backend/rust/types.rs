@@ -58,11 +58,13 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // magnitude> <reference-unit>)`.
         //   - SCALE-1 (a reference unit): the stored magnitude IS the displayed one — any inner type.
         //   - NON-SCALE-1 (`5 kilometer`, `5 foot`): the display SCALES the magnitude to the reference
-        //     (`5 km` → `5000 m`), applied in the harness in the inner numeric type. Supported for a FLOAT
-        //     or INT inner (the harness scales `× num/den` — Float rounds, Int truncates). A RATIONAL/BigInt
-        //     non-scale-1 needs EXACT rational scaling (`5 mile` → `201168/25 meter`) — deferred, still
-        //     declines (`ord_scale_supported` is false for those).
-        Ty::Qty { inner, unit } if unit.scale() == (1, 1) || qty_scale_supported(inner) => {
+        //     (`5 km` → `5000 m`), applied in the harness in the inner numeric type. Supported for FLOAT /
+        //     fixed-INT (`× num/den` — Float rounds, Int truncates), RATIONAL (exact `num/den`), and a
+        //     BigInt at a WHOLE-ratio scale (`den == 1`, e.g. kilo — `Big.mul(num)` exact). A NON-whole
+        //     BigInt ratio (`5 mile` → 201168/125 m) still DECLINES (see `qty_scale_supported`).
+        Ty::Qty { inner, unit }
+            if unit.scale() == (1, 1) || qty_scale_supported(inner, unit.scale()) =>
+        {
             rust_type(inner)
         }
         // A CHAR is a single Unicode scalar value — Rust's native `char` (which IS a Unicode scalar,
@@ -469,11 +471,19 @@ fn storage_width_type(signed: bool, w: u32) -> &'static str {
 ///   - fixed-width INT — `× num / den` (truncates toward zero),
 ///   - RATIONAL — EXACT: multiply by the scale as a `Rational` `num/den` (`Rational::mul` normalizes, no
 ///     rounding — `5 mile` → `201168/25 meter`).
+///   - BIGINT — ONLY a WHOLE-ratio scale (`den == 1`, e.g. a prefix `kilo` = ×1000/1): `Big.mul(num)`
+///     exactly (`5 km` → `5000 m`). A NON-whole BigInt ratio (`mile` = 201168/125) would TRUNCATE — a
+///     bignum scaled by a non-integer ratio is not a BigInt (no Rational result the `Qty BigInt` type
+///     allows) — so it still DECLINES. Hence the SCALE (not just `inner`) is needed to make that split.
 ///
-/// A BigInt still declines (an integer scaled by a non-integer ratio is not a BigInt — it would need a
-/// Rational result the type doesn't allow; no corpus case exercises it). Mirrors wasm `const_value_ast_scaled`.
-pub(super) fn qty_scale_supported(inner: &Ty) -> bool {
-    matches!(inner, Ty::Int(_) | Ty::Float(_) | Ty::Rational)
+/// Mirrors wasm `const_value_ast_scaled`.
+pub(super) fn qty_scale_supported(inner: &Ty, scale: (i128, i128)) -> bool {
+    match inner {
+        Ty::Int(_) | Ty::Float(_) | Ty::Rational => true,
+        // A BigInt scales EXACTLY only when the ratio is whole (den == 1); a non-whole ratio truncates.
+        Ty::BigInt => scale.1 == 1,
+        _ => false,
+    }
 }
 
 /// Whether an integer type is SIGNED — a fixed unsigned sign is `false`; a fixed signed, or a

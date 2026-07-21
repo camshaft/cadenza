@@ -9332,6 +9332,33 @@
   (call   main (: 2 Int64)) (output (: 99 Int64))
   (call   main (: 3 Int64)) (trap "unreachable"))
 
+; The update-bounds cases above use SMALL lists (single RRB leaf, n<=3). A List is an RRB vector: at >=33
+; elements it spans MULTIPLE nodes, so an update at an index in the SECOND node must walk the trie to the
+; right node, replace functionally, and leave BOTH the other node's elements AND the original list intact
+; (persistence). This pins that large-list update-across-the-node-boundary path — distinct from the
+; single-leaf small-list updates and from the n>=33 concat-vs-push KEY-shape cases (:2761), which test
+; equality of large-list keys, not an update landing in a deep node.
+(case "a List.update at a second-RRB-node index on a large runtime list lands there and preserves the rest"
+  (doc    "A 40-element runtime list (built by a push-loop, so it spans >1 RRB node past the 32-element leaf
+           boundary). `(List.update xs 35 999)` updates an index in the SECOND node. Reading back: index 35
+           is 999 (the update landed in the deep node); index 3 is still 3 (a first-node element is
+           untouched); index 38 is still 38 (another second-node element is not clobbered by the update);
+           `List.len` is 40 (length preserved); and the ORIGINAL `xs` still reads 35 at index 35 (the update
+           is FUNCTIONAL/persistent, not in-place). Result `(999, 3, 38, 40, 35)`. Pins the RRB
+           update-across-the-node-boundary walk + persistence on a multi-node list; a lowering that updated
+           the wrong node, mutated in place, or truncated would flip a component.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (at (: xs (List Int64)) (: i Int64)) (match (List.at xs i) ((Some v) v) ((None _u) -1)))
+            (def (main (: n Int64))
+              (let ((xs (build 0 40 (list))))
+                (let ((ys (List.update xs 35 999)))
+                  (tuple (at ys 35) (at ys 3) (at ys 38) (List.len ys) (at xs 35)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: (tuple 999 3 38 40 35) (Tuple Int64 Int64 Int64 Int64 Int64))))
+
 ; --- `List.at` at a RUNTIME index: the fallible positional read on the value heap -----------------------
 ; The `List.at` cases elsewhere read at a CONSTANT index (`(List.at (list …) 3)` folds to the element at
 ; compile time). A RUNTIME index — a boundary parameter — cannot fold: the read runs on the value heap,
