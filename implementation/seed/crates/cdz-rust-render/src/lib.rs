@@ -770,6 +770,20 @@ pub fn cdz_render_at(
                             "({path}).mul(&cdz_num::Rational::new(cdz_num::Big::from_i64({num}i64), cdz_num::Big::from_i64({den}i64)))"
                         ),
                     )
+                } else if inner_ty.trim() == "BigInt" {
+                    // A BIGINT magnitude scales in the bignum path: `Big.mul(num) then quotient by den`
+                    // (`divmod(…).0`, truncating toward zero like the fixed-Int case). For a WHOLE-ratio scale
+                    // (a prefix like `kilo` = `×1000/1`) this is EXACT (`5 km` → `5000 m`, no truncation — the
+                    // "exact, no truncation" corpus case); a non-whole ratio truncates, the BigInt twin of the
+                    // fixed-Int branch. `Big::from_i64` builds the scale limbs (a real prefix/family scale fits
+                    // i64). `divmod` returns an `Option<(Big, Big)>` — a `den` from a unit scale is never 0, so
+                    // `.expect` never fires (belt: a 0 would be a malformed unit).
+                    (
+                        "cdz_num::Big".to_string(),
+                        format!(
+                            "({path}).mul(&cdz_num::Big::from_i64({num}i64)).divmod(&cdz_num::Big::from_i64({den}i64)).expect(\"unit scale denominator is non-zero\").0"
+                        ),
+                    )
                 } else {
                     // The magnitude's Rust scalar type (`Float64`→`f64`, `Int64`→`i64`, `UInt32`→`u32`, …).
                     let inner_rust = rust_scalar_type_name(inner_ty);

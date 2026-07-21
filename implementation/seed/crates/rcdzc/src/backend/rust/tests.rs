@@ -1409,6 +1409,29 @@ fn rustc_roundtrip_unconstrained_empty_set_grounds_and_compiles_not_e0282() {
 }
 
 #[test]
+fn a_bigint_quantity_display_scales_to_its_reference_in_the_bignum_path() {
+    // REGRESSION (v-quantity/v-runtime): a NON-scale-1 BigInt-inner Qty display-scales to its reference in
+    // the bignum path — `(Qty.of (BigInt.of 5) kilometer)` → `(Qty.of 5000 meter)` (×1000/1 kilo scale,
+    // EXACT for a whole ratio). Previously DECLINED ("(Qty BigInt meter) has no native Rust representation")
+    // because `qty_scale_supported` excluded BigInt. Now it emits: the Qty type maps to `cdz_num::Big`, and
+    // the render's Qty arm scales via `Big.mul(num).divmod(den).0`. The bare-Qty return crosses raw + a
+    // `// cdz-scale` note, so the emit itself must NOT decline (a Big magnitude + a scale note).
+    let m = compile_rust_result(
+        "(do (def (run) (Qty.of (BigInt.of 5) (Unit.prefix kilo (Unit.base #\"meter\")))) (export run))",
+    );
+    assert!(
+        m.is_ok(),
+        "a non-scale-1 BigInt-Qty return now EMITS (was declined 'no native Rust representation'): {m:?}"
+    );
+    let m = m.unwrap();
+    // Emits the Big magnitude + a scale note (kilo = 1000/1) for the harness display-multiply.
+    assert!(
+        m.contains("cdz_num::Big") && m.contains("// cdz-scale[run]: 1000/1"),
+        "the BigInt-Qty emits a Big magnitude + a 1000/1 scale note:\n{m}"
+    );
+}
+
+#[test]
 fn a_generic_nominal_returned_whole_notes_its_erased_inner_tuple() {
     // REGRESSION (v-quantity/corpus-bugfix "a record of quantities RETURNED as a value"): a GENERIC nominal
     // (`(type V3q (V3 a a a))`) instantiated + returned WHOLE erases to a Rust tuple `(f64, f64, f64)`, but

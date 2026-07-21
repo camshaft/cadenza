@@ -1543,7 +1543,11 @@ impl<'a> Parser<'a> {
             // which re-reads as the bare `/`) — so emitting bare keeps read→print→read stable, whereas a
             // `Unit./` head would print `a / b` then re-read as bare `/` (a spurious round-trip drift).
             let head = self.name(op_name, op_span);
-            let span = op_span.merge(self.prev_span());
+            // Span the WHOLE composite `left <op> rhs` — from the LEFT operand's start, not the operator
+            // (else `a/b` would highlight only `/b`, mis-anchoring a diagnostic; matches how the ordinary
+            // infix loop spans `start.merge(prev)`). `left`'s span is in the table (it was just built).
+            let left_span = self.spans.get(left).unwrap_or(op_span);
+            let span = left_span.merge(self.prev_span());
             left = self.list(vec![head, left, rhs], span);
         }
         left
@@ -1574,7 +1578,10 @@ impl<'a> Parser<'a> {
         // BARE `^` head (eval composes it over a unit operand; the printer round-trips it) — see the
         // `/`/`*` note in `compound_unit_tail` for why bare, not the `Unit.^` flat name.
         let head = self.name("^", op_span);
-        let span = op_span.merge(self.prev_span());
+        // Span the WHOLE `atom ^ n` from the BASE atom's start (not the `^`), so `m^2` highlights `m^2`
+        // whole rather than `^2` — a truncated span would mis-anchor a diagnostic on the unit factor.
+        let atom_span = self.spans.get(atom).unwrap_or(op_span);
+        let span = atom_span.merge(self.prev_span());
         self.list(vec![head, atom, exp], span)
     }
 
@@ -4295,6 +4302,49 @@ mod tests {
         assert_eq!(
             sexpr::print(&parse_ok("59 GiB/2")),
             r#"(/ ((. Qty of) 59 ((. Unit of) #"GiB")) 2)"#
+        );
+    }
+
+    #[test]
+    fn compound_unit_node_spans_cover_the_whole_unit_expression() {
+        // A compound-unit op node (`a/b`, `a*b`) and an exponent node (`m^2`) must span from the LEFT/BASE
+        // operand's start — not from the operator — so a diagnostic anchored on the unit expression covers
+        // the whole thing (PR#731: the spans previously started at `/`/`*`/`^`, truncating to `/b` / `^2`).
+        // The unit expr is the SECOND operand of the `(Qty.of num <unit>)` node; slice source by its span.
+        let src = "def main() = 59 GiB/s";
+        let p = read_ml(src);
+        assert!(p.ok(), "parse: {:?}", p.errors);
+        let a = &p.arenas;
+        // Reach the `(/ (Unit.of GiB) (Unit.of s))` composite: def body = `((. Qty of) 59 <unit>)`, an
+        // application list whose LAST element is the unit expression.
+        let def = a.as_form(a.root, "def").unwrap();
+        let crate::ast::Struct::List(items) = a.get(def[1]) else {
+            panic!("Qty.of body is a list")
+        };
+        let unit = *items.last().unwrap();
+        let us = p.spans.get(unit).unwrap();
+        // The composite `/` node must span "GiB/s" WHOLE — from `G` through `s` — not just "/s".
+        assert_eq!(
+            &src[us.start..us.end],
+            "GiB/s",
+            "the compound-unit `/` node spans the whole unit expr, not just from the operator"
+        );
+
+        // And an exponent node `m^2` spans "m^2" whole, not "^2".
+        let src2 = "def main() = 9 m^2";
+        let p2 = read_ml(src2);
+        assert!(p2.ok(), "parse: {:?}", p2.errors);
+        let a2 = &p2.arenas;
+        let def2 = a2.as_form(a2.root, "def").unwrap();
+        let crate::ast::Struct::List(items2) = a2.get(def2[1]) else {
+            panic!("list")
+        };
+        let unit2 = *items2.last().unwrap();
+        let us2 = p2.spans.get(unit2).unwrap();
+        assert_eq!(
+            &src2[us2.start..us2.end],
+            "m^2",
+            "the unit-exponent `^` node spans the whole base^exp, not just from the `^`"
         );
     }
 

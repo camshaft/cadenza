@@ -121,7 +121,7 @@ fn collect_qty_scale_paths(
         // a NESTED Qty (non-empty path) at a non-1 scale over a supported inner needs a per-element note.
         Ty::Qty { inner, unit } if !path.is_empty() => {
             let (num, den) = unit.scale();
-            if (num, den) != (1, 1) && types::qty_scale_supported(inner) {
+            if (num, den) != (1, 1) && types::qty_scale_supported(inner, (num, den)) {
                 out.push((path.to_string(), num, den));
             }
         }

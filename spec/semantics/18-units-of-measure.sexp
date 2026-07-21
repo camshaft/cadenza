@@ -548,6 +548,18 @@
   (output (: (tuple (tuple (Qty.of 5000.0 (Unit.base #"meter"))) (tuple (Qty.of 2.0 (Unit.base #"meter"))))
              (Tuple (Tuple (Qty Float64 (Unit.base #"meter"))) (Tuple (Qty Float64 (Unit.base #"meter")))))))
 
+(case "a MIXED-shape compound scales its quantity leaf beside a non-quantity element"
+  (doc    "The heterogeneous companion of the uniform tuple/nested pins: a compound whose leaves are a MIX of
+           a quantity-through-an-Option and a bare non-quantity — `(tuple (Some (Qty.of 5.0 kilometer)) 7)` —
+           scales ONLY the Qty leaf (through the Option payload hole) to its reference while leaving the bare
+           `7` untouched: → `(tuple (Some (Qty.of 5000.0 meter)) 7)` typed `(Tuple (Option (Qty Float64
+           meter)) Int64)`. Pins that the value-form scale-fold is per-LEAF and shape-directed — it descends
+           an Option nested inside a tuple to reach the Qty, and does not touch a sibling non-quantity element
+           (no spurious scaling of the Int).")
+  (input  (tuple (Some (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))) 7))
+  (output (: (tuple (Some (Qty.of 5000.0 (Unit.base #"meter"))) 7)
+             (Tuple (Option (Qty Float64 (Unit.base #"meter"))) Int64))))
+
 (case "a velocity multiplied by a time recovers the distance dimension"
   (doc    "The multiply-direction inverse of the velocity quotient: `(* (Qty.of 6.0 (meter/second))
            (Qty.of 2.0 second))` composes `(meter·second⁻¹)·second` = meter — the `second` cancels in the
@@ -567,6 +579,42 @@
            result recovers the bare ratio 3.0.")
   (input  (Qty.value (/ (Qty.of 6.0 (Unit.base #"meter")) (Qty.of 2.0 (Unit.base #"meter")))))
   (output (: 3.0 Float64)))
+
+; DATA-RATE composite units (information ÷ time) — the desugared s-expr form of the ML-surface rate literal
+; `59 GiB/s` (postfix-unit sugar → this shape; the sugar is ML-only, so the corpus pins the desugared form
+; that carries the TYPING). Distinct from the length/time composites above (km/h, m/s²): this exercises the
+; INFORMATION dimension with a BINARY prefix (GiB = ×2³⁰) and an INT magnitude, and pins rate ARITHMETIC
+; (same-dimension add) + the cross-dimension guard on a COMPOSITE dimension. `Unit./` of two registered
+; atomic units composes the derived `[(byte,1),(second,-1)]` dimension automatically — no rate registry row
+; needed (a bare `bps`/`mbps` NAME would use one, but a `GiB/s` composite does not).
+(case "a data-rate quantity converts a binary-prefix composite unit to its byte/second reference"
+  (doc    "`59 GiB/s` (desugared `(Qty.of 59 (Unit./ (Unit.of GiB) (Unit.of s)))`) normalizes to the
+           byte/second reference: the numerator's binary prefix GiB = 2³⁰ = 1073741824 bytes folds into the
+           magnitude (the denominator `s` is already the reference), so 59 → 59·1073741824 = 63350767616,
+           unit `(Unit./ byte second)`. Pins the DERIVED data-rate dimension (information÷time) with a binary
+           prefix + Int magnitude — the composite of two atomic units types + converts with no registry row.")
+  (input  (Qty.of 59 (Unit./ (Unit.of #"GiB") (Unit.of #"s"))))
+  (output (: (Qty.of 63350767616 (Unit./ (Unit.base #"byte") (Unit.base #"second")))
+             (Qty Int64 (Unit./ (Unit.base #"byte") (Unit.base #"second"))))))
+
+(case "adding two data-rate quantities of the same composite dimension is exact"
+  (doc    "`2 GiB/s + 1 GiB/s` = `3 GiB/s`: adding two quantities of the SAME derived data-rate dimension
+           composes exactly — both normalize to byte/second (each GiB → ×1073741824) and the magnitudes add,
+           2·1073741824 + 1·1073741824 = 3221225472 byte/second. Pins that same-dimension addition works over
+           a COMPOSITE (derived) dimension, not only atomic units — the group-add is dimension-general.")
+  (input  (+ (Qty.of 2 (Unit./ (Unit.of #"GiB") (Unit.of #"s")))
+             (Qty.of 1 (Unit./ (Unit.of #"GiB") (Unit.of #"s")))))
+  (output (: (Qty.of 3221225472 (Unit./ (Unit.base #"byte") (Unit.base #"second")))
+             (Qty Int64 (Unit./ (Unit.base #"byte") (Unit.base #"second"))))))
+
+(case "adding a data-rate to a length is a compile-time dimension error over a composite dimension"
+  (doc    "`(GiB/s) + meter` rejects CDZ0501: a data-rate (byte·second⁻¹) and a length (meter) are
+           incompatible dimensions, so their addition is a compile-time error — units are never silently
+           converted across dimensions. Pins that the dimension-safety guard fires on a COMPOSITE/derived
+           dimension (byte·second⁻¹), not only on atomic units — the companion of the atomic-unit mismatch
+           cases above, isolating the derived-dimension side.")
+  (input  (+ (Qty.of 2 (Unit./ (Unit.of #"GiB") (Unit.of #"s"))) (Qty.of 1 (Unit.of #"meter"))))
+  (error  CDZ0501))
 
 ; The product/quotient above fold (constant magnitudes). A RUNTIME magnitude cannot fold: the erased
 ; multiply/divide is emitted, while the DIMENSION composes at compile time (meter·second, meter/second).

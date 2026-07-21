@@ -2647,6 +2647,21 @@
 
 ; ── A LOGICAL right shift that drops ALL of a value's significant bits folds to 0 ────────────────────
 ; `arith_identity` (lower.rs) folds `(>>ᵤ x k)` → 0 when `x`'s PROVABLE unsigned bit-bound `B ≤ k` — the
+(case "nested MIXED-direction shifts do not combine — left-then-right is two operations"
+  (doc    "The non-combine guard of the same-direction fold above: `(>> (<< v 8) 4)` mixes directions,
+           so the counts must NOT combine — neither to `(>> v -4)` nor to a single `(<< v 4)`: shifting
+           left by 8 then arithmetically right by 4 multiplies by 16 (80 at v=5), and the sign-extending
+           `>>` keeps a negative's sign (-80 at v=-5). A fold matching nested shifts by count-summing
+           without checking DIRECTION would produce a different value at either call (left-shift-by-4
+           gives 80 too at 5, but the negative face separates: -5 << 4 = -80 only if the sign survives
+           both ops — an unsigned-right combine gives a huge positive). Expected: 80, -80.")
+  (input  (do
+            (def (main (: v Int64))
+              (>> (<< v 8) 4))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 80 Int64))
+  (call   main (: -5 Int64)) (output (: -80 Int64)))
+
 ; shift moves every set bit out. The bound comes from a masking chain (`unsigned_value_bits`): `(x & 15)`
 ; fits 4 bits so `>> 4` (on the UNSIGNED UInt8, `>>` is the LOGICAL zero-filling shift) drops them all → 0,
 ; and `(x & 7)` fits 3 bits so `>> 3` → 0. The fold DISCARDS `x`, so it is `is_trap_free`-guarded: a

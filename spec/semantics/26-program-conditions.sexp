@@ -2997,3 +2997,27 @@
   (trap   "unreachable")
   (call   main (: 20 Int64))
   (trap   "unreachable"))
+
+(case "NESTED CONTRACT: an @ensures predicate that CALLS a @requires-guarded helper enforces the HELPER's precondition during postcondition eval"
+  (doc    "Contract composition across a def boundary: `f`'s @ensures predicate CALLS a user helper `always-ok`
+           that itself carries @requires. The pin isolates WHICH contract fires by making the helper body
+           UNCONDITIONALLY true: `(@ (requires (>= x 0)) (def (always-ok (: x Int64)) true))` — so f's
+           `@ensures(always-ok ret)` can NEVER be false on its own. `f(x) = x + 1`. main(5): ret=6, the
+           postcondition calls always-ok(6) — its @requires(6>=0) holds, body true → contract satisfied → 6.
+           main(-3): ret=-2, the postcondition calls always-ok(-2) — the HELPER's OWN @requires(-2>=0) FAILS and
+           traps DURING postcondition evaluation, even though always-ok's body would have returned true. That
+           the -3 case traps THOUGH the outer postcondition can't be false proves the nested @requires is what
+           enforces — pins that a @requires-guarded call inside an @ensures predicate carries its own contract
+           (verify_enforce's injected checks compose transitively through helper calls). Runtime arg via main's
+           param (no const-fold).")
+  (input  (do
+            (@ (requires (>= x 0))
+               (def (always-ok (: x Int64)) true))
+            (@ (ensures (always-ok ret))
+               (def (f (: n Int64)) (+ n 1)))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64))
+  (call   main (: -3 Int64))
+  (trap   "unreachable"))

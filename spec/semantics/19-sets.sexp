@@ -1215,6 +1215,51 @@
   (call   main (: 1.25 Float64))
   (output (: 42 Int64)))
 
+; The NaN-key / signed-zero / computed-key cases above are all Float64. `box-float32` canonicalizes at the
+; 4-BYTE width (`f32::NAN.to_bits()`, sign-preserving zero) — a DISTINCT path from `box-float`'s 8-byte form
+; — so the same canonical-byte CHAMP key/element rules must hold for a Float32 key at f32 width: a NaN
+; unifies, a signed zero stays distinct, and a computed key hits its literal twin. These pin that f32 axis.
+(case "a Float32 set dedups NaN elements and keeps zero signs distinct"
+  (doc    "The Float32 analogue of the Float64 set-dedup case: insert a computed f32 NaN (`(/ x x)` at x=0)
+           then `Float32.nan` → ONE element (the 4-byte-width canonical quiet NaN unifies them); insert a
+           Float32 `-0.0` then `0.0` → TWO (the sign bit is kept at f32 width). 10·1 + 2 = 12. Pins that the
+           CHAMP set hash/eq canonicalizes a Float32 element at its OWN 32-bit width, not only Float64.")
+  (input  (do
+            (def (main (: x Float32))
+              (+ (* 10 (Set.len (Set.insert (Set.insert (Set.of (list)) (/ x x)) Float32.nan)))
+                 (Set.len (Set.insert (Set.insert (Set.of (list)) (: -0.0 Float32)) (: 0.0 Float32)))))
+            (export main)))
+  (call   main (: 0.0 Float32))
+  (output (: 12 Int64)))
+
+(case "a Float32 NaN map key is found by a differently-produced NaN"
+  (doc    "The Float32 map-key face: insert under a COMPUTED f32 NaN (`(/ x x)` at x=0) and look up with
+           `Float32.nan` → 42. Both NaNs canonicalize to the one 4-byte quiet NaN, so they hash+compare
+           equal and land in the same CHAMP slot (the f32-width analogue of the Float64 NaN-map-key case). A
+           raw-bits hash would scatter differently-produced NaNs into distinct slots and MISS.")
+  (input  (do
+            (def (main (: x Float32))
+              (match (Map.lookup (Map.insert Map.empty (/ x x) 42) Float32.nan)
+                ((Some v) v)
+                ((None _) -1)))
+            (export main)))
+  (call   main (: 0.0 Float32))
+  (output (: 42 Int64)))
+
+(case "a computed Float32 map key is found by its literal twin"
+  (doc    "The Float32 computed-key control: insert under `(+ x 1.25)` at x=1.25 (a Float32 add) and look up
+           with the literal `2.5` at f32 width → 7. The arithmetic-result key and the literal share one f32
+           canonical byte form (f32 arithmetic is deterministic; the add's bits equal the folded literal's),
+           the f32 companion of the Float64 computed-key case.")
+  (input  (do
+            (def (main (: x Float32))
+              (match (Map.lookup (Map.insert Map.empty (+ x (: 1.25 Float32)) 7) (: 2.5 Float32))
+                ((Some v) v)
+                ((None _) -1)))
+            (export main)))
+  (call   main (: 1.25 Float32))
+  (output (: 7 Int64)))
+
 ; --- CHAMP Set DEDUP follows the canonical FLOAT byte form (float-form × dedup intersection) ----------
 ; A Set dedups by hash+eq, and both must follow the SAME canonical byte form that scalar/compound `=`
 ; pins (03-equality NaN==NaN, -0.0 != +0.0). If the Set hashed/compared floats by IEEE == instead
