@@ -1279,6 +1279,44 @@
   (call   main (: 5 Int64))
   (output (: 2 Int64)))
 
+; The BigInt-key cases above pin the EMIT (slot-clash) face with SINGLE-limb values (6, 7 — fit an
+; i64). These pin the HASH/COMPARE face at MULTI-limb magnitudes: `(* (BigInt.of n) (BigInt.of
+; Int64.max))` products exceed one limb, so a CHAMP that hashed or compared only a truncated low limb
+; (or the handle) would conflate keys sharing low bits and either dedup wrongly or miss lookups. The
+; distinct-keys, dedup, and lookup-hit/miss faces each witness the full-value discipline.
+
+(case "multi-limb BigInt map keys stay distinct and look up by full value"
+  (doc    "`big n = n · Int64.max` is a genuine MULTI-limb BigInt (≥ 2^63). Keys `big 2` and `big 3`
+           must be two distinct entries (len 2), the lookup `big a` at a=2 hits (20), and at a=5 — a
+           multi-limb value inserted never — misses cleanly (-1). A hash over a truncated low limb or a
+           compare over the handle would break one of the three faces. Encodes 100·len + hit/miss.
+           Expected: 220 (a=2), 199 (a=5).")
+  (input  (do
+            (def (big (: n Int64))
+              (* (BigInt.of n) (BigInt.of 9223372036854775807)))
+            (def (main (: a Int64))
+              (let ((m (Map.insert (Map.insert Map.empty (big 2) 20) (big 3) 30)))
+                (+ (* 100 (Map.len m))
+                   (match (Map.lookup m (big a)) ((Some v) v) ((None u) -1)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 220 Int64))
+  (call   main (: 5 Int64)) (output (: 199 Int64)))
+
+(case "multi-limb BigInt set elements deduplicate by full value"
+  (doc    "The Set twin: `{big a, big 2, big 3}` at a=2 collapses the repeated multi-limb value (len 2);
+           at a=7 all three are distinct (len 3). Dedup must compare the FULL multi-limb magnitude —
+           values sharing low-limb bits (all are Int64.max multiples) conflate under a truncated hash
+           only if the full compare also fails, so the pair of calls witnesses both the collision path
+           and the equality walk. Expected: 2 (a=2), 3 (a=7).")
+  (input  (do
+            (def (big (: n Int64))
+              (* (BigInt.of n) (BigInt.of 9223372036854775807)))
+            (def (main (: a Int64))
+              (Set.len (Set.of (list (big a) (big 2) (big 3)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 2 Int64))
+  (call   main (: 7 Int64)) (output (: 3 Int64)))
+
 ; The `Set.remove`/`Map.remove` twins of the disjoint-slot guard above. Unlike the constructor/insert arms
 ; (fixed by the sibling-scratch pass), the two REMOVE arms laid BOTH operands at a fixed `base + 1` — so a
 ; `remove` whose collection operand is a recursive call (an i32 list/set handle in a `dup` slot) and whose

@@ -61,6 +61,7 @@ fn print_mode(arenas: &Arenas, width: usize, display: bool) -> String {
         delimit_body: false,
         display,
         depth: 0,
+        suppress_leading_docs: false,
     };
     // In display mode, an outer `(: value type)` result annotation is stripped — a rendered value
     // shows the value, not its type. Only at the ROOT (a nested ascription is a real program form).
@@ -117,6 +118,14 @@ struct Printer<'a> {
     /// whole mutually-recursive printer to an explicit stack (large + output-risky), guard the ONE
     /// recursion hub (`expr`) with [`MAX_PRINT_DEPTH`] and elide past it. See `expr`.
     depth: u32,
+    /// Set by the `@`-annotation arm when it has ALREADY printed a documented def's leading `(doc …)`
+    /// forms ABOVE the annotation (where the user wrote a `/// header` before `@test`). Consumed by
+    /// [`print_def_docs`] so the def does NOT re-print them below the `@`. Without this, a doc carried
+    /// INSIDE an annotated def (the reader's `carry_docs`) prints BETWEEN the annotation and the def
+    /// (`@test` / `/// header` / `def …`), moving a section header below its annotation — the
+    /// annotation-comment adjacency the frontend is touchy about (v-cad/v-cdz-tooling report). A
+    /// one-shot flag (like `delimit_body`): set, print the form, taken+cleared at the def's doc site.
+    suppress_leading_docs: bool,
 }
 
 /// The `expr`-recursion depth ceiling for the ML printer. Set FAR above the reader's
@@ -540,6 +549,10 @@ impl<'a> Printer<'a> {
                     if paren {
                         self.doc.word("(");
                     }
+                    // A `/// header` the user wrote ABOVE the annotation was carried INSIDE the def by
+                    // the reader (`carry_docs`) — print it back ABOVE the `@name`, not between the
+                    // annotation and the def. Sets `suppress_leading_docs` so the def skips re-printing.
+                    self.hoist_annotated_docs(args[1]);
                     self.doc.word("@");
                     self.doc.word(emit_name(name));
                     self.doc.hardbreak();
@@ -559,6 +572,7 @@ impl<'a> Printer<'a> {
                     if paren {
                         self.doc.word("(");
                     }
+                    self.hoist_annotated_docs(args[1]);
                     self.doc.word("@");
                     self.expr(args[0], PREC_MEMBER);
                     self.doc.hardbreak();
@@ -1106,6 +1120,12 @@ impl<'a> Printer<'a> {
     /// Emit a def's leading `(doc "…")` forms as `/// …` lines, each followed by a hardbreak. Shared
     /// by the function and value def printers.
     fn print_def_docs(&mut self, docs: &[StructId]) {
+        // The `@`-annotation arm may have ALREADY printed these leading docs ABOVE the annotation
+        // (a `/// header` the user wrote before `@test`). One-shot flag: skip them here so they are
+        // not re-printed between the annotation and the def. Cleared as it's consumed.
+        if std::mem::take(&mut self.suppress_leading_docs) {
+            return;
+        }
         for &d in docs {
             if let Some(a) = self.a.as_form(d, "doc") {
                 self.print_doc(a[0]);
@@ -2488,6 +2508,52 @@ impl<'a> Printer<'a> {
     /// bracket-delimited literal (`[…]`/`(…,)`/`{…}`/`#{…}`), or a nested `@`. Wrapping only the three
     /// post-prefix shapes keeps the multi-line keyword forms unparenthesized (an `@inline (if …)` would be
     /// ugly and needless). The wrapped form prints at prec 0 inside the parens (a fresh sub-expression).
+    /// If `form` is a documented `def`/value-def (a `def` list with leading `(doc …)` forms — the shape
+    /// the reader's `carry_docs` produces from a `/// header` written ABOVE an `@`-annotation), print
+    /// those docs NOW (above the `@name` about to be emitted) and set `suppress_leading_docs` so the def
+    /// does not re-print them below the annotation. Restores the user's `/// header` \n `@test` \n `def`
+    /// order instead of the reordered `@test` \n `/// header` \n `def`. Only handles the immediate-def
+    /// case AND a stacked `@a @b def` (descends through nested `@` wrappers to the def, so the doc
+    /// prints above ALL annotations). No-op for a non-def / doc-less form. The arena is unchanged
+    /// (round-trip-safe — a print-position fix only). Only the OUTERMOST `@` arm's call actually prints
+    /// (it sets the suppress flag; inner `@` arms then find the flag already pending — but since the flag
+    /// is consumed only at the def, an inner call would re-hoist; guard on the flag to hoist ONCE).
+    fn hoist_annotated_docs(&mut self, form: StructId) {
+        // Already hoisted by an outer `@` this chain — don't print twice.
+        if self.suppress_leading_docs {
+            return;
+        }
+        // Descend through nested `@name` wrappers (a stacked `@a @b def`) to the innermost annotated form.
+        let mut inner = form;
+        while let Some(ann) = self.a.as_form(inner, "@") {
+            if ann.len() != 2 {
+                break;
+            }
+            inner = ann[1];
+        }
+        // A def is `(def SIG doc… body)` or value-def `(def NAME doc… value)`; either way the leading
+        // `(doc …)` run sits at args[1..]. Only hoist when the head is `def` and it has ≥1 leading doc.
+        let Some(args) = self.a.as_form(inner, "def") else {
+            return;
+        };
+        let docs: Vec<StructId> = args
+            .iter()
+            .skip(1)
+            .take_while(|&&a| self.is_doc(a))
+            .copied()
+            .collect();
+        if docs.is_empty() {
+            return;
+        }
+        for d in docs {
+            if let Some(a) = self.a.as_form(d, "doc") {
+                self.print_doc(a[0]);
+            }
+            self.doc.hardbreak();
+        }
+        self.suppress_leading_docs = true;
+    }
+
     fn annotated_form(&mut self, form: StructId) {
         if self.form_needs_prefix_parens(form) {
             self.doc.word("(");
@@ -5707,6 +5773,56 @@ mod tests {
             assert_eq!(doc_lines, 1, "[{label}] doc re-prints as `///`: {printed}");
             assert_eq!(comment_lines, 0, "[{label}] no `//` downgrade: {printed}");
             // Idempotent across a second fmt pass.
+            let b = parser::read_ml(&printed);
+            assert!(b.ok(), "[{label}] reparse: {:?}", b.errors);
+            assert_eq!(print(&b.arenas, 100), printed, "[{label}] not idempotent");
+        }
+    }
+
+    #[test]
+    fn doc_above_an_annotated_def_prints_above_the_annotation_not_between() {
+        // A `/// header` the user wrote ABOVE an `@`-annotation must re-print ABOVE the annotation, NOT
+        // BETWEEN the annotation and its def. The reader carries the doc INSIDE the def (`carry_docs`),
+        // so a naive printer emits `@test` \n `/// header` \n `def` — moving a section header below its
+        // annotation (the annotation-comment adjacency the frontend is touchy about; v-cad/v-cdz-tooling
+        // report). The printer hoists the def's leading docs above the `@`. Arena is unchanged (a
+        // print-POSITION fix), so it stays round-trip-safe.
+        for (src, label) in [
+            (
+                "/// header\n@test\ndef t() -> Bool = true",
+                "single annotation",
+            ),
+            (
+                "/// h1\n/// h2\n@test\ndef t() -> Bool = true",
+                "multi-line doc",
+            ),
+            (
+                "/// header\n@inline-always\n@test\ndef t() -> Bool = true",
+                "stacked annotations",
+            ),
+        ] {
+            let a = parser::read_ml(src);
+            assert!(a.ok(), "[{label}] parse: {:?}", a.errors);
+            let printed = print(&a.arenas, 100);
+            // The FIRST non-blank line must be the doc (`///`), not an `@` annotation.
+            let first = printed.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+            assert!(
+                first.trim_start().starts_with("///"),
+                "[{label}] doc must be the FIRST line (above the annotation); got:\n{printed}"
+            );
+            // No `///` line may appear AFTER an `@` line (the reorder bug's signature).
+            let mut seen_at = false;
+            for l in printed.lines() {
+                let t = l.trim_start();
+                if t.starts_with('@') {
+                    seen_at = true;
+                }
+                assert!(
+                    !(seen_at && t.starts_with("///")),
+                    "[{label}] a `///` appears BELOW an `@` (reordered):\n{printed}"
+                );
+            }
+            // Idempotent + round-trip-safe (arena unchanged): re-read → re-print is byte-identical.
             let b = parser::read_ml(&printed);
             assert!(b.ok(), "[{label}] reparse: {:?}", b.errors);
             assert_eq!(print(&b.arenas, 100), printed, "[{label}] not idempotent");
