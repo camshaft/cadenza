@@ -40,7 +40,11 @@ def cnum64(v: Int64) = Core.CNum(v, true, 64)
 /// comparison result, or absent) → the canonical (true, 64). Today arith is gated to Int64 in infer
 /// (2b-ii-c), so this stamps (true,64) until the infer-relax slice types same-width narrow arith TIntW.
 def cbin-of(op: Int64, t: Typed, l: Core, r: Core) = match t with
-  | Typed.TIntW(s, w) => Core.CBin(op, s, w, l, r)
+  // item-3 HM: a still-DEFERRED result type (the sentinel TIntW(_,0) — an all-literal arith that never met a
+  // narrow constraint) GROUNDS to Int64 here, so no width-0 reaches Core (emit picks i32/i64 by width; a 0
+  // would be invalid). A concrete narrow/64 width passes through. This is the deferred→ground boundary for a
+  // top-level all-literal arith; a deferred operand that MET a narrow sibling already grounded in infer.
+  | Typed.TIntW(s, w) => (if w == 0 then Core.CBin(op, true, 64, l, r) else Core.CBin(op, s, w, l, r))
   | _ => Core.CBin(op, true, 64, l, r)
 
 /// Lower the subtree at `id`, reading the pre-built resolve column `rcol` (for var canonicalization) and

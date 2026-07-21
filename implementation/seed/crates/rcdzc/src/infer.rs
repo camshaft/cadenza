@@ -757,6 +757,54 @@ fn literal_binop_context_ty(db: &mut Db, id: StructId) -> Option<crate::ty::IntT
     }
 }
 
+/// True iff a bare FLOAT literal at `id` is grounded to `Float32` by an arith-operand CONTEXT — the float
+/// twin of `literal_binop_context_ty`'s integer climb. Climbs the binary-arith spine from the literal; a
+/// concretely `Float32` sibling anywhere up the ARITH chain fixes the shared width to Float32 (a float
+/// arith op unifies its operands to one width, `+. : ∀a.(Float a)→(Float a)→(Float a)`), so the literal
+/// must fit Float32. A COMPARISON breaks the chain (its result is `Bool`); a non-`Float32` fixed sibling
+/// (e.g. Float64) does NOT ground it narrow. Used to surface an inf-materializing overflow at `check`.
+fn literal_binop_float32_context(db: &mut Db, id: StructId) -> bool {
+    let mut child = id;
+    loop {
+        let Some(parent) = db.parent_of(child) else {
+            return false;
+        };
+        let (head, arg0, arg1) = {
+            let Resolved::Apply { head, args } = resolved_ref(db, parent) else {
+                return false;
+            };
+            if args.len() != 2 {
+                return false;
+            }
+            (*head, args[0], args[1])
+        };
+        let Some(prim) = crate::eval::meta_apply_of(db, head) else {
+            return false;
+        };
+        if !prim.is_binop() {
+            return false;
+        }
+        let sibling = if arg0 == child {
+            arg1
+        } else if arg1 == child {
+            arg0
+        } else {
+            return false;
+        };
+        // A concretely `Float32` sibling fixes the shared width to Float32.
+        if let Ty::Float(ft) = type_of(db, sibling)
+            && ft.ground_width() == 32
+        {
+            return true;
+        }
+        // Keep climbing only through an ARITH op (a comparison's result is `Bool`, breaking the chain).
+        if !prim.is_arith() {
+            return false;
+        }
+        child = parent;
+    }
+}
+
 /// The CDZ0302 fault if the value at `value` is an integer LITERAL that does not fit the NARROW integer
 /// type the type-expression `ty_expr` denotes, else `None`. The literal analogue of "Annotations
 /// Constrain" (numeric-model.md §A Bare Integer Literal Is Grounded By Its Annotation, Subject To A Range
@@ -13896,6 +13944,40 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 out.push(reject);
             }
         }
+        // A bare FLOAT literal whose width is fixed CONTEXTUALLY to `Float32` through an arith spine — the
+        // float twin of the integer contextual check above. `(+ a 1.0e300)` over `(: a Float32)`: the `+`
+        // unifies operand widths, grounding `1.0e300` to Float32 where it saturates to `±inf` (a value with
+        // no written form, numeric-model.md §A Floating-Point Literal That Denotes No Representable Value Is
+        // Malformed) — yet without this it COMPILED + materialized `inf` (the int analogue rejects CDZ0201).
+        // Skip an annotated literal (its `Float32` annotation is checked by `literal_width_fault`'s Float32
+        // arm); only a bare literal grounded solely by its arith-operand context is judged here. CDZ0201
+        // (contextual — no annotation to blame), matching the integer arith-spine verdict.
+        Resolved::Float(dec) => {
+            let annotated = db
+                .parent_of(id)
+                .and_then(|p| db.ast.as_form(p, ":"))
+                .and_then(|t| t.first().copied())
+                == Some(id);
+            if !annotated
+                && !dec.fits_f32()
+                && literal_binop_float32_context(db, id)
+                && matches!(type_of(db, id), Ty::Float(ft) if !ft.width_is_fixed())
+            {
+                trace!(target: "rcdzc::infer", node = id.0, "fault: float literal grounded to Float32 through an arith spine overflows to inf (CDZ0201)");
+                // CDZ0201 (`Code::Malformed`) — CONTEXTUAL: a bare literal fixed by an arith-operand context,
+                // no annotation to blame — matching the integer arith-spine verdict (not the annotated
+                // CDZ0302 the direct `(: 1.0e300 Float32)` path takes).
+                out.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        "float literal does not fit Float32 (it is grounded to Float32 by an \
+                         arithmetic-operand context, where it overflows the Float32 range to infinity — \
+                         the largest finite Float32 is about 3.4e38)",
+                    )
+                    .at(id),
+                );
+            }
+        }
         Resolved::Prim(_)
         | Resolved::Ref { .. }
         | Resolved::SumPayload { .. }
@@ -13907,7 +13989,6 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::SymbolConst(_)
         | Resolved::Bytes(_)
         | Resolved::Char(_)
-        | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::TypeVal(_) => {}
         // An anonymous LAMBDA `(fn (params…) body)`: check its parameter list is LINEAR, exactly as a

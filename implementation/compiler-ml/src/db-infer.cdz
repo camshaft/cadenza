@@ -11,7 +11,7 @@
 /// semantics either way).
 import { Tree } from "parse-db"
 
-import { Typed, infer-node } from "infer-db"
+import { Typed, infer-node, ground-deferred } from "infer-db"
 
 import { Db, db-tree, typed-filled } from "db"
 
@@ -42,7 +42,12 @@ def infer-into-db(db: Db, root: Int64) =
 /// first. `(db', Option(Typed))` — updated Db + the fact (`None` = no fact; filled `TErr` = ill-typed decline).
 def typed-of-db(db: Db, root: Int64, id: Int64) =
   let db1 = infer-into-db(db, root) in
-  (db1, Map.lookup(db-typed-col(db1), id))
+  // item-3 HM: GROUND the deferred-int sentinel (TIntW(_,0)) to Int64 at the query boundary — an unconstrained
+  // literal's default (matches type-at). The raw column may hold a deferred fact for a literal/var that never
+  // met a narrow sibling; the reported type never leaks width 0.
+  (db1, (match Map.lookup(db-typed-col(db1), id) with
+          | Option.Some(t) => Option.Some(ground-deferred(t))
+          | Option.None(_) => Option.None(unit)))
 
 // ---- TESTS: infer reads the memoized resolved column; fills types once -------------------------------
 import { Tok, parse-tokens } from "parse-db"

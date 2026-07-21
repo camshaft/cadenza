@@ -2581,6 +2581,31 @@
             ((tuple a b) (+ a b))))
   (output (: 12 Int64)))
 
+; The construction cases above build a collection; these eval a quoted OPERATION that CONSUMES one — a
+; String accessor and a List indexing op. eval reconstructs the whole applied form (the op head + its
+; collection/string argument + the index) and folds it through the ordinary compile-time path, producing
+; the operation's result (a scalar / an Option), not just a rebuilt collection. The consuming-operation
+; companion of the collection-construction cases.
+
+(case "eval of a quoted String.byte-len folds the string operation"
+  (doc    "`(eval (quote (String.byte-len \"hello\")))` = 5: eval reconstructs the `String.byte-len`
+           application over the string literal and folds it. Pins that eval handles a quoted OPERATION
+           over a string (not only constructing/executing a bare string), the string-accessor companion
+           of the collection cases.")
+  (input  (eval (quote (String.byte-len "hello"))))
+  (output (: 5 Int64)))
+
+(case "eval of a quoted List.at folds the indexing operation to its Option result"
+  (doc    "`(eval (quote (List.at (list 10 20 30) 1)))` reconstructs the `List.at` indexing over a
+           quoted list-construction and folds it to `(Option.Some 20)` — element 1. Pins that eval folds
+           a quoted operation whose result is an Option (a bounds-checked accessor), reconstructing both
+           the operation and its collection argument. The consuming-operation companion of the
+           list-construction case.")
+  (input  (match (eval (quote (List.at (list 10 20 30) 1)))
+            ((Option.Some v) v)
+            (_               0)))
+  (output (: 20 Int64)))
+
 (case "a constructed Ast.Bool leaf drives an evaluated conditional"
   (doc    "`(if (eval (Ast.Bool true)) 5 6)` = 5: the Bool leaf is CONSTRUCTED (not quoted), evaluated
            to its payload, and the resulting runtime boolean drives an ORDINARY (non-reified) `if`.

@@ -1649,6 +1649,10 @@ fn run_program_rust(
     // …and the per-generic-sum parameter COUNT (`// cdz-sum-params[Box]: 1`) — the driver substitutes a
     // generic sum's `T{k}` payload placeholders with the result type's concrete args when it renders one.
     let sum_params = cdz_sum_params(&module);
+    // …and the set of sums whose variant heads render QUALIFIED (`// cdz-sum-qualified-heads[Ast]`) — the
+    // backend's per-sum `sum_needs_qualified_heads` decision, so the render qualifies a ctor exactly as the
+    // wasm backend does (the built-in `Ast` and any user sum with a prelude-colliding variant name).
+    let qualified_heads = cdz_sum_qualified_heads(&module);
     // …and the QUANTITY result's unit VALUE-FORM (`// cdz-unit[<ident>]: <value-form>`) — the dotted
     // `((. Unit base) …)` / `Unit./`-quotient surface cdz-run prints a quantity value with, which the type
     // note's `render_name` (the bare `(Unit.base …)` / `Unit.*` TYPE surface) does NOT carry. The backend
@@ -1703,6 +1707,7 @@ fn run_program_rust(
                     unit_form.as_deref(),
                     unit_scale,
                     &qty_at,
+                    &qualified_heads,
                 );
                 // The Cadenza type surface for the annotation (`(Option Int64)`) — parenthesize a
                 // multi-token type (`Option Int64` → `(Option Int64)`); a bare single token stays as-is.
@@ -1721,6 +1726,7 @@ fn run_program_rust(
                     unit_form.as_deref(),
                     unit_scale,
                     &qty_at,
+                    &qualified_heads,
                 )
             }
         }) {
@@ -5753,6 +5759,7 @@ mod trap_grading_tests {
             None,
             None,
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
         );
         // A recursive helper `fn __render_IntList` is generated and the value is rendered by CALLING it —
         // the self-referential `IntList` payload position becomes a recursive call, not another inline match.
@@ -5788,6 +5795,7 @@ mod trap_grading_tests {
             None,
             None,
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
         );
         assert!(
             s.contains("fn __render_Sign(") && s.contains("(Pos unit)"),
@@ -5812,6 +5820,7 @@ mod trap_grading_tests {
             None,
             None,
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
         );
         assert!(
             expr.contains("(record (") && expr.contains("(__r).0") && expr.contains("(__r).1"),
@@ -5830,6 +5839,7 @@ mod trap_grading_tests {
             None,
             None,
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
         );
         assert!(
             nested.contains("(record (") && nested.contains("(tuple "),
@@ -5854,6 +5864,7 @@ mod trap_grading_tests {
             None,
             None,
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
         );
         assert!(
             expr.contains("(tuple ") && expr.contains("(__r).0") && expr.contains("(__r).1"),
@@ -5874,6 +5885,7 @@ mod trap_grading_tests {
             None,
             None,
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
         );
         assert!(
             s.contains("format!(\"{}\""),
@@ -5903,6 +5915,7 @@ mod trap_grading_tests {
             None,
             None,
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
         );
         assert_eq!(
             expr, "\"(tuple)\".to_string()",
@@ -5948,6 +5961,7 @@ mod trap_grading_tests {
             None,
             None,
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
         );
         assert!(
             expr.contains("(P {} {})") && expr.contains("(__p).0") && expr.contains("(__p).1"),
@@ -5966,6 +5980,7 @@ mod trap_grading_tests {
             None,
             None,
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
         );
         assert!(
             vexpr.contains("(Q {})") && vexpr.contains("(tuple "),

@@ -134,6 +134,37 @@
   (call   main (: 10 Int64)) (output (: 2 Int64))
   (call   main (: 99 Int64)) (output (: 3 Int64)))
 
+(case "a Set.of over RECURSIVE-sum elements dedups by spine content"
+  (doc    "The unbounded-depth member of the compound-element family: elements are runtime-built Peano
+           spines — `{(mk a), (mk 3)}` at `a = 3` collapses (two separately-built equal 4-node spines share
+           one canonical content) → len 1; at `a = 2` distinct depths → len 2. The set's hash/compare must
+           walk the WHOLE recursive spine per element. Note the construction-path asymmetry: this Set.of
+           batch build computes on every backend while the equivalent Set.insert chain onto Set.empty still
+           declines (the two paths lower separately) — so this pins the WORKING path; the insert twin joins
+           when its emit lands.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk (: n Int64)) (if (= n 0) (Z) (S (mk (- n 1)))))
+            (def (main (: a Int64))
+              (Set.len (Set.of (list (mk a) (mk 3)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: 2 Int64)))
+
+(case "a Set.of over user-sum variants keeps same-payload different-variant elements distinct"
+  (doc    "The variant-tag member: `{(A n), (B n), (A 5)}` at `n = 5` — `(A n)` and `(A 5)` collapse (same
+           tag, same payload) while `(B 5)` stays distinct (different TAG, same payload) → len 2; at
+           `n = 7` all three differ → len 3. The element hash must read both the variant tag and the
+           payload (a payload-only hash would collapse A/B; a tag-only hash would collapse the two As at
+           n=7). The set companion of the sum-as-map-key discrimination pins.")
+  (input  (do
+            (type T (A Int64) (B Int64))
+            (def (main (: n Int64))
+              (Set.len (Set.of (list (A n) (B n) (A 5)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2 Int64))
+  (call   main (: 7 Int64)) (output (: 3 Int64)))
+
 (case "membership of an absent element is false, not a trap"
   (doc    "The absent companion: `(Set.contains (Set.of (list 1 2 3)) 5)` tests an element not in the
            set, so the total predicate yields false — NOT a trap and NOT an error (collections-and-text.md

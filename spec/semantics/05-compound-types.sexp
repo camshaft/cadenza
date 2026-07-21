@@ -6526,6 +6526,28 @@
   (call   main (: 1 Int64) (: 5 Int64)) (output (: -1 Int64))
   (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64)))
 
+(case "a map of lists of tuples of RECORDS: a four-level mixed query reads a named leaf"
+  (doc    "One level deeper than the three-level query above, adding a RECORD as the innermost layer —
+           `{1 ↦ [(10, {v:100,w:200}), (20, {v:300,w:400})]}`, the keyed-rows-of-positional-entries-with-
+           named-fields shape (a symbol table whose rows carry annotated metadata). The query walks
+           Map.lookup → List.at 1 → tuple slot 1 → field `v` = 300; the absent key reports -1. Pins that
+           the projection chain composes across all FOUR wrapper kinds (CHAMP, RRB, positional, named) in
+           one expression — a wrong slot/field resolution at ANY level lands on a different leaf (100,
+           200, 400, or a positional misread) rather than 300.")
+  (input  (do
+            (def (main (: k Int64))
+              (let ((m (Map.insert Map.empty 1
+                         (list (tuple 10 (record (v 100) (w 200)))
+                               (tuple 20 (record (v 300) (w 400)))))))
+                (match (Map.lookup m k)
+                  ((Some xs) (match (List.at xs 1)
+                    ((Some t) (. (. t 1) v))
+                    ((None u) -2)))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 300 Int64))
+  (call   main (: 9 Int64)) (output (: -1 Int64)))
+
 (case "a set nested in a tuple compares equal with a runtime element, order-independent"
   (doc    "`(= (tuple 0 (Set.of (list 1 x))) (tuple 0 (Set.of (list 1 2))))` compares two tuples whose second
            element is a runtime-built set: with `x`=2 the sets are {1,2} = {1,2} so the tuples are equal;

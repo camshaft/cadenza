@@ -63,6 +63,42 @@
   (call   main (: 5 Int64)) (output (: 7 Int64))
   (call   main (: 0 Int64)) (output (: 7 Int64)))
 
+(case "a closure captures a runtime-depth RECURSIVE SUM and folds it at call time"
+  (doc    "The unbounded-heap capture face (the scalar captures above hold Int/Bool; the host-closure file
+           pins list/rope captures across the HOST boundary — this is the pure in-guest twin): `make-reader`
+           captures a runtime-depth Peano spine `(mk a)` in the closure cell and returns `(fn (u) (depth
+           v))`; the caller invokes it AFTER make-reader's activation is gone, so the captured spine must
+           outlive its builder (capture-cell dup) and the fold must walk the live heap value at call time
+           → 3. A capture that shallow-copied one node or dropped the spine at return would break it.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk (: n Int64)) (if (= n 0) (Z) (S (mk (- n 1)))))
+            (def (depth (: v Nat))
+              (match v ((S rest) (+ 1 (depth rest))) ((Z u) 0)))
+            (def (make-reader (: v Nat))
+              (fn ((: u Unit)) (depth v)))
+            (def (main (: a Int64))
+              ((make-reader (mk a)) unit))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3 Int64)))
+
+(case "a closure captures a MAP and serves lookups at call time"
+  (doc    "The CHAMP-capture face: `make-getter` captures a two-entry map and returns a lookup closure; the
+           caller invokes it twice with different keys — a hit path (`g a` at a=1 → 10) and the fixed `g 2`
+           → 20, summing 30; at a=9 the first lookup misses (-1) → 19. The captured CHAMP must stay live
+           across both calls and serve genuine per-call lookups (a snapshot of one lookup result, or a
+           dropped map, would break a call). The environment-closure idiom an interpreter's `eval`
+           closes over.")
+  (input  (do
+            (def (make-getter (: m (Map Int64 Int64)))
+              (fn ((: k Int64)) (match (Map.lookup m k) ((Some v) v) ((None u) -1))))
+            (def (main (: a Int64))
+              (let ((g (make-getter (Map.insert (Map.insert Map.empty 1 10) 2 20))))
+                (+ (g a) (g 2))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 30 Int64))
+  (call   main (: 9 Int64)) (output (: 19 Int64)))
+
 (case "a list of closures each keeps its own capture, selected by a runtime index"
   (doc    "Three closures `(mk 10)`, `(mk 20)`, `(mk 30)` — each `(mk k) = (fn (x) (+ x k))` capturing its
            own `k` — are stored in a LIST and one is selected by a runtime index, then applied. `apply-at
@@ -1336,6 +1372,22 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 15 Int64)))
+
+(case "a compose combinator captures TWO function values and applies them in declared order"
+  (doc    "The two-function capture face: `(compose f g)` returns `(fn (x) (f (g x)))` — ONE closure whose
+           env holds TWO fn handles, applied inner-to-outer. Order is witnessed by non-commuting operands:
+           `inc∘dbl` at 5 = (5·2)+1 = 11 but `dbl∘inc` = (5+1)·2 = 12 — a compose that swapped its captured
+           slots (or shared one cell for both) would transpose the tuple. The one-capture HOF case above
+           holds a single fn; this pins two independently-read fn cells in one env.")
+  (input  (do
+            (def (compose (: f (-> Int64 Int64)) (: g (-> Int64 Int64)))
+              (fn ((: x Int64)) (f (g x))))
+            (def (main (: n Int64))
+              (let ((inc (fn ((: x Int64)) (+ x 1)))
+                    (dbl (fn ((: x Int64)) (* x 2))))
+                (tuple ((compose inc dbl) n) ((compose dbl inc) n))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: (tuple 11 12) (Tuple Int64 Int64))))
 
 ; NESTED CAPTURING CLOSURES — a closure captures another closure that ITSELF captures. `g = (fn (x) (f
 ; (+ x 1)))` captures `f`, and `f = (fn (y) (+ y k))` captures `k`. Inside `g`'s lifted body, `f` is a

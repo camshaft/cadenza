@@ -1401,6 +1401,7 @@ fn run_run_rust(args: &RunRustArgs) -> ExitCode {
                 let sums = cdz_rust_render::cdz_sum_descriptors(&module);
                 let newtypes = cdz_rust_render::cdz_newtype_descriptors(&module);
                 let sum_params = cdz_rust_render::cdz_sum_params(&module);
+                let qualified_heads = cdz_rust_render::cdz_sum_qualified_heads(&module);
                 let unit_form = cdz_rust_render::cdz_unit_form(&module, &export);
                 let scale = cdz_rust_render::cdz_scale(&module, &export);
                 let qty_at = cdz_rust_render::cdz_qty_at(&module, &export);
@@ -1412,6 +1413,7 @@ fn run_run_rust(args: &RunRustArgs) -> ExitCode {
                     unit_form.as_deref(),
                     scale,
                     &qty_at,
+                    &qualified_heads,
                 )
             }
             // No `cdz-return` note (an older/void export) — fall back to Display of the result.

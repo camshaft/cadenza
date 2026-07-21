@@ -5766,3 +5766,27 @@ fn rustc_roundtrip_unusual_width_composes_through_compounds_and_collections() {
         assert_eq!(out, "2", "two UInt4 elements build a length-2 list");
     }
 }
+
+#[test]
+fn a_sum_with_a_prelude_colliding_variant_emits_the_qualified_heads_note() {
+    // The rust backend emits `// cdz-sum-qualified-heads[<ident>]` for a sum whose variant heads must render
+    // QUALIFIED at the value boundary — the per-sum `lower::sum_needs_qualified_heads` decision (any variant
+    // name is a prelude NON-variant-ctor). Reused verbatim from the wasm backend, so both agree.
+    // (a) a user sum with a COLLIDING variant (`Int` is a prelude type ctor) → gets the note (qualifies, like
+    // the built-in Ast); this is the case a naive built-in-vs-user rule would wrongly render bare.
+    let collide = compile_rust(
+        "(module m (type Foo (Int Int64) (Bar Bool)) (def (run) (match (Foo.Int 5) ((Int x) x) (_ 0))) (export run))",
+    );
+    assert!(
+        collide.contains("// cdz-sum-qualified-heads[Foo]"),
+        "a sum with a prelude-colliding variant (Int) emits the qualified-heads note:\n{collide}"
+    );
+    // (b) a user sum with NO prelude-colliding variant → NO note (renders bare).
+    let bare = compile_rust(
+        "(module m (type Col (Rd) (Gn) (Bl)) (def (run) (match (Col.Rd) ((Rd) 1) (_ 0))) (export run))",
+    );
+    assert!(
+        !bare.contains("// cdz-sum-qualified-heads[Col]"),
+        "a sum with no prelude-colliding variant emits NO qualified-heads note:\n{bare}"
+    );
+}
