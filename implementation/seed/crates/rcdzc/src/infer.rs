@@ -1046,6 +1046,65 @@ fn nested_literal_width_faults(db: &mut Db, value: StructId, ty_expr: StructId) 
                 .iter()
                 .find_map(|&e| width_fault_against_ty(db, e, &elem_ty))
         }
+        // A record `(record (x 999) …)` : `(Record (: x Int8) …)` — each field value against its DECLARED
+        // field type. Without this a bare `999` in an `Int8` field escaped the fit-check → wasm silently
+        // TRUNCATED it (999 → -25) while rust rejected E0308 (a backend-divergent SILENT MISCOMPILE, the
+        // record face of the Option/Tuple payload cases). The record value's fields are keyed by symbol
+        // (`Resolved::Record`); pair each declared field type with its value node by name.
+        Ty::Record(field_tys) => {
+            // A record literal resolves either as a folded `Resolved::Record` OR (the common case) an
+            // `Apply(RecordNew, [(key value)…])` name-alias — read the field value nodes by symbol from
+            // whichever shape, like `positional_value_nodes` unifies the Tuple/List Apply cases.
+            let fields = match resolved_of(db, value) {
+                Resolved::Record { fields } => (*fields).clone(),
+                Resolved::Apply { head, args }
+                    if crate::eval::meta_apply_of(db, head)
+                        == Some(crate::resolved::Prim::RecordNew) =>
+                {
+                    crate::resolve::read_record_fields(db, &args).ok()?
+                }
+                _ => return None,
+            };
+            field_tys.iter().find_map(|(sym, t)| {
+                fields
+                    .get(sym)
+                    .and_then(|&v| width_fault_against_ty(db, v, t))
+            })
+        }
+        // A map `(map (k v) …)` : `(Map Int8 Int64)` — each KEY literal against the key type + each VALUE
+        // literal against the value type. Both positions escaped the fit-check: `(: (map (1 999)) (Map
+        // Int64 Int8))` silently TRUNCATED the value (999 → -25 on lookup), and `(: (map (999 1)) (Map Int8
+        // Int64))` accepted an out-of-range key. Descend the entry key/value nodes (paired, in order) each
+        // against its declared side. The map value's entries are `(key value)` occurrence pairs.
+        Ty::Map(key_ty, val_ty) => {
+            // A map literal resolves as a folded `Resolved::Map { entries }` OR an `Apply(MapNew, [(k v)…])`
+            // name-alias; read the `(key value)` node pairs from whichever shape.
+            // A map literal resolves as a folded `Resolved::Map { entries }` OR an `Apply(MapNew, [(k v)…])`
+            // name-alias; read the `(key value)` node pairs from whichever shape (each Apply arg is a
+            // two-element `(key value)` list, as `resolve_map` reads them).
+            let entries: Vec<(StructId, StructId)> = match resolved_of(db, value) {
+                Resolved::Map { entries } => entries.to_vec(),
+                Resolved::Apply { head, args }
+                    if crate::eval::meta_apply_of(db, head)
+                        == Some(crate::resolved::Prim::MapNew) =>
+                {
+                    args.iter()
+                        .filter_map(|&entry| match db.ast.get(entry) {
+                            crate::ast::Struct::List(items) if items.len() == 2 => {
+                                Some((items[0], items[1]))
+                            }
+                            _ => None,
+                        })
+                        .collect()
+                }
+                _ => return None,
+            };
+            let (key_ty, val_ty) = ((**key_ty).clone(), (**val_ty).clone());
+            entries.iter().find_map(|&(k, v)| {
+                width_fault_against_ty(db, k, &key_ty)
+                    .or_else(|| width_fault_against_ty(db, v, &val_ty))
+            })
+        }
         // A quantity `(Qty.of 300 kilometer)` : `(Qty UInt8 meter)` — drill the MAGNITUDE against the
         // annotation's INNER numeric type. A quantity annotation checks the dimension (not the scale, so
         // km may be annotated at meter), but it STILL grounds + range-checks the inner numeric type exactly

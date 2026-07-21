@@ -9443,6 +9443,35 @@
   (call   main (: 3 Int64)) (output (: -1 Int64))
   (call   main (: 99 Int64)) (output (: -1 Int64)))
 
+; The reads above yield scalar elements. When the ELEMENT is itself an Option OF A HEAP payload, `List.at`
+; returns a NESTED optional (`Option (Option BigInt)`) that must be double-matched, and the inner heap
+; payload (a BigInt) must survive round-trip through the list spine + the Option wrapper. This pins that
+; nested-heap-payload shape: a `(List (Option BigInt))` holding `Some(10^12)`, `None`, and `Some(x+7)`,
+; each read back correctly. A lowering that dropped the inner heap handle through the Option wrapper, or
+; confused the two None depths, would flip a component.
+(case "a runtime List of Option-BigInt round-trips each Some/None payload through List.at"
+  (doc    "A `(List (Option BigInt))` whose elements are `Some` of a runtime BigInt or `None`: element 0 is
+           `Some (10^6 · 10^6)` = Some(10^12), element 1 is `None`, element 2 is `Some (x+7)` (runtime).
+           `List.at` yields `Option (Option BigInt)` — double-matched: `(Some (Some b))` reads the inner
+           BigInt (element 0 → b/10^6 = 1000000; element 2 → 7), `(Some (None))` confirms the middle absent
+           element (→ 1), and `List.len` = 3. Result `(1000000, 1, 7, 3)`. Pins that an Option-of-heap
+           payload nested in a list element round-trips through both the list spine and the Option wrapper —
+           the inner BigInt handle is not dropped and the two None depths (list-absent vs element-None) stay
+           distinct.")
+  (input  (do
+            (def (main (: x Int64))
+              (let ((xs (list (Some (* (BigInt.of 1000000) (BigInt.of 1000000)))
+                              (None)
+                              (Some (BigInt.of (+ x 7))))))
+                (tuple
+                  (match (List.at xs 0) ((Some (Some b)) (Int64.of (/ b (BigInt.of 1000000)))) (_ -1))
+                  (match (List.at xs 1) ((Some (None)) 1) (_ 0))
+                  (match (List.at xs 2) ((Some (Some b)) (Int64.of b)) (_ -1))
+                  (List.len xs))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: (tuple 1000000 1 7 3) (Tuple Int64 Int64 Int64 Int64))))
+
 (case "a runtime-index list read at a NEGATIVE index is None, not an unsigned wrap"
   (doc    "`(List.at (list 10 20 30) i)` at a NEGATIVE runtime index is `None` — the distinct SIGNEDNESS
            boundary the positive out-of-range case above does not cover. The bounds check is a SIGNED
