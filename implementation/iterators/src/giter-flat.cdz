@@ -65,11 +65,11 @@ def digit-from(it, acc) = match it with
   | GIter.Nil(_) => acc
   | GIter.Cons(h, rest) => digit-from(rest, acc * 10 + h)
 
-@test
 /// TESTS ----------------------------------------------------------------------------------------------
 /// Kept small — well under the ~22-call-site ceiling this nested shape needs (see header). The Int64 tests
 /// verify the flattened SEQUENCE via `digits` (order + values), not just `count` (cardinality); the String
 /// test stays a `count` check (the second element type, proving flatten composes generically).
+@test
 def flatten-ints-two-inners() =
   if count(flatten(from-list([from-list([1, 2]), from-list([3, 4, 5])]))) == 5 then
     unit

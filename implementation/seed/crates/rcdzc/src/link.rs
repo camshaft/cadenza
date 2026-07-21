@@ -1011,6 +1011,19 @@ mod tests {
             "rewrites the typo to the near export"
         );
         assert!(!fix.verified, "a nearest-name guess is heuristic");
+        // ROUND-TRIP: applying the fix (`helpr` → `helper` at both the import clause AND the use site)
+        // yields a package that links clean — the suggestion is a real repair, not just a plausible name.
+        // Witnessed by compiling the corrected source (mirrors the applied edit; the import-path and
+        // unknown-unit did-you-means carry the same round-trip pin).
+        let repaired = compile_package(
+            "(do (def (helper) 40) (export helper))",
+            "(do (import \"lib\" (helper)) (def (main) (helper)) (export main))",
+        );
+        assert!(
+            !repaired.has_error(),
+            "applying the import-name fix (`helpr` → `helper`) links clean; got {:?}",
+            repaired.diagnostics
+        );
     }
 
     /// An import naming an unknown package file declines.

@@ -213,8 +213,8 @@ def last-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: 
 def last(it) = match it with
   | Iter.Mk(s, step) => last-drive(step, s, 0, false)
 
-@test
 /// TESTS ----------------------------------------------------------------------------------------------
+@test
 def from-list-then-fold-sums() =
   if fold(from-list([1, 2, 3, 4]), 0, fn(a, x) => a + x) == 10 then
     unit
@@ -241,8 +241,8 @@ def filter-keeps-matching() =
   else
     trap("filter >2 then sum = 3+4+5 = 12")
 
-@test
 /// THE fusion showcase: a map().filter().fold() pipeline — the operator's "as if hand-written one loop".
+@test
 def map-filter-fold-fuses() =
   if fold(filter(map(from-list([1, 2, 3, 4, 5]), fn(x) => x * 2), fn(x) => x > 4), 0, fn(a, x) =>
         a + x) == 24 then
@@ -257,8 +257,8 @@ def count-after-filter() =
   else
     trap("count of >3 in 1..6 = 3")
 
-@test
 /// take-while — same-state combinator, composes with the base Iter + its consumers.
+@test
 def take-while-stops-at-first-failure() =
   if sum(take-while(from-list([1, 2, 3, 10, 1]), fn(x) => x < 5)) == 6 then
     unit
@@ -279,16 +279,16 @@ def take-while-first-fails-is-empty() =
   else
     trap("take-while first-fail = 0")
 
-@test
 /// take-while composes INTO a further stage (map over the taken prefix) — same-state fusion.
+@test
 def take-while-then-map-composes() =
   if sum(map(take-while(from-list([1, 2, 3, 9]), fn(x) => x < 5), fn(x) => x * 10)) == 60 then
     unit
   else
     trap("take-while<5 |> map*10 |> sum = 10+20+30 = 60")
 
-@test
 /// scalar short-circuiting consumers.
+@test
 def any-finds-a-match() =
   if any(from-list([1, 2, 3]), fn(x) => x > 2) then unit else trap("any >2 in 1..3")
 
@@ -316,15 +316,15 @@ def find-miss-is-none() = match find(from-list([1, 2]), fn(x) => x > 9) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("find miss must be None")
 
-@test
 /// find over a filtered+mapped pipeline — composed short-circuit consumer.
+@test
 def find-after-map-filter() = match find(filter(map(from-list([1, 2, 3, 4]), fn(x) => x * 3), fn(x) =>
     x > 5), fn(x) => x > 0) with
   | Option.None(_) => trap("find should hit 6")
   | Option.Some(v) => if v == 6 then unit else trap("first >5 of *3 is 6")
 
-@test
 /// position — the index dual of find.
+@test
 def position-finds-index() = match position(from-list([5, 6, 7, 8]), fn(x) => x > 6) with
   | Option.None(_) => trap("position should hit index 2")
   | Option.Some(i) => if i == 2 then unit else trap("first >6 is at index 2")
@@ -339,15 +339,15 @@ def position-miss-is-none() = match position(from-list([1, 2, 3]), fn(x) => x > 
   | Option.None(_) => unit
   | Option.Some(_) => trap("position miss must be None")
 
-@test
 /// position over a mapped source — composed short-circuit index consumer.
+@test
 def position-after-map() = match position(map(from-list([1, 2, 3, 4]), fn(x) => x * 10), fn(x) =>
     x > 25) with
   | Option.None(_) => trap("position should hit index 2 (30 > 25)")
   | Option.Some(i) => if i == 2 then unit else trap("first *10 >25 is at index 2")
 
-@test
 /// LAW: find and position agree — when position finds index i, nth(it, i) is the element find returns.
+@test
 def law-position-agrees-with-find-via-nth() = match position(from-list([3, 5, 8, 9]), fn(x) => x > 4) with
   | Option.None(_) => trap("position should hit")
   | Option.Some(i) => match nth(from-list([3, 5, 8, 9]), i) with
@@ -356,8 +356,8 @@ def law-position-agrees-with-find-via-nth() = match position(from-list([3, 5, 8,
       | Option.None(_) => trap("find should hit")
       | Option.Some(fv) => if v == fv then unit else trap("nth(position) == find")
 
-@test
 /// scalar consumers: product / nth / contains / last (all same-state).
+@test
 def product-multiplies() =
   if product(from-list([1, 2, 3, 4])) == 24 then unit else trap("product 1*2*3*4=24")
 
@@ -379,8 +379,8 @@ def nth-after-filter() = match nth(filter(from-list([1, 2, 3, 4, 5, 6]), fn(x) =
   | Option.None(_) => trap("nth 0 of filtered must be Some")
   | Option.Some(v) => if v == 3 then unit else trap("first >2 is 3")
 
-@test
 /// nth of a NEGATIVE index is None — matches List.at's fallible-index contract (not the first element).
+@test
 def nth-negative-index-is-none() = match nth(from-list([10, 20, 30]), 0 - 1) with
   | Option.None(_) => unit
   | Option.Some(_) => trap("nth(-1) must be None (List.at parity), not the first element")
@@ -393,13 +393,13 @@ def contains-finds-element() =
 def contains-missing-is-false() =
   if contains(from-list([1, 2, 3]), 9) then trap("should not contain 9") else unit
 
-@test
 /// EMPTY-SOURCE EDGE for the predicate/search consumers — the degenerate boundary where vacuous-truth
 /// bugs hide. Each drives its recursive `*-drive` worker with a step that returns `None` on the FIRST
 /// call, so the base arm's seed value IS the observable result: `any` → false (no witness), `all` →
 /// true (vacuously — no counterexample), `count` → 0, `find`/`position` → None, `contains` → false.
 /// Pinned so a future change to a consumer's base arm (or the coming fusion rewrite) can't silently
 /// flip a vacuous case (e.g. `all []` → false, the classic off-by-one on the empty fold).
+@test
 def any-of-empty-is-false() =
   if any(from-list([]), fn(x) => x > 0) then trap("any [] must be false (no witness)") else unit
 
@@ -439,12 +439,12 @@ def last-after-map() = match last(map(from-list([1, 2, 3]), fn(x) => x * 10)) wi
   | Option.None(_) => trap("last of mapped must be Some")
   | Option.Some(v) => if v == 30 then unit else trap("last of *10 is 30")
 
-@test
 /// ALGEBRAIC LAWS — cross-combinator invariants pinned so a future change (ESPECIALLY the coming
 /// fusion/devirtualization optimization, which literally rewrites map∘map and folds step layers) cannot
 /// silently alter observable results. Each law equates two expressions that must compute the same value.
 /// map fusion: map(map(it, f), g) == map(it, g∘f). The optimizer WILL fuse these; this pins that the
 /// fusion is value-preserving.
+@test
 def law-map-fusion() =
   if sum(map(map(from-list([1, 2, 3]), fn(x) => x + 1), fn(x) => x * 2))
       == sum(map(from-list([1, 2, 3]), fn(x) => (x + 1) * 2)) then
@@ -452,32 +452,32 @@ def law-map-fusion() =
   else
     trap("map(map(f),g) == map(g.f)")
 
-@test
 /// filter never grows the count: count(filter(it, p)) <= count(it).
+@test
 def law-filter-does-not-grow() =
   if count(filter(from-list([1, 2, 3, 4, 5]), fn(x) => x > 2)) <= count(from-list([1, 2, 3, 4, 5])) then
     unit
   else
     trap("filter count <= source count")
 
-@test
 /// sum is fold(+, 0) — the definitional identity (pins sum's meaning across a fold rewrite).
+@test
 def law-sum-is-fold-plus() =
   if sum(from-list([3, 4, 5])) == fold(from-list([3, 4, 5]), 0, fn(a, x) => a + x) then
     unit
   else
     trap("sum == fold(+,0)")
 
-@test
 /// count is the sum of ones: count(it) == sum(map(it, _ -> 1)).
+@test
 def law-count-is-sum-of-ones() =
   if count(from-list([9, 8, 7, 6])) == sum(map(from-list([9, 8, 7, 6]), fn(_x) => 1)) then
     unit
   else
     trap("count == sum(map(->1))")
 
-@test
 /// take-while then count never exceeds the source count (take-while is a prefix).
+@test
 def law-take-while-is-a-prefix() =
   if count(take-while(from-list([1, 2, 3, 4, 5]), fn(x) => x < 4))
       <= count(from-list([1, 2, 3, 4, 5])) then
@@ -485,12 +485,12 @@ def law-take-while-is-a-prefix() =
   else
     trap("take-while count <= source count")
 
-@test
 /// SHORT-CIRCUIT CONSUMER LAWS — the search/predicate consumers (any/find/contains) all drive the step
 /// with EARLY EXIT, so their driving loops differ; these pin their algebraic ties so a fusion/short-circuit
 /// rewrite that reorders or merges the exit can't silently desync them.
 /// any is find-non-None: any(it, p) yields a match iff find(it, p) does. Same predicate, same source; only
 /// the RESULT differs (Bool vs the element). Pins that any doesn't over/under-shoot find's short-circuit.
+@test
 def law-any-is-find-some() =
   if (match find(from-list([1, 2, 3, 4, 5]), fn(x) => x > 3) with
         | Option.None(_) => false
@@ -500,21 +500,21 @@ def law-any-is-find-some() =
   else
     trap("any(p) == is-Some(find(p))")
 
-@test
 /// contains is any-equal: contains(it, x) == any(it, ==x). Pins that the specialized equality search agrees
 /// with the general predicate search (both short-circuit at the first hit).
+@test
 def law-contains-is-any-eq() =
   if contains(from-list([10, 20, 30]), 20) == any(from-list([10, 20, 30]), fn(x) => x == 20) then
     unit
   else
     trap("contains(x) == any(==x)")
 
-@test
 /// EDGE-CASE PINS (self-adversarial probing, all verified to hold) — cover corners the single-combinator
 /// tests + the w3 fusion witness don't: a DEEPER (4-stage) fused chain, filter removing ALL elements into a
 /// fold, and negatives threaded through a map chain.
 /// A 4-stage fused chain (map|>map|>map|>filter|>sum) — deeper than the w3 fusion witness (3 stages); pins
 /// that stacked const-driver specialization stays correct at greater depth. (1..4)+1 → *2 → -1 → keep >4.
+@test
 def deep-map-map-map-filter-sum() =
   if sum(
         filter(map(map(map(from-list([1, 2, 3, 4]), fn(x) => x + 1), fn(x) => x * 2), fn(x) => x - 1), fn(x) =>
@@ -524,26 +524,26 @@ def deep-map-map-map-filter-sum() =
   else
     trap("deep chain: [1,2,3,4] +1|>*2|>-1 = [3,5,7,9], keep>4 = 5+7+9 = 21")
 
-@test
 /// filter that removes EVERY element, then fold — the empty-result-through-a-consumer corner (distinct from
 /// an empty SOURCE: here the source is non-empty but the filter empties it).
+@test
 def filter-removes-all-then-sum-is-zero() =
   if sum(filter(from-list([1, 2, 3]), fn(x) => x > 100)) == 0 then
     unit
   else
     trap("filter-all-out then sum = 0")
 
-@test
 /// negatives threaded through a map chain (sign handling in the fused loop).
+@test
 def negatives-through-map-sum() =
   if sum(map(from-list([0 - 5, 3, 0 - 2]), fn(x) => x * 2)) == 0 - 8 then
     unit
   else
     trap("map*2 over [-5,3,-2] |> sum = -10+6-4 = -8")
 
-@test
 /// filter-map (I4 extensibility demo) — transform+select in one pass, unblocked by the const-param-drop +
 /// tail-loop fixes. Keep the doubled value only for even inputs: [1,2,3,4] → evens {2,4} → {4,8} → sum 12.
+@test
 def filter-map-selects-and-transforms() =
   if sum(
         filter-map(from-list([1, 2, 3, 4]), fn(x) =>
@@ -553,16 +553,16 @@ def filter-map-selects-and-transforms() =
   else
     trap("filter-map even|>*2 |> sum = 4+8 = 12")
 
-@test
 /// filter-map dropping EVERYTHING (f always None) folds to the seed — the empty-result corner.
+@test
 def filter-map-all-none-is-zero() =
   if sum(filter-map(from-list([1, 2, 3]), fn(_x) => Option.None(unit))) == 0 then
     unit
   else
     trap("filter-map all-None then sum = 0")
 
-@test
 /// filter-map keeping EVERYTHING (f always Some) equals a plain map — the total-function corner.
+@test
 def filter-map-all-some-equals-map() =
   if sum(filter-map(from-list([1, 2, 3]), fn(x) => Option.Some(x + 10)))
       == sum(map(from-list([1, 2, 3]), fn(x) => x + 10)) then
@@ -570,8 +570,8 @@ def filter-map-all-some-equals-map() =
   else
     trap("filter-map(Some.f) == map(f)")
 
-@test
 /// LAW: filter-map decomposes into map then filter — pins that the fused transform+select is value-preserving.
+@test
 def law-filter-map-is-map-then-filter() =
   if sum(
         filter-map(from-list([1, 2, 3, 4, 5]), fn(x) =>
@@ -581,8 +581,8 @@ def law-filter-map-is-map-then-filter() =
   else
     trap("filter-map == filter . map")
 
-@test
 /// filter-map composes INTO a further consumer over a chain — count the kept elements after a map.
+@test
 def filter-map-then-count() =
   if count(
         filter-map(map(from-list([1, 2, 3, 4, 5, 6]), fn(x) => x + 1), fn(x) =>
@@ -592,7 +592,6 @@ def filter-map-then-count() =
   else
     trap("map+1 |> filter-map(>4) |> count = {5,6,7} = 3")
 
-@test
 /// A 4-stage chain that composes BOTH recursive-worker combinators (filter-map + take-while) with two
 /// non-recursive ones (map + filter) in one fused pipeline — the corner the single-combinator + map-heavy
 /// deep-chain tests don't hit (they stack map/filter but never filter-map ALONGSIDE take-while). Pins that
@@ -600,6 +599,7 @@ def filter-map-then-count() =
 /// correctly when stacked: map*3 |> filter>4 |> filter-map(even->/2, drop odd) |> take-while<20 |> sum.
 /// [1..8] -> *3=[3,6,9,12,15,18,21,24] -> >4=[6,9,12,15,18,21,24] -> even/2=[3,6,9,12] (drops odd 9,15,21)
 /// -> take-while<20=[3,6,9,12] -> sum=30.
+@test
 def deep-filter-map-take-while-chain-fuses() =
   if sum(
         take-while(filter-map(filter(map(from-list([1, 2, 3, 4, 5, 6, 7, 8]), fn(x) => x * 3), fn(x) =>

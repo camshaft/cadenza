@@ -366,9 +366,28 @@ fn plan_for_item(ast: &Arenas, item: StructId, items: &[StructId]) -> Option<Tes
                 {
                     constrain_sum_variants(ast, variants, &requires_preds, pname);
                 }
-                // A SCALAR param (`Int`/`Bool`/`Float`) has a boundary representation → boundary-arg route,
-                // no wrapper. Only a COMPOUND param (no boundary form) forces the synthesized wrapper.
-                if !matches!(gt, GenTy::Int | GenTy::Bool | GenTy::Float(_)) {
+                // Narrow a SCALAR `Int` param to a recognized param-level `@requires` RANGE. When another param
+                // is compound, EVERY param (this scalar included) is drawn through the synthesized wrapper — but
+                // the wrapper drew the scalar UNCONSTRAINED, so a precondition like `@requires(k >= 0)` on
+                // `f(xs: List Int64, k: Int64)` let it draw `k < 0` and the enforced (D) precondition spuriously
+                // tripped. Apply the same `int_range_over` the sum-payload guard uses, keyed on the PARAM NAME,
+                // so the wrapper scalar generates in-domain (the boundary-arg route already handles an all-scalar
+                // sig; an IntRange stays boundary-representable below, so this never turns an all-scalar sig into
+                // a wrapper). Mirrored on the decode side (`gen_ty_of_wrapper_param`).
+                if let (GenTy::Int, Some(pname)) = (&gt, ast.as_name(param_name_occ))
+                    && let Some((lo, hi)) = requires_preds
+                        .iter()
+                        .find_map(|&q| int_range_over(ast, q, pname))
+                {
+                    gt = GenTy::IntRange { lo, hi };
+                }
+                // A SCALAR param (`Int`/`IntRange`/`Bool`/`Float`) has a boundary representation → boundary-arg
+                // route, no wrapper. Only a COMPOUND param (no boundary form) forces the synthesized wrapper. A
+                // narrowed `IntRange` scalar stays scalar here (else an all-scalar sig would wrongly synthesize).
+                if !matches!(
+                    gt,
+                    GenTy::Int | GenTy::IntRange { .. } | GenTy::Bool | GenTy::Float(_)
+                ) {
                     any_compound = true;
                 }
                 gen_tys.push(gt);
@@ -519,6 +538,23 @@ pub fn gen_ty_of_wrapper_param(db: &crate::db::Db, wrapper_name: &str) -> Option
             .and_then(|&n| db.ast.as_name(n)),
     ) {
         constrain_sum_variants(&db.ast, variants, db.requires_of(def), pname);
+    }
+    // RE-APPLY the param-level `@requires` scalar RANGE on the DECODE side, matching the generation-side
+    // narrowing (`plan_for_item`): a scalar `Int` wrapper param under a recognized `@requires(k >= 0)` becomes
+    // an `IntRange`, so the decoder maps the shrunk pool int into the SAME window the generator drew — a bare
+    // `Int` decode would render the raw out-of-window pool int for a failing counterexample.
+    if let (GenTy::Int, Some(pname)) = (
+        &gt,
+        db.ast
+            .as_form(param, ":")
+            .and_then(|t| t.first())
+            .and_then(|&n| db.ast.as_name(n)),
+    ) && let Some((lo, hi)) = db
+        .requires_of(def)
+        .iter()
+        .find_map(|&q| int_range_over(&db.ast, q, pname))
+    {
+        gt = GenTy::IntRange { lo, hi };
     }
     Some(gt)
 }
@@ -1991,6 +2027,54 @@ mod tests {
             },
             other => panic!("expected a Sum GenTy, got {other:?}"),
         }
+    }
+
+    /// A SCALAR `Int` param that rides inside a synthesized wrapper (because a SIBLING param is compound) is
+    /// narrowed to an `IntRange` by a param-level `@requires` bound — was drawn UNCONSTRAINED, so `@requires(k
+    /// >= 0)` on `f(xs: List Int64, k: Int64)` let the wrapper draw `k < 0` and the enforced (D) precondition
+    /// spuriously tripped. Pins that `plan_for_item` narrows the scalar leaf (not only the List/Sum payloads).
+    /// The compound sibling (`xs`) forces the wrapper; the scalar (`k`) must come out `IntRange`, not `Int`.
+    #[test]
+    fn a_scalar_wrapper_param_is_narrowed_by_a_param_level_requires_range() {
+        let ast = crate::testkit::parse(
+            "(do (@ test (@ (requires (and (>= k 0) (<= k 9))) \
+               (def (f (: xs (List Int64)) (: k Int64)) (List.len xs)))) (def (o) 1))",
+        );
+        let items: Vec<_> = ast.as_form(ast.root, "do").unwrap().to_vec();
+        let ann = *items
+            .iter()
+            .find(|&&it| ast.as_form(it, "@").is_some())
+            .expect("the @test item");
+        let plan =
+            super::plan_for_item(&ast, ann, &items).expect("a wrapper plan (xs is compound)");
+        // gen_tys is [List(Int, 0), IntRange{0,9}] — the scalar `k` narrowed, the List sibling untouched.
+        match plan.gen_tys.as_slice() {
+            [
+                super::GenTy::List(..),
+                super::GenTy::IntRange { lo: 0, hi: 9 },
+            ] => {}
+            other => panic!("expected [List, IntRange{{0,9}}] for (xs, k), got {other:?}"),
+        }
+    }
+
+    /// The dual guard: an ALL-SCALAR signature with a `@requires` range must NOT synthesize a wrapper — the
+    /// boundary-arg route generates each scalar. A narrowed `IntRange` scalar stays boundary-representable, so
+    /// `plan_for_item` returns `None` (no compound param), leaving the def to the runner's `--arg` generation.
+    #[test]
+    fn an_all_scalar_requires_range_signature_gets_no_wrapper() {
+        let ast = crate::testkit::parse(
+            "(do (@ test (@ (requires (and (>= k 10) (<= k 20))) \
+               (def (f (: k Int64)) k))) (def (o) 1))",
+        );
+        let items: Vec<_> = ast.as_form(ast.root, "do").unwrap().to_vec();
+        let ann = *items
+            .iter()
+            .find(|&&it| ast.as_form(it, "@").is_some())
+            .expect("the @test item");
+        assert!(
+            super::plan_for_item(&ast, ann, &items).is_none(),
+            "an all-scalar @requires-range signature stays on the boundary route (no wrapper synthesized)"
+        );
     }
 
     /// A recognized MIN-LENGTH `@invariant` over a newtype-List constrains its payload list to be non-empty:

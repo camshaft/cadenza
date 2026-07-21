@@ -2928,3 +2928,26 @@
   (output (: 8 Int64))
   (call   main-thrice (: -1 Int64))
   (trap   "unreachable"))
+
+(case "@ensures on a RECURSIVE def whose body is a HANDLE is re-checked at every recursive exit (recursion x effects-fold seam)"
+  (doc    "Composes the recursive re-check invariant (already pinned for a plain recursive def) with the
+           handle-bodied effectful body (already pinned non-recursively). `f` is self-recursive AND its body is
+           a `handle` that folds a `St` state effect seeded by the param, resuming state twice per level, with
+           the recursive `(f (- n 1))` call inside the handled body under @ensures(< ret 2). Each recursive
+           EXIT re-runs the postcondition against that level's returned value: f(1) folds/recurses to a result
+           < 2 (returns 1); f(5) recurses deeper so an exit's result reaches >= 2 and the postcondition traps.
+           This pins that enforcement's `(let ((ret BODY)) (if Q ret trap))` wrapper composes correctly when
+           BODY is BOTH a handle fold AND a self-call — the effects seed-thread fix and the per-exit re-check
+           must both hold at once. Runtime arg via the export param (no const-fold).")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (@ (ensures (< ret 2))
+               (def (f (: n Int64))
+                 (handle St n ((get (u) s (resume s s)))
+                   (if (<= (St.get) 0) 0 (+ 1 (f (- n 1)))))))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64))
+  (call   main (: 5 Int64))
+  (trap   "unreachable"))
