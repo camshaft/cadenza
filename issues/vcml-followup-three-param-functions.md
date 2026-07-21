@@ -42,3 +42,17 @@ makes this a slightly bigger but FINAL param-arity slice. Pick up on clean trunk
 query columns, so a clean base with no pending MR touching them). This is the highest-value corpus-conformance
 feature currently open (ahead of recursion, which is rarer in the integer corpus and needs a non-inlining call
 form).
+
+## UPDATE 2026-07-20: 3-PARAM (untyped) DONE — landed. REMAINING: typed-3rd + 4+-param.
+The core 3-param slice LANDED this session (6b5f27d38, slice-3e): untyped 3-param defs `(def (f a b c) …)` +
+`(f x y z)` parse/resolve/infer/lower/run, arity-checked (over-app→CDZ0203, under-app→CDZ0201). Wiring:
+sread read-third-param (7-tuple) + record-param3/arg3; resolve binds param3; infer-param3; lower nests a 3rd
+CLet; eval/emit unchanged (inline path). param3/arg3 tables landed in the prior foundation slice (21c92bbcc).
+STILL OPEN (this file's remaining scope):
+  1. TYPED 3rd param `(: c T)` — read-third-param declines a `(` (typed) 3rd param; add a read-typed-third-param
+     analogue (mirror read-typed-second-param) + infer-param3 already fit-checks, so mostly reader work.
+  2. 4+-PARAM — read-third-param requires `)` after param3 (4th declines). Needs param4/arg4 OR the List-based
+     N-ary rep (RECOMMENDED — ends the 2→3→4 table sprawl; the idiomatic end state).
+Both are lower-priority than the forward-ref/recursion PRE-SCAN (see recursive-user-functions follow-up), which
+is the higher-value architectural feature. Corpus 4-arg helpers (sl b s n, go b i a, skip-elems b i k) need the
+4+-param work eventually.

@@ -37,3 +37,25 @@ Medium slice (reader + the param-type recording), MY lane (sread + parse-db para
 A 2-param-if coverage MR (9e43bbae6) was pending → couldn't sync to a clean base, and neither gap is a quick
 fix (A is item-3 HM, B is a reader extension worth its own gated slice). Pick up on clean trunk. Gap B is the
 better near-term slice (self-contained reader work); Gap A folds into the item-3 HM effort.
+
+## UPDATE 2026-07-20 (Gap A confirmed = item-3 HM, NOT a small arith-lit-adapt extension)
+Confirmed by reading arith-result-type/arith-lit-adapt: a MIXED typed/untyped PARAM body-arith declines —
+`(def (f a (: b Int8)) (+ a b))` `(f 5 20)` → declined, ref=25 (and the (: a Int8) b mirror). MECHANISM:
+arith-result-type unifies operand int-types; on a mismatch it calls arith-lit-adapt, which ONLY adapts a bare
+NLit operand to a narrow sibling. An untyped PARAM is an NVar typed Int64 (via param-bind-type from its
+Int64-literal arg), NOT an NLit → arith-lit-adapt doesn't touch it → the Int8+Int64 mix declines. The reference
+grounds the untyped param to Int8 through the whole unification-connected component. That requires a DEFERRED
+int-type in `Typed` + real unification (deferred grounds to a concrete narrow sibling) — this IS the item-3 HM
+slice (see compiler-ml-foundation-hardening-sequence's "STEP 1..5" recipe: add TIntW width-0=deferred, replace
+both-int64 with unify-int, root-default ungrounded to Int64). NOT a quick arith-lit-adapt tweak. So Gap A =
+item-3 HM; do it as that dedicated slice. Same root as the computed-operand case (`(+ (: 100 Int8) (+ 10 10))`).
+
+## UPDATE 2026-07-21: Gap B (mixed typed/untyped param PARSING + typed-param-narrow-bind) is DONE — landed.
+Gap B's PARSING half + the typed-param2/param3 narrow-bind are LANDED this session (dfa93bf55 2-param typed,
+b22cff6bc typed-3rd): the reader now parses ANY typed/untyped param mix (1/2/3 params), and infer binds each
+typed param to its declared narrow type + fit-checks its arg (CDZ0302). So `(def (f (: a Int8) (: b Int8)) …)`,
+`(f (: a Int8) b)`, `(f a (: b Int8))`, and all-typed 3-param RUN. What REMAINS from Gap B is ONLY the
+mixed-width BODY-ARITH case `(def (f a (: b Int8)) (+ a b))` — that's the untyped-param-adapts-to-narrow-sibling
+unification = Gap A = item-3 HM (see the Gap A update above). So Gap B is effectively CLOSED except for the
+item-3-HM overlap. Net remaining in this file = item-3 HM (deferred-int-type + real unify), which subsumes
+both Gap A and the Gap-B body-arith remainder. Everything else here is landed.
