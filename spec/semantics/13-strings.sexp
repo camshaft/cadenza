@@ -563,7 +563,7 @@
            sequence (collections-and-text.md #String Equality Follows Normalized Contents applied to the
            addressing axis), the indexing companion of the `=` (:510) and scalar-len (:518) normalization
            cases. A raw-scalar byte walk would return \"e\".")
-  (input  (String.at "café" 3))
+  (input  (String.at "café" 3))
   (output (: (Some "é") (Option String))))
 
 (case "a decomposed literal indexes and measures by its normalized length, not the raw scalar count"
@@ -573,8 +573,8 @@
            40. Pins that BOTH the length measure and the addressing bound use the normalized sequence; a
            lowering counting the raw 5 scalars would give 51 (len 5, and .at 4 = Some of the combining acute).")
   (input  (do (def (main)
-                (+ (* 10 (String.scalar-len "café"))
-                   (match (String.at "café" 4) ((Some _c) 1) ((None _u) 0))))
+                (+ (* 10 (String.scalar-len "café"))
+                   (match (String.at "café" 4) ((Some _c) 1) ((None _u) 0))))
               (export main)))
   (call   main)
   (output (: 40 Int64)))

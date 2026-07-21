@@ -4336,3 +4336,11 @@ pass	a bare literal grounded to a narrow width through a BITWISE spine is range-
 pass	a prefixed quantity displays scaled to its reference over Float32
 todo	a prefixed quantity displays scaled to its reference over BigInt (exact, no truncation)
 pass	a USER-DEFINED multi-variant sum payload quantity renders scaled to its reference
+pass	a large-magnitude float renders its full expansion as a TUPLE element (compound matches scalar)
+pass	a large-magnitude float renders its full expansion as a LIST element
+pass	a large-magnitude float renders its full expansion as an OPTION (sum) payload
+pass	a float at f64::MAX renders its full 309-digit expansion (large-significand codec)
+pass	a complementary comparison pair nested past a third operand still folds via reassociation
+pass	a combined left shift that overflows Int64 traps like the single shift it folds to
+pass	a scalar-result match over an owned compound-payload sum reclaims the shell AFTER its borrowed reads
+pass	nested same-direction shifts by constants combine into one shift by the sum, keeping the left-shift overflow trap
