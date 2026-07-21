@@ -401,6 +401,33 @@
             (_                0)))
   (output (: 3 Int64)))
 
+; The case above matches ONE variant + catch-all; these pin VARIANT-TAG DISCRIMINATION — a match over an
+; `Ast` value must dispatch on the scrutinee's actual variant, SKIPPING a preceding non-matching arm to
+; reach the right one, not fall through to the catch-all or (worse) mis-fire the wrong arm. Two confusable
+; leaf pairs: a quoted FLOAT skips a preceding `Ast.Int` arm (numeric-adjacent), and a quoted STRING skips
+; a preceding `Ast.Name` arm (both text-carrying). A match that discriminated leaves by payload rather than
+; variant tag, or that collapsed Float↔Int / Str↔Name, would mis-dispatch here.
+
+(case "a match over a quoted float dispatches the Ast.Float arm past a preceding Ast.Int arm"
+  (doc    "`(quote 2.5)` is an `Ast.Float`, so a match with an `Ast.Int` arm FIRST skips it and selects the
+           `Ast.Float` arm (= 2), not the catch-all. Pins variant-tag dispatch over the numeric-adjacent
+           Float/Int pair — the discrimination the single-arm case above doesn't exercise.")
+  (input  (match (quote 2.5)
+            ((Ast.Int _)   1)
+            ((Ast.Float _) 2)
+            (_             0)))
+  (output (: 2 Int64)))
+
+(case "a match over a quoted string dispatches the Ast.Str arm past a preceding Ast.Name arm"
+  (doc    "`(quote \"hi\")` is an `Ast.Str`, so a match with an `Ast.Name` arm FIRST skips it and selects
+           the `Ast.Str` arm (= 2). Pins variant-tag dispatch over the text-carrying Str/Name pair (both
+           hold a String payload, so a payload-based rather than tag-based match would confuse them).")
+  (input  (match (quote "hi")
+            ((Ast.Name _) 1)
+            ((Ast.Str _)  2)
+            (_            0)))
+  (output (: 2 Int64)))
+
 ; A NESTED match on the recursive `Ast` sum — `Ast.List` inside `Ast.List` — over a CONSTANT `quote` reads
 ; the deep leaf at the RIGHT depth. `Ast` is a recursive sum (`Ast.List` holds `(List Ast)`), and a quoted
 ; literal is a compile-time-constant scrutinee, so this is exactly the "recursive-sum nested match with a

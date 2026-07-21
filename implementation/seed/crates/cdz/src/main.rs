@@ -4987,16 +4987,22 @@ fn decode_value(
             }
             selected
         }
-        // A Set: the generator draws exactly `RUNNER_LIST_LEN` elements (a FIXED count, no length draw) then
-        // `Set.of` DEDUPS them by value. Mirror it: decode all `RUNNER_LIST_LEN` elements in order (advancing
-        // the cursor over every one, so a NESTED Set keeps the cursor correct), then dedup by the rendered
-        // string — a collision yields a smaller set, exactly as the runtime does. Rendered `{a, b}` (first
-        // occurrence order); an all-collision draw renders a singleton. Set element decode uses the SAME
-        // element GenTy the generator built from, so a refined-newtype element renders in-domain (`{P(67)}`).
+        // A Set: the generator draws a count `c = (gen & i64::MAX) % (LEN+1)` then folds `c` `Set.insert`s of
+        // the first `c` of `RUNNER_LIST_LEN` candidate elements over the empty set (a VARIABLE-cardinality set,
+        // so the empty/singleton sets are reachable — see `build_var_set_gen`). Mirror it EXACTLY: draw the
+        // count, decode all `RUNNER_LIST_LEN` candidates (cursor advances over every one, so a NESTED Set stays
+        // in lockstep), keep the length-`c` prefix, then DEDUP by rendered value (a collision yields a smaller
+        // set, as `Set.insert` does). `{}` for c=0. A refined-newtype element renders in-domain via its GenTy.
         GenTy::Set(elem) => {
-            let mut seen = Vec::with_capacity(RUNNER_LIST_LEN);
+            let span = (RUNNER_LIST_LEN + 1) as i64;
+            let c = ((next(cursor)? & i64::MAX) % span) as usize;
+            let mut drawn = Vec::with_capacity(RUNNER_LIST_LEN);
             for _ in 0..RUNNER_LIST_LEN {
-                let e = decode_value(elem, pool, cursor)?;
+                drawn.push(decode_value(elem, pool, cursor)?);
+            }
+            drawn.truncate(c);
+            let mut seen: Vec<String> = Vec::with_capacity(c);
+            for e in drawn {
                 if !seen.contains(&e) {
                     seen.push(e);
                 }

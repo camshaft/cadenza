@@ -3288,6 +3288,30 @@
   (input  (do (def (main) (let (((: x Bool) 5)) x)) (export main)))
   (error  CDZ0203))
 
+(case "an annotated let binder narrower than its literal value is rejected (int width)"
+  (doc    "`(let (((: x Int8) 999)) x)` — the binder's `Int8` annotation grounds the bound literal, and 999
+           overflows Int8 (valid range -128..=127) → CDZ0302 'does not fit', exactly as `(: 999 Int8)` is.
+           The width companion of the Bool/Int contradiction above: a binder annotation is a WIDTH constraint
+           on the value too, not only a type-shape constraint — without the check the binding would smuggle
+           an out-of-range value under a narrow name.")
+  (input  (let (((: x Int8) 999)) x))
+  (error  CDZ0302))
+
+(case "an annotated let binder narrower than its literal value is rejected (float width)"
+  (doc    "The float twin: `(let (((: x Float32) 1.0e300)) x)` — `1.0e300` is finite as Float64 but overflows
+           binary32 (as an f32 it would be ±inf, a malformed value with no written form) → CDZ0302. Pins that
+           the binder-annotation width check covers FLOAT widths as well as integer ones. The fitting twin
+           below computes — the check must not over-reject.")
+  (input  (let (((: x Float32) 1.0e300)) x))
+  (error  CDZ0302))
+
+(case "an annotated let binder at a fitting narrow float computes"
+  (doc    "The no-over-reject control: `(let (((: x Float32) 0.5)) x)` — 0.5 is exactly representable in
+           binary32, so the binder annotation grounds the literal at Float32 and the binding computes → 0.5
+           at Float32. Guards the width check above against rejecting every narrow-float binder.")
+  (input  (let (((: x Float32) 0.5)) x))
+  (output (: 0.5 Float32)))
+
 ; A FUNCTION PARAMETER is a binding position too (core-semantics.md #A Binding Position Accepts An
 ; Irrefutable Pattern): `(def (f (tuple a b)) …)` names the two halves of its single pair argument, keeping
 ; ARITY ONE. The compiler realizes this by a load-time rewrite to a fresh whole-value parameter + a

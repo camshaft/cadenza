@@ -498,6 +498,33 @@ special case per type — the spec's explicit intent (`16-binary-matching.sexp:2
      `expr.rs` arms + `select.rs`) — a focused multi-file slice, hence deferred behind the const path.
      (Characterized by v-patterns during a runtime-vs-const bin-match probe; declines cleanly today so it is
      correct-for-now, a feature gap not a bug.)
+     - **4a EXECUTABLE PLAN (Inc-345, mapped against current trunk).** The change is irreducible — no smaller
+       safe sub-slice — but here is the exact site map so a focused multi-tick session (or a fix-agent)
+       executes without re-discovery. DEAD END ruled out: `Core::BytesSlice` (dynamic `start`/`len`) is NOT a
+       drop-in — it is bounds-checked and returns an `Option` (Some/None), but a bin binder must yield the raw
+       `Bytes` HANDLE directly (the arm predicate already proved the bounds), so reusing it would wrap
+       `body`/`rest` in an Option and change the binder's type. RECOMMENDED APPROACH: **additive new variant**
+       `Core::BinSizedReadDyn { bytes, off_base: u32, off_plus: StructId, len: StructId }` (+ a `BinRestReadDyn`
+       with `len` = `bytes-len - (off_base + off_plus)`), where `off_plus` is a `BinIntRead` of the preceding
+       dependent-size segment — keeps the existing STATIC `BinRestRead`/`BinSizedRead` (~10 sites) untouched,
+       only ADD arms for the new variants. Sites needing a new arm (each mechanical "like the static op but the
+       offset adds a runtime `off_plus`"): (1) `core.rs` ~624 (the variant defs); (2) `layout.rs` 924 + 1194
+       (child-occ collection — 2 children now: `bytes` + `off_plus`, and `len` for the sized one); (3)
+       `compile.rs` 4222 (reached-poison child walk); (4) `backend/wasm/host.rs` 542 + `backend/wasm/mod.rs`
+       1175 (child collection); (5) `backend/wasm/select.rs` — FIVE arms: the borrow/ownership arm ~593, the
+       operand-list arm ~1131, the dup/borrow arm ~1656, the reclaim-scan ~2451, the EMIT arm ~6965/6995
+       (`dup scrutinee; compute off_base + off_plus; bytes-slice`); (6) `backend/rust/expr.rs` 2520 (rust emit).
+       Plus lower.rs: (a) the admission check ~7256 (`Bytes` need not be final IF a following segment can take
+       a dynamic offset — allow a dependent-size `(bytes body n)` at a non-final index, still forbid a non-final
+       UNSIZED `(bytes b)` = CDZ0220); (b) `build_bin_arm_predicate` — the length probe uses the dynamic total
+       (`off_base + Σ dependent n`); (c) `decode_bin_field_runtime` ~23259/23283 — emit the `*Dyn` variant with
+       `off_plus = BinIntRead(earlier size seg)` once a dependent-size segment precedes. 🪤 the BORROW arms are
+       where the sread-UAF class lives — the new variant BORROWS `bytes` (dup-then-slice) exactly like the
+       static ops, and `off_plus`/`len` are scalar `BinIntRead`s (borrow, no heap operand) — so the ownership
+       is identical to `BinSizedRead`; copy its arms verbatim + add the `off_plus` child. VERIFY: my §4a `todo`
+       witness (16-binary "a runtime bin match with a NON-FINAL dependent-size segment") flips todo→pass;
+       run FULL `cargo test -p rcdzc --lib` (the recursion/overflow trap) + gate --check 0-regressions + a
+       debug-counters leak probe on the new slice (a `BinSizedReadDyn` must not leak the scrutinee shell).
    - **4b. GUARDED bin-match arm (deferred sub-slice).** A `(guard (bin <seg>…) <cond>)` arm — a bin pattern
      under a match-arm guard, where the guard cond reads a decoded segment binder (`(guard (bin (u8 n)) (> n
      5))`) — is UNSUPPORTED today, and (unlike 4a) fails at the FRONT of the pipeline: `lower_match`'s bin
