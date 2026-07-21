@@ -121,6 +121,22 @@
   (input  (eval (quote (+ 1 2))))
   (output (: 3 Int64)))
 
+(case "eval of a bare quoted integer executes it to the integer value"
+  (doc    "The Int companion of the bare-literal eval cases (bool/string/float have one; Int did not):
+           `(eval (quote 42))` = 42 — eval of an already-fully-reduced integer leaf is the integer itself,
+           the base case beneath the `(eval (quote (+ 1 2)))` arithmetic case above. Pins that eval's leaf
+           dispatch handles a bare `Ast.Int` node, not only an operator-headed form.")
+  (input  (eval (quote 42)))
+  (output (: 42 Int64)))
+
+(case "eval of a quoted subtraction that goes negative preserves the sign"
+  (doc    "`(eval (quote (- 3 10)))` = -7: the existing arithmetic eval cases produce only POSITIVE results,
+           so none exercise a negative eval result. Pins that eval's arithmetic reduction carries the sign
+           of a below-zero difference (a folder that clamped at zero or dropped the sign would pass the
+           positive cases yet break here).")
+  (input  (eval (quote (- 3 10))))
+  (output (: -7 Int64)))
+
 (case "eval of a quasiquote splicing a compile-time-known value"
   (doc    "The core macro idiom (metaprogramming.md #Eval Is Optional / #Quasiquote Constructs AST With
            Selective Evaluation): eval a quasiquoted form whose unquote splices a compile-time-known VALUE,

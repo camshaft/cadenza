@@ -351,6 +351,33 @@
             (_ "miss")))
   (output (: "hi" String)))
 
+(case "a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string"
+  (doc    "A sized `utf8` segment's size MAY be a CONSTANT LITERAL, not only a name bound by an earlier
+           segment: `(bin (utf8 s 2))` decodes exactly the first 2 bytes as strict UTF-8. Against
+           `(Bytes.of (list 104 105))` = `hi` → `s` = \"hi\". A literal size is the most basic sized-segment
+           form (Erlang bit-syntax precedent: a segment size is an integer expression, of which a literal is
+           the simplest); it MUST match, exactly like the named/dependent form above. Pins that a constant
+           size is accepted — earlier it silently fell through to the catch-all (a miscompile: the size
+           resolver looked up an earlier-segment binder BY NAME and a literal returned nothing → non-match),
+           fixed 2026-07-21 (ruling (a)) so `bin_decode_dependent_size` accepts a constant-literal size.")
+  (input  (match (Bytes.of (list 104 105))
+            ((bin (utf8 s 2)) s)
+            (_ "miss")))
+  (output (: "hi" String)))
+
+(case "a bytes segment sized by a CONSTANT LITERAL binds a fixed number of bytes then composes"
+  (doc    "The `bytes` companion of the constant-literal-size utf8 case: `(bin (bytes b 2) (u8 last))` binds
+           exactly the first 2 bytes to `b`, then a following `u8` segment reads the third byte — a
+           constant-size prefix followed by more segments (NOT a final variable-length segment). Against
+           `(Bytes.of (list 10 20 30))` → `b` = `[10, 20]` (len 2), `last` = 30, so `Bytes.len b + last` =
+           32. Pins that a constant-literal `bytes` size (a) matches and (b) composes with a following
+           segment at the now-static offset — the same ruling-(a) fix as the utf8 case, and the bytes
+           analogue that a fixed-size segment need not be the final one.")
+  (input  (match (Bytes.of (list 10 20 30))
+            ((bin (bytes b 2) (u8 last)) (+ (Bytes.len b) last))
+            (_ -1)))
+  (output (: 32 Int64)))
+
 (case "a literal segment matches a magic-number header by equality"
   (doc    "The pattern `(bin (u32 0x89504E47) (bytes rest))` matches the scrutinee only when its first
            four bytes equal the magic number (137 80 78 71) — a literal segment matches by equality, the

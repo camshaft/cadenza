@@ -799,7 +799,15 @@ fn int_range_over(ast: &Arenas, pred: StructId, binder: &str) -> Option<(i64, i6
             } else if it_is(t[1]) {
                 (lit(t[0])?, true)
             } else {
-                return None; // a comparison not against `it` + a literal — unrecognized
+                // A comparison about ANOTHER binder (`(>= b 100)` while recognizing `a`) — SKIP it, do not
+                // abandon the whole predicate. A multi-param `@requires` conjoins each param's bounds in one
+                // predicate (`(and (and (>= a 0) (<= a 9)) (and (>= b 100) (<= b 109)))`); `int_range_over` is
+                // called once per param, and each call must ignore the OTHER params' conjuncts rather than
+                // `return None` on the first foreign one (which discarded THIS binder's bounds → the param was
+                // drawn unconstrained → spurious (D)-trap). A comparison about `binder` with a NON-literal
+                // operand still bails via the `lit(…)?` above (genuinely unrecognizable for this binder →
+                // conservative unconstrained fallback, per the documented relational-bound limitation).
+                break;
             };
             let op = if mirrored {
                 match op {
@@ -2202,6 +2210,53 @@ mod tests {
             range_of("(do (@ (invariant (> other 0)) (type T (V Int64))) (def (o) 1))"),
             None
         );
+    }
+
+    /// `int_range_over` must SKIP a conjunct that compares a DIFFERENT binder, not abandon the whole predicate.
+    /// A multi-param `@requires` conjoins each param's bounds in ONE predicate; the recognizer runs once per
+    /// param, so recognizing `a`'s range must ignore `b`'s conjuncts. Before the fix, the first foreign conjunct
+    /// hit `return None`, discarding `a`'s bounds → `a` drew unconstrained → spurious (D)-trap. Pins that each
+    /// binder's bounds survive alongside another binder's, AND that a same-binder RELATIONAL (non-literal) bound
+    /// still bails conservatively (the documented relational limitation) — the two must not be conflated.
+    #[test]
+    fn int_range_over_skips_a_cross_binder_conjunct() {
+        // Extract the `@requires` predicate node, then hand it to the binder-parameterized recognizer.
+        let pred_of = |src: &str| -> (crate::ast::Arenas, crate::ast::StructId) {
+            let ast = crate::testkit::parse(src);
+            let items: Vec<_> = ast.as_form(ast.root, "do").unwrap().to_vec();
+            let ann = *items
+                .iter()
+                .find(|&&it| ast.as_form(it, "@").is_some())
+                .expect("an @ annotation");
+            let head = ast.as_form(ann, "@").unwrap()[0];
+            let pred = ast.as_form(head, "requires").expect("(requires Q)")[0];
+            (ast, pred)
+        };
+        // `(and (and (>= a 0) (<= a 9)) (and (>= b 100) (<= b 109)))`: recognizing `a` yields [0,9] (b's
+        // conjuncts skipped, not a bail), and recognizing `b` yields [100,109] (a's conjuncts skipped).
+        let (ast, pred) = pred_of(
+            "(do (@ (requires (and (and (>= a 0) (<= a 9)) (and (>= b 100) (<= b 109)))) \
+               (def (f (: a Int64) (: b Int64)) 0)) (def (z) 1))",
+        );
+        assert_eq!(super::int_range_over(&ast, pred, "a"), Some((0, 9)));
+        assert_eq!(super::int_range_over(&ast, pred, "b"), Some((100, 109)));
+        // A binder with NO bound of its own among only-foreign conjuncts ⇒ None (unconstrained).
+        assert_eq!(super::int_range_over(&ast, pred, "c"), None);
+        // A RELATIONAL (non-literal) bound `(>= a b)` bails for BOTH the binders it mentions — it constrains
+        // `a` (a >= b) and `b` (b <= a) but neither can be inverted to a LITERAL window (the documented
+        // relational limitation), so each returns None → conservative unconstrained fallback (never wrong, may
+        // fail honestly via the (D)-trap). A cross-binder LITERAL conjunct (the case above) is skipped; a
+        // same-or-mentioned-binder NON-LITERAL bound bails. The two must stay distinct.
+        let (ast2, pred2) = pred_of(
+            "(do (@ (requires (and (>= a b) (>= a 0))) \
+               (def (f (: a Int64) (: b Int64)) 0)) (def (z) 1))",
+        );
+        // `a` is mentioned in the non-literal `(>= a b)` → bails (relational, can't invert), even though it
+        // also has a literal `(>= a 0)`: a non-literal bound on the binder is the conservative signal.
+        assert_eq!(super::int_range_over(&ast2, pred2, "a"), None);
+        // `b` appears ONLY in `(>= a b)` (as the non-literal operand of a bound naming `a` first) → for `b`
+        // that conjunct is `(op a b)` with `it_is(t[1])` true and `lit(t[0])` = None → bails → None.
+        assert_eq!(super::int_range_over(&ast2, pred2, "b"), None);
     }
 
     /// G5: a `@test` over a USER SUM `(type NAME (V PAYLOAD?)…)` gains a wrapper — the generator picks a

@@ -461,6 +461,7 @@ pass	a SUM constructor payload that is a compound built from performs threads an
 pass	a SUM is threaded as a handler's folded state across operations
 pass	a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)
 pass	a SYMBOL compound = has DISCRIMINATING power (two runtime-selected interned names separate)
+pass	a RECURSIVE sum with a record payload walks an environment chain by depth and tag search
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
@@ -928,6 +929,8 @@ pass	a file-top default-fraction pragma grounds a bare literal to its exact frac
 pass	a file-top default-integer pragma fixes a bare literal's type
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a dependent-size utf8 segment decodes a length-prefixed string
+pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string
+pass	a bytes segment sized by a CONSTANT LITERAL binds a fixed number of bytes then composes
 pass	a final unquote-splice binds the remaining elements as a list
 pass	a fixed-arity list binding pattern is refutable and rejected
 pass	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
@@ -3167,6 +3170,7 @@ pass	cross-unit Qty host results reject at the guest-side add
 pass	eval does not see through a splice whose operand is itself an Ast value
 pass	eval is optional for macros and interactive use
 pass	eval of a bare Ast.Name for an unbound name is the ordinary unbound-name error
+pass	eval of a bare quoted integer executes it to the integer value
 pass	eval of a fully-concrete imported constructor is legal from outside
 pass	eval of a partially-exported type's EXPORTED constructor works
 pass	eval of a partially-exported type's WITHHELD constructor is rejected
@@ -3188,6 +3192,7 @@ pass	eval of a quoted ordering comparison drives the branch
 pass	eval of a quoted private constructor is withheld exactly as a direct reference — no forge
 pass	eval of a quoted proof-variant match cannot destructure an abstract proof outside the kernel
 pass	eval of a quoted string executes it to the string value
+pass	eval of a quoted subtraction that goes negative preserves the sign
 pass	eval of a quoted theorem constructor cannot forge an abstract theorem outside the kernel
 pass	complementary comparisons over different operand pairs do not fold to a tautology
 pass	eval of a quoted tuple-construction form folds to the runtime tuple

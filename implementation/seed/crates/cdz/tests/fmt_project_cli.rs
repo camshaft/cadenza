@@ -176,6 +176,42 @@ fn line_comment_count(s: &str) -> usize {
 }
 
 #[test]
+fn fmt_keeps_a_doc_above_an_annotation_not_between_it_and_the_def() {
+    // Comment POSITION (not just count): a `///` written ABOVE an `@`-annotation must stay ABOVE it after
+    // a format pass — NOT be reordered to sit BETWEEN the annotation and its def. That adjacency
+    // (`@test` / `/// …` / `def`) is a latent fragility (it has produced spurious CDZ0201/CDZ0602 in
+    // annotation-comment cases) and reads wrong (a section header would then annotate the first item, not
+    // the section). An earlier printer bug DID reorder it (found by v-cad on a real fmt-apply); v-syntax's
+    // `render_child` fix (`14ee12d7b`) prints a leading doc above the annotation. This pins the position:
+    // the count-based pins above would PASS even if the `///` moved, so this is a distinct invariant — the
+    // one the fleet-wide `cdz fmt` apply relied on (its safety metric forbids introducing this sandwich).
+    let (dir, file) = temp_cdz(
+        "doc-above-annot",
+        "/// section header\n@test\ndef t () -> Bool = true\n",
+    );
+    let (ok, out, err) = run_in(&dir, &["fmt", &file, "--stdout"]);
+    assert!(ok, "cdz fmt --stdout should succeed: {err}");
+    // The doc still precedes the annotation: `/// …` appears before `@test` in the output.
+    let doc_pos = out.find("/// section header");
+    let at_pos = out.find("@test");
+    assert!(
+        matches!((doc_pos, at_pos), (Some(d), Some(a)) if d < a),
+        "the `///` stays ABOVE `@test` (not moved below it): {out}"
+    );
+    // And there is NO `@annotation` / comment / `def` sandwich anywhere in the output.
+    let has_sandwich = out.lines().collect::<Vec<_>>().windows(3).any(|w| {
+        w[0].trim_start().starts_with('@')
+            && w[1].trim_start().starts_with("//")
+            && w[2].trim_start().starts_with("def")
+    });
+    assert!(
+        !has_sandwich,
+        "no `@` / comment / `def` sandwich is introduced: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn fmt_preserves_a_plain_line_comment_leading_a_def_body() {
     // Comment fidelity for the OTHER comment kind: a plain `//` line-comment that LEADS a def BODY (the
     // first thing inside the `=`, before the body expression) must survive a format pass. An earlier

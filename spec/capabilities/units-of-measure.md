@@ -65,6 +65,16 @@ A unit prefixed or otherwise scaled by an exact factor — a decimal multiple su
 
 A scale factor MUST be an exact value, so that a prefixed unit converts to its base without approximation.
 
+### A Stored Quantity Displays At Its Dimension's Reference Unit
+
+A quantity stored at a scaled or named unit MUST, when it crosses the machine boundary as a value, display with its magnitude scaled to its dimension's reference unit and its unit shown as that reference, so that the number and the unit agree rather than disagreeing — a `5 kilometer` quantity displays as `5000 meter`, not the misleading `5 meter` that names the reference unit while keeping the source magnitude.
+
+The display scale MUST be applied in the quantity's own inner numeric type, so that a Float rounds, a Rational stays exact, and an integer truncates toward zero on a non-whole ratio exactly as the numeric core's rules dictate — the dimensional layer introduces no arithmetic of its own beyond the source-denoted scale.
+
+The reference-unit display MUST recurse into every quantity leaf of a compound value, so that a tuple, a sum payload, a nested compound, or a record field carrying a quantity each displays scaled to its reference independently and in its own inner type, not only a bare top-level quantity.
+
+Scaling to the reference unit MUST be a display concern only and MUST NOT alter the stored magnitude, so that `Qty.value` returns the number the source wrote in the unit the source named, and an explicit `as`/`in` conversion computes by the exact direct ratio off that stored magnitude with no intermediate reference rounding.
+
 ## Layered, Not Core
 
 ### Dimensional Analysis Does Not Alter The Numeric Core

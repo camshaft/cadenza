@@ -2485,6 +2485,38 @@ fn a_scalar_param_requires_bound_constrains_it_inside_a_compound_wrapper() {
     );
 }
 
+/// TWO scalar params EACH with their own `@requires` range, in one conjunction, are BOTH narrowed inside a
+/// compound wrapper. A multi-param `@requires` conjoins each param's bounds in one predicate; the range
+/// recognizer runs once per param and must SKIP the other param's conjuncts rather than abandon the whole
+/// predicate on the first foreign one. Before the fix, `@requires(a in [0,9] and b in [100,109])` on
+/// `f(xs: List, a, b)` narrowed NEITHER (each param's recognizer bailed on the other's conjunct), so the
+/// wrapper drew out-of-range values and the (D) precondition spuriously tripped. A PASS proves both scalars
+/// draw in-domain. The multi-param twin of `a_scalar_param_requires_bound_constrains_it_inside_a_compound_wrapper`.
+#[test]
+fn two_scalar_params_each_with_a_requires_range_both_narrow_in_a_wrapper() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — the -gen wrapper run needs the store"
+        );
+        return;
+    }
+    let d = dir("requires-two-scalar-ranges");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do \
+           (@ test (@ (requires (and (and (>= a 0) (<= a 9)) (and (>= b 100) (<= b 109)))) \
+             (def (f (: xs (List Int64)) (: a Int64) (: b Int64)) \
+               (if (and (and (>= a 0) (<= a 9)) (and (>= b 100) (<= b 109))) (List.len xs) (trap \"a or b out of range\"))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok && stdout.contains("PASS f-gen (100 trials)"),
+        "both scalar params `a` in [0,9] and `b` in [100,109] are narrowed independently inside the compound wrapper — no spurious out-of-range trap: {stdout}{stderr}"
+    );
+}
+
 /// A match-based `@requires` whose ALLOWED constructor carries a LIST-LENGTH guard floors that payload's
 /// generated length. `@requires(match o ((Box.Full xs) (< 0 (List.len xs))) ((Box.Empty) false))` forbids
 /// `Empty` AND requires the `Full` payload be non-empty; the `-gen` wrapper must draw `Full([…])` with at

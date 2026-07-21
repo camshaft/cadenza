@@ -1126,6 +1126,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_string_literal_is_nfc_normalized_at_parse() {
+        // A STRING LITERAL's content is NFC-normalized on the way in (unescape_string ends in `.nfc()`),
+        // so a decomposed spelling (`e` + combining acute, U+0065 U+0301) and the precomposed `é`
+        // (U+00E9) both intern to the SAME NFC bytes. This is the "normalized-construction path" the
+        // operator's 2026-07-18 String.from-bytes ruling affirmed (equality follows normalization for
+        // LITERALS; from-bytes intentionally does NOT normalize — construction-path-dependent identity).
+        // Pin the literal side so a regression that drops the parse-time NFC (making `café` literals
+        // construction-spelling-dependent) can't slip through. (Whether identifier NAMES also normalize
+        // is a separate open ruling — filed; this pins ONLY the settled literal behavior.)
+        let decomposed = "cafe\u{0301}"; // e + combining acute
+        let precomposed = "caf\u{00e9}"; // é
+        assert_ne!(
+            decomposed, precomposed,
+            "the two spellings differ BEFORE normalization"
+        );
+        assert_eq!(
+            unescape_string(decomposed).unwrap(),
+            unescape_string(precomposed).unwrap(),
+            "a decomposed and precomposed string literal normalize to the same NFC content"
+        );
+        assert_eq!(
+            unescape_string(decomposed).unwrap(),
+            precomposed,
+            "the normalized form is the precomposed (NFC) `café`"
+        );
+        // The token path (what the reader actually calls) agrees.
+        assert_eq!(
+            unescape_string_token("\"cafe\u{0301}\""),
+            Leaf::Str(precomposed.to_string()),
+            "the string-token reader NFC-normalizes too"
+        );
+    }
+
     /// A random tagged-template HOLE's raw source text (bounded by `depth`): identifiers, calls, and
     /// QUOTED STRINGS that carry braces/escaped-quotes (which must shield those braces from the hole's
     /// depth scan), plus nested balanced `{…}` brace groups. Every `{` this emits is matched by a `}`, and

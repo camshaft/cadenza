@@ -461,6 +461,7 @@ pass	a Rational set from a Rational sum and a Rational.of over integer arithmeti
 pass	a Rational-annotated literal composes with exact rational arithmetic
 pass	a Rational-inner quantity addition stays exact through the quantity wrapper
 pass	a Rational-payload sum value escapes across the boundary in its canonical form
+pass	a RECURSIVE sum with a record payload walks an environment chain by depth and tag search
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
 pass	a Result pipeline short-circuits on the first Err
@@ -961,6 +962,8 @@ pass	a file-top default-fraction pragma grounds a bare literal to its exact frac
 pass	a file-top default-integer pragma fixes a bare literal's type
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a dependent-size utf8 segment decodes a length-prefixed string
+pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string
+pass	a bytes segment sized by a CONSTANT LITERAL binds a fixed number of bytes then composes
 pass	a final unquote-splice binds the remaining elements as a list
 pass	a fixed-arity list binding pattern is refutable and rejected
 pass	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
@@ -3231,6 +3234,7 @@ pass	eval does not forge a private constructor NESTED in a compound
 pass	eval does not see through a splice whose operand is itself an Ast value
 pass	eval is optional for macros and interactive use
 pass	eval of a bare Ast.Name for an unbound name is the ordinary unbound-name error
+pass	eval of a bare quoted integer executes it to the integer value
 pass	eval of a constructor-built Ast.List with a valid operator head computes its value
 pass	eval of a fully-concrete imported constructor is legal from outside
 pass	eval of a partially-exported type's EXPORTED constructor works
@@ -3253,6 +3257,7 @@ pass	eval of a quoted ordering comparison drives the branch
 pass	eval of a quoted private constructor is withheld exactly as a direct reference — no forge
 pass	eval of a quoted proof-variant match cannot destructure an abstract proof outside the kernel
 pass	eval of a quoted string executes it to the string value
+pass	eval of a quoted subtraction that goes negative preserves the sign
 pass	division by negative one negates but still overflows at the minimum
 pass	eval of a quoted theorem constructor cannot forge an abstract theorem outside the kernel
 pass	eval of a quoted tuple-construction form folds to the runtime tuple

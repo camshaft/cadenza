@@ -461,6 +461,7 @@ pass	a Rational map from a Rational sum key and a Rational.of-over-arithmetic ke
 pass	a Rational set deduplicates by exact value regardless of how each was written
 pass	a Rational set from a Rational sum and a Rational.of over integer arithmetic has both elements
 pass	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)
+pass	a RECURSIVE sum with a record payload walks an environment chain by depth and tag search
 pass	a Rational-annotated literal composes with exact rational arithmetic
 pass	a Rational-inner quantity addition stays exact through the quantity wrapper
 pass	a Rational-payload sum value escapes across the boundary in its canonical form
@@ -974,6 +975,8 @@ pass	a file-top default-fraction pragma grounds a bare literal to its exact frac
 pass	a file-top default-integer pragma fixes a bare literal's type
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a dependent-size utf8 segment decodes a length-prefixed string
+pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string
+pass	a bytes segment sized by a CONSTANT LITERAL binds a fixed number of bytes then composes
 pass	a final unquote-splice binds the remaining elements as a list
 pass	a fixed-arity list binding pattern is refutable and rejected
 pass	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
@@ -3285,6 +3288,7 @@ pass	eval does not forge a private constructor NESTED in a compound
 pass	eval does not see through a splice whose operand is itself an Ast value
 pass	eval is optional for macros and interactive use
 pass	eval of a bare Ast.Name for an unbound name is the ordinary unbound-name error
+pass	eval of a bare quoted integer executes it to the integer value
 pass	eval of a fully-concrete imported constructor is legal from outside
 pass	eval of a partially-exported type's EXPORTED constructor works
 pass	eval of a partially-exported type's WITHHELD constructor is rejected
@@ -3307,6 +3311,7 @@ pass	eval of a quoted ordering comparison drives the branch
 pass	eval of a quoted private constructor is withheld exactly as a direct reference — no forge
 pass	eval of a quoted proof-variant match cannot destructure an abstract proof outside the kernel
 pass	eval of a quoted string executes it to the string value
+pass	eval of a quoted subtraction that goes negative preserves the sign
 pass	eval of a quoted theorem constructor cannot forge an abstract theorem outside the kernel
 pass	eval of a quoted tuple-construction form folds to the runtime tuple
 pass	eval of a template splicing a runtime VALUE folds — the working side of the boundary
