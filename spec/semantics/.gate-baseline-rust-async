@@ -418,6 +418,7 @@ pass	a NESTED Tuple arg ALONGSIDE a flat Tuple arg
 pass	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 pass	a NON-tail-resumptive arm projects a tuple parameter twice in its pure one-hole context
+pass	a NaN float leaf in a tuple Map key is found by a differently-computed NaN
 pass	a NaN map key is found by a differently-produced NaN
 pass	a NaN nested in a list compares equal under the canonical byte form
 pass	a NaN nested in a sum payload compares equal under the canonical byte form
@@ -969,6 +970,7 @@ pass	a narrow-width overflow reached ACROSS a function boundary through a match 
 pass	a narrow-width overflow reached through a MATCH projection of a runtime sum is rejected
 pass	a narrow-width overflow reached through a TUPLE-field projection of a runtime branch is rejected
 pass	a negative literal under an UNSIGNED width rejects in a runtime branch
+pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
 pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string
 pass	a constant-size utf8 segment over ill-formed UTF-8 is a non-match, not a trap
 pass	a bytes segment sized by a CONSTANT LITERAL binds a fixed number of bytes then composes
@@ -3127,8 +3129,12 @@ pass	decode of a Float tag with a non-finite (NaN) bit pattern yields the error 
 pass	decode of a List tag whose element count exceeds the bytes present yields the error case
 pass	decode of a List tag with an enormous element count does not attempt a giant build — yields the error case
 pass	decode of a Str tag with an oversized length yields the error case
+pass	decode of a canonical length-prefixed Int magnitude round-trips to its value
 pass	decode of a truncated Float tag yields the error case, not a trap
-pass	decode of a truncated Int tag (fewer than eight payload bytes) yields the error case
+pass	decode of an Int tag marked negative with a zero-length magnitude is non-canonical (no negative zero)
+pass	decode of an Int tag whose magnitude is shorter than its declared length yields the error case
+pass	decode of an Int tag with a leading-zero magnitude byte is non-canonical and yields the error case
+pass	decode of an Int tag with a truncated magnitude-length yields the error case
 pass	decode of an empty byte string (no tag) yields the error case
 pass	decode of an unknown tag byte yields the error case
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none

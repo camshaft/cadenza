@@ -203,6 +203,19 @@ enum Cmd {
     /// scripts can gate on `cdz doctor`. `--store <DIR>` checks a specific store.
     Doctor(DoctorArgs),
 
+    // ── fuzzing / differential testing (PASSTHROUGH to the separate-workspace cdz-smith bin) ──────
+    /// Run the `cdz-smith` FUZZER / differential-testing driver — a PASSTHROUGH that execs the standalone
+    /// `cdz-smith` binary and forwards every argument to it (`cdz smith <args…>` == `cdz-smith <args…>`),
+    /// so a single `cdz` on the PATH also reaches the fuzzer for discoverability. It is a passthrough, NOT
+    /// a linked-in subcommand, DELIBERATELY: `cdz-smith` is a SEPARATE cargo workspace (excluded from the
+    /// seed workspace) because its coverage-guided `bolero` engine pins a `toml_datetime` that cannot
+    /// co-resolve with the surface's in one lockfile, and its differential oracle pulls the
+    /// wasmtime+cranelift tree that must never link into `cdz`. Exec-not-link keeps that isolation intact.
+    /// The binary is located beside the running `cdz` (then on `$PATH`); if absent, build it with
+    /// `cargo build -p cdz-smith`. All args/flags/exit-code are the standalone bin's — run `cdz smith --help`.
+    #[command(alias = "fuzz")]
+    Smith(SmithArgs),
+
     // ── unit testing ─────────────────────────────────────────────────────────────────────────────
     /// Compile a SEPARATE test component from a FILE's `@test`-marked NULLARY definitions and run each,
     /// reporting pass/fail. Each `@test def` crosses the boundary as a nullary entry the runner invokes;
@@ -432,6 +445,7 @@ fn main() -> ExitCode {
         Cmd::Init(a) => run_init(&a),
         Cmd::Completions(a) => run_completions(&a),
         Cmd::Doctor(a) => run_doctor(&a),
+        Cmd::Smith(a) => run_smith(&a),
         Cmd::Test(a) => run_test(&a),
         Cmd::Watch(a) => run_watch(&a),
         // The span-mapped semantic queries live here (they need both libraries in one process).
@@ -3638,6 +3652,75 @@ fn run_doctor(args: &DoctorArgs) -> ExitCode {
     } else {
         eprintln!("{PROG}: doctor found problem(s) — see above");
         ExitCode::FAILURE
+    }
+}
+
+// ── cdz smith (fuzzer passthrough) ─────────────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct SmithArgs {
+    /// Every argument after `cdz smith` is forwarded VERBATIM to the standalone `cdz-smith` binary
+    /// (`trailing_var_arg` + `allow_hyphen_values` so flags like `--iters 100` pass through untouched
+    /// rather than being parsed as `cdz`'s own). `cdz smith --help` prints the standalone bin's help.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
+}
+
+/// Locate the sibling `cdz-smith` binary — like [`locate_cdz_run`], it lives beside THIS binary in
+/// `target/<profile>/` when built (`cargo build -p cdz-smith`), the install-location-independent
+/// `current_exe().parent()/cdz-smith` path. Unlike `cdz-run` it is NOT linked in (a separate workspace),
+/// so a passthrough must find it as a binary. `None` if absent beside `cdz`.
+fn locate_cdz_smith() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| {
+            p.parent().map(|dir| {
+                dir.join(if cfg!(windows) {
+                    "cdz-smith.exe"
+                } else {
+                    "cdz-smith"
+                })
+            })
+        })
+        .filter(|p| p.exists())
+}
+
+/// `cdz smith <args…>` (alias `cdz fuzz`) — a PASSTHROUGH to the standalone `cdz-smith` fuzzer/differential
+/// driver: exec the sibling binary and forward argv + exit code, so a single `cdz` on the PATH reaches the
+/// fuzzer for discoverability. It is exec-not-link ON PURPOSE — `cdz-smith` is a SEPARATE cargo workspace
+/// (its `bolero` engine + wasmtime/cranelift oracle cannot co-resolve into `cdz`'s lockfile), so linking it
+/// in would reintroduce the exact dependency conflict its workspace-exclusion exists to prevent. Resolves
+/// the binary beside `cdz` first (the co-built location), then falls back to `$PATH` (an installed one).
+fn run_smith(args: &SmithArgs) -> ExitCode {
+    // Prefer the co-built sibling; fall back to a `cdz-smith` on `$PATH` (a system install). If neither
+    // resolves, `Command::new` on the bare name would fail with an opaque OS error — give the actionable
+    // build hint instead (the separate-workspace bin isn't produced by an ordinary `cargo build`).
+    let program = locate_cdz_smith().unwrap_or_else(|| PathBuf::from("cdz-smith"));
+    let mut cmd = std::process::Command::new(&program);
+    cmd.args(&args.args);
+    match cmd.status() {
+        Ok(status) => {
+            // Propagate the child's exit code so `cdz smith` is transparent to scripts/CI that branch on it.
+            if status.success() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(status.code().unwrap_or(1) as u8)
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "{PROG}: cdz-smith not found beside `cdz` or on `$PATH` — it is a SEPARATE-workspace build \
+                 (deliberately not linked into `cdz`); build it with `cargo build -p cdz-smith` and re-run"
+            );
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!(
+                "{PROG}: could not run cdz-smith ({}): {e}",
+                program.display()
+            );
+            ExitCode::FAILURE
+        }
     }
 }
 

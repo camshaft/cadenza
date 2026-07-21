@@ -41307,16 +41307,18 @@ mod match_engine {
         // TOTAL inverse. Both constant-fold this increment (a compile-time-visible AST / Bytes value).
         //
         // (1) The BYTE FORMAT is locked by an equality against a hand-written `Bytes.of`: `(Ast.Int 7)`
-        //     encodes as tag 0x00 then 7 as 8 bytes little-endian. This pins the declared-default layout
-        //     (the contract pins the bijection, not the bytes — this test is what would need updating if
-        //     the format were ever versioned).
+        //     encodes NON-LOSSILY as tag 0x00 + 1 sign byte (0 = non-negative) + a 4-byte LE magnitude
+        //     length (1) + the big-endian minimal magnitude (`07`) → `(0 0 1 0 0 0 7)`. This pins the
+        //     declared-default layout (the contract pins the bijection, not the bytes — this test is what
+        //     needs updating if the format is versioned; it moved from a fixed 8-byte i64 to this
+        //     arbitrary-precision sign+magnitude form for the non-lossy quoted-Ast directive).
         assert!(
             reject_code(
                 "(module m (def (main) \
-                   (= (Ast.encode (Ast.Int 7)) (Bytes.of (list 0 7 0 0 0 0 0 0 0)))) (export main))"
+                   (= (Ast.encode (Ast.Int 7)) (Bytes.of (list 0 0 1 0 0 0 7)))) (export main))"
             )
             .is_none(),
-            "Ast.encode of (Ast.Int 7) is the canonical bytes 0x00 + 7i64-le"
+            "Ast.encode of (Ast.Int 7) is the canonical bytes 0x00 + sign 0 + len 1 (LE) + magnitude 0x07"
         );
         // (2) A quote-built and a constructor-built AST of the SAME tree encode to IDENTICAL bytes (the
         //     one-canonical-byte-form requirement) — they are the ONE value form.

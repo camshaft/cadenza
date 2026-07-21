@@ -1567,7 +1567,6 @@ fn build_gen(ast: &mut Arenas, ty: &GenTy, binds: &mut Vec<(StructId, StructId)>
         // constant empty set — so the EMPTY + singleton sets are reachable (a fixed 3-element `Set.of (list …)`
         // never reached them for a wide element type). See `build_var_set_gen`.
         GenTy::Set(elem) => build_var_set_gen(ast, elem, binds),
-        // A fold of `Map.insert` over `G1_LIST_LEN` generated key/value pairs, seeded from `Map.empty`:
         // A VARIABLE-size map (`0..=G1_LIST_LEN` entries) via a `Map.insert` fold over `(Map.empty)` — so the
         // EMPTY + small maps are reachable (a fixed `G1_LIST_LEN`-insert fold never reached them for a wide key
         // type — keys never collide, so the map was always exactly `G1_LIST_LEN` entries). See

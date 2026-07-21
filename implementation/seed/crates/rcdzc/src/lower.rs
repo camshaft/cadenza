@@ -3038,9 +3038,19 @@ fn encode_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Vec<
         let Core::ConstInt(v) = core_of(db, payloads[0]) else {
             return None;
         };
-        let n = v.to_i64()?;
+        // The Int payload is NON-LOSSY (operator directive: parametric integers must never silently
+        // truncate). `IntValue` is natively a sign + big-endian minimal magnitude, so it serializes
+        // DIRECTLY as: tag 0x00, 1 sign byte (0 = non-negative, 1 = negative), a 4-byte LE u32 magnitude
+        // length, then that many big-endian magnitude bytes. Same length-prefix framing the Str/List
+        // arms use (one framing style across the codec). Canonical: zero is `negative=false` + a length-0
+        // magnitude (no negative-zero, no leading-zero bytes — the `IntValue` invariant guarantees the
+        // magnitude is already minimal). This replaces the old fixed 8-byte i64 form (which bailed via
+        // `to_i64()` on a beyond-i64 value); an arbitrary-precision magnitude now round-trips.
+        let mag = &v.magnitude;
         out.push(AST_TAG_INT);
-        out.extend_from_slice(&n.to_le_bytes());
+        out.push(u8::from(v.negative));
+        out.extend_from_slice(&(u32::try_from(mag.len()).ok()?).to_le_bytes());
+        out.extend_from_slice(mag);
         Some(())
     } else if d == disc.float && payloads.len() == 1 {
         // A float: the 8-byte f64 BIT PATTERN (`to_f64_bits`), LE — a stable canonical form (equal
@@ -3320,13 +3330,37 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
     let (&tag, rest) = raw.split_first()?;
     match tag {
         AST_TAG_INT => {
-            let field = rest.get(..8)?;
-            let n = i64::from_le_bytes(field.try_into().ok()?);
+            // Inverse of the non-lossy Int encoding: 1 sign byte (0 = non-negative, 1 = negative), a
+            // 4-byte LE u32 magnitude length, then that many big-endian magnitude bytes. TOTAL over any
+            // input — a truncated sign/length/magnitude yields `None` (the error case), never a panic.
+            let (&sign_byte, after_sign) = rest.split_first()?;
+            let negative = match sign_byte {
+                0 => false,
+                1 => true,
+                _ => return None, // not a canonical sign byte
+            };
+            let len_field = after_sign.get(..4)?;
+            let mag_len = u32::from_le_bytes(len_field.try_into().ok()?) as usize;
+            let magnitude = after_sign.get(4..4 + mag_len)?.to_vec();
+            // Canonical form: the magnitude carries no leading zero bytes and is empty iff the value is
+            // zero (the `IntValue` invariant). A non-canonical wire form (a leading zero byte, or a
+            // length-0 magnitude marked negative — there is no negative zero) is rejected so decode is a
+            // bijection with one canonical encoding.
+            if magnitude.first() == Some(&0) {
+                return None; // leading zero byte — non-minimal magnitude
+            }
+            if magnitude.is_empty() && negative {
+                return None; // negative zero is not canonical
+            }
+            let value = IntValue {
+                negative,
+                magnitude,
+            };
             let payload = db.push_atom(crate::ast::Leaf::Int {
-                value: IntValue::from_i64(n),
+                value: value.clone(),
                 radix: crate::ast::Radix::Dec,
             });
-            db.core.fill(payload, Core::ConstInt(IntValue::from_i64(n)));
+            db.core.fill(payload, Core::ConstInt(value));
             db.types.fill(payload, crate::ty::Ty::int64());
             let node = synth_core(
                 db,
@@ -3336,7 +3370,7 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
                 },
                 disc.ty.clone(),
             );
-            Some((node, 1 + 8))
+            Some((node, 1 + 1 + 4 + mag_len))
         }
         AST_TAG_FLOAT => {
             // 8-byte f64 bit pattern (LE) → a `Decimal` via `from_f64`. A non-finite pattern (inf/NaN) has
