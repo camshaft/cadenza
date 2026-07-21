@@ -2874,6 +2874,45 @@ fn a_runtime_rational_zero_denominator_traps_with_a_classifying_unreachable_mess
 }
 
 #[test]
+fn int64_of_a_runtime_bigint_out_of_range_traps_with_a_classifying_unreachable_message() {
+    // REGRESSION (corpus "truncating a rational whose integer part exceeds Int64 traps"): `Int64.of` on a
+    // runtime `Big` that exceeds i64 must TRAP (numeric-model.md; the checked narrowing, matching the wasm
+    // `bigint-to-i64-checked` which lowers to a wasm `unreachable`). The behavior already trapped, but the
+    // `.expect("BigInt value out of Int64 range")` message did NOT classify under the gate's `trap_kind`, so
+    // the case graded `todo` (an unconfirmed trap) — the exact gap the case doc calls out. The emit now
+    // panics a message CONTAINING "unreachable" (the same non-arithmetic trap kind as the shift-count and
+    // rational-zero guards), so both backends grade PASS.
+    let m = compile_rust(
+        "(module m (def (go (: n Int64)) \
+           (Int64.of (Rational.numerator \
+             (* (Rational.of n 1) (Rational.of 9223372036854775807 1))))) (export go))",
+    );
+    // Emit-shape: the checked narrowing panics a message that classifies as `unreachable`.
+    assert!(
+        m.contains("to_i64_checked()") && m.contains("panic!(\"unreachable"),
+        "Int64.of a Big narrows checked and panics a classifying 'unreachable' message:\n{m}"
+    );
+    // In range (n = 1 → 1 · Int64.max = Int64.max, fits) reads back Int64.max.
+    if let Some(out) = rustc_run(&m, "go(1)") {
+        assert_eq!(
+            out, "9223372036854775807",
+            "1 · Int64.max fits and narrows back"
+        );
+    }
+    // n = 3 → 3 · Int64.max exceeds i64 → traps with a classifying `unreachable` message.
+    match rustc_run_traps(&m, "go(3)") {
+        TrapRun::Trapped(msg) => assert!(
+            msg.contains("unreachable"),
+            "an out-of-range Int64.of traps with a classifying 'unreachable' message, got:\n{msg}"
+        ),
+        TrapRun::RanOk(out) => {
+            panic!("`Int64.of (3 · Int64.max)` must TRAP (out of range), but ran → {out}")
+        }
+        TrapRun::NoRustc => {}
+    }
+}
+
+#[test]
 fn a_provably_in_range_left_shift_elides_its_overflow_guard_on_the_rust_backend() {
     // BOTH-BACKEND PARITY (v-core-opt Slice-4): the rust `<<` emit now consults the SAME Core-tier
     // shl_provably_in_range / _dynamic predicates the wasm backend uses (select.rs emit_shift), so a

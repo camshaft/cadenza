@@ -79,10 +79,12 @@ pub mod tagged_template;
 // module's fact by calling that module's producer (which fills it lazily), never a raw column.
 pub mod accum;
 pub mod binding_params;
+pub mod bytes_of_runtime;
 pub mod db;
 pub mod infer;
 pub mod lower;
 pub mod resolve;
+pub mod set_of_runtime;
 
 // Cost-tiered optimization levels — the `OptLevel` enum + the `PassManager` that gates each
 // backend-independent Core pass by its declared tier, running above the backend seam so every backend

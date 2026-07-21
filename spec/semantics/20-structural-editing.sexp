@@ -56,6 +56,28 @@
                 ((Exp.Mul (tuple a b)) (* (eval a) (eval b))))) (export main)))
   (output (: 17 Int64)))
 
+; The BUILT-IN-Ast companion of the user-`Exp` recursive walk above: a recursive function descends the
+; built-in `Ast` sum by matching `(Ast.List es)` and recursing into its `(List Ast)` payload via a
+; list-rest pattern `(list h .. _)`. `depth (quote (f (g 1)))` = 2 (the `Ast.List` → head `f` is an
+; `Ast.Name`, so `1 + depth(f)` = 2). Pins that explicit head-recursion over the built-in Ast's recursive
+; `List` payload COMPILES + runs on all three backends — the idiomatic tree-walk substrate. (NB: the
+; List.fold-CLOSURE form of this walk — a recursive closure re-entering the fn over an Ast fold element —
+; currently compile-stack-overflows, filed as a bug routed to v-inference; this explicit-recursion form is
+; the working boundary beside it, and a compiles-cleanly guard for the fold form lands with that fix.)
+(case "a recursive walk over the built-in Ast recurses into its List payload via a rest pattern"
+  (doc    "A recursive `depth` over the built-in `Ast`: `(Ast.List es)` matches and recurses into the
+           `(List Ast)` payload via the list-rest pattern `(list h .. _)`, taking the head child. Over
+           `(quote (f (g 1)))` the outer `Ast.List`'s head `f` is an `Ast.Name` (a leaf, depth 1), so the
+           result is `1 + 1 = 2`. Pins the idiomatic explicit-recursion tree-walk over the built-in Ast's
+           recursive payload — the built-in-Ast companion of the user-`Exp` recursive eval above.")
+  (input  (do
+            (def (depth node) (match node
+              ((Ast.List es) (match es ((list) 1) ((list h .. _) (+ 1 (depth h)))))
+              (_ 1)))
+            (def (main) (depth (quote (f (g 1)))))
+            (export main)))
+  (output (: 2 Int64)))
+
 (case "a transformation maps a syntax tree to a syntax tree and preserves meaning"
   (doc    "The core of spec/learnings/2026-07-04-program-transformation-is-a-program.md: a refactoring
            is an ordinary function from the canonical representation to the canonical representation

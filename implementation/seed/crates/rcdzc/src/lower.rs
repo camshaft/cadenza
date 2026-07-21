@@ -1629,13 +1629,26 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     let operand = args[0];
                     if let Core::Poison(r) = core_of(db, operand) {
                         Core::Poison(r)
-                    } else if let Some(elems) = const_list_elems(db, operand) {
+                    } else if let Some(elems) = const_list_elems(db, operand)
+                        && elems.iter().all(|&e| is_trap_free(db, e))
+                    {
                         // A compile-time-visible constant list, inline (`(list 1 2 3)`) or `let`-bound (a
                         // kept multi-use binding lowers the reference to a `LocalRef`, which the helper
                         // follows to the bound literal). `List.len` = the spine ARITY, fixed at construction,
                         // so the len folds to the element count regardless of how the value is bound (sound —
                         // only `Set.len`/`Map.size` are unsafe, since dedup can shrink them). Folds only the
                         // LEN read; the binding is not erased (a list used elsewhere is still built).
+                        //
+                        // TRAP-PRESERVATION (same `is_trap_free` discipline as the `x * 0`/`x & 0`
+                        // annihilators): folding to the constant arity DISCARDS the element VALUES — computing
+                        // the length from the spine structure without evaluating the constructions. So it may
+                        // fire ONLY when every element construction is provably TRAP-FREE. A trapping element
+                        // (e.g. `(Rational.of 3 d)` with a RUNTIME denominator `d` that may be 0 → a
+                        // zero-denominator trap) is NOT trap-free, so the fold declines and the runtime
+                        // `Core::ListLen` is emitted instead — which evaluates the list construction, so the
+                        // trapping element still traps (the fold must drop the element's VALUE, not its
+                        // EVALUATION). Without this guard `List.len (list _ (Rational.of 3 d))` at d=0 ran to
+                        // the length instead of trapping (breaker/corpus-bugfix).
                         trace!(target: "rcdzc::fold", node = id.0, len = elems.len(), "List.len folds to a constant list arity");
                         Core::ConstInt(IntValue::from_i64(elems.len() as i64))
                     } else {
@@ -17561,9 +17574,27 @@ pub(crate) fn is_trap_free(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
         Core::ConstInt(_)
         | Core::ConstBool(_)
+        | Core::ConstStr(_)
+        | Core::ConstChar(_)
+        | Core::ConstFloat(_)
+        | Core::ConstFloatNan
         | Core::Unit
         | Core::Param { .. }
         | Core::LocalRef { .. } => true,
+        // PURE VALUE CONSTRUCTORS never trap in themselves — building a record/tuple/list/sum node is total;
+        // only a trapping SUB-expression inside makes the whole thing trap. So a construction is trap-free
+        // iff every field/element/payload it holds is. (This is what lets a discarding fold over a compound
+        // fire — e.g. the `List.len` constant-arity fold drops the element VALUES, sound only when every
+        // element construction is trap-free; a `(list _ (Rational.of 3 d))` with a runtime denominator is
+        // NOT trap-free, so the fold declines and the runtime op preserves the element's trap.)
+        Core::Record { fields } => {
+            let vals: Vec<StructId> = fields.values().copied().collect();
+            vals.into_iter().all(|v| is_trap_free(db, v))
+        }
+        Core::Tuple { elems } | Core::ListNew { elems } => {
+            elems.into_iter().all(|e| is_trap_free(db, e))
+        }
+        Core::SumNew { payloads, .. } => payloads.into_iter().all(|p| is_trap_free(db, p)),
         // Bitwise ops are total; a comparison never traps — trap-free if their operands are. The WRAPPING
         // arithmetic ops (`wrapping-add`/`wrapping-sub`/`wrapping-mul`) are ALSO total: they emit the raw
         // machine `add`/`sub`/`mul` with NO overflow guard (wasm's op wraps modulo the slot — that is their

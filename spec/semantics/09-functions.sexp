@@ -2745,6 +2745,25 @@
   (call   main (: 1000000 Int64))
   (output (: 1000000 Int64)))
 
+(case "a tail-recursive HEAP accumulator builds and folds a 10000-deep spine in constant stack"
+  (doc    "The heap twin of the scalar tail-accumulator above: `mk-tail` threads a RECURSIVE-SUM
+           accumulator (`(S acc)` wraps the heap value one level per step) through its tail call, and
+           `depth-tail` consumes the built spine with a tail-recursive scalar count — both loops at a
+           runtime depth of 10000. The tail-loop conversion must handle an accumulator that is a heap
+           HANDLE (dup/drop across the loop back-edge, not a scalar register), and the 10000-node spine
+           must build and fold without frame growth. A frame-per-iteration emit or a leaked/dropped
+           handle at the back-edge would trap or misdepth well before 10000. → 10000.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk-tail (: n Int64) (: acc Nat))
+              (if (= n 0) acc (mk-tail (- n 1) (S acc))))
+            (def (depth-tail (: v Nat) (: acc Int64))
+              (match v ((S rest) (depth-tail rest (+ acc 1))) ((Z u) acc)))
+            (def (main (: a Int64))
+              (depth-tail (mk-tail a (Z)) 0))
+            (export main)))
+  (call   main (: 10000 Int64)) (output (: 10000 Int64)))
+
 ; A recursive function with TWO OR MORE NARROW-WIDTH parameters (UInt8/Int8/UInt16/…) threading a narrow
 ; accumulator through the recursive call. A narrow value lives in an i32 machine slot (a wide Int64 is
 ; i64); a bare-literal argument (`(f n 0)` — the `0` for a UInt8 `acc`) defaults to Int64, so passing it

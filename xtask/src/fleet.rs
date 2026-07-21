@@ -1761,7 +1761,22 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
 /// considering only merge-requests from still-`active` senders (a stale one-shot's leftover is noise).
 /// Shared by `audit` and the `watchdog` health sweep so both surface the same set. Read-only; a git
 /// failure on any single ref just skips it. Kept as a fn (not pure) because it does I/O + git, but the
-/// per-ref decision is the pure `cherry_says_landed`.
+/// per-ref decisions are the pure `mr_qualifies_for_landed_check` (worth the git call?) and
+/// `cherry_says_landed` (is it actually landed?).
+///
+/// The pure eligibility gate for a queued merge-request: is it worth spending a `git cherry` on? YES iff
+/// it carries a non-empty `--ref` (an empty ref has nothing to check against trunk) AND its sender is
+/// still `active` (a stale one-shot agent's leftover MR is noise, not a live orphan pr-sync should
+/// reject). Split out of `find_queued_but_landed`'s fs+git loop so both skip conditions are unit-pinned:
+/// dropping either would either waste a git call on a ref-less message or resurrect dead-agent noise.
+fn mr_qualifies_for_landed_check(
+    r#ref: &str,
+    from: &str,
+    active: &std::collections::HashSet<String>,
+) -> bool {
+    !r#ref.is_empty() && active.contains(from)
+}
+
 fn find_queued_but_landed(
     fleet: &Fleet,
     active: &std::collections::HashSet<String>,
@@ -1782,7 +1797,7 @@ fn find_queued_but_landed(
         let Ok(mr) = serde_json::from_str::<Message>(&text) else {
             continue;
         };
-        if mr.r#ref.is_empty() || !active.contains(&mr.from) {
+        if !mr_qualifies_for_landed_check(&mr.r#ref, &mr.from, active) {
             continue;
         }
         let cherry = Command::new("git")
@@ -7587,6 +7602,35 @@ mod tests {
         assert!(!cherry_says_landed("- aaaa\nnoise"));
         // Blank lines interspersed are tolerated as long as the real lines are all `-`.
         assert!(cherry_says_landed("\n- aaaa\n\n- bbbb\n"));
+    }
+
+    #[test]
+    fn mr_qualifies_for_landed_check_needs_a_ref_and_a_live_sender() {
+        // The pure gate `find_queued_but_landed` uses to decide whether a queued MR is worth a
+        // `git cherry`: BOTH a non-empty ref AND a still-active sender. Pin each condition so dropping
+        // either arm (`&&`→ short-circuit either way) is caught.
+        let active: std::collections::HashSet<String> = ["v-fleet-tooling", "pr-sync"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        // Non-empty ref + active sender → check it.
+        assert!(mr_qualifies_for_landed_check(
+            "deadbeef",
+            "v-fleet-tooling",
+            &active
+        ));
+        // Empty ref → nothing to compare against trunk → skip (no wasted git call).
+        assert!(
+            !mr_qualifies_for_landed_check("", "v-fleet-tooling", &active),
+            "an empty ref has nothing to cherry-check"
+        );
+        // Live sender but empty ref stays skipped even so (the ref arm alone must gate).
+        assert!(!mr_qualifies_for_landed_check("", "pr-sync", &active));
+        // Inactive/stale sender → leftover noise, skip even with a real ref (the active arm alone gates).
+        assert!(
+            !mr_qualifies_for_landed_check("deadbeef", "corpus-bugfix", &active),
+            "a stale one-shot agent's leftover MR is noise, not a live orphan"
+        );
     }
 
     #[test]

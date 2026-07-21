@@ -100,10 +100,14 @@ so it stays extensible ("add a facet" ≠ "rewrite the domain") — the operator
 
 ```rust
 /// A conservative fact about the value at a Core occurrence, in the current flow context. Every field is
-/// optional and independently join-able; `None`/absent = "unknown" (⊤, the safe default). A fact only ever
-/// NARROWS the true value set — a wrong-because-too-wide fact is unsound, a too-narrow one is just missed
-/// optimization. So the join (at control-flow merges) WIDENS (set-union of possibilities), the meet (at a
-/// refinement) NARROWS (intersection).
+/// optional and independently join-able; `None`/absent = "unknown" (⊤, the safe default). A fact is a
+/// conservative OVER-approximation of the value set (`actual ⊆ fact`); a check is elided only when the
+/// fact PROVES it dead. So a too-WIDE fact (still ⊇ actual) is SAFE — it may fail to prove the check
+/// dead, costing only a missed optimization; a too-NARROW fact (⊊ actual, dropping a real value) is
+/// UNSOUND — it would wrongly prove the check dead and elide a needed guard. Therefore the join (at
+/// control-flow merges) WIDENS (set-union of possibilities), the meet (at a refinement) NARROWS
+/// (intersection to values the branch condition guarantees). (Corrected per PR#748 — the earlier draft
+/// had this soundness direction reversed.)
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ValueFact {
     /// Signed integer interval [lo, hi] — SUBSUMES today's `(i64, Option<i64>)`. `None` = unbounded that side.
@@ -159,7 +163,12 @@ are pure refactors (behavior-identical) and value arrives without ever risking a
    Pure refactor: `ValueFact { int_range: .., ..Default }`, the environment becomes
    `FxHashMap<StructId, ValueFact>`, `refined_range`/`refine_from_comparison` produce/consume the
    `int_range` facet. **Gate: full corpus + gate byte-identical at O0..O2, both backends** (zero
-   behavior change — this is the safety floor the rest builds on).
+   behavior change — this is the safety floor the rest builds on). **LANDED (MR `51221170`, 2026-07-21).**
+1b. **Flagship + reachability warning (§3.1, operator-directed).** Promote the already-live
+   redundant-condition elimination (`tests.rs:13728`) to a headline corpus witness, AND add the
+   reachability WARNING on a provably-dead branch (coordinate the CDZ code + wording with v-diagnostics).
+   Pure integer-interval facts, so it sits right after slice 1. Gate: a warn-case pinning the emitted
+   diagnostic on a fact-proven-dead branch + a companion no-warn case on an undecided condition.
 2. **Fill the integer-facet gaps** the current analysis skips: unsigned comparisons and `Eq`/`Ne`
    two-sided refinement where sound. Gate: a differential case where an unsigned `if x < 8` then a
    masked/indexed use elides on both backends AND a case that must STILL trap.
@@ -193,6 +202,56 @@ are pure refactors (behavior-identical) and value arrives without ever risking a
 
 Slices 1–2 are the "close the integer gaps" core; 3–5 are the "all data types" generalization; 6 is the
 sharing/perf capstone. A vertical can stop after any slice with a coherent, gated surface.
+
+---
+
+## 3.1 Operator refinement (relayed via pr-sync, 2026-07-21): flagship test + a reachability WARNING
+
+The operator named a concrete demonstrator and a user-facing feature to fold in:
+
+> "One good test of the value fact work is to show that redundant if checks are avoided. So like if we
+> check `if x > 0`, anything inside the truthy branch can rely on that fact being true. And for example
+> if there's another `if x > 0` then you just straight up always assume the truthy branch and remove the
+> falsy branch entirely. It would actually be a good idea to emit a reachability warning there because
+> it's just never going to be reached."
+
+**(a) Flagship test — redundant-condition elimination: ALREADY IMPLEMENTED (the demonstrator, not new
+work).** The exact case — a nested `(if (> n 0) …)` inside `(if (> n 0) …)`'s truthy branch collapsing
+to only the taken branch with the dead branch deleted — already works today, the same finding as the
+`x - 1` baseline (§0). It is driven by `refined_comparison_const` (`lower.rs:19367`) consumed at the
+`Core::If` emit (wasm `select.rs:9147` "FLOW-SENSITIVE DEAD-BRANCH ELIMINATION"; the rust backend gets
+the parity refinement push/pop via `refined_frame_for_branch`, `expr.rs:854`). It is GATED by
+`a_branch_refinement_folds_a_redundant_nested_comparison_and_eliminates_its_dead_branch` (`tests.rs:13728`),
+which pins, at the Lir level: the same-test (`> n 0` in `> n 0`), implied-test (`n >= 5 ⇒ n > 0`), and
+made-false (`n < 0 ⇒ n > 10`) shapes — inner compare op gone, dead branch constant gone — plus value
+parity and an over-folding guard (an undecided inner compare is NOT folded). **Action:** promote this to
+a HEADLINE corpus witness of the value-facts feature (a `spec/semantics/NN-*.sexp` elision case), so the
+"redundant checks avoided" the operator wants to SEE is a named, fleet-wide-gated demonstrator rather
+than only a unit test. No new folding logic needed — the fact-propagation the operator describes is
+exactly what's live.
+
+**(b) NEW FEATURE — reachability WARNING on a provably-dead branch.** Beyond silently eliding the dead
+branch, EMIT a diagnostic when the facts prove a branch never reached (the falsy arm of a
+fact-proven-always-true condition, or vice-versa): "this branch is never reached — `<cond>` is always
+`<true|false>` here (`<var> ∈ [lo, hi]`)". This is user-facing value (it surfaces dead code to the
+programmer), distinct from the optimization. Design constraints:
+- **A WARNING, not an error** — dead code is legal, just noteworthy.
+- **Safety-critical, exactly as much as the elision:** fire ONLY when the interval facts PROVE the
+  condition constant (the same `refined_comparison_const`-decided predicate that licenses the fold). A
+  false "always true" that warns-and-removes a REACHABLE branch would be a miscompile, so the warning is
+  gated on the identical conservative proof — never on a heuristic.
+- **Where it fires:** at the fact-analysis site that already decides the branch (the `Core::If` dead-
+  branch elimination). The diagnostic is produced from the analysis, then routed through the standard
+  diagnostic surface.
+- **Diagnostic code + wording: OWNED BY v-diagnostics** (they own the actionable-diagnostic surface +
+  CDZ codes). Coordinated via `note` (2026-07-21): whether a NEW CDZ code (a CDZ04xx "unreachable
+  branch") or an existing reachability/dead-code code fits, and the exact phrasing, is their call; the
+  fact-analysis supplies the fact (`<var> ∈ [lo,hi]`, which arm is dead) and they own the message shape.
+- **A natural early slice:** the redundant-condition case is pure integer-interval facts (stage-1
+  territory), so the warning lands as an early slice (after slice 1's refactor) rather than waiting on
+  the non-integer facets. Gate: a reject/warn corpus case pinning the emitted warning on a
+  provably-dead branch AND a companion case where an UNDECIDED condition emits NO warning (the
+  over-warning guard, mirroring the over-folding guard already in `tests.rs:13728`).
 
 ---
 

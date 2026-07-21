@@ -2135,6 +2135,21 @@ impl Db {
         // and its self-reference resolve like any hand-written def. A def that does not match is untouched.
         let mut defs = defs;
         let accum_links = crate::accum::introduce(&mut ast, &mut defs);
+        // SET.OF OVER A RUNTIME LIST: rewrite `(Set.of xs)` whose `xs` is not a `(list …)` literal into a
+        // synthesized recursive fold (`__set_of_rt$ xs 0 (Set.of (list))`), so a set builds from a
+        // runtime list (a `Set.to-list` result, a `List.concat`, a param/recursively-built list) instead
+        // of declining. Appends one generic fold def + rewrites the calls HERE, before the parent index /
+        // `def_by_name`, so the synthesis resolves + type-checks like hand-written source. Hash-neutral
+        // (reuses `List.len`/`List.at`/`Set.insert`/empty `Set.of`). See `set_of_runtime` for the
+        // one-element-type-per-program limitation (the recursive-generic Set-op grounding tie).
+        crate::set_of_runtime::introduce(&mut ast, &mut defs);
+        // BYTES.OF OVER A RUNTIME LIST: the `Bytes` twin of `set_of_runtime` — rewrite `(Bytes.of xs)`
+        // whose `xs` is not a `(list …)` literal into a synthesized recursive fold (`__bytes_of_rt$ xs 0
+        // (Bytes.of (list))`) that appends each byte via `Bytes.concat`, so a byte sequence builds from a
+        // runtime `(List UInt8)` (a `List.concat`, a param/recursively-built list) instead of declining.
+        // Hash-neutral (reuses `List.len`/`List.at`/`Bytes.concat`/empty `Bytes.of`). `Bytes.of` is
+        // monomorphic (`(List UInt8) → Bytes`), so unlike `set_of_runtime` there is no multi-type limit.
+        crate::bytes_of_runtime::introduce(&mut ast, &mut defs);
         // DESTRUCTURING PARAMETERS: rewrite a `def` whose parameter is a tuple PATTERN (`(def (f (tuple a
         // b)) …)`) into a fresh whole-value parameter plus a destructuring `let` over the body (`(def (f
         // p$0) (let (((tuple a b) p$0)) …))`) — so a body reference to `a`/`b` resolves through the `let`
