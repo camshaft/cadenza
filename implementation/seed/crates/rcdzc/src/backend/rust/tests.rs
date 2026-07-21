@@ -1544,6 +1544,62 @@ fn a_scalar_match_grounds_its_float32_arm_literals_to_the_result_width() {
 }
 
 #[test]
+fn a_compound_construct_grounds_a_narrow_field_literal_to_the_declared_slot_width() {
+    // REGRESSION (corpus-bugfix, sibling of the wasm record-emit bug → v-inference): a FITTING narrow
+    // record-field literal `(record (x 100))` at field type Int8 defaulted its `ConstInt` to Int64, emitting
+    // `(100u64 as i64,)` into a `(i8,)` slot → rustc E0308. `Core::Record`/`Core::Tuple` now ground each
+    // field/element literal to the declared slot type in `emit_elem_grounding_empty_list` (the compound twin
+    // of `emit_grounded`/`emit_branch` — the match-arm/if-branch grounding). Int64 fields + non-literal
+    // fields are unchanged.
+    // (a) Int8 record field: the literal grounds to i8, computes 100 (matches wasm).
+    let i8rec = compile_rust(
+        "(module m (def (get (: r (Record (: x Int8)))) (. r x)) \
+           (def (run) (get (record (x 100)))) (export run))",
+    );
+    assert!(
+        i8rec.contains("100u8 as i8") && !i8rec.contains("100u64 as i64"),
+        "the Int8 record-field literal grounds to i8, not i64:\n{i8rec}"
+    );
+    if let Some(out) = rustc_run(&i8rec, "run()") {
+        assert_eq!(out, "100", "the fitting Int8 record field computes 100");
+    }
+    // (b) Float32 record field: grounds to f32 (was the same E0308 class), computes 1.5.
+    let f32rec = compile_rust(
+        "(module m (def (get (: r (Record (: x Float32)))) (. r x)) \
+           (def (run) (get (record (x 1.5)))) (export run))",
+    );
+    assert!(
+        f32rec.contains("f32::from_bits(") && !f32rec.contains("f64::from_bits("),
+        "the Float32 record-field literal grounds to f32:\n{f32rec}"
+    );
+    if let Some(out) = rustc_run(&f32rec, "run()") {
+        assert_eq!(out, "1.5", "the fitting Float32 record field computes 1.5");
+    }
+    // (c) CONTROL — an Int8 TUPLE element also grounds (same shared helper), and an Int64 record field is
+    // unchanged (no spurious cast). Both compute, confirming no over-broadening.
+    let i8tup = compile_rust(
+        "(module m (def (get (: r (Tuple Int8 Int64))) (. r 0)) \
+           (def (run) (get (tuple 100 7))) (export run))",
+    );
+    if let Some(out) = rustc_run(&i8tup, "run()") {
+        assert_eq!(
+            out, "100",
+            "an Int8 tuple element also grounds and computes 100"
+        );
+    }
+    let i64rec = compile_rust(
+        "(module m (def (get (: r (Record (: x Int64)))) (. r x)) \
+           (def (run) (get (record (x 100)))) (export run))",
+    );
+    if let Some(out) = rustc_run(&i64rec, "run()") {
+        assert_eq!(
+            out, "100",
+            "an Int64 record field is unchanged and computes 100"
+        );
+    }
+}
+
+#[test]
 fn a_bigint_quantity_display_scales_to_its_reference_in_the_bignum_path() {
     // REGRESSION (v-quantity/v-runtime): a NON-scale-1 BigInt-inner Qty display-scales to its reference in
     // the bignum path — `(Qty.of (BigInt.of 5) kilometer)` → `(Qty.of 5000 meter)` (×1000/1 kilo scale,

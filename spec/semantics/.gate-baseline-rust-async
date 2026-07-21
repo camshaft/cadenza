@@ -980,6 +980,9 @@ pass	a negative literal under an UNSIGNED width rejects in a runtime branch
 pass	a quantity in a TUPLE inside a LIST element renders scaled (nested composition)
 pass	a quantity in an OPTION inside a MAP value renders scaled (nested composition)
 pass	a record key with a float-bearing TUPLE field keys by content
+pass	a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on every backend
+pass	a runtime = on a sum recursive through a RECORD-of-TUPLE payload walks structurally
+pass	a runtime = over MUTUALLY-recursive sums walks across the type cycle
 pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
 pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
 pass	a tuple key whose element is itself a float-bearing tuple keys by content
@@ -3605,6 +3608,8 @@ pass	narrow unsigned comparison division and remainder compose unsigned over a h
 pass	recursive factorial with a match base case
 pass	recursive fibonacci over a RUNTIME argument computes the predecessors correctly
 pass	recursive fibonacci with literal match base cases
+pass	recursive-sum equality discriminates a difference at the DEEPEST node
+pass	recursive-sum equality is decided by RUNTIME parameters, both regimes in one export
 pass	redeclaring a built-in unit with its own conversion is admissible
 pass	redeclaring a user-declared unit with the same conversion is admissible
 pass	reifying a constant NaN into an Ast.Float declines (no canonical value form)
@@ -3917,6 +3922,7 @@ pass	the second element of a runtime-content fn-return tuple is projected direct
 pass	the selected operand decides a hoisted comparison
 pass	the selected operand decides a hoisted float equality
 pass	the sequent-shaped kernel Thm is unforgeable — building Thm.Seq outside the kernel is CDZ0214
+pass	the set De Morgan law relates difference-over-union to intersection-of-differences on runtime sets
 pass	the shift-by-zero identities preserve a runtime narrow UInt8 (x << 0 = x, x >> 0 = x)
 pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
 pass	the slice overflow guard holds on a chained slice-of-a-slice

@@ -541,6 +541,24 @@
             (export main)))
   (call main (: 1 Int64) (: 2 Int64) (: 3 Int64)) (output (: 1 Int64)))
 
+(case "the set De Morgan law relates difference-over-union to intersection-of-differences on runtime sets"
+  (doc    "The relative-complement De Morgan law `A \\ (B ∪ C) = (A \\ B) ∩ (A \\ C)`, over RUNTIME-element sets
+           so the nested CHAMP difference/union/intersection composition runs live. A={a,b,c,d}, B={b}, C={c}:
+           B ∪ C = {b,c}, so A \\ (B ∪ C) = {a,d}; and A \\ B = {a,c,d}, A \\ C = {a,b,d}, their intersection =
+           {a,d}. Both sides {a,d}. Pins that removing a union equals intersecting the individual removals — a
+           three-operation composition an implementation could break on the nested difference path while the
+           single-operation difference laws (difference-with-itself, NOT-commutative) still passed. Completes
+           the two/three-operation lattice-law cluster beside distributive and absorption. MUST be 1.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64) (: c Int64) (: d Int64))
+              (let ((sa (Set.of (list a b c d)))
+                    (sb (Set.of (list b)))
+                    (sc (Set.of (list c))))
+                (if (= (Set.difference sa (Set.union sb sc))
+                       (Set.intersection (Set.difference sa sb) (Set.difference sa sc))) 1 0)))
+            (export main)))
+  (call main (: 1 Int64) (: 2 Int64) (: 3 Int64) (: 4 Int64)) (output (: 1 Int64)))
+
 (case "difference is NOT commutative"
   (doc    "`{1,2,3} \\ {2,3,4}` = {1} but `{2,3,4} \\ {1,2,3}` = {4} — set difference is directional, so
            `A \\ B` and `B \\ A` are DIFFERENT sets (unequal). The contrast to union/intersection

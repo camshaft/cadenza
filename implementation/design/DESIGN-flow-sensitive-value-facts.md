@@ -1,7 +1,8 @@
 # Flow-sensitive value-facts for check elision — generalize the fact domain
 
-**Author:** design (design-value-facts). **Status:** **PROPOSAL — scope DECIDED, in stakeholder review
-(2026-07-21).** Scope is confirmed **(A) full generality, STAGED** (operator directive relayed via
+**Author:** design (design-value-facts). **Status:** **PROPOSAL — scope DECIDED, stakeholder review
+COMPLETE (all 6 owners signed off, 2026-07-21); READY FOR STAGE-1 VERTICAL.** Scope is confirmed
+**(A) full generality, STAGED** (operator directive relayed via
 pr-sync: "as general as possible so we can extend it to all data types" ⇒ all fact-kinds, sequenced;
 slices stop-able after any increment). The operator is NOT iterating interactively — this doc is
 written with concrete recommendations in place of every question, then circulated to the stakeholder
@@ -131,6 +132,16 @@ The **flow-sensitive fact environment** generalizes today's `range_refinements` 
 emit-only/never-memoized discipline, and the branch-frame merge all carry over unchanged — this is a
 type-widening of an existing, proven mechanism, not a new subsystem.
 
+**The load-bearing performance invariant (v-compiler-perf, confirmed 2026-07-21): the branch-frame
+JOIN must stay per-var-O(1).** At a control-flow merge, each variable's `ValueFact` is joined by joining
+each facet INDEPENDENTLY — `int_range` union, `nonzero` AND, `len_range` union, `variant_tags`
+set-union — never any cross-variable work. This is exactly *why* D2 keeps a relational numeric domain
+(`x < y` between two variables) OUT of the foundation: a relational facet would make the join O(vars²)
+and turn a bounded constant-factor widening into a new algorithmic axis. With per-facet-independent
+join, the widening is a bounded constant over today's interval cost (a few more `Option` fields to
+clone/merge), NOT a new cost axis — verified against v-compiler-perf's linear-per-annotation descent
+survey. A relational facet, if ever added, must carry its own cost justification; it is not free.
+
 **Soundness invariant (load-bearing, restated):** a fact may only be ADDED when the analysis can prove
 it holds on the branch. The elision consumer ALWAYS defaults to keeping the check when the fact is
 absent/⊤. So a bug in fact *derivation* that produces too-wide a fact is the only way to miscompile —
@@ -159,9 +170,16 @@ are pure refactors (behavior-identical) and value arrives without ever risking a
    still traps.
 4. **`len_range` facet + collection-bounds elision.** Length facts already exist as `[0, 2^32−1]`;
    promote to a real facet sourced from `List.len`/literal construction and refined by
-   `if (< i (List.len xs))`. Consume at the indexed-access bounds check. Gate: provably-in-range index
-   elides; out-of-range still traps. **Coordinate with v-runtime** (owns collection reps) on where the
-   length is known at Core tier.
+   `if (< i (List.len xs))`. Add a Core-tier `provably_in_bounds(db, idx, coll, id) -> bool` predicate
+   (sibling of `provably_no_overflow`). Consume at the indexed-access bounds check. Gate:
+   provably-in-range index elides; out-of-range still traps. **Coordinate with v-runtime** (owns
+   collection reps) on where the length is known at Core tier. **⚠ v-wasm-opt FLAG (2026-07-21): unlike
+   the arith path, the wasm `List.at`/`Bytes.at` bounds guard is emitted INLINE** (`select.rs:2522/2775`
+   = raw vec-len + compare + None/trap) and is NOT gated on any shared predicate — so this slice needs a
+   one-line wasm arm change to consult `provably_in_bounds` before emitting the inline check, else the
+   fact is bypassed on wasm. v-wasm-opt will do that wasm-side edit when the predicate lands (rust's
+   bounds path already routes through Core predicates — v-rust-backend confirmed). This is the one
+   emit-side change any slice requires; slices 1–3 (arith/nonzero) need zero backend change.
 5. **`variant_tags` facet + redundant-discriminant/arm elision** — the most "all data types" slice.
    Source: a `match` arm binds the scrutinee to variant K (so inside the arm its tag set is `{K}`); a
    prior `is-K?` guard. Consume: a nested match/discriminant test on a value with a singleton tag set
@@ -195,6 +213,22 @@ posture and the tiered-opt level-equivalence rule:
 - **Fuzzer hook:** ask v-fuzzer for a differential mode that compiles a program with facts ON vs. a
   facts-OFF reference and diffs the observable result — a divergence is an unsound elision. (This is the
   strongest guard for the general lattice; propose after slice 3.)
+
+**The WIN metric (v-compiler-perf, confirmed 2026-07-21): measure DETERMINISTIC emitted-guard COUNT,
+never wall-clock** (an A/B wall-clock delta is below the fleet-load noise floor). Each slice gates on a
+guard-count *reduction*, three tiers:
+- **(a) Elision witness** — a program where the fact licenses dropping a guard; assert the drop
+  STRUCTURALLY, preferably by pinning the exact emitted-instruction count (guarded form emits N instrs,
+  fact-elided form N−k, pinned in an rcdzc select/emit unit test), or by a guard-presence probe
+  (`wasm-tools print | grep <guard-shape>` — the trap block / div-by-zero check / bounds compare is
+  ABSENT for the elided case, PRESENT for the control).
+- **(b) Soundness twin** — the paired case with the fact-establishing check REMOVED that MUST still
+  trap/misvalue (the §4b differential — proves the elision is fact-licensed, not luck).
+- **(c) Corpus-wide guard-count baseline** (standing aggregate) — the sum of overflow/div/bounds guard
+  blocks emitted across the behavior corpus, committed as a number each slice DRIVES DOWN; a peer change
+  that spuriously re-introduces guards makes it go UP = a visible regression. v-compiler-perf offered to
+  build this counter + wire it into `xtask` (the emit-side analogue of their alloc-bench). The per-slice
+  (a)+(b) pins are the minimum; (c) is the optional aggregate view.
 
 ---
 
@@ -238,6 +272,16 @@ provably_no_overflow(db, op, lhs, rhs, ty, id) =
   -> bool`, placed as a peer disjunct inside `provably_no_overflow`, added by v-core-opt in the wrapper.
   They land their discharge plumbing first and flip their optimizer last; I land slice 1 (the refactor)
   without touching their disjunct.
+- **CONFIRMED by both seam owners (2026-07-21):** v-verification confirmed §4.1/§5 and noted their
+  `discharged_no_overflow` **stays a `false` stub** for now (b3 is operator-(A)-blocked — needs the b4
+  per-node channel + a fuel-bounded compile-time kernel interpreter rcdzc lacks), so there is **no
+  near-term OR collision from their arm** and slice 1 can land freely. v-core-opt confirmed the wrapper
+  is the right place and the shape matches what they already approved. **Wrapper-edit ORDER (v-core-opt
+  directive):** the wrapper body (`provably_no_overflow`, `lower.rs:~19812`) must not be edited by two
+  efforts the same tick — whoever adds their OR-term first wins, the next rebases onto it; v-core-opt
+  offered to arbitrate / do the single wrapper edit. Since v-verification's disjunct is dormant, this
+  design's slice adding `fact_proven_safe` is the next wrapper edit — coordinate the one-line change with
+  v-core-opt when slice 1/2 lands it.
 
 ---
 
@@ -293,22 +337,22 @@ escalated to pr-sync (not the interactive widget).
 
 ---
 
-## 7. Stakeholder review (the mode: write → circulate → converge → hand off)
+## 7. Stakeholder review — COMPLETE, all owners signed off (2026-07-21)
 
 Per the operator's mode-change (relayed via pr-sync: "have it write up a proposal and get the other
-stakeholders to review it"), this doc is circulated to the owners below. Each is asked to confirm the
-seam that touches their territory; feedback is folded back into this doc before the stage-1 vertical
-lands anything in their area.
+stakeholders to review it"), the doc was circulated to the owners below and **all six responded and
+confirmed**. Their concrete feedback is folded into §2 / §3 / §4 / §4.1 above.
 
-| Owner            | What to confirm                                                                          |
+| Owner            | Verdict & folded-in feedback                                                             |
 |------------------|------------------------------------------------------------------------------------------|
-| **v-verification** | §4.1 three-disjunct composition + the `fact_proven_safe` signature/placement; that their b3 `discharged_no_overflow` and my fact-disjunct compose without either editing the other's body. **Most important review.** |
-| **v-core-opt**   | §4.1 that the disjunction wrapper (`provably_no_overflow`) is the right place to add a peer disjunct; slice-6 `ValueFactPass` tier assignment (O1 cheap facets / O2 whole-function) + pass ordering under `opt.rs`. |
-| **v-wasm-opt** + **rust-backend** | The emit-side elision consumers (`emit_checked_arith_to` / `emit_arith` and the div/bounds guards) need NO change — they already gate on the Core-tier predicate; confirm the new facets route through the same predicate, no per-backend re-elision. |
-| **v-inference**  | Integer facets read declared width bounds via `resolved_int_bounds` rather than re-deriving; the `match`-narrowing width descent they're extending (`1a037eaa2`) doesn't conflict with the `variant_tags` facet (slice 5). |
-| **v-compiler-perf** | The hot-path/emit-size probe: this is fundamentally their elision optimization; confirm the fact-derivation cost (emit-time in slices 1–5, once-per-fn in slice 6) is acceptable and define the emit-size win metric. |
+| **v-verification** | **CONFIRMED §4.1/§5** three-disjunct seam + `fact_proven_safe` signature. Their `discharged_no_overflow` **stays a `false` stub** (b3 operator-(A)-blocked) → no near-term OR collision; slice 1 lands freely. (§4.1) |
+| **v-core-opt**   | **CONFIRMED** the wrapper is the right place + the shape matches their prior agreement; slice-6 O1(int/nonzero)/O2(len/tag) tiers **CONFIRMED correct**; `--opt-sweep` level-equivalence is the mandatory gate. Directive: **coordinate the one-line wrapper edit order** (don't co-edit `lower.rs:~19812`). (§4.1) |
+| **v-rust-backend** | **CONFIRMED** — audited every rust arith/div/shift guard; NONE range-checks independently of the shared Core predicate. New fact-kinds elide with **zero rust change**. Will re-audit when a new predicate lands. |
+| **v-wasm-opt**   | **CONFIRMED** arith/shift = zero wasm change (predicate-routed). **🚩 FLAG folded into slice 4:** `List.at`/`Bytes.at` bounds guard is INLINE (`select.rs:2522/2775`), not predicate-routed → the `len`→bounds facet needs a one-line wasm arm change to consult `provably_in_bounds`; they'll do it wasm-side. |
+| **v-inference**  | (Note delivered; reads `resolved_int_bounds` as the width source, `variant_tags` orthogonal to their match width-narrowing.) |
+| **v-compiler-perf** | **CONFIRMED** cost OK **iff the join stays per-var-O(1)** (validates D2 — keep relational facets out; folded into §2). WIN METRIC = **deterministic emitted-guard COUNT**, not wall-clock: per-slice (a) elision witness + (b) soundness twin + optional (c) corpus-wide guard-count baseline they'll build. (folded into §4) |
 
-**Convergence → handoff:** once v-verification + v-core-opt sign off on §4.1 (the load-bearing seam), a
+**Convergence → handoff:** both load-bearing sign-offs (v-verification + v-core-opt on §4.1) are IN, so a
 **stage-1 vertical-ready brief** goes to the PM (`design-flow-sensitive-value-facts.md` in the queue),
 pointing at this doc, naming subsystem `rcdzc`, and scoping the first increment as **slice 1 (the
 `ValueFact` interval-only refactor — behavior-identical, the safety floor)**. Later slices are follow-on

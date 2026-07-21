@@ -978,6 +978,58 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: (tuple 1 1 0) (Tuple Int64 Int64 Int64))))
 
+(case "a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on every backend"
+  (doc    "The recursive companion of the Ast decline note above, now that the rust emit routes a
+           monomorphic user sum through a generated recursive helper (call-indirection, so a
+           self-referential sum no longer expands the inline match unboundedly): `(type Ast (Lit Int64)
+           (Node (List Ast)))` — recursive THROUGH a List element — and two runtime-built two-child trees
+           `(Node (list (Lit a) (Lit (+ a 1))))` compare structurally: equal at `a = 5`, unequal at
+           `a = 7`. The walk descends sum → list spine → each child sum → payload. Pins the recursive
+           sum-through-collection equality on all three backends.")
+  (input  (do
+            (type Ast (Lit Int64) (Node (List Ast)))
+            (def (mk (: n Int64))
+              (Node (list (Lit n) (Lit (+ n 1)))))
+            (def (main (: a Int64))
+              (= (mk a) (mk 5)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: true Bool))
+  (call   main (: 7 Int64)) (output (: false Bool)))
+
+(case "a runtime = on a sum recursive through a RECORD-of-TUPLE payload walks structurally"
+  (doc    "The record-payload face of the recursive-sum walk: `(type Tree (Leaf) (Branch (Record (: v
+           Int64) (: kids (Tuple Tree Tree)))))` — the recursion re-enters through a record FIELD holding a
+           tuple of children, so the walk must descend sum → record (sorted fields) → tuple → child sums.
+           Runtime-built one-branch trees compare equal at `a = 5`, unequal at `a = 7`. With the
+           list-element case above, pins both re-entry wrappers (collection spine and record/tuple fields)
+           of the recursive equality walk.")
+  (input  (do
+            (type Tree (Leaf) (Branch (Record (: v Int64) (: kids (Tuple Tree Tree)))))
+            (def (mk (: n Int64))
+              (Branch (record (v n) (kids (tuple (Leaf) (Leaf))))))
+            (def (main (: a Int64))
+              (= (mk a) (mk 5)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: true Bool))
+  (call   main (: 7 Int64)) (output (: false Bool)))
+
+(case "a runtime = over MUTUALLY-recursive sums walks across the type cycle"
+  (doc    "The mutual-recursion face: `(type E (Num Int64) (Neg T))` and `(type T (Wrap E))` recurse
+           through EACH OTHER, so the equality walk (and on rust, the generated per-type helper fns) must
+           handle a type CYCLE spanning two declarations — `__eq_E` calling `__eq_T` calling `__eq_E` —
+           not only direct self-reference. `(Neg (Wrap (Num a)))` compares equal at `a = 4`, unequal at
+           `a = 6`. A cycle-detection keyed on a single type (or helpers generated per-type without
+           cross-references) would either loop or decline this shape.")
+  (input  (do
+            (type E (Num Int64) (Neg T))
+            (type T (Wrap E))
+            (def (mk (: n Int64)) (Neg (Wrap (Num n))))
+            (def (main (: a Int64))
+              (= (mk a) (mk 4)))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: true Bool))
+  (call   main (: 6 Int64)) (output (: false Bool)))
+
 (case "a negative zero in a record field is distinct from positive zero"
   (doc    "The record companion of the nested -0.0 case: `(= (record (x -0.0)) (record (x 0.0)))` =
            false — the field `x` holds -0.0 in one record and 0.0 in the other, distinct canonical byte
@@ -1198,6 +1250,38 @@
                                (IntList.Cons (tuple n (build (- n 1))))))
             (def (main) (if (= (build 3) (build 2)) 1 0)) (export main)))
   (output (: 0 Int64)))
+
+(case "recursive-sum equality is decided by RUNTIME parameters, both regimes in one export"
+  (doc    "The parameterized face of the recursive-sum heap walk: the deep-list cases above compare
+           builds with CONSTANT arguments (equal or unequal is fixed at authoring time); here `(= (mk a)
+           (mk b))` over RUNTIME `a`/`b` — a Peano-style `(type Nat (Z) (S Nat))` built by recursion —
+           reports true at (3,3) and false at (3,2) from ONE compiled comparison. Pins that the emitted
+           walk is a genuine runtime decision over both spines, not a specialization per call site.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk (: n Int64)) (if (= n 0) (Z) (S (mk (- n 1)))))
+            (def (main (: a Int64) (: b Int64))
+              (= (mk a) (mk b)))
+            (export main)))
+  (call   main (: 3 Int64) (: 3 Int64)) (output (: true Bool))
+  (call   main (: 3 Int64) (: 2 Int64)) (output (: false Bool)))
+
+(case "recursive-sum equality discriminates a difference at the DEEPEST node"
+  (doc    "The full-spine-walk guard: the unequal deep-list case above differs at the FIRST node (the
+           walk may return false immediately); here two 4-node lists agree on every head EXCEPT the
+           LAST — `(mk 3 x)` builds `[3,2,1,x]` and the comparand is `[3,2,1,99]` — so the walk must
+           recurse through all the equal prefix nodes to find the tail difference. True at `x = 99`,
+           false at `x = 7`. A walk that short-circuited on prefix equality (or compared only k levels)
+           would report true for both calls.")
+  (input  (do
+            (type L (Nil) (Cons Int64 L))
+            (def (mk (: n Int64) (: last Int64))
+              (if (= n 0) (Cons last (Nil)) (Cons n (mk (- n 1) last))))
+            (def (main (: x Int64))
+              (= (mk 3 x) (mk 3 99)))
+            (export main)))
+  (call   main (: 99 Int64)) (output (: true Bool))
+  (call   main (: 7 Int64))  (output (: false Bool)))
 
 (case "two runtime sums with the same payload but different variants compare unequal by a heap walk"
   (doc    "The discriminant half of the runtime heap walk: `pick` builds `(N.I n)` or `(N.J n)` from a

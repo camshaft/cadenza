@@ -1218,7 +1218,7 @@ fn width_fault_against_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<Rej
     }
     // A FLOAT literal that overflows a narrow `Float32` `want` — the float analogue of the narrow-int
     // block below, reached here (not only by `literal_width_fault`'s direct-literal check) so it fires
-    // through the runtime `if`/`match`/`let` descent above: `(: (if c 1.0e300 0.0) Float32)` PASSED `cdz
+    // through the runtime `if`/`match` descent above: `(: (if c 1.0e300 0.0) Float32)` PASSED `cdz
     // check` while the emit path produced an INVALID module (the branch literal is `±inf` in Float32, a
     // malformed value with no written form). Only `Float32` is narrow enough to overflow a finite `Float64`
     // literal; the retype-to-`Float64` fix is not offered here (no `ty_expr` for a nested/branch position,
