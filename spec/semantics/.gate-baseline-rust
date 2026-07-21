@@ -3433,6 +3433,8 @@ pass	pushing an element onto a list appends it
 pass	quasiquote constructs AST with selective evaluation
 pass	quasiquote makes AST construction readable
 pass	quasiquote nests with inner unquote evaluated
+pass	multi-limb BigInt map keys stay distinct and look up by full value
+pass	multi-limb BigInt set elements deduplicate by full value
 pass	quasiquotes unquoting a runtime variable and a literal build equal ASTs
 pass	quote of a let reifies as an Ast.List with a let head and round-trips
 pass	quote of a nested quote form is inert — the inner quote is not evaluated

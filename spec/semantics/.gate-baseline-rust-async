@@ -3433,6 +3433,8 @@ pass	reading a member from an if-of-records resolves each branch's field by its 
 pass	reading a string's scalar addresses scalar values, not bytes
 pass	reading a string's scalar in bounds yields Some of the char
 pass	reading a string's scalar out of bounds yields None
+pass	multi-limb BigInt map keys stay distinct and look up by full value
+pass	multi-limb BigInt set elements deduplicate by full value
 pass	reading the text a printer produced round-trips to an equal value
 pass	record equality is independent of the order fields are written
 pass	record fields render in canonical (key-sorted) order regardless of source order

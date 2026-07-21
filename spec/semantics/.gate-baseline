@@ -3433,6 +3433,8 @@ pass	multiplying a compound (tuple) by a number is a cross-kind type error, not 
 pass	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
 pass	multiplying quantities multiplies their dimensions
 pass	narrowing a BigInt-valued if back to Int64 works over both branches
+pass	multi-limb BigInt map keys stay distinct and look up by full value
+pass	multi-limb BigInt set elements deduplicate by full value
 pass	narrowing a constant BigInt out of the target range is rejected at compile time
 pass	narrowing a runtime Int64 to a fixed width with .of declines (the checked-narrow emit is pending)
 pass	negating a runtime Int64 near the boundary is exact just above the min
