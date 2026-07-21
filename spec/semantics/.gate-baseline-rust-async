@@ -449,6 +449,7 @@ pass	a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside
 pass	a RECORD field built from a runtime param boxes its Map handle correctly (function[27] record-path twin)
 pass	a RECORD used as a map key hashes and matches by its field SET, independent of written order
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
+pass	a RECURSIVE sum as a Map key hits and misses by structural content
 pass	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
 pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
 pass	a RUNTIME Ast structural equality compares by value (Ast.Int scalar leaf and Ast.List compound)
@@ -983,6 +984,7 @@ pass	a record key with a float-bearing TUPLE field keys by content
 pass	a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on every backend
 pass	a runtime = on a sum recursive through a RECORD-of-TUPLE payload walks structurally
 pass	a runtime = over MUTUALLY-recursive sums walks across the type cycle
+pass	a runtime-PARAMETERIZED recursive sum renders per-call depths from one export
 pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
 pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
 pass	a tuple key whose element is itself a float-bearing tuple keys by content

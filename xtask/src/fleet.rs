@@ -7208,6 +7208,14 @@ mod tests {
             decide_drain_nudge(true, true, None, 95, Some("m1"), Some(("m1", 200)), cg, sg),
             DrainNudge::Stuck
         );
+        // Stuck EXACT boundary: the suppression is `age < stuck_grace`, so `age == stuck_grace` is
+        // already OUT of the short window → re-nudge (Stuck). Pins the `<` (a `<=` mutant would suppress
+        // one extra sweep and survive the 60/200 cases above).
+        assert_eq!(
+            decide_drain_nudge(true, true, None, 95, Some("m1"), Some(("m1", 180)), cg, sg),
+            DrainNudge::Stuck,
+            "age == stuck_grace is past the short window → Stuck (grace is exclusive)"
+        );
         // DIFFERENT message (agent drained the old one, a new one arrived) within churn grace → healthy
         // churn, DON'T re-nudge (the full anti-spam window applies to a fresh id).
         assert_eq!(
@@ -7218,6 +7226,14 @@ mod tests {
         assert_eq!(
             decide_drain_nudge(true, true, None, 95, Some("m2"), Some(("m1", 950)), cg, sg),
             DrainNudge::Fresh
+        );
+        // Churn EXACT boundary: suppression is `age < churn_grace`, so `age == churn_grace` is already
+        // OUT of the full grace → Fresh. Pins the `<` (a `<=` mutant would suppress one extra sweep and
+        // survive the 60/950 cases above).
+        assert_eq!(
+            decide_drain_nudge(true, true, None, 95, Some("m2"), Some(("m1", 900)), cg, sg),
+            DrainNudge::Fresh,
+            "age == churn_grace is past the full grace → Fresh (grace is exclusive)"
         );
         // Legacy marker with an EMPTY recorded id never matches a real filename → treated as churn, not
         // stuck (degrades safely: full grace, no premature "didn't stick" re-nudge).

@@ -1623,13 +1623,18 @@ impl<'a> Printer<'a> {
             row_var = Some(variants[variants.len() - 1]);
             variants = &variants[..variants.len() - 2];
         }
-        self.doc.cbox(INDENT);
+        // Leading `///` docs print at the type declaration's OWN column, OUTSIDE the `cbox(INDENT)` that
+        // indents the `|`-led variants — otherwise the doc block's continuation lines (every line after the
+        // first `hardbreak`) reflow to the box's INDENT while line 1 stays at column 0, an inconsistent
+        // per-line indent within one doc header (PR-flagged: a multi-line `type` doc-header printed line 1
+        // flush but lines 2+ indented 2 spaces). Mirrors `print_def`, which prints its docs flush.
         for &d in docs {
             if let Some(a) = self.a.as_form(d, "doc") {
                 self.print_doc(a[0]);
             }
             self.doc.hardbreak();
         }
+        self.doc.cbox(INDENT);
         self.doc.word("type ");
         self.expr(name, 0);
         self.doc.word(" =");
@@ -5134,6 +5139,27 @@ mod tests {
         assert_eq!(
             print(&a, 80),
             "type FL =\n  | FNil\n  | FCons(Tuple(Int64, FL))"
+        );
+    }
+
+    #[test]
+    fn a_multiline_type_doc_header_prints_every_line_flush_not_indented() {
+        // A `///` doc header on a `type` decl must print EVERY line at the type's own column — line 1 AND
+        // its continuation lines. Regression: `print_type` opened `cbox(INDENT)` BEFORE the docs, so the
+        // first `hardbreak` reflowed line 2+ to the box's INDENT while line 1 stayed at column 0 — an
+        // inconsistent per-line indent within one doc block (v-cdz-tooling flagged: multi-line `type` doc
+        // headers went `///`\n`  ///`). Docs now print outside the variant-indent box, like `print_def`.
+        let a = sexpr::read(r#"(type T (doc "line one") (doc "line two") (doc "line three") A B)"#)
+            .unwrap();
+        assert_eq!(
+            print(&a, 80),
+            "/// line one\n/// line two\n/// line three\ntype T =\n  | A\n  | B",
+            "every doc-header line flush at column 0; variants indented under `type`"
+        );
+        // Round-trips + idempotent (the `///` header re-reads to the same `(doc …)` nodes).
+        assert_eq!(
+            assert_roundtrip("/// one\n/// two\ntype T = | A | B", 80),
+            "/// one\n/// two\ntype T =\n  | A\n  | B"
         );
     }
 
