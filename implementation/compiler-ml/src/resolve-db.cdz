@@ -16,7 +16,7 @@
 /// resolve column (`Map(NodeId, Resolved)`) as it descends. Once built, a lookup is O(1) — the column IS the
 /// memo (the DB discipline; rcdzc's resolve fills all of a tree's resolved facts in one demand-driven walk).
 
-import { Tok, Node, Tree, node-at, parse-tokens, is-let, add-node, empty-tree, param-of, param2-of, param3-of, arg2-of, arg3-of } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, is-let, add-node, empty-tree, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of } from "parse-db"
 
 /// The resolve fact for a variable reference. `RBound(binderId)` = bound to the `NLet` at `binderId`;
 /// `RPoison` = the name is unbound (a FILLED negative decision — not absence).
@@ -71,20 +71,29 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
         //  slice-3d: a 2-ARG call `(add a b)` resolves BOTH args in the caller scope, and the body sees BOTH
         //  params bound `{p1→param1, p2→param2}` (found by bodyId). arg2 is keyed by this NApp node-id (id).
         (let colA1 = (if (argId == (0 - 1)) then col else resolve-node(tree, argId, env, col)) in
-         (let colArg = (match arg2-of(tree, id) with
+         (let colA2 = (match arg2-of(tree, id) with
                           | Option.Some(a2) => resolve-node(tree, a2, env, colA1)   // resolve arg2 in caller scope too
                           | Option.None(_) => colA1) in
-          (match param-of(tree, calleeId) with
-            | Option.Some(paramId) =>
-                (let scope1 = param-scope(tree, paramId, (Map.empty : Map(Int64, Int64))) in
-                 (let scope2 = (match param2-of(tree, calleeId) with
-                                  | Option.Some(param2Id) => param-scope(tree, param2Id, scope1)  // + 2nd param
-                                  | Option.None(_) => scope1) in
-                  (let bodyScope = (match param3-of(tree, calleeId) with
-                                      | Option.Some(param3Id) => param-scope(tree, param3Id, scope2)  // + 3rd param (slice-3e)
-                                      | Option.None(_) => scope2) in
-                   resolve-node(tree, calleeId, bodyScope, colArg))))
-            | Option.None(_) => resolve-node(tree, calleeId, (Map.empty : Map(Int64, Int64)), colArg))))
+          (let colA3 = (match arg3-of(tree, id) with
+                          | Option.Some(a3) => resolve-node(tree, a3, env, colA2)   // + arg3 (slice-3e)
+                          | Option.None(_) => colA2) in
+           (let colArg = (match arg4-of(tree, id) with
+                            | Option.Some(a4) => resolve-node(tree, a4, env, colA3)  // + arg4 (slice-3f)
+                            | Option.None(_) => colA3) in
+            (match param-of(tree, calleeId) with
+              | Option.Some(paramId) =>
+                  (let scope1 = param-scope(tree, paramId, (Map.empty : Map(Int64, Int64))) in
+                   (let scope2 = (match param2-of(tree, calleeId) with
+                                    | Option.Some(param2Id) => param-scope(tree, param2Id, scope1)  // + 2nd param
+                                    | Option.None(_) => scope1) in
+                    (let scope3 = (match param3-of(tree, calleeId) with
+                                        | Option.Some(param3Id) => param-scope(tree, param3Id, scope2)  // + 3rd param (slice-3e)
+                                        | Option.None(_) => scope2) in
+                     (let bodyScope = (match param4-of(tree, calleeId) with
+                                         | Option.Some(param4Id) => param-scope(tree, param4Id, scope3)  // + 4th param (slice-3f)
+                                         | Option.None(_) => scope3) in
+                      resolve-node(tree, calleeId, bodyScope, colArg)))))
+              | Option.None(_) => resolve-node(tree, calleeId, (Map.empty : Map(Int64, Int64)), colArg))))))
     | Option.None(_) => col   // an id not in the arena (a malformed tree) resolves to nothing
 
 /// The resolve COLUMN builder: resolve the whole tree from `root`, starting with an empty scope + column.

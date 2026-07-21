@@ -2789,6 +2789,21 @@
   (output (: (tuple (Qty.of 5000.0 (Unit.base #"meter")) (Qty.of 2000.0 (Unit.base #"meter"))
                     (Qty.of 3000.0 (Unit.base #"meter"))) V3q)))
 
+(case "a USER-DEFINED multi-variant sum payload quantity renders scaled to its reference"
+  (doc    "A quantity in a USER-DEFINED multi-variant sum's payload displays scaled to its reference when the
+           sum is returned as a value: `(type Shape (Circle (Qty Float64 kilometer)) (Sq Int64))` with
+           `(Circle (Qty.of 3.0 kilometer))` renders `(Circle (Qty.of 3000.0 meter))` — the ×1000 kilo scale
+           folds into the payload magnitude, the unit shows at the reference `meter`. Extends the compound
+           value-form scale-fold (tuple / Option / Result / record) to a USER sum's variant-constructor
+           payload hole — the render descends the matched variant and scales its Qty leaf. The payload's
+           declared unit equals the applied value's unit (kilometer = kilometer; a quantity does not
+           auto-convert at construction). Number and unit AGREE in the payload.")
+  (input  (do
+            (type Shape (Circle (Qty Float64 (Unit.prefix kilo (Unit.base #"meter")))) (Sq Int64))
+            (def (main) (Shape.Circle (Qty.of 3.0 (Unit.prefix kilo (Unit.base #"meter")))))
+            (export main)))
+  (output (: (Circle (Qty.of 3000.0 (Unit.base #"meter"))) Shape)))
+
 (case "a Qty payload's INNER type stays a real type parameter — the unit-arg skip does not over-skip"
   (doc    "The companion of the two cases above, guarding the OTHER edge of the `(Qty T u)` type-parameter
            skip. `collect_type_params` descends ONLY into a `(Qty T u)`'s inner type `T` and skips the unit

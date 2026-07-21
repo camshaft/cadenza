@@ -365,6 +365,19 @@
             (_ "miss")))
   (output (: "hi" String)))
 
+(case "a constant-size utf8 segment over ill-formed UTF-8 is a non-match, not a trap"
+  (doc    "The totality companion of the constant-size utf8 case: a `(bin (utf8 s 2))` segment whose 2 bytes
+           are NOT valid UTF-8 must FALL THROUGH to the catch-all, never trap — decoding-bytes-to-a-string is
+           total (the ill-formed case is a branch the exhaustiveness rule forces the program to carry).
+           Against `(Bytes.of (list 255 255))` — 0xFF 0xFF is not a well-formed UTF-8 sequence (an invalid
+           lead byte) — the utf8 segment does not match, so the `_` arm yields \"bad\". Pins that the strict
+           `str::from_utf8` validation in the decode (which the constant-literal-size path now reaches, ruling
+           (a)) treats ill-formed bytes as a non-match, the soundness guard that pairs with the const-size fix.")
+  (input  (match (Bytes.of (list 255 255))
+            ((bin (utf8 s 2)) s)
+            (_ "bad")))
+  (output (: "bad" String)))
+
 (case "a bytes segment sized by a CONSTANT LITERAL binds a fixed number of bytes then composes"
   (doc    "The `bytes` companion of the constant-literal-size utf8 case: `(bin (bytes b 2) (u8 last))` binds
            exactly the first 2 bytes to `b`, then a following `u8` segment reads the third byte — a

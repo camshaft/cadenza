@@ -1424,6 +1424,29 @@
   (input  (= (print (read ".")) "."))
   (output (: true Bool)))
 
+; The `#`-prefixed-atom companion of the operator-symbol-token case above (v-syntax authoritative, their
+; lane): the reader treats `#` as a Sym/char SIGIL only when the next byte is `"` (`#"foo"` → a Symbol
+; VALUE leaf) or `\` (a char); for any OTHER following byte — including an identifier char — a bare `#`
+; reads as an ORDINARY atom, so `#foo` lexes as a single `Ast.Name` whose text INCLUDES the `#` (byte-len
+; 4). So `(quote #foo)` = `(Ast.Name "#foo")`, a `#`-prefixed NAME — DISTINCT from `(quote foo)` (the bare
+; name) and from `#"foo"` (a symbol value, which has no `Ast` variant and declines). Pins that the `#`
+; stays part of the name text through quote, not stripped or treated as a separate token.
+
+(case "a hash-prefixed atom quotes to an Ast.Name carrying the hash in its text"
+  (doc    "`(quote #foo)` is `(Ast.Name \"#foo\")` — the reader's `#` sigil is active only before `\"`/`\\`
+           (symbol/char), so a `#` before an identifier char is part of an ordinary name atom; the `#` is
+           carried in the `Ast.Name` text. Companion of the lone-punctuation-token case; the NAME half of
+           the `#foo` (name) vs `#\"foo\"` (symbol value) distinction.")
+  (input  (= (quote #foo) (Ast.Name "#foo")))
+  (output (: true Bool)))
+
+(case "a hash-prefixed name is distinct from the bare name without the hash"
+  (doc    "The discriminating companion: `(quote #foo)` and `(quote foo)` quote to DIFFERENT `Ast.Name`
+           values (`\"#foo\"` vs `\"foo\"`), so `=` is FALSE — the `#` is a significant part of the name
+           text, not stripped. Guards against a reader that dropped a leading `#` and collapsed the two.")
+  (input  (= (quote #foo) (quote foo)))
+  (output (: false Bool)))
+
 (case "an active unquote of a float literal lifts to an Ast.Float node"
   (doc    "`` `(f ,2.5) `` embeds the float literal `2.5` as the `Ast.Float` leaf its value denotes — the
            same node `(quote (f 2.5))` builds. The float companion of the literal Int/Bool/Str cases.")

@@ -2974,3 +2974,26 @@
   (output (: 6 Int64))
   (call   main (: -3 Int64))
   (trap   "unreachable"))
+
+(case "FULL CONTRACT: @requires + @ensures on ONE def fire INDEPENDENTLY — a pre-violation and a post-violation trap on DIFFERENT inputs"
+  (doc    "The canonical precondition+postcondition contract on a single def, pinning that BOTH arms enforce on
+           DISTINCT inputs (the existing @requires-over-@ensures case pins the precondition firing THROUGH the
+           wrapper; this pins the two checks are independent and each traps on its own violating input).
+           `@requires(>= x 0)` + `@ensures(< ret 10)` on `(f x) = (+ x 1)` carves three regions over the runtime
+           arg: x=3 satisfies both (3>=0, ret=4<10) → 4; x=-1 violates the PRECONDITION at body-entry → traps
+           BEFORE the body runs; x=20 satisfies the precondition (20>=0) but ret=21 violates the POSTCONDITION at
+           body-exit → traps. Two traps from two different injected checks — verify_enforce wraps the body as
+           `(if PRE (let ((ret BODY)) (if POST ret trap)) trap)`, and this witnesses both trap edges. Runtime
+           arg via main's param (no const-fold).")
+  (input  (do
+            (@ (requires (>= x 0))
+               (@ (ensures (< ret 10))
+                  (def (f (: x Int64)) (+ x 1))))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 4 Int64))
+  (call   main (: -1 Int64))
+  (trap   "unreachable")
+  (call   main (: 20 Int64))
+  (trap   "unreachable"))

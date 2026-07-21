@@ -2179,6 +2179,10 @@ fn watchdog(
         // Only ACTIONABLE queued mail counts toward a drain-stall — stale informational notes/merged
         // acks an agent left un-archived are untidy, not stuck work (see `message_kind_is_actionable`).
         let actionable_depth = actionable_inbox_depth(&fleet.inbox(&a.name));
+        // Read the PRIOR sweep's actionable depth BEFORE recording this one, for the draining-delta
+        // signal below (a strict drop proves the loop is consuming its own mail — see `queue_is_draining`).
+        let prev_depth = last_actionable_depth(fleet, &a.name);
+        record_actionable_depth(fleet, &a.name, actionable_depth);
         let pane_idle = hb_age.is_some() && !pane_working;
         // The instantaneous snapshot only SUSPECTS a stall — a busy agent shows a bare prompt for a
         // sub-second gap between tool-turns, so one capture can't distinguish "idle at prompt" from
@@ -2198,7 +2202,17 @@ fn watchdog(
         } else {
             false
         };
-        let drain_stall = drain_stall_confirmed(suspected_stall, working_on_recheck);
+        // Second exoneration (besides "work on the recheck"): the actionable queue is strictly SMALLER
+        // than last sweep. A single-writer like pr-sync bakes a multi-MR gate BATCH in a DETACHED
+        // subprocess, so its pane sits at a bare `❯` on BOTH captures (the recapture only catches a
+        // sub-second between-turns gap, not a minutes-long detached bake) AND trunk stays flat until the
+        // whole batch lands — both drain-stall-shaped, yet it's healthily draining. A depth that DROPPED
+        // since last sweep is positive proof the loop is consuming its own mail (only self-consumption
+        // lowers it; new mail raises it). First sweep (no prior) can't drop → not exonerated (correct: a
+        // genuinely wedged agent must not get a free pass on the sweep we first see it).
+        let queue_draining = queue_is_draining(prev_depth, actionable_depth);
+        let drain_stall =
+            drain_stall_confirmed(suspected_stall, working_on_recheck || queue_draining);
         if drain_stall {
             drain_stalls += 1;
             eprintln!(
@@ -2842,6 +2856,25 @@ fn stamp_firstseen(fleet: &Fleet, name: &str) {
     std::fs::write(dir.join(name), "firstseen\n").ok();
 }
 
+/// The actionable inbox depth this agent had on the PRIOR watchdog sweep, or `None` if we've never
+/// recorded one (first sweep). Persisted as a tiny touch-file per agent (mirrors `firstseen`), read
+/// before `record_actionable_depth` overwrites it — feeds `queue_is_draining` for the drop-detection
+/// that exonerates a healthily-draining single-writer whose pane reads idle mid-batch.
+fn last_actionable_depth(fleet: &Fleet, name: &str) -> Option<usize> {
+    std::fs::read_to_string(fleet.root.join("actionable-depth").join(name))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+}
+
+/// Record this sweep's actionable inbox depth for `name`, for next sweep's draining-delta check. Best
+/// effort (ignore IO errors — a missed write just means no drop is detected next sweep, i.e. the safe/
+/// conservative direction: we'd warn rather than silently miss a real stall).
+fn record_actionable_depth(fleet: &Fleet, name: &str, depth: usize) {
+    let dir = fleet.root.join("actionable-depth");
+    std::fs::create_dir_all(&dir).ok();
+    std::fs::write(dir.join(name), format!("{depth}\n")).ok();
+}
+
 /// A file's modification time as seconds since the epoch, or `None` if it can't be read.
 fn file_mtime_unix(path: &Path) -> Option<u64> {
     let mtime = std::fs::metadata(path).ok()?.modified().ok()?;
@@ -3162,6 +3195,18 @@ fn is_probable_drain_stall(role: &str, actionable_depth: usize, pane_idle: bool)
 /// agent still shows no work on the recheck → confirmed. Pure so the two-sample AND is unit-tested.
 fn drain_stall_confirmed(suspected: bool, working_on_recheck: bool) -> bool {
     suspected && !working_on_recheck
+}
+
+/// Is the agent's actionable inbox DRAINING across sweeps? A strict drop from the prior sweep's depth is
+/// positive proof the loop is consuming its own mail — only self-consumption lowers the count (new mail
+/// raises it). This exonerates a single-writer (e.g. pr-sync) that bakes a multi-MR gate BATCH in a
+/// detached subprocess: its pane reads idle-at-prompt on BOTH watchdog captures and trunk stays flat
+/// until the whole batch lands, so it looks drain-stalled, yet the shrinking queue proves it isn't.
+/// `None` prev (first sweep we've recorded a depth for this agent) can't establish a drop → NOT draining
+/// (a genuinely wedged agent must not get exonerated on the very sweep we first observe it). Pure so the
+/// monotonicity is unit-tested; the caller supplies the persisted prior depth.
+fn queue_is_draining(prev_depth: Option<usize>, current_depth: usize) -> bool {
+    prev_depth.is_some_and(|prev| current_depth < prev)
 }
 
 /// What the watchdog should do about a probable drain-stall this sweep. Distinguishes a first/fresh
@@ -7136,6 +7181,49 @@ mod tests {
         // Never suspected → never confirmed, regardless of the recheck (recheck isn't even taken).
         assert!(!drain_stall_confirmed(false, false));
         assert!(!drain_stall_confirmed(false, true));
+    }
+
+    #[test]
+    fn queue_is_draining_only_on_a_strict_drop_across_sweeps() {
+        // The pr-sync-mid-batch shape the recapture CAN'T catch: its gate batch runs in a detached
+        // subprocess, so the pane reads idle-at-prompt on BOTH captures (working_on_recheck stays false)
+        // and trunk is flat — yet a shrinking queue proves the loop is draining its own mail.
+        assert!(
+            queue_is_draining(Some(13), 12),
+            "13→12 is a drop → draining"
+        );
+        assert!(queue_is_draining(Some(5), 0), "drained to empty → draining");
+        // Flat or GROWING is not draining — a genuinely wedged agent's queue holds steady or climbs.
+        assert!(
+            !queue_is_draining(Some(12), 12),
+            "flat → not draining (still suspect)"
+        );
+        assert!(
+            !queue_is_draining(Some(12), 15),
+            "grew → not draining (mail piling up)"
+        );
+        // First observed sweep (no prior) can't establish a drop → NOT exonerated, so a truly wedged
+        // agent still gets flagged the first sweep we see it (no free pass on first sight).
+        assert!(
+            !queue_is_draining(None, 12),
+            "no prior depth → cannot claim draining"
+        );
+        assert!(
+            !queue_is_draining(None, 0),
+            "no prior depth, even at zero → not a drop"
+        );
+        // And the draining exoneration composes with the confirm: the call site passes
+        // `working_on_recheck || queue_draining` as the exoneration arg. With an idle recheck
+        // (working_on_recheck = false), that reduces to queue_draining — so a dropping queue clears the
+        // stall and a flat queue leaves it confirmed.
+        assert!(
+            !drain_stall_confirmed(true, queue_is_draining(Some(13), 12)),
+            "suspected + idle-recheck but queue dropped 13→12 → cleared, not a stall"
+        );
+        assert!(
+            drain_stall_confirmed(true, queue_is_draining(Some(12), 12)),
+            "suspected + idle-recheck + flat queue → still a confirmed stall"
+        );
     }
 
     #[test]
