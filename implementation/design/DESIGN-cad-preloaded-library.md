@@ -4,8 +4,35 @@
 to embed the types in the output. It should include the whole library PRE-LOADED so the output is ONLY
 the user's model."*
 
-> **STATUS: DESIGN — routed to concierge for the seam owner + a ruling.** No code changed. The
-> investigation below is run against trunk `2d143ba3b`.
+> **STATUS: ✅ SHIPPED (P5 delivered, Option A + ruling A). This doc is now a RECORD, not a proposal.**
+> The reconciliation box just below records what shipped; the investigation below is retained as the design
+> record (it was run against trunk `2d143ba3b` at design time).
+
+## ✅ What shipped (reconciliation — read this first)
+
+P5 landed as **Option A (preloaded-modules parameter on the browser compile entry)** — the recommended
+option, operator ruling A. The reader's /cad buffer + emitted artifact is now ONLY the user's model.
+
+- **Compiler entry** — `implementation/seed/crates/cdz-wasm/src/lib.rs` gained a preloaded-modules compile
+  path (`compile_with_preloaded` / `compileWithPreloaded`): the preloaded library modules arrive as
+  parallel `names`/`sources`/`formats` arrays, and the user's buffer resolves its `import`s against them.
+  The native project-mode resolution mirrored into the browser entry, exactly as Option A proposed.
+- **The preloaded library** — `exact.cdz` (+ `helpers.cdz`), authored in ML, passed as the preload set
+  (`guide/src/cad/preloadModel.ts`, `CAD_LIB_NAME = "exact"`).
+- **The /cad starter** — no longer inlines `type Vec3r/Solidr` + the constructor boilerplate (verified:
+  none in `CadPage.tsx`). `CadPage`'s `injectImport` prepends only the pragma + the exact import; the
+  reader edits **only the model** (`def main() = lower(...)`), and every picker example is a bare
+  single-buffer model.
+- **Seam split (as designed)** — the compile-entry/resolver-scope change was compiler/inference +
+  cdz-wasm territory; v-cad supplied the preloadable CAD library + the single-buffer example contract;
+  v-guide-infra wired the /cad route to pass the preload set. Option C (string-prepend) stayed rejected.
+- **FORK RESOLUTIONS:** Q1 → Option A; Q2 (preload form) → parsed `.cdz` sources (ml format string); Q3
+  (priority) → shipped alongside/after P1.
+
+The original investigation + options analysis (below) is retained verbatim as the design record.
+
+---
+
 
 ## The problem, located
 

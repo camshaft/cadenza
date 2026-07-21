@@ -1541,6 +1541,47 @@
             ((Err _) false)))
   (output (: true Bool)))
 
+; The EXACT ENCODE-side tag byte per variant — the WIRE-FORMAT contract. ast-encoding.md assigns each
+; leaf/compound a leading tag byte (Int 0x00, Name 0x01, List 0x02, Bool 0x03, Str 0x04, Float 0x05), and
+; the decode arms above pin the READ side (an unknown tag → Err). But the round-trip cases only prove
+; decode INVERTS encode — a change that SWAPPED two tags (e.g. Bool↔Str) would still round-trip yet break
+; interop with any EXTERNAL decoder that reads the documented byte format. These six pin the ENCODE side
+; directly: the first byte `Ast.encode` emits for each variant is its assigned tag, read via `Bytes.at …
+; 0`. A tag reassignment or swap trips exactly the affected case. (`Int64.of` widens the byte to compare.)
+
+(case "the encoded tag byte of an Ast.Int is 0x00"
+  (doc    "`Ast.encode (Ast.Int …)` leads with tag byte 0x00 (ast-encoding.md). Pins the Int tag on the
+           ENCODE side — the write-side companion of the Int decode-arm cases.")
+  (input  (match (Bytes.at (Ast.encode (Ast.Int 5)) 0) ((Option.Some b) (Int64.of b)) (_ -1)))
+  (output (: 0 Int64)))
+
+(case "the encoded tag byte of an Ast.Name is 0x01"
+  (doc    "`Ast.encode (Ast.Name …)` leads with tag byte 0x01. Pins the Name tag on the encode side.")
+  (input  (match (Bytes.at (Ast.encode (Ast.Name "a")) 0) ((Option.Some b) (Int64.of b)) (_ -1)))
+  (output (: 1 Int64)))
+
+(case "the encoded tag byte of an Ast.List is 0x02"
+  (doc    "`Ast.encode (Ast.List …)` leads with tag byte 0x02. Pins the List tag on the encode side.")
+  (input  (match (Bytes.at (Ast.encode (Ast.List (list))) 0) ((Option.Some b) (Int64.of b)) (_ -1)))
+  (output (: 2 Int64)))
+
+(case "the encoded tag byte of an Ast.Bool is 0x03"
+  (doc    "`Ast.encode (Ast.Bool …)` leads with tag byte 0x03. Pins the Bool tag on the encode side —
+           guards against a Bool↔Str tag swap that would still round-trip.")
+  (input  (match (Bytes.at (Ast.encode (Ast.Bool true)) 0) ((Option.Some b) (Int64.of b)) (_ -1)))
+  (output (: 3 Int64)))
+
+(case "the encoded tag byte of an Ast.Str is 0x04"
+  (doc    "`Ast.encode (Ast.Str …)` leads with tag byte 0x04. Pins the Str tag on the encode side.")
+  (input  (match (Bytes.at (Ast.encode (Ast.Str "a")) 0) ((Option.Some b) (Int64.of b)) (_ -1)))
+  (output (: 4 Int64)))
+
+(case "the encoded tag byte of an Ast.Float is 0x05"
+  (doc    "`Ast.encode (Ast.Float …)` leads with tag byte 0x05 (then the 8-byte f64 bit pattern). Pins the
+           Float tag on the encode side — the write-side companion of the Float decode-arm cases.")
+  (input  (match (Bytes.at (Ast.encode (Ast.Float 1.5)) 0) ((Option.Some b) (Int64.of b)) (_ -1)))
+  (output (: 5 Int64)))
+
 (case "encoding and decoding a constructor-built compound AST round-trips"
   (doc    "The compound companion: a hand-built `(Ast.List (list (Ast.Name \"g\") (Ast.Int 5)))` MUST
            encode and decode back to an equal AST, exactly as a quote-built list does. Pins that the

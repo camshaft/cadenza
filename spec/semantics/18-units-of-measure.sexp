@@ -2750,6 +2750,25 @@
             (export main)))
   (output (: 5/1 Rational)))
 
+(case "a record of quantities RETURNED as a value renders every field scaled to its reference"
+  (doc    "The value-form RENDER companion of the construct-and-project case above: a GENERIC single-
+           constructor record `(type V3q (V3 a a a))` instantiated at a prefixed quantity and RETURNED WHOLE
+           renders each field scaled to its reference — `(V3q.V3 (5.0 km) (2.0 km) (3.0 km))` (all three at
+           the SAME unit `kilometer`, so the generic `a` unifies cleanly — a DIFFERENT-scale field would be a
+           correctly-rejected mismatch, no auto-convert) → `(tuple (Qty.of 5000.0 meter) (Qty.of 2000.0
+           meter) (Qty.of 3000.0 meter))` typed `V3q`. Unlike the project-then-Qty.value case (which reads a
+           raw stored magnitude), this pins the per-FIELD reference scale-fold recursing into a named
+           record's payload holes at the boundary — the record twin of the bare-tuple-of-quantities render,
+           the same fix path the rust backend needed for compound Qty leaves. Number and unit AGREE in every field.")
+  (input  (do
+            (type V3q (V3 a a a))
+            (def (main) (V3q.V3 (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))
+                                (Qty.of 2.0 (Unit.prefix kilo (Unit.base #"meter")))
+                                (Qty.of 3.0 (Unit.prefix kilo (Unit.base #"meter")))))
+            (export main)))
+  (output (: (tuple (Qty.of 5000.0 (Unit.base #"meter")) (Qty.of 2000.0 (Unit.base #"meter"))
+                    (Qty.of 3000.0 (Unit.base #"meter"))) V3q)))
+
 (case "a Qty payload's INNER type stays a real type parameter — the unit-arg skip does not over-skip"
   (doc    "The companion of the two cases above, guarding the OTHER edge of the `(Qty T u)` type-parameter
            skip. `collect_type_params` descends ONLY into a `(Qty T u)`'s inner type `T` and skips the unit

@@ -626,6 +626,28 @@
   (input  (do (def (main (: a UInt8) (: b UInt8)) (/ (* 10000 (if (< a b) 1 0)) (% a b))) (export main)))
   (error  CDZ0201))
 
+; The climbed-operator set (`is_arith`) also includes the SHIFT (`<<`/`>>`) and BITWISE (`&`/`|`/`^`) ops,
+; which share the same width-generic type `∀a.(Int a)→(Int a)→(Int a)` as the arithmetic ones (numeric-model:
+; shift and bitwise are not exempt). So the width climb grounds a literal through a shift or bitwise spine
+; exactly as through `+`/`*`/`-`/`/`. These two cases pin a `<<` spine + a `&` spine (representatives of the
+; shift and bitwise categories) so a change excluding either family from the climb is caught by the gate.
+(case "a bare literal grounded to a narrow width through a SHIFT spine is range-checked"
+  (doc    "The shift face: `(<< (* 10000 (if (< a b) 1 0)) (% a b))` over UInt8 a/b — `<<` shares the
+           width-generic integer type, so it unifies the `*` result with the UInt8 `(% a b)`, grounding the
+           bare `10000` to UInt8 (out of range) → CDZ0201. Pins that a SHIFT participates in the arith-spine
+           width climb (its value and count share one width per the uniform shift typing).")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (<< (* 10000 (if (< a b) 1 0)) (% a b))) (export main)))
+  (error  CDZ0201))
+
+(case "a bare literal grounded to a narrow width through a BITWISE spine is range-checked"
+  (doc    "The bitwise face: `(& (* 10000 (if (< a b) 1 0)) (% a b))` over UInt8 a/b — bitwise-and is
+           width-generic (`∀a.(Int a)→(Int a)→(Int a)`), so it unifies the `*` result with the UInt8 `(% a
+           b)`, grounding `10000` to UInt8 (out of range) → CDZ0201. Pins that a BITWISE op participates in
+           the climb like the arithmetic and shift ops; a change dropping bitwise from the climbed set would
+           silently regress this to a check-vs-backend divergence.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (& (* 10000 (if (< a b) 1 0)) (% a b))) (export main)))
+  (error  CDZ0201))
+
 (case "an R-suffixed literal composes with exact rational arithmetic"
   (doc    "`(+ 0.5R (Rational.of 1 3))` = 1/2 + 1/3 = 5/6 exactly — the suffixed literal flows into the
            exact `+` just like the explicit constructor, so both spellings denote one kind of value.")

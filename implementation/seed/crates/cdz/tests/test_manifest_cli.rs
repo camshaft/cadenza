@@ -2455,6 +2455,36 @@ fn a_match_requires_sum_constraint_is_recognized_inside_an_and_conjunction() {
     );
 }
 
+/// A SCALAR param that rides inside a synthesized compound `-gen` wrapper (because a SIBLING param is
+/// compound) is constrained by a param-level `@requires` bound — not left unconstrained. `@requires(k >= 0)`
+/// on `f(xs: List Int64, k: Int64)` must draw `k >= 0` so the enforced (D) precondition never spuriously
+/// trips on a negative `k`. Before this, only the List/Sum payloads were narrowed; the wrapper drew the
+/// scalar `k` uniformly (often negative), so the runner reported a spurious `f([], -1)`. A PASS proves the
+/// scalar leaf is narrowed too. The scalar `@requires` twin of the list-min-length and sum-payload guards.
+#[test]
+fn a_scalar_param_requires_bound_constrains_it_inside_a_compound_wrapper() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — the -gen wrapper run needs the store"
+        );
+        return;
+    }
+    let d = dir("requires-scalar-in-wrapper");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do \
+           (@ test (@ (requires (and (>= k 0) (<= k 9))) \
+             (def (f (: xs (List Int64)) (: k Int64)) (if (and (>= k 0) (<= k 9)) (List.len xs) (trap \"k out of range\"))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok && stdout.contains("PASS f-gen (100 trials)"),
+        "a scalar `k` param under `@requires(k in [0,9])` is drawn in-domain even inside a compound wrapper (List xs sibling) — no spurious f([], -1): {stdout}{stderr}"
+    );
+}
+
 /// A match-based `@requires` whose ALLOWED constructor carries a LIST-LENGTH guard floors that payload's
 /// generated length. `@requires(match o ((Box.Full xs) (< 0 (List.len xs))) ((Box.Empty) false))` forbids
 /// `Empty` AND requires the `Full` payload be non-empty; the `-gen` wrapper must draw `Full([…])` with at

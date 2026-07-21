@@ -4338,6 +4338,24 @@
             (export main)))
   (output (: 0 Int64)))
 
+(case "a guarded list-match arm over a RUNTIME list scrutinee gates on its decoded head"
+  (doc    "The runtime companion of the guarded-list body-binder + fall-through cases above: those build the
+           scrutinee from a CONSTANT `(list 7)` (inlined, so it const-folds), but here the list is built at
+           RUN TIME — `(List.push (list) h)` from a runtime `h` — so the match cannot fold and must decode the
+           leading element `a` and evaluate the guard `(> a 5)` against it at run time. h=9 → `a = 9`, guard
+           holds → 9; h=3 → guard `(> 3 5)` fails → the arm does NOT fire, fall through to the `_` catch-all →
+           0. Pins that the guarded-list composition (length dispatch + leading-element bind + guard gate +
+           fall-through) works over a genuinely-runtime list scrutinee, not only a const-folded one.")
+  (input  (do (def (main (: h Int64))
+                (match (List.push (list) h)
+                  ((guard (list a .. _rest) (> a 5)) a)
+                  (_ 0)))
+              (export main)))
+  (call   main (: 9 Int64))
+  (output (: 9 Int64))
+  (call   main (: 3 Int64))
+  (output (: 0 Int64)))
+
 (case "a guard on a literal-element list pattern reads an enclosing let binding through inlining"
   (doc    "A user guard on a list pattern with a LITERAL leading element (`0`), whose guard cond `(> x lim)`
            reads an enclosing `let` binding `lim` — checked through the INLINING path (`main` calls `f`, so

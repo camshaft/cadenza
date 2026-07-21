@@ -1,5 +1,6 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	@ensures / @requires predicate PROJECTS a TUPLE component (`(. ret N)` on the result, `(. p N)` on a param)
+pass	@ensures on a RECURSIVE def whose body is a HANDLE is re-checked at every recursive exit (recursion x effects-fold seam)
 pass	@ensures on a def returning an @invariant type: establish (on construction) AND the postcondition (on ret) both fire (design §10, (D))
 pass	@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)
 pass	@ensures over a HANDLE-bodied def called with a runtime arg is enforced (the verify_enforce let-over-handle shape)
@@ -1075,6 +1076,7 @@ pass	a guarded list-match arm body reads its element binder
 pass	a guard condition applies a let-bound closure
 pass	a guard condition reads a heap list bound outside the match
 pass	a guarded list-match arm whose guard fails falls through to the catch-all
+pass	a guarded list-match arm over a RUNTIME list scrutinee gates on its decoded head
 pass	a guarded match over a runtime scrutinee whose guard fails takes the wildcard
 pass	a guarded match over a runtime scrutinee with constant arms computes correctly
 pass	a guarded out-of-bounds indexed read is not hoisted by the sharing
@@ -3764,6 +3766,12 @@ pass	the empty string has length zero
 pass	the empty string is a matchable literal
 pass	the empty symbol converts to the empty string
 pass	the empty symbol equals itself
+pass	the encoded tag byte of an Ast.Bool is 0x03
+pass	the encoded tag byte of an Ast.Float is 0x05
+pass	the encoded tag byte of an Ast.Int is 0x00
+pass	the encoded tag byte of an Ast.List is 0x02
+pass	the encoded tag byte of an Ast.Name is 0x01
+pass	the encoded tag byte of an Ast.Str is 0x04
 pass	the entrypoint adds one to its runtime argument
 pass	the entrypoint branches on its runtime argument
 pass	the entrypoint compares its runtime argument to a bound
@@ -4296,3 +4304,7 @@ pass	the multiplicative-one and subtractive-zero identities preserve a boundary-
 pass	the x times minus-one strength reduction negates a normal operand and still traps at Int64.min
 pass	two equal runtime quantities in a Set dedup to one element
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
+todo	a record of quantities RETURNED as a value renders every field scaled to its reference
+pass	a comparison against a constant outside a masked value's range folds, but an in-range one stays a runtime test
+pass	a bare literal grounded to a narrow width through a SHIFT spine is range-checked
+pass	a bare literal grounded to a narrow width through a BITWISE spine is range-checked
