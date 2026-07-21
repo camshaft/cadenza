@@ -14747,6 +14747,46 @@ mod runtime_ops {
     }
 
     #[test]
+    fn cdz_check_rejects_a_narrow_width_overflow_in_a_user_sum_or_nominal_payload() {
+        // Width-fit descent audit, part 2: a USER-DECLARED nominal/sum payload. A newtype `(type W (W
+        // Int8))` is `Ty::Nominal { inner: Int8 }`, a multi-payload `(type P (P Int8 Int64))` is
+        // `Ty::Nominal { inner: Tuple([Int8, Int64]) }`, and a multi-VARIANT `(type E (A Int8) (B Int64))`
+        // is `Ty::Sum`. A bare over-range payload literal escaped the fit-check → wasm SILENTLY TRUNCATED it
+        // (999 → -25; rust E0308). The new `Ty::Nominal` arm descends each ctor arg against `inner` (a Tuple
+        // inner zips positionally; else the single arg), rejecting CDZ0302 like the Option/Record arms.
+        let check_rejects = |src: &str| {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            let d = diags
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .unwrap_or_else(|| panic!("expected a check-level reject for: {src}"));
+            assert_eq!(
+                d.code.as_deref(),
+                Some("CDZ0302"),
+                "expected CDZ0302 for {src}, got: {}",
+                d.message
+            );
+        };
+        check_rejects("(module m (type W (W Int8)) (def (f) (: (W 999) W)) (export f))");
+        check_rejects("(module m (type P (P Int8 Int64)) (def (f) (: (P 999 5) P)) (export f))");
+        check_rejects(
+            "(module m (type E (A Int8) (B Int64)) (def (f) (: (E.A 999) E)) (export f))",
+        );
+
+        let check_clean = |src: &str| {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                diags
+                    .iter()
+                    .all(|d| d.severity != crate::abi::Severity::Error),
+                "expected NO check reject for: {src}\ngot: {diags:?}"
+            );
+        };
+        check_clean("(module m (type W (W Int8)) (def (f) (: (W 100) W)) (export f))");
+        check_clean("(module m (type P (P Int8 Int64)) (def (f) (: (P 100 5) P)) (export f))");
+    }
+
+    #[test]
     fn runtime_if_branch_bare_literal_grounds_to_the_narrow_result_width() {
         // An `if` whose branches MIX a narrow value and a bare literal: the literal branch (Int64 on its
         // own = i64 slot) must take the `if`'s narrow result width, so both branches leave the same i32

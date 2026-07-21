@@ -3477,11 +3477,26 @@ fn check(paths: &Paths, profile: &str) {
     // that don't need it (a larger min stack only raises the floor). `RUST_MIN_STACK` governs threads
     // spawned WITHOUT an explicit stack_size, so it lifts libtest's harness threads but is (correctly)
     // a no-op for the compile worker, which sets its own stack.
+    // CDZ_RUN_TIMEOUT_SECS=300 on the test phase (default is 30). cdz-run arms a WALL-CLOCK epoch deadline
+    // (a background thread bumps the wasmtime engine epoch every 100ms regardless of the run's own CPU —
+    // see cdz-run/src/lib.rs arm_epoch_ticker), so under heavy parallel `cargo test --workspace` (dozens of
+    // concurrent wasmtime instances + build/link contention) a run that is MILLISECONDS of CPU can be
+    // starved off-core past the 30s wall-clock bound → its store trips `wasm trap: interrupt` (sometimes
+    // SIGABRT) even though the program is correct and terminating. This is a recurring, load-dependent
+    // false-red (rcdzc-lib run_heap_value tests: pass in isolation / --test-threads=1, fail only under the
+    // full parallel run — v-property-testing root-caused it 2026-07-21 after it flaked several MRs). Lifting
+    // the bound to 300s for the test phase lets a starved-but-correct run finish while still catching a
+    // GENUINE runaway loop (a real infinite loop blows 300s of wall-clock too). Harness-only (this env
+    // scopes to the `test` step's child); production/CI cdz-run keeps the 30s default. Same shape as the
+    // RUST_MIN_STACK floor added here for the sibling deep-recursion false-red class.
     log.step_env(
         "test",
         "cargo test --workspace",
         repo,
-        &[("RUST_MIN_STACK", "67108864")],
+        &[
+            ("RUST_MIN_STACK", "67108864"),
+            ("CDZ_RUN_TIMEOUT_SECS", "300"),
+        ],
     );
     log.step(
         "clippy",

@@ -1030,6 +1030,28 @@ fn nested_literal_width_faults(db: &mut Db, value: StructId, ty_expr: StructId) 
             let want = payload_ty_at_instantiation(db, head, &expected)?;
             width_fault_against_ty(db, args[0], &want)
         }
+        // A user-declared NOMINAL type — a newtype `(type W (W Int8))` (`inner` = the payload type) or a
+        // multi-payload `(type P (P Int8 Int64))` (`inner` = a `Tuple` of the payloads). Its constructor
+        // `(W 999)` / `(P 999 5)` resolves as `Apply(ctor, [payload args])`; without this arm a bare
+        // over-range payload literal escaped the fit-check → wasm SILENTLY TRUNCATED it (999 → -25; rust
+        // E0308) — the nominal face of the Option/Record/Map cases. Descend each ctor arg against the
+        // matching `inner` type: a Tuple `inner` zips positionally (multi-payload), else the single arg
+        // against `inner`. (A user MULTI-VARIANT sum is `Ty::Sum` and takes the Sum arm above.)
+        Ty::Nominal { inner, .. } => {
+            let Resolved::Apply { head, args } = resolved_of(db, value) else {
+                return None;
+            };
+            crate::eval::variant_disc_of(db, head)?;
+            match &**inner {
+                Ty::Tuple(elem_tys) => elem_tys
+                    .iter()
+                    .zip(args.iter())
+                    .find_map(|(t, &a)| width_fault_against_ty(db, a, t)),
+                single => args
+                    .first()
+                    .and_then(|&a| width_fault_against_ty(db, a, single)),
+            }
+        }
         // A tuple `(tuple 999 …)` : `(Tuple Int8 …)` — each element against its element type.
         Ty::Tuple(elem_tys) => {
             let elems = positional_value_nodes(db, value, crate::resolved::Prim::TupleNew)?;

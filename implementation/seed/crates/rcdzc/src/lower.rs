@@ -3341,7 +3341,11 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
             };
             let len_field = after_sign.get(..4)?;
             let mag_len = u32::from_le_bytes(len_field.try_into().ok()?) as usize;
-            let magnitude = after_sign.get(4..4 + mag_len)?.to_vec();
+            // `4 + mag_len` can overflow `usize` on a 32-bit target (wasm32 — rcdzc self-hosts to wasm)
+            // when `mag_len` is a large untrusted u32, which would panic under overflow-checks and break
+            // the never-panic-on-untrusted-input contract. `checked_add` → `None` (the error case) instead.
+            let end = 4usize.checked_add(mag_len)?;
+            let magnitude = after_sign.get(4..end)?.to_vec();
             // Canonical form: the magnitude carries no leading zero bytes and is empty iff the value is
             // zero (the `IntValue` invariant). A non-canonical wire form (a leading zero byte, or a
             // length-0 magnitude marked negative — there is no negative zero) is rejected so decode is a
@@ -3413,7 +3417,10 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
             // an identifier). Non-UTF-8 payload bytes are not a canonical encoding → `None`.
             let len_field = rest.get(..4)?;
             let len = u32::from_le_bytes(len_field.try_into().ok()?) as usize;
-            let sbytes = rest.get(4..4 + len)?;
+            // `4 + len` can overflow `usize` on a 32-bit target (wasm32) for a large untrusted length →
+            // `checked_add` to `None` (error case), keeping decode never-panic on untrusted input.
+            let end = 4usize.checked_add(len)?;
+            let sbytes = rest.get(4..end)?;
             let s = std::str::from_utf8(sbytes).ok()?.to_string();
             let payload = synth_core(db, Core::ConstStr(s), crate::ty::Ty::String);
             let node = synth_core(
@@ -3429,7 +3436,10 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
         AST_TAG_NAME => {
             let len_field = rest.get(..4)?;
             let len = u32::from_le_bytes(len_field.try_into().ok()?) as usize;
-            let sbytes = rest.get(4..4 + len)?;
+            // `4 + len` can overflow `usize` on a 32-bit target (wasm32) for a large untrusted length →
+            // `checked_add` to `None` (error case), keeping decode never-panic on untrusted input.
+            let end = 4usize.checked_add(len)?;
+            let sbytes = rest.get(4..end)?;
             let s = std::str::from_utf8(sbytes).ok()?.to_string();
             let payload = synth_core(db, Core::ConstStr(s), crate::ty::Ty::String);
             let node = synth_core(
