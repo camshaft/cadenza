@@ -57,3 +57,25 @@ Scope: sread read-do-form two-pass (collect headers, then read bodies) + the low
 non-inlining call form ONLY for true cycles (forward refs to non-recursive defs inline fine once bodyId is
 reserved). Highest-value FEATURE now (definition-order independence + recursion together). Needs a clean
 sread/resolve/lower base (blocked on my pending 3-param MRs).
+
+## UPDATE 2026-07-20 (design refined, read-only investigation): the fix = NApp carries NAME-ID, not bodyId
+Pinned down the exact mechanism/design after reading read-app-or-bin + resolve/lower NApp arms:
+- ROOT: `read-app-or-bin` emits `NApp(calleeId, argId)` where `calleeId = def-body-of(name-id(sym))` — the
+  callee's BODY-NODE-ID, looked up AT READ TIME. A forward/self reference has no def-body-of entry yet →
+  falls to read-bin-form (ill-typed decline). resolve/lower then use `calleeId` (the bodyId) directly for
+  `param-of(calleeId)`/`param2-of`/`param3-of` and to lower the inlined body.
+- Chicken-and-egg: a bodyId is the body's ROOT node, CREATED during reading — so it can't be pre-assigned
+  before the body is read. A pure "pre-record name→bodyId" pass is therefore NOT possible as-is.
+- CLEAN FIX (option A, recommended): change `NApp` to carry the callee's NAME-ID (not bodyId). read-app-or-bin
+  emits `NApp(name-id(sym), argId)` for ANY name (known or not-yet-defined — no def-body-of lookup at read
+  time). Then resolve/lower map name-id→bodyId at LOWER time (all defs recorded by then) via def-body-of, and
+  the param lookups (`param-of`/`param2-of`/`param3-of` — currently keyed by bodyId) resolve through that.
+  This DECOUPLES call-emission from def-recording-order → forward refs, backward refs, AND self-recursion all
+  resolve. Blast radius: NApp semantics (calleeId→calleeNameId) + resolve-db/lower-db/infer-db NApp arms
+  (add a name→bodyId lookup) + the param tables are ALREADY name-keyed for record-param(nameId,...) so the
+  bodyId-keyed copies may become derivable. For RECURSION specifically, lower's INLINE strategy still can't
+  handle a true cycle (infinite inline) — a recursive callee needs a non-inlining call form (a real Core call
+  node + a bounded/looping eval, OR eval-by-def-table-lookup). So: option-A fixes FORWARD/MUTUAL refs to
+  NON-recursive defs (they still inline fine once name-resolved); self/mutual RECURSION additionally needs the
+  non-inlining call form. Sequence: (1) NApp-carries-name + resolve/lower name→bodyId → forward refs run; then
+  (2) non-inlining recursive call form → recursion runs. Each gated. DEDICATED clean-trunk tick(s); big change.

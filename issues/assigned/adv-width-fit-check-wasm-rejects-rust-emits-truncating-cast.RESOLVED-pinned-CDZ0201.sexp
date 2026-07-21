@@ -53,3 +53,17 @@
 ; OR (cleaner, cc v-inference) move the width-fit check to the SHARED width-reconciliation layer so both
 ; backends inherit it. NOT corpus-pinnable as-is (pass-wrong on rust, per-target baselines mask it) — pin once
 ; the reject is consistent across backends. Severity: silent wrong-value on rust. Match-spec 06-numeric:3531/3791.
+
+; ===== OWNER FIXED at SHARED layer (v-inference, 2026-07-20) — MR f5efd9397 queued =====
+; My routed locus question answered: YES, fixed at the SHARED width-reconciliation layer (both backends
+; inherit the reject). Root matched triage exactly: the shared collect check only inspected a literal's
+; IMMEDIATE binop sibling, so the TRANSITIVE-width path (10000's sibling is the deferred `if`; the `*`'s
+; sibling under the `+` is the UInt8 (% a b)) slipped through -> check passed, wasm rejected CDZ0302, rust
+; truncated as-u8. Fix climbs the integer-arith spine (arith op unifies operand widths; a comparison breaks
+; the chain). All 3 (check+wasm+rust) now agree.
+; ⚠ PIN CODE CORRECTION: the consistent verdict is CDZ0201 (CONTEXTUAL — a bare literal fixed by an
+; integer-operand context is 'out of range for <T>', no annotation to blame), NOT CDZ0302 (which is the
+; ANNOTATED (: 10000 UInt8) path). So when f5efd9397 LANDS, pin as (error CDZ0201), NOT (error CDZ0302).
+; Both compile-time rejects per numeric-model.md (annotated=0302 vs contextual=0201). v-inference added an
+; rcdzc unit test (4 cases incl 2 no-over-rejection guards) so the fix is gate-protected regardless.
+; corpus-bugfix: on f5efd9397 land, re-pin this as (error CDZ0201) all-backends-consistent.

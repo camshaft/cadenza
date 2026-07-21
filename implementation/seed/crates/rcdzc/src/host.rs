@@ -26,10 +26,16 @@
 
 use crate::db::DESCENT_DEPTH_LIMIT;
 
-/// Native-stack budget reserved per recursive-descent level. The demand queries recurse one native
-/// frame per descent level; a fat unoptimized (debug) frame measures ~11 KB, so 64 KB/level is a >5×
-/// margin that holds across build profiles and platforms without over-reserving address space.
-const STACK_BYTES_PER_DESCENT_LEVEL: usize = 64 * 1024;
+/// Native-stack budget reserved per recursive-descent level. The demand queries recurse SEVERAL native
+/// frames per descent level (a single `core_of`/lower level fans through `compute`, poison/reachability,
+/// and the shaped-eq/orderable classification walks), and a fat unoptimized (debug) frame is large — the
+/// deepest input measured here (a self-application whose sum-payload walk recurses near
+/// [`DESCENT_DEPTH_LIMIT`]) OVERFLOWED at 64 KB/level on a clean debug build (a SIGABRT in the
+/// `rcdzc-compile` worker — the "known nondeterministic dev-profile stack trip" the gate documents), so
+/// 64 KB under-budgeted. 128 KB/level doubles the reservation (→ a 128 MB worker stack at 1024 levels),
+/// restoring margin so the semantic depth guard is reached BEFORE the native stack — deterministically,
+/// across debug/release and under gate-batch load. Address space is cheap (reserved, not committed).
+const STACK_BYTES_PER_DESCENT_LEVEL: usize = 128 * 1024;
 
 /// The worker-thread stack size that guarantees the recursive-descent depth guard
 /// ([`crate::db::DESCENT_DEPTH_LIMIT`]) is reached before the native stack is exhausted — derived FROM
