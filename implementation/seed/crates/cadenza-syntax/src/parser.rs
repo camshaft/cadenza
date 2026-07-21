@@ -1507,6 +1507,12 @@ impl<'a> Parser<'a> {
     /// (`^`), stops the chain. `left` already includes any `^` on the first atom (applied by `unit_factor`).
     fn compound_unit_tail(&mut self, first: StructId) -> StructId {
         let mut left = self.unit_pow(first); // a trailing `^n` on the first atom binds before `/`/`*`
+        // Layers this loop has folded onto `left`. Like the `postfix`/`expr` left-spine guards: this loop
+        // is iterative (`self.depth` does not grow), but each iteration deepens the produced arena by one
+        // `(/ … …)` level, so an unbounded glued chain (`m/s/s/s…`) would build an arbitrarily deep tree a
+        // recursive consumer (printer/`canon`) overflows on — the flat-chain DoS class (PR #383). Bound
+        // `self.depth + spine` against the shared limit so a pathological chain is a clean diagnostic.
+        let mut spine: u32 = 0;
         loop {
             let op_name = match self.kind() {
                 Kind::Slash => "/",
@@ -1549,6 +1555,15 @@ impl<'a> Parser<'a> {
             let left_span = self.spans.get(left).unwrap_or(op_span);
             let span = left_span.merge(self.prev_span());
             left = self.list(vec![head, left, rhs], span);
+            // Guard the layer just folded (checked AFTER building it, so a chain that stops at the limit
+            // still yields a well-formed node), bounding total arena depth `self.depth + spine` like the
+            // `postfix` loop — a deep glued unit chain gets a clean depth diagnostic, not a downstream crash.
+            spine += 1;
+            if !self.depth_exceeded && self.depth + spine >= crate::sexpr::MAX_NESTING_DEPTH {
+                self.error("expression nests too deeply to parse");
+                self.depth_exceeded = true;
+                return left;
+            }
         }
         left
     }
@@ -4345,6 +4360,33 @@ mod tests {
             &src2[us2.start..us2.end],
             "m^2",
             "the unit-exponent `^` node spans the whole base^exp, not just from the `^`"
+        );
+    }
+
+    #[test]
+    fn a_deep_glued_unit_chain_is_diagnosed_not_an_unbounded_arena() {
+        // `compound_unit_tail` folds a glued `/`/`*` chain in a LOOP (self.depth doesn't grow), but each
+        // iteration deepens the arena by one `(/ … …)` level — so an unbounded chain (`m/s/s/s…`) would
+        // build a tree far deeper than the reader's MAX_NESTING_DEPTH cap that every other nesting path
+        // enforces, a recursive-consumer overflow risk (the flat-chain DoS class, PR #383). The loop's
+        // spine guard now bounds `self.depth + spine`, so a pathological chain is a clean depth diagnostic.
+        let over = (crate::sexpr::MAX_NESTING_DEPTH as usize) + 50;
+        let src = format!("def f() = 5 m{}", "/s".repeat(over));
+        let p = read_ml(&src);
+        assert!(
+            !p.ok()
+                && p.errors
+                    .iter()
+                    .any(|e| e.message.contains("nests too deeply")),
+            "a deep glued unit chain must be a clean depth-limit error, not an unbounded arena: {:?}",
+            p.errors
+        );
+        // A moderate chain well under the limit still parses cleanly (no over-rejection).
+        let ok = read_ml("def f() = 5 m/s/s/s");
+        assert!(
+            ok.ok(),
+            "a short glued unit chain must parse: {:?}",
+            ok.errors
         );
     }
 

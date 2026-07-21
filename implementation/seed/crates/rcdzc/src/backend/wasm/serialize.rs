@@ -189,6 +189,14 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             out.push(op::LOCAL_SET);
             uleb128(*idx as u64, out);
         }
+        // `i32.store8` — opcode then the memarg `(align, offset)` as two ulebs. align=0 (byte store, no
+        // alignment); offset is the static displacement. Stack (already pushed): [addr, val]. Writes the
+        // low byte of `val` to memory 0 at `addr + offset`.
+        Lir::I32Store8 { offset } => {
+            out.push(op::I32_STORE8);
+            uleb128(0, out); // align (log2) = 0
+            uleb128(*offset as u64, out); // offset
+        }
         Lir::LocalTee(idx) => {
             out.push(op::LOCAL_TEE);
             uleb128(*idx as u64, out);

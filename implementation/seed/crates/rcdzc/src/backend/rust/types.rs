@@ -203,6 +203,24 @@ pub(super) fn ord_key_type(ty: &Ty) -> Option<String> {
         } else {
             "__CdzF64".to_string()
         }),
+        // A TUPLE key threads the wrapper through EACH element (a float element becomes `__CdzF{N}`, a
+        // non-float element stays its `rust_type`), so `(Tuple Float64 Int64)` keys as `(__CdzF64, i64)` —
+        // which IS `Ord` (Rust derives Ord structurally over Ord fields). This lifts the float-in-a-tuple-key
+        // decline (v-runtime differential: a `(Tuple Float Int)` Map key computed on wasm but declined on
+        // rust). The matching VALUE-side rebuild is `expr::wrap_ord_key` (wraps each float element by
+        // position); the two MUST agree on which elements wrap + the width. A 1-tuple keeps the trailing
+        // comma (`(T,)`). An element with no ord-key mapping declines the whole tuple key.
+        Ty::Tuple(elems) => {
+            let mut parts = Vec::with_capacity(elems.len());
+            for e in elems.iter() {
+                parts.push(ord_key_type(e)?);
+            }
+            Some(if parts.len() == 1 {
+                format!("({},)", parts[0])
+            } else {
+                format!("({})", parts.join(", "))
+            })
+        }
         _ => rust_type(ty),
     }
 }
@@ -286,17 +304,22 @@ pub(super) fn ty_is_ord(db: &mut Db, ty: &Ty) -> bool {
 }
 
 /// Whether `ty` can occupy a Set ELEMENT / Map KEY position directly — the gate the construction ops and
-/// the boundary use. Like [`ty_is_ord`], EXCEPT a BARE `Float` is now OK: it maps to the total-order
-/// wrapper `CdzF64` (see [`ord_key_type`]), which IS `Ord`. A float NESTED inside a compound key (a
-/// `(Tuple Float …)` / a float-payload sum) is still NOT ok — the wrapper is only substituted at the
-/// top-level key/element by `ord_key_type`, not threaded through a compound — so those delegate to
-/// `ty_is_ord` (which rejects the contained float). This is the ONE place the bare-float relaxation lives;
-/// `ty_is_ord` stays strict so its RECURSIVE use (a float inside a compound) keeps declining.
+/// the boundary use. Like [`ty_is_ord`], EXCEPT a `Float` is OK because it maps to the total-order wrapper
+/// `__CdzF{64,32}` (see [`ord_key_type`]), which IS `Ord` — AND a TUPLE that contains floats is OK too,
+/// because `ord_key_type` now threads the wrapper through the tuple's elements (each float element becomes
+/// `__CdzF{N}`, so the whole tuple keys as an `Ord` `(__CdzF64, i64)`). A float nested in a RECORD / SUM
+/// payload is still NOT threaded (a later increment), so those delegate to the strict `ty_is_ord`. This gate,
+/// the type spelling, and the value wrap (`expr::wrap_ord_key`) MUST agree on exactly which shapes admit a
+/// contained float, or an emitted key value would not match the collection's key type.
 pub(super) fn ty_is_ord_key(db: &mut Db, ty: &Ty) -> bool {
     match ty {
-        // A bare float keys/elements via the `CdzF64` wrapper — representable and totally ordered.
+        // A bare float keys/elements via the `__CdzF{N}` wrapper — representable and totally ordered.
         Ty::Float(_) => true,
-        // Any other shape uses the strict predicate (a nested float still declines).
+        // A TUPLE key is ord iff each element is ord-KEY-able (so a float element is OK via the wrapper) —
+        // matching `ord_key_type`'s per-element threading. (`ty_is_ord`'s tuple arm uses the STRICT
+        // `ty_is_ord`, which would reject a float element — hence this key-specific per-element recurse.)
+        Ty::Tuple(elems) => elems.iter().all(|e| ty_is_ord_key(db, e)),
+        // Any other shape uses the strict predicate (a float nested in a record/sum payload still declines).
         _ => ty_is_ord(db, ty),
     }
 }

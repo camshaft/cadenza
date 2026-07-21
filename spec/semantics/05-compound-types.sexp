@@ -1912,6 +1912,37 @@
             (export main)))
   (call   main (: 20 Int64)) (output (: 10 Int64)))
 
+; The churn cases above stay small (a handful of live entries). A CHAMP map at higher cardinality builds a
+; MULTI-LEVEL trie (past the single-node capacity), so a LARGE runtime map must look up every key through
+; the deep trie, shrink ALL the way to empty under full removal, and REGROW correctly. This pins that depth
+; path: 50 entries (k -> k*10), read keys across the range, a missing key is None, then Map.remove every
+; key -> len 0, then re-fill -> correct lookups + len 50. A trie that mis-navigated a deep node, failed to
+; collapse to empty, or corrupted structure on regrow would flip a component.
+(case "a large runtime Map builds a deep CHAMP trie, looks up every key, shrinks to empty and regrows"
+  (doc    "A 50-entry runtime map (`m[k] = k*10`, built by a recursive `fill`) forces CHAMP past its
+           single-node capacity into a MULTI-LEVEL trie. Reads: `m[0]`=0, `m[25]`=250, `m[49]`=490 (keys
+           across the range resolve through the deep trie); `Map.len`=50 (all distinct); `m[50]`=None→-1 (a
+           missing key is not a false hit). Then `Map.remove` of ALL 50 keys (recursive `drain`) →
+           `Map.len`=0 (shrinks fully to empty, not a partial collapse). Then re-`fill` the emptied map →
+           `regrown[37]`=370, `Map.len`=50 (regrows correctly after full shrink). Result
+           `(0, 250, 490, 50, -1, 0, 370, 50)`. Pins deep-CHAMP insert/lookup/remove at cardinality +
+           shrink-to-empty + regrow — the large-map companion of the small interleaved-churn case above.")
+  (input  (do
+            (def (fill (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (< i n) (fill (+ i 1) n (Map.insert m i (* i 10))) m))
+            (def (drain (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (< i n) (drain (+ i 1) n (Map.remove m i)) m))
+            (def (get (: m (Map Int64 Int64)) (: k Int64)) (match (Map.lookup m k) ((Some v) v) ((None) -1)))
+            (def (main (: n Int64))
+              (let ((m (fill 0 50 Map.empty)))
+                (let ((emptied (drain 0 50 m)))
+                  (let ((regrown (fill 0 50 emptied)))
+                    (tuple (get m 0) (get m 25) (get m 49) (Map.len m)
+                           (get m 50) (Map.len emptied) (get regrown 37) (Map.len regrown))))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: (tuple 0 250 490 50 -1 0 370 50) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64 Int64))))
+
 (case "a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read"
   (doc    "`Map.insert` is persistent — it must leave its operand map unchanged. `h` recurses with a depth
            counter: at depth>0 it sums `(h (Map.insert env \"x\" 2) 0)` (insert x=2, read it back → 2) and
