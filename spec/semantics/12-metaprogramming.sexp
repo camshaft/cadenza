@@ -1243,6 +1243,34 @@
   (input  (= (read (print (Ast.Float -1.5))) (Ast.Float -1.5)))
   (output (: true Bool)))
 
+; The Ast.Int TEXT-path companions of the negative-Float case above: the print/read cases elsewhere use
+; only small positive integers, so they never exercise a NEGATIVE integer's sign or the i64::MIN
+; two's-complement boundary through the TEXT path (distinct from the encode/decode BYTE path, where
+; i64::MIN is pinned below at "the Int codec round-trips i64::MIN"). A printer that dropped the minus, or
+; one that rendered i64::MIN by negating its magnitude (which overflows i64 — |i64::MIN| is not
+; representable), would pass the positive cases yet break here. `read(print (Ast.Int n)) == (Ast.Int n)`.
+
+(case "print then read of a NEGATIVE Ast.Int round-trips (sign survives the text path)"
+  (doc    "The Int companion of the negative-Float text-path case: `print (Ast.Int -42)` renders `-42`
+           and `read` parses it back to the same `Ast.Int`, so the minus survives print → read. Pins the
+           sign through the TEXT path (distinct from the byte codec) — a printer that dropped the sign
+           would still pass the positive `Ast.Int` cases but lose a negative one here.")
+  (input  (match (read (print (Ast.Int -42)))
+            ((Ast.Int n) n)
+            (_           0)))
+  (output (: -42 Int64)))
+
+(case "print then read an Ast.Int at i64::MIN round-trips (text-path two's-complement boundary)"
+  (doc    "🔑 The TEXT-path companion of the byte-codec i64::MIN pin below: `Ast.Int -9223372036854775808`
+           (i64::MIN) prints and re-reads to the same value. i64::MIN is the two's-complement extreme whose
+           positive twin is NOT representable, so a printer that rendered a negative integer by negating its
+           magnitude would overflow HERE (never on a small negative). Pins that the text path is exact at
+           the boundary, not just the byte path.")
+  (input  (match (read (print (Ast.Int -9223372036854775808)))
+            ((Ast.Int n) n)
+            (_           0)))
+  (output (: -9223372036854775808 Int64)))
+
 (case "print of an exponent-scale Ast.Float round-trips through read"
   (doc    "A large-magnitude float `1e10` is rendered by `print` (shortest round-tripping form, which may
            use `e` notation) and `read` parses it back bit-exactly. Pins the exponent/large-magnitude

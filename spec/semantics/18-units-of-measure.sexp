@@ -1060,6 +1060,20 @@
   (call   main (: true Bool))
   (output (: 1000 Int64)))
 
+(case "a list of two same-dimension quantities at different units names the scale difference (CDZ0201)"
+  (doc    "The LIST-element peer-join sibling of the if-join scale-mismatch case: `(list (Qty.of 5.0
+           kilometer) (Qty.of 2.0 meter))` — two SAME-dimension DIFFERENT-unit quantities — breaks list
+           homogeneity (km and m are distinct `(Qty T u)` types; no auto-convert), rejected CDZ0201. Both
+           elements RENDER to `(Qty Float64 (Unit.base #\"meter\"))` (the reference-unit name, scale
+           dropped), so the diagnostic must name the SCALE difference (same dimension, different units,
+           convert with `in`/`as`) rather than the confusing bare 'must share one type: (Qty … meter) and
+           (Qty … meter)' — two identical-looking types. Pins the list-element join to fix-parity with the
+           if/match join sites (qty_scale_mismatch_hint routed through peer_type_delta_hint).")
+  (input  (do (def (main)
+                (Qty.value (List.at (list (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))
+                                          (Qty.of 2.0 (Unit.base #"meter"))) 0))) (export main)))
+  (error  CDZ0201))
+
 ; ============================================================================================
 ; Remainder (%) is not defined on quantities — a clean decline, not a leaked scheme mismatch
 ; ============================================================================================

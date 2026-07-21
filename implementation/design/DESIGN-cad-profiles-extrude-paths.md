@@ -4,9 +4,47 @@
 library I had a bunch of support for SPLINES and PATHS that would also be great to have. The current form
 is fine for a starting point but it'd be hard to do any real cading in it."*
 
-> **STATUS: DESIGN — routed to concierge→operator for the representation forks below.** No code changed.
-> Grounded against the current exact model (`implementation/cad/src/exact.cdz`) + the manifold
-> `CrossSection`/`extrude`/`revolve` API (both native `manifold-csg` and browser `manifold-3d`).
+> **STATUS: ✅ SHIPPED (all stages landed + gated). This doc is now a RECORD, not a proposal.** The design
+> below was the pre-build plan (2026-07-17); the reconciliation box just under it records what actually
+> shipped and how each fork was resolved. Grounded against the current exact model
+> (`implementation/cad/src/exact.cdz`) + the manifold `CrossSection`/`extrude`/`revolve` API (both native
+> `manifold-csg` and browser `manifold-3d`).
+
+## ✅ What shipped (reconciliation — read this first)
+
+The whole 2D-profile / extrude / revolve / path-spline layer is on trunk, gated by `cdz test
+implementation/cad` + the `cdz-cad` driver suite. Concrete surface as landed (naming differs from the
+proposal below — the record is authoritative):
+
+- **`Profile`** = `Rect(Vec2)` | `Circle(Rational)` | `PathProfile(Path)`. (The proposal's explicit
+  `Polygon(List Vec2)` folded into `PathProfile` — a polyline path IS the polygon, so no separate node.)
+- **`Solid` lift nodes**: `ExtrudeLinear(Profile, Rational)` (profile × height, centred like `Cube`) and
+  `Revolve(Profile, Rational)` (profile swept `degrees` about the y-axis).
+- **`Path` = `Segs(List PathSeg)`**; **`PathSeg`** has an **Abs/Rel pair per segment kind** (not the flat
+  `MoveTo`/`LineTo`/`CubicBezier` of the proposal): `MoveToAbs`/`MoveToRel`, `LineToAbs`/`LineToRel`,
+  `CubicToAbs(end,c0,c1)`/`CubicToRel(end,c0,c1)`. A `Rel` segment's `Vec2` is a **delta from the cursor**;
+  the extent fold + the driver both **thread the cursor** (`abs(cur, delta)`).
+- **Builders** (`exact.cdz`, exported): `path-start` seeds `MoveToAbs(0,0)`; then `move-to`, `line-to`,
+  `line-by`, `cubic-to`, `cubic-by` (the `_by` variants append the `*Rel` segments — the rsolid
+  `line_to`/`cubic_curve_to` + `_by` ergonomics). `outline(path)` = `PathProfile`.
+- **FORK 1 (spline exactness) — RESOLVED as recommended:** control points are exact Rational; the mesh
+  driver samples the cubic Bézier to a Rational polygon at a segment count (Bernstein, `sample_cubic` in
+  `cdz-cad/src/mesh.rs`) — float only at the mesh edge, exactly like `Circle`/`Sphere` tessellation.
+- **FORK 2 (revolve angle) — RESOLVED as recommended:** `Revolve` carries `degrees: Rational`; the f64
+  angular sweep is confined to manifold's internal `revolve(cs, degrees, segments)`.
+- **FORK 3 (path/spline API surface) — RESOLVED:** matched rsolid's `line_to`/`cubic_curve_to` + `_by`
+  relative variants (the Abs/Rel builder pairs above).
+- **Bounding box** — `PathProfile` bbox is the max-abs extent over the path's reached points (control hull
+  for cubics, cursor-threaded for relative segments — over-approximating a curve safely, the sound-not-tight
+  discipline); `ExtrudeLinear`/`Revolve` lift it to 3D as the proposal describes. Native `cdz-cad` bounds are
+  mesh-derived (manifold AABB).
+- **Worked examples** (`examples-profiles.cdz`): `plinth` (extrude Rect), `disc-stock` (extrude Circle),
+  `bead` (revolve), `arch-fin` (absolute cubic spline), `wave-fin` (relative `cubic-by` spline).
+
+The original proposal (below) is retained verbatim as the design record.
+
+---
+
 
 ## The gap
 

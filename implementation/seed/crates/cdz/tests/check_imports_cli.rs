@@ -343,15 +343,16 @@ fn a_recovered_error_placeholder_is_suppressed_in_any_downstream_code_not_just_u
 }
 
 #[test]
-fn a_fix_the_patch_engine_cannot_build_shows_no_help_line_and_no_json_fix() {
+fn a_non_exhaustive_match_advertises_its_insert_arms_fix_on_both_ml_surfaces_in_agreement() {
     // The text `help:` line and the JSON `fix` object must AGREE on whether a diagnostic has an
-    // APPLICABLE fix — both are gated on the SAME built structural patch. The concrete trigger: a
-    // non-exhaustive `match` carries an INSERT-ARMS fix, but `insert` scaffold has no ML fragment print,
-    // so on an ML file the fix is dropped (`fix_node` → `-`). Neither surface may then advertise it —
-    // previously the text path printed a phantom `help: add …` whenever a fix column was present, even
-    // when the JSON/`cdz fix` path could not build the edit. Assert the CDZ0210 line has NO `help: add`
-    // and the JSON diagnostic has NO `fix`.
-    let dir = pkg_dir("ml-insert-drop");
+    // APPLICABLE fix — both gated on the SAME built structural patch. The concrete case: a non-exhaustive
+    // `match` (CDZ0210) carries an INSERT-ARMS "add the missing arm" fix. This was HISTORICALLY DROPPED on
+    // the ML surface (a stale insert+ml suppression, because the textedit render printed a spliced arm as
+    // a standalone application, not `| pat => body`). Now that v-syntax's render_child renders the arm
+    // correctly + the suppression is removed, the fix IS applyable on ML — so BOTH surfaces must advertise
+    // it (agreement in the POSITIVE direction): a `help (heuristic): add …` line AND a JSON `fix`. (The
+    // `fix_cli` suite pins that the JSON edit is a valid ML arm that applies to an exhaustive re-check.)
+    let dir = pkg_dir("ml-insert-arms-agree");
     let bad = write(
         &dir,
         "bad.cdz",
@@ -364,8 +365,8 @@ fn a_fix_the_patch_engine_cannot_build_shows_no_help_line_and_no_json_fix() {
         "the CDZ0210 diagnostic is reported: {stdout}"
     );
     assert!(
-        !stdout.contains("help: add") && !stdout.contains("help (heuristic): add"),
-        "no phantom add-arm help line when the insert fix can't build on ML: {stdout}"
+        stdout.contains("help: add") || stdout.contains("help (heuristic): add"),
+        "the add-arm help line IS shown now the ML insert fix builds: {stdout}"
     );
     let (_, json, _) = run(&["check", &bad, "--json"]);
     let exhaustive_line = json
@@ -373,8 +374,8 @@ fn a_fix_the_patch_engine_cannot_build_shows_no_help_line_and_no_json_fix() {
         .find(|l| l.contains("non-exhaustive match"))
         .expect("the CDZ0210 diagnostic is present in json");
     assert!(
-        !exhaustive_line.contains("\"fix\""),
-        "the json diagnostic carries no fix when the patch can't build: {exhaustive_line}"
+        exhaustive_line.contains("\"fix\""),
+        "the json diagnostic carries the fix now the patch builds on ML (agrees with the help line): {exhaustive_line}"
     );
 }
 

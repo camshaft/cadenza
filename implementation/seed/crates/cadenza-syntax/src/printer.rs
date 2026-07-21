@@ -3562,6 +3562,86 @@ mod tests {
         }
     }
 
+    /// Generate a random VALID top-level DECLARATION as S-EXPR text — a `(type …)` sum or an `(effect …)`,
+    /// the two declaration-form surfaces `print_type`/`print_effect` render with their own `|`-led layout.
+    /// The expression + pattern fuzz above never emit a declaration, so the type/effect PRINTERS (each
+    /// layout-sensitive across widths) had no generative round-trip coverage — this closes that. Every
+    /// shape here round-trips FAITHFULLY (verified), so the caller asserts structural equality across
+    /// widths. Kept in s-expr so it never leans on the ML printer under test (matches the sibling gens).
+    fn gen_ml_type_decl(rng: &mut SplitMix64) -> String {
+        // A payload type atom (kept simple — a name or a type var; the point is the DECL layout, not deep
+        // type expressions, which the expression fuzz's `:` ascriptions already exercise).
+        fn ty(rng: &mut SplitMix64) -> String {
+            const TYNAMES: [&str; 5] = ["Int", "String", "Bool", "a", "b"];
+            TYNAMES[(rng.next() as usize) % TYNAMES.len()].to_string()
+        }
+        if rng.next().is_multiple_of(2) {
+            // A SUM type. Optional type params `(T a b)`; 1..=4 variants, each with 0..=2 payload types.
+            let nparams = (rng.next() % 3) as usize; // 0, 1, or 2 params
+            let params: Vec<String> = (0..nparams)
+                .map(|i| ((b'a' + i as u8) as char).to_string())
+                .collect();
+            let head = if params.is_empty() {
+                "T".to_string()
+            } else {
+                format!("(T {})", params.join(" "))
+            };
+            let nvariants = 1 + (rng.next() % 4) as usize;
+            let variants: Vec<String> = (0..nvariants)
+                .map(|i| {
+                    let ctor = ((b'A' + i as u8) as char).to_string();
+                    let npayload = (rng.next() % 3) as usize; // 0, 1, or 2 payload types
+                    if npayload == 0 {
+                        format!("({ctor})")
+                    } else {
+                        let tys: Vec<String> = (0..npayload).map(|_| ty(rng)).collect();
+                        format!("({ctor} {})", tys.join(" "))
+                    }
+                })
+                .collect();
+            format!("(type {head} (sum {}))", variants.join(" "))
+        } else {
+            // An EFFECT with 1..=3 operations `(op <name> <arg-ty> <ret-ty>)`.
+            let nops = 1 + (rng.next() % 3) as usize;
+            let ops: Vec<String> = (0..nops)
+                .map(|i| {
+                    let arg = ty(rng);
+                    let ret = ty(rng);
+                    format!("(op op{i} {arg} {ret})")
+                })
+                .collect();
+            format!("(effect E {})", ops.join(" "))
+        }
+    }
+
+    #[test]
+    fn ml_type_and_effect_decl_round_trip_is_faithful_over_widths() {
+        // The declaration-form printers (`print_type` sum surface, `print_effect` op surface) swept for
+        // never-panic + faithful round-trip across widths — the coverage the expression/pattern fuzz lacks
+        // (neither emits a top-level declaration, so a layout break in the `|`-led sum/effect surface at
+        // some width would go uncaught). For each random decl: `print` never panics, the ML re-parses
+        // clean, and the re-read arena is STRUCTURALLY EQUAL to the source. Generation is in s-expr.
+        let mut rng = SplitMix64(0xda7a_7ec1_2c0d_e55e);
+        for _ in 0..3000 {
+            let sx = gen_ml_type_decl(&mut rng);
+            let a = sexpr::read(&sx)
+                .unwrap_or_else(|e| panic!("generated s-expr {sx:?} reads: {}", e.0));
+            for &width in &[0usize, 1, 8, 30, 100] {
+                let ml = print(&a, width); // must not panic
+                let back = parser::read_ml(&ml);
+                assert!(
+                    back.ok(),
+                    "ML print (w={width}) of decl {sx:?} must re-parse clean, got {:?}\n--- ml ---\n{ml}",
+                    back.errors
+                );
+                assert!(
+                    a.structurally_eq(&back.arenas),
+                    "ML print (w={width}) not faithful for decl {sx:?}\n--- ml ---\n{ml}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn ml_print_round_trip_is_faithful_over_generated_programs_and_widths() {
         // The ML printer's structural FIDELITY, swept: `read_ml(print(a, w))` is STRUCTURALLY EQUAL to
@@ -4015,6 +4095,28 @@ mod tests {
             assert_roundtrip(r#"Record.with(rec, #"has space", 9)"#, 80),
             "Record.with(rec, #\"has space\", 9)"
         );
+    }
+
+    #[test]
+    fn a_hash_prefixed_name_is_backtick_escaped_to_disambiguate_from_a_symbol() {
+        // A `Leaf::Name` whose text STARTS WITH `#` (e.g. the s-expr `#price` NAME, as opposed to the
+        // `#"price"` SYMBOL) must print backtick-escaped as `` `#price` `` in ML — a bare `#price` there
+        // lexes as a SYMBOL (`Leaf::Sym`), a DIFFERENT node, so the backtick is load-bearing for the
+        // round-trip. This edge sits right next to the `Record.with(r, #field, v)` symbol-operand surface
+        // (a `#`-headed name vs a `#`-symbol is exactly the ambiguity the record-update feature's `#field`
+        // operand leans on), yet no test pinned the NAME side — pin it so a printer change can't drop the
+        // escape and silently reinterpret a `#`-name as a symbol.
+        // The s-expr oracle's `#price` is a Name leaf; ML must backtick it.
+        assert_eq!(
+            print(&sexpr::read("(def (f) #price)").unwrap(), 80),
+            "def f() = `#price`"
+        );
+        // And the ML backtick form round-trips: `` `#price` `` -> Name `#price` -> `` `#price` ``.
+        assert_eq!(assert_roundtrip("`#price`", 80), "`#price`");
+        // Contrast (the SYMBOL side, already covered by symbol_sugar_round_trips): a bare ML `#price`
+        // reads to a `Leaf::Sym` and prints back as the bare `#price` sugar — the two `#price` surfaces
+        // are DISTINCT nodes, and each round-trips to its own spelling.
+        assert_eq!(assert_roundtrip("#price", 80), "#price");
     }
 
     #[test]

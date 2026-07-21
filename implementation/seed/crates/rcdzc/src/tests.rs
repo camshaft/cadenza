@@ -42782,6 +42782,44 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_of_different_unit_quantities_names_the_scale_not_two_identical_looking_types() {
+        // A LIST-element join over two same-dimension DIFFERENT-scale quantities (km vs m) is the peer-join
+        // sibling of the if/match case: both elements render `(Qty Float64 (Unit.base #"meter"))` (scale
+        // dropped), so the bare "must share one type: (Qty … meter) and (Qty … meter)" reads as a
+        // contradiction. `peer_type_delta_hint` now routes through `qty_scale_mismatch_hint`, so the list
+        // join names the REAL cause (same dimension, different units, convert with in/as). Pins the
+        // list-element diagnostic to fix-parity with the if/match join sites.
+        let diag = reject_full(
+            "(module m (def (main) ((. Qty value) ((. List at) \
+             (list ((. Qty of) 5.0 ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
+                   ((. Qty of) 2.0 ((. Unit base) #\"meter\"))) 0))) (export main))",
+        )
+        .expect("a list of km vs m quantities is rejected");
+        assert_eq!(
+            diag.code.as_deref(),
+            Some("CDZ0201"),
+            "a list-homogeneity quantity-scale clash is CDZ0201"
+        );
+        assert!(
+            diag.message.contains("SAME dimension at DIFFERENT units"),
+            "the list-element message must name the scale difference, not two identical-looking types: {}",
+            diag.message
+        );
+        // A cross-DIMENSION list (meter vs second) stays a plain distinguishable mismatch — no scale tail.
+        let cross = reject_full(
+            "(module m (def (main) ((. Qty value) ((. List at) \
+             (list ((. Qty of) 5.0 ((. Unit base) #\"meter\")) \
+                   ((. Qty of) 2.0 ((. Unit base) #\"second\"))) 0))) (export main))",
+        )
+        .expect("a list over meter vs second is rejected");
+        assert!(
+            !cross.message.contains("SAME dimension at DIFFERENT units"),
+            "a cross-dimension list clash must NOT claim same-dimension: {}",
+            cross.message
+        );
+    }
+
+    #[test]
     fn adding_a_quantity_to_a_non_numeric_operand_is_cdz0203_not_the_plain_number_cdz0501() {
         // The `_ =>` arm of the additive quantity/non-quantity check reports CDZ0501 "a quantity and a
         // plain number" + a `(Qty.of <n> <unit>)` repair — meaningful ONLY when the non-quantity operand is
