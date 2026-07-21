@@ -371,6 +371,26 @@
   (input  (= (Set.intersection (Set.of (list 1 2 3)) (Set.of (list 1 2 3))) (Set.of (list 1 2 3))))
   (output (: true Bool)))
 
+(case "the SAME runtime set as both operands of union intersection and difference computes each law live"
+  (doc    "The idempotent/self-difference laws above compare two structurally-equal LITERALS, which fold —
+           this passes ONE runtime-built set (a recursive Set.insert loop) as BOTH operands of all three
+           binary ops in one expression: `(union s s)` = A ∪ A = A (len n), `(intersection s s)` = A (len
+           n), `(difference s s)` = ∅ (len 0), encoded 100·|A∪A| + 10·|A∩A| + |A∖A| = 330 at n = 3. Beyond
+           the algebra, the shape is a Perceus face the shared-across-statements pins don't reach: `s` is a
+           CONSUMED operand TWICE AT ONE CALL SITE (both argument positions of one consuming op), so the
+           retain must dup it twice per op — and again for the next op — from one binding. A missed dup
+           reads a freed CHAMP; a leaked one nets live cells. Expected: 330.")
+  (input  (do
+            (def (build (: n Int64) (: s (Set Int64)))
+              (if (< n 1) s (build (- n 1) (Set.insert s n))))
+            (def (main (: n Int64))
+              (let ((s (build n (Set.of (list)))))
+                (+ (* 100 (Set.len (Set.union s s)))
+                   (+ (* 10 (Set.len (Set.intersection s s)))
+                      (Set.len (Set.difference s s))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 330 Int64)))
+
 (case "the difference of a set with the empty set is the set (identity)"
   (doc    "`(Set.difference (Set.of (list 1 2 3)) (Set.of (list)))` is {1, 2, 3} — removing nothing leaves
            the set unchanged. Pins A ∖ ∅ = A, the identity element of difference and the companion of the

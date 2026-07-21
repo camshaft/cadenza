@@ -95,6 +95,23 @@ pub fn compile_with_opt(
     targets: &[Target],
     opt_level: crate::opt::OptLevel,
 ) -> CompileOutput {
+    // Establish the compile-stack precondition at the SHARED SINK — every entry point (the bin, the tests
+    // calling `compile`/`compile_with_opt` directly, `compile_component`) reaches compilation through here,
+    // so wrapping here is the one place that guarantees the guard-sized worker stack for ALL of them. (The
+    // old wrap lived only in `compile_component`, so a caller that used `compile` directly — e.g. the CSE
+    // perf tests building a 400-deep arith chain — recursed on the ≈2 MB `cargo test` worker thread and
+    // SIGABRT'd before the semantic depth guard could fire, regardless of the per-level budget.)
+    // `run_with_compiler_stack` is idempotent (runs inline if already on the worker), so the bin's and
+    // `compile_component`'s existing outer wrap does NOT double-spawn. The borrowed inputs/targets and the
+    // `CompileOutput` result are all `Send`, so the scoped worker is sound.
+    crate::host::run_with_compiler_stack(|| compile_with_opt_inner(inputs, targets, opt_level))
+}
+
+fn compile_with_opt_inner(
+    inputs: &[Artifact],
+    targets: &[Target],
+    opt_level: crate::opt::OptLevel,
+) -> CompileOutput {
     trace!(target: "rcdzc::compile", inputs = inputs.len(), targets = targets.len(), level = %opt_level, "compile requested");
     // Select the `ast` input artifact(s) and decode them into ONE arena. A single `ast` (the common
     // case) decodes directly — byte-identical to today. TWO OR MORE `ast` artifacts (or an explicit
@@ -424,24 +441,19 @@ fn sanitize_origin(db: &Db, reject: &mut Reject) {
 /// A convenience over [`compile`]: a lone canonical-AST byte string → the WebAssembly component bytes,
 /// or the first error diagnostic. What the tests and simple callers use.
 ///
-/// Establishes the compile-stack precondition (`crate::host::run_with_compiler_stack`) around the
-/// `compile` call, exactly as the bin does at its top level (`cli.rs`, `cdz` main). The bin wraps
-/// `compile` directly; the tests and simple callers reach `compile` THROUGH here, so wrapping here is
-/// the one place that gives every such caller the guard-sized stack — without it, a deep-but-finite
-/// recursion (e.g. a depth-25 β-inline chain, or a module sibling call) overflows a `cargo test` worker
-/// thread's ≈2 MB stack in a debug build and ABORTS before the semantic depth guard can fire. See
-/// `crate::host` for why the stack is sized from `DESCENT_DEPTH_LIMIT`.
+/// The compile-stack precondition (`crate::host::run_with_compiler_stack`) is now established at the
+/// shared sink `compile_with_opt`, so this — like every other `compile` caller (the bin, the tests) —
+/// gets the guard-sized worker stack without needing its own wrap. See `crate::host` for why the stack
+/// is sized from `DESCENT_DEPTH_LIMIT`.
 pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
-    let out = crate::host::run_with_compiler_stack(|| {
-        compile(
-            &[Artifact::new(
-                Artifact::KIND_AST,
-                "main",
-                ast_bytes.to_vec(),
-            )],
-            &[Target::Wasm],
-        )
-    });
+    let out = compile(
+        &[Artifact::new(
+            Artifact::KIND_AST,
+            "main",
+            ast_bytes.to_vec(),
+        )],
+        &[Target::Wasm],
+    );
     match out.artifact(Target::Wasm.artifact_kind()) {
         Some(bytes) => Ok(bytes.to_vec()),
         None => {

@@ -113,6 +113,38 @@ export default function Rationals() {
         source={`(Rational.denominator (+ (+ (Rational.of 1 3) (Rational.of 1 3)) (Rational.of 1 3)))`}
       />
 
+      <H2>Rational to a whole number</H2>
+      <P>
+        The numerator and denominator hand back the exact integer <em>parts</em>, each an unbounded{" "}
+        <C>BigInt</C>. Sometimes you instead want the whole value <em>as</em> one integer at a boundary, a
+        MIDI tick, an array index, a pixel, and that's a projection to a fixed <C>Int64</C>. There are four,
+        differing only in how they handle a fraction: <C>truncate</C> drops toward zero, <C>floor</C> rounds
+        toward negative infinity, <C>ceil</C> toward positive infinity, and <C>round</C> to the nearest
+        (ties going away from zero). They agree on positive whole-ish values and diverge on negatives:
+      </P>
+      <Note>
+        <C>{`value    truncate  floor  ceil  round`}</C>
+        <br />
+        <C>{`  7/2        3        3     4     4`}</C>
+        <br />
+        <C>{` -7/2       -3       -4    -3    -4`}</C>
+        <br />
+        <C>{`  7/3        2        2     3     2`}</C>
+      </Note>
+      <P>
+        The split to watch is on negatives: <C>truncate</C> of <C>-7/2</C> is <C>-3</C> (toward zero) while{" "}
+        <C>floor</C> is <C>-4</C> (toward negative infinity). They only look the same on positives, so a sign
+        change is where a wrong choice bites:
+      </P>
+      <Runnable source={`(Rational.truncate (Rational.of -7 2))`} />
+      <P>
+        And <C>round</C> breaks a tie by going <em>away</em> from zero, so <C>5/2</C> rounds to <C>3</C>, not
+        the <C>2</C> that banker's (nearest-even) rounding would give. Cadenza names the rule rather than
+        letting you assume it, the same refusal to guess that runs through the numeric model. All four narrow
+        to <C>Int64</C> and trap on overflow, never silently wrapping:
+      </P>
+      <Runnable source={`(Rational.round (Rational.of 5 2))`} />
+
       <H2>Arithmetic stays exact</H2>
       <P>
         <C>+</C>, <C>-</C>, <C>*</C>, and <C>/</C> over rationals compute the exact result and renormalize.

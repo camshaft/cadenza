@@ -292,3 +292,28 @@
                 (`(* ,x 1) x)
                 (other     other))) (export main)))
   (output (: true Bool)))
+
+; A quote pattern NESTS structurally in pattern position: a template with a compound INSIDE a compound
+; matches a two-level-deep tree in ONE pattern, binding an unquote at the inner level. This is the
+; pattern-position dual of a nested quote CONSTRUCTION, and is distinct from (a) the root-only peephole
+; rule above (which matches only at the top and would need a recursive `simp` self-call to reach a nested
+; redex — a shape the rust backend does not yet fold, so pinned non-recursively here) and (b) the eval-
+; based recursive descent in 12-metaprogramming (which EVALUATES rather than matches). Pins that
+; `` `(+ (+ ,x 0) 0) `` reads as the doubly-nested `(Ast.List (list (Ast.Name "+") (Ast.List (list
+; (Ast.Name "+") x (Ast.Int 0))) (Ast.Int 0)))` pattern and binds `x` at depth 2 — a printer/lowering
+; that flattened the nesting or mis-scoped the inner unquote would break it. Green on all backends.
+
+(case "a nested quote pattern matches a compound-within-a-compound two levels deep"
+  (doc    "A single quote pattern with a compound inside a compound — `` `(+ (+ ,x 0) 0) `` — matches a
+           two-level-deep addition `(+ (+ y 0) 0)` in ONE pattern, binding the inner operand `x` (= the
+           name `y`) at depth 2, so `simp` returns `(quote y)`. Pins that quote patterns nest structurally
+           in pattern position (the dual of nested quote construction), reaching an unquote below the top
+           level. Distinct from the root-only peephole rule above and the eval-descent case in
+           12-metaprogramming — this is a pure structural MATCH two levels down, no recursion, no eval.")
+  (input  (do
+            (def (main) (= (simp (quote (+ (+ y 0) 0))) (quote y)))
+            (def (simp node)
+              (match node
+                (`(+ (+ ,x 0) 0) x)
+                (other           other))) (export main)))
+  (output (: true Bool)))

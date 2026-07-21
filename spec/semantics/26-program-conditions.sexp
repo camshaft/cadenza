@@ -2870,3 +2870,31 @@
   (output (: 5 Int64))
   (call   via-map (: -1 Int64))
   (trap   "unreachable"))
+
+(case "@ensures predicate PROJECTS a RECORD field of the result (single field, and a two-field relation)"
+  (doc    "The enforcement-predicate projection face for a NAMED-FIELD product (the record companion to the
+           tuple-component pin). `proj` returns `(record (x n) (y 2))` under @ensures(>= (. ret x) 0): the
+           postcondition reads field `x` of the result record — proj(5) has x=5>=0 (returns field y = 2),
+           proj(-1) has x=-1<0 and traps. `rel` returns `(record (lo n) (hi 5))` under @ensures(< (. ret lo)
+           (. ret hi)) relating TWO fields: rel(2) has lo=2 < hi=5 (returns lo = 2), rel(9) has lo=9 not < 5 and
+           traps. Together they pin that `(. ret field)` in a predicate resolves + lowers against a record
+           result — both a single-field read and a two-field relation — so a future change to record projection
+           or predicate scoping cannot silently break contract enforcement over record-typed results. Runtime
+           payload via the export param (no const-fold).")
+  (input  (do
+            (@ (ensures (>= (. ret x) 0))
+               (def (proj (: n Int64)) (record (x n) (y 2))))
+            (@ (ensures (< (. ret lo) (. ret hi)))
+               (def (rel (: n Int64)) (record (lo n) (hi 5))))
+            (def (main-proj (: k Int64)) (. (proj k) y))
+            (def (main-rel (: k Int64)) (. (rel k) lo))
+            (export main-proj)
+            (export main-rel)))
+  (call   main-proj (: 5 Int64))
+  (output (: 2 Int64))
+  (call   main-proj (: -1 Int64))
+  (trap   "unreachable")
+  (call   main-rel (: 2 Int64))
+  (output (: 2 Int64))
+  (call   main-rel (: 9 Int64))
+  (trap   "unreachable"))

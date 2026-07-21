@@ -6486,6 +6486,72 @@ fn a_site_a_closure_cell_leak_probe_tracks_the_owned_temp_env_cell() {
     );
 }
 
+/// SITE-A part-b GENERALIZATION pins: the CallClosure owned-temp env-cell drop fires across owned-closure
+/// PRODUCERS, not just the exact eta-4 tuple-stored single-arg shape the primary probe uses. Each runs to
+/// its value (a compile-only check would miss a fold that emits wrong code) AND pins the live-object count
+/// so a regression that stopped the drop firing on these producers (or that leaked more per call) is caught.
+/// (1) a closure stored in a SUM `(Box.B (T.Mk 10))`, projected + applied — the operand is an `If`-of-
+/// `SumNew`-of-partial-ctor that joins to Owned; the drop reclaims the closure cell (remaining live = the
+/// general sum/tuple-shell gap, not the closure seam). (2) a 2-arg-payload partial ctor `(T.Mk 10 20)` in an
+/// `if`-join, applied — a WIDER capture (two payload slots) than the eta-4 single-arg, confirming the drop is
+/// arity-agnostic over the boxed captures. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_site_a_owned_closure_producers_reclaim_across_shapes() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[site-a-siblings] debug-counters runtime not in the store; skipping probe");
+        return;
+    };
+    // (1) A closure STORED IN A SUM, projected + applied. `mk` returns `(Box.B (T.Mk 10))` behind a runtime
+    // `if` (so it is NOT beta-reduced away), the boxed partial ctor is extracted by the `Box.B` match and
+    // applied `(f 5)` → `(T.Mk 10 5)` → 15. The CallClosure operand joins to Owned, so part-b drops its cell.
+    let sum_stored = "(module m \
+                 (type T (Mk Int64 Int64)) \
+                 (type Box (B (-> Int64 T))) \
+                 (def (mk (: n Int64)) (if (< n 0) (Box.B (T.Mk 0)) (Box.B (T.Mk 10)))) \
+                 (def (main) (let ((b (mk 1))) (match (match b ((Box.B f) (f 5))) ((T.Mk a c) (+ a c))))) \
+                 (export main))";
+    let program =
+        compile_component(&crate::codec::encode(&parse(sum_stored))).expect("compile sum-stored");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(15),
+        "sum-stored closure completes to 15"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        2,
+        "sum-stored owned closure: part-b drops the closure cell; remaining 2 = the general sum/tuple-shell \
+         gap. > 2 = the CallClosure reclaim stopped firing on the sum-stored producer."
+    );
+
+    // (2) A 2-ARG-PAYLOAD partial ctor in an `if`-join, applied — wider boxed captures than the single-arg
+    // eta-4. `(T.Mk 10 20)` awaits its 3rd arg; `((. p 0) 5)` → `(T.Mk 10 20 5)` → 35.
+    let two_arg = "(module m \
+                 (type T (Mk Int64 Int64 Int64)) \
+                 (def (mk (: n Int64)) (if (< n 0) (tuple (T.Mk 0 0)) (tuple (T.Mk 10 20)))) \
+                 (def (main) (let ((p (mk 1))) (match ((. p 0) 5) ((T.Mk a b c) (+ a (+ b c)))))) \
+                 (export main))";
+    let program2 =
+        compile_component(&crate::codec::encode(&parse(two_arg))).expect("compile two-arg");
+    let mut rt2 = ComposedRuntime::new(&program2, &runtime_bytes);
+    assert_eq!(
+        rt2.call("main", &[]),
+        Val::S64(35),
+        "two-arg-payload closure completes to 35"
+    );
+    assert_eq!(
+        rt2.live_objects(),
+        3,
+        "two-arg-payload owned closure: part-b drops the closure cell; remaining 3 = the general tuple/ \
+         match-shell gap (one more shell than the single-arg shape). > 3 = the reclaim regressed."
+    );
+}
+
 /// KNOWN LEAK (tracking probe, the PERVASIVE case): a recursive fold over a HEAP LIST leaks EVERY node —
 /// the recursion-heap-reclamation gap is NOT closure-specific and NOT O(1); it is O(N) in the data. A
 /// `match` reading `sum-payload` does not drop the matched shell, so a list threaded through a recursive
@@ -6525,56 +6591,59 @@ fn a_recursive_list_fold_leaks_every_node_known_gap() {
     );
 }
 
-/// RECLAIM WITNESS (pins a SOUND path, narrows the compound-shell gap): a SINGLE non-recursive `match` over
-/// an OWNED compound-payload sum, whose payload child is only BORROWED (read by `List.len` — returns a scalar,
-/// never moves the child out) and does NOT escape the arm, IS already reclaimed to 0 live cells. This was
-/// EXPECTED to leak (the two `MatchSum` reclaim gates require `sum_has_only_scalar_payloads`, which a
-/// `(List Int64)` payload fails), but empirically nets 0 — so this borrow-only, non-escaping compound shape
-/// is ALREADY sound today. That NARROWS the real compound-shell-reclaim gap (the residual leaks) to the
-/// RECURSIVE / child-ESCAPING shapes: `a_recursive_list_fold_leaks_every_node_known_gap` (child `t` threaded
-/// into the recursive `len t` — escapes) and `a_recursive_match_binder_over_a_heap_scrutinee...` (child `a`
-/// flows into the returned `(Mk a a)` — escapes). Pinning THIS (0) guards the sound path from a future
-/// over-drop regression (a wrong broadening that drops an escaping child would show up as a UAF/trap here or
-/// a spurious <0-ish churn elsewhere) while the escaping shapes stay the tracked open gap. `main` returns the
-/// scalar `List.len xs` (3), so the only heap traffic is the shell + its payload list. `#[ignore]` — needs
-/// the debug-counters store (`cargo xtask build`; run with `-- --ignored`).
+/// KNOWN LEAK (tracking probe): a SINGLE non-recursive `match` over an OWNED COMPOUND-payload sum, whose
+/// payload child is only BORROWED (read by `List.len` → scalar, never moved out) and does NOT escape the arm,
+/// STILL leaks the shell + its payload — the two `MatchSum` reclaim gates require `sum_has_only_scalar_payloads`,
+/// which a `(List Int64)` payload fails, so `reclaim_shell` is false and the owned `Box.Wrap` shell is left
+/// un-dropped. Even though this shape is SOUND to reclaim (the child is borrowed + non-escaping, contrast
+/// `((Mk a _) (Mk a a))` whose child flows into the returned ctor), the conservative all-scalar floor blocks it.
+/// ⚠ CRITICAL — the scrutinee `(mk n)` takes a RUNTIME param `n`: with a CONSTANT `(mk 3)` the whole
+/// `(if (< 3 0) …)` + 2-arm match CONST-FOLD to the `Wrap` arm, the `MatchSum` is eliminated, no shell is built,
+/// and the probe spuriously reads 0 (masking the leak — the exact `build 0 …` const-fold flaw PR#719/Copilot
+/// caught in the set-algebra probe). A runtime `n` forces the real `MatchSum` emit + reclaim gate (traced:
+/// `all_scalar=false => reclaim=false`). This is the SIMPLEST instance of the compound-shell-reclaim gap and the
+/// cleanest before/after witness for the future broadening (flip to 0 when the sound compound-shell reclaim,
+/// gated on no-arm-child-escapes, lands). `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
 #[test]
 #[ignore]
-fn a_borrow_only_compound_payload_match_shell_leaves_no_live_objects() {
+fn a_borrow_only_compound_payload_match_shell_known_gap() {
     use crate::testkit::parse;
     use wasmtime::component::Val;
 
     let Some(runtime_bytes) = find_debug_runtime_wasm() else {
         eprintln!(
-            "[compound-shell] debug-counters runtime not in the store; skipping reclaim witness"
+            "[compound-shell] debug-counters runtime not in the store; skipping known-leak probe"
         );
         return;
     };
-    // `mk 3` builds a fresh owned `Box.Wrap [0,1,2]`; the match binds `xs` and reads `List.len xs` (a
-    // borrow → scalar 3). `xs` does NOT escape the arm (no constructor/call/return carries the handle out),
-    // so the shell is a droppable owned temporary — and it IS reclaimed (empirically 0, though the payload
-    // is compound). The recursive-fold + match-binder known-gap probes hold the still-leaking escaping shapes.
+    // `mk n` (RUNTIME `n`, so the match can NOT const-fold) builds a fresh owned `Box.Wrap [0..n)`; the match
+    // binds `xs` and reads `List.len xs` (a borrow → scalar). `xs` does NOT escape the arm, so the shell is a
+    // droppable owned temporary — but the compound-payload gate (`all_scalar=false`) leaves it un-dropped.
     let src = "(module m \
                  (type Box (Wrap (List Int64)) Empty) \
                  (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
                     (if (< i n) (build (+ i 1) n (List.push acc i)) acc)) \
                  (def (mk (: n Int64)) (if (< n 0) (Box.Empty ()) (Box.Wrap (build 0 n (list))))) \
-                 (def (main) (match (mk 3) ((Box.Wrap xs) (List.len xs)) ((Box.Empty _) 0))) \
+                 (def (main (: n Int64)) (match (mk n) ((Box.Wrap xs) (List.len xs)) ((Box.Empty _) 0))) \
                  (export main))";
     let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    // Value CORRECT despite the leak (reclamation gap, not a miscompile; no UAF — a freed-early shell traps).
     assert_eq!(
-        rt.call("main", &[]),
+        rt.call("main", &[Val::S64(3)]),
         Val::S64(3),
-        "List.len of the wrapped [0,1,2] is 3 (value-correct + NO UAF — a freed-early shell would trap/OOB)"
+        "List.len of the wrapped [0,1,2] is 3 (value-correct + NO UAF)"
     );
+    // The owned `Box.Wrap` shell + its payload list ([0,1,2]) leak — the compound-payload gate blocks the
+    // shell drop even though the borrowed, non-escaping child would make it sound. Pins the count; flip to 0
+    // when the compound-shell reclaim broadening (gated on no-arm-child-escapes) lands — this is the first
+    // shape it should fix. A LOWER count = the broadening landed (or an over-drop); investigate before flipping.
     assert_eq!(
         rt.live_objects(),
-        0,
-        "borrow-only compound-payload match shell IS reclaimed: the owned `Box.Wrap` shell + its payload \
-         list net to 0 after the match (the child `xs` is borrowed by List.len + does not escape, so the \
-         deep shell drop is sound). A NON-zero count here = an over-drop UAF regression OR a lost reclaim — \
-         investigate; do not just bump the number."
+        3,
+        "KNOWN GAP: an owned compound-payload match shell whose child is only borrowed (List.len) + non-\
+         escaping is left un-dropped (all-scalar-payload reclaim floor) — 3 cells (the Box.Wrap shell + the \
+         payload list's spine + boxed element(s)). Flip to 0 when the sound compound-shell reclaim lands."
     );
 }
 
