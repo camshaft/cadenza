@@ -1149,7 +1149,7 @@ pass	a lambda captures an enclosing function parameter and is applied in its bod
 pass	a lambda parameter shadows the outer constant for its body
 pass	a lambda's return type ascription agreeing with the body is transparent
 pass	a large multiply-called definition is emitted once by the cost heuristic
-pass	a float at the top of the binary64 exponent range renders its full decimal expansion
+pass	a large-magnitude float whose shortest form differs from its exact value renders the full decimal expansion
 pass	a large whole float crosses the boundary preserving its full value
 pass	a large whole-valued float renders its full value, not an integer saturation
 pass	a later declaration in a do block sees an earlier one
@@ -3239,6 +3239,7 @@ pass	eval of a quoted float executes it to the float value
 pass	eval of a quoted float feeds ordinary float arithmetic
 pass	eval of a quoted lambda application folds
 pass	eval of a quoted let-binding form folds
+pass	eval of a quoted list-construction form folds to the runtime list
 pass	eval of a quoted match form folds to the selected arm
 pass	eval of a quoted ordering comparison drives the branch
 pass	eval of a quoted private constructor is withheld exactly as a direct reference — no forge
@@ -3246,6 +3247,7 @@ pass	eval of a quoted proof-variant match cannot destructure an abstract proof o
 pass	eval of a quoted string executes it to the string value
 pass	division by negative one negates but still overflows at the minimum
 pass	eval of a quoted theorem constructor cannot forge an abstract theorem outside the kernel
+pass	eval of a quoted tuple-construction form folds to the runtime tuple
 pass	eval of a template splicing a runtime VALUE folds — the working side of the boundary
 pass	eval of an Ast.Float NaN node executes to the NaN value — it does NOT construct an escaping node
 pass	eval of an Ast.List with a non-operator head is the ordinary application type error
@@ -4201,3 +4203,92 @@ pass	a rational ceilings toward positive infinity, narrowed to Int64
 pass	a rational rounds to nearest, ties half-away-from-zero, narrowed to Int64
 pass	a rational rounds a negative half away from zero
 pass	a list of two same-dimension quantities at different units names the scale difference (CDZ0201)
+pass	a bare literal grounded to a narrow width through a SUBTRACTION spine is range-checked
+pass	a bare literal grounded to a narrow width through a DIVISION spine is range-checked
+pass	a mixed-scale equality finds GENUINE equality after a whole-ratio conversion (5000 m = 5 km)
+pass	a mixed-scale equality is FALSE when the converted values differ (5000 m ≠ 6 km)
+pass	Set.contains finds a separately-built equal quantity but not a non-member
+pass	a BigInt-inner quantity Set dedups equal elements and keeps distinct ones
+pass	a BigInt-inner quantity stored in a List reads back through List.at
+pass	a List.concat of a checked-arith list with a recursive-call list is disjoint-slotted
+pass	a List.push of a checked-arith element behind a recursive-call list is disjoint-slotted
+pass	a List.update at a checked-arith element behind a recursive-call list is disjoint-slotted
+pass	a Map VALUE that is a list-of-quantities round-trips through Map.lookup and List.at
+pass	a Map.len over a projected field of a fresh record whose producer binds an i64 let is disjoint-slotted
+pass	a Map.remove of a checked-arith key behind a recursive-call map is disjoint-slotted
+pass	a Map.remove of a checked-arith key that is PRESENT drops exactly it (disjoint-slot value-parity)
+pass	a NESTED list-of-lists-of-quantities used as a Map key canonicalizes and hits
+pass	a RUNTIME quantity is returned WITH its unit (the unit label is injected at compile time)
+pass	a Rational-inner quantity Map key matches an equal value written with a different spelling
+pass	a Rational-inner quantity Set dedups equal elements and keeps distinct ones
+pass	a Rational-inner quantity stored in a List reads back canonicalized through List.at
+pass	a Set of lists-of-quantities dedups equal members and keeps distinct ones
+pass	a Set of nominal-over-quantity newtypes dedups equal members
+pass	a Set of tuples-containing-a-quantity dedups equal members and keeps distinct ones
+pass	a Set.remove of a checked-arith element behind a recursive-call set is disjoint-slotted
+pass	a Set.remove of a checked-arith element that is PRESENT drops exactly it (disjoint-slot value-parity)
+pass	a Set.union of a recursive-call set and a Set.of over checked-arith is disjoint-slotted
+pass	a WIDE integer literal pattern (beyond ±2^31) matches a runtime scrutinee by equality
+pass	a `?` in a GENERIC function monomorphizes correctly at two element types
+pass	a `?` in an anonymous LAMBDA body resolves the lambda as its boundary (happy path)
+pass	a `?` in an anonymous LAMBDA with a non-fallible result is rejected (CDZ0230)
+pass	a bare (map) pattern with no keys matches a non-empty map, not just the empty one
+pass	a big literal is NOT grounded to a narrow width across a COMPARISON boundary (arith-spine climb stops at `<`)
+pass	a constant success `?` folds INLINE in a subexpression with no let-binding
+pass	a cube dimension renders as Unit.^ with exponent 3
+pass	a deep uniform arith accumulator chain (CSE-partition shape) computes the same value across opt levels
+pass	a failure `?` preserves a USER-SUM error value (a ctor + payload) through the short-circuit
+pass	a failure `?` short-circuits the enclosing LAMBDA, not the outer function
+pass	a file-level (module-doc) header before an import is inert and round-trips
+pass	a generic newtype instantiated at a FUNCTION type carries a closure through erasure
+pass	a generic newtype with a structural-record payload mentioning the type parameter constructs
+pass	a guard expression calling a recursive helper inside a self-tail-loop match compiles
+pass	a guarded list-splat arm returning an Option beside a tail-recursive arm compiles to valid wasm
+pass	a let-bound if-selected partial constructor is applied and reclaimed once (borrowed-operand path)
+pass	a list of nominal-over-quantity newtypes is a compound Map key
+pass	a list-of-quantities used as a Map key canonicalizes and hits
+pass	a logical right shift that drops every significant bit of a masked unsigned value folds to zero
+pass	a narrow-Int quantity stored in a List reads back through List.at and unwraps
+pass	a nested modulo by a multiple collapses to a single modulo on a runtime operand
+pass	a nominal newtype over a quantity is a Map key that hits by content
+pass	a partial record match naming one scalar field drops the unnamed heap fields
+pass	a partially-applied RUNTIME closure binds its residual to a let, then completes it
+pass	a product of two DIFFERENT base dimensions renders as Unit.*
+pass	a quantity whose reference-scaled magnitude overflows its inner Int is rejected
+pass	a rational truncates a negative value toward zero, not toward negative infinity
+pass	a rational truncates to its integer part toward zero, narrowed to Int64
+pass	a reciprocal dimension renders as Unit.one over the unit
+pass	a recursive list-map reusing a destructured sum payload beside an i64 let is disjoint-slotted
+pass	a recursive sum constructor with a CHECKED-ARITH payload and a recursive-call sibling payload
+pass	a runtime BigInt-inner quantity used as a Map key hits, and a different magnitude misses
+pass	a runtime Rational-inner quantity used as a Map key hits, and a different magnitude misses
+pass	a runtime quantity Map key MISSES when the looked-up magnitude differs
+pass	a runtime quantity stored in a List reads back through List.at and unwraps
+pass	a runtime quantity used as a Map key hits when a separately-built equal key is looked up
+pass	a same-name generic type applied in a variant payload denotes the type
+pass	a same-name generic type at TWO instantiations in one payload each denotes its type
+pass	a self-tail-recursive mixed match whose recursive arm returns an Option compiles to valid wasm
+pass	a success `?` on a LET-BOUND variable operand unwraps through the binding
+pass	a transitive chain of erasable newtypes in reversed declaration order composes
+pass	a trapping guard on a non-matching literal arm is never evaluated
+pass	a variant carrying a structural-record payload in the (: name type) field spelling is non-nullary and readable
+pass	a wide NEGATIVE integer literal pattern matches its runtime scrutinee
+pass	an acceleration dimension renders as a quotient with a squared denominator
+pass	an effect op with a structural-record return types the perform at the declared record
+pass	an if-selected partially-applied constructor is completed by application (eta-closure), both arms
+pass	an underscore-prefixed match-arm binder is a usable binding, not a wildcard
+pass	complementary ordering comparisons fold their or to true and their and to false
+pass	distinct-magnitude runtime quantities in a Set stay separate
+pass	division by one keeps a boundary-crossing runtime operand
+pass	remainder by one folds to zero but does not discard a trapping runtime operand
+pass	the absorption law does not discard a trapping runtime operand
+pass	the and-complement folds to zero on an unsigned type but the or-complement is the width all-ones not -1
+pass	the bitwise absorption law folds x-and-(x-or-y) and x-or-(x-and-y) to x on runtime operands
+pass	the boolean absorption laws reduce a-and-(a-or-b) and a-or-(a-and-b) to a
+pass	the complement laws fold x-and-not-x to zero and x-or-not-x to all-ones on a signed runtime value
+pass	the idempotent bitwise collapse holds on a repeated RUNTIME operand
+pass	the logical-shift-drops-all-bits fold does not discard a trapping runtime operand
+pass	the multiplicative-one and subtractive-zero identities preserve a boundary-crossing runtime operand
+pass	the x times minus-one strength reduction negates a normal operand and still traps at Int64.min
+pass	two equal runtime quantities in a Set dedup to one element
+todo	a closed literal closure forwarded through const-wrapper hops is not a false reject

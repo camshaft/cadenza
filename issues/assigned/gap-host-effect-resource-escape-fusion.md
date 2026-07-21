@@ -73,3 +73,33 @@ set_needs_memory). Both non-urgent; mirror the peer twins with leading_is_host=t
 re-implement the HostImport→ExternImport projection INLINE (mod.rs ~7126) instead of using the
 `host_as_extern_for` helper (added for exactly this) — fold them onto the helper (dedup, avoids divergence).
 Small cleanup, do AFTER cd923d38a lands (same arms; stacking now conflicts).
+
+## UPDATE (v-effects, 2026-07-21) — WITH-METHODS String/Bytes site FULLY SCOPED, turnkey for next build tick.
+All prior work (Flat/Sum/RecursiveSum plain sites + single-effect guards) is ON TRUNK (verified by content:
+`assemble_host_runtime_resource` + `host_as_extern_for` present in trunk envelope.rs/mod.rs). The ONLY remaining
+plain-scalar gap is the STRING/BYTES with-methods site `emit_runtime_bytes_resource` (mod.rs ~6794), which still
+has the `if !host_imports.is_empty() { decline }` guard (mod.rs ~6845) unlike the 3 dispatching sites.
+- REPRO (confirmed declines the target msg "a host-delegated effect … escapes as a runtime resource is not yet
+  emitted"): `(do (effect H (op h (-> Int64 UInt8))) (def (main (: x Int64)) (host (H) (Bytes.of (list (H.h x))))) (export main))`.
+  (NB: a String *host-op-result* is a DIFFERENT deeper limit — out of scope; use a Bytes *result* fed by a
+  scalar host op as above.)
+- THE FIX: replace the bytes-site host-decline guard with the SAME host-resource dispatch block the Flat site
+  uses (mod.rs 1924-2028) — the structure is line-identical: peer+host mutual-exclusion decline, `set_needs_memory`
+  string-param decline, single-effect guard, `host_layout = with_import_base(h+k+2).with_host_order(...)`, select
+  funcs, `host_as_extern_for`, `runtime_resource_core_module_form_ex2(…, leading_is_host=TRUE, EscapeForm::
+  RuntimeBytes(form), &core_methods=[Len,IsEmpty,ToBytes], make_param_vts, make_core_slots, …)`.
+- THE ONE MISSING PIECE: the WITH-METHODS host envelope assembler does NOT exist yet. Envelope has
+  `assemble_host_runtime_resource` (plain, no methods — the 3 landed sites) + `assemble_extern_runtime_resource_
+  with_scalar_methods` (peer, WITH methods, envelope.rs ~3142). Build `assemble_host_runtime_resource_with_scalar_
+  methods` = the host analogue of `assemble_extern_..._with_scalar_methods`, differing exactly as
+  `assemble_host_runtime_resource` (2626) differs from `assemble_extern_runtime_resource` (host imports one
+  interface from "host" module vs peer's grouped "peer" instances; single `iface` + `host_fns`, no `op_ifaces`
+  grouping). ~100-150 lines mirroring 3142 with 2626's host-import shape. Then dispatch to it from the bytes site
+  (the `extern_imports.is_empty()` branch's host twin, before the peer branch).
+- GATE e2e: `run` with a host-response fixture returning the UInt8; escaped Bytes `(bin 7)` or the list byte
+  round-trips + the 3 scalar methods (len/is-empty/to-bytes) resolve. + a two-distinct-host-effects-decline pin
+  (mirror `two_distinct_host_effects_in_a_resource_escape_decline_cleanly`) for the bytes site. NOT green-partial
+  (byte assembler) — run full `cargo xtask check` at RUST_MIN_STACK=64M (the pre-existing CSE-test stack mask).
+- REMAINING AFTER THIS: (1) the STRING-PARAM host op shared-memory `_mem` variant (all sites decline via
+  set_needs_memory today — a bigger increment, the (ptr,len) 2-slot ABI); (2) the `host_as_extern_for` dedup
+  cleanup (PR#483 id 3596437345) once `cd923d38a` lands. Both non-urgent.

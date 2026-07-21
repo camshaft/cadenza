@@ -1025,6 +1025,27 @@
                  (Qty.of (Rational.of 1 1) (Unit.of #"foot"))) 1 0))
   (output (: 1 Int64)))
 
+(case "a mixed-scale equality finds GENUINE equality after a whole-ratio conversion (5000 m = 5 km)"
+  (doc    "`(= (Qty.of 5000.0 meter) (Qty.of 5.0 kilometer))` — a mixed-scale EQUALITY where the two values
+           are genuinely equal after conversion: 5 km = 5×1000 = 5000 m, so 5000 m = 5 km is TRUE (1). Unlike
+           the Int-truncation case above (30 cm = 1 foot compares equal by both truncating to 0 m — a
+           coincidence of lossy conversion), this pins that a mixed-scale `=` over a WHOLE-ratio prefix (kilo
+           = 1000/1) converts EXACTLY and finds real equality, not a truncation artifact. The companion
+           `(= (Qty.of 5000.0 meter) (Qty.of 6.0 kilometer))` is FALSE (0) — 5000 m ≠ 6000 m — confirming the
+           equality discriminates on the converted value, not an always-true collapse.")
+  (input  (if (= (Qty.of 5000.0 (Unit.base #"meter"))
+                 (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))) 1 0))
+  (output (: 1 Int64)))
+
+(case "a mixed-scale equality is FALSE when the converted values differ (5000 m ≠ 6 km)"
+  (doc    "The negative companion of the whole-ratio equality: `(= (Qty.of 5000.0 meter) (Qty.of 6.0
+           kilometer))` converts 6 km = 6000 m, so 5000 m = 6000 m is FALSE (0). Pins that a mixed-scale
+           equality returns false for genuinely unequal converted values — the discrimination the always-
+           equal-by-truncation Int case cannot show.")
+  (input  (if (= (Qty.of 5000.0 (Unit.base #"meter"))
+                 (Qty.of 6.0 (Unit.prefix kilo (Unit.base #"meter")))) 1 0))
+  (output (: 0 Int64)))
+
 ; ============================================================================================
 ; Join sites — an if/match/list of quantities must share ONE quantity type (unit AND scale)
 ; ============================================================================================

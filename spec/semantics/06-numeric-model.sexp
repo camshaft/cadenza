@@ -603,6 +603,29 @@
   (call   main (: 3 UInt8) (: 5 UInt8))
   (output (: 10001 Int64)))
 
+; The arith-spine climb fires for EVERY arith operator, not just `+`/`*` (the case above). `is_arith` covers
+; `+`/`-`/`*`/`/`/`%` — each unifies its two operands to ONE width, so a concretely-fixed sibling anywhere up a
+; `-` or `/` chain grounds the literal exactly as it does through `+`/`*`. These two cases pin the `-` and `/`
+; spines so a future change narrowing the set of climbed operators (e.g. dropping `/` on the theory that
+; division's width reasoning differs — it does NOT: `/ : ∀a.(Int a)→(Int a)→(Int a)` like the rest) is caught
+; by the gate rather than silently regressing to a check-vs-backend divergence on those spines.
+(case "a bare literal grounded to a narrow width through a SUBTRACTION spine is range-checked"
+  (doc    "The `-` face of the arith-spine fit-check: `(- (* 10000 (if (< a b) 1 0)) (% a b))` over UInt8
+           a/b — the `-` unifies the `*` result with the UInt8 `(% a b)`, so the `*` grounds to UInt8 and the
+           bare `10000` is out of range → CDZ0201. Same transitive path as the `+` case, through `-` instead:
+           `-` is an integer arith op (`∀a.(Int a)→(Int a)→(Int a)`), so it climbs identically.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (- (* 10000 (if (< a b) 1 0)) (% a b))) (export main)))
+  (error  CDZ0201))
+
+(case "a bare literal grounded to a narrow width through a DIVISION spine is range-checked"
+  (doc    "The `/` face of the arith-spine fit-check: `(/ (* 10000 (if (< a b) 1 0)) (% a b))` over UInt8
+           a/b — the `/` unifies its operands to one width, so the `*` (and its bare `10000`) grounds to
+           UInt8 and `10000` is out of range → CDZ0201. Pins that DIVISION participates in the climb like the
+           other arith ops (its result width IS its operand width); a change excluding `/` would silently
+           regress this to a check-passes / backend-truncates divergence.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (/ (* 10000 (if (< a b) 1 0)) (% a b))) (export main)))
+  (error  CDZ0201))
+
 (case "an R-suffixed literal composes with exact rational arithmetic"
   (doc    "`(+ 0.5R (Rational.of 1 3))` = 1/2 + 1/3 = 5/6 exactly — the suffixed literal flows into the
            exact `+` just like the explicit constructor, so both spellings denote one kind of value.")
