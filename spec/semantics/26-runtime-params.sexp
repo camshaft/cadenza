@@ -215,6 +215,23 @@
   (host-responses (respond Param.width (: 41 Int64)))
   (output (: 42 Int64)))
 
+(case "a @param value drives a CHAMP map lookup as the KEY"
+  (doc    "Composition of the @param sidecar with the collection machinery: the host-supplied `Param.k`
+           value is used as a MAP KEY — `(Map.lookup {1↦10, 2↦20} (Param.k))` with the host responding 2
+           finds 20. The accessor's runtime Int64 must flow into the CHAMP hash/lookup path exactly as a
+           boundary parameter does (the param×collection interaction — the sidecar's accessors are ordinary
+           values, not a special class). The collection companion of the quasiquote/eval composition above.")
+  (input  (do
+            (pragma param (param (: widget slider)) (: k Int64))
+            (def (main)
+              (host (Param)
+                (match (Map.lookup (Map.insert (Map.insert Map.empty 1 10) 2 20) (Param.k))
+                  ((Some v) v) ((None u) -1))))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.k (: 2 Int64)))
+  (output (: 20 Int64)))
+
 (case "a @param of type Rational desugars to two scalar num/den accessors the guest recombines (#13)"
   (doc    "A heap `Rational` has no host boundary form (only scalar/unit results cross), so a
            `@param(...) rate : Rational` cannot generate one `(op rate (-> Unit Rational))` host accessor.

@@ -393,6 +393,20 @@ pub fn unreachable_branch_message(cond: &str, always_true: bool, fact: &str) -> 
     )
 }
 
+/// Render the proving-interval FACT clause for a CDZ0308 message from the structured facts the value-facts
+/// analysis holds — so the emitter (`v-value-facts`, `compile.rs`) passes `(var, lo, hi)` and the interval
+/// wording stays a single owned+pinned shape rather than each call site hand-formatting `∈ [..]`. `hi` is
+/// `None` for an OPEN upper bound (a `>= lo` fact with no proven ceiling) → `<var> ≥ <lo>`; a closed bound
+/// → `<var> ∈ [<lo>, <hi>]`. Feed the result as the `fact` arg of [`unreachable_branch_message`]:
+/// `unreachable_branch_message(cond, always, &unreachable_branch_fact("x", 1, Some(127)))`
+/// → `` this branch is never reached — `<cond>` is always true here (x ∈ [1, 127]) ``.
+pub fn unreachable_branch_fact(var: &str, lo: i64, hi: Option<i64>) -> String {
+    match hi {
+        Some(hi) => format!("{var} ∈ [{lo}, {hi}]"),
+        None => format!("{var} ≥ {lo}"),
+    }
+}
+
 /// How confident the compiler is that a proposed [`Fix`] is the RIGHT edit — the branch an agent
 /// reads before applying it blind (`spec/capabilities/diagnostics.md` §An Unconfirmed Fix Carries An
 /// Applicability Marker). This is the rustc `Applicability` distinction, minus `Unspecified`: a fix
@@ -1280,7 +1294,7 @@ pub mod suggest {
 
 #[cfg(test)]
 mod cdz0308_tests {
-    use super::{Code, unreachable_branch_message};
+    use super::{Code, unreachable_branch_fact, unreachable_branch_message};
 
     #[test]
     fn unreachable_branch_maps_to_cdz0308() {
@@ -1307,6 +1321,20 @@ mod cdz0308_tests {
         assert_eq!(
             unreachable_branch_message("n == 0", false, "n ∈ [1, 9]"),
             "this branch is never reached — `n == 0` is always false here (n ∈ [1, 9])"
+        );
+    }
+
+    #[test]
+    fn unreachable_branch_fact_renders_closed_and_open_intervals() {
+        // The proving-interval clause the value-facts emitter passes as `fact`. A closed bound → ∈ [lo, hi];
+        // an OPEN upper bound (hi=None, a `>= lo` fact with no proven ceiling) → `<var> ≥ <lo>`. Pinned so
+        // the interval wording stays one owned shape across every emit site.
+        assert_eq!(unreachable_branch_fact("x", 1, Some(127)), "x ∈ [1, 127]");
+        assert_eq!(unreachable_branch_fact("n", 0, None), "n ≥ 0");
+        // Composes with the message helper into the full CDZ0308 wording.
+        assert_eq!(
+            unreachable_branch_message("x > 0", true, &unreachable_branch_fact("x", 1, Some(127))),
+            "this branch is never reached — `x > 0` is always true here (x ∈ [1, 127])"
         );
     }
 }

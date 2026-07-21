@@ -1273,18 +1273,34 @@ fn width_fault_against_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<Rej
     // like the nested-int case). Reuses `dec.fits_f32()` — the same predicate `literal_width_fault` runs.
     if let Ty::Float(ft) = want
         && ft.ground_width() == 32
-        && let crate::ast::Struct::Atom(lid) = db.ast.get(value)
-        && let crate::ast::Leaf::Float(dec) = db.ast.leaf(*lid).clone()
-        && !dec.fits_f32()
     {
-        return Some(
-            Reject::coded(
-                Code::IntOutOfRange,
-                "float literal does not fit the annotated type Float32 (it overflows the Float32 \
-                 range to infinity — the largest finite Float32 is about 3.4e38)",
-            )
-            .at(value),
-        );
+        // The overflowing float `Decimal`, whether `value` is a DIRECT float-literal atom OR a value that
+        // FOLDS to a constant float — a CONST-condition `(if true 1.0e300 0.5)` reduces via `core_of` to
+        // `Core::ConstFloat(1.0e300)`, materializing the malformed `inf` that a runtime `if` (handled by the
+        // descent above) would reject; without reading the fold, the const-fold path slipped `check` and
+        // COMPILED + ran to `inf`. (A runtime `if` is a `Core::If`, taken by the descent arm above, not here.)
+        let dec = match db.ast.get(value) {
+            crate::ast::Struct::Atom(lid) => match db.ast.leaf(*lid).clone() {
+                crate::ast::Leaf::Float(dec) => Some(dec),
+                _ => None,
+            },
+            _ => match crate::lower::core_of(db, value) {
+                crate::core::Core::ConstFloat(dec) => Some(dec),
+                _ => None,
+            },
+        };
+        if let Some(dec) = dec
+            && !dec.fits_f32()
+        {
+            return Some(
+                Reject::coded(
+                    Code::IntOutOfRange,
+                    "float literal does not fit the annotated type Float32 (it overflows the Float32 \
+                     range to infinity — the largest finite Float32 is about 3.4e38)",
+                )
+                .at(value),
+            );
+        }
     }
     if let Ty::Int(it) = want
         && let crate::ty::Width::Fixed(w) = it.width

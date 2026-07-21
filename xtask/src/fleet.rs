@@ -6761,6 +6761,11 @@ mod tests {
             Some("music")
         );
         assert_eq!(
+            path_to_zone("implementation/cad/src/solid.cdz"),
+            Some("cad")
+        );
+        assert_eq!(path_to_zone("implementation/des/src/sim.cdz"), Some("des"));
+        assert_eq!(
             path_to_zone("integrations/slack/bridge.rs"),
             Some("integrations")
         );

@@ -2172,6 +2172,9 @@ impl<'a> Parser<'a> {
         let mut items = vec![head, name];
         items.extend(self.doc_nodes(docs));
         self.expect(Kind::LBrace, "`{`");
+        // Index in `items` where MEMBERS begin (past `head`, `name`, and any leading `(doc …)`). The
+        // trailing-comment handler below must never pop below this — the module NAME is not a member.
+        let members_start = items.len();
         while !self.at(Kind::RBrace) && !self.at_end() {
             // members capture their own leading `//` comments and `///` docs
             let before = self.pos;
@@ -2182,6 +2185,44 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
         }
+        // A `///` doc or `//` comment on the last line(s) BEFORE the closing `}` (no following member)
+        // sits in the `}` token's leading slot — the loop above exits at `}` without ever draining it, so
+        // it would be STRANDED and DROPPED (a genuine comment/doc LOSS: `cdz fmt` then REFUSES the file via
+        // the comment-drop guard, so such a module can't be formatted at all). Drain that slot here and
+        // re-attach, mirroring the top-level `program()` trailing handler:
+        //   • a `///` doc becomes a trailing `(doc …)` MODULE MEMBER (docs are members here — the printer
+        //     already renders it as a `/// …` line before `}`); this is the common, valuable case and it
+        //     works for both empty and non-empty bodies (a `(doc …)` stands alone).
+        //   • a leftover `//` comment wraps the LAST member as `(comment …)`, so the module still
+        //     round-trips (its printed position moves above the last member — the same v1 limitation a
+        //     mid-comment already has — but nothing is lost).
+        // A `//` comment in an EMPTY body has no member to wrap and no standalone carrier that re-reads as
+        // a comment (a bare `(comment "t")` prints as a `comment("t")` CALL; a `unit` placeholder prints a
+        // phantom `unit` member) — so it is left in the slot for the comment-drop guard to catch (`cdz fmt`
+        // refuses, byte-identical, no corruption). That is the pre-existing safe behavior for this rare
+        // curiosity (an empty module whose only content is a plain comment); the doc case is preserved.
+        let (docs, comments): (Vec<Lead>, Vec<Lead>) = {
+            let leads: Vec<Lead> = if self.pos < self.leading.len() {
+                std::mem::take(&mut self.leading[self.pos])
+            } else {
+                Vec::new()
+            };
+            leads.into_iter().partition(|l| l.doc)
+        };
+        if !comments.is_empty() {
+            if items.len() > members_start {
+                // Wrap the LAST member (never the name / a leading doc, which sit below members_start).
+                let last = items.pop().unwrap();
+                items.push(self.wrap_comments(comments, last));
+            } else {
+                // Empty body: put the comment back so the drop-guard sees it (fmt refuses, no corruption).
+                if self.pos < self.leading.len() {
+                    self.leading[self.pos] = comments;
+                }
+            }
+        }
+        // A trailing `///` doc becomes a `(doc …)` member at the END of the module body (empty or not).
+        items.extend(self.doc_nodes(docs));
         self.expect(Kind::RBrace, "`}`");
         let span = start.merge(self.prev_span());
         self.list(items, span)

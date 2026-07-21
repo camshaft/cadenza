@@ -3271,10 +3271,57 @@ fn emit_arith(
     // this guard is what keeps a future runtime unusual-width arith from miscompiling). The value/wrap/render
     // surface (which the storage map serves) has no such hazard. An unusual-width `2^N` range-check is a
     // later slice.
-    if matches!(it.width, Width::Fixed(w) if (1..=64).contains(&w) && !matches!(w, 8 | 16 | 32 | 64))
+    // An UNUSUAL width (`UInt48`, `Int12` — 1..=64 but not an aliased boundary 8/16/32/64) is STORED in the
+    // next-larger machine primitive (`types::int_type` → `storage_width_type`), so a `checked_*` on that
+    // primitive traps at the STORAGE width's `2^machine`, NOT the type's `2^N` (`(UInt48).max + 1` = 2^48
+    // must trap, but `u64::checked_add` wouldn't). So `+`/`-`/`*` compute the native op on the storage type
+    // (which never wraps at `2^machine` for in-range operands) and then RANGE-CHECK the result against the
+    // TYPE's own `[min_N, max_N]`, panicking "integer overflow" out of range — the rust twin of the wasm
+    // narrow-width `emit_range_check` (select.rs). `/`/`%`/bitwise/shift over an unusual width can't exceed
+    // the operands' range (a quotient/remainder/mask/shift stays within), so they need no width check and
+    // fall through to the normal emit below. Handled here as a dedicated arm so the storage-width map stays
+    // safe for arith too. A NON-unusual width (8/16/32/64 with an exact primitive) skips this entirely.
+    if let Width::Fixed(w) = it.width
+        && (1..=64).contains(&w)
+        && !matches!(w, 8 | 16 | 32 | 64)
+        && matches!(op, Prim::Add | Prim::Sub | Prim::Mul)
     {
-        return Err(Reject::decline(
-            "runtime arithmetic on an unusual integer width (stored in a larger machine type) is not yet range-checked at its own width by the Rust backend",
+        let l = emit_grounded(db, lhs, it, env, ctx)?;
+        let r = emit_grounded(db, rhs, it, env, ctx)?;
+        let native = match op {
+            Prim::Add => "wrapping_add",
+            Prim::Sub => "wrapping_sub",
+            Prim::Mul => "wrapping_mul",
+            _ => unreachable!(),
+        };
+        // Provably-in-range elision — the SAME Core-tier decision the wasm backend + the normal path use.
+        let grounded = crate::ty::IntTy::fixed(it.ground_signed(), it.ground_width());
+        if crate::lower::provably_no_overflow(db, op, lhs, rhs, grounded, id) {
+            return Ok(format!("({l}).{native}({r})"));
+        }
+        // The type's own bounds. An unusual width is 1..=63 (never 64 here), so BOTH bounds fit i64 and the
+        // storage type (which is strictly larger) represents any out-of-range result exactly for the compare.
+        let signed = it.ground_signed();
+        let (min_n, max_n): (i128, i128) = if signed {
+            let half = 1i128 << (w - 1);
+            (-half, half - 1)
+        } else {
+            (0, (1i128 << w) - 1)
+        };
+        // Compute on the storage type (via the wrapping op — in range it equals the true result), bind it,
+        // then compare against the type's bounds cast to the storage type; panic "integer overflow" (the
+        // classifying kind) if outside. Signed → two-sided; unsigned → single upper-bound test (the value is
+        // >= 0 by type). The bounds literals are the storage type's, so no cast mismatch.
+        let store = super::types::rust_type(&Ty::Int(it))
+            .ok_or_else(|| Reject::decline("unusual-width arith: no storage type"))?;
+        let cond = if signed {
+            format!("__uw < {min_n}{store} || __uw > {max_n}{store}")
+        } else {
+            format!("__uw > {max_n}{store}")
+        };
+        return Ok(format!(
+            "{{ let __uw = ({l}).{native}({r}); if {cond} {{ panic!(\"integer overflow in {}\") }} __uw }}",
+            op_name(op),
         ));
     }
     let l = emit_grounded(db, lhs, it, env, ctx)?;

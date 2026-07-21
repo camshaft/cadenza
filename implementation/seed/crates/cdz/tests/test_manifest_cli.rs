@@ -1973,6 +1973,49 @@ fn a_set_or_map_nested_in_a_compound_decodes_the_sibling_slot_intact() {
     );
 }
 
+/// §Refinements Constrain Generation for a refined newtype ELEMENT of a Set / VALUE of a Map: EVERY drawn
+/// element must satisfy the element's `@invariant`, across ALL trials — including the empty/small collections
+/// the variable-cardinality generators now reach. `Pct = P(Int64)` with `@invariant [0,100]`; the property
+/// asserts each `Pct` element/value is in `[0,100]` and PASSES all 100 trials — proving generation is in-domain
+/// (before `reapply_recorded_invariant` recursed into Set elements / Map values, the raw `Test.gen` int drew
+/// out-of-domain and the body would trap). This pins the PASSING (in-domain generation) direction, which the
+/// existing failing Set-Pct counterexample test does NOT cover (its body traps at `x >= 50`, INSIDE [0,100], so
+/// an out-of-[0,100] draw would go unnoticed there). Guards the Set-element / Map-value invariant recursion.
+#[test]
+fn a_refined_newtype_in_a_set_or_map_generates_only_in_domain() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — the -gen wrapper run needs the store"
+        );
+        return;
+    }
+    let d = dir("refined-collection-in-domain");
+    // Every Pct ELEMENT of a generated Set is in [0,100] → PASS across all trials (incl. empty/singleton sets).
+    let set_src = "(do (@ (invariant (and (>= self 0) (<= self 100))) (type Pct (P Int64))) \
+           (@ test (def (f (: s (Set Pct))) \
+             (match (Set.to-list s) ((list) unit) \
+               ((list h .. t) (match h (((. Pct P) x) (if (and (>= x 0) (<= x 100)) unit (trap \"pct element out of [0,100]\")))))))) \
+           (def (anchor) 1))";
+    let sf = write(&d, "set.sexp", set_src);
+    let (sok, sout, serr) = run(&["test", &sf, "--seed", "0", "--trials", "100"]);
+    assert!(
+        sok && sout.contains("PASS f-gen (100 trials)"),
+        "every Pct element of a generated Set is in-domain [0,100] across all trials (§Refinements Constrain Generation): {sout}{serr}"
+    );
+    // Every Pct VALUE of a generated Map is in [0,100] → PASS across all trials (incl. empty/small maps).
+    let map_src = "(do (@ (invariant (and (>= self 0) (<= self 100))) (type Pct (P Int64))) \
+           (@ test (def (f (: m (Map Int64 Pct))) \
+             (match (Map.to-list m) ((list) unit) \
+               ((list h .. t) (match h ((tuple k pc) (match pc (((. Pct P) x) (if (and (>= x 0) (<= x 100)) unit (trap \"pct value out of [0,100]\")))))))))) \
+           (def (anchor) 1))";
+    let mf = write(&d, "map.sexp", map_src);
+    let (mok, mout, merr) = run(&["test", &mf, "--seed", "0", "--trials", "100"]);
+    assert!(
+        mok && mout.contains("PASS f-gen (100 trials)"),
+        "every Pct value of a generated Map is in-domain [0,100] across all trials (§Refinements Constrain Generation): {mout}{merr}"
+    );
+}
+
 /// END-TO-END: a MIN-LENGTH `@invariant` constrains a newtype-List to non-empty generation. `NEList = Mk
 /// (List Int64)` with `@invariant(< 0 (List.len self))`: every generated `NEList` wraps a NON-EMPTY list, so
 /// a property asserting `List.len > 0` PASSES all trials (before the constraint the generator drew the empty

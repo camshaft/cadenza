@@ -7248,6 +7248,28 @@
   (call   main (: 0 Int64)) (output (: -1 Int64))
   (call   main (: 60 Int64)) (output (: -2 Int64)))
 
+(case "an Option pipeline chains the SAME fallible step twice and reports WHICH step failed"
+  (doc    "The Option companion of the Result pipeline above, with a twist the Result case doesn't have:
+           the SAME fallible function (`half` — Some for even, None for odd) is applied TWICE, and the
+           nested match distinguishes WHICH application failed by its fallback (-1 outer, -2 inner). n=8 →
+           4 → 2 (both halvings even); n=6 → 3, whose half is None → -2 (the INNER failure); n=7 → None
+           immediately → -1 (the OUTER failure — the inner match never runs). Pins that one fallible
+           helper called at two chained positions keeps its per-call-site Option results distinct, and the
+           nesting order maps failures to the right arm.")
+  (input  (do
+            (def (half (: n Int64))
+              (if (= (% n 2) 0) (Some (/ n 2)) (None)))
+            (def (main (: n Int64))
+              (match (half n)
+                ((Some h) (match (half h)
+                  ((Some q) q)
+                  ((None u) -2)))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 8 Int64)) (output (: 2 Int64))
+  (call   main (: 6 Int64)) (output (: -2 Int64))
+  (call   main (: 7 Int64)) (output (: -1 Int64)))
+
 ; The pipeline above short-circuits a Result through a LINEAR chain of steps. The fallible recursive-descent
 ; PARSER threads a Result through MUTUAL recursion instead: `pe` (expr) and `pf` (factor) are mutually
 ; recursive, each returning `Result((value, cursor), String)` — an Ok carrying a (value, next-index) tuple,
