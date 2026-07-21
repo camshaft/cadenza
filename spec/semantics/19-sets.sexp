@@ -1293,6 +1293,63 @@
   (call   main (: 1.25 Float32))
   (output (: 7 Int64)))
 
+; The float-key cases above use a BARE float key. A float leaf INSIDE a COMPOUND key (a tuple element) must
+; also key by content: the CHAMP hash/eq descends into the tuple and canonicalizes the float leaf at its
+; width. This declined on the rust backend until the __CdzF ord-wrapper was threaded through tuple keys
+; (v-rust-backend d0d18e257); now a (Tuple Float Int64) Map key / Set element keys by content on all three
+; backends. These pin that compound-float-key path: hit-by-content, a MISS on a different float leaf, Set
+; dedup of equal tuple-float elements, and canonical-NaN dedup with an f32 leaf.
+(case "a tuple with a Float64 element is a Map key found by a separately-built equal key"
+  (doc    "A `(Tuple Float64 Int64)` Map key: insert under `(tuple (+ x 1.25) 3)` at x=1.25 (a RUNTIME float
+           leaf, off the const-fold) and look up with `(tuple 2.5 3)` → 42. The CHAMP key hash/eq descends
+           INTO the tuple and compares the float leaf by its canonical byte form, so the arithmetic-built
+           and literal tuples are the same key. Pins the float-leaf-in-compound-key path (rust emits it via
+           the tuple-threaded ord-wrapper, d0d18e257).")
+  (input  (do
+            (def (main (: x Float64))
+              (match (Map.lookup (Map.insert Map.empty (tuple (+ x 1.25) 3) 42) (tuple 2.5 3))
+                ((Some v) v) ((None _) -1)))
+            (export main)))
+  (call   main (: 1.25 Float64))
+  (output (: 42 Int64)))
+
+(case "a tuple with a Float64 element MISSES a Map key with a different float leaf"
+  (doc    "The negative control of the compound-float-key case: the tuples share the Int64 element (3) but
+           differ in the float leaf — look up `(tuple 9.5 3)` against a map keyed by `(tuple 2.5 3)` → None
+           (-1). Confirms the compound-key compare is genuinely by the float leaf's content (not
+           over-matching on the shared Int element or the tuple shape alone).")
+  (input  (do
+            (def (main (: x Float64))
+              (match (Map.lookup (Map.insert Map.empty (tuple (+ x 1.25) 3) 42) (tuple 9.5 3))
+                ((Some v) v) ((None _) -1)))
+            (export main)))
+  (call   main (: 1.25 Float64))
+  (output (: -1 Int64)))
+
+(case "a Set of tuples with a Float64 element dedups equal members by content"
+  (doc    "The Set companion: insert `(tuple (+ x 1.25) 3)` (runtime float leaf) then `(tuple 2.5 3)` into a
+           set → ONE element (`Set.len` 1), the two tuple-float values sharing one canonical form. Pins that
+           the CHAMP set dedup descends into the tuple's float leaf, the compound-key face of the bare-float
+           set-dedup cases.")
+  (input  (do
+            (def (main (: x Float64))
+              (Set.len (Set.insert (Set.insert (Set.of (list)) (tuple (+ x 1.25) 3)) (tuple 2.5 3))))
+            (export main)))
+  (call   main (: 1.25 Float64))
+  (output (: 1 Int64)))
+
+(case "a Set of tuples with an f32 NaN element dedups by the canonical quiet NaN"
+  (doc    "The Float32-NaN-in-a-tuple face: insert `(tuple (/ x x) 3)` (a computed f32 NaN at x=0) then
+           `(tuple Float32.nan 3)` → ONE element. Both NaN leaves canonicalize to the one 4-byte quiet NaN
+           inside the tuple, so the tuples dedup by content. Pins that the compound-key canonicalization
+           reaches an f32 NaN leaf at its own width, the tuple companion of the bare-f32-NaN dedup case.")
+  (input  (do
+            (def (main (: x Float32))
+              (Set.len (Set.insert (Set.insert (Set.of (list)) (tuple (/ x x) 3)) (tuple Float32.nan 3))))
+            (export main)))
+  (call   main (: 0.0 Float32))
+  (output (: 1 Int64)))
+
 ; --- CHAMP Set DEDUP follows the canonical FLOAT byte form (float-form × dedup intersection) ----------
 ; A Set dedups by hash+eq, and both must follow the SAME canonical byte form that scalar/compound `=`
 ; pins (03-equality NaN==NaN, -0.0 != +0.0). If the Set hashed/compared floats by IEEE == instead

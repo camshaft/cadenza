@@ -6260,6 +6260,67 @@ fn runtime_bigint_arithmetic_leaves_no_live_objects() {
     );
 }
 
+/// `(bin …)` CONSTRUCTION producer reclaim balance — the binary-build sibling of the bytes-producer reclaim
+/// family. `heap_operand_ownership` classifies `Core::BinBuild`/`Core::BinBitsBuild` (a runtime `(bin …)`
+/// construction — `bytes-alloc` + per-segment range-check-and-write, exactly like `BytesOf`) as OWNED — each
+/// builds a FRESH owned Bytes on the rope heap. So a `(bin …)` result as the operand of a BORROWING op
+/// (`Bytes.len`, a `BytesLen` that borrows + reclaims an owned operand) is an owned temporary the emit must
+/// drop, or the fresh Bytes leaks. No existing test pins the `(bin …)`-BUILD reclaim (only the bin-MATCH
+/// payload read `BinSizedRead`, and the value/reject faces of `Bytes.len (bin …)`). The segments use a RUNTIME
+/// `n` (via `UInt8.wrap`) so the `(bin …)` can't const-fold to a literal Bytes — the real build + borrow +
+/// drop path runs. `main` returns the scalar length, so the only heap traffic is the built Bytes. `#[ignore]`
+/// — needs the debug-counters store (`cargo xtask build`; run with `-- --ignored`).
+#[test]
+#[ignore]
+fn bin_build_over_an_owned_temporary_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[bin-build] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // A runtime 3-byte `(bin …)` built from the param `n` (so it can't fold), borrowed by `Bytes.len` → 3.
+    // The fresh owned Bytes must be dropped after the borrowing length read; `main` returns a scalar, so the
+    // only heap traffic is that one Bytes leaf → net 0.
+    let src = "(module m \
+                 (def (main (: n Int64)) \
+                    (Bytes.len (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))) (u8 (UInt8.wrap (+ n 2)))))) \
+                 (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[Val::S64(3)]),
+        Val::S64(3),
+        "a runtime 3-byte `(bin …)` has length 3"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "bin-build leak: the fresh owned `(bin …)` Bytes leaf (BinBuild = Owned) must be dropped after the \
+         borrowing `Bytes.len` — net 0 live cells"
+    );
+
+    // A `(bits …)` (BinBitsBuild) sibling — full-byte bit-field segments (width 8 takes a UInt8), same
+    // owned-Bytes producer. Two 8-bit fields → 2 bytes → length 2. Runtime `n` so it doesn't fold.
+    let src2 = "(module m \
+                  (def (main (: n Int64)) \
+                     (Bytes.len (bin (bits (UInt8.wrap n) 8) (bits (UInt8.wrap (+ n 1)) 8)))) (export main))";
+    let program2 = compile_component(&crate::codec::encode(&parse(src2))).expect("compile");
+    let mut rt2 = ComposedRuntime::new(&program2, &runtime_bytes);
+    assert_eq!(
+        rt2.call("main", &[Val::S64(1)]),
+        Val::S64(2),
+        "two 8-bit `(bits …)` fields build a 2-byte `(bin …)`"
+    );
+    assert_eq!(
+        rt2.live_objects(),
+        0,
+        "bin-bits-build leak: the fresh owned bit-packed `(bin …)` Bytes (BinBitsBuild = Owned) must be \
+         dropped after the borrowing `Bytes.len` — net 0 live cells"
+    );
+}
+
 /// RATIONAL PRODUCER leak balance — the numeric-tower sibling of `runtime_bigint_arithmetic_leaves_no_live_objects`.
 /// `heap_operand_ownership` classifies the whole Rational producer family — `RationalOfInts`/`RationalOfIntWiden`
 /// (`Rational.of`), `RationalBinOp` (`+`/`-`/`*`/`/`), and `RationalNum`/`RationalDen` (`Rational.numerator`/

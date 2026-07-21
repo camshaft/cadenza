@@ -177,6 +177,34 @@
   (input  (do (def (main) (Qty.of (Int8.of 5) (Unit.prefix kilo (Unit.base #"meter")))) (export main)))
   (error  CDZ0304))
 
+(case "a magnitude literal that overflows the annotated Qty INNER width is rejected"
+  (doc    "The ANNOTATION face of Qty magnitude width (distinct from the scaled-display CDZ0304 pair above —
+           no unit scaling here, the bare literal itself does not fit): `(: (Qty.of 999 meter) (Qty Int8
+           meter))` — the annotation's INNER type `Int8` grounds the magnitude literal `999`, which overflows
+           (-128..=127) → CDZ0302 'does not fit', exactly as the bare `(: 999 Int8)`. Pins that the width
+           fit-check peels `Ty::Qty` on the ANNOTATION path and grounds the magnitude at the inner type —
+           the Qty arm of the compound-payload width descent.")
+  (input  (: (Qty.of 999 (Unit.base #"meter")) (Qty Int8 (Unit.base #"meter"))))
+  (error  CDZ0302))
+
+(case "a Float32-overflowing magnitude literal under a Float32 Qty inner type is rejected"
+  (doc    "The float twin: `(: (Qty.of 1.0e300 meter) (Qty Float32 meter))` — `1.0e300` is finite at Float64
+           but overflows binary32, and the annotation's inner `Float32` grounds the magnitude → CDZ0302.
+           With the fitting control below, pins that the Qty inner-width grounding covers FLOAT widths and
+           does not over-reject.")
+  (input  (: (Qty.of 1.0e300 (Unit.base #"meter")) (Qty Float32 (Unit.base #"meter"))))
+  (error  CDZ0302))
+
+(case "a fitting Float32 Qty magnitude computes at the narrow inner width"
+  (doc    "The no-over-reject control: `(Qty.of 1.5 meter)` under `(Qty Float32 meter)` — 1.5 is exactly
+           representable in binary32, so the magnitude grounds at Float32 and `Qty.value` reads it back →
+           1.5 at Float32. Guards the Qty inner-width grounding.")
+  (input  (do
+            (def (main)
+              (Qty.value (: (Qty.of 1.5 (Unit.base #"meter")) (Qty Float32 (Unit.base #"meter")))))
+            (export main)))
+  (call   main) (output (: 1.5 Float32)))
+
 (case "a family quantity displays scaled exactly to its reference (Rational)"
   (doc    "`5 mile` = `(Qty.of (Rational.of 5 1) (Unit.of #\"mile\"))` DISPLAYS as `201168/25 meter`
            EXACTLY: mile = 201168/125 m, so 5 mile = 5·201168/125 = 201168/25 m, scaled at the reference

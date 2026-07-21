@@ -627,6 +627,30 @@
             (export main)))
   (error  CDZ0302))
 
+(case "a NEGATIVE Float32-overflowing literal in a runtime branch is rejected"
+  (doc    "The SIGN face of the Float32 branch descent: `(: (if c -1.0e300 0.5) Float32)` — the negative
+           literal overflows binary32 toward -inf exactly as the positive overflows toward +inf, and the
+           fit-check must compare MAGNITUDE (|v| > f32::MAX), not a signed upper bound (a check written as
+           `v > 3.4028235e38` alone would pass every negative literal) → CDZ0302.")
+  (input  (do
+            (def (main (: c Bool))
+              (: (if c -1.0e300 0.5) Float32))
+            (export main)))
+  (error  CDZ0302))
+
+(case "a literal just past the Float32 finite max overflows in a runtime branch"
+  (doc    "The BOUNDARY face: `3.5e38` sits between Float32's finite max (~3.4028235e38) and the f64 values
+           that round DOWN into binary32 range — it rounds to +inf in binary32, so it must reject exactly as
+           `1.0e300` does. Pins that the fit predicate is the precise binary32 boundary (round-to-nearest
+           overflow), not a loose magnitude test that admits near-boundary literals. (The exact-max fitting
+           twin `3.4028235e38` currently trips the FITTING-branch emit bug in this position — its compute pin
+           joins when that fix reaches the corpus base.)")
+  (input  (do
+            (def (main (: c Bool))
+              (: (if c 3.5e38 0.5) Float32))
+            (export main)))
+  (error  CDZ0302))
+
 (case "a Float32-overflowing literal in argument position under a narrow parameter is rejected at check"
   (doc    "The narrow-PARAMETER face of the Float32 branch descent: `(f 1.0e300)` where `f` declares
            `(: x Float32)` — the parameter's Float32 grounds the argument literal, which overflows binary32,
