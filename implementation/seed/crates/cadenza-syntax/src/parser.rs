@@ -2417,7 +2417,13 @@ impl<'a> Parser<'a> {
             self.bump(); // optional leading `|`
         }
         loop {
-            items.push(self.match_arm());
+            let arm = self.match_arm();
+            // A `//` trailing this arm on its line (`| pat => body  // note`) sits at the next token's
+            // leading slot (the `|` or the match's end), which the arm loop never drains → dropped.
+            // Attach it to THIS arm as `(comment-after …)` so it re-prints same-line. `strip_comments`
+            // peels it, so the match compiler is unaffected. (Mirrors the sum-variant locus.)
+            let trailing = self.take_trailing_comment_here();
+            items.push(self.wrap_comment_after(trailing, arm));
             if self.at(Kind::Pipe) {
                 self.bump(); // `|` before the next arm
             } else {

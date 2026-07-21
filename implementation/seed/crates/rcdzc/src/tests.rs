@@ -5656,6 +5656,114 @@ fn set_remove_owned_elem_leaves_no_extra_leak() {
     );
 }
 
+/// SET-ALGEBRA producer reclaim balance — the collection-algebra sibling of the list/map/set producer
+/// reclaim probes. `heap_operand_ownership` classifies the whole `SetAlgebra` family (`Set.union`/
+/// `intersection`/`difference`, select.rs) as OWNED — each consumes its operands and returns a FRESH owned
+/// result set. So such a result as the operand of a BORROWING op (`Set.len`, a `SetLen` that borrows +
+/// reclaims an owned operand) is an owned temporary the emit must drop, or the whole result set leaks. No
+/// existing test pins the ALGEBRA producers' reclaim (only `Set.insert`/`Set.remove` element boxing) — this
+/// witnesses that a fresh union/intersection/difference set is reclaimed after the borrowing length read.
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`; run with `-- --ignored`).
+#[test]
+#[ignore]
+fn set_algebra_producer_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[set-algebra] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // Each `build` recurses so the sets stay OPAQUE runtime values (a two-literal set would fold); the
+    // algebra result is a fresh OWNED set the borrowing `Set.len` must drop, and its operands (each an owned
+    // temporary from `build`) are consumed by the algebra op. Net 0 live cells after the length read.
+    // (a) UNION: {1,2,3} ∪ {2,3,4} = {1,2,3,4} → len 4.
+    let union_src = "(module m \
+                 (def (build (: n Int64) (: a Int64) (: b Int64) (: c Int64)) \
+                    (if (< n 0) (build (+ n 1) a b c) (Set.insert (Set.insert (Set.insert (Set.of (list)) a) b) c))) \
+                 (def (main) (Set.len (Set.union (build 0 1 2 3) (build 0 2 3 4)))) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(union_src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(4),
+        "{{1,2,3}} ∪ {{2,3,4}} = {{1,2,3,4}}, len 4"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "set-union leak: the two owned operand sets (consumed by the union) and the fresh owned union \
+         result (borrowed then dropped by Set.len) must net to 0 live cells"
+    );
+
+    // (b) INTERSECTION: {1,2,3} ∩ {2,3,4} = {2,3} → len 2.
+    let inter_src = "(module m \
+                 (def (build (: n Int64) (: a Int64) (: b Int64) (: c Int64)) \
+                    (if (< n 0) (build (+ n 1) a b c) (Set.insert (Set.insert (Set.insert (Set.of (list)) a) b) c))) \
+                 (def (main) (Set.len (Set.intersection (build 0 1 2 3) (build 0 2 3 4)))) (export main))";
+    let program2 = compile_component(&crate::codec::encode(&parse(inter_src))).expect("compile");
+    let mut rt2 = ComposedRuntime::new(&program2, &runtime_bytes);
+    assert_eq!(
+        rt2.call("main", &[]),
+        Val::S64(2),
+        "{{1,2,3}} ∩ {{2,3,4}} = {{2,3}}, len 2"
+    );
+    assert_eq!(
+        rt2.live_objects(),
+        0,
+        "set-intersection leak: the two owned operand sets and the fresh owned intersection result must \
+         all be dropped after the borrowing length read — net 0 live cells"
+    );
+
+    // (c) DIFFERENCE: {1,2,3} \ {2,3,4} = {1} → len 1.
+    let diff_src = "(module m \
+                 (def (build (: n Int64) (: a Int64) (: b Int64) (: c Int64)) \
+                    (if (< n 0) (build (+ n 1) a b c) (Set.insert (Set.insert (Set.insert (Set.of (list)) a) b) c))) \
+                 (def (main) (Set.len (Set.difference (build 0 1 2 3) (build 0 2 3 4)))) (export main))";
+    let program3 = compile_component(&crate::codec::encode(&parse(diff_src))).expect("compile");
+    let mut rt3 = ComposedRuntime::new(&program3, &runtime_bytes);
+    assert_eq!(
+        rt3.call("main", &[]),
+        Val::S64(1),
+        "{{1,2,3}} \\ {{2,3,4}} = {{1}}, len 1"
+    );
+    assert_eq!(
+        rt3.live_objects(),
+        0,
+        "set-difference leak: the two owned operand sets and the fresh owned difference result must all \
+         be dropped after the borrowing length read — net 0 live cells"
+    );
+
+    // (d) a `let`-BOUND set SHARED across a CONSUMING algebra op + a later read — the borrowed-operand face.
+    // `set-union` CONSUMES both operands, so a `let`-bound `s` reused AFTER the union (`Set.len s`) must be
+    // dup'd by the Perceus retain BEFORE the union consumes it, or the later `Set.len s` reads a freed set
+    // (UAF) / the `let` double-frees. `s = {0,1,2}`; `(Set.len (Set.union s {5,6,7})) + (Set.len s)` = 6 + 3
+    // = 9. The union result is an owned temporary the borrowing `Set.len` drops; the dup'd `s` is reclaimed
+    // by the enclosing `let` exactly once. Net 0: neither leaked nor double-freed — the consuming-op dup/drop
+    // balance the owned-temporary faces (a)–(c) don't exercise.
+    let shared_src = "(module m \
+                 (def (build (: i Int64) (: n Int64) (: s (Set Int64))) \
+                    (if (< i n) (build (+ i 1) n (Set.insert s i)) s)) \
+                 (def (main) \
+                    (let ((s (build 0 3 (Set.of (list))))) \
+                       (+ (Set.len (Set.union s (build 5 8 (Set.of (list))))) (Set.len s)))) \
+                 (export main))";
+    let program4 = compile_component(&crate::codec::encode(&parse(shared_src))).expect("compile");
+    let mut rt4 = ComposedRuntime::new(&program4, &runtime_bytes);
+    assert_eq!(
+        rt4.call("main", &[]),
+        Val::S64(9),
+        "{{0,1,2}} ∪ {{5,6,7}} = 6 elements, plus the reused `s`'s len 3 = 9"
+    );
+    assert_eq!(
+        rt4.live_objects(),
+        0,
+        "set-union shared-operand leak/double-free: `s` (dup'd before the CONSUMING union, read again by \
+         Set.len, dropped once by the `let`) plus the owned union result (dropped by its Set.len) must net \
+         to 0 live cells — neither a UAF from an un-dup'd consume nor a double-free"
+    );
+}
+
 /// A HEAP-HANDLE element inserted into an EMPTY set (`(Set.of (list))`) compiles + runs — the empty
 /// collection's element type is an unresolved `Var`, and the backend must box the element by its OWN
 /// concrete type, not default the var to `box-int`. `Set.insert (Set.of (list)) <String>` (a flat string
@@ -7656,6 +7764,84 @@ fn a_let_bound_handle_whose_seed_is_a_caller_runtime_arg_folds_and_runs() {
         }
         cdz_run::Outcome::Trap(t) => panic!("linked run trapped: {t}"),
     }
+}
+
+/// EDGE PINS for the seed let-lift fix ([`a_let_bound_handle_whose_seed_is_a_caller_runtime_arg_folds_and_runs`]):
+/// the fix let-binds a NON-CONSTANT handle seed once at the `thread`-fold entry so a caller-runtime-arg seed
+/// threaded to a multi-use state binder is not orphaned by the per-splice `deep_fresh_copy`. These pin the
+/// SHAPE of the fix across the family it must cover, each running to its VALUE (a compile-only check would miss
+/// a fold that emits wrong code): (1) an EXPRESSION seed `(+ x 1)` (the seed is not a bare arg — the let-lift
+/// binds the whole expression, `tick` returns k+1); (2) state used THREE times in the arm (more splice sites);
+/// (3) a body with TWO performs (the seed is threaded AND advanced — `(+ (St.tick) (St.tick))` = seed +
+/// (seed+1)); (4) a CONSTANT seed stays byte-identical (the gate `seed_is_shareable_constant` skips the wrap).
+/// A regression in any would mean the seed-capture fix narrowed — these lock the whole class.
+#[test]
+fn a_let_bound_handle_seed_capture_edges_fold_and_run() {
+    use crate::testkit::parse;
+    let run = |src: &str, arg: &str| -> String {
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a runtime-arg handle seed must fold, not CDZ0101 unbound");
+        let runtime = find_runtime_wasm();
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![arg.to_string()],
+            runtime,
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => s,
+            cdz_run::Outcome::Trap(t) => panic!("linked run trapped: {t}"),
+        }
+    };
+    // (1) EXPRESSION seed `(+ x 1)`: tick returns the seed = k+1 = 6.
+    assert_eq!(
+        run(
+            "(module m (effect St (op tick (-> Unit Int64))) \
+               (def (f (: x Int64)) \
+                 (let ((r (handle St (+ x 1) ((tick (u) s (resume s (+ s 1)))) (St.tick)))) r)) \
+               (def (main (: k Int64)) (f k)) (export main))",
+            "5"
+        ),
+        "6",
+        "expression seed folds to k+1"
+    );
+    // (2) state used 3× in the arm body.
+    assert_eq!(
+        run(
+            "(module m (effect St (op tick (-> Unit Int64))) \
+               (def (f (: x Int64)) \
+                 (let ((r (handle St x ((tick (u) s (resume s (+ s (+ s 1))))) (St.tick)))) r)) \
+               (def (main (: k Int64)) (f k)) (export main))",
+            "5"
+        ),
+        "5",
+        "thrice-used state still folds to the seed"
+    );
+    // (3) TWO performs in the body: first tick = seed (5), advances to 6; second tick = 6. 5 + 6 = 11.
+    assert_eq!(
+        run(
+            "(module m (effect St (op tick (-> Unit Int64))) \
+               (def (f (: x Int64)) \
+                 (let ((r (handle St x ((tick (u) s (resume s (+ s 1)))) (+ (St.tick) (St.tick))))) r)) \
+               (def (main (: k Int64)) (f k)) (export main))",
+            "5"
+        ),
+        "11",
+        "two performs thread + advance the seed"
+    );
+    // (4) CONSTANT seed — the wrap is skipped (byte-identical path); tick returns the const 0.
+    assert_eq!(
+        run(
+            "(module m (effect St (op tick (-> Unit Int64))) \
+               (def (f (: x Int64)) \
+                 (let ((r (handle St 0 ((tick (u) s (resume s (+ s 1)))) (St.tick)))) r)) \
+               (def (main (: k Int64)) (f k)) (export main))",
+            "5"
+        ),
+        "0",
+        "constant seed stays byte-identical, folds to the const"
+    );
 }
 
 /// A handler arm that CAPTURES an enclosing fn param, under a MULTI-ARM nested handler, over a recursive
@@ -31385,6 +31571,70 @@ mod match_engine {
             assert!(
                 cdz_run::required_runtime(&bytes).expect("valid").is_none(),
                 "a constant Rational.truncate folds — no runtime import: {prog}"
+            );
+            assert_eq!(
+                run_returns::<i64>(&bytes, "main"),
+                want,
+                "const fold: {prog}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_runtime_rational_floor_and_ceil_round_toward_neg_and_pos_infinity() {
+        // `Rational.floor : Rational → Int64` (toward −∞) / `Rational.ceil` (toward +∞) — DERIVATIONS:
+        // `truncate` adjusted by ±1 off the remainder sign. Runtime rational (from the param `n`), so the
+        // derivation subtree lowers its runtime shape. The KEY axes vs truncate: floor(-7/2) = -4 (toward
+        // −∞, NOT truncate's -3) and ceil(7/2) = 4 (toward +∞, NOT truncate's 3). Exact values (8/2) and
+        // sub-one negatives (-1/2 → floor -1 / ceil 0) pin the rem≠0 conditions.
+        for (n, floor_want, ceil_want) in [
+            (7i64, "3", "4"),
+            (-7, "-4", "-3"),
+            (8, "4", "4"),
+            (-8, "-4", "-4"),
+            (1, "0", "1"),
+            (-1, "-1", "0"),
+        ] {
+            let Some(f) = run_on_heap_arg(
+                "(module m (def (main (: n Int64)) (Rational.floor (Rational.of n 2))) (export main))",
+                n,
+            ) else {
+                eprintln!(
+                    "runtime wasm not found (run `cargo xtask build`); skipping composed run"
+                );
+                return;
+            };
+            assert_eq!(f, floor_want, "floor({n}/2) toward -inf");
+            let Some(c) = run_on_heap_arg(
+                "(module m (def (main (: n Int64)) (Rational.ceil (Rational.of n 2))) (export main))",
+                n,
+            ) else {
+                return;
+            };
+            assert_eq!(c, ceil_want, "ceil({n}/2) toward +inf");
+        }
+    }
+
+    #[test]
+    fn a_constant_rational_floor_and_ceil_fold_to_a_constant_int() {
+        // A CONSTANT `Rational.floor`/`ceil` FOLDS at compile time (no runtime import): the toward-zero
+        // `IntValue::divmod` quotient adjusted by ±1 off the remainder sign. Pins the const-fold arms with
+        // the toward-±∞ discriminants (floor -7/2 = -4, ceil 7/2 = 4) + exact (8/2) + sub-one (-1/2).
+        for (prog, want) in [
+            ("(Rational.floor (Rational.of 7 2))", 3),
+            ("(Rational.floor (Rational.of -7 2))", -4),
+            ("(Rational.floor (Rational.of 8 2))", 4),
+            ("(Rational.floor (Rational.of -1 2))", -1),
+            ("(Rational.ceil (Rational.of 7 2))", 4),
+            ("(Rational.ceil (Rational.of -7 2))", -3),
+            ("(Rational.ceil (Rational.of 8 2))", 4),
+            ("(Rational.ceil (Rational.of -1 2))", 0),
+        ] {
+            let src = format!("(module m (def (main) {prog}) (export main))");
+            let bytes = component(&src);
+            assert!(
+                cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+                "a constant Rational.floor/ceil folds — no runtime import: {prog}"
             );
             assert_eq!(
                 run_returns::<i64>(&bytes, "main"),
@@ -60295,10 +60545,13 @@ mod stage1 {
         // FIX: bucket candidates by a cheap shallow `core_hash_key` (`core_eq(a,b) ⇒ equal key`) and run
         // `core_eq` only WITHIN a bucket → distinct candidates never pairwise-compare → O(N) compares.
         //
-        // The NOISE-FREE signal is `CSE_PARTITION_CORE_EQ_CALLS` (within-bucket compares, a pure function
-        // of the program). With hash-bucketing a wide all-distinct body makes ~0 compares (each candidate
-        // its own bucket); the all-pairs scan made ~cands²/2. Assert a LINEAR bound (≤ 4·cands_upper):
-        // the fixed partition stays far under it, the O(N²) scan blows past it.
+        // The NOISE-FREE signal is the per-`Db` `cse_partition_core_eq_calls` count (within-bucket
+        // compares, a pure function of ONE program's compile), read off this compile's `CompileOutput` —
+        // NOT a process-global atomic (which the parallel test harness's other concurrent compiles
+        // `fetch_add`-pollute during the read window, inflating it under load; see `Db`'s field doc).
+        // With hash-bucketing a wide all-distinct body makes ~0 compares (each candidate its own bucket);
+        // the all-pairs scan made ~cands²/2. Assert a LINEAR bound (≤ 4·cands_upper): the fixed partition
+        // stays far under it, the O(N²) scan blows past it.
         fn wide_arith_src(n: usize) -> String {
             let defs: String = (0..n)
                 .map(|i| format!("(def (calc{i} (: x Int64)) (+ (* x {i}) {}))", i % 13))
@@ -60317,10 +60570,26 @@ mod stage1 {
             )
         }
         fn compares(src: &str) -> u64 {
-            use std::sync::atomic::Ordering;
-            crate::db::CSE_PARTITION_CORE_EQ_CALLS.store(0, Ordering::Relaxed);
-            let _ = crate::compile::compile_component(&crate::codec::encode(&parse(src)));
-            crate::db::CSE_PARTITION_CORE_EQ_CALLS.load(Ordering::Relaxed)
+            // Read the CSE-partition compare count off the CompileOutput of THIS compile — a per-`Db`
+            // metric surfaced through the #[cfg(test)] CompileOutput field, so the parallel test harness's
+            // other concurrent compiles cannot pollute it (the old process-global atomic was
+            // `fetch_add`-contaminated during the read window, inflating the reading under load).
+            // MUST run the compile on the bumped compiler-stack worker (`run_with_compiler_stack`): the
+            // deep left-nested chain recurses deep in `core_eq`/emit and overflows the default ~2MB
+            // cargo-test thread stack. `compile_component` routed through this worker implicitly; driving
+            // `compile` directly to read the per-`Db` field does NOT, so wrap it here (as the 20+ sibling
+            // deep-recursion tests do).
+            crate::host::run_with_compiler_stack(|| {
+                let out = crate::compile::compile(
+                    &[crate::abi::Artifact::new(
+                        crate::abi::Artifact::KIND_AST,
+                        "main",
+                        crate::codec::encode(&parse(src)),
+                    )],
+                    &[crate::backend::Target::Wasm],
+                );
+                out.cse_partition_core_eq_calls
+            })
         }
         // N=400: candidate count is a few thousand (each arith subterm + call is a candidate). A LINEAR
         // partition makes O(cands) compares; the O(N²) all-pairs scan makes ~cands²/2 = millions. A bound
@@ -60360,10 +60629,23 @@ mod stage1 {
             "a deep uniform arith chain compiles: {bytes:?}"
         );
         fn compares(src: &str) -> u64 {
-            use std::sync::atomic::Ordering;
-            crate::db::CSE_PARTITION_CORE_EQ_CALLS.store(0, Ordering::Relaxed);
-            let _ = crate::compile::compile_component(&crate::codec::encode(&parse(src)));
-            crate::db::CSE_PARTITION_CORE_EQ_CALLS.load(Ordering::Relaxed)
+            // Per-`Db` CSE-partition compare count off the CompileOutput of THIS compile (see the twin in
+            // `a_wide_arithmetic_body_…`) — contamination-proof, unlike the old process-global atomic.
+            // On the bumped compiler-stack worker (`run_with_compiler_stack`): this DEEP left-nested chain
+            // recurses deep in `core_eq`/emit and overflows the default ~2MB cargo-test thread stack if run
+            // there directly (`compile_component` routed through the worker; driving `compile` for the
+            // per-`Db` field does not, so wrap it — as the sibling deep-recursion tests do).
+            crate::host::run_with_compiler_stack(|| {
+                let out = crate::compile::compile(
+                    &[crate::abi::Artifact::new(
+                        crate::abi::Artifact::KIND_AST,
+                        "main",
+                        crate::codec::encode(&parse(src)),
+                    )],
+                    &[crate::backend::Target::Wasm],
+                );
+                out.cse_partition_core_eq_calls
+            })
         }
         // N=400: full-depth bucketing → each node its own bucket → ~0 within-bucket compares. A shallow
         // hash (all-collide) would make ~cands²/2 = hundreds of thousands. Bound of 200_000 discriminates.

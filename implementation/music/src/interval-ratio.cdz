@@ -115,6 +115,18 @@ def to-semitones-in-range(i: RInterval, lo: Int64, hi: Int64) =
 /// a single interval), or `None` if it is not exactly a twelfth-of-octave in that range.
 def to-semitones-exact(i: RInterval) = to-semitones-in-range(i, 0 - 24, 24)
 
+/// The GENERAL rational→MIDI-semitone projection (unblocked 2026-07-21 by the prelude's `Rational.truncate
+/// : Rational → Int64`, checked-narrow/trap-on-overflow). An `RInterval` is an octave-fraction; its semitone
+/// value is `octaves × 12`, and this TRUNCATES that toward zero to a whole semitone — the total,
+/// always-defined projection any interval (even a microtonal/just-intonation one off the 12-TET grid) needs
+/// to reach the integer MIDI wire. For an interval EXACTLY on the 12-TET grid (`k/12` of an octave) the
+/// product `k/12 × 12 = k` is a whole number, so `to-semitones` == `to-semitones-exact`'s `Some k` — the two
+/// agree on the grid (pinned in @tests). They can only differ OFF the grid, where `to-semitones-exact`
+/// declines (`None`) but `to-semitones` still snaps to a semitone. NB: truncate is TOWARD ZERO, so a
+/// descending off-grid interval rounds up toward 0 (a `floor`/`round` variant awaits the later prelude
+/// increments; toward-zero is the honest name for what's available now).
+def to-semitones(i: RInterval) = Rational.truncate(octaves(i) * Rational.of-int(12))
+
 /// ============================ @test suite (rational intervals) ============================
 @test
 def a-fifth-is-seven-twelfths-of-an-octave() =
@@ -250,6 +262,41 @@ def minor-sixth-complements-a-major-third() =
   else
     trap("major third complements to minor sixth")
 
+@test
+def to-semitones-projects-the-twelve-tet-grid-exactly() =
+  // The general projection agrees with the exact on-grid one for every 12-TET interval: k/12 → k.
+  if to-semitones(semitones-r(7)) == 7 then
+    if to-semitones(r-octave) == 12 then
+      if to-semitones(r-unison) == 0 then
+        if to-semitones(r-minor-third) == 3 then unit else trap("minor third → 3")
+      else trap("unison → 0")
+    else trap("octave → 12")
+  else trap("fifth → 7")
+
+@test
+def to-semitones-agrees-with-to-semitones-exact-on-grid() =
+  // Where to-semitones-exact returns Some(k), to-semitones returns the same k — the general projection is a
+  // superset of the exact one on the grid (they can only diverge OFF the grid, where -exact declines).
+  match to-semitones-exact(r-perfect-fifth) with
+    | Option.Some(s) => if to-semitones(r-perfect-fifth) == s then unit else trap("fifth: general == exact")
+    | Option.None(_) => trap("fifth is on-grid")
+
+@test
+def to-semitones-projects-a-negative-interval() =
+  // A descending fifth is -7/12 of an octave → -7 semitones (exact on-grid, so truncate is unambiguous).
+  if to-semitones(r-negate(r-perfect-fifth)) == (0 - 7) then unit else trap("descending fifth → -7")
+
+@test
+def to-semitones-snaps-an-off-grid-interval-toward-zero() =
+  // OFF the 12-TET grid (where to-semitones-exact declines), to-semitones still snaps: a quarter-tone above
+  // a fifth (7/12 + 1/24 = 15/24 of an octave) is 7.5 semitones → truncate toward zero = 7. This is the
+  // capability the projection adds over to-semitones-exact (which returns None here).
+  let quarter-sharp-fifth = rinterval(Rational.of(15, 24)) in
+  match to-semitones-exact(quarter-sharp-fifth) with
+    | Option.None(_) =>
+      if to-semitones(quarter-sharp-fifth) == 7 then unit else trap("7.5 semitones truncates to 7")
+    | Option.Some(_) => trap("a quarter-sharp fifth is OFF the 12-TET grid")
+
 export {
   RInterval.*,
   rinterval,
@@ -276,5 +323,6 @@ export {
   r-negate,
   r-eq,
   r-complement,
-  to-semitones-exact
+  to-semitones-exact,
+  to-semitones,
 }

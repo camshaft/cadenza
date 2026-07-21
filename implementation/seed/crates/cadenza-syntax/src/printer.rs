@@ -2292,9 +2292,16 @@ impl<'a> Printer<'a> {
         // Arms go one per line, each led by `| ` at the `match` column (OCaml style — the leading `|`
         // is always printed, including on the first arm). No braces, no trailing commas.
         let arms = &args[1..];
-        for (i, &arm) in arms.iter().enumerate() {
+        for (i, &raw_arm) in arms.iter().enumerate() {
             self.doc.hardbreak();
             self.doc.word("| ");
+            // An arm may be `(comment-after "text" (pat body))` — a `//` that trailed the arm on its
+            // line. Unwrap to the real arm; the trailing comment prints AFTER the body, same line.
+            let arm = self.strip_comment_after(raw_arm);
+            let trailing = self
+                .a
+                .as_form(raw_arm, "comment-after")
+                .filter(|a| a.len() == 2);
             if let Struct::List(pair) = self.a.get(arm) {
                 let (pat, body) = (pair[0], pair[1]);
                 self.pattern(pat);
@@ -2305,6 +2312,9 @@ impl<'a> Printer<'a> {
                 // block-form parens without parenthesizing an infix body.
                 let last = i + 1 == arms.len();
                 self.expr(body, if last { 0 } else { PREC_KEYWORD });
+            }
+            if let Some(a) = trailing {
+                self.doc.word(format!(" //{}", self.doc_line_text(a[0])));
             }
         }
         if paren {
@@ -3093,10 +3103,22 @@ impl<'a> Printer<'a> {
         if args.len() < 2 {
             return false;
         }
-        args[1..].iter().all(|&a| match self.a.get(a) {
-            Struct::List(p) => p.len() == 2,
-            _ => false,
+        args[1..].iter().all(|&a| {
+            // An arm may be wrapped in `(comment-after "text" arm)` (a `//` trailing the arm on its
+            // line) — unwrap to the real arm before checking it's a 2-element `(pat body)`.
+            let arm = self.strip_comment_after(a);
+            matches!(self.a.get(arm), Struct::List(p) if p.len() == 2)
         })
+    }
+
+    /// If `id` is a `(comment-after "text" inner)` wrapper, return `(Some(text_id), inner)`; else
+    /// `(None, id)`. The dual of the leading `(comment "text" inner)` — a `//` that TRAILED `inner` on
+    /// the same source line (`Ctor(T) // note`). The printer prints `inner` then ` // text` (same line).
+    fn strip_comment_after(&self, id: StructId) -> StructId {
+        match self.a.as_form(id, "comment-after") {
+            Some(a) if a.len() == 2 && self.is_string(a[0]) => a[1],
+            _ => id,
+        }
     }
 
     /// Every arg is a 2-element `(key value)` pair — the shape the record/map surfaces render. A
@@ -5881,6 +5903,49 @@ mod tests {
                 .count(),
             1,
             "the `(comment-after …)` survives the round-trip"
+        );
+    }
+
+    #[test]
+    fn a_comment_trailing_a_match_arm_is_preserved_same_line() {
+        // A `//` on the same line as a NON-LAST match arm (`| pat => body // note`) is captured as a
+        // `(comment-after "note" (pat body))` node and re-prints same-line after the body — not dropped
+        // nor moved. (The FILE-FINAL last-arm case falls back to the pre-existing leading-comment reorder,
+        // count-preserving; here we pin the common non-last case + a following statement makes the last
+        // arm's comment attach too.) `strip_comments` peels it so the match still compiles.
+        let src =
+            "def f(x) =\n  match x with\n  | 0 => 1 // zero\n  | _ => 2 // other\ndef g() = 9";
+        let a = parser::read_ml(src);
+        assert!(a.ok(), "parse: {:?}", a.errors);
+        let sexpr = crate::sexpr::print(&a.arenas);
+        assert_eq!(
+            sexpr.matches("(comment-after ").count(),
+            2,
+            "both arm comments become `(comment-after …)` (the last arm's too, since a def follows): {sexpr}"
+        );
+        let printed = print(&a.arenas, 100);
+        assert!(
+            printed
+                .lines()
+                .any(|l| l.contains("=> 1") && l.contains("// zero")),
+            "first arm comment trails same-line: {printed}"
+        );
+        assert!(
+            printed
+                .lines()
+                .any(|l| l.contains("=> 2") && l.contains("// other")),
+            "last arm comment trails same-line: {printed}"
+        );
+        // Idempotent + round-trips.
+        let b = parser::read_ml(&printed);
+        assert!(b.ok(), "reparse: {:?}", b.errors);
+        assert_eq!(print(&b.arenas, 100), printed, "not idempotent");
+        assert_eq!(
+            crate::sexpr::print(&b.arenas)
+                .matches("(comment-after ")
+                .count(),
+            2,
+            "the `(comment-after …)` arm-comments survive the round-trip"
         );
     }
 

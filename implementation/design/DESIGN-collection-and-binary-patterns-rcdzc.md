@@ -523,6 +523,48 @@ special case per type — the spec's explicit intent (`16-binary-matching.sexp:2
      `todo` witness "a guarded bin-match arm reads its decoded binder and falls through when the guard fails"
      (16-binary), which flips todo→pass when all three parts land. (Characterized by v-patterns Inc-322 while
      probing bin×guard composition coverage; the resolve helper was prototyped + reverted as incomplete-alone.)
+     - **4b IMPLEMENTATION ATTEMPT (Inc-323, reverted — one blocker remains).** Prototyped all THREE parts +
+       a FOURTH the sketch missed: (iv) `match_arm_bin_binds` (Case B, the BODY path) must ALSO peel the
+       `(guard …)` wrapper, else a guarded arm's BODY `n` ascends to a `guard` head not `bin` → spurious
+       CDZ0101 on the body (not just the cond). With (i)+(ii)+(iii)+(iv) the case COMPILES + RUNS (no decline),
+       the routing/classifier/exhaustiveness (guarded arm ≠ cover) all correct, and the RUNTIME `BinIntRead`
+       for the guard's `n` reads the right materialized-scrutinee `LocalRef` (verified in the lower trace).
+       **BUT the guard-cond `BinField` does not FOLD** where the IDENTICAL body expression does: `((bin (u8 n))
+       (= n 9))` over const `[9]` folds the body to `true` (92-byte const wasm), yet `((guard (bin (u8 n)) (=
+       n 9)) …)` reports "guard did not fold to a constant" — `core_of` on the guard-cond node is never
+       reached/decoded for `n` (node never lowered in the trace), while the same-scrutinee same-seg BinField
+       in the body folds. ROOT CAUSE (hypothesis): a **memoization / resolution-ORDER hazard** — the guard-cond
+       subtree's `core_of`/`resolved_of` is computed at a DIFFERENT point (exhaustiveness / redundant-arm /
+       eager `resolve_subtree` walk) than the body's, before or outside the context where Case 6bg + the
+       kept-scrutinee decode apply, and the stale result is memoized. The runtime symptom is the guard reading
+       `n` as 0 (all `(= n 0)`/`(< n 5)` true, all `(= n 9)`/`(> n 5)` false). **NEXT ATTEMPT:** find WHERE the
+       guard-cond node is first `core_of`'d (add a trace/breakpoint on the guard occurrence), ensure the
+       kept-scrutinee binding + Case 6bg resolution are in effect at THAT point — likely the fix is to build the
+       guard `if` (and its `core_of`) only AFTER `db.kept_bindings.insert(scrutinee)` AND to clear any stale
+       memo on the guard subtree (`resolve::invalidate_subtree`), OR to route the guard through the same
+       `decode_bin_field` path the body uses rather than a raw `core_of(cond)`. The const-path guard fold has
+       the same non-fold; both share the one root cause. Parts (i)–(iv) are correct + necessary; only the
+       fold-context wiring blocks the land.
+     - **4b ROOT-CAUSE REFINED (Inc-325).** The eager pass `collect_redundant_arm_warnings` (compile.rs:4666)
+       walks EVERY match node in the program (`0..node_count`) and calls `core_of(db, id)` on each (line 4685,
+       to skip poisoning matches). For a guarded bin-match this runs `lower_match_bin` → `core_of(*guard)`
+       **BEFORE** the arm's real in-context lowering. `core_of` MEMOIZES per node, so whatever the guard folds
+       to in THAT eager call is cached and reused by the real fold. If at the eager-pass moment the guard's
+       `BinField` decodes to a non-const (e.g. the scrutinee isn't seen as a const `BytesOf` yet, or the
+       kept-scrutinee binding isn't in effect, so `decode_bin_field` takes the runtime `BinIntRead` branch →
+       the `=` fold sees a non-const operand → the whole guard is a non-const `Core`), that non-const result is
+       what the const-path fold later reads — hence "guard did not fold to a constant" even over a genuinely
+       const scrutinee, and the runtime symptom of the guard reading a stale/0 `n`. This is the SAME class as
+       the documented `subtree_reaches_host_call`/`should_keep_binding` memoization-order hazards. **FIX
+       DIRECTION:** the guard must be folded in the SAME context/order as the arm body — either (a) do NOT
+       `core_of` the guard during the eager redundant-arm skip-check for a bin-match (guard arms are already
+       `arm_cover → None` = unclassifiable, so the redundant-arm pass ignores them anyway; the `core_of(id)`
+       poison-skip is what forces the premature lowering), or (b) fold the guard through a fresh
+       `decode_bin_field`-based evaluation rather than the memoized `core_of(cond)`, or (c) invalidate the
+       guard subtree's memo after `kept_bindings.insert(scrutinee)` and before the real fold. Option (a) is the
+       narrowest (skip the whole-program eager `core_of` for guarded-bin matches, or make that poison-skip not
+       memoize). Verify with the `((bin (u8 n)) (= n 9))`-body-vs-guard reproducer: both must fold to the same
+       constant over `[9]`. Parts (i)–(iv) stand; this identifies WHICH eager `core_of` poisons the memo.
 5. **Map patterns** (map-lookup+remove, spec-first done in step 0). **Set patterns** only if step 0 took the
    spec decision.
 

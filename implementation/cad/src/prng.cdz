@@ -45,8 +45,8 @@ def roll(state: Int64, k: Int64) = next(state) % k
 /// common "pick a size/count/angle-index between lo and hi" case in a procedural model.
 def between(state: Int64, lo: Int64, hi: Int64) = lo + roll(state, hi - lo + (1 : Int64))
 
-@test
 /// ============================ @test suite (seedable, deterministic, bounded) ============================
+@test
 def next-is-deterministic-and-advances() =
   // Same state → same next (reproducible); and the stream actually moves (next ≠ state for a normal state).
   let s = seed(42 : Int64) in

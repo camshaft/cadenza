@@ -56,9 +56,9 @@ def a_shutdown_routes_to_a_single_note() = op-count(4) == 1
 @test
 def an_unknown_event_routes_to_noop() = op-count(99) == 1
 
-@test
 /// A message's FIRST op is the log-append (ack) — pins the ORDER (the executor runs ops in list order, so a
 /// message acks BEFORE it runs the model turn; order is semantically load-bearing).
+@test
 def a_message_acks_before_it_runs_the_model_turn() = match route(1) with
   | [first, .. _] => (match first with
     | HostOp.Append(_) => true
@@ -66,9 +66,9 @@ def a_message_acks_before_it_runs_the_model_turn() = match route(1) with
   )
   | [] => false
 
-@test
 /// A model-reply routes to an EXEC as its second op (the tool the model chose) — pins that routing reaches
 /// the broad `Exec` primitive, not just log-appends.
+@test
 def a_model_reply_execs_a_tool() = match route(3) with
   | [_, second] => (match second with
     | HostOp.Exec(_) => true

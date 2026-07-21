@@ -1196,6 +1196,19 @@ fn rational_module(ast: &mut Arenas) -> StructId {
     let truncate_op = list_op_record(ast, "rational-truncate", truncate_ty);
     let truncate_key = push_atom(ast, Leaf::Name("truncate".to_string()));
     children.push(push_list(ast, vec![truncate_key, truncate_op]));
+    // `floor : Rational → Int64` (toward −∞) and `ceil : Rational → Int64` (toward +∞) — the other two
+    // exact integer projections, each `truncate` adjusted by ±1 off the remainder sign. Like `truncate`,
+    // NOT new runtime ops: they lower as DERIVATIONS over numerator/denominator + BigInt divmod + a
+    // remainder-sign conditional + the checked `Int64.of` narrowing (hash-neutral). `floor(-7/2) = -4`
+    // (toward −∞, distinct from `truncate`'s −3); `ceil(7/2) = 4` (toward +∞).
+    let floor_ty = rational_to_int64_type(ast);
+    let floor_op = list_op_record(ast, "rational-floor", floor_ty);
+    let floor_key = push_atom(ast, Leaf::Name("floor".to_string()));
+    children.push(push_list(ast, vec![floor_key, floor_op]));
+    let ceil_ty = rational_to_int64_type(ast);
+    let ceil_op = list_op_record(ast, "rational-ceil", ceil_ty);
+    let ceil_key = push_atom(ast, Leaf::Name("ceil".to_string()));
+    children.push(push_list(ast, vec![ceil_key, ceil_op]));
     push_list(ast, children)
 }
 

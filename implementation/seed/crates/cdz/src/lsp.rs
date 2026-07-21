@@ -39,23 +39,26 @@ use lsp_types::notification::{
     PublishDiagnostics,
 };
 use lsp_types::request::{
+    CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare,
     CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest,
     DocumentSymbolRequest, FoldingRangeRequest, Formatting, GotoDefinition, GotoTypeDefinition,
     HoverRequest, InlayHintRequest, References, Rename, Request as _, SelectionRangeRequest,
     SemanticTokensFullRequest, Shutdown, SignatureHelpRequest, WorkspaceSymbolRequest,
 };
 use lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
-    CodeLens, CodeLensOptions, CodeLensParams, CompletionItem, CompletionItemKind,
-    CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams,
-    DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeParams,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InlayHint, InlayHintKind,
-    InlayHintLabel, InlayHintParams, Location, MarkedString, ParameterInformation, ParameterLabel,
-    Position, PublishDiagnosticsParams, Range, ReferenceParams, RenameParams, SelectionRange,
-    SelectionRangeParams, SemanticToken, SemanticTokenType, SemanticTokens,
+    CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
+    CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
+    CallHierarchyServerCapability, CodeAction, CodeActionKind, CodeActionOrCommand,
+    CodeActionParams, CodeActionResponse, CodeLens, CodeLensOptions, CodeLensParams,
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
+    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind,
+    DocumentHighlightParams, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange,
+    FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InlayHint,
+    InlayHintKind, InlayHintLabel, InlayHintParams, Location, MarkedString, ParameterInformation,
+    ParameterLabel, Position, PublishDiagnosticsParams, Range, ReferenceParams, RenameParams,
+    SelectionRange, SelectionRangeParams, SemanticToken, SemanticTokenType, SemanticTokens,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
     SignatureHelp, SignatureHelpOptions, SignatureHelpParams, SignatureInformation,
@@ -118,6 +121,10 @@ fn capabilities() -> ServerCapabilities {
         // value's rendered type) + the `Symbols` type-name→decl-node lookup. A compound/builtin type (no
         // single user decl) declines (no jump), so it never lands somewhere wrong.
         type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
+        // Call hierarchy — "who calls this function" (incoming). `prepare` picks the def under the cursor;
+        // `incomingCalls` finds its callers via `UsesOf`, grouped by the enclosing top-level def. (Outgoing
+        // calls are a later increment.)
+        call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
         references_provider: Some(lsp_types::OneOf::Left(true)),
         // Highlight every occurrence of the symbol under the cursor WITHIN the buffer (the editor's
         // subtle same-symbol highlight as you rest the caret on a name) — the single-document sibling of
@@ -396,6 +403,21 @@ impl Server {
             Formatting::METHOD => {
                 let (id, params) = cast_request::<Formatting>(req)?;
                 let result = self.formatting(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
+            CallHierarchyPrepare::METHOD => {
+                let (id, params) = cast_request::<CallHierarchyPrepare>(req)?;
+                let result = self.call_hierarchy_prepare(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
+            CallHierarchyIncomingCalls::METHOD => {
+                let (id, params) = cast_request::<CallHierarchyIncomingCalls>(req)?;
+                let result = self.call_hierarchy_incoming(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
+            CallHierarchyOutgoingCalls::METHOD => {
+                let (id, params) = cast_request::<CallHierarchyOutgoingCalls>(req)?;
+                let result = self.call_hierarchy_outgoing(&params);
                 self.send_response(Response::new_ok(id, result))
             }
             _ => {
@@ -823,6 +845,54 @@ impl Server {
             range: Range::new(Position::new(0, 0), end),
             new_text: formatted,
         }])
+    }
+
+    /// Answer a `callHierarchy/prepare`: the call-hierarchy item for the top-level definition whose NAME
+    /// the cursor sits on — the anchor the client then asks incoming/outgoing calls for. `None` when the
+    /// document is not open or the cursor is not on a top-level definition's name.
+    fn call_hierarchy_prepare(
+        &self,
+        params: &CallHierarchyPrepareParams,
+    ) -> Option<Vec<CallHierarchyItem>> {
+        let pos = &params.text_document_position_params;
+        let doc = self.docs.get(&pos.text_document.uri)?;
+        let item =
+            call_hierarchy_item_at(&doc.text, doc.is_ml, pos.position, &pos.text_document.uri)?;
+        Some(vec![item])
+    }
+
+    /// Answer a `callHierarchy/incomingCalls`: the callers of the prepared item — every top-level def that
+    /// references its name, each with the ranges of the calls. Backed by `UsesOf` (the reference index),
+    /// grouped by the enclosing top-level def. `None` when the document is not open; an empty list when the
+    /// definition has no callers — total.
+    fn call_hierarchy_incoming(
+        &self,
+        params: &CallHierarchyIncomingCallsParams,
+    ) -> Option<Vec<CallHierarchyIncomingCall>> {
+        let doc = self.docs.get(&params.item.uri)?;
+        Some(incoming_calls_for(
+            &doc.text,
+            doc.is_ml,
+            &params.item.name,
+            &params.item.uri,
+        ))
+    }
+
+    /// Answer a `callHierarchy/outgoingCalls`: the callees of the prepared item — every top-level def that
+    /// the item's OWN body calls, each with the ranges of those call sites (within the item). Walks the
+    /// item def's body for name-headed call lists whose head names a top-level def. `None` when the document
+    /// is not open; an empty list when the def calls nothing local — total.
+    fn call_hierarchy_outgoing(
+        &self,
+        params: &CallHierarchyOutgoingCallsParams,
+    ) -> Option<Vec<CallHierarchyOutgoingCall>> {
+        let doc = self.docs.get(&params.item.uri)?;
+        Some(outgoing_calls_for(
+            &doc.text,
+            doc.is_ml,
+            &params.item.name,
+            &params.item.uri,
+        ))
     }
 
     /// Dispatch a client NOTIFICATION — the document-sync lifecycle. Each open/change recomputes and
@@ -1965,6 +2035,283 @@ fn references_at(
     }
 
     locations
+}
+
+/// Every top-level `(def …)` / `(type …)` / `(effect …)` form in `text`, as `(name, full_range,
+/// name_range)` — the FULL form span (for "which caller encloses this use") plus the NAME occurrence span
+/// (the call-hierarchy `selection_range`). Walks the arena root through a `(module …)` / `(do …)` wrapper
+/// (like the folding/outline walk), reading the declared name from a function signature `(name param…)`
+/// or a bare `(def name …)`. Used by the call-hierarchy handlers to build items + attribute a reference
+/// to its enclosing definition. Total: an unparseable buffer yields empty.
+fn top_level_defs_with_spans(text: &str, is_ml: bool) -> Vec<(String, Range, Range)> {
+    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return Vec::new();
+    };
+    let root = crate::unwrap_comment(&arenas, arenas.root);
+    // Top-level items: a `(module name member…)`'s members, a `(do …)`'s children, else the lone root.
+    let items: Vec<cadenza_syntax::StructId> = if let Some(tail) = arenas.as_form(root, "module") {
+        tail.iter().skip(1).copied().collect() // skip the module NAME
+    } else if let Some(tail) = arenas.as_form(root, "do") {
+        tail.to_vec()
+    } else {
+        vec![root]
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let item = crate::unwrap_comment(&arenas, item);
+        // Only definitional forms carry a callable/declared name we hang a hierarchy item on.
+        let tail = arenas
+            .as_form(item, "def")
+            .or_else(|| arenas.as_form(item, "type"))
+            .or_else(|| arenas.as_form(item, "effect"));
+        let Some(tail) = tail else { continue };
+        let Some(&target) = tail.first() else {
+            continue;
+        };
+        // `(def (name param…) body)` → name is the sig-list head; `(def name body)` → the bare name.
+        let (name, name_node) = match arenas.get(target) {
+            cadenza_syntax::ast::Struct::List(sig) => match sig.first() {
+                Some(&h) => match arenas.as_name(h) {
+                    Some(n) => (n.to_string(), h),
+                    None => continue,
+                },
+                None => continue,
+            },
+            cadenza_syntax::ast::Struct::Atom(_) => match arenas.as_name(target) {
+                Some(n) => (n.to_string(), target),
+                None => continue,
+            },
+        };
+        let (Some(full), Some(name_span)) = (spans.get(item), spans.get(name_node)) else {
+            continue;
+        };
+        out.push((
+            name,
+            byte_range_to_range(text, full.start, full.end),
+            byte_range_to_range(text, name_span.start, name_span.end),
+        ));
+    }
+    out
+}
+
+/// The `CallHierarchyItem` for the top-level definition whose NAME occurrence contains `pos` — the anchor
+/// a `callHierarchy/prepare` returns. `None` when the cursor is not on a top-level definition's name.
+fn call_hierarchy_item_at(
+    text: &str,
+    is_ml: bool,
+    pos: Position,
+    uri: &Uri,
+) -> Option<CallHierarchyItem> {
+    // Match on the NAME range (the def's own identifier), so preparing from the declaration works; the
+    // `Symbols`-backed kind gives the icon. First def whose name range covers the cursor wins.
+    let kinds: std::collections::HashMap<String, String> = top_level_symbols_of(text, is_ml)
+        .into_iter()
+        .map(|(n, k, _)| (n, k))
+        .collect();
+    for (name, full_range, name_range) in top_level_defs_with_spans(text, is_ml) {
+        if range_contains(&name_range, pos) {
+            let kind = kinds
+                .get(&name)
+                .map(|k| symbol_kind_to_document_kind(k))
+                .unwrap_or(SymbolKind::FUNCTION);
+            return Some(CallHierarchyItem {
+                name,
+                kind,
+                tags: None,
+                detail: None,
+                uri: uri.clone(),
+                range: full_range,
+                selection_range: name_range,
+                data: None,
+            });
+        }
+    }
+    None
+}
+
+/// The incoming calls to the definition `name` in `text` — every top-level def that references it, each as
+/// a `CallHierarchyIncomingCall{from: caller-item, from_ranges: [use ranges within that caller]}`. Backed
+/// by `UsesOf{name}` (the reference index); each reference range is attributed to the enclosing top-level
+/// def by span containment. A reference NOT inside any def (e.g. an `(export …)` clause) is skipped — it is
+/// not a call site. Total: no callers → empty.
+fn incoming_calls_for(
+    text: &str,
+    is_ml: bool,
+    name: &str,
+    uri: &Uri,
+) -> Vec<CallHierarchyIncomingCall> {
+    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return Vec::new();
+    };
+    let defs = top_level_defs_with_spans(text, is_ml);
+    let kinds: std::collections::HashMap<String, String> = top_level_symbols_of(text, is_ml)
+        .into_iter()
+        .map(|(n, k, _)| (n, k))
+        .collect();
+    // Each reference's range, from `UsesOf` (node-id-keyed → source range).
+    let Some(answer) = run_query_text(
+        &arenas,
+        rcdzc::sidecar::Query::UsesOf {
+            name: name.to_string(),
+        },
+        rcdzc::sidecar::KIND_USES,
+    ) else {
+        return Vec::new();
+    };
+    // Group use ranges by the enclosing caller def (by name), preserving encounter order.
+    let mut order: Vec<String> = Vec::new();
+    let mut by_caller: std::collections::HashMap<String, Vec<Range>> =
+        std::collections::HashMap::new();
+    for line in answer.lines() {
+        let Ok(id) = line.trim().parse::<u32>() else {
+            continue;
+        };
+        let Some(span) = spans.get(cadenza_syntax::StructId(id)) else {
+            continue;
+        };
+        let use_range = byte_range_to_range(text, span.start, span.end);
+        // The caller is the def whose FULL range encloses this use (and isn't the def's own name — a
+        // self-recursive call still counts as an incoming call from itself, which is correct).
+        let Some((caller, _, _)) = defs
+            .iter()
+            .find(|(_, full, _)| range_contains(full, use_range.start))
+        else {
+            continue; // a reference outside any def (e.g. an export clause) is not a call site
+        };
+        if !by_caller.contains_key(caller) {
+            order.push(caller.clone());
+        }
+        by_caller.entry(caller.clone()).or_default().push(use_range);
+    }
+    order
+        .into_iter()
+        .filter_map(|caller| {
+            let ranges = by_caller.remove(&caller)?;
+            let (_, full_range, name_range) = defs.iter().find(|(n, _, _)| n == &caller)?.clone();
+            let kind = kinds
+                .get(&caller)
+                .map(|k| symbol_kind_to_document_kind(k))
+                .unwrap_or(SymbolKind::FUNCTION);
+            Some(CallHierarchyIncomingCall {
+                from: CallHierarchyItem {
+                    name: caller,
+                    kind,
+                    tags: None,
+                    detail: None,
+                    uri: uri.clone(),
+                    range: full_range,
+                    selection_range: name_range,
+                    data: None,
+                },
+                from_ranges: ranges,
+            })
+        })
+        .collect()
+}
+
+/// The outgoing calls FROM the definition `name` in `text` — every top-level def that `name`'s own body
+/// calls, each as `CallHierarchyOutgoingCall{to: callee-item, from_ranges: [call-site ranges in name]}`.
+/// Walks every name-headed call list whose span is INSIDE `name`'s def form and whose head names a
+/// top-level def (the callee); groups the call-site ranges by callee. A call to a builtin / unknown name
+/// (not a top-level def) is skipped. The def's OWN signature list `(name param…)` is excluded (it is not a
+/// call). Total: a def that calls nothing local → empty.
+fn outgoing_calls_for(
+    text: &str,
+    is_ml: bool,
+    name: &str,
+    uri: &Uri,
+) -> Vec<CallHierarchyOutgoingCall> {
+    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return Vec::new();
+    };
+    let defs = top_level_defs_with_spans(text, is_ml);
+    // The caller def's FULL byte span (so we only look at call sites inside its body). No such def → empty.
+    let Some((_, caller_full, _)) = defs.iter().find(|(n, _, _)| n == name).cloned() else {
+        return Vec::new();
+    };
+    let caller_lo = position_to_byte(text, caller_full.start);
+    let caller_hi = position_to_byte(text, caller_full.end);
+    let def_names: std::collections::HashSet<&str> =
+        defs.iter().map(|(n, _, _)| n.as_str()).collect();
+    let kinds: std::collections::HashMap<String, String> = top_level_symbols_of(text, is_ml)
+        .into_iter()
+        .map(|(n, k, _)| (n, k))
+        .collect();
+    // A def's own signature list `(name param…)` is call-shaped but is a declaration, not a call — exclude
+    // it (mirrors the inlay-hint signature-leak guard).
+    let mut def_sigs: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for i in 0..arenas.structure.len() {
+        let id = cadenza_syntax::StructId(i as u32);
+        if let cadenza_syntax::ast::Struct::List(kids) = arenas.get(id)
+            && kids.first().and_then(|&h| arenas.as_name(h)) == Some("def")
+            && let Some(&sig) = kids.get(1)
+            && matches!(arenas.get(sig), cadenza_syntax::ast::Struct::List(_))
+        {
+            def_sigs.insert(sig.0);
+        }
+    }
+    let mut order: Vec<String> = Vec::new();
+    let mut by_callee: std::collections::HashMap<String, Vec<Range>> =
+        std::collections::HashMap::new();
+    for i in 0..arenas.structure.len() {
+        let id = cadenza_syntax::StructId(i as u32);
+        if def_sigs.contains(&id.0) {
+            continue;
+        }
+        let cadenza_syntax::ast::Struct::List(children) = arenas.get(id) else {
+            continue;
+        };
+        let Some(callee) = children.first().and_then(|&h| arenas.as_name(h)) else {
+            continue;
+        };
+        // Only a call to a TOP-LEVEL def (not the caller itself → a self-recursive call is an outgoing
+        // call to itself, which is correct and useful), and only within the caller's body span.
+        if !def_names.contains(callee) {
+            continue;
+        }
+        let Some(span) = spans.get(id) else { continue };
+        if span.start < caller_lo || span.start >= caller_hi {
+            continue;
+        }
+        let range = byte_range_to_range(text, span.start, span.end);
+        if !by_callee.contains_key(callee) {
+            order.push(callee.to_string());
+        }
+        by_callee.entry(callee.to_string()).or_default().push(range);
+    }
+    order
+        .into_iter()
+        .filter_map(|callee| {
+            let ranges = by_callee.remove(&callee)?;
+            let (_, full_range, name_range) = defs.iter().find(|(n, _, _)| n == &callee)?.clone();
+            let kind = kinds
+                .get(&callee)
+                .map(|k| symbol_kind_to_document_kind(k))
+                .unwrap_or(SymbolKind::FUNCTION);
+            Some(CallHierarchyOutgoingCall {
+                to: CallHierarchyItem {
+                    name: callee,
+                    kind,
+                    tags: None,
+                    detail: None,
+                    uri: uri.clone(),
+                    range: full_range,
+                    selection_range: name_range,
+                    data: None,
+                },
+                from_ranges: ranges,
+            })
+        })
+        .collect()
+}
+
+/// Whether `range` covers `pos` (inclusive of start, exclusive of end at the line/char granularity LSP
+/// positions use) — the containment test the call-hierarchy handlers use to attribute a cursor/use to a
+/// def. A simple line/column lexicographic comparison.
+fn range_contains(range: &Range, pos: Position) -> bool {
+    let after_start = (pos.line, pos.character) >= (range.start.line, range.start.character);
+    let before_end = (pos.line, pos.character) < (range.end.line, range.end.character);
+    after_start && before_end
 }
 
 /// The node id of the TOP-LEVEL declaration named `name` (its name occurrence), or `None` if no
@@ -4431,6 +4778,118 @@ mod tests {
             type_definition_at("def (f x = (", true, Position::new(0, 5), &test_uri()).is_none()
         );
         assert!(type_definition_at("", true, Position::new(9, 9), &test_uri()).is_none());
+    }
+
+    #[test]
+    fn call_hierarchy_prepare_returns_the_def_under_the_cursor() {
+        // Preparing call hierarchy from a def's NAME yields an item for that def (a FUNCTION `helper`),
+        // with its name as the selection range — the anchor the client asks incoming/outgoing calls for.
+        let text = "def helper(x: Int64) -> Int64 = x + 1\ndef main() -> Int64 = helper(2)";
+        // Cursor on the `helper` NAME in its declaration (line 0, col 4).
+        let item = call_hierarchy_item_at(text, true, Position::new(0, 4), &test_uri())
+            .expect("an item on the def name");
+        assert_eq!(item.name, "helper");
+        assert_eq!(item.kind, SymbolKind::FUNCTION);
+        assert_eq!(
+            item.selection_range.start.line, 0,
+            "selection is the name on line 0"
+        );
+    }
+
+    #[test]
+    fn call_hierarchy_prepare_is_none_off_a_definition_name() {
+        // A cursor NOT on a top-level def's name (here in the body) prepares nothing.
+        let text = "def answer = 42";
+        assert!(
+            call_hierarchy_item_at(text, true, Position::new(0, 13), &test_uri()).is_none(),
+            "cursor on the `42` body is not a def name"
+        );
+    }
+
+    #[test]
+    fn call_hierarchy_incoming_finds_the_callers_grouped_by_def() {
+        // Incoming calls to `helper`: both `main` and `twice` call it, so incomingCalls returns two caller
+        // items (`main`, `twice`), each with the range(s) of its call(s). `helper` itself is not a caller.
+        let text = "def helper(x: Int64) -> Int64 = x + 1\ndef main() -> Int64 = helper(2)\ndef twice() -> Int64 = helper(helper(3))";
+        let calls = incoming_calls_for(text, true, "helper", &test_uri());
+        let callers: std::collections::HashSet<&str> =
+            calls.iter().map(|c| c.from.name.as_str()).collect();
+        assert!(
+            callers.contains("main") && callers.contains("twice"),
+            "helper's callers are main + twice, got {callers:?}"
+        );
+        assert!(
+            !callers.contains("helper"),
+            "helper's own declaration is not one of its callers: {callers:?}"
+        );
+        // `twice` calls helper TWICE (nested) → its entry carries 2 call ranges.
+        let twice = calls.iter().find(|c| c.from.name == "twice").unwrap();
+        assert_eq!(
+            twice.from_ranges.len(),
+            2,
+            "twice calls helper twice (helper(helper(3))): {:?}",
+            twice.from_ranges
+        );
+    }
+
+    #[test]
+    fn call_hierarchy_incoming_is_empty_for_an_uncalled_def() {
+        // A def nobody calls has no incoming calls — empty (never a panic).
+        let text = "def lonely() -> Int64 = 1\ndef main() -> Int64 = 2";
+        assert!(
+            incoming_calls_for(text, true, "lonely", &test_uri()).is_empty(),
+            "an uncalled def has no incoming calls"
+        );
+    }
+
+    #[test]
+    fn call_hierarchy_outgoing_finds_the_callees_of_a_def() {
+        // Outgoing calls FROM `main`: it calls `helper` and `other`, so outgoingCalls returns those two
+        // callee items with their call-site ranges. `main`'s own signature is not a call.
+        let text = "def helper(x: Int64) -> Int64 = x\ndef other() -> Int64 = 7\ndef main() -> Int64 = helper(other())";
+        let calls = outgoing_calls_for(text, true, "main", &test_uri());
+        let callees: std::collections::HashSet<&str> =
+            calls.iter().map(|c| c.to.name.as_str()).collect();
+        assert!(
+            callees.contains("helper") && callees.contains("other"),
+            "main calls helper + other, got {callees:?}"
+        );
+        assert!(
+            !callees.contains("main"),
+            "main's own signature is not an outgoing call: {callees:?}"
+        );
+    }
+
+    #[test]
+    fn call_hierarchy_outgoing_counts_a_self_recursive_call() {
+        // A self-recursive def calls ITSELF — an outgoing call to itself (useful: shows the recursion).
+        // `countdown` calls `countdown` once in its body.
+        let text = "def countdown(n: Int64) -> Int64 = countdown(n)";
+        let calls = outgoing_calls_for(text, true, "countdown", &test_uri());
+        let self_call = calls.iter().find(|c| c.to.name == "countdown");
+        assert!(
+            self_call.is_some(),
+            "a self-recursive call is an outgoing call to itself: {:?}",
+            calls.iter().map(|c| &c.to.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn call_hierarchy_outgoing_is_empty_for_a_leaf_def() {
+        // A def that calls no top-level def (only a builtin `+`) has no outgoing calls — empty.
+        let text = "def leaf(x: Int64) -> Int64 = x + 1\ndef main() -> Int64 = leaf(2)";
+        assert!(
+            outgoing_calls_for(text, true, "leaf", &test_uri()).is_empty(),
+            "leaf calls only the builtin `+`, no top-level callee"
+        );
+    }
+
+    #[test]
+    fn call_hierarchy_is_total_on_malformed_source() {
+        // Total on incomplete source, like the other queries.
+        let _ = call_hierarchy_item_at("def (f x = (", true, Position::new(0, 5), &test_uri());
+        assert!(incoming_calls_for("(def (f x", false, "f", &test_uri()).is_empty());
+        assert!(outgoing_calls_for("(def (f x", false, "f", &test_uri()).is_empty());
     }
 
     #[test]

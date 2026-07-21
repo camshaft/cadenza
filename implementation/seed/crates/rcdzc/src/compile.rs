@@ -280,6 +280,9 @@ pub fn compile_with_opt(
         return CompileOutput {
             artifacts: query_artifacts,
             diagnostics: Vec::new(),
+            // No emit ran on this query-only path, so no CSE partition compares happened.
+            #[cfg(test)]
+            cse_partition_core_eq_calls: 0,
         };
     }
 
@@ -397,6 +400,10 @@ pub fn compile_with_opt(
     CompileOutput {
         artifacts,
         diagnostics,
+        // Surface the emit path's per-`Db` CSE-partition compare count (the `Db` is dropped here) for the
+        // regression-guard test to read a single-compile value — see `Db::cse_partition_core_eq_calls`.
+        #[cfg(test)]
+        cse_partition_core_eq_calls: db.cse_partition_core_eq_calls,
     }
 }
 
@@ -5726,5 +5733,8 @@ fn fail_with(query_artifacts: Vec<Artifact>, rejects: Vec<Reject>) -> CompileOut
     CompileOutput {
         artifacts: query_artifacts,
         diagnostics: rejects.iter().map(Diagnostic::from_reject).collect(),
+        // An early failure — no emit ran, so no CSE partition compares happened.
+        #[cfg(test)]
+        cse_partition_core_eq_calls: 0,
     }
 }

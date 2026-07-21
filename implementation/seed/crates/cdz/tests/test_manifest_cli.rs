@@ -2556,6 +2556,63 @@ fn a_failing_requires_property_shrinks_to_an_in_domain_counterexample() {
     );
 }
 
+/// A FAILING SUM property whose constructor payload is constrained by a match-`@requires` payload GUARD must
+/// SHRINK to a counterexample whose payload stays IN the guard's domain — the sum-payload twin of
+/// `a_failing_requires_property_shrinks_to_an_in_domain_counterexample` (scalar) and
+/// `a_failing_requires_min_length_property_renders_an_in_domain_length_counterexample` (list length). Here the
+/// guard forces `Some(n)` with `0 <= n <= 100` (and forbids `None`), and the property `n >= 50` is FALSE
+/// across `[0, 49]`, so every trial fails; the shrinker halves the payload toward 0. Because the generator +
+/// decoder narrow the `Some` payload to `IntRange{0,100}` (the payload-guard constrained-gen landed in
+/// 8ff0f8797), the shrunk counterexample must decode as `Some(k)` with `k` in `[0, 100]` — never a spurious
+/// out-of-domain `Some(-1)`. Pins that the payload IntRange is honored on the SHRINK path (not just the
+/// initial draw), so a future change to the shrink search can't silently render an out-of-domain payload.
+/// Uses the s-expr surface (the match-predicate spelling); a `Some` payload is a scalar Int64 in a heap sum,
+/// so store-guard the run half.
+#[test]
+fn a_failing_sum_payload_guard_property_shrinks_to_an_in_domain_payload() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — the -gen wrapper run needs the store"
+        );
+        return;
+    }
+    let d = dir("requires-sum-payload-shrink");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do \
+           (type Opt (None) (Some Int64)) \
+           (@ test (@ (requires (match o ((Opt.Some n) (and (>= n 0) (<= n 100))) ((Opt.None) false))) \
+             (def (f (: o Opt)) (match o ((Opt.Some n) (if (>= n 50) 1 (trap \"payload below 50\"))) ((Opt.None) 0))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "3", "--trials", "60"]);
+    assert!(
+        !ok,
+        "the property `n >= 50` is false across the guard window [0,49] so it fails: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("FAIL f-gen"),
+        "the property fails: {stdout}"
+    );
+    // Extract the shrunk counterexample `f(Some(N))` and assert N stayed IN the guard domain [0, 100] — the
+    // shrink must not descend the payload below the guard's lower bound (0). Pre-fix it could report Some(-1).
+    let ce = stdout
+        .lines()
+        .find(|l| l.contains("counterexample: f(Some("))
+        .unwrap_or("");
+    let n: i64 = ce
+        .split("Some(")
+        .nth(1)
+        .and_then(|s| s.split(')').next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(-1);
+    assert!(
+        (0..=100).contains(&n),
+        "the shrunk sum-payload-guard counterexample stays IN the guard domain [0,100], not below the payload bound: {stdout}"
+    );
+}
+
 /// A property with THREE parameters is generated and checked across all three. This pins the 3-plus-param
 /// property path, which sits adjacent to a NEIGHBORING parser boundary: trunk `fd23c9d09` declines a
 /// 3-plus-param s-expr `(def (f a b c) …)`. A property `@test` — ML surface (scalar params) AND the

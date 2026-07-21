@@ -65,8 +65,8 @@ def q-z(v: Vec3q) = match v with
 def vec3q-to-vec3(v: Vec3q) = match v with
   | Vec3q.V3q(x, y, z) => v3(Qty.value(x), Qty.value(y), Qty.value(z))
 
-@test
 /// ============================ @test suite (S2b — Qty-field product, exact meters) ============================
+@test
 def a-vec3q-field-holds-a-length-quantity() =
   // The field itself is a Qty — read a component back and it is a meter quantity of the right magnitude.
   let v = v3q(qm(5), qm(2), qm(3)) in

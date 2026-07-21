@@ -1467,6 +1467,32 @@
   (call   main)
   (output (: 7 Int64)))
 
+; An IF-OF-PARTIAL-CTORS applied — the eta-closure shape whose `CallClosure` operand is an `Core::If` whose
+; arms are each a fresh, partially-applied constructor. Selecting the ctor by an `if` then completing the
+; application distributes the final projection into both arms, so the operand the `CallClosure` emit sees is
+; an `If` joining two owned closure cells. `heap_operand_ownership` classifies each `Core::Closure` arm as
+; Owned (a freshly-built cell, like `SumNew`/`Tuple`), and the `Core::If` join carries that Owned through — a
+; value-correctness precondition for the SITE-A reclaim work in the effects/rc layer (the cell must be a
+; genuine owned temporary before its reclaim can be gated). This pins the emitted VALUE stays correct on BOTH
+; arms and across O0..O3, so the ownership-classification + eventual cell-drop transition can't silently
+; miscompute the completed constructor.
+(case "an if-selected partially-applied constructor is completed by application (eta-closure), both arms"
+  (doc    "`((if c (T.Mk 0) (T.Mk 10)) 5)` selects one of two PARTIAL applications of the 2-arg ctor `Mk`
+           under an `if`, then applies the result to `5` to complete it — an eta-closure whose `CallClosure`
+           operand is an `If` of two fresh owned closure cells. `c=true` builds `Mk 0 5` → `0+5=5`; `c=false`
+           builds `Mk 10 5` → `10+5=15`. Pins the completed constructor computes the right value on both arms
+           (the `Core::Closure`-Owned classification + `If`-join must preserve the arm's partial args), and —
+           anchored by the opt-sweep — that it stays correct at every optimization level.")
+  (input  (do
+            (type T (Mk Int64 Int64))
+            (def (main (: c Bool))
+              (match ((if c (T.Mk 0) (T.Mk 10)) 5) ((Mk a b) (+ a b))))
+            (export main)))
+  (call   main (: true Bool))
+  (output (: 5 Int64))
+  (call   main (: false Bool))
+  (output (: 15 Int64)))
+
 ; A PREDICATE closure — a runtime closure whose RESULT TYPE is Bool. `(fn (x) (= x k))` is a `(-> Int64
 ; Bool)` value threaded through the recursive `anyp` ("does any i in n…1 satisfy the predicate?"), which
 ; SHORT-CIRCUITS on the first `true`. The closure's result crosses the `call_indirect` boundary as a

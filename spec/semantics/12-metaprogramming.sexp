@@ -919,6 +919,38 @@
             (_            0)))
   (output (: 1 Int64)))
 
+; The STRING-SPELLED companion of the digit-led / keyword-spelled name-reclassification boundary: a name
+; whose SPELLING is a quote-delimited string (`Ast.Name "\"x\""`, the two-character text `"x"` including
+; the quotes) prints as the bare word `"x"`, which the reader lexes as a STRING literal — so `read`
+; returns `Ast.Str`, not the original `Ast.Name`. Like a digit-led or keyword name, such a name cannot
+; arise from parsing source (the lexer yields a string, never a name). Correct grammar behavior, not a
+; round-trip bug — the text round-trip is scoped to grammatically-valid identifiers. The byte codec, by
+; contrast, is total over it (its tag delimits the payload, no re-lexing), completing the trio.
+
+(case "the byte codec round-trips a string-spelled Ast.Name that the text path would reclassify"
+  (doc    "`Ast.encode`/`Ast.decode` is total over a name whose spelling looks like a string literal:
+           `(Ast.Name \"\\\"x\\\"\")` (text `\"x\"`, quotes included) round-trips to an EQUAL `Ast.Name`
+           through the byte path — the tag delimits the payload, so no re-lexing reclassifies it. The
+           string-lookalike companion of the digit-led / keyword-spelled byte-codec cases; contrast the
+           text path below where the quotes make `read` see a string.")
+  (input  (match (Ast.decode (Ast.encode (Ast.Name "\"x\"")))
+            ((Ok a)  (= a (Ast.Name "\"x\"")))
+            ((Err _) false)))
+  (output (: true Bool)))
+
+(case "print then read of a string-spelled Ast.Name reclassifies it as an Ast.Str"
+  (doc    "`print (Ast.Name \"\\\"x\\\"\")` renders the bare word `\"x\"` (the name's spelling includes the
+           quote characters), which `read` lexes as a STRING literal → `Ast.Str`, NOT the original
+           `Ast.Name`. Like the digit-led and keyword-spelled cases, `Ast.Name \"\\\"x\\\"\"` cannot arise
+           from source (the lexer yields a string for quote-delimited text, never a name). Correct grammar
+           behavior, not a bug — the text round-trip is scoped to grammatically-valid identifiers. Matched
+           via the Str arm; completes the reclassification trio (number / keyword / string spelling).")
+  (input  (match (read (print (Ast.Name "\"x\"")))
+            ((Ast.Str _)  1)
+            ((Ast.Name _) 2)
+            (_            0)))
+  (output (: 1 Int64)))
+
 (case "print of an Ast.Str renders a quoted literal with escapes and read inverts it"
   (doc    "`print : Ast → String` renders an `Ast.Str` as a `\"…\"` literal, escaping the closed set
            (`\\n \\t \\r \\\\ \\\"`) — the canonical re-readable spelling — and `read : String → Ast`

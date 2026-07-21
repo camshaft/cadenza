@@ -514,7 +514,20 @@ async function checkProgram(program, surface, ex, where) {
     } catch (e) {
       // A run failure is the trust-breaker: a compiled example that crashes/traps/stack-overflows.
       const label = ex.expected != null ? "solution" : ex.kind;
-      return `${ex.file} [${ex.kind}] (${where}): ${label} compiled but FAILED TO RUN — ${String(e.message || e).slice(0, 100)}\n    ${brief}`;
+      const emsg = String(e.message || e);
+      // A wasm TYPE-mismatch at run ("expected i32, found i64", "type mismatch", "failed to parse
+      // WebAssembly module") is the signature of a compiler EMIT bug in the *staged* wasm — which is often
+      // one the compiler has already FIXED on trunk since this local `src/wasm/pkg` was built. Locally that
+      // reads as a scary miscompile; in CI (which rebuilds guide-wasm fresh every run) it's usually green.
+      // So on that error class, hint the most common cause before anyone escalates a false regression. (The
+      // staged store is internally consistent — compiler hash == runtime hash — so a hash-guard can't catch
+      // this; only rebuilding from trunk can. See the guide-infra stale-store trap.)
+      const staleHint = /expected i(32|64), found i(32|64)|type mismatch|failed to parse WebAssembly/i.test(emsg)
+        ? `\n    ↳ HINT: a wasm type-mismatch at RUN often means your LOCAL src/wasm/pkg is a STALE compiler build (a `
+          + `since-fixed emit bug). If this appeared after a trunk update, rebuild with \`cargo xtask guide-wasm\` `
+          + `and re-run before treating it as a real regression — CI rebuilds fresh, so it may already be green there.`
+        : "";
+      return `${ex.file} [${ex.kind}] (${where}): ${label} compiled but FAILED TO RUN — ${emsg.slice(0, 100)}\n    ${brief}${staleHint}`;
     }
     // A graded exercise additionally asserts the rendered scalar equals its stated `expected`.
     // Normalize LAYOUT before comparing: the renderer pretty-prints a large nested COMPOUND value with

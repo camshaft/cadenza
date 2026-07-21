@@ -1960,6 +1960,46 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     Core::Poison(r) => Core::Poison(r),
                     _ => lower_rational_truncate(db, args[0]),
                 },
+                // `Rational.floor r` (toward −∞) / `Rational.ceil r` (toward +∞) — `truncate` adjusted by ±1
+                // off the remainder sign. A CONSTANT `Core::ConstRational(n, d)` folds: `divmod` gives the
+                // toward-zero quotient `q` + remainder `rem` (dividend-signed); floor subtracts 1 when the
+                // value is NEGATIVE with a nonzero remainder (`n < 0 ∧ rem ≠ 0` — the toward-zero `q` is one
+                // too HIGH for a floor), ceil adds 1 when POSITIVE with a nonzero remainder. A RUNTIME
+                // Rational synthesizes the derivation subtree (a remainder-sign conditional over truncate).
+                Some(Prim::RationalFloor) if args.len() == 1 => match core_of(db, args[0]) {
+                    Core::ConstRational(n, d) => match n.divmod(&d) {
+                        Some((q, rem)) => {
+                            if n.negative && !rem.is_zero() {
+                                Core::ConstInt(q.sub(&crate::ast::IntValue::from_i64(1)))
+                            } else {
+                                Core::ConstInt(q)
+                            }
+                        }
+                        None => Core::Poison(Reject::coded(
+                            Code::ConstTrap,
+                            "rational with zero denominator has no integer part",
+                        )),
+                    },
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => lower_rational_floor_ceil(db, args[0], /* is_floor */ true),
+                },
+                Some(Prim::RationalCeil) if args.len() == 1 => match core_of(db, args[0]) {
+                    Core::ConstRational(n, d) => match n.divmod(&d) {
+                        Some((q, rem)) => {
+                            if !n.negative && !rem.is_zero() {
+                                Core::ConstInt(q.add(&crate::ast::IntValue::from_i64(1)))
+                            } else {
+                                Core::ConstInt(q)
+                            }
+                        }
+                        None => Core::Poison(Reject::coded(
+                            Code::ConstTrap,
+                            "rational with zero denominator has no integer part",
+                        )),
+                    },
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => lower_rational_floor_ceil(db, args[0], /* is_floor */ false),
+                },
                 // `Symbol.to-string` — recover a Symbol's content String (`Symbol → String`, the inverse of
                 // `Symbol.of`). A constant symbol IS its `Core::ConstStr`, so this folds to that same node
                 // retyped `String` (the node's solved type); the rep is unchanged. A RUNTIME symbol is a
@@ -15325,6 +15365,99 @@ fn rational_member_call(db: &mut Db, member: &str, bind_name: &str) -> StructId 
     db.push_list(vec![member_access, arg_ref])
 }
 
+/// Build `(BigInt.of <n>)` — a BigInt-typed integer literal for a synthesized derivation (the `0`/`1` a
+/// floor/ceil/round comparison + `±1` adjustment compares/combines with the BigInt numerator/remainder).
+/// A fresh node each call.
+fn bigint_lit(db: &mut Db, n: i64) -> StructId {
+    let lit = db.push_atom(crate::ast::Leaf::Int {
+        value: crate::ast::IntValue::from_i64(n),
+        radix: crate::ast::Radix::Dec,
+    });
+    let dot = db.push_name(".");
+    let bigint_mod = db.push_name("BigInt");
+    let of_key = db.push_name("of");
+    let bigint_of = db.push_list(vec![dot, bigint_mod, of_key]);
+    db.push_list(vec![bigint_of, lit])
+}
+
+/// Lower a RUNTIME `Rational.floor`/`ceil r` as a DERIVATION — `truncate` adjusted by ±1 off the remainder
+/// sign. Synthesize (for FLOOR — ceil flips the comparison to `>` and the adjustment to `+`):
+/// ```text
+/// (let ((__rfc r))
+///   (Int64.of
+///     (let ((__q (/ (num __rfc) (den __rfc))))
+///       (if (and (< (num __rfc) 0N) (not (= (% (num __rfc) (den __rfc)) 0N)))
+///           (- __q 1N)
+///           __q))))
+/// ```
+/// The toward-zero quotient `__q` is one too HIGH for a floor exactly when the value is NEGATIVE with a
+/// nonzero remainder (`n < 0 ∧ rem ≠ 0`), so subtract 1 there; ceil is the mirror (positive + nonzero rem →
+/// add 1). All BigInt ops (`/`, `%`, `<`/`>`, `=`) + the checked `Int64.of` narrowing already exist → no new
+/// runtime op (hash-neutral). `__q` is let-bound (read twice); `num`/`den`/`rem` reads are fresh
+/// `rational_member_call`s (each a distinct occurrence). Matches the const-fold arms above and the verified
+/// formula (`floor(-7/2) = -4`, `ceil(7/2) = 4`).
+fn lower_rational_floor_ceil(db: &mut Db, r: StructId, is_floor: bool) -> Core {
+    let outer = "__rfc";
+    let q_name = "__q";
+    // `(/ (num __rfc) (den __rfc))` — the toward-zero truncating quotient, let-bound to `__q`.
+    let q_div = {
+        let num = rational_member_call(db, "numerator", outer);
+        let den = rational_member_call(db, "denominator", outer);
+        let div_head = db.push_name("/");
+        db.push_list(vec![div_head, num, den])
+    };
+    let q_binder = db.push_name(q_name);
+    let q_binding = db.push_list(vec![q_binder, q_div]);
+    let q_bindings = db.push_list(vec![q_binding]);
+    // `(<cmp> (num __rfc) 0N)` — floor: `n < 0`; ceil: `n > 0`.
+    let sign_test = {
+        let num = rational_member_call(db, "numerator", outer);
+        let zero = bigint_lit(db, 0);
+        let cmp = db.push_name(if is_floor { "<" } else { ">" });
+        db.push_list(vec![cmp, num, zero])
+    };
+    // `(not (= (% (num __rfc) (den __rfc)) 0N))` — a nonzero remainder (the fraction is not whole).
+    let rem_nonzero = {
+        let num = rational_member_call(db, "numerator", outer);
+        let den = rational_member_call(db, "denominator", outer);
+        let rem_head = db.push_name("%");
+        let rem = db.push_list(vec![rem_head, num, den]);
+        let zero = bigint_lit(db, 0);
+        let eq_head = db.push_name("=");
+        let is_zero = db.push_list(vec![eq_head, rem, zero]);
+        let not_head = db.push_name("not");
+        db.push_list(vec![not_head, is_zero])
+    };
+    let and_head = db.push_name("and");
+    let cond = db.push_list(vec![and_head, sign_test, rem_nonzero]);
+    // `(<±> __q 1N)` — floor subtracts 1, ceil adds 1 — on the adjustment branch; else plain `__q`.
+    let adjusted = {
+        let q_ref = db.push_name(q_name);
+        let one = bigint_lit(db, 1);
+        let op = db.push_name(if is_floor { "-" } else { "+" });
+        db.push_list(vec![op, q_ref, one])
+    };
+    let q_else = db.push_name(q_name);
+    let if_head = db.push_name("if");
+    let if_expr = db.push_list(vec![if_head, cond, adjusted, q_else]);
+    let inner_let_head = db.push_name("let");
+    let inner_let = db.push_list(vec![inner_let_head, q_bindings, if_expr]);
+    // `(Int64.of <inner_let>)` — checked narrowing (traps on overflow).
+    let dot = db.push_name(".");
+    let int64_mod = db.push_name("Int64");
+    let of_key = db.push_name("of");
+    let int64_of = db.push_list(vec![dot, int64_mod, of_key]);
+    let narrowed = db.push_list(vec![int64_of, inner_let]);
+    // `(let ((__rfc r)) <narrowed>)`.
+    let outer_binder = db.push_name(outer);
+    let outer_binding = db.push_list(vec![outer_binder, r]);
+    let outer_bindings = db.push_list(vec![outer_binding]);
+    let outer_let_head = db.push_name("let");
+    let derivation = db.push_list(vec![outer_let_head, outer_bindings, narrowed]);
+    crate::resolve::resolve_subtree(db, derivation);
+    core_of(db, derivation)
+}
+
 /// The two `IntValue`s of a `Core::ConstRational` operand (already normalized), or `None` if `id` did not
 /// fold to a constant rational (a runtime rational — the caller then emits the runtime `rational-*` op, R3b).
 fn const_rational_of(
@@ -17848,6 +17981,8 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::RationalNum
         | Prim::RationalDen
         | Prim::RationalTruncate
+        | Prim::RationalFloor
+        | Prim::RationalCeil
         // The unit/quantity prims are compile-time unit builders / erasing quantity ops — never an
         // integer binary operation (a `Qty.of`/`Qty.value` lowers to its value argument, a unit builder
         // is reduced away by `eval`), so they never reach this integer fold.
@@ -23939,6 +24074,8 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::RationalNum => "rational-num",
         Prim::RationalDen => "rational-den",
         Prim::RationalTruncate => "rational-truncate",
+        Prim::RationalFloor => "rational-floor",
+        Prim::RationalCeil => "rational-ceil",
         Prim::CharTy => "Char",
         Prim::CharToInt => "char-to-int",
         Prim::CharFromInt => "char-from-int",

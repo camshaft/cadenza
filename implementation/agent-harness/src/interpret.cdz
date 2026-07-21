@@ -53,9 +53,9 @@ def a_tick_event_schedules_one_poll() = op-count(2, 0) == 1
 @test
 def an_unknown_event_schedules_only_noop() = op-count(9, 0) == 1
 
-@test
 /// The FIRST op for a message event is the log-append (ack) — pins the ORDER interpret emits (the executor
 /// runs the list in order, so order is semantically load-bearing: ack before the handler runs).
+@test
 def a_message_appends_before_it_execs() = match interpret(1, 0) with
   | [first, .. _] => (match first with
     | HostOp.Append(_) => true
