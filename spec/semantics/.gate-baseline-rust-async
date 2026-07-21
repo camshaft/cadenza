@@ -358,6 +358,7 @@ pass	a FLAT runtime string nested in a tuple is unaffected (control)
 pass	a FLOAT literal that fits its contextually-grounded narrow width through an arith op computes
 pass	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
 pass	a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator
+pass	a FRESHLY-BUILT recursive-sum payload returns through a Result and unwraps in the caller
 pass	a Float KEY inserted into an empty (runtime) map boxes with box-float, not box-int
 pass	a Float VALUE inserted into an empty (runtime) map boxes with box-float, not box-int
 pass	a Float element inserted into an empty (runtime) set boxes with box-float, not box-int
@@ -450,6 +451,7 @@ pass	a RECORD field built from a runtime param boxes its Map handle correctly (f
 pass	a RECORD used as a map key hashes and matches by its field SET, independent of written order
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a RECURSIVE sum as a Map key hits and misses by structural content
+pass	a RECURSIVE-sum value of runtime depth rides a handler resume
 pass	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
 pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
 pass	a RUNTIME Ast structural equality compares by value (Ast.Int scalar leaf and Ast.List compound)
@@ -859,6 +861,7 @@ pass	a decoded field re-encodes into the same-width segment without an explicit 
 pass	a decoded length field re-encodes a length-prefixed frame end to end
 pass	a decomposed literal indexes and measures by its normalized length, not the raw scalar count
 pass	a decoded payload feeds ordinary arithmetic
+pass	a deep NESTED-VARIANT pattern selects a runtime recursive sum by spine depth
 pass	a deep balanced tree is built and folded to a scalar, consuming both children
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
 pass	a deep compound nesting all six leaf kinds round-trips through encode and decode
@@ -966,6 +969,7 @@ pass	a fitting handler arm resume value computes under a narrow annotation
 pass	a fitting payload projected through Option.expect computes
 pass	a fitting recursive annotated result computes at the narrow width
 pass	a float literal compared against a Float32 param computes at the narrow width
+pass	a handler STATE that is a recursive sum GROWS one constructor per operation
 pass	a large value in a NON-projected tuple slot does not trip the projection width check
 pass	a literal just past the Float32 finite max overflows in a runtime branch
 pass	a literal one past the Int8 min rejects in a runtime branch
@@ -981,6 +985,7 @@ pass	a negative literal under an UNSIGNED width rejects in a runtime branch
 pass	a quantity in a TUPLE inside a LIST element renders scaled (nested composition)
 pass	a quantity in an OPTION inside a MAP value renders scaled (nested composition)
 pass	a record key with a float-bearing TUPLE field keys by content
+pass	a recursive fold over a runtime Peano spine recovers its depth
 pass	a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on every backend
 pass	a runtime = on a sum recursive through a RECORD-of-TUPLE payload walks structurally
 pass	a runtime = over MUTUALLY-recursive sums walks across the type cycle
@@ -3268,6 +3273,7 @@ pass	eval of a quasiquote splicing a compile-time-known value
 pass	eval of a quasiquote splicing a string works through String ops
 pass	eval of a quasiquote-built form with a float unquote folds
 pass	eval of a quoted RECURSIVE call folds through the compile-time evaluator
+pass	eval of a quoted RECURSIVE-sum construction builds the heap spine
 pass	eval of a quoted boolean connective short-circuits
 pass	eval of a quoted boolean executes it to the boolean value
 pass	eval of a quoted conditional reduces its comparison condition first
@@ -4209,7 +4215,7 @@ todo	a mutually-recursive decoder returns a heap value and cursor and its heap s
 todo	a produced closure is handed back into a consumer export (the round trip)
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
-todo	a rational built from a RUNTIME zero denominator traps rather than being a value
+pass	a rational built from a RUNTIME zero denominator traps rather than being a value
 todo	a record-returning closure alongside a parameterized plain export — the closure
 todo	a record-returning closure alongside a parameterized plain export — the plain
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
@@ -4473,3 +4479,4 @@ pass	a literal in a RECORD FIELD that overflows the annotated field width is rej
 pass	a literal MAP VALUE that overflows the annotated value width is rejected
 pass	a literal MAP KEY that overflows the annotated key width is rejected
 pass	a bare in-range ConstFloat if-branch under a Float32 annotation emits valid f32 and runs
+pass	a FITTING narrow record-field literal grounds to the field width and computes (emit twin of the reject)

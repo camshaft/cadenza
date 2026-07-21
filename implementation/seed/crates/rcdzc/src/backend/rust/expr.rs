@@ -2371,12 +2371,23 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // `Big` BY VALUE through `i128` (a `uN as i128` keeps its true sign — the same unsigned-safe path
         // as `BigIntOfI64`, since `Rational.of` operands are `∀a.(Int a)`).
         //
-        // `Rational.of n d` — build `n/d`, normalized (traps on zero denominator). `RationalOfIntWiden n`
-        // — the whole rational `n/1`.
+        // `Rational.of n d` — build `n/d`, normalized. A ZERO denominator has no rational value and TRAPS
+        // at run time (numeric-model.md #A Rational With A Zero Denominator Is Not A Value), the rational
+        // analogue of a runtime integer divide-by-zero; the const-foldable case is rejected CDZ0304 at
+        // `lower`, this is the runtime companion. `cdz_num::Rational::new` DOES panic on a zero denominator,
+        // but its message ("Rational with zero denominator") does NOT classify under the gate's `trap_kind`,
+        // so the trap graded `todo` (an unconfirmed trap) rather than matching the corpus's `unreachable`.
+        // Emit an EXPLICIT guard panicking "unreachable" — the SAME non-arithmetic trap kind the wasm
+        // backend lowers this to (`wasm 'unreachable' instruction executed`) — so both backends grade PASS
+        // (the rust shift-count guard uses the same "unreachable"-classifying message for the identical
+        // reason). Bind the denominator `Big` once (it may be a side-effecting expression, and the guard
+        // reads it before the move into `new`).
         Core::RationalOfInts { num, den } => {
             let n = emit_int_as_big(db, num, env, ctx)?;
             let d = emit_int_as_big(db, den, env, ctx)?;
-            Ok(format!("cdz_num::Rational::new({n}, {d})"))
+            Ok(format!(
+                "{{ let __d = {d}; if __d.is_zero() {{ panic!(\"unreachable\") }} cdz_num::Rational::new({n}, __d) }}"
+            ))
         }
         Core::RationalOfIntWiden { value } => {
             let n = emit_int_as_big(db, value, env, ctx)?;

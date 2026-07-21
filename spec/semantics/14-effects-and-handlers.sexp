@@ -1821,6 +1821,46 @@
   (call   main (: true Bool)) (output (: 100 UInt8))
   (call   main (: false Bool)) (output (: 5 UInt8)))
 
+(case "a RECURSIVE-sum value of runtime depth rides a handler resume"
+  (doc    "An op whose declared result is a RECURSIVE sum (`Give.get : Unit -> Nat`) resumed with a
+           runtime-depth spine `(mk a)`: the resume value is an unbounded heap structure, not a scalar or
+           fixed-shape compound, and the body folds it back to its depth — 3 at `a = 3`, 0 at `a = 0`.
+           Pins that the resume path carries a recursive sum intact through the handler machinery (the
+           unbounded-depth companion of the Qty/Result resume-value cases).")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (effect Give (op get (-> Unit Nat)))
+            (def (mk (: n Int64)) (if (= n 0) (Z) (S (mk (- n 1)))))
+            (def (depth (: v Nat))
+              (match v ((S rest) (+ 1 (depth rest))) ((Z u) 0)))
+            (def (main (: a Int64))
+              (depth (handle Give 0
+                ((get (u) s (resume (mk a) s)))
+                (Give.get unit))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+(case "a handler STATE that is a recursive sum GROWS one constructor per operation"
+  (doc    "The recursive-sum face of heap-valued handler state (list/record/set/string states are pinned;
+           this state's SHAPE deepens per op): seeded `(Z)`, each `Acc.bump` arm resumes with next-state
+           `(S s)` — wrapping the CURRENT state one level deeper — and `Acc.read` folds the accumulated
+           spine to its depth. Two bumps then a read → 2. Pins that the threaded state may be a recursive
+           sum whose depth is the operation COUNT (state evolution changes the value's structure, not just
+           its contents), composing the state-threading discipline with unbounded recursive values.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (effect Acc (op bump (-> Unit Int64)) (op read (-> Unit Int64)))
+            (def (depth (: v Nat))
+              (match v ((S rest) (+ 1 (depth rest))) ((Z u) 0)))
+            (def (main (: a Int64))
+              (handle Acc (Z)
+                ((bump (u) s (resume 0 (S s)))
+                 (read (u) s (resume (depth s) s)))
+                (do (Acc.bump unit) (Acc.bump unit) (Acc.read unit))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))
+
 (case "a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom"
   (doc    "The `Result` companion of the Option-result case: an operation whose declared result is a
            `(Result Int64 Int64)`, resumed with an `Ok` or `Err` chosen by the arm, and the body dispatches

@@ -5623,17 +5623,31 @@ fn gate_check_pidf_alive(pidf: &Path) -> bool {
 }
 
 /// Reap gate-check artifacts (marker/log/pid/script) older than 6h — old combined trees no longer gated.
+/// TTL for detached gate-check artifacts (`.exit`/`.pid`/`.log`/`.sh` keyed by combined-tree id): a
+/// tree that hasn't been the merge target in this long is stale scaffolding, safe to sweep.
+const GATE_CHECK_TTL_SECS: u64 = 6 * 3600;
+
 fn reap_stale_gate_checks(dir: &Path) {
-    const TTL: u64 = 6 * 3600;
-    let now = now_unix();
+    reap_stale_gate_checks_in(dir, now_unix());
+}
+
+/// The reap core, split out from `now_unix()` so the `> TTL` mtime boundary is unit-testable against a
+/// plain temp dir (mirrors `reap_check_leases`/`reap_check_leases_in`). Returns the count swept.
+/// Boundary is STRICT `>`: an artifact whose mtime is exactly one TTL old is kept — the resume path may
+/// still key off it — and only a strictly-older one is scaffolding to sweep.
+fn reap_stale_gate_checks_in(dir: &Path, now: u64) -> usize {
+    let mut reaped = 0usize;
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.filter_map(Result::ok) {
             let p = e.path();
-            if file_mtime_unix(&p).is_some_and(|m| now.saturating_sub(m) > TTL) {
-                let _ = std::fs::remove_file(&p);
+            if file_mtime_unix(&p).is_some_and(|m| now.saturating_sub(m) > GATE_CHECK_TTL_SECS)
+                && std::fs::remove_file(&p).is_ok()
+            {
+                reaped += 1;
             }
         }
     }
+    reaped
 }
 
 /// Launch the combined-tree check DETACHED in its own session (`setsid`), backgrounded so our direct
@@ -7861,6 +7875,43 @@ mod tests {
             "the leaked priority lease is gone — the merge gate is no longer blocked on a dead holder"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reap_stale_gate_checks_sweeps_only_strictly_past_ttl() {
+        // The gate-check scaffolding reaper (`.exit`/`.pid`/`.log`/`.sh` keyed by combined-tree id):
+        // drive its pure core against a temp dir so the `> TTL` mtime boundary is pinned. Two artifacts
+        // written together; choose `now` from each mtime so one lands EXACTLY at TTL (kept — the resume
+        // path may still key off it) and one lands one second PAST TTL (swept). Without both, a `>`→`>=`
+        // mutant that reaps an exactly-TTL-old artifact would survive.
+        let dir = std::env::temp_dir().join(format!("cdz-gate-reap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let at_ttl = dir.join("treeA.exit");
+        std::fs::write(&at_ttl, "0").unwrap();
+        // `now` exactly one TTL past the artifact's mtime → age == TTL, which is NOT strictly greater →
+        // kept. (Both files share ~the same mtime, so pick `now` off `at_ttl` and assert on it alone.)
+        let now_at = file_mtime_unix(&at_ttl).unwrap() + GATE_CHECK_TTL_SECS;
+        assert_eq!(
+            reap_stale_gate_checks_in(&dir, now_at),
+            0,
+            "age == TTL is not strictly past → nothing swept (boundary is exclusive)"
+        );
+        assert!(at_ttl.exists(), "the exactly-TTL-old artifact is kept");
+        // One second later → age == TTL+1 > TTL → swept.
+        assert_eq!(
+            reap_stale_gate_checks_in(&dir, now_at + 1),
+            1,
+            "age == TTL+1 is strictly past → swept"
+        );
+        assert!(!at_ttl.exists(), "the past-TTL artifact is gone");
+        // A missing dir is inert (no panic, nothing swept) — mirrors the read_dir fail-open.
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            reap_stale_gate_checks_in(&dir, now_at + 1),
+            0,
+            "an absent dir sweeps nothing"
+        );
     }
 
     #[test]

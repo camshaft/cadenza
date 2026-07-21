@@ -2839,6 +2839,41 @@ fn a_runtime_shift_count_that_is_a_multiple_of_2_pow_32_traps() {
 }
 
 #[test]
+fn a_runtime_rational_zero_denominator_traps_with_a_classifying_unreachable_message() {
+    // REGRESSION (corpus "a rational built from a RUNTIME zero denominator traps"): `(Rational.of n d)`
+    // with a runtime `d = 0` has no rational value and must TRAP (numeric-model.md; the rational analogue
+    // of a runtime divide-by-zero; the const case is CDZ0304 at lower). `cdz_num::Rational::new` DOES
+    // panic on a zero denominator, but its message ("Rational with zero denominator") does NOT classify
+    // under the gate's `trap_kind`, so the case graded `todo` (unconfirmed trap). The emit now guards the
+    // denominator explicitly and panics "unreachable" — the SAME non-arithmetic trap kind the wasm backend
+    // lowers this to — so both backends grade PASS.
+    let m = compile_rust(
+        "(module m (def (go (: n Int64) (: d Int64)) \
+           (Int64.of (Rational.numerator (Rational.of n d)))) (export go))",
+    );
+    // Emit-shape: an explicit zero-denominator guard panicking the classifying "unreachable".
+    assert!(
+        m.contains("is_zero()") && m.contains("panic!(\"unreachable\")"),
+        "the runtime Rational.of emits an explicit zero-denominator unreachable guard:\n{m}"
+    );
+    // In-range control: 1/2 normalizes, numerator reads back 1.
+    if let Some(out) = rustc_run(&m, "go(1, 2)") {
+        assert_eq!(out, "1", "1/2 normalizes and its numerator is 1");
+    }
+    // d = 0 traps with a message that classifies as `unreachable` (matches the corpus + the wasm oracle).
+    match rustc_run_traps(&m, "go(1, 0)") {
+        TrapRun::Trapped(msg) => assert!(
+            msg.contains("unreachable"),
+            "a zero denominator traps with a classifying 'unreachable' message, got:\n{msg}"
+        ),
+        TrapRun::RanOk(out) => {
+            panic!("`(Rational.of 1 0)` must TRAP (zero denominator), but ran → {out}")
+        }
+        TrapRun::NoRustc => {}
+    }
+}
+
+#[test]
 fn a_provably_in_range_left_shift_elides_its_overflow_guard_on_the_rust_backend() {
     // BOTH-BACKEND PARITY (v-core-opt Slice-4): the rust `<<` emit now consults the SAME Core-tier
     // shl_provably_in_range / _dynamic predicates the wasm backend uses (select.rs emit_shift), so a
