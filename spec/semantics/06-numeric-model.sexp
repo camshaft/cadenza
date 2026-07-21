@@ -306,6 +306,37 @@
   (call   main (: -5 Int64))
   (output (: -3 Int64)))
 
+; The projection cases above each apply ONE op to a rational and return its Int64 directly. This pins that
+; the projection RESULT is a first-class Int64 that flows through the value HEAP: all four projections of ONE
+; runtime negative rational are stored in a runtime List and read back individually via `List.at`. It doubles
+; as a divergence pin — at -7/2 = -3.5 the four projections give DISTINCT results (truncate -3 toward zero,
+; floor -4 toward −∞, ceil -3 toward +∞, round -4 half-away), so a lowering that confused two of them (e.g.
+; floor≡truncate, or round-toward-zero) would flip a component. Combines the R→Int64 derivation surface with
+; the List.at heap read: the derived Int64 is an ordinary heap-storable scalar, not a special value.
+(case "the four rational-to-Int64 projections of one runtime rational store in a list and read back distinct"
+  (doc    "A runtime rational `r = (Rational.of n 2)` at n=-7 is -7/2 = -3.5. Its four Int64 projections —
+           `Rational.truncate` (toward zero → -3), `Rational.floor` (toward −∞ → -4), `Rational.ceil` (toward
+           +∞ → -3), `Rational.round` (nearest, half-away → -4) — are placed IN a runtime `(List Int64)` and
+           each read back with `List.at` (an `Option Int64`, matched). Result `(-3, -4, -3, -4)`. Pins two
+           things at once: (1) a Rational→Int64 projection result is an ordinary first-class Int64 that stores
+           in and reads back from the value heap like any scalar (the derivation ends in a plain `Int64.of`
+           narrowing, not a special value); (2) the four projections DIVERGE correctly on a negative
+           non-whole value — the exact axis a floor/truncate/round confusion in a future lowering change would
+           break. A backend that boxed the projection result wrongly, or a lowering that aliased two
+           projections, flips a component.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((r (Rational.of n 2)))
+                (let ((xs (list (Rational.truncate r) (Rational.floor r) (Rational.ceil r) (Rational.round r))))
+                  (tuple
+                    (match (List.at xs 0) ((Some v) v) ((None) -99))
+                    (match (List.at xs 1) ((Some v) v) ((None) -99))
+                    (match (List.at xs 2) ((Some v) v) ((None) -99))
+                    (match (List.at xs 3) ((Some v) v) ((None) -99))))))
+            (export main)))
+  (call   main (: -7 Int64))
+  (output (: (tuple -3 -4 -3 -4) (Tuple Int64 Int64 Int64 Int64))))
+
 ; The exact-arithmetic cases above use SMALL operands (1/3, 1/6) that never leave the i64 range. A Rational
 ; is a normalized pair of BigInt handles, so a gcd normalization over NEAR-i64 operands must run on the
 ; runtime bigint limbs and stay exact. This pins a large num/den reducing to 2/1 — both backends must agree

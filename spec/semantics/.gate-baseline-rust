@@ -1392,6 +1392,7 @@ pass	a multi-export set of parameterized capturing closures is driven per export
 pass	a multi-export shared call is a repeatable (borrow<t>) callback
 pass	a multi-field record with one param-named key survives the call
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
+pass	a missed literal tag falls to a BINDER bin arm that decodes the scrutinee
 pass	a multi-payload destructure binds the head and recurses on the tail
 pass	a multi-payload nested same-sum match falls through when the nested variant differs
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
@@ -2423,6 +2424,7 @@ pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
 pass	a truncating conversion to an unusual width keeps that width's low bits
 pass	a tuple = whose Bool element derives from a const-divisor rem is emitted as valid wasm
+pass	a three-arm runtime literal-tag dispatch hits the middle and last arms and misses past all three
 pass	a tuple = with differing const-divisor Bool elements compares unequal
 pass	a tuple access out of arity on a function-returned tuple is a type error, not a trap
 pass	a tuple annotated as a scalar type is rejected
@@ -3490,6 +3492,8 @@ pass	print renders an empty Ast.List as the empty-parens form
 pass	print then read an Ast.Float at full 17-significant-digit precision round-trips
 pass	print then read an Ast.Float at the maximum finite magnitude round-trips
 pass	print then read an Ast.Float at the smallest subnormal round-trips
+pass	print then read an Ast.Int at i64::MIN round-trips (text-path two's-complement boundary)
+pass	print then read of a NEGATIVE Ast.Int round-trips (sign survives the text path)
 pass	print then read of a digit-led Ast.Name reclassifies it per the number/identifier boundary
 pass	print then read of a keyword-spelled Ast.Name reclassifies it as the boolean literal
 pass	print then read of a string-spelled Ast.Name reclassifies it as an Ast.Str
@@ -3763,6 +3767,7 @@ pass	the exponent marker is case-insensitive
 pass	the false-literal coercion negates a float ordering compare, turning an unordered pair true
 pass	the first failing `?` short-circuits; a later `?` never runs
 pass	the float ordering-versus-equality split on the zero pair
+pass	the four rational-to-Int64 projections of one runtime rational store in a list and read back distinct
 pass	the generated-set convergence property has discriminating power — two different generated sets are NOT equal
 pass	the generator is a deterministic function of its seed (same seed, same value) — folds
 pass	the generator reproduces its stream from a runtime seed (same seed, same value) — runs
@@ -4188,3 +4193,4 @@ pass	a rational floors toward negative infinity, narrowed to Int64
 pass	a rational ceilings toward positive infinity, narrowed to Int64
 pass	a rational rounds to nearest, ties half-away-from-zero, narrowed to Int64
 pass	a rational rounds a negative half away from zero
+pass	a list of two same-dimension quantities at different units names the scale difference (CDZ0201)

@@ -956,18 +956,45 @@ fn constrain_sum_variants(
     }
 }
 
-fn sum_ctors_forbidden_by_match(ast: &Arenas, pred: StructId, param: &str) -> Vec<String> {
-    // `(match SCRUT (PAT BODY) (PAT BODY) …)` — head `match`, first tail item the scrutinee, rest the arms.
-    let Some(tail) = ast.as_form(pred, "match") else {
-        return Vec::new();
-    };
-    let Some((&scrut, arms)) = tail.split_first() else {
-        return Vec::new();
-    };
-    // Only a match on THIS param constrains its generation.
-    if ast.as_name(scrut) != Some(param) {
-        return Vec::new();
+/// The ARMS of every `(match param …)` precondition on `param`, SEEING THROUGH a top-level `(and …)`/`(& …)`
+/// conjunction — the sum-match analogue of the conjunct descent in [`invariant_int_range`]/[`min_len_for_param`].
+/// A `@requires` may spell the sum constraint bare (`(match o …)`) OR conjoined with other preconditions
+/// (`(and (match o …) (>= k 0))` — a multi-param signature, or a sum constraint beside a scalar one), and it
+/// may even carry SEVERAL match conjuncts on the same param whose constraints all apply. Without this descent
+/// the three sum recognizers matched only a BARE `(match …)` and silently dropped the constraint inside an
+/// `(and …)`, so the generator drew a forbidden constructor and the (D) precondition spuriously tripped (e.g.
+/// `f(None)`). Returns the arms of ALL matching conjuncts CONCATENATED (an empty slice if none) — the callers
+/// union across arms (a forbidden ctor from any arm is forbidden; a payload bound from any arm applies), so
+/// collecting every match's arms is correct and order-independent. `arena` backs the returned slice.
+fn match_arms_for_param<'a>(
+    ast: &Arenas,
+    pred: StructId,
+    param: &str,
+    arena: &'a mut Vec<StructId>,
+) -> &'a [StructId] {
+    // Descend a top-level `(and …)`/`(& …)` into its conjuncts (same vocabulary the scalar recognizers use),
+    // collecting the arms of EVERY `(match param …)` conjunct on this exact param.
+    let mut stack = vec![pred];
+    while let Some(p) = stack.pop() {
+        if let Some(t) = ast.as_form(p, "and").or_else(|| ast.as_form(p, "&")) {
+            stack.extend(t.iter().copied());
+            continue;
+        }
+        // A `(match SCRUT ARMS…)` on THIS param — head `match`, first tail item the scrutinee, rest the arms.
+        if let Some(tail) = ast.as_form(p, "match")
+            && let Some((&scrut, arms)) = tail.split_first()
+            && ast.as_name(scrut) == Some(param)
+        {
+            arena.extend_from_slice(arms);
+        }
     }
+    arena.as_slice()
+}
+
+fn sum_ctors_forbidden_by_match(ast: &Arenas, pred: StructId, param: &str) -> Vec<String> {
+    // The `(match param …)` arms, seeing through a top-level `(and …)` conjunction.
+    let mut arena = Vec::new();
+    let arms = match_arms_for_param(ast, pred, param, &mut arena);
     let mut forbidden = Vec::new();
     for &arm in arms {
         // An arm is `(PAT BODY)`: a 2-element list.
@@ -1003,15 +1030,8 @@ fn sum_ctors_forbidden_by_match(ast: &Arenas, pred: StructId, param: &str) -> Ve
 /// name (a nullary or multi-bind pattern has no single payload binder to bound). Only a match on THIS param
 /// constrains its generation.
 fn sum_ctor_payload_ranges(ast: &Arenas, pred: StructId, param: &str) -> Vec<(String, (i64, i64))> {
-    let Some(tail) = ast.as_form(pred, "match") else {
-        return Vec::new();
-    };
-    let Some((&scrut, arms)) = tail.split_first() else {
-        return Vec::new();
-    };
-    if ast.as_name(scrut) != Some(param) {
-        return Vec::new();
-    }
+    let mut arena = Vec::new();
+    let arms = match_arms_for_param(ast, pred, param, &mut arena);
     let mut ranges = Vec::new();
     for &arm in arms {
         let crate::ast::Struct::List(items) = ast.get(arm) else {
@@ -1048,15 +1068,8 @@ fn sum_ctor_payload_ranges(ast: &Arenas, pred: StructId, param: &str) -> Vec<(St
 /// vocabulary (`(< K (List.len xs))`, mirrors, conjunctions) is identical. Skips a `false`/`true` arm (a
 /// constructor verdict), a nullary/multi-bind pattern, and an unrecognized guard (unconstrained fallback).
 fn sum_ctor_payload_min_lens(ast: &Arenas, pred: StructId, param: &str) -> Vec<(String, usize)> {
-    let Some(tail) = ast.as_form(pred, "match") else {
-        return Vec::new();
-    };
-    let Some((&scrut, arms)) = tail.split_first() else {
-        return Vec::new();
-    };
-    if ast.as_name(scrut) != Some(param) {
-        return Vec::new();
-    }
+    let mut arena = Vec::new();
+    let arms = match_arms_for_param(ast, pred, param, &mut arena);
     let mut mins = Vec::new();
     for &arm in arms {
         let crate::ast::Struct::List(items) = ast.get(arm) else {
@@ -2561,6 +2574,29 @@ mod tests {
             )
             .is_empty()
         );
+        // SEEING THROUGH a top-level `(and …)`: the match constraint is recognized even when conjoined with a
+        // scalar precondition on another param (a multi-param signature) — was silently dropped before the
+        // conjunct descent (`match_arms_for_param`), causing a spurious `f(None)`.
+        assert_eq!(
+            forbidden_of(
+                "(do (type Opt (None) (Some Int64)) \
+                 (@ (requires (and (match o ((Opt.Some n) true) ((Opt.None) false)) (>= k 0))) \
+                   (def (f (: o Opt) (: k Int64)) 0)) (def (z) 1))",
+                "o"
+            ),
+            vec!["None".to_string()]
+        );
+        // TWO match conjuncts on the same param union their forbidden constructors (order-independent — sort
+        // before comparing, since conjunct traversal order is not part of the contract).
+        let mut both = forbidden_of(
+            "(do (type T (A) (B) (C Int64)) \
+             (@ (requires (and (match o ((T.A) false) ((T.B) true) ((T.C n) true)) \
+                               (match o ((T.A) true) ((T.B) false) ((T.C n) true)))) \
+               (def (f (: o T)) 0)) (def (z) 1))",
+            "o",
+        );
+        both.sort();
+        assert_eq!(both, vec!["A".to_string(), "B".to_string()]);
     }
 
     /// `sum_ctor_payload_ranges` is the PAYLOAD-level twin of `sum_ctors_forbidden_by_match`: an arm whose

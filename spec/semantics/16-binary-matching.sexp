@@ -826,6 +826,41 @@
   (call   main (: 9 UInt8) (: 300 UInt16))
   (output (: -1 Int64)))
 
+(case "a three-arm runtime literal-tag dispatch hits the middle and last arms and misses past all three"
+  (doc    "The two-arm dispatch above can't distinguish a genuine PER-ARM fall-through chain from a
+           two-way branch; three literal-tag arms witness the chain at depth: tag 2 falls past arm 1's
+           predicate and hits the MIDDLE arm (y + 1000 = 1300), tag 3 falls past two predicates to the
+           LAST literal arm (z + 2000 = 2300), and tag 9 falls past ALL THREE to the catch-all (-1). A
+           dispatch that compiled the arms to a two-way test (or a jump table missing the fall-through
+           tail) diverges at one of the three calls. Expected: 1300, 2300, -1.")
+  (input  (do
+            (def (main (: t UInt8) (: v UInt16))
+              (match (bin (u8 t) (u16 v))
+                ((bin (u8 1) (u16 x)) x)
+                ((bin (u8 2) (u16 y)) (+ y 1000))
+                ((bin (u8 3) (u16 z)) (+ z 2000))
+                (_ -1)))
+            (export main)))
+  (call   main (: 2 UInt8) (: 300 UInt16)) (output (: 1300 Int64))
+  (call   main (: 3 UInt8) (: 300 UInt16)) (output (: 2300 Int64))
+  (call   main (: 9 UInt8) (: 300 UInt16)) (output (: -1 Int64)))
+
+(case "a missed literal tag falls to a BINDER bin arm that decodes the scrutinee"
+  (doc    "The default arm is a BINDING bin pattern, not `_`: `((bin (u8 other) (u8 b)) (+ other b))` —
+           a missed tag (5) falls through the literal arm and the binder arm DECODES the whole scrutinee
+           (5 + 7 = 12), while a hit (1) takes the literal arm (100). Pins that the fall-through target
+           can itself be a decoding bin pattern (the parser idiom: known opcodes special-cased, everything
+           else decoded generically) — the catch-all need not discard the bytes. Expected: 100, 12.")
+  (input  (do
+            (def (main (: t UInt8))
+              (match (bin (u8 t) (u8 7))
+                ((bin (u8 1) (u8 a)) 100)
+                ((bin (u8 other) (u8 b)) (+ other b))
+                (_ -1)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 100 Int64))
+  (call   main (: 5 Int64)) (output (: 12 Int64)))
+
 (case "a runtime bytes value is spliced into a length-prefixed frame"
   (doc    "`(bin (u16 3) (bytes b))` with `b` a RUNTIME `Bytes` value splices `b` after a two-byte header,
            building the frame at run time (a `bytes-concat` of the emitted header and the runtime body).

@@ -6783,11 +6783,6 @@ fn check_one(file: &str, json: bool, verify_fixes: bool) -> (bool, Vec<String>) 
     };
     // Fix helpers that demux the fix's TARGET node to its file, then apply against that file's own
     // source / arenas / spans / surface (a fix may land in an imported library, not the entry).
-    let fix_is_ml = |fix_node: &str| -> bool {
-        file_of_node(fix_node)
-            .map(|(fi, _)| is_ml_source(&files[fi].path))
-            .unwrap_or(false)
-    };
     // The parsed `Tree` (`Tree::of`) of each file, built ONCE and shared across every fix that targets it.
     // Every fix rebuilds `new = old.transform(target)` from the SAME `old` = the file's whole tree; building
     // `old` per fix (`Tree::of` deep-copies the whole arena) made a file with N fixable diagnostics
@@ -6891,19 +6886,18 @@ fn check_one(file: &str, json: bool, verify_fixes: bool) -> (bool, Vec<String>) 
             continue;
         }
         any_error |= severity == "error";
-        // A fix the compiler rendered in s-expr form may not be byte-splice-able into THIS file's
-        // surface. `replace`/`delete`/`wrap` render on any surface (a bare name, a deletion, or the
-        // `(ctor …)`→`ctor(…)` reshape). `insert` splices ARM/child scaffold whose syntax only exists
-        // in-context (a handle/match arm) — an s-expr arm can't be lowered to ML by a fragment print —
-        // so on a non-s-expr file we DROP the structured fix (the message still names the arm to add).
-        // Treating it as "no fix node" makes both the human `help:` line and the JSON `fix` object omit
-        // it uniformly. (`cdz fix` already declines it via the verify re-parse; this stops `check --json`
-        // from handing an ML agent an unusable insert.)
-        let fix_node = if fix_kind == "insert" && fix_is_ml(fix_node) {
-            "-"
-        } else {
-            fix_node
-        };
+        // NOTE (historical): an `insert` fix splices ARM/child scaffold whose syntax only exists
+        // in-context (a match/handle arm). This was previously DROPPED on the ML surface because the
+        // textedit `render` printed a spliced arm node in ISOLATION — an arm `(pat body)` rendered
+        // standalone as the APPLICATION `pat(body)`, not `| pat => body`, so the splice was invalid ML.
+        // v-syntax's `render_child` fix (`2da1d3bb3`) now renders an inserted match arm AS an arm
+        // (`\n  | pat => body`, `|`-led, reparseable), so an `insert` on an ML file flows through the
+        // now-correct render path and produces a valid splice — no longer dropped. Safety net remains:
+        // `do_fix_edits` only advertises the fix when the built patch is non-empty (below), and `cdz fix`
+        // re-parses the applied result, so any residual insert shape that still can't render into ML
+        // self-drops (no fix advertised) rather than emitting a broken edit. So we no longer null the
+        // node up front — the InsertArms CDZ0210 "add the missing arm" fix is now applyable on `.cdz`
+        // (the primary user surface), which it wasn't before this + the render fix.
 
         // `--verify-fixes`: UPGRADE a heuristic fix to verified when applying it actually clears this
         // diagnostic. The compiler marks a fix verified only when a RULE proves it (D3's `_`-prefix);
@@ -6935,7 +6929,33 @@ fn check_one(file: &str, json: bool, verify_fixes: bool) -> (bool, Vec<String>) 
         // parse (a malformed wrap payload) printed a phantom `help:` line the JSON/`cdz fix` path silently
         // dropped, misleading a human/agent reading the text output. Gating both on the built patch closes
         // that. The edits are relative to the fix's OWN file (which may be an imported library, not entry).
-        let patch = if fix_node != "-" {
+        // An `insert` fix splices ARM/child scaffold whose syntax is CONTEXT-SENSITIVE on the ML surface:
+        // a match arm renders `| pat => body` (valid, since v-syntax's `render_child` handles it), but a
+        // handle-op arm renders as a bare application `op(…)` that does NOT parse in a handler position
+        // (`expected in` / `keyword used outside its form`). So a single blanket "ML inserts are fine" is
+        // WRONG (it surfaced a CDZ0405 effect-handler fix whose splice is invalid ML) and so is a blanket
+        // "ML inserts are dropped" (it hid the CDZ0210 match-arm fix, the flagship actionable fix). The
+        // sound test is BEHAVIORAL: apply the ML insert and re-parse — keep it only if the result parses.
+        // A match-arm insert survives (valid ML), a handle-op insert self-drops (unparseable), with no
+        // hardcoded per-diagnostic list. Only ML `insert` pays the extra parse (s-expr arms render the
+        // same in/out of context; replace/wrap/delete are already surface-correct).
+        // Resolve the fix's OWN target file (a fix may land in an imported library, not the entry) to
+        // decide surface + validate the splice against that file.
+        let fix_target_is_ml = file_of_node(fix_node)
+            .map(|(fi, _)| is_ml_source(&files[fi].path))
+            .unwrap_or(false);
+        let ml_insert_reparses = |kind: &str, node: &str, repl: &str| -> bool {
+            match do_fix_apply(kind, node, repl) {
+                Some(edited) => cadenza_syntax::parser::read_ml(&edited).errors.is_empty(),
+                None => false,
+            }
+        };
+        let drop_unparseable_ml_insert = fix_kind == "insert"
+            && fix_node != "-"
+            && fix_target_is_ml
+            && !ml_insert_reparses(fix_kind, fix_node, fix_repl);
+
+        let patch = if fix_node != "-" && !drop_unparseable_ml_insert {
             do_fix_edits(fix_kind, fix_node, fix_repl).filter(|e| !e.is_empty())
         } else {
             None

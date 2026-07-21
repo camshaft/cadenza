@@ -4339,6 +4339,32 @@
   (call   main (: -1 Int64) (: 5 Int64))
   (output (: (tuple 0 0) (Tuple Int64 Int64))))
 
+; ── COMPLEMENTARY COMPARISONS: two ordering tests that PARTITION every value fold to true / false ─────
+; When two comparisons on the SAME operand pair are exact complements over the total order — `<`/`>=` or
+; `<=`/`>` (same operand order) — they partition every value: their `or` is exhaustive (always TRUE) and
+; their `and` is disjoint (always FALSE). `complementary_comparisons` (lower.rs) folds `(or (< a b) (>= a
+; b))` → true and `(and (< a b) (>= a b))` → false (caller trap-guards the discard). Observed via `(if …
+; 1 0)` on runtime operands so the comparisons EMIT; the answer is fixed regardless of a/b — pinned for
+; BOTH complement pairs including the boundary `a == b` (where `<=/>` must still partition). Both backends.
+(case "complementary ordering comparisons fold their or to true and their and to false"
+  (doc    "`(or (< a b) (>= a b))` → true (exhaustive) and `(and (< a b) (>= a b))` → false (disjoint), and
+           the same for the `<=`/`>` pair. `main` = `(tuple (if (or (< a b) (>= a b)) 1 0) (if (and (< a b)
+           (>= a b)) 1 0) (if (or (<= a b) (> a b)) 1 0) (if (and (<= a b) (> a b)) 1 0))`. At (a=3, b=5) →
+           (1, 0, 1, 0) and at (a=5, b=5) (the EQUAL boundary) → (1, 0, 1, 0): the or is always 1, the and
+           always 0, at every relation of a to b. Pins that complementary comparisons partition every value
+           (or exhaustive, and disjoint) for both `<`/`>=` and `<=`/`>`, both backends.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (tuple (if (or  (< a b) (>= a b)) 1 0)
+                     (if (and (< a b) (>= a b)) 1 0)
+                     (if (or  (<= a b) (> a b)) 1 0)
+                     (if (and (<= a b) (> a b)) 1 0)))
+            (export main)))
+  (call   main (: 3 Int64) (: 5 Int64))
+  (output (: (tuple 1 0 1 0) (Tuple Int64 Int64 Int64 Int64)))
+  (call   main (: 5 Int64) (: 5 Int64))
+  (output (: (tuple 1 0 1 0) (Tuple Int64 Int64 Int64 Int64))))
+
 ; --- Zero-equality instruction selection (eqz) keys on VALUE and width -----------------------------
 ; e316ef2cd selects `(= x 0)` to a single `eqz` at the Compare emit site. The selection must key on
 ; a VALUE zero in either operand order, test the NORMALIZED narrow value for a masked width (the

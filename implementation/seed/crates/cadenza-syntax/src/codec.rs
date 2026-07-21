@@ -513,6 +513,46 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_list_node_round_trips_through_the_codec() {
+        // The `sample()` fixture only exercises NON-empty lists, yet an empty `Struct::List([])` is a real
+        // arena node (the inner `()` of a quote pattern `(quote ())`, now reachable after the empty-list
+        // pattern surface landed) — it encodes as a `TAG_LIST` + a var-length count of ZERO with no child
+        // ids. Pin that the codec round-trips it (encode → decode → equal + re-encode determinism), both as
+        // the root AND nested inside a larger list, so a future decode change that assumed a list has ≥1
+        // child can't silently break the `decode` totality / round-trip invariant on the empty case.
+        // `encode` canonicalizes (DFS re-index) before serializing, so `decode(encode(a))` returns the
+        // CANONICAL arena — structurally equal to `a`, but raw-`==` only if `a` was already canonical.
+        // Assert with `structurally_eq` (the round-trip contract), and pin encode DETERMINISM by
+        // re-encoding the decoded arena (canonical → canonical is a fixed point → identical bytes).
+        let mut b = Builder::new();
+        let name = b.name("quote");
+        let empty = b.list(vec![]); // `()` — a zero-child list
+        let root = b.list(vec![name, empty]); // `(quote ())` — empty list nested under a head
+        let a = b.finish(root);
+        let bytes = encode(&a);
+        let back = decode(&bytes).expect("decode of an arena carrying an empty list");
+        assert!(
+            a.structurally_eq(&back),
+            "empty-list arena not preserved through the codec: {a:?} vs {back:?}"
+        );
+        assert_eq!(
+            bytes,
+            encode(&back),
+            "re-encode of the decoded (canonical) arena is not byte-identical"
+        );
+
+        // Also the degenerate case: an empty list as the ROOT node.
+        let mut b2 = Builder::new();
+        let only = b2.list(vec![]);
+        let a2 = b2.finish(only);
+        let back2 = decode(&encode(&a2)).expect("decode of a lone empty-list root");
+        assert!(
+            a2.structurally_eq(&back2),
+            "lone empty-list root not preserved: {a2:?} vs {back2:?}"
+        );
+    }
+
+    #[test]
     fn radix_round_trips() {
         // Same value, different bases -> distinct leaves that survive the round-trip.
         let mut b = Builder::new();

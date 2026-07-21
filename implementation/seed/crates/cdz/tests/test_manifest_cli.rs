@@ -2422,6 +2422,39 @@ fn a_match_requires_payload_guard_constrains_the_constructor_payload_range() {
     );
 }
 
+/// A match-based `@requires` sum constraint is recognized even when CONJOINED inside a top-level `(and …)` —
+/// not only when spelled bare. `@requires(and (match o ((Opt.Some n) (>= n 0)) ((Opt.None) false)) (>= 5 0))`
+/// still forbids `None` and floors the `Some` payload, so the wrapper never draws `None` (nor `Some(-1)`).
+/// Before the conjunct descent (`match_arms_for_param`), the three sum recognizers matched only a BARE
+/// `(match …)` predicate and silently dropped a match nested in an `(and …)`, so the generator drew the
+/// forbidden `None` and the (D) precondition spuriously tripped `f(None)`. This mirrors the conjunct descent
+/// the scalar `@requires` range / list-min-length recognizers already do; a PASS proves the sum constraint
+/// survives conjunction. A `Some` payload is a scalar Int64 in a heap sum, so store-guard the run half.
+#[test]
+fn a_match_requires_sum_constraint_is_recognized_inside_an_and_conjunction() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — the -gen wrapper run needs the store"
+        );
+        return;
+    }
+    let d = dir("requires-sum-match-in-and");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do \
+           (type Opt (None) (Some Int64)) \
+           (@ test (@ (requires (and (match o ((Opt.Some n) (and (>= n 0) (<= n 9))) ((Opt.None) false)) (>= 5 0))) \
+             (def (f (: o Opt)) (match o ((Opt.Some n) (if (and (>= n 0) (<= n 9)) n (trap \"payload oob\"))) ((Opt.None) (trap \"drew None\")))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok && stdout.contains("PASS f-gen (100 trials)"),
+        "a match-@requires nested in a top-level (and …) still forbids None and bounds the Some payload — no spurious f(None) or f(Some(-1)): {stdout}{stderr}"
+    );
+}
+
 /// A match-based `@requires` whose ALLOWED constructor carries a LIST-LENGTH guard floors that payload's
 /// generated length. `@requires(match o ((Box.Full xs) (< 0 (List.len xs))) ((Box.Empty) false))` forbids
 /// `Empty` AND requires the `Full` payload be non-empty; the `-gen` wrapper must draw `Full([…])` with at

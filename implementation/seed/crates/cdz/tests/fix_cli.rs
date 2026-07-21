@@ -99,3 +99,62 @@ fn fix_a_single_form_sexpr_still_renames_the_param() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn ml_non_exhaustive_match_carries_the_insert_arms_fix_and_it_applies_clean() {
+    // Regression pin (v-diagnostics report): a non-exhaustive `match` (CDZ0210) carries its "add the
+    // missing arm" InsertArms fix on the ML surface — it was previously DROPPED (a stale insert+ml
+    // suppression at the fix-assembly layer, because the textedit render printed a spliced arm as a
+    // standalone application, not `| pat => body`). With v-syntax's render_child fix + the suppression
+    // removed, `cdz check --json` now emits the fix, its edit is a valid `\n  | D => trap(...)` ML arm,
+    // and applying it makes the match exhaustive (clean re-check). ML is the primary user surface and
+    // non-exhaustive-match is the flagship actionable fix, so this end-to-end pin guards a regression.
+    let dir = temp_dir("ml-insert-arms");
+    let f = dir.join("nx.cdz");
+    std::fs::write(
+        &f,
+        "type C = | A | B | D\ndef f (c: C) -> Int64 = match c with | A => 1 | B => 2\n",
+    )
+    .unwrap();
+    let (ok, out, err) = run(&["check", f.to_str().unwrap(), "--json"]);
+    // A non-exhaustive match is a compile error, so `check` exits non-zero; the DIAGNOSTIC + its fix are
+    // on stdout regardless.
+    let _ = ok;
+    let diag = out
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|d| d["code"] == "CDZ0210")
+        .unwrap_or_else(|| panic!("expected a CDZ0210 diagnostic: out={out} err={err}"));
+    let fix = &diag["fix"];
+    assert!(
+        !fix.is_null(),
+        "the ML CDZ0210 carries an InsertArms fix (not dropped): {diag}"
+    );
+    assert_eq!(fix["kind"], "insert", "the fix is an insert: {fix}");
+    // The edit text is a valid ML match arm (`| pat => body`), NOT a standalone application `D(trap(…))`.
+    let edits = fix["edits"].as_array().expect("edits is an array");
+    assert_eq!(edits.len(), 1, "one insert edit: {fix}");
+    let text = edits[0]["text"].as_str().expect("edit text");
+    assert!(
+        text.contains("| D =>"),
+        "the inserted arm is ML arm-syntax `| D => …`, not an application: {text:?}"
+    );
+
+    // Apply the edit and re-check: the match is now exhaustive (no CDZ0210) — proving the fix is valid,
+    // reparseable ML, not just present.
+    let src = std::fs::read_to_string(&f).unwrap();
+    let (from, to) = (
+        edits[0]["from"].as_u64().unwrap() as usize,
+        edits[0]["to"].as_u64().unwrap() as usize,
+    );
+    let fixed = format!("{}{}{}", &src[..from], text, &src[to..]);
+    let ff = dir.join("nx_fixed.cdz");
+    std::fs::write(&ff, &fixed).unwrap();
+    let (fok, _fout, ferr) = run(&["check", ff.to_str().unwrap()]);
+    assert!(
+        fok,
+        "applying the InsertArms fix yields exhaustive, clean-checking ML: {ferr}\n{fixed}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

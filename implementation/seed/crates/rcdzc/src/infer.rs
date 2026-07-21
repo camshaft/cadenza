@@ -6375,6 +6375,13 @@ fn same_name_distinct_type_hint(first: &Ty, other: &Ty) -> Option<String> {
 /// sites keep their own one-shot INT-LITERAL→FLOAT retype fix for the numeric case.
 fn peer_type_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
     structural_delta_hint(first, other)
+        // Two same-dimension DIFFERENT-scale quantities (`(list (Qty … km) (Qty … m))`) render to the SAME
+        // name (`render_name` drops the scale), so the generic "must share one type: (Qty … meter) and
+        // (Qty … meter)" reads as a contradiction. Route the peer join through the scale-mismatch hint (as
+        // the `if`/`match` join sites already do at their own chain) so the list-element / peer clash names
+        // the real cause (same dimension, different units — convert with `in`/`as`) rather than two
+        // identical-looking types.
+        .or_else(|| qty_scale_mismatch_hint(first, other))
         .or_else(|| option_payload_mismatch_hint(first, other))
         .or_else(|| option_payload_mismatch_hint(other, first))
         .or_else(|| fn_not_applied_hint(first, other))
@@ -11726,6 +11733,12 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     if crate::unify::unify(&mut subst, &first_ty, &et).is_err() {
                         let code = list_homogeneity_code(&first_ty, &et);
                         trace!(target: "rcdzc::infer", node = id.0, ?code, "fault: list elements differ in type");
+                        // Two same-dimension DIFFERENT-scale quantities render to the same name (scale
+                        // dropped), so the bare "must share one type: (Qty … meter) and (Qty … meter)" reads
+                        // as a contradiction — route through the peer-join delta chain (which carries the
+                        // qty-scale-mismatch tail) so this fault-walker site names the real cause, matching
+                        // the `.at`-anchored list-literal join site.
+                        let delta = peer_type_delta_hint(&first_ty, &et).unwrap_or_default();
                         // Anchor at the OFFENDING element `e`, not the whole list node — the squiggle points
                         // at the specific element whose type breaks homogeneity, the minimal culprit (PR #399
                         // review; matches the file's "anchor the specific offending element" pattern). Without
@@ -11735,7 +11748,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             Reject::coded(
                                 code,
                                 format!(
-                                    "list elements must share one type: {} and {}",
+                                    "list elements must share one type: {} and {}{delta}",
                                     first_ty.render_name(),
                                     et.render_name()
                                 ),
