@@ -567,6 +567,17 @@
   (input  (: (record (x 999)) (Record (: x Int8))))
   (error  CDZ0302))
 
+(case "a FITTING narrow record-field literal grounds to the field width and computes (emit twin of the reject)"
+  (doc    "The FITTING compute face of the record-field width descent, the emit twin of the overflow reject
+           above: a record field declared `x : Int8` with a fitting literal `100` grounds the literal to the
+           declared field width and reads back 100. Previously broken at EMIT — the field literal grounded to
+           i64 while the 1-field record erases to (i8,) → rust E0308 (wasm computed the Int8 case). Fixed by
+           grounding a narrow record-field literal to the declared slot width in the rust Core::Record emit
+           (the record twin of the branch/match-arm grounding). Pins that a fitting narrow record-field
+           literal is emittable + computes on all backends — the working counterpart the overflow case rejects.")
+  (input  (do (def (get (: r (Record (: x Int8)))) (. r x)) (def (main) (get (record (x 100)))) (export main)))
+  (output (: 100 Int8)))
+
 (case "a literal MAP VALUE that overflows the annotated value width is rejected"
   (doc    "`(: (map (1 999)) (Map Int64 Int8))` — the map type's declared value `Int8` grounds the entry's
            value literal `999`, which overflows Int8 → CDZ0302. The width fit-check must descend into a map's

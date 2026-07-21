@@ -1750,13 +1750,18 @@ impl<'a> Printer<'a> {
         let docs_end = 1 + args[1..].iter().take_while(|&&a| self.is_doc(a)).count();
         let docs = &args[1..docs_end];
         let ops = &args[docs_end..];
-        self.doc.cbox(INDENT);
+        // Leading `///` docs print at the effect declaration's OWN column, OUTSIDE the `cbox(INDENT)` that
+        // indents the `|`-led operations — otherwise the doc block's continuation lines (every line after
+        // the first `hardbreak`) reflow to the box's INDENT while line 1 stays flush, an inconsistent
+        // per-line indent within one doc header. Mirrors `print_type`/`print_def` (docs flush; the `|`-led
+        // entries indented under the keyword).
         for &d in docs {
             if let Some(a) = self.a.as_form(d, "doc") {
                 self.print_doc(a[0]);
             }
             self.doc.hardbreak();
         }
+        self.doc.cbox(INDENT);
         self.doc.word("effect ");
         self.expr(args[0], 0); // effect name
         self.doc.word(" =");
@@ -5160,6 +5165,29 @@ mod tests {
         assert_eq!(
             assert_roundtrip("/// one\n/// two\ntype T = | A | B", 80),
             "/// one\n/// two\ntype T =\n  | A\n  | B"
+        );
+    }
+
+    #[test]
+    fn a_multiline_effect_doc_header_prints_every_line_flush_not_indented() {
+        // Same layout invariant as the `type` doc header, for an `effect` decl: a multi-line `///` header
+        // must print EVERY line at the effect's own column. Regression sibling to `print_type` — before
+        // the fix `print_effect` also opened `cbox(INDENT)` BEFORE the docs, so line 2+ reflowed to the
+        // box's INDENT (`///`\n`  ///`) while line 1 stayed flush. Docs now print outside the `|`-led
+        // operations' indent box, like `print_type`/`print_def`.
+        let a = sexpr::read(
+            r#"(effect E (doc "line one") (doc "line two") (doc "line three") (op emit (-> Unit)))"#,
+        )
+        .unwrap();
+        assert_eq!(
+            print(&a, 80),
+            "/// line one\n/// line two\n/// line three\neffect E =\n  | emit : -> Unit",
+            "every doc-header line flush at column 0; operations indented under `effect`"
+        );
+        // Round-trips + idempotent (the `///` header re-reads to the same `(doc …)` nodes).
+        assert_eq!(
+            assert_roundtrip("/// one\n/// two\neffect E = | emit : -> Unit", 80),
+            "/// one\n/// two\neffect E =\n  | emit : -> Unit"
         );
     }
 

@@ -129,6 +129,21 @@
   (input  (eval (quote 42)))
   (output (: 42 Int64)))
 
+(case "eval of a quoted RECURSIVE-sum construction builds the heap spine"
+  (doc    "Eval over a USER-declared recursive sum: `(eval (quote (S (S (Z)))))` must resolve the quoted
+           constructor NAMES against the user's `(type Nat (Z) (S Nat))`, build the two-level heap spine at
+           run time, and hand it to ordinary code — the recursive `depth` fold reads back 2. Pins that eval
+           reaches user-sum constructors (not only built-in operators/literals) and that its result is a
+           first-class recursive heap value indistinguishable from a directly-constructed one.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (depth (: v Nat))
+              (match v ((S rest) (+ 1 (depth rest))) ((Z u) 0)))
+            (def (main)
+              (depth (eval (quote (S (S (Z)))))))
+            (export main)))
+  (call   main) (output (: 2 Int64)))
+
 (case "eval of a quoted subtraction that goes negative preserves the sign"
   (doc    "`(eval (quote (- 3 10)))` = -7: the existing arithmetic eval cases produce only POSITIVE results,
            so none exercise a negative eval result. Pins that eval's arithmetic reduction carries the sign

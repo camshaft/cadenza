@@ -2401,6 +2401,45 @@
   (call   main (: 3 Int64)) (output (: 42 Int64))
   (call   main (: 2 Int64)) (output (: -1 Int64)))
 
+(case "a deep NESTED-VARIANT pattern selects a runtime recursive sum by spine depth"
+  (doc    "Nested constructor patterns to depth 3 over a runtime-built Peano spine: `((S (S (S _))) 3)` /
+           `((S (S _)) 2)` / `((S _) 1)` / `((Z u) 0)` — the match must UNWRAP the spine level by level and
+           dispatch on the ORDERED arms (first sufficient depth wins), so `(mk 5)` — deeper than any
+           pattern — takes the depth-3 wildcard arm, `(mk 2)` takes exactly the depth-2 arm, and `(mk 0)`
+           the base arm. Pins depth-ordered dispatch over an unbounded runtime spine: a decision tree that
+           tested only the outer tag (or unwrapped a fixed single level) would misroute the middle calls.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk (: n Int64)) (if (= n 0) (Z) (S (mk (- n 1)))))
+            (def (main (: a Int64))
+              (match (mk a)
+                ((S (S (S _))) 3)
+                ((S (S _)) 2)
+                ((S _) 1)
+                ((Z u) 0)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: 2 Int64))
+  (call   main (: 5 Int64)) (output (: 3 Int64)))
+
+(case "a recursive fold over a runtime Peano spine recovers its depth"
+  (doc    "The consume dual of the parameterized render: `depth` matches `(S rest)` and recurses on the
+           BOUND recursive payload (`rest : Nat`), adding one per level, to `(Z u)` = 0 — so `(depth (mk
+           4))` = 4 recovers exactly the runtime construction depth. Pins that a recursive-payload binder
+           re-enters the fold at every level (construction and consumption are inverse bijections on the
+           spine). The Peano twin of the linked-list fold cases (payload-less recursion — the depth IS the
+           value).")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk (: n Int64)) (if (= n 0) (Z) (S (mk (- n 1)))))
+            (def (depth (: v Nat))
+              (match v ((S rest) (+ 1 (depth rest))) ((Z u) 0)))
+            (def (main (: a Int64)) (depth (mk a)))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 4 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
 ; The map-sum-value case above consumes the lookup result INLINE, in the same expression. The environment-
 ; lookup idiom a type-inference / evaluation pass takes is different: look a binding up in the map, WRAP it
 ; in a result constructor, RETURN it from the lookup function, then MATCH it in the CALLER. These pin that
@@ -2409,6 +2448,28 @@
 ; inspects the payload. (A returned looked-up value whose payload is itself a HEAP value — a String, a
 ; nested sum — is a separate backend borrow-analysis limit tracked outside the corpus; a scalar payload is
 ; realized, which is what these pin.)
+
+(case "a FRESHLY-BUILT recursive-sum payload returns through a Result and unwraps in the caller"
+  (doc    "The fallible-constructor idiom over an unbounded value: `get` validates its argument and returns
+           `(Ok (mk n))` — the Ok payload is a freshly-CONSTRUCTED runtime-depth recursive spine, not a
+           looked-up binding (the looked-up-heap-payload return is the separate borrow-analysis limit noted
+           above; a fresh construction is fully owned and crosses the return boundary today). The caller
+           matches Ok/Err and folds the payload to its depth — 3 at `a = 3`, the Err path 99 at `a = -1`.
+           Pins that an owned recursive sum rides a Result through a function return on every backend.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk (: n Int64)) (if (= n 0) (Z) (S (mk (- n 1)))))
+            (def (depth (: v Nat))
+              (match v ((S rest) (+ 1 (depth rest))) ((Z u) 0)))
+            (def (get (: n Int64))
+              (if (< n 0) (Err 99) (Ok (mk n))))
+            (def (main (: a Int64))
+              (match (get a)
+                ((Ok v) (depth v))
+                ((Err e) e)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3 Int64))
+  (call   main (: -1 Int64)) (output (: 99 Int64)))
 
 (case "a scalar-payload sum looked up from a map, returned via a ctor, is matched in the caller"
   (doc    "The environment-lookup shape: `get` looks a key up in a `(Map Int64 Ty)`, wraps the found `Ty`
