@@ -5,9 +5,40 @@ everywhere. I would think the Vec3 would be over the Rational+Meter types instea
 rationals. We really want strong typing about units!" — refined live: "I don't want to have 2 different
 models, one for floats and one for rationals. It should just all be RATIONALS everywhere."*
 
-> **STATUS: DESIGN — routed to concierge→operator for a ruling BEFORE any code rework (per the P1
-> plan: "route the units type-model design to operator BEFORE committing").** No code changed. The
-> infra probes below are RUN + green on trunk `cb5dcca53`.
+> **STATUS: ✅ SHIPPED (P1 delivered + gated). This doc is now a RECORD, not a proposal.** The design
+> below was the pre-build plan (2026-07-16, operator ruling captured at the bottom); the reconciliation box
+> just under here records what actually shipped. The infra probes below were RUN + green on trunk
+> `cb5dcca53` at design time.
+
+## ✅ What shipped (reconciliation — read this first)
+
+The P1 "units everywhere" layer is on trunk in **`implementation/cad/src/units-model.cdz`**, gated by
+`cdz test implementation/cad`. What landed vs. this proposal:
+
+- **The units-carrying model** = a **generic `Solid`/`Vec3` instantiated at `Qty(Rational, meter)`** —
+  NOT the monomorphic `Vec3q`/`Solidr` twin this doc sketched. The parallel P-stage refactor made
+  `Vec3(a)`/`Solid(a)` **generic over the coordinate type**, so the units model is just
+  `Solid(Qty(Rational, Unit.base meter))` — one generic type, two instantiations (bare-Rational render
+  form + units-carrying authoring form), a structural `lower` between them. Cleaner than a hand-written
+  monomorphic twin, same guarantee.
+- **Constructors** (`units-model.cdz`, exported): `meters(n)`, `v3m(x,y,z)`, `cube-m`/`sphere-m`/
+  `cylinder-m`, `union-m`/`difference-m`/`intersection-m`, `translate-m`. A bare number or a non-length
+  where a `Qty[meter]` is expected is a **CDZ0301 compile-time error** — the strong typing the operator
+  asked for (PROBE C, realized).
+- **`lower`** unwraps each coordinate `Qty[meter]` → bare-Rational meters (`Qty.value`) for the render/
+  mesh path — the "units in the model, bare meters on the wire" B-via-generic ruling. Covers every arm
+  (primitives, booleans, Translate/Scale/Rotate/Mirror, ExtrudeLinear/Revolve + the profile unwrap).
+- **Scale stays bare Rational** (dimensionless) — Q3 as-ruled (length×length=area avoided).
+- **Exact conversions** (`units.cdz`): author in mm/cm/m/inch/foot → exact Rational meters; display back
+  exactly. `1 inch → 127/5000 m`, `m→mm = 127/5` — lossless, f64 only at the manifold leaf.
+- **All 3 operator-ruling items (Q1 base=meter / Q2 `Len` alias / Q3 bare-Rational scale) — DELIVERED.**
+- The `@param` convergence (S-below) also shipped: CAD dimensions are `@!param`-annotatable sliders
+  (showcase-units-parametric.cdz — inch-authored bracket with slider dims).
+
+The original proposal + operator ruling (below) are retained verbatim as the design record.
+
+---
+
 
 ## The one-sentence shape
 

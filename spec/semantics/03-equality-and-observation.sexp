@@ -163,6 +163,55 @@
   (call   main)
   (output (: true Bool)))
 
+; The compound-float-leaf cases above are all Float64. The value-eq heap walk canonicalizes each float leaf
+; at ITS OWN declared width (`box-float` at f32 vs f64), so the same NaN-canonicalization / signed-zero
+; discrimination must hold for a Float32 leaf, AND for a compound MIXING f32 and f64 leaves where each leaf
+; is compared at its own width (the per-leaf-width dispatch the walk performs). These pin that axis:
+; Float32-leaf nan==nan + -0.0≠+0.0, and a mixed f32/f64 tuple equal (both NaN) / unequal (differing f64
+; leaf). A walk that canonicalized every float leaf at one fixed width would flip the mixed-width faces.
+(case "compound equality over a runtime FLOAT32 NaN leaf: nan equals nan"
+  (doc    "The Float32 analogue of the compound NaN-leaf case: a runtime Float32 NaN in a tuple compares
+           EQUAL to another (`box-float` canonicalizes a NaN at the 32-bit width, so `champ_eq` sees
+           identical bytes). `(= (tuple x 1) (tuple Float32.nan 1))` with `x = Float32.nan` → true. Pins
+           that the value-eq walk canonicalizes a Float32 leaf at f32 width, not only f64.")
+  (input  (do (def (eq (: x Float32)) (= (tuple x 1) (tuple Float32.nan 1)))
+              (def (main) (eq Float32.nan)) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "compound equality over a runtime FLOAT32 leaf: negative zero is not equal to positive zero"
+  (doc    "The Float32 signed-zero face: `-0.0` and `+0.0` at f32 have distinct canonical byte forms (the box
+           keeps the zero's sign bit at 32-bit width too), so a tuple holding a Float32 `-0.0` is NOT equal
+           to one holding `+0.0`. `(= (tuple x) (tuple y))` with `x = (: -0.0 Float32)`, `y = (: 0.0
+           Float32)` → false. Pins signed-zero discrimination at f32 width in the compound walk.")
+  (input  (do (def (eq (: x Float32) (: y Float32)) (= (tuple x) (tuple y)))
+              (def (main) (eq (: -0.0 Float32) (: 0.0 Float32))) (export main)))
+  (call   main)
+  (output (: false Bool)))
+
+(case "compound equality over a MIXED Float32/Float64 tuple: each leaf canonicalized at its own width"
+  (doc    "A tuple mixing an f32 and an f64 leaf, both NaN, compares EQUAL — each float leaf is canonicalized
+           at ITS OWN declared width by the value-eq walk (the f32 leaf at 32-bit, the f64 leaf at 64-bit),
+           so both leaves see the identical canonical NaN bytes for their width. `(= (tuple a b) (tuple
+           Float32.nan Float64.nan))` with `a = Float32.nan : Float32`, `b = Float64.nan : Float64` → true.
+           Pins the per-leaf-width dispatch — a walk that canonicalized every float leaf at one fixed width
+           would misread one of the two leaves.")
+  (input  (do (def (eq (: a Float32) (: b Float64)) (= (tuple a b) (tuple Float32.nan Float64.nan)))
+              (def (main) (eq Float32.nan Float64.nan)) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "compound equality over a MIXED Float32/Float64 tuple: a differing f64 leaf makes it unequal"
+  (doc    "The negative companion of the mixed-width case: the f32 leaves match (both NaN) but the f64 leaves
+           differ (`1.5` vs `2.5`), so the tuples are unequal → false. Confirms the mixed-width walk is
+           genuinely structural per leaf (it does not stop at the first matching leaf, and the f64 leaf is
+           compared at its own width). `(= (tuple a b) (tuple Float32.nan (: 2.5 Float64)))` with `a =
+           Float32.nan`, `b = (: 1.5 Float64)` → false.")
+  (input  (do (def (eq (: a Float32) (: b Float64)) (= (tuple a b) (tuple Float32.nan (: 2.5 Float64))))
+              (def (main) (eq Float32.nan (: 1.5 Float64))) (export main)))
+  (call   main)
+  (output (: false Bool)))
+
 ; --- COMPOUND value-equality over a runtime BIGINT / RATIONAL leaf ------------------------------------
 ; The numeric-tower siblings of the Float-leaf cases. A runtime BigInt is a CANONICAL sign-magnitude byte
 ; leaf (runtime `box_bigint`, the sole producer), and a runtime Rational is a NORMALIZED 2-BigInt-handle

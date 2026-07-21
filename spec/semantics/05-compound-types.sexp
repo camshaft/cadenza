@@ -6292,6 +6292,31 @@
   (call   main (: 1 Int64) (: 99 Int64)) (output (: -1 Int64))
   (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64)))
 
+(case "a map of lists of tuples: a three-level mixed query with a miss at each level"
+  (doc    "The nested-value cases above each nest ONE collection kind one level deep; this composes THREE
+           kinds — `{1 ↦ [(10,11),(12,13)], 2 ↦ [(20,21)]}`, a Map whose values are LISTS of TUPLES (the
+           index-structure shape: keyed rows of positional entries). The query walks all three levels:
+           `Map.lookup` returns the list, `List.at` the tuple, and two projections read its components
+           (10·fst + snd). Both hit paths (k=1,i=1 → 133; k=2,i=0 → 221) and a distinct miss at EACH
+           level (inner index OOB → -1; outer key absent → -2) — a level that dropped its Option layer or
+           returned a stale handle diverges at one of the four calls. Expected: 133, 221, -1, -2.")
+  (input  (do
+            (def (main (: k Int64) (: i Int64))
+              (let ((m (Map.insert (Map.insert Map.empty
+                          1 (list (tuple 10 11) (tuple 12 13)))
+                          2 (list (tuple 20 21)))))
+                (match (Map.lookup m k)
+                  ((Some xs)
+                    (match (List.at xs i)
+                      ((Some t) (+ (* 10 (. t 0)) (. t 1)))
+                      ((None u) -1)))
+                  ((None u) -2))))
+            (export main)))
+  (call   main (: 1 Int64) (: 1 Int64)) (output (: 133 Int64))
+  (call   main (: 2 Int64) (: 0 Int64)) (output (: 221 Int64))
+  (call   main (: 1 Int64) (: 5 Int64)) (output (: -1 Int64))
+  (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64)))
+
 (case "a set nested in a tuple compares equal with a runtime element, order-independent"
   (doc    "`(= (tuple 0 (Set.of (list 1 x))) (tuple 0 (Set.of (list 1 2))))` compares two tuples whose second
            element is a runtime-built set: with `x`=2 the sets are {1,2} = {1,2} so the tuples are equal;

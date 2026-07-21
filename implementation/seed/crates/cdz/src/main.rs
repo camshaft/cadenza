@@ -1375,6 +1375,7 @@ fn run_run_rust(args: &RunRustArgs) -> ExitCode {
                 let sum_params = cdz_rust_render::cdz_sum_params(&module);
                 let unit_form = cdz_rust_render::cdz_unit_form(&module, &export);
                 let scale = cdz_rust_render::cdz_scale(&module, &export);
+                let qty_at = cdz_rust_render::cdz_qty_at(&module, &export);
                 cdz_rust_render::cdz_render_expr(
                     ty,
                     &sums,
@@ -1382,6 +1383,7 @@ fn run_run_rust(args: &RunRustArgs) -> ExitCode {
                     &sum_params,
                     unit_form.as_deref(),
                     scale,
+                    &qty_at,
                 )
             }
             // No `cdz-return` note (an older/void export) — fall back to Display of the result.

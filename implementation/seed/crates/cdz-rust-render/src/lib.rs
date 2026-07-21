@@ -404,6 +404,31 @@ pub fn cdz_scale(module: &str, name: &str) -> Option<(i128, i128)> {
     None
 }
 
+/// The PER-ELEMENT quantity display-scale notes (`// cdz-qty-at[<name>]: <path> <num>/<den>`) for a COMPOUND
+/// result carrying non-scale-1 Qty leaves — one per leaf, keyed by the render's positional descent PATH (the
+/// `.i` field route, e.g. `0`, `1`, `0.1`). Returns a map `path → (num, den)`; the Qty arm looks up the
+/// CURRENT descent path and applies that leaf's scale (the compound twin of the top-level `cdz_scale`). A
+/// tuple/record of quantities at different units thus scales each element independently. Empty for a result
+/// with no compound non-scale-1 Qty leaf.
+pub fn cdz_qty_at(module: &str, name: &str) -> std::collections::HashMap<String, (i128, i128)> {
+    let prefix = format!("// cdz-qty-at[{name}]:");
+    let mut map = std::collections::HashMap::new();
+    for line in module.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix(&prefix) {
+            // `<path> <num>/<den>`
+            let rest = rest.trim();
+            if let Some((path, scale)) = rest.split_once(char::is_whitespace)
+                && let Some((n, d)) = scale.trim().split_once('/')
+                && let (Ok(num), Ok(den)) = (n.trim().parse(), d.trim().parse())
+            {
+                map.insert(path.trim().to_string(), (num, den));
+            }
+        }
+    }
+    map
+}
+
 /// A Rust EXPRESSION that renders the driver's result binding `__r` (whose CADENZA type is `ty`, in
 /// `render_name` form) to cdz-run's canonical text form — the value the gate grades against. Type-
 /// directed and recursive over the Cadenza type:
@@ -420,6 +445,10 @@ pub fn cdz_render_expr(
     sum_params: &std::collections::HashMap<String, usize>,
     unit_form: Option<&str>,
     unit_scale: Option<(i128, i128)>,
+    // PER-ELEMENT Qty display-scale map (`cdz_qty_at`): logical-path → `(num, den)`. Consulted by the Qty arm
+    // for a Qty NESTED in a Tuple/Record (its scale is not the top-level `unit_scale`). Empty for a result
+    // with no compound non-scale-1 Qty leaf; the top-level bare Qty keeps using `unit_scale`.
+    qty_at: &std::collections::HashMap<String, (i128, i128)>,
 ) -> String {
     let mut helpers = Vec::new();
     let mut on_path = Vec::new();
@@ -431,6 +460,8 @@ pub fn cdz_render_expr(
         sum_params,
         unit_form,
         unit_scale,
+        "",
+        qty_at,
         &mut helpers,
         &mut on_path,
     );
@@ -470,6 +501,13 @@ pub fn cdz_render_at(
     // non-reference unit; the Qty arm multiplies the boundary magnitude by it (Float `× num/den`, Int
     // `× num / den`). `None` for a scale-1 Qty (display = stored) and every non-top-level descent.
     unit_scale: Option<(i128, i128)>,
+    // The LOGICAL descent path (positional `.i` route: `""` top-level, `0`, `0.1`), keying `qty_at` for a
+    // nested Qty leaf. Distinct from the Rust access `path` (`(__r).0`): the logical path is the corpus/type
+    // descent, stable across the Rust binding shape. Extended by the Tuple/Record arms; forwarded unchanged
+    // by every other descent (sum/list/newtype are out of this slice's per-element scope).
+    logical_path: &str,
+    // PER-ELEMENT Qty display-scale map — logical-path → `(num, den)`; the Qty arm looks up `logical_path`.
+    qty_at: &std::collections::HashMap<String, (i128, i128)>,
     helpers: &mut Vec<String>,
     on_path: &mut Vec<String>,
 ) -> String {
@@ -486,7 +524,17 @@ pub fn cdz_render_at(
         // Same value/path — a newtype-over-Qty forwards the unit form (the tag is erased, so a `Pt = Mk Qty`
         // renders as its inner quantity).
         return cdz_render_at(
-            inner, path, sums, newtypes, sum_params, unit_form, unit_scale, helpers, on_path,
+            inner,
+            path,
+            sums,
+            newtypes,
+            sum_params,
+            unit_form,
+            unit_scale,
+            logical_path,
+            qty_at,
+            helpers,
+            on_path,
         );
     }
     // `(Tuple T0 T1 …)` → `(tuple …)`. The EMPTY tuple `(Tuple)` (a variant's explicit empty-tuple payload,
@@ -501,6 +549,14 @@ pub fn cdz_render_at(
             .iter()
             .enumerate()
             .map(|(i, e)| {
+                // Extend the LOGICAL path (`i` at top-level, `{lp}.{i}` nested) so a Qty element looks up its
+                // per-element scale in `qty_at`. A non-Qty element ignores it. `unit_form`/`unit_scale` stay
+                // `None` for the descent (top-level-only); the Qty arm falls back to `qty_at[logical_path]`.
+                let child_lp = if logical_path.is_empty() {
+                    i.to_string()
+                } else {
+                    format!("{logical_path}.{i}")
+                };
                 cdz_render_at(
                     e,
                     &format!("({path}).{i}"),
@@ -509,6 +565,8 @@ pub fn cdz_render_at(
                     sum_params,
                     None,
                     None,
+                    &child_lp,
+                    qty_at,
                     helpers,
                     on_path,
                 )
@@ -540,6 +598,13 @@ pub fn cdz_render_at(
                 .trim();
             let (fname, fty) = inner.split_once(char::is_whitespace).unwrap_or((inner, ""));
             args.push(format!("\"{}\"", fname.trim()));
+            // Extend the logical path by the sorted-field index `i` (== the emitted tuple `.i`), so a Qty
+            // field looks up its per-element scale in `qty_at`.
+            let child_lp = if logical_path.is_empty() {
+                i.to_string()
+            } else {
+                format!("{logical_path}.{i}")
+            };
             args.push(cdz_render_at(
                 fty.trim(),
                 &format!("({path}).{i}"),
@@ -548,6 +613,8 @@ pub fn cdz_render_at(
                 sum_params,
                 None,
                 None,
+                &child_lp,
+                qty_at,
                 helpers,
                 on_path,
             ));
@@ -566,7 +633,17 @@ pub fn cdz_render_at(
     if let Some(args) = parse_head_type(ty, "List") {
         let elem_ty = args.first().map(String::as_str).unwrap_or("");
         let inner = cdz_render_at(
-            elem_ty, &ebind, sums, newtypes, sum_params, None, None, helpers, on_path,
+            elem_ty,
+            &ebind,
+            sums,
+            newtypes,
+            sum_params,
+            None,
+            None,
+            logical_path,
+            qty_at,
+            helpers,
+            on_path,
         );
         // Build `(list <e0> <e1> …)`: seed with "(list", push a space + each element's render, close ")".
         return format!(
@@ -579,7 +656,17 @@ pub fn cdz_render_at(
     if let Some(args) = parse_head_type(ty, "Set") {
         let elem_ty = args.first().map(String::as_str).unwrap_or("");
         let inner = cdz_render_at(
-            elem_ty, &ebind, sums, newtypes, sum_params, None, None, helpers, on_path,
+            elem_ty,
+            &ebind,
+            sums,
+            newtypes,
+            sum_params,
+            None,
+            None,
+            logical_path,
+            qty_at,
+            helpers,
+            on_path,
         );
         return format!(
             "{{ let mut __s = String::from(\"((. Set of) (list\"); for {ebind} in ({path}).iter() {{ __s.push(' '); __s.push_str(&({inner})); }} __s.push_str(\"))\"); __s }}"
@@ -594,10 +681,30 @@ pub fn cdz_render_at(
         let kbind = format!("__mk{}", path.len());
         let vbind = format!("__mv{}", path.len());
         let kr = cdz_render_at(
-            key_ty, &kbind, sums, newtypes, sum_params, None, None, helpers, on_path,
+            key_ty,
+            &kbind,
+            sums,
+            newtypes,
+            sum_params,
+            None,
+            None,
+            logical_path,
+            qty_at,
+            helpers,
+            on_path,
         );
         let vr = cdz_render_at(
-            val_ty, &vbind, sums, newtypes, sum_params, None, None, helpers, on_path,
+            val_ty,
+            &vbind,
+            sums,
+            newtypes,
+            sum_params,
+            None,
+            None,
+            logical_path,
+            qty_at,
+            helpers,
+            on_path,
         );
         return format!(
             "{{ let mut __s = String::from(\"(map\"); for ({kbind}, {vbind}) in ({path}).iter() {{ __s.push_str(&format!(\" ({{}} {{}})\", {kr}, {vr})); }} __s.push(')'); __s }}"
@@ -629,6 +736,12 @@ pub fn cdz_render_at(
             },
         };
         let unit_lit = unit.replace('\\', "\\\\").replace('"', "\\\"");
+        // The scale for THIS Qty: the top-level `unit_scale` note if present (a bare Qty result), ELSE the
+        // per-element `qty_at` entry keyed by the current logical descent path (a Qty NESTED in a tuple/
+        // record — the compound scale-fold this slice adds). `None` when neither → a scale-1 Qty renders its
+        // stored magnitude unchanged. This is what fixes the rust-red: a `(Tuple (Qty km) (Qty mile))` now
+        // scales each element by its own `qty_at[0]`/`qty_at[1]` instead of rendering the raw magnitude.
+        let unit_scale = unit_scale.or_else(|| qty_at.get(logical_path).copied());
         // A NON-scale-1 unit DISPLAY-SCALES the stored magnitude to its reference (`5 km` → `5000 m`): the
         // backend crosses the RAW magnitude + a `// cdz-scale` note (`unit_scale`), and the display multiply
         // happens HERE, in the inner numeric type, mirroring the wasm boundary value-encode
@@ -684,6 +797,8 @@ pub fn cdz_render_at(
             sum_params,
             None,
             None,
+            logical_path,
+            qty_at,
             helpers,
             on_path,
         );
@@ -774,14 +889,33 @@ pub fn cdz_render_at(
     let vbind = format!("__v{}", path.len());
     if let Some(args) = parse_head_type(ty, "Option") {
         let payload = args.first().map(String::as_str).unwrap_or("");
+        // Extend the logical path with `?0` (Option's single payload) so a Qty payload looks up its
+        // per-element scale in `qty_at` (the emit walk keys an Option payload as `<path>?0`).
+        let child_lp = if logical_path.is_empty() {
+            "?0".to_string()
+        } else {
+            format!("{logical_path}?0")
+        };
         let inner = cdz_render_at(
-            payload, &vbind, sums, newtypes, sum_params, None, None, helpers, on_path,
+            payload, &vbind, sums, newtypes, sum_params, None, None, &child_lp, qty_at, helpers,
+            on_path,
         );
         return format!(
             "match &{path} {{ Some({vbind}) => format!(\"(Some {{}})\", {inner}), None => \"(None unit)\".to_string() }}"
         );
     }
     if let Some(args) = parse_head_type(ty, "Result") {
+        // Ok payload → `?0`, Err payload → `?1` (the type-arg indices the emit walk keys a Result on).
+        let ok_lp = if logical_path.is_empty() {
+            "?0".to_string()
+        } else {
+            format!("{logical_path}?0")
+        };
+        let err_lp = if logical_path.is_empty() {
+            "?1".to_string()
+        } else {
+            format!("{logical_path}?1")
+        };
         let ok = cdz_render_at(
             args.first().map(String::as_str).unwrap_or(""),
             &vbind,
@@ -790,6 +924,8 @@ pub fn cdz_render_at(
             sum_params,
             None,
             None,
+            &ok_lp,
+            qty_at,
             helpers,
             on_path,
         );
@@ -801,6 +937,8 @@ pub fn cdz_render_at(
             sum_params,
             None,
             None,
+            &err_lp,
+            qty_at,
             helpers,
             on_path,
         );
@@ -838,7 +976,17 @@ pub fn cdz_render_at(
                 )),
                 1 => {
                     let inner = cdz_render_at(
-                        &subst[0], &vbind, sums, newtypes, sum_params, None, None, helpers, on_path,
+                        &subst[0],
+                        &vbind,
+                        sums,
+                        newtypes,
+                        sum_params,
+                        None,
+                        None,
+                        logical_path,
+                        qty_at,
+                        helpers,
+                        on_path,
                     );
                     arms.push(format!(
                         "prog::{head_ident}::{vident}({vbind}) => format!(\"({vname} {{}})\", {inner})"
@@ -858,6 +1006,8 @@ pub fn cdz_render_at(
                                 sum_params,
                                 None,
                                 None,
+                                logical_path,
+                                qty_at,
                                 helpers,
                                 on_path,
                             )
@@ -930,6 +1080,9 @@ pub fn cdz_render_at(
                         // A single-payload variant → `(Name <payload>)`, the payload rendered from `__p`
                         // (its own type — a scalar, tuple, record, or nested sum; kept nested if a tuple).
                         1 => {
+                            // Inside a recursive-sum helper fn — the per-element Qty scale map does not
+                            // track paths across the runtime recursion, so pass `""` (a Qty payload here
+                            // renders raw, this slice's out-of-scope path — Qty-in-user-sum is a follow-up).
                             let inner = cdz_render_at(
                                 &payloads[0],
                                 "__p",
@@ -938,6 +1091,8 @@ pub fn cdz_render_at(
                                 sum_params,
                                 None,
                                 None,
+                                "",
+                                qty_at,
                                 helpers,
                                 on_path,
                             );
@@ -963,6 +1118,8 @@ pub fn cdz_render_at(
                                         sum_params,
                                         None,
                                         None,
+                                        "",
+                                        qty_at,
                                         helpers,
                                         on_path,
                                     )
@@ -1244,13 +1401,29 @@ mod tests {
         let newtypes = std::collections::HashMap::new();
         let params = std::collections::HashMap::new();
         // A scalar result renders via Display of the access path.
-        let scalar = cdz_render_expr("Int64", &sums, &newtypes, &params, None, None);
+        let scalar = cdz_render_expr(
+            "Int64",
+            &sums,
+            &newtypes,
+            &params,
+            None,
+            None,
+            &std::collections::HashMap::new(),
+        );
         assert!(
             scalar.contains("__r"),
             "scalar render references the result path: {scalar}"
         );
         // A tuple result descends into `.0`/`.1` and rebuilds the `(tuple …)` s-expr.
-        let tup = cdz_render_expr("(Tuple Int64 Int64)", &sums, &newtypes, &params, None, None);
+        let tup = cdz_render_expr(
+            "(Tuple Int64 Int64)",
+            &sums,
+            &newtypes,
+            &params,
+            None,
+            None,
+            &std::collections::HashMap::new(),
+        );
         assert!(
             tup.contains(".0") && tup.contains(".1"),
             "tuple render descends into fields: {tup}"
