@@ -558,6 +558,31 @@
   (input  (do (type W (W Int8)) (def (main) (match (: (W 999) W) ((W v) v))) (export main)))
   (error  CDZ0302))
 
+(case "a literal in a RECORD FIELD that overflows the annotated field width is rejected"
+  (doc    "`(: (record (x 999)) (Record (: x Int8)))` — the record type's declared field `x : Int8` grounds
+           the field literal `999`, which overflows Int8 → CDZ0302, exactly as the Option/user-sum payloads.
+           The width fit-check must descend into a RECORD field's declared type; before the descent reached
+           records, this escaped the check entirely and silently truncated (999 → -25 as Int8 on wasm; rust
+           E0308 — a backend-divergent miscompile). Pins that the descent reaches record fields.")
+  (input  (: (record (x 999)) (Record (: x Int8))))
+  (error  CDZ0302))
+
+(case "a literal MAP VALUE that overflows the annotated value width is rejected"
+  (doc    "`(: (map (1 999)) (Map Int64 Int8))` — the map type's declared value `Int8` grounds the entry's
+           value literal `999`, which overflows Int8 → CDZ0302. The width fit-check must descend into a map's
+           VALUE type; before the descent reached maps, this escaped and silently truncated (999 → -25).
+           Pins that the descent reaches map values.")
+  (input  (: (map (1 999)) (Map Int64 Int8)))
+  (error  CDZ0302))
+
+(case "a literal MAP KEY that overflows the annotated key width is rejected"
+  (doc    "`(: (map (999 1)) (Map Int8 Int64))` — the map type's declared key `Int8` grounds the entry's key
+           literal `999`, which overflows Int8 → CDZ0302. The width fit-check must descend into a map's KEY
+           type (not only the value); before the descent reached map keys, this escaped the check. Pins that
+           the descent reaches map keys — the key twin of the map-value case.")
+  (input  (: (map (999 1)) (Map Int8 Int64)))
+  (error  CDZ0302))
+
 (case "a Float32-overflowing literal nested in a compound payload is rejected"
   (doc    "The FLOAT analogue of the compound-payload width descent above: `(: (Some 1.0e300) (Option
            Float32))` — the annotation's `Float32` grounds the `Some` payload literal, and `1.0e300` (finite
@@ -5393,6 +5418,49 @@
            (the CHAMP descends the two BigInt children), the set companion of the Rational-map-key case.")
   (input  (Set.len (Set.of (list (Rational.of 1 2) (Rational.of 2 4) (Rational.of 1 3)))))
   (output (: 2 Int64)))
+
+(case "a RUNTIME-built unreduced Rational and its reduced form are ONE map key"
+  (doc    "The RUNTIME dimension of the Rational-key canonicalization (the const pins above materialize
+           baked handles; this builds the key from a RUNTIME numerator, off every fold): `(Rational.of n 6)`
+           at `n = 2` reduces AT CONSTRUCTION to `1/3`, so inserting it and then `(Rational.of 1 3)` leaves
+           ONE entry (the second insert replaces); at `n = 5` the keys are `5/6` vs `1/3` — two entries.
+           A runtime construction path that skipped the reduce (or a key hash reading raw num/den) would
+           report 2 at n=2. Both regimes in one shape.")
+  (input  (do
+            (def (main (: n Int64))
+              (Map.len (Map.insert (Map.insert Map.empty (Rational.of n 6) 10) (Rational.of 1 3) 20)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64)) (output (: 2 Int64)))
+
+(case "a tuple key with a RUNTIME Rational leaf hits and misses by canonical content"
+  (doc    "Composes the runtime-Rational canonicalization with the compound-key descent: a map keyed by
+           `(tuple (Rational.of n 6) 1)` at `n = 2` (constructs 1/3) is found by the lookup key `(tuple
+           (Rational.of 1 3) 1)` → 42; at `n = 5` (5/6) the same lookup MISSES → -1. The CHAMP hash/eq
+           descend the tuple into the Rational's normalized 2-BigInt node — a leaf left unreduced by the
+           runtime path would hash differently and false-miss the n=2 call.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((m (Map.insert Map.empty (tuple (Rational.of n 6) 1) 42)))
+                (match (Map.lookup m (tuple (Rational.of 1 3) 1)) ((Some v) v) ((None u) -1))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 42 Int64))
+  (call   main (: 5 Int64)) (output (: -1 Int64)))
+
+(case "a tuple key with an ARITH-built BigInt leaf hits and misses by content"
+  (doc    "The BigInt sibling of the tuple-nested Rational key case above (and the compound companion of the
+           bare multi-limb BigInt key pins in 19-sets): a map keyed by `(tuple (+ (BigInt.of n) (BigInt.of
+           1)) 5)` — the leaf is an ARITH-built BigInt handle, not a baked constant — is found by the lookup
+           key `(tuple (BigInt.of 10) 5)` at `n = 9` (9+1 = 10 → 42) and MISSES at `n = 3` (4 ≠ 10 → -1).
+           The CHAMP descent must compare the BigInt leaf by VALUE through the tuple (an identity/handle
+           compare would miss the differently-built equal key at n=9).")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((m (Map.insert Map.empty (tuple (+ (BigInt.of n) (BigInt.of 1)) 5) 42)))
+                (match (Map.lookup m (tuple (BigInt.of 10) 5)) ((Some v) v) ((None u) -1))))
+            (export main)))
+  (call   main (: 9 Int64)) (output (: 42 Int64))
+  (call   main (: 3 Int64)) (output (: -1 Int64)))
 
 ; The RATIONAL twin of the BigInt collection slot-clash guard (19-sets.sexp): a Set/Map build whose
 ; element/key siblings interleave a boxed Rational ARITH result (i32 handle in scratch) with a `Rational.of`

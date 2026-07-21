@@ -422,6 +422,7 @@ pass	a NESTED Tuple ARG with a fixed-shape COMPOUND result crosses the direct-ca
 pass	a NESTED Tuple ARG with a narrow Bool leaf crosses the direct-call boundary
 pass	a NESTED Tuple arg ALONGSIDE a flat Tuple arg
 pass	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
+pass	a NESTED sum-in-sum map key discriminates by the inner variant
 pass	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 pass	a NON-tail-resumptive arm projects a tuple parameter twice in its pure one-hole context
@@ -470,6 +471,7 @@ pass	a RUNTIME payload-literal refinement dispatches through its literal test
 pass	a RUNTIME string scrutinee matches string literals by equality
 pass	a RUNTIME-built Rational is usable as a map key, matched by its exact value
 pass	a RUNTIME-built Rational set deduplicates by exact value
+pass	a RUNTIME-built unreduced Rational and its reduced form are ONE map key
 pass	a Rational accumulator threaded through recursion sums exactly
 pass	a Rational entry argument is marshalled through Rational::new
 pass	a Rational fanned into a compound then re-read survives (Perceus retain over a BigInt/Rational leaf)
@@ -1004,6 +1006,9 @@ pass	a narrow-width overflow reached through a MATCH projection of a runtime sum
 pass	a narrow-width overflow reached through a TUPLE-field projection of a runtime branch is rejected
 pass	a negative literal under an UNSIGNED width rejects in a runtime branch
 pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
+pass	a tuple key with a RUNTIME Rational leaf hits and misses by canonical content
+pass	a tuple key with an ARITH-built BigInt leaf hits and misses by content
+pass	a user-sum variant value as a Map KEY keys by variant and payload
 pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string
 pass	a constant-size utf8 segment over ill-formed UTF-8 is a non-match, not a trap
 pass	a bytes segment sized by a CONSTANT LITERAL binds a fixed number of bytes then composes
@@ -1597,6 +1602,8 @@ pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
 pass	a nested symbol-literal payload falls through on a non-matching symbol
 pass	a nested tuple list element is bound over a runtime list and folded across the rest
+pass	a nested tuple-in-tuple float key MISSES a Map key with a different deep float leaf
+pass	a nested tuple-in-tuple float key is a Map key found by a separately-built equal key
 pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested tuple-pattern parameter destructures a runtime tuple
@@ -1830,6 +1837,7 @@ pass	a record sub-pattern nested inside a tuple match names the feature, not an 
 pass	a record whose field is a List projects the list handle and indexes it, alongside a scalar field
 pass	a record whose field is a runtime tuple nests across the boundary
 pass	a record whose field is misnamed is both missing and extra
+pass	a record whose field is a tuple with a Float64 leaf is a Map key found by content
 pass	a record with a duplicate field name is a type error
 pass	a record with a non-adjacent duplicate field name is a type error
 pass	a record with a runtime field is returned as a program result
@@ -2494,6 +2502,7 @@ pass	a truncating conversion to an unusual width keeps that width's low bits
 pass	a tuple = whose Bool element derives from a const-divisor rem is emitted as valid wasm
 pass	a three-arm runtime literal-tag dispatch hits the middle and last arms and misses past all three
 pass	a tuple = with differing const-divisor Bool elements compares unequal
+pass	a tuple Map key inserted twice with different values collapses to one entry and last write wins
 pass	a tuple access out of arity on a function-returned tuple is a type error, not a trap
 pass	a tuple annotated as a scalar type is rejected
 pass	a tuple annotated with the wrong arity is rejected
@@ -3717,6 +3726,7 @@ pass	same-arity tuple match arms share an equal element and sink the differing o
 pass	same-effect shadowing with ADVANCING states — the outer state survives the inner handle and resumes advanced
 pass	same-key-set record match arms share an equal field and sink the differing one
 pass	same-length list match arms share an equal element and sink the differing one
+pass	same-payload different-variant sum keys are DISTINCT map keys
 pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
 pass	scaling a Float64 quantity by a bare integer is a numeric-type mismatch
@@ -3731,6 +3741,7 @@ pass	self-operand division is NOT folded to one — it still traps at zero
 pass	remainder by negative one annihilates to zero at every input including the minimum
 pass	self-operand subtraction and xor are zero, and-or are the operand, on a runtime value
 pass	sequenced memoize helpers with a local let thread the Map-state out-state (the memo-spine shape)
+pass	set algebra descends into FLOAT-leaf tuple elements
 pass	set equality is independent of the order elements are written
 pass	set union is associative on generated inputs (the order merges are grouped does not matter)
 pass	set union is commutative on generated inputs (a grow-only-set CRDT merge converges)
@@ -4331,6 +4342,7 @@ pass	a Rational-inner quantity Map key matches an equal value written with a dif
 pass	a Rational-inner quantity Set dedups equal elements and keeps distinct ones
 pass	a Rational-inner quantity stored in a List reads back canonicalized through List.at
 pass	a Set of lists-of-quantities dedups equal members and keeps distinct ones
+pass	a Set of nested tuple-in-tuple float keys dedups equal members by content
 pass	a Set of nominal-over-quantity newtypes dedups equal members
 pass	a Set of structural records with a Float64 field dedups equal members by content
 pass	a Set of tuples with a Float64 element dedups equal members by content
@@ -4430,3 +4442,7 @@ pass	a whole LIST of quantities renders every element scaled to reference in the
 pass	a bare literal annotated Float32 is grounded at binary32 precision (literal path, not a runtime demote)
 pass	a literal in a USER-DECLARED sum payload that overflows the annotated width is rejected
 pass	two composed times-minus-one strength reductions round-trip a normal operand but still trap at Int64.min
+pass	a literal in a RECORD FIELD that overflows the annotated field width is rejected
+pass	a literal MAP VALUE that overflows the annotated value width is rejected
+pass	a literal MAP KEY that overflows the annotated key width is rejected
+pass	a bare in-range ConstFloat if-branch under a Float32 annotation emits valid f32 and runs
