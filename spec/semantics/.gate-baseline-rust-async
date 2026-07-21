@@ -393,6 +393,7 @@ pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
 todo	a Float64-inner Qty host result crosses as its float magnitude
 pass	a LET-bound outer perform under an inner handle threads its state advance
+pass	a do-discarded OUTER perform under an inner handle threads its state advance across the level
 pass	a List entry argument is marshalled as a vec!
 pass	a List-returning closure alongside a plain export — the closure
 pass	a List-returning closure alongside a plain export — the plain
@@ -468,6 +469,7 @@ pass	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot c
 pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
 pass	a RUNTIME Ast structural equality compares by value (Ast.Int scalar leaf and Ast.List compound)
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
+pass	a RUNTIME if-chain selects among four different-length heap lists
 pass	a RUNTIME list of floats compares equal element-wise (the value-eq-shaped walk)
 pass	a RUNTIME list of floats with a NaN element compares equal (value-eq-shaped canonical byte form)
 pass	a RUNTIME list of floats with a differing element compares unequal (value-eq-shaped)
@@ -514,6 +516,7 @@ pass	a String param threaded through a self-recursive loop and concatenated each
 pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
 pass	a Symbol nested in a TUPLE map key keys by content through the compound descent
+pass	a THREE-deep member-access chain reads a RUNTIME leaf through nested records
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
 pass	a THREE-parameter op arm binds all three parameters and the state
 pass	a TUPLE-result perform's projected field feeds a SECOND perform's argument, threading state across both
@@ -999,6 +1002,7 @@ pass	a handler arm computes its NEXT-STATE with a recursive pure helper
 pass	a handler arm computes its RESUME VALUE with a deeply RECURSIVE pure helper
 todo	a host-delegated result SEEDS an in-program handler's initial state
 pass	a large value in a NON-projected tuple slot does not trip the projection width check
+pass	a let record pattern destructures a helper CALL's runtime record result
 pass	a let tuple pattern destructures a helper CALL's runtime tuple result
 pass	a literal just past the Float32 finite max overflows in a runtime branch
 pass	a literal one past the Int8 min rejects in a runtime branch
@@ -1016,6 +1020,8 @@ pass	a performing closure called TWICE observes the state advance between its ca
 pass	a quantity in a TUPLE inside a LIST element renders scaled (nested composition)
 pass	a quantity in an OPTION inside a MAP value renders scaled (nested composition)
 pass	a quantity read from a map COMBINES with a fresh same-dimension quantity
+pass	a record MATCH pattern with a LITERAL field sub-pattern dispatches on the field value
+pass	a record field built by a RUNTIME BRANCH holds a user-sum, projected then matched
 pass	a record key with a float-bearing TUPLE field keys by content
 pass	a recursive fold over a runtime Peano spine recovers its depth
 pass	a right shift of a negative by a RUNTIME amount stays arithmetic
@@ -1943,6 +1949,7 @@ pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a recursively-built linked list renders its full runtime spine
 pass	a reduce-shaped wrapper seeding a second generic helper at two element types declines pending the transitive tie
 pass	a redundant full-width mask on an unsigned runtime value is elided
+pass	a redundant relational check inside its own truthy branch is known-true and its dead branch is eliminated
 pass	a reference to an unbound name is rejected before running
 pass	a referenced let binding whose init overflows IS observed, so its trap occurs (the anchor)
 pass	a reflected quantity type rejects a value of a different dimension

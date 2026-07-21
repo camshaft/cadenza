@@ -13461,6 +13461,121 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_unsigned_ordering_guard_refines_the_range_and_elides_a_dead_guard() {
+        // SLICE 2 (value-facts): an UNSIGNED ordering comparison against a NON-NEGATIVE constant refines the
+        // variable's range, exactly as the signed case does — `refine_from_comparison` previously SKIPPED all
+        // unsigned comparisons (over-conservative). `x < 8` on a `UInt32` proves `x ∈ [0,7]` in the then
+        // branch (no wraparound: x≥0, c≥0), so a nested comparison the range decides folds away and a
+        // range-covered mask is dropped. Pins the fold at the Lir level, value parity, AND the soundness
+        // twin (an UNDECIDED unsigned comparison is NOT folded — the guard against over-refining).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // `(if (< x 8) (if (< x 8) 1 2) 3)` on a UInt32 — the inner `(< x 8)` is known TRUE under the outer
+        // refinement `x ∈ [0,7]`, so it folds away: exactly ONE unsigned compare remains (the outer), the
+        // dead inner branch `2` gone. Before slice 2 the unsigned comparison refined NOTHING, so BOTH
+        // compares would have stayed. `I32LtU` is the unsigned-less-than the UInt32 compare selects.
+        let redundant = select(
+            "(module m (def (f (: x UInt32)) (if (< x 8) (if (< x 8) 1 2) 3)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            redundant
+                .iter()
+                .filter(|i| matches!(i, Lir::I32LtU))
+                .count(),
+            1,
+            "the inner unsigned (< x 8) folds away under the outer refinement, leaving one compare: {redundant:?}"
+        );
+        assert!(
+            !redundant.contains(&Lir::ConstI32(2)),
+            "the dead inner branch `2` is eliminated by the unsigned refinement: {redundant:?}"
+        );
+        // VALUE PARITY: x<8 takes both truthy → 1; x>=8 → outer else → 3.
+        let same = "(if (< x 8) (if (< x 8) 1 2) 3)";
+        assert_eq!(run::<i64>("(: x UInt32)", same, &[Val::U32(3)]), 1);
+        assert_eq!(run::<i64>("(: x UInt32)", same, &[Val::U32(50)]), 3);
+        // IMPLIED: `x < 4 ⇒ x < 8` true → inner folds, one compare, dead `2` gone.
+        let implied = select(
+            "(module m (def (g (: x UInt32)) (if (< x 4) (if (< x 8) 1 2) 3)) (def (main) 0) (export main))",
+            "g",
+        );
+        assert_eq!(
+            implied.iter().filter(|i| matches!(i, Lir::I32LtU)).count(),
+            1,
+            "an implied unsigned inner test folds: {implied:?}"
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x UInt32)",
+                "(if (< x 4) (if (< x 8) 1 2) 3)",
+                &[Val::U32(2)]
+            ),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x UInt32)",
+                "(if (< x 4) (if (< x 8) 1 2) 3)",
+                &[Val::U32(6)]
+            ),
+            3
+        );
+        // SOUNDNESS TWIN / over-refine guard: `x < 8` does NOT decide `x < 4` — the value can be 0..3 or
+        // 4..7 — so both unsigned compares MUST remain (an over-refinement here would be a miscompile).
+        let undecided = select(
+            "(module m (def (h (: x UInt32)) (if (< x 8) (if (< x 4) 1 2) 3)) (def (main) 0) (export main))",
+            "h",
+        );
+        assert_eq!(
+            undecided
+                .iter()
+                .filter(|i| matches!(i, Lir::I32LtU))
+                .count(),
+            2,
+            "an undecided unsigned inner comparison must NOT be folded: {undecided:?}"
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x UInt32)",
+                "(if (< x 8) (if (< x 4) 1 2) 3)",
+                &[Val::U32(2)]
+            ),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x UInt32)",
+                "(if (< x 8) (if (< x 4) 1 2) 3)",
+                &[Val::U32(6)]
+            ),
+            2
+        );
+    }
+
+    #[test]
     fn a_branch_refinement_elides_a_redundant_and_mask() {
         // FLOW-SENSITIVE REDUNDANT-MASK ELISION: inside `(if (and (>= x 0) (< x 256)) (& x 255) …)` the
         // then-branch KNOWS `x ∈ [0,255]`, so `x & 255 == x` — the mask covers x's whole refined range and

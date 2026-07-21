@@ -7149,6 +7149,44 @@ mod tests {
             )
             .is_some()
         );
+        // `rearmed`, `reaped`, and `queued_but_landed` each notable ON THEIR OWN. The multi-counter case
+        // above sets several counters at once, so it can't catch a mutant that DROPS one `== 0` conjunct
+        // from the notability gate (with the other counters still nonzero the gate stays false → Some
+        // either way). Only a "this counter alone is notable" pin kills that mutant — same reason the
+        // `reissued`-alone case exists. These three were the gate conjuncts left unpinned.
+        assert!(
+            watchdog_log_line(
+                1,
+                42,
+                &WatchdogCounts {
+                    rearmed: 1,
+                    ..Default::default()
+                }
+            )
+            .is_some()
+        );
+        assert!(
+            watchdog_log_line(
+                1,
+                42,
+                &WatchdogCounts {
+                    reaped: 1,
+                    ..Default::default()
+                }
+            )
+            .is_some()
+        );
+        assert!(
+            watchdog_log_line(
+                1,
+                42,
+                &WatchdogCounts {
+                    queued_but_landed: 1,
+                    ..Default::default()
+                }
+            )
+            .is_some()
+        );
     }
 
     #[test]
