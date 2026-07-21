@@ -8327,23 +8327,40 @@ fn check_application(
                 None
             };
             if let Some((bad_arg, bad_ty)) = bad {
+                // For a BOOL operand, add the likely-intent hint AND — when the operator has a boolean
+                // connective twin — a heuristic Replace on the OPERATOR HEAD so the suggestion is
+                // machine-applyable: `&` → `and`, `|` → `or` (`(& true false)` → `(and true false)`).
+                // `^`/`<<`/`>>` have NO boolean analogue, so they keep the message-only hint (no fix). The
+                // fix anchors `head` (the operator occurrence), NOT `bad_arg` (the operand the message points
+                // at) — the repair swaps the operator, not the value.
+                let mut fix = None;
                 let hint = if bad_ty == Ty::Bool {
+                    let connective = match crate::eval::meta_apply_of(db, head) {
+                        Some(crate::resolved::Prim::BitAnd) => Some("and"),
+                        Some(crate::resolved::Prim::BitOr) => Some("or"),
+                        _ => None, // BitXor / Shl / Shr — no boolean connective to swap in
+                    };
+                    if let Some(connective) = connective {
+                        fix = Some(crate::diag::Fix::replace_heuristic(head, connective));
+                    }
                     " — for boolean logic use `and`/`or`, not the bitwise operators"
                 } else {
                     ""
                 };
                 trace!(target: "rcdzc::infer", head = head.0, ty = %bad_ty.render_name(), "fault: bitwise/shift op on a non-integer operand (CDZ0203)");
-                out.push(
-                    Reject::coded(
-                        Code::TypeMismatch,
-                        format!(
-                            "a bitwise/shift operator needs integer operands, but a value of type {} \
-                             was given{hint}",
-                            bad_ty.render_name()
-                        ),
-                    )
-                    .at(bad_arg),
-                );
+                let mut reject = Reject::coded(
+                    Code::TypeMismatch,
+                    format!(
+                        "a bitwise/shift operator needs integer operands, but a value of type {} \
+                         was given{hint}",
+                        bad_ty.render_name()
+                    ),
+                )
+                .at(bad_arg);
+                if let Some(fix) = fix {
+                    reject = reject.with_fix(fix);
+                }
+                out.push(reject);
                 for &arg in args {
                     collect(db, arg, out);
                 }

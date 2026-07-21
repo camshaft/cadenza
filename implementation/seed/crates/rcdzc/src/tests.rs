@@ -23182,26 +23182,39 @@ mod match_engine {
         // in the arith/comparison cross-kind list (those share numeric-coercion hints a bitwise op lacks),
         // so this had no specific message. Now named: a bitwise/shift op is integer-only. A BOOL operand
         // also gets the likely-intent hint (`and`/`or` are the boolean connectives — the C/Python habit).
-        for (src, ty, want_hint) in [
+        // `want_fix` is the boolean-connective REPLACE the operator head should carry: `&`→`and`,
+        // `|`→`or` on Bool operands; `^`/shifts have no boolean twin so no fix, and a non-Bool operand
+        // (Char/String) gets the message-only hint with no fix.
+        for (src, ty, want_hint, want_fix) in [
             (
                 "(module m (def (f (: a Bool) (: b Bool)) (& a b)) (def (main) 0) (export main))",
                 "Bool",
                 true,
+                Some("and"),
+            ),
+            (
+                "(module m (def (f (: a Bool) (: b Bool)) (| a b)) (def (main) 0) (export main))",
+                "Bool",
+                true,
+                Some("or"),
             ),
             (
                 "(module m (def (f (: a Bool) (: b Bool)) (^ a b)) (def (main) 0) (export main))",
                 "Bool",
                 true,
+                None, // xor has no boolean connective twin — hint only, no fix
             ),
             (
                 "(module m (def (f (: c Char)) (<< c 1)) (def (main) 0) (export main))",
                 "Char",
                 false,
+                None,
             ),
             (
                 "(module m (def (f (: a String)) (| a a)) (def (main) 0) (export main))",
                 "String",
                 false,
+                None,
             ),
         ] {
             let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
@@ -23227,7 +23240,42 @@ mod match_engine {
                 "the `and`/`or` hint appears for a Bool operand only: {}",
                 d.message
             );
+            // A `&`/`|` on Bools carries an APPLYABLE Replace on the operator head (swap the bitwise op
+            // for its boolean connective); `^`/shifts / non-Bool operands carry no fix.
+            match want_fix {
+                Some(connective) => {
+                    let fix = d.fix.as_ref().unwrap_or_else(|| {
+                        panic!("a `&`/`|` on Bools carries a connective fix: {src}")
+                    });
+                    assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+                    assert_eq!(
+                        fix.replacement, connective,
+                        "swaps the bitwise op for its boolean connective: {src}"
+                    );
+                    assert!(
+                        !fix.verified,
+                        "the connective swap is a heuristic (intent guess)"
+                    );
+                }
+                None => assert!(
+                    d.fix.is_none(),
+                    "no connective fix for `^`/shifts / non-Bool operands: {src} fix={:?}",
+                    d.fix
+                ),
+            }
         }
+        // ROUND-TRIP: applying the `&`→`and` fix yields a program with no bitwise-operand fault — the
+        // connective swap is a real repair (a boolean `and` on Bools type-checks), witnessed by compiling.
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (f (: a Bool) (: b Bool)) (and a b)) (def (main) 0) (export main))"
+            )))
+            .iter()
+            .any(|d| d
+                .message
+                .contains("a bitwise/shift operator needs integer operands")),
+            "applying the `&`→`and` fix clears the bitwise-operand fault"
+        );
         // NO false positive: valid integer bitwise/shift, and the boolean connective `and` on Bools.
         for ok in [
             "(module m (def (f (: a Int64) (: b Int64)) (& a b)) (def (main) (f 5 3)) (export main))",
@@ -31287,6 +31335,61 @@ mod match_engine {
                 run_returns::<i64>(&bytes, "main"),
                 want,
                 "constant fold: {prog}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_runtime_rational_truncate_is_the_integer_part_toward_zero() {
+        // `Rational.truncate : Rational → Int64` — the integer part TOWARD ZERO, narrowed to Int64. A
+        // DERIVATION (no new runtime op): `(Int64.of (/ (numerator r) (denominator r)))` over the existing
+        // rational-num/den + BigInt truncating-div + checked Int64.of. `main` takes the runtime param `n`, so
+        // `(Rational.of n 2)` is a RUNTIME `RationalOfInts` (not a constant fold) → the derivation lowers its
+        // runtime shape. Pins TOWARD-ZERO on both signs: 7/2 → 3, -7/2 → -3 (NOT -4, which is floor), and an
+        // exact 8/2 → 4. This is the correctness axis a floor/round confusion would break.
+        for (n, want) in [
+            (7i64, "3"),
+            (-7, "-3"),
+            (8, "4"),
+            (-8, "-4"),
+            (1, "0"),
+            (-1, "0"),
+        ] {
+            let Some(got) = run_on_heap_arg(
+                "(module m (def (main (: n Int64)) (Rational.truncate (Rational.of n 2))) (export main))",
+                n,
+            ) else {
+                eprintln!(
+                    "runtime wasm not found (run `cargo xtask build`); skipping composed run"
+                );
+                return;
+            };
+            assert_eq!(got, want, "truncate({n}/2) toward zero");
+        }
+    }
+
+    #[test]
+    fn a_constant_rational_truncate_folds_to_a_constant_int() {
+        // A CONSTANT `Rational.truncate` FOLDS at compile time (no runtime import): `(Rational.of 7 2)` is a
+        // compile-time `Core::ConstRational(7, 2)`, so truncate folds to `Core::ConstInt(7 / 2 = 3)` via
+        // `IntValue::divmod` (truncating toward zero). Pins the const-fold arm alongside the runtime path,
+        // including the negative toward-zero case (-7/2 → -3) that distinguishes truncate from floor.
+        for (prog, want) in [
+            ("(Rational.truncate (Rational.of 7 2))", 3),
+            ("(Rational.truncate (Rational.of -7 2))", -3),
+            ("(Rational.truncate (Rational.of 8 2))", 4),
+            ("(Rational.truncate (Rational.of 1 2))", 0),
+        ] {
+            let src = format!("(module m (def (main) {prog}) (export main))");
+            let bytes = component(&src);
+            assert!(
+                cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+                "a constant Rational.truncate folds — no runtime import: {prog}"
+            );
+            assert_eq!(
+                run_returns::<i64>(&bytes, "main"),
+                want,
+                "const fold: {prog}"
             );
         }
     }

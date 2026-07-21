@@ -291,6 +291,15 @@ pub enum Prim {
     /// is in lowest terms (the normalized canonical form), so num/den observe the reduced fraction.
     RationalNum,
     RationalDen,
+    /// `Rational.truncate r` — the integer part of a rational TOWARD ZERO, narrowed to `Int64` (`7/2 → 3`,
+    /// `-7/2 → -3`). NOT a runtime op: it lowers as a DERIVATION synthesizing `(Int64.of (/ (numerator r)
+    /// (denominator r)))` over EXISTING nodes — `Rational.numerator`/`denominator` (→ BigInt), BigInt `/`
+    /// (truncating, toward zero), then the checked `Int64.of` narrowing. A CONSTANT `Core::ConstRational(n,
+    /// d)` folds to `Core::ConstInt(n / d)` (num-bigint truncating division) at compile time; a runtime
+    /// Rational lowers the synthesized derivation subtree. The `Int64.of` narrowing TRAPS on overflow. The
+    /// base of the Rational→Int64 projection surface; floor/ceil/round add a remainder-sign `±1` on top in
+    /// later increments (numeric-model.md: integer projections of a rational are written on BigInt divmod).
+    RationalTruncate,
     /// `Symbol.of` — INTERN a String into a Symbol (`String → Symbol`, 17-symbols). A constant string
     /// FOLDS to a constant symbol (represented as the underlying `Core::ConstStr` at type `Ty::Symbol` —
     /// the identity is content-derived), so `(= (Symbol.of "a") (Symbol.of "a"))` folds via the shared
@@ -843,6 +852,7 @@ impl Prim {
             "rational-value" => Some(Prim::RationalValue),
             "rational-num" => Some(Prim::RationalNum),
             "rational-den" => Some(Prim::RationalDen),
+            "rational-truncate" => Some(Prim::RationalTruncate),
             "Char" => Some(Prim::CharTy),
             "char-to-int" => Some(Prim::CharToInt),
             "char-from-int" => Some(Prim::CharFromInt),

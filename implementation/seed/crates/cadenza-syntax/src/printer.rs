@@ -1672,6 +1672,18 @@ impl<'a> Printer<'a> {
     /// One sum-type variant: a nullary `Ctor` (a `Name` atom) prints as itself; a payload variant
     /// `(Ctor T …)` prints as `Ctor(T, …)` — the same shape as a constructor application.
     fn print_variant(&mut self, id: StructId) {
+        // A `(comment-after "text" variant)` wrapper — a `//` comment that trailed this variant on the
+        // same source line (`| Ctor(T)  // note`). Print the inner variant, then ` // text` (trailing,
+        // no break), so it re-reads to the same wrapper. Unwrap FIRST so the wrapper isn't mistaken for
+        // a `(ctor payload…)` variant by the arms below.
+        if let Some(a) = self.a.as_form(id, "comment-after")
+            && a.len() == 2
+            && self.is_string(a[0])
+        {
+            self.print_variant(a[1]);
+            self.doc.word(format!(" //{}", self.doc_line_text(a[0])));
+            return;
+        }
         match self.a.get(id) {
             Struct::List(items) if items.len() >= 2 => {
                 let items = items.clone();
@@ -5827,6 +5839,49 @@ mod tests {
             assert!(b.ok(), "[{label}] reparse: {:?}", b.errors);
             assert_eq!(print(&b.arenas, 100), printed, "[{label}] not idempotent");
         }
+    }
+
+    #[test]
+    fn a_comment_trailing_a_sum_variant_is_preserved_same_line() {
+        // A `//` comment on the SAME line as a sum-type variant (`| Ctor(T) // note`) is captured as a
+        // `(comment-after "note" (Ctor T))` node and re-prints SAME-LINE after the variant — NOT dropped
+        // (the trailing-inline loss) NOR moved to its own line. The reader records same-line-ness (a span
+        // check) and attaches the comment to the variant it FOLLOWS. rcdzc's `strip_comments` peels the
+        // `comment-after` head (same as `comment`), so the type still scans. Count-based: the `//` count
+        // is preserved, and the arena carries a `(comment-after …)` that round-trips.
+        let src = "type E =\n  | Mismatch(Int64) // a code\n  | NotImpl";
+        let a = parser::read_ml(src);
+        assert!(a.ok(), "parse: {:?}", a.errors);
+        let sexpr = crate::sexpr::print(&a.arenas);
+        assert_eq!(
+            sexpr.matches("(comment-after ").count(),
+            1,
+            "the trailing `//` becomes a `(comment-after …)` node: {sexpr}"
+        );
+        let printed = print(&a.arenas, 100);
+        // The comment re-prints on the SAME line as its variant (not its own line), and is not dropped.
+        assert!(
+            printed
+                .lines()
+                .any(|l| l.contains("Mismatch(Int64)") && l.contains("// a code")),
+            "the `//` trails its variant same-line: {printed}"
+        );
+        assert_eq!(
+            printed.matches("// a code").count(),
+            1,
+            "comment preserved once: {printed}"
+        );
+        // Idempotent + round-trips (the `(comment-after …)` survives a re-read).
+        let b = parser::read_ml(&printed);
+        assert!(b.ok(), "reparse: {:?}", b.errors);
+        assert_eq!(print(&b.arenas, 100), printed, "not idempotent");
+        assert_eq!(
+            crate::sexpr::print(&b.arenas)
+                .matches("(comment-after ")
+                .count(),
+            1,
+            "the `(comment-after …)` survives the round-trip"
+        );
     }
 
     #[test]

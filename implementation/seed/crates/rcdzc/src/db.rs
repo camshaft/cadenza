@@ -4734,24 +4734,28 @@ pub(crate) struct StrippedAnnotations {
 //= spec/capabilities/agent-authoring.md#comments-are-semantically-inert
 //# A comment MUST NOT change the type a program's expressions are assigned.
 pub(crate) fn strip_comments(ast: &mut Arenas) {
+    // A reader-produced comment node the compiler peels through: a LEADING `(comment "text" form)` (a
+    // `//`/`///` on its own line above `form`) OR a TRAILING `(comment-after "text" form)` (a `//` that
+    // followed `form` on the same source line, e.g. `| Ctor(T) // note`). Both have the identical
+    // `[<string>, <form>]` tail, so both peel to `form` by the same rule — the compiler never sees either.
+    let comment_form = |ast: &Arenas, id: StructId| -> Option<StructId> {
+        let tail = ast
+            .as_form(id, "comment")
+            .or_else(|| ast.as_form(id, "comment-after"))?;
+        let (&text, &form) = (tail.first()?, tail.get(1)?);
+        // The first tail element must be a STRING (the comment text); else it's not a reader comment node.
+        matches!(ast.get(text), Struct::Atom(l) if matches!(ast.leaf(*l), Leaf::Str(_)))
+            .then_some(form)
+    };
     for i in 0..ast.structure.len() {
         let id = StructId(i as u32);
-        if ast.as_form(id, "comment").is_none() {
+        if comment_form(ast, id).is_none() {
             continue;
         }
-        // Follow the chain of nested `(comment "…" inner)` down to the first NON-comment form. Each step
-        // requires the tail to be exactly `[<string>, <form>]` where the string is the comment text; a
-        // malformed comment stops the descent (the node is left as-is for a later well-formedness pass).
+        // Follow the chain of nested comment nodes (leading and/or trailing, in any mix) down to the
+        // first NON-comment form. A malformed comment stops the descent (left for a well-formedness pass).
         let mut inner = id;
-        while let Some(tail) = ast.as_form(inner, "comment") {
-            let (Some(&text), Some(&form)) = (tail.first(), tail.get(1)) else {
-                break; // not `(comment <string> <form>)` — malformed, leave it
-            };
-            // The first tail element must be a STRING (the comment text); otherwise this is not a
-            // reader-produced comment node — leave it untouched.
-            if !matches!(ast.get(text), Struct::Atom(l) if matches!(ast.leaf(*l), Leaf::Str(_))) {
-                break;
-            }
+        while let Some(form) = comment_form(ast, inner) {
             inner = form;
         }
         // `inner` is the innermost non-comment form (or `id` itself if the chain was malformed at the top —
