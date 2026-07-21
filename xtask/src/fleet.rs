@@ -7434,6 +7434,20 @@ mod tests {
         );
         // Not a .json at all → None (never counted).
         assert_eq!(message_kind_from_filename("not-a-message.txt"), None);
+        // A trailing-dash bus name has numeric seq+pid but an EMPTY kind field
+        // (`<seq>-<pid>-.json` → the splitn(3) third field is ""). The `!kind.is_empty()` guard rejects
+        // it → None. Without that guard it would parse to `Some("")`, and since "" is not in
+        // INFORMATIONAL_KINDS, `message_kind_is_actionable("")` is true — a garbage file would silently
+        // inflate the drain-stall numerator. Pin both halves so a dropped `!kind.is_empty()` is caught.
+        assert_eq!(
+            message_kind_from_filename("000000000652-1961391-.json"),
+            None,
+            "empty kind field (trailing dash) is not a valid bus message"
+        );
+        assert!(
+            message_kind_is_actionable(""),
+            "guard rationale: an empty kind would count as actionable, so it MUST be rejected upstream"
+        );
     }
 
     #[test]

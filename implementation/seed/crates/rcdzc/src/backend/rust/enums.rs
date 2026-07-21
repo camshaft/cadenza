@@ -102,6 +102,19 @@ pub fn emit_sum_descriptors(db: &mut Db) -> String {
             }
         }
         out.push_str(&format!("// cdz-sum[{ident}]: {}\n", groups.join(" ")));
+        // Whether this sum renders its variant heads QUALIFIED (`((. Ast Str) …)`) rather than bare
+        // (`(Str …)`) at the value boundary — a PER-SUM property: true iff ANY variant name is bound in the
+        // prelude to a NON-variant-ctor (a type ctor / module / value), so a bare head would resolve to that
+        // OTHER binding. Computed by the SAME `lower::sum_needs_qualified_heads` the WASM backend uses
+        // (both-backend parity — one predicate, so a prelude change updates one place). This is what makes
+        // the built-in reflection `Ast` render qualified (`Int`/`Float`/`Bool` are type ctors, `List` the
+        // list module → the whole sum qualifies, so `Str`/`Name` qualify too as the per-sum consequence)
+        // WHILE a user sum with non-colliding variant names renders bare — the render crate keyed on the
+        // type NAME `Ast`, wrongly qualifying any sum so named (the boundary-render divergence this fixes).
+        // Emit a bare per-sum marker note the dependency-free render crate consults (it lacks the prelude).
+        if crate::lower::sum_needs_qualified_heads(db, decl.occ) {
+            out.push_str(&format!("// cdz-sum-qualified-heads[{ident}]\n"));
+        }
         // A generic sum records its parameter COUNT so the driver knows how many `T{k}` placeholders to
         // substitute from the result type's args. A monomorphic sum (no params) needs no such note.
         if !decl.params.is_empty() {

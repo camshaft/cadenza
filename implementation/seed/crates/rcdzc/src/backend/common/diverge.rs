@@ -7,7 +7,7 @@
 
 use crate::ast::StructId;
 use crate::core::Core;
-use crate::db::Db;
+use crate::db::{Db, ValueFact};
 use crate::infer::type_of;
 use crate::lower::core_of;
 use crate::resolved::Prim;
@@ -89,8 +89,8 @@ pub(crate) fn refined_frame_for_branch(
     db: &mut Db,
     cond: StructId,
     then_branch: bool,
-    base: crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)>,
-) -> crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)> {
+    base: crate::fxhash::FxHashMap<StructId, crate::db::ValueFact>,
+) -> crate::fxhash::FxHashMap<StructId, crate::db::ValueFact> {
     match core_of(db, cond) {
         Core::Compare { op, lhs, rhs } => {
             refine_from_comparison(db, op, lhs, rhs, then_branch, base)
@@ -128,8 +128,8 @@ pub(crate) fn refine_from_comparison(
     lhs: StructId,
     rhs: StructId,
     then_branch: bool,
-    base: crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)>,
-) -> crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)> {
+    base: crate::fxhash::FxHashMap<StructId, ValueFact>,
+) -> crate::fxhash::FxHashMap<StructId, ValueFact> {
     let binder_of = |db: &mut Db, id: StructId| -> Option<StructId> {
         match core_of(db, id) {
             Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
@@ -175,10 +175,10 @@ pub(crate) fn refine_from_comparison(
         // prior frame rather than fabricate an inverted `[c,c]` a downstream consumer might misread.
         let (plo, phi) = frame
             .get(&var)
-            .copied()
+            .and_then(|f| f.int_range)
             .unwrap_or((i64::MIN, Some(i64::MAX)));
         if plo <= ec && phi.is_none_or(|h| ec <= h) {
-            frame.insert(var, (ec, Some(ec)));
+            frame.insert(var, ValueFact::from_int_range(ec, Some(ec)));
         }
         return frame;
     }
@@ -217,7 +217,7 @@ pub(crate) fn refine_from_comparison(
     let mut frame = base;
     let (mut lo, mut hi) = frame
         .get(&var)
-        .copied()
+        .and_then(|f| f.int_range)
         .unwrap_or((i64::MIN, Some(i64::MAX)));
     if let Some(nl) = new_lo {
         lo = lo.max(nl);
@@ -228,6 +228,6 @@ pub(crate) fn refine_from_comparison(
             None => nh,
         });
     }
-    frame.insert(var, (lo, hi));
+    frame.insert(var, ValueFact::from_int_range(lo, hi));
     frame
 }

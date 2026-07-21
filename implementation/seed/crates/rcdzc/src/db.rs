@@ -758,6 +758,40 @@ pub(crate) struct SimpleListBinders {
     pub(crate) by_name: crate::fxhash::FxHashMap<String, Vec<crate::core::PathStep>>,
 }
 
+/// A conservative fact about the value at a Core occurrence, in the current flow context. A `ValueFact`
+/// is a product of independent, individually-optional FACETS so the domain is extensible ("add a facet"
+/// ≠ "rewrite the domain"): every field defaults to "unknown" (⊤, the safe default), and each is joined
+/// independently at a control-flow merge (per-var O(1), never cross-variable — a relational domain is
+/// deliberately OUT of the foundation).
+///
+/// SOUNDNESS (load-bearing — check elision defaults to KEEPING the check): a `ValueFact` is a conservative
+/// OVER-approximation of the set of values the occurrence may take here, i.e. `actual ⊆ fact`. A check is
+/// elided only when the fact PROVES it dead (e.g. div-by-zero elided iff `0 ∉ fact`). So a fact that is
+/// too WIDE (still a superset of `actual`) is SAFE — it may fail to prove the check dead, costing only a
+/// missed optimization; a fact that is too NARROW (drops a real value like 0) is UNSOUND — it would
+/// wrongly prove the check dead and elide a needed guard. Therefore the JOIN (at control-flow merges)
+/// WIDENS (set-union of possibilities) and the MEET (at a refinement) NARROWS (intersection): a
+/// refinement may only shrink the set to values the branch condition GUARANTEES.
+///
+/// Slice 1 populates ONLY `int_range` (a behavior-identical port of the former bare `(i64, Option<i64>)`
+/// interval tuple); the other facets are reserved for later slices (nonzero → div-by-zero elision,
+/// len_range → bounds elision, variant_tags → redundant-match elision) and are always ⊤ today.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ValueFact {
+    /// Signed integer interval `[lo, hi]` (`hi = None` ⇒ unbounded above) KNOWN to hold here — SUBSUMES the
+    /// former `(i64, Option<i64>)` refinement tuple. `None` ⇒ no interval fact (⊤).
+    pub(crate) int_range: Option<(i64, Option<i64>)>,
+}
+
+impl ValueFact {
+    /// The interval-only fact — the slice-1 constructor mirroring the former bare tuple.
+    pub(crate) fn from_int_range(lo: i64, hi: Option<i64>) -> ValueFact {
+        ValueFact {
+            int_range: Some((lo, hi)),
+        }
+    }
+}
+
 /// The compiler's whole state for one program: the AST, the top-level index, and the lazily-filled
 /// columns. Constructed once per subject program; every query is a free function in a query module
 /// that takes `&mut Db`. The columns are `pub(crate)` so a query module can fill its own and read the
@@ -1887,7 +1921,12 @@ pub struct Db {
     /// with this EMPTY (no branch context), so their behavior is unchanged. A frame is the FULL set of
     /// refinements in scope (each `if` merges its parent's frame with its own), so `value_range` reads
     /// only `last()`.
-    pub(crate) range_refinements: Vec<crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)>>,
+    ///
+    /// The frame value is a [`ValueFact`] (a product-of-facets over-approximation), of which slice 1
+    /// populates only the `int_range` facet — a behavior-identical widening of the former bare
+    /// `(i64, Option<i64>)` tuple. `refined_range` still projects out `int_range` so the interval
+    /// consumers (`value_range`, the guard-elision fns) are unchanged.
+    pub(crate) range_refinements: Vec<crate::fxhash::FxHashMap<StructId, ValueFact>>,
 }
 
 impl Db {
@@ -2728,7 +2767,7 @@ impl Db {
     /// [`pop_range_refinements`]: Db::pop_range_refinements
     pub(crate) fn push_range_refinements(
         &mut self,
-        frame: crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)>,
+        frame: crate::fxhash::FxHashMap<StructId, ValueFact>,
     ) {
         self.range_refinements.push(frame);
     }
@@ -2744,14 +2783,14 @@ impl Db {
     /// refinement frame's entry. `None` when no branch context is active (the const-fold callers) or the
     /// binder is not refined here, so the caller falls back to the declared-type / arith range.
     pub(crate) fn refined_range(&self, b: StructId) -> Option<(i64, Option<i64>)> {
-        self.range_refinements.last()?.get(&b).copied()
+        // Project out the `int_range` facet — slice 1 populates only that, so this is the same interval
+        // the interval consumers saw before the `ValueFact` widening.
+        self.range_refinements.last()?.get(&b)?.int_range
     }
 
     /// The current (top) refinement frame, or an empty map — so the `if` emit can clone it as the base a
     /// child branch extends (each branch's frame = parent's refinements ∪ this branch's).
-    pub(crate) fn current_refinements(
-        &self,
-    ) -> crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)> {
+    pub(crate) fn current_refinements(&self) -> crate::fxhash::FxHashMap<StructId, ValueFact> {
         self.range_refinements.last().cloned().unwrap_or_default()
     }
 

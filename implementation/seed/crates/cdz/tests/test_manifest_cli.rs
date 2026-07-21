@@ -1912,6 +1912,67 @@ fn a_failing_collection_property_shrinks_to_a_minimal_cardinality_counterexample
     );
 }
 
+/// A Set/Map nested inside a compound (`(Tuple (Set …) Bool)`) decodes its counterexample with the SIBLING
+/// slot INTACT — pinning that the Set/Map decode arm advances the pool cursor over its WHOLE draw (the count
+/// int + all RUNNER_LIST_LEN candidate elements/pairs), so a following slot decodes from the right position.
+/// The Set/Map decode draws a variable count then a fixed candidate block; a cursor-advance bug there (e.g.
+/// stopping after `c` elements instead of all `RUNNER_LIST_LEN`) would misalign — the trailing `Bool` would
+/// decode from a wrong pool int and render a wrong/garbage sibling. Here the property traps on a large Set
+/// element / Map value, and the counterexample must render `f(({…}, true))` — the `Bool` sibling present and
+/// correct AFTER the collection. Guards the nested-collection cursor discipline that the flat Set/Map CE tests
+/// don't exercise (they have no trailing slot to misalign).
+#[test]
+fn a_set_or_map_nested_in_a_compound_decodes_the_sibling_slot_intact() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — the -gen wrapper run needs the store"
+        );
+        return;
+    }
+    let d = dir("nested-collection-cursor");
+    // A `(Tuple (Set Int64) Bool)`: the property traps on a large Set element. The CE must show `({…}, <bool>)`
+    // — a well-formed 2-tuple with the Bool sibling decoded AFTER the set (cursor advanced over the whole set).
+    let set_src = "(do \
+           (@ test (def (f (: p (Tuple (Set Int64) Bool))) \
+             (match p ((tuple s b) \
+               (match (Set.to-list s) ((list) unit) \
+                 ((list h .. t) (if (< h 500000000000000000) unit (trap \"big\")))))))) \
+           (def (anchor) 1))";
+    let sf = write(&d, "settup.sexp", set_src);
+    let (sok, sout, _) = run(&["test", &sf, "--seed", "1", "--trials", "40"]);
+    assert!(!sok, "the nested-Set property fails: {sout}");
+    // The CE is `f(({…}, <bool>))` — assert the tuple shape with the set first and a Bool sibling after it.
+    let set_ce = sout
+        .lines()
+        .find(|l| l.contains("counterexample: f(({"))
+        .unwrap_or("");
+    assert!(
+        (set_ce.contains("}, true)") || set_ce.contains("}, false)"))
+            && !set_ce.contains("generated ints"),
+        "a nested `(Tuple (Set …) Bool)` counterexample renders `f(({{…}}, <bool>))` with the Bool sibling intact after the set (cursor advanced over the whole set): {sout}"
+    );
+    // Same for a `(Tuple (Map …) Bool)` — the Map decode (count + candidate pairs) must also leave the cursor
+    // positioned so the trailing Bool decodes correctly.
+    let map_src = "(do \
+           (@ test (def (f (: p (Tuple (Map Int64 Int64) Bool))) \
+             (match p ((tuple m b) \
+               (match (Map.to-list m) ((list) unit) \
+                 ((list h .. t) (match h ((tuple k v) (if (< v 500000000000000000) unit (trap \"big\")))))))))) \
+           (def (anchor) 1))";
+    let mf = write(&d, "maptup.sexp", map_src);
+    let (mok, mout, _) = run(&["test", &mf, "--seed", "1", "--trials", "40"]);
+    assert!(!mok, "the nested-Map property fails: {mout}");
+    let map_ce = mout
+        .lines()
+        .find(|l| l.contains("counterexample: f(({"))
+        .unwrap_or("");
+    assert!(
+        (map_ce.contains("}, true)") || map_ce.contains("}, false)"))
+            && !map_ce.contains("generated ints"),
+        "a nested `(Tuple (Map …) Bool)` counterexample renders `f(({{…}}, <bool>))` with the Bool sibling intact after the map: {mout}"
+    );
+}
+
 /// END-TO-END: a MIN-LENGTH `@invariant` constrains a newtype-List to non-empty generation. `NEList = Mk
 /// (List Int64)` with `@invariant(< 0 (List.len self))`: every generated `NEList` wraps a NON-EMPTY list, so
 /// a property asserting `List.len > 0` PASSES all trials (before the constraint the generator drew the empty

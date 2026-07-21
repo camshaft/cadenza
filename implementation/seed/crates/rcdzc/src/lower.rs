@@ -13913,7 +13913,7 @@ fn variant_head_ast(
 /// same way. A variant whose prelude binding IS a variant ctor (`Some`/`None`/`Ok`/`Err`) round-trips
 /// bare, so it does not force qualification; a variant name absent from the prelude (`Cons`, `Neg`)
 /// likewise resolves bare to its own ctor.
-fn sum_needs_qualified_heads(db: &mut Db, decl: StructId) -> bool {
+pub(crate) fn sum_needs_qualified_heads(db: &mut Db, decl: StructId) -> bool {
     let Some(t) = db.type_decl_by_occ(decl) else {
         return false;
     };

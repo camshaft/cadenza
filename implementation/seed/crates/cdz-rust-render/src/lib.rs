@@ -440,6 +440,7 @@ pub fn cdz_qty_at(module: &str, name: &str) -> std::collections::HashMap<String,
 ///    order (both the type's render and the emitted Rust tuple order them the same), so element `i`
 ///    reads `.i`;
 ///  - any scalar (`Int64`, `Bool`, …) → `{}` (an integer/bool `Display`s exactly as cdz-run prints it).
+#[allow(clippy::too_many_arguments)]
 pub fn cdz_render_expr(
     ty: &str,
     sums: &std::collections::HashMap<String, Vec<(String, Vec<String>)>>,
@@ -451,6 +452,9 @@ pub fn cdz_render_expr(
     // for a Qty NESTED in a Tuple/Record (its scale is not the top-level `unit_scale`). Empty for a result
     // with no compound non-scale-1 Qty leaf; the top-level bare Qty keeps using `unit_scale`.
     qty_at: &std::collections::HashMap<String, (i128, i128)>,
+    // The set of sum idents whose variant heads render QUALIFIED (see [`cdz_render_at`] / the
+    // `// cdz-sum-qualified-heads[…]` notes). Parsed from the module by [`cdz_sum_qualified_heads`].
+    qualified_heads: &std::collections::HashSet<String>,
 ) -> String {
     let mut helpers = Vec::new();
     let mut on_path = Vec::new();
@@ -464,6 +468,7 @@ pub fn cdz_render_expr(
         unit_scale,
         "",
         qty_at,
+        qualified_heads,
         &mut helpers,
         &mut on_path,
     );
@@ -512,6 +517,10 @@ pub fn cdz_render_at(
     logical_path: &str,
     // PER-ELEMENT Qty display-scale map — logical-path → `(num, den)`; the Qty arm looks up `logical_path`.
     qty_at: &std::collections::HashMap<String, (i128, i128)>,
+    // The set of sum idents whose variant heads render QUALIFIED (`((. Ast Str) …)`) rather than bare — the
+    // backend's per-sum `sum_needs_qualified_heads` decision, parsed from the `// cdz-sum-qualified-heads[…]`
+    // notes. The user-sum arm's `disp_head` consults it (replacing the old `ty == "Ast"` name hack).
+    qualified_heads: &std::collections::HashSet<String>,
     helpers: &mut Vec<String>,
     on_path: &mut Vec<String>,
 ) -> String {
@@ -537,6 +546,7 @@ pub fn cdz_render_at(
             unit_scale,
             logical_path,
             qty_at,
+            qualified_heads,
             helpers,
             on_path,
         );
@@ -571,6 +581,7 @@ pub fn cdz_render_at(
                     None,
                     &child_lp,
                     qty_at,
+                    qualified_heads,
                     helpers,
                     on_path,
                 )
@@ -619,6 +630,7 @@ pub fn cdz_render_at(
                 None,
                 &child_lp,
                 qty_at,
+                qualified_heads,
                 helpers,
                 on_path,
             ));
@@ -644,7 +656,17 @@ pub fn cdz_render_at(
             format!("{logical_path}.*")
         };
         let inner = cdz_render_at(
-            elem_ty, &ebind, sums, newtypes, sum_params, None, None, &elem_lp, qty_at, helpers,
+            elem_ty,
+            &ebind,
+            sums,
+            newtypes,
+            sum_params,
+            None,
+            None,
+            &elem_lp,
+            qty_at,
+            qualified_heads,
+            helpers,
             on_path,
         );
         // Build `(list <e0> <e1> …)`: seed with "(list", push a space + each element's render, close ")".
@@ -664,7 +686,17 @@ pub fn cdz_render_at(
             format!("{logical_path}.*")
         };
         let inner = cdz_render_at(
-            elem_ty, &ebind, sums, newtypes, sum_params, None, None, &elem_lp, qty_at, helpers,
+            elem_ty,
+            &ebind,
+            sums,
+            newtypes,
+            sum_params,
+            None,
+            None,
+            &elem_lp,
+            qty_at,
+            qualified_heads,
+            helpers,
             on_path,
         );
         return format!(
@@ -692,11 +724,31 @@ pub fn cdz_render_at(
             format!("{logical_path}!v")
         };
         let kr = cdz_render_at(
-            key_ty, &kbind, sums, newtypes, sum_params, None, None, &key_lp, qty_at, helpers,
+            key_ty,
+            &kbind,
+            sums,
+            newtypes,
+            sum_params,
+            None,
+            None,
+            &key_lp,
+            qty_at,
+            qualified_heads,
+            helpers,
             on_path,
         );
         let vr = cdz_render_at(
-            val_ty, &vbind, sums, newtypes, sum_params, None, None, &val_lp, qty_at, helpers,
+            val_ty,
+            &vbind,
+            sums,
+            newtypes,
+            sum_params,
+            None,
+            None,
+            &val_lp,
+            qty_at,
+            qualified_heads,
+            helpers,
             on_path,
         );
         return format!(
@@ -806,6 +858,7 @@ pub fn cdz_render_at(
             None,
             logical_path,
             qty_at,
+            qualified_heads,
             helpers,
             on_path,
         );
@@ -904,7 +957,17 @@ pub fn cdz_render_at(
             format!("{logical_path}?0")
         };
         let inner = cdz_render_at(
-            payload, &vbind, sums, newtypes, sum_params, None, None, &child_lp, qty_at, helpers,
+            payload,
+            &vbind,
+            sums,
+            newtypes,
+            sum_params,
+            None,
+            None,
+            &child_lp,
+            qty_at,
+            qualified_heads,
+            helpers,
             on_path,
         );
         return format!(
@@ -933,6 +996,7 @@ pub fn cdz_render_at(
             None,
             &ok_lp,
             qty_at,
+            qualified_heads,
             helpers,
             on_path,
         );
@@ -946,6 +1010,7 @@ pub fn cdz_render_at(
             None,
             &err_lp,
             qty_at,
+            qualified_heads,
             helpers,
             on_path,
         );
@@ -992,6 +1057,7 @@ pub fn cdz_render_at(
                         None,
                         logical_path,
                         qty_at,
+                        qualified_heads,
                         helpers,
                         on_path,
                     );
@@ -1015,6 +1081,7 @@ pub fn cdz_render_at(
                                 None,
                                 logical_path,
                                 qty_at,
+                                qualified_heads,
                                 helpers,
                                 on_path,
                             )
@@ -1061,15 +1128,20 @@ pub fn cdz_render_at(
             {
                 on_path.push(ty.to_string());
                 // A variant's DISPLAY HEAD (including the opening paren) in the canonical value form. Most
-                // user/prelude sums render a variant BARE — `(Cons …`, `(Pos …`. But the prelude reflection
-                // sum `Ast` renders QUALIFIED — `((. Ast Int) …`, `((. Ast Name) …` — because its variant
-                // names (`Int`, `List`, `Bool`, `Float`) collide with prelude/type names, so the canonical
-                // form disambiguates via member access (matching cdz-run + the wasm gate for `Ast`;
-                // `Sign`/`Ordering`, whose variants don't collide, stay bare). Keyed on the sum name `Ast` —
-                // the one reflection value-type whose escape form is qualified. Every arm then emits
-                // `{head} <payload…>)` uniformly (nullary → `{head} unit)`).
+                // user/prelude sums render a variant BARE — `(Cons …`, `(Pos …`. But a sum in the
+                // `qualified_heads` set renders QUALIFIED — `((. Ast Int) …`, `((. Ast Name) …` — via member
+                // access. This is a PER-SUM property the backend computes (`lower::sum_needs_qualified_heads`,
+                // emitted as `// cdz-sum-qualified-heads[…]`): true iff ANY variant name is bound in the
+                // prelude to a NON-variant-ctor (a type ctor / module / value), so a bare head would resolve
+                // to that OTHER binding. The built-in reflection `Ast` qualifies (its `Int`/`Float`/`Bool`
+                // are type ctors, `List` the list module → whole sum qualifies, so `Str`/`Name` do too);
+                // `Sign`/`Ordering`/a user sum with no prelude-colliding variant name stay bare. Replaces
+                // the old `ty == "Ast"` NAME hack, which wrongly qualified any sum literally named `Ast`
+                // regardless of its variants (the boundary-render divergence corpus-bugfix filed). Every arm
+                // then emits `{head} <payload…>)` uniformly (nullary → `{head} unit)`).
+                let qualified = qualified_heads.contains(ty);
                 let disp_head = |vname: &str| -> String {
-                    if ty == "Ast" {
+                    if qualified {
                         format!("((. {ty} {vname})")
                     } else {
                         format!("({vname}")
@@ -1100,6 +1172,7 @@ pub fn cdz_render_at(
                                 None,
                                 &child_lp,
                                 qty_at,
+                                qualified_heads,
                                 helpers,
                                 on_path,
                             );
@@ -1129,6 +1202,7 @@ pub fn cdz_render_at(
                                         None,
                                         &child_lp,
                                         qty_at,
+                                        qualified_heads,
                                         helpers,
                                         on_path,
                                     )
@@ -1230,6 +1304,27 @@ pub fn cdz_sum_params(module: &str) -> std::collections::HashMap<String, usize> 
         }
     }
     map
+}
+
+/// Parse the `// cdz-sum-qualified-heads[<Ident>]` marker notes into a set of sum idents whose variant
+/// heads render QUALIFIED (`((. Ast Str) …)`) rather than bare (`(Str …)`) at the value boundary. A sum
+/// gets this marker iff any of its variant names is bound in the prelude to a NON-variant-ctor (a type
+/// ctor / module / value) — the backend's `lower::sum_needs_qualified_heads` per-sum decision, emitted so
+/// the driver renders each user-sum ctor exactly as the wasm backend does. A sum absent from this set
+/// renders its heads bare (the common case — `Some`/`None`/`Cons`/a user sum with no prelude-colliding
+/// variant name). This REPLACES the old hard-coded `ty == "Ast"` name check, which wrongly qualified any
+/// sum literally NAMED `Ast` regardless of its variants (the boundary-render divergence).
+pub fn cdz_sum_qualified_heads(module: &str) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    for line in module.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("// cdz-sum-qualified-heads[")
+            && let Some(ident) = rest.strip_suffix(']')
+        {
+            set.insert(ident.trim().to_string());
+        }
+    }
+    set
 }
 
 /// Split a HEAD-APPLIED type `(<Head> <Arg>…)` into `(head, args)` — `"(Box Int64)"` → `("Box", ["Int64"])`,
@@ -1418,6 +1513,7 @@ mod tests {
             None,
             None,
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
         );
         assert!(
             scalar.contains("__r"),
@@ -1432,6 +1528,7 @@ mod tests {
             None,
             None,
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
         );
         assert!(
             tup.contains(".0") && tup.contains(".1"),
@@ -1441,5 +1538,49 @@ mod tests {
             tup.contains("tuple"),
             "tuple render emits the (tuple …) head: {tup}"
         );
+    }
+
+    #[test]
+    fn a_sum_renders_heads_qualified_iff_it_is_in_the_qualified_heads_set_not_by_name() {
+        // Boundary-render divergence fix: the old `disp_head` qualified ANY sum literally NAMED `Ast`; now it
+        // consults the per-sum `qualified_heads` set (the backend's `sum_needs_qualified_heads` decision).
+        // A user sum named `Ast` with NON-colliding variants (Lit/Node) is NOT in the set → renders BARE
+        // `(Lit …)`, matching wasm + the `Tree` control (the divergence corpus-bugfix filed). The SAME sum,
+        // when in the set (the built-in reflection `Ast`, or a user sum with a prelude-colliding variant like
+        // `Int`), renders QUALIFIED `((. Ast Lit) …)`. So qualification is a per-sum property, not the name.
+        let mut sums = std::collections::HashMap::new();
+        sums.insert(
+            "Ast".to_string(),
+            vec![
+                ("Lit".to_string(), vec!["Int64".to_string()]),
+                ("Node".to_string(), vec![]),
+            ],
+        );
+        let nt = std::collections::HashMap::new();
+        let params = std::collections::HashMap::new();
+        let qty = std::collections::HashMap::new();
+        // NOT qualified → bare.
+        let empty = std::collections::HashSet::new();
+        let bare = cdz_render_expr("Ast", &sums, &nt, &params, None, None, &qty, &empty);
+        assert!(
+            bare.contains("(Lit ") && !bare.contains("(. Ast Lit)"),
+            "a sum absent from qualified_heads renders BARE (Lit …), not qualified by name:\n{bare}"
+        );
+        // In qualified_heads → qualified member-access heads.
+        let mut q = std::collections::HashSet::new();
+        q.insert("Ast".to_string());
+        let qual = cdz_render_expr("Ast", &sums, &nt, &params, None, None, &qty, &q);
+        assert!(
+            qual.contains("(. Ast Lit)"),
+            "a sum in qualified_heads renders its heads QUALIFIED ((. Ast Lit) …):\n{qual}"
+        );
+    }
+
+    #[test]
+    fn cdz_sum_qualified_heads_parses_the_marker_notes() {
+        let module = "// cdz-sum[Ast]: (Int Int64) (Str String)\n// cdz-sum-qualified-heads[Ast]\n// cdz-sum[Foo]: (A) (B)\n";
+        let set = cdz_sum_qualified_heads(module);
+        assert!(set.contains("Ast"), "Ast is marked qualified-heads");
+        assert!(!set.contains("Foo"), "Foo has no marker → not qualified");
     }
 }

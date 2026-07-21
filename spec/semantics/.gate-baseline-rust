@@ -500,6 +500,8 @@ pass	a SUM constructor payload that is a compound built from performs threads an
 pass	a SUM is threaded as a handler's folded state across operations
 pass	a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)
 pass	a SYMBOL compound = has DISCRIMINATING power (two runtime-selected interned names separate)
+pass	a Set.of over RECURSIVE-sum elements dedups by spine content
+pass	a Set.of over user-sum variants keeps same-payload different-variant elements distinct
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
@@ -698,9 +700,11 @@ pass	a checked-add over a RUNTIME operand declines pending the Core::CheckedArit
 pass	a closure applied through an unbuilt sibling variant compiles and runs
 pass	a closure argument is another closure's result
 pass	a closure captures TWO inner-handled perform results across NESTED lets and escapes under an outer handler
+pass	a closure captures a MAP and serves lookups at call time
 pass	a closure captures a boolean and reads it back inside its lifted body through a recursive HOF
 pass	a closure captures a capturing closure and calls it through a recursive HOF
 pass	a closure captures a function value and applies it through a recursive HOF
+pass	a closure captures a runtime-depth RECURSIVE SUM and folds it at call time
 pass	a closure captures a sum value and matches it inside its lifted body through a recursive HOF
 pass	a closure captures a tuple and projects it inside its lifted body through a recursive HOF
 pass	a closure captures another closure and applies it
@@ -772,6 +776,7 @@ pass	a comparison's trapping shared bound fires under a trap-free condition
 pass	a comparison-predicate function returns its boolean result
 pass	a compile-time type branch reads a runtime parameter's static type
 pass	a component's manifest is the union of two entrypoints' distinct rows
+pass	a compose combinator captures TWO function values and applies them in declared order
 pass	a composed call over a record-transforming function with an arithmetic field compiles
 pass	a composed proof chains the equational, λ, and logical rule families into one derivation
 pass	a compound element projected from a let-bound runtime tuple is matched
@@ -1007,6 +1012,7 @@ pass	a large value in a NON-projected tuple slot does not trip the projection wi
 pass	a literal just past the Float32 finite max overflows in a runtime branch
 pass	a literal one past the Int8 min rejects in a runtime branch
 pass	a magnitude literal that overflows the annotated Qty INNER width is rejected
+pass	a map of lists of tuples of RECORDS: a four-level mixed query reads a named leaf
 pass	a narrow-width overflow in a RECURSIVE function's annotated result is rejected
 pass	a narrow-width overflow in a handler arm resume value under a narrow annotation is rejected
 pass	a narrow-width overflow projected through Option.expect over a runtime branch is rejected
@@ -1017,6 +1023,7 @@ pass	a narrow-width overflow reached through a TUPLE-field projection of a runti
 pass	a negative literal under an UNSIGNED width rejects in a runtime branch
 pass	a quantity in a TUPLE inside a LIST element renders scaled (nested composition)
 pass	a quantity in an OPTION inside a MAP value renders scaled (nested composition)
+pass	a quantity read from a map COMBINES with a fresh same-dimension quantity
 pass	a record key with a float-bearing TUPLE field keys by content
 pass	a recursive fold over a runtime Peano spine recovers its depth
 pass	a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on every backend
@@ -3347,6 +3354,7 @@ pass	eval of a quoted disjunction short-circuits to true
 pass	eval of a quoted equality yields the boolean value directly
 pass	eval of a quoted float executes it to the float value
 pass	eval of a quoted float feeds ordinary float arithmetic
+pass	eval of a quoted List.at folds the indexing operation to its Option result
 pass	eval of a quoted lambda application folds
 pass	eval of a quoted let-binding form folds
 pass	eval of a quoted list-construction form folds to the runtime list
@@ -3356,6 +3364,7 @@ pass	eval of a quoted ordering comparison drives the branch
 pass	eval of a quoted ordering comparison yields the boolean value directly
 pass	eval of a quoted private constructor is withheld exactly as a direct reference — no forge
 pass	eval of a quoted proof-variant match cannot destructure an abstract proof outside the kernel
+pass	eval of a quoted String.byte-len folds the string operation
 pass	eval of a quoted string executes it to the string value
 pass	eval of a quoted subtraction that goes negative preserves the sign
 pass	division by negative one negates but still overflows at the minimum

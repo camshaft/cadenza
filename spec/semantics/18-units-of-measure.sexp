@@ -2265,6 +2265,22 @@
             (export main)))
   (output (: 100 Int8)))
 
+(case "a quantity read from a map COMBINES with a fresh same-dimension quantity"
+  (doc    "The arithmetic face of the Qty-in-collection round-trip (the round-trip pins above read and
+           UNWRAP; this one reads and COMPUTES): a runtime-magnitude `(Qty.of n meter)` stored as a map
+           value, looked up, and ADDED to a fresh `(Qty.of 5 meter)` inside the Some arm — the looked-up
+           quantity must carry its dimension through the heap round-trip so the homogeneous `+` type-checks
+           and computes 10+5 = 15. A decode that returned a bare magnitude (dimension dropped) would either
+           reject the `+` or mis-scale. The collection-read companion of the direct Qty arithmetic pins.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((m (Map.insert Map.empty 1 (Qty.of n (Unit.base #"meter")))))
+                (Qty.value (match (Map.lookup m 1)
+                  ((Some q) (+ q (Qty.of 5 (Unit.base #"meter"))))
+                  ((None u) (Qty.of 0 (Unit.base #"meter")))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 15 Int64)))
+
 (case "a Float32 quantity stored as a map value round-trips through Map.lookup"
   (doc    "The Float32 analogue of the narrow-Int map-value case. A `(Qty Float32 meter)` stored as a MAP
            VALUE, read back via `Map.lookup`, and unwrapped. A quantity over a Float32 erases to its inner

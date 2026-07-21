@@ -14064,8 +14064,8 @@ fn refined_frame_for_match_arm(
     db: &mut Db,
     scrutinee: StructId,
     probe: &crate::core::Probe,
-    base: crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)>,
-) -> crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)> {
+    base: crate::fxhash::FxHashMap<StructId, crate::db::ValueFact>,
+) -> crate::fxhash::FxHashMap<StructId, crate::db::ValueFact> {
     let binder = match core_of(db, scrutinee) {
         Core::Param { binder } | Core::LocalRef { binder } => binder,
         _ => return base,
@@ -14083,7 +14083,7 @@ fn refined_frame_for_match_arm(
     let mut frame = base;
     // Intersect with any parent refinement (the exact point is the tightest, so it wins whenever it lies
     // within the parent range — and a match arm that reached here proves the scrutinee IS `c`).
-    frame.insert(binder, (c, Some(c)));
+    frame.insert(binder, crate::db::ValueFact::from_int_range(c, Some(c)));
     frame
 }
 

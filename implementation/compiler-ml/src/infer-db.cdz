@@ -16,7 +16,7 @@
 import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, param-type-of, record-param-type, encode-param-type, pt-width, pt-signed } from "parse-db"
 import { fits-width } from "int-width"
 import { Resolved, resolve-tree } from "resolve-db"
-import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ground-default } from "ty"
+import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ty-deferred-int, ground-default } from "ty"
 import { unify-ty } from "unify-ty"
 
 /// The type fact. `TInt`/`TBool` = the two ground types; `TErr` = type-level poison (unbound name / ill-typed
@@ -37,12 +37,29 @@ type Typed =
 /// narrow width from an annotation changes only the sites that KNOW the width, not this default).
 def t-int64() = Typed.TIntW(true, 64)
 
+/// A DEFERRED integer type — a bare literal (or an all-literal computed subexpr) whose sign+width are not yet
+/// constrained (item-3 HM). Represented as the SENTINEL `TIntW(true, 0)`: width 0 is not a real int width
+/// (valid widths are 8/16/32/64), so it can't collide with a concrete type, and existing `TIntW(_, _)` matches
+/// (the lower/guard sites that don't inspect the width) still fire. A deferred type GROUNDS to a narrow sibling
+/// when it meets one in `arith-result-type` (routed to `ty-deferred-int()` so the existing unify does the work),
+/// and grounds to Int64 at the root (`ty-to-typed-int`/`ground-default` map width 0 → 64 via the deferred `Ty`).
+/// This mirrors the `ty` layer's `SignDef`/`WidthDef` deferred state, which the pipeline never sees (grounded
+/// before lower/eval). `is-deferred-int` recognizes it.
+def t-int-deferred() = Typed.TIntW(true, 0)
+
+/// Is `t` the deferred-int sentinel (`TIntW(_, 0)`)? Sign is irrelevant to the sentinel — width 0 IS the mark.
+def is-deferred-int(t: Typed) = match t with
+  | Typed.TIntW(_, w) => w == 0
+  | _ => false
+
 /// Infer the type of every node in the subtree at `id`, reading the pre-built resolve column `rcol` and
 /// threading the type column `tcol` (NodeId → Typed) it fills. Reading `rcol` (not re-resolving) is the
 /// producer-reads-producer contract: infer consumes resolve's already-memoized facts.
 def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
   match node-at(tree, id) with
-    | Option.Some(Node.NLit(_)) => Map.insert(tcol, id, t-int64())
+    // item-3 HM: a bare literal is DEFERRED (sign+width unconstrained) — it grounds to a narrow sibling in an
+    // arith/relational op (via arith-result-type), or to Int64 at the root if never constrained. Was t-int64().
+    | Option.Some(Node.NLit(_)) => Map.insert(tcol, id, t-int-deferred())
     | Option.Some(Node.NBoolLit(_)) => Map.insert(tcol, id, Typed.TBool)
     | Option.Some(Node.NAnnLit(_, sflag, w)) =>
         // a width-annotated literal `(: v IntN)` has the ANNOTATED type TIntW(signed, width) — the narrow
@@ -287,29 +304,94 @@ def ty-to-typed-int(t: Ty) = match ground-default(t) with
   | Ty.TyBool => Typed.TBool
   | Ty.TyErr => Typed.TErr
 
+/// item-3 HM: a unification RESULT `Ty` → `Typed`, PRESERVING a still-deferred width as the deferred sentinel
+/// (`t-int-deferred`) rather than eagerly grounding it to Int64. This is what an ARITH node's result type uses:
+/// two deferred operands (`(+ 10 10)`) unify to a still-deferred `Ty` → keep it DEFERRED so an enclosing op
+/// (`(: 100 Int8) + (+ 10 10)`) can still ground the whole component to the narrow sibling. A CONCRETE width
+/// (the operand met a fixed sibling, e.g. Int8) grounds normally. The deferred sentinel only ever survives to a
+/// context that grounds it: another arith op, or the root (lower emits a literal as cnum64 regardless; a bare
+/// deferred value never carries width 0 into Core — see t-int-deferred).
+def ty-to-typed-defer(t: Ty) = match t with
+  | Ty.TyInt(it) => (match it with | IntType.IntType(_, w) =>
+      (match w with | Width.WidthDef => t-int-deferred() | Width.WFixed(_) => ty-to-typed-int(t)))
+  | _ => ty-to-typed-int(t)
+
 /// The ARITHMETIC result type of operands `a`,`b` (corrected-2b): both must be the SAME integer type — UNIFY
 /// their `Ty` (via the bridge + unify-ty's orthogonal sign/width). `Some(shared TIntW)` when they unify to an
 /// integer (Int64+Int64→Int64, UInt8+UInt8→UInt8); `None` when they conflict (mixed width/sign → CDZ0301) or
 /// either isn't an integer. eval/lower TRAP a narrow result's overflow (int-width.checked-*).
 def arith-result-type(tree: Tree, tcol: Map(Int64, Typed), a: Int64, b: Int64) =
   (match Map.lookup(tcol, a) with
-    | Option.Some(Typed.TIntW(sa, wa)) =>
+    | Option.Some(ta) =>
         (match Map.lookup(tcol, b) with
-          | Option.Some(Typed.TIntW(sb, wb)) =>
-              (match unify-ty(ty-fixed-int(sa, wa), ty-fixed-int(sb, wb)) with
-                | Option.Some(rty) => Option.Some(ty-to-typed-int(rty))
-                // MIXED width/sign that doesn't unify: a bare integer LITERAL is width-AND-SIGN-polymorphic —
-                // it grounds to the sibling's WIDTH AND SIGN if its value fits (corpus 09-functions:3577 "the
-                // check does NOT over-reject": `(def (f (: a Int8)) (+ a 10))` `(f 100)` → 110:Int8, the
-                // literal 10 becomes Int8; and a signed-default literal adapting to a UInt8 sibling takes
-                // (unsigned,8) when it fits — arith-lit-adapt→lit-fits-narrow grounds the full (ts,tw), sign
-                // included). infer types every NLit as the default Int64, so `Int8 + 10` looks mixed; recover
-                // by letting a plain-literal operand take the OTHER operand's narrow type when the literal fits.
-                // (Only a genuine NLit adapts — a computed/annotated Int64 keeps its width, so a real mixed-
-                // width op like `(: 5 Int8) + (: 5 Int16)` still declines CDZ0301.)
-                | Option.None(_) => arith-lit-adapt(tree, a, sa, wa, b, sb, wb))
+          | Option.Some(tb) =>
+              // item-3 HM: map each operand to a `Ty` — a DEFERRED operand (t-int-deferred sentinel, width 0)
+              // becomes `ty-deferred-int()` (SignDef+WidthDef) so the EXISTING unify grounds it to a fixed
+              // narrow sibling (or, deferred~deferred, stays deferred → grounds to Int64 at the root via
+              // ty-to-typed-int/ground-default). A fixed operand keeps its concrete (sign,width). This makes
+              // `(: 100 Int8) + (+ 10 10)` (a COMPUTED deferred operand) ground the whole thing to Int8 and RUN
+              // (120 fits; a narrow-overflowing result traps at eval — CDZ0304), and a mixed typed/untyped param
+              // body `(def (f a (: b Int8)) (+ a b))` ground `a` to Int8. Non-int operands → None.
+              (match typed-to-ty-defer(ta) with
+                | Option.Some(tya) =>
+                    (match typed-to-ty-defer(tb) with
+                      | Option.Some(tyb) =>
+                          (match unify-ty(tya, tyb) with
+                            // unified — BUT if the result grounds to a NARROW fixed width and either operand is a
+                            // BARE literal, its VALUE must fit that width (operand range-check, CDZ0201/CDZ0302):
+                            // `(: -100 Int8) + 200` unifies to Int8 but 200 is out of Int8 range → DECLINE, even
+                            // though the result -100+200=100 fits (the reference range-checks the OPERAND, not
+                            // just the result; a COMPUTED operand isn't literal-range-checkable — its overflow
+                            // rides the eval result-trap). Guarded by lit-operand-fits: only a bare NLit operand
+                            // grounding to a narrow width is checked; a fixed/computed operand passes through.
+                            | Option.Some(rty) =>
+                                (if (lit-operands-fit-result(tree, a, b, ty-to-typed-defer(rty)))
+                                 then Option.Some(ty-to-typed-defer(rty))
+                                 else Option.None(unit))
+                            // didn't unify (mixed FIXED width/sign like `(: 5 Int8) + (: 5 Int16)` → CDZ0301) —
+                            // BUT a BARE literal is also VALUE-polymorphic: it grounds to the sibling's narrow
+                            // type IF its value FITS (range-checked as an operand — CDZ0201/CDZ0302). This is the
+                            // NLit-specific compile fits-check (a computed operand can't be operand-range-checked;
+                            // it already unified above via deferral). Only reached when BOTH are fixed + conflict,
+                            // OR a deferred sentinel carried the wrong default sign — arith-lit-adapt gates on the
+                            // node BEING an NLit that fits, so a real mixed-width op still declines.
+                            | Option.None(_) =>
+                                (match (ta, tb) with
+                                  | (Typed.TIntW(sa, wa), Typed.TIntW(sb, wb)) => arith-lit-adapt(tree, a, sa, wa, b, sb, wb)
+                                  | _ => Option.None(unit)))
+                      | Option.None(_) => Option.None(unit))
+                | Option.None(_) => Option.None(unit))
           | _ => Option.None(unit))
     | _ => Option.None(unit))
+
+/// item-3 HM operand range-check: when an arith result grounds to a NARROW fixed width `rty`, a BARE literal
+/// operand (node is `NLit(v)`) must have `v` FIT that width — else the whole op declines (CDZ0201/CDZ0302, the
+/// reference range-checks the operand, not just the result). Checks BOTH operands. A non-literal (computed/var/
+/// annotated) operand passes (its own type was already checked; a computed overflow rides the eval result-trap).
+/// A width-64 or deferred (width-0) result imposes no narrow operand constraint → always fits. `true` = keep the
+/// unified result; `false` = decline.
+def lit-operands-fit-result(tree: Tree, a: Int64, b: Int64, rty: Typed) =
+  (match rty with
+    | Typed.TIntW(rs, rw) =>
+        (if ((rw == 0) or (rw == 64)) then true                    // no narrow constraint (deferred / Int64)
+         else (if (lit-node-fits(tree, a, rs, rw)) then lit-node-fits(tree, b, rs, rw) else false))
+    | _ => true)
+
+/// Does operand node `x` fit the narrow `(ts, tw)` AS a literal? A bare `NLit(v)` must have `v` fit; ANY
+/// non-literal node passes (only a compile-time literal is operand-range-checkable here).
+def lit-node-fits(tree: Tree, x: Int64, ts: Bool, tw: Int64) =
+  (match node-at(tree, x) with
+    | Option.Some(Node.NLit(v)) => fits-width(v, ts, tw)
+    | _ => true)
+
+/// Map a `Typed` operand to a `Ty` for unification, DEFERRING the sentinel: `t-int-deferred` (width 0) →
+/// `ty-deferred-int()` (both axes unconstrained, so unify grounds it to a fixed narrow sibling); a concrete
+/// `TIntW(s,w)` → `ty-fixed-int(s,w)`; TBool → TyBool; TErr → None (not an arith operand). This is the item-3
+/// HM infer↔ty boundary: it's what turns a deferred literal into the unifier's deferred int.
+def typed-to-ty-defer(t: Typed) = match t with
+  | Typed.TIntW(s, w) => (if w == 0 then Option.Some(ty-deferred-int()) else Option.Some(ty-fixed-int(s, w)))
+  | Typed.TBool => Option.Some(Ty.TyBool)
+  | Typed.TErr => Option.None(unit)
 
 /// Literal-width adaptation for a mixed-width arith pair that didn't unify. If ONE operand is a plain `NLit(v)`
 /// (which infer typed as the default Int64) and the OTHER is a FIXED NARROW width (< 64) that `v` FITS, the
@@ -393,8 +475,20 @@ def infer-tree(tree: Tree, root: Int64) =
   infer-node(tree, root, resolve-tree(tree, root), (Map.empty : Map(Int64, Typed)))
 
 /// The infer producer/query: the `Typed` fact at NodeId `id`. Unlike resolve, EVERY node has a type fact
-/// (there is no "needs no typing"), so a node in a well-formed tree is always `Some`.
-def type-at(tree: Tree, root: Int64, id: Int64) = Map.lookup(infer-tree(tree, root), id)
+/// (there is no "needs no typing"), so a node in a well-formed tree is always `Some`. item-3 HM: a
+/// still-DEFERRED type (the sentinel `TIntW(_,0)` — an unconstrained literal that never met a narrow sibling,
+/// e.g. the root of `let x = 2 in x`) GROUNDS to Int64 here at the query boundary — the reported type never
+/// leaks width 0 (the pipeline's default for an ungrounded literal is Int64, per ground-default).
+def type-at(tree: Tree, root: Int64, id: Int64) =
+  (match Map.lookup(infer-tree(tree, root), id) with
+    | Option.Some(t) => Option.Some(ground-deferred(t))
+    | Option.None(_) => Option.None(unit))
+
+/// Ground the deferred-int sentinel (`TIntW(_,0)`) to Int64 (`TIntW(true,64)`) — a lone unconstrained literal's
+/// default. A concrete type passes through unchanged.
+def ground-deferred(t: Typed) = match t with
+  | Typed.TIntW(s, w) => (if w == 0 then t-int64() else Typed.TIntW(s, w))
+  | _ => t
 
 /// Probe: is the whole program (the root) well-typed (any ground type — TInt or TBool, not TErr/absent)?
 def well-typed(tree: Tree, root: Int64) = match type-at(tree, root, root) with
@@ -783,4 +877,4 @@ def id-param-bind-type-untyped-takes-arg-type() =
       | Typed.TIntW(s, w) => (if (if s then false else true) and (w == 16) then unit else trap("untyped param takes the arg's type"))
       | _ => trap("untyped param binds to the arg type")))
 
-export { Typed.*, infer-node, infer-tree, type-at, well-typed, type-err-at, typed-count, is-bool-at, is-int-at }
+export { Typed.*, infer-node, infer-tree, type-at, ground-deferred, well-typed, type-err-at, typed-count, is-bool-at, is-int-at }

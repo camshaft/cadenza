@@ -14787,6 +14787,41 @@ mod runtime_ops {
     }
 
     #[test]
+    fn cdz_check_rejects_a_float_literal_grounded_to_float32_through_an_arith_spine() {
+        // Width-fit audit, 5th position (CONTEXTUAL arith-spine Float32). `(+ a 1.0e300)` over `(: a
+        // Float32)`: the `+` unifies operand widths, grounding `1.0e300` to Float32 where it saturates to
+        // `inf` — a value with no written form. Before, this COMPILED + materialized inf (no check), while
+        // the INT analogue `(+ a 10000)` over UInt8 rejects CDZ0201. Now `literal_binop_float32_context`
+        // climbs the float arith spine and, on a `Float32` sibling context + a literal that doesn't fit f32,
+        // rejects CDZ0201 (contextual, no annotation to blame — matching the int arith-spine verdict).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: a Float32)) (+ a 1.0e300)) (export f))",
+        )));
+        let d = diags
+            .iter()
+            .find(|d| d.severity == crate::abi::Severity::Error)
+            .expect(
+                "expected a check-level reject for a Float32-grounded overflowing float literal",
+            );
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+
+        // NO OVER-REJECTION: a fitting literal, a Float64 context (holds 1.0e300), and a bare literal with
+        // no narrow-float context (stays Float64) all pass.
+        let check_clean = |src: &str| {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                diags
+                    .iter()
+                    .all(|d| d.severity != crate::abi::Severity::Error),
+                "expected NO check reject for: {src}\ngot: {diags:?}"
+            );
+        };
+        check_clean("(module m (def (f (: a Float32)) (+ a 1.5)) (export f))");
+        check_clean("(module m (def (f (: a Float64)) (+ a 1.0e300)) (export f))");
+        check_clean("(module m (def (f) (+ 1.0e300 1.0)) (export f))");
+    }
+
+    #[test]
     fn runtime_if_branch_bare_literal_grounds_to_the_narrow_result_width() {
         // An `if` whose branches MIX a narrow value and a bare literal: the literal branch (Int64 on its
         // own = i64 slot) must take the `if`'s narrow result width, so both branches leave the same i32
