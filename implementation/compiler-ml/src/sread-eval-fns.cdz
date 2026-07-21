@@ -8,56 +8,60 @@
 /// These shapes currently RUN correctly but were UN-WITNESSED (the loop-doc "add a case even if it passes"
 /// gate-coverage discipline) — pinned so a future reader/resolve/infer/lower/eval change can't silently break
 /// them. Each value is differential-verified vs rcdzc.
-
 import { run-src } from "sread-eval"
 
 @test
 def se-let-in-def-body() =
   // a def BODY that is a nested `let`: `(def (f x) (let ((y 10)) (+ x y)))` `(f 5)` → 15. Pins that a call's
   // inlined body can itself introduce a binder (the param `x` and the let's `y` coexist in the body scope).
-  (match run-src("(do (def (f x) (let ((y 10)) (+ x y))) (def (main) (f 5)) (export main))") with
+  match run-src("(do (def (f x) (let ((y 10)) (+ x y))) (def (main) (f 5)) (export main))") with
     | Option.Some(v) => (if v == 15 then unit else trap("(def (f x) (let y=10 in x+y)) (f 5) → 15"))
-    | Option.None(_) => trap("a let-bodied def call runs"))
+    | Option.None(_) => trap("a let-bodied def call runs")
 
 @test
 def se-if-in-def-body() =
   // a def body with CONTROL FLOW: `(def (f x) (if (< x 10) x 0))` `(f 5)` → 5. Pins an `if` inside a called
   // body (the param flows into the condition + a branch).
-  (match run-src("(do (def (f x) (if (< x 10) x 0)) (def (main) (f 5)) (export main))") with
-    | Option.Some(v) => (if v == 5 then unit else trap("(def (f x) (if x<10 then x else 0)) (f 5) → 5"))
-    | Option.None(_) => trap("an if-bodied def call runs"))
+  match run-src("(do (def (f x) (if (< x 10) x 0)) (def (main) (f 5)) (export main))") with
+    | Option.Some(v) => (if v == 5 then
+      unit
+    else
+      trap("(def (f x) (if x<10 then x else 0)) (f 5) → 5"))
+    | Option.None(_) => trap("an if-bodied def call runs")
 
 @test
 def se-param-used-twice-in-body() =
   // the param referenced MORE THAN ONCE: `(def (sq x) (* x x))` `(sq 7)` → 49. Pins that a single CLet binder
   // is read by multiple uses of the param (the arg is bound once, both `x` occurrences resolve to it).
-  (match run-src("(do (def (sq x) (* x x)) (def (main) (sq 7)) (export main))") with
+  match run-src("(do (def (sq x) (* x x)) (def (main) (sq 7)) (export main))") with
     | Option.Some(v) => (if v == 49 then unit else trap("(def (sq x) (* x x)) (sq 7) → 49"))
-    | Option.None(_) => trap("a param used twice runs"))
+    | Option.None(_) => trap("a param used twice runs")
 
 @test
 def se-two-distinct-helpers-in-main() =
   // `main` calls TWO DIFFERENT helper defs: `(g 3)` + `(h 4)` where g(x)=x*2, h(x)=x+1 → 6+5 = 11. Pins that
   // multiple distinct def-names resolve at distinct call sites in one expression.
-  (match run-src("(do (def (g x) (* x 2)) (def (h x) (+ x 1)) (def (main) (+ (g 3) (h 4))) (export main))") with
+  match run-src(
+      "(do (def (g x) (* x 2)) (def (h x) (+ x 1)) (def (main) (+ (g 3) (h 4))) (export main))"
+    ) with
     | Option.Some(v) => (if v == 11 then unit else trap("(g 3)+(h 4) = 6+5 = 11"))
-    | Option.None(_) => trap("two distinct helpers run"))
+    | Option.None(_) => trap("two distinct helpers run")
 
 @test
 def se-call-results-as-arith-operands() =
   // call RESULTS as operands: `(+ (dbl 5) (dbl 3))` where dbl(x)=x*2 → 10+6 = 16. Pins that the SAME def
   // applied at two sites (with different args) composes under an arith op.
-  (match run-src("(do (def (dbl x) (* x 2)) (def (main) (+ (dbl 5) (dbl 3))) (export main))") with
+  match run-src("(do (def (dbl x) (* x 2)) (def (main) (+ (dbl 5) (dbl 3))) (export main))") with
     | Option.Some(v) => (if v == 16 then unit else trap("(dbl 5)+(dbl 3) = 10+6 = 16"))
-    | Option.None(_) => trap("call results as arith operands run"))
+    | Option.None(_) => trap("call results as arith operands run")
 
 @test
 def se-nested-two-arg-calls() =
   // NESTED 2-arg calls: `(add (add 1 2) (add 3 4))` where add(a,b)=a+b → add(3,7) = 10. Pins that a 2-arg
   // call's args can themselves be 2-arg calls (the nested-CLet wiring composes recursively at the call sites).
-  (match run-src("(do (def (add a b) (+ a b)) (def (main) (add (add 1 2) (add 3 4))) (export main))") with
+  match run-src("(do (def (add a b) (+ a b)) (def (main) (add (add 1 2) (add 3 4))) (export main))") with
     | Option.Some(v) => (if v == 10 then unit else trap("add(add(1,2), add(3,4)) = add(3,7) = 10"))
-    | Option.None(_) => trap("nested 2-arg calls run"))
+    | Option.None(_) => trap("nested 2-arg calls run")
 
 @test
 def se-two-param-if-selects-a-param() =
@@ -65,17 +69,17 @@ def se-two-param-if-selects-a-param() =
   // (if (< a b) b a)`. The existing 2-param test (`add`) is pure arith; this pins that BOTH params flow
   // through a conditional AND each branch can be a distinct param reference — max(7,4) takes the else (a=7,
   // since 7<4 is false) → 7. Matches the reference (max 7 4 → 7).
-  (match run-src("(do (def (max a b) (if (< a b) b a)) (def (main) (max 7 4)) (export main))") with
+  match run-src("(do (def (max a b) (if (< a b) b a)) (def (main) (max 7 4)) (export main))") with
     | Option.Some(v) => (if v == 7 then unit else trap("max(7,4) = 7 (else branch, a)"))
-    | Option.None(_) => trap("2-param if-selecting-a-param runs"))
+    | Option.None(_) => trap("2-param if-selecting-a-param runs")
 
 @test
 def se-two-param-if-selects-other-param() =
   // the THEN direction of the same shape: max(3,9) takes the then-branch (b=9, since 3<9 is true) → 9.
   // Pins both branches of the param-selecting conditional (guards a branch-swap regression).
-  (match run-src("(do (def (max a b) (if (< a b) b a)) (def (main) (max 3 9)) (export main))") with
+  match run-src("(do (def (max a b) (if (< a b) b a)) (def (main) (max 3 9)) (export main))") with
     | Option.Some(v) => (if v == 9 then unit else trap("max(3,9) = 9 (then branch, b)"))
-    | Option.None(_) => trap("2-param if then-branch runs"))
+    | Option.None(_) => trap("2-param if then-branch runs")
 
 @test
 def se-two-typed-narrow-params-run() =
@@ -85,27 +89,29 @@ def se-two-typed-narrow-params-run() =
   // Int8 arith, not a spurious mixed-width Int8+Int64 decline. f(5,20) → 25 (fits Int8). Before this slice a
   // typed FIRST param made the whole def fast-decline (the reader only read a single typed param), AND the
   // 2-param infer bound param2 to Int64 → mixed-width. Matches the reference.
-  (match run-src("(do (def (f (: a Int8) (: b Int8)) (+ a b)) (def (main) (f 5 20)) (export main))") with
+  match run-src("(do (def (f (: a Int8) (: b Int8)) (+ a b)) (def (main) (f 5 20)) (export main))") with
     | Option.Some(v) => (if v == 25 then unit else trap("f(5,20) Int8+Int8 = 25"))
-    | Option.None(_) => trap("both-typed-narrow 2-param def runs"))
+    | Option.None(_) => trap("both-typed-narrow 2-param def runs")
 
 @test
 def se-two-typed-narrow-params-overflow-declines() =
   // narrow enforcement composes on the 2nd typed param too: Int8+Int8 with f(100,100) = 200 overflows Int8 →
   // declines (CDZ0304), NOT a laundered 200. Pins that param2's declared narrow width drives the body's
   // overflow trap exactly like param1's.
-  (match run-src("(do (def (f (: a Int8) (: b Int8)) (+ a b)) (def (main) (f 100 100)) (export main))") with
+  match run-src(
+      "(do (def (f (: a Int8) (: b Int8)) (+ a b)) (def (main) (f 100 100)) (export main))"
+    ) with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("Int8 100+100 = 200 overflows → declines"))
+    | Option.Some(_) => trap("Int8 100+100 = 200 overflows → declines")
 
 @test
 def se-two-typed-params-arg2-out-of-range-declines() =
   // CDZ0302 on the SECOND typed param: an arg2 out of param2's declared range rejects (like param1's fit-check).
   // `(f (: a Int8) (: b Int8))` `(f 5 200)` → 200 doesn't fit Int8 → declines (was silently accepted before the
   // infer-param2 fit-check).
-  (match run-src("(do (def (f (: a Int8) (: b Int8)) (+ a b)) (def (main) (f 5 200)) (export main))") with
+  match run-src("(do (def (f (: a Int8) (: b Int8)) (+ a b)) (def (main) (f 5 200)) (export main))") with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("arg2 200 out of Int8 range → declines (CDZ0302 on param2)"))
+    | Option.Some(_) => trap("arg2 200 out of Int8 range → declines (CDZ0302 on param2)")
 
 @test
 def se-narrow-param-plus-literal-runs() =
@@ -114,42 +120,46 @@ def se-narrow-param-plus-literal-runs() =
   // the bare literal `10` ADAPTS to Int8 (it fits) rather than forcing a spurious mixed-width Int8+Int64
   // decline. The corpus doc: "the check does NOT over-reject." Before this the ML compiler wrongly DECLINED
   // (a declined-when-should-run miscompile). Differential-verified vs rcdzc (110, in Int8 range).
-  (match run-src("(do (def (f (: a Int8)) (+ a 10)) (def (main) (f 100)) (export main))") with
+  match run-src("(do (def (f (: a Int8)) (+ a 10)) (def (main) (f 100)) (export main))") with
     | Option.Some(v) => (if v == 110 then unit else trap("(+ a 10) on Int8 param (f 100) → 110"))
-    | Option.None(_) => trap("(+ a 10) must RUN (110 fits Int8) — literal adapts, not spurious mixed-width decline"))
+    | Option.None(_) => trap(
+      "(+ a 10) must RUN (110 fits Int8) — literal adapts, not spurious mixed-width decline"
+    )
 
 @test
 def se-narrow-param-plus-overflowing-literal-declines() =
   // the sharp companion: a literal that pushes the body OVER the narrow width still declines. `(+ a 100)` on
   // an Int8 param `(f 100)` = 200 OVERFLOWS Int8 → declines (CDZ0304). Pins that literal adaptation composes
   // with the overflow trap — the literal adapts to Int8, then the Int8 arith overflows.
-  (match run-src("(do (def (f (: a Int8)) (+ a 100)) (def (main) (f 100)) (export main))") with
+  match run-src("(do (def (f (: a Int8)) (+ a 100)) (def (main) (f 100)) (export main))") with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("(+ a 100) on Int8 param = 200 OVERFLOWS Int8 → must decline (CDZ0304)"))
+    | Option.Some(_) => trap(
+      "(+ a 100) on Int8 param = 200 OVERFLOWS Int8 → must decline (CDZ0304)"
+    )
 
 @test
 def se-logical-and-of-comparisons() =
   // LOGICAL `and` over two Bool comparisons: `(and (< 1 2) (< 3 4))` → 1 (both true). Pins the logical-op
   // subset end-to-end (and-node → Bool operands → Bool result, encoded 0/1). Differential-verified vs rcdzc.
-  (match run-src("(and (< 1 2) (< 3 4))") with
+  match run-src("(and (< 1 2) (< 3 4))") with
     | Option.Some(v) => (if v == 1 then unit else trap("(and true true) → 1"))
-    | Option.None(_) => trap("logical and of comparisons runs"))
+    | Option.None(_) => trap("logical and of comparisons runs")
 
 @test
 def se-logical-and-short-false() =
   // `and` with a false operand → 0: `(and (< 1 2) (< 5 4))` → 0 (second is false). Pins the false path.
-  (match run-src("(and (< 1 2) (< 5 4))") with
+  match run-src("(and (< 1 2) (< 5 4))") with
     | Option.Some(v) => (if v == 0 then unit else trap("(and true false) → 0"))
-    | Option.None(_) => trap("logical and with a false operand runs"))
+    | Option.None(_) => trap("logical and with a false operand runs")
 
 @test
 def se-logical-and-on-ints-declines() =
   // `and` REQUIRES Bool operands: `(and 1 2)` (int operands) → DECLINES (ill-typed), matching rcdzc's
   // `declined`. Pins that a logical op rejects non-Bool operands rather than coercing ints — the type
   // discipline complement to the running cases above.
-  (match run-src("(and 1 2)") with
+  match run-src("(and 1 2)") with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("(and 1 2) — int operands to a logical op must decline"))
+    | Option.Some(_) => trap("(and 1 2) — int operands to a logical op must decline")
 
 @test
 def se-three-param-def-runs() =
@@ -157,32 +167,32 @@ def se-three-param-def-runs() =
   // reads a 3rd param + 3rd arg (param3/arg3 tables), resolve binds param3 in the body scope, infer types it,
   // and lower builds the 3-deep CLet(p1,a1,CLet(p2,a2,CLet(p3,a3,body))). Matches the reference. Before this,
   // any >2-param def fast-declined.
-  (match run-src("(do (def (f a b c) (+ a (+ b c))) (def (main) (f 1 2 3)) (export main))") with
+  match run-src("(do (def (f a b c) (+ a (+ b c))) (def (main) (f 1 2 3)) (export main))") with
     | Option.Some(v) => (if v == 6 then unit else trap("f(1,2,3) = 6"))
-    | Option.None(_) => trap("3-param def runs"))
+    | Option.None(_) => trap("3-param def runs")
 
 @test
 def se-three-param-with-if-and-mul() =
   // a 3-param body using an if comparing two params + arith on the third: `(g x y z) = (if (< x y) z (* y z))`,
   // g(1,2,5) takes the then (1<2) → z = 5. Pins all three params flow through a conditional + arith.
-  (match run-src("(do (def (g x y z) (if (< x y) z (* y z))) (def (main) (g 1 2 5)) (export main))") with
+  match run-src("(do (def (g x y z) (if (< x y) z (* y z))) (def (main) (g 1 2 5)) (export main))") with
     | Option.Some(v) => (if v == 5 then unit else trap("g(1,2,5) = 5 (then branch, z)"))
-    | Option.None(_) => trap("3-param if/arith body runs"))
+    | Option.None(_) => trap("3-param if/arith body runs")
 
 @test
 def se-three-param-over-application-declines() =
   // arity check: a 3-param def applied to 4 args OVER-applies → declines (the 4th arg leaves leftover tokens
   // the trailing-token guard poisons), matching the reference's CDZ0203. NOT a silently-dropped 4th arg.
-  (match run-src("(do (def (f a b c) (+ a (+ b c))) (def (main) (f 1 2 3 4)) (export main))") with
+  match run-src("(do (def (f a b c) (+ a (+ b c))) (def (main) (f 1 2 3 4)) (export main))") with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("(f 1 2 3 4) over-applies a 3-param def → declines"))
+    | Option.Some(_) => trap("(f 1 2 3 4) over-applies a 3-param def → declines")
 
 @test
 def se-three-param-under-application-declines() =
   // the other arity edge: a 3-param def applied to 2 args UNDER-applies → declines (matches reference CDZ0201).
-  (match run-src("(do (def (f a b c) (+ a (+ b c))) (def (main) (f 1 2)) (export main))") with
+  match run-src("(do (def (f a b c) (+ a (+ b c))) (def (main) (f 1 2)) (export main))") with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("(f 1 2) under-applies a 3-param def → declines"))
+    | Option.Some(_) => trap("(f 1 2) under-applies a 3-param def → declines")
 
 @test
 def se-helper-calls-earlier-helper() =
@@ -191,17 +201,21 @@ def se-helper-calls-earlier-helper() =
   // a def-body's call resolves to a PRIOR def (the definition-order-dependent path that currently works;
   // definition-order INDEPENDENCE — a forward call to a LATER def — is a filed follow-up). Guards the
   // backward-ref call-chain against regression. Differential-verified vs rcdzc (7).
-  (match run-src("(do (def (inc x) (+ x 1)) (def (inc2 x) (inc (inc x))) (def (main) (inc2 5)) (export main))") with
+  match run-src(
+      "(do (def (inc x) (+ x 1)) (def (inc2 x) (inc (inc x))) (def (main) (inc2 5)) (export main))"
+    ) with
     | Option.Some(v) => (if v == 7 then unit else trap("inc2(5) = inc(inc(5)) = 7"))
-    | Option.None(_) => trap("a helper calling an earlier helper runs"))
+    | Option.None(_) => trap("a helper calling an earlier helper runs")
 
 @test
 def se-helper-chain-nested-calls() =
   // a deeper backward chain: `(def (dbl x) (* x 2))` then `(def (quad x) (dbl (dbl x)))` — quad(3) → 12.
   // Pins a NESTED call to an earlier helper (dbl called twice, nested, inside quad's body).
-  (match run-src("(do (def (dbl x) (* x 2)) (def (quad x) (dbl (dbl x))) (def (main) (quad 3)) (export main))") with
+  match run-src(
+      "(do (def (dbl x) (* x 2)) (def (quad x) (dbl (dbl x))) (def (main) (quad 3)) (export main))"
+    ) with
     | Option.Some(v) => (if v == 12 then unit else trap("quad(3) = dbl(dbl(3)) = 12"))
-    | Option.None(_) => trap("a nested backward helper chain runs"))
+    | Option.None(_) => trap("a nested backward helper chain runs")
 
 @test
 def se-three-typed-params-run() =
@@ -209,23 +223,27 @@ def se-three-typed-params-run() =
   // (+ a (+ b c)))` `(f 5 10 15)` → 30 (fits Int8). The reader now chains a typed 2nd param to a typed 3rd
   // (read-typed-second-param → read-third-param → read-typed-third-param), and infer-param3 binds param3's
   // declared narrow type + fit-checks arg3. Matches the reference.
-  (match run-src("(do (def (f (: a Int8) (: b Int8) (: c Int8)) (+ a (+ b c))) (def (main) (f 5 10 15)) (export main))") with
+  match run-src(
+      "(do (def (f (: a Int8) (: b Int8) (: c Int8)) (+ a (+ b c))) (def (main) (f 5 10 15)) (export main))"
+    ) with
     | Option.Some(v) => (if v == 30 then unit else trap("f(5,10,15) Int8 sum = 30"))
-    | Option.None(_) => trap("all-typed 3-param def runs"))
+    | Option.None(_) => trap("all-typed 3-param def runs")
 
 @test
 def se-three-param-typed-third-arg-out-of-range-declines() =
   // CDZ0302 on the THIRD typed param: an arg3 out of param3's declared range rejects (like param1/param2).
   // `(f (: a Int8) (: b Int8) (: c Int8))` `(f 5 10 200)` → 200 doesn't fit Int8 → declines.
-  (match run-src("(do (def (f (: a Int8) (: b Int8) (: c Int8)) (+ a (+ b c))) (def (main) (f 5 10 200)) (export main))") with
+  match run-src(
+      "(do (def (f (: a Int8) (: b Int8) (: c Int8)) (+ a (+ b c))) (def (main) (f 5 10 200)) (export main))"
+    ) with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("arg3 200 out of Int8 range → declines (CDZ0302 on param3)"))
+    | Option.Some(_) => trap("arg3 200 out of Int8 range → declines (CDZ0302 on param3)")
 
 @test
 def se-three-param-typed-third-only() =
   // a MIXED shape: untyped 1st/2nd + a typed 3rd `(f a b (: c Int8))`. Body returns c → 3. Pins that the
   // untyped-params → typed-3rd path (read-second-param untyped → read-third-param → read-typed-third-param)
   // composes. (A body mixing the untyped-Int64 params with the Int8 3rd would be mixed-width — Gap A/item-3.)
-  (match run-src("(do (def (f a b (: c Int8)) c) (def (main) (f 1 2 3)) (export main))") with
+  match run-src("(do (def (f a b (: c Int8)) c) (def (main) (f 1 2 3)) (export main))") with
     | Option.Some(v) => (if v == 3 then unit else trap("f(1,2,3) returns c = 3"))
-    | Option.None(_) => trap("untyped-1st-2nd + typed-3rd def runs"))
+    | Option.None(_) => trap("untyped-1st-2nd + typed-3rd def runs")

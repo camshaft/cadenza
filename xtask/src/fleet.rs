@@ -3597,6 +3597,30 @@ fn base_reparent_should_warn(base_is_ancestor_of_trunk: bool, replay_len: usize)
     !base_is_ancestor_of_trunk && replay_len > 0
 }
 
+/// Roles whose loop bodies explicitly NEVER send a `merge-request` (verified against `fleet/loops/*.md`:
+/// each states "never send merge-request(s)" or equivalent). Such a role AUTHORS NOTHING on its branch,
+/// so it has ZERO unlanded local commits BY DEFINITION — any commit `git cherry trunk HEAD` marks as
+/// "unlanded" for it is therefore, without ambiguity, a FOREIGN peer commit its base transiently carried
+/// (the recurring trunk-rewind contamination 7 peers flagged; reviewer's insight that its role is a
+/// 100% false-replay case). For these roles `fleet sync` can safely SKIP the patch-id replay entirely
+/// and hard-reset to trunk — no ownership-guessing, no cherry-pick conflict, because the ROLE itself is
+/// the proof there is nothing of theirs to preserve. This is the sound counterpart to the RE-PARENT
+/// WARNING (which surfaces the divergence for AUTHORING roles that must eyeball). Conservative: an
+/// authoring role (`vertical`, `fix`, `corpus-bugfix`'s spawned fixers, …) is never listed, so it always
+/// takes the normal replay path. Pure so the policy is unit-testable.
+fn role_never_authors(role: &str) -> bool {
+    matches!(
+        role,
+        "reviewer"
+            | "tracker"
+            | "librarian"
+            | "concierge"
+            | "github-liaison"
+            | "breaker"
+            | "pr-sync"
+    )
+}
+
 fn sync(fleet: &Fleet, force: bool) {
     let cwd = std::env::current_dir().expect("cwd");
     let git = |args: &[&str]| -> std::process::Output {
@@ -3653,6 +3677,40 @@ fn sync(fleet: &Fleet, force: bool) {
                  any queued merge-request --ref stays valid)."
             );
         }
+        return;
+    }
+
+    // NEVER-AUTHORING ROLE FAST-PATH (reviewer's insight; the 100%-false-replay case). A role whose loop
+    // never sends a merge-request authors NOTHING on its branch, so it has ZERO unlanded commits BY
+    // DEFINITION — every commit `git cherry` would mark "unlanded" for it is a FOREIGN peer commit its
+    // base transiently carried (the recurring trunk-rewind contamination). For such a role there is
+    // nothing to preserve, so skip the patch-id replay entirely and hard-reset to trunk: this eliminates
+    // BOTH the false replay AND the cherry-pick conflict that the replay path hits on a rewound trunk,
+    // with zero false-positive risk (the ROLE is the proof, not a path/ownership heuristic). Authoring
+    // roles fall through to the normal replay below. Resolve role from the branch → roster; if we can't
+    // (unknown branch/role), take the safe normal path.
+    let branch_for_role = git_stdout(&["rev-parse", "--abbrev-ref", "HEAD"]);
+    let my_role = sender_from_branch_name(&branch_for_role).and_then(|me| {
+        fleet
+            .load_roster()
+            .agents
+            .into_iter()
+            .find(|a| a.name == me)
+            .map(|a| a.role)
+    });
+    if let Some(role) = my_role.as_deref()
+        && role_never_authors(role)
+    {
+        if !git_ok(&["reset", "--hard", TRUNK]) {
+            eprintln!("fleet sync: `git reset --hard {TRUNK}` failed.");
+            std::process::exit(1);
+        }
+        let trunk_sha = git_stdout(&["rev-parse", "--short", "HEAD"]);
+        println!(
+            "fleet sync: role '{role}' never authors merge-requests → reset to trunk ({trunk_sha}) \
+             WITHOUT patch-id replay (nothing of yours to preserve; any 'unlanded' commit would be a \
+             peer's your base transiently carried). Branch is now clean at trunk."
+        );
         return;
     }
 
@@ -6652,6 +6710,40 @@ mod tests {
         // regardless of how many commits replay (the per-commit zone warnings handle those).
         assert!(!base_reparent_should_warn(true, 5));
         assert!(!base_reparent_should_warn(true, 0));
+    }
+
+    #[test]
+    fn role_never_authors_matches_only_the_non_authoring_support_roles() {
+        // Roles whose loops/*.md explicitly say "never send merge-request(s)" → skip-replay fast-path.
+        for role in [
+            "reviewer",
+            "tracker",
+            "librarian",
+            "concierge",
+            "github-liaison",
+            "breaker",
+            "pr-sync",
+        ] {
+            assert!(role_never_authors(role), "{role} should be never-authoring");
+        }
+        // AUTHORING roles must fall through to the normal patch-id replay (they DO produce merge-requests,
+        // so their unlanded commits are real and must be preserved). `vertical` is the canonical author;
+        // `fix` agents author bug-fix MRs; `corpus-bugfix` spawns fixers that send their own; `design` and
+        // an unknown/empty role take the safe normal path too.
+        for role in [
+            "vertical",
+            "fix",
+            "corpus-bugfix",
+            "design",
+            "fuzzer",
+            "",
+            "unknown",
+        ] {
+            assert!(
+                !role_never_authors(role),
+                "{role} must NOT be never-authoring"
+            );
+        }
     }
 
     #[test]

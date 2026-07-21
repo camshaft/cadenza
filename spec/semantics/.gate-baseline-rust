@@ -349,6 +349,7 @@ pass	a Float element inserted into an empty (runtime) set boxes with box-float, 
 pass	a Float32 quantity stored as a map value round-trips through Map.lookup
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
+pass	a GENUINELY-RUNTIME Rational map/set key is found by a normalized-equal key
 pass	a HEAP element pushed across the RRB 32→33 boundary reads back intact at every index
 pass	a HOF callback matching a tuple argument computes through the nested reduction
 pass	a HOF callback matching its sum argument reaches the nullary arm

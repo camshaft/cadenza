@@ -1412,3 +1412,21 @@
             (def (main) (half))
             (export main)))
   (output (: 1 Int64)))
+
+(case "a file-level (module-doc) header before an import is inert and round-trips"
+  (doc    "A `(module-doc \"…\")` is the file/module-level doc-comment node the ML reader emits for a `///`
+           header before a NON-documentable form — the surface a file header round-trips as, rather than
+           being downgraded to a `//` comment. (A `///` before a `def`/`type`/`effect`/`module` attaches
+           INSIDE it as a `(doc …)`; only before a non-documentable form — here an `import` — does it become
+           a top-level `(module-doc)`.) It DECLARES nothing and is inert at every stage (no def/export, no
+           runtime effect), so the program compiles and runs exactly as without it: the header precedes the
+           `import` of `half`, and `main` still returns 1. Pins that a top-level `(module-doc)` is TOLERATED
+           (not the CDZ0201 an unmodeled top-level form gets) and inert — and, via corpus_roundtrip, that a
+           `///` file header survives the ML surface round-trip (as `(module-doc)`, not a downgraded `//`).")
+  (module "lib" (do (def (half) (: 1 Int64)) (export half)))
+  (input  (do
+            (module-doc "The entry module — documents the file, defines main.")
+            (import "lib" (half))
+            (def (main) (half))
+            (export main)))
+  (output (: 1 Int64)))

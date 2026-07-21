@@ -218,6 +218,27 @@
   (call   main)
   (output (: 42 Int64)))
 
+(case "a GENUINELY-RUNTIME Rational map/set key is found by a normalized-equal key"
+  (doc    "The runtime companion of the bare-Rational-key case above (which builds a CONST `(Rational.of 1 2)`
+           that folds): here the key is constructed at RUN TIME — `(Rational.of (if (> c 0) 1 1) 2)` — so its
+           numerator arrives via a run-time `if` and the whole Rational cannot fold; it must be normalized by
+           the runtime `box_rational_normalized` before its CHAMP key hash. Three faces over that runtime key:
+           (1) a MAP insert under it, looked up by `(Rational.of 2 4)` → 42 (normalized-equal, found by
+           canonical form); (2) the NEGATIVE control — looked up by a genuinely-different `(Rational.of 1 3)`
+           → absent (-1), so it is a real content test, not a blanket hit; (3) the SET twin — `Set.contains`
+           of `(Rational.of 2 4)` in a set built by inserting the runtime key → true (1). Encodes them as a
+           tuple (42, -1, 1). Pins the runtime construct→normalize→CHAMP-key path (distinct from the const
+           fold), the path a runtime-built `Map Rational V` / Rational-keyed table rests on. Both backends.")
+  (input  (do
+            (def (main (: c Int64))
+              (let ((half (Rational.of (if (> c 0) 1 1) 2)))
+                (tuple
+                  (match (Map.lookup (Map.insert (Map.empty) half 42) (Rational.of 2 4)) ((Some v) v) ((None u) -1))
+                  (match (Map.lookup (Map.insert (Map.empty) half 42) (Rational.of 1 3)) ((Some v) v) ((None u) -1))
+                  (if (Set.contains (Set.insert (Set.of (list)) half) (Rational.of 2 4)) 1 0))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: (tuple 42 -1 1) (Tuple Int64 Int64 Int64))))
+
 (case "a COMPOUND map key with a Rational leaf hashes+matches by the leaf's normalized form"
   (doc    "Composes the two faces above: the tuple-element walk (:194/:207) pins Rational `=` inside a tuple,
            and the CHAMP-KEY face (:211) pins a BARE Rational key — this pins their COMPOSITION, a compound

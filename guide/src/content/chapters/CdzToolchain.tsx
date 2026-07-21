@@ -120,10 +120,18 @@ export default function CdzToolchain() {
         <C>{`$ cdz symbols / doc           # a file's definitions, and their docs`}</C>
         <br />
         <C>{`$ cdz fix foo.cdz             # apply the compiler's verified repairs`}</C>
+        <br />
+        <C>{`$ cdz fmt foo.cdz             # canonical layout, meaning untouched`}</C>
+        <br />
+        <C>{`$ cdz normalize --match-to-let  # opt-in codemod: an irrefutable match becomes a let`}</C>
       </Note>
       <P>
-        These are the same facts the editor shows on hover and as squiggles, offered one query at a time
-        so a script or an agent can consume them directly. For an editor that speaks the Language Server
+        The first few <em>read</em> your program; <C>fmt</C> and <C>normalize</C> <em>rewrite</em> it, still
+        structure-aware: <C>fmt</C> canonicalizes layout without changing meaning, so your comments and
+        structure survive intact, while <C>normalize</C> is opt-in because it does change shape (the{" "}
+        <Ch to="/irrefutable-patterns">match-to-let</Ch> idiom, applied for you). These are the same facts
+        the editor shows on hover and as squiggles, offered one query at a time so a script or an agent can
+        consume them directly. For an editor that speaks the Language Server
         Protocol, <C>cdz lsp</C> serves all of it live over stdio, and <C>cdz calc</C> opens the same
         exact-arithmetic calculator you met earlier as a REPL. The point is that a human and an agent reach
         for the same tool and get the same compiler-backed answers, never a separate approximation that
