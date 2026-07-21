@@ -1,5 +1,6 @@
 import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
+import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
 import { Link } from "react-router-dom";
 
@@ -138,6 +139,48 @@ export default function RecordedLog() {
         you can inspect, branch, and resume with no new concepts, which is what lets one generation of an
         agent hand its whole existence to the next.
       </Why>
+
+      <H2>Your turn</H2>
+      <Exercise
+        id="recorded-log:1"
+        prompt={
+          <>
+            The log gains a third kind of event, a <C>Transfer</C> that moves money out of the account, so
+            it lowers the balance just like a withdrawal. Add the arm that handles it, so the log{" "}
+            <C>[Deposit 100, Transfer 30, Deposit 5]</C> folds to <C>75</C>.
+          </>
+        }
+        starter={`(type Event (Deposit Int64) (Withdraw Int64) (Transfer Int64))
+(def (replay log acc)
+  (match log
+    ((list) acc)
+    ((list e .. rest)
+      (match e
+        ((Deposit n) (replay rest (+ acc n)))
+        ((Withdraw n) (replay rest (- acc n)))
+        ((Transfer n) ?)))))
+(def (main)
+  (replay (list (Deposit 100) (Transfer 30) (Deposit 5)) 0))`}
+        solution={`(type Event (Deposit Int64) (Withdraw Int64) (Transfer Int64))
+(def (replay log acc)
+  (match log
+    ((list) acc)
+    ((list e .. rest)
+      (match e
+        ((Deposit n) (replay rest (+ acc n)))
+        ((Withdraw n) (replay rest (- acc n)))
+        ((Transfer n) (replay rest (- acc n)))))))
+(def (main)
+  (replay (list (Deposit 100) (Transfer 30) (Deposit 5)) 0))`}
+        expected="75"
+        hint={
+          <>
+            A <C>Transfer</C> moves money out, so it subtracts like a <C>Withdraw</C>: recurse on the rest
+            of the log with <C>(- acc n)</C>. The fold is total, so the compiler requires the arm before it
+            will run. <C>100</C> in, <C>30</C> out, <C>5</C> in gives <C>75</C>.
+          </>
+        }
+      />
 
       <P>
         That's what makes Cadenza different: exact numbers, units that erase, effects as values, code as

@@ -2422,6 +2422,39 @@ fn a_match_requires_payload_guard_constrains_the_constructor_payload_range() {
     );
 }
 
+/// A match-based `@requires` whose ALLOWED constructor carries a LIST-LENGTH guard floors that payload's
+/// generated length. `@requires(match o ((Box.Full xs) (< 0 (List.len xs))) ((Box.Empty) false))` forbids
+/// `Empty` AND requires the `Full` payload be non-empty; the `-gen` wrapper must draw `Full([…])` with at
+/// least one element so the enforced (D) precondition never spuriously trips on a generated `Full([])`.
+/// Before this, the constructor filter dropped `Empty` but the `Full` list was drawn with any length ≥ 0
+/// (often empty), so the runner reported a spurious `f(Full([]))`. The LIST-payload twin of
+/// `a_match_requires_payload_guard_constrains_the_constructor_payload_range` (the Int-range case). A `List`
+/// payload needs the heap, so store-guard the run half.
+#[test]
+fn a_match_requires_list_length_guard_floors_the_constructor_payload_length() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — the -gen wrapper run needs the store"
+        );
+        return;
+    }
+    let d = dir("requires-sum-payload-listlen");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do \
+           (type Box (Empty) (Full (List Int64))) \
+           (@ test (@ (requires (match o ((Box.Full xs) (< 0 (List.len xs))) ((Box.Empty) false))) \
+             (def (f (: o Box)) (match o ((Box.Full xs) (if (< 0 (List.len xs)) 1 (trap \"empty list payload\"))) ((Box.Empty) 0))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok && stdout.contains("PASS f-gen (100 trials)"),
+        "a match-@requires length guard `(< 0 (List.len xs))` on Full floors its payload list non-empty so no spurious f(Full([])): {stdout}{stderr}"
+    );
+}
+
 /// TERMINATION under an UNSATISFIABLE relation: `@requires(a < b and b < a)` can NEVER hold (it implies
 /// `a < a`), so rejection sampling can never find an in-domain draw. The generator must NOT loop forever —
 /// it is fuel-bounded (`RELATION_FUEL`), so after exhausting fuel it returns the last draw and lets the (D)

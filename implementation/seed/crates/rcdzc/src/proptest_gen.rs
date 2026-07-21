@@ -936,6 +936,24 @@ fn constrain_sum_variants(
             }
         }
     }
+    // Floor a KEPT constructor's List payload to a recognized same-arm min-length guard (`((Box.Full xs) (< 0
+    // (List.len xs)))` → the `Full` payload list is drawn non-empty). Same ctor-keyed application as the Int
+    // range above; the max floor wins if several conjuncts/preds bound the same constructor.
+    let min_lens: std::collections::HashMap<String, usize> = preds
+        .iter()
+        .flat_map(|&q| sum_ctor_payload_min_lens(ast, q, pname))
+        .fold(std::collections::HashMap::new(), |mut acc, (c, m)| {
+            let e = acc.entry(c).or_insert(0);
+            *e = (*e).max(m);
+            acc
+        });
+    if !min_lens.is_empty() {
+        for (vname, payload) in variants.iter_mut() {
+            if let (Some(&m), Some(GenTy::List(_, ml))) = (min_lens.get(vname), payload.as_mut()) {
+                *ml = (*ml).max(m);
+            }
+        }
+    }
 }
 
 fn sum_ctors_forbidden_by_match(ast: &Arenas, pred: StructId, param: &str) -> Vec<String> {
@@ -1019,6 +1037,48 @@ fn sum_ctor_payload_ranges(ast: &Arenas, pred: StructId, param: &str) -> Vec<(St
         }
     }
     ranges
+}
+
+/// The set of `(constructor, min_len)` LIST-LENGTH FLOORS a match-based `@requires` on `param` imposes — the
+/// LIST-payload twin of [`sum_ctor_payload_ranges`] (which handles an Int payload). An arm `((Box.Full xs)
+/// (< 0 (List.len xs)))` allows the `Full` constructor but requires its `(List …)` payload be non-empty, so
+/// the generator must FLOOR that constructor's drawn list length rather than draw the empty list the enforced
+/// (D) precondition rejects as a spurious `f(Full([]))`. Reuses [`min_len_for_param`] over the pattern's
+/// single payload binder (the same recognizer the param-level and type-level min-length paths use), so the
+/// vocabulary (`(< K (List.len xs))`, mirrors, conjunctions) is identical. Skips a `false`/`true` arm (a
+/// constructor verdict), a nullary/multi-bind pattern, and an unrecognized guard (unconstrained fallback).
+fn sum_ctor_payload_min_lens(ast: &Arenas, pred: StructId, param: &str) -> Vec<(String, usize)> {
+    let Some(tail) = ast.as_form(pred, "match") else {
+        return Vec::new();
+    };
+    let Some((&scrut, arms)) = tail.split_first() else {
+        return Vec::new();
+    };
+    if ast.as_name(scrut) != Some(param) {
+        return Vec::new();
+    }
+    let mut mins = Vec::new();
+    for &arm in arms {
+        let crate::ast::Struct::List(items) = ast.get(arm) else {
+            continue;
+        };
+        let [pat, body] = items.as_slice() else {
+            continue;
+        };
+        if ast.as_bool(*body).is_some() {
+            continue;
+        }
+        let (Some(ctor), Some(binder)) = (
+            ctor_name_of_pattern(ast, *pat),
+            single_payload_binder(ast, *pat),
+        ) else {
+            continue;
+        };
+        if let Some(m) = min_len_for_param(ast, *body, &binder) {
+            mins.push((ctor, m));
+        }
+    }
+    mins
 }
 
 /// The single payload BINDER name of a constructor pattern `((. TYPE Ctor) n)` / `(Ctor n)` → `n`. `None` if
@@ -2558,6 +2618,56 @@ mod tests {
                  (@ (requires (match o ((Opt.Some n) (>= n 0)) ((Opt.None) false))) \
                    (def (f (: o Opt) (: p Opt)) 0)) (def (z) 1))",
                 "p"
+            )
+            .is_empty()
+        );
+    }
+
+    /// `sum_ctor_payload_min_lens` is the LIST-payload twin of `sum_ctor_payload_ranges`: an arm whose body is
+    /// a recognized min-length guard over the pattern's single `(List …)` payload binder (`((Box.Full xs) (< 0
+    /// (List.len xs)))`) yields `(Ctor, min_len)`, so the generator floors that constructor's drawn list length
+    /// (no spurious `Full([])`). A `false`/`true` arm body, a nullary/multi-bind pattern, an upper-bound-only
+    /// guard, or a match on another param yields nothing.
+    #[test]
+    fn sum_ctor_payload_min_lens_reads_length_guard_arms() {
+        let mins_of = |src: &str, param: &str| -> Vec<(String, usize)> {
+            let ast = crate::testkit::parse(src);
+            let items: Vec<_> = ast.as_form(ast.root, "do").unwrap().to_vec();
+            let ann = *items
+                .iter()
+                .find(|&&it| ast.as_form(it, "@").is_some())
+                .expect("an @ annotation");
+            let head = ast.as_form(ann, "@").unwrap()[0];
+            let pred = ast.as_form(head, "requires").expect("(requires Q)")[0];
+            super::sum_ctor_payload_min_lens(&ast, pred, param)
+        };
+        // `(< 0 (List.len xs))` → floor 1 (non-empty); `Empty -> false` is not a length guard.
+        assert_eq!(
+            mins_of(
+                "(do (type Box (Empty) (Full (List Int64))) \
+                 (@ (requires (match o ((Box.Full xs) (< 0 (List.len xs))) ((Box.Empty) false))) \
+                   (def (f (: o Box)) 0)) (def (z) 1))",
+                "o"
+            ),
+            vec![("Full".to_string(), 1)]
+        );
+        // `(<= 2 (List.len xs))` → floor 2.
+        assert_eq!(
+            mins_of(
+                "(do (type Box (Empty) (Full (List Int64))) \
+                 (@ (requires (match o ((Box.Full xs) (<= 2 (List.len xs))) ((Box.Empty) false))) \
+                   (def (f (: o Box)) 0)) (def (z) 1))",
+                "o"
+            ),
+            vec![("Full".to_string(), 2)]
+        );
+        // A `true` allow-all arm (no length guard) yields no floor.
+        assert!(
+            mins_of(
+                "(do (type Box (Empty) (Full (List Int64))) \
+                 (@ (requires (match o ((Box.Full xs) true) ((Box.Empty) true))) \
+                   (def (f (: o Box)) 0)) (def (z) 1))",
+                "o"
             )
             .is_empty()
         );

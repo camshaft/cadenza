@@ -11577,6 +11577,21 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // A CONSTANT Rational likewise materializes to a FRESH owned handle at `emit` (`bigint-of-i64` ×2
         // + `rational-of`), so as a borrowing-op operand it is Owned.
         Core::ConstRational(_, _) => Ok(HandleOwnership::Owned),
+        // A `Core::Closure` builds a FRESH owned cell (`arr-alloc` of the code index + the dup'd captures),
+        // ownership transferring out exactly like a `SumNew`/`Tuple`/`Record` constructor — so as the operand
+        // of a BORROWING op it is an owned temporary the enclosing op reclaims after the borrow. This is the
+        // SITE-A part (a): the eta-closure `((if c (T.Mk 0) (T.Mk 10)) 5)` distributes the projection into the
+        // `if`, so the `CallClosure` operand is an `If`-of-partial-ctors whose arms are each a fresh owned
+        // closure; the `Core::If` join (`join_arm_ownership`) can now flip that operand to Owned, which is the
+        // precondition v-effects' CallClosure emit (part b) gates its `cell_slot` drop on. Classifying a
+        // Closure Owned is UNCONDITIONALLY correct (a freshly-built cell is genuinely owned); the SOUNDNESS
+        // that keeps a SHARED/curried/re-applied/forced-thunk cell from being wrongly dropped lives ENTIRELY
+        // in v-effects' emit gate (full-arity apply + non-escaping result), NOT here — this arm only states
+        // "the cell is owned", never "the cell may be dropped". No reclaim consumer today takes a Fn-typed
+        // operand except that CallClosure emit, so until part (b) lands this arm is observably inert (a Fn
+        // cannot be a List.len/value-eq/map-key/sum-scrutinee operand — those are type errors), which is what
+        // lets part (a) land independently.
+        Core::Closure { .. } => Ok(HandleOwnership::Owned),
         // A reference to a parameter or a kept `let`-binding — the owner elsewhere reclaims it.
         Core::Param { .. } | Core::LocalRef { .. } => Ok(HandleOwnership::Borrowed),
         // A payload/element READ (`sum-payload`/`arr-get`) BORROWS its operand — the enclosing compound

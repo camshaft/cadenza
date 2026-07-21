@@ -102,6 +102,15 @@ pub struct Ctx<'a> {
     /// `f` twice per level). The Rust-backend twin of the wasm backend's materialize-scrutinee-once fix
     /// (keep the `MatchSum` wrapper for a non-reusable scrutinee, read one slot). Empty outside such a match.
     pub scrut_locals: Vec<(StructId, String)>,
+    /// The type this expression is EXPECTED to produce, from its consuming context — set ONLY when the
+    /// context fixes a type the node's own `type_of` may leave unsolved. The case: an empty `Set.of
+    /// (list)` / `Map.empty` passed as a CALL ARGUMENT whose callee PARAM type is a concrete collection
+    /// (`Set Float64`) — the empty node's element is an unsolved VAR at the construction site, so grounding
+    /// it to the default (`i64`) spells `BTreeSet<i64>` while the param wants `BTreeSet<__CdzF64>` → E0308
+    /// (breaker: empty-Set-at-call-arg). When set, `SetOf`/`MapNew` annotate from this expected type
+    /// instead of the default-grounded node type. `None` in every other context (the node's own solved
+    /// type governs). Reset to `None` when descending into a sub-expression that does NOT inherit it.
+    pub expected_ty: Option<Ty>,
 }
 
 /// A payload bound by a sum-match arm's Rust pattern: the scrutinee occurrence + access path the
@@ -184,6 +193,7 @@ pub fn emit_body(
         map_typed_by_enclosing_insert: false,
         set_typed_by_enclosing_insert: false,
         scrut_locals: Vec::new(),
+        expected_ty: None,
     };
     let expr = emit(db, body, &env, &ctx)?;
     Ok(format!("    {expr}"))
@@ -299,6 +309,7 @@ pub(super) fn emit_lifted_lambda(
         map_typed_by_enclosing_insert: false,
         set_typed_by_enclosing_insert: false,
         scrut_locals: Vec::new(),
+        expected_ty: None,
     };
     let body = emit(db, lam.body, &env, &ctx)?;
     let ident = lifted_ident(k);
@@ -338,6 +349,7 @@ fn emit_loop_body(
         map_typed_by_enclosing_insert: false,
         set_typed_by_enclosing_insert: false,
         scrut_locals: Vec::new(),
+        expected_ty: None,
     };
     // Initialize the shared locals from THIS member's params (its param name → `__pi`), then the body.
     let mut init = String::new();
@@ -803,6 +815,17 @@ fn emit_tail(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, 
             for (i, &a) in args.iter().enumerate() {
                 match param_tys.get(i).map(|(_, t)| t) {
                     Some(Ty::Int(it)) => rendered.push(emit_grounded(db, a, *it, env, ctx)?),
+                    // A COLLECTION param (Set/Map/List) with a fully-concrete element: thread it as the
+                    // arg's EXPECTED type, so an empty `Set.of (list)`/`Map.empty` arg annotates from the
+                    // param's element type rather than the default-grounded `i64` (breaker: an empty-Set at
+                    // a call-arg with a declared Float64 elem emitted `BTreeSet<i64>` ≠ the param's
+                    // `BTreeSet<__CdzF64>` → E0308). Only when the param type has no free var — else there
+                    // is nothing better than the node's own type.
+                    Some(pt @ (Ty::Set(_) | Ty::Map(_, _) | Ty::List(_))) if !pt.has_free_var() => {
+                        let mut arg_ctx = ctx.clone();
+                        arg_ctx.expected_ty = Some(pt.clone());
+                        rendered.push(emit(db, a, env, &arg_ctx)?);
+                    }
                     _ => rendered.push(emit(db, a, env, ctx)?),
                 }
             }
@@ -1238,6 +1261,17 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 // or a position past the known params (arity is checked upstream), emits as-is.
                 match param_tys.get(i).map(|(_, t)| t) {
                     Some(Ty::Int(it)) => rendered.push(emit_grounded(db, a, *it, env, ctx)?),
+                    // A COLLECTION param (Set/Map/List) with a fully-concrete element: thread it as the
+                    // arg's EXPECTED type, so an empty `Set.of (list)`/`Map.empty` arg annotates from the
+                    // param's element type rather than the default-grounded `i64` (breaker: an empty-Set at
+                    // a call-arg with a declared Float64 elem emitted `BTreeSet<i64>` ≠ the param's
+                    // `BTreeSet<__CdzF64>` → E0308). Only when the param type has no free var — else there
+                    // is nothing better than the node's own type.
+                    Some(pt @ (Ty::Set(_) | Ty::Map(_, _) | Ty::List(_))) if !pt.has_free_var() => {
+                        let mut arg_ctx = ctx.clone();
+                        arg_ctx.expected_ty = Some(pt.clone());
+                        rendered.push(emit(db, a, env, &arg_ctx)?);
+                    }
                     _ => rendered.push(emit(db, a, env, ctx)?),
                 }
             }
@@ -1516,6 +1550,17 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     Some(t) => format!(": {t}"),
                     None => String::new(),
                 }
+            } else if map_ty.has_free_var()
+                && let Some(exp) = &ctx.expected_ty
+                && matches!(exp, Ty::Map(_, _))
+                && !exp.has_free_var()
+            {
+                // Empty `Map.empty` at a CALL-ARG position: annotate from the callee param's concrete `Map`
+                // type, not the default ground (the Set-twin of the empty-Set-at-call-arg E0308 fix).
+                match types::rust_type(exp) {
+                    Some(t) => format!(": {t}"),
+                    None => String::new(),
+                }
             } else {
                 // No enclosing insert to infer from (get-only / pass-through — e.g. an empty-Map handler
                 // state): GROUND the open vars so the annotation is spellable (else E0282). See
@@ -1641,6 +1686,18 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let set_ty = type_of(db, id);
             let ann = if ctx.set_typed_by_enclosing_insert {
                 match types::rust_type(&set_ty) {
+                    Some(t) => format!(": {t}"),
+                    None => String::new(),
+                }
+            } else if set_ty.has_free_var()
+                && let Some(exp) = &ctx.expected_ty
+                && matches!(exp, Ty::Set(_))
+                && !exp.has_free_var()
+            {
+                // The node's element is unsolved here (an empty `Set.of (list)` at a CALL-ARG position),
+                // but the consuming context (the callee's param type) FIXES it — annotate from the expected
+                // `Set` type, not the default `i64` ground (which would clash with the param → E0308).
+                match types::rust_type(exp) {
                     Some(t) => format!(": {t}"),
                     None => String::new(),
                 }

@@ -32,7 +32,7 @@ use crate::arena::Slot;
 use crate::ast::StructId;
 use crate::db::Db;
 use crate::diag::{Code, Fix, Reject};
-use crate::resolve::resolved_of;
+use crate::resolve::{resolved_of, resolved_ref};
 use crate::resolved::Resolved;
 use crate::ty::{Scheme, Ty};
 use crate::unify::{Fresh, Subst};
@@ -715,18 +715,29 @@ fn literal_binop_context_ty(db: &mut Db, id: StructId) -> Option<crate::ty::IntT
     let mut child = id;
     loop {
         let parent = db.parent_of(child)?;
-        let Resolved::Apply { head, args } = resolved_of(db, parent) else {
-            return None;
+        // Borrow the resolved form (a dispatch/tag test that only READS `head`/`args`) instead of cloning
+        // the whole `Resolved` per climb step via `resolved_of` — the `resolved_ref` borrow family the
+        // `a_wide_match_resolves_in_a_bounded_number_of_clones` guard documents. A binop is exactly two
+        // operands (any other arity returns `None` below), so extract only the Copy `StructId` head + the
+        // two operands, dropping the borrow before the `&mut db` calls below — no `Vec` clone at all.
+        let (head, arg0, arg1) = {
+            let Resolved::Apply { head, args } = resolved_ref(db, parent) else {
+                return None;
+            };
+            if args.len() != 2 {
+                return None;
+            }
+            (*head, args[0], args[1])
         };
         // The head must be an integer binary operator; the child must be one of its (exactly two) operands.
         let prim = crate::eval::meta_apply_of(db, head)?;
-        if !prim.is_binop() || args.len() != 2 {
+        if !prim.is_binop() {
             return None;
         }
-        let sibling = if args[0] == child {
-            args[1]
-        } else if args[1] == child {
-            args[0]
+        let sibling = if arg0 == child {
+            arg1
+        } else if arg1 == child {
+            arg0
         } else {
             return None;
         };
@@ -7373,30 +7384,47 @@ pub(crate) fn check_unknown_units(db: &mut Db, out: &mut Vec<Reject>) {
             continue; // a known family / user-defined unit
         }
         // Two-tiered hint. A CONFIDENT typo of a real unit (`metre`→`meter`, `secnd`→`second`) gets a
-        // "did you mean?". Otherwise DON'T fall back to `did_you_mean`'s raw "closest matches" list: for
-        // an ABBREVIATION like `mph`/`kmh`/`rpm` the nearest units by edit distance are semantically
-        // unrelated noise (`mph` → `bps`, `mbps`, `bit`) — misleading, and it never says what to DO.
-        // Give ACTIONABLE guidance instead — a compound unit is COMPOSED from known units, and a genuinely
-        // new named unit is introduced with `Unit.define` (the example carries the actual unknown name, so
-        // it is a copy-paste starting point).
+        // "did you mean?" AND a heuristic Replace fix on the NAME occurrence, so the suggestion is
+        // machine-applyable (the unit-literal analogue of a member-access / import-name did-you-mean).
+        // Otherwise DON'T fall back to `did_you_mean`'s raw "closest matches" list: for an ABBREVIATION
+        // like `mph`/`kmh`/`rpm` the nearest units by edit distance are semantically unrelated noise
+        // (`mph` → `bps`, `mbps`, `bit`) — misleading, and it never says what to DO. Give ACTIONABLE
+        // guidance instead — a compound unit is COMPOSED from known units, and a genuinely new named unit
+        // is introduced with `Unit.define` (the example carries the actual unknown name, so it is a
+        // copy-paste starting point); that far-miss guidance is not one mechanical edit, so no fix.
+        let mut fix = None;
         let hint = match crate::diag::suggest::nearest(&name, known.iter()) {
-            Some(near) => format!(" — did you mean `{near}`?"),
+            Some(near) => {
+                // ⚠ The unit name is a LITERAL whose delimiter must be preserved so the applied edit
+                // re-renders a valid `Unit.of` argument: a symbol `#"metre"` (`Leaf::Sym`) → `#"meter"`,
+                // a plain string `"metre"` (`Leaf::Str`) → `"meter"`. Detect which from the AST node —
+                // a bare `meter` would re-read as a NAME and break the `(Unit.of …)` form.
+                let replacement = if db.ast.as_sym(name_occ).is_some() {
+                    format!("#\"{near}\"")
+                } else {
+                    format!("\"{near}\"")
+                };
+                fix = Some(crate::diag::Fix::replace_heuristic(name_occ, replacement));
+                format!(" — did you mean `{near}`?")
+            }
             None => format!(
                 " — compose a compound unit from known units \
                  (e.g. miles per hour is `(Unit./ (Unit.of #\"mile\") (Unit.of #\"hour\"))`), \
                  or declare it with `(Unit.define #\"{name}\" <base-unit> <num> <den>)`"
             ),
         };
-        out.push(
-            Reject::coded(
-                Code::Malformed,
-                format!(
-                    "unknown unit `{name}` — it is neither a built-in unit nor declared by a \
-                     `Unit.define`{hint}"
-                ),
-            )
-            .at(id),
-        );
+        let mut reject = Reject::coded(
+            Code::Malformed,
+            format!(
+                "unknown unit `{name}` — it is neither a built-in unit nor declared by a \
+                 `Unit.define`{hint}"
+            ),
+        )
+        .at(id);
+        if let Some(fix) = fix {
+            reject = reject.with_fix(fix);
+        }
+        out.push(reject);
     }
 }
 

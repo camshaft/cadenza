@@ -575,6 +575,28 @@
             (def (main) (mk 1)) (export main)))
   (output (: b"\x01\x02\x03" Bytes)))
 
+(case "compacting a runtime CONCAT ROPE materializes it, preserving the value and staying usable"
+  (doc    "The rope-MATERIALIZATION face of compact (distinct from compacting a slice-view :299 or an already-
+           flat single leaf :567): a genuinely-runtime multi-chunk `Bytes.concat` rope — its chunks chosen by a
+           run-time `if` so the concat cannot fold — is `Bytes.compact`ed into one contiguous buffer. Compact is
+           value-preserving AND the compacted result is fully usable: over the rope `[10,20]++[30,40]` = `[10,
+           20,30,40]`, `c = Bytes.compact rope` satisfies `(= c rope)` (value-preserving — the flattened buffer
+           equals the un-compacted rope by bytes-in-order, #Sharing Is Not Observable), `(Bytes.len c)` = 4 (the
+           materialized result carries its length), and `(Bytes.at c 2)` = Some 30 (indexing the flat buffer
+           works). Encoded as a tuple (1, 4, 30). Pins that flattening a deferred concatenation into contiguous
+           storage neither changes the value nor breaks len/at — both backends.")
+  (input  (do
+            (def (pickb (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
+            (def (main (: s Int64))
+              (let ((rope (Bytes.concat (pickb s (Bytes.of (list 10 20)) (Bytes.of (list 99 99)))
+                                        (pickb s (Bytes.of (list 30 40)) (Bytes.of (list 99 99))))))
+                (let ((c (Bytes.compact rope)))
+                  (tuple (if (= c rope) 1 0)
+                         (Bytes.len c)
+                         (match (Bytes.at c 2) ((Some x) x) ((None _u) -1))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: (tuple 1 4 30) (Tuple Int64 Int64 Int64))))
+
 ; --- A runtime `Bytes.at` Option is MATCHED — the reader's core idiom -------------------------------
 ; The reader walks the input bytes with `(match (Bytes.at input i) ((Some b) …) (None …))` on every
 ; byte, so this must compile: matching a runtime `Bytes.at` result (an `Option<Int64>` — the byte

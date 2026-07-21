@@ -1409,6 +1409,51 @@ fn rustc_roundtrip_unconstrained_empty_set_grounds_and_compiles_not_e0282() {
 }
 
 #[test]
+fn empty_set_at_a_call_arg_grounds_to_the_callee_param_element_not_the_default() {
+    // REGRESSION (breaker adv-rust-empty-set-call-arg-elem-type-not-consulted-E0308): an empty
+    // `(Set.of (list))` passed as a CALL ARGUMENT whose callee PARAM declares a `(Set Float64)` — with no
+    // insert anywhere, the param type is the ONLY element-type fixer. The empty node's element is an
+    // unsolved var at the construction site, so the old `ground_open_vars` default spelled `BTreeSet<i64>`
+    // at the call site while the param is `BTreeSet<__CdzF64>` → error[E0308]. The fix threads the callee
+    // param type as the arg's EXPECTED type so the empty set annotates from it.
+    let m = compile_rust(
+        "(module m \
+           (def (loop (: n Int64) (: s (Set Float64))) (if (= n 0) (Set.len s) (loop (- n 1) s))) \
+           (def (run) (loop 3 (Set.of (list)))) (export run))",
+    );
+    assert!(
+        m.contains("std::collections::BTreeSet<__CdzF64> = std::collections::BTreeSet::new()"),
+        "the empty-set call arg grounds to the param's __CdzF64 element (not the default i64):\n{m}"
+    );
+    // The whole point: rustc-compiles (was E0308) and computes 0 like wasm.
+    assert!(
+        compile_rust_result(
+            "(module m \
+               (def (loop (: n Int64) (: s (Set Float64))) (if (= n 0) (Set.len s) (loop (- n 1) s))) \
+               (def (run) (loop 3 (Set.of (list)))) (export run))"
+        )
+        .is_ok(),
+        "the emitted program is produced (not declined)"
+    );
+    if let Some(out) = rustc_run(&m, "run()") {
+        assert_eq!(
+            out, "0",
+            "an empty float set has cardinality 0 — same as wasm"
+        );
+    }
+    // An INT-element call-arg empty set stays fine (the default ground already matched — no regression).
+    let mi = compile_rust(
+        "(module m \
+           (def (loop (: n Int64) (: s (Set Int64))) (if (= n 0) (Set.len s) (loop (- n 1) s))) \
+           (def (run) (loop 3 (Set.of (list)))) (export run))",
+    );
+    assert!(
+        mi.contains("std::collections::BTreeSet<i64>"),
+        "an Int64 call-arg empty set still grounds to i64:\n{mi}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_unconstrained_empty_set_grounds_through_a_control_flow_join() {
     // REGRESSION (v-rust-backend, extends the direct-`Set.len (Set.of (list))` pin above): an
     // UNANNOTATED empty set whose element type is fixed by NOTHING downstream must still ground to the

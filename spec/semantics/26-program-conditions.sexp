@@ -2785,3 +2785,33 @@
   (output (: 5 Int64))
   (call   mk (: -1 Int64))
   (trap   "unreachable"))
+
+(case "@ensures / @requires predicate PROJECTS a TUPLE component (`(. ret N)` on the result, `(. p N)` on a param)"
+  (doc    "The enforcement predicate is not limited to scalar/heap results — it may PROJECT a component of a
+           tuple. Existing cases pin @ensures over a scalar and over a heap List result; this pins the tuple
+           projection face for BOTH the result binder and a parameter. `proj-ret` returns `(tuple x (x+1))` under
+           @ensures(>= (. ret 0) 0): the postcondition reads component 0 of the result tuple — proj-ret(5) yields
+           (5,6) whose 0th is 5 >= 0 (returns 6 = component 1), proj-ret(-2) yields (-2,-1) whose 0th is -2 < 0
+           and TRAPS. `proj-arg` takes a tuple parameter under @requires(>= (. p 0) 0): the precondition projects
+           component 0 of the argument tuple — main builds `(tuple k (k+100))` at runtime, proj-arg over (5,105)
+           passes (returns 105), over (-2,98) traps before the body. Together they pin that `(. binder N)` in a
+           predicate resolves + lowers against both the result binder `ret` and a tuple-typed parameter, so a
+           future change to tuple projection or predicate scoping cannot silently break contract enforcement over
+           product-typed results/arguments. Runtime values via main's param (no const-fold).")
+  (input  (do
+            (@ (ensures (>= (. ret 0) 0))
+               (def (proj-ret (: x Int64)) (tuple x (+ x 1))))
+            (@ (requires (>= (. p 0) 0))
+               (def (proj-arg (: p (Tuple Int64 Int64))) (. p 1)))
+            (def (main-ret (: k Int64)) (. (proj-ret k) 1))
+            (def (main-arg (: k Int64)) (proj-arg (tuple k (+ k 100))))
+            (export main-ret)
+            (export main-arg)))
+  (call   main-ret (: 5 Int64))
+  (output (: 6 Int64))
+  (call   main-ret (: -2 Int64))
+  (trap   "unreachable")
+  (call   main-arg (: 5 Int64))
+  (output (: 105 Int64))
+  (call   main-arg (: -2 Int64))
+  (trap   "unreachable"))

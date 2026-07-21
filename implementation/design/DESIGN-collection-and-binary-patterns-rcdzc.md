@@ -498,6 +498,31 @@ special case per type — the spec's explicit intent (`16-binary-matching.sexp:2
      `expr.rs` arms + `select.rs`) — a focused multi-file slice, hence deferred behind the const path.
      (Characterized by v-patterns during a runtime-vs-const bin-match probe; declines cleanly today so it is
      correct-for-now, a feature gap not a bug.)
+   - **4b. GUARDED bin-match arm (deferred sub-slice).** A `(guard (bin <seg>…) <cond>)` arm — a bin pattern
+     under a match-arm guard, where the guard cond reads a decoded segment binder (`(guard (bin (u8 n)) (> n
+     5))`) — is UNSUPPORTED today, and (unlike 4a) fails at the FRONT of the pipeline: `lower_match`'s bin
+     ROUTING checks `head_name(pat) == "bin"` (lower.rs:4076), but a guarded arm's `pat` is `(guard …)`, so
+     `head_name` is `"guard"` and the match never routes to `lower_match_bin` — it falls to the SCALAR probe
+     path, which lowers the guard's inner `(bin …)` as an EXPRESSION → "unbound name `bin`" (a pattern-position
+     poison; scored `todo`, not graded, so it declines cleanly — a feature gap, not a miscompile). The other
+     compound-pattern kinds have the SAME latent shape (a guarded `(list …)`/`(map …)` arm), but bin is the one
+     witnessed. **Implementation (3 cohesive parts):** (i) ROUTING — peel a `(guard …)` wrapper before the
+     `head_name == "bin"`/`"list"`/`"map"` checks at lower.rs:4073–4102 (an `inner_pat` helper, exactly as the
+     scalar path already does at 4114); (ii) RESOLVE — add `guard_cond_bin_binds` (resolve.rs, the binary twin
+     of `guard_cond_list_binds`/`guard_cond_record_binds`): when `form` is `(guard (bin …) cond)` ascended from
+     the cond, resolve a segment binder to a `Resolved::BinField { scrutinee, segs, seg_index }` — exactly what
+     Case B gives the arm BODY — inserted as a new Case 6bg after Case 6recg; (iii) `lower_match_bin` — give
+     `BinArm::Bin` an optional guard field (peel it in the classifier at lower.rs:7189), and thread it: the
+     CONST path (7300–7338) wraps the matched arm's body-return in a guard fold (`core_of` the cond with the
+     seg binders resolving to the const scrutinee via Case 6bg; `ConstBool(false)` → continue to the next arm,
+     mirroring `lower_match`'s scalar guard fold at 4271–4293), and the RUNTIME path (7250–7286) nests the guard
+     INTO the arm predicate (`bytes-len == total & literals-match & <guard>`, guard read via `BinIntRead` — a
+     false guard falls through to the next arm's predicate, NOT a trap). The whole-scrutinee borrow/escape arms
+     are unaffected (the guard is a boolean read of already-decoded binders, no new heap operand). Miscompile-
+     sensitive at the const fold (a wrong guard fold would select the wrong arm), so it is gated behind the
+     `todo` witness "a guarded bin-match arm reads its decoded binder and falls through when the guard fails"
+     (16-binary), which flips todo→pass when all three parts land. (Characterized by v-patterns Inc-322 while
+     probing bin×guard composition coverage; the resolve helper was prototyped + reverted as incomplete-alone.)
 5. **Map patterns** (map-lookup+remove, spec-first done in step 0). **Set patterns** only if step 0 took the
    spec decision.
 

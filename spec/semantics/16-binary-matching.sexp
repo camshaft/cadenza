@@ -780,6 +780,30 @@
   (call   main (: 258 UInt16))
   (output (: 258 Int64)))
 
+(case "a guarded bin-match arm reads its decoded binder and falls through when the guard fails"
+  (doc    "A `(bin …)` pattern under a GUARD, over a RUNTIME scrutinee — the composition of runtime
+           bin-decode and match-arm guards. The arm `(guard (bin (u8 n)) (> n 5))` decodes the one-byte
+           field `n` via a runtime `BinIntRead`, then gates the arm on `(> n 5)` reading that decoded
+           binder; a second guarded arm `(guard (bin (u8 n)) (> n 0))` catches the 1..5 range, and the
+           wildcard catches 0. The scrutinee is `(bin (u8 h))` built from a runtime `h` so it cannot fold.
+           Pins that a guard sees the runtime-decoded segment binder in scope AND that a failing guard on a
+           bin arm FALLS THROUGH to the next arm (which re-probes the same materialized scrutinee), not
+           traps — the bin analogue of the scalar `guarded arm falls through` case. h=9 → first guard
+           `9 > 5` holds → 100; h=3 → first guard fails, second `3 > 0` holds → 200; h=0 → both guards fail
+           → wildcard 300.")
+  (input  (do (def (main (: h Int64))
+                (match (bin (u8 (UInt8.wrap h)))
+                  ((guard (bin (u8 n)) (> n 5)) 100)
+                  ((guard (bin (u8 n)) (> n 0)) 200)
+                  (_ 300)))
+              (export main)))
+  (call   main (: 9 Int64))
+  (output (: 100 Int64))
+  (call   main (: 3 Int64))
+  (output (: 200 Int64))
+  (call   main (: 0 Int64))
+  (output (: 300 Int64)))
+
 (case "a runtime bin match dispatches on a literal tag across arms"
   (doc    "A multi-arm `bin` match over a RUNTIME scrutinee: a leading LITERAL tag segment selects the arm
            (tag 1 vs tag 2), and a runtime `u16` field fills the payload. The construction takes a `UInt8`

@@ -287,6 +287,7 @@ export const CHAPTERS: Chapter[] = [
     title: "History as a value",
     blurb: "An agent's whole history is an event log, and running it is a fold over that log, so replay, fork, and recovery are just re-folding a value.",
     section: "What makes Cadenza different",
+    exercises: 1,
     Component: lazy(() => import("./chapters/RecordedLog.tsx")),
   },
   {

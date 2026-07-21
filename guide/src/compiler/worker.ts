@@ -32,6 +32,9 @@ import init, {
 } from "../wasm/pkg/cdz_wasm.js";
 // The wasm binary as a URL Vite fingerprints; `--target web` init fetches + compiles it.
 import wasmUrl from "../wasm/pkg/cdz_wasm_bg.wasm?url";
+// Pure boundary guard: the three preload arrays must be equal length (see preloadArity.ts). Kept in a
+// wasm-free module so `node --test` can pin it (preloadArity.test.ts); worker.ts just composes it.
+import { preloadArityError } from "./preloadArity.ts";
 
 export type Surface = "ml" | "sexpr";
 
@@ -263,6 +266,8 @@ const api = {
     formats: string[],
   ): Promise<CompileOutcome> {
     await ensureReady();
+    const arity = preloadArityError(names, sources, formats);
+    if (arity) return { component: null, diagnostics: [arity] };
     let r: ReturnType<typeof wasmCompileWithPreloaded>;
     try {
       r = wasmCompileWithPreloaded(text, from, names, sources, formats);
@@ -363,6 +368,8 @@ const api = {
     formats: string[],
   ): Promise<Diag[]> {
     await ensureReady();
+    const arity = preloadArityError(names, sources, formats);
+    if (arity) return [arity];
     return wasmDiagnosticsWithPreloaded(text, from, names, sources, formats).map(toDiag);
   },
 

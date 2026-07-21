@@ -1,4 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+pass	@ensures / @requires predicate PROJECTS a TUPLE component (`(. ret N)` on the result, `(. p N)` on a param)
 pass	@ensures on a def returning an @invariant type: establish (on construction) AND the postcondition (on ret) both fire (design §10, (D))
 pass	@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
@@ -1895,6 +1896,7 @@ pass	a runtime bin match binds the tail after a fixed header via a final rest se
 pass	a runtime bin match decodes a byte-aligned bit-field run
 pass	a runtime bin match dispatches on a leading literal bit-field tag
 pass	a runtime bin match dispatches on a literal tag across arms
+todo	a guarded bin-match arm reads its decoded binder and falls through when the guard fails
 pass	a runtime bin match reads an int segment after a byte-aligned bit-field run
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
 pass	a runtime bit-field literal tag that does not match falls through
@@ -2940,6 +2942,7 @@ pass	checked subtraction yields None on underflow instead of trapping
 pass	checked subtraction yields Some of the difference when it fits
 pass	combining a named rate with a length is a dimensional error
 pass	compacting a byte sequence built at run time preserves its bytes
+pass	compacting a runtime CONCAT ROPE materializes it, preserving the value and staying usable
 pass	compacting a slice preserves its bytes
 pass	compacting is the identity on value for a whole byte sequence
 pass	comparing a Float32 nan to a Float64 finite value is a cross-width type error
@@ -3025,8 +3028,12 @@ pass	converting zero to a char yields Some — U+0000 (NUL) is a valid scalar
 pass	cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) emits (total)
 pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decode of a Float tag with a non-finite (NaN) bit pattern yields the error case
+pass	decode of a List tag whose element count exceeds the bytes present yields the error case
+pass	decode of a List tag with an enormous element count does not attempt a giant build — yields the error case
 pass	decode of a Str tag with an oversized length yields the error case
 pass	decode of a truncated Float tag yields the error case, not a trap
+pass	decode of a truncated Int tag (fewer than eight payload bytes) yields the error case
+pass	decode of an empty byte string (no tag) yields the error case
 pass	decode of an unknown tag byte yields the error case
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
 pass	decoding a lone continuation byte yields none
@@ -3446,6 +3453,7 @@ pass	reading the text a printer produced round-trips to an equal value
 pass	record equality is independent of the order fields are written
 pass	record fields render in canonical (key-sorted) order regardless of source order
 pass	record reshaping is subset comparison as explicit projection
+pass	narrow unsigned comparison division and remainder compose unsigned over a high-bit operand
 pass	recursive factorial with a match base case
 pass	recursive fibonacci over a RUNTIME argument computes the predecessors correctly
 pass	recursive fibonacci with literal match base cases
