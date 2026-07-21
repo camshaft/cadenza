@@ -204,19 +204,6 @@ thread_local! {
         const { std::cell::Cell::new(0) };
 }
 
-/// Test-only: within-bucket `core_eq` comparisons the wasm CSE class-partition
-/// (`select::collect_cse_candidate_groups`) made since the last reset. This is an `AtomicU64` (NOT a
-/// `thread_local`) DELIBERATELY: the emit path runs on a SCOPED WORKER THREAD (`host::
-/// run_with_compiler_stack`), so a `thread_local` incremented there is invisible to a test thread that
-/// resets/reads it — the counter would always read 0. An atomic is shared across threads, so the test
-/// observes the worker's increments. The partition buckets candidates by a cheap shallow `core_hash_key`
-/// and compares only WITHIN a bucket, so a WIDE all-distinct arithmetic body makes ~O(#candidates)
-/// compares (each its own bucket → 0 compares), NOT the ~cands²/2 the old all-pairs scan made. See
-/// `a_wide_arithmetic_body_partitions_cse_candidates_in_bounded_time`.
-#[cfg(test)]
-pub(crate) static CSE_PARTITION_CORE_EQ_CALLS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
 /// occurrences (empty = nullary), and its body occurrence (absent = malformed). The body is LOCATED,
 /// never entered by the scan — entering it is a later per-node demand.
@@ -1616,6 +1603,20 @@ pub struct Db {
     /// `a_wide_match_resolves_in_a_bounded_number_of_clones`.
     #[cfg(test)]
     pub(crate) resolved_of_calls: u64,
+    /// Test-only: within-bucket `core_eq` comparisons the wasm CSE class-partition
+    /// (`select::collect_cse_candidate_groups`) made against THIS `Db` — the noise-free signal that the
+    /// partition buckets candidates by a cheap shallow `core_hash_key` and compares only WITHIN a bucket,
+    /// so a WIDE all-distinct arithmetic body makes ~O(#candidates) compares (each its own bucket → ~0),
+    /// NOT the ~cands²/2 the old all-pairs scan made. A PER-`Db` counter for the SAME reason as
+    /// [`Self::resolved_of_calls`]: a process-global `AtomicU64` is `fetch_add`-polluted by the parallel
+    /// test harness's OTHER concurrent compiles during the read window (the emit path runs on a scoped
+    /// worker thread, incrementing a shared static), so the reading inflated nondeterministically under
+    /// load. Scoped to one `Db` (`collect_cse_candidate_groups` holds `&mut Db` → single-owner increments)
+    /// and surfaced out of the emit path via the `#[cfg(test)]` `CompileOutput::cse_partition_core_eq_calls`
+    /// field, so the test reads a value from exactly one compile. See
+    /// `a_wide_arithmetic_body_partitions_cse_candidates_in_bounded_time`.
+    #[cfg(test)]
+    pub(crate) cse_partition_core_eq_calls: u64,
     /// The solved-type column. Filled only by [`crate::infer`].
     pub(crate) types: Column<StructId, Ty>,
     /// The ground TYPE-VALUE memo — the read-through cache for [`crate::eval::typeval_of`]. Distinct from
@@ -2562,6 +2563,8 @@ impl Db {
             resolved: Column::new(),
             #[cfg(test)]
             resolved_of_calls: 0,
+            #[cfg(test)]
+            cse_partition_core_eq_calls: 0,
             types: Column::new(),
             typeval: Column::new(),
             typeval_memo_live: false,

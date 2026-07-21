@@ -279,6 +279,14 @@ impl Diagnostic {
 pub struct CompileOutput {
     pub artifacts: Vec<Artifact>,
     pub diagnostics: Vec<Diagnostic>,
+    /// Test-only: the `Db::cse_partition_core_eq_calls` count from this compile — the within-bucket
+    /// `core_eq` comparisons the wasm CSE class-partition made. The counter lives on the `Db` (which the
+    /// emit path drops before returning), so it is surfaced here for the regression-guard test
+    /// (`a_wide_arithmetic_body_partitions_cse_candidates_in_bounded_time`) to read a value from exactly
+    /// one compile — a per-`Db` metric rather than a parallel-test-contaminated process-global atomic.
+    /// `0` on any construction path that ran no emit (a query-only or early-fail output).
+    #[cfg(test)]
+    pub cse_partition_core_eq_calls: u64,
 }
 
 impl CompileOutput {

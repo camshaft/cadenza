@@ -32,12 +32,14 @@ use crate::db::DESCENT_DEPTH_LIMIT;
 /// deepest input measured here (a self-application whose sum-payload walk recurses near
 /// [`DESCENT_DEPTH_LIMIT`]) OVERFLOWED at 64 KB/level on a clean debug build (a SIGABRT in the
 /// `rcdzc-compile` worker — the "known nondeterministic dev-profile stack trip" the gate documents), so
-/// 64 KB under-budgeted. 256 KB/level (→ a 256 MB worker stack at 1024 levels) restores GENEROUS margin so
+/// 64 KB under-budgeted. 512 KB/level (→ a 512 MB worker stack at 1024 levels) restores GENEROUS margin so
 /// the semantic depth guard is reached BEFORE the native stack — deterministically, across debug/release
 /// AND under pr-sync's COMBINED gate-batch load (many deep compiles in one `cargo test` process, which
 /// SIGABRT'd the worker as a batch even where each MR passed alone). Address space is cheap (reserved, not
-/// committed), so a generous margin costs nothing.
-const STACK_BYTES_PER_DESCENT_LEVEL: usize = 256 * 1024;
+/// committed), so a generous margin costs nothing. Bumped 256 KB→512 KB after the N=400 uniform
+/// arith-chain CSE test (`a_deep_uniform_arith_chain_partitions_cse_candidates_in_bounded_time`)
+/// SIGABRT'd the worker at 256 KB on CI (ubuntu+macos) as well as under local load.
+const STACK_BYTES_PER_DESCENT_LEVEL: usize = 512 * 1024;
 
 /// The worker-thread stack size that guarantees the recursive-descent depth guard
 /// ([`crate::db::DESCENT_DEPTH_LIMIT`]) is reached before the native stack is exhausted — derived FROM

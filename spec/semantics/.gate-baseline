@@ -2,6 +2,7 @@
 pass	@ensures / @requires predicate PROJECTS a TUPLE component (`(. ret N)` on the result, `(. p N)` on a param)
 pass	@ensures on a def returning an @invariant type: establish (on construction) AND the postcondition (on ret) both fire (design §10, (D))
 pass	@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)
+pass	@ensures over a HANDLE-bodied def called with a runtime arg is enforced (the verify_enforce let-over-handle shape)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
 pass	@invariant ESTABLISH (divert) over a heap payload: a NonEmptyList newtype traps on the empty list, constructs a non-empty one (design §10.1/§10.2, (D))
 pass	@invariant ESTABLISH Part 1: a bare-scalar invariant on a newtype auto-unwraps + type-checks; a satisfying value constructs and is usable
@@ -136,6 +137,7 @@ pass	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
 pass	Map.remove of a Rational key canonicalizes: a normalized-equal key removes the entry
+pass	Map.swap and Map.take canonicalize a runtime COMPOUND (tuple) key on their value-yielding paths
 pass	Map.to-list canonical key order is independent of insertion order
 pass	Map.to-list enumerates the FULL interior key order, not just the smallest
 pass	Map.to-list enumerates the entries as a List of (key value) tuples in canonical KEY order
@@ -626,6 +628,7 @@ pass	a call-returned Bool newtype literal-payload arm spills correctly
 pass	a call-returned Int32 newtype literal-payload arm spills at the narrow width
 pass	a call-returned UInt8 newtype literal-payload arm spills at the narrow width
 pass	a called function's body resolves its free names lexically, not in the caller's scope
+pass	a callee whose body LET-BINDS a handle seeded by its param, called with the caller's runtime arg, keeps that arg bound
 pass	a camelCase round-trip resolves through kebab boundary-name normalization
 pass	a camelCase same-signature multi-export normalizes each make-<name>
 pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly
@@ -1092,6 +1095,7 @@ pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm capturing an enclosing fn param folds under a multi-arm nested handler
 pass	a handler arm consumes its resume value through an effect-free helper call
 pass	a handler arm for an operation the effect does not declare is rejected
+pass	a handle seeded from a runtime caller argument advances from that seed
 pass	a handler arm forwarding an effect its enclosing scope does not hold is rejected
 pass	a handler arm forwards an effect its enclosing scope DOES hold and runs
 pass	a handler arm interposes on another intra-program effect and forwards
@@ -1195,6 +1199,7 @@ pass	a let-bound record produced by an if is read at both fields
 pass	a let-bound record produced by an if, two fields read, compiles and runs
 pass	a let-bound returned closure applied twice folds each application independently
 pass	a let-bound runtime-if list is length-measured with valid wasm
+pass	a let-bound handle with a runtime seed composes with arithmetic after the let
 pass	a let-bound runtime-if map is looked up with valid wasm
 pass	a let-bound tuple produced by an if is projected at both indices
 pass	a let-bound tuple produced by an if, projected at two indices, compiles and runs
@@ -2755,10 +2760,12 @@ pass	an empty binary form is the empty byte sequence
 pass	an empty byte-string literal is the empty byte sequence
 pass	an empty list escaping to the host is rejected as undetermined, like a bare None
 pass	an empty map is unequal to a non-empty map, not a type error
+pass	an empty map passed to a recursive callee with a non-Int64 key param grounds its key type from the param
 pass	an empty quote is rejected, not a crash
 pass	an empty record pattern matches any record of its type
 pass	an empty scrutinee matches an empty bin pattern
 pass	an empty set in one if-branch unifies with a non-empty set in the other and its length reads correctly
+pass	an empty set passed to a recursive callee with a non-Int64 element param grounds its element type from the param
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
 pass	an empty-span String.slice at a multi-byte position has scalar-len zero
@@ -3215,6 +3222,7 @@ pass	double negation of a runtime boolean is the identity
 pass	draining the event queue yields entries in time-order with FIFO same-time ties
 pass	dropping an absent field from a record is rejected
 pass	dropping fields from a record leaves the remaining fields
+pass	division by negative one negates but still overflows at the minimum
 pass	each definition in a module registers a reachable export field
 pass	each literal kind quotes to its own single Ast leaf that escapes and renders
 pass	effect state threads across a successful `?`
@@ -3533,6 +3541,7 @@ pass	print then read an Ast.Float at the maximum finite magnitude round-trips
 pass	print then read an Ast.Float at the smallest subnormal round-trips
 pass	print then read of a digit-led Ast.Name reclassifies it per the number/identifier boundary
 pass	print then read of a keyword-spelled Ast.Name reclassifies it as the boolean literal
+pass	print then read of a string-spelled Ast.Name reclassifies it as an Ast.Str
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a just-built tuple does not evaluate the unprojected sibling's trap
@@ -3600,6 +3609,7 @@ pass	removing an absent key leaves the map unchanged
 pass	removing an element yields a set without it
 pass	resolving a head against a prelude symbol rejects a length-mismatched prefix
 pass	resolving a name in a shadowing environment returns the innermost binding's slot
+pass	remainder by negative one annihilates to zero at every input including the minimum
 pass	resuming with a value of the wrong type for the operation's result is a type error
 pass	resuming with a wrong-type value for a compound result type is a type error
 pass	round-trip byte-rope consumer alongside a plain export — the consumer
@@ -3781,6 +3791,7 @@ pass	the built-in Ast is transformed as an ordinary value
 pass	the built-in list is folded by an element-with-rest pattern
 pass	the byte codec round-trips a digit-led Ast.Name that the text path would reclassify
 pass	the byte codec round-trips a keyword-spelled Ast.Name that the text path would reclassify
+pass	the byte codec round-trips a string-spelled Ast.Name that the text path would reclassify
 pass	the byte length of a run-time multibyte string exceeds its scalar length
 pass	the byte length of a run-time-selected string reads the actual handle
 pass	the byte length of a runtime string equals the length of its encoded bytes
@@ -4144,5 +4155,6 @@ todo	a List entry argument is marshalled as a vec!
 todo	a Rational entry argument is marshalled through Rational::new
 todo	an Option (sum) entry argument is marshalled as a native Option
 todo	an exported entry with a String parameter is called with a string argument
+pass	zero divided by a runtime value folds to zero but keeps the zero-divisor guard
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional

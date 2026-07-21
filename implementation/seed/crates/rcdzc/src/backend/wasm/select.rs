@@ -4631,10 +4631,13 @@ fn collect_cse_candidate_groups(db: &mut Db, body: StructId) -> Vec<Vec<StructId
             // Count each within-bucket `core_eq` — the partition's comparison work. With hash-bucketing
             // this is O(#candidates) (each candidate compares only against same-hash predecessors, near
             // always none); the old all-pairs scan made it O(#candidates²). This is the noise-free
-            // regression signal (`a_wide_arithmetic_body_partitions_cse_candidates_in_bounded_time`).
+            // regression signal (`a_wide_arithmetic_body_partitions_cse_candidates_in_bounded_time`). A
+            // per-`Db` counter (not a process-global atomic) so the parallel test harness's other
+            // concurrent compiles can't pollute the reading — see `Db::cse_partition_core_eq_calls`.
             #[cfg(test)]
-            crate::db::CSE_PARTITION_CORE_EQ_CALLS
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            {
+                db.cse_partition_core_eq_calls += 1;
+            }
             if core_eq(db, classes[ci][0], id) {
                 classes[ci].push(id);
                 placed = true;

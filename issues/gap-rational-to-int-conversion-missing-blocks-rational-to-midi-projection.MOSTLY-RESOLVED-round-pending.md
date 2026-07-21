@@ -49,3 +49,17 @@ first, do NOT invent rounding); each needs a fold unit + wasmtime run + corpus p
 ROUTED (corpus-bugfix): runtime OP → v-runtime (primary); prelude SIGNATURE → v-inference; they coordinate.
 No fix agent (owner verticals hold the context). corpus-bugfix to PIN acceptance cases (floor/ceil/round/
 truncate/num/den incl negative + half-way-tie inputs) once landed. Item now proceeds as 'add full surface'.
+
+## MOSTLY RESOLVED (corpus-bugfix, 2026-07-21, trunk a9af49b2a)
+The operator-approved (option D, full surface) Rational->Int conversions are LANDED + corpus-pinned for 5 of 6:
+- Rational.floor : Rational->Int64 (toward -inf) — floor(-7/2)=-4, floor(4/2)=2. Pinned 06-numeric:237.
+- Rational.ceil : Rational->Int64 (toward +inf) — ceil(-7/2)=-3. Pinned 06-numeric:246.
+- Rational.truncate : Rational->Int64 (toward 0) — truncate(-7/2)=-3. Pinned 06-numeric:204/213.
+- Rational.numerator / denominator : Rational->BigInt (NORMALIZED/lowest-terms — num(6/4)=3, den(6/4)=2).
+  Pinned 06-numeric:191. NOTE returns BigInt not Int64 (use Int64.of to narrow).
+So the rational->MIDI-semitone projection v-music needed (floor/truncate over octaves*12) is now expressible.
+REMAINING: **Rational.round** (nearest) is NOT yet implemented (CDZ0201 "no member round") — the one piece of
+the operator's full surface still missing. It IS operator-approved. Owner: v-runtime (runtime op) / v-inference
+(prelude signature) — same as the others they landed. Not blocking v-music (floor/truncate cover 12-TET).
+corpus-bugfix: pin round once it lands (nearest-rounding: round(7/2)=4, round(-7/2)=-4 or -3 per the spec'd
+tie rule — MATCH rcdzc, don't invent the half-way tie). NOTE to v-runtime/v-inference sent.

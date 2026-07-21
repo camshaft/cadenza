@@ -2815,3 +2815,28 @@
   (output (: 105 Int64))
   (call   main-arg (: -2 Int64))
   (trap   "unreachable"))
+
+(case "@ensures over a HANDLE-bodied def called with a runtime arg is enforced (the verify_enforce let-over-handle shape)"
+  (doc    "Regression pin for the exact rewrite `verify_enforce` injects over an effectful body. Enforcement
+           wraps the def body as `(let ((ret BODY)) (if Q ret (trap)))`; when BODY is a `handle` expression and
+           the def is CALLED with the caller's runtime argument, the let-bound handle init used to spuriously
+           reject `CDZ0101 unbound <caller-param>` — the tail-resumptive effects fold `deep_fresh_copy`d the
+           threaded handle seed at each multi-use state-binder site, re-pushing the pinned caller-arg UNPINNED so
+           it re-resolved against the folded orphan (v-effects root-cause; fixed by let-binding a non-constant
+           seed once at fold entry). `f` handles a `St` state effect seeded by its param `n`, its arm resumes
+           `s` twice `(resume s s)` (the ≥2 state-binder use that triggered the orphan), under @ensures(>= ret
+           0). Called `(f k)` with main's runtime param: f(7) folds the handle to 7, the postcondition 7>=0
+           holds → 7; f(-3) folds to -3, -3>=0 is false → traps. Pins that contract enforcement composes with a
+           handle-bodied def + runtime arg (the effects/verify seam), so the fold's seed-preservation fix cannot
+           silently regress. Runtime arg via main's param (no const-fold).")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (@ (ensures (>= ret 0))
+               (def (f (: n Int64))
+                 (handle St n ((get (u) s (resume s s))) (St.get))))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 7 Int64))
+  (call   main (: -3 Int64))
+  (trap   "unreachable"))

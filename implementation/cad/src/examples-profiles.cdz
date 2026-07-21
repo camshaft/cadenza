@@ -71,8 +71,8 @@ def wave-fin() =
     ) in
   extrude(outline(profile), 3 / 1)
 
-@test
 /// ---- @test suite: pin the extents (the meshable geometry is exercised by the native cdz-cad driver) ----
+@test
 def plinth-box-is-the-prism-extent() =
   // rect(40, 20) extruded 10 → a 40×20×10 prism.
   if v3-eq(aabbr-size(bounding-box(plinth())), v3(40 / 1, 20 / 1, 10 / 1)) then

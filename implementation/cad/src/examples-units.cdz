@@ -34,8 +34,8 @@ def drilled-block-m() =
 def washer-m() =
   difference-m(cylinder-m(meters(1 / 10), meters(1)), cylinder-m(meters(1 / 10), meters(1 / 2)))
 
-@test
 /// ============================ @test suite (units-authored models → lower → exact bbox) ============================
+@test
 def plinth-authored-in-meters-has-exact-bbox() =
   // Authored as Solid(Qty[meter]); lower → Solid(Rational); bbox is exactly 2 × 1 × 1/2 m (the meter mags).
   let sz = aabbr-size(bounding-box(lower(plinth-m()))) in

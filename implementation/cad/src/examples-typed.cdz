@@ -42,8 +42,8 @@ def plinth() = box-len(meters(2), meters(1), meters(1))
 /// showcase: units mix EXACTLY in one model.
 def mixed-block() = box-len(meters(1), inches(12), inches(6))
 
-@test
 /// ============================ @test suite (S3 — units-typed worked models, exact meters) ============================
+@test
 def plinth-bbox-is-exact-meters() =
   // The plinth is a full-size 2×1×1 m box centred at origin; its bounding-box size is exactly 2×1×1 m
   // (bare Rational meters — the stored model unit). Exact, via the existing exact bbox fold.

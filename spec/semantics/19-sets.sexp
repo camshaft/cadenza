@@ -141,6 +141,36 @@
   (input  (Set.len (Set.of (list))))
   (output (: 0 Int64)))
 
+(case "an empty set passed to a recursive callee with a non-Int64 element param grounds its element type from the param"
+  (doc    "The empty-set element type must be fixed by the CALLEE's declared parameter at a CALL-ARGUMENT
+           position — not just by an enclosing insert. `(loop 3 (Set.of (list)))` where `loop`'s param is
+           `(: s (Set Float64))` and NO insert anywhere: the callee param `(Set Float64)` is the only fixer.
+           wasm defaults the empty set's element type in emit and runs (0); the RUST backend used to emit the
+           i64 DEFAULT `BTreeSet<i64>` for the empty-set call-arg (it grounded via an enclosing insert/remove
+           but did NOT consult the callee param type), giving E0308 'expected BTreeSet<__CdzF64>, found
+           BTreeSet<i64>' — a build failure while wasm computed. The fix grounds the empty-collection element
+           from the callee param at the call-arg. SET-SPECIFIC (the List twin already grounded). Pins the
+           build-set-by-recursion-over-floats idiom with an empty seed → 0 on all backends.")
+  (input  (do
+            (def (loop (: n Int64) (: s (Set Float64)))
+              (if (= n 0) (Set.len s) (loop (- n 1) s)))
+            (def (main) (loop 3 (Set.of (list))))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "an empty map passed to a recursive callee with a non-Int64 key param grounds its key type from the param"
+  (doc    "The Map twin of the empty-set-at-call-arg case above: `(loop 3 Map.empty)` where `loop`'s param is
+           `(: m (Map Float64 Int64))` and no insert — the callee param `(Map Float64 Int64)` is the only fixer
+           for the empty map's key/value types. wasm runs (0); the rust backend must ground the empty
+           `BTreeMap` key/value from the callee param (not the i64 default) so it does not E0308. Pins that the
+           empty-collection call-arg element-type grounding covers Map keys as well as Set elements → 0.")
+  (input  (do
+            (def (loop (: n Int64) (: m (Map Float64 Int64)))
+              (if (= n 0) (Map.len m) (loop (- n 1) m)))
+            (def (main) (loop 3 Map.empty))
+            (export main)))
+  (output (: 0 Int64)))
+
 (case "the number of elements counts distinct elements"
   (doc    "`(Set.len (Set.of (list 1 2 2 3)))` is 3 — the count of DISTINCT elements, since the duplicate
            2 is held once (collections-and-text.md #A Set Is A Collection Of Unique Elements). Pins that

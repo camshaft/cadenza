@@ -1611,6 +1611,43 @@
                     (Fresh.next)))) (export main)))
   (output (: 2 Int64)))
 
+; Every handle seed in the cases above is a CONSTANT. A seed may be a RUNTIME value — a caller
+; argument flowing into the handler's initial state — and the fold must genuinely START from it (a
+; seed baked at compile time, or a let-bound handle whose runtime seed was mishandled by the fold,
+; produces a value independent of the argument). Two calls with different seeds witness the
+; dependence.
+
+(case "a handle seeded from a runtime caller argument advances from that seed"
+  (doc    "`(handle Ctr seed …)` where `seed` is main's PARAMETER — the handler's initial state is a
+           runtime value, not a compile-time constant. Two ticks encode 100·first + second: seeded 7 →
+           7, 8 → 708; seeded 50 → 50, 51 → 5051. The two calls returning seed-dependent values pin
+           that the fold starts from the LIVE argument (a compile-time-baked seed, or a state slot
+           initialized before the argument arrives, returns the same value for both calls). The
+           runtime-seed companion of the constant-seeded counter fold above.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main (: seed Int64))
+              (handle Ctr seed ((tick (u) s (resume s (+ s 1))))
+                (+ (* 100 (Ctr.tick)) (Ctr.tick))))
+            (export main)))
+  (call   main (: 7 Int64))  (output (: 708 Int64))
+  (call   main (: 50 Int64)) (output (: 5051 Int64)))
+
+(case "a let-bound handle with a runtime seed composes with arithmetic after the let"
+  (doc    "The let-bound face the runtime-seed fold fix targets: `(let ((r (handle Get seed … (+
+           (Get.get) 1)))) (* r 2))` — the handle's value is bound, then consumed by later arithmetic.
+           Seeded 20 the perform reads 20, the body yields 21, and the doubled result is 42. Pins that
+           a let-bound handle whose seed is a caller runtime arg folds cleanly into the enclosing
+           computation (the handle is not the def's tail, so its fold must compose, not just
+           terminate). Expected: 42.")
+  (input  (do
+            (effect Get (op get (-> Unit Int64)))
+            (def (main (: seed Int64))
+              (let ((r (handle Get seed ((get (u) s (resume s s))) (+ (Get.get) 1))))
+                (* r 2)))
+            (export main)))
+  (call   main (: 20 Int64)) (output (: 42 Int64)))
+
 ; The counter fold above SEQUENCES its performs with `do` — each perform is a separate statement, so
 ; the state advance is witnessed only through the last value. These pin the fold where the advancing
 ; state is observed by ORDER-SENSITIVE operand positions instead: two performs as SIBLING operands of
@@ -2744,6 +2781,29 @@
               (handle Bump unit ((by (n) s (resume (+ n 1) s))) (gen))) (export main)))
   (output (: 42 Int64))
   (host-calls))
+
+(case "a callee whose body LET-BINDS a handle seeded by its param, called with the caller's runtime arg, keeps that arg bound"
+  (doc    "The caller-arg-through-a-let-wrapped-handle-seed shape: `(def (f x) (let ((r (handle St x …))) r))`
+           binds the result of a `handle` whose SEED is the param `x`, and `main` calls `(f k)` passing its OWN
+           runtime param `k`. This spuriously reported CDZ0101 'unbound name k' FROM THE COMPILE BACKEND (`cdz
+           check` passed) — inlining `f` substituted the handle seed `x`→the arg node carrying `k`, then the
+           tail-resumptive fold's `deep_fresh_copy` spliced that ONE seed node at BOTH state-binder references
+           in the arm body (`(resume s (+ s 1))`), and the re-parent to the last site ORPHANED the first, so
+           `k` re-resolved unbound. The fix let-binds a non-constant seed ONCE at the fold entry (an orphaned-
+           occurrence bug of the same family as an extracted child spliced without a re-parenting copy). Only
+           the CONJUNCTION triggers it — a const arg, a handle DIRECTLY in the body (no let), or a let over a
+           NON-handle init each compiled. `main 5`: the handler resumes with the state (seeded 5), `(St.tick)`
+           yields it → 5. Guards that a let-bound handle init seeded by a param does not drop the caller's
+           runtime argument (the exact shape `verify_enforce` injects for `@ensures`/`@requires` over a
+           handle-bodied def).")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (def (f (: x Int64))
+              (let ((r (handle St x ((tick (u) s (resume s (+ s 1)))) (St.tick)))) r))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
 
 (case "an effect resolves past an intermediate frame that installs no handler"
   (doc    "Witnesses capabilities-and-effects.md #Handler Resolution Is Dynamic In Extent And Statically

@@ -47,10 +47,10 @@ def main() =
   let r = Param.bbore() in
   lower(bracket(w, d, t, r))
 
-@test
 /// @test: pin the non-parametric core (the bracket at fixed inch dims to its exact mm envelope) so the shape
 /// plus the unit conversion are gate-protected. The parametric path (param plus host-response) is proven via
 /// cdz run --host-response, not a @test, which supplies no host values.
+@test
 def bracket-at-fixed-inches-has-the-exact-mm-envelope() =
   // bracket(3, 2, 1, 1/4) is a 3 in by 2 in by 1 in plate with a quarter-inch bore. In model mm the envelope
   // is exactly (381/5, 254/5, 127/5) mm, the exact inch-to-mm conversion, no float. The hole never grows the

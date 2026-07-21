@@ -228,6 +228,29 @@
   (call   main (: -7 Int64))
   (output (: -3 Int64)))
 
+; `Rational.floor : Rational → Int64` (toward −∞) and `Rational.ceil` (toward +∞) — the other two exact
+; integer projections. Like `truncate`, DERIVATIONS (no runtime op): `truncate` adjusted by ±1 off the
+; remainder sign — floor = trunc−1 iff (numerator < 0 AND remainder ≠ 0); ceil = trunc+1 iff (numerator > 0
+; AND remainder ≠ 0). The DISCRIMINANT vs truncate is a NEGATIVE non-whole value: floor(-7/2) = -4 (toward
+; −∞, not truncate's -3) and ceil(7/2) = 4 (toward +∞, not 3). Pins both directions on a runtime rational.
+(case "a rational floors toward negative infinity, narrowed to Int64"
+  (doc    "`Rational.floor : Rational → Int64` rounds toward −∞. `(Rational.of n 2)` at n=-7 is -7/2, whose
+           floor is -4 (toward −∞), distinct from truncate's -3 (toward zero). A DERIVATION: the toward-zero
+           quotient minus 1 when the value is negative with a nonzero remainder. Pins the toward−∞ direction
+           the ±1 remainder-sign adjustment implements (a floor/truncate confusion trips this).")
+  (input  (do (def (main (: n Int64)) (Rational.floor (Rational.of n 2))) (export main)))
+  (call   main (: -7 Int64))
+  (output (: -4 Int64)))
+
+(case "a rational ceilings toward positive infinity, narrowed to Int64"
+  (doc    "`Rational.ceil : Rational → Int64` rounds toward +∞. `(Rational.of n 2)` at n=7 is 7/2, whose
+           ceil is 4 (toward +∞), distinct from truncate's 3. A DERIVATION: the toward-zero quotient plus 1
+           when the value is positive with a nonzero remainder. Pins the toward+∞ direction — the mirror of
+           floor. An exact value (a whole rational) is unchanged: no ±1 when the remainder is zero.")
+  (input  (do (def (main (: n Int64)) (Rational.ceil (Rational.of n 2))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 4 Int64)))
+
 ; The exact-arithmetic cases above use SMALL operands (1/3, 1/6) that never leave the i64 range. A Rational
 ; is a normalized pair of BigInt handles, so a gcd normalization over NEAR-i64 operands must run on the
 ; runtime bigint limbs and stay exact. This pins a large num/den reducing to 2/1 — both backends must agree
@@ -2034,6 +2057,64 @@
   (call   main (: 5 Int64)) (output (: 0 Int64))
   (call   main (: 0 Int64)) (trap "divide by zero"))
 
+; ── NESTED-MODULO collapse: `(% (% v M) N)` → `(% v N)` when N DIVIDES M ─────────────────────────────
+; `arith_identity` (lower.rs) collapses two remainders to one when the outer divisor `N` divides the inner
+; `M` (`M % N == 0`, both positive constants ≥ 2): reducing mod `M` then mod `N` gives the same residue as
+; reducing mod `N` directly — for TRUNCATED (toward-zero) division at EVERY sign of `v`, so it holds for
+; negatives too (`(-25 % 100) % 10 == -25 % 10 == -5`). One `rem` instead of two. `v` STAYS the outer
+; operand so its own traps are preserved (no `is_trap_free` guard needed); a runtime `v` keeps the ops out
+; of the const fold. Both backends.
+(case "a nested modulo by a multiple collapses to a single modulo on a runtime operand"
+  (doc    "`(% (% v 100) 10)` → `(% v 10)` (10 | 100) and `(% (% v 12) 4)` → `(% v 4)` (4 | 12): the outer
+           divisor divides the inner, so the double reduction equals one direct reduction — at every sign
+           of v under truncated division. `(tuple (% (% v 100) 10) (% (% v 12) 4))` at v = 1234 → (4, 2),
+           at v = -25 → (-5, -1) (negatives collapse identically: -25%100=-25, -25%10=-5; -25%12=-1,
+           -1%4=-1). Pins the nested-modulo collapse (N | M) on a runtime operand across signs, both
+           backends.")
+  (input  (do (def (main (: v Int64)) (tuple (% (% v 100) 10) (% (% v 12) 4))) (export main)))
+  (call   main (: 1234 Int64))
+  (output (: (tuple 4 2) (Tuple Int64 Int64)))
+  (call   main (: -25 Int64))
+  (output (: (tuple -5 -1) (Tuple Int64 Int64))))
+
+; The by-ONE identities above have SIGNED mirrors at a literal -1 divisor, each with a guard the fold
+; must keep: `x / -1` is negation — EXCEPT at Int64.min, where the true quotient 2^63 overflows and
+; must trap (a fold to bare `i64.sub 0 x` wraps silently); `x % -1` annihilates to 0 at EVERY input
+; INCLUDING Int64.min (the `%`-vs-`/` overflow split, here at a FOLDED literal divisor — the pinned
+; MIN%-1 case reaches the runtime emit with a runtime -1 operand, a different path than a
+; constant-divisor rewrite); and `0 / x` folds the numerator but must keep the zero-divisor guard.
+
+(case "division by negative one negates but still overflows at the minimum"
+  (doc    "`(/ x -1)` with a LITERAL -1 divisor is exact negation for every x except Int64.min, whose
+           negation 2^63 does not fit — the checked divide must still trap there. A constant-divisor
+           rewrite to plain negation (`0 - x`, which wraps MIN to itself) would return -9223372036854775808
+           silently. 17 → -17; MIN → trap. The literal-divisor twin of the runtime (/ a b) at (MIN,-1)
+           case — same trap, reached through the FOLD path rather than the runtime emit. Expected: -17,
+           trap.")
+  (input  (do (def (main (: x Int64)) (/ x -1)) (export main)))
+  (call   main (: 17 Int64)) (output (: -17 Int64))
+  (call   main (: -9223372036854775808 Int64)) (trap "integer overflow"))
+
+(case "remainder by negative one annihilates to zero at every input including the minimum"
+  (doc    "`(% x -1)` is 0 for EVERY x — including Int64.min, where the sibling `/` traps: the remainder
+           after dividing by -1 is always exact. The `%`-vs-`/` overflow split at a LITERAL -1 divisor
+           (the pinned MIN%-1 case passes -1 as a runtime operand, exercising the runtime emit; this
+           reaches the constant-divisor fold, which must produce 0 without inserting a spurious MIN/-1
+           overflow guard). 17 → 0; MIN → 0. Expected: 0, 0.")
+  (input  (do (def (main (: x Int64)) (% x -1)) (export main)))
+  (call   main (: 17 Int64)) (output (: 0 Int64))
+  (call   main (: -9223372036854775808 Int64)) (output (: 0 Int64)))
+
+(case "zero divided by a runtime value folds to zero but keeps the zero-divisor guard"
+  (doc    "`(/ 0 x)` is 0 for every NONZERO x — but at x = 0 it is 0/0, which must trap divide-by-zero.
+           A zero-NUMERATOR fold to the constant 0 discards the divisor; like the annihilator cases
+           below, it may do so only for a provably nonzero divisor — a runtime `x` must keep the guard.
+           7 → 0; 0 → trap. The numerator-side companion of the by-one divisor folds above. Expected: 0,
+           trap.")
+  (input  (do (def (main (: x Int64)) (/ 0 x)) (export main)))
+  (call   main (: 7 Int64)) (output (: 0 Int64))
+  (call   main (: 0 Int64)) (trap "integer divide by zero"))
+
 ; ── An ANNIHILATOR algebraic identity (x*0, x&0 → 0) must not DISCARD a trapping runtime operand ──────
 ; These are the annihilator companions of the tautology-comparison cases above, aimed at the algebraic
 ; SIMPLIFICATION the compiler applies at the Core (backend-independent) tier: `x * 0` and `x & 0` fold to
@@ -2342,6 +2423,36 @@
   (input  (do (def (main (: x Int64)) (tuple (<< x 0) (>> x 0))) (export main)))
   (call   main (: -7 Int64))
   (output (: (tuple -7 -7) (Tuple Int64 Int64))))
+
+; ── A LOGICAL right shift that drops ALL of a value's significant bits folds to 0 ────────────────────
+; `arith_identity` (lower.rs) folds `(>>ᵤ x k)` → 0 when `x`'s PROVABLE unsigned bit-bound `B ≤ k` — the
+; shift moves every set bit out. The bound comes from a masking chain (`unsigned_value_bits`): `(x & 15)`
+; fits 4 bits so `>> 4` (on the UNSIGNED UInt8, `>>` is the LOGICAL zero-filling shift) drops them all → 0,
+; and `(x & 7)` fits 3 bits so `>> 3` → 0. The fold DISCARDS `x`, so it is `is_trap_free`-guarded: a
+; trapping operand inside the mask must still trap. `k` must be an IN-RANGE constant count (`< width`); an
+; out-of-range count TRAPS instead, so it is left alone. `unsigned_value_bits` fires only on an unsigned
+; logical-shift chain, so a signed arithmetic `>>ₛ` (which sign-extends) never misfires. Both backends.
+(case "a logical right shift that drops every significant bit of a masked unsigned value folds to zero"
+  (doc    "`(>> (& x 15) 4)` on a UInt8: `x & 15` fits the low 4 bits, and a UInt8 `>>` is the LOGICAL
+           (zero-filling) shift, so shifting right by 4 moves all 4 bits out → 0 for ANY x. `(>> (& x 7) 3)`
+           is the 3-bit-bound companion → 0. Packed as `(tuple (>> (& x 15) 4) (>> (& x 7) 3))`, x = 255 →
+           (0, 0). Pins the logical-shift-drops-all-significant-bits fold (`unsigned_value_bits` bound ≤ k)
+           on a runtime unsigned operand, both backends.")
+  (input  (do (def (main (: x UInt8)) (tuple (>> (& x 15) 4) (>> (& x 7) 3))) (export main)))
+  (call   main (: 255 UInt8))
+  (output (: (tuple 0 0) (Tuple UInt8 UInt8))))
+
+(case "the logical-shift-drops-all-bits fold does not discard a trapping runtime operand"
+  (doc    "The trap-preservation face: `(>> (& (/ 100 z) 15) 4)` still folds to 0 for the VALUE (the masked
+           value fits 4 bits, shifted out by 4), but the discarded operand `(/ 100 z)` with z = 0 divides by
+           zero and MUST trap — the fold may drop x's VALUE, not its EVALUATION (the `is_trap_free` guard).
+           At z = 5 the operand `(/ 100 z)` = 20 is trap-free and the whole thing folds to 0. Pins both
+           faces of the shift-drops-all-bits fold's trap-preservation on a runtime operand, both backends.")
+  (input  (do (def (main (: z UInt8)) (>> (& (/ 100 z) 15) 4)) (export main)))
+  (call   main (: 5 UInt8))
+  (output (: 0 UInt8))
+  (call   main (: 0 UInt8))
+  (trap   "divide by zero"))
 
 ; The MULTIPLICATIVE-one and SUBTRACTIVE-zero keeping identities are the companions of `x + 0` above:
 ; `x * 1`, `1 * x`, and `x - 0` all RETURN the surviving operand (`arith_identity` in lower.rs elides the

@@ -146,6 +146,15 @@
   (input  (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))
   (output (: (Qty.of 5000.0 (Unit.base #"meter")) (Qty Float64 (Unit.base #"meter")))))
 
+(case "a NEGATIVE prefixed quantity carries its sign through the reference scale-fold"
+  (doc    "`-5 kilometer` = `(Qty.of -5.0 (Unit.prefix kilo meter))` DISPLAYS as `-5000.0 meter`: the
+           reference scale-fold (×1000) applies to a NEGATIVE magnitude with the sign preserved — the scale
+           multiply is sign-transparent, so -5 km → -5000 m, not +5000. The sibling of the positive `5 km →
+           5000 m` display pin; isolates that scaling a stored quantity to its reference does not drop or
+           flip the sign.")
+  (input  (Qty.of -5.0 (Unit.prefix kilo (Unit.base #"meter"))))
+  (output (: (Qty.of -5000.0 (Unit.base #"meter")) (Qty Float64 (Unit.base #"meter")))))
+
 (case "a quantity whose reference-scaled magnitude overflows its inner Int is rejected"
   (doc    "`(Qty.of 9223372036854776 kilometer)` : `(Qty Int64 …)` scales to `9223372036854776 × 1000` at
            its reference `meter` = 9.2e18, which EXCEEDS Int64's max (9223372036854775807). A quantity
@@ -156,6 +165,16 @@
            twin of the runtime scale-multiply's trap-on-overflow — so the constant and runtime paths agree.
            A value whose scaled magnitude FITS (`5 km` → 5000 m) renders normally.")
   (input  (do (def (main) (Qty.of 9223372036854776 (Unit.prefix kilo (Unit.base #"meter")))) (export main)))
+  (error  CDZ0304))
+
+(case "a narrow-width quantity whose reference-scaled magnitude overflows its inner type is rejected"
+  (doc    "The NARROW-WIDTH twin of the Int64 scaled-display overflow above: `(Qty.of (Int8.of 5) kilometer)`
+           scales to `5 × 1000` = 5000 at its reference `meter`, which EXCEEDS Int8's max (127). The
+           scaled-magnitude fit check peels `Ty::Qty` AND reads the INNER numeric type's actual width — not
+           just Int64 — so a narrow inner (Int8) overflows on display exactly as Int64 does, DECLINING at
+           compile time (CDZ0304). Confirms the display-scale overflow gate is width-aware for every integer
+           inner, not hard-coded to 64 bits.")
+  (input  (do (def (main) (Qty.of (Int8.of 5) (Unit.prefix kilo (Unit.base #"meter")))) (export main)))
   (error  CDZ0304))
 
 (case "a family quantity displays scaled exactly to its reference (Rational)"
@@ -472,6 +491,20 @@
   (input  (Qty.of 1.0 (Unit./ Unit.one (Unit.of #"millisecond"))))
   (output (: (Qty.of 1000.0 (Unit./ Unit.one (Unit.base #"second")))
              (Qty Float64 (Unit./ Unit.one (Unit.base #"second"))))))
+
+(case "a bare TUPLE of quantities renders each element scaled to its reference (mixed inner types)"
+  (doc    "A compound VALUE — a `(Tuple (Qty …) (Qty …))` literal — crossing the boundary renders each Qty
+           element scaled to its reference in the value form, INDEPENDENTLY and with the element's own inner
+           numeric type: `(Qty.of 5.0 kilometer, Qty.of 5 mile)` → `(tuple (Qty.of 5000.0 meter) (Qty.of
+           201168/25 meter))` — the Float `5 km` scales to `5000.0 m` and the Rational `5 mile` scales EXACTLY
+           to `201168/25 m`, both at the reference `meter`. Distinct from the collection-element/key matrix
+           (those DECODE a quantity from a heap collection): this pins the const/value-form bake of a compound
+           LITERAL of quantities, confirming the per-element scale-fold recurses into a tuple's holes and
+           respects each element's inner type. Number and unit AGREE in every element.")
+  (input  (tuple (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))
+                 (Qty.of (Rational.of 5 1) (Unit.of #"mile"))))
+  (output (: (tuple (Qty.of 5000.0 (Unit.base #"meter")) (Qty.of 201168/25 (Unit.base #"meter")))
+             (Tuple (Qty Float64 (Unit.base #"meter")) (Qty Rational (Unit.base #"meter"))))))
 
 (case "a velocity multiplied by a time recovers the distance dimension"
   (doc    "The multiply-direction inverse of the velocity quotient: `(* (Qty.of 6.0 (meter/second))
@@ -2138,6 +2171,25 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 0 Int64)))
+
+(case "a DERIVED-dimension (velocity) quantity used as a Map key hits by content"
+  (doc    "The prior key cases use a BASE-dimension quantity key; this pins a DERIVED (quotient) dimension —
+           a velocity `(/ (Qty.of v meter) (Qty.of 2 second))` = `v/2 m/s`. A derived-dimension quantity
+           still erases to its inner scalar with a composite (quotient) unit, so it is a first-class heap key:
+           insert under the velocity key, look up a key built INDEPENDENTLY from the same runtime `v` (a
+           velocity of the same magnitude AND the same m/s dimension) — content equality HITS and returns 42.
+           Confirms the key hasher/comparator handles a composite-unit quantity key exactly as a base-unit
+           one (the unit is compile-time-only; the runtime key is the erased magnitude in a m/s-shaped slot).")
+  (input  (do
+            (def (main (: v Int64))
+              (let ((k (/ (Qty.of v (Unit.base #"meter")) (Qty.of 2 (Unit.base #"second"))))
+                    (m (Map.insert (Map.empty) k 42)))
+                (match (Map.lookup m (/ (Qty.of v (Unit.base #"meter")) (Qty.of 2 (Unit.base #"second"))))
+                  ((Some found) found)
+                  ((None) 0))))
+            (export main)))
+  (call   main (: 8 Int64))
+  (output (: 42 Int64)))
 
 ; --- Quantity over a HEAP-NUMERIC inner (BigInt/Rational) as a Map key -----------------------------
 ; The fixnum Map-key cases above erase to an immediate scalar in the key. These pin the heap-numeric

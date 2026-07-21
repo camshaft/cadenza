@@ -300,6 +300,16 @@ pub enum Prim {
     /// base of the Rational→Int64 projection surface; floor/ceil/round add a remainder-sign `±1` on top in
     /// later increments (numeric-model.md: integer projections of a rational are written on BigInt divmod).
     RationalTruncate,
+    /// `Rational.floor r` (toward −∞) / `Rational.ceil r` (toward +∞) — the other two exact integer
+    /// projections of a rational, narrowed to `Int64`. Like `RationalTruncate`, DERIVATIONS (no runtime op):
+    /// `floor` = `truncate − 1` iff (numerator < 0 AND remainder ≠ 0) else `truncate`; `ceil` = `truncate +
+    /// 1` iff (numerator > 0 AND remainder ≠ 0) else `truncate` — the ±1 adjustment off the truncating
+    /// division's remainder sign (numeric-model.md: the integer projections are written on BigInt divmod).
+    /// A CONSTANT `Core::ConstRational` folds to the adjusted `Core::ConstInt` (via `IntValue::divmod`); a
+    /// runtime Rational synthesizes the derivation subtree (a remainder-sign `Core::If` over the truncate).
+    /// `floor(-7/2) = -4` (vs `truncate`'s −3); `ceil(7/2) = 4`. The `Int64.of` narrowing TRAPS on overflow.
+    RationalFloor,
+    RationalCeil,
     /// `Symbol.of` — INTERN a String into a Symbol (`String → Symbol`, 17-symbols). A constant string
     /// FOLDS to a constant symbol (represented as the underlying `Core::ConstStr` at type `Ty::Symbol` —
     /// the identity is content-derived), so `(= (Symbol.of "a") (Symbol.of "a"))` folds via the shared
@@ -853,6 +863,8 @@ impl Prim {
             "rational-num" => Some(Prim::RationalNum),
             "rational-den" => Some(Prim::RationalDen),
             "rational-truncate" => Some(Prim::RationalTruncate),
+            "rational-floor" => Some(Prim::RationalFloor),
+            "rational-ceil" => Some(Prim::RationalCeil),
             "Char" => Some(Prim::CharTy),
             "char-to-int" => Some(Prim::CharToInt),
             "char-from-int" => Some(Prim::CharFromInt),

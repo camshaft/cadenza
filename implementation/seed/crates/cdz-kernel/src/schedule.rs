@@ -199,11 +199,19 @@ fn fired_counts(events: &[crate::Event]) -> std::collections::HashMap<String, u6
 
 /// How many occurrences of a periodic schedule have come due as of `now_ms` (0 if before `first_ms`): one for
 /// `first_ms`, plus one per elapsed period. `(now - first) / period + 1`. Used to compute the COALESCE target.
+///
+/// The `+ 1` is a `saturating_add`: with `first_ms = 0, period_ms = 1` and a `now_ms` at the very top of the
+/// `u64` range, `(now - first) / period` is already `u64::MAX`, so a plain `+ 1` would OVERFLOW — a debug-build
+/// PANIC (a can't-brick violation, wedging the pure `due` fold forever) and a silent wrap-to-0 in release. A
+/// `now_ms` that large only arises from a synthesized clock (the fast-forward clock a DES-style consumer drives,
+/// vs the trusted wall clock), but this module's contract is that the fold is TOTAL for ANY `now_ms`. Saturating
+/// keeps the count at `u64::MAX` there — `due` then sees `occ > k`, coalesces to a single fire (`fire_to = MAX`),
+/// and records it, exactly as it would for any far-behind periodic. Mirrors the period-0 divide-by-zero guard.
 fn occurrences_due(first_ms: u64, period_ms: u64, now_ms: u64) -> u64 {
     if now_ms < first_ms {
         return 0;
     }
-    (now_ms - first_ms) / period_ms + 1
+    ((now_ms - first_ms) / period_ms).saturating_add(1)
 }
 
 /// One entry the daemon should FIRE this tick: the schedule + the occurrence count to advance TO (`fire_to`).
@@ -332,6 +340,30 @@ mod tests {
         let d = due(&events, 10_000);
         assert_eq!(d.len(), 1, "only the well-formed periodic is due: {d:?}");
         assert_eq!(d[0].schedule.id, "ok");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn due_never_overflows_on_a_huge_now_ms() {
+        // A can't-brick invariant (sibling of the period-0 guard): a periodic with first_ms=0, period=1 and a
+        // `now_ms` at the top of the u64 range makes `(now - first)/period` already u64::MAX, so a plain `+ 1`
+        // would PANIC in a debug build (attempt to add with overflow) — wedging the pure `due` fold forever — and
+        // silently wrap to 0 in release. Such a `now_ms` only comes from a synthesized/fast-forward clock, but the
+        // fold must stay TOTAL for any input. occurrences_due saturates, so `due` still returns ONE coalesced Due.
+        let (path, mut log) = temp_log();
+        append_create(&mut log, &sched("p", 0, Some(1))).unwrap();
+        // This call would panic (debug) / wrap (release) if the `+ 1` weren't saturating.
+        let d = due(&log.tail(0).unwrap(), u64::MAX);
+        assert_eq!(
+            d.len(),
+            1,
+            "the periodic is due (coalesced), not a panic: {d:?}"
+        );
+        assert_eq!(
+            d[0].fire_to,
+            u64::MAX,
+            "the occurrence count saturates at u64::MAX rather than overflowing"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

@@ -9741,6 +9741,32 @@
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 9 Int64)) (output (: 2 Int64)))
 
+(case "Map.swap and Map.take canonicalize a runtime COMPOUND (tuple) key on their value-yielding paths"
+  (doc    "The swap/take cases above use SCALAR keys; this pins the value-yielding ops over a runtime COMPOUND
+           (tuple) key — the swap/take companion of the compound-key insert/lookup/remove canonicalization. A
+           tuple key is hashed+matched by its WHOLE content on the CHAMP path here too, exactly as for a plain
+           insert/lookup. Over `m = {(a,1)↦10}` with runtime `a`, three faces: (1) `Map.swap m (a,1) 20`
+           reports prior `Some 10` AND the new map holds `20` at `(a,1)` (present-swap by compound key); (2)
+           `Map.swap m (a,2) 99` reports prior `None` AND the new map ADDS `(a,2)↦99` (absent-swap adds by
+           compound key); (3) `Map.take m (a,1)` reports prior `Some 10` AND the new map no longer holds
+           `(a,1)` (present-take removes by compound key). Encoded `(10·prior + newval)` per face → (120, 89,
+           100). Pins that a compound key canonicalizes on swap/take, not only on insert/lookup/remove.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((m (Map.insert Map.empty (tuple a 1) 10)))
+                (tuple
+                  (match (Map.swap m (tuple a 1) 20)
+                    ((tuple p m2) (+ (* 10 (match p ((Some v) v) ((None) -1)))
+                                     (match (Map.lookup m2 (tuple a 1)) ((Some v) v) ((None) -1)))))
+                  (match (Map.swap m (tuple a 2) 99)
+                    ((tuple p m2) (+ (* 10 (match p ((Some v) v) ((None) -1)))
+                                     (match (Map.lookup m2 (tuple a 2)) ((Some v) v) ((None) -1)))))
+                  (match (Map.take m (tuple a 1))
+                    ((tuple p m2) (+ (* 10 (match p ((Some v) v) ((None) -1)))
+                                     (match (Map.lookup m2 (tuple a 1)) ((Some v) v) ((None) 0))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: (tuple 120 89 100) (Tuple Int64 Int64 Int64))))
+
 (case "a map consumed by Map.take in one operand is unchanged for a later read of the same binding"
   (doc    "The persistence companion of the Map.take cases above and the value-yielding-remove twin of the
            Map.remove / Map.swap persistence pins: `Map.take` produces `(tuple <dropped-opt> <new-map>)` and

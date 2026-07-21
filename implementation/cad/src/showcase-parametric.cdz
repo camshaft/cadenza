@@ -40,10 +40,10 @@ def main() =
   let r = Param.bore() in
   lower(plate(w, d, t, r))
 
-@test
 /// ---- @test: pin the NON-parametric core (the helper-built plate at fixed dims) so the shape is gate-
 /// protected. (The PARAMETRIC path — @param + host-response — is proven via `cdz run --host-response`, not a
 /// @test, which supplies no host values; see the module doc for the CLI invocation.) ----
+@test
 def plate-at-fixed-dims-is-a-drilled-block() =
   // plate(50, 30, 5, 3) — a 50×30×5 plate with a Ø6 bore. The hole (a Difference) never grows the box, so
   // the envelope is exactly the outer block 50×30×5; and it's not empty (a real drilled plate).
