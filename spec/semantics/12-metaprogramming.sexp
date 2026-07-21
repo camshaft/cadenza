@@ -2407,6 +2407,26 @@
   (input  (eval (quote (and true false))))
   (output (: false Bool)))
 
+; The `and` case above pins one connective; these complete the boolean-form family. `or` is the
+; disjunction complement of `and` (short-circuits to true on a true operand), and `not` is a structurally
+; DISTINCT unary form (a single operand, its own reader/resolve arm — `resolve_not`, not the binary
+; connective path). Together with the `and` case they pin that eval reconstructs + folds every boolean
+; operator, not just conjunction.
+
+(case "eval of a quoted disjunction short-circuits to true"
+  (doc    "`(eval (quote (or false true)))` = true: the quoted `or` connective reduces over its operands,
+           yielding true once a true operand is reached. The disjunction complement of the `and`-connective
+           case above (which folds to false).")
+  (input  (eval (quote (or false true))))
+  (output (: true Bool)))
+
+(case "eval of a quoted not inverts its boolean operand"
+  (doc    "`(eval (quote (not false)))` = true: eval reconstructs + folds the UNARY `not` (a single-operand
+           form with its own resolve arm, distinct from the binary `and`/`or` connectives) and inverts its
+           operand. Completes the boolean-operator eval family (conjunction / disjunction / negation).")
+  (input  (eval (quote (not false))))
+  (output (: true Bool)))
+
 ; eval reconstructs + folds every CORE CONTROL FORM, not only arithmetic and `if`: a quoted `let` (a binder-
 ; introducing form), a quoted `match` (a scrutinee + arms), and a quoted lambda APPLICATION all reconstruct
 ; to the source they denote and fold through the ordinary compile-time path (`metaprogramming.md` §Eval Is

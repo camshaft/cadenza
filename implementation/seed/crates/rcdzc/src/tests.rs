@@ -14462,6 +14462,55 @@ mod runtime_ops {
     }
 
     #[test]
+    fn cdz_check_rejects_a_float32_overflowing_literal_in_a_runtime_if_or_match_branch() {
+        // The FLOAT sibling of the integer descent gap above — HIGHER severity: `(: (if c 1.0e300 0.0)
+        // Float32)` (a Float32-overflowing literal `1.0e300` — finite as Float64, `±inf` as Float32, a
+        // malformed value) in a runtime `if`/`match` branch PASSED `cdz check` while the EMIT path produced
+        // an INVALID wasm MODULE (not a clean reject). `literal_width_fault`'s Float32-overflow check only
+        // fired on a DIRECT float literal; a runtime conditional bypassed it, and the nested descent handled
+        // the INTEGER path only. The fix adds a Float32-overflow arm to `width_fault_against_ty` (reached
+        // through the runtime if/match/let branch descent) + routes a `Ty::Float` annotation into it. Now
+        // `check` rejects CDZ0302 at the branch literal, agreeing with emit (and no longer emitting a broken
+        // module). Only `Float32` overflows a finite `Float64` literal; `Float64` and fitting values pass.
+        let check_rejects = |src: &str| {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            let d = diags
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .unwrap_or_else(|| panic!("expected a check-level reject for: {src}"));
+            assert_eq!(
+                d.code.as_deref(),
+                Some("CDZ0302"),
+                "expected CDZ0302 for {src}, got: {}",
+                d.message
+            );
+        };
+        // if-branch, narrow parameter, and match-arm (scalar-int scrutinee) forms.
+        check_rejects("(module m (def (f (: c Bool)) (: (if c 1.0e300 0.0) Float32)) (export f))");
+        check_rejects(
+            "(module m (def (g (: x Float32)) x) (def (f (: c Bool)) (g (if c 1.0e300 0.0))) (export f))",
+        );
+        check_rejects(
+            "(module m (def (f (: n Int64)) (: (match n (0 1.0e300) (_ 0.0)) Float32)) (export f))",
+        );
+
+        // NO OVER-REJECTION: a fitting Float32 literal, the same overflow under Float64 (fits), and a bare
+        // conditional with no narrow-float context (stays Float64) all pass check clean.
+        let check_clean = |src: &str| {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                diags
+                    .iter()
+                    .all(|d| d.severity != crate::abi::Severity::Error),
+                "expected NO check reject for: {src}\ngot: {diags:?}"
+            );
+        };
+        check_clean("(module m (def (f (: c Bool)) (: (if c 1.0 0.0) Float32)) (export f))");
+        check_clean("(module m (def (f (: c Bool)) (: (if c 1.0e300 0.0) Float64)) (export f))");
+        check_clean("(module m (def (f (: c Bool)) (if c 1.0e300 0.0)) (export f))");
+    }
+
+    #[test]
     fn runtime_if_branch_bare_literal_grounds_to_the_narrow_result_width() {
         // An `if` whose branches MIX a narrow value and a bare literal: the literal branch (Int64 on its
         // own = i64 slot) must take the `if`'s narrow result width, so both branches leave the same i32
@@ -57915,6 +57964,54 @@ mod stage1 {
                 "the host op result 7 escapes as the single-byte Bytes resource 0x07"
             ),
             cdz_run::Outcome::Trap(t) => panic!("host-bytes-resource-escape run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_runtime_string_host_arg_is_marshaled_into_shared_memory_and_runs() {
+        // The host `_mem` RUNTIME-string-arg path (slice 2). A CONSTANT string host arg crosses via the data
+        // segment; a RUNTIME string (a value-heap rope) had declined ("a host call with a non-constant string
+        // argument is not yet emitted"). Now the guest COPIES the rope's bytes into the shared `mem` at a
+        // fixed scratch region (an `I32Store8` loop over `bytes-get`), then passes `(scratch_base, len)` — so
+        // the host reads the runtime string via the canonical `(ptr,len)` ABI. `main(n)` builds a 1-byte
+        // runtime string via `String.from-bytes (Bytes.of (list (UInt8 n)))` (a genuine non-const rope, NOT
+        // an export String param — which declines at the boundary), passes it to host op `h`, and returns
+        // `h`'s response. Runs with a host-response fixture answering 42 → the program returns 42, proving the
+        // runtime string was marshaled + the host call executed. Pins: (a) it now COMPILES (was a decline),
+        // (b) the produced component is VALID (the `mem` import is present — `host_needs_memory` gates it even
+        // with no const string, and `bytes-len`/`bytes-get` are declared in the used-op set), (c) it RUNS.
+        use crate::testkit::parse;
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("[host-mem-runtime-arg] runtime wasm not in the store; skipping run");
+            return;
+        };
+        let src = "(do (effect H (op h (-> String Int64))) \
+                   (def (main (: n Int64)) \
+                     (match (String.from-bytes (Bytes.of (list ((UInt 8).wrap n)))) \
+                       ((Some s) (host (H) (H.h s))) (None 0))) \
+                   (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a runtime string host arg must marshal into shared mem, not decline");
+        // The composed component must be VALID (the `mem` import + the copy-loop ops are all present).
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::from_binary(&engine, &bytes)
+            .expect("the host-mem runtime-string-arg component must be valid");
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["65".to_string()], // byte 'A' → a 1-byte runtime string
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: vec![cdz_run::HostResponse {
+                op: "h".to_string(),
+                value: "42".to_string(),
+            }],
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "42",
+                "the runtime string arg is marshaled + the host call returns its response"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("runtime-string host-arg run trapped: {t}"),
         }
     }
 

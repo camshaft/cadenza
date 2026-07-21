@@ -1445,6 +1445,34 @@ fn rustc_roundtrip_unconstrained_empty_set_grounds_and_compiles_not_e0282() {
 }
 
 #[test]
+fn a_qty_in_a_collection_element_display_scales_to_its_reference() {
+    // REGRESSION (v-quantity 9a5fd3c5): a Qty in a whole-MAP VALUE / LIST ELEMENT rendered RAW on rust
+    // ((map (1 (Qty.of 5.0 meter))) not 5000.0) — the per-element scale-fold reached tuple/record/sum but
+    // NOT a collection element slot. Fix: collect_qty_scale_paths descends List/Set (`.*`) + Map (`!k`/`!v`)
+    // — the scale is uniform per collection, keyed once, applied to each per-iteration bind by the render.
+    // MAP VALUE:
+    let mv = compile_rust(
+        "(do (def (run) (Map.insert (Map.empty) 1 (Qty.of 5.0 (Unit.prefix kilo (Unit.base #\"meter\"))))) (export run))",
+    );
+    assert!(
+        mv.contains("// cdz-qty-at[run]: !v 1000/1"),
+        "a Qty map VALUE emits a per-value scale note (!v, 1000/1):\n{mv}"
+    );
+    // LIST ELEMENT:
+    let le = compile_rust(
+        "(do (def (run) (list (Qty.of 5.0 (Unit.prefix kilo (Unit.base #\"meter\"))) \
+                             (Qty.of 2.0 (Unit.prefix kilo (Unit.base #\"meter\"))))) (export run))",
+    );
+    assert!(
+        le.contains("// cdz-qty-at[run]: * 1000/1"),
+        "a Qty list ELEMENT emits a per-element scale note (*, 1000/1):\n{le}"
+    );
+    // (End-to-end value-form render — (map (1 (Qty.of 5000.0 meter))) / (list (Qty 5000.0 m) …) — is
+    // validated by the corpus gate, which drives the full cdz_render_expr driver; rustc_run's bare
+    // println!("{}", …) can't Display a BTreeMap/Vec.)
+}
+
+#[test]
 fn a_bigint_quantity_display_scales_to_its_reference_in_the_bignum_path() {
     // REGRESSION (v-quantity/v-runtime): a NON-scale-1 BigInt-inner Qty display-scales to its reference in
     // the bignum path — `(Qty.of (BigInt.of 5) kilometer)` → `(Qty.of 5000 meter)` (×1000/1 kilo scale,

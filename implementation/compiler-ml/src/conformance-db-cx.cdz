@@ -1,0 +1,141 @@
+/// conformance-db-cx.cdz — the COMPOSITION half of the conformance scoreboard (split from conformance-db.cdz,
+/// throughput slice). conformance-db.cdz holds the engine (Expect/Case/case-passes/check-case/count-passing/
+/// corpus/conformance) + the basic-block @tests; THIS file holds the 23 `conformance-cx-*` COMPOSITION @tests
+/// (nested-let precedence, arith-in-cond, mod parity, paren-override, chained-comparison-declines, …). The
+/// case-BUILDERS (c-cx-*) stay in conformance-db (corpus() references them) + are imported here; each @test is
+/// just `check-case(c-cx-X())`. SPLIT RATIONALE: conformance-db was the single heaviest compiler-ml test file
+/// (77 run-src @tests, 1079 lines) — each @test drives a program through the whole memoized Db pipeline. The
+/// gate runs files CONCURRENTLY (step_cached_per_file), so halving the biggest file trims the sweep TAIL +
+/// keeps every file well under the per-file cap (the xtask "throughput-drag red gate" in-lane fix). Behavior
+/// is IDENTICAL — same cases, same expectations, just redistributed across two files. corpus()/conformance()
+/// (the aggregate scoreboard) are UNCHANGED in conformance-db and still cover ALL cases incl. these.
+
+import { check-case, c-cx-arith-in-cond, c-cx-bool-cmp-operand-declines, c-cx-bool-let-as-cond, c-cx-chained-comparison-declines, c-cx-div-paren-divisor, c-cx-let-bool-in-arith-declines, c-cx-let-chain-outer-in-value-and-body, c-cx-mod-by-zero-declines, c-cx-mod-parity, c-cx-mod-precedence, c-cx-mod-precedence-distinguishes, c-cx-mul-prec-in-sub-chain, c-cx-ne-true, c-cx-neg-dividend, c-cx-neg-mod, c-cx-nested-if-in-branch, c-cx-nested-let-precedence, c-cx-nested-redundant-parens, c-cx-paren-if-in-then-branch, c-cx-paren-overrides-precedence, c-cx-paren-right-operand, c-cx-sub-left-assoc, c-cx-var-in-later-binding } from "conformance-db"
+
+@test
+def conformance-cx-nested-let-precedence() =
+  if check-case(c-cx-nested-let-precedence()) then
+    unit
+  else
+    trap("let x=10 in let y=3 in x - y*2 → 4")
+
+@test
+def conformance-cx-arith-in-cond() =
+  if check-case(c-cx-arith-in-cond()) then unit else trap("if 2+3<10 then 100 else 200 → 100")
+
+@test
+def conformance-cx-mod-parity() =
+  if check-case(c-cx-mod-parity()) then unit else trap("let n=7 in if n%2==0 then 0 else 1 → 1")
+
+@test
+def conformance-cx-var-in-later-binding() =
+  if check-case(c-cx-var-in-later-binding()) then unit else trap("let a=4 in let b=a*a in b+a → 20")
+
+@test
+def conformance-cx-div-paren-divisor() =
+  if check-case(c-cx-div-paren-divisor()) then unit else trap("let x=20 in x/(2+3) → 4")
+
+@test
+def conformance-cx-bool-let-as-cond() =
+  if check-case(c-cx-bool-let-as-cond()) then
+    unit
+  else
+    trap("let flag=5>3 in if flag then 1 else 0 → 1")
+
+@test
+def conformance-cx-paren-overrides-precedence() =
+  if check-case(c-cx-paren-overrides-precedence()) then unit else trap("(1 + 2) * 3 → 9")
+
+@test
+def conformance-cx-paren-right-operand() =
+  if check-case(c-cx-paren-right-operand()) then unit else trap("2 * (3 + 4) → 14")
+
+@test
+def conformance-cx-sub-left-assoc() =
+  if check-case(c-cx-sub-left-assoc()) then unit else trap("10 - 3 - 2 → 5 (left-assoc)")
+
+@test
+def conformance-cx-mod-precedence() =
+  if check-case(c-cx-mod-precedence()) then unit else trap("1 + 7 % 2 → 2 (% tighter than +)")
+
+@test
+def conformance-cx-mod-precedence-distinguishes() =
+  if check-case(c-cx-mod-precedence-distinguishes()) then
+    unit
+  else
+    trap("4 + 6 % 3 → 4 (% tighter, not (4+6)%3=1)")
+
+@test
+def conformance-cx-neg-dividend() =
+  if check-case(c-cx-neg-dividend()) then unit else trap("-12 / 4 → -3")
+
+@test
+def conformance-cx-mod-by-zero-declines() =
+  if check-case(c-cx-mod-by-zero-declines()) then unit else trap("7 % 0 declines (None)")
+
+// UN-QUARANTINED (2026-07-20, v-inference): conformance-cx-nested-redundant-parens `((5))` FORMERLY hung
+// the compiler (bug #4 — the nested-paren eval non-termination). FIXED by rcdzc 26e3471ac (materialize a
+// recursive-call match scrutinee once, killing the pattern-binder exponential recompute). Now a gated
+// regression guard — verified `((5))` → 5 and the paren-if-in-then face → 42 at full conformance-db scale.
+@test
+def conformance-cx-nested-redundant-parens() =
+  if check-case(c-cx-nested-redundant-parens()) then
+    unit
+  else
+    trap("((5)) → 5 (nested redundant parens collapse; bug #4 regression guard)")
+
+@test
+def conformance-cx-nested-if-in-branch() =
+  if check-case(c-cx-nested-if-in-branch()) then
+    unit
+  else
+    trap("if 1<2 then (if 3<4 then 7 else 8) else 9 → 7")
+
+@test
+def conformance-cx-paren-if-in-then-branch() =
+  if check-case(c-cx-paren-if-in-then-branch()) then
+    unit
+  else
+    trap("if 1<2 then (if 3<4 then 42 else 0) else 99 → 42 (bug #4 paren-if regression guard)")
+
+@test
+def conformance-cx-let-chain-outer-in-value-and-body() =
+  if check-case(c-cx-let-chain-outer-in-value-and-body()) then
+    unit
+  else
+    trap("let x=4 in let y=x+1 in x*y → 20")
+
+@test
+def conformance-cx-ne-true() = if check-case(c-cx-ne-true()) then unit else trap("5 != 3 → 1")
+
+@test
+def conformance-cx-mul-prec-in-sub-chain() =
+  if check-case(c-cx-mul-prec-in-sub-chain()) then unit else trap("20 - 2*3 - 4 → 10")
+
+@test
+def conformance-cx-chained-comparison-declines() =
+  if check-case(c-cx-chained-comparison-declines()) then
+    unit
+  else
+    trap("1 < 2 < 3 declines (chained comparison / trailing-token guard)")
+
+@test
+def conformance-cx-neg-mod() =
+  if check-case(c-cx-neg-mod()) then
+    unit
+  else
+    trap("-7 % 3 → -1 (sign-following modulo, matches rcdzc)")
+
+@test
+def conformance-cx-bool-cmp-operand-declines() =
+  if check-case(c-cx-bool-cmp-operand-declines()) then
+    unit
+  else
+    trap("(1 < 2) < 3 declines (Bool operand to a relational op — CDZ0203)")
+
+@test
+def conformance-cx-let-bool-in-arith-declines() =
+  if check-case(c-cx-let-bool-in-arith-declines()) then
+    unit
+  else
+    trap("let x=(1<2) in x+1 declines (let-bound Bool used in arithmetic — CDZ0203)")

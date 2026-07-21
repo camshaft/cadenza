@@ -105,6 +105,14 @@ pub struct Layout {
     /// call passes a string (then the core module needs no memory/data — byte-identical to the scalar
     /// host shape). Target-agnostic (plain strings + offsets), so it lives on the layout.
     pub host_strings: Vec<(String, u32)>,
+    /// Whether the program core module must import the shared `mem` because a host op takes/needs linear
+    /// memory EVEN WITH NO const string args — a host op with a `string` PARAMETER passed a RUNTIME string
+    /// (the `_mem` runtime-arg path): the guest marshals the runtime rope's bytes into `mem` via a copy
+    /// loop, so it needs `mem` imported even though `host_strings` (the CONST-string data segment) is empty.
+    /// Set by the backend from `host::set_needs_memory(host_imports)`. OR'd with `!host_strings.is_empty()`
+    /// to gate the core module's `mem` import; false for a program with no String-param host op (byte-
+    /// identical to before). Target-agnostic (a plain flag), so it lives on the layout.
+    pub host_needs_memory: bool,
     /// The CROSS-COMPONENT extern-import order (X4b): `(interface, op)` name pairs, one per peer operation
     /// a `Core::ExternCall` names, in the order the backend lays them in the core module's import section
     /// (from module `"peer"`). A `Core::ExternCall` resolves its `(interface, op)` to a core-func index by
@@ -160,8 +168,19 @@ impl Layout {
             lifted_reached,
             host_order: Vec::new(),
             host_strings: Vec::new(),
+            host_needs_memory: false,
             extern_order: Vec::new(),
             closure_call_types: Vec::new(),
+        }
+    }
+
+    /// A copy of this layout with `host_needs_memory` set — the backend sets it from
+    /// `host::set_needs_memory` so the core module imports `mem` for a runtime String host-arg even with no
+    /// const-string data segment (see the field doc).
+    pub fn with_host_needs_memory(&self, host_needs_memory: bool) -> Layout {
+        Layout {
+            host_needs_memory,
+            ..self.clone()
         }
     }
 

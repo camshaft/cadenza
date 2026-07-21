@@ -464,6 +464,36 @@
             (def (main) (cat-all (build 3))) (export main)))
   (output (: b"CBA" Bytes)))
 
+; The recursive fold above renders a SMALL rope (3 fragments) as its whole result, but does not read back a
+; DEEP rope's content by position. A many-chunk byte rope (repeated Bytes.concat) is a deep byte-rope;
+; Bytes.at / Bytes.len / `=` (and Bytes.compact) must traverse it correctly at every position, not just at
+; the 2-chunk depth the slice-across-seam cases use. This pins that: a 20-chunk [10,20] rope (40 bytes)
+; indexes right at the start, deep interior, and last byte, equals its compacted flat form, and is None past
+; the end — the content-through-depth companion of the small recursive-fold and the 2-chunk rope cases.
+(case "a deep many-chunk runtime byte rope indexes and measures correctly through its depth"
+  (doc    "A 20-chunk rope built by repeated `Bytes.concat` of `[10,20]` (a deep runtime byte-rope, 40
+           bytes). `Bytes.len` = 40; `Bytes.at` reads the right byte at index 0 (10), 1 (20), the deep
+           interior 38 (10) and last 39 (20); the rope `=` its `Bytes.compact` flat form (a rope equals its
+           compacted twin — compaction materializes the same logical bytes); and `Bytes.at 40` is None (past
+           the end → -1). Result `(40, 10, 20, 10, 20, 1, -1)`. Pins that a MANY-chunk byte rope's
+           addressing/length/equality/compaction traverse the full depth correctly, not just the 2-chunk
+           slice-across-seam ropes and the small recursive-fold — the byte-rope companion of the deep
+           string-rope content case (13-strings).")
+  (input  (do
+            (def (build (: n Int64) (: acc Bytes))
+              (if (= n 0) acc (build (- n 1) (Bytes.concat acc (Bytes.of (list 10 20))))))
+            (def (at (: b Bytes) (: i Int64)) (match (Bytes.at b i) ((Some v) v) ((None _u) -1)))
+            (def (main (: n Int64))
+              (let ((r (build 20 (Bytes.of (list)))))
+                (tuple
+                  (Bytes.len r)
+                  (at r 0) (at r 1) (at r 38) (at r 39)
+                  (if (= r (Bytes.compact r)) 1 0)
+                  (at r 40))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: (tuple 40 10 20 10 20 1 -1) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64))))
+
 ; --- Slice and compact at RUNTIME: reading and re-basing byte fragments ---------------------
 ; Slicing and compacting a byte sequence carrying a runtime value are the input-side companions of the
 ; concat cases above: a compiler reading its input bytes takes sub-ranges (`Bytes.slice`) and, having

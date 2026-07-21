@@ -2621,6 +2621,17 @@
   (call   main (: 5 Int64))
   (output (: 6 Int64)))
 
+(case "a whole MAP holding a quantity VALUE renders it scaled to reference in the value form"
+  (doc    "The value-form RENDER of a whole Map whose VALUE is a quantity (the render companion of the
+           lookup-round-trip case above): `(Map.insert (Map.empty) 1 (Qty.of 5.0 kilometer))` returned WHOLE
+           renders `(map (1 (Qty.of 5000.0 meter)))` typed `(Map Int64 (Qty Float64 meter))` — the per-value
+           reference scale-fold recurses into the Map's value slot (×1000 kilo → 5000 at reference), just as
+           it does into tuple / sum-payload / record holes. Pins that a Map VALUE quantity is display-scaled
+           in the whole-collection value form, not only when decoded via `Map.lookup` + `Qty.value`.")
+  (input  (Map.insert (Map.empty) 1 (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))))
+  (output (: (map (1 (Qty.of 5000.0 (Unit.base #"meter"))))
+             (Map Int64 (Qty Float64 (Unit.base #"meter"))))))
+
 ; --- A NOMINAL newtype over a quantity as a (compound) key: strip_nominal ∘ peel-Ty::Qty -----------
 ; A single-variant nominal newtype `(type Len (Q (Qty Int64 meter)))` erases to the SAME machine slot as
 ; its inner quantity, which erases to its inner scalar — so the key shape builder must strip the nominal

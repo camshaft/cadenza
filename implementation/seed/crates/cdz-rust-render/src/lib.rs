@@ -636,17 +636,15 @@ pub fn cdz_render_at(
     let ebind = format!("__e{}", path.len());
     if let Some(args) = parse_head_type(ty, "List") {
         let elem_ty = args.first().map(String::as_str).unwrap_or("");
+        // Extend the logical path with `.*` (a list element) so a Qty element looks up its per-element scale
+        // in `qty_at` — the scale is uniform across elements, keyed once, applied to each per-iteration bind.
+        let elem_lp = if logical_path.is_empty() {
+            "*".to_string()
+        } else {
+            format!("{logical_path}.*")
+        };
         let inner = cdz_render_at(
-            elem_ty,
-            &ebind,
-            sums,
-            newtypes,
-            sum_params,
-            None,
-            None,
-            logical_path,
-            qty_at,
-            helpers,
+            elem_ty, &ebind, sums, newtypes, sum_params, None, None, &elem_lp, qty_at, helpers,
             on_path,
         );
         // Build `(list <e0> <e1> …)`: seed with "(list", push a space + each element's render, close ")".
@@ -659,17 +657,14 @@ pub fn cdz_render_at(
     // A `BTreeSet` iterates in SORTED order, which IS the canonical element-value order the runtime uses.
     if let Some(args) = parse_head_type(ty, "Set") {
         let elem_ty = args.first().map(String::as_str).unwrap_or("");
+        // `.*` element segment — same uniform-per-element scale as a list (see the List arm).
+        let elem_lp = if logical_path.is_empty() {
+            "*".to_string()
+        } else {
+            format!("{logical_path}.*")
+        };
         let inner = cdz_render_at(
-            elem_ty,
-            &ebind,
-            sums,
-            newtypes,
-            sum_params,
-            None,
-            None,
-            logical_path,
-            qty_at,
-            helpers,
+            elem_ty, &ebind, sums, newtypes, sum_params, None, None, &elem_lp, qty_at, helpers,
             on_path,
         );
         return format!(
@@ -684,30 +679,24 @@ pub fn cdz_render_at(
         let val_ty = args.get(1).map(String::as_str).unwrap_or("");
         let kbind = format!("__mk{}", path.len());
         let vbind = format!("__mv{}", path.len());
+        // Extend the logical path with `!k` (map key) / `!v` (map value) so a Qty in either slot looks up its
+        // uniform-per-entry scale in `qty_at` (matching `collect_qty_scale_paths`'s Map arm).
+        let key_lp = if logical_path.is_empty() {
+            "!k".to_string()
+        } else {
+            format!("{logical_path}!k")
+        };
+        let val_lp = if logical_path.is_empty() {
+            "!v".to_string()
+        } else {
+            format!("{logical_path}!v")
+        };
         let kr = cdz_render_at(
-            key_ty,
-            &kbind,
-            sums,
-            newtypes,
-            sum_params,
-            None,
-            None,
-            logical_path,
-            qty_at,
-            helpers,
+            key_ty, &kbind, sums, newtypes, sum_params, None, None, &key_lp, qty_at, helpers,
             on_path,
         );
         let vr = cdz_render_at(
-            val_ty,
-            &vbind,
-            sums,
-            newtypes,
-            sum_params,
-            None,
-            None,
-            logical_path,
-            qty_at,
-            helpers,
+            val_ty, &vbind, sums, newtypes, sum_params, None, None, &val_lp, qty_at, helpers,
             on_path,
         );
         return format!(
