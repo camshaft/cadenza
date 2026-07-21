@@ -2384,6 +2384,23 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 2 Int64)))
 
+(case "a RECURSIVE sum as a Map key hits and misses by structural content"
+  (doc    "The unbounded-depth face of the sum-key family: a Peano `(type Nat (Z) (S Nat))` built by
+           RUNTIME recursion is the map key — `(mk a)` at `a = 3` is `S(S(S(Z)))`, a 4-node spine whose
+           depth is decided at run time. The lookup `(mk 3)` (a separately-built equal spine) HITS at
+           `a = 3` (42) and MISSES at `a = 2` (-1). The key hash and compare must walk the whole recursive
+           spine by content (a depth-capped hash or handle-identity compare would break one of the calls) —
+           the CHAMP-key companion of the recursive-sum structural-equality pins in 03-equality.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk (: n Int64)) (if (= n 0) (Z) (S (mk (- n 1)))))
+            (def (main (: a Int64))
+              (let ((m (Map.insert Map.empty (mk a) 42)))
+                (match (Map.lookup m (mk 3)) ((Some v) v) ((None u) -1))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 42 Int64))
+  (call   main (: 2 Int64)) (output (: -1 Int64)))
+
 ; The map-sum-value case above consumes the lookup result INLINE, in the same expression. The environment-
 ; lookup idiom a type-inference / evaluation pass takes is different: look a binding up in the map, WRAP it
 ; in a result constructor, RETURN it from the lookup function, then MATCH it in the CALLER. These pin that
@@ -4984,6 +5001,20 @@
                                (IntList.Cons (tuple n (count (- n 1))))))
             (def (main) (count 3)) (export main)))
   (output (: (Cons (tuple 3 (Cons (tuple 2 (Cons (tuple 1 (Nil unit))))))) IntList)))
+
+(case "a runtime-PARAMETERIZED recursive sum renders per-call depths from one export"
+  (doc    "The parameterized face of the recursive-sum render: the spine/tree render pins above build with
+           CONSTANT arguments (depth fixed at authoring time); here `(mk a)` over a runtime boundary
+           parameter renders `S(S(Z))` at `a = 2` and the bare `Z` at `a = 0` from ONE compiled export —
+           the render walks to a genuinely per-call depth. A renderer specialized to one static unrolling
+           (or reading a cached shape) would emit the wrong spine for one of the calls.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk (: n Int64)) (if (= n 0) (Z) (S (mk (- n 1)))))
+            (def (main (: a Int64)) (mk a))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: (S (S (Z unit))) Nat))
+  (call   main (: 0 Int64)) (output (: (Z unit) Nat)))
 
 (case "a recursively-built binary tree renders its full runtime structure"
   (doc    "The MULTI-WAY recursive counterpart of the linked-list spine: a `Tree` whose `Node` variant

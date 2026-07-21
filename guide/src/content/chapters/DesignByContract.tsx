@@ -95,6 +95,47 @@ export default function DesignByContract() {
         and asks you to rename the parameter.
       </Note>
 
+      <H2>@invariant: guarding a type</H2>
+      <P>
+        <C>@requires</C> guards a function's entry and <C>@ensures</C> its exit. The third contract,{" "}
+        <C>@invariant</C>, guards a <em>type</em>. Put it on a value type and the compiler enforces the
+        predicate at <em>every</em> point a value of that type is built, so a value that breaks it can never
+        come into existence. The predicate is written over <C>self</C>, the value being constructed. Here a{" "}
+        <C>Percent</C> must stay between <C>0</C> and <C>100</C>, and building one in range works:
+      </P>
+      <Runnable
+        wrap={false}
+        source={`(do
+  (@ (invariant (and (>= self 0) (<= self 100)))
+    (type Percent (Pct Int64)))
+  (def (mk (: v Int64))
+    (match (Percent.Pct v) ((Percent.Pct p) p)))
+  (def (main) (mk 50))
+  (export main))`}
+      />
+      <P>
+        <C>mk(50)</C> constructs a <C>Percent</C> and reads back <C>50</C>. Try to build one out of range and
+        it traps at the moment of construction, before the invalid value can exist, so <C>mk(150)</C> never
+        returns a bad <C>Percent</C>:
+      </P>
+      <Runnable
+        wrap={false}
+        expect="error"
+        source={`(do
+  (@ (invariant (and (>= self 0) (<= self 100)))
+    (type Percent (Pct Int64)))
+  (def (mk (: v Int64))
+    (match (Percent.Pct v) ((Percent.Pct p) p)))
+  (def (main) (mk 150))
+  (export main))`}
+      />
+      <P>
+        The same guards any type with an invariant, a non-empty list or a normalized vector just as much as a
+        bounded number. Because the check fires at construction, downstream code never re-validates: a{" "}
+        <C>Percent</C> in hand is <em>always</em> in range, so the illegal state is unrepresentable rather
+        than merely discouraged.
+      </P>
+
       <Why tenet="Make the assumption an enforced check, not a comment">
         Every function has assumptions; usually they live in a comment or someone's head, and a violation
         surfaces far away as corrupted data. A contract puts the assumption where the compiler can enforce

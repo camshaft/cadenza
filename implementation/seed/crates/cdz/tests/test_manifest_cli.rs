@@ -1842,6 +1842,76 @@ fn a_map_generator_reaches_the_empty_map() {
     );
 }
 
+/// A failing variable-length collection property SHRINKS its counterexample toward the MINIMAL CARDINALITY —
+/// spec §Shrinking Converges To A Minimal Failing Input for collections. Now that List/Set/Map are
+/// variable-cardinality (the count is drawn from the pool), the generic count-int halving in `shrink_pool`
+/// trims the collection toward its shortest still-failing form. Here the property fails on ANY element `>=
+/// 5e17`; a SINGLE such element already fails, so the shrunk counterexample must be a ONE-element list `[N]` /
+/// singleton set `{N}` — not the up-to-3-element collection first drawn. Pins that the count is shrunk, not
+/// just the element values (a regression that halved only element ints, or dropped the count from the pool,
+/// would report a longer collection). List + Set both shrink to minimal via count-halving (Map minimal only
+/// when the failing entry is drawn first — the per-specific-entry drop is a separate, unbuilt enhancement).
+#[test]
+fn a_failing_collection_property_shrinks_to_a_minimal_cardinality_counterexample() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — the -gen wrapper run needs the store"
+        );
+        return;
+    }
+    let d = dir("collection-shrink-minimal");
+    // A List property failing on any element >= 5e17 → the minimal failing input is a ONE-element list.
+    let list_src = "(do \
+           (@ test (def (f (: xs (List Int64))) \
+             (match xs ((list) unit) ((list h .. t) (if (< h 500000000000000000) unit (trap \"big\")))))) \
+           (def (anchor) 1))";
+    let lf = write(&d, "list.sexp", list_src);
+    let (lok, lout, _) = run(&["test", &lf, "--seed", "1", "--trials", "60"]);
+    assert!(
+        !lok,
+        "the List property fails (a large element is drawn in [0,3]-len): {lout}"
+    );
+    // Extract the rendered list `f([… , … ])` and count its elements — must be exactly 1 (minimal).
+    let list_ce = lout
+        .lines()
+        .find(|l| l.contains("counterexample: f(["))
+        .and_then(|l| l.split("f([").nth(1))
+        .and_then(|s| s.split(']').next())
+        .unwrap_or("MISSING");
+    let list_len = if list_ce.trim().is_empty() {
+        0
+    } else {
+        list_ce.split(',').count()
+    };
+    assert_eq!(
+        list_len, 1,
+        "a failing List property shrinks to a SINGLE-element counterexample (minimal cardinality), got `[{list_ce}]`: {lout}"
+    );
+    // A Set property failing on any element >= 5e17 → the minimal failing input is a SINGLETON set.
+    let set_src = "(do \
+           (@ test (def (f (: s (Set Int64))) \
+             (match (Set.to-list s) ((list) unit) ((list h .. t) (if (< h 500000000000000000) unit (trap \"big\")))))) \
+           (def (anchor) 1))";
+    let sf = write(&d, "set.sexp", set_src);
+    let (sok, sout, _) = run(&["test", &sf, "--seed", "1", "--trials", "60"]);
+    assert!(!sok, "the Set property fails: {sout}");
+    let set_ce = sout
+        .lines()
+        .find(|l| l.contains("counterexample: f({"))
+        .and_then(|l| l.split("f({").nth(1))
+        .and_then(|s| s.split('}').next())
+        .unwrap_or("MISSING");
+    let set_len = if set_ce.trim().is_empty() {
+        0
+    } else {
+        set_ce.split(',').count()
+    };
+    assert_eq!(
+        set_len, 1,
+        "a failing Set property shrinks to a SINGLETON counterexample (minimal cardinality), got `{{{set_ce}}}`: {sout}"
+    );
+}
+
 /// END-TO-END: a MIN-LENGTH `@invariant` constrains a newtype-List to non-empty generation. `NEList = Mk
 /// (List Int64)` with `@invariant(< 0 (List.len self))`: every generated `NEList` wraps a NON-EMPTY list, so
 /// a property asserting `List.len > 0` PASSES all trials (before the constraint the generator drew the empty

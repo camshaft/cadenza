@@ -36,6 +36,7 @@ const KNOWN_ANNOTATIONS = new Set([
   "inline-never",
   "requires",
   "ensures",
+  "invariant",
 ]);
 
 const chaptersDir = join(guideRoot, "src/content/chapters");
