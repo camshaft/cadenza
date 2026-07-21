@@ -3021,3 +3021,28 @@
   (output (: 6 Int64))
   (call   main (: -3 Int64))
   (trap   "unreachable"))
+
+(case "CROSS-TYPE @invariant: a value deconstructed from one @invariant newtype and RE-constructed into ANOTHER establishes BOTH invariants at their own sites"
+  (doc    "Two DISTINCT @invariant types, and a value flowing from one into the other through a helper — each
+           establish check fires at its own construction site. `Nat` has `@invariant(>= self 0)`, `Pct` has
+           `@invariant(<= self 100)`. `to-pct` deconstructs a `Nat` (reading its erased scalar) and RE-wraps it
+           as a `Pct`, so the re-wrap is a fresh Pct-establish obligation. main builds `(Nat.Mk k)` FIRST (Nat's
+           >=0 establish) then feeds it to to-pct (Pct's <=100 establish). Three regions over the runtime arg:
+           k=50 → Nat.Mk 50 ok (50>=0) → Pct.P 50 ok (50<=100) → 50; k=150 → Nat.Mk 150 ok but Pct.P 150 VIOLATES
+           <=100 → traps at the Pct establish; k=-5 → Nat.Mk -5 VIOLATES >=0 → traps at the FIRST (Nat) establish
+           before to-pct is even called. Pins that two independent @invariant types each enforce at their
+           respective sites when a value crosses between them — the first-violating site traps first. Runtime
+           arg via main's param (no const-fold).")
+  (input  (do
+            (@ (invariant (>= self 0)) (type Nat (Mk Int64)))
+            (@ (invariant (<= self 100)) (type Pct (P Int64)))
+            (def (nat-val (: n Nat)) (match n ((Nat.Mk v) v)))
+            (def (to-pct (: n Nat)) (Pct.P (nat-val n)))
+            (def (main (: k Int64)) (match (to-pct (Nat.Mk k)) ((Pct.P p) p)))
+            (export main)))
+  (call   main (: 50 Int64))
+  (output (: 50 Int64))
+  (call   main (: 150 Int64))
+  (trap   "unreachable")
+  (call   main (: -5 Int64))
+  (trap   "unreachable"))

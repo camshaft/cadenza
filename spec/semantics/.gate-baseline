@@ -48,6 +48,7 @@ pass	COMPOUND SUM PAYLOAD: (Option (Tuple Int64 Int64)) arg, drive Some
 pass	COMPOUND SUM PAYLOAD: an Option-tuple closure beside a scalar closure (distinct-sig)
 pass	COMPOUND SUM PAYLOAD: mixed-width tuple payload (Int32, Int64, Bool)
 pass	COMPOUND SUM PAYLOAD: two same-sig Option-tuple closures share one call (multi-export)
+pass	CROSS-TYPE @invariant: a value deconstructed from one @invariant newtype and RE-constructed into ANOTHER establishes BOTH invariants at their own sites
 pass	Char.from-int at U+E000 (first scalar after the surrogate block) is Some
 pass	Char.from-int at the last surrogate U+DFFF is None
 pass	Char.from-int at the maximum valid scalar U+10FFFF is Some
@@ -1188,6 +1189,7 @@ pass	a lambda captures an enclosing function parameter and is applied in its bod
 pass	a lambda parameter shadows the outer constant for its body
 pass	a lambda's return type ascription agreeing with the body is transparent
 pass	a large multiply-called definition is emitted once by the cost heuristic
+pass	a large runtime Map builds a deep CHAMP trie, looks up every key, shrinks to empty and regrows
 pass	a large-magnitude float whose shortest form differs from its exact value renders the full decimal expansion
 pass	a large whole float crosses the boundary preserving its full value
 pass	a large whole-valued float renders its full value, not an integer saturation

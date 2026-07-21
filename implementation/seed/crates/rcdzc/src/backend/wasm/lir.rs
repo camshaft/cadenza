@@ -147,6 +147,16 @@ pub enum Lir {
     /// `global.set G` — store the stack top into module global `G`. Emitted only by the init function,
     /// which builds each static compound once and stows its handle in its global.
     GlobalSet(u32),
+    /// `i32.store8 (align=0, offset=O)` — pop `[addr:i32, val:i32]` and write the low BYTE of `val` to
+    /// linear memory 0 at `addr + O`. The byte-granular store used to marshal a runtime String/Bytes value
+    /// into the SHARED host memory at a host-call site (the `_mem` runtime-arg path): the guest reads the
+    /// value-heap rope byte-by-byte and writes each into `mem` for the host to read as `(ptr, len)`. The
+    /// stack order is address-then-value (wasm's store convention: push addr, push val, `store`). `offset`
+    /// is the static memarg displacement (usually 0 — a computed base address carries the real offset);
+    /// alignment is 0 (byte store, no alignment requirement). Memory index is implicitly 0 (the sole memory).
+    I32Store8 {
+        offset: u32,
+    },
     /// `call F` — call wasm function index `F` (its arguments already pushed in order). The index is a
     /// definition's ABSOLUTE emission position (`layout.abs`), resolved at selection.
     Call(u32),

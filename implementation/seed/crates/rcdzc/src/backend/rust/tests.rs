@@ -972,15 +972,51 @@ fn a_bare_float_set_or_map_key_uses_the_cdz_f64_total_order_wrapper() {
         !plain.contains("__CdzF64"),
         "a float-free program does not emit the __CdzF64 wrapper:\n{plain}"
     );
-    // A float-CARRYING COMPOUND key still DECLINES (the wrapper is not threaded through a tuple).
-    let nested = compile_rust_result(
+    // A float-carrying TUPLE key now EMITS: the wrapper threads through the tuple, so a `(Tuple Float Int64)`
+    // set element keys as `(__CdzF64, i64)` (Ord) and the value rebuilds `(__CdzF64::new(k.0), k.1)`.
+    let tup = compile_rust(
         "(module m (def (main (: x Float64)) \
            (Set.len (Set.of (list (tuple x 1))))) (export main))",
     );
     assert!(
-        nested.is_err(),
-        "a (Tuple Float Int64) set element still declines (wrapper not threaded through a compound):\n{nested:?}"
+        tup.contains("BTreeSet<(__CdzF64, i64)>") && tup.contains("__CdzF64::new("),
+        "a (Tuple Float Int64) set element keys as (__CdzF64, i64) + wraps the float element:\n{tup}"
     );
+    // A float nested in a RECORD/SUM payload key still DECLINES (threading not yet extended past tuples).
+    let rec = compile_rust_result(
+        "(module m (type R (Mk (: f Float64) (: n Int64))) (def (main (: x Float64)) \
+           (Set.len (Set.of (list (R.Mk x 1))))) (export main))",
+    );
+    assert!(
+        rec.is_err(),
+        "a float-in-a-record/sum-payload set element still declines (tuple-only threading):\n{rec:?}"
+    );
+}
+
+#[test]
+fn a_tuple_with_a_float_leaf_keys_a_map_by_content_end_to_end() {
+    // REGRESSION (v-runtime differential): a `(Tuple Float64 Int64)` Map key looks up BY CONTENT — insert
+    // under `(2.5, 3)`, look up `(2.5, 3)` → hits (42). Was a rust decline (wrapper not threaded through the
+    // tuple); now the key type is `(__CdzF64, i64)` and both insert + lookup keys wrap the float element, so
+    // the BTreeMap orders/compares them totally. Computes 42, matching wasm.
+    let m = compile_rust(
+        "(module m (def (run) \
+           (match (Map.lookup (Map.insert (Map.empty) (tuple 2.5 3) 42) (tuple 2.5 3)) \
+             ((Some v) v) ((None _) -1))) (export run))",
+    );
+    if let Some(out) = rustc_run(&m, "run()") {
+        assert_eq!(out, "42", "a (Tuple Float Int) map key hits by content: 42");
+    }
+    // A DIFFERENT float leaf misses (distinct key) → -1 (the None arm), confirming the float participates in
+    // the key comparison (not ignored).
+    let miss = compile_rust(
+        "(module m (def (run) \
+           (match (Map.lookup (Map.insert (Map.empty) (tuple 2.5 3) 42) (tuple 9.5 3)) \
+             ((Some v) v) ((None _) -1))) (export run))",
+    );
+    if let Some(out) = rustc_run(&miss, "run()") {
+        assert_eq!(out, "-1", "a distinct float leaf in the key MISSES: -1");
+    }
 }
 
 #[test]

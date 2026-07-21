@@ -206,12 +206,34 @@ pub fn emit_body(
 /// A non-float key stays verbatim. This is the emit twin of [`types::ord_key_type`]'s type substitution —
 /// the two MUST agree on BOTH which slots become a wrapper AND the WIDTH, or the emitted value's type would
 /// not match the collection's key type (a `__CdzF64::new` around an `f32` is a type error — the very bug
-/// this width-split fixes). Only a BARE float is wrapped (a float nested in a compound key declines upstream
-/// via `ty_is_ord_key`), so a single `::new` at the top wrapping suffices.
+/// this width-split fixes). A TUPLE key REBUILDS the tuple wrapping each float element by position
+/// (`(__CdzF64::new(k.0), k.1)`), matching `ord_key_type`'s per-element threading — so a `(Tuple Float Int)`
+/// key crosses (v-runtime differential). A float nested in a RECORD/SUM payload still declines upstream via
+/// `ty_is_ord_key` (a later increment), so this only rebuilds Tuples + wraps bare floats.
 fn wrap_ord_key(expr: String, key_ty: &Ty) -> String {
     match key_ty {
         Ty::Float(ft) if ft.ground_width() == 32 => format!("__CdzF32::new({expr})"),
         Ty::Float(_) => format!("__CdzF64::new({expr})"),
+        // A tuple with any float element: bind the key once (it may be a non-trivial expr), then rebuild it
+        // wrapping each float element at its position. A float-free tuple has no float element → the rebuild
+        // is the identity `(k.0, k.1)`; skip it (emit verbatim) so a non-float tuple key stays unchanged.
+        Ty::Tuple(elems)
+            if elems
+                .iter()
+                .any(|e| matches!(e.strip_nominal(), Ty::Float(_))) =>
+        {
+            let parts: Vec<String> = elems
+                .iter()
+                .enumerate()
+                .map(|(i, e)| wrap_ord_key(format!("__k.{i}"), e))
+                .collect();
+            let rebuilt = if parts.len() == 1 {
+                format!("({},)", parts[0])
+            } else {
+                format!("({})", parts.join(", "))
+            };
+            format!("{{ let __k = {expr}; {rebuilt} }}")
+        }
         _ => expr,
     }
 }

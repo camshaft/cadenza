@@ -747,11 +747,37 @@ if (staleEntries.length) {
   );
 }
 
+// ---- ATTR-ABOVE invariant (OPERATOR #16): a `@annotation` on a def renders on its OWN LINE ABOVE the def ----
+// The guide displays ML source via render_syntax(_, _, "ml") (playground toggle, notebook, editor). An
+// `@test`/`@tag(...)` annotation must render attr-above (the annotation line, then the def line) — the readable
+// convention, NOT inline `@test def f() = 1`. This is v-syntax's ML printer behavior (convert → printer::print);
+// pin it here so a future render_syntax/printer change that regressed it (back to inline-@) would fail the guide
+// gate, since the guide's whole @-annotation display depends on it. Pure render check (no run), so it's stable.
+for (const [src, ann] of [["@test\ndef attr_above_probe() = 1", "@test"], ['@tag("slow")\ndef attr_above_tag_probe() = 2', '@tag("slow")']]) {
+  let rendered;
+  try {
+    rendered = render_syntax(src, "ml", "ml");
+  } catch (e) {
+    failures.push(`[attr-above invariant] render_syntax threw on \`${ann}\`: ${String(e.message || e).slice(0, 80)}`);
+    continue;
+  }
+  const lines = rendered.split("\n").map((l) => l.trimEnd());
+  const annIdx = lines.findIndex((l) => l.trim() === ann);
+  const defIdx = lines.findIndex((l) => l.trim().startsWith("def "));
+  // The annotation must be on its OWN line (exactly `@…`, nothing after it) and IMMEDIATELY above the def.
+  if (annIdx < 0 || defIdx < 0 || annIdx >= defIdx) {
+    failures.push(
+      `[attr-above invariant] \`${ann}\` did NOT render attr-above (OPERATOR #16) — expected the annotation on its ` +
+        `own line above \`def\`, got:\n      ${rendered.replace(/\n/g, "\n      ")}`,
+    );
+  }
+}
+
 if (failures.length) {
   console.error("\nFAILURES:\n" + failures.map((f) => "  ✗ " + f).join("\n"));
   process.exit(1);
 }
 console.log(
   "✓ every guide example compiles + runs in both surfaces (graded exercises to their expected value); " +
-    "known-blocked examples are tracked + routed.",
+    "known-blocked examples are tracked + routed; @annotations render attr-above (OPERATOR #16).",
 );

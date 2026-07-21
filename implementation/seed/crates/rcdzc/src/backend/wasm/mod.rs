@@ -7926,6 +7926,15 @@ mod wasm_abi_tests {
         assert_eq!(wasm_abi::op::UNREACHABLE, opcode(I::Unreachable));
         assert_eq!(wasm_abi::op::I32_WRAP_I64, opcode(I::I32WrapI64));
         assert_eq!(wasm_abi::op::I64_EXTEND_I32_S, opcode(I::I64ExtendI32S));
+        // The byte-store used by the host `_mem` runtime-arg marshaling (`Lir::I32Store8`).
+        assert_eq!(
+            wasm_abi::op::I32_STORE8,
+            opcode(I::I32Store8(wasm_encoder::MemArg {
+                offset: 0,
+                align: 0,
+                memory_index: 0
+            }))
+        );
     }
 
     #[test]
