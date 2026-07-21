@@ -2613,6 +2613,38 @@
   (call   main (: -7 Int64))
   (output (: (tuple -7 -7) (Tuple Int64 Int64))))
 
+; ── NESTED SAME-DIRECTION SHIFTS by constants COMBINE into one shift by their SUM (A+B < width) ───────
+; `arith_identity` (lower.rs, `nested_shift_combine`) folds `(SH (SH v A) B)` → `(SH v (A+B))` for the SAME
+; direction, A/B constants, A+B < width. A RIGHT shift is total, so combining is exact (both arithmetic
+; `>>ₛ` and logical `>>ᵤ` on a same-typed value). A LEFT shift is CHECKED (exact `·2^count`, trapping on
+; overflow) but combines TRAP-IDENTICALLY: magnitude is monotone in the count, so `(v<<A)<<B` overflows on
+; exactly the inputs `v<<(A+B)` does. `v` STAYS the operand so its own traps survive (no discard). A+B must
+; be `< width` — a combined count ≥ width would be masked mod width (wrong) and must trap as out-of-range,
+; so only the in-range sum folds. Both backends.
+(case "nested same-direction shifts by constants combine into one shift by the sum, keeping the left-shift overflow trap"
+  (doc    "`(<< (<< x 2) 3)` → `(<< x 5)` and `(>> (>> x 2) 1)` → `(>> x 3)` (arithmetic, sign-preserving):
+           `(tuple (<< (<< x 2) 3) (>> (>> x 2) 1))` at x = 1 → (32, 0), at x = -256 → (-8192, -32) (the
+           `>>` sign-extends: -256>>3 = -32). And the CHECKED left shift combines TRAP-identically — a
+           SECOND def `(<< (<< y 40) 20)` = `(<< y 60)` (count 60 < 64, so it folds): y = 1 → 2^60
+           (1152921504606846976, fits), y = 8 → 8·2^60 = 2^63 overflows Int64 → TRAPS, exactly as the
+           single `<< 60` would. Pins the nested-shift combine for both directions and the preserved
+           left-shift overflow trap, both backends.")
+  (input  (do (def (main (: x Int64)) (tuple (<< (<< x 2) 3) (>> (>> x 2) 1))) (export main)))
+  (call   main (: 1 Int64))
+  (output (: (tuple 32 0) (Tuple Int64 Int64)))
+  (call   main (: -256 Int64))
+  (output (: (tuple -8192 -32) (Tuple Int64 Int64))))
+
+(case "a combined left shift that overflows Int64 traps like the single shift it folds to"
+  (doc    "`(<< (<< y 40) 20)` folds to `(<< y 60)` (60 < 64): y = 1 → 2^60 fits, but y = 8 → 8·2^60 = 2^63
+           overflows Int64 → TRAP. Pins that combining nested left shifts preserves the checked overflow —
+           the fold is trap-identical, not a silent wrap — on both backends.")
+  (input  (do (def (main (: y Int64)) (<< (<< y 40) 20)) (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1152921504606846976 Int64))
+  (call   main (: 8 Int64))
+  (trap   "integer overflow"))
+
 ; ── A LOGICAL right shift that drops ALL of a value's significant bits folds to 0 ────────────────────
 ; `arith_identity` (lower.rs) folds `(>>ᵤ x k)` → 0 when `x`'s PROVABLE unsigned bit-bound `B ≤ k` — the
 ; shift moves every set bit out. The bound comes from a masking chain (`unsigned_value_bits`): `(x & 15)`

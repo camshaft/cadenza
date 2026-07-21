@@ -14,7 +14,7 @@
 /// NO core form (a filled `None`), not a bogus tree. Lowering reads the infer column to make this decision,
 /// and reads the resolve column to canonicalize vars — producer-reads-two-producers.
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of, param2-of, param3-of, arg2-of, arg3-of } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of } from "parse-db"
 import { Resolved, resolve-tree } from "resolve-db"
 import { Typed, infer-tree } from "infer-db"
 
@@ -140,8 +140,10 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
 
 /// slice-3e: the innermost body of a call's nested-CLet chain, optionally wrapping a THIRD `CLet(param3, arg3,
 /// body)`. If this NApp node `id` has a 3rd arg (arg3-of) AND the callee a 3rd param (param3-of), lower arg3
-/// and wrap → `CLet(param3, arg3Core, bodyCore)`; a 2-arg call (arg3-of None) returns `bodyCore` unchanged.
-/// An arg3 with NO param3 (over-applied) → `None` (declines). Keeps the lower-node NApp arm flat.
+/// and wrap → `CLet(param3, arg3Core, <param4-wrapped body>)`; a 2-arg call (arg3-of None) returns `bodyCore`
+/// unchanged. An arg3 with NO param3 (over-applied) → `None` (declines). slice-3f: the body wrapped BEFORE
+/// param3 is `inner-body-with-param4` (a 4th CLet innermost) so the full chain is
+/// `CLet(p3,a3, CLet(p4,a4, body))`. Keeps the lower-node NApp arm flat.
 def inner-body-with-param3(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Core, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
   (match arg3-of(tree, id) with
     | Option.None(_) => Option.Some(bodyCore)                        // 2-arg call — no 3rd CLet
@@ -149,8 +151,26 @@ def inner-body-with-param3(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Cor
         (match param3-of(tree, calleeId) with
           | Option.None(_) => Option.None(unit)                       // arg3 but no param3 → over-applied → decline
           | Option.Some(param3Id) =>
-              (match lower-node(tree, arg3Id, rcol, tcol) with
-                | Option.Some(arg3Core) => Option.Some(Core.CLet(param3Id, arg3Core, bodyCore))
+              (match inner-body-with-param4(tree, id, calleeId, bodyCore, rcol, tcol) with
+                | Option.Some(inner) =>
+                    (match lower-node(tree, arg3Id, rcol, tcol) with
+                      | Option.Some(arg3Core) => Option.Some(Core.CLet(param3Id, arg3Core, inner))
+                      | Option.None(_) => Option.None(unit))
+                | Option.None(_) => Option.None(unit))))              // arg4 but no param4 → over-applied → decline
+
+/// slice-3f: the innermost body of a call's nested-CLet chain, optionally wrapping a FOURTH `CLet(param4, arg4,
+/// body)`. If this NApp node `id` has a 4th arg (arg4-of) AND the callee a 4th param (param4-of), lower arg4
+/// and wrap → `CLet(param4, arg4Core, bodyCore)`; a ≤3-arg call (arg4-of None) returns `bodyCore` unchanged.
+/// An arg4 with NO param4 (over-applied) → `None` (declines). The mirror of inner-body-with-param3.
+def inner-body-with-param4(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Core, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+  (match arg4-of(tree, id) with
+    | Option.None(_) => Option.Some(bodyCore)                        // ≤3-arg call — no 4th CLet
+    | Option.Some(arg4Id) =>
+        (match param4-of(tree, calleeId) with
+          | Option.None(_) => Option.None(unit)                       // arg4 but no param4 → over-applied → decline
+          | Option.Some(param4Id) =>
+              (match lower-node(tree, arg4Id, rcol, tcol) with
+                | Option.Some(arg4Core) => Option.Some(Core.CLet(param4Id, arg4Core, bodyCore))
                 | Option.None(_) => Option.None(unit))))
 
 /// The lower COLUMN builder: build resolve + infer columns (demanding parse under them), then lower over

@@ -1081,6 +1081,23 @@ fn width_fault_against_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<Rej
         return width_fault_against_ty(db, then_, want)
             .or_else(|| width_fault_against_ty(db, else_, want));
     }
+    // A RUNTIME `(match s (p0 b0) …)` in a narrow-width context — the same rule as the `if` above, one
+    // body per arm: the whole `match` carries `want`, so EVERY arm body must fit it, and a bare
+    // out-of-range literal in any arm (`(: (match n (0 10000) (_ 0)) UInt8)`, or reaching a narrow param)
+    // slipped `cdz check` while emit rejected CDZ0302. A `Core::Match` after `core_of` marks a genuine
+    // RUNTIME match (all arms live) — a CONSTANT-scrutinee match folds to its selected arm (handled by the
+    // constant path below), so a folded-away non-selected out-of-range arm is not falsely rejected. Descend
+    // each arm's BODY against `want` (a pattern binder in the body is fine — the width check reads the
+    // body's constant leaves, exactly as an if-branch).
+    if matches!(
+        crate::lower::core_of(db, value),
+        crate::core::Core::Match { .. }
+    ) && let Resolved::Match { arms, .. } = resolved_of(db, value)
+    {
+        return arms
+            .iter()
+            .find_map(|&(_pattern, body)| width_fault_against_ty(db, body, want));
+    }
     if let Ty::Int(it) = want
         && let crate::ty::Width::Fixed(w) = it.width
         && w != 0

@@ -13,7 +13,7 @@
 /// there is one ground type — so this column is the DB-shaped monomorphic specialization. It widens to call
 /// the HM engine when the language grows function types.)
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of, param2-of, param3-of, arg2-of, arg3-of, param-type-of, record-param-type, encode-param-type, pt-width, pt-signed } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, param-type-of, record-param-type, encode-param-type, pt-width, pt-signed } from "parse-db"
 import { fits-width } from "int-width"
 import { Resolved, resolve-tree } from "resolve-db"
 import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ground-default } from "ty"
@@ -132,10 +132,15 @@ def infer-app-with-arg-ty(tree: Tree, id: Int64, calleeId: Int64, paramId: Int64
                 // the arg's type, fit-checking arg3. A 2-arg call (arg3-of None) passes tb0 through unchanged.
                 (match infer-param3(tree, id, calleeId, rcol, tb0) with
                   | Option.Some(tb1) =>
-                      (let tb = infer-node(tree, calleeId, rcol, tb1) in
-                       (match Map.lookup(tb, calleeId) with
-                         | Option.Some(bodyTy) => Map.insert(tb, id, bodyTy)
-                         | Option.None(_) => Map.insert(tb, id, Typed.TErr)))
+                      // slice-3f: after param3, bind param4 (a 4-ARG call) the same way. A ≤3-arg call
+                      // (arg4-of None) passes tb1 through unchanged.
+                      (match infer-param4(tree, id, calleeId, rcol, tb1) with
+                        | Option.Some(tb2) =>
+                            (let tb = infer-node(tree, calleeId, rcol, tb2) in
+                             (match Map.lookup(tb, calleeId) with
+                               | Option.Some(bodyTy) => Map.insert(tb, id, bodyTy)
+                               | Option.None(_) => Map.insert(tb, id, Typed.TErr)))
+                        | Option.None(_) => Map.insert(tb1, id, Typed.TErr))   // 4th arg but no param4 → TErr
                   | Option.None(_) => Map.insert(tb0, id, Typed.TErr))   // 3rd arg but no param3 → TErr
             | Option.None(_) => Map.insert(tp, id, Typed.TErr))))   // 2nd arg present but no param2 → TErr
     | Option.None(_) => Map.insert(ta, id, Typed.TErr))
@@ -193,6 +198,24 @@ def infer-param3(tree: Tree, id: Int64, calleeId: Int64, rcol: Map(Int64, Resolv
                      (if (if param-fit-ok(tree, param3Id, arg3Id) then false else true)
                       then Option.None(unit)                                                   // arg3 out of param3's range → decline
                       else Option.Some(Map.insert(ta3, param3Id, param-bind-type(tree, param3Id, arg3Ty))))
+                 | Option.None(_) => Option.None(unit)))))
+
+/// slice-3f: bind param4's type for a 4-ARG call (the mirror of infer-param3). arg4-of None → a ≤3-arg call,
+/// pass tcol through. Else bind param4 to its declared narrow type (param-bind-type) or the arg4's type, and
+/// fit-check arg4 (CDZ0302). An arg4 with no param4 → None (over-applied → the caller flags TErr).
+def infer-param4(tree: Tree, id: Int64, calleeId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+  (match arg4-of(tree, id) with
+    | Option.None(_) => Option.Some(tcol)                               // ≤3-arg call — nothing to add
+    | Option.Some(arg4Id) =>
+        (match param4-of(tree, calleeId) with
+          | Option.None(_) => Option.None(unit)                          // arg4 but no param4 → over-applied
+          | Option.Some(param4Id) =>
+              (let ta4 = infer-node(tree, arg4Id, rcol, tcol) in
+               (match Map.lookup(ta4, arg4Id) with
+                 | Option.Some(arg4Ty) =>
+                     (if (if param-fit-ok(tree, param4Id, arg4Id) then false else true)
+                      then Option.None(unit)                                                   // arg4 out of param4's range → decline
+                      else Option.Some(Map.insert(ta4, param4Id, param-bind-type(tree, param4Id, arg4Ty))))
                  | Option.None(_) => Option.None(unit)))))
 
 /// Does the CONSTANT argument at node `argId` FIT the declared narrow type of the param `paramId`? — the

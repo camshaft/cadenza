@@ -405,10 +405,12 @@ pub fn cdz_scale(module: &str, name: &str) -> Option<(i128, i128)> {
 }
 
 /// The PER-ELEMENT quantity display-scale notes (`// cdz-qty-at[<name>]: <path> <num>/<den>`) for a COMPOUND
-/// result carrying non-scale-1 Qty leaves — one per leaf, keyed by the render's positional descent PATH (the
-/// `.i` field route, e.g. `0`, `1`, `0.1`). Returns a map `path → (num, den)`; the Qty arm looks up the
-/// CURRENT descent path and applies that leaf's scale (the compound twin of the top-level `cdz_scale`). A
-/// tuple/record of quantities at different units thus scales each element independently. Empty for a result
+/// result carrying non-scale-1 Qty leaves — one per leaf, keyed by the render's LOGICAL descent PATH: a
+/// tuple/record field is a positional `.i` segment (`0`, `1`, `0.1`), an Option/Result payload a `?N`
+/// segment (`?0` payload, `?0`/`?1` Ok/Err; nested composes, e.g. `0?0`), and a USER-DEFINED sum variant
+/// payload a LOCAL `<variant>?<idx>` segment. Returns a map `path → (num, den)`; the Qty arm looks up the
+/// CURRENT descent path and applies that leaf's scale (the compound twin of the top-level `cdz_scale`), so a
+/// tuple/record/sum of quantities at different units scales each element independently. Empty for a result
 /// with no compound non-scale-1 Qty leaf.
 pub fn cdz_qty_at(module: &str, name: &str) -> std::collections::HashMap<String, (i128, i128)> {
     let prefix = format!("// cdz-qty-at[{name}]:");
@@ -501,10 +503,12 @@ pub fn cdz_render_at(
     // non-reference unit; the Qty arm multiplies the boundary magnitude by it (Float `× num/den`, Int
     // `× num / den`). `None` for a scale-1 Qty (display = stored) and every non-top-level descent.
     unit_scale: Option<(i128, i128)>,
-    // The LOGICAL descent path (positional `.i` route: `""` top-level, `0`, `0.1`), keying `qty_at` for a
-    // nested Qty leaf. Distinct from the Rust access `path` (`(__r).0`): the logical path is the corpus/type
-    // descent, stable across the Rust binding shape. Extended by the Tuple/Record arms; forwarded unchanged
-    // by every other descent (sum/list/newtype are out of this slice's per-element scope).
+    // The LOGICAL descent path (`""` top-level; a tuple/record field is `.i`; an Option/Result payload is
+    // `?N`; a user-sum variant payload is the LOCAL `<variant>?<idx>`), keying `qty_at` for a nested Qty leaf.
+    // Distinct from the Rust access `path` (`(__r).0`): the logical path is the corpus/type descent, stable
+    // across the Rust binding shape. EXTENDED by the Tuple/Record/Option/Result/user-sum arms; forwarded
+    // unchanged by a newtype (transparent) and a List (its per-iteration binder is a per-element-scale
+    // follow-up, so a Qty inside a list still renders raw).
     logical_path: &str,
     // PER-ELEMENT Qty display-scale map — logical-path → `(num, den)`; the Qty arm looks up `logical_path`.
     qty_at: &std::collections::HashMap<String, (i128, i128)>,

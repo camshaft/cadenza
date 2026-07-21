@@ -547,6 +547,38 @@
   (input  (String.at "café" 3))
   (output (: (Some "é") (Option String))))
 
+; Normalization is a WHOLE-VALUE property, so it must hold on the ADDRESSING axis too, not only on `=`
+; (:510) and scalar-len (:518). A DECOMPOSED literal "cafe\u0301" (c, a, f, e, U+0301 combining acute — five
+; raw scalars) is normalized by the reader to the four-scalar NFC form (c, a, f, é), so `String.at` and
+; `String.scalar-len` operate on the NORMALIZED sequence: index 3 is the composed "é" (U+00E9), not the bare
+; "e", and the string ends at scalar 4 (index 4 is None), not at the raw fifth scalar. A lowering that
+; normalized for `=`/scalar-len but byte-walked the RAW scalars for `String.at` would return "e" at index 3
+; (or index into the combining accent) and report length 5 — this pins the indexing axis against that.
+; (This is the reader-normalized LITERAL path; `String.from-bytes` is a faithful byte decode that does NOT
+; NFC-normalize — the deliberate known gap pinned at :1395 — so the two paths are distinct.)
+(case "String.at on a decomposed literal returns the composed scalar at the normalized index"
+  (doc    "The decomposed \"café\" (c, a, f, e + U+0301 combining acute — five raw scalars) is normalized by
+           the reader to the four-scalar NFC form, so `(String.at \"café\" 3)` = \"é\" (the COMPOSED U+00E9),
+           not the bare \"e\" of the un-normalized fifth-from-last scalar. Indexing addresses the NORMALIZED
+           sequence (collections-and-text.md #String Equality Follows Normalized Contents applied to the
+           addressing axis), the indexing companion of the `=` (:510) and scalar-len (:518) normalization
+           cases. A raw-scalar byte walk would return \"e\".")
+  (input  (String.at "café" 3))
+  (output (: (Some "é") (Option String))))
+
+(case "a decomposed literal indexes and measures by its normalized length, not the raw scalar count"
+  (doc    "The combined end-boundary face: the decomposed \"café\" has scalar-len 4 (the NFC form c, a, f, é),
+           NOT the raw 5 (e + combining acute), AND `(String.at \"café\" 4)` is None — index 4 is past the
+           normalized four-scalar end, not the raw fifth scalar. Sentinel `10·scalar-len + (at 4 ? 1 : 0)` =
+           40. Pins that BOTH the length measure and the addressing bound use the normalized sequence; a
+           lowering counting the raw 5 scalars would give 51 (len 5, and .at 4 = Some of the combining acute).")
+  (input  (do (def (main)
+                (+ (* 10 (String.scalar-len "café"))
+                   (match (String.at "café" 4) ((Some _c) 1) ((None _u) 0))))
+              (export main)))
+  (call   main)
+  (output (: 40 Int64)))
+
 (case "string indexing past a supplementary-plane scalar lands on the next scalar"
   (doc    "`(String.at \"😀b\" 1)` = \"b\": 😀 (U+1F600) is ONE scalar value occupying four UTF-8
            bytes (and two UTF-16 code units), so scalar index 1 is the character AFTER it, \"b\". A

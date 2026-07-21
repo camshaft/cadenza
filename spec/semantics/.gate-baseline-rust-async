@@ -82,6 +82,7 @@ pass	DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the
 pass	DISTINCT-SIG: two capturing sum-arg closures of different signatures
 pass	DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a plain export
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
+pass	FULL CONTRACT: @requires + @ensures on ONE def fire INDEPENDENTLY — a pre-violation and a post-violation trap on DIFFERENT inputs
 pass	Float64.of-int is exact at 2^53 and rounds a just-past-2^53 odd integer to nearest-even
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
@@ -198,6 +199,7 @@ pass	Set.to-list sorts runtime ROPE string elements smallest-first by content by
 pass	Sim.now reads the scheduler clock — a tail-resumptive handler arm that works today
 pass	String.concat with an empty operand is the identity on a RUNTIME string (the emit path, not the fold)
 pass	String.at addresses scalars across the seam of a runtime multibyte rope
+pass	String.at on a decomposed literal returns the composed scalar at the normalized index
 pass	String.at reads a multibyte scalar whole at its position in a runtime two-chunk rope
 pass	String.from-bytes accepts a two-byte sequence split across a concat seam
 pass	String.from-bytes decodes a RUNTIME byte sequence built by a recursive appender
@@ -830,6 +832,7 @@ pass	a declaration in a do block shadows an outer binding
 todo	a consumed closure is applied once per iteration of a recursive loop
 pass	a decoded field re-encodes into the same-width segment without an explicit narrow
 pass	a decoded length field re-encodes a length-prefixed frame end to end
+pass	a decomposed literal indexes and measures by its normalized length, not the raw scalar count
 pass	a decoded payload feeds ordinary arithmetic
 pass	a deep balanced tree is built and folded to a scalar, consuming both children
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
@@ -930,6 +933,7 @@ pass	a file-top default-integer pragma fixes a bare literal's type
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a dependent-size utf8 segment decodes a length-prefixed string
 pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string
+pass	a constant-size utf8 segment over ill-formed UTF-8 is a non-match, not a trap
 pass	a bytes segment sized by a CONSTANT LITERAL binds a fixed number of bytes then composes
 pass	a final unquote-splice binds the remaining elements as a list
 pass	a fixed-arity list binding pattern is refutable and rejected
@@ -1079,6 +1083,8 @@ pass	a handler threads a SET as its state — the seen-set idiom, deduping acros
 pass	a handler whose STATE is a RECORD combining a scalar counter and a heap LIST field
 pass	a handler whose STATE is a TUPLE reads both fields and rebuilds the pair per performance
 pass	a handler whose STATE is a sum destructures it in the arm
+pass	a hash-prefixed atom quotes to an Ast.Name carrying the hash in its text
+pass	a hash-prefixed name is distinct from the bare name without the hash
 pass	a guard condition applies a let-bound closure
 pass	a guard condition reads a heap list bound outside the match
 pass	a header of packed nibbles and a length-prefixed body round-trips
@@ -4324,4 +4330,6 @@ pass	a comparison against a constant outside a masked value's range folds, but a
 pass	a bare literal grounded to a narrow width through a SHIFT spine is range-checked
 pass	a bare literal grounded to a narrow width through a BITWISE spine is range-checked
 pass	a prefixed quantity displays scaled to its reference over Float32
+todo	a prefixed quantity displays scaled to its reference over BigInt (exact, no truncation)
 pass	a prefixed quantity displays scaled to its reference over BigInt (exact, no truncation)
+pass	a USER-DEFINED multi-variant sum payload quantity renders scaled to its reference

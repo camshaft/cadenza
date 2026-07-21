@@ -14403,6 +14403,7 @@ mod runtime_ops {
         // descends BOTH live branches of a runtime `if` against the annotation width. Both the direct
         // annotation form and the same literal reaching a narrow PARAMETER (`(f (if c 10000 0))` where
         // `f : UInt8 → …`) now reject at check, agreeing with emit. Nested `if`s descend recursively.
+        // The SAME descent covers a runtime `match` (one body per arm, guarded on a runtime `Core::Match`).
         let check_rejects = |src: &str| {
             let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
             let d = diags
@@ -14428,6 +14429,15 @@ mod runtime_ops {
         );
         // Negative literal in an unsigned annotation via a runtime if (the sign-flip CDZ0302 face).
         check_rejects("(module m (def (f (: c Bool)) (: (if c -1 0) UInt8)) (export f))");
+        // The MATCH sibling: a RUNTIME `match` (runtime scrutinee) with an out-of-range literal in an arm
+        // body — the same gap + the same descent (one body per arm, guarded on a runtime `Core::Match`).
+        // Direct annotation and narrow-parameter forms.
+        check_rejects(
+            "(module m (def (f (: n Int64)) (: (match n (0 10000) (_ 0)) UInt8)) (export f))",
+        );
+        check_rejects(
+            "(module m (def (g (: x UInt8)) x) (def (f (: n Int64)) (g (match n (0 10000) (_ 0)))) (export f))",
+        );
 
         // NO OVER-REJECTION: fitting branch literals, a constant-condition if (folds to its taken branch),
         // both-branches-fit, and a bare if with NO narrow context (stays Int64) must all pass check clean.
@@ -14444,6 +14454,11 @@ mod runtime_ops {
         check_clean("(module m (def (f (: c Bool)) (: (if c 200 100) UInt8)) (export f))");
         check_clean("(module m (def (f) (: (if true 100 0) UInt8)) (export f))");
         check_clean("(module m (def (f (: c Bool)) (if c 10000 0)) (export f))");
+        // MATCH clean controls: fitting arms, and a bare match with no narrow context (stays Int64).
+        check_clean(
+            "(module m (def (f (: n Int64)) (: (match n (0 100) (_ 0)) UInt8)) (export f))",
+        );
+        check_clean("(module m (def (f (: n Int64)) (match n (0 10000) (_ 0))) (export f))");
     }
 
     #[test]

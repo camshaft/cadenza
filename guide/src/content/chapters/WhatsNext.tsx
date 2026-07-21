@@ -52,7 +52,7 @@ export default function WhatsNext() {
         all resolved at compile time; <Ch to="/const-parameters">const parameters</Ch> that fix an
         argument at compile time, whether a constant, a type, or a dictionary, inlined into a specialized
         copy and then erased; <Ch to="/metaprogramming">metaprogramming</Ch> where a
-        program is an ordinary AST value you can quote, take apart, build, and eval; and{" "}
+        program is an ordinary AST value you can quote, take apart, build, and eval;{" "}
         <Ch to="/property-testing">testing</Ch>, where <C>@test</C> marks a function as a test and
         parameters make it generative, so the runner synthesizes the inputs and shrinks any failure, no
         testing DSL required; and <Ch to="/recorded-log">history as a value</Ch>, where an agent's whole

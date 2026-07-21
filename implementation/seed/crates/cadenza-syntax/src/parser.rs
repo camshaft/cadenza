@@ -1487,14 +1487,95 @@ impl<'a> Parser<'a> {
         }
         let name = text.to_string();
         self.bump(); // the unit name
-        // (Unit.of #"name")
+        // (Unit.of #"name"), then extend into a COMPOUND / RATE unit across glued operators.
         let unit_head = self.member_head("Unit", "of", unit_span);
         let sym = self.atom(Leaf::Sym(name), unit_span);
-        let unit_expr = self.list(vec![unit_head, sym], unit_span);
-        // (Qty.of num (Unit.of #"name"))
+        let atom = self.list(vec![unit_head, sym], unit_span);
+        let unit_expr = self.compound_unit_tail(atom);
+        // (Qty.of num <unit>)
         let span = num_span.merge(self.prev_span());
         let qty_head = self.member_head("Qty", "of", span);
         self.list(vec![qty_head, num, unit_expr], span)
+    }
+
+    /// Extend a just-read unit atom into a COMPOUND unit across GLUED `/`/`*`/`^` operators. `^` binds
+    /// TIGHTER than `/`/`*` (so `m/s^2` = `m/(s^2)` = `(Unit./ m (Unit.^ s 2))`, the physical reading — NOT
+    /// `(m/s)^2`); `/`/`*` are left-associative (`a/b/c` = `(a/b)/c`). "Glued" = each operator's span abuts
+    /// the token before it AND its right operand abuts the operator (no whitespace) — the syntactic rule
+    /// that separates a RATE unit (`GiB/s`) from arithmetic (`GiB / 2`, left to the ordinary infix loop).
+    /// A non-glued operator, or a right operand that is not the expected unit-name (`/`/`*`) or integer
+    /// (`^`), stops the chain. `left` already includes any `^` on the first atom (applied by `unit_factor`).
+    fn compound_unit_tail(&mut self, first: StructId) -> StructId {
+        let mut left = self.unit_pow(first); // a trailing `^n` on the first atom binds before `/`/`*`
+        loop {
+            let op_name = match self.kind() {
+                Kind::Slash => "/",
+                Kind::Star => "*",
+                _ => break,
+            };
+            let (Some(op_tok), Some(rhs_tok)) =
+                (self.tokens.get(self.pos), self.tokens.get(self.pos + 1))
+            else {
+                break;
+            };
+            let (op_span, rhs_span) = (op_tok.span, rhs_tok.span);
+            // GLUE + a following unit NAME (not a number — `GiB/2` is arithmetic — nor a keyword).
+            if self.prev_span().end != op_span.start
+                || op_span.end != rhs_span.start
+                || rhs_tok.kind != Kind::Ident
+            {
+                break;
+            }
+            let name = self.text(*rhs_tok);
+            if keyword(name).is_some() || word_op(name).is_some() {
+                break;
+            }
+            let name = name.to_string();
+            self.bump(); // operator
+            self.bump(); // unit name
+            let unit_head = self.member_head("Unit", "of", rhs_span);
+            let sym = self.atom(Leaf::Sym(name), rhs_span);
+            let rhs_atom = self.list(vec![unit_head, sym], rhs_span);
+            let rhs = self.unit_pow(rhs_atom); // `^n` binds to THIS factor before the `/`/`*`
+            // BARE `/` / `*` head between two unit operands — `eval::unit_of` composes a bare arithmetic
+            // operator over two operands that BOTH reduce to units (v-inference confirmed), and this is the
+            // shape the printer ROUND-TRIPS to (it renders both `Unit./` and bare `/` as the infix `a / b`,
+            // which re-reads as the bare `/`) — so emitting bare keeps read→print→read stable, whereas a
+            // `Unit./` head would print `a / b` then re-read as bare `/` (a spurious round-trip drift).
+            let head = self.name(op_name, op_span);
+            let span = op_span.merge(self.prev_span());
+            left = self.list(vec![head, left, rhs], span);
+        }
+        left
+    }
+
+    /// Apply a GLUED integer exponent `^n` to a unit `atom` → `(Unit.^ atom n)`, else return `atom`
+    /// unchanged. Only an integer literal is a valid unit exponent; `^` binds tighter than `/`/`*`.
+    fn unit_pow(&mut self, atom: StructId) -> StructId {
+        if self.kind() != Kind::Caret {
+            return atom;
+        }
+        let (Some(op_tok), Some(exp_tok)) =
+            (self.tokens.get(self.pos), self.tokens.get(self.pos + 1))
+        else {
+            return atom;
+        };
+        let (op_span, exp_span) = (op_tok.span, exp_tok.span);
+        if self.prev_span().end != op_span.start
+            || op_span.end != exp_span.start
+            || exp_tok.kind != Kind::Int
+        {
+            return atom;
+        }
+        let exp_text = self.text(*exp_tok).to_string();
+        self.bump(); // `^`
+        self.bump(); // integer
+        let exp = self.numeric_atom(&exp_text, exp_span);
+        // BARE `^` head (eval composes it over a unit operand; the printer round-trips it) — see the
+        // `/`/`*` note in `compound_unit_tail` for why bare, not the `Unit.^` flat name.
+        let head = self.name("^", op_span);
+        let span = op_span.merge(self.prev_span());
+        self.list(vec![head, atom, exp], span)
     }
 
     /// Build a member-access head `(. obj key)` — the arena shape `obj.key` desugars to, reused to
@@ -4164,6 +4245,52 @@ mod tests {
         assert_eq!(
             sexpr::print(&parse_ok("dist(5 feet)")),
             r#"(dist ((. Qty of) 5 ((. Unit of) #"feet")))"#
+        );
+    }
+
+    #[test]
+    fn compound_unit_desugars_on_glued_operators() {
+        use crate::sexpr;
+        // COMPOUND / RATE units (operator BUG #51): a unit magnitude followed by a GLUED `/`/`*`/`^`
+        // extends the UNIT into a composite (bare `/`/`*`/`^` between unit operands — the shape
+        // `eval::unit_of` composes + the printer round-trips), so `59 GiB/s` is a RATE unit, not a
+        // division by an unbound `s`. v-inference confirmed the shape (atomic quotients compose, no
+        // unit_families change).
+        // A glued `/` → a rate unit `(Qty.of 59 (/ (Unit.of GiB) (Unit.of s)))`.
+        assert_eq!(
+            sexpr::print(&parse_ok("59 GiB/s")),
+            r#"((. Qty of) 59 (/ ((. Unit of) #"GiB") ((. Unit of) #"s")))"#
+        );
+        // `^` binds TIGHTER than `/`: `m/s^2` = `m/(s^2)` (the physical reading), NOT `(m/s)^2`.
+        assert_eq!(
+            sexpr::print(&parse_ok("9 m/s^2")),
+            r#"((. Qty of) 9 (/ ((. Unit of) #"m") (^ ((. Unit of) #"s") 2)))"#
+        );
+        // `*` and `/` compose left-to-right: `kg*m/s^2` = `(kg*m)/(s^2)` (a newton).
+        assert_eq!(
+            sexpr::print(&parse_ok("3 kg*m/s^2")),
+            r#"((. Qty of) 3 (/ (* ((. Unit of) #"kg") ((. Unit of) #"m")) (^ ((. Unit of) #"s") 2)))"#
+        );
+        // A bare `^` exponent on a single unit: `m^2`.
+        assert_eq!(
+            sexpr::print(&parse_ok("10 m^2")),
+            r#"((. Qty of) 10 (^ ((. Unit of) #"m") 2))"#
+        );
+        // GLUE is the disambiguator: a SPACED `/ 2` or `/ x` stays ARITHMETIC (a division of the
+        // quantity), NOT a unit — only the ordinary infix loop handles it.
+        assert_eq!(
+            sexpr::print(&parse_ok("59 GiB / 2")),
+            r#"(/ ((. Qty of) 59 ((. Unit of) #"GiB")) 2)"#
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("59 GiB / x")),
+            r#"(/ ((. Qty of) 59 ((. Unit of) #"GiB")) x)"#
+        );
+        // A glued `/` before a NUMBER is arithmetic, not a unit (`GiB/2` divides): the right operand of a
+        // unit `/` must be a NAME.
+        assert_eq!(
+            sexpr::print(&parse_ok("59 GiB/2")),
+            r#"(/ ((. Qty of) 59 ((. Unit of) #"GiB")) 2)"#
         );
     }
 

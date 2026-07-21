@@ -2042,6 +2042,32 @@
   (call   main (: 3 Int64)) (output (: 9 Int64))
   (call   main (: 4 Int64)) (output (: 12 Int64)))
 
+; The SCALAR-RESULT SHELL-RECLAIM face: when a match over an OWNED compound-payload sum has a SCALAR (non-heap)
+; result, the emit reclaims the owned sum SHELL after the arm (the scalar answer cannot carry a shell-child
+; handle out of the block, so the deep drop is safe — the reclaim broadening in the wasm backend's match
+; emit). The subtle risk the fix guards: the arm may still BORROW the shell's child (`List.len`/`List.at`
+; read into the payload list) BEFORE producing the scalar — so the shell must stay live through EVERY such
+; read and be reclaimed only AFTER the last one. A reclaim that dropped the shell too early would free the
+; borrowed child mid-read (a use-after-free / garbage read). This pins the whole borrow-then-reclaim sequence
+; is value-correct — TWO borrowing reads of the child (`List.len` + `List.at`) then a scalar result. The
+; reclaim-placement itself is memory-safety's (a `--lib` test guards it); this is the fleet-VISIBLE value
+; witness (the gate skips `--lib`), so a reclaim regression that stayed valid-but-wrong is caught in the corpus.
+(case "a scalar-result match over an owned compound-payload sum reclaims the shell AFTER its borrowed reads"
+  (doc    "`(match (Wrap (list n (n+1) (n+2))) ((Wrap xs) (+ (* 100 (List.len xs)) (List.at xs 2))))`: the
+           match scrutinee is a fresh OWNED `Wrap` of a runtime list; the arm BORROWS its payload `xs` TWICE
+           (`List.len` = 3, then `List.at xs 2` = n+2) and returns a SCALAR. Because the result is scalar, the
+           emit reclaims the owned `Wrap` shell after the arm — but only AFTER both borrowing reads, or the
+           second read would hit a freed child. n=5 → 100*3 + 7 = 307. Pins the scalar-result shell reclaim
+           keeps the borrowed child live through all reads (a too-early reclaim = UAF/garbage). Both backends.")
+  (input  (do
+            (type Box (Wrap (List Int64)))
+            (def (main (: n Int64))
+              (match (Wrap (list n (+ n 1) (+ n 2)))
+                ((Wrap xs) (+ (* 100 (List.len xs)) (Option.expect (List.at xs 2) "in bounds")))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 307 Int64)))
+
 ; The cases above retain a heap value across SIMULTANEOUS liveness (threaded to a recursive call while a
 ; sibling consumes it). These pin the BRANCH-JOIN axis: a heap value consumed in only ONE arm of an
 ; if/match must stay live for a use AFTER the join — the dup/drop must BALANCE across branches, dropping
