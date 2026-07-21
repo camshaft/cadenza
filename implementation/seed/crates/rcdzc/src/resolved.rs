@@ -310,6 +310,14 @@ pub enum Prim {
     /// `floor(-7/2) = -4` (vs `truncate`'s −3); `ceil(7/2) = 4`. The `Int64.of` narrowing TRAPS on overflow.
     RationalFloor,
     RationalCeil,
+    /// `Rational.round r` — round to the NEAREST integer, ties HALF-AWAY-FROM-ZERO (`1/2 → 1`, `-1/2 → -1`,
+    /// `3/2 → 2`, `5/2 → 3`), narrowed to `Int64`. Like the sibling projections, a DERIVATION (no runtime
+    /// op): the toward-zero quotient `q` adjusted by the sign of `n` when `2·|remainder| ≥ denominator` (the
+    /// fractional part is ≥ ½, so it rounds AWAY from zero). A CONSTANT `Core::ConstRational` folds to the
+    /// adjusted `Core::ConstInt` (`IntValue::divmod` + the tie test); a runtime Rational synthesizes the
+    /// derivation subtree. Half-away is the settled ruling (symmetric snapping for MIDI/tick boundaries).
+    /// The `Int64.of` narrowing TRAPS on overflow. Completes the floor/ceil/truncate/round surface.
+    RationalRound,
     /// `Symbol.of` — INTERN a String into a Symbol (`String → Symbol`, 17-symbols). A constant string
     /// FOLDS to a constant symbol (represented as the underlying `Core::ConstStr` at type `Ty::Symbol` —
     /// the identity is content-derived), so `(= (Symbol.of "a") (Symbol.of "a"))` folds via the shared
@@ -865,6 +873,7 @@ impl Prim {
             "rational-truncate" => Some(Prim::RationalTruncate),
             "rational-floor" => Some(Prim::RationalFloor),
             "rational-ceil" => Some(Prim::RationalCeil),
+            "rational-round" => Some(Prim::RationalRound),
             "Char" => Some(Prim::CharTy),
             "char-to-int" => Some(Prim::CharToInt),
             "char-from-int" => Some(Prim::CharFromInt),

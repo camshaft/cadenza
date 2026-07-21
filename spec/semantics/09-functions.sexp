@@ -469,6 +469,26 @@
             (export main)))
   (output (: 11 Int64)))
 
+(case "a closure stored as a MAP value is looked up by a runtime key and applied"
+  (doc    "The dispatch-TABLE idiom: closures stored as MAP values, one selected by a runtime KEY and
+           applied — `{1 → (· 10), 2 → (+ 100)}`, `(match (Map.lookup m k) ((Some f) (f x)) …)`. k=1
+           applies the multiplier (50), k=2 the adder (105), and a missing key falls to the None arm
+           (-1) — the lookup's Option wraps a FUNCTION payload, so the Some binder carries an applyable
+           closure out of the CHAMP. The map twin of the list-of-closures index dispatch above: there
+           selection is positional, here it is by key hash/compare, and the closure must survive the
+           CHAMP value cell (boxed function handle) round-trip. Expected: 50, 105, -1.")
+  (input  (do
+            (def (main (: k Int64) (: x Int64))
+              (let ((m (Map.insert (Map.insert Map.empty 1 (fn ((: v Int64)) (* v 10)))
+                                   2 (fn ((: v Int64)) (+ v 100)))))
+                (match (Map.lookup m k)
+                  ((Some f) (f x))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 1 Int64) (: 5 Int64)) (output (: 50 Int64))
+  (call   main (: 2 Int64) (: 5 Int64)) (output (: 105 Int64))
+  (call   main (: 9 Int64) (: 5 Int64)) (output (: -1 Int64)))
+
 (case "two capturing closures stored as runtime tuple elements keep distinct captures"
   (doc    "The tuple-element runtime companion: `(tuple (adder 1) (adder 2))` bound via `let` holds two
            closures with DISTINCT captures (n=1 and n=2); a tuple binder extracts both and each is applied to
@@ -2850,6 +2870,46 @@
 ; feeds the outer loop's mixed match (its None ends the outer loop, its Some both accumulates and advances
 ; the outer state). A tail-loop conversion that leaked stack values across either boundary would fail to
 ; validate or misread the composed state.
+; The guard-calls-a-recursive-helper case above exercises guard×recursion; these pin two more guard
+; CONDITION compositions with the value world: a guard applying a LET-BOUND CLOSURE (the guard's
+; condition is a first-class function application, not a direct call to a def), and a guard reading a
+; HEAP list built OUTSIDE the match (the condition captures an enclosing heap binding and performs a
+; fallible indexed read under the pattern machinery).
+
+(case "a guard condition applies a let-bound closure"
+  (doc    "`(guard n (big? n))` where `big?` is a LET-bound `(fn (v) (> v 10))` — the guard's condition
+           dispatches through a first-class closure value, not a def call: the closure handle is read
+           from the enclosing let scope inside the guard's evaluation context and applied to the binder.
+           x=15 passes the guard → 1; x=5 fails → the wildcard 0. Pins that guard evaluation composes
+           with closure application (a guard lowering that only supported direct calls or inline
+           comparisons would reject or mis-dispatch this). Expected: 1, 0.")
+  (input  (do
+            (def (main (: x Int64))
+              (let ((big? (fn ((: v Int64)) (> v 10))))
+                (match x
+                  ((guard n (big? n)) 1)
+                  (_ 0))))
+            (export main)))
+  (call   main (: 15 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64))  (output (: 0 Int64)))
+
+(case "a guard condition reads a heap list bound outside the match"
+  (doc    "`(guard n (= (Option.expect (List.at xs n) …) 2))` — the guard indexes a HEAP list bound in
+           the ENCLOSING let, using the arm's own binder as the index: the condition needs the live list
+           handle (captured across the match boundary), a fallible List.at, an Option.expect unwrap, and
+           an equality — all inside guard evaluation. n=1 finds element 2 → 1; n=0 finds 1 ≠ 2 → 0. Pins
+           the guard's evaluation context sees enclosing heap bindings and composes with the fallible-read
+           idiom (the shape a lookup-table-driven match arm takes). Expected: 1, 0.")
+  (input  (do
+            (def (main (: x Int64))
+              (let ((xs (list 1 2 3)))
+                (match x
+                  ((guard n (= (Option.expect (List.at xs n) "oob") 2)) 1)
+                  (_ 0))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
 (case "a mixed-match tail loop whose Option payload is a heap String finds and reads the element"
   (doc    "`firstlong` walks a `(List String)` via `step`: the keep-arm returns `(Some x)` where `x` is a
            heap STRING pulled from the list, the drop-arm tail-recurses. Over `(list \"ab\" \"c\" \"abcd\"

@@ -1209,6 +1209,15 @@ fn rational_module(ast: &mut Arenas) -> StructId {
     let ceil_op = list_op_record(ast, "rational-ceil", ceil_ty);
     let ceil_key = push_atom(ast, Leaf::Name("ceil".to_string()));
     children.push(push_list(ast, vec![ceil_key, ceil_op]));
+    // `round : Rational → Int64` — round to the NEAREST integer, ties HALF-AWAY-FROM-ZERO (`1/2 → 1`,
+    // `-1/2 → -1`, `3/2 → 2`, `5/2 → 3`). The last of the exact integer projections. Like the others, NOT a
+    // new runtime op: a DERIVATION over numerator/denominator + BigInt divmod + a `2·|rem| ≥ denominator`
+    // tie test + the checked `Int64.of` narrowing (hash-neutral). The half-away tie rule is the settled
+    // ruling (symmetric snapping for MIDI/ticks).
+    let round_ty = rational_to_int64_type(ast);
+    let round_op = list_op_record(ast, "rational-round", round_ty);
+    let round_key = push_atom(ast, Leaf::Name("round".to_string()));
+    children.push(push_list(ast, vec![round_key, round_op]));
     push_list(ast, children)
 }
 

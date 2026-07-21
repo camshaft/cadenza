@@ -1409,6 +1409,42 @@
   (input  (= (Ast.Int 42) (quote 42)))
   (output (: true Bool)))
 
+; --- Structural equality DISCRIMINATES by list order/length and by variant tag ---------------------
+; The equality cases above pin that quote-built and constructor-built forms of the SAME tree are EQUAL.
+; The dual guard is that `=` DISTINGUISHES trees that differ — otherwise a `=` that ignored element order,
+; ignored list length, or collapsed a leaf by its numeric value would wrongly answer `true`. Three cases
+; pin the discrimination: `Ast.List` equality is element-ORDER sensitive and element-COUNT sensitive (the
+; list walk compares positionally and length-first, per the encoding's canonical byte form — two trees
+; equal only if identical), and an `Ast.Bool` is distinct from an `Ast.Int` by VARIANT TAG, never by the
+; boolean's numeric value (a `=` that compared payloads across variants would equate `true` with `1`).
+; Companions of the cross-variant Str-vs-Name (above) and Float-vs-Int distinctness cases.
+
+(case "structural equality on an Ast.List is element-ORDER sensitive"
+  (doc    "Two `Ast.List` values with the SAME elements in a DIFFERENT order are NOT equal: `(Ast.List
+           (list (Ast.Int 1) (Ast.Int 2)))` vs `(Ast.List (list (Ast.Int 2) (Ast.Int 1)))` → `=` is
+           false. Pins that the list-equality walk compares elements POSITIONALLY (per the encoding's
+           canonical byte form), so a `=` that compared list contents order-insensitively is caught.")
+  (input  (= (Ast.List (list (Ast.Int 1) (Ast.Int 2)))
+             (Ast.List (list (Ast.Int 2) (Ast.Int 1)))))
+  (output (: false Bool)))
+
+(case "structural equality on an Ast.List is element-COUNT sensitive"
+  (doc    "A one-element `Ast.List` is NOT equal to a two-element one even when the shorter is a PREFIX of
+           the longer: `(Ast.List (list (Ast.Int 1)))` vs `(Ast.List (list (Ast.Int 1) (Ast.Int 2)))` →
+           `=` is false. Pins that list equality is length-sensitive (a prefix is not a match), so a `=`
+           that ignored the trailing elements is caught.")
+  (input  (= (Ast.List (list (Ast.Int 1)))
+             (Ast.List (list (Ast.Int 1) (Ast.Int 2)))))
+  (output (: false Bool)))
+
+(case "an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value"
+  (doc    "`(Ast.Bool true)` and `(Ast.Int 1)` are DIFFERENT `Ast` sum variants, so `=` is false — the
+           compare discriminates by VARIANT TAG first, never collapsing a boolean to its numeric value
+           (`true`→1). The cross-variant-distinctness companion of Str-vs-Name and Float-vs-Int: a `=`
+           that compared payloads across variants would wrongly equate `Ast.Bool true` with `Ast.Int 1`.")
+  (input  (= (Ast.Bool true) (Ast.Int 1)))
+  (output (: false Bool)))
+
 ; --- Ast.encode / Ast.decode consume an AST built by the Ast.* constructors too ------------
 ; The encoding is a bijection over THE abstract syntax tree value (ast-encoding.md #The Encoding Is A
 ; Bijection With One Canonical Byte Form: "Decoding a canonical binary encoding MUST yield the abstract
@@ -1957,6 +1993,32 @@
             (`(f ,a ,b) 2)
             (other      9)))
   (output (: 9 Int64)))
+
+; The zero-arity end of the fixed-arity rule: the empty-compound quote pattern `` `() `` reads as
+; `(Ast.List (list))` — an `Ast.List` whose `(list)` sub-pattern fixes length ZERO — so it matches ONLY a
+; quoted empty compound and nothing else. The pattern-side companion of the construction case "quoting an
+; empty compound produces an empty Ast.List": there `(quote ())` BUILDS the empty list; here `` `() ``
+; MATCHES it. A quote pattern whose empty-list sub-pattern was lowered to a wildcard (or a >=0 rest) would
+; wrongly match a non-empty form — these two cases pin the exact-zero-length discrimination.
+
+(case "an empty-compound quote pattern matches a quoted empty compound"
+  (doc    "`` `() `` is the reading of `(Ast.List (list))`, so it matches an `Ast.List` of EXACTLY zero
+           elements — the quoted empty compound `(quote ())`. Pins the zero-arity end of the fixed-arity
+           quote-pattern rule (the empty case of the `(list …)` sub-pattern length fix).")
+  (input  (match (quote ())
+            (`()   1)
+            (other 0)))
+  (output (: 1 Int64)))
+
+(case "an empty-compound quote pattern does not match a non-empty form"
+  (doc    "The discriminating companion: `` `() `` fixes length zero, so a quoted ONE-element compound
+           `(quote (a))` does NOT match it and falls to the catch-all. A lowering that treated the empty
+           list sub-pattern as a wildcard or a zero-or-more rest would wrongly match here — this pins that
+           `` `() `` is an EXACT-zero-length match, not a match-anything.")
+  (input  (match (quote (a))
+            (`()   1)
+            (other 0)))
+  (output (: 0 Int64)))
 
 (case "a nested unquote pattern matches a sub-AST by shape"
   (doc    "`,<pattern>` nests an ordinary pattern at the sub-AST's position, so `` `(+ ,(Ast.Int n) ,b) ``

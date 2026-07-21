@@ -228,6 +228,37 @@
   (call   main (: -7 Int64))
   (output (: -3 Int64)))
 
+(case "a proper fraction truncates to zero from both signs and an exact integer to itself"
+  (doc    "The remaining truncate boundary faces in one case: a PROPER fraction (|value| < 1) truncates
+           to 0 from BOTH signs — 1/3 → 0 and -1/3 → 0 (a floor would give -1 for the negative; a
+           ceiling 1 for the positive) — and an EXACT-integer rational (6n/3 = 2n after normalization)
+           truncates to precisely that integer with nothing dropped: n=5 → 10. Encodes the three reads
+           as 100·(1/3 face + 1) + 10·(-1/3 face + 1) + |2n| checks via separate calls. Together with
+           the ±7/2 cases above, the truncate surface is pinned at: mixed number both signs, proper
+           fraction both signs, exact integer.")
+  (input  (do
+            (def (main (: n Int64) (: d Int64))
+              (Rational.truncate (Rational.of n d)))
+            (export main)))
+  (call   main (: 1 Int64) (: 3 Int64))   (output (: 0 Int64))
+  (call   main (: -1 Int64) (: 3 Int64))  (output (: 0 Int64))
+  (call   main (: 30 Int64) (: 3 Int64))  (output (: 10 Int64)))
+
+(case "truncating a rational whose integer part exceeds Int64 traps rather than wrapping"
+  (doc    "`Rational.truncate` narrows to Int64 — a rational whose integer part does NOT fit (here
+           3 · Int64.max, built by exact Rational multiplication) must TRAP, never silently wrap or
+           truncate the BigInt limbs. wasm traps `unreachable`; the rust backend also traps (its
+           message 'BigInt value out of Int64 range' differs, so the rust baseline records the case
+           todo — a trap either way, not a divergence; the zero-denominator Rational.of case has the
+           same cross-backend-message shape). The R→i64 narrowing guard face of the truncate surface.")
+  (input  (do
+            (def (big (: n Int64))
+              (* (Rational.of n 1) (Rational.of 9223372036854775807 1)))
+            (def (main (: n Int64))
+              (Rational.truncate (big n)))
+            (export main)))
+  (call   main (: 3 Int64)) (trap "unreachable"))
+
 ; `Rational.floor : Rational → Int64` (toward −∞) and `Rational.ceil` (toward +∞) — the other two exact
 ; integer projections. Like `truncate`, DERIVATIONS (no runtime op): `truncate` adjusted by ±1 off the
 ; remainder sign — floor = trunc−1 iff (numerator < 0 AND remainder ≠ 0); ceil = trunc+1 iff (numerator > 0
@@ -250,6 +281,30 @@
   (input  (do (def (main (: n Int64)) (Rational.ceil (Rational.of n 2))) (export main)))
   (call   main (: 7 Int64))
   (output (: 4 Int64)))
+
+; `Rational.round : Rational → Int64` — round to the NEAREST integer, ties HALF-AWAY-FROM-ZERO (the settled
+; ruling: symmetric snapping for MIDI/tick boundaries). The last of the exact integer projections (completing
+; floor/ceil/truncate/round). A DERIVATION: the toward-zero quotient adjusted AWAY from zero (by the value's
+; sign) when 2·|remainder| ≥ denominator — i.e. the fractional part is ≥ ½. The `≥` (not `>`) is what makes
+; an exact half round away. Pinned on the TIE (½) in both signs (5/2 → 3, -5/2 → -3) — the axis a
+; nearest-even or half-toward rounding would break.
+(case "a rational rounds to nearest, ties half-away-from-zero, narrowed to Int64"
+  (doc    "`Rational.round : Rational → Int64` rounds to the NEAREST integer with ties HALF-AWAY-FROM-ZERO.
+           `(Rational.of n 2)` at n=5 is 5/2 = 2.5, an exact half, which rounds AWAY from zero to 3 (not 2 —
+           this is not banker's/nearest-even rounding). A DERIVATION: the toward-zero quotient adjusted away
+           from zero when 2·|remainder| ≥ denominator. Pins the positive tie direction.")
+  (input  (do (def (main (: n Int64)) (Rational.round (Rational.of n 2))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 3 Int64)))
+
+(case "a rational rounds a negative half away from zero"
+  (doc    "The negative-tie face of half-away-from-zero: `(Rational.of n 2)` at n=-5 is -5/2 = -2.5, an
+           exact half, which rounds AWAY from zero to -3 (symmetric with 5/2 → 3). Pins that the tie rule is
+           sign-symmetric (away from zero on both sides), the settled ruling — distinct from a floor-ties or
+           toward-zero-ties rounding that would give -2.")
+  (input  (do (def (main (: n Int64)) (Rational.round (Rational.of n 2))) (export main)))
+  (call   main (: -5 Int64))
+  (output (: -3 Int64)))
 
 ; The exact-arithmetic cases above use SMALL operands (1/3, 1/6) that never leave the i64 range. A Rational
 ; is a normalized pair of BigInt handles, so a gcd normalization over NEAR-i64 operands must run on the
@@ -2398,6 +2453,37 @@
   (input  (do (def (main (: v Int64) (: k Int64)) (^ (^ v k) k)) (export main)))
   (call   main (: 42 Int64) (: 99 Int64))
   (output (: 42 Int64)))
+
+; ── The COMPLEMENT LAWS: `x & ~x → 0` and `x | ~x → -1` (all-ones) ────────────────────────────────────
+; A value and its bitwise complement `~x` share NO set bit, so `x & ~x` is 0 (at EVERY width/sign) and
+; `x | ~x` is all-ones. There is no dedicated bit-NOT prim — `~x` is written `(^ x -1)` for a SIGNED type
+; (or `(^ x 255)` etc. for an unsigned width, since a literal `-1` is out of range there). `arith_identity`
+; (lower.rs) folds both. The `&` result 0 holds at every width; but the `|` all-ones fold to the CONSTANT
+; `-1` is restricted to a SIGNED type (where -1 IS the all-ones): for an UNSIGNED width-N type the all-ones
+; is `2^N − 1` and `-1` is out of range, so `arith_identity` leaves the runtime `or` (which correctly
+; computes `2^N − 1`). Both laws DISCARD `x`, so they are `is_trap_free`-guarded. Both backends.
+(case "the complement laws fold x-and-not-x to zero and x-or-not-x to all-ones on a signed runtime value"
+  (doc    "`(& x (^ x -1))` → 0 and `(| x (^ x -1))` → -1 for a signed runtime x: a value ANDed with its
+           complement shares no bit (0), ORed with it sets every bit (all-ones = -1 for a signed type).
+           `(tuple (& x (^ x -1)) (| x (^ x -1)))` at x = 42 → (0, -1), and at x = Int64.min → (0, -1) (the
+           laws are value-fixed regardless of x). Pins both complement laws on a signed runtime operand,
+           both backends.")
+  (input  (do (def (main (: x Int64)) (tuple (& x (^ x -1)) (| x (^ x -1)))) (export main)))
+  (call   main (: 42 Int64))
+  (output (: (tuple 0 -1) (Tuple Int64 Int64)))
+  (call   main (: -9223372036854775808 Int64))
+  (output (: (tuple 0 -1) (Tuple Int64 Int64))))
+
+(case "the and-complement folds to zero on an unsigned type but the or-complement is the width all-ones not -1"
+  (doc    "On an UNSIGNED UInt8, `~x` is `(^ x 255)`. `(& x (^ x 255))` → 0 (the `&`-complement law holds at
+           every width). But `(| x (^ x 255))` is 255, the UInt8 all-ones (2^8 − 1) — NOT folded to the
+           constant -1 (out of range for UInt8), so the runtime `or` computes the width-correct value.
+           `(tuple (& x (^ x 255)) (| x (^ x 255)))` at x = 200 → (0, 255). Pins that the `&`-complement
+           folds at unsigned width while the `|`-complement yields the width all-ones (the signed-only
+           guard on the `-1` fold), both backends.")
+  (input  (do (def (main (: x UInt8)) (tuple (& x (^ x 255)) (| x (^ x 255)))) (export main)))
+  (call   main (: 200 UInt8))
+  (output (: (tuple 0 255) (Tuple UInt8 UInt8))))
 
 ; ── The KEEPING identities (`x + 0`, `x << 0`, `x >> 0`) preserve a runtime operand exactly ──────────
 ; The additive/shift-by-zero identities RETURN the surviving operand (unlike the annihilators, which

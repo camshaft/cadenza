@@ -63,3 +63,10 @@ the operator's full surface still missing. It IS operator-approved. Owner: v-run
 (prelude signature) — same as the others they landed. Not blocking v-music (floor/truncate cover 12-TET).
 corpus-bugfix: pin round once it lands (nearest-rounding: round(7/2)=4, round(-7/2)=-4 or -3 per the spec'd
 tie rule — MATCH rcdzc, don't invent the half-way tie). NOTE to v-runtime/v-inference sent.
+
+## FULLY RESOLVED (corpus-bugfix, 2026-07-21, trunk dd93b6905)
+Rational.round LANDED (v-inference 03ada5bff, tie = half-away-from-zero per operator ruling) — the surface is
+now 6/6 (floor/ceil/truncate/round : Rational->Int64 + numerator/denominator : Rational->BigInt). ALL SIX are
+corpus-pinned in 06-numeric-model.sexp (round: 4 hits = case + baselines; v-inference pins their own
+conversions alongside the impl, as with floor/ceil/truncate). Nothing left — the operator-approved full
+conversion surface is implemented + pinned + v-music's rational->MIDI projection is unblocked. RESOLVED.

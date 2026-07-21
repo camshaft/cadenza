@@ -585,10 +585,17 @@ fn emit_signature(
     // path doesn't do yet) still DECLINES — a clean `todo`, a later increment — rather than emit an
     // artifact the harness drives wrongly (a FALSE gate FAIL).
     let closure_param_is_simple = |t: &crate::ty::Ty| -> bool {
-        // Peel the arrow spine: every arg scalar, final result scalar (no nested closure/compound).
+        // Peel the arrow spine. Each closure ARG may be an S1 scalar OR an S2 compound the harness rebuilds
+        // (`s2_arg_ok`: Tuple/List/Option/Result over OK elements) — the consumer applies `(g <arg>)` where
+        // `<arg>` is built in ITS OWN body (a literal/constructed value the emitter already lowers), and the
+        // producing sibling that supplies `g` already emits a matching compound-arg closure via the factory
+        // S2 path (`fn_result_renderable`). A HIGHER-ORDER arg (an arg that is itself a `Fn`) stays declined
+        // — `s2_arg_ok` returns false for `Ty::Fn`. The final RESULT must still be an S1 scalar: a COMPOUND
+        // closure result (S3) needs the factory-style result render the consumer path does not do yet, so it
+        // declines cleanly (a `todo`, a later increment).
         let mut cur = t.strip_nominal();
         while let crate::ty::Ty::Fn(p, r) = cur {
-            if !is_capture_scalar(p) {
+            if !s2_arg_ok(p) {
                 return false;
             }
             cur = r.strip_nominal();

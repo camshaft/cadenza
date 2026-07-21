@@ -506,6 +506,28 @@
   (output (: (tuple (Qty.of 5000.0 (Unit.base #"meter")) (Qty.of 201168/25 (Unit.base #"meter")))
              (Tuple (Qty Float64 (Unit.base #"meter")) (Qty Rational (Unit.base #"meter"))))))
 
+(case "an OPTION payload quantity renders scaled to its reference in the value form"
+  (doc    "A `(Some (Qty …))` literal crossing the boundary renders its payload quantity scaled to its
+           reference: `(Some (Qty.of 5.0 kilometer))` → `(Some (Qty.of 5000.0 meter))`. Distinct from the
+           collection cases where `(List.at xs i)` RETURNS a `(Some (Qty …))` decoded from a heap collection
+           and is then unwrapped with `Qty.value`: this pins the const/value-form bake of a `Some(Qty)`
+           LITERAL, confirming the per-element scale-fold recurses into a SUM payload's hole exactly as it
+           does into a tuple hole. Number and unit AGREE in the payload.")
+  (input  (Some (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))))
+  (output (: (Some (Qty.of 5000.0 (Unit.base #"meter")))
+             (Option (Qty Float64 (Unit.base #"meter"))))))
+
+(case "a NESTED tuple of quantities renders every element scaled at depth"
+  (doc    "The recursion companion of the flat tuple-of-quantities pin: a `(Tuple (Tuple (Qty …)) (Tuple
+           (Qty …)))` — quantities nested two tuple layers deep — renders EVERY element scaled to its
+           reference: `((5.0 km,), (2.0 m,))` → `((5000.0 meter,), (2.0 meter,))`. Pins that the value-form
+           scale-fold recurses through nested compound holes to arbitrary depth, not just the outermost
+           tuple's direct elements — every Qty leaf, however deep, is normalized to its reference.")
+  (input  (tuple (tuple (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))
+                 (tuple (Qty.of 2.0 (Unit.base #"meter")))))
+  (output (: (tuple (tuple (Qty.of 5000.0 (Unit.base #"meter"))) (tuple (Qty.of 2.0 (Unit.base #"meter"))))
+             (Tuple (Tuple (Qty Float64 (Unit.base #"meter"))) (Tuple (Qty Float64 (Unit.base #"meter")))))))
+
 (case "a velocity multiplied by a time recovers the distance dimension"
   (doc    "The multiply-direction inverse of the velocity quotient: `(* (Qty.of 6.0 (meter/second))
            (Qty.of 2.0 second))` composes `(meter·second⁻¹)·second` = meter — the `second` cancels in the

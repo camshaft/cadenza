@@ -302,6 +302,33 @@
   (call   main (: -4 Int64))
   (output (: 32 Int64)))
 
+; The DEEP UNIFORM companion of the shallow `(* x x)` share above. A deep left-nested accumulator chain
+; `(+ (+ … (+ (+ p (* p 0)) (* p 1)) …) (* p 7))` is the shape the wasm CSE class-partition buckets by a
+; full-depth structural hash: every `(+ …)` node has the SAME shallow key (`Arith(Add)` over `[Arith,Arith]`)
+; and every `(* p k)` the SAME shallow key (`Arith(Mul)` over `[Param,ConstInt]`), so a SHALLOW bucket hash
+; would collide the whole chain into one bucket and the within-bucket `core_eq` scan degrades to O(N²) deep
+; compares. The full-depth hash distinguishes each `(* p k)` and each chain prefix → distinct buckets → linear
+; partition. That LINEARITY is guarded by an `rcdzc --lib` perf pin (a compare-count bound) — but `xtask gate`
+; SKIPS `--lib`, so this case is the fleet-visible VALUE witness of the same shape: whatever the partition
+; does, the emitted result must stay correct at every opt level. p=2 → 2 + Σ(2·k for k=0..7) = 2 + 2·28 = 58;
+; p=0 → 0. A value-parity pin over the deep-uniform CSE shape (the deep companion of `(* x x)` above).
+(case "a deep uniform arith accumulator chain (CSE-partition shape) computes the same value across opt levels"
+  (doc    "`(+ (+ (+ … (+ p (* p 0)) (* p 1)) …) (* p 7))` — a deep left-nested chain of the SAME-shaped
+           `(* p k)` terms, the uniform shape the wasm CSE partition full-depth-hash-buckets (a shallow hash
+           collides all terms into one bucket → O(N²) within-bucket compares; the full-depth hash keeps them
+           on distinct buckets → linear). Its LINEARITY is a `--lib` perf pin, but the gate skips `--lib`, so
+           this pins the fleet-visible VALUE: p=2 → 2 + (2·0 + 2·1 + … + 2·7) = 2 + 56 = 58; p=0 → 0. The
+           emitted output must be correct however the partition buckets — the deep-uniform companion of the
+           shallow `(* x x)` share above.")
+  (input  (do
+            (def (main (: p Int64))
+              (+ (+ (+ (+ (+ (+ (+ (+ p (* p 0)) (* p 1)) (* p 2)) (* p 3)) (* p 4)) (* p 5)) (* p 6)) (* p 7)))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 58 Int64))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64)))
+
 (case "a loop-invariant subexpression in a MATCH scrutinee is hoisted to valid wasm"
   (doc    "`(match (< i (+ n 1)) (true (loop (+ i 1) n)) (false i))` — a tail-recursive counted loop whose
            MATCH scrutinee `(< i (+ n 1))` contains the loop-invariant `(+ n 1)` (`n` threads unchanged).

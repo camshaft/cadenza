@@ -2840,3 +2840,33 @@
   (output (: 7 Int64))
   (call   main (: -3 Int64))
   (trap   "unreachable"))
+
+(case "@invariant ESTABLISH divert reaches a Set ELEMENT and a Map VALUE construction site (heap-collection positions beyond List)"
+  (doc    "Two more escape-face pins for the establish divert, extending the heap-collection reachability set
+           (which already covers a List element) to a Set element and a Map value position. `via-set` constructs
+           `(Nat.Mk v)` as the element of `(Set.of (list …))` under `@invariant(>= self 0) type Nat`, reads it
+           back via `Set.to-list` + a match: via-set(5)=5 establishes, via-set(-1) traps inside the Set
+           initializer. `via-map` constructs `(Nat.Mk v)` as the VALUE of `(Map.insert Map.empty 1 …)` and reads
+           it back via `Map.lookup`: via-map(5)=5, via-map(-1) traps inside the Map initializer. A construction-
+           site rewrite that walked List element positions but skipped Set-element / Map-value positions would
+           silently build an unchecked value in a CHAMP; these pin that the divert is reachability-complete over
+           those heap-collection construction sites too. Runtime payload via the export param (no const-fold).")
+  (input  (do
+            (@ (invariant (>= self 0)) (type Nat (Mk Int64)))
+            (def (unp (: p Nat)) (match p ((Nat.Mk v) v)))
+            (def (via-set (: v Int64))
+              (match (Set.to-list (Set.of (list (Nat.Mk v))))
+                ((list h .. _) (unp h)) (_ 0)))
+            (def (via-map (: v Int64))
+              (match (Map.lookup (Map.insert Map.empty 1 (Nat.Mk v)) 1)
+                ((Some n) (unp n)) ((None _u) -1)))
+            (export via-set)
+            (export via-map)))
+  (call   via-set (: 5 Int64))
+  (output (: 5 Int64))
+  (call   via-set (: -1 Int64))
+  (trap   "unreachable")
+  (call   via-map (: 5 Int64))
+  (output (: 5 Int64))
+  (call   via-map (: -1 Int64))
+  (trap   "unreachable"))

@@ -9,6 +9,7 @@ pass	@invariant ESTABLISH Part 1: a bare-scalar invariant on a newtype auto-unwr
 pass	@invariant ESTABLISH Part 2 (divert): a plain `(Percent.Pct v)` construction auto-establishes — a satisfying value constructs, a violating value traps at the call site (design §10.2, (D))
 pass	@invariant ESTABLISH Part 2: the synthesized checked constructor enforces the invariant at run time — a satisfying value constructs, a violating value traps (design §10.2, (D))
 pass	@invariant ESTABLISH divert reaches a LET-INIT construction site and a NESTED-invariant constructor argument
+pass	@invariant ESTABLISH divert reaches a Set ELEMENT and a Map VALUE construction site (heap-collection positions beyond List)
 pass	@invariant ESTABLISH divert reaches indirect construction sites: a lambda body, a reconstruct-after-update, and a list element all establish
 pass	@invariant ESTABLISH fires when the constructor is directly a MATCH ARM's selected result (v-patterns divert site)
 pass	@invariant ESTABLISH over a multi-variant sum: each variant's construction auto-establishes — a satisfying value constructs, a violating one traps (design §10.2, (D))
@@ -726,6 +727,7 @@ pass	a closure taking a Result Int64 Int64 ARG — Err crosses the direct-call b
 pass	a closure taking a Result Int64 Int64 ARG — Ok crosses the direct-call boundary
 pass	a closure taking a nominal-over-scalar argument receives the underlying scalar
 pass	a closure taking an Option Bool ARG crosses the direct-call boundary
+pass	a closure stored as a MAP value is looked up by a runtime key and applied
 pass	a closure taking an Option Float64 ARG crosses the direct-call boundary
 pass	a closure taking an Option Int32 ARG (narrow-int payload) crosses the direct-call boundary
 pass	a closure taking an Option Int64 ARG — None crosses the direct-call boundary
@@ -1067,6 +1069,8 @@ pass	a guard on a literal-element list pattern reads an enclosing let binding th
 pass	a guard on a nested-list-in-list element reads the inner list's binder
 pass	a guard on a tuple arm reads the tuple's element binders
 pass	a guard over a variant pattern gates on the payload
+pass	a guard condition applies a let-bound closure
+pass	a guard condition reads a heap list bound outside the match
 pass	a guard reads a binding from the enclosing scope, not only its pattern's
 pass	a guard reads payload binders from two ctor list elements
 pass	a guard reads the payload binder and an enclosing parameter together
@@ -1711,6 +1715,7 @@ pass	a pure shared subexpression computes the same value however the backend opt
 pass	a purely-logical composed proof over a quantified proposition: DISCH then MP
 pass	a push-loop tuple-list accumulator infers its tuple element component types
 pass	a qualified construct and a bare match name the same colliding variant
+pass	a proper fraction truncates to zero from both signs and an exact integer to itself
 pass	a quantity annotation at an in-range narrow width grounds and accepts
 pass	a quantity annotation range-checks the inner width — an out-of-range magnitude is rejected
 pass	a quantity annotation rejects a negative magnitude at an unsigned inner width
@@ -2608,6 +2613,7 @@ pass	an @param with no widget config still generates its typed accessor
 pass	an ABORTIVE arm whose value is a COMPOUND matches the handle body type and folds
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
+pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
 pass	an EFFECTFUL @ensures predicate is value-transparent when SATISFIED — the body's own perform runs first
 pass	an EFFECTFUL @ensures predicate performs under the caller's handler at body-EXIT, after the body's own perform
 pass	an EFFECTFUL @requires predicate performs under the caller's handler and advances its state before the body
@@ -2767,6 +2773,8 @@ pass	an empty scrutinee matches an empty bin pattern
 pass	an empty set in one if-branch unifies with a non-empty set in the other and its length reads correctly
 pass	an empty set passed to a recursive callee with a non-Int64 element param grounds its element type from the param
 pass	an empty string is unequal to a non-empty string
+pass	an empty-compound quote pattern does not match a non-empty form
+pass	an empty-compound quote pattern matches a quoted empty compound
 pass	an empty-range slice of a non-empty string is Some of the empty string
 pass	an empty-span String.slice at a multi-byte position has scalar-len zero
 pass	an empty-string Ast.Str round-trips through encode and decode
@@ -3737,6 +3745,8 @@ pass	string to bytes encodes multi-byte characters
 pass	string to bytes produces the exact UTF-8 byte values, not just the right count
 pass	strings differing only in Unicode normalization are equal
 pass	structural equality holds component-wise
+pass	structural equality on an Ast.List is element-COUNT sensitive
+pass	structural equality on an Ast.List is element-ORDER sensitive
 pass	subset record comparison is explicit projection, not an overloaded equality
 pass	substitution fires inside an implication (subst recurses into Imp)
 pass	subtracting quantities of incompatible dimension is a compile-time error
@@ -3995,6 +4005,7 @@ pass	tuple elements consume and read a shared binding in both orders
 pass	tuples are deconstructed by pattern matching
 pass	two @param sites generate two accessors under one Param effect
 pass	two @param sites with the same name are rejected as a duplicate effect operation
+pass	truncating a rational whose integer part exceeds Int64 traps rather than wrapping
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two LEXICALLY-NESTED handlers of the same effect partition the performs by region
 pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity

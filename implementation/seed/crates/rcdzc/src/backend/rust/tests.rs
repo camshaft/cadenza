@@ -4948,6 +4948,40 @@ fn rustc_roundtrip_closure_parameter_consumer_with_a_producer_sibling() {
 }
 
 #[test]
+fn rustc_roundtrip_closure_parameter_consumer_with_a_compound_arg_closure_s2() {
+    // CLOSURE-PARAMETER CONSUMER, S2: the consumer's closure param takes a COMPOUND arg (a Tuple) with a
+    // scalar result. The consumer applies `(g p)` where `p` is a tuple built in its OWN body; the producing
+    // sibling `mk-sum` emits a matching `Rc<dyn Fn((i64, i64)) -> i64>` (factory S2). The guard now lifts for
+    // a compound closure ARG (`s2_arg_ok`) as long as the RESULT stays scalar — so `apply-tup` emits and the
+    // gate driver builds the closure from the producer: `apply_tup(mk_sum(100))` applies g to (3,4) → 107.
+    let m = compile_rust(
+        "(module m \
+           (def (mk-sum (: k Int64)) (fn ((: p (Tuple Int64 Int64))) (+ (+ (. p 0) (. p 1)) k))) \
+           (def (apply-tup (: g (-> (Tuple Int64 Int64) Int64))) (g (tuple 3 4))) \
+           (export mk-sum) (export apply-tup))",
+    );
+    assert!(
+        m.contains("pub fn apply_tup(g: std::rc::Rc<dyn Fn((i64, i64)) -> i64>) -> i64"),
+        "the S2 consumer emits a compound-arg `Rc<dyn Fn((i64,i64))->i64>` param + applies it:\n{m}"
+    );
+    // Driven producer→consumer: `mk_sum(100)` builds the closure, `apply_tup` applies it to (3,4): 3+4+100.
+    if let Some(out) = rustc_run(&m, "apply_tup(mk_sum(100))") {
+        assert_eq!(out, "107", "apply_tup(mk_sum(100)) = (3 + 4) + 100 = 107");
+    }
+    // A HIGHER-ORDER closure param (its arg is itself a closure) still DECLINES — `s2_arg_ok` rejects `Fn`.
+    let higher_order = compile_rust_result(
+        "(module m \
+           (def (mk (: k Int64)) (fn ((: h (-> Int64 Int64))) (h k))) \
+           (def (apply-ho (: g (-> (-> Int64 Int64) Int64))) (g mk)) \
+           (export mk) (export apply-ho))",
+    );
+    assert!(
+        higher_order.is_err(),
+        "a higher-order closure-param consumer (arg is itself a closure) still declines:\n{higher_order:?}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_host_closure_factory_compound_arg_s2() {
     // HOST-CLOSURE S2: a closure-factory whose returned closure takes a COMPOUND ARG (Tuple/List) with a
     // SCALAR result now crosses — the arg maps natively (`Rc<dyn Fn((i64, i64)) -> i64>`) and the gate
