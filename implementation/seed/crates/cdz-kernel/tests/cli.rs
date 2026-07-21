@@ -629,6 +629,11 @@ fn hosted_performs_via_real_primitives_and_records_prim_events() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     if out.status.success() {
+        // The exec op's scalar result is the record-only tag (2) in the default build, but its subprocess EXIT
+        // CODE under `--features live-exec` (127 for the not-found `handle` payload here — environment-dependent),
+        // so the summed literal (3) is only asserted in the default build. In BOTH builds the STRUCTURAL invariant
+        // holds: both ops performed, none denied. (Mirrors daemon.rs's `genesis_hosted_sum`/record-only gating.)
+        #[cfg(not(feature = "live-exec"))]
         assert!(
             stdout.contains("summed per-op result = 3"),
             "kind=1 → hosted performs [Append(1), Exec(2)] via real primitives, sums to 3; got: {stdout}"
@@ -704,6 +709,11 @@ fn replay_re_folds_a_recorded_hosted_turn_with_no_live_effect() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
+    // The recorded sum embeds exec's result, which is record-only (2 → sum 3) in the default build but the
+    // environment-dependent subprocess exit code under `--features live-exec`; assert the literal only in the
+    // default build. The build-INDEPENDENT invariant — a faithful, deterministic re-fold with 0 missing —
+    // holds in BOTH: replay reproduces WHATEVER the live turn recorded, from the prim-result trail alone.
+    #[cfg(not(feature = "live-exec"))]
     assert!(
         stdout.contains("summed per-op result = 3"),
         "replay reproduces the recorded sum (3) from the prim-result trail; got: {stdout}"

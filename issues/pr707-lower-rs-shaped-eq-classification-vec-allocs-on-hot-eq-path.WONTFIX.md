@@ -44,3 +44,13 @@ elems.to_vec()" (~23620/23690). The FIRST Ty::Tuple arm (~23544) already iterate
 .all() — the fix matches that in the Record + later Tuple arms. Compile-time perf cleanup, behavior-neutral.
 ROUTED to v-runtime (owns the value-eq-shaped/orderable-descriptor machinery — compound/float/Ast eq walks +
 the rust Sum-eq arm). NOT a fix agent, NOT a corpus pin (nothing observable — behavior-neutral). Awaiting their cleanup.
+
+## WON'T-FIX (v-runtime, 2026-07-21) — net negative, evidence-backed
+v-runtime closed this: the "iterate .values()/.iter() directly" form REGRESSES the hot =-classification path.
+History: (1) at old 64KB/level worker stack it overflowed the deep-recursion guard (holding the borrow live
+across the recursive &mut-db call grows the per-recursion frame) — cleared after the 256KB stack raise; (2)
+BUT at 256KB the full `cargo test -p rcdzc --lib` REPRODUCIBLY (2/2) fails 2 tail-loop tests with "wasm trap:
+interrupt" (fuel/epoch cap) + runs 116-130s, vs CLEAN trunk green 2239/0 @ 37s. The borrow-held-across-recursion
+changes inlining on a path invoked per-=/per-to-list on every compile, pushing fuel-capped test compiles over
+budget. The removed Vecs are cheap compile-time allocs; the trade is net-negative. Reverted, no MR. Copilot nit
+CLOSED won't-fix. corpus-bugfix: accepted (v-runtime owns the machinery + gave rigorous 2x-verified evidence).

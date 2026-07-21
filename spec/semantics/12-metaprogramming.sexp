@@ -54,6 +54,66 @@
   (input  (let ((x 1)) (let ((y 1)) (= (quote `(+ ,x)) (quote `(+ ,y))))))
   (output (: false Bool)))
 
+; --- Nested quasiquote LEVEL arithmetic ----------------------------------------------------------
+; metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation: an unquote is active only
+; when it is NOT wrapped by an intervening (inner) quasiquote — a quasiquote INCREMENTS the level and
+; an unquote DECREMENTS it, and only an unquote that brings the level back to zero (the outermost
+; quasiquote) actually SPLICES; a deeper one is preserved as structure. This is standard Lisp-family
+; quasiquote nesting: `` `(a `(b ,x)) `` builds the AST of `(a `(b ,x))` in which the inner `,x` is
+; still literal `(unquote x)` structure (level 1, deferred), NOT x's value. The outermost quasiquote
+; is level-1-active: an unquote directly under it (not under an inner quasiquote) DOES splice. And a
+; DOUBLE unquote `,,x` under one inner quasiquote decrements twice — back to active — so it splices
+; the ENCLOSING value while remaining wrapped in a deferred `(unquote …)` node. The four cases below
+; pin the whole level machine with spelling-independent discriminators (bind the same name to two
+; DIFFERENT values and compare) plus two exact-structure renders, so a compiler that mis-counts the
+; level (splices a deferred inner unquote, or fails to splice an active one / a double unquote) is
+; caught. This is the constructive dual of the "plain quote is inert" case just above — there the
+; whole form is quoted; here the OUTER form is an evaluated quasiquote and only the level decides.
+(case "nested quasiquote: an inner unquote at level 2 is deferred, not spliced (exact structure)"
+  (doc    "`(let ((x 7)) `(a `(b ,x)))` builds the AST of `(a `(b ,x))`: the inner quasiquote raises the
+           level, so `,x` is left as literal `(unquote x)` structure — the NAME `x`, not the value 7.
+           Renders the exact deferred shape. A compiler that spliced the level-2 unquote would embed
+           `(Ast.Int 7)` where `(Ast.Name \"x\")` must stand.")
+  (input  (let ((x 7)) `(a `(b ,x))))
+  (output (: (Ast.List (list (Ast.Name "a")
+                             (Ast.List (list (Ast.Name "quasiquote")
+                                             (Ast.List (list (Ast.Name "b")
+                                                             (Ast.List (list (Ast.Name "unquote") (Ast.Name "x")))))))))
+             Ast)))
+
+(case "nested quasiquote: a level-2 deferred unquote is INDEPENDENT of the enclosing binding"
+  (doc    "The spelling-independent discriminator for the render above: bind x to 1 vs 99 and quasiquote
+           `(a `(b ,x))` each. Because the inner `,x` is deferred (level 2, not spliced), both build the
+           SAME structure — mentioning the name `x`, never the value — so `=` is TRUE despite the differing
+           bindings. A compiler that spliced the inner unquote would embed 1 and 99 and wrongly answer FALSE.")
+  (input  (= (let ((x 1)) `(a `(b ,x))) (let ((x 99)) `(a `(b ,x)))))
+  (output (: true Bool)))
+
+(case "nested quasiquote: a level-1 unquote splices even while a level-2 one is deferred (same template)"
+  (doc    "The companion that proves the OUTER quasiquote is active while the inner is deferred, in ONE
+           template: `` `(a ,x `(b ,x)) `` — the first `,x` sits directly under the outer quasiquote (level 1,
+           SPLICES the value) and the second is under the inner quasiquote (level 2, DEFERRED). Bind x to 1
+           vs 99: the deferred copy is identical, but the spliced copy differs (1 vs 99), so `=` is FALSE.
+           A compiler that failed to splice the level-1 unquote would make both structures equal (both mention
+           the name) and wrongly answer TRUE; one that spliced the level-2 unquote too would also differ but
+           for the wrong reason — the level-1/level-2 split is what this pins.")
+  (input  (= (let ((x 1)) `(a ,x `(b ,x))) (let ((x 99)) `(a ,x `(b ,x)))))
+  (output (: false Bool)))
+
+(case "nested quasiquote: a double unquote at level 2 decrements back to active and splices (exact structure)"
+  (doc    "`(let ((x 7)) `(a `(b ,,x)))`: the inner quasiquote raises the level to 2, and the DOUBLE
+           unquote `,,x` decrements twice — back to active — so it splices the enclosing value 7 while the
+           result stays wrapped in one deferred `(unquote …)` node. Renders the exact shape: the inner leaf
+           is `(unquote 7)` (value spliced, still one level deferred), NOT `(unquote (unquote x))` and NOT a
+           bare 7. A compiler that mis-counted the double unquote would leave the name unspliced or collapse
+           the deferred wrapper.")
+  (input  (let ((x 7)) `(a `(b ,,x))))
+  (output (: (Ast.List (list (Ast.Name "a")
+                             (Ast.List (list (Ast.Name "quasiquote")
+                                             (Ast.List (list (Ast.Name "b")
+                                                             (Ast.List (list (Ast.Name "unquote") (Ast.Int 7)))))))))
+             Ast)))
+
 (case "eval is optional for macros and interactive use"
   (doc    "Witnesses metaprogramming.md #Eval Is Optional For Macros And Interactive Use: (eval <ast>)
            executes AST as code, optional for macros/REPL. Seed provides it; static generations need

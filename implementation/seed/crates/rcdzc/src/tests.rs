@@ -6095,6 +6095,92 @@ fn runtime_bigint_arithmetic_leaves_no_live_objects() {
     );
 }
 
+/// RATIONAL PRODUCER leak balance — the numeric-tower sibling of `runtime_bigint_arithmetic_leaves_no_live_objects`.
+/// `heap_operand_ownership` classifies the whole Rational producer family — `RationalOfInts`/`RationalOfIntWiden`
+/// (`Rational.of`), `RationalBinOp` (`+`/`-`/`*`/`/`), and `RationalNum`/`RationalDen` (`Rational.numerator`/
+/// `denominator`, each unbox-then-rebox a fresh BigInt) — as OWNED (select.rs), so a borrowing op consuming such a
+/// result must drop the fresh handle after the borrow. A Rational is a NORMALIZED 2-BigInt-handle node, so its own
+/// reclamation cascades to both component BigInt leaves. The existing Rational tests assert only VALUE-correctness
+/// (a scalar answer is correct whether or not the operands are reclaimed); only `live-objects` sees a missing drop.
+/// This PINS the reclaim invariant for the Rational lane fleet-wide. `#[ignore]` — needs the debug-counters store
+/// (`cargo xtask build`; run with `-- --ignored`).
+#[test]
+#[ignore]
+fn runtime_rational_arithmetic_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[rational-leak] debug-counters runtime not in the store; skipping balance probe"
+        );
+        return;
+    };
+    // (a) `Rational.numerator` (a `RationalNum`, Owned BigInt result) BORROWS its OWNED `(Rational.of n 4)` operand
+    // and hands out a fresh owned BigInt, narrowed by `Int64.of` (borrows + drops the BigInt). 6/4 = 3/2 → 3. Both
+    // the Rational node (+ its 2 BigInt components) and the numerator BigInt must be dropped → net 0.
+    let src = "(module m \
+                 (def (main (: n Int64)) \
+                    ((. Int64 of) ((. Rational numerator) ((. Rational of) n 4)))) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[Val::S64(6)]),
+        Val::S64(3),
+        "numerator of 6/4 = 3/2 is 3 (reduced)"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "rational-num leak: the owned `(Rational.of n 4)` node (and its two BigInt components) plus the owned \
+         numerator BigInt must all be dropped after the borrowing reads — net 0 live cells"
+    );
+
+    // (b) a RATIONAL SUM (`RationalBinOp`) of two owned `Rational.of` operands, its numerator read out. `(+ 1/4 1/4)`
+    // = 1/2 → numerator 1. `+` borrows both operands + returns a fresh owned Rational; `numerator` borrows it +
+    // returns a fresh BigInt; `Int64.of` borrows + drops. Every fresh Rational/BigInt handle must be dropped → 0.
+    let src2 = "(module m \
+                  (def (main (: n Int64)) \
+                     ((. Int64 of) ((. Rational numerator) \
+                        (+ ((. Rational of) n 4) ((. Rational of) n 4))))) (export main))";
+    let program2 = compile_component(&crate::codec::encode(&parse(src2))).expect("compile");
+    let mut rt2 = ComposedRuntime::new(&program2, &runtime_bytes);
+    assert_eq!(
+        rt2.call("main", &[Val::S64(1)]),
+        Val::S64(1),
+        "(1/4 + 1/4) = 1/2, numerator 1"
+    );
+    assert_eq!(
+        rt2.live_objects(),
+        0,
+        "rational-add leak: the two owned `Rational.of` operands, the owned sum Rational, and the owned \
+         numerator BigInt must all be dropped after the borrowing reads — net 0 live cells"
+    );
+
+    // (c) a `let`-BOUND Rational BORROWED by two reads (`numerator` + `denominator`) — the borrowed-operand face.
+    // `r = (Rational.of n 4)` at n=6 is 3/2; `(+ num den)` = 3 + 2 = 5. `numerator`/`denominator` only BORROW `r`
+    // (each returns a fresh owned BigInt the `+`/`Int64.of` drops); the enclosing `let` drops `r` exactly once. So
+    // net 0: `r` reclaimed by the `let`, the two BigInt reads by their consumers — neither leaked nor double-freed.
+    let src3 = "(module m \
+                  (def (main (: n Int64)) \
+                     (let ((r ((. Rational of) n 4))) \
+                        (+ ((. Int64 of) ((. Rational numerator) r)) \
+                           ((. Int64 of) ((. Rational denominator) r))))) (export main))";
+    let program3 = compile_component(&crate::codec::encode(&parse(src3))).expect("compile");
+    let mut rt3 = ComposedRuntime::new(&program3, &runtime_bytes);
+    assert_eq!(
+        rt3.call("main", &[Val::S64(6)]),
+        Val::S64(5),
+        "6/4 = 3/2, numerator 3 + denominator 2 = 5"
+    );
+    assert_eq!(
+        rt3.live_objects(),
+        0,
+        "rational borrow leak/double-free: `r` (borrowed by both reads, dropped by the `let`) plus the two \
+         owned numerator/denominator BigInts (dropped by their `Int64.of`) must net to 0 live cells"
+    );
+}
+
 /// RUNTIME STRUCTURAL EQUALITY, BORROWED operand: a `let`-bound list compared by `=` (a BORROW) leaves
 /// no cell leaked or double-freed. `xs = (build 3)` is compared to a fresh `(build 3)` (an OWNED
 /// temporary `value-eq` drops); the result is a scalar `1`, so `xs` is used ONLY as the borrowed
@@ -8501,6 +8587,37 @@ fn a_genuinely_recursive_pqueue_insert_declines_cleanly_never_folds_the_wrong_en
             }
         }
     }
+}
+
+/// A PARTIAL application of a boxed closure whose body PERFORMS a discharged effect, under a handler, DECLINES
+/// cleanly — the effects×partial-closure intersection. `mk` boxes a 2-param curried closure `(fn a (fn b (+ a
+/// (+ b (E.tick)))))`; `main` handles `E` and applies the projected closure to ONE of its two args (`(f 3)` —
+/// a genuine 1-of-2 partial, result still a function). The partial-application-of-a-runtime-closure lowering
+/// (which now declines an under-arity `CallClosure` rather than emitting an invalid module — the
+/// v-effects-surfaced miscompile→decline) must compose with the effect fold: the perform inside the residual
+/// closure does NOT change that the partial has no residual-closure lift yet, so it declines HONESTLY (never a
+/// miscompile / invalid wasm). Pins that a performing closure partially applied under a handler takes the
+/// clean partial-application decline, not a mis-emit — the effect analogue of
+/// `a_partial_application_of_a_runtime_closure_declines_not_invalid_wasm`. (Full application would fold; this
+/// guards the SHORT-arity path at the effects intersection.)
+#[test]
+fn a_partial_application_of_a_performing_closure_under_a_handler_declines_cleanly() {
+    use crate::testkit::parse;
+    let src = "(module m \
+        (effect E (op tick (-> Unit Int64))) \
+        (type Box (C (-> Int64 (-> Int64 Int64)))) \
+        (def (mk) (Box.C (fn ((: a Int64)) (fn ((: b Int64)) (+ a (+ b (E.tick))))))) \
+        (def (main) (handle E 0 ((tick (u) s (resume s (+ s 1)))) (match (mk) ((Box.C f) (f 3))))) \
+        (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+        "a partial application of a performing runtime closure must DECLINE, not emit invalid wasm",
+    );
+    assert!(
+        err.message
+            .contains("partial application of a runtime closure"),
+        "the decline names the partial-application limitation (not a mis-emit / handler fold error), got: {}",
+        err.message
+    );
 }
 
 /// Arm a′ (the deferred-resume fold reducing a non-recursive helper call in a match SCRUTINEE) with a

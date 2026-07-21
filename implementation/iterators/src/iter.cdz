@@ -752,6 +752,13 @@ def max-of-empty() = match max(empty()) with
   | Option.Some(_) => trap("empty has no max")
 
 @test
+def min-of-empty() = match min(empty()) with
+  // mirror of max-of-empty: min's base arm is None on an empty source. Pinned so a step-layer/fusion
+  // rewrite can't silently flip the empty-reduction result (the same class as `all []` off-by-one).
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("empty has no min")
+
+@test
 def range-inclusive-includes-hi() =
   // 1..=5 -> 1,2,3,4,5 (the endpoint is INCLUDED, unlike the half-open range)
   if int-list-eq(collect-list(range-inclusive(1, 5)), [1, 2, 3, 4, 5]) then
@@ -805,6 +812,12 @@ def product-of-range() =
 def product-of-empty-is-one() =
   // the multiplicative identity, mirroring sum's 0
   if product(empty()) == 1 then unit else trap("product of empty is 1")
+
+@test
+def sum-of-empty-is-zero() =
+  // the additive identity — the fold seed for an empty source. Pinned alongside product's 1 so the
+  // empty-reduction seeds of both folds are guarded symmetrically against a base-arm/seed regression.
+  if sum(empty()) == 0 then unit else trap("sum of empty is 0")
 
 @test
 def contains-hit() =
@@ -956,6 +969,13 @@ def max-by-empty-is-none() =
   match max-by(empty(), fn(x) => x) with
     | Option.None(_) => unit
     | Option.Some(_) => trap("empty has no max-by")
+
+@test
+def min-by-empty-is-none() =
+  // mirror of max-by-empty-is-none — the keyed-min base arm on an empty source is None
+  match min-by(empty(), fn(x) => x) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("empty has no min-by")
 
 // ── Algebraic laws (cross-combinator invariants a future change must not break) ──────────────────
 

@@ -440,4 +440,38 @@ mod tests {
             "an extruded path-profile triangle has geometry"
         );
     }
+
+    #[test]
+    fn relative_path_segments_sample_the_same_points_as_the_equivalent_absolute_path() {
+        // sample_path threads the cursor through RELATIVE segments (`abs(cur, delta)`); a regression that
+        // forgot to add `cur` would sample the raw deltas and land the polygon in the wrong place. Pin it by
+        // building the SAME outline two ways — once with absolute segments, once with the equivalent relative
+        // deltas — and asserting the sampled point lists are identical. Covers LineToRel + CubicToRel (the
+        // `cubic-by` builder's driver-side twin), which no prior test exercised.
+        let seg = 4;
+        // Absolute: (0,0) → line (10,0) → cubic to (10,6) via controls (8,4),(12,4).
+        let absolute = [
+            PathSeg::MoveToAbs([0.0, 0.0]),
+            PathSeg::LineToAbs([10.0, 0.0]),
+            PathSeg::CubicToAbs([10.0, 6.0], [8.0, 4.0], [12.0, 4.0]),
+        ];
+        // Relative deltas producing the identical absolute points (cursor threaded: 0→10, then +0/+6 etc.).
+        let relative = [
+            PathSeg::MoveToAbs([0.0, 0.0]),
+            PathSeg::LineToRel([10.0, 0.0]),
+            PathSeg::CubicToRel([0.0, 6.0], [-2.0, 4.0], [2.0, 4.0]),
+        ];
+        let a = sample_path(&absolute, seg);
+        let r = sample_path(&relative, seg);
+        assert_eq!(
+            a, r,
+            "relative segments must thread the cursor → identical sampled polygon to the absolute form"
+        );
+        // And the shared endpoint really is the threaded absolute (10,6), not the raw delta (0,6).
+        assert_eq!(
+            *r.last().unwrap(),
+            [10.0, 6.0],
+            "the relative cubic's endpoint resolves to absolute (10,6) via the cursor"
+        );
+    }
 }

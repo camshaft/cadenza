@@ -896,6 +896,27 @@
   (call   main (: 255 Int64))
   (output (: -1 Int64)))
 
+(case "a runtime bin match with a NON-FINAL dependent-size segment binds the body then the rest"
+  (doc    "The non-final dependent-size shape over a RUNTIME scrutinee — a `(bytes body n)` FOLLOWED by more
+           segments, so the cursor offset goes dynamic (`static_base + n`) for everything after it. The
+           pattern `(bin (u8 n) (bytes body n) (bytes rest))` reads a one-byte size `n`, binds EXACTLY `n`
+           payload bytes to `body`, then binds the remainder to `rest`. Against a four-byte runtime frame
+           `[h, 7, 8, 9]` with h=2: `n = 2` → `body = [7, 8]` (len 2), `rest = [9]` (len 1), so the arm
+           returns `Bytes.len body + Bytes.len rest = 3`. The CONSTANT-scrutinee twin of this shape already
+           passes (the dependent-size crown-jewel cases above use a `Bytes.of` const, so the const evaluator
+           does the slicing); this is its RUNTIME companion. The runtime lowering today admits only a SINGLE
+           final variable-length segment (a `(bytes rest)` OR a `(bytes body n)`) and DECLINES a non-final
+           dependent-size segment cleanly (lower.rs 'non-final variable-length segment is not yet lowered'),
+           so the gate scores this TODO — it is a well-formed form (distinct from the permanent CDZ0220
+           non-final UNSIZED `(bytes b)`), pinned here so the §4a dynamic-offset lowering flips it to PASS.")
+  (input  (do (def (main (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 9)))
+                  ((bin (u8 n) (bytes body n) (bytes rest)) (+ (Bytes.len body) (Bytes.len rest)))
+                  (_ -1)))
+              (export main)))
+  (call   main (: 2 Int64))
+  (output (: 3 Int64)))
+
 (case "a runtime bit-field packs a runtime value into a nibble"
   (doc    "`(bin (bits ((UInt 4).wrap n) 4) (bits 5 4))` with a RUNTIME `n` packs the low nibble of `n`
            into the HIGH nibble and the constant 5 into the low nibble of one byte (most-significant field

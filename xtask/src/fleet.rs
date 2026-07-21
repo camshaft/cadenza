@@ -3597,27 +3597,29 @@ fn base_reparent_should_warn(base_is_ancestor_of_trunk: bool, replay_len: usize)
     !base_is_ancestor_of_trunk && replay_len > 0
 }
 
-/// Roles whose loop bodies explicitly NEVER send a `merge-request` (verified against `fleet/loops/*.md`:
-/// each states "never send merge-request(s)" or equivalent). Such a role AUTHORS NOTHING on its branch,
-/// so it has ZERO unlanded local commits BY DEFINITION — any commit `git cherry trunk HEAD` marks as
-/// "unlanded" for it is therefore, without ambiguity, a FOREIGN peer commit its base transiently carried
-/// (the recurring trunk-rewind contamination 7 peers flagged; reviewer's insight that its role is a
-/// 100% false-replay case). For these roles `fleet sync` can safely SKIP the patch-id replay entirely
-/// and hard-reset to trunk — no ownership-guessing, no cherry-pick conflict, because the ROLE itself is
-/// the proof there is nothing of theirs to preserve. This is the sound counterpart to the RE-PARENT
-/// WARNING (which surfaces the divergence for AUTHORING roles that must eyeball). Conservative: an
-/// authoring role (`vertical`, `fix`, `corpus-bugfix`'s spawned fixers, …) is never listed, so it always
-/// takes the normal replay path. Pure so the policy is unit-testable.
+/// Roles that NEVER commit authored work to their branch, so they have ZERO unlanded local commits BY
+/// DEFINITION — any commit `git cherry trunk HEAD` marks "unlanded" for them is therefore, without
+/// ambiguity, a FOREIGN peer commit their base transiently carried (the recurring trunk-rewind
+/// contamination 7 peers flagged; reviewer's insight that its role is a 100% false-replay case). For
+/// these roles `fleet sync` can safely SKIP the patch-id replay entirely and hard-reset to trunk — no
+/// ownership-guessing, no cherry-pick conflict, because the ROLE itself is the proof there is nothing of
+/// theirs to preserve. Sound counterpart to the RE-PARENT WARNING (which surfaces the divergence for
+/// AUTHORING roles that must eyeball).
+///
+/// ⚠ CORRECTNESS: this list gates a DESTRUCTIVE `reset --hard` (drops the branch's commits with no
+/// replay), so a role listed here that ACTUALLY authors would lose unlanded work. So membership is NOT
+/// the loop-body's "never send merge-request(s)" TEXT (which can go stale): breaker's loop still says
+/// that, but per the 2026-07-15 operator directive breaker PROMOTES passing probes as corpus
+/// merge-requests every tick (35 landed on trunk) — listing it here would have silently discarded an
+/// unlanded corpus pin (regression caught by breaker on the first landing). Membership is the roles that
+/// EMPIRICALLY author zero MRs: pure coordination/routing/maintenance roles. Verify with
+/// `git log trunk | grep 'integrate MR:.*(<role>)'` before adding one. Any authoring role (`vertical`,
+/// `fix`, `breaker`, `corpus-bugfix`'s spawned fixers, …) is never listed → normal replay path. Pure so
+/// the policy is unit-testable.
 fn role_never_authors(role: &str) -> bool {
     matches!(
         role,
-        "reviewer"
-            | "tracker"
-            | "librarian"
-            | "concierge"
-            | "github-liaison"
-            | "breaker"
-            | "pr-sync"
+        "reviewer" | "tracker" | "librarian" | "concierge" | "github-liaison" | "pr-sync"
     )
 }
 
@@ -6714,26 +6716,30 @@ mod tests {
 
     #[test]
     fn role_never_authors_matches_only_the_non_authoring_support_roles() {
-        // Roles whose loops/*.md explicitly say "never send merge-request(s)" → skip-replay fast-path.
+        // Roles that EMPIRICALLY author zero MRs (pure coordination/routing/maintenance) → skip-replay
+        // fast-path. Verified `git log trunk | grep 'integrate MR:.*(<role>)'` = 0 for each.
         for role in [
             "reviewer",
             "tracker",
             "librarian",
             "concierge",
             "github-liaison",
-            "breaker",
             "pr-sync",
         ] {
             assert!(role_never_authors(role), "{role} should be never-authoring");
         }
         // AUTHORING roles must fall through to the normal patch-id replay (they DO produce merge-requests,
         // so their unlanded commits are real and must be preserved). `vertical` is the canonical author;
-        // `fix` agents author bug-fix MRs; `corpus-bugfix` spawns fixers that send their own; `design` and
-        // an unknown/empty role take the safe normal path too.
+        // `fix` agents author bug-fix MRs; `corpus-bugfix` spawns fixers that send their own.
+        // ⚠ REGRESSION PIN: `breaker` MUST be authoring. Its loop body still says "never send
+        // merge-requests", but per the 2026-07-15 operator directive it promotes passing probes as corpus
+        // MRs every tick (35 landed on trunk). Listing it silently discarded an unlanded corpus pin on
+        // `reset --hard` — the destructive bug this pins against. Membership is EMPIRICAL, never loop text.
         for role in [
             "vertical",
             "fix",
             "corpus-bugfix",
+            "breaker",
             "design",
             "fuzzer",
             "",

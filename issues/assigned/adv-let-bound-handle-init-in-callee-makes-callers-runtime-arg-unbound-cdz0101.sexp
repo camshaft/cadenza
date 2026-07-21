@@ -59,3 +59,55 @@
 ;   free var. LIKELY the effects-pre-reduction copies f's body (handle present → effects path) with a
 ;   copy that doesn't pin/preserve the seed's caller-arg. NEXT: trace reduce_applied_lambdas / the apply
 ;   β-reduce of a callee whose body is (let ((r (handle …seed=arg…))) r).
+;
+; RE-SHARPENED + TRACE-BACKED (v-effects, 2026-07-21 — CORRECTS the "reduce_handle unreached" claim above):
+; A VEFF eprintln trace in eval::beta_reduce + copy_structural on the EXACT repro proves reduce_handle IS
+; reached and DOES fold (the pure-one-hole `resume`-rewrite path, effects.rs ~2050/2107 fires). The real
+; mechanism:
+;   1. (f k) inlines f's body: beta_reduce substitutes the handle SEED x -> the arg node carrying `k`
+;      (trace: `SUBST ref name="x" -> arg=6054`). So far correct.
+;   2. reduce_handle's pure-one-hole fold does `subst.insert(arm.state /*s*/, init)` (effects.rs:2077),
+;      where init is that SAME seed node 6054. beta_reduce then splices it at EVERY `s` reference via the
+;      direct `return arg` branch (eval.rs:536-537) — arm body `(resume s (+ s 1))` has TWO `s` sites, both
+;      get node 6054 (trace: `SUBST ref name="s" node=6066 -> arg=6054` AND `... node=6068 -> arg=6054`).
+;   3. A single node has ONE parent; push_list re-parents 6054 to the LAST `s` site, ORPHANING the earlier
+;      splice. The `k` free var inside the orphaned copy re-resolves against no scope -> CDZ0101 unbound `k`.
+; WHY THE ISOLATION MATCHES: const seed (f 5) = a constant leaf is scope-independent (shared safely, no
+;   re-resolve); handle-direct-body has no `let`-routing of x into a foldable seed the same way; a
+;   SINGLE-`s` arm would splice once (no orphan). The bug needs [runtime-arg seed] × [arm body uses `s` ≥2×].
+; FIX TESTED-NEGATIVE: `resolve::resolve_subtree(db, init)` (pin the seed's free vars) BEFORE the subst.insert
+;   does NOT fix it — the direct `return arg` substitution branch bypasses the pinned-share arm, so both `s`
+;   sites still share the one node. Pinning alone is insufficient.
+; FIX DIRECTION (for landing): the multi-`s`-use seed must not be a SHARED node. Either (a) in reduce_handle,
+;   let-bind `init` ONCE at the fold site — the eval-once pattern apply_lambda already uses for multi-use
+;   args (eval.rs ~1042-1080): substitute a fresh #s local at each site + wrap `(let ((#s init)) folded)`;
+;   or (b) give beta_reduce a per-site fresh+pinned copy for a substituted arg used ≥2× whose subtree has a
+;   free (caller-scope) name. (a) is the more localized fix (touches only the effects fold, and the seed is
+;   pure so a plain let is sound). Gated by: this repro compiles+runs 5, and no gate/E5 fold regression.
+; NOTE: v-effects has this queued — build is BLOCKED this tick on an in-flight unrelated MR (can't commit /
+;   re-sync under a pending --ref). Fix lands the tick after that MR clears.
+;
+; DEEPER ROOT CAUSE + WORKING FIX FOUND (v-effects, 2026-07-21, 2nd trace tick — CORRECTS the fold-path locus):
+; The failing fold is NOT the pure-one-hole block — it is the TAIL-RESUMPTIVE `thread` path. `(resume s (+ s
+; 1))` is a tail-resumptive arm, so `reduce_handle` routes it to `thread` (effects.rs ~2331 `thread(db, body,
+; vec![init], &ctx)`), which at the perform arm (effects.rs ~4036) does `subst.insert(arm.state, cur[slot])`
+; (cur[slot] starts = init = the seed `(: k Int64)` node), β-reduces the arm body, then `peel_resume_from_arm_
+; body` extracts value=`s`(→the seed) + next_state=`(+ s 1)`, and DEEP_FRESH_COPYs each (effects.rs ~4092-93).
+; TRACE PROOF: instrumented the thread arm — value node = `List[":", k, "Int64"]` (the substituted seed wrap),
+; and the `k` leaf inside IS resolve-PINNED (`resolved_subtrees.contains` = true, its resolution to main's
+; param `k` memoized). deep_fresh_copy re-pushes it as a BARE fresh atom with an EMPTY `resolved` slot → the
+; copy re-resolves against the folded ORPHAN (parent None) → unbound `k`. So the drop site is deep_fresh_copy
+; DESTROYING the pin, exactly the "deep_fresh_copy is naive" hypothesis — CONFIRMED at the node level.
+; FIX THAT WORKS (repro COMPILED OK): make deep_fresh_copy PIN-PRESERVING — when copying a node in
+; resolved_subtrees, copy its memoized `Resolved` onto the fresh id (db.resolved.fill) + re-insert into
+; resolved_subtrees. The copy is a distinct node (still breaks value/next-state sharing) that keeps the
+; capture's resolution.
+; BUT TOO BROAD — REGRESSES 3 existing tests (an_effectful_helper_in_a_selfcall_arg_folds +2): those NEED the
+; fresh copy to RE-resolve against the SPECIALIZED def's sig (an INTERNAL state param `fuel`/`$s{k}` whose
+; binder is being re-created in the copy), and blanket pin-preservation keeps their stale resolution → "unbound
+; fuel". So the copy must preserve the pin ONLY for a capture bound OUTSIDE the whole fold (like `k`), NOT for
+; an internal param re-bound by the copy. This is EXACTLY beta_reduce's existing scrutinee_is_substituted /
+; `is_within(reduction_root)` discrimination (eval.rs ~574-593). REFINED FIX (next tick): gate the pin-
+; preservation on the pinned node's binder being OUTSIDE the fold root (a genuine capture), else fall to the
+; existing fresh-re-resolve. Needs the fold's root id threaded to deep_fresh_copy (or a `reduction_root`-style
+; check). Then: repro compiles+RUNS 5, the 3 selfcall-arg tests stay green, full effects suite + gate green.

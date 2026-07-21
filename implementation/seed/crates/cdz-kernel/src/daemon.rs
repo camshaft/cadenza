@@ -594,6 +594,16 @@ mod tests {
           (if (= kind 1) (list (Append \"ack\") (Exec \"handle\")) (list (Noop 0)))) \
         (export interpret))";
 
+    /// The sum a kind=1 hosted turn (`[Append "ack", Exec "handle"]`) folds to when each op is PERFORMED by the
+    /// real host primitive ([`perform_op_body`]). Derived from `perform_op_body` rather than hardcoded so the
+    /// tick_hosted / replay / fork / policy tests below assert the SAME invariant ("the fold sums each op's
+    /// scalar result") in BOTH builds: in the default build exec is record-only (append 1 + exec 2 = 3); under
+    /// `--features live-exec` exec spawns `sh -c handle` (command-not-found → 127) so the sum shifts, but the
+    /// tests still prove the fold summed append + exec rather than false-failing on a build-specific literal.
+    fn genesis_hosted_sum() -> i64 {
+        perform_op_body("append", "ack") + perform_op_body("exec", "handle")
+    }
+
     #[test]
     fn latest_cursor_reads_the_newest_recorded_daemon_cursor() {
         // The crash-recovery resume mark (store-independent — a pure fold): latest_cursor returns the newest
@@ -771,8 +781,9 @@ mod tests {
         let performed = tick_hosted(Arc::clone(&log), 1, runtime)
             .expect("the daemon performs the genesis's ops via a real host primitive");
         assert_eq!(
-            performed, 3,
-            "kind=1 → append(\"ack\")→1 + exec(\"handle\")→2 → summed by the fold = 3"
+            performed,
+            genesis_hosted_sum(),
+            "kind=1 → append(\"ack\") + exec(\"handle\") → summed by the fold (per perform_op_body)"
         );
         // The recorded-effect trail (REQUEST half): a `prim-append`/`prim-exec` event per performed op, in
         // list order, each carrying the op's String payload. Exclude the `prim-result-*` RESPONSE records so
@@ -813,8 +824,14 @@ mod tests {
         assert_eq!(
             result_events,
             vec![
-                ("prim-result-append".to_string(), "1".to_string()),
-                ("prim-result-exec".to_string(), "2".to_string()),
+                (
+                    "prim-result-append".to_string(),
+                    perform_op_body("append", "ack").to_string()
+                ),
+                (
+                    "prim-result-exec".to_string(),
+                    perform_op_body("exec", "handle").to_string()
+                ),
             ],
             "each performed op recorded its scalar result as prim-result-<op>, in order (the §2.3 response half)"
         );
@@ -857,7 +874,11 @@ mod tests {
         // LIVE record: kind=1 → [Append "ack", Exec "handle"] → sum 3, recording prim-result-append=1 + -exec=2.
         let live_sum = tick_hosted(Arc::clone(&log), 1, runtime.clone())
             .expect("the live hosted tick records the turn");
-        assert_eq!(live_sum, 3, "the live turn sums to 3");
+        assert_eq!(
+            live_sum,
+            genesis_hosted_sum(),
+            "the live turn sums the performed ops (per perform_op_body)"
+        );
         let recorded = log.lock().unwrap().tail(0).unwrap();
         let events_before = recorded.len();
 
@@ -947,7 +968,11 @@ mod tests {
         // Record a hosted turn on the parent (prim-result-* trail) + a daemon-cursor bookmark.
         let parent_sum = tick_hosted(Arc::clone(&parent), 1, runtime.clone())
             .expect("the parent hosted turn records its trail");
-        assert_eq!(parent_sum, 3, "the parent turn sums to 3");
+        assert_eq!(
+            parent_sum,
+            genesis_hosted_sum(),
+            "the parent turn sums the performed ops (per perform_op_body)"
+        );
         {
             let mut l = parent.lock().unwrap();
             l.append(DAEMON_CURSOR, b"99").unwrap(); // the parent daemon's resume bookmark
@@ -1255,8 +1280,10 @@ mod tests {
         let sum = tick_hosted_log_policy(Arc::clone(&log), 1, runtime)
             .expect("the daemon evaluates base policy ∪ grant");
         assert_eq!(
-            sum, 3,
-            "base permits append(1); the operator grant permits exec(2) → both performed → sum 3"
+            sum,
+            genesis_hosted_sum(),
+            "base permits append; the operator grant permits exec → BOTH performed → the summed fold \
+             (per perform_op_body): the grant widened the effective policy so exec was not denied"
         );
         let _ = std::fs::remove_file(&path);
     }

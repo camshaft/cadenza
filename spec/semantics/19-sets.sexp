@@ -1340,6 +1340,23 @@
             (export main)))
   (output (: 0 Int64)))
 
+(case "a Set.remove of a checked-arith element that is PRESENT drops exactly it (disjoint-slot value-parity)"
+  (doc    "Value-parity companion to the Set.remove disjoint-slot pin above: the two pins there observe a
+           NO-OP removal (the checked-arith element is ABSENT → len unchanged), so they witness only that the
+           module LOADS, not that disjoint-slotting removed the RIGHT element. Here the recursive base case
+           holds {6, 9}, and `(Set.remove (g t) (+ v 1))` removes `5+1=6` — an element that is PRESENT —
+           leaving {9}. A slot-collision that corrupted the i64 element temp (the miscompile the fix closed)
+           would remove the wrong element (or none), so 6 would survive. Observed via membership:
+           `(+ (* 10 contains-6) contains-9)` = 0*10 + 1 = 1 pins that exactly 6 was dropped and 9 survived.")
+  (input  (do
+            (type ILst (INil) (ICons Int64 ILst))
+            (def (g xs) (match xs ((INil) (Set.of (list 6 9))) ((ICons v t) (Set.remove (g t) (+ v 1)))))
+            (def (main)
+              (let ((r (g (ICons 5 (INil)))))
+                (+ (* 10 (if (Set.contains r 6) 1 0)) (if (Set.contains r 9) 1 0))))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "a Map.remove of a checked-arith key behind a recursive-call map is disjoint-slotted"
   (doc    "The Map twin of the `Set.remove` disjoint-slot pin above: `(Map.remove (g t) (+ v 1))` removes a
            CHECKED-ARITH key `(+ v 1)` (an i64 overflow-guard scratch temp) from the result of a RECURSIVE
@@ -1353,3 +1370,21 @@
             (def (main) (Map.len (g (ICons 5 (INil)))))
             (export main)))
   (output (: 1 Int64)))
+
+(case "a Map.remove of a checked-arith key that is PRESENT drops exactly it (disjoint-slot value-parity)"
+  (doc    "Value-parity companion to the Map.remove disjoint-slot pin above: that pin observes a NO-OP removal
+           (the checked-arith key is ABSENT → len unchanged), witnessing only module validity, not that
+           disjoint-slotting removed the RIGHT key. Here the recursive base holds `{6:60, 9:90}` and
+           `(Map.remove (g t) (+ v 1))` removes key `5+1=6` — PRESENT — leaving `{9:90}`. A slot-collision
+           that corrupted the i64 key temp (the miscompile the fix closed) would remove the wrong key (or
+           none), so 6 would survive. Observed via lookup: `(+ (* 100 lookup-6) lookup-9)` where a missing key
+           reads -1 → 100*(-1) + 90 = -10 pins that exactly key 6 was dropped and key 9 survived.")
+  (input  (do
+            (type ILst (INil) (ICons Int64 ILst))
+            (def (g xs) (match xs ((INil) (Map.insert (Map.insert Map.empty 6 60) 9 90)) ((ICons v t) (Map.remove (g t) (+ v 1)))))
+            (def (main)
+              (let ((r (g (ICons 5 (INil)))))
+                (+ (* 100 (match (Map.lookup r 6) ((Some v) v) ((None u) -1)))
+                   (match (Map.lookup r 9) ((Some v) v) ((None u) -1)))))
+            (export main)))
+  (output (: -10 Int64)))
