@@ -3736,21 +3736,40 @@ fn check(paths: &Paths, profile: &str) {
         baseline_titles_agree_lint(paths)
     });
 
-    // cadenza-ml conformance — REPORTED, never a baseline gate. Drive each shared-corpus program
-    // through BOTH the ML compiler (`cdz run-ml`) and the rcdzc/wasm ORACLE, and diff the verdicts:
-    // an ML decline is coverage-not-yet (the front-end is subset-only), an ML value that MATCHES the
-    // oracle is progress, and an ML value that DISAGREES with the oracle is a differential miscompile.
-    // Report-only for now (a D>0 loud-warns but does not red the fleet, since the ML front-end is under
-    // active development); promote to blocking once it's trusted. Green against today's declines-all
-    // stub (0 agree / 0 disagree). This is the differential form the operator directed (C + diff).
-    report_ml_conformance(paths, profile);
+    // The two REPORT-ONLY conformance sweeps below (cadenza-ml + emit≡interpret) each shell `cdz
+    // run-ml`/`run-emitted` PLUS the wasm oracle once per corpus case (~3s/case over thousands of
+    // cases), bounded only by the 45-min compiler-ml suite deadline — so back-to-back they can add up
+    // to ~90min AFTER the gate verdict is already fully decided (they never red the gate). In pr-sync's
+    // merge-queue gate that's pure dead-weight: the batch's green/red is settled the instant
+    // `baseline-titles-agree` passes above, but the detached check's exit marker isn't written until
+    // these two finish — so the queue (and trunk) freeze for up to ~90min on already-green work, which
+    // is exactly the gate-batch ">1h trailing-native-step" stall pr-sync self-diagnosed. `CDZ_GATE_ONLY`
+    // (set ONLY by the gate-batch merge-queue call sites in fleet.rs) skips these two report-only passes
+    // so the merge gate returns the moment its verdict is known. Every vertical `cargo xtask check` and
+    // CI run leaves the var UNSET and still gets the full differential-miscompile reports — byte-identical.
+    let gate_only = std::env::var_os("CDZ_GATE_ONLY").is_some();
+    if gate_only {
+        println!(
+            "\ncheck: CDZ_GATE_ONLY set (merge-queue gate) — skipping the two REPORT-ONLY conformance \
+             sweeps (cadenza-ml + emit≡interpret); the gate verdict is already fully decided."
+        );
+    } else {
+        // cadenza-ml conformance — REPORTED, never a baseline gate. Drive each shared-corpus program
+        // through BOTH the ML compiler (`cdz run-ml`) and the rcdzc/wasm ORACLE, and diff the verdicts:
+        // an ML decline is coverage-not-yet (the front-end is subset-only), an ML value that MATCHES the
+        // oracle is progress, and an ML value that DISAGREES with the oracle is a differential miscompile.
+        // Report-only for now (a D>0 loud-warns but does not red the fleet, since the ML front-end is under
+        // active development); promote to blocking once it's trusted. Green against today's declines-all
+        // stub (0 agree / 0 disagree). This is the differential form the operator directed (C + diff).
+        report_ml_conformance(paths, profile);
 
-    // W4 EMIT≡INTERPRET conformance — REPORTED, never a baseline gate (yet). For each corpus case, run the
-    // self-hosted WASM-EMIT backend (`cdz run-emitted`) AND the tree-walking interpreter (`cdz run-ml`) and
-    // diff the verdicts: the emitted module MUST compute what the interpreter does. A divergence is an emit
-    // miscompile; both-declined is coverage-not-yet. Report-only while the emit backend is the young integer
-    // subset; promote to blocking-on-disagreement once stable-green (same trajectory as cadenza-ml).
-    report_emit_conformance(paths, profile);
+        // W4 EMIT≡INTERPRET conformance — REPORTED, never a baseline gate (yet). For each corpus case, run the
+        // self-hosted WASM-EMIT backend (`cdz run-emitted`) AND the tree-walking interpreter (`cdz run-ml`) and
+        // diff the verdicts: the emitted module MUST compute what the interpreter does. A divergence is an emit
+        // miscompile; both-declined is coverage-not-yet. Report-only while the emit backend is the young integer
+        // subset; promote to blocking-on-disagreement once stable-green (same trajectory as cadenza-ml).
+        report_emit_conformance(paths, profile);
+    }
 
     println!("\ncheck: all green ✓  (full log: {})", log.path.display());
 }

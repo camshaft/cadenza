@@ -997,6 +997,26 @@
   (call   main (: 1 Int64))
   (output (: -1 Int64)))
 
+(case "a runtime literal-tag probe gates a dependent-size body in one arm"
+  (doc    "The chunked-format shape at RUNTIME: a LITERAL magic/tag segment must MATCH before a dependent-size
+           body binds — `(bin (u8 137) (u8 n) (bytes body n))`. The arm's predicate ANDs the literal-equality
+           probe (byte 0 == 137) with the dependent length probe (`bytes-len == prefix(2) + n`), all at run
+           time. Over `(Bytes.of (list 137 h 7 8))`: h=2 → tag 137 matches AND n=2 sizes the two body bytes →
+           `Bytes.len body = 2`; h=1 → tag matches but n=1 leaves a trailing byte unconsumed → the arm does not
+           match the whole scrutinee → falls through → -1. Pins that a runtime literal-segment probe COMPOSES
+           with a runtime dependent-size read in a single arm (the const `magic + length-prefixed chunk` case
+           above, but with the magic gate and the size read both evaluated at run time), the tag-length-value
+           parser shape.")
+  (input  (do (def (main (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap 137) (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
+                  ((bin (u8 137) (u8 n) (bytes body n)) (Bytes.len body))
+                  (_ -1)))
+              (export main)))
+  (call   main (: 2 Int64))
+  (output (: 2 Int64))
+  (call   main (: 1 Int64))
+  (output (: -1 Int64)))
+
 (case "a runtime dependent-size match falls through when the scrutinee is too short for the size prefix"
   (doc    "The truncated-frame boundary the dependent-size length probe must GUARD: a RUNTIME scrutinee too
            short to even READ the size prefix must FALL THROUGH, not trap. The arm `(bin (u8 a) (u8 n) (bytes
