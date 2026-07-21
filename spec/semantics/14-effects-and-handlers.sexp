@@ -1719,6 +1719,41 @@
                 (match (Fresh.next) (0 100) (_ 200)))) (export main)))
   (output (: 100 Int64)))
 
+; The performed-scrutinee cases dispatch on the effect's result but keep the arm BODIES pure — so a
+; state slot corrupted by the match lowering would go unobserved. These thread state through BOTH
+; halves: the scrutinee performs (advancing the state), the match dispatches, and the SELECTED arm's
+; body performs again and must read the post-scrutinee state.
+
+(case "a matched arm body performs and reads the state the scrutinee advanced"
+  (doc    "Seeded 5, the scrutinee `(Ctr.tick)` reads 5 (state → 6) and hits the literal-5 arm, whose
+           BODY performs again: the second tick must read 6 — the state the scrutinee's discharge left —
+           not the seed re-read (105) or a per-arm re-seed. 100 + 6 = 106. The arm-body companion of the
+           performed-scrutinee case above (whose arms are pure). Expected: 106.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main)
+              (handle Ctr 5 ((tick (u) s (resume s (+ s 1))))
+                (match (Ctr.tick)
+                  (5 (+ 100 (Ctr.tick)))
+                  (_ -1))))
+            (export main)))
+  (output (: 106 Int64)))
+
+(case "a fall-through arm body performs and reads the post-scrutinee state"
+  (doc    "The wildcard twin: seeded 9, the scrutinee reads 9 (state → 10) and MISSES the literal-5 arm;
+           the fall-through arm's body performs and reads 10. Pins that the state threads to WHICHEVER
+           arm is selected — the dispatch (hit or miss) does not fork or reset the handler state slot.
+           Expected: 10.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main)
+              (handle Ctr 9 ((tick (u) s (resume s (+ s 1))))
+                (match (Ctr.tick)
+                  (5 -1)
+                  (_ (Ctr.tick)))))
+            (export main)))
+  (output (: 10 Int64)))
+
 (case "a performed operation whose result is a sum is matched on its variant"
   (doc    "Extends the match-scrutinee composition to an operation whose declared RESULT is a SUM type — the
            resume value is a compound sum, not a scalar. `Look.find : Int64 -> (Option Int64)`; the arm

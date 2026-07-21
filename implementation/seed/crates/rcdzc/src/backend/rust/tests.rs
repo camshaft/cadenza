@@ -1409,6 +1409,39 @@ fn rustc_roundtrip_unconstrained_empty_set_grounds_and_compiles_not_e0282() {
 }
 
 #[test]
+fn a_generic_nominal_returned_whole_notes_its_erased_inner_tuple() {
+    // REGRESSION (v-quantity/corpus-bugfix "a record of quantities RETURNED as a value"): a GENERIC nominal
+    // (`(type V3q (V3 a a a))`) instantiated + returned WHOLE erases to a Rust tuple `(f64, f64, f64)`, but
+    // its `// cdz-return` note used to be the bare nominal name `V3q` — for which no descriptor is emitted
+    // (a generic nominal is skipped by emit_newtype_descriptors), so the render fell to a scalar Display of
+    // the tuple → rustc E0277. Now the return note is the ERASED INNER's render_name (a `(Tuple …)`), so the
+    // render's structural Tuple arm handles it (and the per-element cdz-qty-at notes scale each Qty field).
+    let m = compile_rust(
+        "(do (type V3q (V3 a a a)) \
+             (def (run) (V3q.V3 (Qty.of 5.0 (Unit.prefix kilo (Unit.base #\"meter\"))) \
+                                (Qty.of 2.0 (Unit.prefix kilo (Unit.base #\"meter\"))) \
+                                (Qty.of 3.0 (Unit.prefix kilo (Unit.base #\"meter\"))))) (export run))",
+    );
+    // The return note is the erased inner Tuple, NOT the bare nominal `V3q`.
+    assert!(
+        m.contains("// cdz-return[run]: (Tuple (Qty Float64")
+            && !m.contains("// cdz-return[run]: V3q"),
+        "a generic nominal returned whole notes its erased inner tuple type:\n{m}"
+    );
+    // The per-field scale notes still key positionally (0/1/2) — each km field scales ×1000/1.
+    assert!(
+        m.contains("// cdz-qty-at[run]: 0 1000/1"),
+        "the first Qty field emits a positional per-element scale note:\n{m}"
+    );
+    // A MONOMORPHIC nominal keeps its name (its newtype descriptor resolves it) — no over-broadening.
+    let mono = compile_rust("(do (type P (Mk Int64 Int64)) (def (run) (P.Mk 3 4)) (export run))");
+    assert!(
+        mono.contains("// cdz-return[run]: P"),
+        "a monomorphic nominal keeps its nominal name in the return note:\n{mono}"
+    );
+}
+
+#[test]
 fn a_compound_tuple_of_quantities_emits_per_element_scale_notes() {
     // REGRESSION (pr-sync/v-core-opt rust-red on 18-units): a `(Tuple (Qty km) (Qty mile))` result — each
     // element display-scales to its reference INDEPENDENTLY. The single `// cdz-scale` note only scales a

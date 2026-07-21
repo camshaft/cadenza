@@ -430,3 +430,15 @@
            backends agree — pins the exact-expansion value render against a renderer regression.")
   (input  (do (def (main (: x Float64)) x) (export main)))
   (call   main (: 3.4028235e38 Float64)) (output (: 340282349999999991754788743781432688640.0 Float64)))
+
+(case "a compound-element float renders the same full expansion as the scalar path"
+  (doc    "The COMPOUND-element companion of the full-expansion case above: the same 3.4028235e38
+           returned as a TUPLE element must render the identical exact expansion — the compound
+           value-encode walk and the scalar path share one float renderer. Before the KIND_FLOAT
+           convergence the compound paths emitted the SHORTEST round-tripping form instead, so a
+           Float64 rendered DIFFERENTLY as a bare scalar vs a tuple/list element (the float_leaf
+           divergence); this pins the converged behavior — one canonical expansion regardless of the
+           position the float crosses the boundary in. Both backends.")
+  (input  (do (def (main (: x Float64)) (tuple x 1)) (export main)))
+  (call   main (: 3.4028235e38 Float64))
+  (output (: (tuple 340282349999999991754788743781432688640.0 1) (Tuple Float64 Int64))))

@@ -805,6 +805,7 @@ pass	a constant-failure `?` short-circuit ELIDES an earlier trapping let-init wh
 pass	a constant-index String.at result compares equal to a literal by content
 pass	a constant-index String.at result compares unequal to a different literal
 pass	a constant-returning closure threads through a recursive-generic HOF
+pass	a compound-element float renders the same full expansion as the scalar path
 pass	a constructed Ast.Bool leaf drives an evaluated conditional
 pass	a constructor CHOSEN by matching one sum is applied to build another
 pass	a constructor STORED in a tuple is extracted and applied as a first-class closure
@@ -1008,6 +1009,7 @@ pass	a function declaration in a do block is callable by the following forms
 pass	a function deriving a velocity from a distance and a time
 pass	a function is passed as an argument (higher-order)
 pass	a function is returned as a result
+pass	a fall-through arm body performs and reads the post-scrutinee state
 pass	a function open over a record's extra fields accepts any record with the used field
 pass	a function returning None or a nested Some infers its compound result shape
 pass	a function returning a boolean predicate result
@@ -1453,6 +1455,7 @@ pass	a named catch-all binder captures the whole sum and re-matches it
 pass	a named family unit combines across DIFFERENT dimensions is a compile-time error
 pass	a named float width alias and its width-indexed expansion name the same type
 pass	a named function is partially applied, bound, and used
+pass	a matched arm body performs and reads the state the scrutinee advanced
 pass	a named higher-order function receives a lambda argument
 pass	a named multi-argument function applies in explicit curried form
 pass	a named multi-argument function applies to all its arguments at once
@@ -4325,11 +4328,10 @@ pass	the multiplicative-one and subtractive-zero identities preserve a boundary-
 pass	the x times minus-one strength reduction negates a normal operand and still traps at Int64.min
 pass	two equal runtime quantities in a Set dedup to one element
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
-todo	a record of quantities RETURNED as a value renders every field scaled to its reference
+pass	a record of quantities RETURNED as a value renders every field scaled to its reference
 pass	a comparison against a constant outside a masked value's range folds, but an in-range one stays a runtime test
 pass	a bare literal grounded to a narrow width through a SHIFT spine is range-checked
 pass	a bare literal grounded to a narrow width through a BITWISE spine is range-checked
 pass	a prefixed quantity displays scaled to its reference over Float32
 todo	a prefixed quantity displays scaled to its reference over BigInt (exact, no truncation)
-pass	a prefixed quantity displays scaled to its reference over BigInt (exact, no truncation)
 pass	a USER-DEFINED multi-variant sum payload quantity renders scaled to its reference

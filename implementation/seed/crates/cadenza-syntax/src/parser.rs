@@ -1615,10 +1615,14 @@ impl<'a> Parser<'a> {
             let span = self.cur_span();
             let name = self.cur_text().to_string();
             self.bump(); // the unit name
-            // (Unit.of #"name")
+            // (Unit.of #"name"), then extend across a GLUED `/`/`*`/`^` chain into a COMPOUND unit — so
+            // `x as GiB/s` converts to the rate unit, matching the `<num> GiB/s` quantity-literal surface
+            // (without this the bare-name case read only a SINGLE unit and a following `/s` fell to the
+            // enclosing infix loop as a division of the conversion by unbound `s`).
             let unit_head = self.member_head("Unit", "of", span);
             let sym = self.atom(Leaf::Sym(name), span);
-            return self.list(vec![unit_head, sym], span);
+            let atom = self.list(vec![unit_head, sym], span);
+            return self.compound_unit_tail(atom);
         }
         // A parenthesized / computed unit expression — parsed as an ordinary expression the units layer
         // reduces to a unit. A bare non-name here (an operator, EOF) is a conversion target error.
@@ -4833,6 +4837,33 @@ mod tests {
         assert_eq!(
             sexpr::print(&parse_ok("5.0 as meter\nx")),
             r#"(do ((. Unit in) ((. Unit of) #"meter") 5.0) x)"#
+        );
+    }
+
+    #[test]
+    fn as_conversion_target_may_be_a_compound_unit() {
+        use crate::sexpr;
+        // The `as` conversion target extends across a GLUED `/`/`*`/`^` chain into a COMPOUND unit, the
+        // same surface as the `<num> GiB/s` quantity literal — so `x as GiB/s` converts to the rate unit.
+        // Without this the bare-name case read only a SINGLE unit and `/s` fell to the enclosing infix loop
+        // as a division of the conversion by unbound `s` (the sibling of BUG #51 on the conversion path).
+        assert_eq!(
+            sexpr::print(&parse_ok("x as GiB/s")),
+            r#"((. Unit in) (/ ((. Unit of) #"GiB") ((. Unit of) #"s")) x)"#
+        );
+        // `^` binds tighter than `/` here too: `m/s^2`.
+        assert_eq!(
+            sexpr::print(&parse_ok("x as m/s^2")),
+            r#"((. Unit in) (/ ((. Unit of) #"m") (^ ((. Unit of) #"s") 2)) x)"#
+        );
+        // A single unit is unchanged, and a SPACED `/ 2` stays a division of the conversion (glue rule).
+        assert_eq!(
+            sexpr::print(&parse_ok("x as meter")),
+            r#"((. Unit in) ((. Unit of) #"meter") x)"#
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("x as meter / 2")),
+            r#"(/ ((. Unit in) ((. Unit of) #"meter") x) 2)"#
         );
     }
 

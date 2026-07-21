@@ -2517,6 +2517,53 @@ fn two_scalar_params_each_with_a_requires_range_both_narrow_in_a_wrapper() {
     );
 }
 
+/// A `@requires`-CONSTRAINED generator correctly FEEDS an `@ensures` POSTCONDITION oracle on a compound-param
+/// property — the two verification layers compose. `@requires(< 0 (List.len xs))` floors the drawn list
+/// non-empty, so the postcondition `@ensures(> ret 0)` (ret = List.len) HOLDS on every trial. Control (below)
+/// proves the `@requires` is load-bearing: WITHOUT it the same `@ensures` FAILs on a drawn empty list `f([])`
+/// (len 0 violates ret > 0). Pins that constrained-gen (my territory) feeds the enforced postcondition
+/// (v-verification's `verify_enforce`, which runs BEFORE proptest_gen) rather than the two silently
+/// decoupling — a regression dropping the `@requires` floor would surface as a spurious `f([])` here.
+#[test]
+fn a_requires_constrained_gen_feeds_an_ensures_oracle_on_a_compound_param() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — the -gen wrapper run needs the store"
+        );
+        return;
+    }
+    let d = dir("requires-plus-ensures");
+    // Both layers present: @requires floors non-empty, @ensures(ret > 0) then holds → PASS.
+    let both = write(
+        &d,
+        "both.sexp",
+        "(do \
+           (@ test (@ (requires (< 0 (List.len xs))) (@ (ensures (> ret 0)) \
+             (def (f (: xs (List Int64))) (List.len xs))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &both, "--seed", "0", "--trials", "80"]);
+    assert!(
+        ok && stdout.contains("PASS f-gen (80 trials)"),
+        "@requires floors the list non-empty so @ensures(ret > 0) holds — the constrained generator feeds the postcondition oracle: {stdout}{stderr}"
+    );
+    // Control: the SAME @ensures WITHOUT the @requires floor FAILs on the drawn empty list — proving the
+    // @requires constraint (not something incidental) is what makes the composed property pass.
+    let ens_only = write(
+        &d,
+        "ens.sexp",
+        "(do \
+           (@ test (@ (ensures (> ret 0)) \
+             (def (f (: xs (List Int64))) (List.len xs)))) \
+           (def (anchor) 1))",
+    );
+    let (ok2, stdout2, _) = run(&["test", &ens_only, "--seed", "0", "--trials", "80"]);
+    assert!(
+        !ok2 && stdout2.contains("FAIL f-gen"),
+        "the same @ensures WITHOUT @requires fails on a drawn empty list — confirming @requires is load-bearing: {stdout2}"
+    );
+}
+
 /// A match-based `@requires` whose ALLOWED constructor carries a LIST-LENGTH guard floors that payload's
 /// generated length. `@requires(match o ((Box.Full xs) (< 0 (List.len xs))) ((Box.Empty) false))` forbids
 /// `Empty` AND requires the `Full` payload be non-empty; the `-gen` wrapper must draw `Full([…])` with at

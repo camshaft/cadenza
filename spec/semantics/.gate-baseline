@@ -805,6 +805,7 @@ pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant left shift of 1 by 63 overflows and is rejected
 pass	a constant list update at an index that wraps below the length is also rejected
 pass	a constant list update at an out-of-bounds index is rejected at compile time
+pass	a compound-element float renders the same full expansion as the scalar path
 pass	a constant multi-payload variant match binds both payloads and folds to a scalar
 pass	a constant multi-payload variant match on the IA-variant nested payload folds to the right depth
 pass	a constant multi-payload variant match reaches each payload and dispatches a nested variant
@@ -1008,6 +1009,7 @@ pass	a four-level nested-constructor pattern with a generic user sum in the midd
 pass	a fresh-id supply threads state across two sibling recursive calls in one arm
 pass	a fresh-id walk over a THREE-constructor sum threads state across mixed-arity arms
 pass	a full-range signed division keeps its MIN over -1 overflow guard and traps
+pass	a fall-through arm body performs and reads the post-scrutinee state
 pass	a full-string String.slice byte-len equals the whole string's byte-len
 pass	a full-string String.slice recovers the whole string's length by both measures
 pass	a function applied to an argument
@@ -1453,6 +1455,7 @@ pass	a mutual AST walker re-extracts a node's payload in a sibling operand while
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
+pass	a matched arm body performs and reads the state the scrutinee advanced
 pass	a mutually-recursive check/check-if returning a Result compiles and runs (if-cond is a call)
 pass	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 pass	a mutually-recursive fresh-id walk assigns a fresh id at each node and sums them
