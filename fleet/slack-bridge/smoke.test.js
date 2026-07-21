@@ -16,9 +16,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { deliver, drain, markProcessed, inboxDir, isValidAgentName } = require("./inbox.js");
-const { parseOperatorMessage, renderFleetMessage, helpText } = require("./format.js");
-// Safe to require: bridge.js only runs main() under `require.main === module`, not when imported.
-const { isTransientSocketModeFault } = require("./bridge.js");
+const { parseOperatorMessage, renderFleetMessage, helpText, isTransientSocketModeFault } = require("./format.js");
 
 let passed = 0;
 function test(name, fn) {

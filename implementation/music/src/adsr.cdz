@@ -1,24 +1,23 @@
-/// adsr.cdz — a full ADSR amplitude envelope as pure data, sampleable at any tick.
-///
-/// synth.cdz's `Env` is a simple linear attack/release; this is the full ADSR (Attack / Decay / Sustain /
-/// Release) an instrument uses: amplitude ramps 0→peak over the attack, falls peak→sustain over the decay,
-/// holds at the sustain level while the key is down, then falls sustain→0 over the release after release.
-/// We model it as pure DATA + a `sample(env, held, t)` that returns the per-mille amplitude (0..1000) at
-/// tick `t` — the value a WebAudio driver reads to shape a note. Amplitudes are per-mille integers (1000 =
-/// unity) and time is in ticks, matching the rest of the model; the ramps are exact integer linear
-/// interpolation (no floats).
-///
-/// `held` is the tick at which the key is RELEASED (note-off). Before `held` the envelope runs
-/// attack→decay→sustain; at/after `held` it runs the release ramp from wherever it was down to 0. Total:
-/// negative/oversized `t` clamp to the envelope's endpoints.
-
 // ---- the ADSR envelope -------------------------------------------------------------------------------
+/// adsr.cdz — a full ADSR amplitude envelope as pure data, sampleable at any tick.
+  ///
+  /// synth.cdz's `Env` is a simple linear attack/release; this is the full ADSR (Attack / Decay / Sustain /
+  /// Release) an instrument uses: amplitude ramps 0→peak over the attack, falls peak→sustain over the decay,
+  /// holds at the sustain level while the key is down, then falls sustain→0 over the release after release.
+  /// We model it as pure DATA + a `sample(env, held, t)` that returns the per-mille amplitude (0..1000) at
+  /// tick `t` — the value a WebAudio driver reads to shape a note. Amplitudes are per-mille integers (1000 =
+  /// unity) and time is in ticks, matching the rest of the model; the ramps are exact integer linear
+  /// interpolation (no floats).
+  ///
+  /// `held` is the tick at which the key is RELEASED (note-off). Before `held` the envelope runs
+  /// attack→decay→sustain; at/after `held` it runs the release ramp from wherever it was down to 0. Total:
+  /// negative/oversized `t` clamp to the envelope's endpoints.
+  /// An ADSR envelope: attack ticks, decay ticks, sustain level (per-mille 0..1000), release ticks, and the
+  /// peak level (per-mille) the attack rises to (usually 1000 = unity).
+  type Adsr =
+  | Adsr(Int64, Int64, Int64, Int64, Int64)
 
-/// An ADSR envelope: attack ticks, decay ticks, sustain level (per-mille 0..1000), release ticks, and the
-/// peak level (per-mille) the attack rises to (usually 1000 = unity).
-type Adsr =
-  | Adsr(Int64, Int64, Int64, Int64, Int64)   // attack, decay, sustain-level, release, peak
-
+// attack, decay, sustain-level, release, peak
 /// Build an ADSR envelope (attack, decay, sustain-level, release, peak).
 def adsr(attack: Int64, decay: Int64, sustain: Int64, release: Int64, peak: Int64) =
   Adsr.Adsr(attack, decay, sustain, release, peak)
@@ -27,24 +26,32 @@ def adsr(attack: Int64, decay: Int64, sustain: Int64, release: Int64, peak: Int6
 def adsr-unity(attack: Int64, decay: Int64, sustain: Int64, release: Int64) =
   Adsr.Adsr(attack, decay, sustain, release, 1000)
 
-def env-attack(e: Adsr) = match e with | Adsr.Adsr(a, _, _, _, _) => a
-def env-decay(e: Adsr) = match e with | Adsr.Adsr(_, d, _, _, _) => d
-def env-sustain(e: Adsr) = match e with | Adsr.Adsr(_, _, s, _, _) => s
-def env-release(e: Adsr) = match e with | Adsr.Adsr(_, _, _, r, _) => r
-def env-peak(e: Adsr) = match e with | Adsr.Adsr(_, _, _, _, p) => p
+def env-attack(e: Adsr) = match e with
+  | Adsr.Adsr(a, _, _, _, _) => a
+
+def env-decay(e: Adsr) = match e with
+  | Adsr.Adsr(_, d, _, _, _) => d
+
+def env-sustain(e: Adsr) = match e with
+  | Adsr.Adsr(_, _, s, _, _) => s
+
+def env-release(e: Adsr) = match e with
+  | Adsr.Adsr(_, _, _, r, _) => r
+
+def env-peak(e: Adsr) = match e with
+  | Adsr.Adsr(_, _, _, _, p) => p
 
 // ---- linear interpolation helper ---------------------------------------------------------------------
-
 /// Linear interpolation from `a` to `b` over `span` ticks, at offset `t` (0..span). Exact integer lerp:
 /// a + (b - a) * t / span. Clamps `t` into [0, span]; a zero/negative span jumps straight to `b`.
 def lerp(a: Int64, b: Int64, t: Int64, span: Int64) =
-  if span <= 0 then b
+  if span <= 0 then
+    b
   else
-    let clamped = if t < 0 then 0 else (if t > span then span else t) in
-    a + ((b - a) * clamped) / span
+    let clamped = if t < 0 then 0 else if t > span then span else t in
+    a + (b - a) * clamped / span
 
 // ---- sampling the envelope ---------------------------------------------------------------------------
-
 /// The amplitude (per-mille) at tick `t` of the ATTACK/DECAY/SUSTAIN portion (key still down). Attack ramps
 /// 0→peak over [0,attack); decay ramps peak→sustain over [attack, attack+decay); then holds at sustain.
 def sample-down(e: Adsr, t: Int64) =
@@ -52,16 +59,17 @@ def sample-down(e: Adsr, t: Int64) =
   let d = env-decay(e) in
   let peak = env-peak(e) in
   let sus = env-sustain(e) in
-  if t <= 0 then 0
-  else if t < a then lerp(0, peak, t, a)
-  else if t < a + d then lerp(peak, sus, t - a, d)
-  else sus
+  if t <= 0 then
+    0
+  else
+    if t < a then lerp(0, peak, t, a) else if t < a + d then lerp(peak, sus, t - a, d) else sus
 
 /// The amplitude (per-mille) at tick `t`, given the key is released at tick `held`. Before `held`, the
 /// attack/decay/sustain portion; at/after `held`, a release ramp from the level AT `held` down to 0 over
 /// `release` ticks. After the release completes, silence (0).
 def sample(e: Adsr, held: Int64, t: Int64) =
-  if t < held then sample-down(e, t)
+  if t < held then
+    sample-down(e, t)
   else
     let level-at-release = sample-down(e, held) in
     let r = env-release(e) in
@@ -77,17 +85,18 @@ def total-span(e: Adsr, held: Int64) = held + env-release(e)
 def is-active(e: Adsr, held: Int64, t: Int64) = if t < 0 then false else t < total-span(e, held)
 
 /// ============================ @test suite (ADSR envelope laws) ============================
-
 @test
 def attack-ramps-from-zero-to-peak() =
   // adsr(100 attack, 50 decay, 700 sustain, 200 release, 1000 peak): at t=0 amplitude 0; halfway up the
   // attack (t=50) it's ~500; at the attack top (t=100) it's the peak 1000.
   let e = adsr(100, 50, 700, 200, 1000) in
   if sample-down(e, 0) == 0 then
-    (if sample-down(e, 50) == 500 then
-      (if sample-down(e, 100) == 1000 then unit else trap("attack top is peak"))
-     else trap("halfway attack is 500"))
-  else trap("t=0 is silent")
+    if sample-down(e, 50) == 500 then
+      if sample-down(e, 100) == 1000 then unit else trap("attack top is peak")
+    else
+      trap("halfway attack is 500")
+  else
+    trap("t=0 is silent")
 
 @test
 def decay-falls-from-peak-to-sustain() =
@@ -95,10 +104,12 @@ def decay-falls-from-peak-to-sustain() =
   // t=150 (decay end) it's the sustain 700, and it holds there.
   let e = adsr(100, 50, 700, 200, 1000) in
   if sample-down(e, 125) == 850 then
-    (if sample-down(e, 150) == 700 then
-      (if sample-down(e, 999) == 700 then unit else trap("holds at sustain"))
-     else trap("decay end is sustain"))
-  else trap("mid-decay is 850")
+    if sample-down(e, 150) == 700 then
+      if sample-down(e, 999) == 700 then unit else trap("holds at sustain")
+    else
+      trap("decay end is sustain")
+  else
+    trap("mid-decay is 850")
 
 @test
 def release-falls-from-the-held-level-to-zero() =
@@ -106,10 +117,12 @@ def release-falls-from-the-held-level-to-zero() =
   // t=400 (halfway) it's ~350; at t=500 (release end) it's 0.
   let e = adsr(100, 50, 700, 200, 1000) in
   if sample(e, 300, 300) == 700 then
-    (if sample(e, 300, 400) == 350 then
-      (if sample(e, 300, 500) == 0 then unit else trap("release end is 0"))
-     else trap("mid-release is 350"))
-  else trap("at release start it's the sustain level")
+    if sample(e, 300, 400) == 350 then
+      if sample(e, 300, 500) == 0 then unit else trap("release end is 0")
+    else
+      trap("mid-release is 350")
+  else
+    trap("at release start it's the sustain level")
 
 @test
 def a-short-release-before-sustain-uses-the-actual-level() =
@@ -117,8 +130,9 @@ def a-short-release-before-sustain-uses-the-actual-level() =
   // down to 0 — the release starts from wherever the envelope actually was.
   let e = adsr(100, 50, 700, 200, 1000) in
   if sample(e, 50, 50) == 500 then
-    (if sample(e, 50, 150) == 250 then unit else trap("release halves from 500"))
-  else trap("released mid-attack starts at 500")
+    if sample(e, 50, 150) == 250 then unit else trap("release halves from 500")
+  else
+    trap("released mid-attack starts at 500")
 
 @test
 def total-span-is-held-plus-release() =
@@ -133,10 +147,12 @@ def zero-attack-jumps-straight-to-peak-then-decays() =
   // toward 800: lerp(1000, 800, 1, 100) = 998. Pins that a zero attack skips straight into decay.
   let e = adsr(0, 100, 800, 100, 1000) in
   if sample-down(e, 0) == 0 then
-    (if sample-down(e, 1) == 998 then
-      (if sample-down(e, 100) == 800 then unit else trap("decay end is sustain 800"))
-     else trap("t=1 is one decay step below peak"))
-  else trap("t=0 still 0")
+    if sample-down(e, 1) == 998 then
+      if sample-down(e, 100) == 800 then unit else trap("decay end is sustain 800")
+    else
+      trap("t=1 is one decay step below peak")
+  else
+    trap("t=0 still 0")
 
 @test
 def sustain-can-be-full-scale-a-flat-envelope() =
@@ -144,8 +160,9 @@ def sustain-can-be-full-scale-a-flat-envelope() =
   // the key is down.
   let e = adsr(10, 0, 1000, 50, 1000) in
   if sample-down(e, 10) == 1000 then
-    (if sample-down(e, 500) == 1000 then unit else trap("flat at full scale"))
-  else trap("reaches full scale after attack")
+    if sample-down(e, 500) == 1000 then unit else trap("flat at full scale")
+  else
+    trap("reaches full scale after attack")
 
 @test
 def is-active-spans-the-note-and-its-release() =
@@ -153,14 +170,28 @@ def is-active-spans-the-note-and-its-release() =
   // inactive; t=0 and t=499 active; t=500 (release finished) inactive.
   let e = adsr(100, 50, 700, 200, 1000) in
   if is-active(e, 300, 0) then
-    (if is-active(e, 300, 499) then
-      (if is-active(e, 300, 500) then trap("finished ringing out at 500") else
-        (if is-active(e, 300, 0 - 1) then trap("t<0 is inactive") else unit))
-     else trap("still active at 499"))
-  else trap("active at t=0")
+    if is-active(e, 300, 499) then
+      if is-active(e, 300, 500) then
+        trap("finished ringing out at 500")
+      else
+        if is-active(e, 300, 0 - 1) then trap("t<0 is inactive") else unit
+    else
+      trap("still active at 499")
+  else
+    trap("active at t=0")
 
 export {
   Adsr.*,
-  adsr, adsr-unity, env-attack, env-decay, env-sustain, env-release, env-peak,
-  lerp, sample-down, sample, total-span, is-active,
+  adsr,
+  adsr-unity,
+  env-attack,
+  env-decay,
+  env-sustain,
+  env-release,
+  env-peak,
+  lerp,
+  sample-down,
+  sample,
+  total-span,
+  is-active
 }

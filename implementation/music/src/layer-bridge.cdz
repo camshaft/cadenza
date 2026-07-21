@@ -7,24 +7,57 @@
 /// exactly `s` semitones. This module is a GATE that fails if a future change to EITHER layer silently
 /// drifts them apart: for each named interval, `to-semitones-exact(<rational>)` must equal
 /// `Some(semitones(<int64>))`. It witnesses the two-layer invariant so neither side can regress unnoticed.
-
 import { Interval, semitones } from "pitch"
-import { unison, major-second, minor-third, major-third, perfect-fourth, tritone, perfect-fifth, major-sixth, major-seventh, octave-interval } from "pitch"
+
+import {
+  unison,
+  major-second,
+  minor-third,
+  major-third,
+  perfect-fourth,
+  tritone,
+  perfect-fifth,
+  major-sixth,
+  major-seventh,
+  octave-interval
+} from "pitch"
+
 import { minor-second, minor-sixth, minor-seventh } from "pitch"
+
 import { RInterval, to-semitones-exact } from "interval-ratio"
-import { r-unison, r-semitone, r-wholetone, r-minor-third, r-major-third, r-perfect-fourth, r-tritone, r-perfect-fifth, r-minor-sixth, r-major-sixth, r-minor-seventh, r-major-seventh, r-octave } from "interval-ratio"
+
+import {
+  r-unison,
+  r-semitone,
+  r-wholetone,
+  r-minor-third,
+  r-major-third,
+  r-perfect-fourth,
+  r-tritone,
+  r-perfect-fifth,
+  r-minor-sixth,
+  r-major-sixth,
+  r-minor-seventh,
+  r-major-seventh,
+  r-octave
+} from "interval-ratio"
+
 import { RChord, rchord-stack, major-triad-r, dominant-seventh-r } from "chord-ratio"
+
 import { major-triad-stack, dominant-seventh-stack } from "chord"
 
 /// Assert the rational interval `ri` projects (exactly, on the 12-TET grid) to the same semitone count the
 /// Int64 interval `ii` carries. Returns unit on agreement, traps on mismatch or an off-grid rational.
-def agree(ri: RInterval, ii: Interval) =
-  match to-semitones-exact(ri) with
-    | Option.Some(s) => if s == semitones(ii) then unit else trap("rational/Int64 semitone mismatch")
-    | Option.None(_) => trap("rational interval is off the 12-TET grid — cannot bridge to Int64 semitones")
+def agree(ri: RInterval, ii: Interval) = match to-semitones-exact(ri) with
+  | Option.Some(s) => (if s == semitones(ii) then
+    unit
+  else
+    trap("rational/Int64 semitone mismatch"))
+  | Option.None(_) => trap(
+    "rational interval is off the 12-TET grid — cannot bridge to Int64 semitones"
+  )
 
 /// ============================ @test suite (cross-layer 12-TET agreement) ============================
-
 @test
 def unison-agrees() = agree(r-unison, unison)
 
@@ -85,16 +118,19 @@ def the-whole-twelve-tet-grid-round-trips() =
 
 /// Assert a rational chord's STACK (list of RInterval offsets) projects, entry-by-entry, to the Int64
 /// semitone stack `ints` — the chord-level twin of `agree`. Traps on any mismatch or off-grid entry.
-def chord-agree(rstack: List(RInterval), ints: List(Int64)) =
-  match rstack with
-    | [] => (match ints with | [] => unit | [_, .. _] => trap("rational chord has fewer intervals"))
-    | [rh, .. rt] =>
-      (match ints with
-        | [] => trap("rational chord has more intervals")
-        | [ih, .. it] =>
-          (match to-semitones-exact(rh) with
-            | Option.Some(s) => if s == ih then chord-agree(rt, it) else trap("chord stack semitone mismatch")
-            | Option.None(_) => trap("rational chord interval off the 12-TET grid")))
+def chord-agree(rstack: List(RInterval), ints: List(Int64)) = match rstack with
+  | [] => (match ints with
+    | [] => unit
+    | [_, .. _] => trap("rational chord has fewer intervals")
+  )
+  | [rh, .. rt] => match ints with
+    | [] => trap("rational chord has more intervals")
+    | [ih, .. it] => match to-semitones-exact(rh) with
+      | Option.Some(s) => (if s == ih then
+        chord-agree(rt, it)
+      else
+        trap("chord stack semitone mismatch"))
+      | Option.None(_) => trap("rational chord interval off the 12-TET grid")
 
 @test
 def rational-and-int64-chords-agree-on-twelve-tet() =

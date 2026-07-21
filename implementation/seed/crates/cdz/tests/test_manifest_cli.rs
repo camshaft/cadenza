@@ -2390,6 +2390,38 @@ fn a_match_requires_forbidding_a_sum_constructor_filters_it_from_generation() {
     );
 }
 
+/// A match-based `@requires` whose ALLOWED constructor carries a PAYLOAD GUARD constrains that payload's
+/// generation, not just the constructor set. `@requires(match o ((Opt.Some n) (>= n 0)) ((Opt.None) false))`
+/// forbids `None` AND requires the `Some` payload be `>= 0`; the `-gen` wrapper must draw `Some(k)` with
+/// `k >= 0` so the enforced (D) precondition never spuriously trips on a generated `Some(-1)`. Before this,
+/// the constructor filter dropped `None` but the `Some` payload was drawn uniformly (often negative), so the
+/// runner reported a spurious `f(Some(-1))`. A PASS proves every drawn `Some` payload was in-domain. This is
+/// the payload-level twin of `a_match_requires_forbidding_a_sum_constructor_filters_it_from_generation`.
+#[test]
+fn a_match_requires_payload_guard_constrains_the_constructor_payload_range() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — the -gen wrapper run needs the store"
+        );
+        return;
+    }
+    let d = dir("requires-sum-payload-guard");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do \
+           (type Opt (None) (Some Int64)) \
+           (@ test (@ (requires (match o ((Opt.Some n) (and (>= n 0) (<= n 9))) ((Opt.None) false))) \
+             (def (f (: o Opt)) (match o ((Opt.Some n) (if (and (>= n 0) (<= n 9)) n (trap \"payload out of range\"))) ((Opt.None) 0))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok && stdout.contains("PASS f-gen (100 trials)"),
+        "a match-@requires payload guard `(and (>= n 0) (<= n 9))` on Some constrains the drawn payload to [0,9] so no spurious f(Some(-1)): {stdout}{stderr}"
+    );
+}
+
 /// TERMINATION under an UNSATISFIABLE relation: `@requires(a < b and b < a)` can NEVER hold (it implies
 /// `a < a`), so rejection sampling can never find an in-domain draw. The generator must NOT loop forever —
 /// it is fuel-bounded (`RELATION_FUEL`), so after exhausting fuel it returns the last draw and lets the (D)

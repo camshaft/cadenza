@@ -567,13 +567,30 @@ fn resolve_import_clause(
         // file-name analogue of the typoed import NAME handled below, so it gets the same treatment
         // (the shared `nearest` guards the 1-char/empty cases). `name_to_ix`'s keys ARE the package's
         // file names, so no extra plumbing is needed.
+        // A near-miss also carries the STRUCTURAL fix (rewrite the mistyped path to the near file), so
+        // the "did you mean?" is APPLYABLE, not just prose — the import-NAME-typo treatment extended to
+        // the path. Anchored at the PATH node `path_id`. ⚠ `path_id` is a STRING LITERAL, so the
+        // replacement must be QUOTED (`"lib"`): the consumer re-parses it as a sub-form and a bare `lib`
+        // would read as a Name → the malformed `(import lib …)`. Heuristic: the near name is a guess.
+        let mut fix = None;
         let msg = match crate::diag::suggest::nearest(path, name_to_ix.keys().copied()) {
             Some(near) => {
-                format!("`(import …)` names unknown package file `{path}` — did you mean `{near}`?")
+                let m = format!(
+                    "`(import …)` names unknown package file `{path}` — did you mean `{near}`?"
+                );
+                fix = Some(crate::diag::Fix::replace_heuristic(
+                    path_id,
+                    format!("\"{near}\""),
+                ));
+                m
             }
             None => format!("`(import …)` names unknown package file `{path}`"),
         };
-        return Err(Reject::coded(Code::Malformed, msg).at(occ));
+        let mut reject = Reject::coded(Code::Malformed, msg).at(occ);
+        if let Some(fix) = fix {
+            reject = reject.with_fix(fix);
+        }
+        return Err(reject);
     };
 
     for &name_id in names {
@@ -1025,13 +1042,44 @@ mod tests {
             "(do (def (helper) 40) (export helper))",
             "(do (import \"lipb\" (helper)) (def (main) (helper)) (export main))",
         );
+        let d = out
+            .diagnostics
+            .iter()
+            .find(|d| {
+                d.message.contains("unknown package file `lipb`")
+                    && d.message.contains("did you mean `lib`?")
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a did-you-mean suggestion for the module path; got {:?}",
+                    out.diagnostics
+                )
+            });
+        // The path did-you-mean is now APPLYABLE: it carries a heuristic Replace fix rewriting the
+        // mistyped path to the near file — the import-NAME-typo treatment extended to the path. Because
+        // the path is a STRING LITERAL, the replacement is QUOTED (`"lib"`), so applying it re-renders a
+        // well-formed `(import "lib" …)`, not the malformed `(import lib …)` a bare name would give.
+        let fix = d
+            .fix
+            .as_ref()
+            .expect("the typoed-path did-you-mean carries a replace fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fix.replacement, "\"lib\"",
+            "rewrites the typo to the near file, QUOTED so it stays a string literal"
+        );
+        assert!(!fix.verified, "a nearest-name guess is heuristic");
+        // ROUND-TRIP: applying the fix (`"lipb"` → the quoted near file `"lib"`) yields a package that
+        // links clean — the suggestion is a real repair, not just a plausible-looking string. Witnessed
+        // by compiling the corrected source (mirrors the applied edit: the string literal now names `lib`).
+        let repaired = compile_package(
+            "(do (def (helper) 40) (export helper))",
+            "(do (import \"lib\" (helper)) (def (main) (helper)) (export main))",
+        );
         assert!(
-            out.diagnostics
-                .iter()
-                .any(|d| d.message.contains("unknown package file `lipb`")
-                    && d.message.contains("did you mean `lib`?")),
-            "expected a did-you-mean suggestion for the module path; got {:?}",
-            out.diagnostics
+            !repaired.has_error(),
+            "applying the path fix (\"lipb\" → \"lib\") links clean; got {:?}",
+            repaired.diagnostics
         );
     }
 

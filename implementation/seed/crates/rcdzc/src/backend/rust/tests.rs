@@ -761,16 +761,19 @@ fn rustc_roundtrip_closures_run_no_capture_and_capturing_and_in_a_list() {
 
 #[test]
 fn a_closure_param_export_declines_but_a_scalar_factory_result_now_emits() {
-    // A closure PARAMETER still cannot cross the EXPORT boundary (no way to synthesize an `Rc<dyn Fn>`
-    // argument from a literal): an exported fn with a function-typed PARAM declines cleanly (todo).
+    // A closure PARAMETER export declines when there is NO PRODUCING SIBLING to supply the closure: the
+    // host would have to hand the `Rc<dyn Fn>` in directly, which has no boundary rep (matching wasm's
+    // "closure argument … has no scalar host-boundary representation"). `apply-it` alone (no companion
+    // producer) declines cleanly (todo). (A closure-param consumer WITH a producing sibling now EMITS +
+    // runs — see `rustc_roundtrip_closure_parameter_consumer_with_a_producer_sibling`.)
     let param = try_compile_rust(
         "(module m (def (apply-it (: g (-> Int64 Int64)) (: x Int64)) (g x)) (export apply-it))",
     )
-    .expect_err("a closure-typed export param must decline");
+    .expect_err("a closure-param export with no producer sibling must decline");
     assert!(
         param
             .iter()
-            .any(|d| d.contains("cannot cross the Rust export boundary")),
+            .any(|d| d.contains("does not cross the Rust export boundary yet")),
         "decline cites the export boundary: {param:?}"
     );
     // A closure RESULT (a scalar-capture FACTORY), by contrast, NOW EMITS (host-closure S1): it crosses as
@@ -782,13 +785,15 @@ fn a_closure_param_export_declines_but_a_scalar_factory_result_now_emits() {
         scalar_factory.contains("pub fn mk(k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64>"),
         "a scalar-capture closure factory emits an `Rc<dyn Fn>` handle (S1):\n{scalar_factory}"
     );
-    // A closure PARAMETER export (the OTHER function-typed shape) still declines — no way to synthesize an
-    // `Rc<dyn Fn>` argument at the boundary from a literal (this stays the guard's territory).
+    // A closure PARAMETER export with NO producing sibling still declines — the host can't synthesize the
+    // `Rc<dyn Fn>` argument (this stays the guard's territory).
     let param2 =
         try_compile_rust("(module m (def (use-it (: f (-> Int64 Int64))) (f 3)) (export use-it))")
-            .expect_err("a closure-PARAMETER export still declines");
+            .expect_err("a closure-PARAMETER export with no producer still declines");
     assert!(
-        param2.iter().any(|d| d.contains("closure PARAMETER")),
+        param2
+            .iter()
+            .any(|d| d.contains("closure-PARAMETER export shape")),
         "the closure-param decline cites the parameter boundary: {param2:?}"
     );
 }
@@ -4851,7 +4856,49 @@ fn rustc_roundtrip_host_closure_factory_export_scalar_capture_s1() {
     );
     assert!(
         param.is_err(),
-        "a closure-PARAMETER export declines (no Rc<dyn Fn> arg synthesis at the boundary):\n{param:?}"
+        "a closure-PARAMETER export with NO producing sibling declines (host can't supply the closure):\n{param:?}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_closure_parameter_consumer_with_a_producer_sibling() {
+    // CLOSURE-PARAMETER CONSUMER (the round-trip): a consumer export TAKES an `(-> a b)` closure param +
+    // applies it; a companion PRODUCER export supplies the closure. The consumer now EMITS `pub fn
+    // apply_it(g: Rc<dyn Fn(i64)->i64>, x: i64) -> i64` (the guard lifts when a producing sibling exists),
+    // and the gate driver builds the closure from the producer: `apply_it(make_adder(100), 7)` = 107.
+    let m = compile_rust(
+        "(module m \
+           (def (make-adder (: k Int64)) (fn ((: x Int64)) (+ x k))) \
+           (def (apply-it (: g (-> Int64 Int64)) (: x Int64)) (g x)) \
+           (export make-adder) (export apply-it))",
+    );
+    assert!(
+        m.contains("pub fn apply_it(g: std::rc::Rc<dyn Fn(i64) -> i64>, x: i64) -> i64"),
+        "the consumer emits an Rc<dyn Fn> param + applies it:\n{m}"
+    );
+    // Driven producer→consumer: build the closure via the producer, pass it to the consumer.
+    if let Some(out) = rustc_run(&m, "apply_it(make_adder(100), 7)") {
+        assert_eq!(out, "107", "apply_it(make_adder(100), 7) = 7 + 100 = 107");
+    }
+    // A closure-param consumer with NO producing sibling still DECLINES (the host would supply the closure
+    // directly — no boundary rep, matching wasm's "closure argument has no scalar host-boundary rep").
+    let no_producer = compile_rust_result(
+        "(module m (def (apply (: f (-> Int64 Int64)) (: x Int64)) (f x)) (export apply))",
+    );
+    assert!(
+        no_producer.is_err(),
+        "a closure-param consumer with no producer declines:\n{no_producer:?}"
+    );
+    // An ASYNC closure-param consumer declines (deferred sub-slice) — even with a producer.
+    let async_consumer = compile_rust_async_result(
+        "(module m \
+           (def (make-adder (: k Int64)) (fn ((: x Int64)) (+ x k))) \
+           (def (apply-it (: g (-> Int64 Int64)) (: x Int64)) (g x)) \
+           (export make-adder) (export apply-it))",
+    );
+    assert!(
+        async_consumer.is_err(),
+        "an async closure-param consumer declines (deferred):\n{async_consumer:?}"
     );
 }
 

@@ -10,8 +10,8 @@
 /// The comparison stays in RATIONAL space (`Rational.of(tick-count(d), tick-count(whole))` vs
 /// `whole-notes(r-d)`), so it needs no Rational->Int64 conversion (which the prelude still lacks) — it's a
 /// pure exact-rational equality.
-
 import { Duration, tick-count, whole, half, quarter, eighth, sixteenth } from "rhythm"
+
 import { RDuration, whole-notes, r-whole, r-half, r-quarter, r-eighth, r-sixteenth } from "rhythm-ratio"
 
 /// Assert an Int64 tick duration `d` agrees with the rational duration `rd`: `d`'s tick count as a fraction
@@ -19,11 +19,12 @@ import { RDuration, whole-notes, r-whole, r-half, r-quarter, r-eighth, r-sixteen
 /// equality). Traps on mismatch. Whole is the reference unit both layers share.
 def rhythm-agree(d: Duration, rd: RDuration) =
   let as-fraction = Rational.of(tick-count(d), tick-count(whole)) in
-  if as-fraction == whole-notes(rd) then unit
-  else trap("rhythm tick-fraction and rational whole-note-fraction disagree")
+  if as-fraction == whole-notes(rd) then
+    unit
+  else
+    trap("rhythm tick-fraction and rational whole-note-fraction disagree")
 
 /// ============================ @test suite (cross-layer time agreement) ============================
-
 @test
 def a-whole-note-agrees() = rhythm-agree(whole, r-whole)
 
@@ -55,9 +56,8 @@ def the-quarter-is-exactly-a-fourth-of-the-whole() =
   // whole-note fraction. Ties the PPQ grid to the rational model at a specific value.
   let frac = Rational.of(tick-count(quarter), tick-count(whole)) in
   if frac == Rational.of(1, 4) then
-    (if frac == whole-notes(r-quarter) then unit else trap("quarter fraction is r-quarter"))
-  else trap("quarter is a fourth of the whole")
+    if frac == whole-notes(r-quarter) then unit else trap("quarter fraction is r-quarter")
+  else
+    trap("quarter is a fourth of the whole")
 
-export {
-  rhythm-agree,
-}
+export { rhythm-agree }

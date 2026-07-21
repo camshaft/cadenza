@@ -9143,6 +9143,26 @@
             (export main)))
   (output (: 302 Int64)))
 
+(case "prepend across the RRB 32→33 boundary front-inserts and reads back at every index"
+  (doc    "The prepend companion of the RRB dense-leaf→trie boundary. A List is an RRB vector: at ≤32 elements
+           it fits ONE strict leaf; growing past 32 forms a trie. The existing boundary pin grows at the TAIL
+           via `List.push` (build-then-scan); FRONT-insertion via `List.prepend` past 32 is a DISTINCT path
+           (prepend = `concat(singleton, xs)`, which must re-spine the RRB from the front). Build a 32-element
+           list `[32,31,…,1]` at run time (recursive `List.push`, so no fold), `List.prepend` a runtime seed →
+           a 33-element list crossing the boundary. Reads: length 33, index 0 is the new seed, and index 32 is
+           the last-pushed original element (1) — the whole spine survives the front re-shape intact. Encoded
+           as a tuple (33, seed, 1). Pins that prepend crosses the 32→33 boundary correctly, not only push.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push out (- n i))) out))
+            (def (main (: seed Int64))
+              (let ((xs (List.prepend (build 0 32 (list)) seed)))
+                (tuple (List.len xs)
+                       (Option.expect (List.at xs 0) "index 0 in range")
+                       (Option.expect (List.at xs 32) "index 32 in range"))))
+            (export main)))
+  (call   main (: 99 Int64)) (output (: (tuple 33 99 1) (Tuple Int64 Int64 Int64))))
+
 ; The replace-at-index operation is DEFINED ONLY for an in-bounds index (collections-and-text.md #A List
 ; Is Grown By Functional Construction, 2nd sentence: "The replace-at-index operation MUST be defined only
 ; for an index that is in bounds"). An out-of-bounds update therefore has NO value. When the list AND the

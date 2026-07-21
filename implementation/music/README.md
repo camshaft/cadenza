@@ -18,6 +18,29 @@ compiler-ml self-host vertical.
 This directory is the pure-Cadenza model layer. Per-surface **drivers** (native audio-out, browser
 WebMIDI/WebAudio) consume the model as data, kept separate — same split as CAD's model-vs-driver.
 
+## Status (2026-07-21) — Phase 1 COMPLETE; Phase 2 substantially delivered
+The model spans **30 `.cdz` files, 255 `@test` laws** (gate `cdz test implementation/music`), all green.
+- **Phase 1 primitives — ALL built:** pitch/intervals (`pitch`), scales + the 7 modes (`scale`) + mode
+  NAMING (`mode-name`), chords + inversions (`chord`), rhythm/meter/tuplets (`rhythm`), the note-on/off
+  scheduler with the stuck-key `balanced` invariant (`schedule`), composition (`compose`, `piece`).
+- **Rational core (operator's "rationals everywhere"):** intervals/scales/chords/rhythm as exact
+  `Rational` fractions of the octave / whole-note (`interval-ratio`, `scale-ratio`, `chord-ratio`,
+  `rhythm-ratio`), with **cross-layer consistency gates** pinning the rational core ↔ Int64 projection
+  agree across the full 12-TET grid for intervals + chords (`layer-bridge`) and for time (`rhythm-bridge`).
+- **Analysis layer:** chord IDENTIFICATION (`analysis` + `analysis-roundtrip` gate), key detection
+  (`key`), interval naming (`interval-name`), consonance/dissonance (`consonance`), diatonic Roman-numeral
+  harmony (`progression`) + cadences (`cadence`) + the harmonized scale (`scale-harmony`), voice-leading
+  (`voicing`), melodic contour (`melody`).
+- **Synthesis:** the synth graph as data (`synth`) + a full ADSR envelope (`adsr`).
+- **Phase 2 demos DELIVERED:** #1 the DES-composed piece (`des-piece`) + #3 the MIDI pipeline processor
+  (`pipeline`), both live; the **Strudel/Tidal live-coding pattern layer** (`pattern`:
+  seq/stack/fast/euclid/rev/every) powers a live `/music` guide showcase.
+- **Gated on external deps (not yet built):** the general **rational→MIDI-note projection** waits on a
+  prelude `Rational→Int64` conversion surface (`Rational.numerator`/`denominator` exist but return BigInt;
+  12-TET projection works via `to-semitones-exact`); the **parametric-WebMIDI + looping-pedal** demos
+  wait on DES's parked multi-task `run-sim` (live add/remove of voices).
+See `DESIGN.md` for the per-module architecture + the two-layer (rational core / Int64 projection) rationale.
+
 ## Phase 1 — PRIMITIVES first (the whole of phase 1 before demos)
 Track every music-theory primitive, built + gated in Cadenza:
 - **pitch/intervals** — pitch classes, octaves, an `Interval` (semitone distance + quality),

@@ -39,17 +39,24 @@
 //! (quasiquote t)       any      ->  (Ast.List (list (Ast.Name "quasiquote") <reify t @ depth+1>))
 //! ```
 //!
-//! An ACTIVE unquote keeps its operand `e` LIVE (reused, not reified) and wraps it `(Ast.Int e)`, so `e`
-//! resolves/types/lowers as ordinary code: an unbound name in it is the ordinary CDZ0101 (NOT swallowed
-//! into inert AST), and its Int64 value lifts to an `(Ast.Int …)` node structurally identical to a const
-//! fold's — so `` `(f ,x) `` (x=1) equals `(quote (f 1))`. ⚠ THE LIFT IS Int-ONLY this increment: the
-//! active operand is wrapped `(Ast.Int e)` unconditionally (every corpus active-unquote is Int-valued),
-//! so a non-Int active unquote gets `Ast.Int`'s payload type-error (a decline-equivalent, never a
-//! miscompile); a type-directed lift (Ast-identity, other payload types) is a later increment.
+//! An ACTIVE unquote keeps its operand `e` LIVE (reused, not reified) and lifts its VALUE into the
+//! matching `Ast` leaf, so `e` resolves/types/lowers as ordinary code: an unbound name in it is the
+//! ordinary CDZ0101 (NOT swallowed into inert AST), and its value lifts to a node structurally identical
+//! to a const fold's — so `` `(f ,x) `` (x=1) equals `(quote (f 1))`. The lift is TYPE-DIRECTED: a value
+//! LITERAL dispatches by its structural kind HERE (Int → `Ast.Int`, Float → `Ast.Float`, Bool →
+//! `Ast.Bool`, String → `Ast.Str`); a RUNTIME operand (a name / a computed expression, unknown type at
+//! reify time) is wrapped in the compiler-internal `(ast-lift e)`, which `lower` resolves by `e`'s
+//! INFERRED type — IDENTITY when `e` is already an `Ast` (splice a sub-tree), else the matching leaf. A
+//! literal the `Ast` sum has no value variant for (Char/Sym/Bytes) BAILS (declines honestly, never a
+//! miscompile).
 //!
-//! An ACTIVE `(unquote-splicing e)` (splice list elements into the parent) BAILS (`None`) — the whole
-//! quasiquote is left for `resolve` (so the splice-non-list CDZ0201 check + the decline still fire); a
-//! real list-flattening splice is a later increment.
+//! An ACTIVE `(unquote-splicing e)` (depth 1) SPLICES e's list elements into the parent: `reify_active`
+//! builds the parent's element list by CONCATENATING runs of ordinary reified elements with
+//! `(ast-splice-lift e)` segments (each lifts e's elements — scalars into their matching `Ast` leaf, an
+//! `Ast` element by identity), so `` `(f ,@xs g) `` with xs=`(a b)` flattens to `(Ast.List (Ast.Name
+//! "f") (Ast.Name "a") (Ast.Name "b") (Ast.Name "g"))`. A splice operand that is not a list is the
+//! CDZ0201 non-list type error, and a non-liftable element (a nested list) declines
+//! (reject-don't-miscompile) — the splice-lift map for those is a later increment.
 //!
 //! ## Quote PATTERNS — the dual direction
 //!

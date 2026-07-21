@@ -9,31 +9,34 @@
 /// The resolution: 960 ticks per quarter note (a common DAW PPQ; divisible by 2,3,4,5,6,8 so triplets,
 /// quintuplets, and dotted values are all exact integers). A `Beat` is one quarter note = 960 ticks. This
 /// is the time backbone the phase-2 event/scheduler layer places notes on.
-
 /// Pulses per quarter note — the tick resolution. 960 is divisible by 2·3·4·5·6·8 so common tuplets and
 /// dotted durations are exact integers.
 def ppq = 960
 
 /// A duration in ticks (a newtype so a raw tick count and a duration don't get confused with a pitch).
-type Duration =
+  type Duration =
   | Duration(Int64)
 
 /// Build a duration from a raw tick count.
 def ticks(n: Int64) = Duration.Duration(n)
 
 /// The raw tick count of a duration.
-def tick-count(d: Duration) = match d with | Duration.Duration(t) => t
+def tick-count(d: Duration) = match d with
+  | Duration.Duration(t) => t
 
 // ---- the note-value durations (whole/half/quarter/…) ------------------------------------------------
-
 /// A quarter note = one beat = `ppq` ticks.
 def quarter = Duration.Duration(ppq)
+
 /// A whole note = 4 beats.
 def whole = Duration.Duration(ppq * 4)
+
 /// A half note = 2 beats.
 def half = Duration.Duration(ppq * 2)
+
 /// An eighth note = half a beat.
 def eighth = Duration.Duration(ppq / 2)
+
 /// A sixteenth note = a quarter of a beat.
 def sixteenth = Duration.Duration(ppq / 4)
 
@@ -51,17 +54,19 @@ def dur-add(a: Duration, b: Duration) = Duration.Duration(tick-count(a) + tick-c
 def dur-times(d: Duration, n: Int64) = Duration.Duration(tick-count(d) * n)
 
 // ---- meter: beats per bar over a beat unit ----------------------------------------------------------
-
 /// A time signature: `numerator` beats per bar, each of `denominator`-note value (4 = quarter, 8 =
-/// eighth). E.g. 4/4 is `Meter(4, 4)`, 6/8 is `Meter(6, 8)`.
-type Meter =
+  /// eighth). E.g. 4/4 is `Meter(4, 4)`, 6/8 is `Meter(6, 8)`.
+  type Meter =
   | Meter(Int64, Int64)
 
 /// Build a meter (time signature).
 def meter(num: Int64, den: Int64) = Meter.Meter(num, den)
 
-def meter-num(m: Meter) = match m with | Meter.Meter(n, _) => n
-def meter-den(m: Meter) = match m with | Meter.Meter(_, d) => d
+def meter-num(m: Meter) = match m with
+  | Meter.Meter(n, _) => n
+
+def meter-den(m: Meter) = match m with
+  | Meter.Meter(_, d) => d
 
 /// The tick length of ONE beat in a meter: a `den`-note value. `ppq` is a quarter (den 4), so a beat is
 /// `ppq * 4 / den` ticks (den 8 → half a quarter → eighth-note beat).
@@ -71,12 +76,16 @@ def beat-ticks(m: Meter) = ppq * 4 / meter-den(m)
 def bar-ticks(m: Meter) = beat-ticks(m) * meter-num(m)
 
 // ---- placing time on the grid: bar / beat / offset --------------------------------------------------
-
 /// Floored division (rounds toward negative infinity) — a tick before bar 0 stays in a consistent bar.
-def div-floor(n: Int64, d: Int64) = let q = n / d in let r = n % d in (if r < 0 then q - 1 else q)
+def div-floor(n: Int64, d: Int64) =
+  let q = n / d in
+  let r = n % d in
+  if r < 0 then q - 1 else q
 
 /// Floored modulus into `0 .. d-1`.
-def mod-floor(n: Int64, d: Int64) = let r = n % d in (if r < 0 then r + d else r)
+def mod-floor(n: Int64, d: Int64) =
+  let r = n % d in
+  if r < 0 then r + d else r
 
 /// The (zero-based) BAR index a tick position falls in, under a meter.
 def bar-of(m: Meter, at: Int64) = div-floor(at, bar-ticks(m))
@@ -88,7 +97,6 @@ def beat-of(m: Meter, at: Int64) = div-floor(mod-floor(at, bar-ticks(m)), beat-t
 def on-beat(m: Meter, at: Int64) = mod-floor(mod-floor(at, bar-ticks(m)), beat-ticks(m)) == 0
 
 // ---- quantization: snap a tick to the nearest grid division -----------------------------------------
-
 /// QUANTIZE a tick position to the nearest multiple of `grid` ticks (round half up). The scheduler's
 /// timing-correction primitive: snap a sloppily-played note onto the grid. `grid` must be positive.
 def quantize(at: Int64, grid: Int64) =
@@ -97,61 +105,69 @@ def quantize(at: Int64, grid: Int64) =
   if rem * 2 >= grid then lo + grid else lo
 
 /// ============================ @test suite (rhythm / meter / time) ============================
-
 @test
 def note-values-are-exact-tick-counts() =
   // whole=4 beats, half=2, quarter=1, eighth=1/2, sixteenth=1/4 — all exact at ppq=960.
   if tick-count(whole) == 3840 then
-    (if tick-count(half) == 1920 then
-      (if tick-count(quarter) == 960 then
-        (if tick-count(eighth) == 480 then
-          (if tick-count(sixteenth) == 240 then unit else trap("sixteenth")) else trap("eighth"))
-       else trap("quarter")) else trap("half"))
-  else trap("whole")
+    if tick-count(half) == 1920 then
+      if tick-count(quarter) == 960 then
+        if tick-count(eighth) == 480 then
+          if tick-count(sixteenth) == 240 then unit else trap("sixteenth")
+        else
+          trap("eighth")
+      else
+        trap("quarter")
+    else
+      trap("half")
+  else
+    trap("whole")
 
 @test
 def dotted-quarter-is-one-and-a-half-beats() =
   // A dotted quarter = quarter + eighth = 1440 ticks.
   if tick-count(dotted(quarter)) == 1440 then
-    (if tick-count(dotted(half)) == 2880 then unit else trap("dotted half"))
-  else trap("dotted quarter")
+    if tick-count(dotted(half)) == 2880 then unit else trap("dotted half")
+  else
+    trap("dotted quarter")
 
 @test
 def triplet-eighths-fill-a-beat() =
   // Three triplet-eighths = one quarter note (960). A triplet-eighth = 320 ticks.
   let te = triplet(eighth) in
   if tick-count(te) == 320 then
-    (if tick-count(dur-times(te, 3)) == 960 then unit else trap("three fill a beat"))
-  else trap("triplet eighth")
+    if tick-count(dur-times(te, 3)) == 960 then unit else trap("three fill a beat")
+  else
+    trap("triplet eighth")
 
 @test
 def four-four-bar-is-four-beats() =
   // In 4/4 a beat is a quarter (960) and a bar is four beats (3840).
   let m = meter(4, 4) in
-  if beat-ticks(m) == 960 then
-    (if bar-ticks(m) == 3840 then unit else trap("bar"))
-  else trap("beat")
+  if beat-ticks(m) == 960 then if bar-ticks(m) == 3840 then unit else trap("bar") else trap("beat")
 
 @test
 def six-eight-has-eighth-note-beats() =
   // In 6/8 a beat is an eighth (480) and a bar is six of them (2880).
   let m = meter(6, 8) in
-  if beat-ticks(m) == 480 then
-    (if bar-ticks(m) == 2880 then unit else trap("bar"))
-  else trap("beat")
+  if beat-ticks(m) == 480 then if bar-ticks(m) == 2880 then unit else trap("bar") else trap("beat")
 
 @test
 def placing-a-tick-gives-bar-and-beat() =
   // In 4/4: tick 0 = bar 0 beat 0; tick 3840 = bar 1 beat 0; tick 4800 (3840+960) = bar 1 beat 1.
   let m = meter(4, 4) in
   if bar-of(m, 0) == 0 then
-    (if beat-of(m, 0) == 0 then
-      (if bar-of(m, 3840) == 1 then
-        (if beat-of(m, 4800) == 1 then
-          (if on-beat(m, 4800) then unit else trap("on beat")) else trap("beat 1"))
-       else trap("bar 1"))
-     else trap("beat 0"))
-  else trap("bar 0")
+    if beat-of(m, 0) == 0 then
+      if bar-of(m, 3840) == 1 then
+        if beat-of(m, 4800) == 1 then
+          if on-beat(m, 4800) then unit else trap("on beat")
+        else
+          trap("beat 1")
+      else
+        trap("bar 1")
+    else
+      trap("beat 0")
+  else
+    trap("bar 0")
 
 @test
 def off-beat-is-not-on-beat() =
@@ -163,11 +179,15 @@ def off-beat-is-not-on-beat() =
 def quantize-snaps-to-the-nearest-grid() =
   // Snap to a sixteenth grid (240): 250 → 240 (round down), 360 → 480 (round up, half rounds up).
   if quantize(250, 240) == 240 then
-    (if quantize(360, 240) == 480 then
-      (if quantize(120, 240) == 240 then
-        (if quantize(960, 240) == 960 then unit else trap("already on grid")) else trap("half rounds up"))
-     else trap("round up"))
-  else trap("round down")
+    if quantize(360, 240) == 480 then
+      if quantize(120, 240) == 240 then
+        if quantize(960, 240) == 960 then unit else trap("already on grid")
+      else
+        trap("half rounds up")
+    else
+      trap("round up")
+  else
+    trap("round down")
 
 @test
 def negative-tick-positions-stay-on-a-consistent-grid() =
@@ -175,26 +195,51 @@ def negative-tick-positions-stay-on-a-consistent-grid() =
   // a consistent grid: tick -1 (one before the downbeat) is bar -1, its last beat (beat 3 in 4/4), NOT
   // bar 0. And a full bar back (-3840) is exactly bar -1 beat 0, on-beat.
   let m = meter(4, 4) in
-  if bar-of(m, 0 - 1) == (0 - 1) then
-    (if beat-of(m, 0 - 1) == 3 then
-      (if bar-of(m, 0 - 3840) == (0 - 1) then
-        (if on-beat(m, 0 - 3840) then unit else trap("full bar back is on-beat")) else trap("bar -1"))
-     else trap("last beat of previous bar"))
-  else trap("tick -1 is in bar -1")
+  if bar-of(m, 0 - 1) == 0 - 1 then
+    if beat-of(m, 0 - 1) == 3 then
+      if bar-of(m, 0 - 3840) == 0 - 1 then
+        if on-beat(m, 0 - 3840) then unit else trap("full bar back is on-beat")
+      else
+        trap("bar -1")
+    else
+      trap("last beat of previous bar")
+  else
+    trap("tick -1 is in bar -1")
 
 @test
 def quantize-rounds-a-negative-tick-toward-the-nearest-grid() =
   // Quantizing a sub-zero tick still snaps to the nearest grid multiple (round half up): -10 → 0, -130 →
   // -240 (closer to -240 than 0 on a 240 grid), -120 → 0 (half rounds up toward zero).
   if quantize(0 - 10, 240) == 0 then
-    (if quantize(0 - 130, 240) == (0 - 240) then
-      (if quantize(0 - 120, 240) == 0 then unit else trap("half rounds up")) else trap("round to -240"))
-  else trap("round to 0")
+    if quantize(0 - 130, 240) == 0 - 240 then
+      if quantize(0 - 120, 240) == 0 then unit else trap("half rounds up")
+    else
+      trap("round to -240")
+  else
+    trap("round to 0")
 
 export {
-  Duration.*, Meter.*,
-  ppq, ticks, tick-count,
-  whole, half, quarter, eighth, sixteenth, dotted, triplet, dur-add, dur-times,
-  meter, meter-num, meter-den, beat-ticks, bar-ticks,
-  bar-of, beat-of, on-beat, quantize,
+  Duration.*,
+  Meter.*,
+  ppq,
+  ticks,
+  tick-count,
+  whole,
+  half,
+  quarter,
+  eighth,
+  sixteenth,
+  dotted,
+  triplet,
+  dur-add,
+  dur-times,
+  meter,
+  meter-num,
+  meter-den,
+  beat-ticks,
+  bar-ticks,
+  bar-of,
+  beat-of,
+  on-beat,
+  quantize
 }

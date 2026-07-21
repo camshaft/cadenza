@@ -10,15 +10,20 @@
 /// resolves to a chromatic offset; we take the same view, written fresh in Cadenza, and tie it back to
 /// pitch.cdz so `spelled-pitch` lands on the exact MIDI note (with the correct octave-boundary behavior:
 /// B#3 sounds as C4, Cb4 sounds as B3 — the sharp/flat naturally carries the octave across).
-
 import { Pitch } from "pitch"
+
 import { pitch-class, note, mod-floor } from "pitch"
 
 // ---- Letter: the seven natural note names ------------------------------------------------------------
-
 /// A letter name with no accidental — the seven "white key" pitch classes.
-type Letter =
-  | C | D | E | F | G | A | B
+  type Letter =
+  | C
+  | D
+  | E
+  | F
+  | G
+  | A
+  | B
 
 /// The pitch class `0..11` of a bare letter (its natural, no accidental): C=0, D=2, E=4, F=5, G=7, A=9,
 /// B=11. These are the white keys; the gaps of 2 are where the black keys (accidentals) live.
@@ -32,11 +37,14 @@ def letter-pc(l: Letter) = match l with
   | Letter.B => 11
 
 // ---- Accidental: how far a letter is bent, in semitones ----------------------------------------------
-
 /// An accidental: a signed semitone bend applied to a letter. Double-flat/flat/natural/sharp/double-sharp
-/// cover standard notation.
-type Accidental =
-  | DoubleFlat | Flat | Natural | Sharp | DoubleSharp
+  /// cover standard notation.
+  type Accidental =
+  | DoubleFlat
+  | Flat
+  | Natural
+  | Sharp
+  | DoubleSharp
 
 /// The signed semitone offset an accidental applies: double-flat -2 … double-sharp +2.
 def acc-offset(a: Accidental) = match a with
@@ -47,21 +55,22 @@ def acc-offset(a: Accidental) = match a with
   | Accidental.DoubleSharp => 2
 
 // ---- NoteName: a spelled note (letter + accidental), still octave-free -------------------------------
-
 /// A spelled note name: a letter plus its accidental. This names a PITCH CLASS with a chosen spelling
-/// (C-sharp and D-flat are different `NoteName`s that fold to the same pitch class), but carries no octave
-/// yet — `spelled-pitch` adds the octave to land on a concrete MIDI note.
-type NoteName =
+  /// (C-sharp and D-flat are different `NoteName`s that fold to the same pitch class), but carries no octave
+  /// yet — `spelled-pitch` adds the octave to land on a concrete MIDI note.
+  type NoteName =
   | NoteName(Letter, Accidental)
 
 /// Build a spelled note name from a letter and an accidental.
 def note-name(l: Letter, a: Accidental) = NoteName.NoteName(l, a)
 
 /// The letter of a spelled note name.
-def name-letter(nn: NoteName) = match nn with | NoteName.NoteName(l, _) => l
+def name-letter(nn: NoteName) = match nn with
+  | NoteName.NoteName(l, _) => l
 
 /// The accidental of a spelled note name.
-def name-accidental(nn: NoteName) = match nn with | NoteName.NoteName(_, a) => a
+def name-accidental(nn: NoteName) = match nn with
+  | NoteName.NoteName(_, a) => a
 
 /// The RAW chromatic offset of a spelled note: letter natural + accidental, BEFORE folding into an octave.
 /// This can sit outside `0..11` on purpose — B-sharp is 12 and C-flat is -1, and that overflow is exactly
@@ -77,14 +86,12 @@ def note-name-pc(nn: NoteName) = mod-floor(note-name-raw(nn), 12)
 def enharmonic-eq(a: NoteName, b: NoteName) = note-name-pc(a) == note-name-pc(b)
 
 // ---- realizing a spelled note to a concrete pitch on the MIDI grid -----------------------------------
-
 /// Place a spelled note name in an OCTAVE to get a concrete `Pitch`. Uses the RAW offset (not the folded
 /// pitch class) so the accidental carries the note across the octave boundary the way notation does:
 /// B-sharp in octave 3 sounds as C4 (MIDI 60), and C-flat in octave 4 sounds as B3 (MIDI 59).
 def spelled-pitch(nn: NoteName, oct: Int64) = Pitch.Pitch((oct + 1) * 12 + note-name-raw(nn))
 
 // ---- default spellings of a bare pitch class ---------------------------------------------------------
-
 /// Spell a pitch class `0..11` with SHARPS: the white keys as naturals, the black keys as the sharp of the
 /// letter below (C-sharp, D-sharp, F-sharp, G-sharp, A-sharp). The neutral MIDI grid forgets spelling, so
 /// this is the canonical "ascending, sharp" choice a driver falls back to. Total: input folded first.
@@ -119,28 +126,33 @@ def flat-name-of-pc(pc: Int64) = match mod-floor(pc, 12) with
   | _ => NoteName.NoteName(Letter.B, Accidental.Natural)
 
 /// ============================ @test suite (spelling laws) ============================
-
 @test
 def letters-are-the-white-key-pitch-classes() =
   // C D E F G A B fold to 0 2 4 5 7 9 11 — the white keys, gaps of 2 where the black keys sit.
   if letter-pc(Letter.C) == 0 then
-    (if letter-pc(Letter.E) == 4 then
-      (if letter-pc(Letter.F) == 5 then
-        (if letter-pc(Letter.B) == 11 then unit else trap("B"))
-       else trap("F"))
-     else trap("E"))
-  else trap("C")
+    if letter-pc(Letter.E) == 4 then
+      if letter-pc(Letter.F) == 5 then
+        if letter-pc(Letter.B) == 11 then unit else trap("B")
+      else
+        trap("F")
+    else
+      trap("E")
+  else
+    trap("C")
 
 @test
 def accidentals-bend-by-signed-semitones() =
   // Double-flat -2 … double-sharp +2, natural 0.
   if acc-offset(Accidental.Natural) == 0 then
-    (if acc-offset(Accidental.Sharp) == 1 then
-      (if acc-offset(Accidental.DoubleFlat) == (0 - 2) then
-        (if acc-offset(Accidental.DoubleSharp) == 2 then unit else trap("x"))
-       else trap("bb"))
-     else trap("#"))
-  else trap("nat")
+    if acc-offset(Accidental.Sharp) == 1 then
+      if acc-offset(Accidental.DoubleFlat) == 0 - 2 then
+        if acc-offset(Accidental.DoubleSharp) == 2 then unit else trap("x")
+      else
+        trap("bb")
+    else
+      trap("#")
+  else
+    trap("nat")
 
 @test
 def c-sharp-and-d-flat-are-enharmonic() =
@@ -148,10 +160,12 @@ def c-sharp-and-d-flat-are-enharmonic() =
   let cs = note-name(Letter.C, Accidental.Sharp) in
   let df = note-name(Letter.D, Accidental.Flat) in
   if note-name-pc(cs) == 1 then
-    (if note-name-pc(df) == 1 then
-      (if enharmonic-eq(cs, df) then unit else trap("not enharmonic"))
-     else trap("Db pc"))
-  else trap("C# pc")
+    if note-name-pc(df) == 1 then
+      if enharmonic-eq(cs, df) then unit else trap("not enharmonic")
+    else
+      trap("Db pc")
+  else
+    trap("C# pc")
 
 @test
 def enharmonic-eq-rejects-a-genuine-semitone-apart() =
@@ -166,8 +180,9 @@ def b-sharp-carries-up-across-the-octave() =
   // up into the next octave — the notation-correct octave-boundary behavior.
   let bs = note-name(Letter.B, Accidental.Sharp) in
   if note(spelled-pitch(bs, 3)) == 60 then
-    (if note-name-pc(bs) == 0 then unit else trap("B# folds to pc 0"))
-  else trap("B#3 sounds as C4")
+    if note-name-pc(bs) == 0 then unit else trap("B# folds to pc 0")
+  else
+    trap("B#3 sounds as C4")
 
 @test
 def c-flat-carries-down-across-the-octave() =
@@ -175,17 +190,16 @@ def c-flat-carries-down-across-the-octave() =
   // into the previous octave.
   let cb = note-name(Letter.C, Accidental.Flat) in
   if note(spelled-pitch(cb, 4)) == 59 then
-    (if note-name-pc(cb) == 11 then unit else trap("Cb folds to pc 11"))
-  else trap("Cb4 sounds as B3")
+    if note-name-pc(cb) == 11 then unit else trap("Cb folds to pc 11")
+  else
+    trap("Cb4 sounds as B3")
 
 @test
 def double-accidentals-resolve-to-the-natural-neighbor() =
   // F-double-sharp is G (pc 7); G-double-flat is F (pc 5).
   let fx = note-name(Letter.F, Accidental.DoubleSharp) in
   let gbb = note-name(Letter.G, Accidental.DoubleFlat) in
-  if note-name-pc(fx) == 7 then
-    (if note-name-pc(gbb) == 5 then unit else trap("Gbb"))
-  else trap("Fx")
+  if note-name-pc(fx) == 7 then if note-name-pc(gbb) == 5 then unit else trap("Gbb") else trap("Fx")
 
 @test
 def spelled-pitch-round-trips-through-pitch-class() =
@@ -193,30 +207,34 @@ def spelled-pitch-round-trips-through-pitch-class() =
   let ef = note-name(Letter.E, Accidental.Flat) in
   let p = spelled-pitch(ef, 4) in
   if pitch-class(p) == note-name-pc(ef) then
-    (if note(spelled-pitch(note-name(Letter.C, Accidental.Natural), 4)) == 60 then unit
-     else trap("C4 is 60"))
-  else trap("round trip")
+    if note(spelled-pitch(note-name(Letter.C, Accidental.Natural), 4)) == 60 then
+      unit
+    else
+      trap("C4 is 60")
+  else
+    trap("round trip")
 
 @test
 def sharp-and-flat-spellings-agree-on-pitch-class() =
   // For every pitch class 0..11, the sharp spelling and the flat spelling are enharmonic (same sounding
   // note) even when their names differ — and both fold back to the pitch class they came from.
   let check = fn(pc: Int64) =>
-    let sh = sharp-name-of-pc(pc) in
-    let fl = flat-name-of-pc(pc) in
-    if note-name-pc(sh) == pc then
-      (if note-name-pc(fl) == pc then enharmonic-eq(sh, fl) else false)
-    else false
-  in
+      let sh = sharp-name-of-pc(pc) in
+      let fl = flat-name-of-pc(pc) in
+      if note-name-pc(sh) == pc then
+        if note-name-pc(fl) == pc then enharmonic-eq(sh, fl) else false
+      else
+        false in
   if check(0) then
-    (if check(1) then
-      (if check(6) then
-        (if check(10) then
-          (if check(11) then unit else trap("pc 11"))
-         else trap("pc 10"))
-       else trap("pc 6"))
-     else trap("pc 1"))
-  else trap("pc 0")
+    if check(1) then
+      if check(6) then
+        if check(10) then if check(11) then unit else trap("pc 11") else trap("pc 10")
+      else
+        trap("pc 6")
+    else
+      trap("pc 1")
+  else
+    trap("pc 0")
 
 @test
 def sharp-and-flat-differ-in-name-for-a-black-key() =
@@ -225,17 +243,25 @@ def sharp-and-flat-differ-in-name-for-a-black-key() =
   let sh = sharp-name-of-pc(1) in
   let fl = flat-name-of-pc(1) in
   match name-letter(sh) with
-    | Letter.C =>
-      (match name-letter(fl) with
-        | Letter.D => unit
-        | _ => trap("flat spelling of pc 1 should be D-flat"))
+    | Letter.C => (match name-letter(fl) with
+      | Letter.D => unit
+      | _ => trap("flat spelling of pc 1 should be D-flat")
+    )
     | _ => trap("sharp spelling of pc 1 should be C-sharp")
 
 export {
-  Letter.*, Accidental.*, NoteName.*,
-  letter-pc, acc-offset,
-  note-name, name-letter, name-accidental,
-  note-name-raw, note-name-pc, enharmonic-eq,
+  Letter.*,
+  Accidental.*,
+  NoteName.*,
+  letter-pc,
+  acc-offset,
+  note-name,
+  name-letter,
+  name-accidental,
+  note-name-raw,
+  note-name-pc,
+  enharmonic-eq,
   spelled-pitch,
-  sharp-name-of-pc, flat-name-of-pc,
+  sharp-name-of-pc,
+  flat-name-of-pc
 }

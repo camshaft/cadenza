@@ -499,30 +499,55 @@ fn run_convert(args: &ConvertArgs) -> Result<(), String> {
 /// gate). A file that does not parse is a hard error and is NEVER written (the reader rejects a recovered
 /// tree, so a broken file can't be silently "reformatted" into a patched-up shape) — in a multi-file run
 /// it warns and skips, so one unparseable file can't abort a whole directory sweep.
-/// The number of DOC (`///`) and plain-COMMENT (`//`, not `///`) comment MARKERS in a text surface,
-/// counting a marker ANYWHERE on a line (leading OR trailing — `x = 1 // note` counts), scanning the
-/// raw text and SKIPPING a `//` that falls inside a `"…"` string or `#\…`-style char/`#"…"` symbol
-/// literal (so a `//` in a URL string is not miscounted). At most one comment marker per line (a `//`
-/// runs to end-of-line, so anything after it — including a second `//` — is comment text, not a new
-/// marker). A `///` counts ONLY as a doc, never also as a comment. Returned as `(doc, comment)`.
+/// The comment lexis of a surface — which marker starts a line comment, so the write-path guard counts
+/// the RIGHT thing per file. The ML/text surfaces use `//` (+ `///` doc); the s-expr surface uses a
+/// single `;`. A `;` in ML text is the SEQUENCE operator, NOT a comment — so the guard MUST NOT count
+/// `;` as a comment on an ML file (and must NOT count `//` on a `.sexp` file). Derived from [`Format`].
+#[derive(Clone, Copy, PartialEq)]
+enum CommentLexis {
+    /// `//` line comment, `///` doc comment (ML, and the doc/markdown text surfaces).
+    SlashSlash,
+    /// `;` line comment (s-expr). No doc-comment distinction.
+    Semicolon,
+    /// A surface with no line-comment lexis this guard models (binary/json/toml/cedar/…) — count nothing.
+    None,
+}
+
+impl From<Format> for CommentLexis {
+    fn from(f: Format) -> Self {
+        match f {
+            // ML surfaces (and doc/markdown, which carry `//`/`///` in embedded code) use slash comments.
+            Format::Ml | Format::Markdown => CommentLexis::SlashSlash,
+            Format::Sexpr => CommentLexis::Semicolon,
+            _ => CommentLexis::None,
+        }
+    }
+}
+
+/// The number of DOC and plain-COMMENT markers in `text`, per the surface's [`CommentLexis`], counting a
+/// marker ANYWHERE on a line (leading OR trailing — `x = 1 // note` / `(f x) ; note` both count),
+/// scanning raw text and SKIPPING a marker inside a `"…"` string or `#\…` char literal (so a `//` in a
+/// URL, or a `;` inside a `";"` string, is not miscounted). At most one marker per line (a comment runs
+/// to end-of-line). For `SlashSlash`, `///` counts ONLY as a doc; `Semicolon` has no doc distinction (all
+/// s-expr `;` are plain comments). Returned as `(doc, comment)`.
 ///
 /// Used by the WRITE paths of `fmt`/`normalize` to detect a reprint that DROPS a comment marker — the
-/// exact signature of a reader comment/doc-attachment gap (a trailing `//` the reader loses is invisible
-/// to any ARENA-level check, because it never became a node; only this raw-text count catches it). The
-/// guard then refuses the write, turning silent comment-loss into a visible fail-safe no-op.
-fn comment_counts(text: &str) -> (usize, usize) {
+/// exact signature of a reader comment-attachment gap (a comment the reader loses is invisible to any
+/// ARENA-level check, because it never became a node; only this raw-text count catches it). The guard
+/// then refuses the write, turning silent comment-loss into a visible fail-safe no-op. (Fixes a gap where
+/// a `.sexp` file's `;` comments were counted as 0 under the ML-only `//` scan, so the guard never fired
+/// and the s-expr printer silently dropped them — v-lsp/v-cdz-tooling report.)
+fn comment_counts(text: &str, lexis: CommentLexis) -> (usize, usize) {
+    if lexis == CommentLexis::None {
+        return (0, 0);
+    }
     let mut docs = 0;
     let mut comments = 0;
     for line in text.lines() {
-        // Scan the line for the first `//` that is NOT inside a string/char/symbol literal. A `"`
-        // toggles string state (a `\"` escape stays inside); `#\` starts a char literal token whose
-        // `//` (if any) is literal text — rare, but a `#\/` char followed by `/` shouldn't count. We
-        // approximate char/symbol handling by treating `#"` like a string quote and `#\` as escaping
-        // the next char.
         let bytes = line.as_bytes();
         let mut i = 0;
         let mut in_str = false;
-        while i + 1 < bytes.len() {
+        while i < bytes.len() {
             let c = bytes[i];
             if in_str {
                 if c == b'\\' {
@@ -540,18 +565,25 @@ fn comment_counts(text: &str) -> (usize, usize) {
                 i += 1;
                 continue;
             }
-            if c == b'#' && bytes[i + 1] == b'\\' {
+            if c == b'#' && bytes.get(i + 1) == Some(&b'\\') {
                 // A char literal `#\x` — skip the `#\` and the escaped char so its content never scans.
                 i += 3.min(bytes.len() - i);
                 continue;
             }
-            if c == b'/' && bytes[i + 1] == b'/' {
-                if bytes.get(i + 2) == Some(&b'/') {
-                    docs += 1;
-                } else {
-                    comments += 1;
+            match lexis {
+                CommentLexis::SlashSlash if c == b'/' && bytes.get(i + 1) == Some(&b'/') => {
+                    if bytes.get(i + 2) == Some(&b'/') {
+                        docs += 1;
+                    } else {
+                        comments += 1;
+                    }
+                    break; // rest of line is comment text
                 }
-                break; // rest of line is comment text
+                CommentLexis::Semicolon if c == b';' => {
+                    comments += 1;
+                    break; // rest of line is comment text
+                }
+                _ => {}
             }
             i += 1;
         }
@@ -559,20 +591,28 @@ fn comment_counts(text: &str) -> (usize, usize) {
     (docs, comments)
 }
 
-/// True if reprinting `input` as `output` would DROP a `///` doc or `//` comment line — the fail-safe
-/// signal for `fmt`/`normalize`'s write paths. Only a NET decrease in either count trips it (a transform
-/// that adds lines, or leaves counts equal, is fine); an increase never trips (so `normalize`'s
+/// True if reprinting `input` as `output` (both in surface `lexis`) would DROP a doc or plain comment —
+/// the fail-safe signal for `fmt`/`normalize`'s write paths. Only a NET decrease in either count trips it
+/// (a transform that adds, or leaves counts equal, is fine); an increase never trips (so `normalize`'s
 /// match→let, which only adds a `let`, is unaffected). Both args are the final text about to be written.
-fn would_drop_comments(input: &[u8], output: &[u8]) -> Option<String> {
-    let (in_docs, in_comments) = comment_counts(&String::from_utf8_lossy(input));
-    let (out_docs, out_comments) = comment_counts(&String::from_utf8_lossy(output));
+fn would_drop_comments(input: &[u8], output: &[u8], lexis: CommentLexis) -> Option<String> {
+    let (in_docs, in_comments) = comment_counts(&String::from_utf8_lossy(input), lexis);
+    let (out_docs, out_comments) = comment_counts(&String::from_utf8_lossy(output), lexis);
     if out_docs < in_docs || out_comments < in_comments {
         let mut lost = Vec::new();
         if out_docs < in_docs {
             lost.push(format!("{} doc-comment(s) (`///`)", in_docs - out_docs));
         }
         if out_comments < in_comments {
-            lost.push(format!("{} comment(s) (`//`)", in_comments - out_comments));
+            let marker = if lexis == CommentLexis::Semicolon {
+                "`;`"
+            } else {
+                "`//`"
+            };
+            lost.push(format!(
+                "{} comment(s) ({marker})",
+                in_comments - out_comments
+            ));
         }
         Some(lost.join(" + "))
     } else {
@@ -669,7 +709,7 @@ fn run_fmt(args: &FmtArgs) -> Result<bool, String> {
         // silently overwriting the file would DESTROY it. Fail-safe: skip this file with a clear message
         // + remember to exit non-zero, so a comment-loss becomes a visible no-op instead of data loss.
         // (Guards the WRITE path only — `--stdout`/`--diff`/`--check` don't overwrite the source.)
-        if let Some(lost) = would_drop_comments(&input, &formatted) {
+        if let Some(lost) = would_drop_comments(&input, &formatted, spec.format.into()) {
             all_formatted = false;
             eprintln!(
                 "cdz: refusing to format {path}: would drop {lost} (a reader comment-attachment gap)"
@@ -775,7 +815,7 @@ fn run_normalize(args: &NormalizeArgs) -> Result<bool, String> {
         // only ADDS a `let` (never removes a `///`/`//`), so this won't false-trip today; it fail-safes
         // any future normalization — or a latent reader gap in the reprint — into a visible no-op rather
         // than silent comment-loss. Skip + exit non-zero (via `all_unchanged=false`) instead of writing.
-        if let Some(lost) = would_drop_comments(&input, &normalized) {
+        if let Some(lost) = would_drop_comments(&input, &normalized, spec.format.into()) {
             all_unchanged = false;
             eprintln!(
                 "cdz: refusing to normalize {path}: would drop {lost} (a reader comment-attachment gap)"
@@ -1457,33 +1497,80 @@ mod tests {
 
     #[test]
     fn comment_counts_finds_leading_and_trailing_markers_skipping_strings() {
-        // Leading doc + leading comment + trailing comment, and a `//` inside a string is NOT counted.
+        use CommentLexis::{Semicolon, SlashSlash};
+        // ML surface (`//`/`///`): leading doc + leading comment + trailing comment; a `//` in a string
+        // is NOT counted.
         assert_eq!(
-            comment_counts("/// doc\ndef f() = 1 // trailing\n// lead"),
+            comment_counts("/// doc\ndef f() = 1 // trailing\n// lead", SlashSlash),
             (1, 2)
         );
         // A `///` counts ONLY as a doc, never also as a comment.
-        assert_eq!(comment_counts("/// just a doc"), (1, 0));
+        assert_eq!(comment_counts("/// just a doc", SlashSlash), (1, 0));
         // `//` inside a string literal is skipped (a URL).
-        assert_eq!(comment_counts("def u() = \"http://x.com\""), (0, 0));
+        assert_eq!(
+            comment_counts("def u() = \"http://x.com\"", SlashSlash),
+            (0, 0)
+        );
         // A trailing comment AFTER a string still counts; the string's `//` does not.
-        assert_eq!(comment_counts("let u = \"a//b\" // real"), (0, 1));
+        assert_eq!(
+            comment_counts("let u = \"a//b\" // real", SlashSlash),
+            (0, 1)
+        );
         // Only the FIRST marker per line counts (a `//` runs to end-of-line).
-        assert_eq!(comment_counts("x // a // b"), (0, 1));
+        assert_eq!(comment_counts("x // a // b", SlashSlash), (0, 1));
         // No markers.
-        assert_eq!(comment_counts("def f() = 1 + 2"), (0, 0));
+        assert_eq!(comment_counts("def f() = 1 + 2", SlashSlash), (0, 0));
+
+        // S-EXPR surface (`;`): a leading + trailing `;` comment; a `;` in a string is NOT counted; and
+        // — crucially — `//` is NOT a comment in s-expr (it's ordinary), while a `;` IS. No doc marker.
+        assert_eq!(
+            comment_counts("; header\n(def (f) 1) ; trailing", Semicolon),
+            (0, 2)
+        );
+        assert_eq!(
+            comment_counts("(f \"a;b\")", Semicolon),
+            (0, 0),
+            "; in a string"
+        );
+        assert_eq!(
+            comment_counts("(f x) // not a sexpr comment", Semicolon),
+            (0, 0)
+        );
+        // And the ML lexis does NOT count a `;` (it's the ML sequence operator, not a comment).
+        assert_eq!(
+            comment_counts("a; b", SlashSlash),
+            (0, 0),
+            "; is ML seq, not a comment"
+        );
+        // A None-lexis surface counts nothing.
+        assert_eq!(
+            comment_counts("; anything // here", CommentLexis::None),
+            (0, 0)
+        );
     }
 
     #[test]
     fn would_drop_comments_trips_only_on_a_net_decrease() {
+        use CommentLexis::{Semicolon, SlashSlash};
         // A dropped trailing comment (1 → 0) trips.
-        assert!(would_drop_comments(b"x = 1 // note\n", b"x = 1\n").is_some());
+        assert!(would_drop_comments(b"x = 1 // note\n", b"x = 1\n", SlashSlash).is_some());
         // A dropped doc trips.
-        assert!(would_drop_comments(b"/// d\ndef f() = 1\n", b"def f() = 1\n").is_some());
+        assert!(
+            would_drop_comments(b"/// d\ndef f() = 1\n", b"def f() = 1\n", SlashSlash).is_some()
+        );
         // Equal counts do NOT trip (a faithful reprint).
-        assert!(would_drop_comments(b"// c\nx = 1\n", b"// c\nx = 1\n").is_none());
+        assert!(would_drop_comments(b"// c\nx = 1\n", b"// c\nx = 1\n", SlashSlash).is_none());
         // An INCREASE does not trip (e.g. a comment that reattaches to two lines — never a loss).
-        assert!(would_drop_comments(b"x = 1\n", b"// added\nx = 1\n").is_none());
+        assert!(would_drop_comments(b"x = 1\n", b"// added\nx = 1\n", SlashSlash).is_none());
+        // S-EXPR: a dropped `;` comment trips (the v-lsp bug — an ML-only `//` count would miss it).
+        assert!(
+            would_drop_comments(b"(m ; keep\n (def (f) 1))", b"(m (def (f) 1))", Semicolon)
+                .is_some(),
+            "a dropped s-expr `;` must trip the guard"
+        );
+        // But under ML lexis the same `;`-drop does NOT trip (a `;` isn't an ML comment) — so the guard
+        // is surface-correct, not blanket.
+        assert!(would_drop_comments(b"(m ; c\n x)", b"(m x)", SlashSlash).is_none());
     }
 
     #[test]
@@ -1511,8 +1598,10 @@ mod tests {
                 .map(|_| alphabet[(r.next() as usize) % alphabet.len()])
                 .collect();
             // The ONLY assertion is that it returns (does not panic); the counts themselves are exercised
-            // by the hand-written cases above. Totality is the property under test.
-            let _ = comment_counts(&s);
+            // by the hand-written cases above. Totality is the property under test — for every lexis.
+            let _ = comment_counts(&s, CommentLexis::SlashSlash);
+            let _ = comment_counts(&s, CommentLexis::Semicolon);
+            let _ = comment_counts(&s, CommentLexis::None);
         }
     }
 
@@ -1544,7 +1633,7 @@ mod tests {
                 Err(e) => panic!("reprint {src:?}: {e}"),
             };
             assert!(
-                would_drop_comments(src.as_bytes(), &printed).is_none(),
+                would_drop_comments(src.as_bytes(), &printed, CommentLexis::SlashSlash).is_none(),
                 "guard must NOT trip on a comment-preserving reprint of {src:?} → {}",
                 String::from_utf8_lossy(&printed)
             );

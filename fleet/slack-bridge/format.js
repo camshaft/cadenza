@@ -101,4 +101,20 @@ function helpText(defaultTo) {
   ].join("\n");
 }
 
-module.exports = { parseOperatorMessage, renderFleetMessage, helpText, KNOWN_KINDS };
+// A KNOWN, self-recovering Socket Mode fault. `@slack/socket-mode` drives its connection with the `finity`
+// state machine; when Slack sends a `server explicit disconnect` frame while the client is still
+// mid-handshake (state `connecting`), finity has no transition and THROWS synchronously from the WebSocket
+// handler — an uncaughtException that kills the process, even though the client would just reconnect.
+// bridge.js's process guards use this to SURVIVE that transient (re-throwing anything else). Lives HERE, in
+// the dependency-free module, so the zero-dep smoke test can pin it without loading @slack/bolt.
+function isTransientSocketModeFault(err) {
+  const msg = (err && (err.message || String(err))) || "";
+  // finity's message: "Unhandled event '<event>' in state '<state>'." — the connection-lifecycle events
+  // (disconnect/handshake races) are benign and self-heal; match on the finity shape + a connection event.
+  return (
+    /Unhandled event '.*' in state '.*'\./.test(msg) &&
+    /(disconnect|connecting|connected|reconnect|handshake|authenticated)/i.test(msg)
+  );
+}
+
+module.exports = { parseOperatorMessage, renderFleetMessage, helpText, KNOWN_KINDS, isTransientSocketModeFault };

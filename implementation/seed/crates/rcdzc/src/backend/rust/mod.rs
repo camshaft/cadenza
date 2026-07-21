@@ -575,11 +575,89 @@ fn emit_signature(
             "`{name}`: a closure-returning export with a non-scalar capture/arg/result is not yet rendered by the Rust backend (host-closure S2/S3)"
         )));
     }
-    // A closure PARAMETER crossing the export boundary declines regardless — no way to synthesize an
-    // `Rc<dyn Fn>` argument at the boundary from a literal.
-    if public && params.iter().any(|(_, t)| is_fn_ty(t)) {
+    // A closure PARAMETER crosses the export boundary as an `Rc<dyn Fn(…)->…>` argument (which
+    // `rust_type` renders) and the body applies it (`Core::CallClosure` → `(g)(x)` — already emitted). The
+    // host supplies the closure: the gate harness builds it from a companion PRODUCER export and passes it
+    // (see `run_program_rust`'s consumer branch). SCOPE (this slice = the SIMPLE closure-param shape): the
+    // closure's arg AND result are SCALARS (Int/Bool/Float), so the harness's producer→consumer synthesis
+    // is unambiguous. A HIGHER-ORDER closure param (its arg is itself a closure), a COMPOUND closure
+    // arg/result, or an export whose OWN result is compound (needs the S3 factory-style render the consumer
+    // path doesn't do yet) still DECLINES — a clean `todo`, a later increment — rather than emit an
+    // artifact the harness drives wrongly (a FALSE gate FAIL).
+    let closure_param_is_simple = |t: &crate::ty::Ty| -> bool {
+        // Peel the arrow spine: every arg scalar, final result scalar (no nested closure/compound).
+        let mut cur = t.strip_nominal();
+        while let crate::ty::Ty::Fn(p, r) = cur {
+            if !is_capture_scalar(p) {
+                return false;
+            }
+            cur = r.strip_nominal();
+        }
+        is_capture_scalar(cur)
+    };
+    // A closure param needs a PRODUCING sibling export to supply its closure — either a FACTORY (an export
+    // whose result is that closure type) or a PEELED producer (a nullary `(fn …)` eta-peeled to a direct
+    // `fn(args)->ret` whose signature IS the closure's arg/result shape). Without one, the host would have
+    // to supply the closure DIRECTLY at the boundary, which has no rust (or wasm) representation — wasm
+    // declines this "closure argument … has no scalar host-boundary representation"; match it. Check by
+    // type-equality against sibling exports' plans (this export excluded — a self-produced closure is not
+    // a thing here). A closure `(-> A… R)` matches a factory result of the SAME `Ty::Fn`, or a peeled
+    // producer whose params are `A…` and result is `R`.
+    let has_producer_for = |closure_ty: &crate::ty::Ty| -> bool {
+        let ct = closure_ty.strip_nominal();
+        // The closure's arg types + result, for matching a peeled producer's params/result.
+        let mut arg_tys = Vec::new();
+        let mut cur = ct;
+        while let crate::ty::Ty::Fn(p, r) = cur {
+            arg_tys.push((*p).clone());
+            cur = r.strip_nominal();
+        }
+        let closure_ret = cur;
+        layout.exports.iter().any(|ep| {
+            if ep.def == def {
+                return false; // not self
+            }
+            // FACTORY: sibling result IS the closure type.
+            if ep.result.strip_nominal() == ct {
+                return true;
+            }
+            // PEELED: sibling is a plain fn whose params == the closure's arg types and result == closure
+            // result (a nullary `(fn …)` eta-peeled to a direct fn).
+            ep.params.len() == arg_tys.len()
+                && ep
+                    .params
+                    .iter()
+                    .zip(&arg_tys)
+                    .all(|((_, pt), at)| pt.strip_nominal() == at.strip_nominal())
+                && ep.result.strip_nominal() == closure_ret
+        })
+    };
+    // The export's OWN result: a Tuple/Option/Result/List/sum result renders fine via the driver's
+    // `cdz_render_expr`, but a Bytes/String consumer result needs the byte-list render the consumer path
+    // does NOT do yet (the factory path special-cases it via `cdz_render_bytes_list`) — decline those.
+    let result_render_unsupported = matches!(
+        result.strip_nominal(),
+        crate::ty::Ty::Bytes | crate::ty::Ty::String
+    );
+    // ASYNC closure-PARAMETER consumers: the async gate driver must build the closure from an `async fn`
+    // producer (drive it through `block_on`) and thread the gas/yield env — more harness wiring than the
+    // sync producer→consumer synthesis. Defer that: an async-mode closure-param consumer still DECLINES
+    // (clean `todo`), so this slice lands the SYNC closure-param shape without a red rust-async gate. (The
+    // sync case is the bulk; async closure-param is a follow-up sub-slice.)
+    if mode.is_async() && public && params.iter().any(|(_, t)| is_fn_ty(t)) {
         return Err(Reject::decline(format!(
-            "`{name}`: a closure PARAMETER cannot cross the Rust export boundary (no way to synthesize an Rc<dyn Fn> argument)"
+            "`{name}`: an async closure-PARAMETER consumer is not yet driven by the Rust backend"
+        )));
+    }
+    if public
+        && params.iter().any(|(_, t)| is_fn_ty(t))
+        && (!params
+            .iter()
+            .all(|(_, t)| !is_fn_ty(t) || (closure_param_is_simple(t) && has_producer_for(t)))
+            || result_render_unsupported)
+    {
+        return Err(Reject::decline(format!(
+            "`{name}`: this closure-PARAMETER export shape (higher-order / compound arg / Bytes-String result / no producing sibling) does not cross the Rust export boundary yet"
         )));
     }
     // Whether this function is compiled as a `loop` (it self-tail-calls). A looped function REASSIGNS

@@ -111,3 +111,13 @@
 ; preservation on the pinned node's binder being OUTSIDE the fold root (a genuine capture), else fall to the
 ; existing fresh-re-resolve. Needs the fold's root id threaded to deep_fresh_copy (or a `reduction_root`-style
 ; check). Then: repro compiles+RUNS 5, the 3 selfcall-arg tests stay green, full effects suite + gate green.
+
+; ===== FIX SENT (v-effects, 2026-07-21) — MR 21c957904, PIN PLAN ready =====
+; FIXED + sent to pr-sync (21c957904): compiles+runs 5 as predicted. Root = tail-resumptive fold
+; deep_fresh_copy re-pinning loss on the threaded seed; fix = let-bind a non-constant seed once at fold entry
+; (chosen over a deep_fresh_copy change that regressed selfcall-arg specialization tests). Gate 4195/0, +1
+; rcdzc unit test. NOT landed yet (still CDZ0101 on trunk 2bc0ba7ea). The .sexp CORPUS pin is MINE (both-sides
+; rule). PIN PLAN (on land): (do (effect St (op tick (-> Unit Int64))) (def (f (: x Int64)) (let ((r (handle
+; St x ((tick (u) s (resume s (+ s 1)))) (St.tick)))) r)) (def (main (: k Int64)) (f k)) (export main))
+; with (call main (: 5 Int64)) -> (output (: 5 Int64)). Also pins the DUP let-WRAPPED variant. All 3 backends
+; (compile-time fix, backend-agnostic — likely pass all). WATCH: pin the moment 21c957904 lands.
