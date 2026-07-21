@@ -13908,6 +13908,10 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         // renders a bare number, not a Qty). The scale is applied in the inner numeric type: Float
         // rounds, Rational is exact, Int truncates on a non-whole ratio — the same rule the combine path
         // and the numeric core already use (a scale-1 reference unit is a no-op, byte-neutral).
+        //= spec/capabilities/units-of-measure.md#a-stored-quantity-displays-at-its-dimension-s-reference-unit
+        //# A quantity stored at a scaled or named unit MUST, when it crosses the machine boundary as a value, display with its magnitude scaled to its dimension's reference unit and its unit shown as that reference, so that the number and the unit agree rather than disagreeing — a `5 kilometer` quantity displays as `5000 meter`, not the misleading `5 meter` that names the reference unit while keeping the source magnitude.
+        //= spec/capabilities/units-of-measure.md#a-stored-quantity-displays-at-its-dimension-s-reference-unit
+        //# Scaling to the reference unit MUST be a display concern only and MUST NOT alter the stored magnitude, so that `Qty.value` returns the number the source wrote in the unit the source named, and an explicit `as`/`in` conversion computes by the exact direct ratio off that stored magnitude with no intermediate reference rounding.
         let (num, den) = unit.scale();
         let inner_val = const_value_ast_scaled(db, b, id, &inner, num, den)?;
         let unit_ast = unit_value_ast(b, &unit.at_reference());
@@ -13981,6 +13985,12 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         //= spec/contracts/deterministic-value-form.md#the-unit-value-has-a-canonical-byte-form
         //# The canonical byte encoding of the unit value MUST be distinct from that of every other value, consistent with structural equality treating the unit value as equal only to itself.
         Core::Unit => Some(b.name("unit")),
+        // Each compound element recurses through `const_value_ast`, whose Qty arm (above) scales any
+        // quantity leaf to its dimension's reference unit in its own inner type — so a tuple/record/sum
+        // payload/nested-compound carrying a quantity displays at reference independently, not only a bare
+        // top-level quantity.
+        //= spec/capabilities/units-of-measure.md#a-stored-quantity-displays-at-its-dimension-s-reference-unit
+        //# The reference-unit display MUST recurse into every quantity leaf of a compound value, so that a tuple, a sum payload, a nested compound, or a record field carrying a quantity each displays scaled to its reference independently and in its own inner type, not only a bare top-level quantity.
         Core::Tuple { elems } => {
             let head = b.name("tuple");
             let mut children = vec![head];
@@ -14172,6 +14182,8 @@ fn const_value_ast_scaled(
     if num == 1 && den == 1 {
         return const_value_ast_at(db, b, id, expect);
     }
+    //= spec/capabilities/units-of-measure.md#a-stored-quantity-displays-at-its-dimension-s-reference-unit
+    //# The display scale MUST be applied in the quantity's own inner numeric type, so that a Float rounds, a Rational stays exact, and an integer truncates toward zero on a non-whole ratio exactly as the numeric core's rules dictate — the dimensional layer introduces no arithmetic of its own beyond the source-denoted scale.
     match core_of(db, id) {
         Core::ConstInt(v) => {
             let scaled = v.to_i128()?.checked_mul(num)? / den;

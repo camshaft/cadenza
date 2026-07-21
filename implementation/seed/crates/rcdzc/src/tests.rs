@@ -57862,6 +57862,43 @@ mod stage1 {
     }
 
     #[test]
+    fn a_scalar_host_op_result_escaping_as_a_bytes_resource_emits_with_methods() {
+        // HOST-RESOURCE-ESCAPE, increment 3: the WITH-METHODS String/Bytes site
+        // (`emit_runtime_bytes_resource`) gets the host arm too — a scalar host op whose result escapes inside
+        // a Bytes value composes via `assemble_host_runtime_resource_with_scalar_methods` (`leading_is_host =
+        // true`), carrying make + encode + the three borrow methods (len / is-empty / to-bytes). Previously
+        // this declined "a host-delegated effect … escapes as a runtime resource is not yet emitted". The host
+        // op `h : Int64 -> UInt8` feeds `(Bytes.of (list (H.h x)))`, a one-byte Bytes resource. Emits a VALID
+        // component (wasmtime parses it, incl. the three lifted methods). Scalar host op (a String-param op
+        // still declines to the `_mem` follow-up). Mirrors the peer with-methods twin.
+        let src = "(do (effect H (op h (-> Int64 UInt8))) \
+                   (def (main (: x Int64)) (host (H) (Bytes.of (list (H.h x))))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "a scalar host op result-escaping as a Bytes resource now emits (with methods)",
+        );
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::from_binary(&engine, &bytes)
+            .expect("the host+bytes-resource-escape (with-methods) component must be valid");
+    }
+
+    #[test]
+    fn two_distinct_host_effects_in_a_bytes_resource_escape_decline_cleanly() {
+        // `assemble_host_runtime_resource_with_scalar_methods` imports ONE host interface, so two DISTINCT
+        // host effects delegated from a Bytes-resource-escaping entrypoint would be conflated + mis-serialized.
+        // The bytes-site host arm carries the same single-effect guard as the Flat/Sum/RecursiveSum arms.
+        let src = "(do (effect A (op a (-> Int64 UInt8))) (effect B (op b (-> Int64 UInt8))) \
+                   (def (main (: x Int64)) (host (A) (host (B) (Bytes.of (list (A.a x) (B.b x)))))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "two distinct host effects in a Bytes resource escape must decline, not mis-serialize",
+        );
+        assert!(
+            err.message.contains("more than one host effect"),
+            "the multi-host-effect bytes-resource decline must name the cause: {}",
+            err.message
+        );
+    }
+
+    #[test]
     fn two_performs_across_a_let_fold_via_the_one_shot_refold() {
         // E5 TWO-HOLE across a `let`: a hole in a let INIT and another in the BODY. The one-shot refold
         // (`leading_strict_hole` descends the `let`'s inits then body) folds it: leading flip in the INIT →

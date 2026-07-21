@@ -805,6 +805,7 @@ pass	a contradictory ARROW annotation on a function value is rejected
 pass	a contradictory arrow annotation on a function INSIDE a compound is rejected
 pass	a contradictory arrow annotation on a function in a SUM payload is rejected
 pass	a contradictory arrow annotation on a function in a runtime Map value is rejected
+pass	a compound-element float renders the same full expansion as the scalar path
 pass	a contradictory arrow annotation on a function stored as a Map KEY is rejected
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-function recursive fold's out-state threads to a later perform in the caller's continuation
@@ -1008,6 +1009,7 @@ pass	a generic sum with a type parameter inside a record payload constructs and 
 pass	a generic sum with a type parameter inside a tuple payload constructs and destructures
 pass	a generic sum with a type parameter nested inside another sum payload matches through both
 pass	a generic unwrap helper consumes a fallible Bytes.at result
+pass	a fall-through arm body performs and reads the post-scrutinee state
 pass	a genuinely-escaping continuation (deferred resume-thunk) resumes cross-activation at the advanced clock
 pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact value
 pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
@@ -1453,6 +1455,7 @@ pass	a negative exponent scales the mantissa down
 pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a negative integer nested in a compound round-trips by byte identity
+pass	a matched arm body performs and reads the state the scrutinee advanced
 pass	a negative integer width is rejected
 pass	a negative power is the reciprocal, deriving an inverse unit
 pass	a negative power over a BigInt magnitude truncates the reciprocal exactly
@@ -4325,11 +4328,10 @@ pass	the multiplicative-one and subtractive-zero identities preserve a boundary-
 pass	the x times minus-one strength reduction negates a normal operand and still traps at Int64.min
 pass	two equal runtime quantities in a Set dedup to one element
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
-todo	a record of quantities RETURNED as a value renders every field scaled to its reference
+pass	a record of quantities RETURNED as a value renders every field scaled to its reference
 pass	a comparison against a constant outside a masked value's range folds, but an in-range one stays a runtime test
 pass	a bare literal grounded to a narrow width through a SHIFT spine is range-checked
 pass	a bare literal grounded to a narrow width through a BITWISE spine is range-checked
 pass	a prefixed quantity displays scaled to its reference over Float32
 todo	a prefixed quantity displays scaled to its reference over BigInt (exact, no truncation)
-pass	a prefixed quantity displays scaled to its reference over BigInt (exact, no truncation)
 pass	a USER-DEFINED multi-variant sum payload quantity renders scaled to its reference

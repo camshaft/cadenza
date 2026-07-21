@@ -6842,12 +6842,130 @@ fn emit_runtime_bytes_resource(
             }
         });
     }
+    // HOST-effect × STRING/BYTES-resource-escape WITH-METHODS FUSION (the host-side mirror of the peer
+    // with-methods path below). A host-delegated effect reached in a body whose String/Bytes result escapes
+    // — `main(x) = host H in (Bytes.of (list (H.h x)))` — dispatches to `assemble_host_runtime_resource_with_
+    // scalar_methods`, laying host ops as leading `"host"` imports (`leading_is_host = true`) + the make/
+    // encode/len/is-empty/to-bytes methods. SCOPE: scalar/unit host ops (a STRING-param host op takes the
+    // shared-memory `_mem` variant — a later increment). A host effect ALONGSIDE a peer effect, or MORE than
+    // one host effect, is a further fusion — decline cleanly (mirrors the Flat/Sum/RecursiveSum host arms).
     if !host_imports.is_empty() {
-        return Err(Reject::decline(
-            "a host-delegated effect in an entrypoint whose result escapes as a runtime resource is not \
-             yet emitted (only a peer-bound effect is); consume the host op's result into a scalar the \
-             entrypoint returns",
-        ));
+        if !extern_imports.is_empty() {
+            return Err(Reject::decline(
+                "a host effect composed with a peer effect in a resource-escaping entrypoint is not yet \
+                 emitted (host+peer+resource triple fusion)",
+            ));
+        }
+        if host::set_needs_memory(&host_imports) {
+            return Err(Reject::decline(
+                "a host op with a STRING parameter in a resource-escaping entrypoint is not yet emitted \
+                 (the shared-memory host-resource `_mem` variant is a later increment); a scalar/unit host \
+                 op result-escaping as a resource IS emitted",
+            ));
+        }
+        let iface = host_imports[0].effect.clone();
+        if host_imports.iter().any(|hi| hi.effect != iface) {
+            return Err(Reject::decline(
+                "delegating more than one host effect from a resource-escaping entrypoint is not yet \
+                 emitted (one interface per envelope; the multi-interface host shape is a later increment)",
+            ));
+        }
+        let h = host_imports.len() as u32;
+        let k = imports.len() as u32;
+        let host_order: Vec<(String, String)> = host_imports
+            .iter()
+            .map(|hi| (hi.effect.clone(), hi.op.clone()))
+            .collect();
+        let host_layout = layout
+            .with_import_base(h + k + 2)
+            .with_host_order(host_order);
+        let host_layout = &host_layout;
+
+        let mut funcs: Vec<SelectedFunc> = Vec::new();
+        for &def in &host_layout.order {
+            let body = def_body(db, def)?;
+            let params = match host_layout.export_plan(def) {
+                Some(e) => e.params.clone(),
+                None => crate::layout::def_params(db, def),
+            };
+            funcs.push(select_function_of(
+                db,
+                body,
+                &params,
+                host_layout,
+                Some(def),
+            )?);
+        }
+        append_lifted_bodies(db, &mut funcs, host_layout)?;
+        let export_abs = host_layout.abs(export_def).ok_or_else(|| {
+            Reject::decline("the escaping bytes export is not in the emission order")
+        })?;
+
+        let core_methods = [
+            serialize::CoreMethod::Len,
+            serialize::CoreMethod::IsEmpty,
+            serialize::CoreMethod::ToBytes,
+        ];
+        let (make_param_vts, make_param_bytes) =
+            export_make_params(db, host_layout, export_def)?.scalars_only()?;
+        let make_core_slots: Vec<serialize::MakeCoreSlot> = make_param_vts
+            .iter()
+            .map(|_| serialize::MakeCoreSlot::Scalar)
+            .collect();
+        let host_as_extern = host_as_extern_for(&host_imports);
+        let mut main_core = serialize::runtime_resource_core_module_form_ex2(
+            &funcs,
+            &imports,
+            &host_as_extern,
+            true, // leading ops are HOST — import from "host"
+            export_abs,
+            serialize::EscapeForm::RuntimeBytes(form),
+            &core_methods,
+            &make_param_vts,
+            &make_core_slots,
+            &escape_lifted_table(host_layout),
+        )
+        .map_err(Reject::decline)?;
+        append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
+        let dtor_core = serialize::resource_dtor_module_with_drop();
+        let import_name = runtime_import_name();
+        let scalar_methods = [
+            envelope::ScalarMethod {
+                boundary_name: "len",
+                core_export: "t-len",
+                result: envelope::MethodResult::Scalar(crate::backend::wasm::wasm_abi::COMP_U32),
+            },
+            envelope::ScalarMethod {
+                boundary_name: "is-empty",
+                core_export: "t-is-empty",
+                result: envelope::MethodResult::Scalar(crate::backend::wasm::wasm_abi::COMP_BOOL),
+            },
+            envelope::ScalarMethod {
+                boundary_name: "to-bytes",
+                core_export: "t-to-bytes",
+                result: envelope::MethodResult::ListU8,
+            },
+        ];
+        let host_fns: Vec<envelope::HostFn> = host_imports
+            .iter()
+            .map(|hi| envelope::HostFn {
+                op: hi.op.clone(),
+                comp_functype: host_op_comp_functype(hi),
+                core_functype: Vec::new(),
+            })
+            .collect();
+        return Ok(
+            envelope::assemble_host_runtime_resource_with_scalar_methods(
+                &main_core,
+                &dtor_core,
+                &imports,
+                &import_name,
+                &iface,
+                &host_fns,
+                &make_param_bytes,
+                &scalar_methods,
+            ),
+        );
     }
     // The fused envelope supports MULTIPLE distinct peer interfaces (grouped into g imported instances).
     let p = extern_imports.len() as u32;

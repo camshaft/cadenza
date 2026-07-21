@@ -202,6 +202,32 @@ fn collect_qty_scale_paths(
     }
 }
 
+/// The type-name to put in the `// cdz-return[<ident>]` note — normally `result.render_name()`, but for a
+/// GENERIC nominal returned WHOLE it is the ERASED INNER's render_name instead. WHY: a monomorphic nominal
+/// newtype gets a `// cdz-newtype[<Ident>]` descriptor the render uses to resolve `<Ident>` → its structural
+/// inner; but a GENERIC nominal (`(type V3q (V3 a a a))`) is SKIPPED by `emit_newtype_descriptors`
+/// (`!decl.params.is_empty()`), so at an instantiated whole-return the render would get the bare nominal name
+/// `V3q`, find no descriptor, and fall to a scalar `Display` of the erased Rust tuple `(f64, f64, f64)` →
+/// rustc E0277 (v-quantity/corpus-bugfix: "a record of quantities RETURNED as a value"). Noting the inner's
+/// render_name (`(Tuple (Qty …) (Qty …) …)`) instead lets the render's structural Tuple/Record arm handle it
+/// — and the per-element `// cdz-qty-at` notes already key by the same positional descent, so a nested Qty
+/// field still display-scales. Only for a GENERIC nominal whose erased inner is a STRUCTURAL type the render
+/// walks (Tuple/Record); a monomorphic nominal keeps its name (its newtype descriptor resolves it), and a
+/// non-nominal result is unchanged.
+fn boundary_return_render_name(db: &Db, result: &crate::ty::Ty) -> String {
+    use crate::ty::Ty;
+    if let Ty::Nominal { decl, inner, .. } = result {
+        let is_generic = db
+            .type_decl_by_occ(*decl)
+            .map(|t| !t.params.is_empty())
+            .unwrap_or(false);
+        if is_generic && matches!(inner.as_ref(), Ty::Tuple(_) | Ty::Record(_)) {
+            return inner.render_name();
+        }
+    }
+    result.render_name()
+}
+
 /// Whether a closure RESULT type is renderable by the gate harness (S1 scalar OR S3 Tuple/List/Option/
 /// Result). The factory result is rendered by `cdz_render_expr`, which walks the value's TYPE and emits the
 /// corpus s-expr form — including the Option/Result arms (`(Some <p>)`/`(None unit)`/`(Ok <p>)`/`(Err <e>)`,
@@ -878,7 +904,10 @@ fn emit_signature(
     let ret_note = if diverges {
         format!("// cdz-return[{ident}]: !\n")
     } else {
-        format!("// cdz-return[{ident}]: {}\n", result.render_name())
+        format!(
+            "// cdz-return[{ident}]: {}\n",
+            boundary_return_render_name(db, result)
+        )
     };
     // For a QUANTITY result, ALSO emit the unit's canonical VALUE-form spelling (`// cdz-unit[ident]:
     // <value-form>`) beside the type note. `render_name` carries the unit as `Unit::render` — the TYPE
