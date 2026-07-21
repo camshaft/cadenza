@@ -65,20 +65,21 @@ fn smith_is_a_passthrough_not_a_clap_misparse() {
 fn smith_forwards_arbitrary_trailing_args_without_parsing_them() {
     // Flags that are NOT `cdz` flags (and a leading-hyphen value) must pass through untouched — the
     // `trailing_var_arg` + `allow_hyphen_values` contract. If `cdz` tried to parse `--iters`/`--seed` it
-    // would clap-error with "unexpected argument"; the passthrough must never produce that.
-    let (ok, _out, err) = run(&["smith", "--iters", "3", "--seed", "-1", "--not-a-cdz-flag"]);
+    // would clap-error with "unexpected argument"; the passthrough must never produce that. We assert ONLY
+    // the cdz-SIDE contract (cdz doesn't eat the args), NOT what the bin does with them: a CO-PRESENT
+    // `cdz-smith` may itself reject an unknown flag and exit non-zero, which is the bin's business, not a
+    // cdz parse failure — so a non-success is fine as long as it isn't cdz's own "unexpected argument".
+    let (_ok, _out, err) = run(&["smith", "--iters", "3", "--seed", "-1", "--not-a-cdz-flag"]);
     assert!(
         !err.contains("unexpected argument") && !err.contains("panic"),
         "arbitrary trailing args are forwarded verbatim, not parsed by cdz: {err}"
     );
-    // Either the bin ran with those args, or it's absent (clean not-found). Both are acceptable; a
-    // cdz-level parse failure is not.
-    if !ok {
-        assert!(
-            is_clean_not_found(&err),
-            "a non-success is the actionable not-found error, not a cdz parse error: {err}"
-        );
-    }
+    // The error (if any) must NOT be cdz's own clap usage error — it's EITHER the bin's own output (present)
+    // OR our clean not-found (absent). Both acceptable; a cdz-level parse failure is not.
+    assert!(
+        !err.contains("error: unrecognized") && !err.contains("Usage: cdz smith"),
+        "a non-success is the bin's own output or the actionable not-found, not a cdz parse error: {err}"
+    );
 }
 
 #[test]

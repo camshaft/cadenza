@@ -55,8 +55,19 @@ jobs:
           cache-key: rc-leak-full
       - name: Build the runtime store (release + debug-counters)
         run: cargo xtask build
+      # Run the FULL reclaim/leak probe family. The lone `leaves_no_live_objects` filter MISSED ~40 probes
+      # named `reclaim`/`no_extra_leak`/`not_use_after_freed`/`_known_gap`/`survives_and_balances`/
+      # `owned_temporary_list_producers` (the bytes/list/map/set owned-temporary reclaim family, map/set-remove,
+      # the SITE-A probes, the UAF-guard, the tracked known-gap counts) — so a regression to those reclaim
+      # invariants would have gone uncaught. libtest takes MULTIPLE filter substrings AFTER `--` (OR'd — NOT as
+      # positional `cargo test` args, which only accept one TESTNAME and error on a second). All are debug-store
+      # (`find_debug_runtime_wasm`) probes that skip cleanly if the store is absent. Selects 34 probes (was 23).
+      # Keep this list in sync when a new reclaim probe's name matches none of these substrings.
       - name: Run the full live-objects leak-probe family
-        run: cargo test -p rcdzc --lib leaves_no_live_objects -- --ignored --test-threads=1
+        run: >-
+          cargo test -p rcdzc --lib -- --ignored --test-threads=1
+          leaves_no_live_objects reclaim no_extra_leak not_use_after_freed
+          _known_gap survives_and_balances owned_temporary_list_producers
 
   publish:
     name: rolling nightly prerelease

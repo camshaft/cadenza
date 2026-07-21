@@ -2054,6 +2054,18 @@
             ((Err _) 0)))
   (output (: 0 Int64)))
 
+(case "decode of an Int tag with a maximal magnitude-length yields the error case without overflowing"
+  (doc    "`(0 0 255 255 255 255)` declares a magnitude length of 0xFFFFFFFF (~4.29 billion) with no
+           magnitude bytes following. Computing the payload end as `4 + length` would OVERFLOW usize on a
+           32-bit target (wasm32 — rcdzc self-hosts to wasm), panicking under overflow-checks and breaking
+           the never-panic-on-untrusted-input contract; a `checked_add` returns `Err` instead. Pins that
+           the length arithmetic is overflow-safe on the adversarial maximal length, not merely
+           bounds-checked against present bytes (github-liaison/Copilot PR#747).")
+  (input  (match (Ast.decode (Bytes.of (list 0 0 255 255 255 255)))
+            ((Ok _)  1)
+            ((Err _) 0)))
+  (output (: 0 Int64)))
+
 (case "decode of an Int tag whose magnitude is shorter than its declared length yields the error case"
   (doc    "The Int arm reads `length` magnitude bytes after the 4-byte length; `(0 0 2 0 0 0)` declares a
            2-byte magnitude but supplies ZERO magnitude bytes, so `Ast.decode` returns `Err`. The

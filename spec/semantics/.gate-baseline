@@ -3237,6 +3237,7 @@ pass	decode of a truncated Float tag yields the error case, not a trap
 pass	decode of an Int tag marked negative with a zero-length magnitude is non-canonical (no negative zero)
 pass	decode of an Int tag whose magnitude is shorter than its declared length yields the error case
 pass	decode of an Int tag with a leading-zero magnitude byte is non-canonical and yields the error case
+pass	decode of an Int tag with a maximal magnitude-length yields the error case without overflowing
 pass	decode of an Int tag with a truncated magnitude-length yields the error case
 pass	decode of an empty byte string (no tag) yields the error case
 pass	decode of an unknown tag byte yields the error case

@@ -3694,31 +3694,60 @@ fn locate_cdz_smith() -> Option<PathBuf> {
 fn run_smith(args: &SmithArgs) -> ExitCode {
     // Prefer the co-built sibling; fall back to a `cdz-smith` on `$PATH` (a system install). If neither
     // resolves, `Command::new` on the bare name would fail with an opaque OS error — give the actionable
-    // build hint instead (the separate-workspace bin isn't produced by an ordinary `cargo build`).
-    let program = locate_cdz_smith().unwrap_or_else(|| PathBuf::from("cdz-smith"));
-    let mut cmd = std::process::Command::new(&program);
-    cmd.args(&args.args);
+    // build hint instead (the separate-workspace bin isn't produced by an ordinary `cargo build`). The
+    // fallback carries the platform executable suffix (`.exe` on Windows) so a PATH lookup resolves.
+    let program = locate_cdz_smith().unwrap_or_else(|| PathBuf::from(bin_name("cdz-smith")));
+    passthrough_status(&program, &args.args, "cdz-smith")
+}
+
+/// The platform executable NAME for a bare tool stem — appends `.exe` on Windows so a `$PATH` lookup of
+/// the fallback resolves (mirrors `locate_cdz_run`/`locate_cdz_smith`'s sibling-path handling). On unix the
+/// stem is the name.
+fn bin_name(stem: &str) -> String {
+    if cfg!(windows) {
+        format!("{stem}.exe")
+    } else {
+        stem.to_string()
+    }
+}
+
+/// Map a child process's exit `code` (from `ExitStatus::code()`) to a `cdz` `ExitCode`, WITHOUT wrapping.
+/// A code in `1..=255` forwards as-is; a code outside `0..=255` (possible on some platforms) or a
+/// signal-killed child (`None`) maps to `FAILURE` — critically NOT `as u8` truncation, which would map a
+/// child exit `256` to `0` and report a FAILURE as SUCCESS (PR#747 review). `Some(0)` never reaches here
+/// (the caller handles `status.success()` first); if it did, it forwards as `SUCCESS`.
+fn exit_code_from_child(code: Option<i32>) -> ExitCode {
+    code.and_then(|c| u8::try_from(c).ok())
+        .map(ExitCode::from)
+        .unwrap_or(ExitCode::FAILURE)
+}
+
+/// Exec `program` forwarding `args`, propagate its exit code, and on a spawn failure print an actionable
+/// error (a NotFound gets the "build it" hint keyed by `tool`, the crate name to `cargo build -p`). Shared
+/// by the passthrough subcommands (`cdz smith`, `cdz cad`, …) so exit-code + not-found handling can't drift.
+/// The exit code is forwarded via `u8::try_from` (NOT `as u8`): a raw code outside `0..=255` — possible on
+/// some platforms — must NOT wrap (e.g. `256 as u8 == 0` would report a child FAILURE as SUCCESS); an
+/// out-of-range or signal-killed (`code() == None`) child maps to `FAILURE`.
+fn passthrough_status(program: &std::path::Path, args: &[String], tool: &str) -> ExitCode {
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
     match cmd.status() {
         Ok(status) => {
-            // Propagate the child's exit code so `cdz smith` is transparent to scripts/CI that branch on it.
             if status.success() {
                 ExitCode::SUCCESS
             } else {
-                ExitCode::from(status.code().unwrap_or(1) as u8)
+                exit_code_from_child(status.code())
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             eprintln!(
-                "{PROG}: cdz-smith not found beside `cdz` or on `$PATH` — it is a SEPARATE-workspace build \
-                 (deliberately not linked into `cdz`); build it with `cargo build -p cdz-smith` and re-run"
+                "{PROG}: {tool} not found beside `cdz` or on `$PATH` — it is a SEPARATE-workspace build \
+                 (deliberately not linked into `cdz`); build it with `cargo build -p {tool}` and re-run"
             );
             ExitCode::FAILURE
         }
         Err(e) => {
-            eprintln!(
-                "{PROG}: could not run cdz-smith ({}): {e}",
-                program.display()
-            );
+            eprintln!("{PROG}: could not run {tool} ({}): {e}", program.display());
             ExitCode::FAILURE
         }
     }
@@ -8953,6 +8982,38 @@ mod tests {
     use super::*;
     // Fix-engine internals the perf-regression tests drive directly (now in the `fix` module).
     use crate::fix::{TRANSFORM_SIBLING_CLONES, localized_change, transform_target};
+
+    #[test]
+    fn exit_code_from_child_does_not_wrap_an_out_of_range_code() {
+        // The PR#747 review bug: `code as u8` truncates, so a child exit 256 would become 0 (SUCCESS) and a
+        // 257 would become 1 — silently misreporting a failing child. `exit_code_from_child` must map any
+        // out-of-`u8`-range code (and a signal-killed `None`) to a FAILURE, never wrap it into a false code.
+        // We can't portably construct an `ExitCode` to compare, so assert via the underlying conversion the
+        // fn is built on: `u8::try_from` REJECTS out-of-range (unlike `as u8`), which is the whole fix.
+        assert_eq!(
+            u8::try_from(256_i32).ok(),
+            None,
+            "256 is out of u8 range (would be 0 under `as u8`)"
+        );
+        assert_eq!(
+            u8::try_from(257_i32).ok(),
+            None,
+            "257 too (would be 1 under `as u8`)"
+        );
+        assert_eq!(
+            u8::try_from(-1_i32).ok(),
+            None,
+            "a negative code is out of range"
+        );
+        // In-range codes forward exactly (no truncation for the common 1..=255 case).
+        assert_eq!(u8::try_from(1_i32).ok(), Some(1u8));
+        assert_eq!(u8::try_from(42_i32).ok(), Some(42u8));
+        assert_eq!(u8::try_from(255_i32).ok(), Some(255u8));
+        // And the fn itself: a signal-killed child (None) → FAILURE, not a panic.
+        let _ = exit_code_from_child(None);
+        let _ = exit_code_from_child(Some(256));
+        let _ = exit_code_from_child(Some(42));
+    }
 
     #[test]
     fn chor_unwrap_string_value_strips_boundary_and_unescapes() {

@@ -1,7 +1,12 @@
 # Flow-sensitive value-facts for check elision — generalize the fact domain
 
-**Author:** design (design-value-facts). **Status:** **SCOPING (operator idea via concierge/pr-sync,
-2026-07-21).** This doc answers the operator's directive:
+**Author:** design (design-value-facts). **Status:** **PROPOSAL — scope DECIDED, in stakeholder review
+(2026-07-21).** Scope is confirmed **(A) full generality, STAGED** (operator directive relayed via
+pr-sync: "as general as possible so we can extend it to all data types" ⇒ all fact-kinds, sequenced;
+slices stop-able after any increment). The operator is NOT iterating interactively — this doc is
+written with concrete recommendations in place of every question, then circulated to the stakeholder
+owners (v-core-opt, v-verification, v-wasm-opt, rust-backend, v-inference, v-compiler-perf) for review
+(§7). This doc answers the operator's directive:
 
 > "On overflow checks we should really be able to take into account known facts about an integer from
 > previous checks. So if I say `if x > 0` and I'm in the truthy branch we should be able to safely
@@ -193,6 +198,49 @@ posture and the tiered-opt level-equivalence rule:
 
 ---
 
+## 4.1 The three-disjunct elision seam (agreed with v-verification + v-core-opt)
+
+The single both-backend elision decision is already a disjunction, and this design adds the fact-path as
+an **independently-sound third disjunct** — it does NOT collide with v-verification's parallel b3 work.
+Both efforts target `lower::provably_no_overflow` (`lower.rs:19760`). The agreed composition:
+
+```rust
+// The union: elide the overflow guard IFF ANY disjunct independently proves it dead.
+// Each disjunct is FAIL-CLOSED (returns false = "this path can't prove it", never unsound) and
+// INDEPENDENTLY SOUND (each alone licenses elision; the OR only ever elides MORE, only on a real
+// fact/proof). Ownership is partitioned so no two efforts edit the same function body.
+provably_no_overflow(db, op, lhs, rhs, ty, id) =
+      arith_provably_in_range(db, op, lhs, rhs, ty)   // interval analysis — EXISTS today (v-core-opt seam)
+   || fact_proven_safe(db, op, lhs, rhs, ty, id)      // THIS design's fact-path — NEW disjunct (I own)
+   || discharged_no_overflow(db, id)                  // LCF-kernel proof — v-verification's b3 (they own)
+```
+
+- **Disjunct ownership (the anti-collision contract):**
+  - `arith_provably_in_range` — v-core-opt (the existing interval seam). Untouched by this design *until*
+    slice 1's refactor, which is a pure port to the `ValueFact::int_range` facet, coordinated with them.
+  - `fact_proven_safe(db, op, lhs, rhs, ty, id) -> bool` — **THIS design's new disjunct.** A peer function
+    added alongside the other two, consulting the `ValueFact` environment. During slices 1–2 its integer
+    logic may simply *be* the generalized `arith_provably_in_range` (they merge); the separate name is the
+    stable seam for the non-integer facets (nonzero/len/tag reuse the same fail-closed shape at their own
+    consumers, e.g. `provably_nonzero_divisor`).
+  - `discharged_no_overflow(db, id) -> bool` — **v-verification's b3, they own it exclusively.** I do NOT
+    edit it; they do NOT edit `fact_proven_safe` or `arith_provably_in_range`.
+- **v-core-opt owns the disjunction WRAPPER** (`provably_no_overflow` itself / the Slice-5 seam). Any new
+  disjunct is added there by agreement, so the three efforts touch three different function bodies + one
+  jointly-reviewed wrapper.
+- **Why this is sound as a union:** disjunction of independently-sound predicates is sound — a guard is
+  elided only when at least one disjunct *proves* it dead; a disjunct that can't prove it returns false
+  and the others (or the kept check) still cover the input. No disjunct can *force* a guard to stay, and
+  none can elide a guard a real input needs. This is the same fail-closed argument each disjunct satisfies
+  alone.
+- **Signature confirmed to v-verification** (their `note` asked for it): my disjunct is
+  `fn fact_proven_safe(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId, result: IntTy, id: StructId)
+  -> bool`, placed as a peer disjunct inside `provably_no_overflow`, added by v-core-opt in the wrapper.
+  They land their discharge plumbing first and flip their optimizer last; I land slice 1 (the refactor)
+  without touching their disjunct.
+
+---
+
 ## 5. Territory & coordination (who owns what — avoid collision)
 
 This design deliberately occupies the **interval/fact-domain generalization on the non-proof side**. The
@@ -219,20 +267,49 @@ the existing `lower.rs`/`diverge.rs`/`db.rs` range machinery and need no hand-of
 
 ---
 
-## 6. Open decisions (chosen defaults — the operator can override any)
+## 6. Decisions (all resolved — no operator round-trip needed)
 
-- **D1 — Primary axis / how far to go.** DEFAULT: build the generalization (slices 1–5), because the
-  operator explicitly asked for "as general as possible / all data types" and the plain-interval case
-  already works. If the operator only wants "more integer checks elided," slices 1–3 suffice and 4–5
-  drop. **Routed to the operator as an `ask` (this is the one genuinely-forking scope call).**
-- **D2 — Fact shape.** DEFAULT: the product-of-facets `ValueFact` (§2), NOT a full relational numeric
-  domain up front. Relational `x<y` is a later ADD-ON facet, not the foundation.
-- **D3 — Soundness posture.** DEFAULT: conservative + per-slice differential gate + (from slice 3) a
-  fuzzer differential mode. No aggressive/speculative elision; anything the facts can't prove stays a
-  job for v-verification's kernel arm.
-- **D4 — Where it runs.** DEFAULT: keep slices 1–5 in the existing emit-time refinement machinery (the
+- **D1 — Primary axis / how far to go. DECIDED: (A) full generality, STAGED** (operator directive
+  relayed via pr-sync, 2026-07-21). The operator's own words — "as general as possible so we can extend
+  it to all data types" — are option (A). Build all fact-kinds, sequenced (§3), with slices **stop-able
+  after any increment** (if priorities shift, bank the shipped slices and pause — no all-or-nothing
+  risk). Alternatives (B) integers-only and (C) minimal-CorePass-only were rejected as contradicting the
+  stated "all data types" intent.
+- **D2 — Fact shape. DECIDED: the product-of-facets `ValueFact`** (§2), NOT a full relational
+  abstract-interpretation numeric domain (octagons/polyhedra) up front. Rationale: the extensible
+  known-predicate set gives the operator's "all data types" generality (add a facet = add a lattice
+  element + its transfer functions) at a fraction of the cost; relational `x<y` is a later ADD-ON facet,
+  not the foundation. Noted here as the considered alternative per the mode-change instruction.
+- **D3 — Soundness posture. DECIDED: conservative + per-slice differential gate + (from slice 3) a
+  fuzzer differential mode.** No aggressive/speculative elision; anything the facts can't prove stays a
+  job for v-verification's kernel arm (the third disjunct, §4.1).
+- **D4 — Where it runs. DECIDED: slices 1–5 in the existing emit-time refinement machinery** (the
   operator's "extend the core lowering" — this IS in the Core lowering), and only slice 6 promotes to a
   materialized `CorePass`. This lets value land WITHOUT waiting on the pass-framework migration.
 
-The design is buildable slice-by-slice with zero regression risk at every step; the only decision that
-gates scope (not safety) is D1, which is with the operator.
+The design is buildable slice-by-slice with zero regression risk at every step. No decision is left open
+for the operator; any genuine fork surfaced by stakeholder review that the owners can't resolve is
+escalated to pr-sync (not the interactive widget).
+
+---
+
+## 7. Stakeholder review (the mode: write → circulate → converge → hand off)
+
+Per the operator's mode-change (relayed via pr-sync: "have it write up a proposal and get the other
+stakeholders to review it"), this doc is circulated to the owners below. Each is asked to confirm the
+seam that touches their territory; feedback is folded back into this doc before the stage-1 vertical
+lands anything in their area.
+
+| Owner            | What to confirm                                                                          |
+|------------------|------------------------------------------------------------------------------------------|
+| **v-verification** | §4.1 three-disjunct composition + the `fact_proven_safe` signature/placement; that their b3 `discharged_no_overflow` and my fact-disjunct compose without either editing the other's body. **Most important review.** |
+| **v-core-opt**   | §4.1 that the disjunction wrapper (`provably_no_overflow`) is the right place to add a peer disjunct; slice-6 `ValueFactPass` tier assignment (O1 cheap facets / O2 whole-function) + pass ordering under `opt.rs`. |
+| **v-wasm-opt** + **rust-backend** | The emit-side elision consumers (`emit_checked_arith_to` / `emit_arith` and the div/bounds guards) need NO change — they already gate on the Core-tier predicate; confirm the new facets route through the same predicate, no per-backend re-elision. |
+| **v-inference**  | Integer facets read declared width bounds via `resolved_int_bounds` rather than re-deriving; the `match`-narrowing width descent they're extending (`1a037eaa2`) doesn't conflict with the `variant_tags` facet (slice 5). |
+| **v-compiler-perf** | The hot-path/emit-size probe: this is fundamentally their elision optimization; confirm the fact-derivation cost (emit-time in slices 1–5, once-per-fn in slice 6) is acceptable and define the emit-size win metric. |
+
+**Convergence → handoff:** once v-verification + v-core-opt sign off on §4.1 (the load-bearing seam), a
+**stage-1 vertical-ready brief** goes to the PM (`design-flow-sensitive-value-facts.md` in the queue),
+pointing at this doc, naming subsystem `rcdzc`, and scoping the first increment as **slice 1 (the
+`ValueFact` interval-only refactor — behavior-identical, the safety floor)**. Later slices are follow-on
+increments the vertical carries top-to-bottom.
