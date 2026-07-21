@@ -5498,6 +5498,9 @@ fn blocking_combined_check(repo: &Path) -> bool {
         .current_dir(repo)
         .args(["xtask", "check"])
         .env("CDZ_CHECK_PRIORITY", "1")
+        // Skip the two trailing REPORT-ONLY conformance sweeps — they never change the merge verdict but
+        // can add ~90min after it's decided (matches the detached-check path in `spawn_detached_check`).
+        .env("CDZ_GATE_ONLY", "1")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -5587,9 +5590,13 @@ fn spawn_detached_check(
 ) {
     let script_path = dir.join(format!("{key}.sh"));
     let script = format!(
+        // `CDZ_GATE_ONLY=1` skips `check`'s two trailing REPORT-ONLY conformance sweeps (cadenza-ml +
+        // emit≡interpret). They never affect the gate verdict but can add ~90min AFTER it's decided,
+        // freezing the merge queue on already-green work (pr-sync's ">1h trailing-native-step" stall).
+        // The merge gate only needs the green/red verdict, so it returns the moment that's known.
         "#!/bin/sh\n\
          echo $$ > '{pidf}'\n\
-         CDZ_CHECK_PRIORITY=1 cargo xtask check > '{log}' 2>&1\n\
+         CDZ_GATE_ONLY=1 CDZ_CHECK_PRIORITY=1 cargo xtask check > '{log}' 2>&1\n\
          code=$?\n\
          printf '%s' \"$code\" > '{marker}.tmp' && mv '{marker}.tmp' '{marker}'\n\
          rm -f '{pidf}'\n",
